@@ -124,32 +124,6 @@ sha256_stdin() {
   fi
 }
 
-# JSON string escape (bash 3.2). Newline → \n, tab → \t, CR → \r,
-# backslash → \\, double-quote → \", control chars get a \u00xx escape
-# (rough — sufficient for stdout/stderr blobs we attach for context).
-json_escape() {
-  local s="$1"
-  # Use awk to emit a properly escaped JSON string body (no quotes).
-  awk 'BEGIN { RS = "\1"; ORS = "" }
-  {
-    n = length($0)
-    for (i = 1; i <= n; i++) {
-      c = substr($0, i, 1)
-      o = sprintf("%d", 0)
-      # Get integer codepoint:
-      "printf %d \"'\\''" c "\"" | getline o
-      close("printf %d \"'\\''" c "\"")
-      if      (c == "\\") printf "\\\\"
-      else if (c == "\"") printf "\\\""
-      else if (c == "\n") printf "\\n"
-      else if (c == "\r") printf "\\r"
-      else if (c == "\t") printf "\\t"
-      else if (o + 0 < 32) printf "\\u%04x", o + 0
-      else printf "%s", c
-    }
-  }' <<< "$s"
-}
-
 # Faster (and saner) JSON-string escape via python3 (always present on
 # macOS/Linux dev machines). Falls back to a sed-pipe if python3 is
 # missing.
@@ -219,11 +193,17 @@ run_with_timeout() {
 # not normalized — those gaps are surfaced as cosmetic in Phase 2.5.
 normalize_output() {
   local in_path="$1" out_path="$2"
-  sed \
+  # LC_ALL=C tells BSD sed to treat input as raw bytes, sidestepping the
+  # "RE error: illegal byte sequence" abort that triggers when verbs
+  # emit non-UTF-8 bytes (e.g. tree-rendering with embedded glyphs).
+  # We also normalize TMP_ROOT itself so any nested tmp-path the more
+  # specific replacements miss still collapses to a stable token.
+  LC_ALL=C sed \
     -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' \
     -e "s#${AUDIT_DB}#<AUDIT_DB>#g" \
     -e "s#${CWD_DB}#<CWD_DB>#g" \
     -e "s#${CWD_DIR}#<CWD_DIR>#g" \
+    -e "s#${TMP_ROOT}#<TMP_ROOT>#g" \
     -e "s#${PLANAR_GO_BIN}#<GO_BIN>#g" \
     -e "s#${ZIG_BIN}#<ZIG_BIN>#g" \
     "$in_path" > "$out_path"
@@ -294,6 +274,60 @@ PLANAR_DB="$CWD_DB" "$ZIG_BIN" assoc create parity-audit-fixture --kind project 
   || log "warn: assoc add returned non-zero (may already be added)"
 
 log "cwd-fixture dir: $CWD_DIR  db: $CWD_DB"
+
+# ---------- health-check preflight ----------
+#
+# Run `planar health` on both binaries against $AUDIT_DB before the verb
+# matrix runs. If either binary fails to open the audit DB or reports an
+# unexpected schema version, abort with a clear error. This is the
+# fast-failing guard that would have caught task 2365 (Go silently
+# falling back to ~/.planar/planar.db under a fake $HOME) in one second.
+# We capture the human-readable health output for inclusion in the
+# report so future readers can confirm both binaries saw the same DB
+# state at audit time.
+title "health-check preflight"
+
+HEALTH_GO_OUT="$TMP_ROOT/health.go.out"
+HEALTH_ZIG_OUT="$TMP_ROOT/health.zig.out"
+
+# Go takes --db; zig consumes PLANAR_DB env. We feed both, against the
+# same file, and require exit 0 from each. Note: Go's `health` exits
+# non-zero when the DB is degraded (e.g. in-flight tasks not resumable);
+# that is not a tool failure — only treat schema=0 / missing-file as
+# fatal. We parse the schema version out of stdout and require it to be
+# non-zero on both sides.
+HEALTH_GO_EXIT=0
+HEALTH_ZIG_EXIT=0
+PLANAR_HOME="$TMP_ROOT/planar-home-go" HOME="$TMP_ROOT/home-go" \
+  "$PLANAR_GO_BIN" --db "$AUDIT_DB" health >"$HEALTH_GO_OUT" 2>&1 \
+  || HEALTH_GO_EXIT=$?
+PLANAR_DB="$AUDIT_DB" PLANAR_HOME="$TMP_ROOT/planar-home-zig" HOME="$TMP_ROOT/home-zig" \
+  "$ZIG_BIN" health >"$HEALTH_ZIG_OUT" 2>&1 \
+  || HEALTH_ZIG_EXIT=$?
+
+# Extract schema version. Go renders "  schema:           14  [current]".
+# Zig renders "schema version:   14".
+HEALTH_GO_SCHEMA=$(awk '/schema:/ { for (i=1;i<=NF;i++) if ($i ~ /^[0-9]+$/) { print $i; exit } }' "$HEALTH_GO_OUT")
+HEALTH_ZIG_SCHEMA=$(awk '/schema version/ { for (i=1;i<=NF;i++) if ($i ~ /^[0-9]+$/) { print $i; exit } }' "$HEALTH_ZIG_OUT")
+HEALTH_GO_SCHEMA="${HEALTH_GO_SCHEMA:-0}"
+HEALTH_ZIG_SCHEMA="${HEALTH_ZIG_SCHEMA:-0}"
+
+log "go  health: exit=$HEALTH_GO_EXIT  schema=$HEALTH_GO_SCHEMA"
+log "zig health: exit=$HEALTH_ZIG_EXIT schema=$HEALTH_ZIG_SCHEMA"
+
+if [[ "$HEALTH_GO_SCHEMA" == "0" ]]; then
+  cat "$HEALTH_GO_OUT" >&2
+  err "Go health-check failed: reported schema 0 against AUDIT_DB ($AUDIT_DB). The --db flag may not be wired through, or the DB is unreadable."
+fi
+if [[ "$HEALTH_ZIG_SCHEMA" == "0" ]]; then
+  cat "$HEALTH_ZIG_OUT" >&2
+  err "Zig health-check failed: reported schema 0 against AUDIT_DB ($AUDIT_DB). PLANAR_DB may not be honored, or the DB is unreadable."
+fi
+if [[ "$HEALTH_GO_SCHEMA" != "$HEALTH_ZIG_SCHEMA" ]]; then
+  err "schema-version mismatch between binaries against AUDIT_DB: go=$HEALTH_GO_SCHEMA zig=$HEALTH_ZIG_SCHEMA. Audit aborted before matrix run."
+fi
+
+log "preflight: both binaries report schema $HEALTH_GO_SCHEMA against AUDIT_DB"
 
 # ---------- enumerate verbs ----------
 
@@ -450,7 +484,9 @@ run_one() {
   local db_for_run="$AUDIT_DB"
   if [[ "$cwd_label" == "cwd" ]]; then
     cwd="$CWD_DIR"
-    cwd_label_emit="$CWD_DIR"
+    # Emit a stable token rather than the raw $CWD_DIR so the report is
+    # byte-identical across runs (the mktemp suffix changes each time).
+    cwd_label_emit="<CWD_DIR>"
     db_for_run="$CWD_DB"
   fi
 
@@ -466,6 +502,12 @@ run_one() {
   # any subcommand or flag. We split args_str on whitespace via $IFS
   # word-splitting; empty is handled by the "no extra args" branch
   # below (bash 3.2 'set -u' treats empty-array expansion as unbound).
+  # The Go binary respects --db, not PLANAR_DB — without --db it falls
+  # back to $HOME/.planar/planar.db (which, under the fake HOME below,
+  # is a schema-0 empty file). We pass --db explicitly so Go reads the
+  # same audit DB the zig binary reads via PLANAR_DB. Zig accepts the
+  # env var on every invocation and does not parse --db; mixing the
+  # two keeps both binaries pointed at $db_for_run.
   local go_exit go_timed_out zig_exit zig_timed_out
   if [[ -n "$args_str" ]]; then
     # shellcheck disable=SC2086
@@ -473,13 +515,13 @@ run_one() {
       PLANAR_HOME="$TMP_ROOT/planar-home-go" \
       HOME="$TMP_ROOT/home-go" \
       "$RUNONE" "$TIMEOUT_SECS" "$go_out" "$go_err" \
-      "$PLANAR_GO_BIN" "$verb" $args_str 2>/dev/null ) || go_exit="?"
+      "$PLANAR_GO_BIN" --db "$db_for_run" "$verb" $args_str 2>/dev/null ) || go_exit="?"
   else
     go_exit=$( cd "$cwd" && PLANAR_DB="$db_for_run" \
       PLANAR_HOME="$TMP_ROOT/planar-home-go" \
       HOME="$TMP_ROOT/home-go" \
       "$RUNONE" "$TIMEOUT_SECS" "$go_out" "$go_err" \
-      "$PLANAR_GO_BIN" "$verb" 2>/dev/null ) || go_exit="?"
+      "$PLANAR_GO_BIN" --db "$db_for_run" "$verb" 2>/dev/null ) || go_exit="?"
   fi
   go_timed_out="false"
   [[ -f "$go_out.timedout" ]] && go_timed_out="true"
@@ -511,10 +553,15 @@ run_one() {
   normalize_output "$go_err" "$go_err_norm"
   normalize_output "$zig_err" "$zig_err_norm"
 
+  # --label on both stdout and stderr diffs so the +++ / --- header
+  # lines are stable across runs. Without --label, diff(1) embeds the
+  # input file path plus mtime, both of which change per run and would
+  # otherwise prevent the report from being byte-identical between
+  # consecutive audits.
   local diff_path="$WORK/diffs/${slug}.diff"
   {
     # stdout diff
-    if ! diff -u "$go_norm" "$zig_norm" 2>/dev/null; then :; fi
+    if ! diff -u --label "go" --label "zig" "$go_norm" "$zig_norm" 2>/dev/null; then :; fi
     # stderr diff (suffix-tagged so the report shows which stream)
     if ! diff -u --label "go.stderr" --label "zig.stderr" "$go_err_norm" "$zig_err_norm" 2>/dev/null; then :; fi
     # exit-code diff sentinel
@@ -526,28 +573,44 @@ run_one() {
   local diff_bytes
   diff_bytes=$(wc -c < "$diff_path" | tr -d ' ')
 
+  # Use NORMALIZED file bytes/SHAs for the JSON so the report is stable
+  # across runs. Raw outputs may embed per-run TMP_ROOT paths (e.g. when
+  # a verb prints the audit DB path), which would otherwise change
+  # byte counts and SHAs between two consecutive audits.
   local go_stdout_bytes go_stderr_bytes zig_stdout_bytes zig_stderr_bytes
-  go_stdout_bytes=$(wc -c < "$go_out" | tr -d ' ')
-  go_stderr_bytes=$(wc -c < "$go_err" | tr -d ' ')
-  zig_stdout_bytes=$(wc -c < "$zig_out" | tr -d ' ')
-  zig_stderr_bytes=$(wc -c < "$zig_err" | tr -d ' ')
+  go_stdout_bytes=$(wc -c < "$go_norm" | tr -d ' ')
+  go_stderr_bytes=$(wc -c < "$go_err_norm" | tr -d ' ')
+  zig_stdout_bytes=$(wc -c < "$zig_norm" | tr -d ' ')
+  zig_stderr_bytes=$(wc -c < "$zig_err_norm" | tr -d ' ')
 
   local go_stdout_sha go_stderr_sha zig_stdout_sha zig_stderr_sha
-  go_stdout_sha=$(sha256_file "$go_out")
-  go_stderr_sha=$(sha256_file "$go_err")
-  zig_stdout_sha=$(sha256_file "$zig_out")
-  zig_stderr_sha=$(sha256_file "$zig_err")
+  go_stdout_sha=$(sha256_file "$go_norm")
+  go_stderr_sha=$(sha256_file "$go_err_norm")
+  zig_stdout_sha=$(sha256_file "$zig_norm")
+  zig_stderr_sha=$(sha256_file "$zig_err_norm")
 
   local status="no_diff"
   if [[ "$diff_bytes" -gt 0 ]]; then status="gap"; fi
   if [[ "$go_exit" == "?" || "$zig_exit" == "?" ]]; then status="error"; fi
   if [[ "$go_timed_out" == "true" || "$zig_timed_out" == "true" ]]; then status="error"; fi
 
-  printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
+  # failure_class: which binary (if any) returned a non-zero exit (or
+  # timed out / failed to launch). Phase 2.5 needs this to bucket the
+  # "both errored consistently" rows separately from real regressions.
+  local go_failed="false" zig_failed="false"
+  if [[ "$go_exit" != "0" || "$go_timed_out" == "true" ]]; then go_failed="true"; fi
+  if [[ "$zig_exit" != "0" || "$zig_timed_out" == "true" ]]; then zig_failed="true"; fi
+  local failure_class="neither-failed"
+  if   [[ "$go_failed" == "true" && "$zig_failed" == "true" ]]; then failure_class="both-failed"
+  elif [[ "$go_failed" == "true" ]];                              then failure_class="go-failed"
+  elif [[ "$zig_failed" == "true" ]];                             then failure_class="zig-failed"
+  fi
+
+  printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
     "$verb" "$inv_label" "$cwd_label_emit" "${args_str}" \
     "$go_exit" "$go_stdout_bytes" "$go_stderr_bytes" "$go_stdout_sha" "$go_stderr_sha" "$go_timed_out" \
     "$zig_exit" "$zig_stdout_bytes" "$zig_stderr_bytes" "$zig_stdout_sha" "$zig_stderr_sha" "$zig_timed_out" \
-    "$diff_bytes" "$diff_path" "$status" \
+    "$diff_bytes" "$diff_path" "$status" "$failure_class" \
     >> "$RECORDS"
 
   inv_count=$((inv_count + 1))
@@ -608,21 +671,50 @@ zig_bin_sha=$(sha256_file "$ZIG_BIN")
 generated_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 skipped_count=$(grep -c . "$SKIPPED" || true)
 
+# Normalize the host-tmp paths to stable tokens so the report is
+# byte-identical across runs. The mktemp suffix on $TMP_ROOT changes
+# every invocation; without normalization the JSON's audit_db / cwd
+# fields (and any leaked path in a diff body the sed substitution
+# missed) would make the report non-deterministic.
+AUDIT_DB_TOKEN="<AUDIT_DB>"
+CWD_DB_TOKEN="<CWD_DB>"
+CWD_DIR_TOKEN="<CWD_DIR>"
+
+# Read the preflight health output for inclusion in the report. We
+# normalize tmp paths the same way normalize_output() does for matrix
+# outputs, so the embedded health text doesn't change across runs.
+HEALTH_GO_TEXT=$(LC_ALL=C sed \
+  -e "s#${AUDIT_DB}#<AUDIT_DB>#g" \
+  -e "s#${CWD_DB}#<CWD_DB>#g" \
+  -e "s#${TMP_ROOT}#<TMP_ROOT>#g" \
+  "$HEALTH_GO_OUT" 2>/dev/null || echo "")
+HEALTH_ZIG_TEXT=$(LC_ALL=C sed \
+  -e "s#${AUDIT_DB}#<AUDIT_DB>#g" \
+  -e "s#${CWD_DB}#<CWD_DB>#g" \
+  -e "s#${TMP_ROOT}#<TMP_ROOT>#g" \
+  "$HEALTH_ZIG_OUT" 2>/dev/null || echo "")
+
 # Build JSON in pieces. We pipe records through python3 for safe
 # string-escaping of diff bodies.
 python3 - "$RECORDS" "$SKIPPED" "$JSON_OUT" \
   "$PLANAR_GO_BIN" "$go_bin_sha" \
   "$ZIG_BIN" "$zig_bin_sha" \
-  "$AUDIT_DB" "$CWD_DB" "$CWD_DIR" \
+  "$AUDIT_DB_TOKEN" "$CWD_DB_TOKEN" "$CWD_DIR_TOKEN" \
   "$generated_at" \
   "$verb_count" "$inv_count" "$gap_count" "$no_diff_count" "$error_count" "$skipped_count" \
+  "$HEALTH_GO_SCHEMA" "$HEALTH_ZIG_SCHEMA" \
+  "$HEALTH_GO_EXIT" "$HEALTH_ZIG_EXIT" \
+  "$HEALTH_GO_TEXT" "$HEALTH_ZIG_TEXT" \
 <<'PY'
 import json, sys, os
 
 (_, records_path, skipped_path, out_path,
  go_bin, go_sha, zig_bin, zig_sha,
  audit_db, cwd_db, cwd_dir, generated_at,
- verbs, invocations, gaps, no_diff, errors, skipped_n) = sys.argv
+ verbs, invocations, gaps, no_diff, errors, skipped_n,
+ health_go_schema, health_zig_schema,
+ health_go_exit, health_zig_exit,
+ health_go_text, health_zig_text) = sys.argv
 
 results = []
 with open(records_path) as f:
@@ -635,7 +727,7 @@ with open(records_path) as f:
         (verb, inv, cwd, args,
          g_exit, g_so_b, g_se_b, g_so_sha, g_se_sha, g_to,
          z_exit, z_so_b, z_se_b, z_so_sha, z_se_sha, z_to,
-         diff_bytes, diff_path, status) = parts
+         diff_bytes, diff_path, status, failure_class) = parts
         try:
             with open(diff_path, "r", errors="replace") as df:
                 diff_unified = df.read()
@@ -647,6 +739,7 @@ with open(records_path) as f:
             "args": args,
             "cwd": cwd,
             "status": status,
+            "failure_class": failure_class,
             "go": {
                 "exit": g_exit,
                 "stdout_bytes": int(g_so_b),
@@ -678,6 +771,11 @@ with open(skipped_path) as f:
         verb, reason = line.split("|", 1)
         skipped.append({"verb": verb, "reason": reason})
 
+# Aggregate failure_class distribution for the summary block.
+fc_dist = {"neither-failed": 0, "go-failed": 0, "zig-failed": 0, "both-failed": 0}
+for r in results:
+    fc_dist[r["failure_class"]] = fc_dist.get(r["failure_class"], 0) + 1
+
 doc = {
     "generated_at": generated_at,
     "go_bin": go_bin,
@@ -687,6 +785,14 @@ doc = {
     "audit_db": audit_db,
     "cwd_fixture_db": cwd_db,
     "cwd_fixture_dir": cwd_dir,
+    "preflight": {
+        "go_health_exit": int(health_go_exit),
+        "go_schema_version": int(health_go_schema),
+        "go_health_text": health_go_text,
+        "zig_health_exit": int(health_zig_exit),
+        "zig_schema_version": int(health_zig_schema),
+        "zig_health_text": health_zig_text,
+    },
     "summary": {
         "verbs": int(verbs),
         "invocations": int(invocations),
@@ -694,6 +800,7 @@ doc = {
         "no_diff": int(no_diff),
         "errors": int(errors),
         "skipped": int(skipped_n),
+        "failure_class": fc_dist,
     },
     "skipped": skipped,
     "results": results,
@@ -743,6 +850,51 @@ lines.append(f"- Cwd-fixture DB: `{doc['cwd_fixture_db']}`")
 lines.append(f"- Cwd-fixture dir: `{doc['cwd_fixture_dir']}`")
 lines.append("")
 
+# Failure-class distribution (task 2368).
+fc = doc["summary"].get("failure_class", {})
+if fc:
+    lines.append("### Failure class distribution")
+    lines.append("")
+    lines.append("Per-invocation breakdown of which binary (if any) returned a non-zero exit. "
+                 "`neither-failed` rows are the most signal-rich gaps (both binaries ran but disagreed); "
+                 "`both-failed` rows often differ only in the error message phrasing.")
+    lines.append("")
+    lines.append("| Class | Count |")
+    lines.append("|-------|-------|")
+    for k in ("neither-failed", "go-failed", "zig-failed", "both-failed"):
+        lines.append(f"| `{k}` | {fc.get(k, 0)} |")
+    lines.append("")
+
+# Preflight health-check block (task 2367). Both binaries must have
+# reported a non-zero schema version against $AUDIT_DB before the matrix
+# ran; this records what they saw.
+pf = doc.get("preflight")
+if pf:
+    lines.append("## Preflight health-check")
+    lines.append("")
+    lines.append(
+        f"Both binaries opened the audit DB before the matrix ran. "
+        f"Go reported schema **{pf['go_schema_version']}** (exit {pf['go_health_exit']}); "
+        f"Zig reported schema **{pf['zig_schema_version']}** (exit {pf['zig_health_exit']})."
+    )
+    lines.append("")
+    lines.append("<details><summary>Go health output</summary>")
+    lines.append("")
+    lines.append("```")
+    lines.append(pf["go_health_text"].rstrip("\n"))
+    lines.append("```")
+    lines.append("")
+    lines.append("</details>")
+    lines.append("")
+    lines.append("<details><summary>Zig health output</summary>")
+    lines.append("")
+    lines.append("```")
+    lines.append(pf["zig_health_text"].rstrip("\n"))
+    lines.append("```")
+    lines.append("")
+    lines.append("</details>")
+    lines.append("")
+
 # Skipped verbs.
 if doc["skipped"]:
     lines.append("## Pre-skipped verbs")
@@ -782,12 +934,13 @@ if not gaps:
     lines.append("_None._")
     lines.append("")
 else:
-    lines.append("| # | Verb | Invocation | Args | Diff bytes | Go exit | Zig exit |")
-    lines.append("|---|------|------------|------|------------|---------|----------|")
+    lines.append("| # | Verb | Invocation | Args | Diff bytes | Go exit | Zig exit | Failure class |")
+    lines.append("|---|------|------------|------|------------|---------|----------|---------------|")
     for i, r in enumerate(gaps, 1):
         lines.append(
             f"| {i} | `{r['verb']}` | `{r['invocation']}` | `{r['args']}` | "
-            f"{r['diff']['size_bytes']} | {r['go']['exit']} | {r['zig']['exit']} |"
+            f"{r['diff']['size_bytes']} | {r['go']['exit']} | {r['zig']['exit']} | "
+            f"`{r['failure_class']}` |"
         )
     lines.append("")
     lines.append("### Per-gap diffs")
@@ -795,6 +948,7 @@ else:
     for i, r in enumerate(gaps, 1):
         lines.append(f"#### {i}. `{r['verb']} {r['args']}` — invocation `{r['invocation']}`")
         lines.append("")
+        lines.append(f"- Failure class: `{r['failure_class']}`")
         lines.append(f"- Go exit: `{r['go']['exit']}` (stdout {r['go']['stdout_bytes']}B, stderr {r['go']['stderr_bytes']}B)")
         lines.append(f"- Zig exit: `{r['zig']['exit']}` (stdout {r['zig']['stdout_bytes']}B, stderr {r['zig']['stderr_bytes']}B)")
         if r["cwd"]:
