@@ -1,0 +1,9 @@
+{
+  "fields": {
+    "issuetype": { "name": "Story" },
+    "summary": "{{.Plan.Title}}",
+    "description": "{{.Plan.Body}}",
+    "customfield_10014": "{{.ExternalKey}}",
+    "labels": ["planar-managed"]
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "title": "{{.Task.Title}}",
+  "body": "## Acceptance criteria\n\n{{.Task.Body}}\n\n## Repository scope\n{{range .Touches}}- {{.}}\n{{end}}",
+  "labels": ["planar-managed", "type:task"],
+  "assignees": []
+}

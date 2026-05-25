@@ -1,0 +1,51 @@
+# Workspace capability rules.
+#
+# These rules drive `planar workspace routing build`'s manifest classifier.
+# Each [[rule]] entry contributes one capability tag to a project when its
+# matchers fire. Rules are evaluated in declaration order; the resulting
+# tag set is deduplicated and sorted before being written to
+# routing-table.json.
+#
+# Matcher fields:
+#   tag           Capability label emitted on match (required).
+#   match_all     Glob patterns that must ALL find at least one matching
+#                 entry under the project root (e.g. ["go.mod"]).
+#   match_any     Glob patterns where ANY match satisfies the rule.
+#   package_dep   Optional extra constraint: require the named npm
+#                 dependency or devDependency in package.json.
+#   go_main       Optional extra constraint: require a `package main`
+#                 Go file under cmd/* (or the project root).
+#
+# Default install — edit freely. Hand edits survive `planar install`
+# re-runs only if you keep the file at $PLANAR_HOME/templates/.
+
+[[rule]]
+tag = "go-service"
+match_all = ["go.mod"]
+go_main = true
+
+[[rule]]
+tag = "go-library"
+match_all = ["go.mod"]
+
+[[rule]]
+tag = "node-service"
+match_all = ["package.json"]
+package_dep = "express"
+
+[[rule]]
+tag = "react-app"
+match_all = ["package.json"]
+package_dep = "react"
+
+[[rule]]
+tag = "rust"
+match_all = ["Cargo.toml"]
+
+[[rule]]
+tag = "python"
+match_any = ["pyproject.toml", "setup.py", "requirements.txt"]
+
+[[rule]]
+tag = "protobuf"
+match_any = ["*.proto", "proto/*.proto"]

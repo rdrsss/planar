@@ -1,0 +1,8 @@
+{
+  "fields": {
+    "issuetype": { "name": "Story" },
+    "summary": "{{.Scenario.Title}}",
+    "description": "{{.Scenario.Body}}",
+    "labels": ["planar-managed", "test-scenario"]
+  }
+}

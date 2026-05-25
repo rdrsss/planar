@@ -1,0 +1,9 @@
+{
+  "fields": {
+    "issuetype": { "name": "Epic" },
+    "summary": "{{.Feature.Title}}",
+    "description": "{{.Feature.Body}}",
+    "customfield_10004": "{{.Feature.Title}}",
+    "labels": ["planar-managed"]
+  }
+}

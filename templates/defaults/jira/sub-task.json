@@ -1,0 +1,9 @@
+{
+  "fields": {
+    "issuetype": { "name": "Sub-task" },
+    "summary": "{{.Task.Title}}",
+    "description": "{{.Task.Body}}",
+    "parent": { "key": "{{.ExternalKey}}" },
+    "labels": ["planar-managed"]
+  }
+}

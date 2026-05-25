@@ -1,0 +1,5 @@
+{
+  "title": "{{.Feature.Title}}",
+  "description": "{{.Feature.Body}}",
+  "custom_fields": []
+}

@@ -1,0 +1,6 @@
+{
+  "title": "{{.Feature.Title}}",
+  "body": "## Feature\n\n{{.Feature.Body}}\n\n## Association\n\n{{.Assoc.Name}} (`{{.Assoc.Slug}}`)\n{{if .ExternalKey}}\n## External reference\n\n`{{.ExternalKey}}`\n{{end}}",
+  "labels": ["planar-managed", "type:epic"],
+  "assignees": []
+}

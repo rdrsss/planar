@@ -1,3 +1,60 @@
-.zig-cache/
+# ============================================================================
+# Zig build artifacts
+# ============================================================================
+
+# `zig build` install prefix (binary lands at zig-out/bin/planar).
 zig-out/
+
+# Incremental compile cache (current name + legacy name; both can appear
+# depending on the zig version operators run).
+.zig-cache/
+zig-cache/
+
+# C object files produced from the vendored SQLite amalgamation if anyone
+# invokes the C compiler directly outside the zig build graph. The graph
+# itself keeps these inside .zig-cache/, so this is just a safety net.
 *.o
+*.obj
+*.a
+*.lib
+
+# ============================================================================
+# Repo-local install destinations
+# ============================================================================
+
+# `make build` writes the production binary here from zig-out/bin/.
+/bin/
+
+# Workspace-local install destinations for vendor harnesses. Source files
+# live under commands/, skills/, copilot/, agents/. These directories hold
+# symlinks (or copies) populated by install.sh.
+.claude/
+.codex/
+.copilot/
+
+# ============================================================================
+# Database + scratch data
+# ============================================================================
+
+# Local SQLite databases, if any (including WAL + shm sidecars).
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# ============================================================================
+# Editor / OS clutter
+# ============================================================================
+
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# ============================================================================
+# Worktrees
+# ============================================================================
+
+# Local git worktrees for feature branches.
+.worktrees/

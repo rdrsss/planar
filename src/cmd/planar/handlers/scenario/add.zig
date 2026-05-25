@@ -1,0 +1,32 @@
+//! handlers/scenario/add — `planar scenario add <title> [--body --related --plan --editor --scope]`
+
+const std = @import("std");
+const cli = @import("cli");
+const engine = @import("engine");
+const main = @import("../../main.zig");
+const runtime = @import("../../runtime.zig");
+const output = @import("../../output.zig");
+const exit = @import("../../exit.zig");
+
+pub fn handle(args_ptr: *const anyopaque) anyerror!void {
+    const args = cli.castArgs(main.root, &.{ "scenario", "add" }, args_ptr);
+    const ctx = runtime.current();
+    const d = try runtime.ensureDb();
+
+    if (args.editor) {
+        try ctx.stderr.print("warning: --editor not yet implemented; falling back to inline create\n", .{});
+    }
+    if (args.plan != null) {
+        try ctx.stderr.print("warning: --plan accepted but not yet linked (entity_links not wired)\n", .{});
+    }
+
+    const s = engine.planning.scenario.create(d, ctx.allocator, .{
+        .title = args.title,
+        .body = args.body,
+        .related_artifact_id = args.related,
+        .plan_id = args.plan,
+        .scope = args.scope,
+    }) catch |e| exit.die(ctx, e, "scenario add: {s}", .{@errorName(e)});
+
+    try output.emit(ctx, engine.planning.scenario, s, .{ .json = args.json });
+}

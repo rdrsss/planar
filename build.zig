@@ -1,0 +1,395 @@
+const std = @import("std");
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
+    // -----------------------------------------------------------------
+    // SQLite — compile the vendored amalgamation as a static library.
+    // We import the C source directly rather than depend on a wrapper
+    // crate. Flags mirror the defaults Planar wants regardless of host
+    // (thread-safe, FTS5, JSON1, strict DQS off).
+    // -----------------------------------------------------------------
+    const sqlite_mod = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    sqlite_mod.addCSourceFile(.{
+        .file = b.path("vendor/sqlite/sqlite3.c"),
+        .flags = &.{
+            "-DSQLITE_THREADSAFE=1",
+            "-DSQLITE_ENABLE_FTS5",
+            "-DSQLITE_ENABLE_JSON1",
+            "-DSQLITE_DQS=0",
+            "-DSQLITE_DEFAULT_FOREIGN_KEYS=1",
+            "-DSQLITE_USE_URI=1",
+            "-std=c99",
+        },
+    });
+    sqlite_mod.addIncludePath(b.path("vendor/sqlite"));
+    const sqlite_lib = b.addLibrary(.{
+        .name = "sqlite3",
+        .linkage = .static,
+        .root_module = sqlite_mod,
+    });
+
+    // -----------------------------------------------------------------
+    // Migrations codegen — scan ../migrations/ and emit a manifest.zig
+    // that the `migrations` module exposes as `pub const all: []Migration`.
+    // The generator runs on the build host, not the user's target.
+    // -----------------------------------------------------------------
+    const gen_exe = b.addExecutable(.{
+        .name = "gen_migrations",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/gen_migrations.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+
+    const gen_run = b.addRunArtifact(gen_exe);
+    gen_run.addDirectoryArg(b.path("migrations"));
+    const manifest_path = gen_run.addOutputFileArg("manifest.zig");
+
+    // addDirectoryArg alone doesn't track directory CONTENTS for cache
+    // invalidation — adding/removing a migration file leaves the
+    // manifest stale. Enumerate every *.sql here and register each
+    // as a file input so the cache key flips on any change.
+    addMigrationDirInputs(b, gen_run, "migrations");
+
+    const migrations_mod = b.addModule("migrations", .{
+        .root_source_file = manifest_path,
+        .target = target,
+    });
+
+    // -----------------------------------------------------------------
+    // Templates codegen — scan ../src/internal/templates/defaults/ and
+    // emit a `templates_embed.zig` exposing every JSON template as
+    // `pub const all: []TemplateFile`. The defaults dir is the same one
+    // the Go binary embeds via `embed.FS`; we keep a single source of
+    // truth on disk and let both binaries pick it up at build time.
+    // -----------------------------------------------------------------
+    const gen_tmpl_exe = b.addExecutable(.{
+        .name = "gen_templates",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/gen_templates.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+
+    const gen_tmpl_run = b.addRunArtifact(gen_tmpl_exe);
+    gen_tmpl_run.addDirectoryArg(b.path("templates/defaults"));
+    const tmpl_manifest_path = gen_tmpl_run.addOutputFileArg("templates_embed.zig");
+    addTemplateDirInputs(b, gen_tmpl_run, "templates/defaults");
+
+    const templates_embed_mod = b.addModule("templates_embed", .{
+        .root_source_file = tmpl_manifest_path,
+        .target = target,
+    });
+
+    // -----------------------------------------------------------------
+    // `db` module: SQLite wrapper + migration runner. Needs the sqlite
+    // headers (for @cImport) and the static lib (for linking).
+    // -----------------------------------------------------------------
+    const db_mod = b.addModule("db", .{
+        .root_source_file = b.path("src/db/db.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    db_mod.addIncludePath(b.path("vendor/sqlite"));
+    db_mod.linkLibrary(sqlite_lib);
+    db_mod.addImport("migrations", migrations_mod);
+
+    // -----------------------------------------------------------------
+    // `cli` module: comptime-driven command-tree argument parser.
+    // Self-contained, no deps beyond std.
+    // -----------------------------------------------------------------
+    const cli_mod = b.addModule("cli", .{
+        .root_source_file = b.path("src/cli/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // -----------------------------------------------------------------
+    // `engine` module: Planar's business-logic layer.
+    // Domain entities, CRUD, validation — owns no IO, takes *db.sqlite.Db
+    // explicitly. The CLI handlers and integration tests both call into
+    // it. Depends on `db` and nothing else.
+    // -----------------------------------------------------------------
+    const engine_mod = b.addModule("engine", .{
+        .root_source_file = b.path("src/engine/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    engine_mod.addImport("db", db_mod);
+    engine_mod.addImport("templates_embed", templates_embed_mod);
+
+    // -----------------------------------------------------------------
+    // Library module (existing planar package surface).
+    // -----------------------------------------------------------------
+    const mod = b.addModule("planar", .{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+    });
+    mod.addImport("db", db_mod);
+    mod.addImport("cli", cli_mod);
+    mod.addImport("engine", engine_mod);
+
+    // -----------------------------------------------------------------
+    // build_options module: compile-time git sha + build date + dirty
+    // flag, exposed to the `version` verb. Operators can override the
+    // defaults via -Dgit-sha=<sha> / -Dbuild-date=<ISO8601> /
+    // -Dgit-dirty=true; otherwise we auto-resolve from `git` against
+    // the repo root. Auto-resolution failures produce "unknown" rather
+    // than a build error so the binary still builds outside a git
+    // checkout.
+    // -----------------------------------------------------------------
+    const sha_opt = b.option([]const u8, "git-sha", "Override git commit sha embedded in `planar version`");
+    const date_opt = b.option([]const u8, "build-date", "Override ISO8601 build date embedded in `planar version`");
+    const dirty_opt = b.option(bool, "git-dirty", "Override git-dirty marker embedded in `planar version`");
+
+    const resolved_sha = sha_opt orelse resolveGitSha(b) orelse "unknown";
+    const resolved_date = date_opt orelse resolveBuildDate(b) orelse "unknown";
+    const resolved_dirty: bool = dirty_opt orelse resolveGitDirty(b);
+
+    const build_options = b.addOptions();
+    build_options.addOption([]const u8, "git_sha", resolved_sha);
+    build_options.addOption([]const u8, "build_date", resolved_date);
+    build_options.addOption(bool, "git_dirty", resolved_dirty);
+    const build_options_mod = build_options.createModule();
+
+    // -----------------------------------------------------------------
+    // CLI executable.
+    // -----------------------------------------------------------------
+    const exe = b.addExecutable(.{
+        .name = "planar",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/cmd/planar/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "planar", .module = mod },
+                .{ .name = "db", .module = db_mod },
+                .{ .name = "cli", .module = cli_mod },
+                .{ .name = "engine", .module = engine_mod },
+                .{ .name = "build_options", .module = build_options_mod },
+            },
+        }),
+    });
+    b.installArtifact(exe);
+
+    const run_step = b.step("run", "Run the app");
+    const run_cmd = b.addRunArtifact(exe);
+    run_step.dependOn(&run_cmd.step);
+    run_cmd.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        run_cmd.addArgs(args);
+    }
+
+    // -----------------------------------------------------------------
+    // Tests. Each test executable only sees its own module's `test`
+    // blocks, so we add one per module we want covered.
+    //
+    // -Dtest-filter="<substring>" runs only tests whose names contain the
+    // substring (the default test runner skips the rest). Repeatable:
+    //   zig build test -Dtest-filter=parse -Dtest-filter=help
+    // matches tests whose name contains EITHER substring.
+    // -----------------------------------------------------------------
+    const test_filters_opt = b.option(
+        []const []const u8,
+        "test-filter",
+        "Only run tests whose name contains this substring (repeatable)",
+    ) orelse &.{};
+
+    const mod_tests = b.addTest(.{ .root_module = mod, .filters = test_filters_opt });
+    const run_mod_tests = b.addRunArtifact(mod_tests);
+
+    const exe_tests = b.addTest(.{ .root_module = exe.root_module, .filters = test_filters_opt });
+    const run_exe_tests = b.addRunArtifact(exe_tests);
+
+    const db_tests = b.addTest(.{ .root_module = db_mod, .filters = test_filters_opt });
+    const run_db_tests = b.addRunArtifact(db_tests);
+
+    const cli_tests = b.addTest(.{ .root_module = cli_mod, .filters = test_filters_opt });
+    const run_cli_tests = b.addRunArtifact(cli_tests);
+
+    const engine_tests = b.addTest(.{ .root_module = engine_mod, .filters = test_filters_opt });
+    const run_engine_tests = b.addRunArtifact(engine_tests);
+
+    const test_step = b.step("test", "Run tests");
+    test_step.dependOn(&run_mod_tests.step);
+    test_step.dependOn(&run_exe_tests.step);
+    test_step.dependOn(&run_db_tests.step);
+    test_step.dependOn(&run_cli_tests.step);
+    test_step.dependOn(&run_engine_tests.step);
+
+    // -----------------------------------------------------------------
+    // Integration tests. Separate from `zig build test` (mirrors Go's
+    // build-tag separation between unit and integration tiers).
+    //
+    // The harness resolves the binary path from PLANAR_BIN, which this
+    // step sets by exporting the install artifact's path before spawning
+    // the test executable. Tests live under integration_tests/ and are
+    // pure black-box: they exec the binary against ephemeral DBs.
+    //
+    // Usage: zig build test-integration
+    // -----------------------------------------------------------------
+    const harness_mod = b.addModule("harness", .{
+        .root_source_file = b.path("integration_tests/harness.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const int_test_exe = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("integration_tests/smoke_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "harness", .module = harness_mod },
+            },
+        }),
+        .filters = test_filters_opt,
+    });
+
+    // The integration test binary must run after the CLI binary is installed.
+    // We set PLANAR_BIN to the installed binary path so the harness can locate
+    // it without coupling to a relative path.
+    const run_int_tests = b.addRunArtifact(int_test_exe);
+    run_int_tests.step.dependOn(b.getInstallStep());
+    run_int_tests.setEnvironmentVariable(
+        "PLANAR_BIN",
+        b.getInstallPath(.bin, "planar"),
+    );
+
+    const test_integration_step = b.step("test-integration", "Run integration tests (requires compiled binary)");
+    test_integration_step.dependOn(&run_int_tests.step);
+}
+
+/// Register every `*.sql` file under `dir_rel_to_build` as a file
+/// input on the gen_migrations run step. Without this, the build
+/// cache keys the gen step on the directory path only — adding or
+/// removing a migration leaves the manifest stale until the user
+/// blows away `.zig-cache/`. We enumerate at build-graph eval time
+/// and let `addFileInput` thread each file into the cache key.
+///
+/// Uses `b.graph.io` since std.fs.openDirAbsolute was removed in Zig 0.16
+/// — directory ops live on std.Io.Dir now and need an Io instance.
+/// Panics on directory open / iterate errors: a missing migrations
+/// dir is a build configuration error worth failing loudly.
+/// Register every `*.json` file under `dir_rel_to_build/<system>/` as a file
+/// input on the gen_templates run step. Same rationale as
+/// `addMigrationDirInputs`: the cache key must flip when any template body
+/// changes or a file is added/removed.
+fn addTemplateDirInputs(b: *std.Build, run: *std.Build.Step.Run, dir_rel_to_build: []const u8) void {
+    const abs = b.pathFromRoot(dir_rel_to_build);
+    var root = std.Io.Dir.openDirAbsolute(b.graph.io, abs, .{ .iterate = true }) catch |e| {
+        std.debug.panic("build.zig: cannot open templates defaults dir '{s}': {s}", .{ abs, @errorName(e) });
+    };
+    defer root.close(b.graph.io);
+
+    var sys_it = root.iterate();
+    while (sys_it.next(b.graph.io) catch |e| std.debug.panic("build.zig: iterate {s}: {s}", .{ abs, @errorName(e) })) |sys_entry| {
+        if (sys_entry.kind != .directory) continue;
+        const sys_dir_rel = std.fs.path.join(b.allocator, &.{ dir_rel_to_build, sys_entry.name }) catch @panic("OOM");
+        const sys_abs = b.pathFromRoot(sys_dir_rel);
+        var sys_dir = std.Io.Dir.openDirAbsolute(b.graph.io, sys_abs, .{ .iterate = true }) catch |e| {
+            std.debug.panic("build.zig: cannot open template system dir '{s}': {s}", .{ sys_abs, @errorName(e) });
+        };
+        defer sys_dir.close(b.graph.io);
+
+        var file_it = sys_dir.iterate();
+        while (file_it.next(b.graph.io) catch |e| std.debug.panic("build.zig: iterate {s}: {s}", .{ sys_abs, @errorName(e) })) |file_entry| {
+            if (file_entry.kind != .file) continue;
+            if (!std.mem.endsWith(u8, file_entry.name, ".json")) continue;
+            const file_rel = std.fs.path.join(b.allocator, &.{ sys_dir_rel, file_entry.name }) catch @panic("OOM");
+            run.addFileInput(b.path(file_rel));
+        }
+    }
+}
+
+/// resolveGitSha invokes `git -C <repo-root> rev-parse HEAD` at build
+/// time and returns the trimmed sha. Returns null when git is missing,
+/// the directory is not a checkout, or the command otherwise fails —
+/// the caller substitutes "unknown" so the binary still builds outside
+/// a git tree (release tarballs, vendored checkouts).
+fn resolveGitSha(b: *std.Build) ?[]const u8 {
+    const result = std.process.run(b.allocator, b.graph.io, .{
+        .argv = &.{ "git", "-C", b.pathFromRoot("."), "rev-parse", "HEAD" },
+    }) catch return null;
+    defer b.allocator.free(result.stderr);
+    if (result.term != .exited or result.term.exited != 0) {
+        b.allocator.free(result.stdout);
+        return null;
+    }
+    const trimmed = std.mem.trim(u8, result.stdout, " \t\n\r");
+    if (trimmed.len == 0) {
+        b.allocator.free(result.stdout);
+        return null;
+    }
+    // Copy out of result.stdout so we can free the buffer cleanly.
+    const sha = b.allocator.dupe(u8, trimmed) catch {
+        b.allocator.free(result.stdout);
+        return null;
+    };
+    b.allocator.free(result.stdout);
+    return sha;
+}
+
+/// resolveBuildDate invokes `git -C <repo-root> log -1 --format=%cI HEAD`
+/// to pull the committer date of HEAD in ISO 8601 form. Null when git
+/// isn't available; callers substitute "unknown".
+fn resolveBuildDate(b: *std.Build) ?[]const u8 {
+    const result = std.process.run(b.allocator, b.graph.io, .{
+        .argv = &.{ "git", "-C", b.pathFromRoot("."), "log", "-1", "--format=%cI", "HEAD" },
+    }) catch return null;
+    defer b.allocator.free(result.stderr);
+    if (result.term != .exited or result.term.exited != 0) {
+        b.allocator.free(result.stdout);
+        return null;
+    }
+    const trimmed = std.mem.trim(u8, result.stdout, " \t\n\r");
+    if (trimmed.len == 0) {
+        b.allocator.free(result.stdout);
+        return null;
+    }
+    const date = b.allocator.dupe(u8, trimmed) catch {
+        b.allocator.free(result.stdout);
+        return null;
+    };
+    b.allocator.free(result.stdout);
+    return date;
+}
+
+/// resolveGitDirty invokes `git -C <repo-root> status --porcelain` and
+/// returns true when the worktree has uncommitted modifications. Failed
+/// invocations report `false` (no marker added).
+fn resolveGitDirty(b: *std.Build) bool {
+    const result = std.process.run(b.allocator, b.graph.io, .{
+        .argv = &.{ "git", "-C", b.pathFromRoot("."), "status", "--porcelain" },
+    }) catch return false;
+    defer b.allocator.free(result.stderr);
+    defer b.allocator.free(result.stdout);
+    if (result.term != .exited or result.term.exited != 0) return false;
+    const trimmed = std.mem.trim(u8, result.stdout, " \t\n\r");
+    return trimmed.len > 0;
+}
+
+fn addMigrationDirInputs(b: *std.Build, run: *std.Build.Step.Run, dir_rel_to_build: []const u8) void {
+    const abs = b.pathFromRoot(dir_rel_to_build);
+    var dir = std.Io.Dir.openDirAbsolute(b.graph.io, abs, .{ .iterate = true }) catch |e| {
+        std.debug.panic("build.zig: cannot open migrations dir '{s}': {s}", .{ abs, @errorName(e) });
+    };
+    defer dir.close(b.graph.io);
+
+    var it = dir.iterate();
+    while (it.next(b.graph.io) catch |e| std.debug.panic("build.zig: iterate {s}: {s}", .{ abs, @errorName(e) })) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.name, ".sql")) continue;
+        const joined = std.fs.path.join(b.allocator, &.{ dir_rel_to_build, entry.name }) catch @panic("OOM");
+        run.addFileInput(b.path(joined));
+    }
+}

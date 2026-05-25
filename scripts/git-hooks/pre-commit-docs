@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Planar docs pre-commit hook.
+#
+# Verifies that the docs manifest is current and that citations / references
+# lint clean before allowing a commit. Opt in via:
+#
+#   ln -s ../../scripts/git-hooks/pre-commit-docs .git/hooks/pre-commit
+#
+# Documented in docs/workflows.md under "Doc hygiene pre-commit".
+
+set -e
+
+planar doc manifest verify || {
+  echo "doc manifest is out of date — run \`planar doc manifest update\`" >&2
+  exit 1
+}
+
+planar doc lint || {
+  echo "doc lint failed — fix issues above" >&2
+  exit 1
+}

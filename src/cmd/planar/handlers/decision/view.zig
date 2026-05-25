@@ -1,0 +1,21 @@
+//! handlers/decision/view — `planar decision view <decision-id>`
+//!
+//! Thin shim: parse positional, delegate to editflow.view.
+
+const std = @import("std");
+const cli = @import("cli");
+const main = @import("../../main.zig");
+const runtime = @import("../../runtime.zig");
+const exit = @import("../../exit.zig");
+const editflow = @import("../../editflow.zig");
+
+pub fn handle(args_ptr: *const anyopaque) anyerror!void {
+    const args = cli.castArgs(main.root, &.{ "decision", "view" }, args_ptr);
+    const ctx = runtime.current();
+    const d = try runtime.ensureDb();
+
+    const id = std.fmt.parseInt(i64, args.decision_id, 10) catch
+        exit.die(ctx, error.InvalidInput, "decision id must be an integer, got '{s}'", .{args.decision_id});
+
+    try editflow.view(ctx, d, .decision, id);
+}

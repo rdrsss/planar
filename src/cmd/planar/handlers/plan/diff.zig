@@ -1,0 +1,22 @@
+const std = @import("std");
+const cli = @import("cli");
+const main = @import("../../main.zig");
+const runtime = @import("../../runtime.zig");
+const exit = @import("../../exit.zig");
+const editflow = @import("../../editflow.zig");
+
+pub fn handle(args_ptr: *const anyopaque) anyerror!void {
+    const args = cli.castArgs(main.root, &.{ "plan", "diff" }, args_ptr);
+    const ctx = runtime.current();
+    const id = std.fmt.parseInt(i64, args.plan_id, 10) catch
+        exit.die(ctx, error.InvalidInput, "plan id must be an integer, got '{s}'", .{args.plan_id});
+    if (id <= 0) {
+        exit.die(ctx, error.InvalidInput, "plan id must be a positive integer, got {d}", .{id});
+    }
+    const d = try runtime.ensureDb();
+    editflow.diff(ctx, d, .plan, id) catch |e| switch (e) {
+        error.NotFound => exit.die(ctx, e, "no plan with id {d}", .{id}),
+        error.NoPlanLink => exit.die(ctx, e, "plan {d} is not linked to an anchor plan", .{id}),
+        else => exit.die(ctx, e, "plan diff failed: {s}", .{@errorName(e)}),
+    };
+}

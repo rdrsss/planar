@@ -1,0 +1,215 @@
+# Planar Agent Guide
+
+## Identity
+
+- **Project:** Planar
+- **Purpose:** Local agent-operations infrastructure spanning planning, tasking, scoping, durable agent handoff, vendor parity, and operational plane integration with Jira and GitHub Issues.
+- **Stack:** Zig CLI binary plus a SQLite database (vendored SQLite amalgamation under `vendor/sqlite/`, compiled as a static library by `build.zig`, no system library dependency). Build via `zig build` from the repo root. Migrations live under `migrations/` in sqlx-cli format (`NNNNN_<name>.up.sql` / `.down.sql`); build-time codegen (`tools/gen_migrations.zig`) reads them and emits a `migrations` Zig module that the runtime embeds and applies on startup. `schema_migrations` is the public schema-version contract. Propagation templates for external systems live under `templates/defaults/` and are read by a second codegen pass (`tools/gen_templates.zig`). CLI parsing is hand-rolled in `src/cli/` (cmd.zig, parser.zig, flag.zig, help.zig, completion.zig, validate.zig). HTTP via Zig's `std.http`. Logging via `std.log`. The workbench is a bidirectionally synced drafting filesystem under `$PLANAR_WORKBENCH_ROOT` (default `~/.planar/workbench/`). See [docs/architecture.md](docs/architecture.md) for the system overview.
+- **Repo shape:** Feature-complete, ported from the original Go implementation to Zig (M1–M19 closed; archive remains at github.com:rdrsss/planar-go-archive.git). Single binary, schema versioned across thirteen per-domain migration files (`migrations/00001_foundation.up.sql` through `00013_test_spec_artifact_kind.up.sql`). Full capability set: planning loop (spec drafting → task decomposition → execution → propagation), bidirectional workbench sync, configuration plane (`~/.planar/config.toml`), templates layer (`~/.planar/templates/`), three agent roles driving the feature lifecycle (planner, ingestor, ext-sync), and operational-plane adapters for Jira and GitHub Issues. 608+ unit tests, 64+ integration tests; all clean.
+- **Binary name:** `planar`.
+
+## Operating Rules
+
+- Treat this file as this repo's true agent guide, not a template for other repos.
+- Keep `AGENTS.md` equivalent to this file (symlink or byte-for-byte copy).
+- Put installable Planar agents under top-level `agents/`. Do not scaffold them under vendor dot directories.
+- Put unified skill source files under `skills/src/`. Do not author generated vendor surfaces directly.
+- Vendor skill surfaces (`commands/claude/`, `skills/codex/`, `skills/copilot/`) are generated outputs from `planar skills render`; do not hand-edit them.
+- Copilot instructions/prompts stay under `copilot/`. Do not scaffold under `.copilot/` or `.github/`.
+- Operator-machine-local skills and agents go under `~/.planar/local/{skills,agents}/`, not in the repo. They are user-machine-local state, never committed, and are linked into each vendor's surface via `planar local link` (which prefixes installs with `local-` to make them visibly user-authored). Promotion from sandbox to canonical is manual — copy the file into the repo and follow the normal contribution flow. There is no `planar local promote` shortcut. See `docs/workflows.md § Recipe 14` for the end-to-end walk-through and `docs/skill-reference.md § Personal sandbox` for the canonical-vs-sandbox boundary.
+- User-facing reference docs (architecture, CLI reference, skill reference, concepts, workflows) live under `docs/` in the repo. Project-internal planning artifacts (tech specs, roadmaps, ADRs about Planar's own development) live as Planar artifacts under `~/.planar/`, accessible via `planar artifact` and the workbench. Operational state belongs in SQLite.
+- Internal vs published docs. Project-internal planning artifacts (tech specs, roadmaps, decisions, ADRs, sessions) live as Planar artifacts under `~/.planar/` and the workbench, accessible via `planar artifact` and the workbench export. User-facing reference docs (architecture, CLI reference, skill reference, concepts, workflows, features, research, glossary, changelog) live under `docs/` in the repo and are managed via `planar doc promote` / `planar doc regenerate`. Don't blur the boundary: a tech-spec is internal authoring; a feature catalog entry is published prose derived from one or more tech-specs. The doc-system feature page (`docs/features/doc-system.md`) is the authoritative reference for the boundary mechanics — provenance front matter, the `.manifest-docs` Merkle index, the citation linter, and the four-signal drift classifier.
+- Treat the `planar` CLI as the only supported access layer for workflows. Skills, agents, commands, and prompts must use current CLI commands and must not invent direct DB writes or repo-local context scaffolding.
+- Workspace `AGENTS.md` and `CLAUDE.md` at a polyrepo workspace root are symlinks (or, in degraded mode, copies) to the canonical generated file under `~/.planar/workspaces/<org_id>/`. Do not hand-edit them; they are regenerated by `planar workspace regenerate`. Operator overrides belong in `routing-table-overrides.json` next to the canonical target.
+- Write verbs use the strict scope resolver: skills, agents, commands, and prompts must either run from a cwd inside the target project (relying on cwd derivation) or pass `--scope` explicitly. `--no-scope-check` is a legacy escape hatch and must not appear in routine workflow examples or new skill code. See `docs/concepts.md#scope` for the resolution algorithm.
+- Every entity-targeted mutation verb verifies operator-vs-entity scope agreement before writing; cross-scope writes are explicit-only via `--scope <slug>` or `--no-scope-check`. Link verbs (`*_link`, `task touches add/remove`, `links add/remove`) are deliberately unguarded — they create entity_links edges that may legitimately cross scopes (the polyrepo touches/derives-from workflow). Read `docs/concepts.md#cross-scope-guard` for the full guarded/unguarded matrix.
+- Use `planar pl-import` (not `pl-adopt`) to import an existing repo's planning content. The old verb was renamed in plan 179; the new verb supports an optional `--interpret` LLM pass.
+- The data model is the contract. Schema changes flow through versioned migrations starting at `migrations/00001_foundation.up.sql`. Other binaries (read-side viewers, web servers, Obsidian bridges) must open the database read-only and verify schema version before operating.
+- Architecture changes must update `docs/architecture.md` (and other affected reference docs) in the same change. The schema migration is the primary contract; docs are the human-readable annotation of it.
+
+## Source Layout
+
+The repo root IS the Zig package root: `build.zig` and `build.zig.zon` sit at the top level alongside the modules dir (`src/`), build-time codegen (`tools/`), the integration suite (`integration_tests/`), and the vendored SQLite amalgamation (`vendor/sqlite/`). Workflow surfaces, docs, templates, and bash tooling live as sibling top-level directories.
+
+| Path | Role |
+|------|------|
+| `build.zig` | Zig build configuration. Compiles the vendored SQLite amalgamation as a static library, runs migrations + templates codegen against `migrations/` and `templates/defaults/`, and links the resulting modules into the `planar` executable. Declares `run`, `test`, and `test-integration` build steps. |
+| `build.zig.zon` | Zig package manifest (name `planar`, version, fingerprint, minimum Zig version `0.16.0`, `.paths` listing the in-package directories). |
+| `src/` | Zig modules — the runtime source tree. Imported by `build.zig` as `db`, `cli`, `engine`, `planar`, etc. |
+| `src/cmd/planar/` | Executable entry point — `main.zig` plus runtime scaffolding (`editflow.zig`, `editor.zig`, `exit.zig`, `output.zig`, `runtime.zig`, `scope.zig`) and per-verb handlers under `handlers/`. |
+| `src/cli/` | Hand-rolled CLI parser and help renderer (`cmd.zig`, `parser.zig`, `flag.zig`, `help.zig`, `completion.zig`, `validate.zig`, `error.zig`, `platform/`). |
+| `src/db/` | Database layer — `db.zig` (connection + transaction wrappers), `migrate.zig` (migration application against the embedded `migrations` module), `sqlite.zig` (C-API bindings against the vendored amalgamation). |
+| `src/engine/` | Domain engine organized as bucket directories: `identity/`, `planning/`, `external/`, `runtime/`, plus subsystem modules (`config.zig`, `docs.zig`, `entitylink.zig`, `extsync.zig`, `health.zig`, `import.zig`, `ingestor.zig`, `init.zig`, `llm.zig`, `local.zig`, `policy.zig`, `promotion.zig`, `search.zig`, `skillrender.zig`) at top level. |
+| `src/root.zig` | Package root (`pub` surface). |
+| `tools/gen_migrations.zig` | Build-time codegen: scans `migrations/` and emits a `migrations` Zig module exposing `pub const all: []const Migration` for the runtime to apply. |
+| `tools/gen_templates.zig` | Build-time codegen for embedded propagation templates (reads `templates/defaults/`). |
+| `vendor/sqlite/` | Vendored SQLite amalgamation (`sqlite3.c`, `sqlite3.h`). Compiled into a static library by `build.zig` with `SQLITE_THREADSAFE=1`, `SQLITE_ENABLE_FTS5`, `SQLITE_ENABLE_JSON1`, `SQLITE_DQS=0`, `SQLITE_DEFAULT_FOREIGN_KEYS=1`, `SQLITE_USE_URI=1`. No external wrapper. |
+| `integration_tests/` | End-to-end integration suites exercising the built binary via the `harness.zig` runner (`harness.smoke`, `harness.mustRun`, `harness.mustRunJSON`). Run via `zig build test-integration`. |
+| `migrations/` | SQLite schema migrations in sqlx-cli format (`NNNNN_<name>.up.sql` / `.down.sql`, 5-digit zero-padded prefix). Authoritative source — the Zig build picks them up automatically via `tools/gen_migrations.zig` codegen. See `migrations/README.md` for the file format and `schema_migrations` contract. |
+| `templates/defaults/` | Propagation templates (JSON) for external operational systems (`github-issues/`, `github-projects/`, `jira/`). Embedded into the binary at build time via `tools/gen_templates.zig`; operator overrides land in `~/.planar/templates/defaults/`. |
+| `templates/doc-prompts/`, `templates/entity/`, `templates/workspace-capabilities.toml` | Operator-editable template defaults staged under `~/.planar/templates/`. |
+| `docs/architecture.md` | System overview — storage model, schema contract, context planes, workbench, adapters |
+| `docs/cli-reference.md` | Full CLI surface — commands, flags, exit codes |
+| `docs/skill-reference.md` | Skill and agent role overview |
+| `docs/concepts.md` | Mental model — scope, association, plan, task, handoff |
+| `docs/workflows.md` | End-to-end recipes |
+| `docs/` | All user-facing reference documentation |
+| `skills/src/` | Unified authored skill sources (`pl-*.md`) rendered into all vendor surfaces |
+| `commands/claude/` | Generated Claude slash commands installed to `~/.claude/commands/` |
+| `skills/codex/` | Generated Codex skills materialized under `~/.planar/codex-skills/` and installed into `~/.codex/skills/` |
+| `skills/copilot/` | Generated Copilot skills installed to `~/.copilot/skills/` |
+| `copilot/` | Source Copilot instructions and prompts installed to `~/.copilot/` |
+| `agents/` | Installable Planar agents installed to `~/.planar/agents/` |
+| `Makefile` | Thin wrapper around `zig build ...` so `make build` / `make test` work from the repo root. |
+| `install.sh` | Source-checkout installer; builds the binary via `zig build --prefix ~/.planar` and stages workflow surfaces under `~/.planar`. |
+| `scripts/` | Bash tooling (acceptance validators, session stats, git hooks) — independent of the Zig build. |
+| `.sqlfluff` | sqlfluff linter config for `migrations/` — dialect `sqlite`, lowercase keywords, 2-space indent. |
+
+## Migrations
+
+Schema migrations live at repo root under `migrations/` in sqlx-cli format
+(`NNNNN_<name>.up.sql` / `.down.sql`). Authoring rules — file naming,
+`schema_migrations` insert/delete contract, sqlx-cli workflow,
+`.sqlfluff` linting, and the up/down/up roundtrip test — are documented in
+[`migrations/README.md`](migrations/README.md). New migrations are
+created via `sqlx migrate add -r <name> --source migrations`; the Zig
+build picks them up automatically via `tools/gen_migrations.zig`
+codegen on the next `zig build`.
+
+## Build And Test
+
+`zig build` is the build system of record. The Zig package root IS the repo root (build.zig sits at the top); run `zig build` from the repo root or use the Makefile wrappers:
+
+```bash
+# Via Makefile (preferred for one-off scripts):
+make build              # → ./bin/planar (ReleaseSafe)
+make test               # unit tests
+make test-integration   # builds ./bin/planar, sets PLANAR_BIN, runs the
+                        # integration suite under integration_tests/
+make test-all           # unit + integration
+
+# Direct zig CLI from the repo root:
+zig build                                     # default install (zig-out/bin/planar)
+zig build test                                # unit tests
+zig build test-integration                    # integration tests
+zig build run -- <subcommand>                 # run from source
+```
+
+Optimize modes follow Zig conventions: `Debug` (default), `ReleaseSafe`, `ReleaseFast`, `ReleaseSmall`. Set via `zig build -Doptimize=<mode>` or `make build OPTIMIZE=<mode>`.
+
+### Test stratification
+
+Planar uses a two-tier test model. Both layers earn their keep and the
+distinction is load-bearing — never collapse them.
+
+- **Unit tests** — `test` blocks colocated with the code under test under
+  `src/<module>/`. They exercise the module directly (plus the `db`
+  module when they need a DB) and run under `zig build test`. These catch
+  logic and SQL regressions.
+- **CLI integration tests** — `integration_tests/` (at the repo root) holds
+  black-box suites that exercise the compiled `planar` binary via the
+  `harness.zig` runner (`harness.smoke`, `harness.mustRun`,
+  `harness.mustRunJSON`, `harness.expectFailure`). The suite imports
+  nothing from the engine modules. These lock the user-visible contract —
+  flag names, JSON shapes, exit codes, status-transition rules — so
+  internal refactors cannot silently break it.
+
+Always run integration tests via `make test-integration` (not bare
+`zig build test-integration`). The make target builds `./bin/planar` and
+exports `PLANAR_BIN` to point at it; without that, the harness falls back
+to building per-call, which is much slower and exercises a freshly
+recompiled binary on every test.
+
+Migrations are plain SQL files under `migrations/` in sqlx-cli format
+(`-r` reversible pairs). The runtime applies the embedded `migrations`
+module at startup. To create a new migration:
+
+```bash
+sqlx migrate add -r <name> --source migrations
+# Edit migrations/NNNNN_<name>.up.sql and migrations/NNNNN_<name>.down.sql.
+zig build                                      # codegen picks up the new files
+```
+
+To smoke a migration as raw SQL against a scratch database:
+
+```bash
+sqlite3 /tmp/cp-smoke.db < migrations/00001_foundation.up.sql
+```
+
+When invoking the CLI to exercise documented behavior (running skills, composing verbs from agent docs, scripting workflows), use the bare `planar` command — it resolves via `$PATH` to the installed binary at `~/.planar/bin/planar`, which is what users and skills actually run. Reach for `./bin/planar` only when explicitly testing a fresh local build, and say so at the call site. Defaulting to `./bin/planar` risks running stale or branch-experimental code without realizing it.
+
+## Zig Style
+
+The defaults are mainstream Zig; deviations require justification.
+
+- `zig fmt` (via `make fmt` or `zig fmt build.zig src tools integration_tests`) clean before merge. `zig build` clean (warnings are errors). `make fmt-check` enforces formatter cleanliness in CI.
+- Identifiers: `camelCase` for functions and variables, `PascalCase` for types, `SCREAMING_SNAKE_CASE` for constants by convention. Module file names lowercase, short, no underscores when possible.
+- Errors: Zig's error unions (`!T`) and error sets. Define module-local error sets where the surface is bounded; use `anyerror` only at boundaries that genuinely propagate everything. Wrap underlying errors via explicit `catch` blocks that map them to the module's error set; never silently swallow.
+- Allocation: explicit allocator parameters at every API boundary that allocates. Prefer `std.heap.ArenaAllocator` for transient request-scoped work; long-lived state uses `std.heap.GeneralPurposeAllocator` (with leak detection on in tests). Never call `std.heap.page_allocator` from library code.
+- Concurrency: explicit `std.Thread` and `std.Thread.Pool`. No async/await runtime (Zig's async is in flux); where I/O can run in parallel (orchestrator dispatch, parallel sync), use threads explicitly. Default to simple sequential code.
+- Database access: the `db` module (`src/db/db.zig`) wraps `sqlite.zig` C-API bindings. One `*Db` per process, passed through context or a small `Store` struct. Use `db.beginTx` / `tx.commit` for atomic multi-statement operations. Migrations applied via the embedded `migrations` module — never write ad-hoc SQL migration code in the runtime.
+- CLI parsing: hand-rolled under `src/cli/`. Subcommand-per-domain (init, scope, association, plan, task, question, scenario, decision, artifact, promote, workbench, workspace, ext, link, sync, resume, handoff, capture, audit, health, help, spec, config, templates, tree); `ext propagate` is the whole-feature propagation verb; `tree` is the hierarchical drill-down verb. Authoritative list lives in `docs/cli-reference.md`.
+- HTTP: Zig stdlib `std.http`. Adapter implementations in their own modules behind the adapter boundary (see `docs/architecture.md`). Always set a sensible client timeout (e.g. 30s).
+- JSON: Zig stdlib `std.json`. YAML/TOML are limited to surfaces that genuinely need them (templates, configs); prefer JSON where the input is internal-machine-readable.
+- Logging: Zig stdlib `std.log`. Structured fields via `std.log.scoped(.<module>)`. JSON output for production; text for dev.
+- C interop: bounded to the vendored SQLite amalgamation under `vendor/sqlite/`, called from `src/db/sqlite.zig`. No other C dependencies. Cross-compilation works out of the box because the SQLite C source is compiled by Zig itself.
+- Module layout: `src/cmd/planar/main.zig` is thin — wires the parser, dispatches to handlers. Per-verb handlers live under `src/cmd/planar/handlers/`. Domain logic lives under `src/engine/<bucket>/` (buckets: `identity/`, `planning/`, `external/`, `runtime/`) with subsystem modules (`workbench`, `extsync`, `templates`, `adapter`, `ingestor`, `tree`, `config`, `syncengine`) at `src/engine/` top level. Build-time codegen tools live at the repo root under `tools/`.
+- Tests: `test "<name>" { ... }` blocks colocated with the code under test are unit tests and run under `zig build test`. The integration suite at `integration_tests/` (repo root) exec's the compiled `planar` binary via `harness.zig`. Run with `make test-integration` (which builds `./bin/planar` and sets `PLANAR_BIN`); see Build And Test § "Test stratification".
+- Test fixtures: per-test temp directories via `std.testing.tmpDir`. SQLite test DBs in-memory or under `tmpDir` for isolation.
+- HTTP adapter tests: in-process test servers via `std.http.Server`. No external mock-server dependency.
+- Output stability: machine-consumable commands use stable, parseable formats (line-oriented or JSON via `std.json`). Avoid decorative formatting in commands that scripts will read.
+- No global mutable state. State threads through explicit `App` / `Store` parameters. Cancellation: explicit "shutdown" channels or atomics, not language-level constructs.
+- Cross-platform from day one. Zig handles macOS/Linux/Windows transparently; do not gate features on host-OS conditionals without an explicit reason. The vendored SQLite amalgamation means no cross-compile gotchas.
+
+## Zig Doc Comments
+
+- Top-of-file `//!` comments describe the module's purpose and primary entry points (Zig convention).
+- Item-level `///` comments document every exported declaration. Begin with a short summary sentence.
+- Document the invariants on types that hold shared state. Document thread safety where applicable.
+- Keep comments factual. Do not narrate obvious implementation steps.
+
+## Documentation And Context
+
+- User-facing reference docs live under `docs/`: `architecture.md`, `cli-reference.md`, `skill-reference.md`, `concepts.md`, `workflows.md`. Update the relevant doc in the same change as any behavior or architecture change.
+- Project-internal planning artifacts (founding spec, roadmap, ADRs about Planar's own development) live as Planar artifacts under `~/.planar/`, accessible via `planar artifact list --plan <id>` or the workbench.
+- The data model is the primary contract. Schema changes flow through versioned migrations starting at `migrations/00001_foundation.up.sql`; always define and review the schema change before writing application code.
+- Workflow surfaces (Claude commands, Codex skills, Copilot skills/instructions/prompts, Planar agents) must stay aligned. Drift is gated by `planar skills render --check` (`make render-check`).
+- Build/render-time structured data belongs in YAML / JSON (for example the embedded vendor profile); operator-facing runtime settings stay in TOML (`~/.planar/config.toml`, templates, defaults).
+- Skills, agents, commands, and prompts must route through `planar` CLI commands. They must not describe direct database writes or repo-local context scaffolding.
+
+## Checklists
+
+### Spec Change
+
+1. Either add a new artifact via `planar artifact add` on a project-development plan, or update the existing one via `planar artifact update`. If the change is an ADR-level decision, register a `kind=adr` artifact.
+2. Update the relevant user-facing reference doc under `docs/` (architecture, CLI reference, concepts, workflows) to reflect the change.
+3. Verify any cross-references and anchor links in the updated docs remain valid.
+4. If the change implies a non-goal or an unresolved question, capture it as a Planar artifact or decision on the appropriate plan.
+
+### Schema Change
+
+1. Review `docs/architecture.md` (schema contract section) to understand the current model before making changes.
+2. Create a reversible migration pair via `sqlx migrate add -r <name> --source migrations`. Do not edit released migrations in place.
+3. Place each table's indexes immediately after its `create table` statement.
+4. Add a `-- <table>: …` doc comment immediately above every `create table` describing what the table is and why.
+5. Add CHECK constraints for enum-shaped columns.
+6. Do not declare `BEGIN`/`COMMIT` inside the migration — the runtime wraps each migration in its own transaction. Do not place `PRAGMA foreign_keys = ON` (or any PRAGMA that cannot run inside a transaction) in the file; the runtime sets that per-connection.
+7. End the up migration with `insert into schema_migrations (version, description) values (<N>, '<short summary>');`, and mirror the deletion in the down migration. This is the public schema-version contract (see `docs/architecture.md` § schema contract).
+8. Validate via the integration suite — `make test-integration` exercises real migrations on every run. For ad-hoc validation, `sqlite3 /tmp/cp-check.db < migrations/000<N>_<name>.up.sql` then inspect `schema_migrations`.
+9. Update `docs/architecture.md` to reflect the new schema state.
+
+### Workflow Surface Change
+
+1. Update source files in every affected vendor surface: `commands/claude/`, `skills/codex/`, `skills/copilot/`, `copilot/`, and `agents/`.
+2. Keep workflow names, descriptions, and command examples aligned across vendors.
+3. Workflow text must use the current `planar` CLI and the SQLite-backed model. It must not describe repo-local scaffolding or direct Markdown generation outside of the workbench.
+4. Run `make render-check` (renderer drift gate) and any remaining workflow validators relevant to the change.
+
+## Known Failure Modes
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Code written before the schema is locked | Skipped schema review step | Stop. Define the schema first, review end-to-end, then resume. |
+| `docs/architecture.md` drifts from migrations | Schema change not reflected in docs | Update `docs/architecture.md` in the same change as the migration. |
+| Agent or skill scaffolds repo-local context | Pre-context-plane template assumption | Keep context in `docs/`, Planar artifacts, and SQLite. |
+| Workflow surfaces drift apart | Updated one vendor but not the others | Audit Claude, Codex, Copilot, and agent surfaces; run parity checks. |

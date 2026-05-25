@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# validate-barrel-modes-acceptance — confirm the barrel-mode documentation
+# surface is consistent across the load-bearing files (plan 298 M5 acceptance).
+#
+# Scope: this is a documentation linter, not a behavior test. It greps the
+# specific files that ship the barrel-mode contract and verifies each names
+# all six dispatch shapes and the four CLI flags. Designed to fail loudly if
+# a future edit drops a shape from one surface but leaves it in another —
+# the silent drift that render-check does not cover.
+#
+# Exit 0 if every file has every required token, 1 otherwise.
+#
+# WHEN TO EXTEND:
+#   - A new dispatch shape is added: extend SIX_SHAPES.
+#   - A new CLI flag is added: extend FOUR_FLAGS.
+#   - A new surface is added: extend SURFACE_FILES and the per-file checks.
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${REPO_ROOT}"
+
+SIX_SHAPES=(strict grouped single barrel-grouped barrel-deferred barrel-bypass)
+FOUR_FLAGS=("--barrel-grouped" "--barrel-deferred" "--barrel-bypass" "--barrel-deferred-at")
+
+# Files that must mention every shape.
+SHAPE_FILES=(
+  "agents/methodology.md"
+  "agents/orchestrator.md"
+  "commands/claude/pl-orchestrator.md"
+  "skills/codex/pl-orchestrator.md"
+  "skills/copilot/pl-orchestrator.md"
+)
+
+# Files that must mention every flag.
+FLAG_FILES=(
+  "commands/claude/pl-orchestrator.md"
+  "skills/codex/pl-orchestrator.md"
+  "skills/copilot/pl-orchestrator.md"
+)
+
+# Files that must mention the barrel-modes documentation surface.
+DOC_FILES=(
+  "docs/concepts.md"
+  "docs/workflows.md"
+)
+
+issues=0
+
+# Check shape presence.
+for f in "${SHAPE_FILES[@]}"; do
+  if [[ ! -f "${f}" ]]; then
+    echo "MISSING: ${f} does not exist"
+    issues=$((issues + 1))
+    continue
+  fi
+  for shape in "${SIX_SHAPES[@]}"; do
+    if ! grep -qF "${shape}" "${f}"; then
+      echo "SHAPE_MISSING: ${f} does not mention '${shape}'"
+      issues=$((issues + 1))
+    fi
+  done
+done
+
+# Check flag presence in vendor surfaces only.
+for f in "${FLAG_FILES[@]}"; do
+  for flag in "${FOUR_FLAGS[@]}"; do
+    if ! grep -qF -- "${flag}" "${f}"; then
+      echo "FLAG_MISSING: ${f} does not mention '${flag}'"
+      issues=$((issues + 1))
+    fi
+  done
+done
+
+# Docs must mention the §Barrel modes / §Dispatch shapes surfaces.
+if ! grep -qE "## Dispatch shapes|## Barrel modes" docs/concepts.md; then
+  echo "DOC_MISSING: docs/concepts.md is missing the Dispatch shapes section"
+  issues=$((issues + 1))
+fi
+if ! grep -qE "Picking a barrel mode" docs/workflows.md; then
+  echo "DOC_MISSING: docs/workflows.md Recipe 2 missing 'Picking a barrel mode' subsection"
+  issues=$((issues + 1))
+fi
+
+# Methodology must contain the audit-trail schema lines.
+for tok in "dispatch_shape:" "reviewer_disposition:" "cycle_scope:" "tasks:"; do
+  if ! grep -qF "${tok}" agents/methodology.md; then
+    echo "AUDIT_SCHEMA_MISSING: agents/methodology.md lacks '${tok}' in the audit-trail body schema"
+    issues=$((issues + 1))
+  fi
+done
+
+if [[ "${issues}" -eq 0 ]]; then
+  echo "validate-barrel-modes-acceptance: ok (no issues found)"
+  exit 0
+else
+  echo "validate-barrel-modes-acceptance: FAILED (${issues} issue(s) found)"
+  exit 1
+fi

@@ -1,0 +1,6 @@
+{
+  "title": "{{.Feature.Title}} — tracking issue",
+  "body": "## Feature\n\n{{.Feature.Body}}\n\n## Sub-tasks\n\n{{range .Children}}- [ ] {{.Title}}{{if .ExternalKey}} (#{{.ExternalKey}}){{end}}\n{{end}}\n\n## Association\n\n{{.Assoc.Name}} (`{{.Assoc.Slug}}`)",
+  "labels": ["planar-managed", "type:tracking-issue"],
+  "assignees": []
+}

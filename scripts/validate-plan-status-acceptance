@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# validate-plan-status-acceptance — confirm the plan-status auto-promotion
+# invariant documentation is consistent across the load-bearing files
+# (plan 304 M4 acceptance).
+#
+# Scope: documentation linter, parallel to validate-barrel-modes-acceptance.
+# Confirms the invariant is documented in methodology.md, concepts.md, and
+# cli-reference.md, and that the --no-auto-promote flag is documented in
+# the cli-reference task add / task update tables.
+#
+# Exit 0 if every file has every required token, 1 otherwise.
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${REPO_ROOT}"
+
+issues=0
+
+# Methodology must document the invariant subsection + the audit-trail
+# sentinel body schema.
+must_grep() {
+  local file="$1"
+  local needle="$2"
+  if ! grep -qF -- "${needle}" "${file}"; then
+    echo "MISSING in ${file}: ${needle}"
+    issues=$((issues + 1))
+  fi
+}
+
+must_grep agents/methodology.md "## Plan-status invariant"
+must_grep agents/methodology.md "plan_status:"
+must_grep agents/methodology.md "trigger:"
+must_grep agents/methodology.md "task_aggregate:"
+must_grep agents/methodology.md "--no-auto-promote"
+must_grep agents/methodology.md "Anchor exception"
+
+# Orchestrator's Phase 3 step 9 acknowledges the invariant.
+must_grep agents/orchestrator.md "plan-status auto-promotion invariant"
+
+# Concepts §Plan documents the auto-promotion contract.
+must_grep docs/concepts.md "Status auto-promotion"
+must_grep docs/concepts.md "Anchor plans don't auto-promote to done"
+must_grep docs/concepts.md "--no-auto-promote"
+
+# CLI reference: task add + task update both document --no-auto-promote.
+# Use awk to find the flag inside each verb's section.
+awk_scope_grep() {
+  local file="$1"
+  local section="$2"
+  local needle="$3"
+  if ! awk -v section="${section}" -v needle="${needle}" '
+    $0 ~ "^### " section { in_sec = 1; next }
+    in_sec && /^### / { in_sec = 0 }
+    in_sec && index($0, needle) > 0 { found = 1 }
+    END { exit !found }
+  ' "${file}"; then
+    echo "MISSING in ${file} §${section}: ${needle}"
+    issues=$((issues + 1))
+  fi
+}
+
+awk_scope_grep docs/cli-reference.md '`planar task add' "--no-auto-promote"
+awk_scope_grep docs/cli-reference.md '`planar task update' "--no-auto-promote"
+
+if [[ "${issues}" -eq 0 ]]; then
+  echo "validate-plan-status-acceptance: ok (no issues found)"
+  exit 0
+else
+  echo "validate-plan-status-acceptance: FAILED (${issues} issue(s) found)"
+  exit 1
+fi

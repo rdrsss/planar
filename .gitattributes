@@ -1,0 +1,7 @@
+# Vendor skill trees are generated from skills/src/<slug>.md by
+# `planar skills render` (plan 335). Mark them linguist-generated so
+# GitHub collapses them in PR diffs and excludes them from language
+# stats; the authoritative source lives one tree up.
+commands/claude/pl-*.md linguist-generated=true
+skills/codex/pl-*.md    linguist-generated=true
+skills/copilot/pl-*.md  linguist-generated=true
