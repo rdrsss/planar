@@ -52,6 +52,13 @@ pub const Suite = struct {
     /// binary creates it on first use).
     db_path: []const u8,
     tmp_dir: std.testing.TmpDir,
+    /// Lazily-resolved absolute path to `tmp_dir`. Owned by the suite; null
+    /// until first access via `tmpAbsPath`.
+    tmp_abs_cache: ?[]u8 = null,
+    /// Lazily-resolved absolute version of `db_path`. Owned by the suite;
+    /// null until first access via `absDbPath`. When `db_path` is already
+    /// absolute the cache aliases it without re-allocating.
+    abs_db_cache: ?[]u8 = null,
 
     /// Initialize the suite: resolve the binary path and create an ephemeral
     /// temp directory. The DB file is not created here — the binary does that
@@ -76,8 +83,46 @@ pub const Suite = struct {
     /// Release the temp directory and allocations owned by the suite.
     /// Call via `defer suite.deinit()` at the top of each test.
     pub fn deinit(self: *Suite) void {
+        if (self.tmp_abs_cache) |p| self.allocator.free(p);
+        if (self.abs_db_cache) |p| self.allocator.free(p);
         self.allocator.free(self.db_path);
         self.tmp_dir.cleanup();
+    }
+
+    // -------------------------------------------------------------------------
+    // Path helpers — useful when shelling commands into the tmp dir.
+    // -------------------------------------------------------------------------
+
+    /// Resolve the absolute path to the suite's tmp_dir. The returned slice
+    /// is owned by the suite and freed by `deinit`; callers must not free it.
+    pub fn tmpAbsPath(self: *Suite) []const u8 {
+        if (self.tmp_abs_cache) |p| return p;
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        const len = self.tmp_dir.dir.realPath(std.testing.io, &buf) catch
+            @panic("cannot resolve tmp dir absolute path");
+        const owned = self.allocator.dupe(u8, buf[0..len]) catch @panic("OOM");
+        self.tmp_abs_cache = owned;
+        return owned;
+    }
+
+    /// Return an absolute path to the suite DB, suitable for injection via
+    /// `PLANAR_DB` when the child process runs with a non-default cwd
+    /// (relative `db_path` would otherwise resolve against the child's cwd).
+    /// The returned slice is owned by the suite and freed by `deinit`.
+    pub fn absDbPath(self: *Suite) []const u8 {
+        if (self.abs_db_cache) |p| return p;
+        if (std.fs.path.isAbsolute(self.db_path)) {
+            const owned = self.allocator.dupe(u8, self.db_path) catch @panic("OOM");
+            self.abs_db_cache = owned;
+            return owned;
+        }
+        const cwd_abs = std.Io.Dir.realPathFileAlloc(.cwd(), std.testing.io, ".", self.allocator) catch
+            @panic("cannot resolve cwd absolute path");
+        defer self.allocator.free(cwd_abs);
+        const joined = std.fs.path.join(self.allocator, &.{ cwd_abs, self.db_path }) catch
+            @panic("OOM building abs_db");
+        self.abs_db_cache = joined;
+        return joined;
     }
 
     // -------------------------------------------------------------------------
@@ -325,5 +370,111 @@ pub const Suite = struct {
         }
         self.allocator.free(res.stdout);
         return res.stderr;
+    }
+
+    // -------------------------------------------------------------------------
+    // Cwd-scope fixture primitives
+    //
+    // These helpers let an integration test make `suite.tmp_dir` look like a
+    // registered Planar project so that the cwd-derive logic in
+    // `src/engine/identity/scope.zig` resolves to a real scope when a verb
+    // is run from inside the tmp. Mirrors the operator path — they shell
+    // out to `planar init` / `planar assoc create` / `planar assoc add`
+    // and never touch the database directly.
+    //
+    // Per-test isolation: every Suite has its own ephemeral tmp_dir + DB
+    // file, so the registered project/association lives and dies with the
+    // Suite — no leakage across tests.
+    // -------------------------------------------------------------------------
+
+    /// mustRunInDir runs the binary with cwd set to `cwd`. It also injects an
+    /// absolute `PLANAR_DB` so the child can find the suite DB even when
+    /// `suite.db_path` is relative to the test runner's cwd. Returns stdout;
+    /// caller must free.
+    pub fn mustRunInDir(
+        self: *Suite,
+        cwd: []const u8,
+        args: []const []const u8,
+    ) []u8 {
+        const env = [_]ExtraEnvEntry{.{ .key = "PLANAR_DB", .value = self.absDbPath() }};
+        const res = self.execWithInDir(cwd, args, &env);
+        if (res.term != .exited or res.term.exited != 0) {
+            std.debug.print(
+                "\nmustRunInDir: non-zero exit in cwd '{s}'\nstdout: {s}\nstderr: {s}\n",
+                .{ cwd, res.stdout, res.stderr },
+            );
+            self.allocator.free(res.stderr);
+            std.testing.expect(false) catch {};
+            return res.stdout;
+        }
+        self.allocator.free(res.stderr);
+        return res.stdout;
+    }
+
+    /// expectFailureInDir runs the binary with cwd set to `cwd` and an
+    /// absolute `PLANAR_DB` injected. Asserts the process exits non-zero;
+    /// returns stderr (caller must free).
+    pub fn expectFailureInDir(
+        self: *Suite,
+        cwd: []const u8,
+        args: []const []const u8,
+    ) []u8 {
+        const env = [_]ExtraEnvEntry{.{ .key = "PLANAR_DB", .value = self.absDbPath() }};
+        const res = self.execWithInDir(cwd, args, &env);
+        if (res.term == .exited and res.term.exited == 0) {
+            std.debug.print(
+                "\nexpectFailureInDir: command succeeded unexpectedly in '{s}'\nstdout: {s}\n",
+                .{ cwd, res.stdout },
+            );
+            self.allocator.free(res.stdout);
+            std.testing.expect(false) catch {};
+        }
+        self.allocator.free(res.stdout);
+        return res.stderr;
+    }
+
+    /// registerProject makes `suite.tmp_dir` look like a registered Planar
+    /// project (writes a row into the `projects` table with the tmp's
+    /// absolute path). Implemented by shelling `planar init` with the
+    /// child's cwd set to the tmp dir — `init` reads cwd via realpath and
+    /// inserts a project row pointing at it. Idempotent end-to-end:
+    /// calling twice is harmless (the underlying `init` is INSERT OR
+    /// IGNORE on the registration step).
+    ///
+    /// `name` is passed via `--name <name>` to the child. Pass null to let
+    /// `planar init` derive the project name from the cwd basename.
+    /// `--allow-no-repo` is always set because tmp dirs are not git repos.
+    ///
+    /// Returns the tmp's absolute path; the returned slice is owned by the
+    /// suite (do not free).
+    pub fn registerProject(self: *Suite, name: ?[]const u8) []const u8 {
+        const root = self.tmpAbsPath();
+        if (name) |n| {
+            const out = self.mustRunInDir(root, &.{ "init", "--allow-no-repo", "--name", n });
+            self.allocator.free(out);
+        } else {
+            const out = self.mustRunInDir(root, &.{ "init", "--allow-no-repo" });
+            self.allocator.free(out);
+        }
+        return root;
+    }
+
+    /// addAssoc creates an association with `slug` (kind defaults to
+    /// "project" since that is the common operator shape — single-repo
+    /// project workflows) and binds the tmp-rooted project to it via
+    /// `planar assoc add`. After this returns, cwd-derive run from inside
+    /// `suite.tmp_dir` resolves to `slug`. Requires `registerProject` to
+    /// have been called first (or for the caller to have otherwise
+    /// registered a project at `suite.tmp_dir`).
+    ///
+    /// Pass `kind = null` to use the default ("project").
+    pub fn addAssoc(self: *Suite, slug: []const u8, kind: ?[]const u8) void {
+        const k = kind orelse "project";
+        const create_out = self.mustRun(&.{ "assoc", "create", slug, "--kind", k });
+        self.allocator.free(create_out);
+
+        const root = self.tmpAbsPath();
+        const add_out = self.mustRun(&.{ "assoc", "add", slug, root });
+        self.allocator.free(add_out);
     }
 };

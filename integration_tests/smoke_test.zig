@@ -29,6 +29,13 @@ comptime {
     _ = @import("tree_test.zig");
 }
 
+// Plan 351 (parity-gap-tests), task 2358 — cwd-derive fixture harness
+// + sentinel test for the tree-scope regression that shipped on M20
+// (commit bfa3abc). See Planar artifact 190 § Phase 1.
+comptime {
+    _ = @import("cwd_scope_test.zig");
+}
+
 // M14: config ~/.planar/config.toml integration tests.
 comptime {
     _ = @import("config_test.zig");
