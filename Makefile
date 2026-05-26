@@ -59,6 +59,10 @@ test: ## Run unit tests
 test-integration: build ## Run the integration suite against the built binary
 	PLANAR_BIN=$(CURDIR)/$(BIN) $(ZIG) build test-integration $(ARGS)
 
+.PHONY: test-integration-files
+test-integration-files: build ## Run integration tests as one executable per test file
+	PLANAR_BIN=$(CURDIR)/$(BIN) $(ZIG) build test-integration-files $(ARGS)
+
 .PHONY: parity-check
 parity-check: build ## Diff zig binary against Go archive binary (plan 351 Phase 5; skips when Go binary unreachable)
 	scripts/parity-check.sh

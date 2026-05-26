@@ -276,18 +276,32 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // Enumerate every `integration_tests/*_test.zig` at build-graph eval
-    // time and create one test executable per file. Each runs after the
-    // CLI binary is installed and receives PLANAR_BIN pointing at the
-    // installed planar binary.
-    //
-    // Previous shape: a single test executable rooted at smoke_test.zig
-    // only, leaving every sibling *_test.zig file dead (compiled into
-    // nothing). See plan 351 task 2374 / question 238 for the discovery.
-    //
-    // Per-file executables (rather than an umbrella @import root) give
-    // per-file failure isolation and let the test runner parallelize.
+    // The default integration path uses one umbrella root. This is the
+    // common local loop: one test executable, no duplicate smoke-root imports,
+    // and the same per-test Suite isolation inside each test block.
     const test_integration_step = b.step("test-integration", "Run integration tests (requires compiled binary)");
+    const integration_all = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("integration_tests/all_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "harness", .module = harness_mod },
+            },
+        }),
+        .filters = test_filters_opt,
+    });
+    const run_integration_all = b.addRunArtifact(integration_all);
+    run_integration_all.step.dependOn(b.getInstallStep());
+    run_integration_all.setEnvironmentVariable(
+        "PLANAR_BIN",
+        b.getInstallPath(.bin, "planar"),
+    );
+    test_integration_step.dependOn(&run_integration_all.step);
+
+    // Per-file executables remain available when failure isolation is worth
+    // the extra build graph overhead.
+    const test_integration_files_step = b.step("test-integration-files", "Run integration tests as one executable per test file");
 
     // Discover top-level integration tests AND scenario tests under
     // integration_tests/scenarios/. Both directories are treated
@@ -306,7 +320,7 @@ pub fn build(b: *std.Build) void {
             target,
             optimize,
             test_filters_opt,
-            test_integration_step,
+            test_integration_files_step,
         );
     }
 }
