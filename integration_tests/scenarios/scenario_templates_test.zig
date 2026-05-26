@@ -202,3 +202,51 @@ test "scenario: templates — list embedded, init to disk, list from disk, show 
     try std.testing.expect(rendered.value == .object);
     try std.testing.expect(rendered.value.object.get("title") != null);
 }
+
+// =========================================================================
+// Bug-fix red test: every templates/* verb takes --json. validate
+// is the odd one out — its cmd.zig registration omits the flag, so
+// `templates validate <set> <system> <kind> --json` exits non-zero
+// with UnknownFlag. The contract is "every templates verb supports
+// --json"; pin it.
+// =========================================================================
+
+test "scenario: templates validate accepts --json (red until cmd.zig flag is registered)" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    _ = suite.registerProject("tpl-validate-json");
+    const tpl_dir = std.fmt.allocPrint(arena, "{s}/templates", .{suite.tmpAbsPath()}) catch unreachable;
+    const env = [_]harness.Suite.ExtraEnvEntry{
+        .{ .key = "PLANAR_TEMPLATES_DIR", .value = tpl_dir },
+    };
+
+    // Seed defaults to disk so there's a template to validate.
+    const init_out = suite.mustRunWith(&.{ "templates", "init", "--json" }, &env);
+    gpa.free(init_out);
+
+    // Exit 0 with --json present. Today: UnknownFlag → exit
+    // non-zero. The mere fact that the verb accepts --json is the
+    // contract — the output shape can be empty or {ok:true},
+    // either is fine. Use execWith (not mustRunWith) so we can
+    // assert on the exit code directly without the harness's
+    // mustRun fail-swallow behavior.
+    const res = suite.execWith(&.{
+        "templates", "validate", "default", "github-issues", "issue", "--json",
+    }, &env);
+    defer gpa.free(res.stdout);
+    defer gpa.free(res.stderr);
+
+    if (res.term != .exited or res.term.exited != 0) {
+        std.debug.print(
+            "\ntemplates validate --json should exit 0; got term={any} stderr={s}\n",
+            .{ res.term, res.stderr },
+        );
+        try std.testing.expect(false);
+    }
+}
