@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Internal helper for parity-audit.sh: run "$@" with timeout, dump
+# stdout/stderr to provided paths, echo exit code.
+set -uo pipefail
+secs="$1"; stdout_path="$2"; stderr_path="$3"
+shift 3
+: > "$stdout_path"; : > "$stderr_path"
+rm -f "$stdout_path.timedout"
+( exec "$@" ) >"$stdout_path" 2>"$stderr_path" &
+cmd_pid=$!
+(
+  waited=0
+  while kill -0 "$cmd_pid" 2>/dev/null; do
+    if [[ "$waited" -ge "$secs" ]]; then
+      touch "$stdout_path.timedout"
+      kill -TERM "$cmd_pid" 2>/dev/null || true
+      sleep 1
+      kill -KILL "$cmd_pid" 2>/dev/null || true
+      exit 0
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+) &
+wd_pid=$!
+ec=0
+wait "$cmd_pid" 2>/dev/null || ec=$?
+kill "$wd_pid" 2>/dev/null || true
+wait "$wd_pid" 2>/dev/null || true
+echo "$ec"

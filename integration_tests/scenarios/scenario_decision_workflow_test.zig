@@ -231,3 +231,46 @@ test "scenario: decision workflow — decision list surfaces all decisions on a 
     try std.testing.expectEqual(d_b.id, d_b_shown.id);
     try std.testing.expectEqualStrings("proposed", d_b_shown.status);
 }
+
+// =========================================================================
+// Bug-fix red test: `decision add --plan <id>` must write the
+// entity_links (decision → plan, relationship=derives-from) edge,
+// not just emit a stderr warning. Mirrors the behavior of
+// `artifact add --plan` and `question add --plan`.
+// =========================================================================
+
+test "scenario: decision add --plan writes the entity_links derives-from edge (red until engine wires it)" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    _ = suite.registerProject("decision-link-bug");
+
+    const plan = suite.mustRunJSON(PlanJSON, arena, &.{
+        "plan", "create", "--json", "Linked decision target",
+    });
+    const plan_id_str = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch unreachable;
+
+    const d = suite.mustRunJSON(DecisionJSON, arena, &.{
+        "decision", "add",  "--json",
+        "--plan",   plan_id_str,
+        "--body",   "should write the derives-from edge",
+        "Auto-link target",
+    });
+    const d_id_str = std.fmt.allocPrint(arena, "{d}", .{d.id}) catch unreachable;
+
+    // The contract: `decision add --plan <pid>` produces an
+    // entity_links row (decision:<id> → plan:<pid>, derives-from).
+    // `links list decision:<id> --json` surfaces the edge.
+    const ref = std.fmt.allocPrint(arena, "decision:{d}", .{d.id}) catch unreachable;
+    const links_raw = suite.mustRun(&.{ "links", "list", ref, "--json" });
+    defer gpa.free(links_raw);
+
+    try std.testing.expect(std.mem.containsAtLeast(u8, links_raw, 1, "derives-from"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, links_raw, 1, plan_id_str));
+    _ = d_id_str;
+}
