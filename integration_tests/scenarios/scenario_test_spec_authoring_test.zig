@@ -180,3 +180,64 @@ test "scenario: test-spec authoring — retire obsolete scenario lands terminal 
     });
     try std.testing.expectEqualStrings("retired", after.status);
 }
+
+// =========================================================================
+// Bug-fix red test: `scenario verify --outcome fail` records a failing
+// run. Today the verb has no --outcome flag; it always records pass
+// + flips status to verified. The test-spec's TS-Z2 (question 248)
+// asserted the failing path. Pin the contract: --outcome fail records
+// last_outcome="fail" and leaves status alone (not "verified" — a
+// failing run does not constitute verification).
+// =========================================================================
+
+test "scenario: verify --outcome fail records failing run (red until engine + flag land)" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    _ = suite.registerProject("ts-outcome-fail");
+
+    const plan = suite.mustRunJSON(PlanJSON, arena, &.{
+        "plan", "create", "--json", "Failing-run target",
+    });
+    const plan_id_str = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch unreachable;
+
+    const scen = suite.mustRunJSON(ScenarioJSON, arena, &.{
+        "scenario", "add", "--json",
+        "--plan",   plan_id_str,
+        "--body",   "GIVEN flaky service, WHEN x, THEN sometimes fails.",
+        "Flaky scenario",
+    });
+    const scen_id_str = std.fmt.allocPrint(arena, "{d}", .{scen.id}) catch unreachable;
+
+    // The contract: --outcome fail records last_outcome=fail,
+    // last_run_at populates, status stays at draft (not verified).
+    const res = suite.execWith(&.{
+        "scenario", "verify", scen_id_str,
+        "--outcome", "fail",
+        "--summary", "ran 2026-05-26: assertion at line 42 failed",
+        "--json",
+    }, &.{});
+    defer gpa.free(res.stdout);
+    defer gpa.free(res.stderr);
+    if (res.term != .exited or res.term.exited != 0) {
+        std.debug.print(
+            "\nscenario verify --outcome fail should exit 0; got term={any} stderr={s}\n",
+            .{ res.term, res.stderr },
+        );
+        try std.testing.expect(false);
+    }
+
+    const after = suite.mustRunJSON(ScenarioJSON, arena, &.{
+        "scenario", "show", scen_id_str, "--json",
+    });
+    try std.testing.expect(after.last_outcome != null);
+    try std.testing.expectEqualStrings("fail", after.last_outcome.?);
+    try std.testing.expect(after.last_run_at != null);
+    // A failing run does not constitute verification.
+    try std.testing.expect(!std.mem.eql(u8, after.status, "verified"));
+}
