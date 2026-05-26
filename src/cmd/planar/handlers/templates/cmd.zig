@@ -50,6 +50,9 @@ pub const verb: cli.Cmd = .{
         .{
             .name = "validate",
             .desc = "Validate template syntax.",
+            .flags = &.{
+                .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
+            },
             .positionals = &.{
                 .{ .name = "set", .kind = .string, .required = true },
                 .{ .name = "system", .kind = .string, .required = true },

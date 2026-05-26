@@ -30,8 +30,32 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     defer engine.templates.deinitIssues(issues, ctx.allocator);
 
     if (issues.len == 0) {
-        try ctx.stdout.print("ok: {s}/{s}/{s}\n", .{ t.set_name, t.system, t.kind });
+        if (args.json) {
+            try ctx.stdout.print(
+                "{{\"ok\":true,\"set\":\"{s}\",\"system\":\"{s}\",\"kind\":\"{s}\",\"issues\":[]}}\n",
+                .{ t.set_name, t.system, t.kind },
+            );
+        } else {
+            try ctx.stdout.print("ok: {s}/{s}/{s}\n", .{ t.set_name, t.system, t.kind });
+        }
         return;
+    }
+
+    if (args.json) {
+        try ctx.stdout.print(
+            "{{\"ok\":false,\"set\":\"{s}\",\"system\":\"{s}\",\"kind\":\"{s}\",\"issues\":[",
+            .{ t.set_name, t.system, t.kind },
+        );
+        for (issues, 0..) |iss, i| {
+            if (i > 0) try ctx.stdout.print(",", .{});
+            try ctx.stdout.print("{{\"json_path\":", .{});
+            try std.json.Stringify.encodeJsonString(iss.json_path, .{}, ctx.stdout);
+            try ctx.stdout.print(",\"message\":", .{});
+            try std.json.Stringify.encodeJsonString(iss.message, .{}, ctx.stdout);
+            try ctx.stdout.print("}}", .{});
+        }
+        try ctx.stdout.print("]}}\n", .{});
+        exit.die(ctx, error.InvalidInput, "{d} issue(s) in {s}/{s}/{s}", .{ issues.len, t.set_name, t.system, t.kind });
     }
 
     for (issues) |iss| {
