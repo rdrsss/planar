@@ -113,6 +113,17 @@ distinction is load-bearing — never collapse them.
   nothing from the engine modules. These lock the user-visible contract —
   flag names, JSON shapes, exit codes, status-transition rules — so
   internal refactors cannot silently break it.
+- **Cross-binary parity gate** — `make parity-check` runs
+  `scripts/parity-check.sh`, which diffs the zig binary against the
+  archive Go binary across the full top-level verb surface and fails
+  on any gap not present in `scripts/parity-allowlist.txt`. The
+  allowlist enumerates Bucket-3 (intentional zig divergence) and
+  Bucket-4 (cosmetic) rows per the plan-351 parity-triage taxonomy.
+  `make test-all` wires the gate in. When the Go reference binary is
+  unreachable (`$PLANAR_GO_BIN` not executable, `$ARCHIVE/src` absent)
+  the gate prints a skip notice and exits 0; the zig integration
+  suite remains the always-on parity guard. Pass `--strict` to
+  `parity-check.sh` to fail when the Go binary is unreachable.
 
 Always run integration tests via `make test-integration` (not bare
 `zig build test-integration`). The make target builds `./bin/planar` and

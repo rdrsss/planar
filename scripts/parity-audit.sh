@@ -306,9 +306,12 @@ PLANAR_DB="$AUDIT_DB" PLANAR_HOME="$TMP_ROOT/planar-home-zig" HOME="$TMP_ROOT/ho
   || HEALTH_ZIG_EXIT=$?
 
 # Extract schema version. Go renders "  schema:           14  [current]".
-# Zig renders "schema version:   14".
+# Zig (post Cluster C-health-content-loss, plan 351) renders
+# "schema:           v14 of v14 (current)". The first integer on the
+# `schema:` line is the current version on both sides — Go's number
+# parses straight, zig's strips the leading `v`.
 HEALTH_GO_SCHEMA=$(awk '/schema:/ { for (i=1;i<=NF;i++) if ($i ~ /^[0-9]+$/) { print $i; exit } }' "$HEALTH_GO_OUT")
-HEALTH_ZIG_SCHEMA=$(awk '/schema version/ { for (i=1;i<=NF;i++) if ($i ~ /^[0-9]+$/) { print $i; exit } }' "$HEALTH_ZIG_OUT")
+HEALTH_ZIG_SCHEMA=$(awk '/schema:/ { for (i=1;i<=NF;i++) { gsub(/^v/, "", $i); if ($i ~ /^[0-9]+$/) { print $i; exit } } }' "$HEALTH_ZIG_OUT")
 HEALTH_GO_SCHEMA="${HEALTH_GO_SCHEMA:-0}"
 HEALTH_ZIG_SCHEMA="${HEALTH_ZIG_SCHEMA:-0}"
 
