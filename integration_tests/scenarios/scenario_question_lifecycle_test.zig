@@ -226,3 +226,76 @@ test "scenario: question lifecycle — question link to the decision that resolv
     try std.testing.expect(std.mem.containsAtLeast(u8, d_links_raw, 1, "addresses"));
     try std.testing.expect(std.mem.containsAtLeast(u8, d_links_raw, 1, q_id_str));
 }
+
+// =========================================================================
+// Bug-fix red test: question status policy refuses terminal → terminal
+// transitions. `wontfix` from `answered` (or vice versa) is not a legal
+// move — both are terminal states. The policy.status matrix currently
+// stubs `.question` as permissive; the matrix needs the open-only rule.
+// =========================================================================
+
+test "scenario: question wontfix from answered refuses (red until status matrix wires open-only rule)" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    _ = suite.registerProject("ql-terminal-guard");
+
+    const plan = suite.mustRunJSON(PlanJSON, arena, &.{
+        "plan", "create", "--json", "Terminal guard target",
+    });
+    const plan_id_str = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch unreachable;
+
+    const q = suite.mustRunJSON(QuestionJSON, arena, &.{
+        "question", "add", "--json",
+        "--plan",   plan_id_str,
+        "--body",   "Drives the answered-then-wontfix-refusal probe",
+        "Terminal probe",
+    });
+    const q_id_str = std.fmt.allocPrint(arena, "{d}", .{q.id}) catch unreachable;
+
+    // Move to `answered` legally.
+    const ans_out = suite.mustRun(&.{
+        "question", "answer", q_id_str, "--answer", "yes, definitively",
+    });
+    gpa.free(ans_out);
+
+    const q_answered = suite.mustRunJSON(QuestionJSON, arena, &.{
+        "question", "show", q_id_str, "--json",
+    });
+    try std.testing.expectEqualStrings("answered", q_answered.status);
+
+    // Now attempt `wontfix` from the terminal answered state. The
+    // documented contract: answered is terminal — wontfix must
+    // refuse with non-zero exit. The current engine accepts the
+    // transition (this assertion is red until the policy.status
+    // matrix lands).
+    const stderr = suite.expectFailure(&.{
+        "question", "wontfix", q_id_str, "--reason", "should-refuse",
+    });
+    defer gpa.free(stderr);
+
+    // Engine should surface an IllegalTransition or terminal-state
+    // refusal in stderr.
+    const refusal_ok =
+        std.mem.containsAtLeast(u8, stderr, 1, "IllegalTransition") or
+        std.mem.containsAtLeast(u8, stderr, 1, "terminal") or
+        std.mem.containsAtLeast(u8, stderr, 1, "transition");
+    if (!refusal_ok) {
+        std.debug.print(
+            "\nexpected terminal-state refusal in stderr; got:\n{s}\n",
+            .{stderr},
+        );
+        try std.testing.expect(false);
+    }
+
+    // The status must NOT have flipped — still `answered`.
+    const q_after = suite.mustRunJSON(QuestionJSON, arena, &.{
+        "question", "show", q_id_str, "--json",
+    });
+    try std.testing.expectEqualStrings("answered", q_after.status);
+}
