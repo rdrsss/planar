@@ -157,24 +157,43 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
     defer ctx.allocator.free(entry_body);
     engine.runtime.session.appendEntry(d, sess.id, "note", entry_body) catch {};
 
-    // Resumability check.
+    // Resumability check. Capture the validation failures so the
+    // --json shape carries the load-bearing `failures` array (Cluster
+    // H-handoff-json-shape, plan 351) — oncall / scripts that scrape
+    // handoff JSON depend on knowing why a snapshot isn't resumable.
     var resumable = false;
+    const ValFail = engine.runtime.@"resume".ValidationFailure;
+    var failures_owned: []ValFail = &[_]ValFail{};
+    var failures_buf: ?engine.runtime.@"resume".ValidationResult = null;
+    defer if (failures_buf) |vr| engine.runtime.@"resume".deinitResult(vr, ctx.allocator);
     if (task_id_opt) |tid| {
-        const r = engine.runtime.@"resume".validate(d, ctx.allocator, tid) catch null;
-        if (r) |vr| {
-            defer engine.runtime.@"resume".deinitResult(vr, ctx.allocator);
+        if (engine.runtime.@"resume".validate(d, ctx.allocator, tid) catch null) |vr| {
+            failures_buf = vr;
+            failures_owned = @constCast(vr.failures);
             resumable = vr.resumable;
         }
     }
 
     if (args.json) {
         try ctx.stdout.print(
-            "{{\"ok\":true,\"snapshot_id\":{d},\"handoff_id\":{d},\"status\":\"{s}\",\"resumable\":{s}}}\n",
+            "{{\"ok\":true,\"snapshot_id\":{d},\"handoff_id\":{d},\"status\":\"{s}\",\"resumable\":{s},\"failures\":[",
             .{
                 snap.id,                            h.id, @tagName(h.status),
                 if (resumable) "true" else "false",
             },
         );
+        for (failures_owned, 0..) |f, i| {
+            if (i > 0) try ctx.stdout.print(",", .{});
+            try ctx.stdout.print(
+                "{{\"check\":\"{s}\",\"message\":",
+                .{f.check},
+            );
+            try std.json.Stringify.encodeJsonString(f.message, .{}, ctx.stdout);
+            try ctx.stdout.print(",\"remediation\":", .{});
+            try std.json.Stringify.encodeJsonString(f.remediation, .{}, ctx.stdout);
+            try ctx.stdout.print("}}", .{});
+        }
+        try ctx.stdout.print("]}}\n", .{});
         return;
     }
 

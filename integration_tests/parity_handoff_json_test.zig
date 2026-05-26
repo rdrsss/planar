@@ -29,13 +29,28 @@ test "parity: 'handoff --json' includes 'failures' array field (Cluster H-handof
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    // Fixture: need a current task for handoff to capture.
-    _ = suite.mustRunJSON(TaskJSON, arena, &.{
+    // Fixture: need a current task and an active session for handoff
+    // to capture against. The vendor tuple (PLANAR_VENDOR /
+    // PLANAR_VENDOR_SESSION_ID) is the lookup key both `capture session`
+    // and `handoff` use to find the active session, so set them in the
+    // child env for every subcommand below.
+    const env_overrides = [_]harness.Suite.ExtraEnvEntry{
+        .{ .key = "PLANAR_VENDOR", .value = "claude" },
+        .{ .key = "PLANAR_VENDOR_SESSION_ID", .value = "handoff-json-fixture" },
+    };
+
+    const t = suite.mustRunJSON(TaskJSON, arena, &.{
         "task", "add", "--json", "--next-action", "verify", "HANDOFF_JSON_TEST_TASK",
     });
+    const t_id_str = std.fmt.allocPrint(arena, "{d}", .{t.id}) catch unreachable;
+    const sess_stdout = suite.mustRunWith(&.{
+        "capture", "session",
+        "--task",  t_id_str,
+    }, &env_overrides);
+    gpa.free(sess_stdout);
 
     // Run handoff with --json (default subcommand path).
-    const stdout = suite.mustRun(&.{ "handoff", "--json" });
+    const stdout = suite.mustRunWith(&.{ "handoff", "--json" }, &env_overrides);
     defer gpa.free(stdout);
 
     const trimmed = std.mem.trim(u8, stdout, " \n");
