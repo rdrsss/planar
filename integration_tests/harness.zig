@@ -453,7 +453,17 @@ pub const Suite = struct {
         cwd: []const u8,
         args: []const []const u8,
     ) []u8 {
-        const env = [_]ExtraEnvEntry{.{ .key = "PLANAR_DB", .value = self.absDbPath() }};
+        // Set PWD to match the child's cwd. Shells do this on `cd`; the
+        // child relies on PWD (not getcwd(3)) to learn its "literal as
+        // passed" cwd vs the canonical realpath. Without this, init's
+        // PWD-first cwd resolution (task 2375) would see the test
+        // runner's PWD instead of the child's cwd — and the
+        // path-canonicalization bug would silently disappear in tests
+        // even when alive for real operators.
+        const env = [_]ExtraEnvEntry{
+            .{ .key = "PLANAR_DB", .value = self.absDbPath() },
+            .{ .key = "PWD", .value = cwd },
+        };
         const res = self.execWithInDir(cwd, args, &env);
         if (res.term != .exited or res.term.exited != 0) {
             std.debug.print(
@@ -476,7 +486,11 @@ pub const Suite = struct {
         cwd: []const u8,
         args: []const []const u8,
     ) []u8 {
-        const env = [_]ExtraEnvEntry{.{ .key = "PLANAR_DB", .value = self.absDbPath() }};
+        // PWD mirrors mustRunInDir's rationale (task 2375).
+        const env = [_]ExtraEnvEntry{
+            .{ .key = "PLANAR_DB", .value = self.absDbPath() },
+            .{ .key = "PWD", .value = cwd },
+        };
         const res = self.execWithInDir(cwd, args, &env);
         if (res.term == .exited and res.term.exited == 0) {
             std.debug.print(

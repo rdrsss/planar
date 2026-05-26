@@ -56,6 +56,50 @@ pub const Node = struct {
     updated_at: []const u8,
     /// Ordered child list. Walker preserves DB insertion order (id ASC).
     children: []Node,
+
+    /// Custom JSON serializer (task 2377): scope nodes emit only the
+    /// scope-relevant fields; entity nodes emit the full shape. Without
+    /// this branch the default struct serializer leaked zero-valued
+    /// entity fields (id=0, slug="", status="", ...) onto scope roots,
+    /// polluting `tree --json` output. See parity-triage.md
+    /// §E-tree-cwd-derive (the JSON-pollution sub-fix) and task 2377.
+    pub fn jsonStringify(self: Node, jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("kind");
+        try jws.write(self.kind);
+        if (std.mem.eql(u8, self.kind, "scope")) {
+            try jws.objectField("title");
+            try jws.write(self.title);
+            try jws.objectField("scope_kind");
+            try jws.write(self.scope_kind);
+            try jws.objectField("scope_id");
+            try jws.write(self.scope_id);
+            try jws.objectField("scope_label");
+            try jws.write(self.scope_label);
+            try jws.objectField("children");
+            try jws.write(self.children);
+        } else {
+            try jws.objectField("id");
+            try jws.write(self.id);
+            try jws.objectField("title");
+            try jws.write(self.title);
+            try jws.objectField("slug");
+            try jws.write(self.slug);
+            try jws.objectField("status");
+            try jws.write(self.status);
+            try jws.objectField("priority");
+            try jws.write(self.priority);
+            try jws.objectField("artifact_kind");
+            try jws.write(self.artifact_kind);
+            try jws.objectField("created_at");
+            try jws.write(self.created_at);
+            try jws.objectField("updated_at");
+            try jws.write(self.updated_at);
+            try jws.objectField("children");
+            try jws.write(self.children);
+        }
+        try jws.endObject();
+    }
 };
 
 /// Filter controls which entities are traversed. Zero value → global scope,
@@ -127,7 +171,10 @@ pub fn build(
     for (filter.kinds) |k| {
         var found = false;
         for (valid_kinds) |vk| {
-            if (std.mem.eql(u8, k, vk)) { found = true; break; }
+            if (std.mem.eql(u8, k, vk)) {
+                found = true;
+                break;
+            }
         }
         if (!found) return Error.UnknownKind;
     }
@@ -143,13 +190,16 @@ pub fn build(
     if (filter.scope) |slug| {
         const ref = identity.scope.resolveSlug(d, allocator, slug) catch |e| switch (e) {
             error.UnsupportedScope => return Error.UnsupportedScope,
-            error.SlugNotFound    => return Error.SlugNotFound,
-            else                  => return Error.QueryFailed,
+            error.SlugNotFound => return Error.SlugNotFound,
+            else => return Error.QueryFailed,
         };
         switch (ref.kind) {
-            .global      => scope_kind = "global",
-            .association => { scope_kind = "association"; scope_id = ref.id; },
-            .repo        => return Error.UnsupportedScope,
+            .global => scope_kind = "global",
+            .association => {
+                scope_kind = "association";
+                scope_id = ref.id;
+            },
+            .repo => return Error.UnsupportedScope,
         }
     }
 
@@ -188,7 +238,10 @@ fn buildAllScopes(
         const label = try buildScopeLabel(allocator, "global", null, d);
         errdefer allocator.free(label);
         const ch = try walkScope(d, allocator, "global", null, filter, 0);
-        errdefer { for (ch) |c| deinitNode(c, allocator); allocator.free(ch); }
+        errdefer {
+            for (ch) |c| deinitNode(c, allocator);
+            allocator.free(ch);
+        }
         try roots.append(allocator, try makeScopeNode(allocator, "global", null, label, ch));
     }
 
@@ -200,12 +253,15 @@ fn buildAllScopes(
         while (true) {
             switch (stmt.step() catch return Error.QueryFailed) {
                 .done => break,
-                .row  => {
+                .row => {
                     const aid = stmt.columnInt(0);
                     const label = try buildScopeLabel(allocator, "association", aid, d);
                     errdefer allocator.free(label);
                     const ch = try walkScope(d, allocator, "association", aid, filter, 0);
-                    errdefer { for (ch) |c| deinitNode(c, allocator); allocator.free(ch); }
+                    errdefer {
+                        for (ch) |c| deinitNode(c, allocator);
+                        allocator.free(ch);
+                    }
                     try roots.append(allocator, try makeScopeNode(allocator, "association", aid, label, ch));
                 },
             }
@@ -220,12 +276,15 @@ fn buildAllScopes(
         while (true) {
             switch (stmt.step() catch return Error.QueryFailed) {
                 .done => break,
-                .row  => {
+                .row => {
                     const pid = stmt.columnInt(0);
                     const label = try buildScopeLabel(allocator, "repo", pid, d);
                     errdefer allocator.free(label);
                     const ch = try walkScope(d, allocator, "repo", pid, filter, 0);
-                    errdefer { for (ch) |c| deinitNode(c, allocator); allocator.free(ch); }
+                    errdefer {
+                        for (ch) |c| deinitNode(c, allocator);
+                        allocator.free(ch);
+                    }
                     try roots.append(allocator, try makeScopeNode(allocator, "repo", pid, label, ch));
                 },
             }
@@ -243,19 +302,19 @@ fn makeScopeNode(
     children: []Node,
 ) std.mem.Allocator.Error!Node {
     return Node{
-        .kind        = try allocator.dupe(u8, "scope"),
-        .id          = 0,
-        .title       = try allocator.dupe(u8, scope_label),
-        .slug        = try allocator.dupe(u8, ""),
-        .status      = try allocator.dupe(u8, ""),
-        .priority    = 0,
+        .kind = try allocator.dupe(u8, "scope"),
+        .id = 0,
+        .title = try allocator.dupe(u8, scope_label),
+        .slug = try allocator.dupe(u8, ""),
+        .status = try allocator.dupe(u8, ""),
+        .priority = 0,
         .artifact_kind = try allocator.dupe(u8, ""),
-        .scope_kind  = try allocator.dupe(u8, scope_kind),
-        .scope_id    = scope_id,
+        .scope_kind = try allocator.dupe(u8, scope_kind),
+        .scope_id = scope_id,
         .scope_label = scope_label,
-        .created_at  = try allocator.dupe(u8, ""),
-        .updated_at  = try allocator.dupe(u8, ""),
-        .children    = children,
+        .created_at = try allocator.dupe(u8, ""),
+        .updated_at = try allocator.dupe(u8, ""),
+        .children = children,
     };
 }
 
@@ -284,8 +343,7 @@ fn buildScopeLabel(
     if (scope_id) |sid| {
         // Build sentinel-terminated SQL via a fixed buffer.
         var sql_buf: [128]u8 = undefined;
-        const sql_slice = std.fmt.bufPrint(&sql_buf, "select slug from {s} where id = ?", .{table})
-            catch return Error.QueryFailed;
+        const sql_slice = std.fmt.bufPrint(&sql_buf, "select slug from {s} where id = ?", .{table}) catch return Error.QueryFailed;
         // Null-terminate manually.
         if (sql_slice.len >= sql_buf.len) return Error.QueryFailed;
         sql_buf[sql_slice.len] = 0;
@@ -295,7 +353,7 @@ fn buildScopeLabel(
         stmt.bind(&.{.{ .int = sid }}) catch return Error.QueryFailed;
         switch (stmt.step() catch return Error.QueryFailed) {
             .done => {},
-            .row  => {
+            .row => {
                 const slug = try stmt.columnTextAlloc(0, allocator);
                 defer allocator.free(slug);
                 return std.fmt.allocPrint(allocator, "{s}{s}", .{ prefix, slug });
@@ -345,8 +403,7 @@ fn walkScope(
     var params: std.ArrayList(db.sqlite.Param) = .empty;
     defer params.deinit(allocator);
 
-    try sql_buf.appendSlice(allocator,
-        "select id, title, slug, status," ++
+    try sql_buf.appendSlice(allocator, "select id, title, slug, status," ++
         " coalesce(created_at,''), coalesce(updated_at,'')" ++
         " from plans where parent_plan_id is null and scope_kind = ?");
     try params.append(allocator, .{ .text = scope_kind });
@@ -376,12 +433,12 @@ fn walkScope(
     while (true) {
         switch (stmt.step() catch return Error.QueryFailed) {
             .done => break,
-            .row  => {
+            .row => {
                 const row = PlanRow{
-                    .id         = stmt.columnInt(0),
-                    .title      = try stmt.columnTextAlloc(1, allocator),
-                    .slug       = try stmt.columnTextAlloc(2, allocator),
-                    .status     = try stmt.columnTextAlloc(3, allocator),
+                    .id = stmt.columnInt(0),
+                    .title = try stmt.columnTextAlloc(1, allocator),
+                    .slug = try stmt.columnTextAlloc(2, allocator),
+                    .status = try stmt.columnTextAlloc(3, allocator),
                     .created_at = try stmt.columnTextAlloc(4, allocator),
                     .updated_at = try stmt.columnTextAlloc(5, allocator),
                 };
@@ -463,19 +520,19 @@ fn buildPlanNode(
     }
 
     return Node{
-        .kind          = try allocator.dupe(u8, "plan"),
-        .id            = row.id,
-        .title         = try allocator.dupe(u8, row.title),
-        .slug          = try allocator.dupe(u8, row.slug),
-        .status        = try allocator.dupe(u8, row.status),
-        .priority      = 0,
+        .kind = try allocator.dupe(u8, "plan"),
+        .id = row.id,
+        .title = try allocator.dupe(u8, row.title),
+        .slug = try allocator.dupe(u8, row.slug),
+        .status = try allocator.dupe(u8, row.status),
+        .priority = 0,
         .artifact_kind = try allocator.dupe(u8, ""),
-        .scope_kind    = try allocator.dupe(u8, ""),
-        .scope_id      = null,
-        .scope_label   = try allocator.dupe(u8, ""),
-        .created_at    = try allocator.dupe(u8, row.created_at),
-        .updated_at    = try allocator.dupe(u8, row.updated_at),
-        .children      = try children.toOwnedSlice(allocator),
+        .scope_kind = try allocator.dupe(u8, ""),
+        .scope_id = null,
+        .scope_label = try allocator.dupe(u8, ""),
+        .created_at = try allocator.dupe(u8, row.created_at),
+        .updated_at = try allocator.dupe(u8, row.updated_at),
+        .children = try children.toOwnedSlice(allocator),
     };
 }
 
@@ -492,8 +549,8 @@ fn queryChildPlans(
 ) Error![]Node {
     var stmt = d.prepare(
         "select id, title, slug, status," ++
-        " coalesce(created_at,''), coalesce(updated_at,'')" ++
-        " from plans where parent_plan_id = ? order by id",
+            " coalesce(created_at,''), coalesce(updated_at,'')" ++
+            " from plans where parent_plan_id = ? order by id",
     ) catch return Error.QueryFailed;
     defer stmt.finalize();
     stmt.bind(&.{.{ .int = parent_id }}) catch return Error.QueryFailed;
@@ -507,12 +564,12 @@ fn queryChildPlans(
     while (true) {
         switch (stmt.step() catch return Error.QueryFailed) {
             .done => break,
-            .row  => {
+            .row => {
                 try rows.append(allocator, .{
-                    .id         = stmt.columnInt(0),
-                    .title      = try stmt.columnTextAlloc(1, allocator),
-                    .slug       = try stmt.columnTextAlloc(2, allocator),
-                    .status     = try stmt.columnTextAlloc(3, allocator),
+                    .id = stmt.columnInt(0),
+                    .title = try stmt.columnTextAlloc(1, allocator),
+                    .slug = try stmt.columnTextAlloc(2, allocator),
+                    .status = try stmt.columnTextAlloc(3, allocator),
                     .created_at = try stmt.columnTextAlloc(4, allocator),
                     .updated_at = try stmt.columnTextAlloc(5, allocator),
                 });
@@ -564,15 +621,15 @@ fn queryTopTasks(
     // Mirrors Go's queryTopTasksForPlan: DISTINCT + LEFT JOIN for derives-from.
     var stmt = d.prepare(
         "select distinct t.id, t.title, coalesce(t.status,''), t.priority," ++
-        " coalesce(t.created_at,''), coalesce(t.updated_at,'')" ++
-        " from tasks t" ++
-        " left join entity_links el" ++
-        "   on el.from_kind = 'task' and el.from_id = t.id" ++
-        "  and el.to_kind = 'plan' and el.to_id = ?" ++
-        "  and el.relationship = 'derives-from'" ++
-        " where t.parent_task_id is null" ++
-        "   and (t.plan_id = ? or el.id is not null)" ++
-        " order by t.id",
+            " coalesce(t.created_at,''), coalesce(t.updated_at,'')" ++
+            " from tasks t" ++
+            " left join entity_links el" ++
+            "   on el.from_kind = 'task' and el.from_id = t.id" ++
+            "  and el.to_kind = 'plan' and el.to_id = ?" ++
+            "  and el.relationship = 'derives-from'" ++
+            " where t.parent_task_id is null" ++
+            "   and (t.plan_id = ? or el.id is not null)" ++
+            " order by t.id",
     ) catch return Error.QueryFailed;
     defer stmt.finalize();
     stmt.bind(&.{ .{ .int = plan_id }, .{ .int = plan_id } }) catch return Error.QueryFailed;
@@ -586,12 +643,12 @@ fn queryTopTasks(
     while (true) {
         switch (stmt.step() catch return Error.QueryFailed) {
             .done => break,
-            .row  => {
+            .row => {
                 try rows.append(allocator, .{
-                    .id         = stmt.columnInt(0),
-                    .title      = try stmt.columnTextAlloc(1, allocator),
-                    .status     = try stmt.columnTextAlloc(2, allocator),
-                    .priority   = stmt.columnInt(3),
+                    .id = stmt.columnInt(0),
+                    .title = try stmt.columnTextAlloc(1, allocator),
+                    .status = try stmt.columnTextAlloc(2, allocator),
+                    .priority = stmt.columnInt(3),
                     .created_at = try stmt.columnTextAlloc(4, allocator),
                     .updated_at = try stmt.columnTextAlloc(5, allocator),
                 });
@@ -638,19 +695,19 @@ fn buildTaskNode(
     if (!keep_self and children.items.len == 0) return null;
 
     return Node{
-        .kind          = try allocator.dupe(u8, "task"),
-        .id            = row.id,
-        .title         = try allocator.dupe(u8, row.title),
-        .slug          = try allocator.dupe(u8, ""),
-        .status        = try allocator.dupe(u8, row.status),
-        .priority      = row.priority,
+        .kind = try allocator.dupe(u8, "task"),
+        .id = row.id,
+        .title = try allocator.dupe(u8, row.title),
+        .slug = try allocator.dupe(u8, ""),
+        .status = try allocator.dupe(u8, row.status),
+        .priority = row.priority,
         .artifact_kind = try allocator.dupe(u8, ""),
-        .scope_kind    = try allocator.dupe(u8, ""),
-        .scope_id      = null,
-        .scope_label   = try allocator.dupe(u8, ""),
-        .created_at    = try allocator.dupe(u8, row.created_at),
-        .updated_at    = try allocator.dupe(u8, row.updated_at),
-        .children      = try children.toOwnedSlice(allocator),
+        .scope_kind = try allocator.dupe(u8, ""),
+        .scope_id = null,
+        .scope_label = try allocator.dupe(u8, ""),
+        .created_at = try allocator.dupe(u8, row.created_at),
+        .updated_at = try allocator.dupe(u8, row.updated_at),
+        .children = try children.toOwnedSlice(allocator),
     };
 }
 
@@ -663,8 +720,8 @@ fn querySubtasks(
 ) Error![]Node {
     var stmt = d.prepare(
         "select id, title, coalesce(status,''), priority," ++
-        " coalesce(created_at,''), coalesce(updated_at,'')" ++
-        " from tasks where parent_task_id = ? order by id",
+            " coalesce(created_at,''), coalesce(updated_at,'')" ++
+            " from tasks where parent_task_id = ? order by id",
     ) catch return Error.QueryFailed;
     defer stmt.finalize();
     stmt.bind(&.{.{ .int = parent_task_id }}) catch return Error.QueryFailed;
@@ -678,12 +735,12 @@ fn querySubtasks(
     while (true) {
         switch (stmt.step() catch return Error.QueryFailed) {
             .done => break,
-            .row  => {
+            .row => {
                 try rows.append(allocator, .{
-                    .id         = stmt.columnInt(0),
-                    .title      = try stmt.columnTextAlloc(1, allocator),
-                    .status     = try stmt.columnTextAlloc(2, allocator),
-                    .priority   = stmt.columnInt(3),
+                    .id = stmt.columnInt(0),
+                    .title = try stmt.columnTextAlloc(1, allocator),
+                    .status = try stmt.columnTextAlloc(2, allocator),
+                    .priority = stmt.columnInt(3),
                     .created_at = try stmt.columnTextAlloc(4, allocator),
                     .updated_at = try stmt.columnTextAlloc(5, allocator),
                 });
@@ -717,11 +774,11 @@ fn queryDerived(
 ) Error![]Node {
     var stmt = d.prepare(
         "select el.from_kind, el.from_id" ++
-        " from entity_links el" ++
-        " where el.relationship = 'derives-from'" ++
-        "   and el.to_kind = 'plan' and el.to_id = ?" ++
-        "   and el.from_kind in ('artifact','decision','test_scenario','question')" ++
-        " order by el.from_kind, el.from_id",
+            " from entity_links el" ++
+            " where el.relationship = 'derives-from'" ++
+            "   and el.to_kind = 'plan' and el.to_id = ?" ++
+            "   and el.from_kind in ('artifact','decision','test_scenario','question')" ++
+            " order by el.from_kind, el.from_id",
     ) catch return Error.QueryFailed;
     defer stmt.finalize();
     stmt.bind(&.{.{ .int = plan_id }}) catch return Error.QueryFailed;
@@ -736,7 +793,7 @@ fn queryDerived(
     while (true) {
         switch (stmt.step() catch return Error.QueryFailed) {
             .done => break,
-            .row  => {
+            .row => {
                 const kind = try stmt.columnTextAlloc(0, allocator);
                 try links.append(allocator, .{ .db_kind = kind, .id = stmt.columnInt(1) });
             },
@@ -776,25 +833,27 @@ fn hydrateDerived(
     if (std.mem.eql(u8, db_kind, "artifact")) {
         var stmt = d.prepare(
             "select title, status, kind, coalesce(created_at,''), coalesce(updated_at,'')" ++
-            " from artifacts where id = ?",
+                " from artifacts where id = ?",
         ) catch return Error.QueryFailed;
         defer stmt.finalize();
         stmt.bind(&.{.{ .int = id }}) catch return Error.QueryFailed;
         switch (stmt.step() catch return Error.QueryFailed) {
             .done => return null,
-            .row  => {
-                const title      = try stmt.columnTextAlloc(0, allocator);
-                const status     = try stmt.columnTextAlloc(1, allocator);
-                const akind      = try stmt.columnTextAlloc(2, allocator);
+            .row => {
+                const title = try stmt.columnTextAlloc(0, allocator);
+                const status = try stmt.columnTextAlloc(1, allocator);
+                const akind = try stmt.columnTextAlloc(2, allocator);
                 const created_at = try stmt.columnTextAlloc(3, allocator);
                 const updated_at = try stmt.columnTextAlloc(4, allocator);
                 if (!statusAllowed(status, filter.statuses)) {
-                    allocator.free(title); allocator.free(status); allocator.free(akind);
-                    allocator.free(created_at); allocator.free(updated_at);
+                    allocator.free(title);
+                    allocator.free(status);
+                    allocator.free(akind);
+                    allocator.free(created_at);
+                    allocator.free(updated_at);
                     return null;
                 }
-                return makeLeafNode(allocator, display_kind, id, title, status, akind,
-                    created_at, updated_at);
+                return makeLeafNode(allocator, display_kind, id, title, status, akind, created_at, updated_at);
             },
         }
     }
@@ -809,10 +868,8 @@ fn hydrateDerived(
         return null;
 
     var sql_buf2: [256]u8 = undefined;
-    const sql_slice2 = std.fmt.bufPrint(&sql_buf2,
-        "select title, status, coalesce(created_at,''), coalesce(updated_at,'')" ++
-        " from {s} where id = ?", .{table})
-        catch return Error.QueryFailed;
+    const sql_slice2 = std.fmt.bufPrint(&sql_buf2, "select title, status, coalesce(created_at,''), coalesce(updated_at,'')" ++
+        " from {s} where id = ?", .{table}) catch return Error.QueryFailed;
     if (sql_slice2.len >= sql_buf2.len) return Error.QueryFailed;
     sql_buf2[sql_slice2.len] = 0;
     const sql2: [:0]const u8 = sql_buf2[0..sql_slice2.len :0];
@@ -822,19 +879,20 @@ fn hydrateDerived(
     stmt.bind(&.{.{ .int = id }}) catch return Error.QueryFailed;
     switch (stmt.step() catch return Error.QueryFailed) {
         .done => return null,
-        .row  => {
-            const title      = try stmt.columnTextAlloc(0, allocator);
-            const status     = try stmt.columnTextAlloc(1, allocator);
+        .row => {
+            const title = try stmt.columnTextAlloc(0, allocator);
+            const status = try stmt.columnTextAlloc(1, allocator);
             const created_at = try stmt.columnTextAlloc(2, allocator);
             const updated_at = try stmt.columnTextAlloc(3, allocator);
             if (!statusAllowed(status, filter.statuses)) {
-                allocator.free(title); allocator.free(status);
-                allocator.free(created_at); allocator.free(updated_at);
+                allocator.free(title);
+                allocator.free(status);
+                allocator.free(created_at);
+                allocator.free(updated_at);
                 return null;
             }
             const empty_akind = try allocator.dupe(u8, "");
-            return makeLeafNode(allocator, display_kind, id, title, status, empty_akind,
-                created_at, updated_at);
+            return makeLeafNode(allocator, display_kind, id, title, status, empty_akind, created_at, updated_at);
         },
     }
 }
@@ -851,19 +909,19 @@ fn makeLeafNode(
 ) Error!?Node {
     const empty_children = try allocator.alloc(Node, 0);
     return Node{
-        .kind          = try allocator.dupe(u8, kind),
-        .id            = id,
-        .title         = title,
-        .slug          = try allocator.dupe(u8, ""),
-        .status        = status,
-        .priority      = 0,
+        .kind = try allocator.dupe(u8, kind),
+        .id = id,
+        .title = title,
+        .slug = try allocator.dupe(u8, ""),
+        .status = status,
+        .priority = 0,
         .artifact_kind = artifact_kind,
-        .scope_kind    = try allocator.dupe(u8, ""),
-        .scope_id      = null,
-        .scope_label   = try allocator.dupe(u8, ""),
-        .created_at    = created_at,
-        .updated_at    = updated_at,
-        .children      = empty_children,
+        .scope_kind = try allocator.dupe(u8, ""),
+        .scope_id = null,
+        .scope_label = try allocator.dupe(u8, ""),
+        .created_at = created_at,
+        .updated_at = updated_at,
+        .children = empty_children,
     };
 }
 
@@ -879,13 +937,17 @@ fn depthAtMax(depth: i64, max_depth: i64) bool {
 
 fn kindAllowed(kind: []const u8, kinds: []const []const u8) bool {
     if (kinds.len == 0) return true;
-    for (kinds) |k| { if (std.mem.eql(u8, k, kind)) return true; }
+    for (kinds) |k| {
+        if (std.mem.eql(u8, k, kind)) return true;
+    }
     return false;
 }
 
 fn statusAllowed(status: []const u8, statuses: []const []const u8) bool {
     if (statuses.len == 0) return true;
-    for (statuses) |s| { if (std.mem.eql(u8, s, status)) return true; }
+    for (statuses) |s| {
+        if (std.mem.eql(u8, s, status)) return true;
+    }
     return false;
 }
 
@@ -914,8 +976,8 @@ pub fn renderText(roots: []const Node, writer: *std.Io.Writer) std.Io.Writer.Err
     try writer.print(
         "{d} plan{s}, {d} task{s}, {d} artifact{s}, {d} decision{s}, {d} scenario{s}, {d} question{s}\n",
         .{
-            counts.plans,     if (counts.plans     == 1) "" else "s",
-            counts.tasks,     if (counts.tasks     == 1) "" else "s",
+            counts.plans,     if (counts.plans == 1) "" else "s",
+            counts.tasks,     if (counts.tasks == 1) "" else "s",
             counts.artifacts, if (counts.artifacts == 1) "" else "s",
             counts.decisions, if (counts.decisions == 1) "" else "s",
             counts.scenarios, if (counts.scenarios == 1) "" else "s",
@@ -925,16 +987,15 @@ pub fn renderText(roots: []const Node, writer: *std.Io.Writer) std.Io.Writer.Err
 }
 
 const NodeCounts = struct {
-    plans: usize = 0, tasks: usize = 0, artifacts: usize = 0,
-    decisions: usize = 0, scenarios: usize = 0, questions: usize = 0,
+    plans: usize = 0,
+    tasks: usize = 0,
+    artifacts: usize = 0,
+    decisions: usize = 0,
+    scenarios: usize = 0,
+    questions: usize = 0,
 
     fn bump(self: *NodeCounts, kind: []const u8) void {
-        if      (std.mem.eql(u8, kind, "plan"))     self.plans     += 1
-        else if (std.mem.eql(u8, kind, "task"))     self.tasks     += 1
-        else if (std.mem.eql(u8, kind, "artifact")) self.artifacts += 1
-        else if (std.mem.eql(u8, kind, "decision")) self.decisions += 1
-        else if (std.mem.eql(u8, kind, "scenario")) self.scenarios += 1
-        else if (std.mem.eql(u8, kind, "question")) self.questions += 1;
+        if (std.mem.eql(u8, kind, "plan")) self.plans += 1 else if (std.mem.eql(u8, kind, "task")) self.tasks += 1 else if (std.mem.eql(u8, kind, "artifact")) self.artifacts += 1 else if (std.mem.eql(u8, kind, "decision")) self.decisions += 1 else if (std.mem.eql(u8, kind, "scenario")) self.scenarios += 1 else if (std.mem.eql(u8, kind, "question")) self.questions += 1;
     }
 };
 
@@ -960,21 +1021,28 @@ fn renderChildList(
 
     // Pass 1: plans.
     for (children, 0..) |c, i| {
-        if (std.mem.eql(u8, c.kind, "plan")) { order[n] = i; n += 1; }
+        if (std.mem.eql(u8, c.kind, "plan")) {
+            order[n] = i;
+            n += 1;
+        }
     }
     // Pass 2: tasks.
     for (children, 0..) |c, i| {
-        if (std.mem.eql(u8, c.kind, "task")) { order[n] = i; n += 1; }
+        if (std.mem.eql(u8, c.kind, "task")) {
+            order[n] = i;
+            n += 1;
+        }
     }
     // Pass 3: rest.
     for (children, 0..) |c, i| {
         if (!std.mem.eql(u8, c.kind, "plan") and !std.mem.eql(u8, c.kind, "task")) {
-            order[n] = i; n += 1;
+            order[n] = i;
+            n += 1;
         }
     }
 
     for (order[0..n], 0..) |child_idx, pos| {
-        const child   = children[child_idx];
+        const child = children[child_idx];
         const is_last = pos == n - 1;
         try renderNode(child, prefix, is_last, writer, counts);
     }
@@ -1008,7 +1076,9 @@ fn renderNode(
 /// Format the per-line label for a non-scope node.
 /// Matches Go's formatNodeLabel in render.go byte-for-byte.
 fn formatNodeLabel(n: Node) []const u8 {
-    const S = struct { var buf: [512]u8 = undefined; };
+    const S = struct {
+        var buf: [512]u8 = undefined;
+    };
     const r = if (std.mem.eql(u8, n.kind, "plan"))
         std.fmt.bufPrint(&S.buf, "plan:{d} [{s}]  {s}", .{ n.id, n.status, n.title })
     else if (std.mem.eql(u8, n.kind, "task"))
@@ -1099,7 +1169,7 @@ fn insertLink(d: *db.sqlite.Db, from_kind: []const u8, from_id: i64, to_kind: []
         "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values (?, ?, ?, ?, ?)",
         &.{
             .{ .text = from_kind }, .{ .int = from_id },
-            .{ .text = to_kind  }, .{ .int = to_id   },
+            .{ .text = to_kind },   .{ .int = to_id },
             .{ .text = rel },
         },
     );
@@ -1110,10 +1180,10 @@ test "happy path: plan → child plan → task → linked question" {
     var d = try setupTestDb(a);
     defer d.close();
 
-    const plan_id       = try insertPlan(&d, a, "Root Plan", "global");
+    const plan_id = try insertPlan(&d, a, "Root Plan", "global");
     const child_plan_id = try insertChildPlan(&d, a, "Child Plan", "global", plan_id);
-    _                   = try insertTask(&d, "Top Task", plan_id, "todo");
-    const q_id          = try insertQuestion(&d, "Linked Question");
+    _ = try insertTask(&d, "Top Task", plan_id, "todo");
+    const q_id = try insertQuestion(&d, "Linked Question");
     try insertLink(&d, "question", q_id, "plan", plan_id, "derives-from");
 
     const roots = try build(&d, a, .{ .max_depth = -1 });
@@ -1127,11 +1197,11 @@ test "happy path: plan → child plan → task → linked question" {
         if (std.mem.eql(u8, c.kind, "plan") and c.id == plan_id) {
             found_root_plan = true;
             var found_child_plan = false;
-            var found_task       = false;
-            var found_question   = false;
+            var found_task = false;
+            var found_question = false;
             for (c.children) |gc| {
-                if (std.mem.eql(u8, gc.kind, "plan")     and gc.id == child_plan_id) found_child_plan = true;
-                if (std.mem.eql(u8, gc.kind, "task"))     found_task     = true;
+                if (std.mem.eql(u8, gc.kind, "plan") and gc.id == child_plan_id) found_child_plan = true;
+                if (std.mem.eql(u8, gc.kind, "task")) found_task = true;
                 if (std.mem.eql(u8, gc.kind, "question")) found_question = true;
             }
             try std.testing.expect(found_child_plan);
@@ -1147,15 +1217,17 @@ test "depth bound: depth=1 clips grandchildren" {
     var d = try setupTestDb(a);
     defer d.close();
 
-    const plan_id  = try insertPlan(&d, a, "Root Plan Depth", "global");
+    const plan_id = try insertPlan(&d, a, "Root Plan Depth", "global");
     const child_id = try insertChildPlan(&d, a, "Child Plan Depth", "global", plan_id);
-    _              = try insertChildPlan(&d, a, "Grandchild Plan Depth", "global", child_id);
+    _ = try insertChildPlan(&d, a, "Grandchild Plan Depth", "global", child_id);
 
     const roots = try build(&d, a, .{ .max_depth = 1 });
     defer deinitNodes(roots, a);
 
     var root_plan: ?Node = null;
-    for (roots[0].children) |c| { if (c.id == plan_id) root_plan = c; }
+    for (roots[0].children) |c| {
+        if (c.id == plan_id) root_plan = c;
+    }
     try std.testing.expect(root_plan != null);
 
     var found_child = false;
@@ -1174,23 +1246,29 @@ test "depth unbounded (-1): grandchildren present" {
     var d = try setupTestDb(a);
     defer d.close();
 
-    const plan_id       = try insertPlan(&d, a, "Root Plan Unbounded", "global");
-    const child_id      = try insertChildPlan(&d, a, "Child Plan Unbounded", "global", plan_id);
+    const plan_id = try insertPlan(&d, a, "Root Plan Unbounded", "global");
+    const child_id = try insertChildPlan(&d, a, "Child Plan Unbounded", "global", plan_id);
     const grandchild_id = try insertChildPlan(&d, a, "Grandchild Plan Unbounded", "global", child_id);
 
     const roots = try build(&d, a, .{ .max_depth = -1 });
     defer deinitNodes(roots, a);
 
     var root_plan: ?Node = null;
-    for (roots[0].children) |c| { if (c.id == plan_id) root_plan = c; }
+    for (roots[0].children) |c| {
+        if (c.id == plan_id) root_plan = c;
+    }
     try std.testing.expect(root_plan != null);
 
     var found_child: ?Node = null;
-    for (root_plan.?.children) |c| { if (c.id == child_id) found_child = c; }
+    for (root_plan.?.children) |c| {
+        if (c.id == child_id) found_child = c;
+    }
     try std.testing.expect(found_child != null);
 
     var found_grandchild = false;
-    for (found_child.?.children) |c| { if (c.id == grandchild_id) found_grandchild = true; }
+    for (found_child.?.children) |c| {
+        if (c.id == grandchild_id) found_grandchild = true;
+    }
     try std.testing.expect(found_grandchild);
 }
 
@@ -1200,10 +1278,10 @@ test "kind filter: kind=[plan,task] excludes questions and decisions" {
     defer d.close();
 
     const plan_id = try insertPlan(&d, a, "Kinded Plan", "global");
-    _             = try insertTask(&d, "Kinded Task", plan_id, "todo");
-    const q_id    = try insertQuestion(&d, "Kinded Question");
+    _ = try insertTask(&d, "Kinded Task", plan_id, "todo");
+    const q_id = try insertQuestion(&d, "Kinded Question");
     try insertLink(&d, "question", q_id, "plan", plan_id, "derives-from");
-    const dec_id  = try insertDecision(&d, "Kinded Decision");
+    const dec_id = try insertDecision(&d, "Kinded Decision");
     try insertLink(&d, "decision", dec_id, "plan", plan_id, "derives-from");
 
     const kinds = [_][]const u8{ "plan", "task" };
@@ -1211,7 +1289,9 @@ test "kind filter: kind=[plan,task] excludes questions and decisions" {
     defer deinitNodes(roots, a);
 
     var found_plan: ?Node = null;
-    for (roots[0].children) |c| { if (c.id == plan_id) found_plan = c; }
+    for (roots[0].children) |c| {
+        if (c.id == plan_id) found_plan = c;
+    }
     try std.testing.expect(found_plan != null);
 
     for (found_plan.?.children) |c| {
@@ -1239,7 +1319,7 @@ test "status filter: done plans excluded when filtering for active" {
     defer deinitNodes(roots, a);
 
     var found_active = false;
-    var found_done   = false;
+    var found_done = false;
     for (roots[0].children) |c| {
         if (c.id == active_id) found_active = true;
         if (std.mem.eql(u8, c.status, "done")) found_done = true;
@@ -1290,7 +1370,9 @@ test "all-scopes: returns global + association scope roots" {
     // Must include global + at least the association scope.
     try std.testing.expect(roots.len >= 2);
     var found_global = false;
-    for (roots) |r| { if (std.mem.eql(u8, r.scope_kind, "global")) found_global = true; }
+    for (roots) |r| {
+        if (std.mem.eql(u8, r.scope_kind, "global")) found_global = true;
+    }
     try std.testing.expect(found_global);
 }
 
@@ -1313,7 +1395,7 @@ test "root_plan_id: only the specified plan is returned" {
     defer d.close();
 
     const plan_a_id = try insertPlan(&d, a, "Plan A Root Filter", "global");
-    _               = try insertPlan(&d, a, "Plan B Root Filter", "global");
+    _ = try insertPlan(&d, a, "Plan B Root Filter", "global");
 
     const roots = try build(&d, a, .{ .root_plan_id = plan_a_id });
     defer deinitNodes(roots, a);
@@ -1327,10 +1409,10 @@ test "linked entities: artifact and scenario surface as plan children" {
     var d = try setupTestDb(a);
     defer d.close();
 
-    const plan_id  = try insertPlan(&d, a, "Links Plan", "global");
-    const art_id   = try insertArtifact(&d, "Linked Artifact");
+    const plan_id = try insertPlan(&d, a, "Links Plan", "global");
+    const art_id = try insertArtifact(&d, "Linked Artifact");
     try insertLink(&d, "artifact", art_id, "plan", plan_id, "derives-from");
-    const scen_id  = try insertScenario(&d, "Linked Scenario");
+    const scen_id = try insertScenario(&d, "Linked Scenario");
     try insertLink(&d, "test_scenario", scen_id, "plan", plan_id, "derives-from");
     // Anchor task so the plan satisfies scaffold rules.
     _ = try insertTask(&d, "Anchor Task", plan_id, "todo");
