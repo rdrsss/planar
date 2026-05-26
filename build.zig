@@ -276,30 +276,53 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    const int_test_exe = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("integration_tests/smoke_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "harness", .module = harness_mod },
-            },
-        }),
-        .filters = test_filters_opt,
-    });
-
-    // The integration test binary must run after the CLI binary is installed.
-    // We set PLANAR_BIN to the installed binary path so the harness can locate
-    // it without coupling to a relative path.
-    const run_int_tests = b.addRunArtifact(int_test_exe);
-    run_int_tests.step.dependOn(b.getInstallStep());
-    run_int_tests.setEnvironmentVariable(
-        "PLANAR_BIN",
-        b.getInstallPath(.bin, "planar"),
-    );
-
+    // Enumerate every `integration_tests/*_test.zig` at build-graph eval
+    // time and create one test executable per file. Each runs after the
+    // CLI binary is installed and receives PLANAR_BIN pointing at the
+    // installed planar binary.
+    //
+    // Previous shape: a single test executable rooted at smoke_test.zig
+    // only, leaving every sibling *_test.zig file dead (compiled into
+    // nothing). See plan 351 task 2374 / question 238 for the discovery.
+    //
+    // Per-file executables (rather than an umbrella @import root) give
+    // per-file failure isolation and let the test runner parallelize.
     const test_integration_step = b.step("test-integration", "Run integration tests (requires compiled binary)");
-    test_integration_step.dependOn(&run_int_tests.step);
+
+    const int_tests_rel = "integration_tests";
+    const int_tests_abs = b.pathFromRoot(int_tests_rel);
+    var int_tests_dir = std.Io.Dir.openDirAbsolute(b.graph.io, int_tests_abs, .{ .iterate = true }) catch |e| {
+        std.debug.panic("build.zig: cannot open integration_tests dir '{s}': {s}", .{ int_tests_abs, @errorName(e) });
+    };
+    defer int_tests_dir.close(b.graph.io);
+
+    var int_it = int_tests_dir.iterate();
+    while (int_it.next(b.graph.io) catch |e| std.debug.panic("build.zig: iterate {s}: {s}", .{ int_tests_abs, @errorName(e) })) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.name, "_test.zig")) continue;
+
+        const test_rel = std.fs.path.join(b.allocator, &.{ int_tests_rel, entry.name }) catch @panic("OOM");
+
+        const test_exe = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(test_rel),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "harness", .module = harness_mod },
+                },
+            }),
+            .filters = test_filters_opt,
+        });
+
+        const run = b.addRunArtifact(test_exe);
+        run.step.dependOn(b.getInstallStep());
+        run.setEnvironmentVariable(
+            "PLANAR_BIN",
+            b.getInstallPath(.bin, "planar"),
+        );
+        test_integration_step.dependOn(&run.step);
+    }
 }
 
 /// Register every `*.sql` file under `dir_rel_to_build` as a file
