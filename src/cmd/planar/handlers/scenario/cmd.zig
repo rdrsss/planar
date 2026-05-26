@@ -67,8 +67,9 @@ pub const verb: cli.Cmd = .{
         },
         .{
             .name = "verify",
-            .desc = "Record a successful test run for a scenario.",
+            .desc = "Record a test run for a scenario (--outcome pass|fail|error|skipped; defaults to pass).",
             .flags = &.{
+                .{ .long = "--outcome", .kind = .string },
                 .{ .long = "--summary", .kind = .string },
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },

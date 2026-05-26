@@ -385,32 +385,58 @@ pub fn listTouching(
 // State transitions
 // =========================================================================
 
-/// Record a successful test run: status='verified', last_outcome='pass',
-/// last_run_at=now. Optional `summary` is included in the audit row.
+/// Record a test run with the given outcome. When outcome=pass the
+/// scenario's status flips to `verified` (the canonical success
+/// transition); for fail / error / skipped, the status is left
+/// alone — a non-passing run doesn't constitute verification. In
+/// every case last_outcome and last_run_at update so the operator
+/// can see when the most recent run happened and what its result
+/// was. Optional `summary` is included in the audit row.
 pub fn verify(
     d: *db.sqlite.Db,
     allocator: std.mem.Allocator,
     id: i64,
+    outcome: Outcome,
     summary_text: ?[]const u8,
 ) Error!Scenario {
     const current = try show(d, allocator, id);
     defer deinit(current, allocator);
     try policy.scope_guard.check(null, null);
-    try policy.status.check(.scenario, @tagName(current.status), "verified");
 
-    _ = d.execParams(
-        \\update test_scenarios
-        \\set status = 'verified',
-        \\    last_outcome = 'pass',
-        \\    last_run_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-        \\    updated_at  = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-        \\where id = ?
-    , &.{.{ .int = id }}) catch return Error.QueryFailed;
+    const outcome_text: []const u8 = switch (outcome) {
+        .pass => "pass",
+        .fail => "fail",
+        .@"error" => "error",
+        .skipped => "skipped",
+    };
+
+    if (outcome == .pass) {
+        try policy.status.check(.scenario, @tagName(current.status), "verified");
+        _ = d.execParams(
+            \\update test_scenarios
+            \\set status = 'verified',
+            \\    last_outcome = ?,
+            \\    last_run_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+            \\    updated_at  = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            \\where id = ?
+        , &.{ .{ .text = outcome_text }, .{ .int = id } }) catch return Error.QueryFailed;
+    } else {
+        // Non-passing run: record the outcome + run timestamp but
+        // leave status alone. A failing scenario stays in whatever
+        // status it was (draft, retired, etc.).
+        _ = d.execParams(
+            \\update test_scenarios
+            \\set last_outcome = ?,
+            \\    last_run_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+            \\    updated_at  = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            \\where id = ?
+        , &.{ .{ .text = outcome_text }, .{ .int = id } }) catch return Error.QueryFailed;
+    }
 
     const audit_summary = if (summary_text) |s|
-        try std.fmt.allocPrint(allocator, "verify: {s}", .{s})
+        try std.fmt.allocPrint(allocator, "verify({s}): {s}", .{ outcome_text, s })
     else
-        try allocator.dupe(u8, "verify: pass");
+        try std.fmt.allocPrint(allocator, "verify: {s}", .{outcome_text});
     defer allocator.free(audit_summary);
     try policy.audit.record(d, .{
         .verb = .status_change,
