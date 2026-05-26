@@ -2,12 +2,12 @@
   "audit_db": "<AUDIT_DB>",
   "cwd_fixture_db": "<CWD_DB>",
   "cwd_fixture_dir": "<CWD_DIR>",
-  "generated_at": "2026-05-26T15:12:14Z",
+  "generated_at": "2026-05-26T15:24:06Z",
   "go_bin": "/Users/mn/.planar-archive/bin/planar-go",
   "go_bin_sha256": "9b32c7720522ca845a04275e9adac2f467756c7c223b5812eb958f1c5e247b8d",
   "preflight": {
     "go_health_exit": 1,
-    "go_health_text": "planar health\n\n  db:               <AUDIT_DB>  [ok]\n  schema:           14  [current]\n  integrity:        ok\n  in-flight tasks:  751  (0 resumable, 751 NOT RESUMABLE)\n  pending handoffs: 0  (0 stale)\n\noverall: DEGRADED  (751 tasks not resumable)\nerror: degraded health",
+    "go_health_text": "planar health\n\n  db:               <AUDIT_DB>  [ok]\n  schema:           14  [current]\n  integrity:        ok\n  in-flight tasks:  746  (0 resumable, 746 NOT RESUMABLE)\n  pending handoffs: 0  (0 stale)\n\noverall: DEGRADED  (746 tasks not resumable)\nerror: degraded health",
     "go_schema_version": 14,
     "zig_health_exit": 1,
     "zig_health_text": "db:               ok (<AUDIT_DB>)\nschema:           v14 of v14 (current)\nintegrity:        ok\nin-flight tasks:  2 (0 resumable, 2 NOT resumable)\npending handoffs: 3 (3 stale > 24h)\noverall:          degraded",
@@ -1587,7 +1587,7 @@
       "cwd": "",
       "diff": {
         "size_bytes": 567,
-        "unified": "--- go\n+++ zig\n@@ -1,9 +1,6 @@\n-planar health\n-\n-  db:               <AUDIT_DB>  [ok]\n-  schema:           14  [current]\n-  integrity:        ok\n-  in-flight tasks:  751  (0 resumable, 751 NOT RESUMABLE)\n-  pending handoffs: 0  (0 stale)\n-\n-overall: DEGRADED  (751 tasks not resumable)\n+db:               ok (<AUDIT_DB>)\n+schema:           v14 of v14 (current)\n+integrity:        ok\n+in-flight tasks:  2 (0 resumable, 2 NOT resumable)\n+pending handoffs: 7 (3 stale > 24h)\n+overall:          degraded\n--- go.stderr\n+++ zig.stderr\n@@ -1 +0,0 @@\n-error: degraded health\n"
+        "unified": "--- go\n+++ zig\n@@ -1,9 +1,6 @@\n-planar health\n-\n-  db:               <AUDIT_DB>  [ok]\n-  schema:           14  [current]\n-  integrity:        ok\n-  in-flight tasks:  746  (0 resumable, 746 NOT RESUMABLE)\n-  pending handoffs: 0  (0 stale)\n-\n-overall: DEGRADED  (746 tasks not resumable)\n+db:               ok (<AUDIT_DB>)\n+schema:           v14 of v14 (current)\n+integrity:        ok\n+in-flight tasks:  2 (0 resumable, 2 NOT resumable)\n+pending handoffs: 7 (3 stale > 24h)\n+overall:          degraded\n--- go.stderr\n+++ zig.stderr\n@@ -1 +0,0 @@\n-error: degraded health\n"
       },
       "failure_class": "both-failed",
       "go": {
@@ -1595,7 +1595,7 @@
         "stderr_bytes": 23,
         "stderr_sha256": "a91b0ea06aaeeca2e5e5e378e1bc86a1f1f3127081959f286b0aa4e9a28f1a1e",
         "stdout_bytes": 246,
-        "stdout_sha256": "fa656bab5073e41d634aa3a71d770756001bf93f67b0a80d75e26b86648ab11c",
+        "stdout_sha256": "9e4e46565121c39e9e63ba2149dd75756500f6fb5ac91636e0a9d5d096671f9b",
         "timed_out": false
       },
       "invocation": "no-args",
@@ -1615,7 +1615,7 @@
       "cwd": "",
       "diff": {
         "size_bytes": 587,
-        "unified": "--- go\n+++ zig\n@@ -1,12 +1 @@\n-{\n-  \"db_path\": \"<AUDIT_DB>\",\n-  \"db_ok\": true,\n-  \"schema_current\": true,\n-  \"integrity_ok\": true,\n-  \"inflight_tasks\": 751,\n-  \"resumable_tasks\": 0,\n-  \"not_resumable_tasks\": 751,\n-  \"pending_handoffs\": 0,\n-  \"stale_handoffs\": 0,\n-  \"overall\": \"degraded\"\n-}\n+{\"db_path\":\"<AUDIT_DB>\",\"db_ok\":true,\"schema_version\":14,\"schema_target\":14,\"schema_current\":true,\"migration_count\":14,\"integrity_ok\":true,\"inflight_tasks\":2,\"resumable_tasks\":0,\"not_resumable_tasks\":2,\"pending_handoffs\":7,\"stale_handoffs\":3,\"overall\":\"degraded\"}\n--- exit\n+++ exit\n-go=0\n+zig=1\n"
+        "unified": "--- go\n+++ zig\n@@ -1,12 +1 @@\n-{\n-  \"db_path\": \"<AUDIT_DB>\",\n-  \"db_ok\": true,\n-  \"schema_current\": true,\n-  \"integrity_ok\": true,\n-  \"inflight_tasks\": 746,\n-  \"resumable_tasks\": 0,\n-  \"not_resumable_tasks\": 746,\n-  \"pending_handoffs\": 0,\n-  \"stale_handoffs\": 0,\n-  \"overall\": \"degraded\"\n-}\n+{\"db_path\":\"<AUDIT_DB>\",\"db_ok\":true,\"schema_version\":14,\"schema_target\":14,\"schema_current\":true,\"migration_count\":14,\"integrity_ok\":true,\"inflight_tasks\":2,\"resumable_tasks\":0,\"not_resumable_tasks\":2,\"pending_handoffs\":7,\"stale_handoffs\":3,\"overall\":\"degraded\"}\n--- exit\n+++ exit\n-go=0\n+zig=1\n"
       },
       "failure_class": "zig-failed",
       "go": {
@@ -1623,7 +1623,7 @@
         "stderr_bytes": 0,
         "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "stdout_bytes": 249,
-        "stdout_sha256": "7bb919d34cac7cc9a116f82c30b2cc2636c97b35fb6569240d0bd8cf7b4a82a8",
+        "stdout_sha256": "aeae4e8f647000fed7ca0fc7a5a82d036094e2b839a9ec1102eb0a53a99a0555",
         "timed_out": false
       },
       "invocation": "json",
@@ -4892,5 +4892,5 @@
     "verbs": 37
   },
   "zig_bin": "/Users/mn/projects/github/rdrsss/planar/bin/planar",
-  "zig_bin_sha256": "4d465b486c8dc1c019adee8bb2ea122f53c8693960293cd1e2dd7a1c277e6fee"
+  "zig_bin_sha256": "0ce83fa32e39665292027672cef9e9079135be2da537d76f05e0a7bf3ef5b9a2"
 }
