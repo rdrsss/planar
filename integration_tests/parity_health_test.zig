@@ -127,7 +127,8 @@ test "parity: 'planar health' exits 1 when an in-flight NOT-RESUMABLE task exist
         "task", "add", "--json", "HEALTH_DEGRADED_TASK",
     });
     const id_str = std.fmt.allocPrint(arena, "{d}", .{t.id}) catch unreachable;
-    _ = suite.mustRun(&.{ "task", "update", "--status", "doing", id_str });
+    const upd_out = suite.mustRun(&.{ "task", "update", "--status", "doing", id_str });
+    gpa.free(upd_out);
 
     const res = suite.exec(&.{"health"});
     defer gpa.free(res.stdout);

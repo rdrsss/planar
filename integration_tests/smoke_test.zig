@@ -72,14 +72,15 @@ test "health --json returns valid JSON with expected fields after migration" {
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
 
-    // The health command's JSON shape (from engine/health.zig):
-    //   { "schema_version": i64, "migration_count": i64,
-    //     "handoffs_pending": i64, "db_ok": bool }
+    // The health command's JSON shape (from engine/health.zig). After
+    // Cluster C-health-content-loss (plan 351 Q235) the shape carries
+    // Go's rich field set; the smoke test only asserts on the subset
+    // it directly validates.
     const HealthReport = struct {
+        db_ok: bool,
         schema_version: i64,
         migration_count: i64,
-        handoffs_pending: i64,
-        db_ok: bool,
+        pending_handoffs: i64,
     };
 
     var arena_backing = std.heap.ArenaAllocator.init(gpa);
@@ -98,7 +99,7 @@ test "health --json returns valid JSON with expected fields after migration" {
     try std.testing.expectEqual(report.schema_version, report.migration_count);
 
     // Fresh DB has no pending handoffs.
-    try std.testing.expectEqual(@as(i64, 0), report.handoffs_pending);
+    try std.testing.expectEqual(@as(i64, 0), report.pending_handoffs);
 
     // db_ok must be true on a healthy newly-migrated database.
     try std.testing.expect(report.db_ok);

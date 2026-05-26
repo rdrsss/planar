@@ -29,11 +29,19 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
     const args = cli.castArgs(main.root, &.{"health"}, args_ptr);
     const ctx = runtime.current();
     const d = try runtime.ensureDb();
-    const report = engine.health.check(d) catch |e| exit.die(
+    const report = engine.health.check(d, ctx.db_path) catch |e| exit.die(
         ctx,
         e,
         "health check failed: {s}",
         .{@errorName(e)},
     );
     try output.emit(ctx, engine.health, report, .{ .json = args.json });
+
+    // Mirror Go's exit-1-on-DEGRADED contract (Cluster C-health-content-
+    // loss, plan 351 Q235). Oncall scrapes treat a non-zero exit as
+    // "needs attention"; collapsing it to 0 hides the degraded signal.
+    if (std.mem.eql(u8, report.overall, "degraded")) {
+        runtime.shutdown();
+        std.process.exit(1);
+    }
 }
