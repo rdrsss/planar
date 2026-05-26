@@ -12,6 +12,7 @@ const view = @import("view.zig");
 const diff = @import("diff.zig");
 const review = @import("review.zig");
 const link = @import("link.zig");
+const next = @import("next.zig");
 const recompute_status = @import("recompute_status.zig");
 const step = @import("step/cmd.zig");
 
@@ -114,6 +115,15 @@ pub const verb: cli.Cmd = .{
                 .{ .name = "ref", .kind = .string, .required = true },
             },
             .run = cli.handler(link.handle),
+        },
+        .{
+            .name = "next",
+            .desc = "Return the highest-priority eligible task on a plan.",
+            .flags = &.{
+                .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
+            },
+            .positionals = &.{.{ .name = "plan-id", .kind = .string, .required = true }},
+            .run = cli.handler(next.handle),
         },
         .{
             .name = "recompute-status",
