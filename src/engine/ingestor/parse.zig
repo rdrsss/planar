@@ -305,7 +305,9 @@ pub fn parseRoadmap(
         }
     }.call;
 
-    for (lines) |line| {
+    var idx: usize = 0;
+    while (idx < lines.len) : (idx += 1) {
+        const line = lines[idx];
         const trimmed = trimRight(line);
         // H2 (not H3) starts a new milestone.
         if (std.mem.startsWith(u8, trimmed, "## ") and !std.mem.startsWith(u8, trimmed, "### ")) {
@@ -321,7 +323,41 @@ pub fn parseRoadmap(
         if (isBullet(trimmed)) {
             intent_done = true;
             in_intent = false;
-            const wi = try parseBullet(allocator, trimmed);
+            // Fold continuation lines (indented, non-bullet,
+            // non-empty) onto the bullet's text before parsing.
+            // Markdown convention: a bullet's body continues until
+            // the next bullet, the next H1/H2/H3, or a blank line.
+            // Continuation lines preserve any [touches:] /
+            // [slug:] annotations the operator wrote on a wrapped
+            // line. Without folding, those annotations are
+            // silently dropped (plan 352 task 2442).
+            var merged: std.ArrayList(u8) = .empty;
+            defer merged.deinit(allocator);
+            try merged.appendSlice(allocator, trimmed);
+
+            while (idx + 1 < lines.len) {
+                const next = trimRight(lines[idx + 1]);
+                const next_trimmed_start = std.mem.trimStart(u8, next, " \t");
+                // Stop at: blank line, another bullet, or any
+                // header line. Bullet detection uses the same
+                // start-trimmed form so nested bullets also stop
+                // the merge (they're a separate item).
+                if (next_trimmed_start.len == 0) break;
+                if (std.mem.startsWith(u8, next_trimmed_start, "#")) break;
+                if (std.mem.startsWith(u8, next_trimmed_start, "- ") or
+                    std.mem.startsWith(u8, next_trimmed_start, "* "))
+                    break;
+                // Require at least one leading whitespace char to
+                // count as a continuation. A non-indented line
+                // ends the bullet even if it has text.
+                if (next.len == 0 or (next[0] != ' ' and next[0] != '\t')) break;
+
+                try merged.append(allocator, ' ');
+                try merged.appendSlice(allocator, next_trimmed_start);
+                idx += 1;
+            }
+
+            const wi = try parseBullet(allocator, merged.items);
             try work_items.append(allocator, wi);
             continue;
         }
@@ -861,6 +897,47 @@ test "parseRoadmap: H2 milestones with intent and bullets" {
     try testing.expectEqualStrings("add-baz", ms[0].work_items[2].slug);
     try testing.expectEqualStrings("M2", ms[1].name);
     try testing.expectEqual(@as(usize, 1), ms[1].work_items.len);
+}
+
+test "parseRoadmap: multi-line bullets fold continuation lines and surface trailing [slug:] / [touches:]" {
+    // Real operator markdown wraps bullets across lines; without
+    // folding, `[slug: ...]` on a continuation line is silently
+    // dropped. Plan 352 task 2442 surfaced this against the
+    // scenario-coverage roadmap.
+    const body =
+        \\## M1
+        \\
+        \\- First bullet runs across two
+        \\  lines and the slug sits on the second. [slug: m1-first]
+        \\- Second bullet has the touches
+        \\  on a continuation. [touches: alpha, beta]
+        \\- Third bullet single-line only [slug: m1-third]
+    ;
+    const ms = try parseRoadmap(testing.allocator, body);
+    defer deinitMilestones(ms, testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), ms.len);
+    try testing.expectEqual(@as(usize, 3), ms[0].work_items.len);
+
+    // Bullet 1: title is the merged text minus the [slug:].
+    try testing.expectEqualStrings(
+        "First bullet runs across two lines and the slug sits on the second.",
+        ms[0].work_items[0].title,
+    );
+    try testing.expectEqualStrings("m1-first", ms[0].work_items[0].slug);
+
+    // Bullet 2: touches on the continuation.
+    try testing.expectEqualStrings(
+        "Second bullet has the touches on a continuation.",
+        ms[0].work_items[1].title,
+    );
+    try testing.expectEqual(@as(usize, 2), ms[0].work_items[1].touches.len);
+    try testing.expectEqualStrings("alpha", ms[0].work_items[1].touches[0]);
+    try testing.expectEqualStrings("beta", ms[0].work_items[1].touches[1]);
+
+    // Bullet 3: single-line baseline unaffected.
+    try testing.expectEqualStrings("Third bullet single-line only", ms[0].work_items[2].title);
+    try testing.expectEqualStrings("m1-third", ms[0].work_items[2].slug);
 }
 
 test "parseTestSpec: scenarios with verifies, kind, acceptance" {
