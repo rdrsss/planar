@@ -718,7 +718,12 @@ const dbChildPlan = struct {
 };
 
 fn loadChildPlans(d: *db.sqlite.Db, allocator: std.mem.Allocator, parent_id: i64) Error![]dbChildPlan {
-    var stmt = d.prepare("select id, title from plans where parent_plan_id = ? order by id") catch return Error.QueryFailed;
+    var stmt = d.prepare(
+        \\select id, title from plans
+        \\where parent_plan_id = ?
+        \\  and status != 'abandoned'
+        \\order by id
+    ) catch return Error.QueryFailed;
     defer stmt.finalize();
     stmt.bind(&.{.{ .int = parent_id }}) catch return Error.QueryFailed;
 

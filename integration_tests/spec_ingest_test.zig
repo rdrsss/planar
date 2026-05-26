@@ -228,3 +228,177 @@ test "spec ingest orphan removals stay pending without flag and cancel/abandon w
     const removed_task_after = parseJSON(TaskShowJSON, arena, removed_task_after_json);
     try std.testing.expectEqualStrings("cancelled", removed_task_after.status);
 }
+
+test "spec ingest apply-removals frees stale plan and task slugs before replacements" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_backing = std.heap.ArenaAllocator.init(gpa);
+    defer arena_backing.deinit();
+    const arena = arena_backing.allocator();
+
+    var tmp_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_len = suite.tmp_dir.dir.realPath(std.testing.io, &tmp_buf) catch @panic("cannot resolve tmp dir");
+    const tmp_abs = tmp_buf[0..tmp_len];
+    const wb_root = std.fs.path.join(arena, &.{ tmp_abs, "workbench-slug-reuse" }) catch @panic("OOM");
+    const env = &[_]harness.Suite.ExtraEnvEntry{
+        .{ .key = "PLANAR_WORKBENCH_ROOT", .value = wb_root },
+    };
+
+    const IDJSON = struct { id: i64 };
+    const plan = suite.mustRunJSON(IDJSON, arena, &.{ "plan", "create", "--json", "Slug Reuse Apply-Removals Plan" });
+    const plan_id = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch @panic("OOM");
+
+    const tech_body =
+        \\# Slug Reuse Tech Spec
+        \\
+        \\## Status
+        \\
+        \\Draft.
+        \\
+    ;
+    const roadmap_body =
+        \\# Slug Reuse Roadmap
+        \\
+        \\## Milestone Alpha
+        \\
+        \\- Old implementation [slug: shared-task]
+        \\
+    ;
+
+    const tech_out = suite.mustRun(&.{
+        "artifact",  "add",
+        "--json",    "--kind",
+        "tech_spec", "--plan",
+        plan_id,     "--body",
+        tech_body,   "Slug Reuse Tech Spec",
+    });
+    defer gpa.free(tech_out);
+    const roadmap_out = suite.mustRun(&.{
+        "artifact",   "add",
+        "--json",     "--kind",
+        "roadmap",    "--plan",
+        plan_id,      "--body",
+        roadmap_body, "Slug Reuse Roadmap",
+    });
+    defer gpa.free(roadmap_out);
+
+    const push_res = suite.execWith(&.{ "workbench", "push", "--json", plan_id }, env);
+    defer push_res.deinit(gpa);
+    try std.testing.expect(push_res.term == .exited and push_res.term.exited == 0);
+    const roadmap_path = try findRoadmapPathFromPush(arena, wb_root, push_res.stdout);
+
+    const apply1 = suite.execWith(&.{ "spec", "ingest", plan_id, "--apply" }, env);
+    defer apply1.deinit(gpa);
+    try std.testing.expect(apply1.term == .exited and apply1.term.exited == 0);
+
+    const PlanRow = struct {
+        id: i64,
+        title: []const u8,
+        status: []const u8 = "",
+        slug: []const u8 = "",
+    };
+    const TaskRow = struct {
+        id: i64,
+        title: []const u8,
+        status: []const u8 = "",
+        slug: ?[]const u8 = null,
+    };
+
+    const child_plans_json = suite.mustRunWith(&.{
+        "plan", "list", "--json", "--parent", plan_id,
+    }, env);
+    defer gpa.free(child_plans_json);
+    const child_plans = parseJSON([]const PlanRow, arena, child_plans_json);
+
+    var old_plan_id: i64 = 0;
+    for (child_plans) |row| {
+        if (std.mem.eql(u8, row.title, "Milestone Alpha")) {
+            old_plan_id = row.id;
+            break;
+        }
+    }
+    try std.testing.expect(old_plan_id > 0);
+    const old_plan_id_s = std.fmt.allocPrint(arena, "{d}", .{old_plan_id}) catch @panic("OOM");
+
+    const old_tasks_json = suite.mustRunWith(&.{
+        "task", "list", "--json", "--plan", old_plan_id_s,
+    }, env);
+    defer gpa.free(old_tasks_json);
+    const old_tasks = parseJSON([]const TaskRow, arena, old_tasks_json);
+    try std.testing.expect(old_tasks.len == 1);
+    const old_task_id = old_tasks[0].id;
+    const old_task_id_s = std.fmt.allocPrint(arena, "{d}", .{old_task_id}) catch @panic("OOM");
+
+    const roadmap_before = try std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        roadmap_path,
+        arena,
+        .limited(2 * 1024 * 1024),
+    );
+    const old_block =
+        \\## Milestone Alpha
+        \\
+        \\- Old implementation [slug: shared-task]
+        \\
+    ;
+    const new_block =
+        \\## Milestone Alpha!
+        \\
+        \\- New implementation [slug: shared-task]
+        \\
+    ;
+    const idx = std.mem.indexOf(u8, roadmap_before, old_block) orelse return error.FileNotFound;
+    const roadmap_after = try std.mem.concat(arena, u8, &.{
+        roadmap_before[0..idx],
+        new_block,
+        roadmap_before[idx + old_block.len ..],
+    });
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{
+        .sub_path = roadmap_path,
+        .data = roadmap_after,
+    });
+
+    const apply2 = suite.execWith(&.{ "spec", "ingest", plan_id, "--apply", "--apply-removals" }, env);
+    defer apply2.deinit(gpa);
+    try std.testing.expect(apply2.term == .exited and apply2.term.exited == 0);
+
+    const old_plan_json = suite.mustRunWith(&.{ "plan", "show", "--json", old_plan_id_s }, env);
+    defer gpa.free(old_plan_json);
+    const old_plan = parseJSON(PlanRow, arena, old_plan_json);
+    try std.testing.expectEqualStrings("abandoned", old_plan.status);
+    try std.testing.expect(std.mem.startsWith(u8, old_plan.slug, "stale-"));
+
+    const old_task_json = suite.mustRunWith(&.{ "task", "show", "--json", old_task_id_s }, env);
+    defer gpa.free(old_task_json);
+    const old_task = parseJSON(TaskRow, arena, old_task_json);
+    try std.testing.expectEqualStrings("cancelled", old_task.status);
+    try std.testing.expect(old_task.slug == null);
+
+    const refreshed_plans_json = suite.mustRunWith(&.{
+        "plan", "list", "--json", "--parent", plan_id,
+    }, env);
+    defer gpa.free(refreshed_plans_json);
+    const refreshed_plans = parseJSON([]const PlanRow, arena, refreshed_plans_json);
+
+    var new_plan_id: i64 = 0;
+    for (refreshed_plans) |row| {
+        if (std.mem.eql(u8, row.title, "Milestone Alpha!")) {
+            new_plan_id = row.id;
+            break;
+        }
+    }
+    try std.testing.expect(new_plan_id > 0);
+    const new_plan_id_s = std.fmt.allocPrint(arena, "{d}", .{new_plan_id}) catch @panic("OOM");
+
+    const new_tasks_json = suite.mustRunWith(&.{
+        "task", "list", "--json", "--plan", new_plan_id_s,
+    }, env);
+    defer gpa.free(new_tasks_json);
+    const new_tasks = parseJSON([]const TaskRow, arena, new_tasks_json);
+    try std.testing.expect(new_tasks.len == 1);
+    try std.testing.expectEqualStrings("New implementation", new_tasks[0].title);
+    try std.testing.expect(new_tasks[0].slug != null);
+    try std.testing.expectEqualStrings("shared-task", new_tasks[0].slug.?);
+}

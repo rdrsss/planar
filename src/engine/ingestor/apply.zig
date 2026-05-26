@@ -112,6 +112,27 @@ pub fn apply(
     // runSpecIngestOne which uses anchor.AssocSlug / --scope.
     const scope_slug: ?[]const u8 = opts.scope;
 
+    // ---- removals -----------------------------------------------------
+    //
+    // Apply removals before additions so a spec refresh can replace an
+    // orphaned plan/task with a new row that reuses the same derived slug.
+    // Cancelled tasks and abandoned plans remain in the audit trail, but
+    // their slugs must be moved out of the live namespace first because the
+    // schema's slug indexes are global for non-null slugs.
+    if (opts.apply_removals) {
+        for (diff.orphan_tasks) |ot| {
+            try retireTaskForSpecRemoval(d, allocator, ot.existing_id);
+            res.tasks_cancelled += 1;
+        }
+        for (diff.orphan_plans) |op| {
+            for (op.tasks) |ot| {
+                try retireTaskForSpecRemoval(d, allocator, ot.existing_id);
+                res.tasks_cancelled += 1;
+            }
+            try retirePlanForSpecRemoval(d, allocator, op.existing_id);
+        }
+    }
+
     // ---- child plans + tasks ------------------------------------------
     for (diff.child_plans) |cp| {
         var child_plan_id: i64 = 0;
@@ -192,30 +213,6 @@ pub fn apply(
                     res.tasks_updated += 1;
                 },
                 .remove => continue,
-            }
-        }
-    }
-
-    // ---- removals -----------------------------------------------------
-    if (opts.apply_removals) {
-        for (diff.orphan_tasks) |ot| {
-            const cancelled = task_mod.markCancelled(d, allocator, ot.existing_id) catch |e| return mapTaskErr(e);
-            task_mod.deinit(cancelled, allocator);
-            res.tasks_cancelled += 1;
-        }
-        for (diff.orphan_plans) |op| {
-            for (op.tasks) |ot| {
-                const cancelled = task_mod.markCancelled(d, allocator, ot.existing_id) catch |e| return mapTaskErr(e);
-                task_mod.deinit(cancelled, allocator);
-                res.tasks_cancelled += 1;
-            }
-            // Abandon the orphan child plan; "already terminal" is a no-op.
-            const abandoned: plan_mod.Status = .abandoned;
-            if (plan_mod.update(d, allocator, op.existing_id, .{ .status = abandoned })) |upd| {
-                plan_mod.deinit(upd, allocator);
-            } else |e| switch (e) {
-                error.IllegalTransition => {}, // already abandoned/done
-                else => return mapPlanErr(e),
             }
         }
     }
@@ -487,6 +484,69 @@ fn readTaskSlug(
         .done => return Error.NotFound,
         .row => return stmt.columnTextOpt(0, allocator) catch return Error.QueryFailed,
     }
+}
+
+fn retireTaskForSpecRemoval(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    id: i64,
+) Error!void {
+    d.savepoint(allocator, "spec_retire_task") catch return Error.QueryFailed;
+    var released = false;
+    defer {
+        if (!released) {
+            d.rollbackToSavepoint(allocator, "spec_retire_task") catch {};
+            d.releaseSavepoint(allocator, "spec_retire_task") catch {};
+        }
+    }
+
+    const cancelled = task_mod.markCancelled(d, allocator, id) catch |e| return mapTaskErr(e);
+    task_mod.deinit(cancelled, allocator);
+    _ = d.execParams(
+        \\update tasks
+        \\set slug = null,
+        \\    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        \\where id = ?
+    , &.{.{ .int = id }}) catch return Error.QueryFailed;
+
+    d.releaseSavepoint(allocator, "spec_retire_task") catch return Error.QueryFailed;
+    released = true;
+}
+
+fn retirePlanForSpecRemoval(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    id: i64,
+) Error!void {
+    d.savepoint(allocator, "spec_retire_plan") catch return Error.QueryFailed;
+    var released = false;
+    defer {
+        if (!released) {
+            d.rollbackToSavepoint(allocator, "spec_retire_plan") catch {};
+            d.releaseSavepoint(allocator, "spec_retire_plan") catch {};
+        }
+    }
+
+    const current = plan_mod.show(d, allocator, id) catch |e| return mapPlanErr(e);
+    defer plan_mod.deinit(current, allocator);
+    const stale_slug = try std.fmt.allocPrint(allocator, "stale-{d}-{s}", .{ id, current.slug });
+    defer allocator.free(stale_slug);
+
+    const abandoned: plan_mod.Status = .abandoned;
+    const updated = plan_mod.update(d, allocator, id, .{
+        .slug = stale_slug,
+        .status = abandoned,
+    }) catch |e| switch (e) {
+        error.IllegalTransition => blk: {
+            const renamed = plan_mod.update(d, allocator, id, .{ .slug = stale_slug }) catch |rename_err| return mapPlanErr(rename_err);
+            break :blk renamed;
+        },
+        else => return mapPlanErr(e),
+    };
+    plan_mod.deinit(updated, allocator);
+
+    d.releaseSavepoint(allocator, "spec_retire_plan") catch return Error.QueryFailed;
+    released = true;
 }
 
 /// appendReadEntry tries to append a `prefix='read'` session entry; a
