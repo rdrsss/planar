@@ -2,12 +2,12 @@
   "audit_db": "<AUDIT_DB>",
   "cwd_fixture_db": "<CWD_DB>",
   "cwd_fixture_dir": "<CWD_DIR>",
-  "generated_at": "2026-05-26T16:34:54Z",
+  "generated_at": "2026-05-26T18:07:06Z",
   "go_bin": "/Users/mn/.planar-archive/bin/planar-go",
   "go_bin_sha256": "9b32c7720522ca845a04275e9adac2f467756c7c223b5812eb958f1c5e247b8d",
   "preflight": {
     "go_health_exit": 1,
-    "go_health_text": "planar health\n\n  db:               <AUDIT_DB>  [ok]\n  schema:           14  [current]\n  integrity:        ok\n  in-flight tasks:  720  (0 resumable, 720 NOT RESUMABLE)\n  pending handoffs: 0  (0 stale)\n\noverall: DEGRADED  (720 tasks not resumable)\nerror: degraded health",
+    "go_health_text": "planar health\n\n  db:               <AUDIT_DB>  [ok]\n  schema:           14  [current]\n  integrity:        ok\n  in-flight tasks:  711  (0 resumable, 711 NOT RESUMABLE)\n  pending handoffs: 0  (0 stale)\n\noverall: DEGRADED  (711 tasks not resumable)\nerror: degraded health",
     "go_schema_version": 14,
     "zig_health_exit": 1,
     "zig_health_text": "db:               ok (<AUDIT_DB>)\nschema:           v14 of v14 (current)\nintegrity:        ok\nin-flight tasks:  2 (0 resumable, 2 NOT resumable)\npending handoffs: 3 (3 stale > 24h)\noverall:          degraded",
@@ -18,8 +18,8 @@
       "args": "--help",
       "cwd": "",
       "diff": {
-        "size_bytes": 895,
-        "unified": "--- go\n+++ zig\n@@ -0,0 +1,22 @@\n+annotate\n+\n+  Manage source annotations.\n+\n+USAGE:\n+  annotate <command>\n+\n+COMMANDS:\n+  add             Create a new annotation.\n+  show            Show an annotation.\n+  list            List annotations.\n+  update          Update an annotation.\n+  remove          Remove an annotation.\n+  tag             Add or remove tags on an annotation.\n+  resolve         Mark an annotation as resolved.\n+  dismiss         Dismiss an annotation.\n+  archive         Archive an annotation.\n+  bulk-resolve    Resolve multiple annotations.\n+  bulk-dismiss    Dismiss multiple annotations.\n+  bulk-archive    Archive multiple annotations.\n+  verify          Verify annotation anchors against workspace state.\n+  sweep           Sweep stale annotations.\n--- go.stderr\n+++ zig.stderr\n@@ -1 +0,0 @@\n-error: unknown command \"annotate\" for \"planar\"\n--- exit\n+++ exit\n-go=2\n+zig=0\n"
+        "size_bytes": 1118,
+        "unified": "--- go\n+++ zig\n@@ -0,0 +1,24 @@\n+annotate\n+\n+Manage line-anchored annotations on source code.\n+\n+  Status lifecycle: active \u2192 resolved / dismissed / archived.\n+\n+USAGE:\n+  annotate <command>\n+\n+COMMANDS:\n+  add             Create a new annotation.\n+  show            Show an annotation.\n+  list            List annotations.\n+  update          Update an annotation.\n+  remove          Remove an annotation.\n+  tag             Add or remove a tag on an annotation.\n+  resolve         Mark an annotation as resolved.\n+  dismiss         Dismiss an annotation.\n+  archive         Archive an annotation.\n+  bulk-resolve    Resolve every active annotation matching the filter.\n+  bulk-dismiss    Dismiss every active annotation matching the filter.\n+  bulk-archive    Archive every annotation matching the filter (including non-active rows).\n+  verify          Verify annotation anchors against workspace state.\n+  sweep           Sweep stale annotations (resolved/dismissed older than --since-days).\n--- go.stderr\n+++ zig.stderr\n@@ -1 +0,0 @@\n-error: unknown command \"annotate\" for \"planar\"\n--- exit\n+++ exit\n-go=2\n+zig=0\n"
       },
       "failure_class": "go-failed",
       "go": {
@@ -37,8 +37,8 @@
         "exit": "0",
         "stderr_bytes": 0,
         "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "stdout_bytes": 719,
-        "stdout_sha256": "e87363592fc9ea6a30046832123403a83e00532737c03809b587e545e2d5bc35",
+        "stdout_bytes": 940,
+        "stdout_sha256": "ec7b0bef7a7e764553dcf895728881fd38a6243cf39bb0ca43a5aa5f5d03d362",
         "timed_out": false
       }
     },
@@ -46,8 +46,8 @@
       "args": "",
       "cwd": "",
       "diff": {
-        "size_bytes": 895,
-        "unified": "--- go\n+++ zig\n@@ -0,0 +1,22 @@\n+annotate\n+\n+  Manage source annotations.\n+\n+USAGE:\n+  annotate <command>\n+\n+COMMANDS:\n+  add             Create a new annotation.\n+  show            Show an annotation.\n+  list            List annotations.\n+  update          Update an annotation.\n+  remove          Remove an annotation.\n+  tag             Add or remove tags on an annotation.\n+  resolve         Mark an annotation as resolved.\n+  dismiss         Dismiss an annotation.\n+  archive         Archive an annotation.\n+  bulk-resolve    Resolve multiple annotations.\n+  bulk-dismiss    Dismiss multiple annotations.\n+  bulk-archive    Archive multiple annotations.\n+  verify          Verify annotation anchors against workspace state.\n+  sweep           Sweep stale annotations.\n--- go.stderr\n+++ zig.stderr\n@@ -1 +0,0 @@\n-error: unknown command \"annotate\" for \"planar\"\n--- exit\n+++ exit\n-go=2\n+zig=0\n"
+        "size_bytes": 1118,
+        "unified": "--- go\n+++ zig\n@@ -0,0 +1,24 @@\n+annotate\n+\n+Manage line-anchored annotations on source code.\n+\n+  Status lifecycle: active \u2192 resolved / dismissed / archived.\n+\n+USAGE:\n+  annotate <command>\n+\n+COMMANDS:\n+  add             Create a new annotation.\n+  show            Show an annotation.\n+  list            List annotations.\n+  update          Update an annotation.\n+  remove          Remove an annotation.\n+  tag             Add or remove a tag on an annotation.\n+  resolve         Mark an annotation as resolved.\n+  dismiss         Dismiss an annotation.\n+  archive         Archive an annotation.\n+  bulk-resolve    Resolve every active annotation matching the filter.\n+  bulk-dismiss    Dismiss every active annotation matching the filter.\n+  bulk-archive    Archive every annotation matching the filter (including non-active rows).\n+  verify          Verify annotation anchors against workspace state.\n+  sweep           Sweep stale annotations (resolved/dismissed older than --since-days).\n--- go.stderr\n+++ zig.stderr\n@@ -1 +0,0 @@\n-error: unknown command \"annotate\" for \"planar\"\n--- exit\n+++ exit\n-go=2\n+zig=0\n"
       },
       "failure_class": "go-failed",
       "go": {
@@ -65,8 +65,8 @@
         "exit": "0",
         "stderr_bytes": 0,
         "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "stdout_bytes": 719,
-        "stdout_sha256": "e87363592fc9ea6a30046832123403a83e00532737c03809b587e545e2d5bc35",
+        "stdout_bytes": 940,
+        "stdout_sha256": "ec7b0bef7a7e764553dcf895728881fd38a6243cf39bb0ca43a5aa5f5d03d362",
         "timed_out": false
       }
     },
@@ -102,8 +102,8 @@
       "args": "",
       "cwd": "<CWD_DIR>",
       "diff": {
-        "size_bytes": 895,
-        "unified": "--- go\n+++ zig\n@@ -0,0 +1,22 @@\n+annotate\n+\n+  Manage source annotations.\n+\n+USAGE:\n+  annotate <command>\n+\n+COMMANDS:\n+  add             Create a new annotation.\n+  show            Show an annotation.\n+  list            List annotations.\n+  update          Update an annotation.\n+  remove          Remove an annotation.\n+  tag             Add or remove tags on an annotation.\n+  resolve         Mark an annotation as resolved.\n+  dismiss         Dismiss an annotation.\n+  archive         Archive an annotation.\n+  bulk-resolve    Resolve multiple annotations.\n+  bulk-dismiss    Dismiss multiple annotations.\n+  bulk-archive    Archive multiple annotations.\n+  verify          Verify annotation anchors against workspace state.\n+  sweep           Sweep stale annotations.\n--- go.stderr\n+++ zig.stderr\n@@ -1 +0,0 @@\n-error: unknown command \"annotate\" for \"planar\"\n--- exit\n+++ exit\n-go=2\n+zig=0\n"
+        "size_bytes": 1118,
+        "unified": "--- go\n+++ zig\n@@ -0,0 +1,24 @@\n+annotate\n+\n+Manage line-anchored annotations on source code.\n+\n+  Status lifecycle: active \u2192 resolved / dismissed / archived.\n+\n+USAGE:\n+  annotate <command>\n+\n+COMMANDS:\n+  add             Create a new annotation.\n+  show            Show an annotation.\n+  list            List annotations.\n+  update          Update an annotation.\n+  remove          Remove an annotation.\n+  tag             Add or remove a tag on an annotation.\n+  resolve         Mark an annotation as resolved.\n+  dismiss         Dismiss an annotation.\n+  archive         Archive an annotation.\n+  bulk-resolve    Resolve every active annotation matching the filter.\n+  bulk-dismiss    Dismiss every active annotation matching the filter.\n+  bulk-archive    Archive every annotation matching the filter (including non-active rows).\n+  verify          Verify annotation anchors against workspace state.\n+  sweep           Sweep stale annotations (resolved/dismissed older than --since-days).\n--- go.stderr\n+++ zig.stderr\n@@ -1 +0,0 @@\n-error: unknown command \"annotate\" for \"planar\"\n--- exit\n+++ exit\n-go=2\n+zig=0\n"
       },
       "failure_class": "go-failed",
       "go": {
@@ -121,8 +121,8 @@
         "exit": "0",
         "stderr_bytes": 0,
         "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "stdout_bytes": 719,
-        "stdout_sha256": "e87363592fc9ea6a30046832123403a83e00532737c03809b587e545e2d5bc35",
+        "stdout_bytes": 940,
+        "stdout_sha256": "ec7b0bef7a7e764553dcf895728881fd38a6243cf39bb0ca43a5aa5f5d03d362",
         "timed_out": false
       }
     },
@@ -1587,7 +1587,7 @@
       "cwd": "",
       "diff": {
         "size_bytes": 567,
-        "unified": "--- go\n+++ zig\n@@ -1,9 +1,6 @@\n-planar health\n-\n-  db:               <AUDIT_DB>  [ok]\n-  schema:           14  [current]\n-  integrity:        ok\n-  in-flight tasks:  720  (0 resumable, 720 NOT RESUMABLE)\n-  pending handoffs: 0  (0 stale)\n-\n-overall: DEGRADED  (720 tasks not resumable)\n+db:               ok (<AUDIT_DB>)\n+schema:           v14 of v14 (current)\n+integrity:        ok\n+in-flight tasks:  2 (0 resumable, 2 NOT resumable)\n+pending handoffs: 7 (3 stale > 24h)\n+overall:          degraded\n--- go.stderr\n+++ zig.stderr\n@@ -1 +0,0 @@\n-error: degraded health\n"
+        "unified": "--- go\n+++ zig\n@@ -1,9 +1,6 @@\n-planar health\n-\n-  db:               <AUDIT_DB>  [ok]\n-  schema:           14  [current]\n-  integrity:        ok\n-  in-flight tasks:  711  (0 resumable, 711 NOT RESUMABLE)\n-  pending handoffs: 0  (0 stale)\n-\n-overall: DEGRADED  (711 tasks not resumable)\n+db:               ok (<AUDIT_DB>)\n+schema:           v14 of v14 (current)\n+integrity:        ok\n+in-flight tasks:  2 (0 resumable, 2 NOT resumable)\n+pending handoffs: 7 (3 stale > 24h)\n+overall:          degraded\n--- go.stderr\n+++ zig.stderr\n@@ -1 +0,0 @@\n-error: degraded health\n"
       },
       "failure_class": "both-failed",
       "go": {
@@ -1595,7 +1595,7 @@
         "stderr_bytes": 23,
         "stderr_sha256": "a91b0ea06aaeeca2e5e5e378e1bc86a1f1f3127081959f286b0aa4e9a28f1a1e",
         "stdout_bytes": 246,
-        "stdout_sha256": "253e2ae3f6f2682c97ae5c8d8c80986f04f27f7e8ce90bdd83abcb1348057962",
+        "stdout_sha256": "3da11a6b8e709838953970ac7474c64c9ab5eda379af3c54ee8c682ac881e500",
         "timed_out": false
       },
       "invocation": "no-args",
@@ -1615,7 +1615,7 @@
       "cwd": "",
       "diff": {
         "size_bytes": 587,
-        "unified": "--- go\n+++ zig\n@@ -1,12 +1 @@\n-{\n-  \"db_path\": \"<AUDIT_DB>\",\n-  \"db_ok\": true,\n-  \"schema_current\": true,\n-  \"integrity_ok\": true,\n-  \"inflight_tasks\": 720,\n-  \"resumable_tasks\": 0,\n-  \"not_resumable_tasks\": 720,\n-  \"pending_handoffs\": 0,\n-  \"stale_handoffs\": 0,\n-  \"overall\": \"degraded\"\n-}\n+{\"db_path\":\"<AUDIT_DB>\",\"db_ok\":true,\"schema_version\":14,\"schema_target\":14,\"schema_current\":true,\"migration_count\":14,\"integrity_ok\":true,\"inflight_tasks\":2,\"resumable_tasks\":0,\"not_resumable_tasks\":2,\"pending_handoffs\":7,\"stale_handoffs\":3,\"overall\":\"degraded\"}\n--- exit\n+++ exit\n-go=0\n+zig=1\n"
+        "unified": "--- go\n+++ zig\n@@ -1,12 +1 @@\n-{\n-  \"db_path\": \"<AUDIT_DB>\",\n-  \"db_ok\": true,\n-  \"schema_current\": true,\n-  \"integrity_ok\": true,\n-  \"inflight_tasks\": 711,\n-  \"resumable_tasks\": 0,\n-  \"not_resumable_tasks\": 711,\n-  \"pending_handoffs\": 0,\n-  \"stale_handoffs\": 0,\n-  \"overall\": \"degraded\"\n-}\n+{\"db_path\":\"<AUDIT_DB>\",\"db_ok\":true,\"schema_version\":14,\"schema_target\":14,\"schema_current\":true,\"migration_count\":14,\"integrity_ok\":true,\"inflight_tasks\":2,\"resumable_tasks\":0,\"not_resumable_tasks\":2,\"pending_handoffs\":7,\"stale_handoffs\":3,\"overall\":\"degraded\"}\n--- exit\n+++ exit\n-go=0\n+zig=1\n"
       },
       "failure_class": "zig-failed",
       "go": {
@@ -1623,7 +1623,7 @@
         "stderr_bytes": 0,
         "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "stdout_bytes": 249,
-        "stdout_sha256": "1a4cdacd61a37e787c286ae2dd480cfecb60b14e34239a3a6e93f199cc64fd38",
+        "stdout_sha256": "2ae650c52df35c3d3afae7d3b6a600ca0c157cb6ba42c4e606c472883d661974",
         "timed_out": false
       },
       "invocation": "json",
@@ -4892,5 +4892,5 @@
     "verbs": 37
   },
   "zig_bin": "/Users/mn/projects/github/rdrsss/planar/bin/planar",
-  "zig_bin_sha256": "0bea12831ff519ce502f23c0ef9df9f63094aff523a45bbf02538a394f31b131"
+  "zig_bin_sha256": "6b988d5de9b49493dd1c3ecf67a693f1f16ad9f468c2a5ed9c29dfdd6a0bbdff"
 }

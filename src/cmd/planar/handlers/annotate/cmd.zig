@@ -1,4 +1,10 @@
 //! handlers/annotate/cmd.zig — `planar annotate {...}`
+//!
+//! Annotations are line-anchored notes on source code with a four-state
+//! lifecycle (active → resolved / dismissed / archived). Schema lives in
+//! migrations/00012_annotations.up.sql; engine module is
+//! src/engine/planning/annotation.zig. The handlers under this directory
+//! are thin: parse args, call the engine, render output.
 
 const cli = @import("cli");
 
@@ -20,11 +26,28 @@ const sweep = @import("sweep.zig");
 pub const verb: cli.Cmd = .{
     .name = "annotate",
     .desc = "Manage source annotations.",
+    .long_desc = "Manage line-anchored annotations on source code.\n\n  Status lifecycle: active → resolved / dismissed / archived.",
     .cmds = &.{
         .{
             .name = "add",
             .desc = "Create a new annotation.",
-            .flags = &.{.{ .long = "--json", .kind = .bool, .default = .{ .bool = false } }},
+            .flags = &.{
+                .{ .long = "--anchor-path", .kind = .string },
+                .{ .long = "--line-start", .kind = .int },
+                .{ .long = "--line-end", .kind = .int },
+                .{ .long = "--commit-sha", .kind = .string },
+                .{ .long = "--text-hash", .kind = .string },
+                .{ .long = "--text", .kind = .string },
+                .{ .long = "--title", .kind = .string },
+                .{ .long = "--slug", .kind = .string },
+                .{ .long = "--body", .kind = .string },
+                .{ .long = "--vendor", .kind = .string },
+                .{ .long = "--plan", .kind = .int },
+                .{ .long = "--task", .kind = .int },
+                .{ .long = "--tags", .kind = .string },
+                .{ .long = "--scope", .kind = .string },
+                .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
+            },
             .run = cli.handler(add.handle),
         },
         .{
@@ -37,13 +60,31 @@ pub const verb: cli.Cmd = .{
         .{
             .name = "list",
             .desc = "List annotations.",
-            .flags = &.{.{ .long = "--json", .kind = .bool, .default = .{ .bool = false } }},
+            .flags = &.{
+                .{ .long = "--anchor-path", .kind = .string },
+                .{ .long = "--status", .kind = .string },
+                .{ .long = "--plan", .kind = .int },
+                .{ .long = "--task", .kind = .int },
+                .{ .long = "--vendor", .kind = .string },
+                .{ .long = "--tag", .kind = .string },
+                .{ .long = "--scope", .kind = .string },
+                .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
+            },
             .run = cli.handler(list.handle),
         },
         .{
             .name = "update",
             .desc = "Update an annotation.",
-            .flags = &.{.{ .long = "--json", .kind = .bool, .default = .{ .bool = false } }},
+            .flags = &.{
+                .{ .long = "--title", .kind = .string },
+                .{ .long = "--slug", .kind = .string },
+                .{ .long = "--body", .kind = .string },
+                .{ .long = "--status", .kind = .string },
+                .{ .long = "--plan", .kind = .int },
+                .{ .long = "--task", .kind = .int },
+                .{ .long = "--scope", .kind = .string },
+                .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
+            },
             .positionals = &.{.{ .name = "annotation-id", .kind = .string, .required = true }},
             .run = cli.handler(update.handle),
         },
@@ -56,8 +97,11 @@ pub const verb: cli.Cmd = .{
         },
         .{
             .name = "tag",
-            .desc = "Add or remove tags on an annotation.",
-            .flags = &.{.{ .long = "--json", .kind = .bool, .default = .{ .bool = false } }},
+            .desc = "Add or remove a tag on an annotation.",
+            .flags = &.{
+                .{ .long = "--remove", .kind = .bool, .default = .{ .bool = false } },
+                .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
+            },
             .positionals = &.{
                 .{ .name = "annotation-id", .kind = .string, .required = true },
                 .{ .name = "tag", .kind = .string, .required = true },
@@ -87,32 +131,64 @@ pub const verb: cli.Cmd = .{
         },
         .{
             .name = "bulk-resolve",
-            .desc = "Resolve multiple annotations.",
-            .flags = &.{.{ .long = "--json", .kind = .bool, .default = .{ .bool = false } }},
+            .desc = "Resolve every active annotation matching the filter.",
+            .flags = &.{
+                .{ .long = "--anchor-path", .kind = .string },
+                .{ .long = "--plan", .kind = .int },
+                .{ .long = "--task", .kind = .int },
+                .{ .long = "--vendor", .kind = .string },
+                .{ .long = "--tag", .kind = .string },
+                .{ .long = "--scope", .kind = .string },
+                .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
+            },
             .run = cli.handler(bulk_resolve.handle),
         },
         .{
             .name = "bulk-dismiss",
-            .desc = "Dismiss multiple annotations.",
-            .flags = &.{.{ .long = "--json", .kind = .bool, .default = .{ .bool = false } }},
+            .desc = "Dismiss every active annotation matching the filter.",
+            .flags = &.{
+                .{ .long = "--anchor-path", .kind = .string },
+                .{ .long = "--plan", .kind = .int },
+                .{ .long = "--task", .kind = .int },
+                .{ .long = "--vendor", .kind = .string },
+                .{ .long = "--tag", .kind = .string },
+                .{ .long = "--scope", .kind = .string },
+                .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
+            },
             .run = cli.handler(bulk_dismiss.handle),
         },
         .{
             .name = "bulk-archive",
-            .desc = "Archive multiple annotations.",
-            .flags = &.{.{ .long = "--json", .kind = .bool, .default = .{ .bool = false } }},
+            .desc = "Archive every annotation matching the filter (including non-active rows).",
+            .flags = &.{
+                .{ .long = "--anchor-path", .kind = .string },
+                .{ .long = "--plan", .kind = .int },
+                .{ .long = "--task", .kind = .int },
+                .{ .long = "--vendor", .kind = .string },
+                .{ .long = "--tag", .kind = .string },
+                .{ .long = "--scope", .kind = .string },
+                .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
+            },
             .run = cli.handler(bulk_archive.handle),
         },
         .{
             .name = "verify",
             .desc = "Verify annotation anchors against workspace state.",
-            .flags = &.{.{ .long = "--json", .kind = .bool, .default = .{ .bool = false } }},
+            .flags = &.{
+                .{ .long = "--anchor-path", .kind = .string },
+                .{ .long = "--scope", .kind = .string },
+                .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
+            },
             .run = cli.handler(verify.handle),
         },
         .{
             .name = "sweep",
-            .desc = "Sweep stale annotations.",
-            .flags = &.{.{ .long = "--json", .kind = .bool, .default = .{ .bool = false } }},
+            .desc = "Sweep stale annotations (resolved/dismissed older than --since-days).",
+            .flags = &.{
+                .{ .long = "--since-days", .kind = .int, .default = .{ .int = 30 } },
+                .{ .long = "--scope", .kind = .string },
+                .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
+            },
             .run = cli.handler(sweep.handle),
         },
     },

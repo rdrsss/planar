@@ -1,13 +1,13 @@
 # Parity Gap Report
 
-_Generated 2026-05-26T16:34:54Z_
+_Generated 2026-05-26T18:07:06Z_
 
 ## Summary
 
 37 verbs audited, 172 gaps surfaced, 0 errors, 4 skipped (with reasons), 1 no-diff invocations across 173 total invocations.
 
 - Go binary: `/Users/mn/.planar-archive/bin/planar-go` (sha256 `9b32c7720522…`)
-- Zig binary: `/Users/mn/projects/github/rdrsss/planar/bin/planar` (sha256 `0bea12831ff5…`)
+- Zig binary: `/Users/mn/projects/github/rdrsss/planar/bin/planar` (sha256 `6b988d5de9b4…`)
 - Audit DB: `<AUDIT_DB>`
 - Cwd-fixture DB: `<CWD_DB>`
 - Cwd-fixture dir: `<CWD_DIR>`
@@ -35,10 +35,10 @@ planar health
   db:               <AUDIT_DB>  [ok]
   schema:           14  [current]
   integrity:        ok
-  in-flight tasks:  720  (0 resumable, 720 NOT RESUMABLE)
+  in-flight tasks:  711  (0 resumable, 711 NOT RESUMABLE)
   pending handoffs: 0  (0 stale)
 
-overall: DEGRADED  (720 tasks not resumable)
+overall: DEGRADED  (711 tasks not resumable)
 error: degraded health
 ```
 
@@ -191,9 +191,9 @@ overall:          degraded
 | 119 | `audit` | `real-cwd-json` | `--json` | 1348 | 0 | 1 | `zig-failed` |
 | 120 | `spec` | `json` | `--json` | 1257 | 0 | 1 | `zig-failed` |
 | 121 | `spec` | `real-cwd-json` | `--json` | 1257 | 0 | 1 | `zig-failed` |
-| 122 | `annotate` | `help` | `--help` | 895 | 2 | 0 | `go-failed` |
-| 123 | `annotate` | `no-args` | `` | 895 | 2 | 0 | `go-failed` |
-| 124 | `annotate` | `real-cwd` | `` | 895 | 2 | 0 | `go-failed` |
+| 122 | `annotate` | `help` | `--help` | 1118 | 2 | 0 | `go-failed` |
+| 123 | `annotate` | `no-args` | `` | 1118 | 2 | 0 | `go-failed` |
+| 124 | `annotate` | `real-cwd` | `` | 1118 | 2 | 0 | `go-failed` |
 | 125 | `health` | `json` | `--json` | 587 | 0 | 1 | `zig-failed` |
 | 126 | `health` | `no-args` | `` | 567 | 1 | 1 | `both-failed` |
 | 127 | `health` | `real-cwd-json` | `--json` | 536 | 0 | 0 | `neither-failed` |
@@ -7697,15 +7697,17 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 
 - Failure class: `go-failed`
 - Go exit: `2` (stdout 0B, stderr 47B)
-- Zig exit: `0` (stdout 719B, stderr 0B)
+- Zig exit: `0` (stdout 940B, stderr 0B)
 
 ```diff
 --- go
 +++ zig
-@@ -0,0 +1,22 @@
+@@ -0,0 +1,24 @@
 +annotate
 +
-+  Manage source annotations.
++Manage line-anchored annotations on source code.
++
++  Status lifecycle: active → resolved / dismissed / archived.
 +
 +USAGE:
 +  annotate <command>
@@ -7716,15 +7718,15 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  list            List annotations.
 +  update          Update an annotation.
 +  remove          Remove an annotation.
-+  tag             Add or remove tags on an annotation.
++  tag             Add or remove a tag on an annotation.
 +  resolve         Mark an annotation as resolved.
 +  dismiss         Dismiss an annotation.
 +  archive         Archive an annotation.
-+  bulk-resolve    Resolve multiple annotations.
-+  bulk-dismiss    Dismiss multiple annotations.
-+  bulk-archive    Archive multiple annotations.
++  bulk-resolve    Resolve every active annotation matching the filter.
++  bulk-dismiss    Dismiss every active annotation matching the filter.
++  bulk-archive    Archive every annotation matching the filter (including non-active rows).
 +  verify          Verify annotation anchors against workspace state.
-+  sweep           Sweep stale annotations.
++  sweep           Sweep stale annotations (resolved/dismissed older than --since-days).
 --- go.stderr
 +++ zig.stderr
 @@ -1 +0,0 @@
@@ -7739,15 +7741,17 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 
 - Failure class: `go-failed`
 - Go exit: `2` (stdout 0B, stderr 47B)
-- Zig exit: `0` (stdout 719B, stderr 0B)
+- Zig exit: `0` (stdout 940B, stderr 0B)
 
 ```diff
 --- go
 +++ zig
-@@ -0,0 +1,22 @@
+@@ -0,0 +1,24 @@
 +annotate
 +
-+  Manage source annotations.
++Manage line-anchored annotations on source code.
++
++  Status lifecycle: active → resolved / dismissed / archived.
 +
 +USAGE:
 +  annotate <command>
@@ -7758,15 +7762,15 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  list            List annotations.
 +  update          Update an annotation.
 +  remove          Remove an annotation.
-+  tag             Add or remove tags on an annotation.
++  tag             Add or remove a tag on an annotation.
 +  resolve         Mark an annotation as resolved.
 +  dismiss         Dismiss an annotation.
 +  archive         Archive an annotation.
-+  bulk-resolve    Resolve multiple annotations.
-+  bulk-dismiss    Dismiss multiple annotations.
-+  bulk-archive    Archive multiple annotations.
++  bulk-resolve    Resolve every active annotation matching the filter.
++  bulk-dismiss    Dismiss every active annotation matching the filter.
++  bulk-archive    Archive every annotation matching the filter (including non-active rows).
 +  verify          Verify annotation anchors against workspace state.
-+  sweep           Sweep stale annotations.
++  sweep           Sweep stale annotations (resolved/dismissed older than --since-days).
 --- go.stderr
 +++ zig.stderr
 @@ -1 +0,0 @@
@@ -7781,16 +7785,18 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 
 - Failure class: `go-failed`
 - Go exit: `2` (stdout 0B, stderr 47B)
-- Zig exit: `0` (stdout 719B, stderr 0B)
+- Zig exit: `0` (stdout 940B, stderr 0B)
 - cwd: `<CWD_DIR>`
 
 ```diff
 --- go
 +++ zig
-@@ -0,0 +1,22 @@
+@@ -0,0 +1,24 @@
 +annotate
 +
-+  Manage source annotations.
++Manage line-anchored annotations on source code.
++
++  Status lifecycle: active → resolved / dismissed / archived.
 +
 +USAGE:
 +  annotate <command>
@@ -7801,15 +7807,15 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  list            List annotations.
 +  update          Update an annotation.
 +  remove          Remove an annotation.
-+  tag             Add or remove tags on an annotation.
++  tag             Add or remove a tag on an annotation.
 +  resolve         Mark an annotation as resolved.
 +  dismiss         Dismiss an annotation.
 +  archive         Archive an annotation.
-+  bulk-resolve    Resolve multiple annotations.
-+  bulk-dismiss    Dismiss multiple annotations.
-+  bulk-archive    Archive multiple annotations.
++  bulk-resolve    Resolve every active annotation matching the filter.
++  bulk-dismiss    Dismiss every active annotation matching the filter.
++  bulk-archive    Archive every annotation matching the filter (including non-active rows).
 +  verify          Verify annotation anchors against workspace state.
-+  sweep           Sweep stale annotations.
++  sweep           Sweep stale annotations (resolved/dismissed older than --since-days).
 --- go.stderr
 +++ zig.stderr
 @@ -1 +0,0 @@
@@ -7835,9 +7841,9 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 -  "db_ok": true,
 -  "schema_current": true,
 -  "integrity_ok": true,
--  "inflight_tasks": 720,
+-  "inflight_tasks": 711,
 -  "resumable_tasks": 0,
--  "not_resumable_tasks": 720,
+-  "not_resumable_tasks": 711,
 -  "pending_handoffs": 0,
 -  "stale_handoffs": 0,
 -  "overall": "degraded"
@@ -7864,10 +7870,10 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 -  db:               <AUDIT_DB>  [ok]
 -  schema:           14  [current]
 -  integrity:        ok
--  in-flight tasks:  720  (0 resumable, 720 NOT RESUMABLE)
+-  in-flight tasks:  711  (0 resumable, 711 NOT RESUMABLE)
 -  pending handoffs: 0  (0 stale)
 -
--overall: DEGRADED  (720 tasks not resumable)
+-overall: DEGRADED  (711 tasks not resumable)
 +db:               ok (<AUDIT_DB>)
 +schema:           v14 of v14 (current)
 +integrity:        ok

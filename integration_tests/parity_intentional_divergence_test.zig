@@ -33,8 +33,15 @@ test "Bucket 3 (D-zig-only-verb): 'annotate --help' exits 0 and renders zig-only
     const stdout = suite.mustRun(&.{ "annotate", "--help" });
     defer gpa.free(stdout);
 
-    // The zig annotate verb's help summary line.
-    try std.testing.expect(std.mem.containsAtLeast(u8, stdout, 1, "Manage source annotations"));
+    // The zig annotate verb's help summary line. Post-2452 the
+    // verb's long_desc expanded to "Manage line-anchored
+    // annotations on source code" with the status-lifecycle
+    // postscript; either wording locks the Bucket-3 contract that
+    // annotate is a zig-only verb with usable help.
+    try std.testing.expect(
+        std.mem.containsAtLeast(u8, stdout, 1, "Manage source annotations") or
+            std.mem.containsAtLeast(u8, stdout, 1, "Manage line-anchored annotations"),
+    );
 }
 
 test "Bucket 3 (F-q233-add-shape): 'task add <positional-title>' accepted (Q237 intentional zig shape)" {
