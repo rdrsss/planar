@@ -250,3 +250,65 @@ test "scenario: templates validate accepts --json (red until cmd.zig flag is reg
         try std.testing.expect(false);
     }
 }
+
+// =========================================================================
+// Behavioral lock-in (not a bug fix): templates path with any flag
+// combination must produce non-empty output. Initial M9 probe via
+// chained shell commands suggested --json / --system suppressed
+// output; redirecting to a file revealed the binary's stdout is
+// correct and the earlier observation was a terminal-pipeline
+// rendering artifact. This test locks the contract before any
+// future change accidentally regresses it.
+// =========================================================================
+
+test "scenario: templates path produces output regardless of --json/--system/--set" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    _ = suite.registerProject("tpl-path-flags");
+    const tpl_dir = std.fmt.allocPrint(arena, "{s}/templates", .{suite.tmpAbsPath()}) catch unreachable;
+    const env = [_]harness.Suite.ExtraEnvEntry{
+        .{ .key = "PLANAR_TEMPLATES_DIR", .value = tpl_dir },
+    };
+
+    const init_out = suite.mustRunWith(&.{ "templates", "init", "--json" }, &env);
+    gpa.free(init_out);
+
+    // Probe each flag combination. The bare invocation works
+    // today; the others must also produce non-empty stdout.
+    const Probe = struct { label: []const u8, args: []const []const u8 };
+    const probes = [_]Probe{
+        .{ .label = "bare", .args = &.{ "templates", "path" } },
+        .{ .label = "--json", .args = &.{ "templates", "path", "--json" } },
+        .{ .label = "--system", .args = &.{ "templates", "path", "--system", "github-issues" } },
+        .{ .label = "--set", .args = &.{ "templates", "path", "--set", "default" } },
+        .{ .label = "--system+--set", .args = &.{ "templates", "path", "--system", "github-issues", "--set", "default" } },
+    };
+
+    for (probes) |p| {
+        const res = suite.execWith(p.args, &env);
+        defer gpa.free(res.stdout);
+        defer gpa.free(res.stderr);
+
+        if (res.term != .exited or res.term.exited != 0) {
+            std.debug.print(
+                "\ntemplates path [{s}] non-zero exit; stderr={s}\n",
+                .{ p.label, res.stderr },
+            );
+            try std.testing.expect(false);
+        }
+        if (res.stdout.len == 0) {
+            std.debug.print(
+                "\ntemplates path [{s}] produced empty stdout (expected non-empty path)\n",
+                .{p.label},
+            );
+            try std.testing.expect(false);
+        }
+        try std.testing.expect(std.mem.containsAtLeast(u8, res.stdout, 1, tpl_dir));
+    }
+}
