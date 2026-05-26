@@ -1,13 +1,13 @@
 # Parity Gap Report
 
-_Generated 2026-05-26T14:30:35Z_
+_Generated 2026-05-26T14:43:12Z_
 
 ## Summary
 
 37 verbs audited, 172 gaps surfaced, 0 errors, 4 skipped (with reasons), 1 no-diff invocations across 173 total invocations.
 
 - Go binary: `/Users/mn/.planar-archive/bin/planar-go` (sha256 `9b32c7720522…`)
-- Zig binary: `/Users/mn/projects/github/rdrsss/planar/bin/planar` (sha256 `1290dd62e3fb…`)
+- Zig binary: `/Users/mn/projects/github/rdrsss/planar/bin/planar` (sha256 `56bf6dd93d83…`)
 - Audit DB: `<AUDIT_DB>`
 - Cwd-fixture DB: `<CWD_DB>`
 - Cwd-fixture dir: `<CWD_DIR>`
@@ -35,10 +35,10 @@ planar health
   db:               <AUDIT_DB>  [ok]
   schema:           14  [current]
   integrity:        ok
-  in-flight tasks:  762  (0 resumable, 762 NOT RESUMABLE)
+  in-flight tasks:  758  (0 resumable, 758 NOT RESUMABLE)
   pending handoffs: 0  (0 stale)
 
-overall: DEGRADED  (762 tasks not resumable)
+overall: DEGRADED  (758 tasks not resumable)
 error: degraded health
 ```
 
@@ -7835,9 +7835,9 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 -  "db_ok": true,
 -  "schema_current": true,
 -  "integrity_ok": true,
--  "inflight_tasks": 762,
+-  "inflight_tasks": 758,
 -  "resumable_tasks": 0,
--  "not_resumable_tasks": 762,
+-  "not_resumable_tasks": 758,
 -  "pending_handoffs": 0,
 -  "stale_handoffs": 0,
 -  "overall": "degraded"
@@ -7864,10 +7864,10 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 -  db:               <AUDIT_DB>  [ok]
 -  schema:           14  [current]
 -  integrity:        ok
--  in-flight tasks:  762  (0 resumable, 762 NOT RESUMABLE)
+-  in-flight tasks:  758  (0 resumable, 758 NOT RESUMABLE)
 -  pending handoffs: 0  (0 stale)
 -
--overall: DEGRADED  (762 tasks not resumable)
+-overall: DEGRADED  (758 tasks not resumable)
 +db:               ok (<AUDIT_DB>)
 +schema:           v14 of v14 (current)
 +integrity:        ok
