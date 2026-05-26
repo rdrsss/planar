@@ -1087,6 +1087,17 @@ fn renderBodyTemplate(allocator: std.mem.Allocator, body: []const u8, values: Te
 fn renderModelsDoc(allocator: std.mem.Allocator, current: []const u8, vendors: VendorProfiles) ![]u8 {
     var lines = splitLines(allocator, current);
     defer lines.deinit(allocator);
+    // splitScalar on input ending in '\n' yields a trailing empty
+    // string item ("a\nb\n" → ["a","b",""]). The line-by-line
+    // append loop below treats every item as a line + '\n', which
+    // would convert the phantom trailing "" into a real extra
+    // newline. Each render pass would then grow the file by one
+    // blank line — a non-idempotent renderer bug. Drop the
+    // trailing empty before processing; we restore the trailing
+    // newline at the end based on the source's original state.
+    if (lines.items.len > 0 and lines.items[lines.items.len - 1].len == 0) {
+        _ = lines.pop();
+    }
     var heading_idx: ?usize = null;
     for (lines.items, 0..) |line, i| {
         if (std.mem.eql(u8, trimSpace(line), "## Tier Table")) {
