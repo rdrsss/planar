@@ -5,6 +5,35 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     // -----------------------------------------------------------------
+    // Vendored deps — fail-fast at configure time if any vendor/<name>/
+    // VENDOR.toml drifts from vendor/manifest.zon. `zig build
+    // vendor-sync` invokes the same tool in `sync` mode to refresh the
+    // tree (fetch + sha256 verify + extract + restamp). See
+    // tools/vendor_sync.zig and vendor/manifest.zon.
+    // -----------------------------------------------------------------
+    const vendor_sync_exe = b.addExecutable(.{
+        .name = "vendor_sync",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/vendor_sync.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+
+    const vendor_check_run = b.addRunArtifact(vendor_sync_exe);
+    vendor_check_run.addArg("check");
+    vendor_check_run.addFileArg(b.path("vendor/manifest.zon"));
+    vendor_check_run.addDirectoryArg(b.path("vendor"));
+    addVendorStampInputs(b, vendor_check_run, "vendor");
+
+    const vendor_sync_step = b.step("vendor-sync", "Fetch and re-vendor third-party deps per vendor/manifest.zon");
+    const vendor_sync_run = b.addRunArtifact(vendor_sync_exe);
+    vendor_sync_run.addArg("sync");
+    vendor_sync_run.addFileArg(b.path("vendor/manifest.zon"));
+    vendor_sync_run.addDirectoryArg(b.path("vendor"));
+    vendor_sync_step.dependOn(&vendor_sync_run.step);
+
+    // -----------------------------------------------------------------
     // SQLite — compile the vendored amalgamation as a static library.
     // We import the C source directly rather than depend on a wrapper
     // crate. Flags mirror the defaults Planar wants regardless of host
@@ -180,6 +209,10 @@ pub fn build(b: *std.Build) void {
         }),
     });
     b.installArtifact(exe);
+    // Vendored-deps drift check runs before the binary is installed, so
+    // `zig build` (which depends on the install step) fails loudly on
+    // any vendor/<name>/VENDOR.toml mismatch.
+    b.getInstallStep().dependOn(&vendor_check_run.step);
 
     const run_step = b.step("run", "Run the app");
     const run_cmd = b.addRunArtifact(exe);
@@ -376,6 +409,29 @@ fn resolveGitDirty(b: *std.Build) bool {
     if (result.term != .exited or result.term.exited != 0) return false;
     const trimmed = std.mem.trim(u8, result.stdout, " \t\n\r");
     return trimmed.len > 0;
+}
+
+/// Register every `vendor/<name>/VENDOR.toml` as a file input on the
+/// vendor-check run step. Without this, editing a stamp wouldn't
+/// invalidate the cache and the check would silently pass.
+fn addVendorStampInputs(b: *std.Build, run: *std.Build.Step.Run, vendor_rel: []const u8) void {
+    const abs = b.pathFromRoot(vendor_rel);
+    var root = std.Io.Dir.openDirAbsolute(b.graph.io, abs, .{ .iterate = true }) catch |e| {
+        std.debug.panic("build.zig: cannot open vendor dir '{s}': {s}", .{ abs, @errorName(e) });
+    };
+    defer root.close(b.graph.io);
+
+    var it = root.iterate();
+    while (it.next(b.graph.io) catch |e| std.debug.panic("build.zig: iterate {s}: {s}", .{ abs, @errorName(e) })) |entry| {
+        if (entry.kind != .directory) continue;
+        const stamp_rel = std.fs.path.join(b.allocator, &.{ vendor_rel, entry.name, "VENDOR.toml" }) catch @panic("OOM");
+        const stamp_abs = b.pathFromRoot(stamp_rel);
+        // Only register if the stamp exists; missing stamps trigger
+        // failure via the manifest-driven check at run time, and we
+        // don't want addFileInput to choke on a non-existent path.
+        std.Io.Dir.accessAbsolute(b.graph.io, stamp_abs, .{}) catch continue;
+        run.addFileInput(b.path(stamp_rel));
+    }
 }
 
 fn addMigrationDirInputs(b: *std.Build, run: *std.Build.Step.Run, dir_rel_to_build: []const u8) void {

@@ -1,0 +1,27 @@
+.{
+    // Declarative manifest for vendored third-party sources. The `vendor_sync`
+    // tool reads this file and writes a matching VENDOR.toml into each
+    // `vendor/<name>/` directory after a successful sync. `build.zig` performs
+    // a fail-fast check at configure time: if `vendor/<name>/VENDOR.toml`
+    // does not match the entry below, the build aborts with a message
+    // pointing the operator at `zig build vendor-sync`.
+    //
+    // To bump a dep:
+    //   1. Update `version`, `url`, `sha256`, and `strip_prefix` here.
+    //   2. Run `zig build vendor-sync`.
+    //   3. Commit the manifest + the regenerated files under `vendor/<name>/`.
+    //
+    // To add a new dep: add another entry to `.deps`. Supported archive types:
+    //   - .zip
+    .deps = .{
+        .{
+            .name = "sqlite",
+            .version = "3.50.2",
+            .url = "https://sqlite.org/2025/sqlite-amalgamation-3500200.zip",
+            .sha256 = "387991de2834b5da2894119ff4173a9ea0779ea55ebcf53d9a40b24d1dc2484e",
+            .archive = .zip,
+            .strip_prefix = "sqlite-amalgamation-3500200/",
+            .keep = .{ "sqlite3.c", "sqlite3.h", "sqlite3ext.h" },
+        },
+    },
+}
