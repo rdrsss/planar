@@ -58,3 +58,4 @@ zig-cache/
 
 # Local git worktrees for feature branches.
 .worktrees/
+scripts/parity-audit.sh.runone

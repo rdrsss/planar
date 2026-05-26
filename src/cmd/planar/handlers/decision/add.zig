@@ -20,10 +20,6 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         exit.die(ctx, e, "decision add: resolving scope failed: {s}", .{@errorName(e)});
     const effective_scope: ?[]const u8 = if (resolution.scope) |s| s else null;
 
-    if (args.plan != null) {
-        try ctx.stderr.print("warning: --plan accepted but not yet linked (entity_links not wired)\n", .{});
-    }
-
     var body_owned: ?[]u8 = null;
     defer if (body_owned) |b| ctx.allocator.free(b);
     var body: ?[]const u8 = args.body;

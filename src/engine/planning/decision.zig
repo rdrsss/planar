@@ -185,10 +185,17 @@ pub fn create(d: *db.sqlite.Db, allocator: std.mem.Allocator, args: CreateArgs) 
         .summary = summary,
     });
 
-    // --plan currently has no schema column to land on; warn-and-ignore
-    // is the handler's job. Document intent here for the future
-    // entity_links wiring.
-    _ = args.plan_id;
+    // `--plan <pid>` attaches the decision to a plan via the
+    // entity_links (decision → plan, relationship=derives-from)
+    // edge — mirrors artifact.create + question.create. Plans
+    // don't have a plan_id FK column on the decisions table; the
+    // link lives in entity_links exclusively.
+    if (args.plan_id) |pid| {
+        _ = d.execParams(
+            \\insert into entity_links (from_kind, from_id, to_kind, to_id, relationship)
+            \\values ('decision', ?, 'plan', ?, 'derives-from')
+        , &.{ .{ .int = id }, .{ .int = pid } }) catch return Error.QueryFailed;
+    }
 
     return try show(d, allocator, id);
 }
