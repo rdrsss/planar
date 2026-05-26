@@ -327,8 +327,9 @@ pub const Suite = struct {
     // -------------------------------------------------------------------------
 
     /// mustRun executes the binary with the given arguments. Fails the test
-    /// if the process exits non-zero. Returns stdout; caller must free with
-    /// `self.allocator.free(stdout)`.
+    /// LOUDLY if the process exits non-zero — panics so the test runner
+    /// surfaces the failure rather than silently returning bogus stdout.
+    /// Returns stdout; caller must free with `self.allocator.free(stdout)`.
     pub fn mustRun(self: *const Suite, args: []const []const u8) []u8 {
         const res = self.exec(args);
         if (res.term != .exited or res.term.exited != 0) {
@@ -337,8 +338,8 @@ pub const Suite = struct {
                 .{ res.stdout, res.stderr },
             );
             self.allocator.free(res.stderr);
-            std.testing.expect(false) catch {};
-            return res.stdout;
+            self.allocator.free(res.stdout);
+            @panic("mustRun: non-zero exit (see stderr above)");
         }
         self.allocator.free(res.stderr);
         return res.stdout;
@@ -365,15 +366,16 @@ pub const Suite = struct {
                 "\nmustRunJSON: JSON decode failed: {s}\nraw: {s}\n",
                 .{ @errorName(e), stdout },
             );
-            std.testing.expect(false) catch {};
-            unreachable;
+            @panic("mustRunJSON: JSON decode failed (see raw above)");
         };
         // The value is owned by the arena; just return the inner typed value.
         return parsed.value;
     }
 
     /// expectFailure runs the command and asserts that the process exits
-    /// non-zero. Returns stderr; caller must free with `self.allocator.free`.
+    /// non-zero. Panics if the command succeeded — silent success on a
+    /// negative-path test is misleading. Returns stderr; caller must
+    /// free with `self.allocator.free`.
     pub fn expectFailure(self: *const Suite, args: []const []const u8) []u8 {
         const res = self.exec(args);
         if (res.term == .exited and res.term.exited == 0) {
@@ -382,14 +384,16 @@ pub const Suite = struct {
                 .{res.stdout},
             );
             self.allocator.free(res.stdout);
-            std.testing.expect(false) catch {};
+            self.allocator.free(res.stderr);
+            @panic("expectFailure: command exited 0 (negative-path assertion broken)");
         }
         self.allocator.free(res.stdout);
         return res.stderr;
     }
 
     /// mustRunWith is like mustRun but merges extra_env on top of the
-    /// inherited environment. Returns stdout; caller must free.
+    /// inherited environment. Panics LOUDLY on non-zero exit.
+    /// Returns stdout; caller must free.
     pub fn mustRunWith(
         self: *const Suite,
         args: []const []const u8,
@@ -402,15 +406,16 @@ pub const Suite = struct {
                 .{ res.stdout, res.stderr },
             );
             self.allocator.free(res.stderr);
-            std.testing.expect(false) catch {};
-            return res.stdout;
+            self.allocator.free(res.stdout);
+            @panic("mustRunWith: non-zero exit (see stderr above)");
         }
         self.allocator.free(res.stderr);
         return res.stdout;
     }
 
     /// expectFailureWith is like expectFailure but merges extra_env on top of
-    /// the inherited environment. Returns stderr; caller must free.
+    /// the inherited environment. Panics if the command unexpectedly
+    /// succeeded. Returns stderr; caller must free.
     pub fn expectFailureWith(
         self: *const Suite,
         args: []const []const u8,
@@ -423,7 +428,8 @@ pub const Suite = struct {
                 .{res.stdout},
             );
             self.allocator.free(res.stdout);
-            std.testing.expect(false) catch {};
+            self.allocator.free(res.stderr);
+            @panic("expectFailureWith: command exited 0 (negative-path assertion broken)");
         }
         self.allocator.free(res.stdout);
         return res.stderr;
@@ -471,8 +477,8 @@ pub const Suite = struct {
                 .{ cwd, res.stdout, res.stderr },
             );
             self.allocator.free(res.stderr);
-            std.testing.expect(false) catch {};
-            return res.stdout;
+            self.allocator.free(res.stdout);
+            @panic("mustRunInDir: non-zero exit (see stderr above)");
         }
         self.allocator.free(res.stderr);
         return res.stdout;
@@ -498,7 +504,8 @@ pub const Suite = struct {
                 .{ cwd, res.stdout },
             );
             self.allocator.free(res.stdout);
-            std.testing.expect(false) catch {};
+            self.allocator.free(res.stderr);
+            @panic("expectFailureInDir: command exited 0 (negative-path assertion broken)");
         }
         self.allocator.free(res.stdout);
         return res.stderr;

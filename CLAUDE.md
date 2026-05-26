@@ -182,6 +182,50 @@ co-exist; both earn their keep:
   and fails when the ratio drops below the recorded baseline. A new
   leaf added without a test trips the gate immediately.
 
+**Bug-fix discipline: red-then-green, never silently work around:**
+
+- When a scenario authoring run surfaces a real bug (verb fails,
+  edge isn't written, status guard is missing, etc.), file a new
+  test that **asserts the documented contract and fails** before
+  touching the engine. This is the canonical red-test. Commit it
+  as its own commit with a "Red test: …" subject so the discovery
+  arc shows up in `git log`.
+- Then land the engine / handler fix in the next commit. The same
+  test goes green. The two commits together prove the fix actually
+  closes the contract the test pins.
+- **Do NOT silently route around the bug** by editing the scenario
+  to assert only the working subset. That gives a false "tests
+  passing" signal and the bug slips into the long tail. If the bug
+  is truly out of scope for the current cycle, file it as a task
+  on the anchor plan with a `TODO(plan:<id>, task:<id>)` comment
+  in the test — but the red test still goes in first.
+- This discipline is what surfaced the five plan-352 bugs (decision
+  add --plan no-op, question wontfix from answered, templates
+  validate --json, scenario verify --outcome). Each one had been
+  papered over by the original scenario; the red-test pass on top
+  exposed and fixed them.
+
+**Harness fail-loudness invariant:**
+
+- Every `must*` / `expectFailure*` helper in `integration_tests/
+  harness.zig` panics on contract violation. A non-zero exit from
+  `mustRun` / `mustRunWith` / `mustRunInDir` panics; a zero exit
+  from `expectFailure*` panics; a JSON-decode failure in
+  `mustRunJSON` panics. The diagnostic is printed via
+  `std.debug.print` immediately before the panic so the test runner
+  surfaces both.
+- The earlier `std.testing.expect(false) catch {}` pattern was a
+  silent swallow — the helper returned bogus stdout, the test
+  continued, and downstream assertions passed against garbage.
+  That pattern is **prohibited** in the harness; treat any future
+  re-introduction as a bug.
+- Tests that need to inspect a non-zero exit without panicking
+  call `suite.execWith(...)` (or `exec`, `execWithInDir`)
+  directly and assert on `res.term.exited` themselves. That's the
+  documented escape hatch when both branches are operator-
+  reachable contract paths (e.g. "verb may legitimately fail when
+  contacting the network").
+
 Always run integration tests via `make test-integration` (not bare
 `zig build test-integration`). The make target builds `./bin/planar` and
 exports `PLANAR_BIN` to point at it; without that, the harness falls back
