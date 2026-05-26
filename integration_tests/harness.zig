@@ -59,6 +59,11 @@ pub const Suite = struct {
     /// null until first access via `absDbPath`. When `db_path` is already
     /// absolute the cache aliases it without re-allocating.
     abs_db_cache: ?[]u8 = null,
+    /// Extra directories created by `freshSystemTmpDir` (literal-path
+    /// system temp dirs, NOT under `.zig-cache/tmp/`). Each entry is an
+    /// owned absolute path; `deinit` `rm -rf`s every entry and frees
+    /// the slice.
+    extra_dirs: std.ArrayList([]const u8) = .empty,
 
     /// Initialize the suite: resolve the binary path and create an ephemeral
     /// temp directory. The DB file is not created here — the binary does that
@@ -87,6 +92,22 @@ pub const Suite = struct {
         if (self.abs_db_cache) |p| self.allocator.free(p);
         self.allocator.free(self.db_path);
         self.tmp_dir.cleanup();
+        // Clean up any literal-path tmp dirs created via freshSystemTmpDir.
+        // Shell out to `rm -rf` (matches the creation path which shells
+        // to `mktemp`); any errors are swallowed since deinit must not
+        // fail and a missing dir is harmless.
+        for (self.extra_dirs.items) |dir_path| {
+            const rm_result = std.process.run(self.allocator, std.testing.io, .{
+                .argv = &.{ "rm", "-rf", dir_path },
+            }) catch {
+                self.allocator.free(dir_path);
+                continue;
+            };
+            self.allocator.free(rm_result.stdout);
+            self.allocator.free(rm_result.stderr);
+            self.allocator.free(dir_path);
+        }
+        self.extra_dirs.deinit(self.allocator);
     }
 
     // -------------------------------------------------------------------------
@@ -102,6 +123,42 @@ pub const Suite = struct {
             @panic("cannot resolve tmp dir absolute path");
         const owned = self.allocator.dupe(u8, buf[0..len]) catch @panic("OOM");
         self.tmp_abs_cache = owned;
+        return owned;
+    }
+
+    /// Create a fresh empty directory at a literal `/var/folders/...`
+    /// (macOS) or `/tmp/...` (Linux) path via shelling to `mktemp -d`.
+    /// The returned path is the LITERAL string `mktemp` emits — on
+    /// macOS `/var/folders/...` rather than `/private/var/folders/...`
+    /// (the realPath of `/var` on macOS).
+    ///
+    /// Tests that exercise path-canonicalization-sensitive code paths
+    /// (e.g. `init` vs `assoc add` binding) must use this rather than
+    /// `tmpAbsPath()`. The harness's `tmp_dir` lives under
+    /// `.zig-cache/tmp/...` which has no `/private/` shadow on macOS,
+    /// so realpath-vs-literal divergence does not manifest there.
+    ///
+    /// The created directory is tracked in `extra_dirs` and removed
+    /// recursively in `deinit()`. The returned slice is owned by the
+    /// suite; callers must not free it.
+    pub fn freshSystemTmpDir(self: *Suite) []const u8 {
+        const gpa = self.allocator;
+        const result = std.process.run(gpa, std.testing.io, .{
+            .argv = &.{ "mktemp", "-d", "-t", "planar-int.XXXXXX" },
+        }) catch |e| std.debug.panic(
+            "freshSystemTmpDir: mktemp spawn failed: {s}",
+            .{@errorName(e)},
+        );
+        defer gpa.free(result.stderr);
+        if (result.term != .exited or result.term.exited != 0) {
+            std.debug.print("\nmktemp stderr: {s}\n", .{result.stderr});
+            gpa.free(result.stdout);
+            @panic("freshSystemTmpDir: mktemp returned non-zero");
+        }
+        const trimmed = std.mem.trim(u8, result.stdout, " \t\r\n");
+        const owned = gpa.dupe(u8, trimmed) catch @panic("OOM duping mktemp output");
+        gpa.free(result.stdout);
+        self.extra_dirs.append(gpa, owned) catch @panic("OOM tracking extra dir");
         return owned;
     }
 
