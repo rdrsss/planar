@@ -208,9 +208,21 @@ fn findAnchorPlanForEntity(
         try stmt.bind(&.{ .{ .text = from_kind }, .{ .int = from_id } });
         const step = try stmt.step();
         if (step == .done) {
-            // For plans themselves walk up via parent_plan_id directly.
+            // Plans walk up via parent_plan_id directly. Tasks have a
+            // dedicated `plan_id` foreign key (not an entity_links
+            // edge); when the derives-from link is absent, fall back
+            // to that. Plan 352 task 2454.
             if (std.mem.eql(u8, from_kind, "plan")) {
                 first_plan_id = from_id;
+            } else if (std.mem.eql(u8, from_kind, "task")) {
+                var t_stmt = try d.prepare("select coalesce(plan_id, 0) from tasks where id = ?");
+                defer t_stmt.finalize();
+                try t_stmt.bind(&.{.{ .int = from_id }});
+                const t_step = try t_stmt.step();
+                if (t_step == .done) return error.AnchorPlanNotFound;
+                const pid = t_stmt.columnInt(0);
+                if (pid == 0) return error.AnchorPlanNotFound;
+                first_plan_id = pid;
             } else {
                 return error.AnchorPlanNotFound;
             }

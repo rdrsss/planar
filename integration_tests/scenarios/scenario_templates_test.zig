@@ -151,4 +151,54 @@ test "scenario: templates — list embedded, init to disk, list from disk, show 
     defer gpa.free(path_raw);
     try std.testing.expect(path_raw.len > 0);
     try std.testing.expect(std.mem.containsAtLeast(u8, path_raw, 1, tpl_dir));
+
+    // ---- 7. render — exercise the engine's anchor-plan walk
+    // through a real task fixture. Post-task-2454, the walker
+    // falls back to the task's plan_id when no derives-from
+    // edge exists, so a trivial fixture (plan + task linked
+    // via plan_id) now renders cleanly. Pre-fix the verb exited
+    // with AnchorPlanNotFound.
+    const PlanShape = struct { id: i64 };
+    const TaskShape = struct { id: i64 };
+    const plan_raw = suite.mustRunWith(&.{
+        "plan", "create", "--json", "Render target plan",
+    }, &env);
+    const plan = std.json.parseFromSlice(PlanShape, arena, plan_raw, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    }) catch unreachable;
+    gpa.free(plan_raw);
+
+    const plan_id_str = std.fmt.allocPrint(arena, "{d}", .{plan.value.id}) catch unreachable;
+    const task_raw = suite.mustRunWith(&.{
+        "task",          "add",   "--json",
+        "--plan",        plan_id_str,
+        "--next-action", "render",
+        "Render target task",
+    }, &env);
+    const task = std.json.parseFromSlice(TaskShape, arena, task_raw, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    }) catch unreachable;
+    gpa.free(task_raw);
+
+    const task_ref = std.fmt.allocPrint(arena, "task:{d}", .{task.value.id}) catch unreachable;
+    const render_raw = suite.mustRunWith(&.{
+        "templates", "render", "default", "github-issues", "issue", task_ref, "--json",
+    }, &env);
+    defer gpa.free(render_raw);
+
+    // The default github-issues/issue template emits a JSON
+    // object with at least `title` and `body` fields. Parse as
+    // a generic object and check structurally.
+    const rendered = std.json.parseFromSlice(std.json.Value, arena, render_raw, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    }) catch |e| {
+        std.debug.print("\ntemplates render parse failed: {s}\nraw: {s}\n", .{ @errorName(e), render_raw });
+        try std.testing.expect(false);
+        return;
+    };
+    try std.testing.expect(rendered.value == .object);
+    try std.testing.expect(rendered.value.object.get("title") != null);
 }
