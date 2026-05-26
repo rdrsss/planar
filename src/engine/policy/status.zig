@@ -47,8 +47,22 @@ pub fn check(
             //   done/cancelled → active only via `task reopen` verb (with --reason)
         },
         .question => {
-            // TODO(status-matrix:question): open → {answered, wontfix}
-            //   answered is reversible only via `question reopen` (no such verb yet)
+            // Status set: {open, answered, wontfix}.
+            // Legal transitions: open → {answered, wontfix} only.
+            // Both `answered` and `wontfix` are terminal — there is
+            // no `question reopen` verb. Terminal → anything raises
+            // IllegalTransition.
+            //
+            // Plan 352 bug 2: M4 scenario surfaced that wontfix from
+            // answered silently succeeded; the engine called this
+            // check but the arm was a permissive TODO stub.
+            if (std.mem.eql(u8, from, to)) return; // identity transition is a no-op
+            if (std.mem.eql(u8, from, "open")) {
+                if (std.mem.eql(u8, to, "answered") or std.mem.eql(u8, to, "wontfix")) return;
+                return Error.IllegalTransition;
+            }
+            // from is terminal (answered or wontfix): refuse any move.
+            return Error.IllegalTransition;
         },
         .scenario => {
             // TODO(status-matrix:scenario): draft → verified → retired
@@ -75,8 +89,6 @@ pub fn check(
             //   policy layer instead of its own isTerminal guard.
         },
     }
-    _ = from;
-    _ = to;
 }
 
 // ---- tests ----
