@@ -7,6 +7,7 @@ const main = @import("../../main.zig");
 const runtime = @import("../../runtime.zig");
 const output = @import("../../output.zig");
 const exit = @import("../../exit.zig");
+const scope_mod = @import("../../scope.zig");
 
 pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     const args = cli.castArgs(main.root, &.{ "task", "update" }, args_ptr);
@@ -18,6 +19,46 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
 
     if (args.force) {
         try ctx.stderr.print("warning: --force not yet implemented; no constraint relaxation in effect\n", .{});
+    }
+
+    // Cross-scope write guard (plan 352 task 2451).
+    //
+    // Look up the task's stored scope and compare against the
+    // operator's resolved write scope (--scope override or cwd-
+    // derive). Refuse with ScopeMismatch when they disagree. The
+    // matrix lives in policy.scope_guard.check; the slug
+    // conversion lives in engine.identity.scope.slugFromRef.
+    {
+        const current = engine.planning.task.show(d, ctx.allocator, id) catch |e| switch (e) {
+            error.NotFound => exit.die(ctx, e, "no task with id {d}", .{id}),
+            else => exit.die(ctx, e, "task lookup: {s}", .{@errorName(e)}),
+        };
+        defer engine.planning.task.deinit(current, ctx.allocator);
+
+        // engine.planning.task.ScopeKind and engine.identity.scope
+        // .ScopeKind are sibling enums; translate by tag name.
+        const scope_kind_enum: engine.identity.scope.ScopeKind = switch (current.scope_kind) {
+            .global => .global,
+            .association => .association,
+            .repo => .repo,
+        };
+        const entity_scope: ?[]const u8 = engine.identity.scope.slugFromRef(
+            d,
+            ctx.allocator,
+            scope_kind_enum,
+            current.scope_id,
+        ) catch |e| exit.die(ctx, e, "task update: looking up entity scope: {s}", .{@errorName(e)});
+        defer if (entity_scope) |s| ctx.allocator.free(s);
+
+        const resolution = scope_mod.resolve(ctx, args.scope) catch |e|
+            exit.die(ctx, e, "task update: resolving write scope: {s}", .{@errorName(e)});
+
+        scope_mod.guard(entity_scope, resolution.scope) catch
+            exit.die(ctx, error.ScopeMismatch, "scope mismatch: task {d} is in scope '{s}' but operator write scope is '{s}'", .{
+                id,
+                if (entity_scope) |s| s else "global",
+                if (resolution.scope) |s| s else "global",
+            });
     }
 
     var patch: engine.planning.task.UpdateArgs = .{

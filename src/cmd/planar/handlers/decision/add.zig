@@ -8,11 +8,17 @@ const runtime = @import("../../runtime.zig");
 const output = @import("../../output.zig");
 const exit = @import("../../exit.zig");
 const editor = @import("../../editor.zig");
+const scope_mod = @import("../../scope.zig");
 
 pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     const args = cli.castArgs(main.root, &.{ "decision", "add" }, args_ptr);
     const ctx = runtime.current();
     const d = try runtime.ensureDb();
+
+    // cwd-derive fallback (plan 352 task 2450).
+    const resolution = scope_mod.resolve(ctx, args.scope) catch |e|
+        exit.die(ctx, e, "decision add: resolving scope failed: {s}", .{@errorName(e)});
+    const effective_scope: ?[]const u8 = if (resolution.scope) |s| s else null;
 
     if (args.plan != null) {
         try ctx.stderr.print("warning: --plan accepted but not yet linked (entity_links not wired)\n", .{});
@@ -39,7 +45,7 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         .body = body_required,
         .rationale = args.rationale,
         .plan_id = args.plan,
-        .scope = args.scope,
+        .scope = effective_scope,
     }) catch |e| exit.die(ctx, e, "decision add: {s}", .{@errorName(e)});
 
     try output.emit(ctx, engine.planning.decision, dec, .{ .json = args.json });

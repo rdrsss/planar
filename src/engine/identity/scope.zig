@@ -241,6 +241,48 @@ pub fn resolveSlug(
     };
 }
 
+/// Reverse of `resolveSlug`: given a stored scope_kind + scope_id,
+/// return the slug. Returns null for `.global` (no slug per the rule
+/// that global is the absence of scope). Returns SlugNotFound if the
+/// id does not exist in the corresponding table.
+///
+/// Caller owns the returned slice; pass through `allocator.free` once
+/// done. Used by the cross-scope write guard to convert an entity's
+/// stored scope into a slug it can compare against the resolved
+/// operator write scope.
+pub fn slugFromRef(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    kind: ScopeKind,
+    id: ?i64,
+) Error!?[]const u8 {
+    return switch (kind) {
+        .global => null,
+        .association => slugFromAssocId(d, allocator, id orelse return Error.SlugNotFound),
+        .repo => slugFromProjectId(d, allocator, id orelse return Error.SlugNotFound),
+    };
+}
+
+fn slugFromAssocId(d: *db.sqlite.Db, allocator: std.mem.Allocator, id: i64) Error!?[]const u8 {
+    var stmt = d.prepare("select slug from associations where id = ?") catch return Error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .int = id }}) catch return Error.QueryFailed;
+    return switch (stmt.step() catch return Error.QueryFailed) {
+        .done => Error.SlugNotFound,
+        .row => try stmt.columnTextAlloc(0, allocator),
+    };
+}
+
+fn slugFromProjectId(d: *db.sqlite.Db, allocator: std.mem.Allocator, id: i64) Error!?[]const u8 {
+    var stmt = d.prepare("select slug from projects where id = ?") catch return Error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .int = id }}) catch return Error.QueryFailed;
+    return switch (stmt.step() catch return Error.QueryFailed) {
+        .done => Error.SlugNotFound,
+        .row => try stmt.columnTextAlloc(0, allocator),
+    };
+}
+
 // =========================================================================
 // Suggest (cwd-based association proposals from existing memberships)
 // =========================================================================

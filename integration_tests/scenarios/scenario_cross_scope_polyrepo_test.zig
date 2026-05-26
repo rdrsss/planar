@@ -19,22 +19,15 @@
 //!     [cs/task-touches] — `task touches add` against a sibling
 //!     project's slug surfaces the touches edge via
 //!     `task list --touches <slug> --json`.
-//!     [cs/plan-scope-derive] (partial / observed-behavior pin) —
-//!     `plan create` from inside a registered project's cwd
-//!     produces a usable plan. The scenario locks the CURRENT
-//!     observable behavior (plan lands in `global` regardless of
-//!     assoc binding); the aspirational claim that the plan
-//!     should derive the bound assoc scope is filed as task
-//!     2450 on plan 352. Once that engine fix lands, the
-//!     scope_kind assertion below tightens from "global" to
-//!     "association".
-//!
-//! Bullets deferred to follow-up tasks (NOT asserted here):
-//!     [cs/cross-scope-refusal] — the cross-scope guard does not
-//!     currently fire for `task update` from operator cwd. Filed
-//!     as task 2451. Once landed, the second block from this
-//!     scenario's original draft (rolled back 2026-05-26) is
-//!     restored.
+//!     [cs/plan-scope-derive] — `plan create` from inside a
+//!     registered project's cwd derives the bound assoc scope
+//!     automatically. Tightened from "global" to "association"
+//!     after task 2450's cwd-derive fix landed in handlers/plan/
+//!     create.zig.
+//!     [cs/cross-scope-refusal] — restored after task 2451 wired
+//!     scope_mod.guard into handlers/task/update.zig. From
+//!     project A's cwd, attempting to update a task in scope B
+//!     exits 5 with the documented scope-mismatch wording.
 
 const std = @import("std");
 const harness = @import("harness");
@@ -129,17 +122,24 @@ test "scenario: cross-scope polyrepo — two projects under one assoc surface in
 
     // ---- 4. Plan from inside project A's cwd.
     //
-    // Known gap (task 2450): cwd-derive at plan-create does not
-    // surface the bound assoc scope today. The plan lands in
-    // `global`. We assert the current observable behavior so the
-    // engine fix lands as a deliberate test update, not a silent
-    // contract change.
-    const plan = suite.mustRunJSON(PlanJSON, arena, &.{
+    // Post-task-2450, cwd-derive at plan-create surfaces the
+    // bound assoc scope automatically. Run via mustRunInDir so
+    // the child's cwd is project A's path — that's the
+    // operator's actual call site. The PWD-first cwd helper
+    // (task 2375) + scope_mod.resolve fallback in handlers/plan/
+    // create.zig together land the plan in `assoc_slug`'s scope.
+    const plan_raw = suite.mustRunInDir(proj_a, &.{
         "plan", "create", "--json", "Polyrepo feature spike",
     });
+    defer gpa.free(plan_raw);
+    const plan_parsed = std.json.parseFromSlice(PlanJSON, arena, plan_raw, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    }) catch unreachable;
+    const plan = plan_parsed.value;
     try std.testing.expectEqualStrings("Polyrepo feature spike", plan.title);
     try std.testing.expectEqualStrings("draft", plan.status);
-    try std.testing.expectEqualStrings("global", plan.scope_kind);
+    try std.testing.expectEqualStrings("association", plan.scope_kind);
 
     const plan_id_str = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch unreachable;
 
@@ -235,4 +235,66 @@ test "scenario: cross-scope polyrepo — plan show round-trips title and surface
     try std.testing.expectEqual(plan.id, plan_shown.id);
     try std.testing.expectEqualStrings("Roundtrip target", plan_shown.title);
     try std.testing.expectEqualStrings("draft", plan_shown.status);
+}
+
+// =========================================================================
+// Cross-scope refusal: write from project A's cwd to a task in
+// assoc-B's scope is refused by scope_mod.guard (task 2451).
+// =========================================================================
+
+test "scenario: cross-scope polyrepo — task update from project A's cwd to assoc-B's task refuses with exit 5" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    // Two registered projects, each bound to a different assoc.
+    _ = suite.registerProject("guard-a");
+    const proj_a = suite.tmpAbsPath();
+    const proj_b = suite.freshSystemTmpDir();
+    const init_b_out = suite.mustRunInDir(proj_b, &.{
+        "init", "--allow-no-repo", "--name", "guard-b",
+    });
+    gpa.free(init_b_out);
+
+    const cr_a = suite.mustRun(&.{ "assoc", "create", "guard-assoc-a", "--kind", "org" });
+    gpa.free(cr_a);
+    const cr_b = suite.mustRun(&.{ "assoc", "create", "guard-assoc-b", "--kind", "org" });
+    gpa.free(cr_b);
+    const add_a = suite.mustRun(&.{ "assoc", "add", "guard-assoc-a", proj_a });
+    gpa.free(add_a);
+    const add_b = suite.mustRun(&.{ "assoc", "add", "guard-assoc-b", proj_b });
+    gpa.free(add_b);
+
+    // Seed a task explicitly in assoc-B's scope.
+    const plan_b = suite.mustRunJSON(PlanJSON, arena, &.{
+        "plan", "create", "--json", "--scope", "guard-assoc-b", "B-scoped plan",
+    });
+    try std.testing.expectEqualStrings("association", plan_b.scope_kind);
+    const plan_b_id_str = std.fmt.allocPrint(arena, "{d}", .{plan_b.id}) catch unreachable;
+
+    const task_b = suite.mustRunJSON(TaskJSON, arena, &.{
+        "task",          "add",         "--json",
+        "--plan",        plan_b_id_str, "--scope", "guard-assoc-b",
+        "--next-action", "trigger guard",
+        "B-scoped task",
+    });
+    const task_b_id_str = std.fmt.allocPrint(arena, "{d}", .{task_b.id}) catch unreachable;
+
+    // From project A's cwd (resolves to guard-assoc-a via cwd-
+    // derive), attempt `task update --status doing` against the
+    // assoc-B-scoped task. scope_mod.guard refuses with exit 5
+    // (codeFor(ScopeMismatch)) and a stderr containing the
+    // documented "scope mismatch" wording.
+    const stderr = suite.expectFailureInDir(proj_a, &.{
+        "task", "update", "--status", "doing", task_b_id_str,
+    });
+    defer gpa.free(stderr);
+
+    try std.testing.expect(std.mem.containsAtLeast(u8, stderr, 1, "scope mismatch"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, stderr, 1, "guard-assoc-a"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, stderr, 1, "guard-assoc-b"));
 }

@@ -8,11 +8,19 @@ const runtime = @import("../../runtime.zig");
 const output = @import("../../output.zig");
 const exit = @import("../../exit.zig");
 const editor = @import("../../editor.zig");
+const scope_mod = @import("../../scope.zig");
 
 pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     const args = cli.castArgs(main.root, &.{ "task", "add" }, args_ptr);
     const ctx = runtime.current();
     const d = try runtime.ensureDb();
+
+    // Resolve write scope: --scope override wins; otherwise cwd-
+    // derive uses the project-at-cwd's bound assoc when present.
+    // Plan 352 task 2450.
+    const resolution = scope_mod.resolve(ctx, args.scope) catch |e|
+        exit.die(ctx, e, "task add: resolving scope failed: {s}", .{@errorName(e)});
+    const effective_scope: ?[]const u8 = if (resolution.scope) |s| s else null;
 
     var body_owned: ?[]u8 = null;
     defer if (body_owned) |b| ctx.allocator.free(b);
@@ -40,7 +48,7 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         .due_at = args.due,
         .slug = args.slug,
         .no_auto_promote = args.no_auto_promote,
-        .scope = args.scope,
+        .scope = effective_scope,
     }) catch |e| exit.die(ctx, e, "task add: {s}", .{@errorName(e)});
 
     try output.emit(ctx, engine.planning.task, task, .{ .json = args.json });
