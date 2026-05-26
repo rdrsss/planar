@@ -108,6 +108,13 @@ fn renderText(ctx: *const runtime.Ctx, p: engine.runtime.@"resume".Packet) !void
     }
     if (p.operational_plane.links.len == 0) {
         try ctx.stdout.print("  (no external links)\n", .{});
+    } else {
+        for (p.operational_plane.links) |l| {
+            try ctx.stdout.print(
+                "  link {d}: {s} [{s}]  {s}\n",
+                .{ @as(u64, @intCast(l.link_id)), l.external_id, l.sync_status, l.external_url },
+            );
+        }
     }
     try ctx.stdout.print("\n", .{});
 

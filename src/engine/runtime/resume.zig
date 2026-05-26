@@ -21,6 +21,7 @@ const std = @import("std");
 const db = @import("db");
 const session_mod = @import("session.zig");
 const snapshot_mod = @import("snapshot.zig");
+const extlink = @import("../external/link.zig");
 
 // =========================================================================
 // Types — JSON-stable (used in handler emission too)
@@ -134,8 +135,17 @@ pub fn deinitPacket(p: Packet, allocator: std.mem.Allocator) void {
         }
         allocator.free(slice);
     }
+    for (p.operational_plane.links) |l| {
+        allocator.free(l.external_id);
+        allocator.free(l.external_url);
+        allocator.free(l.remote_status);
+        allocator.free(l.remote_assignee);
+        allocator.free(l.last_synced_at);
+        allocator.free(l.sync_status);
+        allocator.free(l.refresh_error);
+    }
     allocator.free(p.operational_plane.links);
-    if (p.operational_plane.refresh_note.len > 0) allocator.free(p.operational_plane.refresh_note);
+    allocator.free(p.operational_plane.refresh_note);
     for (p.recent_activity) |e| {
         allocator.free(e.prefix);
         allocator.free(e.body);
@@ -279,9 +289,9 @@ pub fn validate(
 // buildPacket
 // =========================================================================
 
-/// Assemble the full resume packet for task `task_id`. The external
-/// plane (section 4) is skipped in the M7 build with a refresh_note
-/// pointing at M8.
+/// Assemble the full resume packet for task `task_id`. Section 4 loads
+/// the external_links rows whose entity is this task and surfaces them
+/// as ExternalLinkState entries on the operational plane.
 pub fn buildPacket(
     d: *db.sqlite.Db,
     allocator: std.mem.Allocator,
@@ -330,15 +340,8 @@ pub fn buildPacket(
     // ---- Section 3 — Plan position ------------------------------------
     const plan_pos = try buildPlanPosition(d, allocator, identity.plan_id);
 
-    // ---- Section 4 — Operational plane (deferred to M8) ---------------
-    const op_note = try allocator.dupe(
-        u8,
-        "operational plane not available in M7 build (external plane lands in M8)",
-    );
-    const op_plane = OperationalPlane{
-        .links = try allocator.alloc(ExternalLinkState, 0),
-        .refresh_note = op_note,
-    };
+    // ---- Section 4 — Operational plane --------------------------------
+    const op_plane = try buildOperationalPlane(d, allocator, task_id);
 
     // ---- Section 5 — Recent activity ----------------------------------
     const entries = try session_mod.recentEntriesForTask(d, allocator, task_id, 50);
@@ -406,6 +409,51 @@ pub fn buildPacket(
         .questions = questions,
         .artifacts = artifacts,
         .audit = audit_opt,
+    };
+}
+
+fn buildOperationalPlane(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    task_id: i64,
+) Error!OperationalPlane {
+    const links = extlink.linksForEntity(d, allocator, .task, task_id) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return Error.QueryFailed,
+    };
+    defer extlink.deinitMany(links, allocator);
+
+    var out: std.ArrayList(ExternalLinkState) = .empty;
+    errdefer {
+        for (out.items) |item| {
+            allocator.free(item.external_id);
+            allocator.free(item.external_url);
+            allocator.free(item.remote_status);
+            allocator.free(item.remote_assignee);
+            allocator.free(item.last_synced_at);
+            allocator.free(item.sync_status);
+            allocator.free(item.refresh_error);
+        }
+        out.deinit(allocator);
+    }
+
+    for (links) |l| {
+        try out.append(allocator, .{
+            .link_id = l.id,
+            .external_id = try allocator.dupe(u8, l.external_id),
+            .external_url = try allocator.dupe(u8, l.external_url orelse ""),
+            .remote_status = try allocator.dupe(u8, ""),
+            .remote_assignee = try allocator.dupe(u8, ""),
+            .last_synced_at = try allocator.dupe(u8, l.last_synced_at orelse ""),
+            .sync_status = try allocator.dupe(u8, l.last_sync_status.toText()),
+            .conflict = l.last_sync_status == .conflict,
+            .refresh_error = try allocator.dupe(u8, ""),
+        });
+    }
+
+    return .{
+        .links = try out.toOwnedSlice(allocator),
+        .refresh_note = try allocator.dupe(u8, ""),
     };
 }
 
