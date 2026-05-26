@@ -14,7 +14,7 @@
 - Keep `AGENTS.md` equivalent to this file (symlink or byte-for-byte copy).
 - Put installable Planar agents under top-level `agents/`. Do not scaffold them under vendor dot directories.
 - Put unified skill source files under `skills/src/`. Do not author generated vendor surfaces directly.
-- Vendor skill surfaces (`commands/claude/`, `skills/codex/`, `skills/copilot/`) are generated outputs from `planar skills render`; do not hand-edit them.
+- The per-vendor skill surfaces (`commands/claude/`, `skills/codex/`, `skills/copilot/`) are **not checked into the repo** — they are rendered at install time by `planar skills render`, invoked by `install.sh` after the binary is built. Source-of-truth lives under `skills/src/` only. `.gitignore` blocks the rendered dirs from re-entering the tree. The `agents/models.md` Tier Table section is also patched at install time.
 - Copilot instructions/prompts stay under `copilot/`. Do not scaffold under `.copilot/` or `.github/`.
 - Operator-machine-local skills and agents go under `~/.planar/local/{skills,agents}/`, not in the repo. They are user-machine-local state, never committed, and are linked into each vendor's surface via `planar local link` (which prefixes installs with `local-` to make them visibly user-authored). Promotion from sandbox to canonical is manual — copy the file into the repo and follow the normal contribution flow. There is no `planar local promote` shortcut. See `docs/workflows.md § Recipe 14` for the end-to-end walk-through and `docs/skill-reference.md § Personal sandbox` for the canonical-vs-sandbox boundary.
 - User-facing reference docs (architecture, CLI reference, skill reference, concepts, workflows) live under `docs/` in the repo. Project-internal planning artifacts (tech specs, roadmaps, ADRs about Planar's own development) live as Planar artifacts under `~/.planar/`, accessible via `planar artifact` and the workbench. Operational state belongs in SQLite.
@@ -54,10 +54,10 @@ The repo root IS the Zig package root: `build.zig` and `build.zig.zon` sit at th
 | `docs/concepts.md` | Mental model — scope, association, plan, task, handoff |
 | `docs/workflows.md` | End-to-end recipes |
 | `docs/` | All user-facing reference documentation |
-| `skills/src/` | Unified authored skill sources (`pl-*.md`) rendered into all vendor surfaces |
-| `commands/claude/` | Generated Claude slash commands installed to `~/.claude/commands/` |
-| `skills/codex/` | Generated Codex skills materialized under `~/.planar/codex-skills/` and installed into `~/.codex/skills/` |
-| `skills/copilot/` | Generated Copilot skills installed to `~/.copilot/skills/` |
+| `skills/src/` | Unified authored skill sources (`pl-*.md`); the only skills tree checked into the repo. `planar skills render` produces the per-vendor outputs at install time. |
+| `~/.planar/commands/claude/` | (Generated at install) Claude slash commands, symlinked into `~/.claude/commands/` |
+| `~/.planar/skills/codex/` | (Generated at install) Codex skills, materialized under `~/.planar/codex-skills/<slug>/SKILL.md` and installed into `~/.codex/skills/` |
+| `~/.planar/skills/copilot/` | (Generated at install) Copilot skills, materialized under `~/.planar/copilot-skills/<slug>/SKILL.md` and installed into `~/.copilot/skills/` |
 | `copilot/` | Source Copilot instructions and prompts installed to `~/.copilot/` |
 | `agents/` | Installable Planar agents installed to `~/.planar/agents/` |
 | `Makefile` | Thin wrapper around `zig build ...` so `make build` / `make test` work from the repo root. |
@@ -285,7 +285,7 @@ The defaults are mainstream Zig; deviations require justification.
 - User-facing reference docs live under `docs/`: `architecture.md`, `cli-reference.md`, `skill-reference.md`, `concepts.md`, `workflows.md`. Update the relevant doc in the same change as any behavior or architecture change.
 - Project-internal planning artifacts (founding spec, roadmap, ADRs about Planar's own development) live as Planar artifacts under `~/.planar/`, accessible via `planar artifact list --plan <id>` or the workbench.
 - The data model is the primary contract. Schema changes flow through versioned migrations starting at `migrations/00001_foundation.up.sql`; always define and review the schema change before writing application code.
-- Workflow surfaces (Claude commands, Codex skills, Copilot skills/instructions/prompts, Planar agents) must stay aligned. Drift is gated by `planar skills render --check` (`make render-check`).
+- Workflow surfaces (Claude commands, Codex skills, Copilot skills/instructions/prompts, Planar agents) stay aligned automatically: render is the install step, so the only authored surface is `skills/src/`. The `planar skills render --check` verb is reserved for CI / pre-merge gates that run against an out-of-tree staging dir (it walks both directions and reports orphans + content drift). It still works against any out-of-tree render — useful when developing the renderer itself.
 - Build/render-time structured data belongs in YAML / JSON (for example the embedded vendor profile); operator-facing runtime settings stay in TOML (`~/.planar/config.toml`, templates, defaults).
 - Skills, agents, commands, and prompts must route through `planar` CLI commands. They must not describe direct database writes or repo-local context scaffolding.
 
@@ -312,10 +312,10 @@ The defaults are mainstream Zig; deviations require justification.
 
 ### Workflow Surface Change
 
-1. Update source files in every affected vendor surface: `commands/claude/`, `skills/codex/`, `skills/copilot/`, `copilot/`, and `agents/`.
-2. Keep workflow names, descriptions, and command examples aligned across vendors.
+1. Update the single authored surface: `skills/src/<slug>.md`. The per-vendor outputs (`commands/`, `skills/codex/`, `skills/copilot/`) are generated at install time — do not check rendered files into the repo. `copilot/` and `agents/` are still hand-authored and stay in the tree.
+2. Keep workflow names, descriptions, and command examples aligned across vendors via the unified source.
 3. Workflow text must use the current `planar` CLI and the SQLite-backed model. It must not describe repo-local scaffolding or direct Markdown generation outside of the workbench.
-4. Run `make render-check` (renderer drift gate) and any remaining workflow validators relevant to the change.
+4. Run `planar skills render --check` against an out-of-tree staging dir if you want to verify renderer output independently of `install.sh`. The renderer is covered by `integration_tests/skills_render_test.zig` (idempotency, orphan detection, content drift, agents/models.md regression).
 
 ## Known Failure Modes
 

@@ -253,13 +253,39 @@ title "Placing source artifacts into $PLANAR_HOME"
 # These directories are the canonical Planar artifacts that get installed.
 # In copy mode we mirror them under $PLANAR_HOME; in link mode we symlink the
 # whole tree so edits to the repo propagate.
-for d in agents commands skills scripts; do
+#
+# `skills/` is special-cased: only `skills/src/` is authored in the repo;
+# the per-vendor outputs (`commands/`, `skills/codex/`, `skills/copilot/`)
+# are rendered into $PLANAR_HOME below by `planar skills render`. In link
+# mode we still symlink skills/src so source edits propagate; the
+# rendered outputs are always real files (writing through a link-mode
+# symlink would mutate the repo).
+for d in agents scripts; do
   if [[ -d "$REPO_ROOT/$d" ]]; then
     rm -rf "$PLANAR_HOME/$d"
     place "$REPO_ROOT/$d" "$PLANAR_HOME/$d"
     log "$d/ → $PLANAR_HOME/$d ($MODE)"
   fi
 done
+
+# Stage skills/src — the unified renderer input — and prepare a real
+# $PLANAR_HOME/skills/ directory the renderer can write into without
+# touching the repo. Wipe the whole skills/ subtree first so previous-
+# install rendered files don't linger.
+rm -rf "$PLANAR_HOME/skills" "$PLANAR_HOME/commands"
+mkdir -p "$PLANAR_HOME/skills"
+if [[ -d "$REPO_ROOT/skills/src" ]]; then
+  place "$REPO_ROOT/skills/src" "$PLANAR_HOME/skills/src"
+  log "skills/src/ → $PLANAR_HOME/skills/src ($MODE)"
+fi
+
+# Render the per-vendor outputs (commands/claude, skills/codex,
+# skills/copilot, agents/models.md tier table) directly into
+# $PLANAR_HOME. This replaces the previous workflow where the rendered
+# outputs were committed to the repo and copied at install time.
+title "Rendering per-vendor skill outputs"
+( cd "$PLANAR_HOME" && "$PLANAR_HOME/bin/planar" skills render --src "$PLANAR_HOME/skills/src" --out "$PLANAR_HOME" )
+log "rendered: commands/claude, skills/codex, skills/copilot (+ agents/models.md tier table)"
 
 # Migrations live at repo root in sqlx-cli format and are read by the Zig
 # build via codegen. We also stage them under $PLANAR_HOME for ad-hoc

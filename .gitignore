@@ -59,3 +59,11 @@ zig-cache/
 # Local git worktrees for feature branches.
 .worktrees/
 scripts/parity-audit.sh.runone
+
+# Per-vendor skill renders — generated at install time by
+# `planar skills render`. Source is skills/src/. See CLAUDE.md
+# § Integration test methodology for the render-at-install
+# pipeline.
+/commands/
+/skills/codex/
+/skills/copilot/

@@ -2,7 +2,7 @@
   "audit_db": "<AUDIT_DB>",
   "cwd_fixture_db": "<CWD_DB>",
   "cwd_fixture_dir": "<CWD_DIR>",
-  "generated_at": "2026-05-26T20:46:41Z",
+  "generated_at": "2026-05-26T21:18:01Z",
   "go_bin": "/Users/mn/.planar-archive/bin/planar-go",
   "go_bin_sha256": "9b32c7720522ca845a04275e9adac2f467756c7c223b5812eb958f1c5e247b8d",
   "preflight": {
@@ -4892,5 +4892,5 @@
     "verbs": 37
   },
   "zig_bin": "/Users/mn/projects/github/rdrsss/planar/bin/planar",
-  "zig_bin_sha256": "c33df2864de5e7bd2b3b8775e2a2b37efe7e50c4513c8f8c735e5d627361684a"
+  "zig_bin_sha256": "0fe6f7b20c2488e8369689f343c6bef53489b4707ef23f0d03bbb8ace939d7e7"
 }
