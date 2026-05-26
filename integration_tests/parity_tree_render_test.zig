@@ -56,7 +56,7 @@ test "parity: tree renders mixed-kind plan children in creation order, not kind-
         "artifact", "add", "--json", "--plan", plan_id_str, "--kind", "design_note", "TREE_ORDER_FIRST_artifact",
     });
     _ = suite.mustRunJSON(QuestionJSON, arena, &.{
-        "question", "add", "--json", "--body", "x", "TREE_ORDER_SECOND_question",
+        "question", "add", "--json", "--plan", plan_id_str, "--body", "x", "TREE_ORDER_SECOND_question",
     });
     _ = suite.mustRunJSON(ArtifactJSON, arena, &.{
         "artifact", "add", "--json", "--plan", plan_id_str, "--kind", "design_note", "TREE_ORDER_THIRD_artifact",

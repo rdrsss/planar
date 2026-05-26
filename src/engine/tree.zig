@@ -772,13 +772,17 @@ fn queryDerived(
     plan_id: i64,
     filter: Filter,
 ) Error![]Node {
+    // Order by el.id so derived entities surface in creation order
+    // (interleaved across kinds), matching Go's tree output and
+    // preserving the temporal narrative. Cluster K-tree-render-drift
+    // (plan 351).
     var stmt = d.prepare(
         "select el.from_kind, el.from_id" ++
             " from entity_links el" ++
             " where el.relationship = 'derives-from'" ++
             "   and el.to_kind = 'plan' and el.to_id = ?" ++
             "   and el.from_kind in ('artifact','decision','test_scenario','question')" ++
-            " order by el.from_kind, el.from_id",
+            " order by el.id",
     ) catch return Error.QueryFailed;
     defer stmt.finalize();
     stmt.bind(&.{.{ .int = plan_id }}) catch return Error.QueryFailed;
@@ -1075,25 +1079,42 @@ fn renderNode(
 
 /// Format the per-line label for a non-scope node.
 /// Matches Go's formatNodeLabel in render.go byte-for-byte.
+///
+/// Titles longer than `title_truncate_at` bytes are truncated with `…`
+/// to keep the rendered tree scannable on standard terminal widths.
+/// Cluster K-tree-render-drift (plan 351).
 fn formatNodeLabel(n: Node) []const u8 {
     const S = struct {
         var buf: [512]u8 = undefined;
+        var title_buf: [title_truncate_at + 4]u8 = undefined;
     };
+    const title = truncateTitle(n.title, S.title_buf[0..]);
     const r = if (std.mem.eql(u8, n.kind, "plan"))
-        std.fmt.bufPrint(&S.buf, "plan:{d} [{s}]  {s}", .{ n.id, n.status, n.title })
+        std.fmt.bufPrint(&S.buf, "plan:{d} [{s}]  {s}", .{ n.id, n.status, title })
     else if (std.mem.eql(u8, n.kind, "task"))
-        std.fmt.bufPrint(&S.buf, "task:{d}  {s}  [{s}, pri:{d}]", .{ n.id, n.title, n.status, n.priority })
+        std.fmt.bufPrint(&S.buf, "task:{d}  {s}  [{s}, pri:{d}]", .{ n.id, title, n.status, n.priority })
     else if (std.mem.eql(u8, n.kind, "artifact"))
-        std.fmt.bufPrint(&S.buf, "artifact:{d}  {s}  [{s}, {s}]", .{ n.id, n.title, n.artifact_kind, n.status })
+        std.fmt.bufPrint(&S.buf, "artifact:{d}  {s}  [{s}, {s}]", .{ n.id, title, n.artifact_kind, n.status })
     else if (std.mem.eql(u8, n.kind, "decision"))
-        std.fmt.bufPrint(&S.buf, "decision:{d}  {s}  [{s}]", .{ n.id, n.title, n.status })
+        std.fmt.bufPrint(&S.buf, "decision:{d}  {s}  [{s}]", .{ n.id, title, n.status })
     else if (std.mem.eql(u8, n.kind, "scenario"))
-        std.fmt.bufPrint(&S.buf, "scenario:{d}  {s}  [{s}]", .{ n.id, n.title, n.status })
+        std.fmt.bufPrint(&S.buf, "scenario:{d}  {s}  [{s}]", .{ n.id, title, n.status })
     else if (std.mem.eql(u8, n.kind, "question"))
-        std.fmt.bufPrint(&S.buf, "question:{d}  {s}  [{s}]", .{ n.id, n.title, n.status })
+        std.fmt.bufPrint(&S.buf, "question:{d}  {s}  [{s}]", .{ n.id, title, n.status })
     else
-        std.fmt.bufPrint(&S.buf, "{s}:{d}  {s}", .{ n.kind, n.id, n.title });
+        std.fmt.bufPrint(&S.buf, "{s}:{d}  {s}", .{ n.kind, n.id, title });
     return r catch n.title;
+}
+
+const title_truncate_at: usize = 80;
+
+fn truncateTitle(title: []const u8, scratch: []u8) []const u8 {
+    if (title.len <= title_truncate_at) return title;
+    const ellipsis = "…";
+    const keep = title_truncate_at - ellipsis.len;
+    @memcpy(scratch[0..keep], title[0..keep]);
+    @memcpy(scratch[keep..][0..ellipsis.len], ellipsis);
+    return scratch[0 .. keep + ellipsis.len];
 }
 
 // =========================================================================

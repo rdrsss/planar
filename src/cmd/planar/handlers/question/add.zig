@@ -21,6 +21,7 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         .title = args.title,
         .body = args.body,
         .scope = args.scope,
+        .plan_id = args.plan,
     }) catch |e| exit.die(ctx, e, "question add: {s}", .{@errorName(e)});
 
     try output.emit(ctx, engine.planning.question, q, .{ .json = args.json });

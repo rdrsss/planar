@@ -24,6 +24,7 @@ pub const verb: cli.Cmd = .{
             .flags = &.{
                 .{ .long = "--body", .kind = .string },
                 .{ .long = "--scope", .kind = .string },
+                .{ .long = "--plan", .kind = .int },
                 .{ .long = "--editor", .kind = .bool, .default = .{ .bool = false } },
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },

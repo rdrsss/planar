@@ -76,6 +76,12 @@ pub const CreateArgs = struct {
     title: []const u8,
     body: ?[]const u8 = null,
     scope: ?[]const u8 = null,
+    /// Optional plan to link this question to via an entity_links
+    /// (`question -> plan`, relationship=`derives-from`) edge. Mirrors
+    /// the artifact / decision / scenario one-shot create-and-link
+    /// pattern so the question appears under the plan in `planar tree`
+    /// output. Q237 follow-up (task 2372).
+    plan_id: ?i64 = null,
 };
 
 pub const ListFilter = struct {
@@ -119,6 +125,17 @@ pub fn create(d: *db.sqlite.Db, allocator: std.mem.Allocator, args: CreateArgs) 
 
     try policy.scope_guard.check(null, null);
 
+    if (args.plan_id) |pid| {
+        var stmt_plan = d.prepare("select count(*) from plans where id = ?") catch return Error.QueryFailed;
+        defer stmt_plan.finalize();
+        stmt_plan.bind(&.{.{ .int = pid }}) catch return Error.QueryFailed;
+        const n = switch (stmt_plan.step() catch return Error.QueryFailed) {
+            .done => return Error.QueryFailed,
+            .row => stmt_plan.columnInt(0),
+        };
+        if (n == 0) return Error.NotFound;
+    }
+
     const id = d.execParams(
         \\insert into questions (scope_kind, scope_id, title, body)
         \\values (?, ?, ?, ?)
@@ -139,6 +156,13 @@ pub fn create(d: *db.sqlite.Db, allocator: std.mem.Allocator, args: CreateArgs) 
         .entity = .{ .kind = "question", .id = id },
         .summary = summary,
     });
+
+    if (args.plan_id) |pid| {
+        _ = d.execParams(
+            \\insert into entity_links (from_kind, from_id, to_kind, to_id, relationship)
+            \\values ('question', ?, 'plan', ?, 'derives-from')
+        , &.{ .{ .int = id }, .{ .int = pid } }) catch return Error.QueryFailed;
+    }
 
     return try show(d, allocator, id);
 }
