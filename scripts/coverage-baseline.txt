@@ -8,4 +8,4 @@
 # Excluded verbs (intentional, not counted in total):
 #   completion version sync planar init
 
-67 168
+73 168
