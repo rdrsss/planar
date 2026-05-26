@@ -8,12 +8,15 @@
 //!
 //! Exit-code convention (mirrors Go side, src/internal/cperr/cperr.go):
 //!   0  — success
-//!   1  — generic failure (default for unmapped errors)
+//!   1  — generic failure (default for unmapped errors); also entity
+//!        not found, matching Go's behavior and the canonical Unix
+//!        not-found convention. Parity-triage §F-exit-code-not-found
+//!        (plan 351) folded NotFound back into the generic-1 bucket so
+//!        scripts can `|| exit 1` cleanly.
 //!   2  — user-input failure (parse errors, bad flag values, …)
 //!        (main.zig maps cli.Parse.* here directly; engine code raises
 //!        InvalidInput / InvalidEntityRef which land here too)
 //!   3  — sync conflict (Go cperr.ExitConflict)
-//!   4  — entity not found (NotFound)
 //!   5  — scope violation (ScopeMismatch / cross-scope guard refusal)
 //!   6  — conflict / precondition failure (SlugConflict, AlreadyExists, …)
 //!   7  — schema version ahead of binary (SchemaVersionAhead; "stale binary")
@@ -27,7 +30,6 @@ const runtime = @import("runtime.zig");
 pub fn codeFor(err: anyerror) u8 {
     return switch (err) {
         error.NotImplemented => 64,
-        error.NotFound => 4,
         error.InvalidEntityRef, error.InvalidInput => 2,
         error.Conflict => 3,
         error.ScopeMismatch => 5,
