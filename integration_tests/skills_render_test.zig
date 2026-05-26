@@ -217,6 +217,90 @@ test "skills render rewrites and checks agents models table parity" {
     try std.testing.expect(std.mem.indexOf(u8, stderr, "--- a/agents/models.md") != null);
 }
 
+// =========================================================================
+// Regression: render must be idempotent INCLUDING agents/models.md.
+// Pre-fix the renderer's splitLines() returned a trailing empty string
+// item for any input ending in '\n', then the line-by-line append loop
+// added one '\n' per item — so agents/models.md grew by one blank line
+// per render pass. The original "is idempotent" test missed this
+// because its fixture had no agents/models.md so the renderer skipped
+// the renderModelsDoc path. This test seeds that file explicitly.
+// =========================================================================
+
+test "skills render is idempotent for agents/models.md (regression)" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try fixtureRoot(gpa, &tmp, "skills-render-models-idempotent");
+    defer gpa.free(root);
+    try writeFixtureSource(gpa, root, "pl-alpha.md", "pl-alpha", "Alpha body");
+
+    // Seed agents/models.md with the canonical shape the operator
+    // would have on disk after a clean render — including a final
+    // trailing newline, which is the input shape that triggered the
+    // phantom-newline bug.
+    const agents = try std.fs.path.join(gpa, &.{ root, "agents" });
+    defer gpa.free(agents);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, agents);
+    const models = try std.fs.path.join(gpa, &.{ agents, "models.md" });
+    defer gpa.free(models);
+    const seed =
+        \\---
+        \\name: models
+        \\description: tier-to-model mapping.
+        \\---
+        \\
+        \\# Models
+        \\
+        \\## Tier Table
+        \\
+        \\| Tier | Claude | Codex | Copilot |
+        \\|------|--------|-------|---------|
+        \\| medium | seed | seed | seed |
+        \\| large | seed | seed | seed |
+        \\
+        \\## Agent Assignments
+        \\
+        \\(populated by the renderer)
+        \\
+    ;
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = models, .data = seed });
+
+    // First render: brings the Tier Table to the canonical form.
+    {
+        const stdout = mustRunInDir(&suite, root, &.{ "skills", "render" });
+        defer gpa.free(stdout);
+    }
+    const first = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, models, gpa, std.Io.Limit.limited(1024 * 1024));
+    defer gpa.free(first);
+
+    // Second render: must produce byte-identical output. If the
+    // renderer is non-idempotent (e.g. appends a phantom trailing
+    // newline per pass) the snapshot diverges.
+    {
+        const stdout = mustRunInDir(&suite, root, &.{ "skills", "render" });
+        defer gpa.free(stdout);
+    }
+    const second = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, models, gpa, std.Io.Limit.limited(1024 * 1024));
+    defer gpa.free(second);
+
+    if (!std.mem.eql(u8, first, second)) {
+        std.debug.print(
+            "\nagents/models.md is not idempotent across render passes:\n--- first ({d} bytes) ---\n{s}\n--- second ({d} bytes) ---\n{s}\n",
+            .{ first.len, first, second.len, second },
+        );
+        try std.testing.expect(false);
+    }
+
+    // Third pass via --check must also report no drift. This locks
+    // the bidirectional contract: re-render produces identical
+    // output AND --check agrees the existing file matches.
+    const stdout = mustRunInDir(&suite, root, &.{ "skills", "render", "--check" });
+    defer gpa.free(stdout);
+}
+
 test "skills render real sources keep model tiers notes and invocation blocks" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
