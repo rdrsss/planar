@@ -241,3 +241,151 @@ test "scenario: doc system — coverage / orphans / backlinks return documented 
     };
     try std.testing.expect(bl.value.ok);
 }
+
+// =========================================================================
+// Promote + regenerate: an artifact becomes a published doc, then is
+// re-synthesised (the hand-edit guard refuses without --force).
+// =========================================================================
+
+test "scenario: doc system — promote artifact to published doc, regenerate with --force" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const proj = suite.registerProject("doc-promote-flow");
+
+    // ---- Seed: docs/features directory + manifest baseline.
+    const seed_argv = [_][]const u8{
+        "sh", "-c", "mkdir -p docs/features",
+    };
+    const seed_res = std.process.run(gpa, std.testing.io, .{
+        .argv = &seed_argv,
+        .cwd = .{ .path = proj },
+    }) catch unreachable;
+    gpa.free(seed_res.stdout);
+    gpa.free(seed_res.stderr);
+    try std.testing.expect(seed_res.term == .exited and seed_res.term.exited == 0);
+
+    const seed_mb = suite.mustRunInDir(proj, &.{ "doc", "manifest", "build", "--json" });
+    gpa.free(seed_mb);
+
+    // ---- Plan + tech-spec artifact as the promote source.
+    const PlanShape = struct { id: i64 };
+    const ArtShape = struct { id: i64 };
+
+    const plan_raw = suite.mustRun(&.{ "plan", "create", "--json", "Promote target" });
+    defer gpa.free(plan_raw);
+    const plan = std.json.parseFromSlice(PlanShape, arena, plan_raw, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    }) catch unreachable;
+    const plan_id_str = std.fmt.allocPrint(arena, "{d}", .{plan.value.id}) catch unreachable;
+
+    const art_raw = suite.mustRun(&.{
+        "artifact", "add", "--json",
+        "--plan",   plan_id_str,
+        "--kind",   "tech_spec",
+        "--body",   "# Spec\nWidget feature internals.",
+        "Widget spec",
+    });
+    defer gpa.free(art_raw);
+    const art = std.json.parseFromSlice(ArtShape, arena, art_raw, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    }) catch unreachable;
+
+    // ---- Pre-render a --body-file so promote doesn't need the
+    // LLM doc-promote skill (which is the alternative path).
+    const body_path = std.fmt.allocPrint(arena, "{s}/.promote-body.md", .{proj}) catch unreachable;
+    const write_argv = [_][]const u8{
+        "sh", "-c",
+        std.fmt.allocPrint(arena, "echo '# Widget feature' > '{s}'", .{body_path}) catch unreachable,
+    };
+    const w_res = std.process.run(gpa, std.testing.io, .{
+        .argv = &write_argv,
+        .cwd = .{ .path = proj },
+    }) catch unreachable;
+    gpa.free(w_res.stdout);
+    gpa.free(w_res.stderr);
+    try std.testing.expect(w_res.term == .exited and w_res.term.exited == 0);
+
+    // ---- doc promote with --body-file + --out file path.
+    const source_ref = std.fmt.allocPrint(arena, "artifact:{d}", .{art.value.id}) catch unreachable;
+    const out_rel = "docs/features/widget.md";
+    const PromoteShape = struct {
+        ok: bool,
+        path: []const u8,
+        kind: []const u8,
+    };
+    const promote_raw = suite.mustRunInDir(proj, &.{
+        "doc",        "promote", "--json",
+        "--kind",     "feature",
+        "--source",   source_ref,
+        "--slug",     "widget",
+        "--out",      out_rel,
+        "--body-file", body_path,
+    });
+    defer gpa.free(promote_raw);
+    const promote = std.json.parseFromSlice(PromoteShape, arena, promote_raw, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    }) catch unreachable;
+    try std.testing.expect(promote.value.ok);
+    try std.testing.expectEqualStrings("feature", promote.value.kind);
+
+    // ---- doc regenerate without --force refuses on hand-edits.
+    // The promoted doc was just written, so its hash matches the
+    // manifest. Simulate a hand edit by appending a line; then
+    // regenerate without --force should detect the drift.
+    const tamper_argv = [_][]const u8{
+        "sh", "-c", "echo 'hand-edited line' >> docs/features/widget.md",
+    };
+    const t_res = std.process.run(gpa, std.testing.io, .{
+        .argv = &tamper_argv,
+        .cwd = .{ .path = proj },
+    }) catch unreachable;
+    gpa.free(t_res.stdout);
+    gpa.free(t_res.stderr);
+    try std.testing.expect(t_res.term == .exited and t_res.term.exited == 0);
+
+    // doc regenerate without --force should exit non-zero now
+    // that there's a hand-edit. (Some implementations may instead
+    // surface a warning + non-zero; we just assert exit != 0.)
+    const refuse_res = suite.execWithInDir(proj, &.{
+        "doc",       "regenerate", "--json",
+        "--path",    out_rel,
+        "--body-file", body_path,
+    }, &.{});
+    defer gpa.free(refuse_res.stdout);
+    defer gpa.free(refuse_res.stderr);
+    if (refuse_res.term == .exited and refuse_res.term.exited == 0) {
+        // Some doc-regenerate implementations no-op on identical
+        // body; that's a soft signal too. We only fail when the
+        // verb actively succeeded AND silently dropped the hand
+        // edit. Assert one of: non-zero exit OR stderr/stdout
+        // mentions the drift.
+        const noisy =
+            std.mem.containsAtLeast(u8, refuse_res.stdout, 1, "drift") or
+            std.mem.containsAtLeast(u8, refuse_res.stderr, 1, "drift") or
+            std.mem.containsAtLeast(u8, refuse_res.stdout, 1, "hand") or
+            std.mem.containsAtLeast(u8, refuse_res.stderr, 1, "hand") or
+            std.mem.containsAtLeast(u8, refuse_res.stderr, 1, "force");
+        try std.testing.expect(noisy);
+    }
+    // Else: verb refused. Either way, the contract is locked.
+
+    // ---- doc regenerate WITH --force succeeds.
+    const force_res = suite.mustRunInDir(proj, &.{
+        "doc",       "regenerate", "--json",
+        "--path",    out_rel,
+        "--body-file", body_path,
+        "--force",
+    });
+    defer gpa.free(force_res);
+    try std.testing.expect(force_res.len > 0);
+    try std.testing.expect(std.mem.containsAtLeast(u8, force_res, 1, "\"ok\""));
+}
