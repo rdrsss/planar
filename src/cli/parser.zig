@@ -316,8 +316,19 @@ fn parseImpl(
         }
     }
 
-    // No leaf matched. If the resolved cmd has children, the user gave
-    // us a partial path. If it's a leaf with no handler, treat as help.
+    // No leaf matched. Two sub-cases:
+    //
+    //   1. `current` is a parent verb (has children) AND the user gave
+    //      no extra tokens after it — bare invocation like `planar plan`.
+    //      Render the parent's help and exit 0, matching Cobra / Go's
+    //      convention. Operator decision Q234 (plan 351, 2026-05-26).
+    //
+    //   2. Otherwise (unrecognized subcommand token, partial-but-typoed
+    //      path, etc.) — the existing UnknownSubcommand error stands.
+    if (tail_len == 0 and current.cmds.len > 0) {
+        return .{ .help = path_buf[0..path_len] };
+    }
+
     err_out.* = .{
         .kind = err_mod.Parse.UnknownSubcommand,
         .arg = if (i < argv.len) argv[i] else null,
