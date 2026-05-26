@@ -1,13 +1,13 @@
 # Parity Gap Report
 
-_Generated 2026-05-26T12:24:38Z_
+_Generated 2026-05-26T14:17:06Z_
 
 ## Summary
 
 37 verbs audited, 172 gaps surfaced, 0 errors, 4 skipped (with reasons), 1 no-diff invocations across 173 total invocations.
 
 - Go binary: `/Users/mn/.planar-archive/bin/planar-go` (sha256 `9b32c7720522…`)
-- Zig binary: `/Users/mn/projects/github/rdrsss/planar/bin/planar` (sha256 `4a7fadd3f110…`)
+- Zig binary: `/Users/mn/projects/github/rdrsss/planar/bin/planar` (sha256 `2e8b4dd08cb5…`)
 - Audit DB: `<AUDIT_DB>`
 - Cwd-fixture DB: `<CWD_DB>`
 - Cwd-fixture dir: `<CWD_DIR>`
@@ -35,10 +35,10 @@ planar health
   db:               <AUDIT_DB>  [ok]
   schema:           14  [current]
   integrity:        ok
-  in-flight tasks:  698  (0 resumable, 698 NOT RESUMABLE)
+  in-flight tasks:  766  (0 resumable, 766 NOT RESUMABLE)
   pending handoffs: 0  (0 stale)
 
-overall: DEGRADED  (698 tasks not resumable)
+overall: DEGRADED  (766 tasks not resumable)
 error: degraded health
 ```
 
@@ -51,7 +51,7 @@ db:               ok (<AUDIT_DB>)
 schema:           v14 of v14 (current)
 integrity:        ok
 in-flight tasks:  2 (0 resumable, 2 NOT resumable)
-pending handoffs: 3 (0 stale > 24h)
+pending handoffs: 3 (3 stale > 24h)
 overall:          degraded
 ```
 
@@ -7835,14 +7835,14 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 -  "db_ok": true,
 -  "schema_current": true,
 -  "integrity_ok": true,
--  "inflight_tasks": 698,
+-  "inflight_tasks": 766,
 -  "resumable_tasks": 0,
--  "not_resumable_tasks": 698,
+-  "not_resumable_tasks": 766,
 -  "pending_handoffs": 0,
 -  "stale_handoffs": 0,
 -  "overall": "degraded"
 -}
-+{"db_path":"<AUDIT_DB>","db_ok":true,"schema_version":14,"schema_target":14,"schema_current":true,"migration_count":14,"integrity_ok":true,"inflight_tasks":2,"resumable_tasks":0,"not_resumable_tasks":2,"pending_handoffs":7,"stale_handoffs":0,"overall":"degraded"}
++{"db_path":"<AUDIT_DB>","db_ok":true,"schema_version":14,"schema_target":14,"schema_current":true,"migration_count":14,"integrity_ok":true,"inflight_tasks":2,"resumable_tasks":0,"not_resumable_tasks":2,"pending_handoffs":7,"stale_handoffs":3,"overall":"degraded"}
 --- exit
 +++ exit
 -go=0
@@ -7864,15 +7864,15 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 -  db:               <AUDIT_DB>  [ok]
 -  schema:           14  [current]
 -  integrity:        ok
--  in-flight tasks:  698  (0 resumable, 698 NOT RESUMABLE)
+-  in-flight tasks:  766  (0 resumable, 766 NOT RESUMABLE)
 -  pending handoffs: 0  (0 stale)
 -
--overall: DEGRADED  (698 tasks not resumable)
+-overall: DEGRADED  (766 tasks not resumable)
 +db:               ok (<AUDIT_DB>)
 +schema:           v14 of v14 (current)
 +integrity:        ok
 +in-flight tasks:  2 (0 resumable, 2 NOT resumable)
-+pending handoffs: 7 (0 stale > 24h)
++pending handoffs: 7 (3 stale > 24h)
 +overall:          degraded
 --- go.stderr
 +++ zig.stderr

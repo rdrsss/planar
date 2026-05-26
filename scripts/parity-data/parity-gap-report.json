@@ -2,15 +2,15 @@
   "audit_db": "<AUDIT_DB>",
   "cwd_fixture_db": "<CWD_DB>",
   "cwd_fixture_dir": "<CWD_DIR>",
-  "generated_at": "2026-05-26T12:24:38Z",
+  "generated_at": "2026-05-26T14:17:06Z",
   "go_bin": "/Users/mn/.planar-archive/bin/planar-go",
   "go_bin_sha256": "9b32c7720522ca845a04275e9adac2f467756c7c223b5812eb958f1c5e247b8d",
   "preflight": {
     "go_health_exit": 1,
-    "go_health_text": "planar health\n\n  db:               <AUDIT_DB>  [ok]\n  schema:           14  [current]\n  integrity:        ok\n  in-flight tasks:  698  (0 resumable, 698 NOT RESUMABLE)\n  pending handoffs: 0  (0 stale)\n\noverall: DEGRADED  (698 tasks not resumable)\nerror: degraded health",
+    "go_health_text": "planar health\n\n  db:               <AUDIT_DB>  [ok]\n  schema:           14  [current]\n  integrity:        ok\n  in-flight tasks:  766  (0 resumable, 766 NOT RESUMABLE)\n  pending handoffs: 0  (0 stale)\n\noverall: DEGRADED  (766 tasks not resumable)\nerror: degraded health",
     "go_schema_version": 14,
     "zig_health_exit": 1,
-    "zig_health_text": "db:               ok (<AUDIT_DB>)\nschema:           v14 of v14 (current)\nintegrity:        ok\nin-flight tasks:  2 (0 resumable, 2 NOT resumable)\npending handoffs: 3 (0 stale > 24h)\noverall:          degraded",
+    "zig_health_text": "db:               ok (<AUDIT_DB>)\nschema:           v14 of v14 (current)\nintegrity:        ok\nin-flight tasks:  2 (0 resumable, 2 NOT resumable)\npending handoffs: 3 (3 stale > 24h)\noverall:          degraded",
     "zig_schema_version": 14
   },
   "results": [
@@ -1587,7 +1587,7 @@
       "cwd": "",
       "diff": {
         "size_bytes": 567,
-        "unified": "--- go\n+++ zig\n@@ -1,9 +1,6 @@\n-planar health\n-\n-  db:               <AUDIT_DB>  [ok]\n-  schema:           14  [current]\n-  integrity:        ok\n-  in-flight tasks:  698  (0 resumable, 698 NOT RESUMABLE)\n-  pending handoffs: 0  (0 stale)\n-\n-overall: DEGRADED  (698 tasks not resumable)\n+db:               ok (<AUDIT_DB>)\n+schema:           v14 of v14 (current)\n+integrity:        ok\n+in-flight tasks:  2 (0 resumable, 2 NOT resumable)\n+pending handoffs: 7 (0 stale > 24h)\n+overall:          degraded\n--- go.stderr\n+++ zig.stderr\n@@ -1 +0,0 @@\n-error: degraded health\n"
+        "unified": "--- go\n+++ zig\n@@ -1,9 +1,6 @@\n-planar health\n-\n-  db:               <AUDIT_DB>  [ok]\n-  schema:           14  [current]\n-  integrity:        ok\n-  in-flight tasks:  766  (0 resumable, 766 NOT RESUMABLE)\n-  pending handoffs: 0  (0 stale)\n-\n-overall: DEGRADED  (766 tasks not resumable)\n+db:               ok (<AUDIT_DB>)\n+schema:           v14 of v14 (current)\n+integrity:        ok\n+in-flight tasks:  2 (0 resumable, 2 NOT resumable)\n+pending handoffs: 7 (3 stale > 24h)\n+overall:          degraded\n--- go.stderr\n+++ zig.stderr\n@@ -1 +0,0 @@\n-error: degraded health\n"
       },
       "failure_class": "both-failed",
       "go": {
@@ -1595,7 +1595,7 @@
         "stderr_bytes": 23,
         "stderr_sha256": "a91b0ea06aaeeca2e5e5e378e1bc86a1f1f3127081959f286b0aa4e9a28f1a1e",
         "stdout_bytes": 246,
-        "stdout_sha256": "289483580ef505a8371ae6c0da1a1081632686ec8dd078062632f884afdcac48",
+        "stdout_sha256": "fb73f4c45dda4596bad64f3517254875d05115267050e4dc5b9445f3e622b26a",
         "timed_out": false
       },
       "invocation": "no-args",
@@ -1606,7 +1606,7 @@
         "stderr_bytes": 0,
         "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "stdout_bytes": 208,
-        "stdout_sha256": "bf28ff88959edb7c76dcba23fbbfb6b32047be3b6009acb08ab44b5e2c90bab9",
+        "stdout_sha256": "5c8226bfb9c23c40a7a723b4ea7398428916a36bd8f78e998b52d03995f126a0",
         "timed_out": false
       }
     },
@@ -1615,7 +1615,7 @@
       "cwd": "",
       "diff": {
         "size_bytes": 587,
-        "unified": "--- go\n+++ zig\n@@ -1,12 +1 @@\n-{\n-  \"db_path\": \"<AUDIT_DB>\",\n-  \"db_ok\": true,\n-  \"schema_current\": true,\n-  \"integrity_ok\": true,\n-  \"inflight_tasks\": 698,\n-  \"resumable_tasks\": 0,\n-  \"not_resumable_tasks\": 698,\n-  \"pending_handoffs\": 0,\n-  \"stale_handoffs\": 0,\n-  \"overall\": \"degraded\"\n-}\n+{\"db_path\":\"<AUDIT_DB>\",\"db_ok\":true,\"schema_version\":14,\"schema_target\":14,\"schema_current\":true,\"migration_count\":14,\"integrity_ok\":true,\"inflight_tasks\":2,\"resumable_tasks\":0,\"not_resumable_tasks\":2,\"pending_handoffs\":7,\"stale_handoffs\":0,\"overall\":\"degraded\"}\n--- exit\n+++ exit\n-go=0\n+zig=1\n"
+        "unified": "--- go\n+++ zig\n@@ -1,12 +1 @@\n-{\n-  \"db_path\": \"<AUDIT_DB>\",\n-  \"db_ok\": true,\n-  \"schema_current\": true,\n-  \"integrity_ok\": true,\n-  \"inflight_tasks\": 766,\n-  \"resumable_tasks\": 0,\n-  \"not_resumable_tasks\": 766,\n-  \"pending_handoffs\": 0,\n-  \"stale_handoffs\": 0,\n-  \"overall\": \"degraded\"\n-}\n+{\"db_path\":\"<AUDIT_DB>\",\"db_ok\":true,\"schema_version\":14,\"schema_target\":14,\"schema_current\":true,\"migration_count\":14,\"integrity_ok\":true,\"inflight_tasks\":2,\"resumable_tasks\":0,\"not_resumable_tasks\":2,\"pending_handoffs\":7,\"stale_handoffs\":3,\"overall\":\"degraded\"}\n--- exit\n+++ exit\n-go=0\n+zig=1\n"
       },
       "failure_class": "zig-failed",
       "go": {
@@ -1623,7 +1623,7 @@
         "stderr_bytes": 0,
         "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "stdout_bytes": 249,
-        "stdout_sha256": "b42f6a86e6f04b0d953975ea744dcd518f6b1b34cf80219ae37afafbf279f56e",
+        "stdout_sha256": "8d366ef6148bb6d7942332677ac03e333d7946290e4daac0dc5e6ef7a68bd40d",
         "timed_out": false
       },
       "invocation": "json",
@@ -1634,7 +1634,7 @@
         "stderr_bytes": 0,
         "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "stdout_bytes": 264,
-        "stdout_sha256": "9e806bcc4dadffa6447e7a4a3d6ced46627521b1c4dc56035e3fe64aea12ccf6",
+        "stdout_sha256": "6c546e4ca9e62b91a7b79a86c7383205fe90f003777ca840fe1e71e722ce4ea2",
         "timed_out": false
       }
     },
@@ -4892,5 +4892,5 @@
     "verbs": 37
   },
   "zig_bin": "/Users/mn/projects/github/rdrsss/planar/bin/planar",
-  "zig_bin_sha256": "4a7fadd3f1102e17e2556e198d320934306bd111f1827b378b1ae45f9f10131e"
+  "zig_bin_sha256": "2e8b4dd08cb59b3f070d3ed2817ad37ea79d633dd07a24fd3362f4f6ba5b33a9"
 }
