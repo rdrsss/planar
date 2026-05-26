@@ -30,7 +30,16 @@ fn renderCmd(comptime node: cmd_mod.Cmd, comptime path: []const []const u8) []co
         // Header: "USAGE: <name> [flags] [sub] [positionals]"
         const full_path = renderPath(path, node.name);
         out = out ++ full_path ++ "\n";
-        if (node.desc.len > 0) out = out ++ "\n  " ++ node.desc ++ "\n";
+        // Prefer long_desc (multi-line prose) when set; fall back to
+        // the one-line desc otherwise. long_desc is printed verbatim
+        // with a single leading newline so its own indentation /
+        // formatting survives. desc continues to be used in the parent's
+        // COMMANDS table (rendered below at the subcommand-list site).
+        if (node.long_desc.len > 0) {
+            out = out ++ "\n" ++ node.long_desc ++ "\n";
+        } else if (node.desc.len > 0) {
+            out = out ++ "\n  " ++ node.desc ++ "\n";
+        }
 
         // Usage line synthesis.
         var usage: []const u8 = "\nUSAGE:\n  " ++ full_path;

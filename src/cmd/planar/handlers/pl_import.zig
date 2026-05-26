@@ -11,6 +11,7 @@ const exit = @import("../exit.zig");
 pub const verb: cli.Cmd = .{
     .name = "pl-import",
     .desc = "Import an existing repo's state into Planar.",
+    .long_desc = "pl-import translates the planning artefacts of an existing\n  repository into Planar's data model. It discovers\n  tech specs, roadmap milestones, ADRs, and backlog files,\n  infers completion status from checkbox state and git history,\n  and produces an ImportPlan for review before committing.",
     .flags = &.{
         .{ .long = "--from-github", .kind = .bool, .default = .{ .bool = false }, .desc = "Pull source from GitHub issues" },
         .{ .long = "--dry-run", .kind = .bool, .default = .{ .bool = false } },

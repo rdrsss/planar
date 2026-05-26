@@ -15,6 +15,7 @@ const detect = @import("detect.zig");
 pub const verb: cli.Cmd = .{
     .name = "assoc",
     .desc = "Manage associations (many-to-many scope tags for repos).",
+    .long_desc = "Manage associations — the many-to-many tags that group repos into\n  named scopes.\n\n  Both 'assoc' and 'association' are valid subcommand names.\n  User-creatable kinds: org, project, client, personal, ad-hoc.\n  Auto-detected kinds (via 'assoc detect'): host, path, lang.",
     .cmds = &.{
         .{
             .name = "list",

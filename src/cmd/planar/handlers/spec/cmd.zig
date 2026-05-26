@@ -7,6 +7,7 @@ const ingest = @import("ingest.zig");
 pub const verb: cli.Cmd = .{
     .name = "spec",
     .desc = "Spec pipeline commands (draft, ingest).",
+    .long_desc = "Commands for the planning pipeline spec surface.\n\n  'spec ingest' decomposes workbench planning documents into a\n  structured task graph in the database.\n  'spec draft' generates initial spec artifacts from a goal statement.",
     .cmds = &.{
         .{
             .name = "ingest",

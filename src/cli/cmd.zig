@@ -21,7 +21,18 @@ const flag = @import("flag.zig");
 /// `run` is type-erased; use `handler()` below to wrap a typed function.
 pub const Cmd = struct {
     name: []const u8,
+    /// Short one-line description used in subcommand listings (the
+    /// COMMANDS table on the parent's help page) AND as the fallback
+    /// lead-in on the command's own help page when `long_desc` is
+    /// empty.
     desc: []const u8 = "",
+    /// Optional multi-line prose lead-in printed at the top of this
+    /// command's help page. When non-empty, the help renderer prints
+    /// `long_desc` instead of `desc` in the lead-in block — `desc`
+    /// stays as the one-liner the parent's COMMANDS table shows.
+    /// Used to carry verb-level documentation (status lifecycles,
+    /// allowed kinds, resolution rules) that doesn't fit a one-liner.
+    long_desc: []const u8 = "",
     flags: []const flag.Flag = &.{},
     positionals: []const flag.Positional = &.{},
     /// When true, parseLeaf ignores unknown `-x` / `--long` tokens for this

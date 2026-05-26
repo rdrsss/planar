@@ -29,8 +29,8 @@ pub const verb: cli.Cmd = .{
         .{
             .name = "list",
             .desc = "List steps of a plan.",
-            .flags = &.{ .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } } },
-            .positionals = &.{ .{ .name = "plan-id", .kind = .string, .required = true } },
+            .flags = &.{.{ .long = "--json", .kind = .bool, .default = .{ .bool = false } }},
+            .positionals = &.{.{ .name = "plan-id", .kind = .string, .required = true }},
             .run = cli.handler(list.handle),
         },
         .{
@@ -40,7 +40,7 @@ pub const verb: cli.Cmd = .{
                 .{ .long = "--scope", .kind = .string },
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },
-            .positionals = &.{ .{ .name = "step-id", .kind = .string, .required = true } },
+            .positionals = &.{.{ .name = "step-id", .kind = .string, .required = true }},
             .run = cli.handler(done.handle),
         },
         .{
@@ -50,7 +50,7 @@ pub const verb: cli.Cmd = .{
                 .{ .long = "--scope", .kind = .string },
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },
-            .positionals = &.{ .{ .name = "step-id", .kind = .string, .required = true } },
+            .positionals = &.{.{ .name = "step-id", .kind = .string, .required = true }},
             .run = cli.handler(skip.handle),
         },
         .{

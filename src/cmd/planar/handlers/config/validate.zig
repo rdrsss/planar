@@ -98,7 +98,10 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         const valid_auth = [_][]const u8{ "gh-cli", "token-env", "oauth-stored" };
         var found = false;
         for (valid_auth) |va| {
-            if (std.mem.eql(u8, gh_auth, va)) { found = true; break; }
+            if (std.mem.eql(u8, gh_auth, va)) {
+                found = true;
+                break;
+            }
         }
         if (!found) {
             ctx.stderr.print(
@@ -142,7 +145,6 @@ fn strVal(v: ?engine.config.parse.Value) []const u8 {
     };
 }
 
-
 // Inline split helper used in validate — iterate lines without allocation.
 fn stripInlineComment(s: []const u8) []const u8 {
     var in_quote = false;
@@ -163,4 +165,3 @@ fn stripInlineComment(s: []const u8) []const u8 {
     }
     return s;
 }
-

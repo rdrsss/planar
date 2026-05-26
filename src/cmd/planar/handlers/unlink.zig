@@ -19,6 +19,7 @@ const exit = @import("../exit.zig");
 pub const verb: cli.Cmd = .{
     .name = "unlink",
     .desc = "Remove an external_links row by link id.",
+    .long_desc = "Remove an external_links row by its link id.\n\n  Associated sync_events rows are also removed (cascade).",
     .flags = &.{
         .{ .long = "--scope", .kind = .string, .desc = "Scope for the cross-scope guard (currently informational)" },
         .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },

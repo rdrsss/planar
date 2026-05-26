@@ -15,6 +15,7 @@ const db = @import("db");
 pub const verb: cli.Cmd = .{
     .name = "promote",
     .desc = "Promote an entity to an association scope.",
+    .long_desc = "Promote an entity from its current scope to a named association.\n\n  Valid entity kinds: plan, task, question, test_scenario (alias:\n  scenario), artifact, decision.\n\n  Examples:\n    planar promote task:42 --to org:acme\n    planar promote plan:7 --to project:planar",
     .flags = &.{
         .{ .long = "--to", .kind = .string, .required = true, .desc = "Target association slug" },
         .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },

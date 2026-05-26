@@ -15,6 +15,7 @@ const link = @import("link.zig");
 pub const verb: cli.Cmd = .{
     .name = "artifact",
     .desc = "Manage artifacts (tech specs, ADRs, design notes, etc.).",
+    .long_desc = "Manage artifacts — durable documents that crystallize from work.\n\n  Kinds: tech_spec, adr, design_note, summary, readme, generated,\n  other, product_spec, roadmap, research, getting_started,\n  changelog_entry, glossary_term.\n  Status lifecycle: draft → active → superseded/retired.",
     .cmds = &.{
         .{
             .name = "add",

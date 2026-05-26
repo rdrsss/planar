@@ -11,6 +11,7 @@ const exit = @import("../exit.zig");
 pub const verb: cli.Cmd = .{
     .name = "pl-synthesize",
     .desc = "Synthesize fresh planning artifacts from a repo's docs + code + git history.",
+    .long_desc = "pl-synthesize reads a repository's existing planning docs, source\n  code, and git history AS INPUT for an LLM synthesis pass. It\n  produces fresh product-spec / tech-spec / roadmap artifacts (NOT a\n  verbatim transcription) and proposes them via the same workbench\n  pipeline as the planner agent.",
     .flags = &.{
         .{ .long = "--apply", .kind = .bool, .default = .{ .bool = false } },
         .{ .long = "--apply-removals", .kind = .bool, .default = .{ .bool = false } },

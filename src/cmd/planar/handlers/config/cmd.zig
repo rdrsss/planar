@@ -11,6 +11,7 @@ const path = @import("path.zig");
 pub const verb: cli.Cmd = .{
     .name = "config",
     .desc = "Manage Planar configuration.",
+    .long_desc = "Read, inspect, and validate the Planar configuration file.\n\n  The configuration file lives at ~/.planar/config.toml by default.\n  Set $PLANAR_CONFIG_PATH to use a different path.\n  Resolution order (highest to lowest priority):\n    1. Explicit --config-path flag\n    2. $PLANAR_CONFIG_PATH\n    3. ~/.planar/config.toml",
     .cmds = &.{
         .{
             .name = "show",

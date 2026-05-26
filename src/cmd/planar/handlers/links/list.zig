@@ -110,7 +110,10 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
             for (to_links) |l| {
                 var dup = false;
                 for (from_links) |f| {
-                    if (f.id == l.id) { dup = true; break; }
+                    if (f.id == l.id) {
+                        dup = true;
+                        break;
+                    }
                 }
                 if (!dup) count += 1;
             }
@@ -133,7 +136,10 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         for (to_links) |l| {
             var dup = false;
             for (from_links) |f| {
-                if (f.id == l.id) { dup = true; break; }
+                if (f.id == l.id) {
+                    dup = true;
+                    break;
+                }
             }
             if (dup) continue;
             const peer = l.from_kind.toText();

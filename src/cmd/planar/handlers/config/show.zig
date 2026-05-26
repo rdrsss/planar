@@ -145,4 +145,3 @@ fn maskedValue(key: []const u8, entry: engine.config.ValueWithSource) []const u8
     if (entry.env_var_name.len > 0 and engine.config.sensitiveName(entry.env_var_name)) return "***";
     return entry.value;
 }
-

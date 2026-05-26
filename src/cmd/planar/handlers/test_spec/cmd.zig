@@ -13,6 +13,7 @@ const status = @import("status.zig");
 pub const verb: cli.Cmd = .{
     .name = "test-spec",
     .desc = "Test-spec coverage inspectors.",
+    .long_desc = "Commands for inspecting test-spec coverage of a plan's tasks.\n\n  'test-spec status' prints a per-milestone breakdown of which tasks\n  have verifying scenarios. This is a read-only complement to the\n  ingest-time coverage gate (see `planar spec ingest --strict`).",
     .cmds = &.{
         .{
             .name = "status",

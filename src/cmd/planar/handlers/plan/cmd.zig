@@ -18,6 +18,7 @@ const step = @import("step/cmd.zig");
 pub const verb: cli.Cmd = .{
     .name = "plan",
     .desc = "Manage plans and plan steps.",
+    .long_desc = "Manage plans — the top-level structured intent for a body of work.\n\n  Plans may be hierarchical (--parent) and contain ordered steps\n  (plan step add).\n  Status lifecycle: draft → active → paused / done / abandoned.",
     .cmds = &.{
         .{
             .name = "create",

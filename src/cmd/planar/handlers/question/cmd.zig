@@ -16,6 +16,7 @@ const link = @import("link.zig");
 pub const verb: cli.Cmd = .{
     .name = "question",
     .desc = "Manage questions.",
+    .long_desc = "Manage questions — open uncertainties surfaced during work.\n\n  Status lifecycle: open → answered (via 'question answer') / wontfix.",
     .cmds = &.{
         .{
             .name = "add",
@@ -26,7 +27,7 @@ pub const verb: cli.Cmd = .{
                 .{ .long = "--editor", .kind = .bool, .default = .{ .bool = false } },
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },
-            .positionals = &.{ .{ .name = "title", .kind = .string, .required = true } },
+            .positionals = &.{.{ .name = "title", .kind = .string, .required = true }},
             .run = cli.handler(add.handle),
         },
         .{
@@ -36,19 +37,19 @@ pub const verb: cli.Cmd = .{
                 .{ .long = "--no-pull", .kind = .bool, .default = .{ .bool = false } },
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },
-            .positionals = &.{ .{ .name = "question-id", .kind = .string, .required = true } },
+            .positionals = &.{.{ .name = "question-id", .kind = .string, .required = true }},
             .run = cli.handler(edit.handle),
         },
         .{
             .name = "view",
             .desc = "View question's workbench file.",
-            .positionals = &.{ .{ .name = "question-id", .kind = .string, .required = true } },
+            .positionals = &.{.{ .name = "question-id", .kind = .string, .required = true }},
             .run = cli.handler(view.handle),
         },
         .{
             .name = "diff",
             .desc = "Diff question against database version.",
-            .positionals = &.{ .{ .name = "question-id", .kind = .string, .required = true } },
+            .positionals = &.{.{ .name = "question-id", .kind = .string, .required = true }},
             .run = cli.handler(diff.handle),
         },
         .{
@@ -59,7 +60,7 @@ pub const verb: cli.Cmd = .{
                 .{ .long = "--request-changes", .kind = .bool, .default = .{ .bool = false } },
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },
-            .positionals = &.{ .{ .name = "question-id", .kind = .string, .required = true } },
+            .positionals = &.{.{ .name = "question-id", .kind = .string, .required = true }},
             .run = cli.handler(review.handle),
         },
         .{
@@ -69,7 +70,7 @@ pub const verb: cli.Cmd = .{
                 .{ .long = "--answer", .kind = .string },
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },
-            .positionals = &.{ .{ .name = "question-id", .kind = .string, .required = true } },
+            .positionals = &.{.{ .name = "question-id", .kind = .string, .required = true }},
             .run = cli.handler(answer.handle),
         },
         .{
@@ -79,7 +80,7 @@ pub const verb: cli.Cmd = .{
                 .{ .long = "--reason", .kind = .string },
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },
-            .positionals = &.{ .{ .name = "question-id", .kind = .string, .required = true } },
+            .positionals = &.{.{ .name = "question-id", .kind = .string, .required = true }},
             .run = cli.handler(wontfix.handle),
         },
         .{
@@ -96,8 +97,8 @@ pub const verb: cli.Cmd = .{
         .{
             .name = "show",
             .desc = "Show a question's details.",
-            .flags = &.{ .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } } },
-            .positionals = &.{ .{ .name = "question-id", .kind = .string, .required = true } },
+            .flags = &.{.{ .long = "--json", .kind = .bool, .default = .{ .bool = false } }},
+            .positionals = &.{.{ .name = "question-id", .kind = .string, .required = true }},
             .run = cli.handler(show.handle),
         },
         .{

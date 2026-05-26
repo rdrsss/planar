@@ -12,6 +12,7 @@ const path = @import("path.zig");
 pub const verb: cli.Cmd = .{
     .name = "templates",
     .desc = "Inspect, validate, and render Planar JSON templates.",
+    .long_desc = "Manage the template plane: list available templates, show their\n  raw JSON, render them against a DB entity (dry run), validate\n  syntax, initialise the default set on disk, and print resolution\n  paths.\n\n  Templates resolve via a three-level fallback chain:\n    1. ~/.planar/templates/<kind>/<slug>.json (operator overrides)\n    2. ~/.planar/templates/defaults/<kind>/<slug>.json (default copies)\n    3. templates/defaults/<kind>/<slug>.json (embedded in the binary)",
     .cmds = &.{
         .{
             .name = "list",

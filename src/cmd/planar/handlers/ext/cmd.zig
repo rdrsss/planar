@@ -11,6 +11,7 @@ const propagate = @import("propagate.zig");
 pub const verb: cli.Cmd = .{
     .name = "ext",
     .desc = "Manage external operational-plane systems (Jira, GitHub Issues, etc.).",
+    .long_desc = "Register and interact with external systems on the operational plane.\n\n  Sub-commands: register, list, test, create, propagate.\n  Currently supported systems: Jira, GitHub Issues, GitHub Projects.",
     .cmds = &.{
         register.verb,
         .{

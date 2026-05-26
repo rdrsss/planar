@@ -43,18 +43,15 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         .scopes = scopes.items,
     };
 
-    const items = if (args.touches) |slug|
-        blk: {
-            const repo_id = resolveRepoSlug(d, slug) catch |e| switch (e) {
-                error.NotFound => exit.die(ctx, e, "repo '{s}' not found", .{slug}),
-                else => exit.die(ctx, e, "repo lookup: {s}", .{@errorName(e)}),
-            };
-            break :blk engine.planning.scenario.listTouching(d, ctx.allocator, repo_id, filter) catch |e|
-                exit.die(ctx, e, "scenario list --touches: {s}", .{@errorName(e)});
-        }
-    else
-        engine.planning.scenario.list(d, ctx.allocator, filter) catch |e|
-            exit.die(ctx, e, "scenario list: {s}", .{@errorName(e)});
+    const items = if (args.touches) |slug| blk: {
+        const repo_id = resolveRepoSlug(d, slug) catch |e| switch (e) {
+            error.NotFound => exit.die(ctx, e, "repo '{s}' not found", .{slug}),
+            else => exit.die(ctx, e, "repo lookup: {s}", .{@errorName(e)}),
+        };
+        break :blk engine.planning.scenario.listTouching(d, ctx.allocator, repo_id, filter) catch |e|
+            exit.die(ctx, e, "scenario list --touches: {s}", .{@errorName(e)});
+    } else engine.planning.scenario.list(d, ctx.allocator, filter) catch |e|
+        exit.die(ctx, e, "scenario list: {s}", .{@errorName(e)});
 
     try output.emitList(ctx, engine.planning.scenario, items, .{ .json = args.json });
 }

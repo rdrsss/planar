@@ -16,6 +16,7 @@ const link = @import("link.zig");
 pub const verb: cli.Cmd = .{
     .name = "scenario",
     .desc = "Manage test scenarios.",
+    .long_desc = "Manage test scenarios — verification artifacts tied to specs,\n  plans, or tasks.\n\n  Planar records scenarios and their outcomes; it does not execute\n  them.\n  Status lifecycle: draft → ready → verified / failing → retired.",
     .cmds = &.{
         .{
             .name = "add",

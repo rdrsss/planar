@@ -21,6 +21,7 @@ const touches = @import("touches/cmd.zig");
 pub const verb: cli.Cmd = .{
     .name = "task",
     .desc = "Manage tasks.",
+    .long_desc = "Manage tasks — the discrete units of work.\n\n  Tasks may belong to a plan (--plan) or another task (--parent), and\n  carry the next_action field required by resume validate.\n  Status lifecycle: todo → doing → done / cancelled; blocked is set\n  via task block.",
     .cmds = &.{
         .{
             .name = "add",
@@ -38,14 +39,14 @@ pub const verb: cli.Cmd = .{
                 .{ .long = "--no-auto-promote", .kind = .bool, .default = .{ .bool = false } },
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },
-            .positionals = &.{ .{ .name = "title", .kind = .string, .required = true } },
+            .positionals = &.{.{ .name = "title", .kind = .string, .required = true }},
             .run = cli.handler(add.handle),
         },
         .{
             .name = "show",
             .desc = "Show full task details.",
-            .flags = &.{ .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } } },
-            .positionals = &.{ .{ .name = "task-id", .kind = .string, .required = true } },
+            .flags = &.{.{ .long = "--json", .kind = .bool, .default = .{ .bool = false } }},
+            .positionals = &.{.{ .name = "task-id", .kind = .string, .required = true }},
             .run = cli.handler(show.handle),
         },
         .{
@@ -79,7 +80,7 @@ pub const verb: cli.Cmd = .{
                 .{ .long = "--no-auto-promote", .kind = .bool, .default = .{ .bool = false } },
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },
-            .positionals = &.{ .{ .name = "task-id", .kind = .string, .required = true } },
+            .positionals = &.{.{ .name = "task-id", .kind = .string, .required = true }},
             .run = cli.handler(update.handle),
         },
         .{
@@ -89,19 +90,19 @@ pub const verb: cli.Cmd = .{
                 .{ .long = "--no-pull", .kind = .bool, .default = .{ .bool = false } },
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },
-            .positionals = &.{ .{ .name = "task-id", .kind = .string, .required = true } },
+            .positionals = &.{.{ .name = "task-id", .kind = .string, .required = true }},
             .run = cli.handler(edit.handle),
         },
         .{
             .name = "view",
             .desc = "View task's workbench file.",
-            .positionals = &.{ .{ .name = "task-id", .kind = .string, .required = true } },
+            .positionals = &.{.{ .name = "task-id", .kind = .string, .required = true }},
             .run = cli.handler(view.handle),
         },
         .{
             .name = "diff",
             .desc = "Diff task against its database-stored version.",
-            .positionals = &.{ .{ .name = "task-id", .kind = .string, .required = true } },
+            .positionals = &.{.{ .name = "task-id", .kind = .string, .required = true }},
             .run = cli.handler(diff.handle),
         },
         .{
@@ -112,7 +113,7 @@ pub const verb: cli.Cmd = .{
                 .{ .long = "--request-changes", .kind = .bool, .default = .{ .bool = false } },
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },
-            .positionals = &.{ .{ .name = "task-id", .kind = .string, .required = true } },
+            .positionals = &.{.{ .name = "task-id", .kind = .string, .required = true }},
             .run = cli.handler(review.handle),
         },
         .{
@@ -122,7 +123,7 @@ pub const verb: cli.Cmd = .{
                 .{ .long = "--scope", .kind = .string },
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },
-            .positionals = &.{ .{ .name = "task-id", .kind = .string, .required = true } },
+            .positionals = &.{.{ .name = "task-id", .kind = .string, .required = true }},
             .run = cli.handler(done.handle),
         },
         .{
@@ -132,7 +133,7 @@ pub const verb: cli.Cmd = .{
                 .{ .long = "--scope", .kind = .string },
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },
-            .positionals = &.{ .{ .name = "task-id", .kind = .string, .required = true } },
+            .positionals = &.{.{ .name = "task-id", .kind = .string, .required = true }},
             .run = cli.handler(cancel.handle),
         },
         .{
@@ -144,7 +145,7 @@ pub const verb: cli.Cmd = .{
                 .{ .long = "--scope", .kind = .string },
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },
-            .positionals = &.{ .{ .name = "task-id", .kind = .string, .required = true } },
+            .positionals = &.{.{ .name = "task-id", .kind = .string, .required = true }},
             .run = cli.handler(block.handle),
         },
         .{
@@ -170,7 +171,7 @@ pub const verb: cli.Cmd = .{
                 .{ .long = "--scope", .kind = .string },
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },
-            .positionals = &.{ .{ .name = "task-id", .kind = .string, .required = true } },
+            .positionals = &.{.{ .name = "task-id", .kind = .string, .required = true }},
             .run = cli.handler(reopen.handle),
         },
         touches.verb,

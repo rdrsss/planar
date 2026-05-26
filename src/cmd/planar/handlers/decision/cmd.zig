@@ -18,6 +18,7 @@ const link = @import("link.zig");
 pub const verb: cli.Cmd = .{
     .name = "decision",
     .desc = "Manage decision records.",
+    .long_desc = "Manage decision records — rationale for choices made during work.\n\n  Status lifecycle: proposed → accepted / superseded / withdrawn.\n  Terminal statuses: superseded, withdrawn.",
     .cmds = &.{
         .{
             .name = "add",

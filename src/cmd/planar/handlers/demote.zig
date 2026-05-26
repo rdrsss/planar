@@ -15,6 +15,7 @@ const db = @import("db");
 pub const verb: cli.Cmd = .{
     .name = "demote",
     .desc = "Demote an entity back to global scope.",
+    .long_desc = "Reverse a promotion — move an entity back to global personal scope.\n\n  Only \"global\" is accepted as a target. Association-to-association\n  transitions go through promote.\n\n  Example:\n    planar demote task:42 --to global",
     .flags = &.{
         .{ .long = "--from", .kind = .string, .desc = "Source association slug" },
         .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },

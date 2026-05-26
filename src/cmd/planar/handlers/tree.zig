@@ -30,14 +30,15 @@ const scope_mod = @import("../scope.zig");
 pub const verb: cli.Cmd = .{
     .name = "tree",
     .desc = "Render plans, tasks, artifacts, decisions, scenarios, and questions as a hierarchical tree.",
+    .long_desc = "Render a hierarchical view of Planar entities for one or all\n  scopes.\n\n  Walks plans (via parent_plan_id), tasks (via plan_id and\n  parent_task_id), and entity_links(derives-from) to gather\n  artifacts, decisions, scenarios, and questions linked to each plan.",
     .flags = &.{
-        .{ .long = "--scope",      .kind = .string, .desc = "Limit to a single scope slug" },
+        .{ .long = "--scope", .kind = .string, .desc = "Limit to a single scope slug" },
         .{ .long = "--all-scopes", .kind = .bool, .default = .{ .bool = false }, .desc = "Include every scope" },
-        .{ .long = "--depth",      .kind = .int,  .default = .{ .int = -1 }, .desc = "Max tree depth (-1 = unbounded)" },
-        .{ .long = "--kind",       .kind = .string, .desc = "Restrict to one kind (repeatable in Go; single here for now)" },
-        .{ .long = "--status",     .kind = .string, .desc = "Restrict by status (repeatable in Go; single here for now)" },
-        .{ .long = "--sort",       .kind = .string, .desc = "Sort key" },
-        .{ .long = "--json",       .kind = .bool, .default = .{ .bool = false } },
+        .{ .long = "--depth", .kind = .int, .default = .{ .int = -1 }, .desc = "Max tree depth (-1 = unbounded)" },
+        .{ .long = "--kind", .kind = .string, .desc = "Restrict to one kind (repeatable in Go; single here for now)" },
+        .{ .long = "--status", .kind = .string, .desc = "Restrict by status (repeatable in Go; single here for now)" },
+        .{ .long = "--sort", .kind = .string, .desc = "Sort key" },
+        .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
     },
     .run = cli.handler(handle),
 };
@@ -54,7 +55,10 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
     if (args.kind) |k| {
         var found = false;
         for (engine.tree.valid_kinds) |vk| {
-            if (std.mem.eql(u8, k, vk)) { found = true; break; }
+            if (std.mem.eql(u8, k, vk)) {
+                found = true;
+                break;
+            }
         }
         if (!found) exit.die(ctx, error.InvalidInput, "unknown kind '{s}'", .{k});
         kinds_buf[0] = k;
@@ -83,19 +87,19 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
     const max_depth: i64 = args.depth;
 
     const filter = engine.tree.Filter{
-        .scope      = scope_opt,
+        .scope = scope_opt,
         .all_scopes = args.all_scopes,
-        .max_depth  = max_depth,
-        .kinds      = kinds_slice,
-        .statuses   = statuses_slice,
-        .sort       = if (args.sort) |s| (if (s.len > 0) s else null) else null,
+        .max_depth = max_depth,
+        .kinds = kinds_slice,
+        .statuses = statuses_slice,
+        .sort = if (args.sort) |s| (if (s.len > 0) s else null) else null,
     };
 
     const roots = engine.tree.build(d, ctx.allocator, filter) catch |e| switch (e) {
         error.UnsupportedScope => exit.die(ctx, error.InvalidInput, "unsupported scope form", .{}),
-        error.SlugNotFound     => exit.die(ctx, error.NotFound,     "scope slug not found", .{}),
-        error.UnknownKind      => exit.die(ctx, error.InvalidInput, "unknown kind", .{}),
-        else                   => exit.die(ctx, e, "tree walk failed: {s}", .{@errorName(e)}),
+        error.SlugNotFound => exit.die(ctx, error.NotFound, "scope slug not found", .{}),
+        error.UnknownKind => exit.die(ctx, error.InvalidInput, "unknown kind", .{}),
+        else => exit.die(ctx, e, "tree walk failed: {s}", .{@errorName(e)}),
     };
     defer engine.tree.deinitNodes(roots, ctx.allocator);
 

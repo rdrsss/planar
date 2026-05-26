@@ -10,6 +10,7 @@ const routing = @import("routing/cmd.zig");
 pub const verb: cli.Cmd = .{
     .name = "workspace",
     .desc = "Manage workspace state directories and their AGENTS.md surfaces.",
+    .long_desc = "Workspace administration.\n\n  A workspace is identified by an associations row of kind=org. Each\n  workspace owns a state directory under\n  ${PLANAR_HOME:-~/.planar}/workspaces/<org_id>/ holding the canonical\n  AGENTS.md surface for the org.",
     .cmds = &.{
         .{
             .name = "init",

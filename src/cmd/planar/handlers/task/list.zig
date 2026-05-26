@@ -22,18 +22,15 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         filter.status = engine.planning.task.Status.fromText(s) orelse
             exit.die(ctx, error.InvalidStatus, "unknown status '{s}'", .{s});
     }
-    const tasks = if (args.touches) |slug|
-        blk: {
-            const repo_id = resolveRepoSlug(d, slug) catch |e| switch (e) {
-                error.NotFound => exit.die(ctx, e, "repo '{s}' not found", .{slug}),
-                else => exit.die(ctx, e, "repo lookup: {s}", .{@errorName(e)}),
-            };
-            break :blk engine.planning.task.listTouching(d, ctx.allocator, repo_id, filter) catch |e|
-                exit.die(ctx, e, "task list --touches: {s}", .{@errorName(e)});
-        }
-    else
-        engine.planning.task.list(d, ctx.allocator, filter) catch |e|
-            exit.die(ctx, e, "task list: {s}", .{@errorName(e)});
+    const tasks = if (args.touches) |slug| blk: {
+        const repo_id = resolveRepoSlug(d, slug) catch |e| switch (e) {
+            error.NotFound => exit.die(ctx, e, "repo '{s}' not found", .{slug}),
+            else => exit.die(ctx, e, "repo lookup: {s}", .{@errorName(e)}),
+        };
+        break :blk engine.planning.task.listTouching(d, ctx.allocator, repo_id, filter) catch |e|
+            exit.die(ctx, e, "task list --touches: {s}", .{@errorName(e)});
+    } else engine.planning.task.list(d, ctx.allocator, filter) catch |e|
+        exit.die(ctx, e, "task list: {s}", .{@errorName(e)});
 
     try output.emitList(ctx, engine.planning.task, tasks, .{ .json = args.json });
 }

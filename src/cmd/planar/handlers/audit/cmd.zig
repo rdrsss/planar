@@ -19,6 +19,7 @@ const handoff_readiness = @import("handoff_readiness.zig");
 pub const verb: cli.Cmd = .{
     .name = "audit",
     .desc = "Cross-plane audit trail commands.",
+    .long_desc = "Cross-plane audit trail commands.\n\n  Subcommands inspect external-link history, recompute decision\n  publication targets, render session timelines, and walk the full\n  audit trail for any external link.",
     .cmds = &.{
         .{
             .name = "trail",

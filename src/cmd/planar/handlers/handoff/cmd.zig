@@ -21,6 +21,7 @@ const render = @import("render.zig");
 pub const verb: cli.Cmd = .{
     .name = "handoff",
     .desc = "Capture a context snapshot and create a validated handoff record.",
+    .long_desc = "Capture a context snapshot for the current session and atomically:\n    1. Insert a context_snapshots row.\n    2. Insert a handoffs row with status='pending'.\n    3. Validate the handoff (pending → validated, validated_at set).\n\n  Subcommands manage the handoff lifecycle: create / validate /\n  consume / abandon / list / show.",
     .flags = &.{
         .{ .long = "--vendor", .kind = .string },
         .{ .long = "--note", .kind = .string },

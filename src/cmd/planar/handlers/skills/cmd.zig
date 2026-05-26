@@ -6,6 +6,7 @@ const render = @import("render.zig");
 pub const verb: cli.Cmd = .{
     .name = "skills",
     .desc = "Render unified skill sources into per-vendor output trees.",
+    .long_desc = "Manage the unified skill source tree.\n\n  Skill sources live under skills/src/<slug>.md as Markdown with YAML\n  frontmatter. The 'render' subcommand produces the per-vendor output\n  trees (commands/claude/, skills/codex/, skills/copilot/) from those\n  sources.",
     .cmds = &.{
         .{
             .name = "render",

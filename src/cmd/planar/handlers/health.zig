@@ -18,6 +18,7 @@ const exit = @import("../exit.zig");
 pub const verb: cli.Cmd = .{
     .name = "health",
     .desc = "Report database and handoff-readiness health.",
+    .long_desc = "Check database reachability, schema version currency, SQLite\n  integrity, in-flight task resumability, and pending handoff\n  staleness.\n\n  Exit codes:\n    0  all checks pass\n    1  degraded (in-flight tasks not resumable, stale handoffs,\n       integrity errors, etc.)",
     .flags = &.{
         .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
     },

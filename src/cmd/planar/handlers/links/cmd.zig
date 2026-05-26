@@ -20,6 +20,7 @@ const update = @import("update.zig");
 pub const verb: cli.Cmd = .{
     .name = "links",
     .desc = "List or remove internal entity_links relationships.",
+    .long_desc = "Manage internal cross-cutting entity_links relationships.\n\n  Entity links record typed relationships between any two Planar\n  entities (e.g. a task cites an artifact, a plan blocks another\n  plan). This domain is distinct from the top-level link/unlink\n  commands, which operate on external-system ticket linkage.",
     .cmds = &.{
         .{
             .name = "add",

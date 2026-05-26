@@ -18,6 +18,7 @@ const edit = @import("edit.zig");
 pub const verb: cli.Cmd = .{
     .name = "workbench",
     .desc = "Manage workbench sync for plan feature directories.",
+    .long_desc = "Manage the bidirectional sync surface between the workbench\n  filesystem and the Planar database.\n\n  The workbench root defaults to ~/.planar/workbench/ and can be\n  overridden with the PLANAR_WORKBENCH_ROOT environment variable.",
     .cmds = &.{
         .{
             .name = "pull",

@@ -21,6 +21,7 @@ const propagate_handler = @import("ext/propagate.zig");
 pub const verb: cli.Cmd = .{
     .name = "link",
     .desc = "Link a local entity to an external-system ticket.",
+    .long_desc = "Manually record an external_links row linking a local entity to\n  an already-existing external ticket. Use this when the external\n  ticket was created outside of 'ext create'. Does not push any data\n  to the external system.\n\n  <kind:id> is a local entity reference, e.g. task:42, plan:7.",
     .flags = &.{
         .{ .long = "--to", .kind = .string, .required = true, .desc = "<system-slug>:<external-id>" },
         .{ .long = "--role", .kind = .string, .desc = "Link role: mirror, parent, child, reference (default: reference)" },

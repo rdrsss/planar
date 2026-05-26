@@ -12,6 +12,7 @@ const snapshot = @import("snapshot.zig");
 pub const verb: cli.Cmd = .{
     .name = "capture",
     .desc = "Manage explicit session capture.",
+    .long_desc = "Capture commands manage explicit session management and context\n  capture.\n\n  Automatic capture happens on every write command; use these\n  subcommands for explicit session management, narrative notes,\n  command history, and snapshots.",
     .cmds = &.{
         .{
             .name = "session",

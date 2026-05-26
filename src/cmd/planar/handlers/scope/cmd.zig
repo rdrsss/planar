@@ -9,6 +9,7 @@ const removed = @import("removed.zig");
 pub const verb: cli.Cmd = .{
     .name = "scope",
     .desc = "Inspect the cwd-derived scope and suggest memberships.",
+    .long_desc = "Inspect the scope Planar will resolve for the current working\n  directory.\n\n  Plan 153 removed the active scope stack; scope is now derived from\n  cwd and overridden by passing --scope <slug> to individual verbs.",
     .cmds = &.{
         .{
             .name = "show",

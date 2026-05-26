@@ -14,6 +14,7 @@ const coverage = @import("coverage.zig");
 pub const verb: cli.Cmd = .{
     .name = "doc",
     .desc = "Outward-facing documentation: lint, manifest, drift detection.",
+    .long_desc = "Outward-facing documentation tooling.\n\n  The lint subcommand validates citations and reference declarations\n  in markdown docs. The manifest subcommands track per-doc content +\n  source hashes in .manifest-docs so drift between published docs and\n  the underlying source artifacts is detectable.",
     .cmds = &.{
         .{
             .name = "lint",
@@ -59,8 +60,8 @@ pub const verb: cli.Cmd = .{
         .{
             .name = "backlinks",
             .desc = "Report which docs link to a given entity.",
-            .flags = &.{ .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } } },
-            .positionals = &.{ .{ .name = "ref", .kind = .string, .required = true } },
+            .flags = &.{.{ .long = "--json", .kind = .bool, .default = .{ .bool = false } }},
+            .positionals = &.{.{ .name = "ref", .kind = .string, .required = true }},
             .run = cli.handler(backlinks.handle),
         },
         .{
@@ -76,7 +77,7 @@ pub const verb: cli.Cmd = .{
         .{
             .name = "coverage",
             .desc = "Report documentation coverage metrics.",
-            .flags = &.{ .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } } },
+            .flags = &.{.{ .long = "--json", .kind = .bool, .default = .{ .bool = false } }},
             .run = cli.handler(coverage.handle),
         },
     },

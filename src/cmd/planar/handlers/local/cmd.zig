@@ -11,6 +11,7 @@ const migrate = @import("migrate.zig");
 pub const verb: cli.Cmd = .{
     .name = "local",
     .desc = "Manage user-local sandbox skills and agents under ~/.planar/local/.",
+    .long_desc = "Manage the operator's local sandbox for personal skills and agents.\n\n  Authors a single source file per skill or agent under\n  ~/.planar/local/ and creates per-vendor symlinks (with copy\n  fallback) into each vendor's install directory.\n  Edits to the source file propagate immediately to every vendor.",
     .cmds = &.{
         .{
             .name = "list",
@@ -30,7 +31,7 @@ pub const verb: cli.Cmd = .{
                 .{ .long = "--reconcile", .kind = .bool, .default = .{ .bool = false } },
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },
-            .positionals = &.{ .{ .name = "name", .kind = .string, .required = false } },
+            .positionals = &.{.{ .name = "name", .kind = .string, .required = false }},
             .run = cli.handler(link.handle),
         },
         .{
@@ -40,7 +41,7 @@ pub const verb: cli.Cmd = .{
                 .{ .long = "--purge", .kind = .bool, .default = .{ .bool = false } },
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },
-            .positionals = &.{ .{ .name = "name", .kind = .string, .required = true } },
+            .positionals = &.{.{ .name = "name", .kind = .string, .required = true }},
             .run = cli.handler(unlink.handle),
         },
         .{
@@ -53,7 +54,7 @@ pub const verb: cli.Cmd = .{
                 .{ .long = "--no-link", .kind = .bool, .default = .{ .bool = false } },
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },
-            .positionals = &.{ .{ .name = "path", .kind = .string, .required = true } },
+            .positionals = &.{.{ .name = "path", .kind = .string, .required = true }},
             .run = cli.handler(import.handle),
         },
         .{
