@@ -289,19 +289,54 @@ pub fn build(b: *std.Build) void {
     // per-file failure isolation and let the test runner parallelize.
     const test_integration_step = b.step("test-integration", "Run integration tests (requires compiled binary)");
 
-    const int_tests_rel = "integration_tests";
-    const int_tests_abs = b.pathFromRoot(int_tests_rel);
-    var int_tests_dir = std.Io.Dir.openDirAbsolute(b.graph.io, int_tests_abs, .{ .iterate = true }) catch |e| {
-        std.debug.panic("build.zig: cannot open integration_tests dir '{s}': {s}", .{ int_tests_abs, @errorName(e) });
+    // Discover top-level integration tests AND scenario tests under
+    // integration_tests/scenarios/. Both directories are treated
+    // identically; the split is purely organizational (focused per-verb
+    // tests at the top, multi-verb workflow scenarios under scenarios/).
+    // See CLAUDE.md "Integration test methodology" for the convention.
+    const int_test_dirs = [_][]const u8{
+        "integration_tests",
+        "integration_tests/scenarios",
     };
-    defer int_tests_dir.close(b.graph.io);
+    for (int_test_dirs) |dir_rel| {
+        registerIntegrationTestDir(
+            b,
+            dir_rel,
+            harness_mod,
+            target,
+            optimize,
+            test_filters_opt,
+            test_integration_step,
+        );
+    }
+}
 
-    var int_it = int_tests_dir.iterate();
-    while (int_it.next(b.graph.io) catch |e| std.debug.panic("build.zig: iterate {s}: {s}", .{ int_tests_abs, @errorName(e) })) |entry| {
+fn registerIntegrationTestDir(
+    b: *std.Build,
+    dir_rel: []const u8,
+    harness_mod: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    test_filters_opt: []const []const u8,
+    test_integration_step: *std.Build.Step,
+) void {
+    const dir_abs = b.pathFromRoot(dir_rel);
+    var dir = std.Io.Dir.openDirAbsolute(b.graph.io, dir_abs, .{ .iterate = true }) catch |e| switch (e) {
+        // A missing scenarios/ directory is fine — the bucket is added
+        // incrementally. Only the top-level integration_tests/ dir is
+        // load-bearing; if that is missing we still panic via the
+        // outer enumeration.
+        error.FileNotFound => return,
+        else => std.debug.panic("build.zig: cannot open '{s}': {s}", .{ dir_abs, @errorName(e) }),
+    };
+    defer dir.close(b.graph.io);
+
+    var it = dir.iterate();
+    while (it.next(b.graph.io) catch |e| std.debug.panic("build.zig: iterate {s}: {s}", .{ dir_abs, @errorName(e) })) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.name, "_test.zig")) continue;
 
-        const test_rel = std.fs.path.join(b.allocator, &.{ int_tests_rel, entry.name }) catch @panic("OOM");
+        const test_rel = std.fs.path.join(b.allocator, &.{ dir_rel, entry.name }) catch @panic("OOM");
 
         const test_exe = b.addTest(.{
             .root_module = b.createModule(.{

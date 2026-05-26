@@ -63,8 +63,20 @@ test-integration: build ## Run the integration suite against the built binary
 parity-check: build ## Diff zig binary against Go archive binary (plan 351 Phase 5; skips when Go binary unreachable)
 	scripts/parity-check.sh
 
+.PHONY: coverage
+coverage: build ## Check integration-test leaf-coverage ratio against scripts/coverage-baseline.txt
+	scripts/coverage-check.sh
+
+.PHONY: coverage-report
+coverage-report: build ## Print per-verb integration-test leaf coverage table
+	scripts/coverage-check.sh --report
+
+.PHONY: coverage-update
+coverage-update: build ## Re-seed scripts/coverage-baseline.txt with the current coverage ratio
+	scripts/coverage-check.sh --update
+
 .PHONY: test-all
-test-all: test test-integration parity-check ## Run unit + integration suites + parity-check gate
+test-all: test test-integration parity-check coverage ## Run unit + integration suites + parity-check gate + coverage ratchet
 
 .PHONY: fmt
 fmt: ## Run zig fmt on the source tree

@@ -1,13 +1,13 @@
 # Parity Gap Report
 
-_Generated 2026-05-26T11:08:58Z_
+_Generated 2026-05-26T12:24:38Z_
 
 ## Summary
 
 37 verbs audited, 172 gaps surfaced, 0 errors, 4 skipped (with reasons), 1 no-diff invocations across 173 total invocations.
 
 - Go binary: `/Users/mn/.planar-archive/bin/planar-go` (sha256 `9b32c7720522…`)
-- Zig binary: `/Users/mn/projects/github/rdrsss/planar/bin/planar` (sha256 `23b18860acca…`)
+- Zig binary: `/Users/mn/projects/github/rdrsss/planar/bin/planar` (sha256 `4a7fadd3f110…`)
 - Audit DB: `<AUDIT_DB>`
 - Cwd-fixture DB: `<CWD_DB>`
 - Cwd-fixture dir: `<CWD_DIR>`
@@ -35,10 +35,10 @@ planar health
   db:               <AUDIT_DB>  [ok]
   schema:           14  [current]
   integrity:        ok
-  in-flight tasks:  701  (0 resumable, 701 NOT RESUMABLE)
+  in-flight tasks:  698  (0 resumable, 698 NOT RESUMABLE)
   pending handoffs: 0  (0 stale)
 
-overall: DEGRADED  (701 tasks not resumable)
+overall: DEGRADED  (698 tasks not resumable)
 error: degraded health
 ```
 
@@ -50,7 +50,7 @@ error: degraded health
 db:               ok (<AUDIT_DB>)
 schema:           v14 of v14 (current)
 integrity:        ok
-in-flight tasks:  3 (0 resumable, 3 NOT resumable)
+in-flight tasks:  2 (0 resumable, 2 NOT resumable)
 pending handoffs: 3 (0 stale > 24h)
 overall:          degraded
 ```
@@ -70,8 +70,8 @@ overall:          degraded
 
 | # | Verb | Invocation | Args | Diff bytes | Go exit | Zig exit | Failure class |
 |---|------|------------|------|------------|---------|----------|---------------|
-| 1 | `tree` | `json` | `--json` | 2010523 | 0 | 0 | `neither-failed` |
-| 2 | `tree` | `no-args` | `` | 390831 | 0 | 0 | `neither-failed` |
+| 1 | `tree` | `json` | `--json` | 2010517 | 0 | 0 | `neither-failed` |
+| 2 | `tree` | `no-args` | `` | 390830 | 0 | 0 | `neither-failed` |
 | 3 | `resume` | `json` | `--json` | 16560 | 0 | 0 | `neither-failed` |
 | 4 | `resume` | `no-args` | `` | 7013 | 0 | 0 | `neither-failed` |
 | 5 | `pl-import` | `help` | `--help` | 5085 | 0 | 0 | `neither-failed` |
@@ -248,8 +248,8 @@ overall:          degraded
 #### 1. `tree --json` — invocation `json`
 
 - Failure class: `neither-failed`
-- Go exit: `0` (stdout 1145356B, stderr 0B)
-- Zig exit: `0` (stdout 835581B, stderr 0B)
+- Go exit: `0` (stdout 1145353B, stderr 0B)
+- Zig exit: `0` (stdout 835578B, stderr 0B)
 
 ```diff
 --- go
@@ -491,8 +491,8 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 #### 2. `tree ` — invocation `no-args`
 
 - Failure class: `neither-failed`
-- Go exit: `0` (stdout 325705B, stderr 0B)
-- Zig exit: `0` (stdout 323705B, stderr 0B)
+- Go exit: `0` (stdout 325702B, stderr 0B)
+- Zig exit: `0` (stdout 323702B, stderr 0B)
 
 ```diff
 --- go
@@ -7835,14 +7835,14 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 -  "db_ok": true,
 -  "schema_current": true,
 -  "integrity_ok": true,
--  "inflight_tasks": 701,
+-  "inflight_tasks": 698,
 -  "resumable_tasks": 0,
--  "not_resumable_tasks": 701,
+-  "not_resumable_tasks": 698,
 -  "pending_handoffs": 0,
 -  "stale_handoffs": 0,
 -  "overall": "degraded"
 -}
-+{"db_path":"<AUDIT_DB>","db_ok":true,"schema_version":14,"schema_target":14,"schema_current":true,"migration_count":14,"integrity_ok":true,"inflight_tasks":3,"resumable_tasks":0,"not_resumable_tasks":3,"pending_handoffs":7,"stale_handoffs":0,"overall":"degraded"}
++{"db_path":"<AUDIT_DB>","db_ok":true,"schema_version":14,"schema_target":14,"schema_current":true,"migration_count":14,"integrity_ok":true,"inflight_tasks":2,"resumable_tasks":0,"not_resumable_tasks":2,"pending_handoffs":7,"stale_handoffs":0,"overall":"degraded"}
 --- exit
 +++ exit
 -go=0
@@ -7864,14 +7864,14 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 -  db:               <AUDIT_DB>  [ok]
 -  schema:           14  [current]
 -  integrity:        ok
--  in-flight tasks:  701  (0 resumable, 701 NOT RESUMABLE)
+-  in-flight tasks:  698  (0 resumable, 698 NOT RESUMABLE)
 -  pending handoffs: 0  (0 stale)
 -
--overall: DEGRADED  (701 tasks not resumable)
+-overall: DEGRADED  (698 tasks not resumable)
 +db:               ok (<AUDIT_DB>)
 +schema:           v14 of v14 (current)
 +integrity:        ok
-+in-flight tasks:  3 (0 resumable, 3 NOT resumable)
++in-flight tasks:  2 (0 resumable, 2 NOT resumable)
 +pending handoffs: 7 (0 stale > 24h)
 +overall:          degraded
 --- go.stderr

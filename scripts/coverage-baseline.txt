@@ -1,0 +1,11 @@
+# scripts/coverage-baseline.txt — integration-test leaf coverage baseline.
+#
+# One line: 'exercised total'. coverage-check.sh fails when the
+# exercised count drops below this number or total grows without a
+# matching exercised increase. Update via:
+#   make build && scripts/coverage-check.sh --update
+#
+# Excluded verbs (intentional, not counted in total):
+#   completion version sync planar init
+
+65 168

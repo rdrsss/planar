@@ -125,6 +125,63 @@ distinction is load-bearing — never collapse them.
   suite remains the always-on parity guard. Pass `--strict` to
   `parity-check.sh` to fail when the Go binary is unreachable.
 
+#### Integration test methodology
+
+Integration tests cover the user-visible CLI contract. Two test styles
+co-exist; both earn their keep:
+
+- **Focused per-verb tests** (`integration_tests/<verb>_test.zig`) pin
+  one verb's contract — flags, JSON shape, exit code, error wording.
+  They isolate a single surface so a regression there is easy to
+  bisect.
+- **Scenario tests** (`integration_tests/scenarios/*.zig`) walk a
+  realistic operator workflow end-to-end through many verbs. A
+  scenario is the kind of session an operator would actually run — a
+  feature lifecycle, a polyrepo cross-scope edit, a handoff/resume,
+  an external-plane propagation. They catch the "verb works in
+  isolation but breaks in the actual flow" class of bug that pure
+  per-verb tests miss.
+
+**Scenario conventions:**
+
+- One file per workflow theme, named for the workflow not the verb
+  (e.g. `scenario_feature_lifecycle_test.zig`, not
+  `scenario_task_done_test.zig`).
+- Each `test` block walks a path through the workflow. Use
+  `harness.registerProject` + `harness.addAssoc` to seed realistic
+  scope state — never construct fixture state via raw SQL inside a
+  test; go through the CLI so the test exercises the same code paths
+  the operator would.
+- After every mutating step, assert on the post-state via
+  `*/show --json` (or `*/list --json` for collections). Exit code 0
+  is not sufficient — a verb that silently no-ops is still exit 0.
+  The JSON shape + the post-state is the contract.
+- A scenario that needs to compare an entity's field across two steps
+  should snapshot the JSON via `mustRunJSON(T, ...)` between them, not
+  re-derive expectations from constants.
+- Scenarios MAY (and often should) cross verb boundaries
+  intentionally — e.g. add a question, link it to a plan, advance the
+  plan, then assert the question still surfaces in `plan show`.
+
+**Contribution policy:**
+
+- A PR that adds a new top-level verb, subcommand, or flag MUST also
+  add or extend an integration test that exercises it *in a
+  realistic operator workflow*. A "verb exists and emits JSON" smoke
+  test does not count; the test must call the verb the way an
+  operator would, in a fixture that mirrors real on-disk state.
+- A PR that changes a verb's JSON shape, exit-code mapping, or
+  status-transition rules MUST update the corresponding focused test
+  (or add one) in the same change, and re-run any scenarios that
+  touch the verb.
+- A PR that adds a new external-plane adapter or migration MUST add a
+  scenario that walks the new code path end-to-end against a fixture
+  external system (in-process `std.http.Server` for HTTP adapters).
+- `make coverage` (see scripts/coverage-check.sh) reports the current
+  `(verb, subcommand)` leaf-coverage ratio across `integration_tests/`
+  and fails when the ratio drops below the recorded baseline. A new
+  leaf added without a test trips the gate immediately.
+
 Always run integration tests via `make test-integration` (not bare
 `zig build test-integration`). The make target builds `./bin/planar` and
 exports `PLANAR_BIN` to point at it; without that, the harness falls back
