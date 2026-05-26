@@ -620,7 +620,7 @@ test "verify sets status + outcome + last_run_at" {
     defer d.close();
     const s = try create(&d, a, .{ .title = "happy path" });
     defer deinit(s, a);
-    const v = try verify(&d, a, s.id, "ran clean in CI");
+    const v = try verify(&d, a, s.id, .pass, "ran clean in CI");
     defer deinit(v, a);
     try std.testing.expectEqual(Status.verified, v.status);
     try std.testing.expectEqual(Outcome.pass, v.last_outcome.?);
@@ -633,7 +633,7 @@ test "retire flips status; doesn't touch last_outcome" {
     defer d.close();
     const s = try create(&d, a, .{ .title = "old test" });
     defer deinit(s, a);
-    const v = try verify(&d, a, s.id, null);
+    const v = try verify(&d, a, s.id, .pass, null);
     defer deinit(v, a);
     const r = try retire(&d, a, s.id, "feature removed");
     defer deinit(r, a);
@@ -649,7 +649,7 @@ test "list filters by status" {
     defer deinit(s1, a);
     const s2 = try create(&d, a, .{ .title = "drafting" });
     defer deinit(s2, a);
-    const v = try verify(&d, a, s1.id, null);
+    const v = try verify(&d, a, s1.id, .pass, null);
     defer deinit(v, a);
 
     const verified = try list(&d, a, .{ .statuses = &.{.verified} });

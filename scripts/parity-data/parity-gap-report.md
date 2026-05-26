@@ -1,13 +1,13 @@
 # Parity Gap Report
 
-_Generated 2026-05-26T18:50:52Z_
+_Generated 2026-05-26T19:38:41Z_
 
 ## Summary
 
 37 verbs audited, 172 gaps surfaced, 0 errors, 4 skipped (with reasons), 1 no-diff invocations across 173 total invocations.
 
 - Go binary: `/Users/mn/.planar-archive/bin/planar-go` (sha256 `9b32c7720522…`)
-- Zig binary: `/Users/mn/projects/github/rdrsss/planar/bin/planar` (sha256 `8e889f687f0c…`)
+- Zig binary: `/Users/mn/projects/github/rdrsss/planar/bin/planar` (sha256 `2847d0ebee24…`)
 - Audit DB: `<AUDIT_DB>`
 - Cwd-fixture DB: `<CWD_DB>`
 - Cwd-fixture dir: `<CWD_DIR>`
@@ -88,12 +88,12 @@ overall:          degraded
 | 16 | `templates` | `no-args` | `` | 2829 | 0 | 0 | `neither-failed` |
 | 17 | `templates` | `real-cwd` | `` | 2829 | 0 | 0 | `neither-failed` |
 | 18 | `link` | `help` | `--help` | 2708 | 0 | 0 | `neither-failed` |
-| 19 | `local` | `help` | `--help` | 2560 | 0 | 0 | `neither-failed` |
-| 20 | `local` | `no-args` | `` | 2560 | 0 | 0 | `neither-failed` |
-| 21 | `local` | `real-cwd` | `` | 2560 | 0 | 0 | `neither-failed` |
-| 22 | `scenario` | `help` | `--help` | 2541 | 0 | 0 | `neither-failed` |
-| 23 | `scenario` | `no-args` | `` | 2541 | 0 | 0 | `neither-failed` |
-| 24 | `scenario` | `real-cwd` | `` | 2541 | 0 | 0 | `neither-failed` |
+| 19 | `scenario` | `help` | `--help` | 2584 | 0 | 0 | `neither-failed` |
+| 20 | `scenario` | `no-args` | `` | 2584 | 0 | 0 | `neither-failed` |
+| 21 | `scenario` | `real-cwd` | `` | 2584 | 0 | 0 | `neither-failed` |
+| 22 | `local` | `help` | `--help` | 2560 | 0 | 0 | `neither-failed` |
+| 23 | `local` | `no-args` | `` | 2560 | 0 | 0 | `neither-failed` |
+| 24 | `local` | `real-cwd` | `` | 2560 | 0 | 0 | `neither-failed` |
 | 25 | `search` | `help` | `--help` | 2506 | 0 | 0 | `neither-failed` |
 | 26 | `artifact` | `help` | `--help` | 2497 | 0 | 0 | `neither-failed` |
 | 27 | `artifact` | `no-args` | `` | 2497 | 0 | 0 | `neither-failed` |
@@ -1973,7 +1973,200 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  <ref>           (string) — Entity ref (kind:id)
 ```
 
-#### 19. `local --help` — invocation `help`
+#### 19. `scenario --help` — invocation `help`
+
+- Failure class: `neither-failed`
+- Go exit: `0` (stdout 1638B, stderr 0B)
+- Zig exit: `0` (stdout 865B, stderr 0B)
+
+```diff
+--- go
++++ zig
+@@ -1,33 +1,23 @@
+-Manage test scenarios — verification artifacts tied to specs, plans, or tasks.
++scenario
+ 
+-Planar records scenarios and their outcomes; it does not execute them.
+-Status lifecycle: draft → ready → verified / failing → retired.
++Manage test scenarios — verification artifacts tied to specs,
++  plans, or tasks.
+ 
+-Usage:
+-  planar scenario [command]
++  Planar records scenarios and their outcomes; it does not execute
++  them.
++  Status lifecycle: draft → ready → verified / failing → retired.
+ 
+-Available Commands:
+-  add         Create a new test scenario.
+-  diff        Show a unified diff between the DB's scenario content and the workbench file.
+-  edit        Edit a test scenario in $EDITOR (editor-first flow).
+-  link        Create an entity link from a scenario to another entity.
+-  list        List test scenarios.
+-  retire      Mark a scenario as retired (no longer relevant).
+-  show        Show a scenario's full details including last run outcome.
+-  verify      Record the outcome of running a scenario.
+-  view        View the scenario's workbench file in $PAGER.
++USAGE:
++  scenario <command>
+ 
+-Flags:
+-  -h, --help   help for scenario
+-
+-Global Flags:
+-      --color string     Color mode: auto, always, or never. NO_COLOR env var overrides always. (default "auto")
+-      --db string        Path to the SQLite database (default: ~/.planar/planar.db)
+-      --json             Emit machine-readable JSON instead of human text
+-      --no-color         Shorthand for --color=never; wins over --color=always.
+-      --no-scope-check   Opt out of strict scope resolution; fall back to top-of-stack when cwd is ambiguous (legacy/escape-hatch — not for routine use)
+-  -q, --quiet            Suppress informational output
+-      --v                Enable debug-level tracing
+-      --vv               Enable trace-level tracing
+-
+-Use "planar scenario [command] --help" for more information about a command.
++COMMANDS:
++  add             Create a new test scenario.
++  edit            Edit a scenario in $EDITOR (editor-first flow).
++  view            View scenario's workbench file.
++  diff            Diff scenario against database version.
++  review          Reviewer entry point for scenario diff.
++  verify          Record a test run for a scenario (--outcome pass|fail|error|skipped; defaults to pass).
++  retire          Mark a scenario as retired.
++  list            List scenarios.
++  show            Show a scenario's details.
++  link            Create an entity link from a scenario to another entity.
+```
+
+#### 20. `scenario ` — invocation `no-args`
+
+- Failure class: `neither-failed`
+- Go exit: `0` (stdout 1638B, stderr 0B)
+- Zig exit: `0` (stdout 865B, stderr 0B)
+
+```diff
+--- go
++++ zig
+@@ -1,33 +1,23 @@
+-Manage test scenarios — verification artifacts tied to specs, plans, or tasks.
++scenario
+ 
+-Planar records scenarios and their outcomes; it does not execute them.
+-Status lifecycle: draft → ready → verified / failing → retired.
++Manage test scenarios — verification artifacts tied to specs,
++  plans, or tasks.
+ 
+-Usage:
+-  planar scenario [command]
++  Planar records scenarios and their outcomes; it does not execute
++  them.
++  Status lifecycle: draft → ready → verified / failing → retired.
+ 
+-Available Commands:
+-  add         Create a new test scenario.
+-  diff        Show a unified diff between the DB's scenario content and the workbench file.
+-  edit        Edit a test scenario in $EDITOR (editor-first flow).
+-  link        Create an entity link from a scenario to another entity.
+-  list        List test scenarios.
+-  retire      Mark a scenario as retired (no longer relevant).
+-  show        Show a scenario's full details including last run outcome.
+-  verify      Record the outcome of running a scenario.
+-  view        View the scenario's workbench file in $PAGER.
++USAGE:
++  scenario <command>
+ 
+-Flags:
+-  -h, --help   help for scenario
+-
+-Global Flags:
+-      --color string     Color mode: auto, always, or never. NO_COLOR env var overrides always. (default "auto")
+-      --db string        Path to the SQLite database (default: ~/.planar/planar.db)
+-      --json             Emit machine-readable JSON instead of human text
+-      --no-color         Shorthand for --color=never; wins over --color=always.
+-      --no-scope-check   Opt out of strict scope resolution; fall back to top-of-stack when cwd is ambiguous (legacy/escape-hatch — not for routine use)
+-  -q, --quiet            Suppress informational output
+-      --v                Enable debug-level tracing
+-      --vv               Enable trace-level tracing
+-
+-Use "planar scenario [command] --help" for more information about a command.
++COMMANDS:
++  add             Create a new test scenario.
++  edit            Edit a scenario in $EDITOR (editor-first flow).
++  view            View scenario's workbench file.
++  diff            Diff scenario against database version.
++  review          Reviewer entry point for scenario diff.
++  verify          Record a test run for a scenario (--outcome pass|fail|error|skipped; defaults to pass).
++  retire          Mark a scenario as retired.
++  list            List scenarios.
++  show            Show a scenario's details.
++  link            Create an entity link from a scenario to another entity.
+```
+
+#### 21. `scenario ` — invocation `real-cwd`
+
+- Failure class: `neither-failed`
+- Go exit: `0` (stdout 1638B, stderr 0B)
+- Zig exit: `0` (stdout 865B, stderr 0B)
+- cwd: `<CWD_DIR>`
+
+```diff
+--- go
++++ zig
+@@ -1,33 +1,23 @@
+-Manage test scenarios — verification artifacts tied to specs, plans, or tasks.
++scenario
+ 
+-Planar records scenarios and their outcomes; it does not execute them.
+-Status lifecycle: draft → ready → verified / failing → retired.
++Manage test scenarios — verification artifacts tied to specs,
++  plans, or tasks.
+ 
+-Usage:
+-  planar scenario [command]
++  Planar records scenarios and their outcomes; it does not execute
++  them.
++  Status lifecycle: draft → ready → verified / failing → retired.
+ 
+-Available Commands:
+-  add         Create a new test scenario.
+-  diff        Show a unified diff between the DB's scenario content and the workbench file.
+-  edit        Edit a test scenario in $EDITOR (editor-first flow).
+-  link        Create an entity link from a scenario to another entity.
+-  list        List test scenarios.
+-  retire      Mark a scenario as retired (no longer relevant).
+-  show        Show a scenario's full details including last run outcome.
+-  verify      Record the outcome of running a scenario.
+-  view        View the scenario's workbench file in $PAGER.
++USAGE:
++  scenario <command>
+ 
+-Flags:
+-  -h, --help   help for scenario
+-
+-Global Flags:
+-      --color string     Color mode: auto, always, or never. NO_COLOR env var overrides always. (default "auto")
+-      --db string        Path to the SQLite database (default: ~/.planar/planar.db)
+-      --json             Emit machine-readable JSON instead of human text
+-      --no-color         Shorthand for --color=never; wins over --color=always.
+-      --no-scope-check   Opt out of strict scope resolution; fall back to top-of-stack when cwd is ambiguous (legacy/escape-hatch — not for routine use)
+-  -q, --quiet            Suppress informational output
+-      --v                Enable debug-level tracing
+-      --vv               Enable trace-level tracing
+-
+-Use "planar scenario [command] --help" for more information about a command.
++COMMANDS:
++  add             Create a new test scenario.
++  edit            Edit a scenario in $EDITOR (editor-first flow).
++  view            View scenario's workbench file.
++  diff            Diff scenario against database version.
++  review          Reviewer entry point for scenario diff.
++  verify          Record a test run for a scenario (--outcome pass|fail|error|skipped; defaults to pass).
++  retire          Mark a scenario as retired.
++  list            List scenarios.
++  show            Show a scenario's details.
++  link            Create an entity link from a scenario to another entity.
+```
+
+#### 22. `local --help` — invocation `help`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1877B, stderr 0B)
@@ -2035,7 +2228,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  migrate         Migrate skills/agents to new Planar version.
 ```
 
-#### 20. `local ` — invocation `no-args`
+#### 23. `local ` — invocation `no-args`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1877B, stderr 0B)
@@ -2097,7 +2290,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  migrate         Migrate skills/agents to new Planar version.
 ```
 
-#### 21. `local ` — invocation `real-cwd`
+#### 24. `local ` — invocation `real-cwd`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1877B, stderr 0B)
@@ -2158,199 +2351,6 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  unlink          Remove symlinks from vendor paths.
 +  import          Import a skill or agent from an external directory.
 +  migrate         Migrate skills/agents to new Planar version.
-```
-
-#### 22. `scenario --help` — invocation `help`
-
-- Failure class: `neither-failed`
-- Go exit: `0` (stdout 1638B, stderr 0B)
-- Zig exit: `0` (stdout 822B, stderr 0B)
-
-```diff
---- go
-+++ zig
-@@ -1,33 +1,23 @@
--Manage test scenarios — verification artifacts tied to specs, plans, or tasks.
-+scenario
- 
--Planar records scenarios and their outcomes; it does not execute them.
--Status lifecycle: draft → ready → verified / failing → retired.
-+Manage test scenarios — verification artifacts tied to specs,
-+  plans, or tasks.
- 
--Usage:
--  planar scenario [command]
-+  Planar records scenarios and their outcomes; it does not execute
-+  them.
-+  Status lifecycle: draft → ready → verified / failing → retired.
- 
--Available Commands:
--  add         Create a new test scenario.
--  diff        Show a unified diff between the DB's scenario content and the workbench file.
--  edit        Edit a test scenario in $EDITOR (editor-first flow).
--  link        Create an entity link from a scenario to another entity.
--  list        List test scenarios.
--  retire      Mark a scenario as retired (no longer relevant).
--  show        Show a scenario's full details including last run outcome.
--  verify      Record the outcome of running a scenario.
--  view        View the scenario's workbench file in $PAGER.
-+USAGE:
-+  scenario <command>
- 
--Flags:
--  -h, --help   help for scenario
--
--Global Flags:
--      --color string     Color mode: auto, always, or never. NO_COLOR env var overrides always. (default "auto")
--      --db string        Path to the SQLite database (default: ~/.planar/planar.db)
--      --json             Emit machine-readable JSON instead of human text
--      --no-color         Shorthand for --color=never; wins over --color=always.
--      --no-scope-check   Opt out of strict scope resolution; fall back to top-of-stack when cwd is ambiguous (legacy/escape-hatch — not for routine use)
--  -q, --quiet            Suppress informational output
--      --v                Enable debug-level tracing
--      --vv               Enable trace-level tracing
--
--Use "planar scenario [command] --help" for more information about a command.
-+COMMANDS:
-+  add             Create a new test scenario.
-+  edit            Edit a scenario in $EDITOR (editor-first flow).
-+  view            View scenario's workbench file.
-+  diff            Diff scenario against database version.
-+  review          Reviewer entry point for scenario diff.
-+  verify          Record a successful test run for a scenario.
-+  retire          Mark a scenario as retired.
-+  list            List scenarios.
-+  show            Show a scenario's details.
-+  link            Create an entity link from a scenario to another entity.
-```
-
-#### 23. `scenario ` — invocation `no-args`
-
-- Failure class: `neither-failed`
-- Go exit: `0` (stdout 1638B, stderr 0B)
-- Zig exit: `0` (stdout 822B, stderr 0B)
-
-```diff
---- go
-+++ zig
-@@ -1,33 +1,23 @@
--Manage test scenarios — verification artifacts tied to specs, plans, or tasks.
-+scenario
- 
--Planar records scenarios and their outcomes; it does not execute them.
--Status lifecycle: draft → ready → verified / failing → retired.
-+Manage test scenarios — verification artifacts tied to specs,
-+  plans, or tasks.
- 
--Usage:
--  planar scenario [command]
-+  Planar records scenarios and their outcomes; it does not execute
-+  them.
-+  Status lifecycle: draft → ready → verified / failing → retired.
- 
--Available Commands:
--  add         Create a new test scenario.
--  diff        Show a unified diff between the DB's scenario content and the workbench file.
--  edit        Edit a test scenario in $EDITOR (editor-first flow).
--  link        Create an entity link from a scenario to another entity.
--  list        List test scenarios.
--  retire      Mark a scenario as retired (no longer relevant).
--  show        Show a scenario's full details including last run outcome.
--  verify      Record the outcome of running a scenario.
--  view        View the scenario's workbench file in $PAGER.
-+USAGE:
-+  scenario <command>
- 
--Flags:
--  -h, --help   help for scenario
--
--Global Flags:
--      --color string     Color mode: auto, always, or never. NO_COLOR env var overrides always. (default "auto")
--      --db string        Path to the SQLite database (default: ~/.planar/planar.db)
--      --json             Emit machine-readable JSON instead of human text
--      --no-color         Shorthand for --color=never; wins over --color=always.
--      --no-scope-check   Opt out of strict scope resolution; fall back to top-of-stack when cwd is ambiguous (legacy/escape-hatch — not for routine use)
--  -q, --quiet            Suppress informational output
--      --v                Enable debug-level tracing
--      --vv               Enable trace-level tracing
--
--Use "planar scenario [command] --help" for more information about a command.
-+COMMANDS:
-+  add             Create a new test scenario.
-+  edit            Edit a scenario in $EDITOR (editor-first flow).
-+  view            View scenario's workbench file.
-+  diff            Diff scenario against database version.
-+  review          Reviewer entry point for scenario diff.
-+  verify          Record a successful test run for a scenario.
-+  retire          Mark a scenario as retired.
-+  list            List scenarios.
-+  show            Show a scenario's details.
-+  link            Create an entity link from a scenario to another entity.
-```
-
-#### 24. `scenario ` — invocation `real-cwd`
-
-- Failure class: `neither-failed`
-- Go exit: `0` (stdout 1638B, stderr 0B)
-- Zig exit: `0` (stdout 822B, stderr 0B)
-- cwd: `<CWD_DIR>`
-
-```diff
---- go
-+++ zig
-@@ -1,33 +1,23 @@
--Manage test scenarios — verification artifacts tied to specs, plans, or tasks.
-+scenario
- 
--Planar records scenarios and their outcomes; it does not execute them.
--Status lifecycle: draft → ready → verified / failing → retired.
-+Manage test scenarios — verification artifacts tied to specs,
-+  plans, or tasks.
- 
--Usage:
--  planar scenario [command]
-+  Planar records scenarios and their outcomes; it does not execute
-+  them.
-+  Status lifecycle: draft → ready → verified / failing → retired.
- 
--Available Commands:
--  add         Create a new test scenario.
--  diff        Show a unified diff between the DB's scenario content and the workbench file.
--  edit        Edit a test scenario in $EDITOR (editor-first flow).
--  link        Create an entity link from a scenario to another entity.
--  list        List test scenarios.
--  retire      Mark a scenario as retired (no longer relevant).
--  show        Show a scenario's full details including last run outcome.
--  verify      Record the outcome of running a scenario.
--  view        View the scenario's workbench file in $PAGER.
-+USAGE:
-+  scenario <command>
- 
--Flags:
--  -h, --help   help for scenario
--
--Global Flags:
--      --color string     Color mode: auto, always, or never. NO_COLOR env var overrides always. (default "auto")
--      --db string        Path to the SQLite database (default: ~/.planar/planar.db)
--      --json             Emit machine-readable JSON instead of human text
--      --no-color         Shorthand for --color=never; wins over --color=always.
--      --no-scope-check   Opt out of strict scope resolution; fall back to top-of-stack when cwd is ambiguous (legacy/escape-hatch — not for routine use)
--  -q, --quiet            Suppress informational output
--      --v                Enable debug-level tracing
--      --vv               Enable trace-level tracing
--
--Use "planar scenario [command] --help" for more information about a command.
-+COMMANDS:
-+  add             Create a new test scenario.
-+  edit            Edit a scenario in $EDITOR (editor-first flow).
-+  view            View scenario's workbench file.
-+  diff            Diff scenario against database version.
-+  review          Reviewer entry point for scenario diff.
-+  verify          Record a successful test run for a scenario.
-+  retire          Mark a scenario as retired.
-+  list            List scenarios.
-+  show            Show a scenario's details.
-+  link            Create an entity link from a scenario to another entity.
 ```
 
 #### 25. `search --help` — invocation `help`
