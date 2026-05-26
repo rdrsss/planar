@@ -60,8 +60,17 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     defer freeStrings(ctx.allocator, files);
 
     var results: std.ArrayList(ExtractQuestionsResult) = .empty;
-    defer deinitResults(ctx.allocator, results.items);
-    defer results.deinit(ctx.allocator);
+    // Order is load-bearing: free each result's owned strings BEFORE the
+    // ArrayList's deinit. Splitting these across two `defer` statements
+    // is unsafe — defers run LIFO, so the bottom defer would poison the
+    // ArrayList struct (results.* = undefined ⇒ 0xaa bytes) before the
+    // upper defer reads `results.items` for iteration. Use a single
+    // block defer so the order is explicit and can't be re-broken by a
+    // future edit reordering them.
+    defer {
+        deinitResults(ctx.allocator, results.items);
+        results.deinit(ctx.allocator);
+    }
 
     for (files) |file_name| {
         const abs_path = std.fs.path.join(ctx.allocator, &.{ feature_dir, file_name }) catch continue;
