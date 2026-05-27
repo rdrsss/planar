@@ -10,9 +10,11 @@
 
 BINARY      := planar
 AGENT_BINARY := planar-agent
+WATCH_BINARY := planar-watch
 BIN_DIR     := bin
 BIN         := $(BIN_DIR)/$(BINARY)
 AGENT_BIN   := $(BIN_DIR)/$(AGENT_BINARY)
+WATCH_BIN   := $(BIN_DIR)/$(WATCH_BINARY)
 
 ZIG         ?= zig
 
@@ -31,11 +33,12 @@ help:
 	@awk 'BEGIN {FS = ":.*##"; printf "Targets:\n"} /^[a-zA-Z0-9_.-]+:.*##/ {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 .PHONY: build
-build: ## Build the planar + planar-agent binaries into ./bin/ (at repo root)
+build: ## Build the planar + planar-agent + planar-watch binaries into ./bin/ (at repo root)
 	@mkdir -p $(BIN_DIR)
 	$(ZIG) build -Doptimize=$(OPTIMIZE) $(ARGS)
 	@cp -f zig-out/bin/$(BINARY) $(BIN)
 	@cp -f zig-out/bin/$(AGENT_BINARY) $(AGENT_BIN)
+	@cp -f zig-out/bin/$(WATCH_BINARY) $(WATCH_BIN)
 
 .PHONY: install
 install: ## Full install via ./install.sh — pass extra flags as INSTALL_FLAGS="..."
@@ -60,11 +63,11 @@ test: ## Run unit tests
 
 .PHONY: test-integration
 test-integration: build ## Run the integration suite against the built binary
-	PLANAR_BIN=$(CURDIR)/$(BIN) PLANAR_AGENT_BIN=$(CURDIR)/$(AGENT_BIN) $(ZIG) build test-integration $(ARGS)
+	PLANAR_BIN=$(CURDIR)/$(BIN) PLANAR_AGENT_BIN=$(CURDIR)/$(AGENT_BIN) PLANAR_WATCH_BIN=$(CURDIR)/$(WATCH_BIN) $(ZIG) build test-integration $(ARGS)
 
 .PHONY: test-integration-files
 test-integration-files: build ## Run integration tests as one executable per test file
-	PLANAR_BIN=$(CURDIR)/$(BIN) PLANAR_AGENT_BIN=$(CURDIR)/$(AGENT_BIN) $(ZIG) build test-integration-files $(ARGS)
+	PLANAR_BIN=$(CURDIR)/$(BIN) PLANAR_AGENT_BIN=$(CURDIR)/$(AGENT_BIN) PLANAR_WATCH_BIN=$(CURDIR)/$(WATCH_BIN) $(ZIG) build test-integration-files $(ARGS)
 
 .PHONY: parity-check
 parity-check: build ## Diff zig binary against Go archive binary (plan 351 Phase 5; skips when Go binary unreachable)

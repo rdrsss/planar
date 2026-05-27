@@ -4,6 +4,26 @@ This document explains the core concepts in Planar. Read it after `planar init` 
 
 ---
 
+## Binaries
+
+Planar ships as three executables, each with a disjoint capability boundary enforced **by the verb set the binary registers** (not by runtime ACLs). The boundary is a compile-time and install-time property: the binary on PATH literally has no verb for the work it is not allowed to do. This makes vendor-hook blast radius bounded — a hook configured with only `planar-agent` on its PATH cannot mutate planning state regardless of how it is invoked.
+
+| Binary | Audience | Writes to |
+|---|---|---|
+| `planar` | Operator (human + scripts) | Planning entities (`plans`, `tasks.status` via manual transitions, `decisions`, `questions`, `scenarios`, `artifacts`, `annotations`, …) — everything **except** `agent_actions` / `agent_work_claims`. |
+| `planar-agent` | Agent (vendor hook, orchestrator dispatch) + operator recovery | `agent_actions`, `agent_work_claims`, and `tasks.status` (the last only as part of atomic coordinated operations: `pull`, `complete`, `fail`, `release`, `block`). **Never** to plan / decision / question / scenario / artifact / annotation. |
+| `planar-watch` | Operator (live view) + scripts (`--json`) | **Nothing.** Opens SQLite via `file:?mode=ro` so the driver itself rejects every write SQL string. |
+
+**Capability invariant — `planar-agent`:** a process invoked as `planar-agent` has no verbs that mutate any planning entity. The verb set is exactly `pull`, `peek`, `claim`, `heartbeat`, `complete`, `fail`, `release`, `block`, `action start`/`action end`, `ingest`, `reconcile`, `abort`, `version`.
+
+**Capability invariant — `planar-watch`:** the binary's verb set contains zero write verbs (`feed`, `ps`, `claims`, `actions`, `plans`, `log`, `version`, `completion` only). Enforced two ways: (1) the verb set; (2) the read-only DB handle.
+
+Both invariants are locked by `integration_tests/capability_boundary_test.zig` — a future change that registers a write verb on `planar-watch` or a planning-entity verb on `planar-agent` fails CI immediately. The `planar agent <verb>` subcommand namespace deliberately does not exist; agent observability lives on `planar-watch`, agent-table writes live on `planar-agent`.
+
+The ritual every code-writing agent dispatch follows is `planar-agent pull → heartbeat → complete|fail|release|block` (atomic across all three tables). See [agents/methodology.md § Claim ritual](../agents/methodology.md) and the tech spec § "Agent methodology contract" for the full sequence.
+
+---
+
 ## Scope
 
 Scope determines which entities are included in queries by default and where new entities are created when the target is unambiguous from the current working directory.

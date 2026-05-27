@@ -47,6 +47,15 @@ config/json
 config/no-args
 config/real-cwd
 config/real-cwd-json
+# dashboard/* — zig-only operator-side verb added in plan 85 M3
+# (claim-aware roll-up of in-flight plans + agent state). The Go
+# archive predates the agent-activity feature; there is no Go
+# counterpart by design. Bucket 3 (intentional zig divergence).
+dashboard/help
+dashboard/json
+dashboard/no-args
+dashboard/real-cwd
+dashboard/real-cwd-json
 decision/help
 decision/json
 decision/no-args

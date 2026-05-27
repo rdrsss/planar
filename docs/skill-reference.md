@@ -18,6 +18,18 @@ Vendor profile data and model-tier resolution come from `src/configs/vendors.yam
 
 ---
 
+## Three-binary architecture
+
+Planar ships three executables, each with a disjoint capability boundary enforced by its verb set (not by runtime ACLs). Skills and agents reach for the binary that matches the work — and only that binary. The capability boundary is locked by integration tests (`integration_tests/capability_boundary_test.zig`); see [tech spec § Binary boundaries](../../.planar/workbench/project_planar/p85-agent-activity/58-agent-activity-tracking-tech-spec.md#binary-boundaries) for the canonical table and the per-binary capability invariants.
+
+- `planar` — operator binary. Read-write to the full schema; owns every planning-entity verb (`plan`, `task`, `decision`, `question`, `scenario`, `artifact`, `workbench`, `doc`, `spec`, `templates`, `ext`, `sync`, `init`, `dashboard`, `tree`, `audit`, `health`, …). Has **no** `agent` subcommand namespace; agent-table writes live on `planar-agent` and agent-table reads live on `planar-watch`.
+- `planar-agent` — agent-callable coordination binary. Read-write **only** to `agent_actions`, `agent_work_claims`, and `tasks.status` (the last only as part of atomic coordinated operations). Verbs: `pull`, `peek`, `claim`, `heartbeat`, `complete`, `fail`, `release`, `block`, `action start`/`action end`, `ingest`, `reconcile`, `abort`, `version`. **Capability invariant:** a vendor hook configured with only `planar-agent` on its PATH cannot touch any plan / decision / question / scenario / artifact / annotation row.
+- `planar-watch` — human-facing read-only viewer. Opens SQLite via `file:?mode=ro` so the driver itself refuses any write SQL. Verbs: `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `version`, `completion`. **Capability invariant:** a watcher process holding the binary on PATH cannot corrupt operator state even under hostile verb invocation — enforced both by the zero-write verb set and the read-only DB handle.
+
+Every skill in this document routes its writes through the binary that owns them. Skills that schedule agent work (`/orchestrator`, `/pl-coder`) drive the `planar-agent pull → heartbeat → complete|fail|release|block` ritual; skills that surface live operator views (status, dashboard, audit trail) read through `planar` and `planar-watch`.
+
+---
+
 ## Orchestration
 
 These skills manage the full feature lifecycle and the coder/reviewer execution loop. They are the highest-level entry points.

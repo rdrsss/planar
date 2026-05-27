@@ -1,13 +1,13 @@
 # Parity Gap Report
 
-_Generated 2026-05-26T21:18:01Z_
+_Generated 2026-05-27T17:41:49Z_
 
 ## Summary
 
-37 verbs audited, 172 gaps surfaced, 0 errors, 4 skipped (with reasons), 1 no-diff invocations across 173 total invocations.
+38 verbs audited, 177 gaps surfaced, 0 errors, 4 skipped (with reasons), 1 no-diff invocations across 178 total invocations.
 
 - Go binary: `/Users/mn/.planar-archive/bin/planar-go` (sha256 `9b32c7720522…`)
-- Zig binary: `/Users/mn/projects/github/rdrsss/planar/bin/planar` (sha256 `0fe6f7b20c24…`)
+- Zig binary: `/Users/mn/projects/github/rdrsss/planar/bin/planar` (sha256 `80bc450c18a0…`)
 - Audit DB: `<AUDIT_DB>`
 - Cwd-fixture DB: `<CWD_DB>`
 - Cwd-fixture dir: `<CWD_DIR>`
@@ -19,13 +19,13 @@ Per-invocation breakdown of which binary (if any) returned a non-zero exit. `nei
 | Class | Count |
 |-------|-------|
 | `neither-failed` | 85 |
-| `go-failed` | 3 |
+| `go-failed` | 8 |
 | `zig-failed` | 43 |
 | `both-failed` | 42 |
 
 ## Preflight health-check
 
-Both binaries opened the audit DB before the matrix ran. Go reported schema **14** (exit 1); Zig reported schema **14** (exit 1).
+Both binaries opened the audit DB before the matrix ran. Go reported schema **15** (exit 1); Zig reported schema **15** (exit 1).
 
 <details><summary>Go health output</summary>
 
@@ -33,12 +33,12 @@ Both binaries opened the audit DB before the matrix ran. Go reported schema **14
 planar health
 
   db:               <AUDIT_DB>  [ok]
-  schema:           14  [current]
+  schema:           15  [current]
   integrity:        ok
-  in-flight tasks:  704  (0 resumable, 704 NOT RESUMABLE)
+  in-flight tasks:  673  (0 resumable, 673 NOT RESUMABLE)
   pending handoffs: 0  (0 stale)
 
-overall: DEGRADED  (704 tasks not resumable)
+overall: DEGRADED  (673 tasks not resumable)
 error: degraded health
 ```
 
@@ -48,7 +48,7 @@ error: degraded health
 
 ```
 db:               ok (<AUDIT_DB>)
-schema:           v14 of v14 (current)
+schema:           v15 of v15 (current)
 integrity:        ok
 in-flight tasks:  2 (0 resumable, 2 NOT resumable)
 pending handoffs: 3 (3 stale > 24h)
@@ -70,191 +70,196 @@ overall:          degraded
 
 | # | Verb | Invocation | Args | Diff bytes | Go exit | Zig exit | Failure class |
 |---|------|------------|------|------------|---------|----------|---------------|
-| 1 | `tree` | `json` | `--json` | 2010517 | 0 | 0 | `neither-failed` |
-| 2 | `tree` | `no-args` | `` | 390830 | 0 | 0 | `neither-failed` |
-| 3 | `resume` | `json` | `--json` | 16560 | 0 | 0 | `neither-failed` |
-| 4 | `resume` | `no-args` | `` | 7013 | 0 | 0 | `neither-failed` |
-| 5 | `pl-import` | `help` | `--help` | 5085 | 0 | 0 | `neither-failed` |
-| 6 | `tree` | `help` | `--help` | 4990 | 0 | 0 | `neither-failed` |
-| 7 | `pl-synthesize` | `help` | `--help` | 4458 | 0 | 0 | `neither-failed` |
-| 8 | `task` | `help` | `--help` | 3053 | 0 | 0 | `neither-failed` |
-| 9 | `task` | `no-args` | `` | 3053 | 0 | 0 | `neither-failed` |
-| 10 | `task` | `real-cwd` | `` | 3053 | 0 | 0 | `neither-failed` |
-| 11 | `workbench` | `help` | `--help` | 2971 | 0 | 0 | `neither-failed` |
-| 12 | `workbench` | `no-args` | `` | 2971 | 0 | 0 | `neither-failed` |
-| 13 | `workbench` | `real-cwd` | `` | 2971 | 0 | 0 | `neither-failed` |
-| 14 | `handoff` | `help` | `--help` | 2899 | 0 | 0 | `neither-failed` |
-| 15 | `templates` | `help` | `--help` | 2829 | 0 | 0 | `neither-failed` |
-| 16 | `templates` | `no-args` | `` | 2829 | 0 | 0 | `neither-failed` |
-| 17 | `templates` | `real-cwd` | `` | 2829 | 0 | 0 | `neither-failed` |
-| 18 | `link` | `help` | `--help` | 2708 | 0 | 0 | `neither-failed` |
-| 19 | `scenario` | `help` | `--help` | 2584 | 0 | 0 | `neither-failed` |
-| 20 | `scenario` | `no-args` | `` | 2584 | 0 | 0 | `neither-failed` |
-| 21 | `scenario` | `real-cwd` | `` | 2584 | 0 | 0 | `neither-failed` |
-| 22 | `local` | `help` | `--help` | 2560 | 0 | 0 | `neither-failed` |
-| 23 | `local` | `no-args` | `` | 2560 | 0 | 0 | `neither-failed` |
-| 24 | `local` | `real-cwd` | `` | 2560 | 0 | 0 | `neither-failed` |
-| 25 | `search` | `help` | `--help` | 2506 | 0 | 0 | `neither-failed` |
-| 26 | `artifact` | `help` | `--help` | 2497 | 0 | 0 | `neither-failed` |
-| 27 | `artifact` | `no-args` | `` | 2497 | 0 | 0 | `neither-failed` |
-| 28 | `artifact` | `real-cwd` | `` | 2497 | 0 | 0 | `neither-failed` |
-| 29 | `doc` | `help` | `--help` | 2452 | 0 | 0 | `neither-failed` |
-| 30 | `doc` | `no-args` | `` | 2452 | 0 | 0 | `neither-failed` |
-| 31 | `doc` | `real-cwd` | `` | 2452 | 0 | 0 | `neither-failed` |
-| 32 | `decision` | `help` | `--help` | 2450 | 0 | 0 | `neither-failed` |
-| 33 | `decision` | `no-args` | `` | 2450 | 0 | 0 | `neither-failed` |
-| 34 | `decision` | `real-cwd` | `` | 2450 | 0 | 0 | `neither-failed` |
-| 35 | `resume` | `help` | `--help` | 2411 | 0 | 0 | `neither-failed` |
-| 36 | `links` | `help` | `--help` | 2404 | 0 | 0 | `neither-failed` |
-| 37 | `links` | `no-args` | `` | 2404 | 0 | 0 | `neither-failed` |
-| 38 | `links` | `real-cwd` | `` | 2404 | 0 | 0 | `neither-failed` |
-| 39 | `plan` | `help` | `--help` | 2388 | 0 | 0 | `neither-failed` |
-| 40 | `plan` | `no-args` | `` | 2388 | 0 | 0 | `neither-failed` |
-| 41 | `plan` | `real-cwd` | `` | 2388 | 0 | 0 | `neither-failed` |
-| 42 | `question` | `help` | `--help` | 2334 | 0 | 0 | `neither-failed` |
-| 43 | `question` | `no-args` | `` | 2334 | 0 | 0 | `neither-failed` |
-| 44 | `question` | `real-cwd` | `` | 2334 | 0 | 0 | `neither-failed` |
-| 45 | `assoc` | `help` | `--help` | 2204 | 0 | 0 | `neither-failed` |
-| 46 | `assoc` | `no-args` | `` | 2204 | 0 | 0 | `neither-failed` |
-| 47 | `assoc` | `real-cwd` | `` | 2204 | 0 | 0 | `neither-failed` |
-| 48 | `capture` | `help` | `--help` | 2195 | 0 | 0 | `neither-failed` |
-| 49 | `capture` | `no-args` | `` | 2195 | 0 | 0 | `neither-failed` |
-| 50 | `capture` | `real-cwd` | `` | 2195 | 0 | 0 | `neither-failed` |
-| 51 | `config` | `help` | `--help` | 2175 | 0 | 0 | `neither-failed` |
-| 52 | `config` | `no-args` | `` | 2175 | 0 | 0 | `neither-failed` |
-| 53 | `config` | `real-cwd` | `` | 2175 | 0 | 0 | `neither-failed` |
-| 54 | `workspace` | `help` | `--help` | 2155 | 0 | 0 | `neither-failed` |
-| 55 | `workspace` | `no-args` | `` | 2155 | 0 | 0 | `neither-failed` |
-| 56 | `workspace` | `real-cwd` | `` | 2155 | 0 | 0 | `neither-failed` |
-| 57 | `templates` | `json` | `--json` | 2135 | 0 | 1 | `zig-failed` |
-| 58 | `templates` | `real-cwd-json` | `--json` | 2135 | 0 | 1 | `zig-failed` |
-| 59 | `task` | `json` | `--json` | 2085 | 0 | 1 | `zig-failed` |
-| 60 | `task` | `real-cwd-json` | `--json` | 2085 | 0 | 1 | `zig-failed` |
-| 61 | `local` | `json` | `--json` | 2082 | 0 | 1 | `zig-failed` |
-| 62 | `local` | `real-cwd-json` | `--json` | 2082 | 0 | 1 | `zig-failed` |
-| 63 | `workbench` | `json` | `--json` | 2079 | 0 | 1 | `zig-failed` |
-| 64 | `workbench` | `real-cwd-json` | `--json` | 2079 | 0 | 1 | `zig-failed` |
-| 65 | `scope` | `help` | `--help` | 2044 | 0 | 0 | `neither-failed` |
-| 66 | `scope` | `no-args` | `` | 2044 | 0 | 0 | `neither-failed` |
-| 67 | `scope` | `real-cwd` | `` | 2044 | 0 | 0 | `neither-failed` |
-| 68 | `doc` | `json` | `--json` | 1844 | 0 | 1 | `zig-failed` |
-| 69 | `doc` | `real-cwd-json` | `--json` | 1844 | 0 | 1 | `zig-failed` |
-| 70 | `scenario` | `json` | `--json` | 1843 | 0 | 1 | `zig-failed` |
-| 71 | `scenario` | `real-cwd-json` | `--json` | 1843 | 0 | 1 | `zig-failed` |
-| 72 | `ext` | `help` | `--help` | 1833 | 0 | 0 | `neither-failed` |
-| 73 | `ext` | `no-args` | `` | 1833 | 0 | 0 | `neither-failed` |
-| 74 | `ext` | `real-cwd` | `` | 1833 | 0 | 0 | `neither-failed` |
-| 75 | `decision` | `json` | `--json` | 1823 | 0 | 1 | `zig-failed` |
-| 76 | `decision` | `real-cwd-json` | `--json` | 1823 | 0 | 1 | `zig-failed` |
-| 77 | `question` | `json` | `--json` | 1813 | 0 | 1 | `zig-failed` |
-| 78 | `question` | `real-cwd-json` | `--json` | 1813 | 0 | 1 | `zig-failed` |
-| 79 | `links` | `json` | `--json` | 1812 | 0 | 1 | `zig-failed` |
-| 80 | `links` | `real-cwd-json` | `--json` | 1812 | 0 | 1 | `zig-failed` |
-| 81 | `artifact` | `json` | `--json` | 1800 | 0 | 1 | `zig-failed` |
-| 82 | `artifact` | `real-cwd-json` | `--json` | 1800 | 0 | 1 | `zig-failed` |
-| 83 | `skills` | `help` | `--help` | 1787 | 0 | 0 | `neither-failed` |
-| 84 | `skills` | `no-args` | `` | 1787 | 0 | 0 | `neither-failed` |
-| 85 | `skills` | `real-cwd` | `` | 1787 | 0 | 0 | `neither-failed` |
-| 86 | `audit` | `help` | `--help` | 1769 | 0 | 0 | `neither-failed` |
-| 87 | `audit` | `no-args` | `` | 1769 | 0 | 0 | `neither-failed` |
-| 88 | `audit` | `real-cwd` | `` | 1769 | 0 | 0 | `neither-failed` |
-| 89 | `workspace` | `json` | `--json` | 1766 | 0 | 1 | `zig-failed` |
-| 90 | `workspace` | `real-cwd-json` | `--json` | 1766 | 0 | 1 | `zig-failed` |
-| 91 | `config` | `json` | `--json` | 1724 | 0 | 1 | `zig-failed` |
-| 92 | `config` | `real-cwd-json` | `--json` | 1724 | 0 | 1 | `zig-failed` |
-| 93 | `assoc` | `json` | `--json` | 1668 | 0 | 1 | `zig-failed` |
-| 94 | `assoc` | `real-cwd-json` | `--json` | 1668 | 0 | 1 | `zig-failed` |
-| 95 | `capture` | `json` | `--json` | 1667 | 0 | 1 | `zig-failed` |
-| 96 | `capture` | `real-cwd-json` | `--json` | 1667 | 0 | 1 | `zig-failed` |
-| 97 | `plan` | `json` | `--json` | 1653 | 0 | 1 | `zig-failed` |
-| 98 | `plan` | `real-cwd-json` | `--json` | 1653 | 0 | 1 | `zig-failed` |
-| 99 | `plan` | `q233-plan-next` | `next 351` | 1602 | 0 | 0 | `neither-failed` |
-| 100 | `promote` | `help` | `--help` | 1585 | 0 | 0 | `neither-failed` |
-| 101 | `test-spec` | `help` | `--help` | 1584 | 0 | 0 | `neither-failed` |
-| 102 | `test-spec` | `no-args` | `` | 1584 | 0 | 0 | `neither-failed` |
-| 103 | `test-spec` | `real-cwd` | `` | 1584 | 0 | 0 | `neither-failed` |
-| 104 | `scope` | `json` | `--json` | 1572 | 0 | 1 | `zig-failed` |
-| 105 | `scope` | `real-cwd-json` | `--json` | 1572 | 0 | 1 | `zig-failed` |
-| 106 | `skills` | `json` | `--json` | 1572 | 0 | 1 | `zig-failed` |
-| 107 | `skills` | `real-cwd-json` | `--json` | 1572 | 0 | 1 | `zig-failed` |
-| 108 | `demote` | `help` | `--help` | 1492 | 0 | 0 | `neither-failed` |
-| 109 | `ext` | `json` | `--json` | 1484 | 0 | 1 | `zig-failed` |
-| 110 | `ext` | `real-cwd-json` | `--json` | 1484 | 0 | 1 | `zig-failed` |
-| 111 | `unlink` | `help` | `--help` | 1465 | 0 | 0 | `neither-failed` |
-| 112 | `health` | `help` | `--help` | 1458 | 0 | 0 | `neither-failed` |
-| 113 | `spec` | `help` | `--help` | 1420 | 0 | 0 | `neither-failed` |
-| 114 | `spec` | `no-args` | `` | 1420 | 0 | 0 | `neither-failed` |
-| 115 | `spec` | `real-cwd` | `` | 1420 | 0 | 0 | `neither-failed` |
-| 116 | `test-spec` | `json` | `--json` | 1388 | 0 | 1 | `zig-failed` |
-| 117 | `test-spec` | `real-cwd-json` | `--json` | 1388 | 0 | 1 | `zig-failed` |
-| 118 | `audit` | `json` | `--json` | 1348 | 0 | 1 | `zig-failed` |
-| 119 | `audit` | `real-cwd-json` | `--json` | 1348 | 0 | 1 | `zig-failed` |
-| 120 | `spec` | `json` | `--json` | 1257 | 0 | 1 | `zig-failed` |
-| 121 | `spec` | `real-cwd-json` | `--json` | 1257 | 0 | 1 | `zig-failed` |
-| 122 | `annotate` | `help` | `--help` | 1118 | 2 | 0 | `go-failed` |
-| 123 | `annotate` | `no-args` | `` | 1118 | 2 | 0 | `go-failed` |
-| 124 | `annotate` | `real-cwd` | `` | 1118 | 2 | 0 | `go-failed` |
-| 125 | `health` | `json` | `--json` | 587 | 0 | 1 | `zig-failed` |
-| 126 | `health` | `no-args` | `` | 567 | 1 | 1 | `both-failed` |
-| 127 | `health` | `real-cwd-json` | `--json` | 536 | 0 | 0 | `neither-failed` |
-| 128 | `health` | `real-cwd` | `` | 453 | 0 | 0 | `neither-failed` |
-| 129 | `tree` | `real-cwd-json` | `--json` | 365 | 0 | 0 | `neither-failed` |
-| 130 | `handoff` | `json` | `--json` | 255 | 0 | 0 | `neither-failed` |
-| 131 | `pl-import` | `no-args` | `` | 221 | 2 | 1 | `both-failed` |
-| 132 | `pl-import` | `json` | `--json` | 221 | 2 | 1 | `both-failed` |
-| 133 | `pl-import` | `real-cwd` | `` | 221 | 2 | 1 | `both-failed` |
-| 134 | `pl-import` | `real-cwd-json` | `--json` | 221 | 2 | 1 | `both-failed` |
-| 135 | `pl-synthesize` | `no-args` | `` | 221 | 2 | 1 | `both-failed` |
-| 136 | `pl-synthesize` | `json` | `--json` | 221 | 2 | 1 | `both-failed` |
-| 137 | `pl-synthesize` | `real-cwd` | `` | 221 | 2 | 1 | `both-failed` |
-| 138 | `pl-synthesize` | `real-cwd-json` | `--json` | 221 | 2 | 1 | `both-failed` |
-| 139 | `handoff` | `no-args` | `` | 220 | 0 | 0 | `neither-failed` |
-| 140 | `unlink` | `no-args` | `` | 219 | 2 | 1 | `both-failed` |
-| 141 | `unlink` | `json` | `--json` | 219 | 2 | 1 | `both-failed` |
-| 142 | `unlink` | `real-cwd` | `` | 219 | 2 | 1 | `both-failed` |
-| 143 | `unlink` | `real-cwd-json` | `--json` | 219 | 2 | 1 | `both-failed` |
-| 144 | `annotate` | `json` | `--json` | 217 | 2 | 1 | `both-failed` |
-| 145 | `annotate` | `real-cwd-json` | `--json` | 217 | 2 | 1 | `both-failed` |
-| 146 | `search` | `no-args` | `` | 217 | 2 | 1 | `both-failed` |
-| 147 | `search` | `json` | `--json` | 217 | 2 | 1 | `both-failed` |
-| 148 | `search` | `real-cwd` | `` | 217 | 2 | 1 | `both-failed` |
-| 149 | `search` | `real-cwd-json` | `--json` | 217 | 2 | 1 | `both-failed` |
-| 150 | `demote` | `no-args` | `` | 215 | 2 | 1 | `both-failed` |
-| 151 | `demote` | `json` | `--json` | 215 | 2 | 1 | `both-failed` |
-| 152 | `demote` | `real-cwd` | `` | 215 | 2 | 1 | `both-failed` |
-| 153 | `demote` | `real-cwd-json` | `--json` | 215 | 2 | 1 | `both-failed` |
-| 154 | `handoff` | `real-cwd` | `` | 212 | 1 | 2 | `both-failed` |
-| 155 | `handoff` | `real-cwd-json` | `--json` | 212 | 1 | 2 | `both-failed` |
-| 156 | `agent` | `q233-agent-top` | `` | 212 | 2 | 1 | `both-failed` |
-| 157 | `agent` | `q233-agent-ps` | `ps` | 212 | 2 | 1 | `both-failed` |
-| 158 | `link` | `no-args` | `` | 198 | 2 | 1 | `both-failed` |
-| 159 | `link` | `json` | `--json` | 198 | 2 | 1 | `both-failed` |
-| 160 | `link` | `real-cwd` | `` | 198 | 2 | 1 | `both-failed` |
-| 161 | `link` | `real-cwd-json` | `--json` | 198 | 2 | 1 | `both-failed` |
-| 162 | `promote` | `no-args` | `` | 198 | 2 | 1 | `both-failed` |
-| 163 | `promote` | `json` | `--json` | 198 | 2 | 1 | `both-failed` |
-| 164 | `promote` | `real-cwd` | `` | 198 | 2 | 1 | `both-failed` |
-| 165 | `promote` | `real-cwd-json` | `--json` | 198 | 2 | 1 | `both-failed` |
-| 166 | `test-spec` | `q233-status-positional` | `status 351` | 193 | 1 | 1 | `both-failed` |
-| 167 | `question` | `q233-add-plan-flag` | `add --plan 351 --title parity-probe --body x` | 186 | 2 | 1 | `both-failed` |
-| 168 | `task` | `q233-add-editor-false` | `add --plan 351 --title parity-probe --next-action x --editor=false` | 186 | 2 | 1 | `both-failed` |
-| 169 | `task` | `q233-add-no-editor` | `add --plan 351 --title parity-probe --next-action x --no-editor` | 186 | 2 | 1 | `both-failed` |
-| 170 | `test-spec` | `q233-status-plan-flag` | `status --plan 351` | 184 | 2 | 1 | `both-failed` |
-| 171 | `resume` | `real-cwd` | `` | 31 | 1 | 2 | `both-failed` |
-| 172 | `resume` | `real-cwd-json` | `--json` | 31 | 1 | 2 | `both-failed` |
+| 1 | `tree` | `json` | `--json` | 2182202 | 0 | 0 | `neither-failed` |
+| 2 | `tree` | `no-args` | `` | 440403 | 0 | 0 | `neither-failed` |
+| 3 | `dashboard` | `json` | `--json` | 29727 | 2 | 0 | `go-failed` |
+| 4 | `resume` | `json` | `--json` | 16560 | 0 | 0 | `neither-failed` |
+| 5 | `resume` | `no-args` | `` | 7013 | 0 | 0 | `neither-failed` |
+| 6 | `dashboard` | `no-args` | `` | 6498 | 2 | 0 | `go-failed` |
+| 7 | `pl-import` | `help` | `--help` | 5085 | 0 | 0 | `neither-failed` |
+| 8 | `tree` | `help` | `--help` | 4990 | 0 | 0 | `neither-failed` |
+| 9 | `pl-synthesize` | `help` | `--help` | 4458 | 0 | 0 | `neither-failed` |
+| 10 | `task` | `help` | `--help` | 3053 | 0 | 0 | `neither-failed` |
+| 11 | `task` | `no-args` | `` | 3053 | 0 | 0 | `neither-failed` |
+| 12 | `task` | `real-cwd` | `` | 3053 | 0 | 0 | `neither-failed` |
+| 13 | `workbench` | `help` | `--help` | 2971 | 0 | 0 | `neither-failed` |
+| 14 | `workbench` | `no-args` | `` | 2971 | 0 | 0 | `neither-failed` |
+| 15 | `workbench` | `real-cwd` | `` | 2971 | 0 | 0 | `neither-failed` |
+| 16 | `handoff` | `help` | `--help` | 2899 | 0 | 0 | `neither-failed` |
+| 17 | `templates` | `help` | `--help` | 2829 | 0 | 0 | `neither-failed` |
+| 18 | `templates` | `no-args` | `` | 2829 | 0 | 0 | `neither-failed` |
+| 19 | `templates` | `real-cwd` | `` | 2829 | 0 | 0 | `neither-failed` |
+| 20 | `link` | `help` | `--help` | 2708 | 0 | 0 | `neither-failed` |
+| 21 | `scenario` | `help` | `--help` | 2584 | 0 | 0 | `neither-failed` |
+| 22 | `scenario` | `no-args` | `` | 2584 | 0 | 0 | `neither-failed` |
+| 23 | `scenario` | `real-cwd` | `` | 2584 | 0 | 0 | `neither-failed` |
+| 24 | `local` | `help` | `--help` | 2560 | 0 | 0 | `neither-failed` |
+| 25 | `local` | `no-args` | `` | 2560 | 0 | 0 | `neither-failed` |
+| 26 | `local` | `real-cwd` | `` | 2560 | 0 | 0 | `neither-failed` |
+| 27 | `search` | `help` | `--help` | 2506 | 0 | 0 | `neither-failed` |
+| 28 | `artifact` | `help` | `--help` | 2497 | 0 | 0 | `neither-failed` |
+| 29 | `artifact` | `no-args` | `` | 2497 | 0 | 0 | `neither-failed` |
+| 30 | `artifact` | `real-cwd` | `` | 2497 | 0 | 0 | `neither-failed` |
+| 31 | `doc` | `help` | `--help` | 2452 | 0 | 0 | `neither-failed` |
+| 32 | `doc` | `no-args` | `` | 2452 | 0 | 0 | `neither-failed` |
+| 33 | `doc` | `real-cwd` | `` | 2452 | 0 | 0 | `neither-failed` |
+| 34 | `decision` | `help` | `--help` | 2450 | 0 | 0 | `neither-failed` |
+| 35 | `decision` | `no-args` | `` | 2450 | 0 | 0 | `neither-failed` |
+| 36 | `decision` | `real-cwd` | `` | 2450 | 0 | 0 | `neither-failed` |
+| 37 | `plan` | `help` | `--help` | 2425 | 0 | 0 | `neither-failed` |
+| 38 | `plan` | `no-args` | `` | 2425 | 0 | 0 | `neither-failed` |
+| 39 | `plan` | `real-cwd` | `` | 2425 | 0 | 0 | `neither-failed` |
+| 40 | `resume` | `help` | `--help` | 2411 | 0 | 0 | `neither-failed` |
+| 41 | `links` | `help` | `--help` | 2404 | 0 | 0 | `neither-failed` |
+| 42 | `links` | `no-args` | `` | 2404 | 0 | 0 | `neither-failed` |
+| 43 | `links` | `real-cwd` | `` | 2404 | 0 | 0 | `neither-failed` |
+| 44 | `question` | `help` | `--help` | 2334 | 0 | 0 | `neither-failed` |
+| 45 | `question` | `no-args` | `` | 2334 | 0 | 0 | `neither-failed` |
+| 46 | `question` | `real-cwd` | `` | 2334 | 0 | 0 | `neither-failed` |
+| 47 | `assoc` | `help` | `--help` | 2204 | 0 | 0 | `neither-failed` |
+| 48 | `assoc` | `no-args` | `` | 2204 | 0 | 0 | `neither-failed` |
+| 49 | `assoc` | `real-cwd` | `` | 2204 | 0 | 0 | `neither-failed` |
+| 50 | `capture` | `help` | `--help` | 2195 | 0 | 0 | `neither-failed` |
+| 51 | `capture` | `no-args` | `` | 2195 | 0 | 0 | `neither-failed` |
+| 52 | `capture` | `real-cwd` | `` | 2195 | 0 | 0 | `neither-failed` |
+| 53 | `config` | `help` | `--help` | 2175 | 0 | 0 | `neither-failed` |
+| 54 | `config` | `no-args` | `` | 2175 | 0 | 0 | `neither-failed` |
+| 55 | `config` | `real-cwd` | `` | 2175 | 0 | 0 | `neither-failed` |
+| 56 | `workspace` | `help` | `--help` | 2155 | 0 | 0 | `neither-failed` |
+| 57 | `workspace` | `no-args` | `` | 2155 | 0 | 0 | `neither-failed` |
+| 58 | `workspace` | `real-cwd` | `` | 2155 | 0 | 0 | `neither-failed` |
+| 59 | `templates` | `json` | `--json` | 2135 | 0 | 1 | `zig-failed` |
+| 60 | `templates` | `real-cwd-json` | `--json` | 2135 | 0 | 1 | `zig-failed` |
+| 61 | `task` | `json` | `--json` | 2085 | 0 | 1 | `zig-failed` |
+| 62 | `task` | `real-cwd-json` | `--json` | 2085 | 0 | 1 | `zig-failed` |
+| 63 | `local` | `json` | `--json` | 2082 | 0 | 1 | `zig-failed` |
+| 64 | `local` | `real-cwd-json` | `--json` | 2082 | 0 | 1 | `zig-failed` |
+| 65 | `workbench` | `json` | `--json` | 2079 | 0 | 1 | `zig-failed` |
+| 66 | `workbench` | `real-cwd-json` | `--json` | 2079 | 0 | 1 | `zig-failed` |
+| 67 | `plan` | `q233-plan-next` | `next 351` | 2055 | 0 | 0 | `neither-failed` |
+| 68 | `scope` | `help` | `--help` | 2044 | 0 | 0 | `neither-failed` |
+| 69 | `scope` | `no-args` | `` | 2044 | 0 | 0 | `neither-failed` |
+| 70 | `scope` | `real-cwd` | `` | 2044 | 0 | 0 | `neither-failed` |
+| 71 | `doc` | `json` | `--json` | 1844 | 0 | 1 | `zig-failed` |
+| 72 | `doc` | `real-cwd-json` | `--json` | 1844 | 0 | 1 | `zig-failed` |
+| 73 | `scenario` | `json` | `--json` | 1843 | 0 | 1 | `zig-failed` |
+| 74 | `scenario` | `real-cwd-json` | `--json` | 1843 | 0 | 1 | `zig-failed` |
+| 75 | `ext` | `help` | `--help` | 1833 | 0 | 0 | `neither-failed` |
+| 76 | `ext` | `no-args` | `` | 1833 | 0 | 0 | `neither-failed` |
+| 77 | `ext` | `real-cwd` | `` | 1833 | 0 | 0 | `neither-failed` |
+| 78 | `decision` | `json` | `--json` | 1823 | 0 | 1 | `zig-failed` |
+| 79 | `decision` | `real-cwd-json` | `--json` | 1823 | 0 | 1 | `zig-failed` |
+| 80 | `question` | `json` | `--json` | 1813 | 0 | 1 | `zig-failed` |
+| 81 | `question` | `real-cwd-json` | `--json` | 1813 | 0 | 1 | `zig-failed` |
+| 82 | `links` | `json` | `--json` | 1812 | 0 | 1 | `zig-failed` |
+| 83 | `links` | `real-cwd-json` | `--json` | 1812 | 0 | 1 | `zig-failed` |
+| 84 | `artifact` | `json` | `--json` | 1800 | 0 | 1 | `zig-failed` |
+| 85 | `artifact` | `real-cwd-json` | `--json` | 1800 | 0 | 1 | `zig-failed` |
+| 86 | `skills` | `help` | `--help` | 1787 | 0 | 0 | `neither-failed` |
+| 87 | `skills` | `no-args` | `` | 1787 | 0 | 0 | `neither-failed` |
+| 88 | `skills` | `real-cwd` | `` | 1787 | 0 | 0 | `neither-failed` |
+| 89 | `audit` | `help` | `--help` | 1769 | 0 | 0 | `neither-failed` |
+| 90 | `audit` | `no-args` | `` | 1769 | 0 | 0 | `neither-failed` |
+| 91 | `audit` | `real-cwd` | `` | 1769 | 0 | 0 | `neither-failed` |
+| 92 | `workspace` | `json` | `--json` | 1766 | 0 | 1 | `zig-failed` |
+| 93 | `workspace` | `real-cwd-json` | `--json` | 1766 | 0 | 1 | `zig-failed` |
+| 94 | `config` | `json` | `--json` | 1724 | 0 | 1 | `zig-failed` |
+| 95 | `config` | `real-cwd-json` | `--json` | 1724 | 0 | 1 | `zig-failed` |
+| 96 | `assoc` | `json` | `--json` | 1668 | 0 | 1 | `zig-failed` |
+| 97 | `assoc` | `real-cwd-json` | `--json` | 1668 | 0 | 1 | `zig-failed` |
+| 98 | `capture` | `json` | `--json` | 1667 | 0 | 1 | `zig-failed` |
+| 99 | `capture` | `real-cwd-json` | `--json` | 1667 | 0 | 1 | `zig-failed` |
+| 100 | `plan` | `json` | `--json` | 1653 | 0 | 1 | `zig-failed` |
+| 101 | `plan` | `real-cwd-json` | `--json` | 1653 | 0 | 1 | `zig-failed` |
+| 102 | `promote` | `help` | `--help` | 1585 | 0 | 0 | `neither-failed` |
+| 103 | `test-spec` | `help` | `--help` | 1584 | 0 | 0 | `neither-failed` |
+| 104 | `test-spec` | `no-args` | `` | 1584 | 0 | 0 | `neither-failed` |
+| 105 | `test-spec` | `real-cwd` | `` | 1584 | 0 | 0 | `neither-failed` |
+| 106 | `scope` | `json` | `--json` | 1572 | 0 | 1 | `zig-failed` |
+| 107 | `scope` | `real-cwd-json` | `--json` | 1572 | 0 | 1 | `zig-failed` |
+| 108 | `skills` | `json` | `--json` | 1572 | 0 | 1 | `zig-failed` |
+| 109 | `skills` | `real-cwd-json` | `--json` | 1572 | 0 | 1 | `zig-failed` |
+| 110 | `demote` | `help` | `--help` | 1492 | 0 | 0 | `neither-failed` |
+| 111 | `ext` | `json` | `--json` | 1484 | 0 | 1 | `zig-failed` |
+| 112 | `ext` | `real-cwd-json` | `--json` | 1484 | 0 | 1 | `zig-failed` |
+| 113 | `unlink` | `help` | `--help` | 1465 | 0 | 0 | `neither-failed` |
+| 114 | `health` | `help` | `--help` | 1458 | 0 | 0 | `neither-failed` |
+| 115 | `spec` | `help` | `--help` | 1420 | 0 | 0 | `neither-failed` |
+| 116 | `spec` | `no-args` | `` | 1420 | 0 | 0 | `neither-failed` |
+| 117 | `spec` | `real-cwd` | `` | 1420 | 0 | 0 | `neither-failed` |
+| 118 | `test-spec` | `json` | `--json` | 1388 | 0 | 1 | `zig-failed` |
+| 119 | `test-spec` | `real-cwd-json` | `--json` | 1388 | 0 | 1 | `zig-failed` |
+| 120 | `audit` | `json` | `--json` | 1348 | 0 | 1 | `zig-failed` |
+| 121 | `audit` | `real-cwd-json` | `--json` | 1348 | 0 | 1 | `zig-failed` |
+| 122 | `spec` | `json` | `--json` | 1257 | 0 | 1 | `zig-failed` |
+| 123 | `spec` | `real-cwd-json` | `--json` | 1257 | 0 | 1 | `zig-failed` |
+| 124 | `annotate` | `help` | `--help` | 1118 | 2 | 0 | `go-failed` |
+| 125 | `annotate` | `no-args` | `` | 1118 | 2 | 0 | `go-failed` |
+| 126 | `annotate` | `real-cwd` | `` | 1118 | 2 | 0 | `go-failed` |
+| 127 | `dashboard` | `help` | `--help` | 930 | 2 | 0 | `go-failed` |
+| 128 | `health` | `json` | `--json` | 587 | 0 | 1 | `zig-failed` |
+| 129 | `health` | `no-args` | `` | 567 | 1 | 1 | `both-failed` |
+| 130 | `health` | `real-cwd-json` | `--json` | 536 | 0 | 0 | `neither-failed` |
+| 131 | `health` | `real-cwd` | `` | 453 | 0 | 0 | `neither-failed` |
+| 132 | `tree` | `real-cwd-json` | `--json` | 365 | 0 | 0 | `neither-failed` |
+| 133 | `handoff` | `json` | `--json` | 255 | 0 | 0 | `neither-failed` |
+| 134 | `pl-import` | `no-args` | `` | 221 | 2 | 1 | `both-failed` |
+| 135 | `pl-import` | `json` | `--json` | 221 | 2 | 1 | `both-failed` |
+| 136 | `pl-import` | `real-cwd` | `` | 221 | 2 | 1 | `both-failed` |
+| 137 | `pl-import` | `real-cwd-json` | `--json` | 221 | 2 | 1 | `both-failed` |
+| 138 | `pl-synthesize` | `no-args` | `` | 221 | 2 | 1 | `both-failed` |
+| 139 | `pl-synthesize` | `json` | `--json` | 221 | 2 | 1 | `both-failed` |
+| 140 | `pl-synthesize` | `real-cwd` | `` | 221 | 2 | 1 | `both-failed` |
+| 141 | `pl-synthesize` | `real-cwd-json` | `--json` | 221 | 2 | 1 | `both-failed` |
+| 142 | `handoff` | `no-args` | `` | 220 | 0 | 0 | `neither-failed` |
+| 143 | `unlink` | `no-args` | `` | 219 | 2 | 1 | `both-failed` |
+| 144 | `unlink` | `json` | `--json` | 219 | 2 | 1 | `both-failed` |
+| 145 | `unlink` | `real-cwd` | `` | 219 | 2 | 1 | `both-failed` |
+| 146 | `unlink` | `real-cwd-json` | `--json` | 219 | 2 | 1 | `both-failed` |
+| 147 | `annotate` | `json` | `--json` | 217 | 2 | 1 | `both-failed` |
+| 148 | `annotate` | `real-cwd-json` | `--json` | 217 | 2 | 1 | `both-failed` |
+| 149 | `search` | `no-args` | `` | 217 | 2 | 1 | `both-failed` |
+| 150 | `search` | `json` | `--json` | 217 | 2 | 1 | `both-failed` |
+| 151 | `search` | `real-cwd` | `` | 217 | 2 | 1 | `both-failed` |
+| 152 | `search` | `real-cwd-json` | `--json` | 217 | 2 | 1 | `both-failed` |
+| 153 | `demote` | `no-args` | `` | 215 | 2 | 1 | `both-failed` |
+| 154 | `demote` | `json` | `--json` | 215 | 2 | 1 | `both-failed` |
+| 155 | `demote` | `real-cwd` | `` | 215 | 2 | 1 | `both-failed` |
+| 156 | `demote` | `real-cwd-json` | `--json` | 215 | 2 | 1 | `both-failed` |
+| 157 | `handoff` | `real-cwd` | `` | 212 | 1 | 2 | `both-failed` |
+| 158 | `handoff` | `real-cwd-json` | `--json` | 212 | 1 | 2 | `both-failed` |
+| 159 | `agent` | `q233-agent-top` | `` | 212 | 2 | 1 | `both-failed` |
+| 160 | `agent` | `q233-agent-ps` | `ps` | 212 | 2 | 1 | `both-failed` |
+| 161 | `link` | `no-args` | `` | 198 | 2 | 1 | `both-failed` |
+| 162 | `link` | `json` | `--json` | 198 | 2 | 1 | `both-failed` |
+| 163 | `link` | `real-cwd` | `` | 198 | 2 | 1 | `both-failed` |
+| 164 | `link` | `real-cwd-json` | `--json` | 198 | 2 | 1 | `both-failed` |
+| 165 | `promote` | `no-args` | `` | 198 | 2 | 1 | `both-failed` |
+| 166 | `promote` | `json` | `--json` | 198 | 2 | 1 | `both-failed` |
+| 167 | `promote` | `real-cwd` | `` | 198 | 2 | 1 | `both-failed` |
+| 168 | `promote` | `real-cwd-json` | `--json` | 198 | 2 | 1 | `both-failed` |
+| 169 | `test-spec` | `q233-status-positional` | `status 351` | 193 | 1 | 1 | `both-failed` |
+| 170 | `question` | `q233-add-plan-flag` | `add --plan 351 --title parity-probe --body x` | 186 | 2 | 1 | `both-failed` |
+| 171 | `task` | `q233-add-editor-false` | `add --plan 351 --title parity-probe --next-action x --editor=false` | 186 | 2 | 1 | `both-failed` |
+| 172 | `task` | `q233-add-no-editor` | `add --plan 351 --title parity-probe --next-action x --no-editor` | 186 | 2 | 1 | `both-failed` |
+| 173 | `test-spec` | `q233-status-plan-flag` | `status --plan 351` | 184 | 2 | 1 | `both-failed` |
+| 174 | `dashboard` | `real-cwd-json` | `--json` | 173 | 2 | 0 | `go-failed` |
+| 175 | `dashboard` | `real-cwd` | `` | 169 | 2 | 0 | `go-failed` |
+| 176 | `resume` | `real-cwd` | `` | 31 | 1 | 2 | `both-failed` |
+| 177 | `resume` | `real-cwd-json` | `--json` | 31 | 1 | 2 | `both-failed` |
 
 ### Per-gap diffs
 
 #### 1. `tree --json` — invocation `json`
 
 - Failure class: `neither-failed`
-- Go exit: `0` (stdout 1145353B, stderr 0B)
-- Zig exit: `0` (stdout 835578B, stderr 0B)
+- Go exit: `0` (stdout 1240571B, stderr 0B)
+- Zig exit: `0` (stdout 909796B, stderr 0B)
 
 ```diff
 --- go
 +++ zig
-@@ -1,29552 +1 @@
+@@ -1,31801 +1 @@
 -{
 -  "kind": "scope",
 -  "title": "assoc:project:planar",
@@ -491,8 +496,8 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 #### 2. `tree ` — invocation `no-args`
 
 - Failure class: `neither-failed`
-- Go exit: `0` (stdout 325702B, stderr 0B)
-- Zig exit: `0` (stdout 323702B, stderr 0B)
+- Go exit: `0` (stdout 353601B, stderr 0B)
+- Zig exit: `0` (stdout 351321B, stderr 0B)
 
 ```diff
 --- go
@@ -578,7 +583,22 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 
 _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 
-#### 3. `resume --json` — invocation `json`
+#### 3. `dashboard --json` — invocation `json`
+
+- Failure class: `go-failed`
+- Go exit: `2` (stdout 0B, stderr 48B)
+- Zig exit: `0` (stdout 29574B, stderr 0B)
+
+```diff
+--- go
++++ zig
+@@ -0,0 +1 @@
++{"active_plans":[{"id":43,"scope_kind":"association","scope_id":1,"title":"Ingestor sets task plan_id alongside derives-from link","slug":"ingestor-task-planid","summary":null,"status":"active","parent_plan_id":null,"created_at":"2026-05-16T10:16:22.137Z","updated_at":"2026-05-22T14:23:03.652Z"},{"id":49,"scope_kind":"association","scope_id":1,"title":"Code Annotations — line-anchored notes on code","slug":"annotations","summary":null,"status":"active","parent_plan_id":null,"created_at":"2026-05-16T18:22:37.881Z","updated_at":"2026-05-16T18:55:32.084Z"},{"id":54,"scope_kind":"association","scope_id":1,"title":"M3 — Output polish and slug derivation","slug":"m3-—-output-polish-and-slug-derivation","summary":null,"status":"active","parent_plan_id":47,"created_at":"2026-05-16T18:55:31.858Z","updated_at":"2026-05-22T14:23:03.655Z"},{"id":85,"scope_kind":"association","scope_id":1,"title":"Agent coordination and activity tracking","slug":"agent-activity","summary":"Vendor-neutral live activity, claim leases, heartbeats, stale reconciliation, and claim-aware next-work selection so multiple agent windows can coordinate through Planar.","status":"active","parent_plan_id":null,"created_at":"2026-05-17T01:23:28.081Z","updated_at":"2026-05-25T00:39:20.064Z"},{"id":100,"scope_kind":"association","scope_id":1,"title":"M3 — Optional `planar workbench extract-questions` Go extractor","slug":"m3-optional-planar-workbench-extract-questions-go-extractor","summary":null,"status":"draft","parent_plan_id":97,"created_at":"2026-05-17T17:44:06.351Z","updated_at":"2026-05-17T17:44:06.351Z"},{"id":104,"scope_kind":"association","scope_id":1,"title":"M2 — `ResolveForWrite` implementation","slug":"m2-resolveforwrite-implementation","summary":null,"status":"active","parent_plan_id":88,"created_at":"2026-05-17T17:46:30.796Z","updated_at":"2026-05-22T14:23:03.664Z"},{"id":108,"scope_kind":"association","scope_id":1,"title":"M6 — Skill and agent inventory + updates","slug":"m6-skill-and-agent-inventory-updates","summary":null,"status":"active","parent_plan_id":88,"created_at":"2026-05-17T17:46:30.820Z","updated_at":"2026-05-22T14:23:03.666Z"},{"id":118,"scope_kind":"association","scope_id":1,"title":"M2 — Manifest layer and reference linter","slug":"m2-manifest-layer-and-reference-linter","summary":null,"status":"active","parent_plan_id":96,"created_at":"2026-05-17T17:49:29.392Z","updated_at":"2026-05-22T14:23:03.668Z"},{"id":122,"scope_kind":"association","scope_id":1,"title":"M6 — Backlinks, orphans, coverage","slug":"m6-backlinks-orphans-coverage","summary":null,"status":"active","parent_plan_id":96,"created_at":"2026-05-17T17:49:29.416Z","updated_at":"2026-05-22T14:23:03.669Z"},{"id":143,"scope_kind":"association","scope_id":1,"title":"Add planar assoc tree for association hierarchy visualization","slug":"assoc-tree","summary":null,"status":"draft","parent_plan_id":null,"created_at":"2026-05-18T14:22:19.616Z","updated_at":"2026-05-18T14:22:19.616Z"},{"id":152,"scope_kind":"association","scope_id":1,"title":"Local skills and agents sandbox","slug":"local-sandbox","summary":null,"status":"active","parent_plan_id":null,"created_at":"2026-05-18T21:33:37.037Z","updated_at":"2026-05-20T10:54:57.004Z"},{"id":171,"scope_kind":"association","scope_id":2,"title":"Lectio","slug":"lectio","summary":"macOS-first SwiftUI study reader. v1 ships at end of W17 (2026-08-24).","status":"active","parent_plan_id":null,"created_at":"2026-05-19T21:49:51.615Z","updated_at":"2026-05-19T21:49:51.615Z"},{"id":176,"scope_kind":"association","scope_id":2,"title":"Phase 5 — AI Layer","slug":"phase-5-ai-layer","summary":"W13–W16. Local MCP bridge, grounded chat, recaps, research workflows.","status":"active","parent_plan_id":171,"created_at":"2026-05-19T21:49:51.697Z","updated_at":"2026-05-19T21:49:51.697Z"},{"id":177,"scope_kind":"association","scope_id":2,"title":"Phase 6 — Export, Polish, Launch","slug":"phase-6-export-polish-launch","summary":"W17. Export pipeline, Sparkle updates, beta onboarding, launch 2026-08-25.","status":"draft","parent_plan_id":171,"created_at":"2026-05-19T21:49:51.713Z","updated_at":"2026-05-19T21:49:51.713Z"},{"id":178,"scope_kind":"association","scope_id":2,"title":"Backlog — deferred from v1","slug":"backlog-deferred-from-v1","summary":"Items called out in implementation_status.md §Not Started that don't belong to W13–W17 work. Pull individual items into a phase plan when picked up.","status":"active","parent_plan_id":171,"created_at":"2026-05-19T21:57:18.665Z","updated_at":"2026-05-19T21:57:18.665Z"},{"id":189,"scope_kind":"association","scope_id":1,"title":"Out of scope (captured as Decisions punted)","slug":"out-of-scope-captured-as-decisions-punted","summary":null,"status":"active","parent_plan_id":179,"created_at":"2026-05-19T22:08:35.201Z","updated_at":"2026-05-22T14:23:03.682Z"},{"id":190,"scope_kind":"association","scope_id":3,"title":"Product Roadmap — Holdfast","slug":"product-roadmap-holdfast","summary":null,"status":"active","parent_plan_id":null,"created_at":"2026-05-20T07:20:55.073Z","updated_at":"2026-05-20T13:12:03.935Z"},{"id":191,"scope_kind":"association","scope_id":3,"title":"Phasing summary","slug":"phasing-summary","summary":null,"status":"draft","parent_plan_id":190,"created_at":"2026-05-20T07:20:55.074Z","updated_at":"2026-05-20T07:20:55.074Z"},{"id":192,"scope_kind":"association","scope_id":3,"title":"P0 — Foundations","slug":"p0-foundations","summary":null,"status":"draft","parent_plan_id":190,"created_at":"2026-05-20T07:20:55.075Z","updated_at":"2026-05-20T07:20:55.075Z"},{"id":193,"scope_kind":"association","scope_id":3,"title":"P1 — Pre-launch waitlist (Days 1–30, overlaps technical M1–M3)","slug":"p1-pre-launch-waitlist-days-1-30-overlaps-technical-m1-m3","summary":null,"status":"draft","parent_plan_id":190,"created_at":"2026-05-20T07:20:55.075Z","updated_at":"2026-05-20T07:20:55.075Z"},{"id":194,"scope_kind":"association","scope_id":3,"title":"P2 — v1 launch foundation (Month 4, overlaps technical M4)","slug":"p2-v1-launch-foundation-month-4-overlaps-technical-m4","summary":null,"status":"draft","parent_plan_id":190,"created_at":"2026-05-20T07:20:55.076Z","updated_at":"2026-05-20T07:20:55.076Z"},{"id":195,"scope_kind":"association","scope_id":3,"title":"P3 — Earned word-of-mouth (Days 31–60 post-launch)","slug":"p3-earned-word-of-mouth-days-31-60-post-launch","summary":null,"status":"draft","parent_plan_id":190,"created_at":"2026-05-20T07:20:55.077Z","updated_at":"2026-05-20T07:20:55.077Z"},{"id":196,"scope_kind":"association","scope_id":3,"title":"P4 — Influencer + listicle (Days 61–90 post-launch)","slug":"p4-influencer-listicle-days-61-90-post-launch","summary":null,"status":"draft","parent_plan_id":190,"created_at":"2026-05-20T07:20:55.077Z","updated_at":"2026-05-20T07:20:55.077Z"},{"id":197,"scope_kind":"association","scope_id":3,"title":"P5 — v1.5 AI launch cycle (Months 4–6, parallels technical M5)","slug":"p5-v1-5-ai-launch-cycle-months-4-6-parallels-technical-m5","summary":null,"status":"draft","parent_plan_id":190,"created_at":"2026-05-20T07:20:55.078Z","updated_at":"2026-05-20T07:20:55.078Z"},{"id":198,"scope_kind":"association","scope_id":3,"title":"P6 — v2 hard-mode launch cycle (Months 5–8, parallels technical M6)","slug":"p6-v2-hard-mode-launch-cycle-months-5-8-parallels-technical-m6","summary":null,"status":"draft","parent_plan_id":190,"created_at":"2026-05-20T07:20:55.078Z","updated_at":"2026-05-20T07:20:55.078Z"},{"id":199,"scope_kind":"association","scope_id":3,"title":"P7 — Long-tail bets (Months 9–12+)","slug":"p7-long-tail-bets-months-9-12","summary":null,"status":"draft","parent_plan_id":190,"created_at":"2026-05-20T07:20:55.078Z","updated_at":"2026-05-20T07:20:55.078Z"},{"id":200,"scope_kind":"association","scope_id":3,"title":"Cross-cutting: Apple Developer operations","slug":"cross-cutting-apple-developer-operations","summary":null,"status":"draft","parent_plan_id":190,"created_at":"2026-
+```
+
+_(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
+
+#### 4. `resume --json` — invocation `json`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 8729B, stderr 0B)
@@ -743,7 +763,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 
 _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 
-#### 4. `resume ` — invocation `no-args`
+#### 5. `resume ` — invocation `no-args`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 4041B, stderr 0B)
@@ -962,7 +982,130 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
  
 ```
 
-#### 5. `pl-import --help` — invocation `help`
+#### 6. `dashboard ` — invocation `no-args`
+
+- Failure class: `go-failed`
+- Go exit: `2` (stdout 0B, stderr 48B)
+- Zig exit: `0` (stdout 6239B, stderr 0B)
+
+```diff
+--- go
++++ zig
+@@ -0,0 +1,103 @@
++active plans: 102
++  plan:43  [active]  Ingestor sets task plan_id alongside derives-from link
++  plan:49  [active]  Code Annotations — line-anchored notes on code
++  plan:54  [active]  M3 — Output polish and slug derivation
++  plan:85  [active]  Agent coordination and activity tracking
++  plan:100  [draft]  M3 — Optional `planar workbench extract-questions` Go extractor
++  plan:104  [active]  M2 — `ResolveForWrite` implementation
++  plan:108  [active]  M6 — Skill and agent inventory + updates
++  plan:118  [active]  M2 — Manifest layer and reference linter
++  plan:122  [active]  M6 — Backlinks, orphans, coverage
++  plan:143  [draft]  Add planar assoc tree for association hierarchy visualization
++  plan:152  [active]  Local skills and agents sandbox
++  plan:171  [active]  Lectio
++  plan:176  [active]  Phase 5 — AI Layer
++  plan:177  [draft]  Phase 6 — Export, Polish, Launch
++  plan:178  [active]  Backlog — deferred from v1
++  plan:189  [active]  Out of scope (captured as Decisions punted)
++  plan:190  [active]  Product Roadmap — Holdfast
++  plan:191  [draft]  Phasing summary
++  plan:192  [draft]  P0 — Foundations
++  plan:193  [draft]  P1 — Pre-launch waitlist (Days 1–30, overlaps technical M1–M3)
++  plan:194  [draft]  P2 — v1 launch foundation (Month 4, overlaps technical M4)
++  plan:195  [draft]  P3 — Earned word-of-mouth (Days 31–60 post-launch)
++  plan:196  [draft]  P4 — Influencer + listicle (Days 61–90 post-launch)
++  plan:197  [draft]  P5 — v1.5 AI launch cycle (Months 4–6, parallels technical M5)
++  plan:198  [draft]  P6 — v2 hard-mode launch cycle (Months 5–8, parallels technical M6)
++  plan:199  [draft]  P7 — Long-tail bets (Months 9–12+)
++  plan:200  [draft]  Cross-cutting: Apple Developer operations
++  plan:201  [draft]  Cross-cutting: success metrics
++  plan:202  [draft]  Cross-cutting: negative signals to monitor
++  plan:203  [draft]  Cross-cutting: support & community ops
++  plan:204  [active]  Technical Roadmap — Holdfast
++  plan:205  [draft]  External dependencies
++  plan:206  [active]  M1 — Engine + daemon + CLI + app shell (Month 1)
++  plan:207  [draft]  M2 — DNS proxy + Safari enforcement (Month 2)
++  plan:208  [draft]  M3 — Schedule, lockdown, browsers (Month 3)
++  plan:209  [draft]  M4 — v1 engineering complete + real UI (Month 4)
++  plan:210  [draft]  M5 — v1.5 AI layer (Months 4–6, overlaps M6)
++  plan:211  [draft]  M6 — v2 hard mode (Months 5–8)
++  plan:212  [draft]  M7 — v2.5 vision expansion (Months 7–9)
++  plan:213  [draft]  M8 — Long tail (Months 9–12+)
++  plan:214  [draft]  Cross-cutting: testing infrastructure
++  plan:226  [active]  Editor-first entity authoring and editing
++  plan:227  [active]  Operator session ergonomics
++  plan:228  [active]  verbose-broccoli — comptime-driven CLI argument parsing library for Zig
++  plan:234  [draft]  M6 — Conflict detection and three-way resolution
++  plan:235  [draft]  M7 — View, diff, and workbench-edit verbs
++  plan:236  [draft]  M8 — Bulk review verbs with context loading
++  plan:237  [draft]  M9 — Docs and parity
++  plan:238  [draft]  M1 — Focus context
++  plan:240  [draft]  M3 — Date-based activity
++  plan:241  [draft]  M4 — Verb naming consistency
++  plan:242  [draft]  M5 — Slug references everywhere
++  plan:243  [draft]  M6 — Confirmation prompts on destructive operations
++  plan:244  [draft]  M7 — Dashboard verb
++  plan:245  [draft]  M8 — Plan templates
++  plan:246  [draft]  M9 — CLI polish bundle
++  plan:247  [draft]  M10 — Docs and parity
++  plan:252  [active]  Milestone 0 — Repository bootstrap
++  plan:253  [draft]  Milestone 1 — Core parsing (minimum viable)
++  plan:254  [draft]  Milestone 2 — Help and diagnostics
++  plan:255  [draft]  Milestone 3 — Subcommands and advanced types
++  plan:256  [draft]  Milestone 4 — Parse tree and provenance
++  plan:257  [draft]  Milestone 5 — Static completions and dynamic-completion protocol
++  plan:258  [draft]  Milestone 6a — Man pages
++  plan:259  [draft]  Milestone 6b — Streaming parser
++  plan:260  [draft]  Milestone 6c — Performance pass
++  plan:261  [draft]  Milestone 7 — Documentation and launch prep
++  plan:263  [draft]  M3 — CLI surface — core CRUD verbs
++  plan:264  [draft]  M4 — Anchor and entity-link verbs
++  plan:265  [draft]  M5 — Bundle export and stats
++  plan:266  [draft]  M6 — Composition with session plans
++  plan:267  [draft]  M7 — Skills, parity, docs
++  plan:268  [draft]  M8 — Workbench integration (optional follow-up)
++  plan:269  [draft]  M9 — Operational plane (optional follow-up)
++  plan:271  [draft]  M2 — Anchor read-time logic
++  plan:272  [active]  Color-coded entity status across CLI surfaces
++  plan:276  [draft]  Library grid view as default, with list switch and open actions
++  plan:277  [active]  Planning elevation: test specs, cross-reference traceability, and scenario decomposition
++  plan:278  [active]  Test-coder agent and orchestrator dispatch in the coder-reviewer loop
++  plan:297  [draft]  Worktree management
++  plan:298  [active]  Barrel-through dispatch modes
++  plan:309  [draft]  Universal search verb
++  plan:310  [draft]  Topic-scoped question review via search
++  plan:311  [draft]  Topic-scoped task review via search
++  plan:312  [draft]  Editor-first focal-file lint
++  plan:313  [draft]  FTS dedup guard for questions and prior-art for specs
++  plan:314  [active]  Zig binary feature parity with Go
++  plan:334  [active]  M21 — Cutover
++  plan:335  [active]  Skill source consolidation: unified vendor-neutral sources rendered per vendor
++  plan:342  [draft]  Planar CI infrastructure
++  plan:343  [active]  Agent collaboration: process improvements & retrospectives
++  plan:344  [draft]  M7 — Source-only skill distribution cleanup
++  plan:345  [draft]  GO WG3 Check
++  plan:346  [draft]  Test Plan
++  plan:347  [draft]  M9 strict test
++  plan:349  [draft]  smoke-anchor
++  plan:350  [draft]  smoke
++  plan:365  [active]  M13 — Handoff / resume
++  plan:367  [draft]  Open questions
++  plan:379  [active]  M4 — Claude Code ingestion adapter (`planar-agent ingest`)
++  plan:382  [active]  M8 — `planar-watch` read-only viewer binary
++  plan:383  [active]  M9 — Live-tail wake-mechanism upgrade (Tier 2 kqueue/inotify on `-wal`)
+--- go.stderr
++++ zig.stderr
+@@ -1 +0,0 @@
+-error: unknown command "dashboard" for "planar"
+--- exit
++++ exit
+-go=2
++zig=0
+```
+
+#### 7. `pl-import --help` — invocation `help`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 3965B, stderr 0B)
@@ -1044,7 +1187,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  <repo-root>     (string)
 ```
 
-#### 6. `tree --help` — invocation `help`
+#### 8. `tree --help` — invocation `help`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 4096B, stderr 0B)
@@ -1126,7 +1269,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  --json                (bool) default=false
 ```
 
-#### 7. `pl-synthesize --help` — invocation `help`
+#### 9. `pl-synthesize --help` — invocation `help`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 3478B, stderr 0B)
@@ -1205,7 +1348,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  <repo-root>     (string)
 ```
 
-#### 8. `task --help` — invocation `help`
+#### 10. `task --help` — invocation `help`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1878B, stderr 0B)
@@ -1279,7 +1422,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  touches         Manage repo-touches links on a task.
 ```
 
-#### 9. `task ` — invocation `no-args`
+#### 11. `task ` — invocation `no-args`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1878B, stderr 0B)
@@ -1353,7 +1496,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  touches         Manage repo-touches links on a task.
 ```
 
-#### 10. `task ` — invocation `real-cwd`
+#### 12. `task ` — invocation `real-cwd`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1878B, stderr 0B)
@@ -1428,7 +1571,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  touches         Manage repo-touches links on a task.
 ```
 
-#### 11. `workbench --help` — invocation `help`
+#### 13. `workbench --help` — invocation `help`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1870B, stderr 0B)
@@ -1495,7 +1638,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  edit            Edit a feature's workbench files in $EDITOR.
 ```
 
-#### 12. `workbench ` — invocation `no-args`
+#### 14. `workbench ` — invocation `no-args`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1870B, stderr 0B)
@@ -1562,7 +1705,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  edit            Edit a feature's workbench files in $EDITOR.
 ```
 
-#### 13. `workbench ` — invocation `real-cwd`
+#### 15. `workbench ` — invocation `real-cwd`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1870B, stderr 0B)
@@ -1630,7 +1773,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  edit            Edit a feature's workbench files in $EDITOR.
 ```
 
-#### 14. `handoff --help` — invocation `help`
+#### 16. `handoff --help` — invocation `help`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 2017B, stderr 0B)
@@ -1709,7 +1852,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  <task-id>       (string) optional
 ```
 
-#### 15. `templates --help` — invocation `help`
+#### 17. `templates --help` — invocation `help`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1924B, stderr 0B)
@@ -1777,7 +1920,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  path            Show template resolution paths.
 ```
 
-#### 16. `templates ` — invocation `no-args`
+#### 18. `templates ` — invocation `no-args`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1924B, stderr 0B)
@@ -1845,7 +1988,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  path            Show template resolution paths.
 ```
 
-#### 17. `templates ` — invocation `real-cwd`
+#### 19. `templates ` — invocation `real-cwd`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1924B, stderr 0B)
@@ -1914,7 +2057,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  path            Show template resolution paths.
 ```
 
-#### 18. `link --help` — invocation `help`
+#### 20. `link --help` — invocation `help`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1780B, stderr 0B)
@@ -1973,7 +2116,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  <ref>           (string) — Entity ref (kind:id)
 ```
 
-#### 19. `scenario --help` — invocation `help`
+#### 21. `scenario --help` — invocation `help`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1638B, stderr 0B)
@@ -2037,7 +2180,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  link            Create an entity link from a scenario to another entity.
 ```
 
-#### 20. `scenario ` — invocation `no-args`
+#### 22. `scenario ` — invocation `no-args`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1638B, stderr 0B)
@@ -2101,7 +2244,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  link            Create an entity link from a scenario to another entity.
 ```
 
-#### 21. `scenario ` — invocation `real-cwd`
+#### 23. `scenario ` — invocation `real-cwd`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1638B, stderr 0B)
@@ -2166,7 +2309,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  link            Create an entity link from a scenario to another entity.
 ```
 
-#### 22. `local --help` — invocation `help`
+#### 24. `local --help` — invocation `help`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1877B, stderr 0B)
@@ -2228,7 +2371,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  migrate         Migrate skills/agents to new Planar version.
 ```
 
-#### 23. `local ` — invocation `no-args`
+#### 25. `local ` — invocation `no-args`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1877B, stderr 0B)
@@ -2290,7 +2433,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  migrate         Migrate skills/agents to new Planar version.
 ```
 
-#### 24. `local ` — invocation `real-cwd`
+#### 26. `local ` — invocation `real-cwd`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1877B, stderr 0B)
@@ -2353,7 +2496,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  migrate         Migrate skills/agents to new Planar version.
 ```
 
-#### 25. `search --help` — invocation `help`
+#### 27. `search --help` — invocation `help`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1704B, stderr 0B)
@@ -2411,7 +2554,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  <query>         (string) — FTS5 query string
 ```
 
-#### 26. `artifact --help` — invocation `help`
+#### 28. `artifact --help` — invocation `help`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1596B, stderr 0B)
@@ -2473,7 +2616,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  link            Create an entity link from an artifact to another entity.
 ```
 
-#### 27. `artifact ` — invocation `no-args`
+#### 29. `artifact ` — invocation `no-args`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1596B, stderr 0B)
@@ -2535,7 +2678,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  link            Create an entity link from an artifact to another entity.
 ```
 
-#### 28. `artifact ` — invocation `real-cwd`
+#### 30. `artifact ` — invocation `real-cwd`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1596B, stderr 0B)
@@ -2598,7 +2741,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  link            Create an entity link from an artifact to another entity.
 ```
 
-#### 29. `doc --help` — invocation `help`
+#### 31. `doc --help` — invocation `help`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1644B, stderr 0B)
@@ -2659,7 +2802,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  coverage        Report documentation coverage metrics.
 ```
 
-#### 30. `doc ` — invocation `no-args`
+#### 32. `doc ` — invocation `no-args`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1644B, stderr 0B)
@@ -2720,7 +2863,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  coverage        Report documentation coverage metrics.
 ```
 
-#### 31. `doc ` — invocation `real-cwd`
+#### 33. `doc ` — invocation `real-cwd`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1644B, stderr 0B)
@@ -2782,7 +2925,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  coverage        Report documentation coverage metrics.
 ```
 
-#### 32. `decision --help` — invocation `help`
+#### 34. `decision --help` — invocation `help`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1617B, stderr 0B)
@@ -2846,7 +2989,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  link            Create an entity link from a decision to another entity.
 ```
 
-#### 33. `decision ` — invocation `no-args`
+#### 35. `decision ` — invocation `no-args`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1617B, stderr 0B)
@@ -2910,7 +3053,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  link            Create an entity link from a decision to another entity.
 ```
 
-#### 34. `decision ` — invocation `real-cwd`
+#### 36. `decision ` — invocation `real-cwd`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1617B, stderr 0B)
@@ -2975,7 +3118,197 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  link            Create an entity link from a decision to another entity.
 ```
 
-#### 35. `resume --help` — invocation `help`
+#### 37. `plan --help` — invocation `help`
+
+- Failure class: `neither-failed`
+- Go exit: `0` (stdout 1454B, stderr 0B)
+- Zig exit: `0` (stdout 959B, stderr 0B)
+
+```diff
+--- go
++++ zig
+@@ -1,31 +1,24 @@
++plan
++
+ Manage plans — the top-level structured intent for a body of work.
+ 
+-Plans may be hierarchical (--parent) and contain ordered steps (plan step add).
+-Status lifecycle: draft → active → paused / done / abandoned.
++  Plans may be hierarchical (--parent) and contain ordered steps
++  (plan step add).
++  Status lifecycle: draft → active → paused / done / abandoned.
+ 
+-Usage:
+-  planar plan [command]
++USAGE:
++  plan <command>
+ 
+-Available Commands:
+-  create           Create a new plan.
+-  link             Create an entity link from a plan to another entity.
+-  list             List plans.
+-  recompute-status Re-fire the plan-status auto-promotion invariant against a plan or all plans.
+-  show             Show a plan's details, steps, and child plans.
+-  step             Manage plan steps.
+-  update           Update mutable fields on a plan.
+-
+-Flags:
+-  -h, --help   help for plan
+-
+-Global Flags:
+-      --color string     Color mode: auto, always, or never. NO_COLOR env var overrides always. (default "auto")
+-      --db string        Path to the SQLite database (default: ~/.planar/planar.db)
+-      --json             Emit machine-readable JSON instead of human text
+-      --no-color         Shorthand for --color=never; wins over --color=always.
+-      --no-scope-check   Opt out of strict scope resolution; fall back to top-of-stack when cwd is ambiguous (legacy/escape-hatch — not for routine use)
+-  -q, --quiet            Suppress informational output
+-      --v                Enable debug-level tracing
+-      --vv               Enable trace-level tracing
+-
+-Use "planar plan [command] --help" for more information about a command.
++COMMANDS:
++  create          Create a new plan.
++  show            Show a plan's details, steps, and child plans.
++  list            List plans.
++  update          Update mutable fields on a plan.
++  edit            Edit a plan in $EDITOR (editor-first flow).
++  view            View a plan's workbench file.
++  diff            Diff plan against database version.
++  review          Reviewer entry point for plan diff.
++  link            Create an entity link from a plan to another entity.
++  next            Bucketed claim-aware view of next work on a plan (available / claimed / stale / blocked).
++  recompute-status  Recompute a plan's roll-up status (--plan <id> or --all).
++  step            Manage plan steps.
+```
+
+#### 38. `plan ` — invocation `no-args`
+
+- Failure class: `neither-failed`
+- Go exit: `0` (stdout 1454B, stderr 0B)
+- Zig exit: `0` (stdout 959B, stderr 0B)
+
+```diff
+--- go
++++ zig
+@@ -1,31 +1,24 @@
++plan
++
+ Manage plans — the top-level structured intent for a body of work.
+ 
+-Plans may be hierarchical (--parent) and contain ordered steps (plan step add).
+-Status lifecycle: draft → active → paused / done / abandoned.
++  Plans may be hierarchical (--parent) and contain ordered steps
++  (plan step add).
++  Status lifecycle: draft → active → paused / done / abandoned.
+ 
+-Usage:
+-  planar plan [command]
++USAGE:
++  plan <command>
+ 
+-Available Commands:
+-  create           Create a new plan.
+-  link             Create an entity link from a plan to another entity.
+-  list             List plans.
+-  recompute-status Re-fire the plan-status auto-promotion invariant against a plan or all plans.
+-  show             Show a plan's details, steps, and child plans.
+-  step             Manage plan steps.
+-  update           Update mutable fields on a plan.
+-
+-Flags:
+-  -h, --help   help for plan
+-
+-Global Flags:
+-      --color string     Color mode: auto, always, or never. NO_COLOR env var overrides always. (default "auto")
+-      --db string        Path to the SQLite database (default: ~/.planar/planar.db)
+-      --json             Emit machine-readable JSON instead of human text
+-      --no-color         Shorthand for --color=never; wins over --color=always.
+-      --no-scope-check   Opt out of strict scope resolution; fall back to top-of-stack when cwd is ambiguous (legacy/escape-hatch — not for routine use)
+-  -q, --quiet            Suppress informational output
+-      --v                Enable debug-level tracing
+-      --vv               Enable trace-level tracing
+-
+-Use "planar plan [command] --help" for more information about a command.
++COMMANDS:
++  create          Create a new plan.
++  show            Show a plan's details, steps, and child plans.
++  list            List plans.
++  update          Update mutable fields on a plan.
++  edit            Edit a plan in $EDITOR (editor-first flow).
++  view            View a plan's workbench file.
++  diff            Diff plan against database version.
++  review          Reviewer entry point for plan diff.
++  link            Create an entity link from a plan to another entity.
++  next            Bucketed claim-aware view of next work on a plan (available / claimed / stale / blocked).
++  recompute-status  Recompute a plan's roll-up status (--plan <id> or --all).
++  step            Manage plan steps.
+```
+
+#### 39. `plan ` — invocation `real-cwd`
+
+- Failure class: `neither-failed`
+- Go exit: `0` (stdout 1454B, stderr 0B)
+- Zig exit: `0` (stdout 959B, stderr 0B)
+- cwd: `<CWD_DIR>`
+
+```diff
+--- go
++++ zig
+@@ -1,31 +1,24 @@
++plan
++
+ Manage plans — the top-level structured intent for a body of work.
+ 
+-Plans may be hierarchical (--parent) and contain ordered steps (plan step add).
+-Status lifecycle: draft → active → paused / done / abandoned.
++  Plans may be hierarchical (--parent) and contain ordered steps
++  (plan step add).
++  Status lifecycle: draft → active → paused / done / abandoned.
+ 
+-Usage:
+-  planar plan [command]
++USAGE:
++  plan <command>
+ 
+-Available Commands:
+-  create           Create a new plan.
+-  link             Create an entity link from a plan to another entity.
+-  list             List plans.
+-  recompute-status Re-fire the plan-status auto-promotion invariant against a plan or all plans.
+-  show             Show a plan's details, steps, and child plans.
+-  step             Manage plan steps.
+-  update           Update mutable fields on a plan.
+-
+-Flags:
+-  -h, --help   help for plan
+-
+-Global Flags:
+-      --color string     Color mode: auto, always, or never. NO_COLOR env var overrides always. (default "auto")
+-      --db string        Path to the SQLite database (default: ~/.planar/planar.db)
+-      --json             Emit machine-readable JSON instead of human text
+-      --no-color         Shorthand for --color=never; wins over --color=always.
+-      --no-scope-check   Opt out of strict scope resolution; fall back to top-of-stack when cwd is ambiguous (legacy/escape-hatch — not for routine use)
+-  -q, --quiet            Suppress informational output
+-      --v                Enable debug-level tracing
+-      --vv               Enable trace-level tracing
+-
+-Use "planar plan [command] --help" for more information about a command.
++COMMANDS:
++  create          Create a new plan.
++  show            Show a plan's details, steps, and child plans.
++  list            List plans.
++  update          Update mutable fields on a plan.
++  edit            Edit a plan in $EDITOR (editor-first flow).
++  view            View a plan's workbench file.
++  diff            Diff plan against database version.
++  review          Reviewer entry point for plan diff.
++  link            Create an entity link from a plan to another entity.
++  next            Bucketed claim-aware view of next work on a plan (available / claimed / stale / blocked).
++  recompute-status  Recompute a plan's roll-up status (--plan <id> or --all).
++  step            Manage plan steps.
+```
+
+#### 40. `resume --help` — invocation `help`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1564B, stderr 0B)
@@ -3042,7 +3375,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  <task-id>       (string) optional
 ```
 
-#### 36. `links --help` — invocation `help`
+#### 41. `links --help` — invocation `help`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1611B, stderr 0B)
@@ -3100,7 +3433,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  update          Change sync_direction on an existing external_links row (deferred to M11).
 ```
 
-#### 37. `links ` — invocation `no-args`
+#### 42. `links ` — invocation `no-args`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1611B, stderr 0B)
@@ -3158,7 +3491,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  update          Change sync_direction on an existing external_links row (deferred to M11).
 ```
 
-#### 38. `links ` — invocation `real-cwd`
+#### 43. `links ` — invocation `real-cwd`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1611B, stderr 0B)
@@ -3217,197 +3550,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  update          Change sync_direction on an existing external_links row (deferred to M11).
 ```
 
-#### 39. `plan --help` — invocation `help`
-
-- Failure class: `neither-failed`
-- Go exit: `0` (stdout 1454B, stderr 0B)
-- Zig exit: `0` (stdout 922B, stderr 0B)
-
-```diff
---- go
-+++ zig
-@@ -1,31 +1,24 @@
-+plan
-+
- Manage plans — the top-level structured intent for a body of work.
- 
--Plans may be hierarchical (--parent) and contain ordered steps (plan step add).
--Status lifecycle: draft → active → paused / done / abandoned.
-+  Plans may be hierarchical (--parent) and contain ordered steps
-+  (plan step add).
-+  Status lifecycle: draft → active → paused / done / abandoned.
- 
--Usage:
--  planar plan [command]
-+USAGE:
-+  plan <command>
- 
--Available Commands:
--  create           Create a new plan.
--  link             Create an entity link from a plan to another entity.
--  list             List plans.
--  recompute-status Re-fire the plan-status auto-promotion invariant against a plan or all plans.
--  show             Show a plan's details, steps, and child plans.
--  step             Manage plan steps.
--  update           Update mutable fields on a plan.
--
--Flags:
--  -h, --help   help for plan
--
--Global Flags:
--      --color string     Color mode: auto, always, or never. NO_COLOR env var overrides always. (default "auto")
--      --db string        Path to the SQLite database (default: ~/.planar/planar.db)
--      --json             Emit machine-readable JSON instead of human text
--      --no-color         Shorthand for --color=never; wins over --color=always.
--      --no-scope-check   Opt out of strict scope resolution; fall back to top-of-stack when cwd is ambiguous (legacy/escape-hatch — not for routine use)
--  -q, --quiet            Suppress informational output
--      --v                Enable debug-level tracing
--      --vv               Enable trace-level tracing
--
--Use "planar plan [command] --help" for more information about a command.
-+COMMANDS:
-+  create          Create a new plan.
-+  show            Show a plan's details, steps, and child plans.
-+  list            List plans.
-+  update          Update mutable fields on a plan.
-+  edit            Edit a plan in $EDITOR (editor-first flow).
-+  view            View a plan's workbench file.
-+  diff            Diff plan against database version.
-+  review          Reviewer entry point for plan diff.
-+  link            Create an entity link from a plan to another entity.
-+  next            Return the highest-priority eligible task on a plan.
-+  recompute-status  Recompute a plan's roll-up status (--plan <id> or --all).
-+  step            Manage plan steps.
-```
-
-#### 40. `plan ` — invocation `no-args`
-
-- Failure class: `neither-failed`
-- Go exit: `0` (stdout 1454B, stderr 0B)
-- Zig exit: `0` (stdout 922B, stderr 0B)
-
-```diff
---- go
-+++ zig
-@@ -1,31 +1,24 @@
-+plan
-+
- Manage plans — the top-level structured intent for a body of work.
- 
--Plans may be hierarchical (--parent) and contain ordered steps (plan step add).
--Status lifecycle: draft → active → paused / done / abandoned.
-+  Plans may be hierarchical (--parent) and contain ordered steps
-+  (plan step add).
-+  Status lifecycle: draft → active → paused / done / abandoned.
- 
--Usage:
--  planar plan [command]
-+USAGE:
-+  plan <command>
- 
--Available Commands:
--  create           Create a new plan.
--  link             Create an entity link from a plan to another entity.
--  list             List plans.
--  recompute-status Re-fire the plan-status auto-promotion invariant against a plan or all plans.
--  show             Show a plan's details, steps, and child plans.
--  step             Manage plan steps.
--  update           Update mutable fields on a plan.
--
--Flags:
--  -h, --help   help for plan
--
--Global Flags:
--      --color string     Color mode: auto, always, or never. NO_COLOR env var overrides always. (default "auto")
--      --db string        Path to the SQLite database (default: ~/.planar/planar.db)
--      --json             Emit machine-readable JSON instead of human text
--      --no-color         Shorthand for --color=never; wins over --color=always.
--      --no-scope-check   Opt out of strict scope resolution; fall back to top-of-stack when cwd is ambiguous (legacy/escape-hatch — not for routine use)
--  -q, --quiet            Suppress informational output
--      --v                Enable debug-level tracing
--      --vv               Enable trace-level tracing
--
--Use "planar plan [command] --help" for more information about a command.
-+COMMANDS:
-+  create          Create a new plan.
-+  show            Show a plan's details, steps, and child plans.
-+  list            List plans.
-+  update          Update mutable fields on a plan.
-+  edit            Edit a plan in $EDITOR (editor-first flow).
-+  view            View a plan's workbench file.
-+  diff            Diff plan against database version.
-+  review          Reviewer entry point for plan diff.
-+  link            Create an entity link from a plan to another entity.
-+  next            Return the highest-priority eligible task on a plan.
-+  recompute-status  Recompute a plan's roll-up status (--plan <id> or --all).
-+  step            Manage plan steps.
-```
-
-#### 41. `plan ` — invocation `real-cwd`
-
-- Failure class: `neither-failed`
-- Go exit: `0` (stdout 1454B, stderr 0B)
-- Zig exit: `0` (stdout 922B, stderr 0B)
-- cwd: `<CWD_DIR>`
-
-```diff
---- go
-+++ zig
-@@ -1,31 +1,24 @@
-+plan
-+
- Manage plans — the top-level structured intent for a body of work.
- 
--Plans may be hierarchical (--parent) and contain ordered steps (plan step add).
--Status lifecycle: draft → active → paused / done / abandoned.
-+  Plans may be hierarchical (--parent) and contain ordered steps
-+  (plan step add).
-+  Status lifecycle: draft → active → paused / done / abandoned.
- 
--Usage:
--  planar plan [command]
-+USAGE:
-+  plan <command>
- 
--Available Commands:
--  create           Create a new plan.
--  link             Create an entity link from a plan to another entity.
--  list             List plans.
--  recompute-status Re-fire the plan-status auto-promotion invariant against a plan or all plans.
--  show             Show a plan's details, steps, and child plans.
--  step             Manage plan steps.
--  update           Update mutable fields on a plan.
--
--Flags:
--  -h, --help   help for plan
--
--Global Flags:
--      --color string     Color mode: auto, always, or never. NO_COLOR env var overrides always. (default "auto")
--      --db string        Path to the SQLite database (default: ~/.planar/planar.db)
--      --json             Emit machine-readable JSON instead of human text
--      --no-color         Shorthand for --color=never; wins over --color=always.
--      --no-scope-check   Opt out of strict scope resolution; fall back to top-of-stack when cwd is ambiguous (legacy/escape-hatch — not for routine use)
--  -q, --quiet            Suppress informational output
--      --v                Enable debug-level tracing
--      --vv               Enable trace-level tracing
--
--Use "planar plan [command] --help" for more information about a command.
-+COMMANDS:
-+  create          Create a new plan.
-+  show            Show a plan's details, steps, and child plans.
-+  list            List plans.
-+  update          Update mutable fields on a plan.
-+  edit            Edit a plan in $EDITOR (editor-first flow).
-+  view            View a plan's workbench file.
-+  diff            Diff plan against database version.
-+  review          Reviewer entry point for plan diff.
-+  link            Create an entity link from a plan to another entity.
-+  next            Return the highest-priority eligible task on a plan.
-+  recompute-status  Recompute a plan's roll-up status (--plan <id> or --all).
-+  step            Manage plan steps.
-```
-
-#### 42. `question --help` — invocation `help`
+#### 44. `question --help` — invocation `help`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1608B, stderr 0B)
@@ -3468,7 +3611,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  link            Create an entity link from a question to another entity.
 ```
 
-#### 43. `question ` — invocation `no-args`
+#### 45. `question ` — invocation `no-args`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1608B, stderr 0B)
@@ -3529,7 +3672,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  link            Create an entity link from a question to another entity.
 ```
 
-#### 44. `question ` — invocation `real-cwd`
+#### 46. `question ` — invocation `real-cwd`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1608B, stderr 0B)
@@ -3591,7 +3734,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  link            Create an entity link from a question to another entity.
 ```
 
-#### 45. `assoc --help` — invocation `help`
+#### 47. `assoc --help` — invocation `help`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1464B, stderr 0B)
@@ -3653,7 +3796,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  detect          Propose (or apply) auto-detected associations for the current directory.
 ```
 
-#### 46. `assoc ` — invocation `no-args`
+#### 48. `assoc ` — invocation `no-args`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1464B, stderr 0B)
@@ -3715,7 +3858,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  detect          Propose (or apply) auto-detected associations for the current directory.
 ```
 
-#### 47. `assoc ` — invocation `real-cwd`
+#### 49. `assoc ` — invocation `real-cwd`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1464B, stderr 0B)
@@ -3778,7 +3921,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  detect          Propose (or apply) auto-detected associations for the current directory.
 ```
 
-#### 48. `capture --help` — invocation `help`
+#### 50. `capture --help` — invocation `help`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1466B, stderr 0B)
@@ -3835,7 +3978,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  snapshot        Create a context snapshot.
 ```
 
-#### 49. `capture ` — invocation `no-args`
+#### 51. `capture ` — invocation `no-args`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1466B, stderr 0B)
@@ -3892,7 +4035,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  snapshot        Create a context snapshot.
 ```
 
-#### 50. `capture ` — invocation `real-cwd`
+#### 52. `capture ` — invocation `real-cwd`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1466B, stderr 0B)
@@ -3950,7 +4093,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  snapshot        Create a context snapshot.
 ```
 
-#### 51. `config --help` — invocation `help`
+#### 53. `config --help` — invocation `help`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1519B, stderr 0B)
@@ -4013,7 +4156,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  path            Show the configuration file path.
 ```
 
-#### 52. `config ` — invocation `no-args`
+#### 54. `config ` — invocation `no-args`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1519B, stderr 0B)
@@ -4076,7 +4219,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  path            Show the configuration file path.
 ```
 
-#### 53. `config ` — invocation `real-cwd`
+#### 55. `config ` — invocation `real-cwd`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1519B, stderr 0B)
@@ -4140,7 +4283,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  path            Show the configuration file path.
 ```
 
-#### 54. `workspace --help` — invocation `help`
+#### 56. `workspace --help` — invocation `help`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1561B, stderr 0B)
@@ -4197,7 +4340,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  regenerate      Regenerate AGENTS.md from current state.
 ```
 
-#### 55. `workspace ` — invocation `no-args`
+#### 57. `workspace ` — invocation `no-args`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1561B, stderr 0B)
@@ -4254,7 +4397,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  regenerate      Regenerate AGENTS.md from current state.
 ```
 
-#### 56. `workspace ` — invocation `real-cwd`
+#### 58. `workspace ` — invocation `real-cwd`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1561B, stderr 0B)
@@ -4312,7 +4455,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  regenerate      Regenerate AGENTS.md from current state.
 ```
 
-#### 57. `templates --json` — invocation `json`
+#### 59. `templates --json` — invocation `json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1924B, stderr 0B)
@@ -4371,7 +4514,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 58. `templates --json` — invocation `real-cwd-json`
+#### 60. `templates --json` — invocation `real-cwd-json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1924B, stderr 0B)
@@ -4431,7 +4574,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 59. `task --json` — invocation `json`
+#### 61. `task --json` — invocation `json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1878B, stderr 0B)
@@ -4491,7 +4634,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 60. `task --json` — invocation `real-cwd-json`
+#### 62. `task --json` — invocation `real-cwd-json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1878B, stderr 0B)
@@ -4552,7 +4695,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 61. `local --json` — invocation `json`
+#### 63. `local --json` — invocation `json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1877B, stderr 0B)
@@ -4609,7 +4752,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 62. `local --json` — invocation `real-cwd-json`
+#### 64. `local --json` — invocation `real-cwd-json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1877B, stderr 0B)
@@ -4667,7 +4810,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 63. `workbench --json` — invocation `json`
+#### 65. `workbench --json` — invocation `json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1870B, stderr 0B)
@@ -4724,7 +4867,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 64. `workbench --json` — invocation `real-cwd-json`
+#### 66. `workbench --json` — invocation `real-cwd-json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1870B, stderr 0B)
@@ -4782,7 +4925,55 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 65. `scope --help` — invocation `help`
+#### 67. `plan next 351` — invocation `q233-plan-next`
+
+- Failure class: `neither-failed`
+- Go exit: `0` (stdout 1454B, stderr 0B)
+- Zig exit: `0` (stdout 533B, stderr 0B)
+
+```diff
+--- go
++++ zig
+@@ -1,31 +1,5 @@
+-Manage plans — the top-level structured intent for a body of work.
+-
+-Plans may be hierarchical (--parent) and contain ordered steps (plan step add).
+-Status lifecycle: draft → active → paused / done / abandoned.
+-
+-Usage:
+-  planar plan [command]
+-
+-Available Commands:
+-  create           Create a new plan.
+-  link             Create an entity link from a plan to another entity.
+-  list             List plans.
+-  recompute-status Re-fire the plan-status auto-promotion invariant against a plan or all plans.
+-  show             Show a plan's details, steps, and child plans.
+-  step             Manage plan steps.
+-  update           Update mutable fields on a plan.
+-
+-Flags:
+-  -h, --help   help for plan
+-
+-Global Flags:
+-      --color string     Color mode: auto, always, or never. NO_COLOR env var overrides always. (default "auto")
+-      --db string        Path to the SQLite database (default: ~/.planar/planar.db)
+-      --json             Emit machine-readable JSON instead of human text
+-      --no-color         Shorthand for --color=never; wins over --color=always.
+-      --no-scope-check   Opt out of strict scope resolution; fall back to top-of-stack when cwd is ambiguous (legacy/escape-hatch — not for routine use)
+-  -q, --quiet            Suppress informational output
+-      --v                Enable debug-level tracing
+-      --vv               Enable trace-level tracing
+-
+-Use "planar plan [command] --help" for more information about a command.
++plan:351  available:4  claimed:0  stale:0  blocked:0  done:16
++  available  task:2369  Phase 2 audit: python3 deviation from 'pure bash 3.2' spec  [pri:25]
++  available  task:2373  Q237 docs follow-up: update docs/cli-reference.md to highlight the positional-title shape on 'add' verbs  [pri:25]
++  available  task:2371  Phase 2.5 follow-up: file a separate question for 'planar agent claim' gap (Q236 left it conditional)  [pri:30]
++  available  task:2378  Hardening: spread PWD-first cwd helper to remaining realPath callers  [pri:40]
+```
+
+#### 68. `scope --help` — invocation `help`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1375B, stderr 0B)
@@ -4835,7 +5026,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  clear           Removed in plan 153 M5 — see `planar scope show`.
 ```
 
-#### 66. `scope ` — invocation `no-args`
+#### 69. `scope ` — invocation `no-args`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1375B, stderr 0B)
@@ -4888,7 +5079,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  clear           Removed in plan 153 M5 — see `planar scope show`.
 ```
 
-#### 67. `scope ` — invocation `real-cwd`
+#### 70. `scope ` — invocation `real-cwd`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1375B, stderr 0B)
@@ -4942,7 +5133,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  clear           Removed in plan 153 M5 — see `planar scope show`.
 ```
 
-#### 68. `doc --json` — invocation `json`
+#### 71. `doc --json` — invocation `json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1644B, stderr 0B)
@@ -4996,7 +5187,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 69. `doc --json` — invocation `real-cwd-json`
+#### 72. `doc --json` — invocation `real-cwd-json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1644B, stderr 0B)
@@ -5051,7 +5242,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 70. `scenario --json` — invocation `json`
+#### 73. `scenario --json` — invocation `json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1638B, stderr 0B)
@@ -5105,7 +5296,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 71. `scenario --json` — invocation `real-cwd-json`
+#### 74. `scenario --json` — invocation `real-cwd-json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1638B, stderr 0B)
@@ -5160,7 +5351,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 72. `ext --help` — invocation `help`
+#### 75. `ext --help` — invocation `help`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1289B, stderr 0B)
@@ -5212,7 +5403,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  propagate       Propagate a feature (plan + descendants) to an external system.
 ```
 
-#### 73. `ext ` — invocation `no-args`
+#### 76. `ext ` — invocation `no-args`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1289B, stderr 0B)
@@ -5264,7 +5455,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  propagate       Propagate a feature (plan + descendants) to an external system.
 ```
 
-#### 74. `ext ` — invocation `real-cwd`
+#### 77. `ext ` — invocation `real-cwd`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1289B, stderr 0B)
@@ -5317,7 +5508,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  propagate       Propagate a feature (plan + descendants) to an external system.
 ```
 
-#### 75. `decision --json` — invocation `json`
+#### 78. `decision --json` — invocation `json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1617B, stderr 0B)
@@ -5372,7 +5563,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 76. `decision --json` — invocation `real-cwd-json`
+#### 79. `decision --json` — invocation `real-cwd-json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1617B, stderr 0B)
@@ -5428,7 +5619,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 77. `question --json` — invocation `json`
+#### 80. `question --json` — invocation `json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1608B, stderr 0B)
@@ -5482,7 +5673,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 78. `question --json` — invocation `real-cwd-json`
+#### 81. `question --json` — invocation `real-cwd-json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1608B, stderr 0B)
@@ -5537,7 +5728,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 79. `links --json` — invocation `json`
+#### 82. `links --json` — invocation `json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1611B, stderr 0B)
@@ -5590,7 +5781,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 80. `links --json` — invocation `real-cwd-json`
+#### 83. `links --json` — invocation `real-cwd-json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1611B, stderr 0B)
@@ -5644,7 +5835,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 81. `artifact --json` — invocation `json`
+#### 84. `artifact --json` — invocation `json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1596B, stderr 0B)
@@ -5697,7 +5888,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 82. `artifact --json` — invocation `real-cwd-json`
+#### 85. `artifact --json` — invocation `real-cwd-json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1596B, stderr 0B)
@@ -5751,7 +5942,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 83. `skills --help` — invocation `help`
+#### 86. `skills --help` — invocation `help`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1372B, stderr 0B)
@@ -5803,7 +5994,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  render          Render unified skill sources into per-vendor output trees.
 ```
 
-#### 84. `skills ` — invocation `no-args`
+#### 87. `skills ` — invocation `no-args`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1372B, stderr 0B)
@@ -5855,7 +6046,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  render          Render unified skill sources into per-vendor output trees.
 ```
 
-#### 85. `skills ` — invocation `real-cwd`
+#### 88. `skills ` — invocation `real-cwd`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1372B, stderr 0B)
@@ -5908,7 +6099,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  render          Render unified skill sources into per-vendor output trees.
 ```
 
-#### 86. `audit --help` — invocation `help`
+#### 89. `audit --help` — invocation `help`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1154B, stderr 0B)
@@ -5957,7 +6148,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  handoff-readiness  Check resume-readiness for all in-flight tasks.
 ```
 
-#### 87. `audit ` — invocation `no-args`
+#### 90. `audit ` — invocation `no-args`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1154B, stderr 0B)
@@ -6006,7 +6197,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  handoff-readiness  Check resume-readiness for all in-flight tasks.
 ```
 
-#### 88. `audit ` — invocation `real-cwd`
+#### 91. `audit ` — invocation `real-cwd`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1154B, stderr 0B)
@@ -6056,7 +6247,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  handoff-readiness  Check resume-readiness for all in-flight tasks.
 ```
 
-#### 89. `workspace --json` — invocation `json`
+#### 92. `workspace --json` — invocation `json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1561B, stderr 0B)
@@ -6109,7 +6300,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 90. `workspace --json` — invocation `real-cwd-json`
+#### 93. `workspace --json` — invocation `real-cwd-json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1561B, stderr 0B)
@@ -6163,7 +6354,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 91. `config --json` — invocation `json`
+#### 94. `config --json` — invocation `json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1519B, stderr 0B)
@@ -6219,7 +6410,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 92. `config --json` — invocation `real-cwd-json`
+#### 95. `config --json` — invocation `real-cwd-json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1519B, stderr 0B)
@@ -6276,7 +6467,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 93. `assoc --json` — invocation `json`
+#### 96. `assoc --json` — invocation `json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1464B, stderr 0B)
@@ -6332,7 +6523,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 94. `assoc --json` — invocation `real-cwd-json`
+#### 97. `assoc --json` — invocation `real-cwd-json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1464B, stderr 0B)
@@ -6389,7 +6580,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 95. `capture --json` — invocation `json`
+#### 98. `capture --json` — invocation `json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1466B, stderr 0B)
@@ -6440,7 +6631,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 96. `capture --json` — invocation `real-cwd-json`
+#### 99. `capture --json` — invocation `real-cwd-json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1466B, stderr 0B)
@@ -6492,7 +6683,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 97. `plan --json` — invocation `json`
+#### 100. `plan --json` — invocation `json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1454B, stderr 0B)
@@ -6544,7 +6735,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 98. `plan --json` — invocation `real-cwd-json`
+#### 101. `plan --json` — invocation `real-cwd-json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1454B, stderr 0B)
@@ -6597,51 +6788,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 99. `plan next 351` — invocation `q233-plan-next`
-
-- Failure class: `neither-failed`
-- Go exit: `0` (stdout 1454B, stderr 0B)
-- Zig exit: `0` (stdout 86B, stderr 0B)
-
-```diff
---- go
-+++ zig
-@@ -1,31 +1 @@
--Manage plans — the top-level structured intent for a body of work.
--
--Plans may be hierarchical (--parent) and contain ordered steps (plan step add).
--Status lifecycle: draft → active → paused / done / abandoned.
--
--Usage:
--  planar plan [command]
--
--Available Commands:
--  create           Create a new plan.
--  link             Create an entity link from a plan to another entity.
--  list             List plans.
--  recompute-status Re-fire the plan-status auto-promotion invariant against a plan or all plans.
--  show             Show a plan's details, steps, and child plans.
--  step             Manage plan steps.
--  update           Update mutable fields on a plan.
--
--Flags:
--  -h, --help   help for plan
--
--Global Flags:
--      --color string     Color mode: auto, always, or never. NO_COLOR env var overrides always. (default "auto")
--      --db string        Path to the SQLite database (default: ~/.planar/planar.db)
--      --json             Emit machine-readable JSON instead of human text
--      --no-color         Shorthand for --color=never; wins over --color=always.
--      --no-scope-check   Opt out of strict scope resolution; fall back to top-of-stack when cwd is ambiguous (legacy/escape-hatch — not for routine use)
--  -q, --quiet            Suppress informational output
--      --v                Enable debug-level tracing
--      --vv               Enable trace-level tracing
--
--Use "planar plan [command] --help" for more information about a command.
-+task:2369  Phase 2 audit: python3 deviation from 'pure bash 3.2' spec  [todo, pri:25]
-```
-
-#### 100. `promote --help` — invocation `help`
+#### 102. `promote --help` — invocation `help`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1080B, stderr 0B)
@@ -6691,7 +6838,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  <ref>           (string) — Entity ref (kind:id)
 ```
 
-#### 101. `test-spec --help` — invocation `help`
+#### 103. `test-spec --help` — invocation `help`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1189B, stderr 0B)
@@ -6738,7 +6885,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  status          Print per-milestone test-spec coverage for an anchor plan.
 ```
 
-#### 102. `test-spec ` — invocation `no-args`
+#### 104. `test-spec ` — invocation `no-args`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1189B, stderr 0B)
@@ -6785,7 +6932,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  status          Print per-milestone test-spec coverage for an anchor plan.
 ```
 
-#### 103. `test-spec ` — invocation `real-cwd`
+#### 105. `test-spec ` — invocation `real-cwd`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1189B, stderr 0B)
@@ -6833,7 +6980,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  status          Print per-milestone test-spec coverage for an anchor plan.
 ```
 
-#### 104. `scope --json` — invocation `json`
+#### 106. `scope --json` — invocation `json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1375B, stderr 0B)
@@ -6882,7 +7029,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 105. `scope --json` — invocation `real-cwd-json`
+#### 107. `scope --json` — invocation `real-cwd-json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1375B, stderr 0B)
@@ -6932,7 +7079,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 106. `skills --json` — invocation `json`
+#### 108. `skills --json` — invocation `json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1372B, stderr 0B)
@@ -6983,7 +7130,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 107. `skills --json` — invocation `real-cwd-json`
+#### 109. `skills --json` — invocation `real-cwd-json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1372B, stderr 0B)
@@ -7035,7 +7182,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 108. `demote --help` — invocation `help`
+#### 110. `demote --help` — invocation `help`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1046B, stderr 0B)
@@ -7084,7 +7231,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  <ref>           (string) — Entity ref (kind:id)
 ```
 
-#### 109. `ext --json` — invocation `json`
+#### 111. `ext --json` — invocation `json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1289B, stderr 0B)
@@ -7133,7 +7280,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 110. `ext --json` — invocation `real-cwd-json`
+#### 112. `ext --json` — invocation `real-cwd-json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1289B, stderr 0B)
@@ -7183,7 +7330,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 111. `unlink --help` — invocation `help`
+#### 113. `unlink --help` — invocation `help`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1028B, stderr 0B)
@@ -7226,7 +7373,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  <link-id>       (string) — External-link id (integer)
 ```
 
-#### 112. `health --help` — invocation `help`
+#### 114. `health --help` — invocation `help`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1039B, stderr 0B)
@@ -7273,7 +7420,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  --json                (bool) default=false
 ```
 
-#### 113. `spec --help` — invocation `help`
+#### 115. `spec --help` — invocation `help`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1064B, stderr 0B)
@@ -7319,7 +7466,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  ingest          Decompose workbench spec documents into the task graph.
 ```
 
-#### 114. `spec ` — invocation `no-args`
+#### 116. `spec ` — invocation `no-args`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1064B, stderr 0B)
@@ -7365,7 +7512,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  ingest          Decompose workbench spec documents into the task graph.
 ```
 
-#### 115. `spec ` — invocation `real-cwd`
+#### 117. `spec ` — invocation `real-cwd`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 1064B, stderr 0B)
@@ -7412,7 +7559,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  ingest          Decompose workbench spec documents into the task graph.
 ```
 
-#### 116. `test-spec --json` — invocation `json`
+#### 118. `test-spec --json` — invocation `json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1189B, stderr 0B)
@@ -7459,7 +7606,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 117. `test-spec --json` — invocation `real-cwd-json`
+#### 119. `test-spec --json` — invocation `real-cwd-json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1189B, stderr 0B)
@@ -7507,7 +7654,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 118. `audit --json` — invocation `json`
+#### 120. `audit --json` — invocation `json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1154B, stderr 0B)
@@ -7553,7 +7700,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 119. `audit --json` — invocation `real-cwd-json`
+#### 121. `audit --json` — invocation `real-cwd-json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1154B, stderr 0B)
@@ -7600,7 +7747,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 120. `spec --json` — invocation `json`
+#### 122. `spec --json` — invocation `json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1064B, stderr 0B)
@@ -7646,7 +7793,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 121. `spec --json` — invocation `real-cwd-json`
+#### 123. `spec --json` — invocation `real-cwd-json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 1064B, stderr 0B)
@@ -7693,7 +7840,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 122. `annotate --help` — invocation `help`
+#### 124. `annotate --help` — invocation `help`
 
 - Failure class: `go-failed`
 - Go exit: `2` (stdout 0B, stderr 47B)
@@ -7737,7 +7884,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=0
 ```
 
-#### 123. `annotate ` — invocation `no-args`
+#### 125. `annotate ` — invocation `no-args`
 
 - Failure class: `go-failed`
 - Go exit: `2` (stdout 0B, stderr 47B)
@@ -7781,7 +7928,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=0
 ```
 
-#### 124. `annotate ` — invocation `real-cwd`
+#### 126. `annotate ` — invocation `real-cwd`
 
 - Failure class: `go-failed`
 - Go exit: `2` (stdout 0B, stderr 47B)
@@ -7826,7 +7973,47 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=0
 ```
 
-#### 125. `health --json` — invocation `json`
+#### 127. `dashboard --help` — invocation `help`
+
+- Failure class: `go-failed`
+- Go exit: `2` (stdout 0B, stderr 48B)
+- Zig exit: `0` (stdout 755B, stderr 0B)
+
+```diff
+--- go
++++ zig
+@@ -0,0 +1,20 @@
++dashboard
++
++Roll-up of in-flight plans in the current scope.
++
++  --agents folds in the live claim state from agent_work_claims —
++  active claims, stale claims, and the per-plan 'next available'
++  task list. Without --agents the dashboard is a plain plan summary.
++
++  This is the operator's read surface for agent activity; the
++  `planar agent` subcommand namespace does not exist by design.
++  See `planar-agent` for the ritual (claim/heartbeat/complete) and
++  `planar-watch` for the live streaming view.
++
++USAGE:
++  dashboard [flags]
++
++FLAGS:
++  --scope               (string) — Limit to a single scope slug
++  --agents              (bool) default=false — Fold in live claim state + next-available-work per plan
++  --json                (bool) default=false
+--- go.stderr
++++ zig.stderr
+@@ -1 +0,0 @@
+-error: unknown command "dashboard" for "planar"
+--- exit
++++ exit
+-go=2
++zig=0
+```
+
+#### 128. `health --json` — invocation `json`
 
 - Failure class: `zig-failed`
 - Go exit: `0` (stdout 249B, stderr 0B)
@@ -7841,21 +8028,21 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 -  "db_ok": true,
 -  "schema_current": true,
 -  "integrity_ok": true,
--  "inflight_tasks": 704,
+-  "inflight_tasks": 673,
 -  "resumable_tasks": 0,
--  "not_resumable_tasks": 704,
+-  "not_resumable_tasks": 673,
 -  "pending_handoffs": 0,
 -  "stale_handoffs": 0,
 -  "overall": "degraded"
 -}
-+{"db_path":"<AUDIT_DB>","db_ok":true,"schema_version":14,"schema_target":14,"schema_current":true,"migration_count":14,"integrity_ok":true,"inflight_tasks":2,"resumable_tasks":0,"not_resumable_tasks":2,"pending_handoffs":7,"stale_handoffs":3,"overall":"degraded"}
++{"db_path":"<AUDIT_DB>","db_ok":true,"schema_version":15,"schema_target":15,"schema_current":true,"migration_count":15,"integrity_ok":true,"inflight_tasks":2,"resumable_tasks":0,"not_resumable_tasks":2,"pending_handoffs":7,"stale_handoffs":3,"overall":"degraded"}
 --- exit
 +++ exit
 -go=0
 +zig=1
 ```
 
-#### 126. `health ` — invocation `no-args`
+#### 129. `health ` — invocation `no-args`
 
 - Failure class: `both-failed`
 - Go exit: `1` (stdout 246B, stderr 23B)
@@ -7868,14 +8055,14 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 -planar health
 -
 -  db:               <AUDIT_DB>  [ok]
--  schema:           14  [current]
+-  schema:           15  [current]
 -  integrity:        ok
--  in-flight tasks:  704  (0 resumable, 704 NOT RESUMABLE)
+-  in-flight tasks:  673  (0 resumable, 673 NOT RESUMABLE)
 -  pending handoffs: 0  (0 stale)
 -
--overall: DEGRADED  (704 tasks not resumable)
+-overall: DEGRADED  (673 tasks not resumable)
 +db:               ok (<AUDIT_DB>)
-+schema:           v14 of v14 (current)
++schema:           v15 of v15 (current)
 +integrity:        ok
 +in-flight tasks:  2 (0 resumable, 2 NOT resumable)
 +pending handoffs: 7 (3 stale > 24h)
@@ -7886,7 +8073,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 -error: degraded health
 ```
 
-#### 127. `health --json` — invocation `real-cwd-json`
+#### 130. `health --json` — invocation `real-cwd-json`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 237B, stderr 0B)
@@ -7909,10 +8096,10 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 -  "stale_handoffs": 0,
 -  "overall": "ok"
 -}
-+{"db_path":"<CWD_DB>","db_ok":true,"schema_version":14,"schema_target":14,"schema_current":true,"migration_count":14,"integrity_ok":true,"inflight_tasks":0,"resumable_tasks":0,"not_resumable_tasks":0,"pending_handoffs":0,"stale_handoffs":0,"overall":"ok"}
++{"db_path":"<CWD_DB>","db_ok":true,"schema_version":15,"schema_target":15,"schema_current":true,"migration_count":15,"integrity_ok":true,"inflight_tasks":0,"resumable_tasks":0,"not_resumable_tasks":0,"pending_handoffs":0,"stale_handoffs":0,"overall":"ok"}
 ```
 
-#### 128. `health ` — invocation `real-cwd`
+#### 131. `health ` — invocation `real-cwd`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 207B, stderr 0B)
@@ -7926,21 +8113,21 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 -planar health
 -
 -  db:               <CWD_DB>  [ok]
--  schema:           14  [current]
+-  schema:           15  [current]
 -  integrity:        ok
 -  in-flight tasks:  0  (0 resumable, 0 NOT RESUMABLE)
 -  pending handoffs: 0  (0 stale)
 -
 -overall: OK
 +db:               ok (<CWD_DB>)
-+schema:           v14 of v14 (current)
++schema:           v15 of v15 (current)
 +integrity:        ok
 +in-flight tasks:  0 (0 resumable, 0 NOT resumable)
 +pending handoffs: 0 (0 stale > 24h)
 +overall:          ok
 ```
 
-#### 129. `tree --json` — invocation `real-cwd-json`
+#### 132. `tree --json` — invocation `real-cwd-json`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 176B, stderr 0B)
@@ -7962,7 +8149,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +{"kind":"scope","title":"assoc:parity-audit-fixture","scope_kind":"association","scope_id":1,"scope_label":"assoc:parity-audit-fixture","children":[]}
 ```
 
-#### 130. `handoff --json` — invocation `json`
+#### 133. `handoff --json` — invocation `json`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 121B, stderr 0B)
@@ -7983,7 +8170,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +{"ok":true,"snapshot_id":7,"handoff_id":7,"status":"validated","resumable":false,"failures":[]}
 ```
 
-#### 131. `pl-import ` — invocation `no-args`
+#### 134. `pl-import ` — invocation `no-args`
 
 - Failure class: `both-failed`
 - Go exit: `2` (stdout 0B, stderr 36B)
@@ -8005,7 +8192,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 132. `pl-import --json` — invocation `json`
+#### 135. `pl-import --json` — invocation `json`
 
 - Failure class: `both-failed`
 - Go exit: `2` (stdout 0B, stderr 36B)
@@ -8027,30 +8214,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 133. `pl-import ` — invocation `real-cwd`
-
-- Failure class: `both-failed`
-- Go exit: `2` (stdout 0B, stderr 36B)
-- Zig exit: `1` (stdout 48B, stderr 33B)
-- cwd: `<CWD_DIR>`
-
-```diff
---- go
-+++ zig
-@@ -0,0 +1 @@
-+error: required positional missing: <repo-root>
---- go.stderr
-+++ zig.stderr
-@@ -1 +1 @@
--error: accepts 1 arg(s), received 0
-+error: MissingRequiredPositional
---- exit
-+++ exit
--go=2
-+zig=1
-```
-
-#### 134. `pl-import --json` — invocation `real-cwd-json`
+#### 136. `pl-import ` — invocation `real-cwd`
 
 - Failure class: `both-failed`
 - Go exit: `2` (stdout 0B, stderr 36B)
@@ -8073,51 +8237,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 135. `pl-synthesize ` — invocation `no-args`
-
-- Failure class: `both-failed`
-- Go exit: `2` (stdout 0B, stderr 36B)
-- Zig exit: `1` (stdout 48B, stderr 33B)
-
-```diff
---- go
-+++ zig
-@@ -0,0 +1 @@
-+error: required positional missing: <repo-root>
---- go.stderr
-+++ zig.stderr
-@@ -1 +1 @@
--error: accepts 1 arg(s), received 0
-+error: MissingRequiredPositional
---- exit
-+++ exit
--go=2
-+zig=1
-```
-
-#### 136. `pl-synthesize --json` — invocation `json`
-
-- Failure class: `both-failed`
-- Go exit: `2` (stdout 0B, stderr 36B)
-- Zig exit: `1` (stdout 48B, stderr 33B)
-
-```diff
---- go
-+++ zig
-@@ -0,0 +1 @@
-+error: required positional missing: <repo-root>
---- go.stderr
-+++ zig.stderr
-@@ -1 +1 @@
--error: accepts 1 arg(s), received 0
-+error: MissingRequiredPositional
---- exit
-+++ exit
--go=2
-+zig=1
-```
-
-#### 137. `pl-synthesize ` — invocation `real-cwd`
+#### 137. `pl-import --json` — invocation `real-cwd-json`
 
 - Failure class: `both-failed`
 - Go exit: `2` (stdout 0B, stderr 36B)
@@ -8140,7 +8260,51 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 138. `pl-synthesize --json` — invocation `real-cwd-json`
+#### 138. `pl-synthesize ` — invocation `no-args`
+
+- Failure class: `both-failed`
+- Go exit: `2` (stdout 0B, stderr 36B)
+- Zig exit: `1` (stdout 48B, stderr 33B)
+
+```diff
+--- go
++++ zig
+@@ -0,0 +1 @@
++error: required positional missing: <repo-root>
+--- go.stderr
++++ zig.stderr
+@@ -1 +1 @@
+-error: accepts 1 arg(s), received 0
++error: MissingRequiredPositional
+--- exit
++++ exit
+-go=2
++zig=1
+```
+
+#### 139. `pl-synthesize --json` — invocation `json`
+
+- Failure class: `both-failed`
+- Go exit: `2` (stdout 0B, stderr 36B)
+- Zig exit: `1` (stdout 48B, stderr 33B)
+
+```diff
+--- go
++++ zig
+@@ -0,0 +1 @@
++error: required positional missing: <repo-root>
+--- go.stderr
++++ zig.stderr
+@@ -1 +1 @@
+-error: accepts 1 arg(s), received 0
++error: MissingRequiredPositional
+--- exit
++++ exit
+-go=2
++zig=1
+```
+
+#### 140. `pl-synthesize ` — invocation `real-cwd`
 
 - Failure class: `both-failed`
 - Go exit: `2` (stdout 0B, stderr 36B)
@@ -8163,7 +8327,30 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 139. `handoff ` — invocation `no-args`
+#### 141. `pl-synthesize --json` — invocation `real-cwd-json`
+
+- Failure class: `both-failed`
+- Go exit: `2` (stdout 0B, stderr 36B)
+- Zig exit: `1` (stdout 48B, stderr 33B)
+- cwd: `<CWD_DIR>`
+
+```diff
+--- go
++++ zig
+@@ -0,0 +1 @@
++error: required positional missing: <repo-root>
+--- go.stderr
++++ zig.stderr
+@@ -1 +1 @@
+-error: accepts 1 arg(s), received 0
++error: MissingRequiredPositional
+--- exit
++++ exit
+-go=2
++zig=1
+```
+
+#### 142. `handoff ` — invocation `no-args`
 
 - Failure class: `neither-failed`
 - Go exit: `0` (stdout 109B, stderr 0B)
@@ -8180,7 +8367,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +  handoff:  5  status: validated
 ```
 
-#### 140. `unlink ` — invocation `no-args`
+#### 143. `unlink ` — invocation `no-args`
 
 - Failure class: `both-failed`
 - Go exit: `2` (stdout 0B, stderr 36B)
@@ -8202,7 +8389,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 141. `unlink --json` — invocation `json`
+#### 144. `unlink --json` — invocation `json`
 
 - Failure class: `both-failed`
 - Go exit: `2` (stdout 0B, stderr 36B)
@@ -8224,30 +8411,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 142. `unlink ` — invocation `real-cwd`
-
-- Failure class: `both-failed`
-- Go exit: `2` (stdout 0B, stderr 36B)
-- Zig exit: `1` (stdout 46B, stderr 33B)
-- cwd: `<CWD_DIR>`
-
-```diff
---- go
-+++ zig
-@@ -0,0 +1 @@
-+error: required positional missing: <link-id>
---- go.stderr
-+++ zig.stderr
-@@ -1 +1 @@
--error: accepts 1 arg(s), received 0
-+error: MissingRequiredPositional
---- exit
-+++ exit
--go=2
-+zig=1
-```
-
-#### 143. `unlink --json` — invocation `real-cwd-json`
+#### 145. `unlink ` — invocation `real-cwd`
 
 - Failure class: `both-failed`
 - Go exit: `2` (stdout 0B, stderr 36B)
@@ -8270,7 +8434,30 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 144. `annotate --json` — invocation `json`
+#### 146. `unlink --json` — invocation `real-cwd-json`
+
+- Failure class: `both-failed`
+- Go exit: `2` (stdout 0B, stderr 36B)
+- Zig exit: `1` (stdout 46B, stderr 33B)
+- cwd: `<CWD_DIR>`
+
+```diff
+--- go
++++ zig
+@@ -0,0 +1 @@
++error: required positional missing: <link-id>
+--- go.stderr
++++ zig.stderr
+@@ -1 +1 @@
+-error: accepts 1 arg(s), received 0
++error: MissingRequiredPositional
+--- exit
++++ exit
+-go=2
++zig=1
+```
+
+#### 147. `annotate --json` — invocation `json`
 
 - Failure class: `both-failed`
 - Go exit: `2` (stdout 0B, stderr 47B)
@@ -8292,7 +8479,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 145. `annotate --json` — invocation `real-cwd-json`
+#### 148. `annotate --json` — invocation `real-cwd-json`
 
 - Failure class: `both-failed`
 - Go exit: `2` (stdout 0B, stderr 47B)
@@ -8315,7 +8502,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 146. `search ` — invocation `no-args`
+#### 149. `search ` — invocation `no-args`
 
 - Failure class: `both-failed`
 - Go exit: `2` (stdout 0B, stderr 36B)
@@ -8337,7 +8524,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 147. `search --json` — invocation `json`
+#### 150. `search --json` — invocation `json`
 
 - Failure class: `both-failed`
 - Go exit: `2` (stdout 0B, stderr 36B)
@@ -8359,30 +8546,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 148. `search ` — invocation `real-cwd`
-
-- Failure class: `both-failed`
-- Go exit: `2` (stdout 0B, stderr 36B)
-- Zig exit: `1` (stdout 44B, stderr 33B)
-- cwd: `<CWD_DIR>`
-
-```diff
---- go
-+++ zig
-@@ -0,0 +1 @@
-+error: required positional missing: <query>
---- go.stderr
-+++ zig.stderr
-@@ -1 +1 @@
--error: accepts 1 arg(s), received 0
-+error: MissingRequiredPositional
---- exit
-+++ exit
--go=2
-+zig=1
-```
-
-#### 149. `search --json` — invocation `real-cwd-json`
+#### 151. `search ` — invocation `real-cwd`
 
 - Failure class: `both-failed`
 - Go exit: `2` (stdout 0B, stderr 36B)
@@ -8405,7 +8569,30 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 150. `demote ` — invocation `no-args`
+#### 152. `search --json` — invocation `real-cwd-json`
+
+- Failure class: `both-failed`
+- Go exit: `2` (stdout 0B, stderr 36B)
+- Zig exit: `1` (stdout 44B, stderr 33B)
+- cwd: `<CWD_DIR>`
+
+```diff
+--- go
++++ zig
+@@ -0,0 +1 @@
++error: required positional missing: <query>
+--- go.stderr
++++ zig.stderr
+@@ -1 +1 @@
+-error: accepts 1 arg(s), received 0
++error: MissingRequiredPositional
+--- exit
++++ exit
+-go=2
++zig=1
+```
+
+#### 153. `demote ` — invocation `no-args`
 
 - Failure class: `both-failed`
 - Go exit: `2` (stdout 0B, stderr 36B)
@@ -8427,7 +8614,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 151. `demote --json` — invocation `json`
+#### 154. `demote --json` — invocation `json`
 
 - Failure class: `both-failed`
 - Go exit: `2` (stdout 0B, stderr 36B)
@@ -8449,7 +8636,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 152. `demote ` — invocation `real-cwd`
+#### 155. `demote ` — invocation `real-cwd`
 
 - Failure class: `both-failed`
 - Go exit: `2` (stdout 0B, stderr 36B)
@@ -8472,7 +8659,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 153. `demote --json` — invocation `real-cwd-json`
+#### 156. `demote --json` — invocation `real-cwd-json`
 
 - Failure class: `both-failed`
 - Go exit: `2` (stdout 0B, stderr 36B)
@@ -8495,7 +8682,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 154. `handoff ` — invocation `real-cwd`
+#### 157. `handoff ` — invocation `real-cwd`
 
 - Failure class: `both-failed`
 - Go exit: `1` (stdout 0B, stderr 73B)
@@ -8515,7 +8702,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=2
 ```
 
-#### 155. `handoff --json` — invocation `real-cwd-json`
+#### 158. `handoff --json` — invocation `real-cwd-json`
 
 - Failure class: `both-failed`
 - Go exit: `1` (stdout 0B, stderr 73B)
@@ -8535,7 +8722,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=2
 ```
 
-#### 156. `agent ` — invocation `q233-agent-top`
+#### 159. `agent ` — invocation `q233-agent-top`
 
 - Failure class: `both-failed`
 - Go exit: `2` (stdout 0B, stderr 44B)
@@ -8557,7 +8744,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 157. `agent ps` — invocation `q233-agent-ps`
+#### 160. `agent ps` — invocation `q233-agent-ps`
 
 - Failure class: `both-failed`
 - Go exit: `2` (stdout 0B, stderr 44B)
@@ -8579,7 +8766,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 158. `link ` — invocation `no-args`
+#### 161. `link ` — invocation `no-args`
 
 - Failure class: `both-failed`
 - Go exit: `2` (stdout 0B, stderr 36B)
@@ -8601,7 +8788,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 159. `link --json` — invocation `json`
+#### 162. `link --json` — invocation `json`
 
 - Failure class: `both-failed`
 - Go exit: `2` (stdout 0B, stderr 36B)
@@ -8623,30 +8810,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 160. `link ` — invocation `real-cwd`
-
-- Failure class: `both-failed`
-- Go exit: `2` (stdout 0B, stderr 36B)
-- Zig exit: `1` (stdout 35B, stderr 23B)
-- cwd: `<CWD_DIR>`
-
-```diff
---- go
-+++ zig
-@@ -0,0 +1 @@
-+error: required flag missing: --to
---- go.stderr
-+++ zig.stderr
-@@ -1 +1 @@
--error: accepts 1 arg(s), received 0
-+error: MissingRequired
---- exit
-+++ exit
--go=2
-+zig=1
-```
-
-#### 161. `link --json` — invocation `real-cwd-json`
+#### 163. `link ` — invocation `real-cwd`
 
 - Failure class: `both-failed`
 - Go exit: `2` (stdout 0B, stderr 36B)
@@ -8669,51 +8833,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 162. `promote ` — invocation `no-args`
-
-- Failure class: `both-failed`
-- Go exit: `2` (stdout 0B, stderr 36B)
-- Zig exit: `1` (stdout 35B, stderr 23B)
-
-```diff
---- go
-+++ zig
-@@ -0,0 +1 @@
-+error: required flag missing: --to
---- go.stderr
-+++ zig.stderr
-@@ -1 +1 @@
--error: accepts 1 arg(s), received 0
-+error: MissingRequired
---- exit
-+++ exit
--go=2
-+zig=1
-```
-
-#### 163. `promote --json` — invocation `json`
-
-- Failure class: `both-failed`
-- Go exit: `2` (stdout 0B, stderr 36B)
-- Zig exit: `1` (stdout 35B, stderr 23B)
-
-```diff
---- go
-+++ zig
-@@ -0,0 +1 @@
-+error: required flag missing: --to
---- go.stderr
-+++ zig.stderr
-@@ -1 +1 @@
--error: accepts 1 arg(s), received 0
-+error: MissingRequired
---- exit
-+++ exit
--go=2
-+zig=1
-```
-
-#### 164. `promote ` — invocation `real-cwd`
+#### 164. `link --json` — invocation `real-cwd-json`
 
 - Failure class: `both-failed`
 - Go exit: `2` (stdout 0B, stderr 36B)
@@ -8736,7 +8856,51 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 165. `promote --json` — invocation `real-cwd-json`
+#### 165. `promote ` — invocation `no-args`
+
+- Failure class: `both-failed`
+- Go exit: `2` (stdout 0B, stderr 36B)
+- Zig exit: `1` (stdout 35B, stderr 23B)
+
+```diff
+--- go
++++ zig
+@@ -0,0 +1 @@
++error: required flag missing: --to
+--- go.stderr
++++ zig.stderr
+@@ -1 +1 @@
+-error: accepts 1 arg(s), received 0
++error: MissingRequired
+--- exit
++++ exit
+-go=2
++zig=1
+```
+
+#### 166. `promote --json` — invocation `json`
+
+- Failure class: `both-failed`
+- Go exit: `2` (stdout 0B, stderr 36B)
+- Zig exit: `1` (stdout 35B, stderr 23B)
+
+```diff
+--- go
++++ zig
+@@ -0,0 +1 @@
++error: required flag missing: --to
+--- go.stderr
++++ zig.stderr
+@@ -1 +1 @@
+-error: accepts 1 arg(s), received 0
++error: MissingRequired
+--- exit
++++ exit
+-go=2
++zig=1
+```
+
+#### 167. `promote ` — invocation `real-cwd`
 
 - Failure class: `both-failed`
 - Go exit: `2` (stdout 0B, stderr 36B)
@@ -8759,7 +8923,30 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 166. `test-spec status 351` — invocation `q233-status-positional`
+#### 168. `promote --json` — invocation `real-cwd-json`
+
+- Failure class: `both-failed`
+- Go exit: `2` (stdout 0B, stderr 36B)
+- Zig exit: `1` (stdout 35B, stderr 23B)
+- cwd: `<CWD_DIR>`
+
+```diff
+--- go
++++ zig
+@@ -0,0 +1 @@
++error: required flag missing: --to
+--- go.stderr
++++ zig.stderr
+@@ -1 +1 @@
+-error: accepts 1 arg(s), received 0
++error: MissingRequired
+--- exit
++++ exit
+-go=2
++zig=1
+```
+
+#### 169. `test-spec status 351` — invocation `q233-status-positional`
 
 - Failure class: `both-failed`
 - Go exit: `1` (stdout 0B, stderr 122B)
@@ -8773,7 +8960,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +error: plan '351' not found
 ```
 
-#### 167. `question add --plan 351 --title parity-probe --body x` — invocation `q233-add-plan-flag`
+#### 170. `question add --plan 351 --title parity-probe --body x` — invocation `q233-add-plan-flag`
 
 - Failure class: `both-failed`
 - Go exit: `2` (stdout 0B, stderr 29B)
@@ -8795,7 +8982,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 168. `task add --plan 351 --title parity-probe --next-action x --editor=false` — invocation `q233-add-editor-false`
+#### 171. `task add --plan 351 --title parity-probe --next-action x --editor=false` — invocation `q233-add-editor-false`
 
 - Failure class: `both-failed`
 - Go exit: `2` (stdout 0B, stderr 29B)
@@ -8817,7 +9004,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 169. `task add --plan 351 --title parity-probe --next-action x --no-editor` — invocation `q233-add-no-editor`
+#### 172. `task add --plan 351 --title parity-probe --next-action x --no-editor` — invocation `q233-add-no-editor`
 
 - Failure class: `both-failed`
 - Go exit: `2` (stdout 0B, stderr 29B)
@@ -8839,7 +9026,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 170. `test-spec status --plan 351` — invocation `q233-status-plan-flag`
+#### 173. `test-spec status --plan 351` — invocation `q233-status-plan-flag`
 
 - Failure class: `both-failed`
 - Go exit: `2` (stdout 0B, stderr 28B)
@@ -8861,7 +9048,51 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=1
 ```
 
-#### 171. `resume ` — invocation `real-cwd`
+#### 174. `dashboard --json` — invocation `real-cwd-json`
+
+- Failure class: `go-failed`
+- Go exit: `2` (stdout 0B, stderr 48B)
+- Zig exit: `0` (stdout 20B, stderr 0B)
+- cwd: `<CWD_DIR>`
+
+```diff
+--- go
++++ zig
+@@ -0,0 +1 @@
++{"active_plans":[]}
+--- go.stderr
++++ zig.stderr
+@@ -1 +0,0 @@
+-error: unknown command "dashboard" for "planar"
+--- exit
++++ exit
+-go=2
++zig=0
+```
+
+#### 175. `dashboard ` — invocation `real-cwd`
+
+- Failure class: `go-failed`
+- Go exit: `2` (stdout 0B, stderr 48B)
+- Zig exit: `0` (stdout 16B, stderr 0B)
+- cwd: `<CWD_DIR>`
+
+```diff
+--- go
++++ zig
+@@ -0,0 +1 @@
++active plans: 0
+--- go.stderr
++++ zig.stderr
+@@ -1 +0,0 @@
+-error: unknown command "dashboard" for "planar"
+--- exit
++++ exit
+-go=2
++zig=0
+```
+
+#### 176. `resume ` — invocation `real-cwd`
 
 - Failure class: `both-failed`
 - Go exit: `1` (stdout 0B, stderr 55B)
@@ -8875,7 +9106,7 @@ _(diff truncated at 8000 bytes; full body in parity-gap-report.json)_
 +zig=2
 ```
 
-#### 172. `resume --json` — invocation `real-cwd-json`
+#### 177. `resume --json` — invocation `real-cwd-json`
 
 - Failure class: `both-failed`
 - Go exit: `1` (stdout 0B, stderr 55B)

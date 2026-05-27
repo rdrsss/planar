@@ -5,9 +5,11 @@
 //! available as `zig build test-integration-files` for failure isolation.
 
 comptime {
+    _ = @import("capability_boundary_test.zig");
     _ = @import("config_test.zig");
     _ = @import("cwd_scope_test.zig");
     _ = @import("dashboard_agents_test.zig");
+    _ = @import("json_shape_lint_test.zig");
     _ = @import("editflow_diff_review_test.zig");
     _ = @import("editflow_edit_test.zig");
     _ = @import("editflow_view_test.zig");
