@@ -7,6 +7,7 @@
 comptime {
     _ = @import("config_test.zig");
     _ = @import("cwd_scope_test.zig");
+    _ = @import("dashboard_agents_test.zig");
     _ = @import("editflow_diff_review_test.zig");
     _ = @import("editflow_edit_test.zig");
     _ = @import("editflow_view_test.zig");
@@ -27,6 +28,7 @@ comptime {
     _ = @import("parity_resume_test.zig");
     _ = @import("parity_tree_cwd_derive_test.zig");
     _ = @import("parity_tree_render_test.zig");
+    _ = @import("plan_next_buckets_test.zig");
     _ = @import("plan_update_test.zig");
     _ = @import("planar_agent_test.zig");
     _ = @import("scope_test.zig");

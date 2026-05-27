@@ -51,11 +51,13 @@ const TaskJSON = struct {
     priority: i64,
 };
 
+/// Plan 85 M3 reshaped `plan next` from a single-task picker into a
+/// bucketed view (`available` / `claimed` / `stale` / `blocked`). This
+/// scenario only cares about the "highest-priority available task";
+/// it pulls the first row out of the `available` bucket.
 const PlanNextJSON = struct {
-    id: i64,
-    title: []const u8,
-    status: []const u8,
-    priority: i64,
+    plan_id: i64,
+    available: []TaskJSON,
 };
 
 const SessionJSON = struct {
@@ -169,8 +171,9 @@ test "scenario: feature lifecycle — register → plan → spec → tasks → r
     const next = suite.mustRunJSON(PlanNextJSON, arena, &.{
         "plan", "next", "--json", plan_id_str,
     });
-    try std.testing.expectEqual(t_top.id, next.id);
-    try std.testing.expectEqual(@as(i64, 20), next.priority);
+    try std.testing.expect(next.available.len > 0);
+    try std.testing.expectEqual(t_top.id, next.available[0].id);
+    try std.testing.expectEqual(@as(i64, 20), next.available[0].priority);
 
     // ---- 6. Operator opens the task: `task update --status doing`.
     const top_id_str = std.fmt.allocPrint(arena, "{d}", .{t_top.id}) catch unreachable;
@@ -248,8 +251,9 @@ test "scenario: feature lifecycle — register → plan → spec → tasks → r
     const next_after = suite.mustRunJSON(PlanNextJSON, arena, &.{
         "plan", "next", "--json", plan_id_str,
     });
-    try std.testing.expect(next_after.id != t_top.id);
-    try std.testing.expectEqual(@as(i64, 50), next_after.priority);
+    try std.testing.expect(next_after.available.len > 0);
+    try std.testing.expect(next_after.available[0].id != t_top.id);
+    try std.testing.expectEqual(@as(i64, 50), next_after.available[0].priority);
 }
 
 // ---- scenario 2: question + decision overlay ---------------------

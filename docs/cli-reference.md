@@ -741,6 +741,58 @@ recomputed 15 plans; 8 transitioned
 
 ---
 
+### `planar plan next <plan-id>`
+
+**Synopsis:**
+```
+planar plan next <plan-id> [--include-claimed] [--include-stale] [--json]
+```
+
+**Description:** Bucketed claim-aware "what's next on this plan" view. Returns every task on the plan classified into one of four buckets:
+
+| Bucket | Meaning |
+|--------|---------|
+| `available` | Task status `todo` (or `doing` without an active claim) and ready to be pulled. |
+| `claimed` | Task has an active unexpired entry in `agent_work_claims`. |
+| `stale` | Task has a `stale` claim, or an `active` claim whose lease has expired without a reconcile pass. |
+| `blocked` | Task status `blocked`. |
+
+Same underlying selector as `planar-agent peek`, but returns the FULL bucket breakdown instead of just picking one row. This is the operator's read surface; agents call `planar-agent peek` / `pull`. There is no `planar agent` subcommand by design — agent observability lives on `planar-watch` (M8) and ritual writes live on `planar-agent`.
+
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--include-claimed` | Show the claimed bucket in text mode. (`--json` always carries every bucket.) | off |
+| `--include-stale` | Show the stale bucket in text mode. | off |
+| `--json` | Emit JSON instead of text. | off |
+
+**JSON shape:**
+
+```json
+{
+  "plan_id": 12,
+  "available": [Task, ...],
+  "claimed":   [{"task": Task, "claim": ClaimRow}, ...],
+  "stale":     [{"task": Task, "claim": ClaimRow}, ...],
+  "blocked":   [Task, ...],
+  "summary": {
+    "available": 3, "claimed": 1, "stale": 0, "blocked": 1, "done": 5,
+    "note": "child-plan claim precedence not yet computed; see plan 85 plan_step precedence followup"
+  }
+}
+```
+
+`ClaimRow` is the canonical `agent_work_claims` row shape including the locality columns (`repo_root`, `branch`, `head_sha_at_claim`, `dirty_at_claim`) and worktree columns (`worktree_id`, `worktree_path`). The `summary.note` key is omitted when no parent (`plan` or `plan_step`) claim exists.
+
+**Exit codes:**
+- `0` — success, including empty / all-done plans.
+- `1` — plan id not found, or invalid integer.
+
+**Known limitation (followup):** the underlying selector walks `tasks.plan_id = ?` only. Multi-level claim precedence (a parent `plan_step` or `plan` claim covering every descendant task) is detected and surfaces in `summary.note` but does not yet rewrite the per-task buckets. Full recursive precedence per the tech spec § "Multi-level claim precedence" is followup work tracked on plan 85.
+
+---
+
 ### `planar plan step add <plan-id> <body>`
 
 **Synopsis:**
@@ -3485,6 +3537,60 @@ overall: DEGRADED  (2 tasks not resumable)
 - `0` — all checks pass.
 - `1` — degraded (some tasks not resumable or stale handoffs).
 - `2` — critical (database unreachable or integrity check failed).
+
+---
+
+## Domain: `dashboard`
+
+### `planar dashboard`
+
+**Synopsis:**
+```
+planar dashboard [--scope <slug>] [--agents] [--json]
+```
+
+**Description:** Operator situational-awareness view. Without `--agents`, a lightweight roll-up of in-flight plans (status in `draft` / `active` / `paused`). With `--agents`, folds in live claim state from `agent_work_claims` plus a per-plan "next available work" tally — the operator's read surface on agent coordination state.
+
+The `--agents` fold-in is the planar binary's view of agent activity. The `planar agent` subcommand namespace does not exist by design — agent observability is split between this fold-in, the `planar-watch` viewer binary (M8), and the `planar-agent` ritual binary (M2).
+
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--scope <slug>` | Limit to a single scope slug. | resolved scope |
+| `--agents` | Fold in live claim state and `next_available_by_plan`. | off |
+| `--json` | Emit JSON instead of text. | off |
+
+**JSON shape (without `--agents`):**
+
+```json
+{ "active_plans": [Plan, ...] }
+```
+
+**JSON shape (with `--agents`):**
+
+```json
+{
+  "active_plans": [Plan, ...],
+  "claims": {
+    "active": [ClaimRow, ...],
+    "stale":  [ClaimRow, ...]
+  },
+  "next_available_by_plan": {
+    "12": [Task, ...],
+    "13": [Task, ...]
+  }
+}
+```
+
+`ClaimRow` includes the locality columns (`repo_root`, `branch`, `head_sha_at_claim`, `dirty_at_claim`) and the worktree columns (`worktree_id`, `worktree_path`). The text-mode renderer surfaces `branch:<branch>  sha:<8-char>  dirty:<state>  repo:<repo_root>` for every active claim so an operator can spot mismatched checkouts at a glance.
+
+The `stale` bucket aggregates both `status='stale'` rows and `status='active'` rows whose lease has expired without a reconcile pass.
+
+**Schema effects:** Reads `plans`, `agent_work_claims`, `tasks`.
+
+**Exit codes:**
+- `0` — always (an empty dashboard is not an error).
 
 ---
 

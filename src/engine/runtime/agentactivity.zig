@@ -23,10 +23,12 @@ pub const types = @import("agentactivity/types.zig");
 pub const locality = @import("agentactivity/locality.zig");
 pub const store = @import("agentactivity/store.zig");
 pub const atomic = @import("agentactivity/atomic.zig");
+pub const json = @import("agentactivity/json.zig");
 
 test {
     _ = types;
     _ = locality;
     _ = store;
     _ = atomic;
+    _ = json;
 }

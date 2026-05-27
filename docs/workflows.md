@@ -1473,3 +1473,121 @@ Push the plan's entities to the workbench, exec `$EDITOR` on the feature directo
 - Sweep through open questions or tasks on a plan: `<entity> review`.
 - "I want to edit 4 files at once on one plan": `workbench edit`.
 - Old `push → edit → pull` rhythm: still works; it's just no longer the default.
+
+## Recipe 16 — Observing agent activity from the operator binary
+
+You are an operator watching a feature in flight. One or more agents (planner, coder, reviewer, test-coder, orchestrator, ext-sync) are running against the plan you own, each holding a claim on a task and emitting actions. This recipe walks the **read** verbs on the `planar` binary that give you a complete operator-side view of what's happening, without ever calling the write side.
+
+### What lives where
+
+By design, the `planar` binary has **no `planar agent` subcommand**. Agent observability is split across three surfaces and they earn their separate places:
+
+| Binary | Role | Verbs |
+|--------|------|-------|
+| `planar` (this binary) | Operator reads of agent state, folded into existing verbs. | `dashboard --agents`, `plan next`, `tree`, `audit trail`, `health` |
+| `planar-agent` | Agent ritual + operator-recovery writes. Owns every write to `agent_work_claims` / `agent_actions`. | `pull`, `peek`, `claim`, `heartbeat`, `complete`, `fail`, `release`, `block`, `action start`/`end`, `ingest`, `reconcile`, `abort` |
+| `planar-watch` | Live streaming viewer (forthcoming in plan 85 M8). Pure read. | `feed`, `ps`, `claims`, `actions`, `plans`, `log` |
+
+This recipe covers the **planar** binary's read surface. The ritual recipe for `planar-agent` lives in plan 85 M5; the streaming-viewer recipe for `planar-watch` lives in plan 85 M8.
+
+### Step 1 — Survey what's in flight
+
+```
+planar dashboard --agents
+```
+
+Output (text mode):
+
+```
+active plans: 3    active claims: 2    stale claims: 0
+  plan:85  [active]  Agent activity tracking
+  plan:88  [active]  Doc-system improvements
+  plan:91  [draft]   Workbench redesign
+active claims:
+  task:541  vendor:claude-code  branch:feat/m3-reads  sha:a1b2c3d4  dirty:dirty  repo:/home/me/work/planar  token:9f2c…
+  task:548  vendor:codex        branch:doc/regenerate sha:5e7f9012  dirty:clean  repo:/home/me/work/planar  token:7a13…
+next available by plan:
+  plan:85  available:1
+  plan:88  available:4
+  plan:91  available:0
+```
+
+The `--agents` flag is the toggle. Without it, `dashboard` is a plain plan summary; with it, the same verb folds in the live claim block and the per-plan "next available" tally. The locality columns (`branch`, `sha`, `dirty`, `repo`) come straight off `agent_work_claims` — if you see a claim on a dirty checkout or a branch that disagrees with your own, that's the signal to step in.
+
+For scripted dashboards add `--json`:
+
+```
+planar dashboard --agents --json | jq .
+```
+
+The JSON shape pins the contract: `active_plans`, `claims.{active,stale}`, `next_available_by_plan`. See `docs/cli-reference.md` § `planar dashboard` for the full row shapes.
+
+### Step 2 — Drill into one plan's queue
+
+```
+planar plan next 85 --include-claimed --include-stale
+```
+
+Output:
+
+```
+plan:85  available:1  claimed:1  stale:0  blocked:0  done:9
+  available  task:551  M3 cycle B reviewer fixes  [pri:20]
+  claimed    task:541  planar plan next selector  [pri:10, claim:9f2c…]
+```
+
+The bucket breakdown is the operator counterpart to `planar-agent peek`. Where `peek` returns the single highest-priority pickable task (the next thing an agent would `pull`), `plan next` returns the FULL classification: `available`, `claimed`, `stale`, `blocked`. The text-mode renderer hides `claimed` and `stale` rows by default so the queue you scan first is the available work; pass `--include-claimed` / `--include-stale` to surface them.
+
+The JSON shape carries every bucket regardless of the text-mode flags:
+
+```
+planar plan next 85 --json | jq '.summary, .claimed[0]'
+```
+
+### Step 3 — Walk a plan's hierarchy
+
+```
+planar tree --scope plan:85
+```
+
+The `tree` verb is unchanged by the agent-activity work, but it remains the structural counterpart to `plan next`: `plan next` tells you "what is pullable right now", `tree` tells you "what is the shape of this feature". Use both when triaging.
+
+### Step 4 — Inspect the audit trail for one entity
+
+```
+planar audit trail task:541
+```
+
+The `audit_trail` read surface stitches together `audit_log` (the operator-write log) with `entity_links` and now joins against `agent_actions` for any actions taken on the entity. You see each role's `started_at` / `ended_at` / `outcome` plus the operator-side decisions that ran around them.
+
+### Step 5 — Confirm the database is healthy
+
+```
+planar health
+```
+
+`health` is the always-on smoke check: schema-current, integrity, in-flight tasks resumable, pending handoffs fresh. It is not agent-activity-aware (the claim table is consulted by `dashboard --agents` and `plan next`, not by health), but it is the first verb to run when something looks wrong before you spend time chasing the wrong layer.
+
+### Putting it together
+
+The full operator-side observation loop is exactly these five verbs. None of them write; they read across `plans`, `tasks`, `agent_work_claims`, `agent_actions`, `audit_log`, and `entity_links` to produce the operator view:
+
+```
+planar dashboard --agents              # who is doing what, right now
+planar plan next <plan> --include-claimed --include-stale
+                                        # one plan's queue, every bucket
+planar tree --scope plan:<plan>        # the feature's structure
+planar audit trail <kind:id>           # one entity's history
+planar health                          # is the database itself OK
+```
+
+When you find a stuck claim (active for too long, branch you do not recognise, agent vanished), the recovery verbs live on the other binary:
+
+```
+planar-agent reconcile --dry-run       # what would be marked stale
+planar-agent reconcile                 # mark expired-lease claims stale
+planar-agent abort --claim <token> --reason "operator: agent gone silent"
+                                        # force-release a specific claim
+```
+
+`reconcile` and `abort` live on `planar-agent` because both are writes to `agent_work_claims` and the capability boundary tracks tables, not audience. The `planar` binary remains write-free on the agent activity layer.

@@ -118,8 +118,11 @@ pub const verb: cli.Cmd = .{
         },
         .{
             .name = "next",
-            .desc = "Return the highest-priority eligible task on a plan.",
+            .desc = "Bucketed claim-aware view of next work on a plan (available / claimed / stale / blocked).",
+            .long_desc = "Bucketed claim-aware view of next work on a plan.\n\n  Buckets:\n    available  task is todo (or doing without an active claim)\n               and ready to be pulled\n    claimed    task has an active unexpired claim\n    stale      task has a stale claim (reconcile or lease-expired)\n    blocked    task status is blocked\n\n  Without --include-claimed / --include-stale the text rendering\n  shows only the available + blocked buckets — the JSON shape always\n  carries every bucket.",
             .flags = &.{
+                .{ .long = "--include-claimed", .kind = .bool, .default = .{ .bool = false }, .desc = "Show the claimed bucket in text mode (JSON always includes it)." },
+                .{ .long = "--include-stale", .kind = .bool, .default = .{ .bool = false }, .desc = "Show the stale bucket in text mode (JSON always includes it)." },
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },
             .positionals = &.{.{ .name = "plan-id", .kind = .string, .required = true }},
