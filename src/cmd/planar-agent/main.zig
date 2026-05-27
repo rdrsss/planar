@@ -18,10 +18,11 @@
 //! embedded minimum. The remediation pointer ("run `planar init`")
 //! lives in `runtime.ensureDbReadOnly`.
 //!
-//! M1 scaffold: this binary registers a single `version` verb. The
-//! atomic / claim primitive / nested-action / ingest / reconcile /
-//! abort verbs land in M2. Until then the binary's main job is to
-//! prove the build + dispatch + schema-version contract works.
+//! M2 ships the full 13-verb agent surface: 6 atomic ops (pull / peek /
+//! complete / fail / release / block) + 2 claim primitives (claim /
+//! heartbeat) + 2 nested action verbs (action start / action end) +
+//! ingest (skeleton; full adapter routing in M4) + 2 operator-recovery
+//! verbs (reconcile / abort). See handlers/cmd.zig for the registry.
 
 const std = @import("std");
 const Io = std.Io;
@@ -30,8 +31,7 @@ const cli = @import("cli");
 const db = @import("db");
 const runtime = @import("runtime");
 
-const version_h = @import("handlers/version.zig");
-const self_test_acquire_h = @import("handlers/self_test_acquire.zig");
+const cmd_tree = @import("handlers/cmd.zig");
 const exit = @import("exit.zig");
 
 /// Root command tree for `planar-agent`. Public so handler files can
@@ -39,12 +39,7 @@ const exit = @import("exit.zig");
 pub const root: cli.Cmd = .{
     .name = "planar-agent",
     .desc = "Agent-callable coordination binary (pull / claim / complete / heartbeat / reconcile).",
-    .cmds = &.{
-        version_h.verb,
-        self_test_acquire_h.verb, // M1-only — removed when M2's `pull` verb lands.
-        // M2 fills in: pull, peek, complete, fail, release, block,
-        // claim, heartbeat, action start/end, ingest, reconcile, abort.
-    },
+    .cmds = cmd_tree.verbs,
 };
 
 comptime {

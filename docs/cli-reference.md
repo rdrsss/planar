@@ -4737,6 +4737,106 @@ The `children` array is always present, even when empty (the empty-`global` sign
 
 ---
 
+## Binary: `planar-agent`
+
+`planar-agent` is the agent-callable coordination binary. Owns every write to `agent_work_claims` and `agent_actions`; operator-recovery verbs (`reconcile`, `abort`) live here too because both are `agent_*` table writers (the capability boundary tracks tables, not audience). See `docs/architecture.md` § "Three-binary architecture" for the binary split.
+
+Schema-version handshake: `planar-agent` is a **consumer** of the schema, not its owner. Startup queries `schema_migrations.max(version)` and refuses with exit **7** when the live DB is older than the binary's embedded minimum. The remediation pointer ("run `planar init`") is printed to stderr.
+
+### Verb surface (13 verbs)
+
+```text
+# Atomic operations — each wraps (claim lifecycle + action lifecycle +
+# task status transition) in a single BEGIN IMMEDIATE transaction.
+planar-agent pull       <plan-id> [--vendor-session <vendor:id>] [--role coder] [--ttl <secs>] [--purpose <text>] [--base-ref <git-ref>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--json]
+planar-agent peek       <plan-id> [--json]
+planar-agent complete   --claim <token> [--summary <text>] [--json]
+planar-agent fail       --claim <token> --reason <text> [--json]
+planar-agent release    --claim <token> [--reason <text>] [--json]
+planar-agent block      --claim <token> --blocker <task-id> [--reason <text>] [--json]
+
+# Claim primitives — for orchestrator-dispatch (caller already knows the
+# target entity by id). claim does NOT auto-transition task status.
+planar-agent claim      --entity task:<id>|plan:<id>|plan_step:<id> [--vendor-session <vendor:id>] [--role <r>] [--ttl <secs>] [--purpose <text>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--force] [--json]
+planar-agent heartbeat  --claim <token> [--ttl <secs>] [--json]
+
+# Nested action lifecycle — for sub-tool-calls or sub-phases inside a
+# claim. Optional; lightweight claims skip these.
+planar-agent action start  --claim <token> --kind <kind> [--entity <kind>:<id>] [--vendor-role <s>] [--repo-root <path>] [--no-locality-probe] [--json]
+planar-agent action end    --action <id> [--outcome ok|error|aborted|timeout] [--summary <s>] [--json]
+
+# Vendor hook ingestion — translates hook events into the primitives.
+# M2 ships a skeleton handler; full adapter routing lands in M4.
+planar-agent ingest     --vendor claude --event @<file|-> [--json]
+
+# Operator recovery — agent_* table writers, which is why they live on
+# planar-agent (not planar). The operator invokes them directly; vendor
+# hooks never do.
+planar-agent reconcile  [--dry-run] [--stale-after <secs>] [--json]
+planar-agent abort      --claim <token> [--reason <text>] [--vendor <s>] [--vendor-session <vendor:id>] [--json]
+```
+
+### Atomic operation transaction shapes
+
+| Verb       | Transaction body |
+|------------|------------------|
+| `pull`     | SELECT next eligible task → INSERT `agent_work_claims (status=active)` → UPDATE `tasks.status='doing'` → INSERT `agent_actions`. Returns `{ok, no_work, claim_token, claim, task, action_id}`. No writes on no-eligible-task path. |
+| `complete` | Verify claim active → UPDATE action ended_at + outcome='ok' → UPDATE task status='done' → UPDATE claim status='completed'. |
+| `fail`     | Same as complete with outcome='error', task status='todo', claim status='aborted'. |
+| `release`  | Same as fail with outcome='aborted', claim status='released'. (Distinct semantically from fail — "graceful give-up" vs "I tried and failed".) |
+| `block`    | INSERT `entity_links(from=task, to=blocker, relationship='blocks')` → UPDATE task status='blocked' → UPDATE action ended_at + outcome='aborted' → UPDATE claim status='released'. |
+| `peek`     | Read-only: same SELECT as step 1 of pull; no writes. |
+| `reconcile`| SELECT expired active claims → UPDATE status='stale' → UPDATE orphaned actions ended_at + outcome='aborted'. Does NOT touch tasks.status. `--dry-run` returns candidates without writing. |
+| `abort`    | UPDATE claim status='aborted' + released_at + release_reason → INSERT audit `agent_actions` row naming the aborting session. Does NOT touch tasks.status. |
+
+All write verbs open `BEGIN IMMEDIATE` so the writer lock blocks any concurrent claim attempt on the same row. The status-transition guard (`policy.status.check`) is consulted before each `UPDATE tasks SET status` — refusal rolls the transaction back and the claim keeps its previous state.
+
+### JSON shapes
+
+Stable across versions; new keys may be added, existing keys do not change name or type without a migration. Full reference: `docs/architecture.md` § "JSON shapes" and the tech-spec at `~/.planar/workbench/project_planar/p85-agent-activity/58-agent-activity-tracking-tech-spec.md`.
+
+| Verb          | Shape |
+|---------------|-------|
+| `pull`        | `{ok, no_work, claim_token?, claim?, task?, action_id?}` |
+| `peek`        | `{ok, no_work, task?}` |
+| `complete` / `fail` / `release` / `block` | `{ok, claim_token, claim, task}` |
+| `claim` / `heartbeat` | `{ok, claim_token, claim}` |
+| `action start` / `action end` | `{ok, action_id, action}` |
+| `ingest`      | `{ok, sessions_created, claims_created, actions_created, events_processed}` |
+| `reconcile`   | `{ok, claims_marked_stale, actions_closed, candidates?}` (`candidates` present only with `--dry-run`) |
+| `abort`       | `{ok, claim_token, claim, aborting_session}` |
+
+`ClaimRow` matches the `agent_work_claims` row shape with snake_case keys (including locality columns `repo_root`, `branch`, `head_sha_at_claim`, `dirty_at_claim` and worktree columns `worktree_id`, `worktree_path`). `Task` matches `planar task show --json`. `ActionRow` matches `agent_actions` (including locality columns `head_sha`, `dirty`).
+
+### Locality flags
+
+`pull`, `claim`, and `action start` accept:
+
+- `--repo-root <path>` — absolute path of the checkout to probe locality against. Falls back to the process cwd when omitted.
+- `--no-locality-probe` — short-circuit; records locality columns as NULL.
+
+Per-action-kind defaults: planner / coder / reviewer / test_coder probe; heartbeat / tool_call skip. The probe runs `git symbolic-ref`, `git rev-parse HEAD`, and `git status --porcelain` against the resolved root; any subprocess failure (non-git directory, missing `git`, error exit) records `unknown` rather than refusing the claim.
+
+### Entity-ref parser (`claim --entity`)
+
+`--entity <ref>` accepts `task:<id>` / `plan:<id>` / `plan_step:<id>`. Other prefixes are rejected with a non-zero exit. Missing colon or non-integer id is rejected the same way. The strict parser matches the tech-spec § "claim --entity <ref> parser" contract.
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0`  | Success. |
+| `1`  | Operational failure (atomic op rolled back, invalid state, missing claim token). |
+| `2`  | User-input failure (unknown flag, missing required, invalid value). |
+| `7`  | Schema version mismatch — DB older than this binary's embedded minimum, or newer than its embedded max. Remediation: run `planar init`. |
+| `64` | Not implemented yet (reserved for future verbs). |
+
+### Capability boundary
+
+A process invoked as `planar-agent` writes ONLY to `agent_work_claims`, `agent_actions`, and `tasks.status` (the last only as part of atomic coordinated operations with status guards). It NEVER writes to plan / decision / question / scenario / artifact / annotation. A vendor hook configured with only `planar-agent` on its PATH has bounded blast radius — it cannot touch planning state.
+
+---
+
 ## Command Index
 
 For quick reference, all documented commands grouped by domain:
