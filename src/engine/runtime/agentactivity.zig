@@ -25,6 +25,7 @@ pub const store = @import("agentactivity/store.zig");
 pub const atomic = @import("agentactivity/atomic.zig");
 pub const json = @import("agentactivity/json.zig");
 pub const summary = @import("agentactivity/summary.zig");
+pub const wake = @import("agentactivity/wake.zig");
 
 test {
     _ = types;
@@ -33,4 +34,5 @@ test {
     _ = atomic;
     _ = json;
     _ = summary;
+    _ = wake;
 }

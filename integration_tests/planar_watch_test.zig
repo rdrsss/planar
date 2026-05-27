@@ -617,3 +617,230 @@ test "planar-watch feed --follow surfaces a cross-process write within the poll 
         return error.NoCrossProcessEvent;
     }
 }
+
+// =========================================================================
+// M9 — Tier-2 wake assertions.
+//
+// These tests verify the kqueue/inotify wake source surfaces cross-process
+// writes well before the heartbeat fallback fires. Test methodology:
+//
+//   - Use a LONG interval (30s) so only Tier-2 wake can surface the event
+//     inside the test budget. If kqueue/inotify is broken, the assertion
+//     fails fast (the test waits ~1s, the heartbeat is 30s away).
+//   - Force a WAL rotation via planar-agent reconcile (which checkpoints
+//     the WAL) plus a subsequent write — the watch must re-attach
+//     transparently and still surface the post-rotation event.
+//
+// Both tests pin the Tier-2 invariant: the kqueue/inotify wake IS the
+// event source, not the heartbeat fallback.
+// =========================================================================
+
+test "planar-watch feed --follow --interval 30s surfaces cross-process write via Tier-2 wake" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const pid = seedPlanWithTask(&suite, "watch-tier2", "tier2-task");
+    defer gpa.free(pid);
+
+    // Long heartbeat — only the wake can surface the event in time.
+    var argv_list: std.ArrayList([]const u8) = .empty;
+    defer argv_list.deinit(gpa);
+    argv_list.append(gpa, resolveWatchBin()) catch @panic("OOM");
+    argv_list.append(gpa, "feed") catch @panic("OOM");
+    argv_list.append(gpa, "--follow") catch @panic("OOM");
+    argv_list.append(gpa, "--interval") catch @panic("OOM");
+    argv_list.append(gpa, "30s") catch @panic("OOM");
+    argv_list.append(gpa, "--json") catch @panic("OOM");
+
+    const raw: [*:null]?[*:0]u8 = std.c.environ;
+    var env_count: usize = 0;
+    while (raw[env_count] != null) : (env_count += 1) {}
+    const env_slice: [:null]const ?[*:0]const u8 = @ptrCast(raw[0..env_count :null]);
+    const posix_block: std.process.Environ.PosixBlock = .{ .slice = env_slice };
+    const environ: std.process.Environ = .{ .block = posix_block };
+    var env_map = environ.createMap(gpa) catch @panic("OOM");
+    defer env_map.deinit();
+    env_map.put("PLANAR_DB", suite.db_path) catch @panic("OOM");
+
+    var child = try std.process.spawn(std.testing.io, .{
+        .argv = argv_list.items,
+        .environ_map = &env_map,
+        .stdout = .pipe,
+        .stderr = .pipe,
+    });
+
+    // Let the watcher print its initial snapshot AND register its
+    // wake source on the (yet-to-be-created) `-wal` sibling.
+    try std.testing.io.sleep(std.Io.Duration.fromMilliseconds(500), std.Io.Clock.awake);
+
+    // Drive a write through planar-agent. Under Tier 2 this must
+    // surface within ~100ms (kqueue/inotify wake latency); we budget
+    // 1.5s to absorb test-host scheduler jitter. The 30s heartbeat
+    // is NOT what we're measuring — a watch that waits the heartbeat
+    // is a regression.
+    gpa.free(mustRunAgent(&suite, &.{ "pull", pid, "--no-locality-probe", "--json" }));
+
+    // Give the wake source 1.5s to fire. Anything past ~200ms is
+    // already evidence Tier 2 isn't working; the 1.5s ceiling is
+    // pure CI defense-in-depth.
+    try std.testing.io.sleep(std.Io.Duration.fromMilliseconds(1500), std.Io.Clock.awake);
+
+    // SIGINT and collect output.
+    std.posix.kill(child.id.?, std.posix.SIG.INT) catch |e|
+        std.debug.panic("kill: {s}", .{@errorName(e)});
+
+    var stdout_buf: std.ArrayList(u8) = .empty;
+    defer stdout_buf.deinit(gpa);
+    if (child.stdout) |*f| {
+        var tmp: [4096]u8 = undefined;
+        var reader = f.reader(std.testing.io, &.{});
+        while (true) {
+            const n = reader.interface.readSliceShort(&tmp) catch 0;
+            if (n == 0) break;
+            stdout_buf.appendSlice(gpa, tmp[0..n]) catch @panic("OOM");
+        }
+    }
+    if (child.stderr) |*f| {
+        var tmp: [4096]u8 = undefined;
+        var reader = f.reader(std.testing.io, &.{});
+        while (true) {
+            const n = reader.interface.readSliceShort(&tmp) catch 0;
+            if (n == 0) break;
+        }
+    }
+    _ = try child.wait(std.testing.io);
+
+    if (std.mem.indexOf(u8, stdout_buf.items, "\"event\":\"claim_acquired\"") == null) {
+        std.debug.print(
+            "Tier-2 wake failed to surface cross-process write before the 30s heartbeat:\n{s}\n",
+            .{stdout_buf.items},
+        );
+        return error.Tier2WakeMissed;
+    }
+}
+
+test "planar-watch feed --follow survives WAL rotation without losing events" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const pid = seedPlanWithTask(&suite, "watch-rotation", "rotation-task");
+    defer gpa.free(pid);
+
+    // Pre-drive one write so the -wal sibling already exists when
+    // the watcher starts up. This isolates the "watch survives a
+    // rotation" assertion from the "watch attaches lazily on first
+    // write" assertion (which the Tier-2 cross-process test covers).
+    // Keep the claim token alive — we'll complete() it AFTER the
+    // rotation so the post-rotation write isn't blocked on the
+    // already-in-flight task.
+    const initial_pull = mustRunAgent(&suite, &.{ "pull", pid, "--no-locality-probe", "--json" });
+    defer gpa.free(initial_pull);
+    const token = extractStringField(gpa, initial_pull, "\"claim_token\":\"") catch @panic("no initial token");
+    defer gpa.free(token);
+
+    // Spawn the watcher with a long heartbeat so only the wake can
+    // surface the post-rotation event.
+    var argv_list: std.ArrayList([]const u8) = .empty;
+    defer argv_list.deinit(gpa);
+    argv_list.append(gpa, resolveWatchBin()) catch @panic("OOM");
+    argv_list.append(gpa, "feed") catch @panic("OOM");
+    argv_list.append(gpa, "--follow") catch @panic("OOM");
+    argv_list.append(gpa, "--interval") catch @panic("OOM");
+    argv_list.append(gpa, "30s") catch @panic("OOM");
+    argv_list.append(gpa, "--json") catch @panic("OOM");
+
+    const raw: [*:null]?[*:0]u8 = std.c.environ;
+    var env_count: usize = 0;
+    while (raw[env_count] != null) : (env_count += 1) {}
+    const env_slice: [:null]const ?[*:0]const u8 = @ptrCast(raw[0..env_count :null]);
+    const posix_block: std.process.Environ.PosixBlock = .{ .slice = env_slice };
+    const environ: std.process.Environ = .{ .block = posix_block };
+    var env_map = environ.createMap(gpa) catch @panic("OOM");
+    defer env_map.deinit();
+    env_map.put("PLANAR_DB", suite.db_path) catch @panic("OOM");
+
+    var child = try std.process.spawn(std.testing.io, .{
+        .argv = argv_list.items,
+        .environ_map = &env_map,
+        .stdout = .pipe,
+        .stderr = .pipe,
+    });
+
+    // Let the watcher attach its kqueue/inotify watch to the
+    // existing `-wal`.
+    try std.testing.io.sleep(std.Io.Duration.fromMilliseconds(500), std.Io.Clock.awake);
+
+    // Force a WAL rotation via a direct PRAGMA wal_checkpoint(TRUNCATE).
+    // We can't run this through planar-agent (it doesn't expose a
+    // checkpoint verb), so the test opens its own short-lived
+    // sqlite3 process. The exact mechanism doesn't matter — what
+    // matters is that the -wal file is recreated.
+    {
+        var ckp_argv: std.ArrayList([]const u8) = .empty;
+        defer ckp_argv.deinit(gpa);
+        ckp_argv.append(gpa, "sqlite3") catch @panic("OOM");
+        ckp_argv.append(gpa, suite.db_path) catch @panic("OOM");
+        ckp_argv.append(gpa, "PRAGMA wal_checkpoint(TRUNCATE);") catch @panic("OOM");
+        const ckp_res = std.process.run(gpa, std.testing.io, .{
+            .argv = ckp_argv.items,
+        }) catch |e| {
+            // sqlite3 CLI not installed — skip rather than fail; the
+            // rotation path is also exercised by the unit test in
+            // src/engine/runtime/agentactivity/wake.zig.
+            std.debug.print("sqlite3 not available ({s}); skipping CLI rotation test\n", .{@errorName(e)});
+            std.posix.kill(child.id.?, std.posix.SIG.INT) catch {};
+            _ = try child.wait(std.testing.io);
+            return error.SkipZigTest;
+        };
+        defer gpa.free(ckp_res.stdout);
+        defer gpa.free(ckp_res.stderr);
+    }
+
+    // Give the watcher a beat to observe the rotation delete event
+    // and re-attach.
+    try std.testing.io.sleep(std.Io.Duration.fromMilliseconds(300), std.Io.Clock.awake);
+
+    // Now drive a fresh write — complete the pre-rotation claim.
+    // The re-attached watch must surface this within the
+    // wake-latency budget.
+    gpa.free(mustRunAgent(&suite, &.{ "complete", "--claim", token, "--summary", "post-rotation", "--json" }));
+
+    try std.testing.io.sleep(std.Io.Duration.fromMilliseconds(1500), std.Io.Clock.awake);
+
+    // SIGINT and collect output.
+    std.posix.kill(child.id.?, std.posix.SIG.INT) catch |e|
+        std.debug.panic("kill: {s}", .{@errorName(e)});
+
+    var stdout_buf: std.ArrayList(u8) = .empty;
+    defer stdout_buf.deinit(gpa);
+    if (child.stdout) |*f| {
+        var tmp: [4096]u8 = undefined;
+        var reader = f.reader(std.testing.io, &.{});
+        while (true) {
+            const n = reader.interface.readSliceShort(&tmp) catch 0;
+            if (n == 0) break;
+            stdout_buf.appendSlice(gpa, tmp[0..n]) catch @panic("OOM");
+        }
+    }
+    if (child.stderr) |*f| {
+        var tmp: [4096]u8 = undefined;
+        var reader = f.reader(std.testing.io, &.{});
+        while (true) {
+            const n = reader.interface.readSliceShort(&tmp) catch 0;
+            if (n == 0) break;
+        }
+    }
+    _ = try child.wait(std.testing.io);
+
+    // The POST-rotation completed event MUST appear — that's the
+    // proof that the watch re-attached after the truncate.
+    if (std.mem.indexOf(u8, stdout_buf.items, "\"event\":\"completed\"") == null) {
+        std.debug.print(
+            "watch did not survive WAL rotation; post-rotation event missing:\n{s}\n",
+            .{stdout_buf.items},
+        );
+        return error.RotationEventMissed;
+    }
+}

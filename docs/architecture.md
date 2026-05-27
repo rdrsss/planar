@@ -111,7 +111,52 @@ not audience.
 Plan 85 M1 ships migration 0015 + the shared engine module
 (`src/engine/runtime/agentactivity/`) + the `planar-agent` binary
 scaffold (schema-version handshake + placeholder `version` verb). M2
-adds the 13-verb `planar-agent` surface; M8 adds `planar-watch`.
+adds the 13-verb `planar-agent` surface; M8 adds `planar-watch`; M9
+upgrades `planar-watch <verb> --follow` to a Tier-2 event-driven wake
+loop without changing the public contract.
+
+### Live tail wake abstraction (plan 85 M9)
+
+The `planar-watch <verb> --follow` family runs a poll loop: take an
+initial snapshot, then re-query the watermark whenever new activity
+might have landed. The TRANSPORT — how the loop knows when to wake
+— is INTERNAL and evolves through a tier ladder. The public contract
+(JSON event shape, watermark columns, `--interval` flag, SIGINT
+exit-0) is preserved across tiers.
+
+| Tier | Transport | Latency | Idle CPU | Status |
+|---|---|---|---|---|
+| 1 | Fixed-interval sleep (`--interval` cadence) | `--interval` floor (default 1s) | ~0 (sleeps) | Shipped in M8; remains the fallback. |
+| 2 | kqueue (macOS/BSD) or inotify (Linux) on the SQLite `-wal` sibling | Sub-millisecond wake from any committed write | ~0 (kernel notification) | Shipped in M9. |
+| 3 | Writer-side `update_hook` → sidecar notify socket | Same as Tier 2, plus per-row filtering | ~0 | Future. |
+
+The abstraction lives at `src/engine/runtime/agentactivity/wake.zig`
+behind a `Wake` struct with `init` / `waitNext` / `close`. The follow
+loop in `src/cmd/planar-watch/handlers/follow.zig` calls
+`Wake.waitNext(timeout_ns)` once per iteration; the wake source
+returns `.wal_changed` when a kernel notification arrived, or
+`.heartbeat` when the timeout elapsed without a notification. The
+`--interval` flag is the HEARTBEAT cadence — a maximum fallback that
+catches coalesced/missed wake events (laptop sleep, ENOMEM, etc.).
+
+Backend selection is compile-time: macOS/BSD get kqueue with
+`EVFILT_VNODE` (`NOTE_WRITE | NOTE_EXTEND | NOTE_DELETE | NOTE_RENAME`)
+on the `-wal` fd opened with `O_EVTONLY` (darwin's "watch but don't
+hold a real reference" mode — required to avoid interfering with
+SQLite's WAL coordination); Linux gets inotify with
+`IN_MODIFY | IN_DELETE_SELF | IN_MOVE_SELF`. Unsupported platforms
+fall back to a plain timed sleep with a one-shot stderr warning.
+
+WAL rotation (`PRAGMA wal_checkpoint(TRUNCATE)`, crash recovery) is
+detected via `NOTE_DELETE`/`NOTE_RENAME` (kqueue) and
+`IN_DELETE_SELF`/`IN_IGNORED` (inotify); the wake source re-opens
+the watch transparently on the next `waitNext` call. Operators
+never have to restart `planar-watch` after a checkpoint.
+
+The wake transport is NOT part of the public contract — future
+tiers (Tier 3 writer-side hook + sidecar; alternative IPC mechanisms)
+can swap behind the same `Wake` interface without breaking
+consumers.
 
 ### SQLite driver
 

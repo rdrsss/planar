@@ -220,6 +220,24 @@ fn collectBetween(
         out.deinit(allocator);
     }
 
+    // Wrap both queries in a single read transaction so they share a
+    // consistent SQLite snapshot. Without the wrap, each statement
+    // gets its own implicit read txn and a writer can commit between
+    // them — that race surfaces as "action row visible but matching
+    // claim row not visible" output, breaking the cross-process
+    // invariant the Tier-2 wake test pins. The COMMIT here is just
+    // a release of the read mark; readers don't write anything.
+    //
+    // Best-effort: a BEGIN failure leaves us in the legacy per-statement
+    // mode rather than refusing service.
+    const have_tx = blk: {
+        d.exec("BEGIN DEFERRED;") catch break :blk false;
+        break :blk true;
+    };
+    defer if (have_tx) {
+        d.exec("COMMIT;") catch {};
+    };
+
     // Claim events: each row contributes one acquire event and (if
     // not active) one terminal event. We emit both within the SQL
     // pass to keep the event count bounded. The args struct carries

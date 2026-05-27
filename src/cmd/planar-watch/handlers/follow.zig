@@ -1,4 +1,4 @@
-//! follow.zig — Tier-1 poll loop shared across `planar-watch` verbs
+//! follow.zig — Tier-2 wake loop shared across `planar-watch` verbs
 //! that support `--follow`.
 //!
 //! Per tech-spec § "Live tail / follow implementation":
@@ -7,14 +7,20 @@
 //!     semantics (initial snapshot, then incremental events ordered
 //!     by occurrence time), and the watermark column set.
 //!   - The TRANSPORT — how the loop knows when to re-query — is
-//!     internal and may evolve through the tier ladder without
-//!     breaking consumers. M8 ships Tier 1 (poll); M9 swaps in Tier
-//!     2 (kqueue / inotify on the SQLite `-wal` file). The poll loop
-//!     LIVES IN THIS FILE precisely so the M9 swap is a single-file
-//!     change behind the same public surface.
+//!     internal and evolves through the tier ladder without breaking
+//!     consumers. M8 shipped Tier 1 (sleep-based poll); M9 (this
+//!     file) shipped Tier 2 (kqueue on macOS/BSD, inotify on Linux,
+//!     fall back to Tier-1 sleep on unsupported platforms). The
+//!     wake-source abstraction lives in
+//!     `engine.runtime.agentactivity.wake`; this file only orchestrates
+//!     the loop body. `--interval` is now a HEARTBEAT (maximum poll
+//!     fallback) under Tier 2: the wake fires on -wal change, but
+//!     the interval still fires as a safety-net so a watcher that
+//!     missed a wake event (e.g. coalesced notifications across a
+//!     laptop sleep) recovers within one heartbeat.
 //!
 //! SIGINT handling: each follow verb installs a SIGINT handler that
-//! flips `interrupted` (a global atomic). The poll loop checks
+//! flips `interrupted` (a global atomic). The wake loop checks
 //! `interrupted` between iterations and returns cleanly on true. The
 //! main exits 0 from a graceful interrupt — the operator typed
 //! Ctrl-C to STOP, which is success, not an error.
@@ -25,6 +31,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const runtime = @import("runtime");
+const engine = @import("engine");
+
+const Wake = engine.runtime.agentactivity.wake.Wake;
 
 /// Default poll interval (1 second). Tests override via `--interval`.
 pub const default_interval_ns: u64 = 1 * std.time.ns_per_s;
@@ -93,15 +102,73 @@ pub fn parseDurationNs(text: []const u8) !u64 {
     return error.InvalidValue;
 }
 
-/// Sleep for `ns` nanoseconds, returning early if `interrupted` is
-/// flipped during the sleep. Implementation: chunk the sleep into
-/// ~100ms slices via the runtime Io and check the flag between them
-/// so SIGINT latency is bounded regardless of the configured
-/// `--interval`.
+/// Module-local wake source, initialized lazily on first call to
+/// `interruptibleSleep`. The follow loop is single-threaded (one
+/// per planar-watch process), so a singleton is safe.
+var wake_storage: ?Wake = null;
+var wake_init_failed: bool = false;
+
+/// Wait up to `ns` nanoseconds for a `-wal` change, returning early
+/// if `interrupted` is flipped. On Tier 2 platforms (kqueue/inotify)
+/// this returns the moment SQLite commits to the WAL; on degraded
+/// platforms it falls back to the M8 Tier-1 sleep-and-poll loop.
 ///
-/// Uses the process Io from `runtime.current()` so the sleep honors
-/// the same threading-model the rest of the binary uses.
+/// The `ns` argument is now a HEARTBEAT cadence — the maximum we'll
+/// block before returning even if no kernel notification arrived.
+/// That is the operator-visible meaning of `--interval` under Tier 2
+/// and is the safety net for coalesced / missed kqueue events.
+///
+/// SIGINT latency is bounded by chunking the wait into ≤ 100ms
+/// slices and checking `interrupted` between them. The wake source
+/// itself is also interrupted by the signal (EINTR), so the slice
+/// is the worst case, not the typical case.
 pub fn interruptibleSleep(ns: u64) void {
+    // Wake source is lazy-initialized so a non-follow path never
+    // pays for it. Once initialized, every iteration reuses the
+    // same fds.
+    if (wake_storage == null and !wake_init_failed) {
+        const ctx = runtime.current();
+        wake_storage = Wake.init(ctx.allocator, ctx.db_path) catch blk: {
+            wake_init_failed = true;
+            break :blk null;
+        };
+    }
+
+    // Fall back to a plain interruptible sleep when the wake source
+    // failed to initialize (e.g. resource exhaustion). The poll-loop
+    // contract holds either way; only the wake latency degrades.
+    if (wake_storage == null) {
+        return interruptibleSleepLegacy(ns);
+    }
+
+    const slice_ns: u64 = 100 * std.time.ns_per_ms;
+    var remaining = ns;
+    while (remaining > 0) {
+        if (shouldStop()) return;
+        const this_slice = if (remaining < slice_ns) remaining else slice_ns;
+        const ev = wake_storage.?.waitNext(this_slice) catch .heartbeat;
+        switch (ev) {
+            // A -wal change landed — return now so the caller can
+            // re-query the watermark. The remaining heartbeat budget
+            // is consumed by the query; the next loop iteration
+            // starts a fresh `waitNext`.
+            .wal_changed => return,
+            // SIGINT (EINTR). The shouldStop check at the top of
+            // the next iteration will exit the outer poll loop.
+            .interrupted => return,
+            // Plain heartbeat — keep counting down so the configured
+            // interval is still honored as the maximum delay.
+            .heartbeat => {},
+        }
+        remaining -= this_slice;
+    }
+}
+
+/// Legacy Tier-1 sleep, retained as the fallback when wake init
+/// fails. Identical to the M8 implementation: chunked sleep slices
+/// via the runtime Io, ~100ms each so SIGINT latency stays bounded
+/// regardless of the configured `--interval`.
+fn interruptibleSleepLegacy(ns: u64) void {
     const slice_ns: u64 = 100 * std.time.ns_per_ms;
     var remaining = ns;
     const ctx = runtime.current();
@@ -112,6 +179,18 @@ pub fn interruptibleSleep(ns: u64) void {
         ctx.io.sleep(dur, .awake) catch return;
         remaining -= this_slice;
     }
+}
+
+/// Release the wake source. Idempotent. Called from the binary's
+/// shutdown path so kqueue/inotify fds are returned to the kernel
+/// promptly — not strictly required since the process is exiting,
+/// but tidy.
+pub fn closeWake() void {
+    if (wake_storage) |*w| {
+        w.close();
+        wake_storage = null;
+    }
+    wake_init_failed = false;
 }
 
 test "parseDurationNs accepts bare seconds, ms, us, ns" {
