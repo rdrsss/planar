@@ -27,7 +27,7 @@ pub const verb: cli.Cmd = .{
 fn handle(args_ptr: *const anyopaque) anyerror!void {
     const args = cli.castArgs(main.root, &.{"complete"}, args_ptr);
     const ctx = runtime.current();
-    const d = runtime.ensureDbReadOnly() catch |e| exit.die(ctx, e, "{s}", .{@errorName(e)});
+    const d = runtime.ensureDbConsumer() catch |e| exit.die(ctx, e, "{s}", .{@errorName(e)});
 
     const result = atomic.completeWork(d, ctx.allocator, args.claim, args.summary) catch |e|
         exit.die(ctx, e, "complete: {s}", .{@errorName(e)});

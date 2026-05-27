@@ -259,6 +259,12 @@ test "ingest unknown event_type exits non-zero with distinct error message" {
     try std.testing.expect(res.term.exited != 0);
     // Distinct from "malformed" message — names the offending category.
     try std.testing.expect(std.mem.indexOf(u8, res.stderr, "unknown event_type") != null);
+    // The message must enumerate the supported set inline so the
+    // operator's hook script can see the canonical event_type list
+    // without grepping the adapter.
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "supported:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "session_start") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "tool_call") != null);
 
     // Post-state verification: opening a fresh session_start with the
     // SAME vendor_session_id MUST bump sessions_created to 1, which
@@ -423,6 +429,10 @@ test "ingest copilot unknown event exits non-zero with distinct error message" {
     try std.testing.expect(res.term == .exited);
     try std.testing.expect(res.term.exited != 0);
     try std.testing.expect(std.mem.indexOf(u8, res.stderr, "unknown event_type") != null);
+    // Per-vendor enumeration of the supported event set inline.
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "supported:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "session.started") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "tool.invocation") != null);
 
     // Post-state: opening a session with the same id MUST report 1.
     const followup =

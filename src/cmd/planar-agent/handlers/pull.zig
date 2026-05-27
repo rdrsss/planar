@@ -46,7 +46,7 @@ pub const verb: cli.Cmd = .{
 fn handle(args_ptr: *const anyopaque) anyerror!void {
     const args = cli.castArgs(main.root, &.{"pull"}, args_ptr);
     const ctx = runtime.current();
-    const d = runtime.ensureDbReadOnly() catch |e| exit.die(ctx, e, "{s}", .{@errorName(e)});
+    const d = runtime.ensureDbConsumer() catch |e| exit.die(ctx, e, "{s}", .{@errorName(e)});
 
     // Per-role probe default: planner/coder/reviewer/test_coder probe;
     // tool_call/heartbeat skip. pull picks a role kind (coder by

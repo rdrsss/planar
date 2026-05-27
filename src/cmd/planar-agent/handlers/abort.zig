@@ -36,7 +36,7 @@ pub const verb: cli.Cmd = .{
 fn handle(args_ptr: *const anyopaque) anyerror!void {
     const args = cli.castArgs(main.root, &.{"abort"}, args_ptr);
     const ctx = runtime.current();
-    const d = runtime.ensureDbReadOnly() catch |e| exit.die(ctx, e, "{s}", .{@errorName(e)});
+    const d = runtime.ensureDbConsumer() catch |e| exit.die(ctx, e, "{s}", .{@errorName(e)});
 
     // The aborting session — distinct from the claim's owning session.
     // We open it BEFORE the transaction so the audit row's session_id

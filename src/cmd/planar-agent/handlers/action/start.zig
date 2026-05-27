@@ -34,7 +34,7 @@ pub const verb: cli.Cmd = .{
 fn handle(args_ptr: *const anyopaque) anyerror!void {
     const args = cli.castArgs(main.root, &.{ "action", "start" }, args_ptr);
     const ctx = runtime.current();
-    const d = runtime.ensureDbReadOnly() catch |e| exit.die(ctx, e, "{s}", .{@errorName(e)});
+    const d = runtime.ensureDbConsumer() catch |e| exit.die(ctx, e, "{s}", .{@errorName(e)});
 
     const claim = store.getClaimByToken(d, ctx.allocator, args.claim) catch |e|
         exit.die(ctx, e, "claim lookup: {s}", .{@errorName(e)});

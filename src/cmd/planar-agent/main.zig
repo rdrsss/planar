@@ -16,7 +16,7 @@
 //! not its owner. Startup queries `schema_migrations.max(version)` and
 //! refuses with exit 7 when the live DB is older than the binary's
 //! embedded minimum. The remediation pointer ("run `planar init`")
-//! lives in `runtime.ensureDbReadOnly`.
+//! lives in `runtime.ensureDbConsumer`.
 //!
 //! M2 ships the full 13-verb agent surface: 6 atomic ops (pull / peek /
 //! complete / fail / release / block) + 2 claim primitives (claim /
@@ -65,10 +65,10 @@ pub fn main(init: std.process.Init) !void {
     // verbs so a plain `planar-agent --help` doesn't require a DB at all
     // (matches the `planar` binary's lazy-DB ergonomics).
     //
-    // The handshake guard is wired through `runtime.ensureDbReadOnly`
+    // The handshake guard is wired through `runtime.ensureDbConsumer`
     // which opens the DB WITHOUT applying migrations and refuses with
     // `SchemaVersionBehind` when the live DB is older than the binary's
-    // embedded minimum. Operator surfaces in M2 call ensureDbReadOnly
+    // embedded minimum. Operator surfaces in M2 call ensureDbConsumer
     // as their first DB-touching line; the version verb does not.
 
     cli.dispatch(root, args, runtime.current().stdout) catch |e| switch (e) {

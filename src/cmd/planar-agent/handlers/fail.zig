@@ -27,7 +27,7 @@ pub const verb: cli.Cmd = .{
 fn handle(args_ptr: *const anyopaque) anyerror!void {
     const args = cli.castArgs(main.root, &.{"fail"}, args_ptr);
     const ctx = runtime.current();
-    const d = runtime.ensureDbReadOnly() catch |e| exit.die(ctx, e, "{s}", .{@errorName(e)});
+    const d = runtime.ensureDbConsumer() catch |e| exit.die(ctx, e, "{s}", .{@errorName(e)});
 
     const result = atomic.failWork(d, ctx.allocator, args.claim, args.reason) catch |e|
         exit.die(ctx, e, "fail: {s}", .{@errorName(e)});

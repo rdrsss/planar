@@ -235,7 +235,7 @@ pub fn build(b: *std.Build) void {
     // command tree under `src/cmd/planar-agent/`.
     //
     // The migrations module rides in via `db` (the migrate runner
-    // consumes it). planar-agent uses `runtime.ensureDbReadOnly`
+    // consumes it). planar-agent uses `runtime.ensureDbConsumer`
     // which does NOT apply migrations — only `planar init` does.
     // -----------------------------------------------------------------
     const agent_exe = b.addExecutable(.{

@@ -20,7 +20,7 @@ Planar ships as three executables, each with a disjoint capability boundary enfo
 
 Both invariants are locked by `integration_tests/capability_boundary_test.zig` — a future change that registers a write verb on `planar-watch` or a planning-entity verb on `planar-agent` fails CI immediately. The `planar agent <verb>` subcommand namespace deliberately does not exist; agent observability lives on `planar-watch`, agent-table writes live on `planar-agent`.
 
-The ritual every code-writing agent dispatch follows is `planar-agent pull → heartbeat → complete|fail|release|block` (atomic across all three tables). See [agents/methodology.md § Claim ritual](../agents/methodology.md) and the tech spec § "Agent methodology contract" for the full sequence.
+The ritual every code-writing agent dispatch follows is `planar-agent pull → heartbeat → complete|fail|release|block` (atomic across all three tables). See [agents/methodology.md § Coordination claims](../agents/methodology.md#coordination-claims) and the tech spec § "Agent methodology contract" for the full sequence.
 
 ---
 

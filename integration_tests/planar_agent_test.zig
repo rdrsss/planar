@@ -560,11 +560,14 @@ test "two planar-agent pull processes race; exactly one wins" {
     try std.testing.expect(c1_no_work != c2_no_work);
     try std.testing.expect((c1_won and c2_no_work) or (c2_won and c1_no_work));
 
-    std.debug.print("[plan85-pull-concurrency] elapsed_ns={d} ({d:.3}ms) winner={s}\n", .{
-        elapsed_ns,
-        @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0,
-        if (c1_won) "c1" else "c2",
-    });
+    // No cosmetic timing print: the wall-clock invariant is already
+    // covered by the assertions above (exactly-one-winner + no_work
+    // bookkeeping). Printing to stderr near test exit triggers the
+    // zig 0.16 test runner's stale "failed command:" re-emission noise
+    // on every `make test-integration` run, so this keeps the gate
+    // visibly clean. `elapsed_ns` is computed for future diagnostic
+    // gating but intentionally not surfaced under green runs.
+    _ = elapsed_ns;
 }
 
 // =========================================================================

@@ -62,10 +62,10 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
         ),
     };
 
-    // Open the DB (writable; ensureDbReadOnly is misnamed — it opens R/W
-    // but does not apply migrations, which matches the planar-agent
-    // schema-consumer role).
-    const d = runtime.ensureDbReadOnly() catch |e| exit.die(ctx, e, "{s}", .{@errorName(e)});
+    // Open the DB via the consumer-of-schema entry point: writable
+    // handle, but no migrations are applied. `planar init` is the only
+    // verb that owns the schema; planar-agent only consumes it.
+    const d = runtime.ensureDbConsumer() catch |e| exit.die(ctx, e, "{s}", .{@errorName(e)});
 
     // Read the @<src> payload.
     if (args.event.len < 1 or args.event[0] != '@') {
@@ -88,8 +88,8 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
         agentingest.interface.ParseError.UnknownEventType => exit.die(
             ctx,
             error.InvalidInput,
-            "unknown event_type in payload (vendor={s}); see the adapter's known event_type set",
-            .{args.vendor},
+            "unknown event_type in payload (vendor={s}); supported: {s}",
+            .{ args.vendor, supportedEventTypes(vendor_tag) },
         ),
         else => exit.die(ctx, e, "parse: {s}", .{@errorName(e)}),
     };
@@ -153,6 +153,23 @@ fn readEventSource(ctx: *const runtime.Ctx, src: []const u8) ![]u8 {
         ctx.allocator,
         std.Io.Limit.limited(cap),
     );
+}
+
+/// Per-vendor enumeration of the supported `event_type` values, used to
+/// flesh out the `UnknownEventType` error message so the operator's hook
+/// script can see the canonical set inline without grepping the adapter.
+/// Keep these aligned with the adapter dispatch tables in
+/// `src/engine/external/agentingest/{claude,copilot}.zig`.
+fn supportedEventTypes(vendor: agentingest.interface.Vendor) []const u8 {
+    return switch (vendor) {
+        .claude => "session_start | session_end | user_message | assistant_message | tool_call",
+        .copilot => "session.started | session.completed | turn.user | turn.assistant | tool.invocation",
+        // `codex` is reserved — the dispatch above exits before reaching
+        // the parse step, so this branch is unreachable in practice. Keep
+        // a sensible string so a future wiring change doesn't crash on a
+        // missing arm.
+        .codex => "(codex adapter not wired)",
+    };
 }
 
 comptime {

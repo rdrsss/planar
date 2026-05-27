@@ -83,7 +83,7 @@ pub fn current() *const Ctx {
 }
 
 /// Error: the live DB's max schema version is OLDER than this binary's
-/// embedded minimum. Raised by `ensureDbReadOnly` (which does NOT apply
+/// embedded minimum. Raised by `ensureDbConsumer` (which does NOT apply
 /// migrations); the operator runs `planar init` to bring the DB
 /// forward. Distinct from `SchemaVersionAhead` (binary too old for
 /// DB) so scripts and operators can tell the two skew directions
@@ -166,11 +166,19 @@ pub fn ensureDb() !*db.sqlite.Db {
     return &db_storage.?;
 }
 
-/// Open the DB without applying migrations, then refuse if the live
-/// schema version is outside the binary's supported range. Used by
-/// `planar-agent` and `planar-watch`, which are consumers of the
-/// schema, not its owner — `planar init` is the only verb that
-/// applies migrations.
+/// Open the DB as a schema *consumer* — runs the schema-handshake guard
+/// but does NOT apply migrations, returning a writable handle. Used by
+/// `planar-agent` (which writes to `agent_actions`, `agent_work_claims`,
+/// and `tasks.status` but is not allowed to mutate the schema itself).
+/// `planar init` is the only verb that applies migrations; every other
+/// binary is a consumer of the schema, not its owner.
+///
+/// Naming note: the handle returned is read/write at the SQLite driver
+/// level — the "consumer" label refers to the schema lifecycle (consumer
+/// of versions vs. owner / migrator), not to data-plane writability. The
+/// truly read-only entry point is `ensureDbStrictReadOnly`, used by
+/// `planar-watch`, which opens the file with `?mode=ro` so even data
+/// writes are rejected at the driver layer.
 ///
 /// Two refusal paths, both writing a remediation message to stderr
 /// before returning:
@@ -183,7 +191,7 @@ pub fn ensureDb() !*db.sqlite.Db {
 ///
 /// On success returns the cached `*db.sqlite.Db` (same singleton
 /// `ensureDb` would return). Subsequent calls are O(1).
-pub fn ensureDbReadOnly() !*db.sqlite.Db {
+pub fn ensureDbConsumer() !*db.sqlite.Db {
     if (db_storage != null) return &db_storage.?;
     const ctx = current();
 
@@ -259,7 +267,7 @@ pub fn ensureDbReadOnly() !*db.sqlite.Db {
 /// Open the DB in strict read-only mode (driver-level rejection of
 /// writes), then refuse if the live schema version is outside the
 /// binary's supported range. Used by `planar-watch` as the read-only
-/// viewer's bootstrap. Distinct from `ensureDbReadOnly` because this
+/// viewer's bootstrap. Distinct from `ensureDbConsumer` because this
 /// path produces a handle the SQLite driver itself will refuse to
 /// mutate — the second line of defense behind the "no write verbs
 /// registered" capability boundary.
@@ -390,7 +398,7 @@ test "resolveDbPath: PLANAR_DB overrides HOME" {
 }
 
 // The `SchemaVersionBehind` / `SchemaVersionAhead` paths of
-// `ensureDbReadOnly` are exercised end-to-end in the integration
+// `ensureDbConsumer` are exercised end-to-end in the integration
 // suite (planar-agent_test.zig). Unit-testing them here would require
 // either swapping `db_storage` for an injected handle (it's a module-
 // level singleton today) or running the actual DB-open path with a

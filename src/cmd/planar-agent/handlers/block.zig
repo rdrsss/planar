@@ -29,7 +29,7 @@ pub const verb: cli.Cmd = .{
 fn handle(args_ptr: *const anyopaque) anyerror!void {
     const args = cli.castArgs(main.root, &.{"block"}, args_ptr);
     const ctx = runtime.current();
-    const d = runtime.ensureDbReadOnly() catch |e| exit.die(ctx, e, "{s}", .{@errorName(e)});
+    const d = runtime.ensureDbConsumer() catch |e| exit.die(ctx, e, "{s}", .{@errorName(e)});
 
     const result = atomic.blockWork(d, ctx.allocator, args.claim, args.blocker, args.reason) catch |e|
         exit.die(ctx, e, "block: {s}", .{@errorName(e)});
