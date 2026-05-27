@@ -1591,3 +1591,88 @@ planar-agent abort --claim <token> --reason "operator: agent gone silent"
 ```
 
 `reconcile` and `abort` live on `planar-agent` because both are writes to `agent_work_claims` and the capability boundary tracks tables, not audience. The `planar` binary remains write-free on the agent activity layer.
+
+## Recipe 17 — Wiring Claude Code hooks to `planar-agent ingest`
+
+Claude Code emits a JSON hook event for each session-lifecycle and message-level transition. Pipe those events into `planar-agent ingest --vendor claude` and Planar opens (or reuses) a `sessions` row and records each event as an `agent_actions` row. The same operator-side surfaces from Recipe 16 (`dashboard --agents`, `tree`, `audit trail`) then show the activity automatically.
+
+### Prerequisites
+
+- `planar init` has been run against the database the agent should write to. The agent and operator binaries must agree on `$PLANAR_DB` (default `~/.planar/state.db`).
+- The Planar binaries are on `$PATH`; `which planar-agent` should print a real path.
+
+### Step 1 — Configure the Claude Code hook
+
+Edit `~/.claude/settings.json` (the per-user Claude Code settings) and add a hook entry for each event type you want recorded. The minimal viable subset is the five event types the M4 adapter knows:
+
+```json
+{
+  "hooks": {
+    "session_start": [
+      {
+        "command": "planar-agent ingest --vendor claude --event @-",
+        "env": { "PLANAR_DB": "/Users/you/.planar/state.db" }
+      }
+    ],
+    "session_end": [
+      { "command": "planar-agent ingest --vendor claude --event @-",
+        "env": { "PLANAR_DB": "/Users/you/.planar/state.db" } }
+    ],
+    "user_message": [
+      { "command": "planar-agent ingest --vendor claude --event @-",
+        "env": { "PLANAR_DB": "/Users/you/.planar/state.db" } }
+    ],
+    "assistant_message": [
+      { "command": "planar-agent ingest --vendor claude --event @-",
+        "env": { "PLANAR_DB": "/Users/you/.planar/state.db" } }
+    ],
+    "tool_call": [
+      { "command": "planar-agent ingest --vendor claude --event @-",
+        "env": { "PLANAR_DB": "/Users/you/.planar/state.db" } }
+    ]
+  }
+}
+```
+
+Notes on the invocation:
+
+- `--vendor claude` selects the Claude adapter. The other vendor tags (`codex`, `copilot`) parse but exit non-zero until M6 wires the second adapter.
+- `--event @-` reads the hook payload from stdin; Claude Code pipes the JSON envelope to the configured command. Use `--event @<path>` if your hook runner stages payloads on disk instead.
+- `PLANAR_DB` MUST point at the same database file `planar` and `planar-watch` open. The hook subprocess does not inherit your shell's `$PLANAR_DB`, so set it explicitly in the hook's `env` block.
+- Each invocation opens its own SQLite connection. WAL mode (set by the engine on connect) lets dozens of concurrent hooks coexist with `planar-watch --follow` readers.
+
+### Step 2 — Smoke-test the wiring by hand
+
+Before letting Claude Code drive it, confirm the binary round-trips a payload locally:
+
+```sh
+echo '{"event_type":"session_start","session_id":"smoke","model":"claude-opus-4-7"}' \
+  | planar-agent ingest --vendor claude --event @- --json
+```
+
+Expected output (single-line):
+
+```
+{"ok":true,"sessions_created":1,"claims_created":0,"actions_created":0,"events_processed":1}
+```
+
+A second invocation with the same `session_id` MUST report `sessions_created:0` (the row was reused). A `tool_call` payload increments `actions_created` instead.
+
+### Step 3 — Observe the session
+
+With the hook firing, Recipe 16's verbs show the activity:
+
+```sh
+planar dashboard --agents          # active vendor sessions
+planar audit session <id>          # the session_entries timeline
+```
+
+The session id surfaced by `dashboard --agents` is the Planar-side id; pair it with the vendor's `session_id` field from the hook payload via `vendor_session_id` in the JSON shape.
+
+### Failure modes
+
+- **Malformed payload** (`{` truncated, not JSON): `ingest` exits non-zero with `error: malformed event payload…` on stderr and writes no rows.
+- **Unknown `event_type`** (the payload is valid JSON but the event_type field is outside the adapter's known set): `ingest` exits non-zero with `error: unknown event_type in payload…`. Add the new event type to `src/engine/external/agentingest/claude.zig` if you want it recorded.
+- **`$PLANAR_DB` missing or unreadable**: the schema-version handshake fails at startup; `ingest` exits non-zero before parsing.
+
+Both error paths are atomic — the surrounding `BEGIN IMMEDIATE` transaction rolls back so no partial rows land in `sessions` or `agent_actions`.

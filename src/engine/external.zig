@@ -5,9 +5,11 @@
 pub const system = @import("external/system.zig");
 pub const link = @import("external/link.zig");
 pub const sync = @import("external/sync.zig");
+pub const agentingest = @import("external/agentingest.zig");
 
 test {
     _ = system;
     _ = link;
     _ = sync;
+    _ = agentingest;
 }
