@@ -274,8 +274,7 @@ pub fn query(
             } else {
                 // All non-task kinds link to their plan via entity_links
                 // with relationship 'derives-from'.
-                try sql_buf.appendSlice(allocator,
-                    " AND EXISTS (SELECT 1 FROM entity_links AS el" ++
+                try sql_buf.appendSlice(allocator, " AND EXISTS (SELECT 1 FROM entity_links AS el" ++
                     " WHERE el.from_kind = ? AND el.from_id = b.id" ++
                     " AND el.to_kind = 'plan' AND el.to_id = ?" ++
                     " AND el.relationship = 'derives-from')");

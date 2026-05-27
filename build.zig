@@ -223,6 +223,37 @@ pub fn build(b: *std.Build) void {
         }),
     });
     b.installArtifact(exe);
+
+    // -----------------------------------------------------------------
+    // `planar-agent` executable (plan 85). Second binary in the
+    // three-binary architecture. M1 ships the scaffold (schema-version
+    // handshake + a single `version` verb); M2 wires the 13-verb
+    // atomic / claim / action / reconcile / abort surface on top.
+    //
+    // Links runtime, db, cli, engine, build_options. Does NOT link
+    // the planar package (operator handlers); the binary is its own
+    // command tree under `src/cmd/planar-agent/`.
+    //
+    // The migrations module rides in via `db` (the migrate runner
+    // consumes it). planar-agent uses `runtime.ensureDbReadOnly`
+    // which does NOT apply migrations — only `planar init` does.
+    // -----------------------------------------------------------------
+    const agent_exe = b.addExecutable(.{
+        .name = "planar-agent",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/cmd/planar-agent/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "db", .module = db_mod },
+                .{ .name = "cli", .module = cli_mod },
+                .{ .name = "engine", .module = engine_mod },
+                .{ .name = "runtime", .module = runtime_mod },
+                .{ .name = "build_options", .module = build_options_mod },
+            },
+        }),
+    });
+    b.installArtifact(agent_exe);
     // Vendored-deps drift check runs before the binary is installed, so
     // `zig build` (which depends on the install step) fails loudly on
     // any vendor/<name>/VENDOR.toml mismatch.
@@ -257,6 +288,9 @@ pub fn build(b: *std.Build) void {
     const exe_tests = b.addTest(.{ .root_module = exe.root_module, .filters = test_filters_opt });
     const run_exe_tests = b.addRunArtifact(exe_tests);
 
+    const agent_exe_tests = b.addTest(.{ .root_module = agent_exe.root_module, .filters = test_filters_opt });
+    const run_agent_exe_tests = b.addRunArtifact(agent_exe_tests);
+
     const db_tests = b.addTest(.{ .root_module = db_mod, .filters = test_filters_opt });
     const run_db_tests = b.addRunArtifact(db_tests);
 
@@ -272,6 +306,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
+    test_step.dependOn(&run_agent_exe_tests.step);
     test_step.dependOn(&run_db_tests.step);
     test_step.dependOn(&run_cli_tests.step);
     test_step.dependOn(&run_engine_tests.step);
@@ -314,6 +349,10 @@ pub fn build(b: *std.Build) void {
     run_integration_all.setEnvironmentVariable(
         "PLANAR_BIN",
         b.getInstallPath(.bin, "planar"),
+    );
+    run_integration_all.setEnvironmentVariable(
+        "PLANAR_AGENT_BIN",
+        b.getInstallPath(.bin, "planar-agent"),
     );
     test_integration_step.dependOn(&run_integration_all.step);
 
@@ -387,6 +426,10 @@ fn registerIntegrationTestDir(
         run.setEnvironmentVariable(
             "PLANAR_BIN",
             b.getInstallPath(.bin, "planar"),
+        );
+        run.setEnvironmentVariable(
+            "PLANAR_AGENT_BIN",
+            b.getInstallPath(.bin, "planar-agent"),
         );
         test_integration_step.dependOn(&run.step);
     }

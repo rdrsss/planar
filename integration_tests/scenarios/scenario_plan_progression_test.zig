@@ -105,10 +105,9 @@ test "scenario: plan progression — add steps, mark done/skip/link, recompute s
 
     // ---- 6. Link step 3 to its materializing task.
     const task = suite.mustRunJSON(TaskJSON, arena, &.{
-        "task",         "add", "--json",
-        "--plan",       plan_id_str,
-        "--next-action", "implement step 3",
-        "Materialize step 3",
+        "task",             "add",                "--json",
+        "--plan",           plan_id_str,          "--next-action",
+        "implement step 3", "Materialize step 3",
     });
 
     const s3_id_str = std.fmt.allocPrint(arena, "{d}", .{s3.id}) catch unreachable;

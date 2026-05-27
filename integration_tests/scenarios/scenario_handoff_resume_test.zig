@@ -72,10 +72,9 @@ test "scenario: handoff/resume — source creates, resumer consumes, abandon ref
     const plan_id_str = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch unreachable;
 
     const task = suite.mustRunJSON(TaskJSON, arena, &.{
-        "task",          "add", "--json",
-        "--plan",        plan_id_str,
-        "--next-action", "finish migration",
-        "Finish migration",
+        "task",             "add",              "--json",
+        "--plan",           plan_id_str,        "--next-action",
+        "finish migration", "Finish migration",
     });
     const task_id_str = std.fmt.allocPrint(arena, "{d}", .{task.id}) catch unreachable;
 

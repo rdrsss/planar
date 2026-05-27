@@ -171,10 +171,9 @@ test "scenario: templates — list embedded, init to disk, list from disk, show 
 
     const plan_id_str = std.fmt.allocPrint(arena, "{d}", .{plan.value.id}) catch unreachable;
     const task_raw = suite.mustRunWith(&.{
-        "task",          "add",   "--json",
-        "--plan",        plan_id_str,
-        "--next-action", "render",
-        "Render target task",
+        "task",   "add",                "--json",
+        "--plan", plan_id_str,          "--next-action",
+        "render", "Render target task",
     }, &env);
     const task = std.json.parseFromSlice(TaskShape, arena, task_raw, .{
         .allocate = .alloc_always,

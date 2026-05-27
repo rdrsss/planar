@@ -166,10 +166,9 @@ test "scenario: doc system — coverage / orphans / backlinks return documented 
     const plan_id_str = std.fmt.allocPrint(arena, "{d}", .{plan.value.id}) catch unreachable;
 
     const art_raw = suite.mustRun(&.{
-        "artifact", "add",     "--json",
-        "--plan",   plan_id_str,
-        "--kind",   "tech_spec",
-        "--body",   "Tech spec body",
+        "artifact",        "add",       "--json",
+        "--plan",          plan_id_str, "--kind",
+        "tech_spec",       "--body",    "Tech spec body",
         "Backlink target",
     });
     defer gpa.free(art_raw);
@@ -286,10 +285,9 @@ test "scenario: doc system — promote artifact to published doc, regenerate wit
     const plan_id_str = std.fmt.allocPrint(arena, "{d}", .{plan.value.id}) catch unreachable;
 
     const art_raw = suite.mustRun(&.{
-        "artifact", "add", "--json",
-        "--plan",   plan_id_str,
-        "--kind",   "tech_spec",
-        "--body",   "# Spec\nWidget feature internals.",
+        "artifact",    "add",       "--json",
+        "--plan",      plan_id_str, "--kind",
+        "tech_spec",   "--body",    "# Spec\nWidget feature internals.",
         "Widget spec",
     });
     defer gpa.free(art_raw);
@@ -302,7 +300,7 @@ test "scenario: doc system — promote artifact to published doc, regenerate wit
     // LLM doc-promote skill (which is the alternative path).
     const body_path = std.fmt.allocPrint(arena, "{s}/.promote-body.md", .{proj}) catch unreachable;
     const write_argv = [_][]const u8{
-        "sh", "-c",
+        "sh",                                                                                         "-c",
         std.fmt.allocPrint(arena, "echo '# Widget feature' > '{s}'", .{body_path}) catch unreachable,
     };
     const w_res = std.process.run(gpa, std.testing.io, .{
@@ -322,12 +320,11 @@ test "scenario: doc system — promote artifact to published doc, regenerate wit
         kind: []const u8,
     };
     const promote_raw = suite.mustRunInDir(proj, &.{
-        "doc",        "promote", "--json",
-        "--kind",     "feature",
-        "--source",   source_ref,
-        "--slug",     "widget",
-        "--out",      out_rel,
-        "--body-file", body_path,
+        "doc",      "promote", "--json",
+        "--kind",   "feature", "--source",
+        source_ref, "--slug",  "widget",
+        "--out",    out_rel,   "--body-file",
+        body_path,
     });
     defer gpa.free(promote_raw);
     const promote = std.json.parseFromSlice(PromoteShape, arena, promote_raw, .{
@@ -356,9 +353,9 @@ test "scenario: doc system — promote artifact to published doc, regenerate wit
     // that there's a hand-edit. (Some implementations may instead
     // surface a warning + non-zero; we just assert exit != 0.)
     const refuse_res = suite.execWithInDir(proj, &.{
-        "doc",       "regenerate", "--json",
-        "--path",    out_rel,
-        "--body-file", body_path,
+        "doc",     "regenerate", "--json",
+        "--path",  out_rel,      "--body-file",
+        body_path,
     }, &.{});
     defer gpa.free(refuse_res.stdout);
     defer gpa.free(refuse_res.stderr);
@@ -380,10 +377,9 @@ test "scenario: doc system — promote artifact to published doc, regenerate wit
 
     // ---- doc regenerate WITH --force succeeds.
     const force_res = suite.mustRunInDir(proj, &.{
-        "doc",       "regenerate", "--json",
-        "--path",    out_rel,
-        "--body-file", body_path,
-        "--force",
+        "doc",     "regenerate", "--json",
+        "--path",  out_rel,      "--body-file",
+        body_path, "--force",
     });
     defer gpa.free(force_res);
     try std.testing.expect(force_res.len > 0);

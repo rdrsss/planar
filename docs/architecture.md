@@ -50,7 +50,7 @@ Migrations are plain SQL files under `src/migrations/` with `-- +goose Up` / `--
 
 `schema_migrations` is the public schema-version contract. Every migration inserts one row with a version number and description. Read-side tools (e.g., a web viewer, an Obsidian bridge) must open the database read-only and query `schema_migrations` to verify they support the current version before operating.
 
-### Application tables (21 total)
+### Application tables
 
 | Migration | Tables |
 |-----------|--------|
@@ -62,6 +62,56 @@ Migrations are plain SQL files under `src/migrations/` with `-- +goose Up` / `--
 | 0006 external | `external_systems`, `external_links`, `sync_events` |
 | 0007 workbench | `workbench_sync_state` |
 | 0008 doc artifact kinds | (extends `artifacts.kind` CHECK with `research`, `getting_started`, `changelog_entry`, `glossary_term`) |
+| 0015 agent activity (plan 85 M1) | `agent_work_claims`, `agent_actions` (each with locality columns: claims carry `repo_root`/`branch`/`head_sha_at_claim`/`dirty_at_claim` + optional worktree id/path; actions carry `head_sha`/`dirty`) |
+
+Migration 0015 (`migrations/00015_agent_activity.up.sql`) lands the claim
++ action store that the agent-coordination feature is built on. `claim_token`
+is generated in SQL via `lower(hex(randomblob(16)))` (32-char opaque
+handle). Exclusivity of `(entity_kind, entity_id)` is enforced
+transactionally in the engine store (`src/engine/runtime/agentactivity/`)
+under `BEGIN IMMEDIATE` because SQLite cannot express the time-dependent
+"unexpired" predicate in a partial unique index. WAL mode is enabled
+per-connection in `src/runtime/runtime.zig` — load-bearing for the wake-
+tier ladder behind `--follow` AND for cross-binary concurrency between
+the operator and agent binaries (see Three-binary architecture below).
+
+### Three-binary architecture (plan 85)
+
+The agent-activity feature ships THREE binaries that share one schema,
+one engine module, and one runtime library. The split is real: separate
+`src/cmd/` source trees, separate `addExecutable` entries in
+`build.zig`, separate `--help` surfaces, separate `bin/` artifacts
+under `~/.planar/bin/`.
+
+| Binary | Audience | Write surface | DB open mode |
+|---|---|---|---|
+| `planar` | Operator (human + scripts) | Planning entities (plans/tasks/decisions/etc.) + `tasks.status` on operator-driven transitions | Read-write; owns `init` and runs migrations. |
+| `planar-agent` | Agent (vendor hook, orchestrator dispatch) + operator recovery | `agent_actions` + `agent_work_claims`; `tasks.status` ONLY as part of an atomic coordinated operation under a status-transition guard | Read-write; refuses startup with exit 7 if schema is older than the binary's embedded minimum. |
+| `planar-watch` | Operator (live view) + scripts | None — the binary registers zero write verbs AND opens SQLite via `file:?mode=ro` URI as a second line of defense | Read-only; same schema-version handshake as `planar-agent`. |
+
+Capability invariant — non-overlapping write surfaces enforced at
+compile time by each binary's verb set, not by runtime ACLs:
+
+- `planar` NEVER writes to `agent_actions` or `agent_work_claims`. The
+  `planar agent` subcommand namespace does not exist; agent
+  observability lives on `planar-watch`, agent-table mutation lives on
+  `planar-agent`.
+- `planar-agent` NEVER writes to plan / decision / question / scenario
+  / artifact / annotation rows. A vendor hook configured with only
+  `planar-agent` on its PATH has bounded blast radius — it cannot
+  touch planning state.
+- `planar-watch` is incapable of writing to the DB at all — both the
+  verb set and the read-only DB handle are load-bearing.
+
+The operator-recovery verbs `planar-agent reconcile` and
+`planar-agent abort` live on `planar-agent` (not `planar`) because both
+are `agent_*` table writers. The capability boundary tracks tables,
+not audience.
+
+Plan 85 M1 ships migration 0015 + the shared engine module
+(`src/engine/runtime/agentactivity/`) + the `planar-agent` binary
+scaffold (schema-version handshake + placeholder `version` verb). M2
+adds the 13-verb `planar-agent` surface; M8 adds `planar-watch`.
 
 ### SQLite driver
 

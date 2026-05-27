@@ -345,8 +345,7 @@ pub fn list(d: *db.sqlite.Db, allocator: std.mem.Allocator, filter: ListFilter) 
         try sql_buf.appendSlice(allocator, ")");
     }
     if (filter.plan_id) |pid| {
-        try sql_buf.appendSlice(allocator,
-            " and id in (select from_id from entity_links where from_kind='artifact' and to_kind='plan' and relationship='derives-from' and to_id=?)");
+        try sql_buf.appendSlice(allocator, " and id in (select from_id from entity_links where from_kind='artifact' and to_kind='plan' and relationship='derives-from' and to_id=?)");
         try params.append(allocator, .{ .int = pid });
     }
     if (scope_refs.items.len > 0) {

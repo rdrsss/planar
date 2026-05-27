@@ -93,10 +93,9 @@ test "scenario: audit trail — handoff-readiness, trail by entity, session time
     const plan_id_str = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch unreachable;
 
     const task = suite.mustRunJSON(TaskJSON, arena, &.{
-        "task",         "add", "--json",
-        "--plan",       plan_id_str,
-        "--next-action", "exercise audit verbs",
-        "Exercise audit verbs",
+        "task",                 "add",                  "--json",
+        "--plan",               plan_id_str,            "--next-action",
+        "exercise audit verbs", "Exercise audit verbs",
     });
     const task_id_str = std.fmt.allocPrint(arena, "{d}", .{task.id}) catch unreachable;
 
@@ -104,10 +103,9 @@ test "scenario: audit trail — handoff-readiness, trail by entity, session time
     // warning that --plan link isn't wired yet, but the decision
     // row is created).
     const decision = suite.mustRunJSON(DecisionJSON, arena, &.{
-        "decision", "add",  "--json",
-        "--plan",   plan_id_str,
-        "--body",   "Use X over Y.",
-        "Audit probe ADR",
+        "decision",      "add",             "--json",
+        "--plan",        plan_id_str,       "--body",
+        "Use X over Y.", "Audit probe ADR",
     });
 
     // Active session + snapshot so the task is resume-ready.

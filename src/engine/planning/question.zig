@@ -310,8 +310,7 @@ pub fn listTouching(
     }
     try sql.appendSlice(allocator, " union ");
     try sql.appendSlice(allocator, select_all_prefix);
-    try sql.appendSlice(allocator,
-        " and id in (select from_id from entity_links where from_kind='question' and to_kind='repo' and to_id=? and relationship='touches')");
+    try sql.appendSlice(allocator, " and id in (select from_id from entity_links where from_kind='question' and to_kind='repo' and to_id=? and relationship='touches')");
     if (filter.statuses.len == 0) {
         try sql.appendSlice(allocator, " and status='open'");
     } else {

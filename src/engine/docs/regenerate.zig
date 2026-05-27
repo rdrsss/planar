@@ -121,9 +121,7 @@ pub fn runPath(
 
     const write_path = if (merge and hand_edit)
         try std.fmt.allocPrint(allocator, "{s}.regenerated.md", .{path})
-    else if (out_override) |out| if (out.len > 0) try allocator.dupe(u8, out) else try allocator.dupe(u8, path)
-    else
-        try allocator.dupe(u8, path);
+    else if (out_override) |out| if (out.len > 0) try allocator.dupe(u8, out) else try allocator.dupe(u8, path) else try allocator.dupe(u8, path);
     defer allocator.free(write_path);
     const action = if (merge and hand_edit) "merged" else if (force and hand_edit) "forced" else "regenerated";
 

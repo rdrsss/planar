@@ -74,10 +74,9 @@ test "scenario: decision workflow — propose, accept, supersede, terminal-statu
     // probe 2026-05-26); --plan attaches it to the anchor plan
     // via the standard derives-from edge.
     const d1 = suite.mustRunJSON(DecisionJSON, arena, &.{
-        "decision", "add",  "--json",
-        "--plan",   plan_id_str,
-        "--body",   "Adopt OIDC; keep legacy cookie behind feature flag for 90 days.",
-        "Adopt OIDC for primary auth",
+        "decision",                                                        "add",                         "--json",
+        "--plan",                                                          plan_id_str,                   "--body",
+        "Adopt OIDC; keep legacy cookie behind feature flag for 90 days.", "Adopt OIDC for primary auth",
     });
     try std.testing.expectEqualStrings("Adopt OIDC for primary auth", d1.title);
     try std.testing.expectEqualStrings("proposed", d1.status);
@@ -98,10 +97,9 @@ test "scenario: decision workflow — propose, accept, supersede, terminal-statu
 
     // ---- 4. Second ADR (the successor).
     const d2 = suite.mustRunJSON(DecisionJSON, arena, &.{
-        "decision", "add",  "--json",
-        "--plan",   plan_id_str,
-        "--body",   "Drop OIDC in favor of platform IdP; rationale in 2026-Q2 retro.",
-        "Switch to platform IdP",
+        "decision",                                                        "add",                    "--json",
+        "--plan",                                                          plan_id_str,              "--body",
+        "Drop OIDC in favor of platform IdP; rationale in 2026-Q2 retro.", "Switch to platform IdP",
     });
     try std.testing.expectEqualStrings("proposed", d2.status);
 
@@ -129,10 +127,9 @@ test "scenario: decision workflow — propose, accept, supersede, terminal-statu
     // declared in src/engine/entitylink.zig § Relationship; we
     // use `addresses` for "decision addresses task" semantics.
     const task = suite.mustRunJSON(TaskJSON, arena, &.{
-        "task",         "add",     "--json",
-        "--plan",       plan_id_str,
-        "--next-action", "wire IdP",
-        "Wire platform IdP into login flow",
+        "task",     "add",                               "--json",
+        "--plan",   plan_id_str,                         "--next-action",
+        "wire IdP", "Wire platform IdP into login flow",
     });
     const task_id_str = std.fmt.allocPrint(arena, "{d}", .{task.id}) catch unreachable;
 
@@ -194,19 +191,19 @@ test "scenario: decision workflow — decision list surfaces all decisions on a 
 
     // Add three decisions; two stay proposed, one gets accepted.
     const d_a = suite.mustRunJSON(DecisionJSON, arena, &.{
-        "decision", "add", "--json",
-        "--plan",   plan_id_str, "--body", "A body",
-        "Decision A",
+        "decision", "add",        "--json",
+        "--plan",   plan_id_str,  "--body",
+        "A body",   "Decision A",
     });
     const d_b = suite.mustRunJSON(DecisionJSON, arena, &.{
-        "decision", "add", "--json",
-        "--plan",   plan_id_str, "--body", "B body",
-        "Decision B",
+        "decision", "add",        "--json",
+        "--plan",   plan_id_str,  "--body",
+        "B body",   "Decision B",
     });
     _ = suite.mustRunJSON(DecisionJSON, arena, &.{
-        "decision", "add", "--json",
-        "--plan",   plan_id_str, "--body", "C body",
-        "Decision C",
+        "decision", "add",        "--json",
+        "--plan",   plan_id_str,  "--body",
+        "C body",   "Decision C",
     });
 
     const a_id_str = std.fmt.allocPrint(arena, "{d}", .{d_a.id}) catch unreachable;
@@ -256,10 +253,9 @@ test "scenario: decision add --plan writes the entity_links derives-from edge (r
     const plan_id_str = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch unreachable;
 
     const d = suite.mustRunJSON(DecisionJSON, arena, &.{
-        "decision", "add",  "--json",
-        "--plan",   plan_id_str,
-        "--body",   "should write the derives-from edge",
-        "Auto-link target",
+        "decision",                           "add",              "--json",
+        "--plan",                             plan_id_str,        "--body",
+        "should write the derives-from edge", "Auto-link target",
     });
     const d_id_str = std.fmt.allocPrint(arena, "{d}", .{d.id}) catch unreachable;
 

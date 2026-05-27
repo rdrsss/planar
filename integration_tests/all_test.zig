@@ -28,6 +28,7 @@ comptime {
     _ = @import("parity_tree_cwd_derive_test.zig");
     _ = @import("parity_tree_render_test.zig");
     _ = @import("plan_update_test.zig");
+    _ = @import("planar_agent_test.zig");
     _ = @import("scope_test.zig");
     _ = @import("search_test.zig");
     _ = @import("skills_render_test.zig");

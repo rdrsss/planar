@@ -486,8 +486,8 @@ fn insertTask(d: *db.sqlite.Db, plan_id: i64, title: []const u8) !i64 {
 
 test "EntityKind.fromText / toText round-trip for every kind" {
     const kinds = [_][]const u8{
-        "plan", "plan_step", "task", "question", "test_scenario",
-        "artifact", "decision", "session", "repo", "annotation",
+        "plan",     "plan_step", "task",    "question", "test_scenario",
+        "artifact", "decision",  "session", "repo",     "annotation",
     };
     for (kinds) |k| {
         const ek = EntityKind.fromText(k) orelse {
@@ -507,7 +507,7 @@ test "EntityKind.fromText returns null for unknown kind" {
 
 test "Relationship.fromText / toText round-trip for every relationship" {
     const rels = [_][]const u8{
-        "derives-from", "blocks", "addresses", "verifies",
+        "derives-from", "blocks",     "addresses", "verifies",
         "cites",        "supersedes", "touches",
     };
     for (rels) |r| {
@@ -549,13 +549,13 @@ test "parseRef: 'plan:some-slug' yields slug ref" {
 
 test "parseRef: malformed inputs return InvalidRef" {
     const bad = [_][]const u8{
-        "",           // empty
-        "plan",       // no colon
-        ":42",        // empty kind
-        "plan:",      // empty id / slug
-        "bogus:42",   // unknown kind
-        "plan:0",     // non-positive id
-        "plan:-1",    // negative id
+        "", // empty
+        "plan", // no colon
+        ":42", // empty kind
+        "plan:", // empty id / slug
+        "bogus:42", // unknown kind
+        "plan:0", // non-positive id
+        "plan:-1", // negative id
     };
     for (bad) |s| {
         try std.testing.expectError(Error.InvalidRef, parseRef(s));

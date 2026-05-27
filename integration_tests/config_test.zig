@@ -37,7 +37,7 @@ test "config path: exits 0 and output contains config.toml" {
     const extra: []const harness.Suite.ExtraEnvEntry = &.{
         .{ .key = "PLANAR_CONFIG_PATH", .value = cfg_path },
     };
-    const stdout = suite.mustRunWith(&.{"config", "path"}, extra);
+    const stdout = suite.mustRunWith(&.{ "config", "path" }, extra);
     defer gpa.free(stdout);
 
     try std.testing.expect(std.mem.indexOf(u8, stdout, "config.toml") != null);
@@ -56,7 +56,7 @@ test "config init: creates file on fresh PLANAR_CONFIG_PATH, exits 0" {
     };
 
     // Run init — should create the file.
-    const stdout = suite.mustRunWith(&.{"config", "init"}, extra);
+    const stdout = suite.mustRunWith(&.{ "config", "init" }, extra);
     defer gpa.free(stdout);
 
     // File must now exist — access() returns error.FileNotFound when absent.
@@ -79,11 +79,11 @@ test "config init: idempotent — second call on existing file exits 0" {
     };
 
     // First init.
-    const s1 = suite.mustRunWith(&.{"config", "init"}, extra);
+    const s1 = suite.mustRunWith(&.{ "config", "init" }, extra);
     gpa.free(s1);
 
     // Second init — must exit 0 (already exists message).
-    const s2 = suite.mustRunWith(&.{"config", "init"}, extra);
+    const s2 = suite.mustRunWith(&.{ "config", "init" }, extra);
     defer gpa.free(s2);
 
     try std.testing.expect(std.mem.indexOf(u8, s2, "already exists") != null);
@@ -121,11 +121,11 @@ test "config validate: exits 0 on a freshly init'd config file" {
     };
 
     // Init first.
-    const si = suite.mustRunWith(&.{"config", "init"}, extra);
+    const si = suite.mustRunWith(&.{ "config", "init" }, extra);
     gpa.free(si);
 
     // Validate — should exit 0 and print "ok".
-    const stdout = suite.mustRunWith(&.{"config", "validate"}, extra);
+    const stdout = suite.mustRunWith(&.{ "config", "validate" }, extra);
     defer gpa.free(stdout);
 
     try std.testing.expect(std.mem.indexOf(u8, stdout, "ok") != null);
@@ -159,7 +159,7 @@ test "config validate: exits non-zero on malformed TOML with 'line' in stderr" {
         .{ .key = "PLANAR_CONFIG_PATH", .value = cfg_path },
     };
 
-    const stderr = suite.expectFailureWith(&.{"config", "validate"}, extra);
+    const stderr = suite.expectFailureWith(&.{ "config", "validate" }, extra);
     defer gpa.free(stderr);
 
     // Stderr must contain "line" (citing the location of the parse error).
@@ -194,7 +194,7 @@ test "config validate: exits non-zero when a sensitive key carries a literal" {
         .{ .key = "PLANAR_CONFIG_PATH", .value = cfg_path },
     };
 
-    const stderr = suite.expectFailureWith(&.{"config", "validate"}, extra);
+    const stderr = suite.expectFailureWith(&.{ "config", "validate" }, extra);
     defer gpa.free(stderr);
 
     // Stderr cites the offending key + the line. "api_token" appears in the

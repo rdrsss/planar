@@ -100,10 +100,9 @@ test "scenario: workbench sync — push seeds FS, status round-trips, list surfa
     const plan_id_str = std.fmt.allocPrint(arena, "{d}", .{plan.value.id}) catch unreachable;
 
     const art_raw = suite.mustRunWith(&.{
-        "artifact", "add", "--json",
-        "--plan",   plan_id_str,
-        "--kind",   "tech_spec",
-        "--body",   "# Tech spec\n\nBody content.\n\n## Open questions\n\n### What's the cutover?\n\nA paragraph.\n",
+        "artifact",     "add",       "--json",
+        "--plan",       plan_id_str, "--kind",
+        "tech_spec",    "--body",    "# Tech spec\n\nBody content.\n\n## Open questions\n\n### What's the cutover?\n\nA paragraph.\n",
         "WB sync spec",
     }, &env);
     _ = std.json.parseFromSlice(ArtifactJSON, arena, art_raw, .{
@@ -119,7 +118,7 @@ test "scenario: workbench sync — push seeds FS, status round-trips, list surfa
         .allocate = .alloc_always,
         .ignore_unknown_fields = true,
     }) catch unreachable;
-    try std.testing.expect(push.value.applied >= 2);  // README + the artifact at minimum
+    try std.testing.expect(push.value.applied >= 2); // README + the artifact at minimum
     try std.testing.expectEqual(@as(i64, 0), push.value.conflicts);
 
     // ---- 3. status — on a clean tree, applied = 0, conflicts = 0.
@@ -229,10 +228,9 @@ test "scenario: workbench sync — archive then restore round-trips the FS tree"
     const plan_id_str = std.fmt.allocPrint(arena, "{d}", .{plan.value.id}) catch unreachable;
 
     const art_raw = suite.mustRunWith(&.{
-        "artifact", "add", "--json",
-        "--plan",   plan_id_str,
-        "--kind",   "design_note",
-        "--body",   "# Note\nContent.",
+        "artifact",            "add",       "--json",
+        "--plan",              plan_id_str, "--kind",
+        "design_note",         "--body",    "# Note\nContent.",
         "Archive-target note",
     }, &env);
     gpa.free(art_raw);

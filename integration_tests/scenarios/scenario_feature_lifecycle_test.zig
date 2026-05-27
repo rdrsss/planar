@@ -103,7 +103,7 @@ test "scenario: feature lifecycle — register → plan → spec → tasks → r
     // the returned plan starts in `draft` per the documented status
     // lifecycle.
     const plan = suite.mustRunJSON(PlanJSON, arena, &.{
-        "plan", "create", "--json", "--summary", "Add /reports endpoint",
+        "plan",        "create", "--json", "--summary", "Add /reports endpoint",
         "Reports API",
     });
     try std.testing.expectEqualStrings("Reports API", plan.title);
@@ -126,10 +126,9 @@ test "scenario: feature lifecycle — register → plan → spec → tasks → r
     // We assert the kind round-trips so a future schema change that
     // silently drops the kind tag would surface here.
     const spec = suite.mustRunJSON(ArtifactJSON, arena, &.{
-        "artifact", "add", "--json",
-        "--plan",         plan_id_str,
-        "--kind",         "tech_spec",
-        "--body",         "## Endpoints\n- GET /reports\n",
+        "artifact",          "add",       "--json",
+        "--plan",            plan_id_str, "--kind",
+        "tech_spec",         "--body",    "## Endpoints\n- GET /reports\n",
         "Reports tech spec",
     });
     try std.testing.expectEqualStrings("tech_spec", spec.kind);
@@ -139,29 +138,26 @@ test "scenario: feature lifecycle — register → plan → spec → tasks → r
     // Three tasks at distinct priorities. `plan next` should return
     // the lowest-priority-value task (priority 20 = highest).
     const t_low = suite.mustRunJSON(TaskJSON, arena, &.{
-        "task", "add", "--json",
-        "--plan",         plan_id_str,
-        "--priority",     "80",
-        "--next-action",  "wire response shape",
+        "task",                "add",           "--json",
+        "--plan",              plan_id_str,     "--priority",
+        "80",                  "--next-action", "wire response shape",
         "Wire response shape",
     });
     try std.testing.expectEqualStrings("todo", t_low.status);
     try std.testing.expectEqual(@as(i64, 80), t_low.priority);
 
     const t_mid = suite.mustRunJSON(TaskJSON, arena, &.{
-        "task", "add", "--json",
-        "--plan",         plan_id_str,
-        "--priority",     "50",
-        "--next-action",  "scaffold route handler",
+        "task",                   "add",           "--json",
+        "--plan",                 plan_id_str,     "--priority",
+        "50",                     "--next-action", "scaffold route handler",
         "Scaffold route handler",
     });
     _ = t_mid;
 
     const t_top = suite.mustRunJSON(TaskJSON, arena, &.{
-        "task", "add", "--json",
-        "--plan",         plan_id_str,
-        "--priority",     "20",
-        "--next-action",  "define request schema",
+        "task",                  "add",           "--json",
+        "--plan",                plan_id_str,     "--priority",
+        "20",                    "--next-action", "define request schema",
         "Define request schema",
     });
 
@@ -279,10 +275,9 @@ test "scenario: feature lifecycle — open question + decision threaded through 
     // `question add --plan` (the Q237/task-2372 one-shot create-and-
     // link shape — plan 351 cycle D landed this).
     const q = suite.mustRunJSON(QuestionJSON, arena, &.{
-        "question", "add", "--json",
-        "--plan", plan_id_str,
-        "--body", "Do we keep the legacy session cookie?",
-        "Legacy cookie",
+        "question",                              "add",           "--json",
+        "--plan",                                plan_id_str,     "--body",
+        "Do we keep the legacy session cookie?", "Legacy cookie",
     });
     try std.testing.expectEqualStrings("open", q.status);
 
@@ -290,10 +285,9 @@ test "scenario: feature lifecycle — open question + decision threaded through 
     // attach the decision to the plan via entity_links so it
     // surfaces in `plan show` / `tree` later.
     const decision = suite.mustRunJSON(DecisionJSON, arena, &.{
-        "decision", "add", "--json",
-        "--plan", plan_id_str,
-        "--body", "Drop legacy cookie; force re-auth on rollout.",
-        "Drop legacy session cookie",
+        "decision",                                      "add",                        "--json",
+        "--plan",                                        plan_id_str,                  "--body",
+        "Drop legacy cookie; force re-auth on rollout.", "Drop legacy session cookie",
     });
     try std.testing.expectEqualStrings("proposed", decision.status);
 
@@ -303,7 +297,8 @@ test "scenario: feature lifecycle — open question + decision threaded through 
     const q_id_str = std.fmt.allocPrint(arena, "{d}", .{q.id}) catch unreachable;
     const ans_out = suite.mustRun(&.{
         "question", "answer", q_id_str,
-        "--answer", "Drop the legacy cookie — see decision below.",
+        "--answer",
+        "Drop the legacy cookie — see decision below.",
     });
     gpa.free(ans_out);
 
@@ -333,10 +328,9 @@ test "scenario: feature lifecycle — tree view rolls plan/task/artifact/questio
     const plan_id_str = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch unreachable;
 
     _ = suite.mustRunJSON(ArtifactJSON, arena, &.{
-        "artifact", "add", "--json",
-        "--plan", plan_id_str,
-        "--kind", "design_note",
-        "TREE_ROLLUP_artifact",
+        "artifact",    "add",                  "--json",
+        "--plan",      plan_id_str,            "--kind",
+        "design_note", "TREE_ROLLUP_artifact",
     });
     _ = suite.mustRunJSON(TaskJSON, arena, &.{
         "task", "add", "--json", "--plan", plan_id_str, "TREE_ROLLUP_task",

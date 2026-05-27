@@ -74,26 +74,23 @@ test "scenario: question lifecycle — add, list-by-status, answer, wontfix" {
     // --plan` (Q237 follow-up, landed in plan 351 cycle D)
     // attaches each to the anchor plan via entity_links.
     const q_open = suite.mustRunJSON(QuestionJSON, arena, &.{
-        "question", "add", "--json",
-        "--plan",   plan_id_str,
-        "--body",   "Do we keep the legacy cookie?",
-        "Legacy cookie disposition",
+        "question",                      "add",                       "--json",
+        "--plan",                        plan_id_str,                 "--body",
+        "Do we keep the legacy cookie?", "Legacy cookie disposition",
     });
     try std.testing.expectEqualStrings("open", q_open.status);
     try std.testing.expect(q_open.answered_at == null);
 
     const q_to_answer = suite.mustRunJSON(QuestionJSON, arena, &.{
-        "question", "add", "--json",
-        "--plan",   plan_id_str,
-        "--body",   "What's the migration cutover window?",
-        "Cutover window",
+        "question",                             "add",            "--json",
+        "--plan",                               plan_id_str,      "--body",
+        "What's the migration cutover window?", "Cutover window",
     });
 
     const q_to_wontfix = suite.mustRunJSON(QuestionJSON, arena, &.{
-        "question", "add", "--json",
-        "--plan",   plan_id_str,
-        "--body",   "Should we audit pre-migration session tokens?",
-        "Audit pre-migration tokens",
+        "question",                                      "add",                        "--json",
+        "--plan",                                        plan_id_str,                  "--body",
+        "Should we audit pre-migration session tokens?", "Audit pre-migration tokens",
     });
 
     // ---- 3. `question list --status open` returns all three.
@@ -111,7 +108,7 @@ test "scenario: question lifecycle — add, list-by-status, answer, wontfix" {
     // src/engine/planning/question.zig § Status.
     const q2_id_str = std.fmt.allocPrint(arena, "{d}", .{q_to_answer.id}) catch unreachable;
     const ans_out = suite.mustRun(&.{
-        "question", "answer", q2_id_str,
+        "question", "answer",                                                 q2_id_str,
         "--answer", "T+24h after primary migration; rollback through T+72h.",
     });
     gpa.free(ans_out);
@@ -133,7 +130,7 @@ test "scenario: question lifecycle — add, list-by-status, answer, wontfix" {
     // column as of 2026-05-26).
     const q3_id_str = std.fmt.allocPrint(arena, "{d}", .{q_to_wontfix.id}) catch unreachable;
     const wf_out = suite.mustRun(&.{
-        "question", "wontfix", q3_id_str,
+        "question", "wontfix",                                                   q3_id_str,
         "--reason", "Out of scope; audit lives on the platform team's roadmap.",
     });
     gpa.free(wf_out);
@@ -186,19 +183,17 @@ test "scenario: question lifecycle — question link to the decision that resolv
 
     // Operator opens a question.
     const q = suite.mustRunJSON(QuestionJSON, arena, &.{
-        "question", "add", "--json",
-        "--plan",   plan_id_str,
-        "--body",   "Which IdP do we adopt?",
-        "Choose IdP",
+        "question",               "add",        "--json",
+        "--plan",                 plan_id_str,  "--body",
+        "Which IdP do we adopt?", "Choose IdP",
     });
     const q_id_str = std.fmt.allocPrint(arena, "{d}", .{q.id}) catch unreachable;
 
     // The answer is captured as a decision record.
     const d = suite.mustRunJSON(DecisionJSON, arena, &.{
-        "decision", "add", "--json",
-        "--plan",   plan_id_str,
-        "--body",   "Adopt platform IdP. See 2026-Q2 retro.",
-        "Adopt platform IdP",
+        "decision",                               "add",                "--json",
+        "--plan",                                 plan_id_str,          "--body",
+        "Adopt platform IdP. See 2026-Q2 retro.", "Adopt platform IdP",
     });
     const d_id_str = std.fmt.allocPrint(arena, "{d}", .{d.id}) catch unreachable;
 
@@ -251,10 +246,9 @@ test "scenario: question wontfix from answered refuses (red until status matrix 
     const plan_id_str = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch unreachable;
 
     const q = suite.mustRunJSON(QuestionJSON, arena, &.{
-        "question", "add", "--json",
-        "--plan",   plan_id_str,
-        "--body",   "Drives the answered-then-wontfix-refusal probe",
-        "Terminal probe",
+        "question",                                       "add",            "--json",
+        "--plan",                                         plan_id_str,      "--body",
+        "Drives the answered-then-wontfix-refusal probe", "Terminal probe",
     });
     const q_id_str = std.fmt.allocPrint(arena, "{d}", .{q.id}) catch unreachable;
 

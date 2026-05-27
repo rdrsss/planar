@@ -466,8 +466,7 @@ pub fn listTouching(
 
     try sql.appendSlice(allocator, " union ");
     try sql.appendSlice(allocator, select_all_prefix);
-    try sql.appendSlice(allocator,
-        " and id in (select from_id from entity_links where from_kind='task' and to_kind='repo' and to_id=? and relationship='touches')");
+    try sql.appendSlice(allocator, " and id in (select from_id from entity_links where from_kind='task' and to_kind='repo' and to_id=? and relationship='touches')");
     if (filter.status) |_| try sql.appendSlice(allocator, " and status=?") else try sql.appendSlice(allocator, " and status in ('todo','doing','blocked')");
     if (scope_ref) |ref| {
         switch (ref.kind) {

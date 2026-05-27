@@ -77,19 +77,17 @@ test "scenario: test-spec authoring — add, link to task, verify (passing)" {
     const plan_id_str = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch unreachable;
 
     const task = suite.mustRunJSON(TaskJSON, arena, &.{
-        "task",          "add", "--json",
-        "--plan",        plan_id_str,
-        "--next-action", "implement",
-        "Implement /reports endpoint",
+        "task",      "add",                         "--json",
+        "--plan",    plan_id_str,                   "--next-action",
+        "implement", "Implement /reports endpoint",
     });
     const task_id_str = std.fmt.allocPrint(arena, "{d}", .{task.id}) catch unreachable;
 
     // ---- 2. Scenario add — starts as draft.
     const scen = suite.mustRunJSON(ScenarioJSON, arena, &.{
-        "scenario", "add", "--json",
-        "--plan",   plan_id_str,
-        "--body",   "GIVEN /reports endpoint, WHEN GET with valid token, THEN 200 + JSON payload.",
-        "Reports endpoint happy path",
+        "scenario",                                                                     "add",                         "--json",
+        "--plan",                                                                       plan_id_str,                   "--body",
+        "GIVEN /reports endpoint, WHEN GET with valid token, THEN 200 + JSON payload.", "Reports endpoint happy path",
     });
     try std.testing.expectEqualStrings("draft", scen.status);
     try std.testing.expect(scen.last_run_at == null);
@@ -126,7 +124,7 @@ test "scenario: test-spec authoring — add, link to task, verify (passing)" {
     // The current implementation only records successful runs;
     // a failing-run flow is open (see TS-Z2 in the test spec).
     const ver_out = suite.mustRun(&.{
-        "scenario", "verify", scen_id_str,
+        "scenario",  "verify",                                          scen_id_str,
         "--summary", "Ran 2026-05-26: clean pass, no allocator leaks.",
     });
     gpa.free(ver_out);
@@ -162,15 +160,14 @@ test "scenario: test-spec authoring — retire obsolete scenario lands terminal 
     const plan_id_str = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch unreachable;
 
     const scen = suite.mustRunJSON(ScenarioJSON, arena, &.{
-        "scenario", "add", "--json",
-        "--plan",   plan_id_str,
-        "--body",   "Old flow no longer supported.",
-        "Legacy upload pre-OIDC",
+        "scenario",                      "add",                    "--json",
+        "--plan",                        plan_id_str,              "--body",
+        "Old flow no longer supported.", "Legacy upload pre-OIDC",
     });
     const scen_id_str = std.fmt.allocPrint(arena, "{d}", .{scen.id}) catch unreachable;
 
     const ret_out = suite.mustRun(&.{
-        "scenario", "retire", scen_id_str,
+        "scenario", "retire",                                     scen_id_str,
         "--reason", "Migration removed the underlying endpoint.",
     });
     gpa.free(ret_out);
@@ -207,20 +204,18 @@ test "scenario: verify --outcome fail records failing run (red until engine + fl
     const plan_id_str = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch unreachable;
 
     const scen = suite.mustRunJSON(ScenarioJSON, arena, &.{
-        "scenario", "add", "--json",
-        "--plan",   plan_id_str,
-        "--body",   "GIVEN flaky service, WHEN x, THEN sometimes fails.",
-        "Flaky scenario",
+        "scenario",                                           "add",            "--json",
+        "--plan",                                             plan_id_str,      "--body",
+        "GIVEN flaky service, WHEN x, THEN sometimes fails.", "Flaky scenario",
     });
     const scen_id_str = std.fmt.allocPrint(arena, "{d}", .{scen.id}) catch unreachable;
 
     // The contract: --outcome fail records last_outcome=fail,
     // last_run_at populates, status stays at draft (not verified).
     const res = suite.execWith(&.{
-        "scenario", "verify", scen_id_str,
-        "--outcome", "fail",
-        "--summary", "ran 2026-05-26: assertion at line 42 failed",
-        "--json",
+        "scenario",                                    "verify", scen_id_str,
+        "--outcome",                                   "fail",   "--summary",
+        "ran 2026-05-26: assertion at line 42 failed", "--json",
     }, &.{});
     defer gpa.free(res.stdout);
     defer gpa.free(res.stderr);

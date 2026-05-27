@@ -82,6 +82,14 @@ pub fn current() *const Ctx {
     return &(current_ctx orelse @panic("runtime.current() before runtime.init()"));
 }
 
+/// Error: the live DB's max schema version is OLDER than this binary's
+/// embedded minimum. Raised by `ensureDbReadOnly` (which does NOT apply
+/// migrations); the operator runs `planar init` to bring the DB
+/// forward. Distinct from `SchemaVersionAhead` (binary too old for
+/// DB) so scripts and operators can tell the two skew directions
+/// apart cleanly.
+pub const SchemaVersionBehind = error{SchemaVersionBehind};
+
 /// Open the DB if it isn't open yet, apply pending migrations
 /// idempotently, and return the cached handle. Subsequent calls are
 /// O(1). Creates the parent directory if it doesn't exist (single
@@ -122,6 +130,21 @@ pub fn ensureDb() !*db.sqlite.Db {
             .{@errorName(e)},
         ) catch {};
     };
+    // 5-second busy timeout: under WAL, writers still serialize behind
+    // the writer lock. Without a busy_timeout SQLite returns SQLITE_BUSY
+    // immediately the moment a second writer (e.g. a concurrent
+    // planar-agent process under the cross-process contention path)
+    // tries to BEGIN IMMEDIATE while another holds the lock. The
+    // 5-second default lets short writer-held transactions complete
+    // without forcing every caller to retry. Best-effort; failures
+    // degrade to "every BEGIN IMMEDIATE collision returns BUSY
+    // immediately," not a silent miscompile.
+    db_storage.?.exec("PRAGMA busy_timeout = 5000") catch |e| {
+        ctx.stderr.print(
+            "warning: failed to set busy_timeout ({s}); concurrent writers may see SQLITE_BUSY\n",
+            .{@errorName(e)},
+        ) catch {};
+    };
 
     try db.migrate.applyAll(&db_storage.?, ctx.allocator);
 
@@ -139,6 +162,96 @@ pub fn ensureDb() !*db.sqlite.Db {
             return e;
         },
     };
+
+    return &db_storage.?;
+}
+
+/// Open the DB without applying migrations, then refuse if the live
+/// schema version is outside the binary's supported range. Used by
+/// `planar-agent` and `planar-watch`, which are consumers of the
+/// schema, not its owner — `planar init` is the only verb that
+/// applies migrations.
+///
+/// Two refusal paths, both writing a remediation message to stderr
+/// before returning:
+///
+///   - SchemaVersionBehind  — live DB version < embedded_max. The
+///                            operator runs `planar init` to bring the
+///                            DB forward.
+///   - SchemaVersionAhead   — live DB version > embedded_max. The
+///                            operator upgrades the binary.
+///
+/// On success returns the cached `*db.sqlite.Db` (same singleton
+/// `ensureDb` would return). Subsequent calls are O(1).
+pub fn ensureDbReadOnly() !*db.sqlite.Db {
+    if (db_storage != null) return &db_storage.?;
+    const ctx = current();
+
+    if (ctx.db_path.len > 0 and ctx.db_path[0] == '/') {
+        if (std.fs.path.dirname(ctx.db_path)) |parent| {
+            std.Io.Dir.createDirAbsolute(ctx.io, parent, .default_dir) catch |e| switch (e) {
+                error.PathAlreadyExists => {},
+                else => return e,
+            };
+        }
+    }
+
+    db_storage = try db.sqlite.Db.open(ctx.db_path.ptr);
+
+    // WAL mode is per-connection and load-bearing for the wake-tier
+    // ladder (planar-watch follow). Same idempotent PRAGMA the writer
+    // path uses.
+    db_storage.?.exec("PRAGMA journal_mode = WAL") catch |e| {
+        ctx.stderr.print(
+            "warning: failed to set journal_mode=WAL ({s}); follow / dashboard latency may degrade\n",
+            .{@errorName(e)},
+        ) catch {};
+    };
+    // 5-second busy timeout: under WAL, writers still serialize behind
+    // the writer lock. Without a busy_timeout SQLite returns SQLITE_BUSY
+    // immediately the moment a second writer (e.g. a concurrent
+    // planar-agent process under the cross-process contention path)
+    // tries to BEGIN IMMEDIATE while another holds the lock. The
+    // 5-second default lets short writer-held transactions complete
+    // without forcing every caller to retry. Best-effort; failures
+    // degrade to "every BEGIN IMMEDIATE collision returns BUSY
+    // immediately," not a silent miscompile.
+    db_storage.?.exec("PRAGMA busy_timeout = 5000") catch |e| {
+        ctx.stderr.print(
+            "warning: failed to set busy_timeout ({s}); concurrent writers may see SQLITE_BUSY\n",
+            .{@errorName(e)},
+        ) catch {};
+    };
+
+    // Read the live schema version. A missing `schema_migrations` table
+    // (fresh DB never touched by `planar init`) maps to version 0 —
+    // which trips SchemaVersionBehind below as long as the binary's
+    // embedded migrations include anything at all.
+    const db_version: u32 = if (db_storage.?.intQuery(
+        "select coalesce(max(version), 0) from schema_migrations",
+    )) |v| @intCast(v) else |_| 0;
+    const emb_max = db.migrate.embedded_max;
+
+    if (db_version < emb_max) {
+        ctx.stderr.print(
+            "error: schema version {d} in {s} is older than this binary's minimum of {d}; " ++
+                "run `planar init` to apply migrations\n",
+            .{ db_version, ctx.db_path, emb_max },
+        ) catch {};
+        db_storage.?.close();
+        db_storage = null;
+        return SchemaVersionBehind.SchemaVersionBehind;
+    }
+    if (db_version > emb_max) {
+        ctx.stderr.print(
+            "error: schema version {d} in {s} is newer than this binary's embedded max ({d}); " ++
+                "upgrade the binary or use one that supports schema_version >= {d}\n",
+            .{ db_version, ctx.db_path, emb_max, db_version },
+        ) catch {};
+        db_storage.?.close();
+        db_storage = null;
+        return error.SchemaVersionAhead;
+    }
 
     return &db_storage.?;
 }
@@ -196,3 +309,12 @@ test "resolveDbPath: PLANAR_DB overrides HOME" {
     const E = @TypeOf(resolveDbPath);
     _ = E;
 }
+
+// The `SchemaVersionBehind` / `SchemaVersionAhead` paths of
+// `ensureDbReadOnly` are exercised end-to-end in the integration
+// suite (planar-agent_test.zig). Unit-testing them here would require
+// either swapping `db_storage` for an injected handle (it's a module-
+// level singleton today) or running the actual DB-open path with a
+// scratch file — both add more harness than payoff at this layer. The
+// raw guard logic is covered by `db.migrate.assertSchemaCompatible`
+// tests in `src/db/migrate.zig`.

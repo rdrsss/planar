@@ -453,9 +453,8 @@ pub fn update(
     }
     if (patch.anchor) |an| {
         try appendSep(&sql_buf, &first, allocator);
-        try sql_buf.appendSlice(allocator,
-            "anchor_path = ?, anchor_line_start = ?, anchor_line_end = ?, " ++
-                "anchor_commit_sha = ?, anchor_text_hash = ?, anchor_text = ?");
+        try sql_buf.appendSlice(allocator, "anchor_path = ?, anchor_line_start = ?, anchor_line_end = ?, " ++
+            "anchor_commit_sha = ?, anchor_text_hash = ?, anchor_text = ?");
         try params.append(allocator, .{ .text = an.path });
         try params.append(allocator, if (an.line_start) |n| .{ .int = n } else .{ .null = {} });
         try params.append(allocator, if (an.line_end) |n| .{ .int = n } else .{ .null = {} });

@@ -58,25 +58,24 @@ test "scenario: annotations — add, list-by-status, tag add/remove, lifecycle t
 
     // ---- 1. Add three annotations against different anchor paths.
     const a1 = suite.mustRunJSON(AnnotationJSON, arena, &.{
-        "annotate", "add", "--json",
-        "--anchor-path", "src/foo.zig",
-        "--line-start",  "10",
-        "--title",       "foo rename",
-        "--body",        "symbol name unclear",
-        "--tags",        "refactor,review",
+        "annotate",        "add",                 "--json",
+        "--anchor-path",   "src/foo.zig",         "--line-start",
+        "10",              "--title",             "foo rename",
+        "--body",          "symbol name unclear", "--tags",
+        "refactor,review",
     });
     try std.testing.expectEqualStrings("active", a1.status);
     try std.testing.expectEqual(@as(usize, 2), a1.tags.len);
 
     const a2 = suite.mustRunJSON(AnnotationJSON, arena, &.{
-        "annotate", "add", "--json",
-        "--anchor-path", "src/bar.zig",
-        "--body",        "TODO: cleanup",
+        "annotate",      "add",         "--json",
+        "--anchor-path", "src/bar.zig", "--body",
+        "TODO: cleanup",
     });
     const a3 = suite.mustRunJSON(AnnotationJSON, arena, &.{
-        "annotate", "add", "--json",
-        "--anchor-path", "src/baz.zig",
-        "--body",        "deprecated path",
+        "annotate",        "add",         "--json",
+        "--anchor-path",   "src/baz.zig", "--body",
+        "deprecated path",
     });
 
     const id1_str = std.fmt.allocPrint(arena, "{d}", .{a1.id}) catch unreachable;
@@ -120,7 +119,7 @@ test "scenario: annotations — add, list-by-status, tag add/remove, lifecycle t
 
     // ---- 5. update — change title.
     const updated = suite.mustRunJSON(AnnotationJSON, arena, &.{
-        "annotate", "update", id1_str, "--json",
+        "annotate", "update",                   id1_str, "--json",
         "--title",  "foo rename (post-review)",
     });
     try std.testing.expect(updated.title != null);
@@ -170,20 +169,18 @@ test "scenario: annotations — bulk-resolve filter, bulk-archive any-status, sw
     while (i < 3) : (i += 1) {
         const body = std.fmt.allocPrint(arena, "noise body {d}", .{i}) catch unreachable;
         _ = suite.mustRunJSON(AnnotationJSON, arena, &.{
-            "annotate", "add", "--json",
-            "--anchor-path", "src/x.zig",
-            "--body",        body,
-            "--tags",        "noise",
+            "annotate",      "add",       "--json",
+            "--anchor-path", "src/x.zig", "--body",
+            body,            "--tags",    "noise",
         });
     }
     i = 0;
     while (i < 2) : (i += 1) {
         const body = std.fmt.allocPrint(arena, "keeper {d}", .{i}) catch unreachable;
         _ = suite.mustRunJSON(AnnotationJSON, arena, &.{
-            "annotate", "add", "--json",
-            "--anchor-path", "src/x.zig",
-            "--body",        body,
-            "--tags",        "keeper",
+            "annotate",      "add",       "--json",
+            "--anchor-path", "src/x.zig", "--body",
+            body,            "--tags",    "keeper",
         });
     }
 

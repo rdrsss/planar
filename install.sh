@@ -5,7 +5,10 @@
 # Layout produced:
 #
 #   ~/.planar/
-#     bin/planar                      # the Zig binary
+#     bin/planar                      # the operator binary
+#     bin/planar-agent                # the agent-callable coordination binary
+#                                     # (plan 85 — three-binary architecture;
+#                                     # planar-watch lands in M8)
 #     planar.db                       # created on first `planar init`
 #     migrations/0001_foundation.up.sql  # canonical migration sources (also
 #                                     # embedded into the binary at compile
@@ -236,15 +239,22 @@ log "optimize    = $OPTIMIZE"
 
 # ---------- build the binary ----------
 
-title "Building the planar binary"
+title "Building the planar + planar-agent binaries"
 
 mkdir -p "$PLANAR_HOME/bin"
-# `zig build --prefix <root>` installs into <root>/bin/planar. The build.zig
-# uses b.installArtifact(exe) to register the binary as the default install
-# step. Migrations and templates/defaults are read from the repo root at
+# `zig build --prefix <root>` installs every `installArtifact` target into
+# <root>/bin/. As of plan 85 the build registers TWO binaries:
+#
+#   planar         — operator surface
+#   planar-agent   — agent-callable coordination (atomic claim ops,
+#                    nested actions, ingest, operator recovery)
+#
+# Both land in $PLANAR_HOME/bin/ in one shot — no extra cp step needed.
+# Migrations and templates/defaults are read from the repo root at
 # codegen time (build.zig sits at the repo root).
 ( cd "$REPO_ROOT" && zig build -Doptimize="$OPTIMIZE" --prefix "$PLANAR_HOME" )
 log "wrote $PLANAR_HOME/bin/planar"
+log "wrote $PLANAR_HOME/bin/planar-agent"
 
 # ---------- place artifacts ----------
 

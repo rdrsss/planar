@@ -55,7 +55,7 @@ test "scenario: external plane — register github + jira, list, propagate --dry
 
     // ---- 1. Register both adapter shapes.
     const gh = suite.mustRunJSON(RegisterResult, arena, &.{
-        "ext",      "register",      "github",   "gh-ext",
+        "ext",       "register",     "github",     "gh-ext",
         "--project", "acme/widgets", "--auth-env", "PLANAR_TEST_GH_TOKEN",
         "--json",
     });
@@ -64,12 +64,10 @@ test "scenario: external plane — register github + jira, list, propagate --dry
     try std.testing.expectEqualStrings("github-issues", gh.kind);
 
     const jira = suite.mustRunJSON(RegisterResult, arena, &.{
-        "ext",        "register",                            "jira",
-        "jira-ext",
-        "--base-url", "https://example.atlassian.net",
-        "--project",  "WIDG",
-        "--auth-env", "PLANAR_TEST_JIRA_TOKEN",
-        "--json",
+        "ext",                    "register",   "jira",
+        "jira-ext",               "--base-url", "https://example.atlassian.net",
+        "--project",              "WIDG",       "--auth-env",
+        "PLANAR_TEST_JIRA_TOKEN", "--json",
     });
     try std.testing.expect(jira.ok);
     try std.testing.expectEqualStrings("jira-ext", jira.slug);
@@ -88,17 +86,15 @@ test "scenario: external plane — register github + jira, list, propagate --dry
     const plan_id_str = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch unreachable;
 
     _ = suite.mustRunJSON(TaskJSON, arena, &.{
-        "task",          "add", "--json",
-        "--plan",        plan_id_str,
-        "--next-action", "implement widget",
-        "Implement widget core",
+        "task",             "add",                   "--json",
+        "--plan",           plan_id_str,             "--next-action",
+        "implement widget", "Implement widget core",
     });
 
     _ = suite.mustRunJSON(ArtifactJSON, arena, &.{
-        "artifact", "add", "--json",
-        "--plan",   plan_id_str,
-        "--kind",   "tech_spec",
-        "--body",   "# Widget tech spec\n\n## Endpoints\n- GET /widgets\n",
+        "artifact",    "add",       "--json",
+        "--plan",      plan_id_str, "--kind",
+        "tech_spec",   "--body",    "# Widget tech spec\n\n## Endpoints\n- GET /widgets\n",
         "Widget spec",
     });
 

@@ -18,6 +18,7 @@ pub const handoff = @import("runtime/handoff.zig");
 pub const @"resume" = @import("runtime/resume.zig");
 pub const capture = @import("runtime/capture.zig");
 pub const audit_trail = @import("runtime/audit_trail.zig");
+pub const agentactivity = @import("runtime/agentactivity.zig");
 
 test {
     _ = session;
@@ -26,4 +27,5 @@ test {
     _ = @"resume";
     _ = capture;
     _ = audit_trail;
+    _ = agentactivity;
 }

@@ -151,10 +151,9 @@ test "scenario: cross-scope polyrepo — two projects under one assoc surface in
     // (verified via probe 2026-05-26), but `task list --touches
     // <slug> --json` does — that's what we assert here.
     const task = suite.mustRunJSON(TaskJSON, arena, &.{
-        "task",         "add",     "--json",
-        "--plan",       plan_id_str,
-        "--next-action", "spike cross-repo signature",
-        "Spike cross-repo signature",
+        "task",                       "add",                        "--json",
+        "--plan",                     plan_id_str,                  "--next-action",
+        "spike cross-repo signature", "Spike cross-repo signature",
     });
     try std.testing.expectEqualStrings("todo", task.status);
 
@@ -277,9 +276,9 @@ test "scenario: cross-scope polyrepo — task update from project A's cwd to ass
     const plan_b_id_str = std.fmt.allocPrint(arena, "{d}", .{plan_b.id}) catch unreachable;
 
     const task_b = suite.mustRunJSON(TaskJSON, arena, &.{
-        "task",          "add",         "--json",
-        "--plan",        plan_b_id_str, "--scope", "guard-assoc-b",
-        "--next-action", "trigger guard",
+        "task",          "add",           "--json",
+        "--plan",        plan_b_id_str,   "--scope",
+        "guard-assoc-b", "--next-action", "trigger guard",
         "B-scoped task",
     });
     const task_b_id_str = std.fmt.allocPrint(arena, "{d}", .{task_b.id}) catch unreachable;

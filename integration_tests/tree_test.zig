@@ -50,9 +50,8 @@ test "tree happy path text: plan → task → linked question appear in output" 
     // Create a task on the plan (--plan <id> int flag).
     const plan_id_str = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch unreachable;
     _ = suite.mustRunJSON(TaskJSON, arena, &.{
-        "task", "add", "--json",
-        "--plan", plan_id_str,
-        "TREE_INTEG_Top Task",
+        "task",   "add",       "--json",
+        "--plan", plan_id_str, "TREE_INTEG_Top Task",
     });
 
     // Create a question.
@@ -64,11 +63,10 @@ test "tree happy path text: plan → task → linked question appear in output" 
     // `planar links add <from-ref> <to-ref> --relationship <rel>`
     // from-ref = "question:<id>", to-ref = "plan:<id>"
     const from_ref = std.fmt.allocPrint(arena, "question:{d}", .{question.id}) catch unreachable;
-    const to_ref   = std.fmt.allocPrint(arena, "plan:{d}",     .{plan.id}    ) catch unreachable;
+    const to_ref = std.fmt.allocPrint(arena, "plan:{d}", .{plan.id}) catch unreachable;
     const link_out = suite.mustRun(&.{
-        "links", "add",
-        from_ref,
-        to_ref,
+        "links",          "add",
+        from_ref,         to_ref,
         "--relationship", "derives-from",
     });
     gpa.free(link_out);
