@@ -16,9 +16,10 @@
 //!     surrounding `BEGIN IMMEDIATE` is rolled back so no partial
 //!     state lands.
 //!
-//! Vendor allowlist: M4 wires `claude`. `codex` / `copilot` parse the
-//! flag but exit InvalidInput because no adapter exists yet — M6 wires
-//! the second vendor.
+//! Vendor allowlist: M4 wires `claude`; M6 wires `copilot`. `codex`
+//! parses the flag but exits InvalidInput — no adapter is wired (the
+//! second-vendor slot landed Copilot per the plan-85 M6 decision
+//! artifact).
 
 const std = @import("std");
 const cli = @import("cli");
@@ -33,9 +34,9 @@ const agentingest = engine.external.agentingest;
 
 pub const verb: cli.Cmd = .{
     .name = "ingest",
-    .desc = "Translate a vendor hook event into store primitives (M4: claude adapter; M6 adds a second vendor).",
+    .desc = "Translate a vendor hook event into store primitives (claude + copilot adapters wired; codex reserved).",
     .flags = &.{
-        .{ .long = "--vendor", .kind = .string, .required = true, .desc = "Vendor tag (claude|codex|copilot; M4 wires claude only)" },
+        .{ .long = "--vendor", .kind = .string, .required = true, .desc = "Vendor tag (claude|copilot wired; codex reserved)" },
         .{ .long = "--event", .kind = .string, .required = true, .desc = "Event JSON: @<file> reads from path; @- reads from stdin" },
         .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
     },
@@ -52,10 +53,11 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
 
     const parse_fn: agentingest.interface.ParseFn = switch (vendor_tag) {
         .claude => agentingest.claude.parse,
-        .codex, .copilot => exit.die(
+        .copilot => agentingest.copilot.parse,
+        .codex => exit.die(
             ctx,
             error.InvalidInput,
-            "vendor '{s}' adapter not wired yet (M4 ships claude; M6 adds the second vendor)",
+            "vendor '{s}' adapter not wired (claude + copilot are; codex is reserved)",
             .{args.vendor},
         ),
     };

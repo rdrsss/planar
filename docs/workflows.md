@@ -1636,7 +1636,7 @@ Edit `~/.claude/settings.json` (the per-user Claude Code settings) and add a hoo
 
 Notes on the invocation:
 
-- `--vendor claude` selects the Claude adapter. The other vendor tags (`codex`, `copilot`) parse but exit non-zero until M6 wires the second adapter.
+- `--vendor claude` selects the Claude adapter. `--vendor copilot` selects the GitHub Copilot adapter wired in M6 (see Recipe 18); `--vendor codex` parses but exits non-zero — the codex slot is reserved for a future adapter.
 - `--event @-` reads the hook payload from stdin; Claude Code pipes the JSON envelope to the configured command. Use `--event @<path>` if your hook runner stages payloads on disk instead.
 - `PLANAR_DB` MUST point at the same database file `planar` and `planar-watch` open. The hook subprocess does not inherit your shell's `$PLANAR_DB`, so set it explicitly in the hook's `env` block.
 - Each invocation opens its own SQLite connection. WAL mode (set by the engine on connect) lets dozens of concurrent hooks coexist with `planar-watch --follow` readers.
@@ -1673,6 +1673,104 @@ The session id surfaced by `dashboard --agents` is the Planar-side id; pair it w
 
 - **Malformed payload** (`{` truncated, not JSON): `ingest` exits non-zero with `error: malformed event payload…` on stderr and writes no rows.
 - **Unknown `event_type`** (the payload is valid JSON but the event_type field is outside the adapter's known set): `ingest` exits non-zero with `error: unknown event_type in payload…`. Add the new event type to `src/engine/external/agentingest/claude.zig` if you want it recorded.
+- **`$PLANAR_DB` missing or unreadable**: the schema-version handshake fails at startup; `ingest` exits non-zero before parsing.
+
+Both error paths are atomic — the surrounding `BEGIN IMMEDIATE` transaction rolls back so no partial rows land in `sessions` or `agent_actions`.
+
+## Recipe 18 — Wiring GitHub Copilot hooks to `planar-agent ingest`
+
+The M6 second-vendor adapter ships Copilot support behind `--vendor copilot`. GitHub Copilot — the Coding Agent and the Copilot Chat session surface — emits a namespaced event taxonomy (`session.started`, `session.completed`, `turn.user`, `turn.assistant`, `tool.invocation`) carried on a JSON envelope. Pipe those events into `planar-agent ingest --vendor copilot --event @-` and Planar opens (or reuses) a `sessions` row and records each event as an `agent_actions` row exactly as it does for Claude. The same operator surfaces from Recipe 16 (`dashboard --agents`, `tree`, `audit trail`) then show Copilot activity interleaved with Claude activity.
+
+### Prerequisites
+
+- `planar init` has been run against the database Copilot should write to. Copilot's hook subprocess and the operator binaries must agree on `$PLANAR_DB` (default `~/.planar/state.db`).
+- The Planar binaries are on `$PATH`; `which planar-agent` should print a real path.
+- A Copilot deployment that supports outbound event webhooks or shell-hook commands. Both the GitHub Copilot Coding Agent (server-side) and a self-hosted Copilot-style runner (e.g. a CI bot wired to the Copilot Chat API) can be configured to fire one shell command per event.
+
+### Step 1 — Configure the Copilot hook
+
+The exact configuration surface depends on which Copilot product you're wiring:
+
+- **GitHub Copilot Coding Agent** (per-repo or org-level): add a `copilot.hooks` entry to the repo's `.github/copilot.yml`. The runner pipes each event to the configured command on stdin.
+
+  ```yaml
+  copilot:
+    hooks:
+      session.started:
+        - command: "planar-agent ingest --vendor copilot --event @-"
+          env:
+            PLANAR_DB: "/Users/you/.planar/state.db"
+      session.completed:
+        - command: "planar-agent ingest --vendor copilot --event @-"
+          env:
+            PLANAR_DB: "/Users/you/.planar/state.db"
+      turn.user:
+        - command: "planar-agent ingest --vendor copilot --event @-"
+          env:
+            PLANAR_DB: "/Users/you/.planar/state.db"
+      turn.assistant:
+        - command: "planar-agent ingest --vendor copilot --event @-"
+          env:
+            PLANAR_DB: "/Users/you/.planar/state.db"
+      tool.invocation:
+        - command: "planar-agent ingest --vendor copilot --event @-"
+          env:
+            PLANAR_DB: "/Users/you/.planar/state.db"
+  ```
+
+- **Self-hosted Copilot Chat runner**: register a webhook target that POSTs each event as JSON to a small forwarder, then `curl --data-binary @-` it into `planar-agent ingest --vendor copilot --event @-`. The forwarder is a one-liner; the payload shape is the same.
+
+Notes on the invocation:
+
+- `--vendor copilot` selects the Copilot adapter wired in M6. `--vendor claude` selects the Claude adapter (Recipe 17); `--vendor codex` is reserved and exits non-zero today.
+- `--event @-` reads the hook payload from stdin. Use `--event @<path>` if your runner stages payloads on disk first.
+- `PLANAR_DB` MUST point at the same database file `planar` and `planar-watch` open. Hook subprocesses do not inherit your shell's `$PLANAR_DB`; set it explicitly in the `env` block.
+- Each invocation opens its own SQLite connection. WAL mode (set by the engine on connect) lets dozens of concurrent hooks coexist with `planar-watch --follow` readers.
+
+### Step 2 — Smoke-test the wiring by hand
+
+Before letting Copilot drive it, confirm the binary round-trips a payload locally:
+
+```sh
+echo '{"event":"session.started","session_id":"smoke","model":"gpt-5-copilot","role":"coder"}' \
+  | planar-agent ingest --vendor copilot --event @- --json
+```
+
+Expected output (single-line):
+
+```
+{"ok":true,"sessions_created":1,"claims_created":0,"actions_created":0,"events_processed":1}
+```
+
+A second invocation with the same `session_id` MUST report `sessions_created:0` (the row was reused). A `tool.invocation` payload increments `actions_created` instead.
+
+### Step 3 — Observe the session
+
+```sh
+planar dashboard --agents          # active vendor sessions (claude + copilot interleaved)
+planar audit session <id>          # the session_entries timeline
+```
+
+The session id surfaced by `dashboard --agents` is the Planar-side id; pair it with the vendor's `session_id` field from the hook payload via `vendor_session_id` in the JSON shape. Sessions from the two vendors live in the same `sessions` table — they're distinguished by the `vendor` column.
+
+### Event mapping reference
+
+Copilot's namespaced events are collapsed into the same normalized `Event` shape Claude uses. The mapping is:
+
+| Copilot `event`        | Normalized variant | Notes                                       |
+|------------------------|--------------------|---------------------------------------------|
+| `session.started`      | `session_start`    | New session OR reuse if `session_id` known. |
+| `session.completed`    | `session_end`      | No-op if session already ended.             |
+| `turn.user`            | `action_atomic`    | `action_kind=user_message`.                 |
+| `turn.assistant`       | `action_atomic`    | `action_kind=assistant_message`.            |
+| `tool.invocation`      | `action_atomic`    | `action_kind=tool_call`.                    |
+
+The Copilot adapter accepts BOTH `status` (Copilot's documented field name) and `outcome` (Claude's, for parity) on the atomic-action events; `status` wins when both are present. Allowed values: `ok` | `error` | `aborted` | `timeout`. Default is `ok`.
+
+### Failure modes
+
+- **Malformed payload** (`{` truncated, not JSON, missing required `event` or `session_id` field): `ingest` exits non-zero with `error: malformed event payload (vendor=copilot)…` on stderr and writes no rows.
+- **Unknown event** (payload is valid JSON but `event` is not in the table above): `ingest` exits non-zero with `error: unknown event_type in payload (vendor=copilot)…`. Add the new event name to `src/engine/external/agentingest/copilot.zig` if you want it recorded.
 - **`$PLANAR_DB` missing or unreadable**: the schema-version handshake fails at startup; `ingest` exits non-zero before parsing.
 
 Both error paths are atomic — the surrounding `BEGIN IMMEDIATE` transaction rolls back so no partial rows land in `sessions` or `agent_actions`.

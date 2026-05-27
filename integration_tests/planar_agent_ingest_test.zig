@@ -1,17 +1,23 @@
 //! integration_tests/planar_agent_ingest_test.zig — black-box tests for
-//! the M4 Claude ingestion adapter (`planar-agent ingest --vendor claude
+//! the vendor ingestion verb (`planar-agent ingest --vendor <v>
 //! --event @-`).
 //!
-//! Covers the three scenarios listed under M4 in the test-spec:
+//! Covers the M4 Claude adapter scenarios from the test-spec AND the
+//! M6 second-vendor (Copilot) adapter:
 //!
 //!   - Happy path: session_start payload creates or resolves a session
 //!     (slug: claude-hook-ingest, claude-session-auto-open,
-//!      claude-ingest-integration-test).
+//!      claude-ingest-integration-test, second-vendor-adapter).
 //!   - Happy path: second event on the same vendor_session_id REUSES
-//!     the existing sessions row (slug: claude-session-auto-open).
+//!     the existing sessions row.
 //!   - Error: malformed JSON payload — exit non-zero, no partial writes.
 //!   - Error: well-formed JSON with unknown event_type — distinct exit
 //!     path, no rows written.
+//!
+//! The Copilot scenarios at the bottom re-prove the contract against
+//! a second vendor — they exist to lock in that dispatch + handler
+//! stay vendor-agnostic (a refactor that hard-codes Claude's event
+//! names trips them).
 
 const std = @import("std");
 const harness = @import("harness");
@@ -268,7 +274,7 @@ test "ingest unknown event_type exits non-zero with distinct error message" {
     try std.testing.expect(std.mem.indexOf(u8, r2.stdout, "\"sessions_created\":1") != null);
 }
 
-test "ingest with unsupported vendor 'codex' exits non-zero (M6 will wire it)" {
+test "ingest with reserved vendor 'codex' exits non-zero (M6 wired copilot, not codex)" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
@@ -285,4 +291,147 @@ test "ingest with unsupported vendor 'codex' exits non-zero (M6 will wire it)" {
     try std.testing.expect(res.term == .exited);
     try std.testing.expect(res.term.exited != 0);
     try std.testing.expect(std.mem.indexOf(u8, res.stderr, "codex") != null);
+}
+
+// =========================================================================
+// M6 — Copilot vendor adapter
+//
+// These re-run the same contract scenarios against the second-vendor
+// adapter, proving the dispatch + handler layer is genuinely
+// vendor-agnostic. The payloads use Copilot's namespaced event
+// taxonomy (`session.started`, `tool.invocation`, ...) so a refactor
+// that accidentally hard-coded Claude's flat names would trip these.
+// =========================================================================
+
+test "ingest copilot session.started creates a sessions row" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    gpa.free(suite.mustRun(&.{ "init", "--skip-project" }));
+
+    const payload =
+        \\{"event":"session.started","session_id":"cop-sid-A","model":"gpt-5-copilot","role":"coder"}
+    ;
+    const res = runIngestStdin(&suite, payload, &.{
+        "ingest", "--vendor", "copilot", "--event", "@-", "--json",
+    });
+    defer res.deinit(gpa);
+
+    if (res.term != .exited or res.term.exited != 0) {
+        std.debug.print(
+            "copilot ingest failed: term={any}\nstdout: {s}\nstderr: {s}\n",
+            .{ res.term, res.stdout, res.stderr },
+        );
+        return error.IngestShouldSucceed;
+    }
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "\"ok\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "\"sessions_created\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "\"actions_created\":0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "\"events_processed\":1") != null);
+}
+
+test "ingest copilot second event on same session reuses the row + records action" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    gpa.free(suite.mustRun(&.{ "init", "--skip-project" }));
+
+    const start_payload =
+        \\{"event":"session.started","session_id":"cop-sid-reuse"}
+    ;
+    const tool_payload =
+        \\{"event":"tool.invocation","session_id":"cop-sid-reuse","summary":"ran rg"}
+    ;
+
+    const r1 = runIngestStdin(&suite, start_payload, &.{
+        "ingest", "--vendor", "copilot", "--event", "@-", "--json",
+    });
+    defer r1.deinit(gpa);
+    try std.testing.expect(r1.term == .exited and r1.term.exited == 0);
+    try std.testing.expect(std.mem.indexOf(u8, r1.stdout, "\"sessions_created\":1") != null);
+
+    const r2 = runIngestStdin(&suite, tool_payload, &.{
+        "ingest", "--vendor", "copilot", "--event", "@-", "--json",
+    });
+    defer r2.deinit(gpa);
+    try std.testing.expect(r2.term == .exited and r2.term.exited == 0);
+    try std.testing.expect(std.mem.indexOf(u8, r2.stdout, "\"sessions_created\":0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r2.stdout, "\"actions_created\":1") != null);
+}
+
+test "ingest copilot auto-opens session on first non-session.started event" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    gpa.free(suite.mustRun(&.{ "init", "--skip-project" }));
+
+    const payload =
+        \\{"event":"tool.invocation","session_id":"cop-autoopen","summary":"hello"}
+    ;
+    const res = runIngestStdin(&suite, payload, &.{
+        "ingest", "--vendor", "copilot", "--event", "@-", "--json",
+    });
+    defer res.deinit(gpa);
+
+    try std.testing.expect(res.term == .exited and res.term.exited == 0);
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "\"sessions_created\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "\"actions_created\":1") != null);
+}
+
+test "ingest copilot malformed payload exits non-zero with no partial writes" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    gpa.free(suite.mustRun(&.{ "init", "--skip-project" }));
+
+    const payload = "this is not json {{{";
+    const res = runIngestStdin(&suite, payload, &.{
+        "ingest", "--vendor", "copilot", "--event", "@-", "--json",
+    });
+    defer res.deinit(gpa);
+
+    try std.testing.expect(res.term == .exited);
+    try std.testing.expect(res.term.exited != 0);
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "malformed") != null);
+
+    // Post-state verification: a fresh session_started should report 1.
+    const followup =
+        \\{"event":"session.started","session_id":"cop-after-malformed"}
+    ;
+    const r2 = runIngestStdin(&suite, followup, &.{
+        "ingest", "--vendor", "copilot", "--event", "@-", "--json",
+    });
+    defer r2.deinit(gpa);
+    try std.testing.expect(r2.term == .exited and r2.term.exited == 0);
+    try std.testing.expect(std.mem.indexOf(u8, r2.stdout, "\"sessions_created\":1") != null);
+}
+
+test "ingest copilot unknown event exits non-zero with distinct error message" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    gpa.free(suite.mustRun(&.{ "init", "--skip-project" }));
+
+    const payload =
+        \\{"event":"telemetry.heartbeat","session_id":"cop-unknown"}
+    ;
+    const res = runIngestStdin(&suite, payload, &.{
+        "ingest", "--vendor", "copilot", "--event", "@-", "--json",
+    });
+    defer res.deinit(gpa);
+
+    try std.testing.expect(res.term == .exited);
+    try std.testing.expect(res.term.exited != 0);
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "unknown event_type") != null);
+
+    // Post-state: opening a session with the same id MUST report 1.
+    const followup =
+        \\{"event":"session.started","session_id":"cop-unknown"}
+    ;
+    const r2 = runIngestStdin(&suite, followup, &.{
+        "ingest", "--vendor", "copilot", "--event", "@-", "--json",
+    });
+    defer r2.deinit(gpa);
+    try std.testing.expect(r2.term == .exited and r2.term.exited == 0);
+    try std.testing.expect(std.mem.indexOf(u8, r2.stdout, "\"sessions_created\":1") != null);
 }
