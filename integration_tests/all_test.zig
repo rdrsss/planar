@@ -38,6 +38,7 @@ comptime {
     _ = @import("smoke_test.zig");
     _ = @import("spec_ingest_test.zig");
     _ = @import("tree_test.zig");
+    _ = @import("tree_audit_activity_test.zig");
     _ = @import("workbench_test.zig");
     _ = @import("workspace_test.zig");
 

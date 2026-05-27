@@ -34,7 +34,7 @@ shared_notes:
 These six things are load-bearing. The blind-read reviewer cannot recover them after the fact.
 
 1. **Read the workbench tech-spec sections cited in the brief BEFORE writing code.** The brief is a pointer; the spec is the source. Open the cited paths and read them firsthand.
-2. **Honor the claim token and heartbeat it while working.** The brief's claim token says this task is yours right now. If the claim is stale, missing, or for another entity, stop and return to the orchestrator.
+2. **Honor the claim token and heartbeat it while working.** The brief's claim token (issued by the orchestrator via `planar-agent pull` or `planar-agent claim`) says this task is yours right now. Heartbeat at least once per TTL/2 via `planar-agent heartbeat --claim <token> [--ttl <secs>]`. If the claim is stale, missing, or for another entity, stop and return to the orchestrator. The orchestrator owns the terminal verb (`planar-agent complete` / `fail` / `release` / `block`); the coder does not invoke them directly except under barrel-bypass.
 3. **Limit the diff to the task IDs claimed.** "While I'm here" cleanups go in a separate cycle with their own task rows.
 4. **Paste gate output verbatim in the work-complete report.** The test count, the `ok pkg 0.42s` lines, the `make render-check` outcome (when applicable), and any remaining validator outcomes. The reviewer trusts the report's gate lines and does not re-run them — the lines must actually be there.
 5. **Mark tasks done in the DB only after gates pass.** `planar task done <id>` is the final step of the cycle, not the first.

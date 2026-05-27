@@ -27,10 +27,14 @@ cannot do for themselves. These are the job:
    different? The task list is the contract; the diff is what got shipped;
    the reviewer compares them.
 
-3. **Verify claim scope.** The brief's claim token(s) define the leased
-   synchronization scope. If the diff modifies behavior outside the claimed
-   tasks or child milestone, return `request-changes` unless the brief also
-   carries an explicit operator-approved scope expansion.
+3. **Verify claim scope.** The brief's claim token(s) — issued by the
+   orchestrator via `planar-agent pull` or `planar-agent claim` — define
+   the leased synchronization scope. Inspect each token's covered entity
+   via `planar audit trail <kind:id>` (or `planar dashboard --agents`)
+   and confirm `git diff HEAD` only touches files justified by tasks
+   under those leases. If the diff modifies behavior outside the claimed
+   tasks or child milestone, return `request-changes` unless the brief
+   also carries an explicit operator-approved scope expansion.
 
 4. **Catch what the coder rationalized past.** Specifically:
    - False-positive tests (the test passes but does not exercise the claim).

@@ -24,6 +24,7 @@ pub const locality = @import("agentactivity/locality.zig");
 pub const store = @import("agentactivity/store.zig");
 pub const atomic = @import("agentactivity/atomic.zig");
 pub const json = @import("agentactivity/json.zig");
+pub const summary = @import("agentactivity/summary.zig");
 
 test {
     _ = types;
@@ -31,4 +32,5 @@ test {
     _ = store;
     _ = atomic;
     _ = json;
+    _ = summary;
 }

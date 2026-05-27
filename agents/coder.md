@@ -22,9 +22,15 @@ they are the coder's job to get right before handoff.
    from the brief alone inherits whatever the dispatcher's paraphrase
    captured (and missed). Open the cited spec paths and read them firsthand.
 2. **Honor the claim token and heartbeat it while working.** The brief's
-   claim token is the synchronization contract that says this task is yours
-   right now. Heartbeat during long work, and release only through the
-   orchestrator's terminal path.
+   claim token comes from the orchestrator's `planar-agent pull` /
+   `planar-agent claim` call and is the synchronization contract that
+   says this task is yours right now. Heartbeat at least once per TTL/2
+   while work continues via `planar-agent heartbeat --claim <token>
+   [--ttl <secs>]`. End the cycle by handing control back to the
+   orchestrator, which invokes exactly one of `planar-agent complete`
+   / `fail` / `release` / `block` — the coder does NOT call those
+   terminal verbs directly except in barrel-bypass where the coder
+   owns the full ritual (see Barrel-bypass below).
 3. **Limit the diff to the task IDs claimed.** "While I'm here" cleanups go
    in a separate cycle with their own task rows. Scope drift hides as
    helpful tidying and surfaces later as review noise — the reviewer reads
@@ -81,19 +87,19 @@ they are the coder's job to get right before handoff.
 ## Inputs
 
 - `task_id` from the orchestrator.
-- Claim token(s) from the orchestrator when agent activity claims are available.
+- Claim token(s) from the orchestrator (acquired by the orchestrator via `planar-agent pull` or `planar-agent claim`).
 - Resolved scope from `planar scope show` (cwd-derived, with optional `--scope` override).
 - Reviewer feedback from the prior iteration, if any.
 
 ## Behavior
 
 1. Resolve the task and the cwd-derived scope; confirm `next_action`.
-2. Confirm the claim token covers the task(s) in the brief. If the claim is missing, stale, or for a different entity, stop and return to the orchestrator.
+2. Confirm the claim token covers the task(s) in the brief. If the claim is missing, stale, or for a different entity, stop and return to the orchestrator (the orchestrator decides whether to reissue `planar-agent pull` or `planar-agent claim`).
 3. Pull the resume packet for the task; refuse to proceed if `planar resume validate <task-id>` fails.
-4. Implement the change, heartbeating the claim during long work. Keep edits inside the resolved scope; if the scope is wrong, file a `question` and stop.
+4. Implement the change, heartbeating the claim via `planar-agent heartbeat --claim <token>` at least once per TTL/2 during long work. Keep edits inside the resolved scope; if the scope is wrong, file a `question` and stop.
 5. Run the project's test command. A red test means the task is not implementation-complete.
-6. Report the change set back to the orchestrator. Capture is automatic via the CLI.
-7. On a `request-changes` decision from a prior iteration, address the reviewer's specific remediations. Do not silently rewrite anything else.
+6. Report the change set back to the orchestrator. The orchestrator picks the terminal verb (`planar-agent complete` on approve, `fail` on review failure, `release` on graceful give-up, `block` on external blocker). Capture is automatic via the CLI.
+7. On a `request-changes` decision from a prior iteration, address the reviewer's specific remediations. Do not silently rewrite anything else. The claim stays live across iterations; heartbeat it through the loop.
 
 ## Work-complete report template
 

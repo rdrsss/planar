@@ -14,6 +14,14 @@ const runtime = @import("runtime");
 const exit = @import("../../exit.zig");
 const output = @import("../../output.zig");
 
+const summary_mod = engine.runtime.agentactivity.summary;
+
+/// Cap on rows pulled into the "Agent activity" section. 10 is enough to
+/// show the recent cycle history without flooding a busy entity's audit
+/// trail. The fold-in degrades silently when empty (plan 85 M5,
+/// task:activity-summary-empty-degrade).
+const agent_activity_row_cap: i64 = 10;
+
 pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     const args = cli.castArgs(main.root, &.{ "audit", "trail" }, args_ptr);
     const ctx = runtime.current();
@@ -41,6 +49,16 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
             exit.die(ctx, e, "audit trail: {s}", .{@errorName(e)});
     defer engine.runtime.audit_trail.deinitEntries(entries, ctx.allocator);
 
+    // Agent activity fold-in (plan 85 M5, task:audit-trail-agent-activity).
+    // Loaded best-effort: if the agentactivity tables are absent or
+    // query fails, we render zero rows and degrade silently rather
+    // than aborting the trail. The fold-in shape mirrors the tech-spec
+    // § "Integration with existing views" expectation.
+    const aa_actions = summary_mod.recentActionsForEntity(d, ctx.allocator, kind, id, agent_activity_row_cap) catch &[_]summary_mod.ActionRow{};
+    defer summary_mod.ActionRow.deinitMany(aa_actions, ctx.allocator);
+    const aa_claims = summary_mod.claimTransitionsForEntity(d, ctx.allocator, kind, id, agent_activity_row_cap) catch &[_]summary_mod.ClaimTransitionRow{};
+    defer summary_mod.ClaimTransitionRow.deinitMany(aa_claims, ctx.allocator);
+
     if (args.json) {
         try ctx.stdout.print("{{\"entity_kind\":", .{});
         try output.writeJsonString(ctx.stdout, kind);
@@ -67,22 +85,116 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
             }
             try ctx.stdout.print("}}", .{});
         }
-        try ctx.stdout.print("]}}\n", .{});
+        try ctx.stdout.print("]", .{});
+        try writeAgentActivityJson(ctx.stdout, aa_actions, aa_claims);
+        try ctx.stdout.print("}}\n", .{});
         return;
     }
 
     try ctx.stdout.print("audit trail for {s}:{d}  ({d} entries)\n", .{ kind, @as(u64, @intCast(id)), entries.len });
     if (entries.len == 0) {
         try ctx.stdout.print("  (no audit_log entries)\n", .{});
-        return;
+    } else {
+        for (entries) |e| {
+            try ctx.stdout.print(
+                "  [{s}]  {s:<14}  {s}:{d}",
+                .{ e.recorded_at, e.verb, e.entity_kind, @as(u64, @intCast(e.entity_id)) },
+            );
+            if (e.summary) |s| try ctx.stdout.print("  — {s}", .{s});
+            try ctx.stdout.print("\n", .{});
+        }
     }
-    for (entries) |e| {
-        try ctx.stdout.print(
-            "  [{s}]  {s:<14}  {s}:{d}",
-            .{ e.recorded_at, e.verb, e.entity_kind, @as(u64, @intCast(e.entity_id)) },
-        );
-        if (e.summary) |s| try ctx.stdout.print("  — {s}", .{s});
-        try ctx.stdout.print("\n", .{});
+    try writeAgentActivityText(ctx.stdout, aa_actions, aa_claims);
+}
+
+/// Emit the "agent_activity" JSON sub-object when any actions or claim
+/// transitions exist. Omits the key entirely when both slices are empty
+/// (task:activity-summary-empty-degrade — no empty "agent_activity":{} placeholder).
+fn writeAgentActivityJson(
+    w: *std.Io.Writer,
+    actions: []const summary_mod.ActionRow,
+    claims: []const summary_mod.ClaimTransitionRow,
+) !void {
+    if (actions.len == 0 and claims.len == 0) return;
+    try w.print(",\"agent_activity\":{{\"actions\":[", .{});
+    for (actions, 0..) |r, i| {
+        if (i > 0) try w.print(",", .{});
+        try w.print("{{\"id\":{d},\"session_id\":{d},\"action_kind\":", .{ r.id, r.session_id });
+        try output.writeJsonString(w, r.action_kind);
+        try w.print(",\"vendor\":", .{});
+        try output.writeJsonString(w, r.vendor);
+        try w.print(",\"started_at\":", .{});
+        try output.writeJsonString(w, r.started_at);
+        if (r.ended_at) |s| {
+            try w.print(",\"ended_at\":", .{});
+            try output.writeJsonString(w, s);
+        }
+        if (r.outcome) |s| {
+            try w.print(",\"outcome\":", .{});
+            try output.writeJsonString(w, s);
+        }
+        if (r.summary) |s| {
+            try w.print(",\"summary\":", .{});
+            try output.writeJsonString(w, s);
+        }
+        try w.print("}}", .{});
+    }
+    try w.print("],\"claims\":[", .{});
+    for (claims, 0..) |r, i| {
+        if (i > 0) try w.print(",", .{});
+        try w.print("{{\"id\":{d},\"claim_token\":", .{r.id});
+        try output.writeJsonString(w, r.claim_token);
+        try w.print(",\"status\":", .{});
+        try output.writeJsonString(w, r.status);
+        try w.print(",\"vendor\":", .{});
+        try output.writeJsonString(w, r.vendor);
+        if (r.role) |s| {
+            try w.print(",\"role\":", .{});
+            try output.writeJsonString(w, s);
+        }
+        try w.print(",\"claimed_at\":", .{});
+        try output.writeJsonString(w, r.claimed_at);
+        if (r.released_at) |s| {
+            try w.print(",\"released_at\":", .{});
+            try output.writeJsonString(w, s);
+        }
+        if (r.release_reason) |s| {
+            try w.print(",\"release_reason\":", .{});
+            try output.writeJsonString(w, s);
+        }
+        try w.print("}}", .{});
+    }
+    try w.print("]}}", .{});
+}
+
+/// Print the human-readable "Agent activity" section when any actions or
+/// claim transitions exist. Prints nothing when both slices are empty.
+fn writeAgentActivityText(
+    w: *std.Io.Writer,
+    actions: []const summary_mod.ActionRow,
+    claims: []const summary_mod.ClaimTransitionRow,
+) !void {
+    if (actions.len == 0 and claims.len == 0) return;
+    try w.print("\nAgent activity:\n", .{});
+    if (actions.len > 0) {
+        try w.print("  actions ({d}):\n", .{actions.len});
+        for (actions) |r| {
+            const event_at = r.ended_at orelse r.started_at;
+            const outcome = r.outcome orelse "(in-flight)";
+            try w.print("    [{s}]  {s:<12}  {s:<8}  outcome={s}\n", .{
+                event_at, r.action_kind, r.vendor, outcome,
+            });
+        }
+    }
+    if (claims.len > 0) {
+        try w.print("  claims ({d}):\n", .{claims.len});
+        for (claims) |r| {
+            const event_at = r.released_at orelse r.claimed_at;
+            const tok_prefix = r.claim_token[0..@min(r.claim_token.len, 8)];
+            try w.print("    [{s}]  {s:<10}  {s:<8}  token:{s}…\n", .{
+                event_at, r.status, r.vendor, tok_prefix,
+            });
+        }
     }
 }
 
@@ -271,6 +383,14 @@ fn runLinkForm(
         exit.die(ctx, e, "audit trail --link: load decisions: {s}", .{@errorName(e)});
     defer freeDecisions(decisions, ctx.allocator);
 
+    // Agent activity fold-in for link form (plan 85 M5,
+    // task:audit-trail-agent-activity). Same best-effort load + silent
+    // degrade as the entity form.
+    const aa_actions = summary_mod.recentActionsForEntity(d, ctx.allocator, entity_kind_text, link.entity_id, agent_activity_row_cap) catch &[_]summary_mod.ActionRow{};
+    defer summary_mod.ActionRow.deinitMany(aa_actions, ctx.allocator);
+    const aa_claims = summary_mod.claimTransitionsForEntity(d, ctx.allocator, entity_kind_text, link.entity_id, agent_activity_row_cap) catch &[_]summary_mod.ClaimTransitionRow{};
+    defer summary_mod.ClaimTransitionRow.deinitMany(aa_claims, ctx.allocator);
+
     if (json) {
         try ctx.stdout.print("{{\"link_id\":{d},\"entity_kind\":", .{link.id});
         try output.writeJsonString(ctx.stdout, entity_kind_text);
@@ -331,7 +451,9 @@ fn runLinkForm(
             try output.writeJsonString(ctx.stdout, e.at);
             try ctx.stdout.print("}}", .{});
         }
-        try ctx.stdout.print("]}}\n", .{});
+        try ctx.stdout.print("]", .{});
+        try writeAgentActivityJson(ctx.stdout, aa_actions, aa_claims);
+        try ctx.stdout.print("}}\n", .{});
         return;
     }
 
@@ -366,4 +488,5 @@ fn runLinkForm(
     if (sessions.len == 0 and decisions.len == 0 and events.len == 0) {
         try ctx.stdout.print("  (no sessions, decisions, or sync events)\n", .{});
     }
+    try writeAgentActivityText(ctx.stdout, aa_actions, aa_claims);
 }

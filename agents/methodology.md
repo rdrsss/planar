@@ -84,13 +84,22 @@ Session-entry emission is best-effort: if no active session exists or the sessio
 
 Planar is the synchronization plane for multiple vendors working from separate console windows. Task status alone is not sufficient to answer "what is next" because a task can still be `todo` while another vendor is already working on it. The live ownership contract is an agent work claim.
 
-The claim ritual is:
+The claim ritual is expressed entirely in `planar-agent` verbs (the dedicated agent-side binary; there is **no** `planar agent` subcommand on the `planar` binary). The canonical sequence is **pull → heartbeat → terminate** with `complete` / `fail` / `release` / `block`:
 
-1. **Check.** Before selecting work, run `planar plan next <plan>` or an equivalent claim-aware read. Do not derive next work from `task list --status todo` alone.
-2. **Claim.** Before implementation, review, ingestion, or propagation work begins, acquire a claim for the exact task, task group, or child milestone with `planar agent claim`.
-3. **Report.** Attach major role actions to the claim with `planar agent start` / `planar agent end` when the agent activity feature is available.
-4. **Heartbeat.** Refresh the claim at least once per half-TTL while work continues. A long-running tool call may delay the heartbeat, but the agent should heartbeat immediately before and after such calls.
-5. **Release.** End the cycle by releasing the claim as `completed`, `released`, or `aborted`. If the process dies, `planar agent reconcile` later marks the lease stale.
+1. **Check.** Before selecting work, the orchestrator runs `planar plan next <plan>` (operator-side claim-aware read) or `planar-agent peek <plan>` (agent-side dry-run of "what would `pull` pick"). Do not derive next work from `task list --status todo` alone.
+2. **Pull.** `planar-agent pull <plan-id> [--role coder] [--worktree <id-or-path>]` atomically picks the next eligible task, claims it (`agent_work_claims.status='active'`), flips the task to `doing`, and starts a top-level `agent_actions` row. Returns `{claim_token, task, action_id}`. When no work is available it returns `{ok:true, no_work:true}` and the agent terminates cleanly.
+   For dispatch where the caller already has a specific task ID (orchestrator hand-picking), use `planar-agent claim --entity task:<id> [--role <r>] [--worktree <path>]` instead. `claim` does not auto-transition the task; the caller is responsible for the status flip (or for invoking `planar-agent action start` to mark work as begun without touching task status).
+3. **Heartbeat.** `planar-agent heartbeat --claim <token> [--ttl <secs>]` at least once per TTL/2 while work continues. A long-running tool call may delay the heartbeat, but the agent should heartbeat immediately before and after such calls.
+4. **Report sub-actions (optional).** For granular telemetry, wrap tool calls in `planar-agent action start --claim <token> --kind tool_call` / `planar-agent action end --action <id> --outcome ok`. Most agents skip this and let the top-level action started by `pull` cover the whole work session.
+5. **Terminate** with exactly one of:
+   - `planar-agent complete --claim <token> [--summary <text>]` — work succeeded; task → `done`, claim → `completed`.
+   - `planar-agent fail --claim <token> --reason <text>` — work failed; task back to `todo`, claim → `aborted`.
+   - `planar-agent release --claim <token> [--reason <text>]` — graceful give-up without attempting; task back to `todo`, claim → `released`.
+   - `planar-agent block --claim <token> --blocker <task-id> [--reason <text>]` — hit an external blocker; task → `blocked`, blocker edge created, claim → `released`.
+
+   If the process dies without invoking any of these, `planar-agent reconcile` (operator-side, separate binary) later marks the lease stale. The task stays in `doing` until the operator revives it or another agent's `pull` finds it available again (a stale claim no longer blocks pull's exclusivity).
+6. **Operator recovery.** Stuck claims and the human cleanup path live on `planar-agent`, not `planar`: `planar-agent reconcile [--dry-run] [--stale-after <secs>]` for batch stale-claim sweeps, and `planar-agent abort --claim <token> --reason <text>` to force-release a specific claim regardless of the owning session.
+7. **Live observability.** The read-only `planar-watch` binary (plan 85 M8) carries `ps`, `feed --follow`, `log`, `claims`, `actions`, and `plans` for streaming human observation. For non-streaming reads through the `planar` binary, use `planar dashboard --agents`, `planar plan next`, `planar tree`, `planar audit trail`, and `planar health`.
 
 The default claim scope is exclusive for tasks and child milestones. Shared claims are reserved for read-only observation or plan-level coordination where multiple agents are intentionally watching the same entity. Overlapping exclusive live claims are a conflict, not a scheduling hint.
 

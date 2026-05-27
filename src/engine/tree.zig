@@ -19,6 +19,7 @@
 const std = @import("std");
 const db = @import("db");
 const identity = @import("identity.zig");
+const summary_mod = @import("runtime/agentactivity/summary.zig");
 
 // =========================================================================
 // Public constants
@@ -56,6 +57,15 @@ pub const Node = struct {
     updated_at: []const u8,
     /// Ordered child list. Walker preserves DB insertion order (id ASC).
     children: []Node,
+    /// Compact agent-activity rollup for this entity, or null when the
+    /// entity has no `agent_actions` and no `agent_work_claims` rows.
+    /// Populated by `build` for entity rows (plan/task/artifact/...)
+    /// — NEVER for scope roots. The text renderer prints a one-line
+    /// summary sub-line when set; the JSON serializer omits the
+    /// `activity_summary` key entirely when null so consumers see no
+    /// empty placeholder. M5 (plan 85). Degrades silently when nothing
+    /// is recorded.
+    activity_summary: ?summary_mod.ActivitySummary = null,
 
     /// Custom JSON serializer (task 2377): scope nodes emit only the
     /// scope-relevant fields; entity nodes emit the full shape. Without
@@ -95,6 +105,22 @@ pub const Node = struct {
             try jws.write(self.created_at);
             try jws.objectField("updated_at");
             try jws.write(self.updated_at);
+            // activity_summary: emitted only when present so entities
+            // with no agent activity render a clean JSON shape (no
+            // empty `"activity_summary":null` placeholder). Plan 85 M5.
+            if (self.activity_summary) |s| {
+                try jws.objectField("activity_summary");
+                try jws.beginObject();
+                try jws.objectField("latest_action_kind");
+                try jws.write(s.latest_action_kind);
+                try jws.objectField("latest_vendor");
+                try jws.write(s.latest_vendor);
+                try jws.objectField("last_event_at");
+                try jws.write(s.last_event_at);
+                try jws.objectField("active_claim_count");
+                try jws.write(s.active_claim_count);
+                try jws.endObject();
+            }
             try jws.objectField("children");
             try jws.write(self.children);
         }
@@ -144,6 +170,7 @@ pub fn deinitNode(n: Node, allocator: std.mem.Allocator) void {
     allocator.free(n.scope_label);
     allocator.free(n.created_at);
     allocator.free(n.updated_at);
+    if (n.activity_summary) |s| s.deinit(allocator);
     for (n.children) |child| deinitNode(child, allocator);
     allocator.free(n.children);
 }
@@ -533,7 +560,25 @@ fn buildPlanNode(
         .created_at = try allocator.dupe(u8, row.created_at),
         .updated_at = try allocator.dupe(u8, row.updated_at),
         .children = try children.toOwnedSlice(allocator),
+        .activity_summary = activitySummaryFor(d, allocator, "plan", row.id),
     };
+}
+
+// =========================================================================
+// Internal: activity summary attachment helper
+// =========================================================================
+
+/// Wrapper around `summary_mod.forEntity` that swallows allocation/query
+/// errors as "no summary." The fold-in is additive and MUST NOT fail the
+/// tree walk — a transient DB error renders the node without activity
+/// rather than killing the whole tree.
+fn activitySummaryFor(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    entity_kind: []const u8,
+    entity_id: i64,
+) ?summary_mod.ActivitySummary {
+    return summary_mod.forEntity(d, allocator, entity_kind, entity_id) catch null;
 }
 
 // =========================================================================
@@ -708,6 +753,7 @@ fn buildTaskNode(
         .created_at = try allocator.dupe(u8, row.created_at),
         .updated_at = try allocator.dupe(u8, row.updated_at),
         .children = try children.toOwnedSlice(allocator),
+        .activity_summary = activitySummaryFor(d, allocator, "task", row.id),
     };
 }
 
@@ -857,7 +903,13 @@ fn hydrateDerived(
                     allocator.free(updated_at);
                     return null;
                 }
-                return makeLeafNode(allocator, display_kind, id, title, status, akind, created_at, updated_at);
+                const leaf_opt = try makeLeafNode(allocator, display_kind, id, title, status, akind, created_at, updated_at);
+                if (leaf_opt) |leaf| {
+                    var with_activity = leaf;
+                    with_activity.activity_summary = activitySummaryFor(d, allocator, db_kind, id);
+                    return with_activity;
+                }
+                return leaf_opt;
             },
         }
     }
@@ -896,7 +948,13 @@ fn hydrateDerived(
                 return null;
             }
             const empty_akind = try allocator.dupe(u8, "");
-            return makeLeafNode(allocator, display_kind, id, title, status, empty_akind, created_at, updated_at);
+            const leaf_opt = try makeLeafNode(allocator, display_kind, id, title, status, empty_akind, created_at, updated_at);
+            if (leaf_opt) |leaf| {
+                var with_activity = leaf;
+                with_activity.activity_summary = activitySummaryFor(d, allocator, db_kind, id);
+                return with_activity;
+            }
+            return leaf_opt;
         },
     }
 }
@@ -1074,7 +1132,32 @@ fn renderNode(
     @memcpy(child_prefix_buf[pfx_len..][0..ext.len], ext);
     const child_prefix = child_prefix_buf[0 .. pfx_len + ext.len];
 
+    // Activity sub-line (plan 85 M5). Rendered only when the node has
+    // an activity_summary; degrades silently otherwise. The sub-line
+    // sits under the entity, in front of its children, using the same
+    // indent extension so it lines up with the box-drawing column.
+    if (n.activity_summary) |s| {
+        try renderActivitySubLine(s, child_prefix, writer);
+    }
+
     try renderChildList(n.children, child_prefix, writer, counts);
+}
+
+/// Print a single compact activity sub-line under an entity row. Format:
+///   activity: <action_kind> via <vendor> @ <last_event_at>  [claims:N]
+/// When `latest_action_kind` is empty (fallback to claim-only data),
+/// emit `activity: claim via <vendor> @ <last_event_at>  [claims:N]`
+/// so the line remains parseable.
+fn renderActivitySubLine(
+    s: summary_mod.ActivitySummary,
+    prefix: []const u8,
+    writer: *std.Io.Writer,
+) std.Io.Writer.Error!void {
+    const kind: []const u8 = if (s.latest_action_kind.len == 0) "claim" else s.latest_action_kind;
+    try writer.print(
+        "{s}activity: {s} via {s} @ {s}  [claims:{d}]\n",
+        .{ prefix, kind, s.latest_vendor, s.last_event_at, s.active_claim_count },
+    );
 }
 
 /// Format the per-line label for a non-scope node.

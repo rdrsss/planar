@@ -34,7 +34,7 @@ The orchestrator selects phases based on the anchor plan's current `status`:
 
 2. **Ingestion (Phase 2)** — anchor plan in `draft` with workbench artifacts present: invokes `pl-spec-ingest <plan>` in preview mode (no `--apply`), presents the diff to the user, and **waits for explicit confirmation** before running `--apply`. Never auto-applies.
 
-3. **Execution (Phase 3)** — anchor plan `active` or `paused`: first reads claim-aware state with `planar plan next <plan>` (or equivalent for explicit task IDs), excludes active unexpired claims, and surfaces stale claims before dispatch. It then proposes a dispatch shape (`strict` / `grouped` / `single`) per [Dispatch Granularity](../../agents/methodology.md#dispatch-granularity) and **waits for explicit confirmation** before any coder runs. Before dispatching each cycle it acquires `planar agent claim` leases and records claim tokens in the dispatch entry. After the coder reports done, the orchestrator runs **Phase 3.5 — test-coder dispatch** (see below): consults `planar test-spec status <plan> --json` and, when the cycle's dispatched slugs intersect the JSON's `uncovered_task_slugs`, dispatches `pl-test-coder`. The output (coder diff alone or the union of coder + test-coder diffs) is routed through `pl-reviewer`. Enforces the 5-iteration cap per coder/reviewer cycle (the test-coder cycle has its own cap, default 2), and surfaces escalations (open questions, aborts, ship-with-caveats, failure-surfaced). The dispatch-shape gate is bypassed only when `--strict`, `--grouped`, or `--batch` was supplied at invocation.
+3. **Execution (Phase 3)** — anchor plan `active` or `paused`: first reads claim-aware state with `planar plan next <plan>` (operator-side) or `planar-agent peek <plan>` (agent-side dry-run for explicit task IDs), excludes active unexpired claims, and surfaces stale claims before dispatch. It then proposes a dispatch shape (`strict` / `grouped` / `single`) per [Dispatch Granularity](../../agents/methodology.md#dispatch-granularity) and **waits for explicit confirmation** before any coder runs. Before dispatching each cycle it acquires the lease atomically via `planar-agent pull <plan>` (or `planar-agent claim --entity task:<id>` for hand-picked targets) and records the returned `claim_token` in the dispatch entry. The dispatch heuristic is **parallelism-aware**: it consults the `entity_links` graph + task touches metadata to identify mutually-non-conflicting tasks that can be claimed in parallel windows. Parallel dispatch remains operator-opt-in; explicit serial cycles (one `pull → heartbeat → terminal` at a time) are the default. After the coder reports done, the orchestrator runs **Phase 3.5 — test-coder dispatch** (see below): consults `planar test-spec status <plan> --json` and, when the cycle's dispatched slugs intersect the JSON's `uncovered_task_slugs`, dispatches `pl-test-coder`. The output (coder diff alone or the union of coder + test-coder diffs) is routed through `pl-reviewer`. The cycle terminates via one of `planar-agent complete` / `fail` / `release` / `block` (atomic — flips both claim status and task status in a single transaction). Enforces the 5-iteration cap per coder/reviewer cycle (the test-coder cycle has its own cap, default 2), and surfaces escalations (open questions, aborts, ship-with-caveats, failure-surfaced). The dispatch-shape gate is bypassed only when `--strict`, `--grouped`, or `--batch` was supplied at invocation.
 
    **Phase 3.5 outcomes:**
    - `expanded` → test-coder diff staged alongside coder's; reviewer sees the union.
@@ -57,6 +57,23 @@ The orchestrator selects phases based on the anchor plan's current `status`:
 - Phase 5: user must request archive.
 
 These gates exist to prevent silent side effects on spec/task creation and FS cleanup.
+
+## Claim ritual (`planar-agent`)
+
+The orchestrator's synchronization writes route through the `planar-agent` binary, **not** through a `planar agent` subcommand (the latter does not exist; observability lives on `planar dashboard --agents` / `planar plan next` / `planar-watch` instead). The canonical ritual the orchestrator drives per cycle is:
+
+```text
+planar-agent peek <plan>                              # dry-run: what would pull pick?
+planar-agent pull <plan> --role coder --json          # atomic: claim + task → doing + start action
+planar-agent heartbeat --claim <token> --ttl 600      # at least once per TTL/2 during work
+planar-agent complete --claim <token> --summary <s>   # atomic: task → done + claim → completed
+# or:
+planar-agent fail     --claim <token> --reason <s>    # atomic: task → todo  + claim → aborted
+planar-agent release  --claim <token> --reason <s>    # atomic: task → todo  + claim → released
+planar-agent block    --claim <token> --blocker <id>  # atomic: task → blocked + edge + claim → released
+```
+
+For hand-picked targets, swap `pull <plan>` with `claim --entity task:<id>` (does NOT auto-transition task status — caller decides). For parallel windows, run the heuristic against `entity_links` + task touches to identify mutually-non-conflicting tasks, then issue independent `pull` calls; each returns its own `claim_token`. For operator-side recovery use `planar-agent reconcile [--dry-run]` and `planar-agent abort --claim <token> --reason <text>`.
 
 ## Brief composition
 
