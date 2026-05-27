@@ -1,4 +1,4 @@
-const runtime = @import("../../runtime.zig");
+const runtime = @import("runtime");
 const exit = @import("../../exit.zig");
 
 pub fn handle(args_ptr: *const anyopaque, cmd_name: []const u8) anyerror!void {

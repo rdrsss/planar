@@ -16,7 +16,7 @@ const std = @import("std");
 const cli = @import("cli");
 const db = @import("db");
 const main = @import("../../main.zig");
-const runtime = @import("../../runtime.zig");
+const runtime = @import("runtime");
 const exit = @import("../../exit.zig");
 
 pub fn handle(args_ptr: *const anyopaque) anyerror!void {

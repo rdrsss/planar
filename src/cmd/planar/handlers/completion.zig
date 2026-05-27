@@ -23,7 +23,7 @@
 const std = @import("std");
 const cli = @import("cli");
 const main = @import("../main.zig");
-const runtime = @import("../runtime.zig");
+const runtime = @import("runtime");
 const exit = @import("../exit.zig");
 
 pub const verb: cli.Cmd = .{

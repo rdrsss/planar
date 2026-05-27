@@ -13,7 +13,7 @@ const cli = @import("cli");
 const db = @import("db");
 const engine = @import("engine");
 const main = @import("../../main.zig");
-const runtime = @import("../../runtime.zig");
+const runtime = @import("runtime");
 const exit = @import("../../exit.zig");
 const output = @import("../../output.zig");
 

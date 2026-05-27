@@ -9,7 +9,7 @@ const std = @import("std");
 const cli = @import("cli");
 const engine = @import("engine");
 const main = @import("../../main.zig");
-const runtime = @import("../../runtime.zig");
+const runtime = @import("runtime");
 const exit = @import("../../exit.zig");
 
 const LinksRemoveResult = struct {

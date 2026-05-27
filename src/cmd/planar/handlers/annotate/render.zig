@@ -8,7 +8,7 @@
 
 const std = @import("std");
 const engine = @import("engine");
-const runtime = @import("../../runtime.zig");
+const runtime = @import("runtime");
 
 pub fn emitOne(ctx: *const runtime.Ctx, ann: engine.planning.annotation.Annotation, json: bool) !void {
     if (json) {

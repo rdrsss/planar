@@ -3,7 +3,7 @@ const Io = std.Io;
 
 const planar = @import("planar");
 const cli = @import("cli");
-const runtime = @import("runtime.zig");
+const runtime = @import("runtime");
 const exit = @import("exit.zig");
 
 // Verb groups. Leaf verbs (no subverbs) live at `handlers/<verb>.zig`;

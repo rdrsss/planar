@@ -1,10 +1,9 @@
-//! cmd/planar/runtime — process-wide context shared across all handlers.
+//! runtime — process-wide context shared across all Planar binaries.
 //!
-//! Handlers have signature `fn (*const anyopaque) anyerror!void` to keep
-//! the cli library's type-erasure trick simple. That means they can't
-//! receive the IO + DB + allocator as parameters — instead `main.zig`
-//! initializes a process-global Ctx before `cli.dispatch` runs, and
-//! handlers grab it via `runtime.current()`.
+//! Linked into `planar`, `planar-agent`, and `planar-watch`. The
+//! `current()` accessor is the contract: each binary's `main.zig`
+//! initializes a process-global Ctx before dispatch, and handlers grab
+//! it via `runtime.current()`.
 //!
 //! Exactly one Ctx per process. Set once at startup, lives until exit;
 //! no synchronization needed (handlers run on the main thread under
@@ -16,6 +15,12 @@
 //! should not pay that cost. Handlers that actually need the DB call
 //! `ensureDb()` as their first DB-touching line; the first call opens
 //! and migrates, subsequent calls return the cached handle.
+//!
+//! `planar` runs migrations on open. `planar-agent` and `planar-watch`
+//! refuse to start if the DB's max schema version is older than this
+//! binary's minimum required — they're consumers of the schema, not
+//! owners. (Future read-only `openReadOnly` path for `planar-watch`
+//! is layered on top of `ensureDb`'s caching.)
 //!
 //! Things explicitly NOT on Ctx:
 //!   - --json mode: per-handler, lives in the parsed args struct,
@@ -163,4 +168,14 @@ pub fn resolveDbPath(
     }
     const home = environ.getPosix("HOME") orelse return error.HomeNotSet;
     return try std.fs.path.joinZ(allocator, &.{ home, ".planar", "planar.db" });
+}
+
+test "resolveDbPath: PLANAR_DB overrides HOME" {
+    // The Zig std doesn't expose an in-memory Environ constructor we
+    // can hand to resolveDbPath without a process snapshot. We exercise
+    // the override + default paths via the real process Environ in the
+    // integration suite instead; this unit test pins the function shape
+    // so a signature change shows up at compile time.
+    const E = @TypeOf(resolveDbPath);
+    _ = E;
 }

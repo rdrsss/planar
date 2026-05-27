@@ -1,6 +1,6 @@
 const std = @import("std");
 const engine = @import("engine");
-const runtime = @import("../../runtime.zig");
+const runtime = @import("runtime");
 
 pub const HomeAndRoot = struct {
     home_dir: []const u8,

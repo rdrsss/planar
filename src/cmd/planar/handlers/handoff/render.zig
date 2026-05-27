@@ -6,7 +6,7 @@
 
 const std = @import("std");
 const engine = @import("engine");
-const runtime = @import("../../runtime.zig");
+const runtime = @import("runtime");
 const output = @import("../../output.zig");
 
 pub fn emitOne(ctx: *const runtime.Ctx, h: engine.runtime.handoff.Handoff, json: bool) !void {

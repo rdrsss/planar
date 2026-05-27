@@ -8,7 +8,7 @@ const std = @import("std");
 const cli = @import("cli");
 const engine = @import("engine");
 const main = @import("../../main.zig");
-const runtime = @import("../../runtime.zig");
+const runtime = @import("runtime");
 
 pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     const args = cli.castArgs(main.root, &.{ "scope", "suggest" }, args_ptr);

@@ -12,7 +12,7 @@ const cli = @import("cli");
 const engine = @import("engine");
 const db = @import("db");
 const main = @import("../../main.zig");
-const runtime = @import("../../runtime.zig");
+const runtime = @import("runtime");
 const exit = @import("../../exit.zig");
 const scope_mod = @import("../../scope.zig");
 

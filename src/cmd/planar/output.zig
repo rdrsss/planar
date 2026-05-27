@@ -18,7 +18,7 @@
 //! that hasn't been taught how to render itself.
 
 const std = @import("std");
-const runtime = @import("runtime.zig");
+const runtime = @import("runtime");
 
 pub const Options = struct {
     json: bool = false,

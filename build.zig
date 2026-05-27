@@ -143,6 +143,19 @@ pub fn build(b: *std.Build) void {
     });
 
     // -----------------------------------------------------------------
+    // `runtime` module: shared process-context bootstrap. Linked into
+    // every Planar binary (`planar`, future `planar-agent`,
+    // `planar-watch`). Owns the singleton Ctx, lazy DB acquisition,
+    // and the schema-version handshake. Depends on `db`.
+    // -----------------------------------------------------------------
+    const runtime_mod = b.addModule("runtime", .{
+        .root_source_file = b.path("src/runtime/runtime.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    runtime_mod.addImport("db", db_mod);
+
+    // -----------------------------------------------------------------
     // `engine` module: Planar's business-logic layer.
     // Domain entities, CRUD, validation — owns no IO, takes *db.sqlite.Db
     // explicitly. The CLI handlers and integration tests both call into
@@ -204,6 +217,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "db", .module = db_mod },
                 .{ .name = "cli", .module = cli_mod },
                 .{ .name = "engine", .module = engine_mod },
+                .{ .name = "runtime", .module = runtime_mod },
                 .{ .name = "build_options", .module = build_options_mod },
             },
         }),
@@ -252,12 +266,16 @@ pub fn build(b: *std.Build) void {
     const engine_tests = b.addTest(.{ .root_module = engine_mod, .filters = test_filters_opt });
     const run_engine_tests = b.addRunArtifact(engine_tests);
 
+    const runtime_tests = b.addTest(.{ .root_module = runtime_mod, .filters = test_filters_opt });
+    const run_runtime_tests = b.addRunArtifact(runtime_tests);
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
     test_step.dependOn(&run_db_tests.step);
     test_step.dependOn(&run_cli_tests.step);
     test_step.dependOn(&run_engine_tests.step);
+    test_step.dependOn(&run_runtime_tests.step);
 
     // -----------------------------------------------------------------
     // Integration tests. Separate from `zig build test` (mirrors Go's

@@ -15,7 +15,7 @@ const std = @import("std");
 const cli = @import("cli");
 const build_options = @import("build_options");
 const main = @import("../main.zig");
-const runtime = @import("../runtime.zig");
+const runtime = @import("runtime");
 
 pub const verb: cli.Cmd = .{
     .name = "version",

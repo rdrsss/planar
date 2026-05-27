@@ -23,7 +23,7 @@
 //!   64 — not implemented yet (placeholder handlers)
 
 const std = @import("std");
-const runtime = @import("runtime.zig");
+const runtime = @import("runtime");
 
 /// Map a domain error to the exit code the operator's shell should see.
 /// Unknown errors fall through to 1.

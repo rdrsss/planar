@@ -3,7 +3,7 @@ const std = @import("std");
 const engine = @import("engine");
 const editor = @import("../../editor.zig");
 const main = @import("../../main.zig");
-const runtime = @import("../../runtime.zig");
+const runtime = @import("runtime");
 const exit = @import("../../exit.zig");
 const common = @import("common.zig");
 

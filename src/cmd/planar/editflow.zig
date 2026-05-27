@@ -27,7 +27,7 @@ const std = @import("std");
 const db = @import("db");
 const engine = @import("engine");
 const editor = @import("editor.zig");
-const runtime = @import("runtime.zig");
+const runtime = @import("runtime");
 
 // =========================================================================
 // Public types

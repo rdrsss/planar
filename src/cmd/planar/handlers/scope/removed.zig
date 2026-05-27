@@ -2,7 +2,7 @@
 
 const cli = @import("cli");
 const main = @import("../../main.zig");
-const runtime = @import("../../runtime.zig");
+const runtime = @import("runtime");
 const exit = @import("../../exit.zig");
 
 pub fn handleUse(args_ptr: *const anyopaque) anyerror!void {

@@ -2,7 +2,7 @@
 
 const std = @import("std");
 const engine = @import("engine");
-const runtime = @import("../../runtime.zig");
+const runtime = @import("runtime");
 const exit = @import("../../exit.zig");
 
 /// Resolve the session id the caller's verb should target.

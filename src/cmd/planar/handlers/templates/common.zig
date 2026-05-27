@@ -5,7 +5,7 @@
 
 const std = @import("std");
 const engine = @import("engine");
-const runtime = @import("../../runtime.zig");
+const runtime = @import("runtime");
 const config_path = @import("../config/path.zig");
 
 /// resolveTemplatesRoot returns the effective templates directory, honouring

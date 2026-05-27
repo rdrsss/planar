@@ -19,7 +19,7 @@
 
 const std = @import("std");
 const engine = @import("engine");
-const runtime = @import("runtime.zig");
+const runtime = @import("runtime");
 
 pub const Scope = engine.identity.scope.Scope;
 pub const Resolution = engine.identity.scope.Resolution;

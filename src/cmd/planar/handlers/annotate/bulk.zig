@@ -3,7 +3,7 @@
 const std = @import("std");
 const db_mod = @import("db");
 const engine = @import("engine");
-const runtime = @import("../../runtime.zig");
+const runtime = @import("runtime");
 
 pub const Action = enum { resolve, dismiss, archive };
 
