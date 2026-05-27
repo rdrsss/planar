@@ -127,6 +127,26 @@ pub const Db = struct {
         return .{ .handle = h.? };
     }
 
+    /// Open the database in strict read-only mode. The driver itself
+    /// refuses any write SQL (returns SQLITE_READONLY on attempted
+    /// INSERT / UPDATE / DELETE / DDL). Used by `planar-watch`'s
+    /// `runtime.ensureDbStrictReadOnly` as the second line of defense
+    /// behind "no write verbs registered."
+    ///
+    /// Implementation: `sqlite3_open_v2` with
+    /// `SQLITE_OPEN_READONLY` flag (no URI rewriting needed since the
+    /// flag is authoritative).
+    pub fn openReadOnly(path: [*:0]const u8) Error!Db {
+        var h: ?*c.sqlite3 = null;
+        const flags: c_int = c.SQLITE_OPEN_READONLY;
+        const rc = c.sqlite3_open_v2(path, &h, flags, null);
+        if (rc != c.SQLITE_OK or h == null) {
+            if (h) |hh| _ = c.sqlite3_close(hh);
+            return error.OpenFailed;
+        }
+        return .{ .handle = h.? };
+    }
+
     pub fn close(self: *Db) void {
         _ = c.sqlite3_close(self.handle);
     }
@@ -265,6 +285,54 @@ test "execParams round-trips bind types" {
     try std.testing.expectEqual(@as(i64, 7), try db.intQuery("select a from t"));
     try std.testing.expectEqual(@as(i64, 1), try db.intQuery("select count(*) from t where b = 'hello'"));
     try std.testing.expectEqual(@as(i64, 1), try db.intQuery("select count(*) from t where c is null"));
+}
+
+test "openReadOnly: write SQL is rejected at the driver layer" {
+    // Set up a file-backed DB with a known table; the read-only handle
+    // opened afterward must refuse to mutate.
+    const tmpdir = std.testing.tmpDir(.{});
+    var td = tmpdir;
+    defer td.cleanup();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const len = try td.dir.realPath(std.testing.io, &path_buf);
+    const dir_abs = path_buf[0..len];
+
+    var full_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const full_path = try std.fmt.bufPrintZ(&full_buf, "{s}/strict-ro-test.db", .{dir_abs});
+
+    // Phase 1: seed via a writable handle.
+    {
+        var w = try Db.open(full_path.ptr);
+        defer w.close();
+        try w.exec("create table t (n integer); insert into t values (1);");
+    }
+
+    // Phase 2: open read-only and confirm reads work.
+    var ro = try Db.openReadOnly(full_path.ptr);
+    defer ro.close();
+    try std.testing.expectEqual(@as(i64, 1), try ro.intQuery("select n from t"));
+
+    // Phase 3: writes must fail. `execParams` routes through
+    // sqlite3_step, which surfaces SQLITE_READONLY as StepFailed
+    // without going through sqlite3_exec's stderr-log path (the
+    // `exec` wrapper logs failures via std.log.err which would
+    // count as a test-runner error in the umbrella suite).
+    try std.testing.expectError(
+        error.StepFailed,
+        ro.execParams("insert into t (n) values (?)", &.{.{ .int = 9 }}),
+    );
+    try std.testing.expectError(
+        error.StepFailed,
+        ro.execParams("update t set n = 2", &.{}),
+    );
+    try std.testing.expectError(
+        error.StepFailed,
+        ro.execParams("delete from t", &.{}),
+    );
+
+    // Read state is unchanged.
+    try std.testing.expectEqual(@as(i64, 1), try ro.intQuery("select n from t"));
 }
 
 test "savepoint helpers roll back partial writes" {

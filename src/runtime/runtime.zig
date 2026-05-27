@@ -256,6 +256,85 @@ pub fn ensureDbReadOnly() !*db.sqlite.Db {
     return &db_storage.?;
 }
 
+/// Open the DB in strict read-only mode (driver-level rejection of
+/// writes), then refuse if the live schema version is outside the
+/// binary's supported range. Used by `planar-watch` as the read-only
+/// viewer's bootstrap. Distinct from `ensureDbReadOnly` because this
+/// path produces a handle the SQLite driver itself will refuse to
+/// mutate — the second line of defense behind the "no write verbs
+/// registered" capability boundary.
+///
+/// Two refusal paths, both writing a remediation message to stderr
+/// before returning:
+///
+///   - SchemaVersionBehind  — live DB version < embedded_max. The
+///                            operator runs `planar init` to bring the
+///                            DB forward.
+///   - SchemaVersionAhead   — live DB version > embedded_max. The
+///                            operator upgrades the binary.
+///
+/// Idempotent: subsequent calls return the cached handle without
+/// re-opening. The cached handle IS the strict read-only one; any
+/// caller in this process that retrieves it gets the same write-
+/// refusing connection.
+pub fn ensureDbStrictReadOnly() !*db.sqlite.Db {
+    if (db_storage != null) return &db_storage.?;
+    const ctx = current();
+
+    // The strict path does NOT create the parent dir (the writable
+    // bootstraps do that). A read-only viewer running before `planar
+    // init` should fail loudly with a schema-handshake error, not
+    // silently create empty state.
+
+    db_storage = try db.sqlite.Db.openReadOnly(ctx.db_path.ptr);
+
+    // Set a busy_timeout so the read-only connection waits politely
+    // when a writer holds the WAL lock. Best-effort — under
+    // SQLITE_OPEN_READONLY the connection cannot acquire the writer
+    // lock anyway, so this only affects how long a SELECT blocks
+    // behind a concurrent writer. WAL-mode PRAGMA is intentionally
+    // omitted: it is a writer-side configuration step and a read-
+    // only handle cannot set it.
+    db_storage.?.exec("PRAGMA busy_timeout = 5000") catch |e| {
+        ctx.stderr.print(
+            "warning: failed to set busy_timeout on read-only handle ({s}); concurrent writers may delay queries\n",
+            .{@errorName(e)},
+        ) catch {};
+    };
+
+    // Schema-handshake. A missing `schema_migrations` table (fresh DB
+    // never touched by `planar init`) maps to version 0 — trips
+    // SchemaVersionBehind as long as the binary's embedded migrations
+    // include anything at all.
+    const db_version: u32 = if (db_storage.?.intQuery(
+        "select coalesce(max(version), 0) from schema_migrations",
+    )) |v| @intCast(v) else |_| 0;
+    const emb_max = db.migrate.embedded_max;
+
+    if (db_version < emb_max) {
+        ctx.stderr.print(
+            "error: schema version {d} in {s} is older than this binary's minimum of {d}; " ++
+                "run `planar init` to apply migrations\n",
+            .{ db_version, ctx.db_path, emb_max },
+        ) catch {};
+        db_storage.?.close();
+        db_storage = null;
+        return SchemaVersionBehind.SchemaVersionBehind;
+    }
+    if (db_version > emb_max) {
+        ctx.stderr.print(
+            "error: schema version {d} in {s} is newer than this binary's embedded max ({d}); " ++
+                "upgrade the binary or use one that supports schema_version >= {d}\n",
+            .{ db_version, ctx.db_path, emb_max, db_version },
+        ) catch {};
+        db_storage.?.close();
+        db_storage = null;
+        return error.SchemaVersionAhead;
+    }
+
+    return &db_storage.?;
+}
+
 /// Flush both writers. Errors propagate — call from the normal-exit
 /// path so the caller learns if buffered output was lost.
 pub fn flush() !void {

@@ -32,6 +32,7 @@ comptime {
     _ = @import("plan_update_test.zig");
     _ = @import("planar_agent_test.zig");
     _ = @import("planar_agent_ingest_test.zig");
+    _ = @import("planar_watch_test.zig");
     _ = @import("scope_test.zig");
     _ = @import("search_test.zig");
     _ = @import("skills_render_test.zig");

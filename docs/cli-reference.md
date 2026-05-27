@@ -4943,6 +4943,107 @@ A process invoked as `planar-agent` writes ONLY to `agent_work_claims`, `agent_a
 
 ---
 
+## Binary: `planar-watch`
+
+`planar-watch` is the human-facing **read-only viewer** for live agent activity. Third binary in the three-binary architecture (plan 85 M8). See `docs/architecture.md` § "Three-binary architecture" for the binary split and `docs/workflows.md` § Recipe 19 for the end-to-end cockpit workflow.
+
+Schema-version handshake: `planar-watch` is a **consumer** of the schema, not its owner. Startup queries `schema_migrations.max(version)` and refuses with exit **7** when the live DB is older than the binary's embedded minimum (same code `planar-agent` uses; remediation message "run `planar init`").
+
+### Capability invariant
+
+A process invoked as `planar-watch` performs **no writes**. Two defenses:
+
+1. The command tree (`src/cmd/planar-watch/handlers/cmd.zig`) registers exactly six read verbs plus the conventional `version` / `completion` helpers. There is no write verb anywhere in the tree.
+2. The bootstrap calls `runtime.ensureDbStrictReadOnly` which opens the DB via `sqlite3_open_v2(..., SQLITE_OPEN_READONLY, ...)`. The SQLite driver itself returns `SQLITE_READONLY` on any attempted `INSERT` / `UPDATE` / `DELETE` / DDL — verified by the `openReadOnly: write SQL is rejected at the driver layer` unit test in `src/db/sqlite.zig`.
+
+A vendor hook or operator script configured with only `planar-watch` on its PATH cannot modify the database under any circumstances.
+
+### Verbs
+
+```
+# Cross-cutting activity feed (default invocation; `planar-watch` with no
+# args routes here).
+planar-watch              # alias for `planar-watch feed`
+planar-watch feed     [--follow]  [--vendor <v>] [--plan <id>] [--task <id>] [--since <ISO>] [--limit N] [--json] [--interval <D>]
+
+# Snapshot: active (and stale) claims.
+planar-watch ps       [--follow]  [--vendor <v>] [--plan <id>] [--stale]  [--json] [--interval <D>]
+
+# Claim ledger (active | stale | all buckets).
+planar-watch claims   [--follow]  [--vendor <v>] [--plan <id>] [--status active|stale|all] [--json] [--interval <D>]
+
+# Action ledger (filterable by kind / entity / plan / task).
+planar-watch actions  [--follow]  [--vendor <v>] [--kind <k>] [--entity <kind:id>] [--plan <id>] [--task <id>] [--limit N] [--json] [--interval <D>]
+
+# Plans with in-flight work.
+planar-watch plans    [--follow]  [--in-flight-only] [--json] [--interval <D>]
+
+# Per-entity / per-claim history (union of actions + claim transitions).
+planar-watch log      (--task <id> | --plan <id> | --entity <kind:id> | --session <id> | --claim <token>) [--limit N] [--json]
+
+# Conventional helpers.
+planar-watch version
+planar-watch completion <bash|zsh|fish>
+```
+
+`--follow` (default off) turns each subcommand into a streaming view: the initial snapshot prints, then new events append as the underlying tables change. M8 ships **Tier 1** of the wake-tier ladder (poll every `--interval`, default `1s`; sub-second intervals available for tests). The watermark column set and the JSON event shape are part of the public contract — Tier 2 (kqueue / inotify on the SQLite `-wal` file) lands in a follow-up without changing either.
+
+### JSON shapes
+
+```
+planar-watch feed --json  (NDJSON, one event per line):
+  { event: "claim_acquired" | "heartbeat" | "released" | "stale"
+         | "completed" | "failed" | "blocked"
+         | "action_started" | "action_ended" | "task_status_changed",
+    at: ISO8601,
+    claim?: ClaimRow,
+    action?: ActionRow,
+    task?: { id, status_before, status_after } }
+
+planar-watch ps --json:
+  { generated_at: ISO8601, active: [ClaimRow], stale: [ClaimRow] }
+
+planar-watch claims --json:
+  { generated_at: ISO8601, claims: [ClaimRow] }
+
+planar-watch actions --json:
+  { generated_at: ISO8601, actions: [ActionRow] }
+
+planar-watch plans --json:
+  { generated_at: ISO8601,
+    plans: [{ plan: Plan, in_flight: bool,
+              active_claims: int, active_actions: int,
+              last_event_at: ISO8601 | null }] }
+
+planar-watch log --json:
+  { entity: { kind, id }, entries: [LogEntry] }
+  LogEntry is the discriminated union:
+    { kind: "action",
+      at: ISO8601,
+      action: ActionRow }
+    { kind: "claim_acquired" | "claim_released" | "claim_completed"
+          | "claim_aborted" | "claim_stale",
+      at: ISO8601,
+      claim: ClaimRow }
+```
+
+`ClaimRow` matches the canonical shape from `engine.runtime.agentactivity.json.writeClaim` (snake_case keys mirroring the `agent_work_claims` columns, including the locality columns `repo_root`, `branch`, `head_sha_at_claim`, `dirty_at_claim` and the worktree columns). `ActionRow` mirrors `agent_actions`. `Plan` matches `planar plan show --json`.
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success (and the `--follow` graceful-SIGINT exit). |
+| 1 | Generic failure (DB I/O error, malformed argument). |
+| 2 | User-input failure (unknown flag, missing required filter on `log`). |
+| 7 | Schema version mismatch (DB older than binary's embedded minimum, OR newer than its embedded max). Same code `planar` and `planar-agent` use. |
+
+### `--follow` and SIGINT
+
+Each `--follow` verb installs a SIGINT handler that flips an atomic flag. The poll loop checks the flag between iterations and exits cleanly with code **0** on the next tick. Pressing Ctrl-C is "stop watching" — a success outcome, not an error.
+
+---
+
 ## Command Index
 
 For quick reference, all documented commands grouped by domain:

@@ -1774,3 +1774,67 @@ The Copilot adapter accepts BOTH `status` (Copilot's documented field name) and 
 - **`$PLANAR_DB` missing or unreadable**: the schema-version handshake fails at startup; `ingest` exits non-zero before parsing.
 
 Both error paths are atomic — the surrounding `BEGIN IMMEDIATE` transaction rolls back so no partial rows land in `sessions` or `agent_actions`.
+
+## Recipe 19 — Live agent cockpit with `planar-watch`
+
+`planar-watch` is the third binary in the three-binary architecture — the **human-facing read-only viewer**. It opens the database in strict read-only mode (`SQLITE_OPEN_READONLY`); the SQLite driver itself refuses every write SQL string, which is the second line of defense behind the binary's "no write verbs registered" capability boundary. The first defense is the verb tree itself: it contains exactly six read verbs — `feed`, `ps`, `claims`, `actions`, `plans`, `log` — plus the conventional `version` and `completion` helpers, and zero anything that mutates state.
+
+This recipe walks the streaming-cockpit workflow. The companion recipe for the operator's read-fold-ins on the `planar` binary lives in Recipe 16.
+
+### Step 1 — Stream the cross-cutting activity feed
+
+```
+planar-watch                                     # default: feed
+planar-watch feed --follow                       # stream until SIGINT
+planar-watch feed --follow --json | jq -c .      # NDJSON, one event per line
+planar-watch feed --vendor claude --plan 85      # narrow by vendor + plan
+planar-watch feed --since 2026-05-27T00:00:00Z   # only newer events
+```
+
+`feed` is the lowest-friction view: every claim transition, action transition, and (where applicable) task status change ordered by occurrence time. With `--follow` the loop polls every `--interval` (default `1s`; e.g. `100ms` for tests). The JSON event shape is stable across the transport-tier ladder — see `docs/architecture.md` § "Live tail / follow implementation".
+
+### Step 2 — Snapshot the active claims (`ps`)
+
+```
+planar-watch ps                                  # text table
+planar-watch ps --json                           # generated_at + active + stale arrays
+planar-watch ps --stale                          # also include lease-expired / stale
+planar-watch ps --vendor codex --follow          # live filter
+```
+
+`ps` is the operator's "what's running right now" snapshot. With `--stale` it also includes claims whose lease has expired (and that `planar-agent reconcile` would mark stale on its next sweep) — the diagnostic surface for wedged agents.
+
+### Step 3 — Drill into one claim or task
+
+```
+planar-watch log --task 541 --json               # task history (actions + claim transitions)
+planar-watch log --claim 9f2c… --json            # one specific claim_token's history
+planar-watch log --plan 85 --json
+planar-watch log --entity question:42 --json
+planar-watch log --session 17 --json
+```
+
+`log` accepts exactly one filter (`--task` | `--plan` | `--entity` | `--session` | `--claim`). The output is a discriminated union: each entry carries `.kind = "action"` or `"claim_acquired"` / `"claim_released"` / `"claim_completed"` / `"claim_aborted"` / `"claim_stale"`, with the matching ActionRow or ClaimRow payload.
+
+### Step 4 — Plan rollup
+
+```
+planar-watch plans --in-flight-only              # plans with live work only
+planar-watch plans --json --follow
+```
+
+Each row pairs a plan with its in-flight summary: `active_claims`, `active_actions`, `last_event_at`. Use `--in-flight-only` to skip idle plans.
+
+### Step 5 — Lower-level ledgers (`claims`, `actions`)
+
+```
+planar-watch claims --status active|stale|all --json
+planar-watch actions --kind coder --limit 50 --json
+planar-watch actions --entity task:541 --json
+```
+
+`claims` and `actions` are the unbucketed ledgers — they return whatever rows match the filters in one flat array, suitable for downstream tools that need full table reads rather than the synthesized buckets `ps` / `plans` emit.
+
+### Capability boundary
+
+The verb set is enforced by `src/cmd/planar-watch/handlers/cmd.zig`: there is no `pull`, `claim`, `complete`, `fail`, `release`, `block`, `heartbeat`, `action`, `ingest`, `reconcile`, or `abort` in the tree. The strict-read-only DB handle (`runtime.ensureDbStrictReadOnly` → `sqlite3_open_v2(..., SQLITE_OPEN_READONLY, ...)`) refuses any write SQL with `SQLITE_READONLY` at the driver layer — verified by the `openReadOnly: write SQL is rejected at the driver layer` unit test in `src/db/sqlite.zig`. Both defenses must be in place; either failing alone is treated as a regression by `integration_tests/planar_watch_test.zig`.

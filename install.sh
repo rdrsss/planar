@@ -7,8 +7,10 @@
 #   ~/.planar/
 #     bin/planar                      # the operator binary
 #     bin/planar-agent                # the agent-callable coordination binary
-#                                     # (plan 85 — three-binary architecture;
-#                                     # planar-watch lands in M8)
+#                                     # (plan 85 — three-binary architecture)
+#     bin/planar-watch                # the human-facing read-only viewer
+#                                     # (plan 85 M8 — opens DB read-only,
+#                                     #  zero write verbs)
 #     planar.db                       # created on first `planar init`
 #     migrations/0001_foundation.up.sql  # canonical migration sources (also
 #                                     # embedded into the binary at compile
@@ -243,18 +245,21 @@ title "Building the planar + planar-agent binaries"
 
 mkdir -p "$PLANAR_HOME/bin"
 # `zig build --prefix <root>` installs every `installArtifact` target into
-# <root>/bin/. As of plan 85 the build registers TWO binaries:
+# <root>/bin/. As of plan 85 M8 the build registers THREE binaries:
 #
 #   planar         — operator surface
 #   planar-agent   — agent-callable coordination (atomic claim ops,
 #                    nested actions, ingest, operator recovery)
+#   planar-watch   — human-facing read-only viewer (no write verbs,
+#                    strict SQLITE_OPEN_READONLY handle)
 #
-# Both land in $PLANAR_HOME/bin/ in one shot — no extra cp step needed.
+# All three land in $PLANAR_HOME/bin/ in one shot — no extra cp step needed.
 # Migrations and templates/defaults are read from the repo root at
 # codegen time (build.zig sits at the repo root).
 ( cd "$REPO_ROOT" && zig build -Doptimize="$OPTIMIZE" --prefix "$PLANAR_HOME" )
 log "wrote $PLANAR_HOME/bin/planar"
 log "wrote $PLANAR_HOME/bin/planar-agent"
+log "wrote $PLANAR_HOME/bin/planar-watch"
 
 # ---------- place artifacts ----------
 

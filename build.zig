@@ -254,6 +254,37 @@ pub fn build(b: *std.Build) void {
         }),
     });
     b.installArtifact(agent_exe);
+
+    // -----------------------------------------------------------------
+    // `planar-watch` executable (plan 85 M8). Third binary in the
+    // three-binary architecture — the human-facing read-only viewer.
+    // Opens the DB via `runtime.ensureDbStrictReadOnly`, which uses
+    // `sqlite3_open_v2(..., SQLITE_OPEN_READONLY, ...)` so the SQLite
+    // driver itself refuses any write SQL. That's the second line of
+    // defense behind the capability boundary; the first is that the
+    // command tree registers exactly 6 read verbs (feed / ps / claims
+    // / actions / plans / log) plus `version` and `completion`.
+    //
+    // Links runtime, db, cli, engine (read paths only), build_options.
+    // Does NOT link the planar package (operator handlers); the binary
+    // has its own command tree under `src/cmd/planar-watch/`.
+    // -----------------------------------------------------------------
+    const watch_exe = b.addExecutable(.{
+        .name = "planar-watch",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/cmd/planar-watch/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "db", .module = db_mod },
+                .{ .name = "cli", .module = cli_mod },
+                .{ .name = "engine", .module = engine_mod },
+                .{ .name = "runtime", .module = runtime_mod },
+                .{ .name = "build_options", .module = build_options_mod },
+            },
+        }),
+    });
+    b.installArtifact(watch_exe);
     // Vendored-deps drift check runs before the binary is installed, so
     // `zig build` (which depends on the install step) fails loudly on
     // any vendor/<name>/VENDOR.toml mismatch.
@@ -291,6 +322,9 @@ pub fn build(b: *std.Build) void {
     const agent_exe_tests = b.addTest(.{ .root_module = agent_exe.root_module, .filters = test_filters_opt });
     const run_agent_exe_tests = b.addRunArtifact(agent_exe_tests);
 
+    const watch_exe_tests = b.addTest(.{ .root_module = watch_exe.root_module, .filters = test_filters_opt });
+    const run_watch_exe_tests = b.addRunArtifact(watch_exe_tests);
+
     const db_tests = b.addTest(.{ .root_module = db_mod, .filters = test_filters_opt });
     const run_db_tests = b.addRunArtifact(db_tests);
 
@@ -307,6 +341,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
     test_step.dependOn(&run_agent_exe_tests.step);
+    test_step.dependOn(&run_watch_exe_tests.step);
     test_step.dependOn(&run_db_tests.step);
     test_step.dependOn(&run_cli_tests.step);
     test_step.dependOn(&run_engine_tests.step);
@@ -353,6 +388,10 @@ pub fn build(b: *std.Build) void {
     run_integration_all.setEnvironmentVariable(
         "PLANAR_AGENT_BIN",
         b.getInstallPath(.bin, "planar-agent"),
+    );
+    run_integration_all.setEnvironmentVariable(
+        "PLANAR_WATCH_BIN",
+        b.getInstallPath(.bin, "planar-watch"),
     );
     test_integration_step.dependOn(&run_integration_all.step);
 
@@ -430,6 +469,10 @@ fn registerIntegrationTestDir(
         run.setEnvironmentVariable(
             "PLANAR_AGENT_BIN",
             b.getInstallPath(.bin, "planar-agent"),
+        );
+        run.setEnvironmentVariable(
+            "PLANAR_WATCH_BIN",
+            b.getInstallPath(.bin, "planar-watch"),
         );
         test_integration_step.dependOn(&run.step);
     }
