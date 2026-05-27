@@ -106,6 +106,23 @@ pub fn ensureDb() !*db.sqlite.Db {
     }
 
     db_storage = try db.sqlite.Db.open(ctx.db_path.ptr);
+
+    // WAL mode is a load-bearing prerequisite for the wake-tier ladder
+    // behind `planar-watch <verb> --follow` (Tier 2 kqueue / inotify on
+    // the `-wal` sibling; Tier 3 writer-side update_hook → sidecar
+    // notify). It also lets `planar-watch` read concurrently while
+    // `planar-agent` writes. The PRAGMA is idempotent — existing
+    // databases switch on next open without rewriting rows. Errors are
+    // swallowed only after we surface them to stderr; a WAL-mode
+    // failure on first open turns into "Tier 1 polling continues to
+    // work" rather than refusing service.
+    db_storage.?.exec("PRAGMA journal_mode = WAL") catch |e| {
+        ctx.stderr.print(
+            "warning: failed to set journal_mode=WAL ({s}); follow / dashboard latency may degrade\n",
+            .{@errorName(e)},
+        ) catch {};
+    };
+
     try db.migrate.applyAll(&db_storage.?, ctx.allocator);
 
     var db_version: u32 = 0;
