@@ -15,7 +15,7 @@ const validate = @import("validate.zig");
 pub const verb: cli.Cmd = .{
     .name = "resume",
     .desc = "Produce a structured resume packet for the specified task.",
-    .long_desc = "Produce a structured 8-section resume packet for the specified\n  task.\n\n  The packet contains:\n    1. Identity       — task id, plan id, title, scope\n    2. State          — status, next_action, last action\n    3. Plan position  — parent plan, completed/current/remaining steps\n    4. Operational    — external_links for the task; refreshed if stale\n    5. Recent activity — session entries from recent sessions\n    6. Decisions and questions\n    7. Linked artifacts\n    8. Audit footer   — previous session vendor and timestamp",
+    .long_desc = "Produce a structured 8-section resume packet for the specified\n  task.\n\n  The packet contains:\n    1. Identity       — task id, plan id, title, scope\n    2. State          — status, next_action, last action\n    3. Plan position  — parent plan, completed/current/remaining steps\n    4. Operational    — external_links for the task; refreshed if stale\n    5. Recent activity — session entries from recent sessions\n    6. Decisions and questions\n    7. Linked artifacts\n    8. Audit footer   — previous session vendor and timestamp, plus\n                        the active claim's worktree path (when held)\n                        so the resumer can prepend `cd <path>`",
     .flags = &.{
         .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
     },
@@ -145,6 +145,19 @@ fn renderText(ctx: *const runtime.Ctx, p: engine.runtime.@"resume".Packet) !void
         });
     } else {
         try ctx.stdout.print("  (no prior session)\n", .{});
+    }
+    if (p.active_claim) |ac| {
+        try ctx.stdout.print("  active claim: {d}  vendor: {s}\n", .{
+            @as(u64, @intCast(ac.claim_id)), ac.vendor,
+        });
+        if (ac.worktree_path.len > 0) {
+            try ctx.stdout.print("  worktree: {s}\n", .{ac.worktree_path});
+            // Operator-facing cue. Skill prose (pl-resume) instructs the
+            // resumer to prepend this `cd` to the resume flow.
+            try ctx.stdout.print("  cd: {s}\n", .{ac.worktree_path});
+        }
+        if (ac.branch.len > 0) try ctx.stdout.print("  branch: {s}\n", .{ac.branch});
+        if (ac.repo_root.len > 0) try ctx.stdout.print("  repo_root: {s}\n", .{ac.repo_root});
     }
     try ctx.stdout.print("\n", .{});
 }
