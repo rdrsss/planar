@@ -1563,10 +1563,14 @@ planar plan next 85 --json | jq '.summary, .claimed[0]'
 ### Step 3 — Walk a plan's hierarchy
 
 ```
-planar tree --scope plan:85
+planar plan show 85                    # plan row, steps, child plans
+planar task list --plan 85             # tasks linked to the plan
+planar artifact list --plan 85         # tech specs, ADRs, etc.
+planar decision list --plan 85         # accepted/proposed decisions
+planar question list --plan 85         # open questions
 ```
 
-The `tree` verb is unchanged by the agent-activity work, but it remains the structural counterpart to `plan next`: `plan next` tells you "what is pullable right now", `tree` tells you "what is the shape of this feature". Use both when triaging.
+`plan show` returns the plan's own row plus its `plan_steps` and child plans — the structural counterpart to `plan next`. The per-kind `list --plan <id>` filters drill into entities linked to the plan via `entity_links` (relationship `derives-from`). `planar tree` (no `--scope` flag) renders the cwd-derived scope's full tree; pass `--scope <association-slug>` to root at a different scope. `tree` is scope-rooted, not plan-rooted — use `plan show` + the filtered list verbs when the question is "what does this one feature look like".
 
 ### Step 4 — Inspect the audit trail for one entity
 
@@ -1592,7 +1596,8 @@ The full operator-side observation loop is exactly these five verbs. None of the
 planar dashboard --agents              # who is doing what, right now
 planar plan next <plan> --include-claimed --include-stale
                                         # one plan's queue, every bucket
-planar tree --scope plan:<plan>        # the feature's structure
+planar plan show <plan>                # plan + steps + child plans
+planar task list --plan <plan>         # tasks under the plan
 planar audit trail <kind:id>           # one entity's history
 planar health                          # is the database itself OK
 ```
