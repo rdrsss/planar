@@ -5,19 +5,24 @@ source: agents/orchestrator.md
 model_tier: large
 vendor:
   claude:
-    argument_hint: "<goal|plan-id|task-id> [<task-id>...] [--propagate] [--archive] [--strict | --grouped | --batch <ids>]"
+    argument_hint: "<goal|plan-id|task-id> [<task-id>...] [--propagate] [--archive] [--strategy <name>] [--strict | --grouped | --batch <ids>]"
     invocation_examples: |
       /orchestrator <goal>                          # start from scratch: plan → wait → ingest → wait → execute
       /orchestrator <anchor-plan-id>                # resume from current anchor plan status
       /orchestrator <task-id> [<task-id>...]        # execute specific tasks (Phase 3 only)
       /orchestrator <goal> --propagate              # plan → ingest → execute → propagate
       /orchestrator <anchor-plan-id> --archive      # execute → mark done → archive FS tree
+      /orchestrator <plan-id> --strategy classic              # explicit continuity — coder in pwd, current branch, sequential
+      /orchestrator <plan-id> --strategy isolated-sequential  # coder in a worktree on an epic-child branch; sequential
+      /orchestrator <plan-id> --strategy parallel-fanout      # fan out to N coders + N worktrees; reviewer at fan-in
+      /orchestrator <plan-id> --strategy barrel-deferred      # back-to-back coder cycles in pwd; reviewer at boundary
+      /orchestrator <plan-id> --strategy barrel-bypass        # no reviewer; gates are the entire signal
       /orchestrator <plan-id> --strict              # one coder cycle per task (skip the dispatch-shape gate)
-      /orchestrator <plan-id> --grouped             # orchestrator picks groupings (skip the gate)
-      /orchestrator <plan-id> --batch 8,9,10 --batch 11,12  # explicit grouping; repeatable (skip the gate)
-      /orchestrator <plan-id> --barrel-grouped      # alias for --grouped; milestone heuristic locked in (skip the gate)
-      /orchestrator <plan-id> --barrel-deferred [--barrel-deferred-at milestone|plan]  # coder cycles back-to-back; reviewer at boundary (skip the gate)
-      /orchestrator <plan-id> --barrel-bypass       # no reviewer; gates are the entire signal (skip the gate)
+      /orchestrator <plan-id> --grouped             # orchestrator picks groupings (skip the dispatch-shape gate)
+      /orchestrator <plan-id> --batch 8,9,10 --batch 11,12  # explicit grouping; repeatable (skip the dispatch-shape gate)
+      /orchestrator <plan-id> --barrel-grouped      # DEPRECATED alias for --grouped; prefer --strategy barrel-deferred
+      /orchestrator <plan-id> --barrel-deferred [--barrel-deferred-at milestone|plan]  # DEPRECATED; prefer --strategy barrel-deferred
+      /orchestrator <plan-id> --barrel-bypass       # DEPRECATED; prefer --strategy barrel-bypass
 shared_notes:
   - "Dispatches to the host vendor's Planar skill surfaces by default; cross-vendor dispatch uses the destination vendor's invocation surface."
 ---
@@ -34,7 +39,20 @@ The orchestrator selects phases based on the anchor plan's current `status`:
 
 2. **Ingestion (Phase 2)** — anchor plan in `draft` with workbench artifacts present: invokes `pl-spec-ingest <plan>` in preview mode (no `--apply`), presents the diff to the user, and **waits for explicit confirmation** before running `--apply`. Never auto-applies.
 
-3. **Execution (Phase 3)** — anchor plan `active` or `paused`: first reads claim-aware state with `planar plan next <plan>` (operator-side) or `planar-agent peek <plan>` (agent-side dry-run for explicit task IDs), excludes active unexpired claims, and surfaces stale claims before dispatch. It then proposes a dispatch shape (`strict` / `grouped` / `single`) per [Dispatch Granularity](../../agents/methodology.md#dispatch-granularity) and **waits for explicit confirmation** before any coder runs. Before dispatching each cycle it acquires the lease atomically via `planar-agent pull <plan>` (or `planar-agent claim --entity task:<id>` for hand-picked targets) and records the returned `claim_token` in the dispatch entry. The dispatch heuristic is **parallelism-aware**: it consults the `entity_links` graph + task touches metadata to identify mutually-non-conflicting tasks that can be claimed in parallel windows. Parallel dispatch remains operator-opt-in; explicit serial cycles (one `pull → heartbeat → terminal` at a time) are the default. After the coder reports done, the orchestrator runs **Phase 3.5 — test-coder dispatch** (see below): consults `planar test-spec status <plan> --json` and, when the cycle's dispatched slugs intersect the JSON's `uncovered_task_slugs`, dispatches `pl-test-coder`. The output (coder diff alone or the union of coder + test-coder diffs) is routed through `pl-reviewer`. The cycle terminates via one of `planar-agent complete` / `fail` / `release` / `block` (atomic — flips both claim status and task status in a single transaction). Enforces the 5-iteration cap per coder/reviewer cycle (the test-coder cycle has its own cap, default 2), and surfaces escalations (open questions, aborts, ship-with-caveats, failure-surfaced). The dispatch-shape gate is bypassed only when `--strict`, `--grouped`, or `--batch` was supplied at invocation.
+3. **Execution (Phase 3)** — anchor plan `active` or `paused`: first reads claim-aware state with `planar plan next <plan>` (operator-side) or `planar-agent peek <plan>` (agent-side dry-run for explicit task IDs), excludes active unexpired claims, and surfaces stale claims before dispatch. Phase 3 then runs **two gates in order** before any coder runs: the **strategy gate** (new — see below), which picks the overall methodology for the plan (`classic` / `isolated-sequential` / `parallel-fanout` / `barrel-deferred` / `barrel-bypass`), followed by the **dispatch-shape gate** (existing — `strict` / `grouped` / `single`), which picks the per-cycle batching nested under the chosen strategy. Both gates wait for explicit operator confirmation; both can be pre-committed via flags (`--strategy <name>` / `--strict` / `--grouped` / `--batch`). Before dispatching each cycle the orchestrator acquires the lease atomically via `planar-agent pull <plan>` (or `planar-agent claim --entity task:<id>` for hand-picked targets) and records the returned `claim_token` in the dispatch entry. The dispatch heuristic is **parallelism-aware**: under the `parallel-fanout` strategy it consults the `entity_links` graph + task touches metadata to identify the parallel-eligible subset and fans out N coders into N worktrees per [Worktrees](../../agents/methodology.md#worktrees); under all other strategies cycles run sequentially. After the coder reports done, the orchestrator runs **Phase 3.5 — test-coder dispatch** (see below): consults `planar test-spec status <plan> --json` and, when the cycle's dispatched slugs intersect the JSON's `uncovered_task_slugs`, dispatches `pl-test-coder`. The output (coder diff alone or the union of coder + test-coder diffs) is routed through `pl-reviewer`. The cycle terminates via one of `planar-agent complete` / `fail` / `release` / `block` (atomic — flips both claim status and task status in a single transaction). Enforces the 5-iteration cap per coder/reviewer cycle (the test-coder cycle has its own cap, default 2), and surfaces escalations (open questions, aborts, ship-with-caveats, failure-surfaced).
+
+   **Strategy gate (first thing Phase 3 does, after reading claim state).** The orchestrator runs the recommendation algorithm against the plan — see [`agents/methodology.md` § Recommendation algorithm](../../agents/methodology.md#recommendation-algorithm) for the rules (mechanical/docs/single-verb → `barrel-bypass`; multi-milestone roadmap with ≤1 parallel-eligible per milestone → `barrel-deferred`; ≥3 tasks with ≥2 parallel-eligible → `parallel-fanout`; 2–3 tasks none parallel-eligible → `isolated-sequential`; single-task → `classic`; otherwise stickiness then `classic`). It then surfaces:
+
+   - the recommended strategy,
+   - a one-line rationale (e.g. "2-task plan, neither parallel-eligible"),
+   - the full menu of the five named strategies with one-line trade-offs (see [Strategy menu](#strategy-menu) below),
+   - the `--strategy custom` escape hatch for axis-by-axis overrides.
+
+   The orchestrator **waits for explicit operator confirmation** before doing any further Phase 3 work (no claim acquisition, no dispatch-shape proposal, no coder dispatch). Auto-defaulting without confirmation is not supported: the recommendation never silently turns into an action.
+
+   The strategy gate is skipped only when `--strategy <name>` (or `--strategy custom --isolation X --branch-model Y ...`) was supplied at invocation. The dispatch-shape gate then runs nested under the chosen strategy, constrained by it: `parallel-fanout` forces the fan-out shape; `barrel-bypass` forces the barrel-bypass shape; `barrel-deferred` forces the barrel-deferred shape; `classic` and `isolated-sequential` keep the full strict / grouped / single menu. The dispatch-shape gate is itself bypassed only when `--strict`, `--grouped`, `--batch`, or a `--barrel-*` standalone flag was supplied (the standalone barrel-* flags are soft-deprecated — see [Aliases and deprecations](#aliases-and-deprecations)).
+
+   **Strategy stickiness is deferred.** The recommendation algorithm's rule 6 ("if the last dispatch used non-default strategy S, recommend S") rides on `agent_actions.metadata` JSON which does not yet have the column or CLI plumbing to read/write it (task 2939 follow-up). Until that lands, the orchestrator does **not** auto-recall the prior cycle's strategy — it re-derives the recommendation from plan shape each cycle. The operator confirms each time, so the only loss is one-keypress repetition. Do not assume `agent_actions.metadata` writes happen today; they do not.
 
    **Phase 3.5 outcomes:**
    - `expanded` → test-coder diff staged alongside coder's; reviewer sees the union.
@@ -50,7 +68,8 @@ The orchestrator selects phases based on the anchor plan's current `status`:
 
 - Between Phase 1 and Phase 2: user must review artifacts.
 - Between Phase 2 preview and `--apply`: user must confirm the diff.
-- Phase 3 dispatch shape: user picks one of the six shapes (strict/grouped/single/barrel-grouped/barrel-deferred/barrel-bypass) before any coder runs (unless `--strict`/`--grouped`/`--batch`/`--barrel-grouped`/`--barrel-deferred`/`--barrel-bypass` was supplied).
+- Phase 3 **strategy**: user picks (or confirms the recommendation of) one of the five named strategies (`classic` / `isolated-sequential` / `parallel-fanout` / `barrel-deferred` / `barrel-bypass`), or supplies `--strategy custom` with per-axis flags. This gate runs **first** in Phase 3, before claim acquisition or dispatch-shape selection. Skipped only when `--strategy <name>` was supplied at invocation.
+- Phase 3 **dispatch shape**: user picks one of the dispatch shapes (strict/grouped/single — or the legacy six-shape menu when a standalone barrel-* flag is in play) before any coder runs. Runs nested under the chosen strategy and is constrained by it (`parallel-fanout`/`barrel-deferred`/`barrel-bypass` force the corresponding shape). Skipped when `--strict`/`--grouped`/`--batch`/`--barrel-grouped`/`--barrel-deferred`/`--barrel-bypass` was supplied.
 - Phase 3 claim conflicts: active unexpired claims are not silently bypassed. Stale claims require reconciliation or explicit force-takeover before the work is considered available.
 - Phase 3.5 `failure-surfaced` outcome: when a test the test-coder authored fails on first run, user must resolve (fix the test or fix the code) before the reviewer is dispatched. The orchestrator never decides which side is wrong.
 - Phase 4: user must request propagation.
@@ -108,9 +127,75 @@ When skipping the reviewer, the orchestrator records the disposition (and the cy
 
 When dispatching the reviewer, the orchestrator composes a fresh brief — it MUST NOT paste the coder's or test-coder's full report into the reviewer's context. The reviewer brief contains only: the task IDs, slugs, and claim tokens the coder claimed, the relevant spec/roadmap section paths (not bodies — the reviewer reads the files independently), a directive to run `git diff HEAD` and `git diff --stat HEAD` firsthand, and the coder's quality-gate output (test count, integration confirmation) since the reviewer is not re-running gates. When the test-coder ran successfully, the brief also instructs the reviewer to run `planar test-spec status <plan>` against the post-diff DB and treat any leftover uncovered slug claimed by the brief as a `request-changes` finding. This preserves the reviewer's independent read against the coder/test-coder framing.
 
-## Dispatch mode options
+## Strategy menu
 
-Before asking the user to select a dispatch mode, the orchestrator presents all six shapes with a one-line trade-off each:
+Before asking the operator to confirm the strategy gate, the orchestrator surfaces all five named strategies with a one-line trade-off each, plus the `--strategy custom` escape hatch. Strategy answers "what is the overall methodology for this plan?" — dispatch shape (next section) answers "within that strategy, how do I batch *this cycle's* work?"
+
+```
+  classic                Coder runs in operator's pwd on the current
+                         branch. Sequential cycles, reviewer per cycle,
+                         test-coder per cycle. No worktrees, no epic
+                         branch, no parallelism.
+                         [continuity guarantee — today's behavior bit-for-bit]
+                         Recommended for: single-task changes, small plans,
+                         high-stakes invariant-touching work.
+
+  isolated-sequential    Coder runs in a dedicated worktree on a child
+                         branch off an epic branch. Sequential cycles,
+                         reviewer per cycle.
+                         [pwd hygiene + per-task rollback] — Recommended
+                         for: multi-task plans, cross-cutting work.
+
+  parallel-fanout        Fan out to N parallel coders on the parallel-
+                         eligible subset; each in its own worktree on its
+                         own child branch; single reviewer pass at fan-in.
+                         [throughput + integrated review] — Recommended
+                         for: plans with ≥3 tasks and ≥2 parallel-eligible.
+                         Refused for: schema-migration-heavy plans,
+                         singleton-file editing plans.
+
+  barrel-deferred        Coder cycles run back-to-back in pwd; reviewer
+                         dispatched once at a milestone or plan boundary
+                         on the union diff. No isolation.
+                         [throughput + late review safety net] —
+                         Recommended for: long sequential plans where
+                         per-cycle reviewer overhead exceeds the value.
+
+  barrel-bypass          No reviewer dispatch at all. Quality gates
+                         (make fmt-check, build, test, test-integration
+                         twice, planar skills render --check against an
+                         out-of-tree staging dir, and any remaining
+                         relevant validators) ARE the entire signal.
+                         Sequential, in-pwd.
+                         [maximum throughput; trust the gates] —
+                         Recommended for: mechanical sweeps, docs-polish,
+                         single-verb additions where the contract is
+                         fully gated.
+
+  --strategy custom      Assemble a custom axis combination via
+                         --isolation, --branch-model, --concurrency,
+                         --reviewer-cadence, --test-coder-cadence.
+                         [escape hatch for advanced operators]
+
+  When in doubt: take the recommendation, or use --strategy classic.
+```
+
+The five named strategies are bundles of the five underlying axes (`isolation`, `branch_model`, `concurrency`, `reviewer_cadence`, `test_coder_cadence`); the axes and the named-bundle table live in [`agents/methodology.md` § Orchestration strategies](../../agents/methodology.md#orchestration-strategies). The orchestrator refuses the invalid axis combinations listed there (e.g. `concurrency=fan-out` with `isolation=in-pwd`) with a diagnostic before any dispatch runs.
+
+### `classic` — the continuity guarantee
+
+`classic` is the explicit continuity default, not a legacy or deprecated mode. When the operator selects (or accepts the recommendation of) `classic`, the orchestrator's behavior matches today's bit-for-bit:
+
+- **Explicitly skips:** worktree creation, epic branch creation, child-branch creation, fan-in merge, any parallel dispatch.
+- **Dispatches:** the coder against the operator's pwd on whatever branch is currently checked out. No `isolation: "worktree"` flag, no `--worktree <path>` on `planar-agent pull`.
+- **Reviewer:** runs per cycle, per the existing `agents/methodology.md` reviewer dispatch profile.
+- **Test-coder:** runs per cycle when uncovered slugs intersect the cycle's slugs, per Phase 3.5.
+
+The promise: introducing the strategy menu does not require existing operators to learn a new flow to keep working as they do. Pick `classic`, get today's behavior. See [`agents/methodology.md` § Continuity guarantee: `classic`](../../agents/methodology.md#continuity-guarantee-classic) for the framing.
+
+## Dispatch shape options
+
+Once the strategy is chosen, the orchestrator runs the dispatch-shape gate **nested under the strategy**. The shape describes per-cycle batching, not overall methodology. Under `classic` and `isolated-sequential` the operator picks freely from `strict` / `grouped` / `single`. Under `parallel-fanout` the shape is forced to `fan-out`. Under `barrel-deferred` and `barrel-bypass` the shape is forced to the matching barrel shape.
 
 ```
   strict           One coder cycle per task; full reviewer per task.
@@ -124,30 +209,43 @@ Before asking the user to select a dispatch mode, the orchestrator presents all 
   single           All tasks in one coder cycle; one reviewer pass.
                    [tiny features only] — Decomposition is theatre.
 
-  barrel-grouped   Alias for grouped with the milestone heuristic
-                   locked in. Reviewer per group.
-                   [throughput + per-group review]
+  fan-out          (forced under --strategy parallel-fanout) N parallel
+                   coders + N worktrees, single reviewer at fan-in.
 
-  barrel-deferred  Coder cycles run back-to-back; reviewer fires at
-                   the configured boundary (milestone default;
+  barrel-deferred  (forced under --strategy barrel-deferred) Coder
+                   cycles run back-to-back; reviewer fires at the
+                   configured boundary (milestone default;
                    --barrel-deferred-at plan for once-per-plan).
-                   [throughput + late review safety net]
 
-  barrel-bypass    No reviewer dispatch at all. Quality gates
-                   (make fmt-check, build, test, test-integration
-                   twice, parity validators) ARE the entire review
-                   signal.
-                   [maximum throughput; trust the gates]
+  barrel-bypass    (forced under --strategy barrel-bypass) No reviewer
+                   dispatch at all; gates are the entire signal.
 
   When in doubt: use --strict.
 ```
 
-The three `barrel-*` shapes are documented in detail in [`agents/methodology.md` §Barrel modes](../../agents/methodology.md#barrel-modes). They are siblings of `strict`/`grouped`/`single` on the same gate; the operator picks one shape per `pl-orchestrator` invocation.
+The three `barrel-*` shapes are documented in detail in [`agents/methodology.md` § Barrel modes](../../agents/methodology.md#barrel-modes). Phase 3.5 (test-coder dispatch) fires across all barrel modes when uncovered slugs intersect the cycle's slugs. `barrel-bypass` bypasses the reviewer, not the coverage gate. See [`agents/methodology.md` § Dispatch mode selection](../../agents/methodology.md#dispatch-mode-selection) for the full inline-vs-strict rule.
 
-Phase 3.5 (test-coder dispatch) fires across all barrel modes when uncovered slugs intersect the cycle's slugs. `barrel-bypass` bypasses the reviewer, not the coverage gate.
+## Aliases and deprecations
 
-See `agents/methodology.md` § "Dispatch mode selection" for the full
-inline-vs-strict rule.
+The pre-strategy-model dispatch-shape gate exposed six standalone flags (`--strict`, `--grouped`, `--batch`, `--barrel-grouped`, `--barrel-deferred`, `--barrel-bypass`). Under the strategy model, the three `--barrel-*` standalone flags are **soft-deprecated**: they continue to work as documented, but they conflate the strategy choice with the dispatch-shape choice. The preferred form is `--strategy <name>`.
+
+| Deprecated standalone flag | Preferred form | Strategy implied |
+|----------------------------|----------------|------------------|
+| `--barrel-grouped`         | `--grouped` (under any non-barrel strategy) | n/a — was always an alias for grouped |
+| `--barrel-deferred [--barrel-deferred-at ...]` | `--strategy barrel-deferred` | `barrel-deferred` |
+| `--barrel-bypass`          | `--strategy barrel-bypass` | `barrel-bypass` |
+
+When the orchestrator sees a standalone `--barrel-*` flag at invocation, it accepts it (preserving operator muscle memory and existing scripts) but emits a one-line deprecation note before Phase 3 proceeds:
+
+```
+note: --barrel-deferred is now an alias for --strategy barrel-deferred;
+      the standalone flag will be removed in a future cycle. See
+      agents/methodology.md § Orchestration strategies.
+```
+
+The deprecation note is informational, not blocking. Both gates are still skipped (the standalone barrel-* flag pre-commits both the strategy and the dispatch shape, same as the original semantics). The note exists to surface the migration path to operators using the old form.
+
+`--strict`, `--grouped`, and `--batch` are **not** deprecated — they remain first-class dispatch-shape skips and compose with any strategy that admits them (`classic`, `isolated-sequential`; refused under the forced-shape strategies). Removal of the standalone `--barrel-*` flags is a future cycle's decision, not this cycle's.
 
 ## Vendor Notes
 
