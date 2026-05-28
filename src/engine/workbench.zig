@@ -17,6 +17,7 @@ pub const feature = @import("workbench/feature.zig");
 pub const manifest = @import("workbench/manifest.zig");
 pub const sync = @import("workbench/sync.zig");
 pub const terminal = @import("workbench/terminal.zig");
+pub const gc = @import("workbench/gc.zig");
 
 test {
     _ = parse;
@@ -25,4 +26,5 @@ test {
     _ = manifest;
     _ = sync;
     _ = terminal;
+    _ = gc;
 }

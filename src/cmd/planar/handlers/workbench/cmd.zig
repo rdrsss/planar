@@ -14,6 +14,7 @@ const list = @import("list.zig");
 const publish = @import("publish.zig");
 const extract_questions = @import("extract_questions.zig");
 const edit = @import("edit.zig");
+const gc = @import("gc.zig");
 
 pub const verb: cli.Cmd = .{
     .name = "workbench",
@@ -91,6 +92,19 @@ pub const verb: cli.Cmd = .{
             },
             .positionals = &.{.{ .name = "plan", .kind = .string, .required = true }},
             .run = cli.handler(restore.handle),
+        },
+        .{
+            .name = "gc",
+            .desc = "Remove FS files whose backing entity is terminal in the DB.",
+            .flags = &.{
+                .{ .long = "--dry-run", .kind = .bool, .default = .{ .bool = false }, .desc = "Preview only; do not touch disk" },
+                .{ .long = "--yes", .kind = .bool, .default = .{ .bool = false }, .desc = "Discard FS-content drift; remove drifted files anyway" },
+                .{ .long = "--filter-mode", .kind = .string, .desc = "Terminal-status filter: 'failures' (default) or 'all'" },
+                .{ .long = "--all-scopes", .kind = .bool, .default = .{ .bool = false }, .desc = "Walk every plan's workbench tree" },
+                .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
+            },
+            .positionals = &.{.{ .name = "plan", .kind = .string, .required = false }},
+            .run = cli.handler(gc.handle),
         },
         .{
             .name = "list",
