@@ -37,14 +37,16 @@ pub const verb: cli.Cmd = .{
         },
         .{
             .name = "render",
-            .desc = "Render a template against a database entity.",
+            .desc = "Render a template against a database entity (dry run; no writes).",
             .positionals = &.{
                 .{ .name = "set", .kind = .string, .required = true },
                 .{ .name = "system", .kind = .string, .required = true },
                 .{ .name = "kind", .kind = .string, .required = true },
-                .{ .name = "entity-ref", .kind = .string, .required = true },
             },
-            .flags = &.{.{ .long = "--json", .kind = .bool, .default = .{ .bool = false } }},
+            .flags = &.{
+                .{ .long = "--entity", .kind = .string, .required = true, .desc = "Entity ref (kind:id) — task:42, plan:7, scenario:3" },
+                .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
+            },
             .run = cli.handler(render.handle),
         },
         .{

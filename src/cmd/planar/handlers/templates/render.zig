@@ -1,4 +1,4 @@
-//! handlers/templates/render — `planar templates render <set> <system> <kind> <entity-ref>`.
+//! handlers/templates/render — `planar templates render <set> <system> <kind> --entity <kind>:<id>`.
 //!
 //! Build a render context from the named entity (kind:id), render the
 //! template, and print the resulting JSON payload to stdout. Pure dry run —
@@ -27,8 +27,8 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     };
     defer engine.templates.deinitTemplate(t, ctx.allocator);
 
-    // Parse kind:id.
-    const ref = args.entity_ref;
+    // Parse --entity kind:id.
+    const ref = args.entity;
     const colon = std.mem.indexOfScalar(u8, ref, ':') orelse
         exit.die(ctx, error.InvalidInput, "--entity must be kind:id (got '{s}')", .{ref});
     const kind = ref[0..colon];

@@ -183,7 +183,7 @@ test "scenario: templates — list embedded, init to disk, list from disk, show 
 
     const task_ref = std.fmt.allocPrint(arena, "task:{d}", .{task.value.id}) catch unreachable;
     const render_raw = suite.mustRunWith(&.{
-        "templates", "render", "default", "github-issues", "issue", task_ref, "--json",
+        "templates", "render", "default", "github-issues", "issue", "--entity", task_ref, "--json",
     }, &env);
     defer gpa.free(render_raw);
 
