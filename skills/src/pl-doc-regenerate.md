@@ -31,7 +31,7 @@ current bodies from the database, fills the doc-kind synthesis
 template, calls the LLM at temperature 0 to produce a refreshed body,
 then hands that body to `planar doc regenerate` which validates
 hand-edit safety, writes the doc with refreshed provenance, and
-re-runs the manifest build atomically.
+re-runs the manifest update atomically.
 
 ## CLI Commands
 

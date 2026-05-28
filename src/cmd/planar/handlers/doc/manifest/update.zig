@@ -7,7 +7,7 @@ const exit = @import("../../../exit.zig");
 const output = @import("../../../output.zig");
 
 pub fn handle(args_ptr: *const anyopaque) anyerror!void {
-    const args = cli.castArgs(main.root, &.{ "doc", "manifest", "build" }, args_ptr);
+    const args = cli.castArgs(main.root, &.{ "doc", "manifest", "update" }, args_ptr);
     const ctx = runtime.current();
     const root = if (args.path) |p| p else engine.docs.manifest.default_docs_root;
     const prior = engine.docs.manifest.load(engine.docs.manifest.file_name, ctx.allocator) catch |e| switch (e) {

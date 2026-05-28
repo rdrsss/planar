@@ -1,22 +1,21 @@
 //! integration_tests/scenarios/scenario_doc_system_test.zig
 //!
 //! Scenario M7 of plan 352. Doc system: operator runs the doc-
-//! tooling pipeline (lint → manifest build → manifest check)
+//! tooling pipeline (lint → manifest update → manifest verify)
 //! against a workspace's `docs/` tree, then surveys coverage and
 //! orphan reports.
 //!
 //! Verbs exercised:
-//!     init, doc lint, doc manifest build, doc manifest check,
-//!     doc manifest validate, doc coverage, doc orphans,
-//!     doc backlinks.
+//!     init, doc lint, doc manifest update, doc manifest verify,
+//!     doc manifest diff, doc coverage, doc orphans, doc backlinks.
 //!
 //! Verifies (roadmap slugs):
 //!     [ds/doc-lint] — `doc lint --path <dir>` returns
 //!     `{ok: true, issues: []}` for a clean tree.
-//!     [ds/doc-manifest-roundtrip] — `doc manifest build` produces
-//!     a content-hashed root; `doc manifest check` against the
-//!     same tree returns matching stored / current roots and
-//!     empty changes; `doc manifest validate` returns ok.
+//!     [ds/doc-manifest-roundtrip] — `doc manifest update` produces
+//!     a content-hashed root; `doc manifest verify` against the
+//!     same tree exits 0 with matching roots; `doc manifest diff`
+//!     against the same tree exits 0 with no changes.
 //!     [ds/doc-survey-verbs] — `doc coverage`, `doc backlinks
 //!     <ref>`, `doc orphans` each return JSON with the documented
 //!     {ok, …} shape.
@@ -65,10 +64,10 @@ const Backlinks = struct {
 };
 
 // =========================================================================
-// Primary flow: lint + manifest build/check/validate on a clean tree
+// Primary flow: lint + manifest update/verify/diff on a clean tree
 // =========================================================================
 
-test "scenario: doc system — lint clean tree, manifest build/check round-trip" {
+test "scenario: doc system — lint clean tree, manifest update/verify/diff round-trip" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
@@ -102,26 +101,26 @@ test "scenario: doc system — lint clean tree, manifest build/check round-trip"
     };
     try std.testing.expect(lint.value.ok);
 
-    // ---- 3. doc manifest build returns the content-hashed root +
-    // entry count.
+    // ---- 3. doc manifest update returns the content-hashed root
+    // + entry count.
     const mb_raw = suite.mustRunInDir(proj, &.{
-        "doc", "manifest", "build", "--json", "--path", proj,
+        "doc", "manifest", "update", "--json", "--path", proj,
     });
     defer gpa.free(mb_raw);
     const mb = std.json.parseFromSlice(ManifestBuild, arena, mb_raw, .{
         .allocate = .alloc_always,
         .ignore_unknown_fields = true,
     }) catch |e| {
-        std.debug.print("\ndoc manifest build JSON parse failed: {s}\nraw: {s}\n", .{ @errorName(e), mb_raw });
+        std.debug.print("\ndoc manifest update JSON parse failed: {s}\nraw: {s}\n", .{ @errorName(e), mb_raw });
         try std.testing.expect(false);
         return;
     };
     try std.testing.expect(mb.value.ok);
 
-    // ---- 4. doc manifest check against the same tree returns
-    // matching stored / current root and empty changes.
+    // ---- 4. doc manifest verify against the same tree exits 0
+    // and the JSON reports matching stored / current root.
     const mc_raw = suite.mustRunInDir(proj, &.{
-        "doc", "manifest", "check", "--json", "--path", proj,
+        "doc", "manifest", "verify", "--json", "--path", proj,
     });
     defer gpa.free(mc_raw);
     const mc = std.json.parseFromSlice(ManifestBuild, arena, mc_raw, .{
@@ -134,6 +133,19 @@ test "scenario: doc system — lint clean tree, manifest build/check round-trip"
             try std.testing.expectEqualStrings(sr, cr);
         }
     }
+
+    // ---- 5. doc manifest diff against the same tree exits 0
+    // with no changes. (Drift survey, never fails on drift —
+    // verify is the gate.)
+    const md_raw = suite.mustRunInDir(proj, &.{
+        "doc", "manifest", "diff", "--json", "--path", proj,
+    });
+    defer gpa.free(md_raw);
+    const md = std.json.parseFromSlice(ManifestBuild, arena, md_raw, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    }) catch unreachable;
+    try std.testing.expect(md.value.ok);
 }
 
 // =========================================================================
@@ -178,7 +190,7 @@ test "scenario: doc system — coverage / orphans / backlinks return documented 
         .ignore_unknown_fields = true,
     }) catch unreachable;
 
-    // Seed a `docs/` directory before manifest build — the verb
+    // Seed a `docs/` directory before manifest update — the verb
     // requires a `docs/` subdir at cwd to hash and exits
     // FileNotFound otherwise. Spawn a one-shot mkdir+touch shell
     // via std.process.run so we don't accidentally invoke the
@@ -197,7 +209,7 @@ test "scenario: doc system — coverage / orphans / backlinks return documented 
     // Build the manifest before backlinks runs — backlinks reads
     // .manifest-docs from cwd and exits NotFound otherwise. Build
     // is a write step (persists .manifest-docs at cwd).
-    const seed_mb = suite.mustRunInDir(proj, &.{ "doc", "manifest", "build", "--json" });
+    const seed_mb = suite.mustRunInDir(proj, &.{ "doc", "manifest", "update", "--json" });
     gpa.free(seed_mb);
 
     // ---- doc coverage — emits {ok, total_done, covered, uncovered}.
@@ -269,7 +281,7 @@ test "scenario: doc system — promote artifact to published doc, regenerate wit
     gpa.free(seed_res.stderr);
     try std.testing.expect(seed_res.term == .exited and seed_res.term.exited == 0);
 
-    const seed_mb = suite.mustRunInDir(proj, &.{ "doc", "manifest", "build", "--json" });
+    const seed_mb = suite.mustRunInDir(proj, &.{ "doc", "manifest", "update", "--json" });
     gpa.free(seed_mb);
 
     // ---- Plan + tech-spec artifact as the promote source.

@@ -2542,7 +2542,7 @@ cross-repo edges:
 planar workspace regenerate [<workspace>]
 ```
 
-**Description:** Render the canonical `AGENTS.md` for a workspace. Reads `<state-dir>/routing-table.json` (produced by `routing build`), re-fetches live cross-repo plans and open questions from the database (these go stale fast, so the regenerator queries them every run rather than trusting cached counts), renders the AGENTS.md template (operator-installed at `~/.planar/templates/doc-prompts/agents.md` or the embedded fallback), and atomically writes the result to `<state-dir>/AGENTS.md`. Plan 96's drift manifest (`<state-dir>/.manifest-docs`) is rebuilt alongside the AGENTS.md write so hand-edits surface as drift on the next manifest check. Errors with an explicit "run routing build first" hint when `routing-table.json` is missing.
+**Description:** Render the canonical `AGENTS.md` for a workspace. Reads `<state-dir>/routing-table.json` (produced by `routing build`), re-fetches live cross-repo plans and open questions from the database (these go stale fast, so the regenerator queries them every run rather than trusting cached counts), renders the AGENTS.md template (operator-installed at `~/.planar/templates/doc-prompts/agents.md` or the embedded fallback), and atomically writes the result to `<state-dir>/AGENTS.md`. Plan 96's drift manifest (`<state-dir>/.manifest-docs`) is rebuilt alongside the AGENTS.md write so hand-edits surface as drift on the next `manifest verify`. Errors with an explicit "run routing build first" hint when `routing-table.json` is missing.
 
 **Output (human):**
 ```
