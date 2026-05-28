@@ -52,7 +52,7 @@ classifier[^doc_product_spec].
   (synthesise a new doc from named source entities) and
   `planar doc regenerate` (re-synthesise an existing doc when its
   sources have drifted). The LLM call lives in the vendor skills;
-  the Go CLI handles resolution, hashing, atomic write, and
+  the Planar binary handles resolution, hashing, atomic write, and
   manifest update.
 - Adds query verbs for coverage analysis: `planar doc backlinks`,
   `planar doc orphans`, `planar doc coverage`[^doc_roadmap].

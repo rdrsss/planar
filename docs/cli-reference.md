@@ -2,7 +2,7 @@
 
 Reference for every `planar` subcommand. Authoritative current surface for the installed binary. For machine-readable help, use `planar <subcommand> --help`.
 
-**Source of truth:** schema across `src/migrations/0001_foundation.sql` through `src/migrations/0007_workbench.sql` (21 application tables). Every "schema effects" section below cites real columns from those migrations.
+**Source of truth:** schema across `migrations/00001_foundation.up.sql` through `migrations/00015_agent_activity.up.sql`. Every "schema effects" section below cites real columns from those migrations. See [docs/architecture.md § Application tables](architecture.md#application-tables) for the migration-by-migration table inventory.
 
 ---
 
@@ -194,7 +194,7 @@ Initializes the Planar database and registers the current directory as a project
 planar init [--name <text>] [--db <path>]
 ```
 
-**Description:** Idempotently ensure the config file exists (via `config init`), apply embedded migrations via goose (embed.FS, library mode) against the configured database (creating it if absent), then register the current working directory as a project if it is not already registered. Emits a summary of schema version and project id. Order: ensure config → apply migrations → create project row.
+**Description:** Idempotently ensure the config file exists (via `config init`), apply the embedded migration corpus (compiled into the binary at build time from `migrations/` via `tools/gen_migrations.zig`) against the configured database (creating it if absent), then register the current working directory as a project if it is not already registered. Emits a summary of schema version and project id. Order: ensure config → apply migrations → create project row.
 
 **Workspace-shape guardrail:** when cwd has no `.git` of its own but contains one or more immediate child directories that do, `planar init` refuses with a hint pointing at `planar workspace init`. A bare init in a polyrepo workspace directory would otherwise register a semantically-wrong project row for the workspace itself. Pass `--allow-no-repo` (alias `--force`) to override and register the non-repo cwd as a standalone project anyway. See [Domain: `workspace`](#domain-workspace) and [concepts.md § Workspace](concepts.md#workspace).
 
@@ -2474,9 +2474,9 @@ org:side ok
 planar workspace routing build [<workspace>] [--enrich]
 ```
 
-**Description:** Scan the workspace's member projects and rewrite `<state-dir>/routing-table.json`. Deterministic and pure-Go by default: reads each project's README first paragraph (becomes `summary`), runs manifest detection for capability tags (loaded from `~/.planar/templates/workspace-capabilities.toml` when present), infers cross-repo dependencies from `go.mod` replace directives and `package.json` workspace deps, walks the repo for a language census and entry-point detection, and refreshes the `planar_focus` block via live DB queries (open tasks, open questions, active plans). Operator overrides from `<state-dir>/routing-table-overrides.json` are merged on every build and always win.
+**Description:** Scan the workspace's member projects and rewrite `<state-dir>/routing-table.json`. Deterministic and in-process by default (no LLM): reads each project's README first paragraph (becomes `summary`), runs manifest detection for capability tags (loaded from `~/.planar/templates/workspace-capabilities.toml` when present), infers cross-repo dependencies from `go.mod` replace directives and `package.json` workspace deps, walks the repo for a language census and entry-point detection, and refreshes the `planar_focus` block via live DB queries (open tasks, open questions, active plans). Operator overrides from `<state-dir>/routing-table-overrides.json` are merged on every build and always win.
 
-With `--enrich`, the builder additionally consults the workspace-enrichment cache at `~/.planar/cache/workspace-enrichment/<org_id>/` and merges any LLM result whose fingerprint matches the project's current content. Cache misses emit a per-project hint to run the `pl-workspace-scan` skill. If the workspace's `config.toml` declares an `enrich_command`, the Go side shells out to it on cache miss (stdin = Request JSON, stdout = Result JSON, bounded by `enrich_timeout_seconds`, default 30); validation failures are warnings, never build failures. Merge precedence (highest first): manual overrides → LLM enrichment → static signals.
+With `--enrich`, the builder additionally consults the workspace-enrichment cache at `~/.planar/cache/workspace-enrichment/<org_id>/` and merges any LLM result whose fingerprint matches the project's current content. Cache misses emit a per-project hint to run the `pl-workspace-scan` skill. If the workspace's `config.toml` declares an `enrich_command`, the builder shells out to it on cache miss (stdin = Request JSON, stdout = Result JSON, bounded by `enrich_timeout_seconds`, default 30); validation failures are warnings, never build failures. Merge precedence (highest first): manual overrides → LLM enrichment → static signals.
 
 **Output (human):**
 ```
@@ -3740,7 +3740,7 @@ link 7: sync_direction read-only → write-back
 
 ## Domain: `help`
 
-**Note:** `planar help` and `planar <command> --help` are provided by cobra; this section is preserved for discoverability.
+**Note:** `planar help` and `planar <command> --help` are rendered by the in-tree help layer (`src/cli/help.zig`); this section is preserved for discoverability.
 
 ---
 
@@ -3971,12 +3971,12 @@ Operators who passed `--threshold 0.0` to bypass the confidence floor but ended 
 <repo-root>/
   + plan       Phase 1 — Foundation         (4 tasks)
   +   task     Add migrations               [done — git-log match]
-  +   task     Wire cobra commands          [todo]
+  +   task     Wire CLI parser              [todo]
   + plan       Phase 2 — Adapters           (2 tasks)
   +   task     Jira adapter                 [todo]
   +   task     GitHub adapter               [todo]
   + artifact   docs/tech-spec.md            [kind=tech_spec]
-  + decision   Use pure-Go SQLite           [from: docs/adr/0005-go-as-runtime.md]
+  + decision   Vendor SQLite amalgamation   [from: docs/adrs.md#adr-0009]
   ~ task       Add workbench archive        [skipped — already imported]
 
 7 additions, 1 skipped.
@@ -3999,7 +3999,7 @@ Run with --apply to commit.
     {"title": "Tech Spec", "source_path": "docs/tech-spec.md", "kind": "tech_spec"}
   ],
   "decisions": [
-    {"title": "Use pure-Go SQLite", "source_path": "docs/adr/0005-go-as-runtime.md"}
+    {"title": "Vendor SQLite amalgamation", "source_path": "docs/adrs.md"}
   ],
   "ambiguous": [],
   "warnings": []
@@ -4146,7 +4146,7 @@ Writes (only with `--apply`):
 - `decisions` — inserts decisions extracted from tech specs and LLM-inferred decisions (citation required).
 - `entity_links` — inserts `derives-from` links (child plan→anchor, task→plan, decision→anchor).
 
-**Apply layer.** The Apply path is **shared with `import`** (`src/internal/adopter/apply.go` + `diff.go`). Both verbs converge on the same downstream pipeline.
+**Apply layer.** The Apply path is **shared with `import`** (the apply + diff helpers in `src/engine/import.zig`). Both verbs converge on the same downstream pipeline.
 
 **Exit codes:**
 - `0` — success (preview, dry-run, apply, or cache-miss "awaiting synthesis").
@@ -4173,7 +4173,7 @@ Resolution order (highest to lowest priority):
 1. Environment variable (e.g. `$PLANAR_WORKBENCH_ROOT`, `$PLANAR_VENDOR`).
 2. Per-association section (`[associations."<slug>"]` in the config file).
 3. Top-level config file values.
-4. Embedded defaults (shipped with the binary at `src/internal/config/defaults.toml`).
+4. Embedded defaults (compiled into the binary from the engine config module).
 
 **Sensitive-data invariant:** keys whose names match `*_token`, `*_password`,
 `*_secret`, `*_key`, or the bare names `token`, `password`, `secret` must not
@@ -4774,7 +4774,7 @@ assoc:project:planar
 │   │   ├── task:1  Add --github-strategy flag                       [todo, pri:10]
 │   │   └── task:2  Plumb override                                   [todo, pri:20]
 │   ├── artifact:1  Architecture overview                            [tech_spec, active]
-│   └── question:3  cmd_scope.go prints errors twice                 [open]
+│   └── question:3  scope handler prints errors twice                [open]
 └── plan:4 [active]  Entity visibility: scope columns and tree verb
     └── plan:5 [done]  Scope column on *-list commands
 

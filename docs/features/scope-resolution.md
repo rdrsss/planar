@@ -127,12 +127,12 @@ planar health
 
 ## Implementation notes
 
-The resolver lives in `src/internal/identity/scopearg/` and is
-called by every write verb under `src/cmd/planar/internal/`. The
-algorithm is documented as Godoc on `scopearg.ResolveForWrite`,
-which is the single entry point. The cwd derivation primitive is
-factored as `scopearg.DeriveFromCwd` so the same code path serves
-both the resolver and the `planar scope show` read.
+The resolver lives in `src/engine/identity/scope.zig` and is
+called by every write verb's handler under `src/cmd/planar/handlers/`.
+The single entry point is `scope.resolveForWrite`; the cwd derivation
+primitive is factored as `scope.deriveFromCwd` so the same code path
+serves both the resolver and the `planar scope show` read. Doc
+comments on those functions are the authoritative specification.
 
 ## Related
 

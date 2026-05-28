@@ -95,11 +95,12 @@ planar workspace doctor
 
 ## Routing table builder
 
-The builder lives in `src/internal/workspace/routing/` and emits a
-canonical JSON shape: each member project gets a record with its
-slug, its filesystem path inside the workspace, the static signals
-the builder detected (e.g. `package.json` ⇒ Node, `Cargo.toml` ⇒
-Rust), and a short capability summary derived from README headings.
+The builder lives in `src/engine/workspace/` and emits a canonical
+JSON shape: each member project gets a record with its slug, its
+filesystem path inside the workspace, the static signals the builder
+detected (e.g. `package.json` ⇒ Node, `Cargo.toml` ⇒ Rust,
+`build.zig` ⇒ Zig), and a short capability summary derived from
+README headings.
 The optional LLM enrichment pass — wired via the `pl-workspace-scan`
 vendor skill — fills in human-readable routing hints that the
 static scan cannot infer (e.g. "this is the auth surface").

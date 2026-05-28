@@ -107,7 +107,7 @@ Layered on top of the write resolver, the [cross-scope guard](#cross-scope-guard
 
 ### Removed: the active scope stack
 
-Earlier releases maintained a per-database `active_scope` table and exposed `planar scope use`, `planar scope pop`, and `planar scope clear` to manipulate it. Plan 153 M5 dropped the table (migration `src/migrations/0009_drop_active_scope.sql`) and removed the verbs; concurrent sessions sharing one database can no longer trample each other through stack manipulation. Operators who habitually typed those verbs get an exit-1 redirect pointing at `planar scope show`.
+Earlier releases maintained a per-database `active_scope` table and exposed `planar scope use`, `planar scope pop`, and `planar scope clear` to manipulate it. Plan 153 M5 dropped the table (migration `migrations/00009_drop_active_scope.up.sql`) and removed the verbs; concurrent sessions sharing one database can no longer trample each other through stack manipulation. Operators who habitually typed those verbs get an exit-1 redirect pointing at `planar scope show`.
 
 **SQLite tables:** `associations`, `project_associations`, `projects`. **Primary verbs:** `planar scope show` (derived view), `planar scope suggest`. Set the scope for any verb by `cd`-ing into the target or passing `--scope <slug>`.
 
@@ -208,7 +208,7 @@ Two symlinks at the workspace root (`<workspace-root>/AGENTS.md`, `<workspace-ro
 
 ### Two-pass routing
 
-The routing table is built in two passes. The static pass is always-on, deterministic, pure-Go: README first paragraph, manifest detection for capability tags, dependency inference from `go.mod` replace / `package.json` workspace deps, language census, and live Planar focus queries (open tasks, open questions, active plans). The LLM enrichment pass is opt-in via `pl-workspace-scan --enrich` or `planar workspace routing build --enrich`; it merges cached LLM results into the table, keyed by a content fingerprint so unchanged repos do not re-spend tokens. Manual overrides always win over enrichment, which always wins over static signals.
+The routing table is built in two passes. The static pass is always-on and deterministic: README first paragraph, manifest detection for capability tags, dependency inference from `go.mod` replace / `package.json` workspace deps, language census, and live Planar focus queries (open tasks, open questions, active plans). The LLM enrichment pass is opt-in via `pl-workspace-scan --enrich` or `planar workspace routing build --enrich`; it merges cached LLM results into the table, keyed by a content fingerprint so unchanged repos do not re-spend tokens. Manual overrides always win over enrichment, which always wins over static signals.
 
 ### Bare-init guardrail
 
@@ -228,7 +228,7 @@ Two verbs onboard an existing repo into Planar. They share the downstream `/pl-s
 
 - `synthesize` is a **synthesis** verb. It reads both the existing docs *and* the source tree as input, then produces fresh `product_spec` / `tech_spec` / `roadmap` artifacts via an LLM pass. The original docs are preserved on the same anchor plan as `kind=research` reference artifacts — superseded but not deleted. Reach for it when the planning material is scattered across multiple drafts, mid-evolution, or contradicted by reality (e.g. a roadmap claims a milestone is done but no source files back the claim).
 
-The load-bearing rule for `synthesize` is that **code presence beats text claims**. A task the LLM proposes with `status != "todo"` must cite a `code_evidence` path that exists in the probed source tree; the Go validator refuses results that violate the invariant. A roadmap line that says "M3 is finished" is treated as TODO unless source files, tests, or CI configs corroborate the claim. The greenfield case (no source detected) collapses naturally onto all-todo output.
+The load-bearing rule for `synthesize` is that **code presence beats text claims**. A task the LLM proposes with `status != "todo"` must cite a `code_evidence` path that exists in the probed source tree; the binary's `Validate` step (`src/engine/synthesize.zig`) refuses results that violate the invariant. A roadmap line that says "M3 is finished" is treated as TODO unless source files, tests, or CI configs corroborate the claim. The greenfield case (no source detected) collapses naturally onto all-todo output.
 
 ### Picking between the two
 
@@ -519,13 +519,13 @@ Layout:
 └── scenario.md
 ```
 
-Each template is a Markdown file with a YAML frontmatter block plus a short body skeleton. Placeholders use Go `text/template` syntax: `{{.Title}}`, `{{.PlanID}}`, `{{.PlanSlug}}`, `{{.ArtifactKind}}` (artifact templates only), `{{.Priority}}` (task template only), `{{.Date}}`. The loader (`internal/editflow/templates`) renders with `Option("missingkey=error")` so a typo surfaces immediately.
+Each template is a Markdown file with a YAML frontmatter block plus a short body skeleton. Placeholders use a Go-template-compatible mini-language: `{{.Title}}`, `{{.PlanID}}`, `{{.PlanSlug}}`, `{{.ArtifactKind}}` (artifact templates only), `{{.Priority}}` (task template only), `{{.Date}}`. The loader (`src/cmd/planar/editflow.zig` + `src/engine/templates/`) treats an unknown placeholder as an error so typos surface immediately.
 
 **Customizing.** Operators edit the installed file directly; `install.sh` does not clobber an existing template unless run with `--force`. Per-workspace template overrides are a future seam tracked in the M2 tech-spec.
 
 **Validation.** A unit-time `LintAll` renders every shipped template against a sentinel `Vars` to catch placeholder typos. A richer schema-aware validator at install time is tracked as a follow-up (task 740).
 
-**SQLite tables:** none — templates are pure filesystem assets. **Primary entry points:** `templates.Resolve`, `templates.Render`, `templates.LintAll` (Go package, not CLI surface).
+**SQLite tables:** none — templates are pure filesystem assets. **Primary entry points:** `src/engine/templates/loader.zig` (resolve + load), `src/engine/templates/render.zig` (render), `src/engine/templates/validate.zig` (lint). Engine-internal, not a CLI surface.
 
 ## Color output
 
@@ -552,9 +552,9 @@ Each template is a Markdown file with a YAML frontmatter block plus a short body
 
 **JSON bypass.** The `--json` output path never calls into the color helper. The bypass is structural, not toggle-based: scripts piping JSON receive byte-identical output regardless of `--color` or `NO_COLOR`.
 
-**Drift gate.** A unit test in `src/internal/output/color/` walks every entity package's `Statuses` slice (`plan.PlanStatuses`, `plan.StepStatuses`, `task.Statuses`, `question.Statuses`, `decision.Statuses`, `artifact.Statuses`, `scenario.Statuses`, `scenario.Outcomes`, `annotate.Statuses`) and asserts a palette entry. A future migration that adds a new status without updating the palette fails the test and the build is red.
+**Drift gate.** A unit test in the output color module walks every domain's `Statuses` constant and asserts a palette entry. A future migration that adds a new status without updating the palette fails the test and the build is red.
 
-**SQLite tables:** none — color is a pure rendering concern. **Primary entry points:** `color.Configure`, `color.Status`, `color.PadRight` (Go package, not CLI surface).
+**SQLite tables:** none — color is a pure rendering concern. **Primary entry points:** the output color helpers in `src/cmd/planar/output.zig`. Engine-internal, not a CLI surface.
 
 ## Local sandbox
 
@@ -583,7 +583,7 @@ A file's parent directory tree is authoritative for its kind: a `<name>/SKILL.md
 
 ```yaml
 ---
-description: "Rebuild and re-import Go protos in the current repo"
+description: "Rebuild and re-import protobuf bindings in the current repo"
 argument-hint: "<optional usage hint>"
 tier: medium                    # small | medium | large; maps to model
 model: claude-opus-4-7          # optional explicit model override
