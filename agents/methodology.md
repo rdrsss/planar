@@ -124,6 +124,107 @@ Claims are the synchronization gate. Reviewer dispatch and Phase 3.5 remain the 
 5. **Review.** The orchestrator hands the change set and claim token(s) to a `reviewer`. The reviewer decides one of `approve`, `request-changes`, `open-question`, `abort` and treats edits outside the leased scope as scope drift.
 6. **Loop or terminate.** On `request-changes`, the orchestrator returns to implementation with the same claim if the lease is still valid, or renews/reclaims explicitly. On terminal outcome, the claim is released as `completed`, `released`, or `aborted`. The loop is bounded by the iteration cap below.
 
+## Orchestration strategies
+
+An orchestration strategy is a named bundle of the five underlying dispatch axes the orchestrator uses to drive a plan: `isolation`, `branch_model`, `concurrency`, `reviewer_cadence`, and `test_coder_cadence`. Strategy is the operator-facing dispatch frame; the existing dispatch-shape gate (strict / grouped / single / barrel-*) runs **nested** under the strategy choice, not parallel to it. A strategy answers "what is the overall methodology for this plan?" The dispatch shape then answers "within that strategy, how do I batch *this cycle's* work?"
+
+Storage is path-of-least-resistance: **no schema delta.** The strategy choice for each cycle lives in the existing `agent_actions.metadata` JSON column on the dispatch row; the orchestrator derives the "last-used strategy for this plan" by reading the most recent dispatch entry's metadata. New plans default to `classic`.
+
+### Named strategies
+
+Five named strategies ship. Each is one row in the bundle table below; an operator who wants something outside the menu can assemble a custom combination via axis-by-axis flags (see [Strategy gate](#strategy-gate) below).
+
+- **`classic`** — Coder runs in the operator's cwd on whatever branch is currently checked out. Sequential cycles, reviewer per cycle, test-coder per cycle. No worktrees, no epic branch, no parallelism. Recommended for: single-task changes, small plans, high-stakes invariant-touching work where the operator wants to watch the diff land in their own checkout.
+- **`isolated-sequential`** — Coder runs in a dedicated worktree on a child branch off an epic branch. Sequential cycles, reviewer per cycle. The operator's pwd stays clean; recovery from a dead coder is straightforward; `git log --graph` shows per-task working branches. Recommended for: multi-task plans where pwd hygiene matters, cross-cutting work, plans where easy per-task rollback is valuable.
+- **`parallel-fanout`** — Fan out to N parallel coders on a parallel-eligible subset of the plan's open tasks, consolidate at fan-in, single reviewer pass per fan-in cycle. Each coder runs in its own worktree on its own child branch. Recommended for: plans with ≥3 tasks and ≥2 parallel-eligible. Refused for: schema-migration-heavy plans, singleton-file-editing plans (the parallelizability rules surface this automatically — see the forward pointer in [Things To Revisit](#things-to-revisit)).
+- **`barrel-deferred`** — Coder cycles run back-to-back in pwd; reviewer dispatched once at a milestone or plan boundary on the union diff. No isolation. Recommended for: long sequential plans where per-cycle reviewer overhead exceeds the value. This is the existing `barrel-deferred` dispatch shape promoted to a named strategy.
+- **`barrel-bypass`** — No reviewer at all; quality gates (`make fmt-check`, `make build`, `make test`, `make test-integration` twice, `planar skills render --check` against an out-of-tree staging dir, and any remaining relevant validators) are the entire signal. Sequential, in-pwd. Recommended for: mechanical sweeps, docs-polish, single-verb additions where the contract is fully gated.
+
+### Continuity guarantee: `classic`
+
+`classic` is the explicit continuity default, not a legacy or deprecated mode. It matches today's operator behavior bit-for-bit: coder in pwd, current branch, sequential cycles, reviewer per cycle. An operator who picks (or accepts the recommendation of) `classic` sees no behavioral change relative to today — no worktree is created, no epic branch is cut, no parallel dispatch happens. This is a first-class supported strategy and a design promise: introducing the strategy menu must not require existing operators to learn a new flow to keep working as they do.
+
+### Axes
+
+The five axes underlying every strategy. A custom strategy (`--strategy custom` with per-axis flags) is the escape hatch for advanced operators outside the named menu.
+
+| Axis | Values | `classic` default |
+|------|--------|-------------------|
+| `isolation` | `in-pwd`, `worktree` | `in-pwd` |
+| `branch_model` | `current-branch`, `epic-child` | `current-branch` |
+| `concurrency` | `sequential`, `fan-out` | `sequential` |
+| `reviewer_cadence` | `per-cycle`, `per-fanin`, `at-boundary`, `gates-only` | `per-cycle` |
+| `test_coder_cadence` | `per-cycle`, `per-fanin`, `at-boundary`, `none` | `per-cycle` |
+
+### Named bundles
+
+Each strategy locks in one value per axis:
+
+| Strategy | `isolation` | `branch_model` | `concurrency` | `reviewer_cadence` | `test_coder_cadence` |
+|----------|-------------|----------------|---------------|--------------------|----------------------|
+| `classic`             | in-pwd   | current-branch | sequential | per-cycle    | per-cycle    |
+| `isolated-sequential` | worktree | epic-child     | sequential | per-cycle    | per-cycle    |
+| `parallel-fanout`     | worktree | epic-child     | fan-out    | per-fanin    | per-fanin    |
+| `barrel-deferred`     | in-pwd   | current-branch | sequential | at-boundary  | at-boundary  |
+| `barrel-bypass`       | in-pwd   | current-branch | sequential | gates-only   | none         |
+
+### Invalid combinations
+
+The orchestrator refuses these axis combinations with a diagnostic before any dispatch runs:
+
+- `concurrency=fan-out` with `isolation=in-pwd` — parallel coders would clobber pwd.
+- `concurrency=fan-out` with `branch_model=current-branch` — no fan-in target.
+- `reviewer_cadence=per-cycle` with `concurrency=fan-out` — contradicts the fan-out reviewer model; reviewer-per-child is a separate decision tracked as an open question.
+
+### Recommendation algorithm
+
+The orchestrator proposes a strategy per plan based on plan shape, with status-quo bias. The algorithm runs in the orchestrator skill, sourcing the inputs it needs from existing CLI reads (`planar plan show --json`, `planar task list --json`, `planar audit trail`). If the in-skill implementation drifts, an engine-side `planar plan recommend-strategy --json` flag becomes the parallel of the deferred `--parallel-eligible` flag.
+
+1. If the plan is tagged as mechanical, docs-only, or single-verb → recommend `barrel-bypass`.
+2. Else if the plan has a multi-milestone roadmap and at most one parallel-eligible task per milestone → recommend `barrel-deferred`.
+3. Else if the plan has ≥3 tasks and the parallel-eligible subset has ≥2 tasks → recommend `parallel-fanout` (with the eligible subset surfaced for confirmation).
+4. Else if the plan has 2–3 tasks and none are parallel-eligible → recommend `isolated-sequential`.
+5. Else if the plan has exactly 1 task → recommend `classic`.
+6. Else if the most recent dispatch on this plan used a non-default strategy `S` → recommend `S` (stickiness — the operator already made a choice for this plan).
+7. Otherwise → recommend `classic` (status-quo bias).
+
+The recommendation is a proposal, never an action. The strategy gate (below) is what turns it into a chosen strategy.
+
+### Strategy gate
+
+Phase 3 of the orchestrator now runs **two** gates in order before dispatch:
+
+1. **Strategy gate** (new). "Which strategy for this plan?" The orchestrator surfaces its recommended strategy + a one-line rationale + the named alternatives. The operator confirms or overrides.
+2. **Dispatch-shape gate** (existing — see [Dispatch Granularity](#dispatch-granularity)). "Within that strategy, which shape for this cycle?" Constrained by the strategy: `parallel-fanout` forces the `fan-out` shape; `barrel-bypass` forces the `barrel-bypass` shape; `barrel-deferred` forces the `barrel-deferred` shape; `classic` and `isolated-sequential` keep the full strict / grouped / single menu.
+3. **Dispatch.** Orchestrator creates worktrees and branches (under strategies with `isolation=worktree`), claims tasks, dispatches coders.
+
+The strategy gate is operator-confirmed by default. Skip flags:
+
+- `--strategy <name>` — pre-commit to a named strategy. Skips the gate; the dispatch-shape gate still runs (unless that gate also has a pre-committed answer).
+- `--strategy custom --isolation <X> --branch-model <Y> --concurrency <Z> --reviewer-cadence <W> --test-coder-cadence <V>` — pre-commit to a custom axis combination. The per-axis flags are hidden from default `--help`; advanced operators discover them via docs or `--help-advanced`.
+
+Auto-defaulting without confirmation is **not** a supported mode — the recommendation engine never silently picks a strategy. If the operator wants zero-friction repetition, `--strategy <name>` is the explicit opt-in.
+
+**Persistence.** No new schema. The orchestrator writes the chosen strategy into the dispatch entry's `agent_actions.metadata` JSON column on the dispatch row:
+
+```json
+{
+  "strategy": "isolated-sequential",
+  "axes": {"isolation": "worktree", "branch_model": "epic-child", "concurrency": "sequential", "reviewer_cadence": "per-cycle", "test_coder_cadence": "per-cycle"},
+  "dispatch_shape": "strict",
+  "rationale": "2-task plan, neither parallel-eligible"
+}
+```
+
+The "last-used strategy for this plan" lookup that drives rule 6 of the recommendation algorithm is a single indexed read against the most recent dispatch entry's metadata for the plan. No `plans.strategy` column, no separate `plan_strategies` table — operational state belongs to the dispatch row that recorded the choice.
+
+### Relation to existing dispatch shapes
+
+The dispatch-shape gate's six shapes (`strict`, `grouped`, `single`, `barrel-grouped`, `barrel-deferred`, `barrel-bypass`) map onto the strategy axes as follows:
+
+- `strict`, `grouped`, `single` — apply within any strategy. They describe per-cycle batching, not overall methodology. Under `classic` or `isolated-sequential` the operator picks freely; under `parallel-fanout` they describe how each fan-out lane is batched; under the barrel strategies they are subsumed.
+- `barrel-grouped`, `barrel-deferred`, `barrel-bypass` — these conflate "dispatch shape" with "reviewer cadence." Under the strategy model, the latter two are subsumed by the `barrel-deferred` and `barrel-bypass` named strategies. Whether the standalone flags get deprecated, kept for backward compatibility, or treated as aliases is an open question deferred until operators have used both paths for a cycle or two.
+
 ## Dispatch mode selection
 
 Use INLINE (skip reviewer dispatch) if ALL of the following hold:
@@ -420,6 +521,6 @@ State capture lives in SQLite per the locked schema. Tasks carry `next_action`. 
 
 - **Iteration cap of 5.** Hard-coded today. Revisit once empirical data on real workloads exists — the right number may be 3, 5, or 8 depending on task shape. Move to the `config` table or methodology frontmatter if it needs to flex per project.
 - **Per-tier reviewer.** Currently all reviewers are `large`-tier. Some review work may not need that; a cheaper review tier could be useful for routine tasks.
-- **Parallelism heuristics.** "Independent task" is judgment-call territory today. Codify which task shapes are safely parallel as patterns emerge.
+- **Parallelism heuristics.** "Independent task" is judgment-call territory today. The [Orchestration strategies](#orchestration-strategies) section names `parallel-fanout` as the strategy that depends on a parallel-eligibility test, but the rules that decide eligibility (touched-file disjointness, schema-migration serialization, singleton-authoritative-file exclusion, blocker/decision dependencies) land in the M2 worktree-convention section alongside the worktree path scheme and lifecycle. Until M2 lands, treat parallelizability as judgment-call territory and lean conservative.
 - **Cross-vendor pairings.** A reviewer may be a different vendor than the coder (Claude reviewing Codex output, etc.). The methodology assumes this works; verify once cross-vendor handoff is exercised in M6.
 - **Reviewer feedback format.** "Concrete remediation" is loose today. As patterns emerge, codify the structure (e.g. file:line + proposed change, or a structured issue list).
