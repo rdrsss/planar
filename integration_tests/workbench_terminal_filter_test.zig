@@ -66,12 +66,11 @@ test "workbench push filters failure-terminal tasks by default" {
     defer push.deinit(gpa);
     try std.testing.expect(push.term == .exited and push.term.exited == 0);
 
-    // The push summary on stdout should surface the active mode label.
-    // (Strict "1 filtered" count would require the workbench engine to
-    // enumerate tasks; today it only enumerates entity_links-derived
-    // entities + child plans + the anchor. Tracked separately.)
+    // The push summary on stdout reports the cancelled task as filtered
+    // (the workbench engine now enumerates tasks via `tasks.plan_id`,
+    // closing the M4 follow-up from plan 439).
     try std.testing.expect(std.mem.indexOf(u8, push.stdout, "mode=failures") != null);
-    try std.testing.expect(std.mem.indexOf(u8, push.stdout, "filtered") != null);
+    try std.testing.expect(std.mem.indexOf(u8, push.stdout, "1 filtered") != null);
     _ = active;
 }
 
@@ -104,9 +103,11 @@ test "workbench push reports + cleans pre-existing terminal files (surprise-free
     defer cancel.deinit(gpa);
     try std.testing.expect(cancel.term == .exited and cancel.term.exited == 0);
 
-    // Step 3: push WITHOUT --apply-cleanup. Test only that the verb runs
-    // and surfaces the mode label. (Strict pre-existing terminal counting
-    // requires the workbench to enumerate tasks; tracked separately.)
+    // Step 3: push WITHOUT --apply-cleanup. The verb runs and surfaces
+    // the mode label. (Stricter "1 pre-existing terminal file" assertion
+    // passes against direct binary invocation but flakes in the harness
+    // suite — separate test-isolation question; the M2 task-filter test
+    // above proves task enumeration works under the harness.)
     const push_warn = suite.execWith(&.{ "workbench", "push", plan_id }, env);
     defer push_warn.deinit(gpa);
     try std.testing.expect(push_warn.term == .exited and push_warn.term.exited == 0);

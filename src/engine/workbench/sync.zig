@@ -1322,6 +1322,7 @@ fn enumerateEntities(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan
     });
 
     try appendDerivedEntities(d, allocator, anchor_plan_id, &out);
+    try appendPlanTasks(d, allocator, anchor_plan_id, &out);
 
     var child_ids: std.ArrayList(i64) = .empty;
     defer child_ids.deinit(allocator);
@@ -1348,8 +1349,44 @@ fn enumerateEntities(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan
     }
     for (child_ids.items) |child_id| {
         try appendDerivedEntities(d, allocator, child_id, &out);
+        try appendPlanTasks(d, allocator, child_id, &out);
     }
     return try out.toOwnedSlice(allocator);
+}
+
+/// Append tasks attached to `plan_id` via the direct `tasks.plan_id` column.
+/// Unlike artifacts / decisions / scenarios which reach plans through
+/// `entity_links`, tasks carry their plan reference inline; without this
+/// helper the workbench would never enumerate them, and the terminal-status
+/// filter would silently ignore cancelled tasks (plan 439 follow-up).
+fn appendPlanTasks(d: *db.sqlite.Db, allocator: std.mem.Allocator, plan_id: i64, out: *std.ArrayList(Entity)) !void {
+    var stmt = d.prepare(
+        \\select id, coalesce(updated_at, ''), coalesce(status, '')
+        \\from tasks
+        \\where plan_id = ?
+        \\order by id
+    ) catch return error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .int = plan_id }}) catch return error.QueryFailed;
+    while (true) {
+        switch (stmt.step() catch return error.QueryFailed) {
+            .done => break,
+            .row => {
+                const id = stmt.columnInt(0);
+                if (containsEntity(out.items, "task", id)) continue;
+                const updated = try stmt.columnTextAlloc(1, allocator);
+                errdefer allocator.free(updated);
+                const status_txt = try stmt.columnTextAlloc(2, allocator);
+                errdefer allocator.free(status_txt);
+                try out.append(allocator, .{
+                    .kind = try allocator.dupe(u8, "task"),
+                    .id = id,
+                    .updated_at = updated,
+                    .status = status_txt,
+                });
+            },
+        }
+    }
 }
 
 fn appendDerivedEntities(d: *db.sqlite.Db, allocator: std.mem.Allocator, plan_id: i64, out: *std.ArrayList(Entity)) !void {
