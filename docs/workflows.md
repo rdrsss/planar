@@ -1859,3 +1859,45 @@ planar-watch actions --entity task:541 --json
 ### Capability boundary
 
 The verb set is enforced by `src/cmd/planar-watch/handlers/cmd.zig`: there is no `pull`, `claim`, `complete`, `fail`, `release`, `block`, `heartbeat`, `action`, `ingest`, `reconcile`, or `abort` in the tree. The strict-read-only DB handle (`runtime.ensureDbStrictReadOnly` → `sqlite3_open_v2(..., SQLITE_OPEN_READONLY, ...)`) refuses any write SQL with `SQLITE_READONLY` at the driver layer — verified by the `openReadOnly: write SQL is rejected at the driver layer` unit test in `src/db/sqlite.zig`. Both defenses must be in place; either failing alone is treated as a regression by `integration_tests/planar_watch_test.zig`.
+
+## Recipe 20 — Clean up cancelled-task workbench files after a SlugConflict-retry cycle
+
+`planar spec ingest --apply` is not atomic across the whole anchor (plan 440 is the work
+item that fixes this); a SlugConflict mid-apply leaves the earlier inserts committed and
+rolls back the rest. Each retry produces a new abandoned plan + cancelled tasks. The
+workbench filesystem accumulates `.md` files for every cancelled entity from every retry.
+This recipe cleans them up.
+
+```sh
+# 1. Find out what's stranded. status with terminal-filter on tells you what
+#    the workbench would write under the new defaults; the diff against what's
+#    actually on disk is the cleanup target.
+planar workbench push <plan>
+#   → workbench push: plan N (slug) - X applied, 0 pending, 0 filtered (mode=failures), 0 conflict(s)
+#     12 pre-existing terminal file(s) on disk — run 'planar workbench gc <plan>' to remove
+
+# 2. Run gc to preview.
+planar workbench gc <plan> --dry-run
+#   → workbench gc (--dry-run): would remove 12, keep 47, drifted-skipped 0, errors 0 (mode=failures)
+
+# 3. If anything in the workbench has hand-edited content you care about,
+#    pull it FIRST so the body lands in the DB before deletion.
+planar workbench pull <plan>
+
+# 4. Apply.
+planar workbench gc <plan>
+#   → workbench gc: removed 12, kept 47, drifted-skipped 0, errors 0 (mode=failures)
+```
+
+If `gc` reports `drifted-skipped > 0`, the listed paths have FS content that differs from
+the DB-stored hash. Either run `workbench pull <plan>` first (to land those edits as the
+authoritative body) or re-run `gc --yes` to discard them. The verb deliberately refuses
+silent destruction.
+
+For a fresh-machine cleanup pass (e.g. you just cloned a repo whose `.planar/workbench/`
+came from a teammate), use `planar workbench gc --all-scopes` to walk every plan's tree
+in one shot. The same drift-refusal applies per-plan.
+
+**See also:** `docs/concepts.md § Workbench § Terminal-status filter` for the underlying
+model; `planar workbench push --apply-cleanup` for the in-the-moment narrow-scope variant
+that runs cleanup as part of the next push.
