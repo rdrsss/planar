@@ -58,14 +58,14 @@ See [`docs/concepts.md#transcription-vs-synthesis`](../docs/concepts.md#transcri
 
 ## Sequencing
 
-1. Operator runs `planar pl-synthesize <repo-root>`.
+1. Operator runs `planar synthesize <repo-root>`.
 2. Go side runs the deterministic floor: `adopter.Discover` + `adopter.ParseCorpus` + `codeprobe.Probe`.
 3. Go side builds a fingerprinted `synthesis.Request` and writes it to `$PLANAR_HOME/cache/bootstrap-synthesis/<repo-slug>/_pending.json`.
 4. On a cache miss, Go exits 0 with the five-line "Awaiting LLM synthesis" notice naming the pending and target paths.
 5. The vendor skill (this role) reads the Request from `_pending.json`.
 6. The skill runs the LLM at temperature 0 with the synthesis prompt: produce fresh planning material, ground done-status claims in `code_evidence.areas[].path`, treat existing docs as CONTEXT not transcription source.
 7. The skill writes a `synthesis.Result` JSON to `<cache-dir>/<fingerprint>.json` matching the schema in [`src/internal/bootstrap/synthesis/result.go`](../src/internal/bootstrap/synthesis/result.go).
-8. Operator re-invokes `planar pl-synthesize <repo-root>`.
+8. Operator re-invokes `planar synthesize <repo-root>`.
 9. Go side reads the cached Result, runs `synthesis.Validate` (hard reject on any issue), adapts to `interpretation.Result`, and merges with the deterministic baseline. Reference artifacts and synthesized planning bodies are injected by `appendSynthesisArtifacts`.
 10. Operator reviews the preview; `--apply` commits.
 
@@ -92,7 +92,7 @@ The synthesizer MUST honor (Validate enforces every one — see [`src/internal/b
 - **No automatic `/pl-spec-ingest`.** Accepted forward specs are created in `status=draft`; the operator decides when to run `/pl-spec-ingest <plan-id>` on each.
 - **No source-code rewrites.** The synthesizer reads source for evidence only; it never edits source files.
 - **No real LLM calls in Go.** The Go binary stays free of provider API keys, retries, and rate limits; the vendor skill is the LLM engine.
-- **No verbatim transcription.** That's the `importer` role; `--literal` on pl-synthesize delegates to pl-import.
+- **No verbatim transcription.** That's the `importer` role; `--literal` on `planar synthesize` delegates to `planar import`.
 
 ## Decisions
 
@@ -107,16 +107,16 @@ The synthesizer MUST honor (Validate enforces every one — see [`src/internal/b
 
 ```
 planar scope show
-planar pl-synthesize <repo-root>
-planar pl-synthesize <repo-root> --apply
-planar pl-synthesize <repo-root> --apply --apply-removals
-planar pl-synthesize <repo-root> --code-layout <swift|go|node|python|mixed>
-planar pl-synthesize <repo-root> --treat-as-greenfield
-planar pl-synthesize <repo-root> --treat-as-nongreenfield
-planar pl-synthesize <repo-root> --accept-spec <slug>
-planar pl-synthesize <repo-root> --accept-spec all
-planar pl-synthesize <repo-root> --no-forward-specs
-planar pl-synthesize <repo-root> --threshold 0.0
-planar pl-synthesize <repo-root> --literal
-planar pl-synthesize <repo-root> --scope assoc:<slug> --apply
+planar synthesize <repo-root>
+planar synthesize <repo-root> --apply
+planar synthesize <repo-root> --apply --apply-removals
+planar synthesize <repo-root> --code-layout <swift|go|node|python|mixed>
+planar synthesize <repo-root> --treat-as-greenfield
+planar synthesize <repo-root> --treat-as-nongreenfield
+planar synthesize <repo-root> --accept-spec <slug>
+planar synthesize <repo-root> --accept-spec all
+planar synthesize <repo-root> --no-forward-specs
+planar synthesize <repo-root> --threshold 0.0
+planar synthesize <repo-root> --literal
+planar synthesize <repo-root> --scope assoc:<slug> --apply
 ```

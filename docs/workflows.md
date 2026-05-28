@@ -475,7 +475,7 @@ Run once per machine. Creates `~/.planar/planar.db` and applies all migrations.
 
 ### Step 2 — Set scope (optional)
 
-By default `pl-import` resolves scope from cwd: run it from inside the repo you want to adopt and the resolved scope is `project:<that-repo>`. To import under a different association, pass `--scope` on the `pl-import` invocation:
+By default `import` resolves scope from cwd: run it from inside the repo you want to adopt and the resolved scope is `project:<that-repo>`. To import under a different association, pass `--scope` on the `/pl-import` invocation:
 
 ```
 /pl-import . --scope assoc:project:my-app
@@ -574,13 +574,13 @@ Items already in the database are reported as **Skipped**. Only new items appear
 
 ---
 
-## Recipe 7a — Greenfield Onboard with pl-synthesize
+## Recipe 7a — Greenfield Onboard with synthesize
 
-Use this when the repo is docs-only or has no implementation yet — a freshly cut roadmap, a planning sandbox, or a project where the code tree is intentionally empty. `pl-import` would treat every roadmap-adding commit as evidence that the work is done; `pl-synthesize` reads the source tree and refuses to mark anything done when there is no source to back the claim.
+Use this when the repo is docs-only or has no implementation yet — a freshly cut roadmap, a planning sandbox, or a project where the code tree is intentionally empty. `import` would treat every roadmap-adding commit as evidence that the work is done; `synthesize` reads the source tree and refuses to mark anything done when there is no source to back the claim.
 
 **What happens:** the synthesizer's deterministic floor probes the source tree, sees zero meaningful evidence, and sets `greenfield=true` on the `synthesis.Request`. The vendor skill's contract forbids `status != "todo"` under greenfield; the Go-side `synthesis.Validate` enforces it. Every task lands as todo regardless of what the docs claim.
 
-### Step 1 — Run pl-synthesize against the greenfield repo
+### Step 1 — Run synthesize against the greenfield repo
 
 ```
 /pl-synthesize ~/projects/holdfast
@@ -591,20 +591,20 @@ Auto-detection sets greenfield mode because codeprobe reports no source-file evi
 ```
 greenfield mode: yes (auto-detected — no source-file evidence)
 synthesis-request written to ~/.planar/cache/bootstrap-synthesis/holdfast/_pending.json
-Awaiting LLM synthesis. Re-run `planar pl-synthesize ~/projects/holdfast` after the vendor skill produces the Result.
+Awaiting LLM synthesis. Re-run `planar synthesize ~/projects/holdfast` after the vendor skill produces the Result.
 ```
 
 ### Step 2 — The vendor skill produces a Result
 
 The Claude / Codex / Copilot skill picks up the pending request, runs the LLM at temperature 0, and writes a Result whose every task has `status=todo`. `synthesis.Validate` rejects any Result that violates the greenfield invariant.
 
-### Step 3 — Re-run pl-synthesize to merge and preview
+### Step 3 — Re-run synthesize to merge and preview
 
 ```
 /pl-synthesize ~/projects/holdfast
 ```
 
-Preview shows every roadmap milestone as a child plan with `status=draft` and every extracted task at `status=todo`. Compare to what `pl-import` would have produced: the roadmap-adding commit ("docs: phase 1 roadmap") matches git-log to dozens of phase-1 task titles via fuzzy correlation, so without the >25% auto-done refusal `pl-import` would have marked them done. The greenfield mode of `pl-synthesize` makes the false-done problem structurally impossible.
+Preview shows every roadmap milestone as a child plan with `status=draft` and every extracted task at `status=todo`. Compare to what `import` would have produced: the roadmap-adding commit ("docs: phase 1 roadmap") matches git-log to dozens of phase-1 task titles via fuzzy correlation, so without the >25% auto-done refusal `import` would have marked them done. The greenfield mode of `synthesize` makes the false-done problem structurally impossible.
 
 ### Step 4 — Apply
 
@@ -620,13 +620,13 @@ See [Recipe 7](#recipe-7--adopt-an-existing-repo-into-planar) for the sibling tr
 
 ---
 
-## Recipe 7b — Docs-with-Code Onboard with pl-synthesize
+## Recipe 7b — Docs-with-Code Onboard with synthesize
 
 Use this when the repo has both clean planning material and a working source tree, and you want the LLM to assess what's actually there rather than transcribe the docs verbatim.
 
 **What happens:** the synthesizer probes the source tree, builds a per-FeatureArea EvidenceMap (source / test / CI / commit signals with `SignalStrength` scores), and hands both the docs and the EvidenceMap to the LLM. Tasks with `status != "todo"` must cite a `code_evidence` path that exists in the EvidenceMap; the validator rejects anything claiming completion without code to back it.
 
-### Step 1 — Run pl-synthesize against the repo
+### Step 1 — Run synthesize against the repo
 
 ```
 /pl-synthesize ~/projects/lectio
@@ -657,9 +657,9 @@ Preview shows tasks with code-evidence citations annotated:
 
 The "code wins" rule: if the docs claim a task is done but no source file backs the claim, the LLM is contractually forbidden from marking it done — `synthesis.Validate` rejects the Result.
 
-### Step 3 — Compare with pl-import
+### Step 3 — Compare with import
 
-For the same fixture, `pl-import ~/projects/lectio` would produce a similar plan tree — but with statuses driven by git-log correlation (commit titles vs. task titles) rather than code-presence. Both verbs land in the same downstream pipeline; `pl-import` preserves the original doc structure exactly, while `pl-synthesize` produces an LLM-curated reorganization grounded in what the code actually shows.
+For the same fixture, `planar import ~/projects/lectio` would produce a similar plan tree — but with statuses driven by git-log correlation (commit titles vs. task titles) rather than code-presence. Both verbs land in the same downstream pipeline; `import` preserves the original doc structure exactly, while `synthesize` produces an LLM-curated reorganization grounded in what the code actually shows.
 
 ### Step 4 — Apply
 
@@ -671,11 +671,11 @@ See [Transcription vs Synthesis](./concepts.md#transcription-vs-synthesis) for t
 
 ---
 
-## Recipe 7c — Mid-Evolution Onboard with pl-synthesize
+## Recipe 7c — Mid-Evolution Onboard with synthesize
 
-The most interesting case: the docs claim more than the code shows. A roadmap declares Phase 2 complete; the source tree shows Phase 2's directory is empty. `pl-import` would faithfully transcribe the docs' claim (or git-log-correlate it to done); `pl-synthesize` reads the source and refuses to mark a phase done without code evidence.
+The most interesting case: the docs claim more than the code shows. A roadmap declares Phase 2 complete; the source tree shows Phase 2's directory is empty. `import` would faithfully transcribe the docs' claim (or git-log-correlate it to done); `synthesize` reads the source and refuses to mark a phase done without code evidence.
 
-### Step 1 — Run pl-synthesize against the mid-evolution repo
+### Step 1 — Run synthesize against the mid-evolution repo
 
 ```
 /pl-synthesize ~/projects/midevo
@@ -717,7 +717,7 @@ For repos where codeprobe under-detects code (non-conventional layouts, code und
 
 The audit trail preserves the original doc-claims; operators reviewing the imported tree see the synthesized version as primary and the original docs as research-grade reference.
 
-See [Recipe 7](#recipe-7--adopt-an-existing-repo-into-planar) for the sibling transcription path and [Recipe 7a](#recipe-7a--greenfield-onboard-with-pl-synthesize) / [Recipe 7b](#recipe-7b--docs-with-code-onboard-with-pl-synthesize) for the other synthesis shapes.
+See [Recipe 7](#recipe-7--adopt-an-existing-repo-into-planar) for the sibling transcription path and [Recipe 7a](#recipe-7a--greenfield-onboard-with-synthesize) / [Recipe 7b](#recipe-7b--docs-with-code-onboard-with-synthesize) for the other synthesis shapes.
 
 ---
 

@@ -1,4 +1,4 @@
-//! engine/synthesize — M18 pl-synthesize parity: staged request, validated cache, apply.
+//! engine/synthesize — M18 synthesize parity: staged request, validated cache, apply.
 
 const std = @import("std");
 const db = @import("db");
@@ -721,7 +721,7 @@ fn encodeRequestJSON(allocator: std.mem.Allocator, req: Request) ![]u8 {
 fn awaitingMessage(allocator: std.mem.Allocator, pending_path: []const u8, cache_path: []const u8) ![]const u8 {
     return std.fmt.allocPrint(
         allocator,
-        "Awaiting LLM synthesis. The vendor skill should:\n  1. read  {s}\n  2. run the LLM at temperature 0\n  3. write the Result to {s}\n  4. re-invoke `planar pl-synthesize <repo-root>`\nSee `commands/claude/pl-synthesize.md` for the full contract.",
+        "Awaiting LLM synthesis. The vendor skill should:\n  1. read  {s}\n  2. run the LLM at temperature 0\n  3. write the Result to {s}\n  4. re-invoke `planar synthesize <repo-root>`\nSee `commands/claude/pl-synthesize.md` for the full contract.",
         .{ pending_path, cache_path },
     );
 }

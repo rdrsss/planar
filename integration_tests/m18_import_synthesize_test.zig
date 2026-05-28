@@ -114,7 +114,7 @@ fn synthCachePayload(arena: std.mem.Allocator, fp: []const u8) ![]const u8 {
     );
 }
 
-test "M18 pl-import --interpret supports pending, cache hit, and --apply" {
+test "M18 import --interpret supports pending, cache hit, and --apply" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
@@ -128,7 +128,7 @@ test "M18 pl-import --interpret supports pending, cache hit, and --apply" {
     defer gpa.free(home);
     try std.Io.Dir.cwd().createDirPath(std.testing.io, home);
 
-    const first = suite.mustRunWith(&.{ "pl-import", repo, "--interpret", "--json" }, &.{.{ .key = "PLANAR_HOME", .value = home }});
+    const first = suite.mustRunWith(&.{ "import", repo, "--interpret", "--json" }, &.{.{ .key = "PLANAR_HOME", .value = home }});
     defer gpa.free(first);
     const first_json = parseJSON(ImportJSON, arena, first);
     try std.testing.expectEqualStrings("pending", first_json.mode);
@@ -136,12 +136,12 @@ test "M18 pl-import --interpret supports pending, cache hit, and --apply" {
     const cache_payload = try importCachePayload(arena, first_json.fingerprint);
     try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = first_json.cache_path.?, .data = cache_payload });
 
-    const second = suite.mustRunWith(&.{ "pl-import", repo, "--interpret", "--json" }, &.{.{ .key = "PLANAR_HOME", .value = home }});
+    const second = suite.mustRunWith(&.{ "import", repo, "--interpret", "--json" }, &.{.{ .key = "PLANAR_HOME", .value = home }});
     defer gpa.free(second);
     const second_json = parseJSON(ImportJSON, arena, second);
     try std.testing.expectEqualStrings("cache_hit", second_json.mode);
 
-    const applied = suite.mustRunWith(&.{ "pl-import", repo, "--interpret", "--apply", "--json" }, &.{.{ .key = "PLANAR_HOME", .value = home }});
+    const applied = suite.mustRunWith(&.{ "import", repo, "--interpret", "--apply", "--json" }, &.{.{ .key = "PLANAR_HOME", .value = home }});
     defer gpa.free(applied);
     const applied_json = parseJSON(ImportJSON, arena, applied);
     try std.testing.expect(applied_json.applied != null);
@@ -153,7 +153,7 @@ test "M18 pl-import --interpret supports pending, cache hit, and --apply" {
     try std.testing.expect(std.mem.indexOf(u8, plan.title, "Imported Anchor") != null);
 }
 
-test "M18 pl-import rejects invalid cached result contract" {
+test "M18 import rejects invalid cached result contract" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
@@ -167,21 +167,21 @@ test "M18 pl-import rejects invalid cached result contract" {
     defer gpa.free(home);
     try std.Io.Dir.cwd().createDirPath(std.testing.io, home);
 
-    const first = suite.mustRunWith(&.{ "pl-import", repo, "--interpret", "--json" }, &.{.{ .key = "PLANAR_HOME", .value = home }});
+    const first = suite.mustRunWith(&.{ "import", repo, "--interpret", "--json" }, &.{.{ .key = "PLANAR_HOME", .value = home }});
     defer gpa.free(first);
     const first_json = parseJSON(ImportJSON, arena, first);
     const bad = try std.fmt.allocPrint(arena, "{{\"schema_version\":1,\"fingerprint\":\"{s}\",\"anchor_title\":\"x\",\"phases\":[],\"decisions\":[],\"deferred_items\":[],\"forward_specs\":[],\"provenance\":\"\"}}\n", .{first_json.fingerprint});
     try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = first_json.cache_path.?, .data = bad });
 
     const stderr = suite.expectFailureWith(
-        &.{ "pl-import", repo, "--interpret", "--json" },
+        &.{ "import", repo, "--interpret", "--json" },
         &.{.{ .key = "PLANAR_HOME", .value = home }},
     );
     defer gpa.free(stderr);
-    try std.testing.expect(std.mem.indexOf(u8, stderr, "invalid pl-import arguments") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr, "invalid import arguments") != null);
 }
 
-test "M18 pl-import --apply-removals reconciles missing tasks" {
+test "M18 import --apply-removals reconciles missing tasks" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
@@ -195,26 +195,26 @@ test "M18 pl-import --apply-removals reconciles missing tasks" {
     defer gpa.free(home);
     try std.Io.Dir.cwd().createDirPath(std.testing.io, home);
 
-    const first = suite.mustRunWith(&.{ "pl-import", repo, "--interpret", "--json" }, &.{.{ .key = "PLANAR_HOME", .value = home }});
+    const first = suite.mustRunWith(&.{ "import", repo, "--interpret", "--json" }, &.{.{ .key = "PLANAR_HOME", .value = home }});
     defer gpa.free(first);
     const first_json = parseJSON(ImportJSON, arena, first);
 
     const initial_payload = try importCachePayload(arena, first_json.fingerprint);
     try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = first_json.cache_path.?, .data = initial_payload });
-    const applied_initial = suite.mustRunWith(&.{ "pl-import", repo, "--interpret", "--apply", "--json" }, &.{.{ .key = "PLANAR_HOME", .value = home }});
+    const applied_initial = suite.mustRunWith(&.{ "import", repo, "--interpret", "--apply", "--json" }, &.{.{ .key = "PLANAR_HOME", .value = home }});
     defer gpa.free(applied_initial);
 
     const updated_payload = try importCachePayloadNoTasks(arena, first_json.fingerprint);
     try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = first_json.cache_path.?, .data = updated_payload });
 
-    const applied_reconcile = suite.mustRunWith(&.{ "pl-import", repo, "--interpret", "--apply", "--apply-removals", "--json" }, &.{.{ .key = "PLANAR_HOME", .value = home }});
+    const applied_reconcile = suite.mustRunWith(&.{ "import", repo, "--interpret", "--apply", "--apply-removals", "--json" }, &.{.{ .key = "PLANAR_HOME", .value = home }});
     defer gpa.free(applied_reconcile);
     const reconcile_json = parseJSON(ImportJSON, arena, applied_reconcile);
     try std.testing.expect(reconcile_json.applied != null);
     try std.testing.expect(reconcile_json.applied.?.tasks_cancelled > 0);
 }
 
-test "M18 pl-import default transcription apply works and keeps existing decisions on removals pass" {
+test "M18 import default transcription apply works and keeps existing decisions on removals pass" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
@@ -228,30 +228,30 @@ test "M18 pl-import default transcription apply works and keeps existing decisio
     defer gpa.free(home);
     try std.Io.Dir.cwd().createDirPath(std.testing.io, home);
 
-    const applied_default = suite.mustRunWith(&.{ "pl-import", repo, "--apply", "--json" }, &.{.{ .key = "PLANAR_HOME", .value = home }});
+    const applied_default = suite.mustRunWith(&.{ "import", repo, "--apply", "--json" }, &.{.{ .key = "PLANAR_HOME", .value = home }});
     defer gpa.free(applied_default);
     const default_json = parseJSON(ImportJSON, arena, applied_default);
     try std.testing.expectEqualStrings("skipped", default_json.mode);
     try std.testing.expect(default_json.applied != null);
 
-    const first = suite.mustRunWith(&.{ "pl-import", repo, "--interpret", "--json" }, &.{.{ .key = "PLANAR_HOME", .value = home }});
+    const first = suite.mustRunWith(&.{ "import", repo, "--interpret", "--json" }, &.{.{ .key = "PLANAR_HOME", .value = home }});
     defer gpa.free(first);
     const first_json = parseJSON(ImportJSON, arena, first);
     const cache_payload = try importCachePayload(arena, first_json.fingerprint);
     try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = first_json.cache_path.?, .data = cache_payload });
 
-    const applied_one = suite.mustRunWith(&.{ "pl-import", repo, "--interpret", "--apply", "--apply-removals", "--json" }, &.{.{ .key = "PLANAR_HOME", .value = home }});
+    const applied_one = suite.mustRunWith(&.{ "import", repo, "--interpret", "--apply", "--apply-removals", "--json" }, &.{.{ .key = "PLANAR_HOME", .value = home }});
     defer gpa.free(applied_one);
     _ = parseJSON(ImportJSON, arena, applied_one);
 
-    const applied_two = suite.mustRunWith(&.{ "pl-import", repo, "--interpret", "--apply", "--apply-removals", "--json" }, &.{.{ .key = "PLANAR_HOME", .value = home }});
+    const applied_two = suite.mustRunWith(&.{ "import", repo, "--interpret", "--apply", "--apply-removals", "--json" }, &.{.{ .key = "PLANAR_HOME", .value = home }});
     defer gpa.free(applied_two);
     const second_apply_json = parseJSON(ImportJSON, arena, applied_two);
     try std.testing.expect(second_apply_json.applied != null);
     try std.testing.expectEqual(@as(usize, 0), second_apply_json.applied.?.decisions_superseded);
 }
 
-test "M18 pl-synthesize supports pending, cache hit, apply, and literal passthrough" {
+test "M18 synthesize supports pending, cache hit, apply, and literal passthrough" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
@@ -265,7 +265,7 @@ test "M18 pl-synthesize supports pending, cache hit, apply, and literal passthro
     defer gpa.free(home);
     try std.Io.Dir.cwd().createDirPath(std.testing.io, home);
 
-    const first = suite.mustRunWith(&.{ "pl-synthesize", repo, "--json" }, &.{.{ .key = "PLANAR_HOME", .value = home }});
+    const first = suite.mustRunWith(&.{ "synthesize", repo, "--json" }, &.{.{ .key = "PLANAR_HOME", .value = home }});
     defer gpa.free(first);
     const first_json = parseJSON(SynthesizeJSON, arena, first);
     try std.testing.expectEqualStrings("pending", first_json.mode);
@@ -274,31 +274,31 @@ test "M18 pl-synthesize supports pending, cache hit, apply, and literal passthro
     const cache_payload = try synthCachePayload(arena, first_json.fingerprint);
     try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = first_json.cache_path, .data = cache_payload });
 
-    const second = suite.mustRunWith(&.{ "pl-synthesize", repo, "--json" }, &.{.{ .key = "PLANAR_HOME", .value = home }});
+    const second = suite.mustRunWith(&.{ "synthesize", repo, "--json" }, &.{.{ .key = "PLANAR_HOME", .value = home }});
     defer gpa.free(second);
     const second_json = parseJSON(SynthesizeJSON, arena, second);
     try std.testing.expectEqualStrings("cache_hit", second_json.mode);
 
-    const applied = suite.mustRunWith(&.{ "pl-synthesize", repo, "--apply", "--json" }, &.{.{ .key = "PLANAR_HOME", .value = home }});
+    const applied = suite.mustRunWith(&.{ "synthesize", repo, "--apply", "--json" }, &.{.{ .key = "PLANAR_HOME", .value = home }});
     defer gpa.free(applied);
     const applied_json = parseJSON(SynthesizeJSON, arena, applied);
     try std.testing.expect(applied_json.applied != null);
 
-    // literal should preserve default pl-import mode (not force --interpret)
-    const literal = suite.mustRunWith(&.{ "pl-synthesize", repo, "--literal", "--json" }, &.{.{ .key = "PLANAR_HOME", .value = home }});
+    // literal should preserve default import mode (not force --interpret)
+    const literal = suite.mustRunWith(&.{ "synthesize", repo, "--literal", "--json" }, &.{.{ .key = "PLANAR_HOME", .value = home }});
     defer gpa.free(literal);
     const literal_json = parseJSON(ImportJSON, arena, literal);
     try std.testing.expectEqualStrings("skipped", literal_json.mode);
     try std.testing.expect(literal_json.applied == null);
 
-    const literal_apply = suite.mustRunWith(&.{ "pl-synthesize", repo, "--literal", "--apply", "--json" }, &.{.{ .key = "PLANAR_HOME", .value = home }});
+    const literal_apply = suite.mustRunWith(&.{ "synthesize", repo, "--literal", "--apply", "--json" }, &.{.{ .key = "PLANAR_HOME", .value = home }});
     defer gpa.free(literal_apply);
     const literal_apply_json = parseJSON(ImportJSON, arena, literal_apply);
     try std.testing.expectEqualStrings("skipped", literal_apply_json.mode);
     try std.testing.expect(literal_apply_json.applied != null);
 }
 
-test "M18 pl-synthesize rejects invalid cached result contract" {
+test "M18 synthesize rejects invalid cached result contract" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
@@ -312,7 +312,7 @@ test "M18 pl-synthesize rejects invalid cached result contract" {
     defer gpa.free(home);
     try std.Io.Dir.cwd().createDirPath(std.testing.io, home);
 
-    const first = suite.mustRunWith(&.{ "pl-synthesize", repo, "--json" }, &.{.{ .key = "PLANAR_HOME", .value = home }});
+    const first = suite.mustRunWith(&.{ "synthesize", repo, "--json" }, &.{.{ .key = "PLANAR_HOME", .value = home }});
     defer gpa.free(first);
     const first_json = parseJSON(SynthesizeJSON, arena, first);
 
@@ -320,14 +320,14 @@ test "M18 pl-synthesize rejects invalid cached result contract" {
     try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = first_json.cache_path, .data = bad });
 
     const stderr = suite.expectFailureWith(
-        &.{ "pl-synthesize", repo, "--json" },
+        &.{ "synthesize", repo, "--json" },
         &.{.{ .key = "PLANAR_HOME", .value = home }},
     );
     defer gpa.free(stderr);
-    try std.testing.expect(std.mem.indexOf(u8, stderr, "invalid pl-synthesize arguments") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr, "invalid synthesize arguments") != null);
 }
 
-test "M18 pl-synthesize auto-greenfield is true when all evidence areas are zero-signal" {
+test "M18 synthesize auto-greenfield is true when all evidence areas are zero-signal" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
@@ -341,7 +341,7 @@ test "M18 pl-synthesize auto-greenfield is true when all evidence areas are zero
     defer gpa.free(home);
     try std.Io.Dir.cwd().createDirPath(std.testing.io, home);
 
-    const first = suite.mustRunWith(&.{ "pl-synthesize", repo, "--json" }, &.{.{ .key = "PLANAR_HOME", .value = home }});
+    const first = suite.mustRunWith(&.{ "synthesize", repo, "--json" }, &.{.{ .key = "PLANAR_HOME", .value = home }});
     defer gpa.free(first);
     const first_json = parseJSON(SynthesizeJSON, arena, first);
     try std.testing.expectEqualStrings("pending", first_json.mode);

@@ -1115,7 +1115,7 @@ planar task done <task-id>
 planar task reopen <task-id> [--status todo|doing|blocked] [--reason <text>] [--scope <slug>]
 ```
 
-**Description:** Reopen a task currently in a terminal status (`done` or `cancelled`). The dedicated recovery path for wrongly-marked tasks — see [`pl-import`](#planar-pl-import-repo-root) for the producer of the most common false-done case. Refuses if the task is not in a terminal status; use `task update --status <s>` for ordinary transitions.
+**Description:** Reopen a task currently in a terminal status (`done` or `cancelled`). The dedicated recovery path for wrongly-marked tasks — see [`import`](#planar-import-repo-root) for the producer of the most common false-done case. Refuses if the task is not in a terminal status; use `task update --status <s>` for ordinary transitions.
 
 **Scope guard:** Refuses when the operator's resolved write scope disagrees with the task's stored scope. See [Cross-scope guard](#cross-scope-guard).
 
@@ -3925,21 +3925,21 @@ test-spec status for plan 42 (billing-export-csv)
 
 ---
 
-## Domain: `pl-import`
+## Domain: `import`
 
 Import an existing repository's planning artefacts (tech specs, roadmaps, ADRs, backlog files, GitHub issues) into Planar's data model. A translator, not a generator: imports what is already there rather than drafting new documents from a goal statement.
 
-**Sibling verb.** `pl-synthesize` is the synthesis counterpart to pl-import's transcription. Use pl-import for clean structured docs; use pl-synthesize for messy / docs-only / mid-evolution repos. See [Domain: pl-synthesize](#domain-pl-synthesize) for the full surface, and [Transcription vs Synthesis](./concepts.md#transcription-vs-synthesis) for the conceptual split.
+**Sibling verb.** `synthesize` is the synthesis counterpart to import's transcription. Use `import` for clean structured docs; use `synthesize` for messy / docs-only / mid-evolution repos. See [Domain: synthesize](#domain-synthesize) for the full surface, and [Transcription vs Synthesis](./concepts.md#transcription-vs-synthesis) for the conceptual split.
 
 See also: `spec ingest` (decompose workbench planning docs), `ext propagate` (push the imported tree to an external system).
 
 ---
 
-### `planar pl-import <repo-root>`
+### `planar import <repo-root>`
 
 **Synopsis:**
 ```
-planar pl-import <repo-root> [--from-github] [--dry-run] [--strict]
+planar import <repo-root> [--from-github] [--dry-run] [--strict]
                             [--threshold <float>] [--roadmap <path>]
                             [--apply] [--refresh-status] [--scope <slug>]
                             [--no-status-inference] [--trust-status-inference]
@@ -3974,7 +3974,7 @@ Idempotency: items already present in the database (matched by title and source-
 | `--no-status-inference` | off | Default every imported task to `status=todo`, `signal=no-inference`, `confidence=0`. Skips layers 2-3 (branch + git-log correlation) of `adopter.Infer`; the checkbox layer still runs because checkbox state is operator-explicit. Use for greenfield, docs-only, or fresh-fork repos where status correlation is unreliable by construction. |
 | `--trust-status-inference` | off | Explicit bypass for the >25% auto-done refusal (see below). Pass when you have a clean repo with a high genuinely-done count and have manually verified the inferred done marks. Mutually exclusive with `--no-status-inference`. |
 
-**>25% auto-done refusal:** When `--threshold 0.0` disables the [confidence floor](#confidence-floor) and more than 25% of inferred tasks would land as `status=done` via git-log correlation, `pl-import` refuses the import. The refusal text is:
+**>25% auto-done refusal:** When `--threshold 0.0` disables the [confidence floor](#confidence-floor) and more than 25% of inferred tasks would land as `status=done` via git-log correlation, `import` refuses the import. The refusal text is:
 
 ```
 warning: --threshold 0.0 would auto-mark <N>/<TOTAL> tasks (<P>%) as `status=done`
@@ -4083,30 +4083,30 @@ Writes (only with `--apply`):
 **Related:**
 - `planar spec ingest <plan>` — decompose workbench planning documents into a task graph for a feature already in Planar.
 - `planar ext propagate <plan>` — propagate the imported tree to Jira or GitHub Issues.
-- `planar pl-import <repo-root> --dry-run` — emit the ImportPlan as JSON without writing.
-- `planar pl-synthesize <repo-root>` — sibling verb. Synthesizes fresh planning material from docs + code via an LLM pass instead of transcribing.
+- `planar import <repo-root> --dry-run` — emit the ImportPlan as JSON without writing.
+- `planar synthesize <repo-root>` — sibling verb. Synthesizes fresh planning material from docs + code via an LLM pass instead of transcribing.
 
 ---
 
-## Domain: `pl-synthesize`
+## Domain: `synthesize`
 
-`planar pl-synthesize <repo-root>` — synthesize fresh planning artifacts for a repo from existing docs + git log + source code via an LLM pass. Sibling of `pl-import` (which transcribes existing docs verbatim).
+`planar synthesize <repo-root>` — synthesize fresh planning artifacts for a repo from existing docs + git log + source code via an LLM pass. Sibling of `import` (which transcribes existing docs verbatim).
 
-Use `pl-synthesize` when:
+Use `synthesize` when:
 - Repo docs are scattered, mid-evolution, or contradicted by reality.
 - The repo is docs-only (no source code yet — greenfield).
 - You inherited a repo and want the LLM to assess what's actually there.
 - Multiple roadmaps of different eras exist.
 
-Use `pl-import` instead when docs are clean and structured. See [Transcription vs Synthesis](./concepts.md#transcription-vs-synthesis).
+Use `import` instead when docs are clean and structured. See [Transcription vs Synthesis](./concepts.md#transcription-vs-synthesis).
 
 ---
 
-### `planar pl-synthesize <repo-root>`
+### `planar synthesize <repo-root>`
 
 **Synopsis:**
 ```
-planar pl-synthesize <repo-root> [--apply] [--apply-removals] [--scope <slug>]
+planar synthesize <repo-root> [--apply] [--apply-removals] [--scope <slug>]
                                  [--no-status-inference] [--trust-status-inference]
                                  [--threshold <float>] [--code-layout <name>]
                                  [--treat-as-greenfield] [--treat-as-nongreenfield]
@@ -4118,7 +4118,7 @@ planar pl-synthesize <repo-root> [--apply] [--apply-removals] [--scope <slug>]
 
 Default mode is **preview**: prints a tree-shaped diff and exits 0 without writing. `--apply` is required to commit additions and updates; `--apply --apply-removals` additionally soft-cancels removed entities.
 
-The LLM never runs in Go. The Go side writes a `synthesis.Request` to `$PLANAR_HOME/cache/bootstrap-synthesis/<repo-slug>/_pending.json` and exits 0 with an "Awaiting LLM synthesis" notice. The vendor skill (`commands/claude/pl-synthesize.md`, `skills/codex/pl-synthesize.md`, `skills/copilot/pl-synthesize.md`) reads the Request, runs the LLM at temperature 0, and writes the Result to `<cache-dir>/<fingerprint>.json`. The operator re-runs `planar pl-synthesize <repo-root>`; Go finds the cached Result, validates it, merges it with the deterministic baseline, and emits the preview.
+The LLM never runs in Go. The Go side writes a `synthesis.Request` to `$PLANAR_HOME/cache/bootstrap-synthesis/<repo-slug>/_pending.json` and exits 0 with an "Awaiting LLM synthesis" notice. The vendor skill (`commands/claude/pl-synthesize.md`, `skills/codex/pl-synthesize.md`, `skills/copilot/pl-synthesize.md`) reads the Request, runs the LLM at temperature 0, and writes the Result to `<cache-dir>/<fingerprint>.json`. The operator re-runs `planar synthesize <repo-root>`; Go finds the cached Result, validates it, merges it with the deterministic baseline, and emits the preview.
 
 **Arguments:**
 
@@ -4141,19 +4141,19 @@ The LLM never runs in Go. The Go side writes a `synthesis.Request` to `$PLANAR_H
 | `--treat-as-nongreenfield` | off | Bypass greenfield auto-detection. Use for non-conventional layouts where codeprobe under-detects. |
 | `--accept-spec <slug>` | interactive | Non-interactive forward-spec selection; `all` accepts every proposed forward spec. |
 | `--no-forward-specs` | off | Skip the forward-spec phase entirely. |
-| `--literal` | off | Delegate to `pl-import` (transcription). Useful when you started with pl-synthesize but realize the repo is clean enough for transcription. |
+| `--literal` | off | Delegate to `import` (transcription). Useful when you started with `synthesize` but realize the repo is clean enough for transcription. |
 | `--greenfield` | off | Deprecated alias for `--treat-as-greenfield`. |
 | `--dry-run` | off | Emit the ImportPlan as JSON without writing, regardless of `--apply`. |
 | `--json` | off | Machine-readable output. |
 
 **Workflow:**
 
-1. Operator runs `planar pl-synthesize <repo-root>`.
+1. Operator runs `planar synthesize <repo-root>`.
 2. Go side runs the deterministic floor (`adopter.Discover` + `adopter.ParseCorpus` + `codeprobe.Probe`).
 3. Go side writes the `synthesis.Request` to `$PLANAR_HOME/cache/bootstrap-synthesis/<repo-slug>/_pending.json`.
 4. Go side exits 0 with the "Awaiting LLM synthesis" message.
 5. Vendor skill reads the Request, runs the LLM at temperature 0, and writes the Result to `<cache-dir>/<fingerprint>.json`.
-6. Operator re-runs `planar pl-synthesize <repo-root>`.
+6. Operator re-runs `planar synthesize <repo-root>`.
 7. Go side reads the cached Result, runs `synthesis.Validate`, and merges it with the deterministic baseline.
 8. Operator reviews the preview; `--apply` commits.
 
@@ -4162,7 +4162,7 @@ The LLM never runs in Go. The Go side writes a `synthesis.Request` to `$PLANAR_H
 Reads:
 - `associations`, `project_associations`, `projects` — cwd-derived scope resolution.
 - `plans`, `tasks`, `artifacts`, `decisions` — fingerprint queries to detect already-synthesized items.
-- Source tree + git log (via `codeprobe`); no shell to `gh` (pl-synthesize does not pull GitHub issues).
+- Source tree + git log (via `codeprobe`); no shell to `gh` (`synthesize` does not pull GitHub issues).
 
 Writes (only with `--apply`):
 - `plans` — inserts the anchor plan and per-phase child plans synthesized by the LLM.
@@ -4171,7 +4171,7 @@ Writes (only with `--apply`):
 - `decisions` — inserts decisions extracted from tech specs and LLM-inferred decisions (citation required).
 - `entity_links` — inserts `derives-from` links (child plan→anchor, task→plan, decision→anchor).
 
-**Apply layer.** The Apply path is **shared with `pl-import`** (`src/internal/adopter/apply.go` + `diff.go`). Both verbs converge on the same downstream pipeline.
+**Apply layer.** The Apply path is **shared with `import`** (`src/internal/adopter/apply.go` + `diff.go`). Both verbs converge on the same downstream pipeline.
 
 **Exit codes:**
 - `0` — success (preview, dry-run, apply, or cache-miss "awaiting synthesis").
@@ -4181,7 +4181,7 @@ Writes (only with `--apply`):
 **Related:**
 - [`commands/claude/pl-synthesize.md`](../commands/claude/pl-synthesize.md) — Claude vendor skill body; load-bearing LLM contract.
 - [`agents/synthesizer.md`](../agents/synthesizer.md) — vendor-neutral role spec.
-- [Domain: `pl-import`](#domain-pl-import) — sibling transcription verb.
+- [Domain: `import`](#domain-import) — sibling transcription verb.
 - [Transcription vs Synthesis](./concepts.md#transcription-vs-synthesis) — conceptual split.
 
 ---
@@ -5081,6 +5081,7 @@ For quick reference, all documented commands grouped by domain:
 | `links` | `links list`, `links remove` |
 | `spec` | `spec ingest` |
 | `test-spec` | `test-spec status` |
-| `pl-import` | `pl-import <repo-root>` |
+| `import` | `import <repo-root>` |
+| `synthesize` | `synthesize <repo-root>` |
 | `local` | `local list`, `local link`, `local unlink`, `local import`, `local migrate` |
 | `help` | `help` |

@@ -1,4 +1,4 @@
-//! engine/import — M18 pl-import parity: staged request, validated cache, apply.
+//! engine/import — M18 import parity: staged request, validated cache, apply.
 
 const std = @import("std");
 const db = @import("db");
@@ -87,7 +87,7 @@ pub fn run(
             .docs_count = req.docs.len,
             .guide_files_count = req.guide_files.len,
             .tree_entry_count = req.tree_summary.len,
-            .message = try allocator.dupe(u8, "pl-import: interpretation disabled; run with --interpret to stage/consume LLM artifacts."),
+            .message = try allocator.dupe(u8, "import: interpretation disabled; run with --interpret to stage/consume LLM artifacts."),
         };
         if (opts.apply) {
             const d = d_opt orelse return error.InvalidInput;
@@ -844,7 +844,7 @@ fn encodeRequestJSON(allocator: std.mem.Allocator, req: Request) ![]u8 {
 fn awaitingMessage(allocator: std.mem.Allocator, pending_path: []const u8, cache_path: []const u8) ![]const u8 {
     return std.fmt.allocPrint(
         allocator,
-        "Awaiting LLM interpretation. The vendor skill should:\n  1. read  {s}\n  2. run the LLM at temperature 0\n  3. write the Result to {s}\n  4. re-invoke `planar pl-import <repo> --interpret`\nSee `commands/claude/pl-import.md` for the full contract.",
+        "Awaiting LLM interpretation. The vendor skill should:\n  1. read  {s}\n  2. run the LLM at temperature 0\n  3. write the Result to {s}\n  4. re-invoke `planar import <repo> --interpret`\nSee `commands/claude/pl-import.md` for the full contract.",
         .{ pending_path, cache_path },
     );
 }

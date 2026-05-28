@@ -1,4 +1,4 @@
-//! handlers/pl_synthesize.zig — `planar pl-synthesize`
+//! handlers/synthesize.zig — `planar synthesize`
 //! Synthesize fresh planning artifacts from a repo's docs + code + git history.
 
 const std = @import("std");
@@ -9,9 +9,9 @@ const runtime = @import("runtime");
 const exit = @import("../exit.zig");
 
 pub const verb: cli.Cmd = .{
-    .name = "pl-synthesize",
+    .name = "synthesize",
     .desc = "Synthesize fresh planning artifacts from a repo's docs + code + git history.",
-    .long_desc = "pl-synthesize reads a repository's existing planning docs, source\n  code, and git history AS INPUT for an LLM synthesis pass. It\n  produces fresh product-spec / tech-spec / roadmap artifacts (NOT a\n  verbatim transcription) and proposes them via the same workbench\n  pipeline as the planner agent.",
+    .long_desc = "synthesize reads a repository's existing planning docs, source\n  code, and git history AS INPUT for an LLM synthesis pass. It\n  produces fresh product-spec / tech-spec / roadmap artifacts (NOT a\n  verbatim transcription) and proposes them via the same workbench\n  pipeline as the planner agent.",
     .flags = &.{
         .{ .long = "--apply", .kind = .bool, .default = .{ .bool = false } },
         .{ .long = "--apply-removals", .kind = .bool, .default = .{ .bool = false } },
@@ -31,7 +31,7 @@ pub const verb: cli.Cmd = .{
 };
 
 fn handle(args_ptr: *const anyopaque) anyerror!void {
-    const args = cli.castArgs(main.root, &.{"pl-synthesize"}, args_ptr);
+    const args = cli.castArgs(main.root, &.{"synthesize"}, args_ptr);
     const ctx = runtime.current();
     const d = if (args.apply) runtime.ensureDb() catch |e|
         exit.die(ctx, e, "opening database: {s}", .{@errorName(e)}) else null;
@@ -41,7 +41,7 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
     defer ctx.allocator.free(planar_home);
 
     if (args.literal) {
-        try ctx.stderr.print("pl-synthesize: --literal mode; delegating to pl-import.\n", .{});
+        try ctx.stderr.print("synthesize: --literal mode; delegating to import.\n", .{});
         const delegated = engine.import.run(d, ctx.allocator, ctx.environ, planar_home, .{
             .repo_root = args.repo_root,
             .apply = args.apply,
@@ -49,7 +49,7 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
             .scope = args.scope,
         }) catch |e| switch (e) {
             error.NotFound => exit.die(ctx, e, "repo-root not found or not a directory: {s}", .{args.repo_root}),
-            error.InvalidInput => exit.die(ctx, e, "invalid pl-synthesize --literal arguments", .{}),
+            error.InvalidInput => exit.die(ctx, e, "invalid synthesize --literal arguments", .{}),
             else => exit.die(ctx, e, "literal delegation failed: {s}", .{@errorName(e)}),
         };
         defer engine.import.deinitOutcome(delegated, ctx.allocator);
@@ -98,8 +98,8 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
     }) catch |e| switch (e) {
         error.NotFound => exit.die(ctx, e, "repo-root not found or not a directory: {s}", .{args.repo_root}),
         error.QueryFailed => exit.die(ctx, e, "database apply failed", .{}),
-        error.InvalidInput => exit.die(ctx, e, "invalid pl-synthesize arguments", .{}),
-        else => exit.die(ctx, e, "pl-synthesize failed: {s}", .{@errorName(e)}),
+        error.InvalidInput => exit.die(ctx, e, "invalid synthesize arguments", .{}),
+        else => exit.die(ctx, e, "synthesize failed: {s}", .{@errorName(e)}),
     };
     defer engine.synthesize.deinitOutcome(out, ctx.allocator);
 

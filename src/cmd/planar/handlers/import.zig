@@ -1,4 +1,4 @@
-//! handlers/pl_import.zig — `planar pl-import`
+//! handlers/import.zig — `planar import`
 //! Import an existing repo's planning content into Planar.
 
 const std = @import("std");
@@ -9,9 +9,9 @@ const runtime = @import("runtime");
 const exit = @import("../exit.zig");
 
 pub const verb: cli.Cmd = .{
-    .name = "pl-import",
+    .name = "import",
     .desc = "Import an existing repo's state into Planar.",
-    .long_desc = "pl-import translates the planning artefacts of an existing\n  repository into Planar's data model. It discovers\n  tech specs, roadmap milestones, ADRs, and backlog files,\n  infers completion status from checkbox state and git history,\n  and produces an ImportPlan for review before committing.",
+    .long_desc = "import translates the planning artefacts of an existing\n  repository into Planar's data model. It discovers\n  tech specs, roadmap milestones, ADRs, and backlog files,\n  infers completion status from checkbox state and git history,\n  and produces an ImportPlan for review before committing.",
     .flags = &.{
         .{ .long = "--from-github", .kind = .bool, .default = .{ .bool = false }, .desc = "Pull source from GitHub issues" },
         .{ .long = "--dry-run", .kind = .bool, .default = .{ .bool = false } },
@@ -33,7 +33,7 @@ pub const verb: cli.Cmd = .{
 };
 
 fn handle(args_ptr: *const anyopaque) anyerror!void {
-    const args = cli.castArgs(main.root, &.{"pl-import"}, args_ptr);
+    const args = cli.castArgs(main.root, &.{"import"}, args_ptr);
     const ctx = runtime.current();
     const d = if (args.apply) runtime.ensureDb() catch |e|
         exit.die(ctx, e, "opening database: {s}", .{@errorName(e)}) else null;
@@ -52,8 +52,8 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
     }) catch |e| switch (e) {
         error.NotFound => exit.die(ctx, e, "repo-root not found or not a directory: {s}", .{args.repo_root}),
         error.QueryFailed => exit.die(ctx, e, "database apply failed", .{}),
-        error.InvalidInput => exit.die(ctx, e, "invalid pl-import arguments", .{}),
-        else => exit.die(ctx, e, "pl-import failed: {s}", .{@errorName(e)}),
+        error.InvalidInput => exit.die(ctx, e, "invalid import arguments", .{}),
+        else => exit.die(ctx, e, "import failed: {s}", .{@errorName(e)}),
     };
     defer engine.import.deinitOutcome(out, ctx.allocator);
 

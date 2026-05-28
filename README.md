@@ -21,8 +21,8 @@ brew install zig git gh jq ripgrep
 ```
 
 - `zig` — required to build the binary (see [Install](#install) and [Build from source](#build-from-source)). The minimum supported version is **zig 0.16.0 or later** (declared in `build.zig.zon`). The runtime statically links a vendored SQLite amalgamation compiled by `build.zig`; no system SQLite library dependency.
-- `git` — required at runtime. Planar runs `git remote get-url origin` for repo discovery (association/project registration) and walks `git log` / `git branch` / `git ls-files` during `planar pl-import` and codeprobe.
-- `gh` — optional but recommended. Used by the `gh-cli` auth method for the GitHub adapter (`planar ext register github … --auth gh-cli`) and by `planar pl-import` to enumerate existing GitHub Issues. Planar degrades gracefully when `gh` is absent.
+- `git` — required at runtime. Planar runs `git remote get-url origin` for repo discovery (association/project registration) and walks `git log` / `git branch` / `git ls-files` during `planar import` and codeprobe.
+- `gh` — optional but recommended. Used by the `gh-cli` auth method for the GitHub adapter (`planar ext register github … --auth gh-cli`) and by `planar import` to enumerate existing GitHub Issues. Planar degrades gracefully when `gh` is absent.
 - `jq` — required by the bundled agent skills (`pl-spec-draft`, `pl-spec-ingest`) to parse `planar … --json` output in their shell snippets. The Zig binary itself does not depend on `jq`, but skipping it will break those workflows. No `yq` is needed; Planar handles YAML and TOML internally.
 - `ripgrep` (`rg`) — recommended. Planar's agent workflows and the example session below (`planar capture command "rg -l 'v1.client'"`) prefer `rg` over `grep` for fast, gitignore-aware codebase search. Not a hard dependency, but the documented recipes assume it is available.
 

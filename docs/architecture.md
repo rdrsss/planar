@@ -191,8 +191,8 @@ Packages that implement cross-cutting behavior or system-level features.
 | `src/internal/templates/` | Template rendering for external-system payloads. Resolves templates through a three-level fallback chain (user set → default set → embedded defaults). |
 | `src/internal/adapter/` | The `OperationalAdapter` interface and the data types that cross the adapter boundary. Jira and GitHub Issues implementations live here, behind the interface. |
 | `src/internal/ingestor/` | Planning-document parser and ingestion engine. Reads `tech-spec.md` and `roadmap.md` from the workbench, computes a diff against the current DB state, and optionally applies it. |
-| `src/internal/adopter/` | Transcription pipeline for `pl-import`: classifier, parser, status-inference, diff, and apply stages. The apply layer is shared with `pl-synthesize`. |
-| `src/internal/bootstrap/` | Synthesis pipeline for `pl-synthesize`: `codeprobe/` (per-FeatureArea EvidenceMap) and `synthesis/` (Request/Result, fingerprint cache, Validate, Merge). The LLM runs in the vendor skill; this package owns the deterministic floor and the skill-handoff cache contract. |
+| `src/internal/adopter/` | Transcription pipeline for `import`: classifier, parser, status-inference, diff, and apply stages. The apply layer is shared with `synthesize`. |
+| `src/internal/bootstrap/` | Synthesis pipeline for `synthesize`: `codeprobe/` (per-FeatureArea EvidenceMap) and `synthesis/` (Request/Result, fingerprint cache, Validate, Merge). The LLM runs in the vendor skill; this package owns the deterministic floor and the skill-handoff cache contract. |
 | `src/internal/tree/` | Hierarchical rendering for `planar tree` — walks the plan/task/artifact/decision/scenario/question graph and produces the indented tree output. |
 | `src/internal/config/` | Configuration-plane reader: loads `~/.planar/config.toml`, applies the layered resolution order, validates, and exposes the resolved config to other packages. |
 | `src/internal/syncengine/` | Operational-plane sync engine: drives pull (remote → local) and push (local → remote) cycles, records `sync_events`, detects conflicts. |
@@ -414,9 +414,9 @@ Beyond propagation, the ext-sync agent (`src/internal/extsync/`) handles bidirec
 
 Planar onboards an existing repository into the data model via two sibling verbs that share the same downstream Apply machinery but enter from different contracts.
 
-### Transcription pipeline (`pl-import`)
+### Transcription pipeline (`import`)
 
-The `pl-import` verb is a translator: it reads the repo's existing planning docs and emits them as Planar artifacts as-is. The pipeline lives in `src/internal/adopter/`:
+The `import` verb is a translator: it reads the repo's existing planning docs and emits them as Planar artifacts as-is. The pipeline lives in `src/internal/adopter/`:
 
 ```
 adopter.Discover  → walk repo, classify .md files (frontmatter → filename → path)
@@ -428,9 +428,9 @@ adopter.Apply     → commit additions, updates, and (with --apply-removals) sof
 
 The optional `--interpret` pass writes a fingerprinted Request to `$PLANAR_HOME/cache/import-interpretation/<repo-slug>/_pending.json` and exits 0. The vendor skill produces a Result; the next invocation merges it with the deterministic Corpus before reaching the Diff/Apply stages.
 
-### Synthesis pipeline (`pl-synthesize`)
+### Synthesis pipeline (`synthesize`)
 
-The `pl-synthesize` verb is a generator: it reads docs *and* source, then produces fresh planning artifacts via an LLM pass. The pipeline lives in `src/internal/bootstrap/`:
+The `synthesize` verb is a generator: it reads docs *and* source, then produces fresh planning artifacts via an LLM pass. The pipeline lives in `src/internal/bootstrap/`:
 
 ```
 bootstrap/codeprobe.Probe   → per-FeatureArea source / test / CI / commit signals
@@ -442,7 +442,7 @@ synthesis.Request           → fingerprinted package: docs + EvidenceMap + gree
                               <cache-dir>/<fingerprint>.json
 synthesis.Validate          → hard-rejects Results that violate the code-evidence invariant
 synthesis.Merge             → adapts Result to interpretation.Result, merges with deterministic baseline
-adopter.Diff + Apply        → SHARED with pl-import — same Diff/Apply stages
+adopter.Diff + Apply        → SHARED with import — same Diff/Apply stages
 ```
 
 The LLM never runs in Go. The Go binary stays free of provider API keys, retries, and rate limits; the vendor skill (`commands/claude/pl-synthesize.md` etc.) is the LLM engine. The cache contract is the handoff: Go writes a Request, the skill writes a Result, Go validates and merges.
@@ -462,7 +462,7 @@ The Diff/Apply stages (`src/internal/adopter/diff.go`, `src/internal/adopter/app
 
 The synthesis-vs-transcription split serves the same downstream pipeline: both verbs produce artifacts that flow through `/pl-spec-ingest` for task decomposition, then through the orchestrator's execution + propagation phases. The split is at the entry point only — what counts as the authoritative planning material.
 
-See [docs/concepts.md § Transcription vs Synthesis](concepts.md#transcription-vs-synthesis) for the conceptual framing and [docs/cli-reference.md § Domain: pl-synthesize](cli-reference.md#domain-pl-synthesize) for the full CLI surface.
+See [docs/concepts.md § Transcription vs Synthesis](concepts.md#transcription-vs-synthesis) for the conceptual framing and [docs/cli-reference.md § Domain: synthesize](cli-reference.md#domain-synthesize) for the full CLI surface.
 
 ---
 

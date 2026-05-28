@@ -110,7 +110,7 @@ If an earlier import landed wrong done marks before this safety net existed, use
 1. Go runs the deterministic classifier, builds an interpretation Request from the resulting Corpus, and computes the Request's sha256 `fingerprint`.
 2. On a cache miss, Go writes the Request to `$PLANAR_HOME/cache/import-interpretation/<repo-slug>/_pending.json`, prints an "Awaiting LLM interpretation" notice naming the pending and target paths, and exits 0.
 3. The vendor skill (this skill body) reads the Request, runs the LLM at temperature 0, and writes a Result to `$PLANAR_HOME/cache/import-interpretation/<repo-slug>/<fingerprint>.json`.
-4. The operator re-runs `planar pl-import <repo> --interpret`. Go finds the cached Result, validates it via the Validate rules below, and merges it with the deterministic Corpus per the four merge rules below.
+4. The operator re-runs `planar import <repo> --interpret`. Go finds the cached Result, validates it via the Validate rules below, and merges it with the deterministic Corpus per the four merge rules below.
 
 The Request payload carries: README + each `docs/*` body + git log (last ~500 commits) + guide files (CLAUDE.md as CONTEXT, never backlog) + a tree summary + the detected_artifacts produced by the classifier. The skill must NOT mine guide files for tasks.
 
@@ -226,28 +226,28 @@ Removal semantics are soft — status transitions only, no row deletes:
 
 ## CLI Commands
 
-Wraps [`pl-import`](../../docs/cli-reference.md#domain-pl-import).
+Wraps [`planar import`](../../docs/cli-reference.md#domain-import).
 
 > **Scope.** Reads use the caller's cwd-derived scope; writes refuse on cross-scope mismatch (see [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard)). `<repo-root>` is the import target, not the scope source. When invoking against a repo that is not the caller's cwd, pass `--scope <slug>` explicitly or `cd` into the target first. The active scope stack was removed in plan 153 M5; there is no `scope use` to push.
 
 > **Cross-scope guard.** This verb refuses with exit 1 when the operator's resolved write scope disagrees with the target entity's stored scope. Run from inside the entity's owning repo, pass `--scope <slug>` explicitly, or use `--no-scope-check` for legacy escape (not for routine use). See [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard) for the full guarded/unguarded matrix.
 
 ```
-planar pl-import <path>                              # preview, deterministic only
-planar pl-import <path> --apply                      # commit additions + updates
-planar pl-import <path> --apply --apply-removals     # commit + soft-cancel removed entities
-planar pl-import <path> --interpret                  # opt into LLM pass
-planar pl-import <path> --interpret --apply
-planar pl-import <path> --no-interpret               # explicitly deterministic-only
-planar pl-import <path> --strict --apply             # every task must clear --threshold
-planar pl-import <path> --threshold 0.0 --apply      # disable the confidence floor
-planar pl-import <path> --no-status-inference --apply # docs-only / greenfield: all tasks land todo
-planar pl-import <path> --threshold 0.0 --trust-status-inference --apply # bypass >25% refusal
-planar pl-import <path> --roadmap <path>             # override roadmap auto-discovery
-planar pl-import <path> --accept-spec <slug>         # non-interactive forward-spec selection
-planar pl-import <path> --accept-spec all
-planar pl-import <path> --no-forward-specs
-planar pl-import <path> --scope <slug>               # override cwd-derived scope
+planar import <path>                              # preview, deterministic only
+planar import <path> --apply                      # commit additions + updates
+planar import <path> --apply --apply-removals     # commit + soft-cancel removed entities
+planar import <path> --interpret                  # opt into LLM pass
+planar import <path> --interpret --apply
+planar import <path> --no-interpret               # explicitly deterministic-only
+planar import <path> --strict --apply             # every task must clear --threshold
+planar import <path> --threshold 0.0 --apply      # disable the confidence floor
+planar import <path> --no-status-inference --apply # docs-only / greenfield: all tasks land todo
+planar import <path> --threshold 0.0 --trust-status-inference --apply # bypass >25% refusal
+planar import <path> --roadmap <path>             # override roadmap auto-discovery
+planar import <path> --accept-spec <slug>         # non-interactive forward-spec selection
+planar import <path> --accept-spec all
+planar import <path> --no-forward-specs
+planar import <path> --scope <slug>               # override cwd-derived scope
 ```
 
 ## Output Shapes

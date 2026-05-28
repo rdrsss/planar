@@ -1,6 +1,6 @@
 //! engine/llm/provider — provider strategy resolver for LLM handoff flows.
 //!
-//! M18 keeps pl-import/pl-synthesize no-network by default: the provider is
+//! M18 keeps import/synthesize no-network by default: the provider is
 //! metadata for the staged request/result contract, not an in-process SDK call.
 
 const std = @import("std");

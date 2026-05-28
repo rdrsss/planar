@@ -44,8 +44,8 @@ const search_h = @import("handlers/search.zig");
 const doc_h = @import("handlers/doc/cmd.zig");
 const local_h = @import("handlers/local/cmd.zig");
 const skills_h = @import("handlers/skills/cmd.zig");
-const pl_import_h = @import("handlers/pl_import.zig");
-const pl_synthesize_h = @import("handlers/pl_synthesize.zig");
+const import_h = @import("handlers/import.zig");
+const synthesize_h = @import("handlers/synthesize.zig");
 const version_h = @import("handlers/version.zig");
 const completion_h = @import("handlers/completion.zig");
 
@@ -94,8 +94,8 @@ pub const root: cli.Cmd = .{
         doc_h.verb,
         local_h.verb,
         skills_h.verb,
-        pl_import_h.verb,
-        pl_synthesize_h.verb,
+        import_h.verb,
+        synthesize_h.verb,
         version_h.verb,
         completion_h.verb,
     },

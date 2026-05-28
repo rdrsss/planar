@@ -67,7 +67,7 @@ Awaiting LLM synthesis. The vendor skill should:
   1. read  <pending-path>
   2. run the LLM at temperature 0
   3. write the Result to <cache-path>
-  4. re-invoke `planar pl-synthesize <repo-root>`
+  4. re-invoke `planar synthesize <repo-root>`
 See the generated vendor surface for the full contract.
 ```
 
@@ -88,7 +88,7 @@ The vendor skill (this skill body) consumes the Request and produces a Result by
 
 3. **Writing a `synthesis.Result` JSON** to the cache path printed in the awaiting notice (`$PLANAR_HOME/cache/bootstrap-synthesis/<repo-slug>/<fingerprint>.json`). The schema is load-bearing; `synthesis.Validate` (in [`src/internal/bootstrap/synthesis/validate.go`](../../src/internal/bootstrap/synthesis/validate.go)) rejects any Result that violates it.
 
-4. **The operator re-invokes** `planar pl-synthesize <repo-root>`. The Go side reads the cached Result, runs `Validate`, merges with the deterministic baseline, and lands the preview or apply.
+4. **The operator re-invokes** `planar synthesize <repo-root>`. The Go side reads the cached Result, runs `Validate`, merges with the deterministic baseline, and lands the preview or apply.
 
 ## Greenfield Mode
 
@@ -228,23 +228,23 @@ The default 0.7 confidence floor still applies in synthesis mode. LLM-only tasks
 
 ## CLI Commands
 
-Wraps `planar pl-synthesize`. See [`docs/cli-reference.md`](../../docs/cli-reference.md) for the full flag table.
+Wraps `planar synthesize`. See [`docs/cli-reference.md`](../../docs/cli-reference.md) for the full flag table.
 
 > **Cross-scope guard.** This verb refuses to write across scope mismatches (plan 144). Run from inside the target repo's cwd or pass `--scope <slug>` explicitly. See [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard).
 
 ```
-planar pl-synthesize <repo-root>                          # preview
-planar pl-synthesize <repo-root> --apply                  # commit
-planar pl-synthesize <repo-root> --apply --apply-removals # + soft-cancel removed entities
-planar pl-synthesize <repo-root> --code-layout swift      # override layout detection
-planar pl-synthesize <repo-root> --accept-spec <slug>     # non-interactive forward-spec selection
-planar pl-synthesize <repo-root> --accept-spec all
-planar pl-synthesize <repo-root> --no-forward-specs       # skip forward specs entirely
-planar pl-synthesize <repo-root> --literal                # delegate to pl-import (transcription)
-planar pl-synthesize <repo-root> --treat-as-greenfield    # force greenfield mode despite code
-planar pl-synthesize <repo-root> --treat-as-nongreenfield # bypass greenfield auto-detection
-planar pl-synthesize <repo-root> --threshold 0.0          # disable confidence floor
-planar pl-synthesize <repo-root> --scope <slug>           # override cwd-derived scope
+planar synthesize <repo-root>                          # preview
+planar synthesize <repo-root> --apply                  # commit
+planar synthesize <repo-root> --apply --apply-removals # + soft-cancel removed entities
+planar synthesize <repo-root> --code-layout swift      # override layout detection
+planar synthesize <repo-root> --accept-spec <slug>     # non-interactive forward-spec selection
+planar synthesize <repo-root> --accept-spec all
+planar synthesize <repo-root> --no-forward-specs       # skip forward specs entirely
+planar synthesize <repo-root> --literal                # delegate to import (transcription)
+planar synthesize <repo-root> --treat-as-greenfield    # force greenfield mode despite code
+planar synthesize <repo-root> --treat-as-nongreenfield # bypass greenfield auto-detection
+planar synthesize <repo-root> --threshold 0.0          # disable confidence floor
+planar synthesize <repo-root> --scope <slug>           # override cwd-derived scope
 ```
 
 ## Authoring Conventions

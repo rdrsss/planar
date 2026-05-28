@@ -24,7 +24,7 @@ const harness = @import("harness");
 
 // 21 parent verbs per parity-triage.md §A-bare-parent-verb member list.
 // `annotate` (Cluster D, zig-only) and leaf verbs (Cluster I — handoff,
-// health, demote, link, unlink, promote, pl-import, pl-synthesize,
+// health, demote, link, unlink, promote, import, synthesize,
 // resume, search, tree) are excluded.
 const PARENT_VERBS = [_][]const u8{
     "plan",   "task",      "artifact",  "audit",     "capture",

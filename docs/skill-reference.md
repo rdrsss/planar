@@ -140,7 +140,7 @@ The LLM runs in the vendor skill (not in Go); the Go side provides the determini
 /pl-synthesize .                          # preview the current repo
 /pl-synthesize . --apply                  # commit the synthesis
 /pl-synthesize . --code-layout go --apply # override layout auto-detection
-/pl-synthesize . --literal                # delegate to pl-import (transcription)
+/pl-synthesize . --literal                # delegate to import (transcription)
 ```
 
 Source: `commands/claude/pl-synthesize.md` · `skills/codex/pl-synthesize.md` · `skills/copilot/pl-synthesize.md` · `agents/synthesizer.md`. See [`concepts.md#transcription-vs-synthesis`](concepts.md#transcription-vs-synthesis) for the decision matrix.
