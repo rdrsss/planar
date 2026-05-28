@@ -22,7 +22,7 @@ brew install zig git gh jq ripgrep
 
 - `zig` — required to build the binary (see [Install](#install) and [Build from source](#build-from-source)). The minimum supported version is **zig 0.16.0 or later** (declared in `build.zig.zon`). The runtime statically links a vendored SQLite amalgamation compiled by `build.zig`; no system SQLite library dependency.
 - `git` — required at runtime. Planar runs `git remote get-url origin` for repo discovery (association/project registration) and walks `git log` / `git branch` / `git ls-files` during `planar import` and codeprobe.
-- `gh` — optional but recommended. Used by the `gh-cli` auth method for the GitHub adapter (`planar ext register github … --auth gh-cli`) and by `planar import` to enumerate existing GitHub Issues. Planar degrades gracefully when `gh` is absent.
+- `gh` — optional but recommended. Used by the default `gh-cli` auth method for the GitHub adapter (`planar ext register github <slug> --project <owner>/<repo>` with `--auth-env` omitted) and by `planar import` to enumerate existing GitHub Issues. Planar degrades gracefully when `gh` is absent.
 - `jq` — required by the bundled agent skills (`pl-spec-draft`, `pl-spec-ingest`) to parse `planar … --json` output in their shell snippets. The Zig binary itself does not depend on `jq`, but skipping it will break those workflows. No `yq` is needed; Planar handles YAML and TOML internally.
 - `ripgrep` (`rg`) — recommended. Planar's agent workflows and the example session below (`planar capture command "rg -l 'v1.client'"`) prefer `rg` over `grep` for fast, gitignore-aware codebase search. Not a hard dependency, but the documented recipes assume it is available.
 
@@ -142,15 +142,14 @@ planar ext register jira my-jira \
     --auth-env JIRA_USER,JIRA_TOKEN          # email,api-token pair
 
 planar ext register github my-gh \
-    --project rdrsss/planar \
-    --auth gh-cli                             # shells out to `gh auth token`
+    --project rdrsss/planar                   # omit --auth-env to shell out to `gh auth token`
 
 # Link a task to a remote ticket.
 planar link task:1 --to my-jira:PROJ-1234 --sync two-way
 
 # Sync on demand.
-planar sync pull --link-id 1
-planar sync push --link-id 1
+planar sync pull 1
+planar sync push 1
 
 # Conflicts surface explicitly; never resolved silently.
 planar sync status                            # last_sync_status per link
@@ -179,7 +178,7 @@ planar workbench push plan:7
 
 # Check for FS↔DB divergence; conflicts require explicit resolve.
 planar workbench status plan:7
-planar workbench resolve <event-id> --keep local
+planar workbench resolve <event-id> --prefer fs
 
 # Archive the FS tree when work is done (DB retains all entities).
 planar workbench archive plan:7
@@ -260,7 +259,7 @@ The bundled agent specs and reference workflows use unified source + generated v
 
 Eight agent roles total. Three drive task execution: `orchestrator` (large tier), `coder` (medium tier), `reviewer` (large tier). Three drive the feature lifecycle: `planner` (drafts spec/roadmap/scenario docs), `ingestor` (decomposes docs into rich tasks), `ext-sync` (propagates a feature to a registered operational system). Two drive repo onboarding: `importer` (classifies and ingests an existing repo's planning content) and `synthesizer` (re-synthesizes planning artifacts from docs + code + git history). See [`agents/methodology.md`](agents/methodology.md) for the orchestration flow.
 
-31 vendor surfaces per vendor (`pl-*.md` files under `commands/claude/`, `skills/codex/`, and `skills/copilot/`). Three invoke agent roles directly (`pl-orchestrator`, `pl-coder`, `pl-reviewer`); the rest are workflow wrappers around the `planar` CLI — spec pipeline (`pl-spec-draft`, `pl-spec-ingest`), workbench (`pl-workbench`, `pl-workbench-sync`, `pl-workbench-archive`), external systems (`pl-ext-propagate`, `pl-ext-create`, `pl-templates`), repo onboarding (`pl-import`, `pl-local-import`, `pl-synthesize`, `pl-workspace-scan`), docs (`pl-doc-promote`, `pl-doc-regenerate`), and per-entity CLI wrappers (`pl-plan`, `pl-task`, `pl-question`, `pl-scenario`, `pl-promote`, `pl-status`, `pl-health`, `pl-init`, `pl-scope`, `pl-sync`, `pl-resume`, `pl-handoff`, `pl-audit-trail`, `pl-help`). Vendor-surface drift is gated by `planar skills render --check` (`make render-check`).
+31 vendor surfaces per vendor (`pl-*.md` files under `commands/claude/`, `skills/codex/`, and `skills/copilot/`). Three invoke agent roles directly (`pl-orchestrator`, `pl-coder`, `pl-reviewer`); the rest are workflow wrappers around the `planar` CLI — spec pipeline (`pl-spec-draft`, `pl-spec-ingest`), workbench (`pl-workbench`, `pl-workbench-sync`, `pl-workbench-archive`), external systems (`pl-ext-propagate`, `pl-ext-create`, `pl-templates`), repo onboarding (`pl-import`, `pl-local-import`, `pl-synthesize`, `pl-workspace-scan`), docs (`pl-doc-promote`, `pl-doc-regenerate`), and per-entity CLI wrappers (`pl-plan`, `pl-task`, `pl-question`, `pl-scenario`, `pl-promote`, `pl-status`, `pl-health`, `pl-init`, `pl-scope`, `pl-sync`, `pl-resume`, `pl-handoff`, `pl-audit-trail`, `pl-help`). Vendor-surface drift is gated by `planar skills render --check` against an out-of-tree staging directory.
 
 ## Repository layout
 

@@ -95,7 +95,7 @@ collects tasks, artifacts, decisions, scenarios, and questions
 under one slug. Create one:
 
 ```sh
-planar plan add "Add login flow" --slug login-flow
+planar plan create "Add login flow" --slug login-flow
 ```
 
 The CLI prints the new plan id. Show it:
@@ -107,7 +107,7 @@ planar plan show login-flow
 Plans nest. To carve out a milestone:
 
 ```sh
-planar plan add "M1 — landing page" --slug login-flow-m1 \
+planar plan create "M1 — landing page" --slug login-flow-m1 \
     --parent login-flow
 ```
 
@@ -208,7 +208,7 @@ title: Login flow — roadmap
 - Route first-timers to /welcome.
 EOF
 planar workbench sync login-flow
-planar spec ingest --plan login-flow
+planar spec ingest login-flow
 ```
 
 The ingestor creates one sub-plan per `## ` heading and one task
@@ -225,8 +225,8 @@ via adapters. To propagate your plan to GitHub Issues:
 
 ```sh
 planar ext list                            # check registered systems
-planar ext create github --repo you/example-app
-planar ext propagate login-flow --to github
+planar ext create github --from plan:<login-flow-id> --type Epic
+planar ext propagate login-flow --system github
 ```
 
 `ext propagate` walks the plan tree and creates one issue per task,

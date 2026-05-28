@@ -81,7 +81,7 @@ either form and reports back.
 ```sh
 # One-time scaffold: register the workspace association,
 # materialise the state directory, place the symlinks.
-planar workspace init --workspace-root . --org platform
+planar workspace init --name platform --slug platform
 
 # Refresh the routing table from current static signals.
 planar workspace scan

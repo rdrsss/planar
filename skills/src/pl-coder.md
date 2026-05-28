@@ -36,7 +36,7 @@ These six things are load-bearing. The blind-read reviewer cannot recover them a
 1. **Read the workbench tech-spec sections cited in the brief BEFORE writing code.** The brief is a pointer; the spec is the source. Open the cited paths and read them firsthand.
 2. **Honor the claim token and heartbeat it while working.** The brief's claim token (issued by the orchestrator via `planar-agent pull` or `planar-agent claim`) says this task is yours right now. Heartbeat at least once per TTL/2 via `planar-agent heartbeat --claim <token> [--ttl <secs>]`. If the claim is stale, missing, or for another entity, stop and return to the orchestrator. The orchestrator owns the terminal verb (`planar-agent complete` / `fail` / `release` / `block`); the coder does not invoke them directly except under barrel-bypass.
 3. **Limit the diff to the task IDs claimed.** "While I'm here" cleanups go in a separate cycle with their own task rows.
-4. **Paste gate output verbatim in the work-complete report.** The test count, the `ok pkg 0.42s` lines, the `make render-check` outcome (when applicable), and any remaining validator outcomes. The reviewer trusts the report's gate lines and does not re-run them — the lines must actually be there.
+4. **Paste gate output verbatim in the work-complete report.** The test count, the `All N tests passed` lines, the `planar skills render --check` outcome (when applicable), and any remaining validator outcomes. The reviewer trusts the report's gate lines and does not re-run them — the lines must actually be there.
 5. **Mark tasks done in the DB only after gates pass.** `planar task done <id>` is the final step of the cycle, not the first.
 6. **On `request-changes`, address the specific findings.** Don't re-implement broadly. The reviewer's remediation list is the contract for the next iteration.
 
@@ -51,7 +51,7 @@ These six things are load-bearing. The blind-read reviewer cannot recover them a
 
 ## Barrel-bypass: gates are the review
 
-When dispatched under [`barrel-bypass`](../../agents/methodology.md#barrel-bypass), there is no downstream reviewer. The coder's quality-gate output IS the entire review signal: every applicable gate (gofmt + vet + build + test + integration **twice** + `make render-check` + any remaining relevant validators) must run and the report must paste their output verbatim. Real defects become new task rows (`planar task add ...`), not bullets in a Surprises section — there is no reviewer to catch suppressed issues. Phase 3.5 (test-coder) still fires; barrel-bypass bypasses the reviewer, not the coverage gate. See [`agents/coder.md` §Barrel-bypass: gates are the review](../../agents/coder.md#barrel-bypass-gates-are-the-review).
+When dispatched under [`barrel-bypass`](../../agents/methodology.md#barrel-bypass), there is no downstream reviewer. The coder's quality-gate output IS the entire review signal: every applicable gate (`make fmt-check` + `make build` + `make test` + `make test-integration` **twice** + `planar skills render --check` against an out-of-tree staging dir + any remaining relevant validators) must run and the report must paste their output verbatim. Real defects become new task rows (`planar task add ...`), not bullets in a Surprises section — there is no reviewer to catch suppressed issues. Phase 3.5 (test-coder) still fires; barrel-bypass bypasses the reviewer, not the coverage gate. See [`agents/coder.md` §Barrel-bypass: gates are the review](../../agents/coder.md#barrel-bypass-gates-are-the-review).
 
 ## Test-coder handoff
 

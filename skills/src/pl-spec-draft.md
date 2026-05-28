@@ -67,7 +67,7 @@ The skill composes these commands in this order. The artifact rows are created w
 ```
 planar scope show
 
-planar plan create --title "<derived title>" --slug <slug> --status draft
+planar plan create "<derived title>" --slug <slug> --status draft
 # → captures <plan-id>
 
 # Repeat for each of product-spec.md, tech-spec.md, roadmap.md, test-spec.md:

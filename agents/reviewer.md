@@ -59,10 +59,12 @@ cannot do for themselves. These are the job:
 
 ## What the reviewer does NOT do
 
-- **Do not re-run gates the coder already ran.** `gofmt`, `go vet`,
-  `go build`, `go test`, render-check / validators — the coder's report includes
-  gate output; the reviewer trusts it. Re-running them adds no signal,
-  burns compute, and signals that the reviewer has nothing else to say.
+- **Do not re-run gates the coder already ran.** `make fmt-check`,
+  `make build`, `make test`, `make test-integration`,
+  `planar skills render --check` / validators — the coder's report
+  includes gate output; the reviewer trusts it. Re-running them adds no
+  signal, burns compute, and signals that the reviewer has nothing else
+  to say.
 - **Do not re-implement.** That is the coder's job. If the diff is wrong,
   return `request-changes` with the specific issues — not a fixed
   implementation.

@@ -83,7 +83,7 @@ The dispatcher's brief is the input the coder runs on. Sloppy briefs are a dispa
 - **List task IDs explicitly.** The cycle's scope is the enumerated task list. Task IDs are the contract the reviewer compares the diff against.
 - **List claim tokens explicitly.** Claim tokens are the synchronization contract. The reviewer uses them to verify the diff stayed inside leased scope, and interrupted sessions use them for resume/reconcile.
 - **Note locked decisions inline.** Patterns like `Q47 = editor markers` or "ADR-0012 forbids new global state here" go in the brief verbatim so the coder does not re-litigate them.
-- **Specify the gates the coder must run.** Default Go gates: `gofmt`, `go vet`, `go build`, `go test`, two-run integration confirmation, plus `make render-check` when skill/agent surfaces are touched and any remaining relevant validators.
+- **Specify the gates the coder must run.** Default Zig gates: `make fmt-check`, `make build`, `make test`, `make test-integration` (run twice, back-to-back), plus `planar skills render --check` against an out-of-tree staging dir when skill/agent surfaces are touched and any remaining relevant validators.
 - **Specify the report shape.** Word ceiling and the required sections per [`agents/coder.md` §Work-complete report template](../../agents/coder.md#work-complete-report-template).
 - **Pose the problem; do not include the solution.** State the invariant, the constraint, and the acceptance signal. Let the coder design the implementation.
 - **Cite test-spec section paths when dispatched tasks have `verifies` edges to test-spec scenarios (plan 277).** List the cited scenario IDs explicitly so the reviewer can compare the diff against them. Skip the test-spec reference when no scenarios are cited.
@@ -133,9 +133,10 @@ Before asking the user to select a dispatch mode, the orchestrator presents all 
                    --barrel-deferred-at plan for once-per-plan).
                    [throughput + late review safety net]
 
-  barrel-bypass    No reviewer dispatch at all. Quality gates (gofmt,
-                   vet, build, test, integration-twice, parity
-                   validators) ARE the entire review signal.
+  barrel-bypass    No reviewer dispatch at all. Quality gates
+                   (make fmt-check, build, test, test-integration
+                   twice, parity validators) ARE the entire review
+                   signal.
                    [maximum throughput; trust the gates]
 
   When in doubt: use --strict.

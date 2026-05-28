@@ -8,7 +8,7 @@ vendor:
     invocation_examples: |
       /pl-question add "What is the Stripe API rate limit?"
       /pl-question answer 3 "100 requests per second per endpoint"
-      /pl-question list --open
+      /pl-question list --status open
 shared_notes:
   - "Resolved scope and question state come from the CLI; the skill must not read or write workspace context outside it."
 ---

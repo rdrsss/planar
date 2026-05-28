@@ -32,7 +32,7 @@ When a test the test-coder authors against a cited scenario fails on first run, 
 3. **Read the coder's diff firsthand** via `git diff <coder-cycle-base>..HEAD` and `git diff --stat <coder-cycle-base>..HEAD`. The brief lists the claim; the diff is what got shipped.
 4. **Write tests against the cited scenarios, not the implementation.** Shape the test to the scenario's `**Acceptance:**` clause.
 5. **Limit the diff to test files.** Production-code changes are never the test-coder's job.
-6. **Paste gate output verbatim in the work-complete report** — `gofmt`, `go vet`, `go build`, `go test` with the new-test count and pass/fail summary.
+6. **Paste gate output verbatim in the work-complete report** — `make fmt-check`, `make build`, `make test`, `make test-integration` with the new-test count and pass/fail summary.
 7. **On `request-changes`, address the specific findings** without re-implementing broadly.
 
 ## What the test-coder does NOT do
@@ -54,7 +54,7 @@ When a test the test-coder authors against a cited scenario fails on first run, 
 
 The test-coder's dispatch trigger is the coverage gate (uncovered slugs ∩ cycle slugs), not the reviewer's disposition. Phase 3.5 fires across all barrel modes — including [`barrel-bypass`](../../agents/methodology.md#barrel-bypass). The mode names refer to the *reviewer* skip path; the coverage gate must not be silently bypassed. `failure-surfaced` still halts the cycle and escalates to the operator regardless of the orchestrator's mode. See [`agents/test-coder.md` §Phase 3.5 fires across all barrel modes](../../agents/test-coder.md#phase-35-fires-across-all-barrel-modes).
 
-The command resolves the task (or plan), refuses to proceed on `resume validate` failure, reads the cited test-spec scenarios plus the coder diff, writes a test-only diff, runs `go test`, and returns the change set plus a work-complete report to the orchestrator. The orchestrator decides whether to dispatch the reviewer.
+The command resolves the task (or plan), refuses to proceed on `resume validate` failure, reads the cited test-spec scenarios plus the coder diff, writes a test-only diff, runs `make test` and `make test-integration`, and returns the change set plus a work-complete report to the orchestrator. The orchestrator decides whether to dispatch the reviewer.
 
 ## Vendor Notes
 

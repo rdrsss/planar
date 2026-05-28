@@ -127,12 +127,13 @@ reconciled product-spec.md: 4 questions (2 new, 2 unchanged, 0 stale)
 
 | Flag | Effect |
 |------|--------|
-| `--interactive` | Prompt per body-only question before registering: `Register question 'foo bar'? [y/n]`. Without this flag, new questions are registered silently. |
-| `--yes-all` | Batch acceptance — skip prompts even when `--interactive` is set; accept all body-only items. |
+| `--apply` | Persist the decomposition (without this flag, the run is a dry preview). |
+| `--apply-removals` | Apply removals for tasks/decisions/questions no longer present in the spec. |
+| `--strict` | Refuse to apply when any body-only question would be silently registered. |
+| `--format text\|json` | Output shape (default `text`). `--json` is the shorthand for `--format json`. |
+| `--scope <slug>` | Override the cwd-derived scope. |
 
-**Note:** `--interactive` and `--yes-all` are documented as the future behavioral
-contract. The actual cobra flags are not yet wired on `planar spec ingest`; that
-is a follow-up implementation task. The skill text is accurate once that work lands.
+> Per-question interactive prompting (`--interactive`, `--yes-all`) is a deferred enhancement on the ingest verb; current behavior is silent registration unless `--strict` refuses the run.
 
 ## What it produces
 

@@ -42,7 +42,7 @@ The reviewer adds signal by doing six things the coder structurally cannot do fo
 
 ## What the reviewer does NOT do
 
-- Do not re-run gates the coder already ran (`gofmt`, `go vet`, `go build`, `go test`, render-check / validators). The coder's report includes gate output; the reviewer trusts it.
+- Do not re-run gates the coder already ran (`make fmt-check`, `make build`, `make test`, `make test-integration`, `planar skills render --check` / validators). The coder's report includes gate output; the reviewer trusts it.
 - Do not re-implement. If the diff is wrong, return `request-changes` with specific issues — not a fixed implementation.
 - Do not raise stylistic preferences without grounding. Findings must cite spec, ADR, convention, or existing pattern.
 

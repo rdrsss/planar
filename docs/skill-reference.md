@@ -14,7 +14,7 @@ Planar authors each shared skill once at `skills/src/<name>.md` and renders vend
 - `skills/codex/<name>.md` — generated, materialized as `~/.planar/codex-skills/<name>/SKILL.md`, installed into `~/.codex/skills/<name>`
 - `skills/copilot/<name>.md` — generated, installed to `~/.copilot/skills/<name>.md`
 
-Vendor profile data and model-tier resolution come from `src/configs/vendors.yaml` (embedded into the `planar` binary). Drift between `skills/src/` and generated vendor trees is gated by `planar skills render --check` (`make render-check`).
+Vendor profile data and model-tier resolution come from `src/configs/vendors.yaml` (embedded into the `planar` binary). Drift between `skills/src/` and generated vendor trees is gated by `planar skills render --check` against an out-of-tree staging directory.
 
 ---
 
@@ -509,7 +509,7 @@ The `local-` prefix on the install name makes sandbox skills visibly user-author
 |---|---|---|
 | Location | `commands/claude/`, `skills/codex/`, `skills/copilot/`, `agents/` in the repo | `~/.planar/local/{skills,agents}/` on the operator's machine |
 | Install | `install.sh` or `make install` from the repo checkout | `planar local link` |
-| Authoring overhead | Commit, push, `make render-check` across generated vendor trees | One file, one `planar local link` |
+| Authoring overhead | Commit, push, `planar skills render --check` against an out-of-tree staging dir across generated vendor trees | One file, one `planar local link` |
 | Distribution | Shipped to everyone using the repo | This operator's machine only |
 | Promotion | N/A | Manual: copy file into the repo and follow normal contribution flow. No `planar local promote` shortcut |
 

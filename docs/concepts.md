@@ -612,7 +612,7 @@ The dir-symlink shape for Codex and Copilot is load-bearing. Empirically their d
 
 `planar local unlink` removes the symlink itself; the underlying source directory at `~/.planar/local/skills/<name>/` is left untouched. Use `unlink --purge` to also delete the source.
 
-**Promotion is manual.** No `planar local promote` shortcut. A skill earning a place in the canonical repo means going through the normal git contribution flow: copy the file into `skills/src/`, run `make render`, commit, push, and let `make render-check` plus any remaining relevant validators gate it. The absence of a shortcut is deliberate — canonical and sandbox have different bars.
+**Promotion is manual.** No `planar local promote` shortcut. A skill earning a place in the canonical repo means going through the normal git contribution flow: copy the file into `skills/src/`, run `make install` (which invokes `planar skills render` at install time), commit, push, and let `planar skills render --check` (run against an out-of-tree staging dir) plus any remaining relevant validators gate it. The absence of a shortcut is deliberate — canonical and sandbox have different bars.
 
 **SQLite tables:** none — the sandbox is filesystem state. **Primary entry points:** `sandbox.WalkSandbox`, `sandbox.Migrate`, `link.Link`, `link.Unlink`, `link.List`, `importer.Import`. CLI surface: `planar local {list, link, unlink, import, migrate}`.
 

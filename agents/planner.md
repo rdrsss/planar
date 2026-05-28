@@ -58,7 +58,7 @@ Vendor-neutral. Vendor-specific surfaces are under `commands/claude/pl-spec-draf
 ## Behavior
 
 1. Confirm scope via `planar scope show`. If the cwd resolves to no registered scope and no `--scope` flag is supplied, surface a `question` and stop.
-2. Create the anchor plan: `planar plan create --title "<derived title>" --slug <slug> --status draft --scope assoc:<slug>`. Capture `<plan-id>` from the output.
+2. Create the anchor plan: `planar plan create "<derived title>" --slug <slug> --status draft --scope assoc:<slug>`. Capture `<plan-id>` from the output.
 3. Create the workbench directory:
    ```
    mkdir -p "$PLANAR_WORKBENCH_ROOT/<assoc-slug>/p<plan-id>-<slug>/"
@@ -261,7 +261,7 @@ The planner writes these fields after registering the artifact via `planar artif
 The verbs must be composed in this order to ensure every `.md` file carries canonical front matter before the workbench manifest is seeded:
 
 1. `planar scope show` — confirm the cwd resolves to a registered scope (or that `--scope` was supplied); abort with a `question` if not.
-2. `planar plan create --title "<derived title>" --slug <slug> --status draft [--scope assoc:<slug>]` — returns `<plan-id>`.
+2. `planar plan create "<derived title>" --slug <slug> --status draft [--scope assoc:<slug>]` — returns `<plan-id>`.
 3. For each of `product-spec.md`, `tech-spec.md`, `roadmap.md`:
    1. `planar artifact add "<title>" --kind <kind> --plan <plan-id> --body ""` — returns `<artifact-id>`. Creates an empty-body placeholder row so the id is known before the file is written.
    2. Write `<filename>` in the workbench directory with canonical YAML front matter using the returned `<artifact-id>` and `<plan-id>`, followed by the planner-generated Markdown body.

@@ -107,24 +107,28 @@ and never silently changes thereafter.
 
 ## ADR-0007 — Internal package bucket grouping
 
-*Active, 2026-05-16.* After M7, `src/internal/` contained 32 flat
-entries with no grouping signal. The ADR introduces five bucket
-directories — `identity/`, `planning/`, `external/`, `runtime/`,
-`health/` — each holding the original per-entity packages as
-sub-directories. Package names and exported symbols are unchanged;
+*Historical (Go era), 2026-05-16.* After M7, `src/internal/`
+contained 32 flat entries with no grouping signal. The ADR introduces
+five bucket directories — `identity/`, `planning/`, `external/`,
+`runtime/`, `health/` — each holding the original per-entity packages
+as sub-directories. Package names and exported symbols are unchanged;
 only import paths shift from `internal/X` to `internal/<bucket>/X`.
 Migration is mechanical and reviewable one bucket at a time. The
 internal-package navigability problem this fixed has a counterpart
-in `cmd/planar/`, addressed by ADR-0008.
+in `cmd/planar/`, addressed by ADR-0008. *Carried forward into the
+Zig rewrite as the bucket layout under `src/engine/`.*
 
 ## ADR-0008 — `cmd/planar` subpackage buckets
 
-*Active, 2026-05-18.* Applies the bucket-as-subpackage pattern from
-ADR-0007 to `cmd/planar/`. The flat top-level directory (26 Go
-files in `package main`) becomes seven sub-packages under
+*Historical (Go era), 2026-05-18.* Applies the bucket-as-subpackage
+pattern from ADR-0007 to `cmd/planar/`. The flat top-level directory
+(26 Go files in `package main`) becomes seven sub-packages under
 `cmd/planar/internal/`: `identity/`, `planning/`, `external/`,
 `runtime/`, `workbench/`, `system/`, plus shared helpers in
 `cli/`. Each bucket exports a single `AddCommands(*cobra.Command)`
 constructor; `main.go` calls one constructor per bucket. Go's
 `internal/` path restriction prevents accidental import by any
-other binary.
+other binary. *The Zig rewrite preserves the per-bucket grouping
+under `src/cmd/planar/handlers/` and `src/engine/`; the cobra-specific
+`AddCommands` constructor is replaced by hand-rolled `cli.Cmd`
+registration in `src/cmd/planar/main.zig`.*

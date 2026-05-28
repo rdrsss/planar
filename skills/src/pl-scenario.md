@@ -29,7 +29,7 @@ Wraps [`scenario`](../../docs/cli-reference.md#domain-scenario):
 
 ```
 planar scenario add <title> [--body <text>] [--related <artifact-id>] [--scope <scope>]
-planar scenario verify <scenario-id> --outcome <pass|fail|error|skipped> [--notes <text>]
+planar scenario verify <scenario-id> --outcome <pass|fail|error|skipped> [--summary <text>]
 planar scenario list [--scope <scope>] [--status <status>]
 planar scenario show <scenario-id>
 planar scenario retire <scenario-id>

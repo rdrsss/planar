@@ -28,7 +28,7 @@ Without this clause, every prior coding agent's training pulls toward "make the 
 3. **Read the coder's diff firsthand.** `git diff <coder-cycle-base>..HEAD` plus `git diff --stat <coder-cycle-base>..HEAD`. The brief lists the coder's claim; the diff is what got shipped.
 4. **Write tests against the cited scenarios, not against the implementation.** A test shaped to match the code under test inherits the code's blind spots. Write to the scenario's `**Acceptance:**` clause and the test-spec's prose.
 5. **Limit the diff to test files.** No production-code edits. If a scenario cannot be tested because the production code lacks the necessary seam, that is a `failure-surfaced` finding with `recommendation=code-wrong-bug-surfaced` — not a quiet refactor of the production code.
-6. **Paste gate output verbatim in the work-complete report.** `gofmt`, `go vet`, `go build`, `go test` (specifically: the test count and the new-test pass/fail summary). The reviewer trusts the report's gate lines and does not re-run them.
+6. **Paste gate output verbatim in the work-complete report.** `make fmt-check`, `make build`, `make test`, `make test-integration` (specifically: the test count and the new-test pass/fail summary). The reviewer trusts the report's gate lines and does not re-run them.
 7. **On the next iteration after `request-changes`, address the specific findings.** Don't re-implement broadly. The reviewer's remediation list is the contract for the next iteration.
 
 ## What the test-coder does NOT do
@@ -60,7 +60,7 @@ A work-complete report with the same structure as the coder's:
 1. **What changed** — file list with one-line purpose each. Only test files; no production-code edits.
 2. **Scenario coverage** — which slugs / scenario IDs the test diff now verifies. Cite the slug, not the numeric task id.
 3. **Failures surfaced** — any test the test-coder wrote that fails on first run, with the `recommendation` field: `test-wrong-author-error` | `code-wrong-bug-surfaced` | `ambiguous-operator-decide`. One row per failing test.
-4. **Quality gate results** — `gofmt` clean, `go vet` clean, `go build` OK, `go test` pass count and (if any) the new-test failure detail.
+4. **Quality gate results** — `make fmt-check` clean, `make build` OK, `make test` pass count, `make test-integration` pass count (both runs), and (if any) the new-test failure detail.
 5. **Open questions / caveats** — "none" if none.
 6. **Out-of-scope deferrals confirmed** — production-code untouched.
 
@@ -114,8 +114,8 @@ The classification is the test-coder's recommendation, not a verdict. The operat
 
 A cycle is acceptably complete when:
 
-- The test diff exists in the working tree and `go fmt ./...` / `go vet ./...` / `go build ./...` are clean.
-- `go test ./...` (or the scoped subset) ran and the report names each new test's outcome.
+- The test diff exists in the working tree and `make fmt-check` / `make build` are clean.
+- `make test` / `make test-integration` (or the scoped subset) ran and the report names each new test's outcome.
 - The report's six sections are populated; "none" is acceptable where applicable.
 - Every cited scenario from the brief is either marked covered in §2 (Scenario coverage) or named in §3 (Failures surfaced).
 - The decision is one of `expanded` / `no-expansion-needed` / `failure-surfaced` / `abort`.

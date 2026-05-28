@@ -130,10 +130,11 @@ Use INLINE (skip reviewer dispatch) if ALL of the following hold:
   (a) ≤3 files modified
   (b) Only mechanical edits: renames, deletions, mass symbol-replace,
       comment-only changes, or whitespace normalization
-  (c) Automated validation green pre-submit: `go fmt ./...` clean,
-      `go vet ./...` clean, `go build ./...` clean, `go test ./...`
-      green (or scoped to affected packages), project grep checks pass,
-      render-check and any remaining relevant validators pass
+  (c) Automated validation green pre-submit: `make fmt-check` clean,
+      `make build` clean, `make test` green (or scoped to affected
+      modules), `make test-integration` green (run twice), project
+      grep checks pass, `planar skills render --check` against an
+      out-of-tree staging dir and any remaining relevant validators pass
 
 Use STRICT (full coder + reviewer dispatch) if ANY of the following hold:
   - More than 3 files modified
@@ -146,20 +147,21 @@ Use STRICT (full coder + reviewer dispatch) if ANY of the following hold:
 Run this checklist before every work-complete declaration. Add new entries
 when a cycle surfaces a defect not already listed.
 
-- [ ] `gofmt -l .` returns empty output (all Go files format-clean).
+- [ ] `make fmt-check` returns clean (all Zig files format-clean).
       Note: run this AFTER any bulk substitution (`sed`, find-replace).
-      gofmt does not run automatically on substituted files.
+      `zig fmt` does not run automatically on substituted files.
 - [ ] For any reference to a schema enum value (e.g. artifact kind, task
       status, plan status): confirm the value by reading the migration SQL
-      (`src/migrations/`) — never guess from memory.
+      (`migrations/`) — never guess from memory.
 - [ ] For any documentation table (especially in ADRs or tech-specs):
       cross-check each row against the authoritative source. Tables that
       summarize values from other documents must be validated against those
       documents, not just internally consistent.
-- [ ] `go vet ./...` returns no diagnostics.
-- [ ] `go build ./...` succeeds.
-- [ ] `go test ./...` green (or scoped to modified packages).
-- [ ] `make render-check` passes if any skill/agent surface was modified.
+- [ ] `make fmt-check` returns no diagnostics.
+- [ ] `make build` succeeds.
+- [ ] `make test` green (or scoped to modified packages).
+- [ ] `make test-integration` green (run **twice** back-to-back).
+- [ ] `planar skills render --check` against an out-of-tree staging dir passes if any skill/agent surface was modified.
 - [ ] No references to files that have been renamed or deleted (grep for
       all file paths cited in changed documents).
 
@@ -240,9 +242,9 @@ The orchestrator's queue of pending cycles is recoverable from `session_entries`
 
 ### `barrel-bypass`
 
-No reviewer dispatch at all. Coder cycles run back-to-back; quality gates (`gofmt`, `go vet`, `go build`, `go test`, two-run integration, `make render-check`, plus any remaining relevant validators) are the entire signal. The iteration cap is *undefined* — there is no reviewer, so no `request-changes`, so no iteration.
+No reviewer dispatch at all. Coder cycles run back-to-back; quality gates (`make fmt-check`, `make build`, `make test`, `make test-integration` twice, `planar skills render --check` against an out-of-tree staging dir, plus any remaining relevant validators) are the entire signal. The iteration cap is *undefined* — there is no reviewer, so no `request-changes`, so no iteration.
 
-The contract under `barrel-bypass`: the coder's quality-gate output IS the review. The coder must paste gate citations verbatim in the work-complete report, run the integration suite twice, and (if vendor/agent surfaces are touched) run `make render-check` and any remaining relevant validators. A coder dispatched under `barrel-bypass` must know its situation; the coder agent spec acknowledges this contract explicitly.
+The contract under `barrel-bypass`: the coder's quality-gate output IS the review. The coder must paste gate citations verbatim in the work-complete report, run the integration suite twice, and (if vendor/agent surfaces are touched) run `planar skills render --check` against an out-of-tree staging dir and any remaining relevant validators. A coder dispatched under `barrel-bypass` must know its situation; the coder agent spec acknowledges this contract explicitly.
 
 Operators picking `barrel-bypass` accept that uncaught defects must surface via runtime testing or out-of-band review. The closest retroactive surface is `git blame` + `/pl-reviewer <task-id> <iteration>` against a still-active task; there is no orchestrator-driven "review this old cycle" workflow.
 
@@ -357,9 +359,10 @@ Every coder brief MUST:
   so the coder does not re-litigate them. A decision restated in the
   brief is faster to honor than one buried in an ADR the coder may not
   reach.
-- **Specify the gates the coder must run.** Default Go gates: `gofmt`,
-  `go vet`, `go build`, `go test`, plus the two-run integration
-  confirmation, `make render-check` when surfaces are touched, and any
+- **Specify the gates the coder must run.** Default Zig gates:
+  `make fmt-check`, `make build`, `make test`, plus the two-run
+  `make test-integration` confirmation, `planar skills render --check`
+  against an out-of-tree staging dir when surfaces are touched, and any
   remaining relevant validators.
   Naming the gates in the brief means the coder cannot omit them as
   "obvious."

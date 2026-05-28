@@ -247,7 +247,7 @@ tasks: [44, 45, 46]
 /orchestrator 42 --barrel-bypass
 ```
 
-No reviewer dispatch at all. Coder cycles run back-to-back; quality gates (gofmt + vet + build + test + integration **twice** + `make render-check` + any remaining relevant validators) are the entire signal.
+No reviewer dispatch at all. Coder cycles run back-to-back; quality gates (`make fmt-check` + `make build` + `make test` + `make test-integration` **twice** + `planar skills render --check` against an out-of-tree staging dir + any remaining relevant validators) are the entire signal.
 
 Audit-trail excerpt:
 ```
@@ -276,9 +276,7 @@ Use this after tasks are done (or any time you want external counterparts create
 ### Register the external system (once per system)
 
 ```
-planar ext register my-gh --kind github-issues \
-  --base-url https://api.github.com \
-  --owner myorg --repo myrepo
+planar ext register github my-gh --project myorg/myrepo
 ```
 
 ### Propagate
@@ -1400,7 +1398,7 @@ git commit -m "skill: fixup-protos"
 git push   # PR through the normal contribution flow
 ```
 
-There is no `planar local promote` shortcut — that is deliberate. Canonical skills go through `make render-check`, any remaining relevant validators, and contribution review; sandbox skills do not. Keeping the boundary loud preserves the difference. After promotion, you can run `planar local unlink fixup-protos --purge` to retire the sandbox copy.
+There is no `planar local promote` shortcut — that is deliberate. Canonical skills go through `planar skills render --check` against an out-of-tree staging dir, any remaining relevant validators, and contribution review; sandbox skills do not. Keeping the boundary loud preserves the difference. After promotion, you can run `planar local unlink fixup-protos --purge` to retire the sandbox copy.
 
 ---
 

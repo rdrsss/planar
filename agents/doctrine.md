@@ -17,7 +17,7 @@ Summary:
 - **INLINE** (skip reviewer): ≤3 files, mechanical edits only, automated validation fully green.
 - **STRICT** (full coder + reviewer cycle): any logic change, any spec/ADR/migration change, more than 3 files, or the prior cycle on the same area had a reviewer failure.
 
-**Concrete example (INLINE-eligible):** A single-file comment correction where `gofmt -l .` returns empty, `go build ./...` succeeds, and no parity surface was touched.
+**Concrete example (INLINE-eligible):** A single-file comment correction where `make fmt-check` returns clean, `make build` succeeds, and no parity surface was touched.
 
 **Concrete example (STRICT-required):** A 2-file change that adds a new exported function — even though file count is low, the presence of a new function triggers STRICT.
 
@@ -33,8 +33,8 @@ Session-attributed defect log (add entries when a new defect class is observed):
 
 | Defect class | First seen | Description |
 |---|---|---|
-| gofmt drift after bulk substitution | 2026-05-16 | `sed`/find-replace on Go files does not re-run gofmt; always run `gofmt -l .` after any bulk edit. |
-| Schema enum value guessed from memory | 2026-05-16 | Coder cited an artifact kind that did not exist in the migration SQL. Always read `src/migrations/` to confirm enum values. |
+| zig fmt drift after bulk substitution | 2026-05-16 | `sed`/find-replace on Zig files does not re-run `zig fmt`; always run `make fmt-check` after any bulk edit. (Originally surfaced in the Go era against `gofmt`.) |
+| Schema enum value guessed from memory | 2026-05-16 | Coder cited an artifact kind that did not exist in the migration SQL. Always read `migrations/` to confirm enum values. |
 | Documentation table internal consistency without cross-check | 2026-05-16 | A table in an ADR was internally consistent but contradicted the migration SQL it summarized. Tables must be validated against their source, not just against each other. |
 
 ---

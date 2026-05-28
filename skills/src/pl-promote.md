@@ -4,11 +4,11 @@ description: "Surface personal entities that have matured and promote or demote 
 source: docs/cli-reference.md#domain-promote
 vendor:
   claude:
-    argument_hint: "<kind:id> --to <association-slug> | demote <kind:id> --to global"
+    argument_hint: "<kind:id> --to <association-slug> | demote <kind:id> [--from <association-slug>]"
     invocation_examples: |
       /pl-promote task:42 --to org:acme
       /pl-promote plan:7 --to project:billing
-      /pl-promote demote task:42 --to global
+      /pl-promote demote task:42
 shared_notes:
   - "Active scope and entity state come from the CLI; the skill must not read or write workspace context outside it."
 ---
@@ -27,7 +27,7 @@ Wraps [`promote` and `demote`](../../docs/cli-reference.md#domain-promote):
 
 ```
 planar promote <kind:id> --to <association-slug>
-planar demote <kind:id> --to global
+planar demote <kind:id> [--from <association-slug>]
 ```
 
 ## When To Invoke

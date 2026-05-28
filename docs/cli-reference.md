@@ -1465,7 +1465,7 @@ scenario 9: "Stripe webhook idempotency"  [draft]  (scope: association:3 [from a
 
 **Synopsis:**
 ```
-planar scenario verify <scenario-id> --outcome <outcome> [--notes <text>]
+planar scenario verify <scenario-id> --outcome <outcome> [--summary <text>]
 ```
 
 **Description:** Record the outcome of running a scenario. Transitions status to `verified` (on pass) or `failing` (on fail). Does not execute the scenario — execution is the agent's job.
@@ -1914,22 +1914,22 @@ task:42 promoted to association org:acme  (was: global)
 
 ---
 
-### `planar demote <kind:id> --to global`
+### `planar demote <kind:id>`
 
 **Synopsis:**
 ```
-planar demote <kind:id> --to global
+planar demote <kind:id> [--from <association-slug>]
 ```
 
 **Description:** Reverse a promotion — move an entity back to global personal scope. Allowed before workbench export; after export, the exported file is left for the user to remove manually.
 
-Demotion targets `global` only. Association-to-association transitions go through `promote`.
+Demotion always targets `global`. Association-to-association transitions go through `promote`.
 
 **Options:**
 
 | Flag | Description | Required |
 |------|-------------|----------|
-| `--to global` | Currently only `global` is a valid demotion target. | yes |
+| `--from <slug>` | Optional source-association slug recorded on the audit row. The engine demotes unconditionally regardless of this flag. | no |
 
 **Schema effects:** Updates `<entity_table>(scope_kind='global', scope_id=NULL, updated_at)`.
 
@@ -2634,7 +2634,7 @@ planar ext register jira <slug> --base-url <url> --project <key> --auth-env <var
 
 **Synopsis:**
 ```
-planar ext register github <slug> --project <owner/repo> [--auth gh-cli | --auth-env <var>]
+planar ext register github <slug> --project <owner/repo> [--auth-env <var>]
 ```
 
 **Description:** Register a GitHub Issues instance as an external system.
@@ -2644,8 +2644,7 @@ planar ext register github <slug> --project <owner/repo> [--auth gh-cli | --auth
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--project <owner/repo>` | GitHub repository, e.g. `acme/widgets`. | Required. |
-| `--auth gh-cli` | Use `gh` CLI for authentication. Sets `auth_method='gh-cli'`, `auth_ref='default'`. | default |
-| `--auth-env <var>` | Use an environment variable token. Sets `auth_method='token-env'`. | — |
+| `--auth-env <var>` | Use an environment variable token. Sets `auth_method='token-env'`. When omitted the adapter shells out to `gh auth token` (`auth_method='gh-cli'`). | — |
 
 **Schema effects:** Inserts into `external_systems(kind='github-issues', slug, base_url='https://api.github.com', default_project, auth_method, auth_ref)`.
 
@@ -2902,7 +2901,7 @@ Sync commands pull and push data between the local plane and registered external
 
 **Synopsis:**
 ```
-planar sync pull <link-id | kind:id | --all> [--since <window>] [--system <slug>]
+planar sync pull <link-id | kind:id | --all> [--system <slug>] [--scope <slug>]
 ```
 
 **Description:** Pull remote state for one or more links. Updates `external_links.last_synced_at` and mirrors selected fields onto the local entity if `sync_direction` permits. Records a `sync_events` row per link touched.
@@ -2916,8 +2915,8 @@ planar sync pull <link-id | kind:id | --all> [--since <window>] [--system <slug>
 | `<link-id>` | Pull a specific link by id. |
 | `<kind:id>` | Pull all links for the given local entity. |
 | `--all` | Pull all links with `sync_direction` of `two-way` or `read-only`. |
-| `--since <window>` | Only pull links not synced in the last `<window>` (e.g. `1h`, `30m`). Applied after the link filter. |
 | `--system <slug>` | Filter to links via a specific system (when used with `--all` or `kind:id`). |
+| `--scope <slug>` | Filter to links within a specific scope. |
 
 **Output (human):**
 ```

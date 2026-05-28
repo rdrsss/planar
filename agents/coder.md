@@ -37,8 +37,8 @@ they are the coder's job to get right before handoff.
    `git diff --stat HEAD` and asks "why is this file in the change set?"
    for every entry.
 4. **Paste gate output verbatim in the work-complete report.** The test
-   count, the `ok pkg 0.42s` lines, the `make render-check` outcome (when
-   applicable), and any remaining validator outcomes. "vet
+   count, the `All N tests passed` lines, the `planar skills render --check`
+   outcome (when applicable), and any remaining validator outcomes. "fmt
    clean, tests green" without command output is not a gate citation; the
    reviewer trusts the report's gate lines and does not re-run them
    (see the reviewer's NOT-do list), so the lines must actually be there.
@@ -123,8 +123,8 @@ When dispatched under [`barrel-bypass`](methodology.md#barrel-bypass), the coder
 
 Under barrel-bypass the coder MUST:
 
-- **Run every gate that applies.** `gofmt`, `go vet`, `go build`, `go test` (the affected packages, not just the touched files), the integration suite **twice** (back-to-back, both runs green), `make render-check` when skill/agent surfaces are touched, and any remaining relevant validators. Skipping a gate that would normally apply is a contract violation; there is no reviewer to catch the omission.
-- **Paste gate output verbatim** in the work-complete report, including the test count, `ok pkg 0.42s` lines, the integration two-run pass counts, `make render-check`, and any additional validator outcomes. The report's gate lines are the audit trail the operator reads to retroactively confirm the cycle was safe.
+- **Run every gate that applies.** `make fmt-check`, `make build`, `make test` (the affected modules, not just the touched files), `make test-integration` **twice** (back-to-back, both runs green), `planar skills render --check` against an out-of-tree staging dir when skill/agent surfaces are touched, and any remaining relevant validators. Skipping a gate that would normally apply is a contract violation; there is no reviewer to catch the omission.
+- **Paste gate output verbatim** in the work-complete report, including the test count, the `All N tests passed` lines, the integration two-run pass counts, the `planar skills render --check` outcome, and any additional validator outcomes. The report's gate lines are the audit trail the operator reads to retroactively confirm the cycle was safe.
 - **Surface real defects as new task rows.** If something is wrong but out of scope, file `planar task add` with the issue. Under barrel-bypass there is no `request-changes` round trip; suppressed known-issues silently ship.
 
 Under barrel-bypass the coder MUST NOT:

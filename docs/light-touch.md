@@ -73,7 +73,7 @@ planar decision add "Use Zig stdlib argv parsing instead of zig-cli" \
 ### `planar question add`
 
 For capturing **what you don't know yet**. Each unresolved uncertainty
-becomes a queryable entity. Run `planar question list --open --scope
+becomes a queryable entity. Run `planar question list --status open --scope
 <your-scope>` periodically to see what's still hanging.
 
 ```
@@ -243,7 +243,7 @@ six months later needs the "because" to make sense of it.
 planar question add "<the question>" --body "<context; what you tried; why it's open>"
 ```
 
-Worth running `planar question list --open --scope <yours>` at the
+Worth running `planar question list --status open --scope <yours>` at the
 start of each session — it surfaces stale questions you might be
 able to answer now.
 
@@ -274,7 +274,7 @@ the whole exploration.
 ```
 planar artifact show <id>
 planar decision list --plan <id>     # browse the choices you've made
-planar question list --open          # what's still unresolved
+planar question list --status open          # what's still unresolved
 ```
 
 ## Graduating to a real plan
@@ -352,7 +352,7 @@ planar question wontfix <id>
 
 # Browse
 planar tree <plan-id>                            # everything, hierarchical
-planar question list --open                      # what's unresolved
+planar question list --status open                      # what's unresolved
 planar decision list --plan <id>                 # all your choices
 planar artifact list --plan <id>                 # all your captures
 
