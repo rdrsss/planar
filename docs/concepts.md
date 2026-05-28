@@ -439,7 +439,19 @@ Sync is always explicit:
 
 When a feature is complete, `planar workbench archive <plan>` removes the FS tree (the DB retains everything). `planar workbench restore <plan>` recreates it.
 
-**SQLite table:** `workbench_sync_state` (tracks per-file sync state). **Primary verbs:** `planar workbench push`, `planar workbench pull`, `planar workbench sync`, `planar workbench status`, `planar workbench archive`, `planar workbench restore`, `planar workbench publish`.
+### Terminal-status filter
+
+Push, restore, and the new `gc` verb honor a status-based filter so the workbench filesystem mirrors active work rather than accumulating audit-trail files for terminal entities (cancelled tasks, abandoned plans, superseded decisions, etc.).
+
+- **Default mode is `failures`.** Failure terminals (`tasks.cancelled`, `plans.abandoned`, `decisions.{superseded,withdrawn}`, `questions.wontfix`, `test_scenarios.retired`, `artifacts.{superseded,retired}`) are filtered out of the FS write set. Success terminals (`tasks.done`, `questions.answered`, `test_scenarios.verified`) stay visible as checkpoint artifacts.
+- **`--filter-mode all`** extends the filter to success terminals. Useful in maintenance-mode repos where every historical entity clutters the view.
+- **`workbench pull` does NOT filter.** Edits to terminal-backed FS files (e.g. updating a cancelled task's body to record WHY it was cancelled) are always ingested into the DB. Status never transitions on pull, so accepting body updates carries no integrity risk.
+- **`workbench gc <plan>`** removes FS files whose backing entity is terminal. Defaults to apply but refuses with exit 1 when any to-be-removed file has FS-content drift from its DB-stored hash; `--yes` overrides. Flags: `--dry-run`, `--yes`, `--filter-mode`, `--all-scopes`, `--json`.
+- **`workbench push --apply-cleanup`** is narrow-scope: only removes pre-existing FS files for entities this push enumerated and would have filtered. Plan-wide / workspace-wide cleanup is `workbench gc` / `gc --all-scopes`.
+
+`push --apply-cleanup` and `push --filter-mode all` are mutually exclusive (the modes express opposite intents — clean up vs. include everything).
+
+**SQLite table:** `workbench_sync_state` (tracks per-file sync state). **Primary verbs:** `planar workbench push`, `planar workbench pull`, `planar workbench sync`, `planar workbench status`, `planar workbench archive`, `planar workbench restore`, `planar workbench gc`, `planar workbench publish`. **Primary engine module:** `src/engine/workbench/terminal.zig` (the comptime status table that backs the filter — a future status added by a migration is a compile-time error here).
 
 ---
 
