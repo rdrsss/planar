@@ -107,10 +107,15 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
 
     while (true) {
         if (follow.shouldStop()) return;
+        // `interruptibleSleep` refreshes the DB handle before
+        // returning (see follow.zig). Re-pin the live pointer
+        // because the singleton's address can move.
         follow.interruptibleSleep(interval_ns);
         if (follow.shouldStop()) return;
+        const live_d = runtime.ensureDbStrictReadOnly() catch |e|
+            exit.die(ctx, e, "{s}", .{@errorName(e)});
 
-        const incremental = try collectSince(d, ctx.allocator, args, watermark);
+        const incremental = try collectSince(live_d, ctx.allocator, args, watermark);
         defer freeEvents(ctx.allocator, incremental);
         for (incremental) |ev| try writeEvent(ctx.stdout, args.json, ev);
         try ctx.stdout.flush();
@@ -221,16 +226,26 @@ fn collectBetween(
         out.deinit(allocator);
     }
 
-    // Wrap both queries in a single read transaction so they share a
-    // consistent SQLite snapshot. Without the wrap, each statement
-    // gets its own implicit read txn and a writer can commit between
-    // them — that race surfaces as "action row visible but matching
-    // claim row not visible" output, breaking the cross-process
-    // invariant the Tier-2 wake test pins. The COMMIT here is just
-    // a release of the read mark; readers don't write anything.
+    // Wrap both queries in a single read transaction so they share
+    // a consistent SQLite snapshot. Without the wrap each statement
+    // gets its own implicit read transaction and a writer can commit
+    // between them — that race surfaces as "action row visible but
+    // matching claim row not visible" output.
     //
-    // Best-effort: a BEGIN failure leaves us in the legacy per-statement
-    // mode rather than refusing service.
+    // The follow loop in `handle` (above) closes and re-opens the
+    // strict read-only DB handle on every iteration via
+    // `runtime.refreshDbStrictReadOnly` (see follow.zig
+    // `interruptibleSleep` § "Side effect — DB refresh"). Without
+    // that refresh, the wrapped BEGIN-DEFERRED snapshot stays stuck
+    // on a long-lived read-only connection across another process's
+    // `PRAGMA wal_checkpoint(TRUNCATE)` — committed UPDATE rows
+    // become permanently invisible. The two fixes — the wrap (for
+    // intra-poll atomicity) and the refresh (for cross-rotation
+    // visibility) — are paired and load-bearing together. Plan 85
+    // t#2623.
+    //
+    // Best-effort: a BEGIN failure leaves us in the legacy per-
+    // statement mode rather than refusing service.
     const have_tx = blk: {
         d.exec("BEGIN DEFERRED;") catch break :blk false;
         break :blk true;

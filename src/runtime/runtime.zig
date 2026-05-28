@@ -343,6 +343,31 @@ pub fn ensureDbStrictReadOnly() !*db.sqlite.Db {
     return &db_storage.?;
 }
 
+/// Close and re-open the strict read-only DB handle. Used by the
+/// `planar-watch --follow` loop between polls to dodge a SQLite
+/// behavior where a long-lived read-only connection's wrapped
+/// `BEGIN DEFERRED; SELECT ...; COMMIT;` cycle holds a stale
+/// snapshot across another process's `PRAGMA wal_checkpoint(TRUNCATE)`.
+/// A pure-readonly connection cannot write its read-mark slot to
+/// the SHM file, so the WAL-protocol handshake that would have
+/// advanced the snapshot never runs, and committed UPDATE rows
+/// stay invisible. Closing and re-opening resets the snapshot
+/// tracking cleanly. Cheap enough on the follow loop's per-wake
+/// cadence (~ms-scale open + first-query cost). Plan 85 t#2623
+/// regression fix.
+///
+/// Returns the freshly-opened handle. Errors propagate the same
+/// way `ensureDbStrictReadOnly` does (SchemaVersionBehind / Ahead /
+/// OpenFailed). On error, `db_storage` is null and the caller
+/// MUST treat the prior handle pointer as invalidated.
+pub fn refreshDbStrictReadOnly() !*db.sqlite.Db {
+    if (db_storage) |*d| {
+        d.close();
+        db_storage = null;
+    }
+    return try ensureDbStrictReadOnly();
+}
+
 /// Flush both writers. Errors propagate — call from the normal-exit
 /// path so the caller learns if buffered output was lost.
 pub fn flush() !void {

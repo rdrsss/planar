@@ -60,15 +60,21 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
 
     if (args.follow) follow.installSigintHandler();
 
+    var live_d = d;
     while (true) {
-        emitOnce(ctx.stdout, d, ctx.allocator, args) catch |e|
+        emitOnce(ctx.stdout, live_d, ctx.allocator, args) catch |e|
             exit.die(ctx, e, "ps: {s}", .{@errorName(e)});
         try ctx.stdout.flush();
 
         if (!args.follow) return;
         if (follow.shouldStop()) return;
+        // `interruptibleSleep` refreshes the read-only DB handle on
+        // return (plan 85 t#2623 WAL-rotation fix). Re-pin the
+        // pointer because the singleton's address can move.
         follow.interruptibleSleep(interval_ns);
         if (follow.shouldStop()) return;
+        live_d = runtime.ensureDbStrictReadOnly() catch |e|
+            exit.die(ctx, e, "{s}", .{@errorName(e)});
     }
 }
 

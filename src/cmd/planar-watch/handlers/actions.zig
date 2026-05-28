@@ -54,14 +54,17 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
     const interval_ns = ps.parseIntervalOrDefault(args.interval);
     if (args.follow) follow.installSigintHandler();
 
+    var live_d = d;
     while (true) {
-        emitOnce(ctx.stdout, d, ctx.allocator, args) catch |e|
+        emitOnce(ctx.stdout, live_d, ctx.allocator, args) catch |e|
             exit.die(ctx, e, "actions: {s}", .{@errorName(e)});
         try ctx.stdout.flush();
         if (!args.follow) return;
         if (follow.shouldStop()) return;
         follow.interruptibleSleep(interval_ns);
         if (follow.shouldStop()) return;
+        live_d = runtime.ensureDbStrictReadOnly() catch |e|
+            exit.die(ctx, e, "{s}", .{@errorName(e)});
     }
 }
 

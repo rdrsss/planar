@@ -110,6 +110,21 @@ var wake_init_failed: bool = false;
 /// slices and checking `interrupted` between them. The wake source
 /// itself is also interrupted by the signal (EINTR), so the slice
 /// is the worst case, not the typical case.
+///
+/// Side effect — DB refresh: before returning to the caller, the
+/// strict read-only DB handle is closed and re-opened. This
+/// dodges a SQLite behavior where a long-lived read-only
+/// connection's wrapped read transaction holds a stale snapshot
+/// across another process's `PRAGMA wal_checkpoint(TRUNCATE)`
+/// (the SHM-resident WAL header is reset by the truncate; the
+/// pure-readonly connection cannot write its read-mark slot back
+/// into SHM, so it never re-syncs to the new header and committed
+/// UPDATE rows stay invisible to the wrapped reader forever).
+/// Closing + re-opening is the smallest correct intervention — it
+/// resets the connection's snapshot tracking cleanly with no
+/// observable cost on the follow loop's per-wake cadence. See
+/// plan 85 t#2623 for the regression. Every follow verb in this
+/// binary funnels through this routine, so the fix is centralized.
 pub fn interruptibleSleep(ns: u64) void {
     // Wake source is lazy-initialized so a non-follow path never
     // pays for it. Once initialized, every iteration reuses the
@@ -140,7 +155,10 @@ pub fn interruptibleSleep(ns: u64) void {
             // re-query the watermark. The remaining heartbeat budget
             // is consumed by the query; the next loop iteration
             // starts a fresh `waitNext`.
-            .wal_changed => return,
+            .wal_changed => {
+                refreshDb();
+                return;
+            },
             // SIGINT (EINTR). The shouldStop check at the top of
             // the next iteration will exit the outer poll loop.
             .interrupted => return,
@@ -150,12 +168,29 @@ pub fn interruptibleSleep(ns: u64) void {
         }
         remaining -= this_slice;
     }
+    // Heartbeat path falls through here. Refresh on the way out so
+    // the caller's next watermark query runs against a fresh
+    // snapshot — the WAL-rotation issue documented above can also
+    // surface on the heartbeat-only path under high writer churn.
+    refreshDb();
+}
+
+/// Close + re-open the strict read-only DB singleton. Centralizes
+/// the WAL-rotation snapshot-staleness workaround so every follow
+/// verb in this binary inherits it via `interruptibleSleep` and
+/// `interruptibleSleepLegacy`. Best-effort: a refresh failure
+/// leaves the prior handle closed and surfaces as a query error
+/// on the next iteration; the follow loop dies cleanly via the
+/// per-verb `exit.die` rather than silently masking the state.
+fn refreshDb() void {
+    _ = runtime.refreshDbStrictReadOnly() catch {};
 }
 
 /// Legacy Tier-1 sleep, retained as the fallback when wake init
 /// fails. Identical to the M8 implementation: chunked sleep slices
 /// via the runtime Io, ~100ms each so SIGINT latency stays bounded
-/// regardless of the configured `--interval`.
+/// regardless of the configured `--interval`. Same DB-refresh
+/// post-condition as `interruptibleSleep`.
 fn interruptibleSleepLegacy(ns: u64) void {
     const slice_ns: u64 = 100 * std.time.ns_per_ms;
     var remaining = ns;
@@ -167,6 +202,7 @@ fn interruptibleSleepLegacy(ns: u64) void {
         ctx.io.sleep(dur, .awake) catch return;
         remaining -= this_slice;
     }
+    refreshDb();
 }
 
 /// Release the wake source. Idempotent. Called from the binary's

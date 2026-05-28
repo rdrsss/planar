@@ -885,12 +885,15 @@ test "planar-watch feed --follow survives WAL rotation without losing events" {
             stdout_buf.appendSlice(gpa, tmp[0..n]) catch @panic("OOM");
         }
     }
+    var stderr_buf: std.ArrayList(u8) = .empty;
+    defer stderr_buf.deinit(gpa);
     if (child.stderr) |*f| {
         var tmp: [4096]u8 = undefined;
         var reader = f.reader(std.testing.io, &.{});
         while (true) {
             const n = reader.interface.readSliceShort(&tmp) catch 0;
             if (n == 0) break;
+            stderr_buf.appendSlice(gpa, tmp[0..n]) catch @panic("OOM");
         }
     }
     _ = try child.wait(std.testing.io);
@@ -899,8 +902,8 @@ test "planar-watch feed --follow survives WAL rotation without losing events" {
     // proof that the watch re-attached after the truncate.
     if (std.mem.indexOf(u8, stdout_buf.items, "\"event\":\"completed\"") == null) {
         std.debug.print(
-            "watch did not survive WAL rotation; post-rotation event missing:\n{s}\n",
-            .{stdout_buf.items},
+            "watch did not survive WAL rotation; post-rotation event missing:\nSTDOUT:\n{s}\nSTDERR:\n{s}\n",
+            .{ stdout_buf.items, stderr_buf.items },
         );
         return error.RotationEventMissed;
     }
