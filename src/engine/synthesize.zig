@@ -19,6 +19,14 @@ pub const Opts = struct {
     treat_as_greenfield: bool = false,
     treat_as_nongreenfield: bool = false,
     scope: ?[]const u8 = null,
+    /// Non-interactive forward-spec selection: "all" accepts every
+    /// proposal, comma-separated slugs accept that subset, null
+    /// preserves the (deferred) interactive prompt. Mutually
+    /// exclusive with `no_forward_specs`.
+    accept_spec: ?[]const u8 = null,
+    /// Skip forward-spec processing entirely (no prompting, no
+    /// materialization). Mutually exclusive with `accept_spec`.
+    no_forward_specs: bool = false,
 };
 
 pub const Mode = enum { pending, cache_hit };
@@ -70,6 +78,9 @@ pub fn run(
     if (opts.apply_removals and !opts.apply) return error.InvalidInput;
     if (opts.treat_as_greenfield and opts.treat_as_nongreenfield) return error.InvalidInput;
     if (opts.code_layout) |raw| if (!isValidCodeLayout(raw)) return error.InvalidInput;
+    // --accept-spec and --no-forward-specs are mutually exclusive
+    // (see import.zig for the same guard).
+    if (opts.accept_spec != null and opts.no_forward_specs) return error.InvalidInput;
     if (!isDir(opts.repo_root)) return error.NotFound;
 
     const abs_root = try std.Io.Dir.realPathFileAlloc(.cwd(), fsIo(), opts.repo_root, allocator);

@@ -23,6 +23,8 @@ pub const verb: cli.Cmd = .{
         .{ .long = "--no-status-inference", .kind = .bool, .default = .{ .bool = false } },
         .{ .long = "--interpret", .kind = .bool, .default = .{ .bool = false } },
         .{ .long = "--no-interpret", .kind = .bool, .default = .{ .bool = false } },
+        .{ .long = "--accept-spec", .kind = .string, .desc = "Non-interactive forward-spec selection — slug, comma-separated slugs, or 'all'" },
+        .{ .long = "--no-forward-specs", .kind = .bool, .default = .{ .bool = false }, .desc = "Skip forward-spec processing entirely" },
         .{ .long = "--scope", .kind = .string },
         .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
     },
@@ -49,6 +51,8 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
         .apply = args.apply,
         .apply_removals = args.apply_removals,
         .scope = args.scope,
+        .accept_spec = args.accept_spec,
+        .no_forward_specs = args.no_forward_specs,
     }) catch |e| switch (e) {
         error.NotFound => exit.die(ctx, e, "repo-root not found or not a directory: {s}", .{args.repo_root}),
         error.QueryFailed => exit.die(ctx, e, "database apply failed", .{}),

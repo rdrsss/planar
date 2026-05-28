@@ -347,3 +347,88 @@ test "M18 synthesize auto-greenfield is true when all evidence areas are zero-si
     try std.testing.expectEqualStrings("pending", first_json.mode);
     try std.testing.expect(first_json.greenfield);
 }
+
+// =========================================================================
+// Plan 85 t#2658 — `--accept-spec` / `--no-forward-specs` flags are
+// accepted by both import and synthesize (closes the UnknownFlag
+// regression). Mutual exclusivity is enforced at the engine
+// boundary. Forward-spec materialization itself is deferred to a
+// follow-up task — this slice covers flag plumbing only.
+// =========================================================================
+
+test "Plan 85 t#2658: import + synthesize accept --accept-spec and --no-forward-specs" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const repo = try mkRepo(gpa, &suite.tmp_dir.sub_path, "repo-fwd-spec-flags");
+    defer gpa.free(repo);
+    const home = try std.fs.path.join(gpa, &.{ ".zig-cache/tmp", &suite.tmp_dir.sub_path, "home-fwd-spec-flags" });
+    defer gpa.free(home);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, home);
+
+    const env: []const harness.Suite.ExtraEnvEntry = &.{.{ .key = "PLANAR_HOME", .value = home }};
+
+    // import --accept-spec all: flag accepted, exit 0.
+    const a = suite.mustRunWith(
+        &.{ "import", repo, "--accept-spec", "all", "--json" },
+        env,
+    );
+    gpa.free(a);
+
+    // import --accept-spec <slug>: flag accepted, exit 0.
+    const b = suite.mustRunWith(
+        &.{ "import", repo, "--accept-spec", "v1-1-polish", "--json" },
+        env,
+    );
+    gpa.free(b);
+
+    // import --no-forward-specs: flag accepted, exit 0.
+    const c = suite.mustRunWith(
+        &.{ "import", repo, "--no-forward-specs", "--json" },
+        env,
+    );
+    gpa.free(c);
+
+    // synthesize --accept-spec all: flag accepted, exit 0.
+    const d = suite.mustRunWith(
+        &.{ "synthesize", repo, "--accept-spec", "all", "--json" },
+        env,
+    );
+    gpa.free(d);
+
+    // synthesize --no-forward-specs: flag accepted, exit 0.
+    const e = suite.mustRunWith(
+        &.{ "synthesize", repo, "--no-forward-specs", "--json" },
+        env,
+    );
+    gpa.free(e);
+}
+
+test "Plan 85 t#2658: --accept-spec and --no-forward-specs are mutually exclusive" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const repo = try mkRepo(gpa, &suite.tmp_dir.sub_path, "repo-fwd-spec-mux");
+    defer gpa.free(repo);
+    const home = try std.fs.path.join(gpa, &.{ ".zig-cache/tmp", &suite.tmp_dir.sub_path, "home-fwd-spec-mux" });
+    defer gpa.free(home);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, home);
+
+    const env: []const harness.Suite.ExtraEnvEntry = &.{.{ .key = "PLANAR_HOME", .value = home }};
+
+    // import: both → engine returns InvalidInput → exit non-zero.
+    const a = suite.expectFailureWith(
+        &.{ "import", repo, "--accept-spec", "all", "--no-forward-specs" },
+        env,
+    );
+    gpa.free(a);
+
+    // synthesize: same contract.
+    const b = suite.expectFailureWith(
+        &.{ "synthesize", repo, "--accept-spec", "all", "--no-forward-specs" },
+        env,
+    );
+    gpa.free(b);
+}

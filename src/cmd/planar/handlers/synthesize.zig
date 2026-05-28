@@ -21,6 +21,8 @@ pub const verb: cli.Cmd = .{
         .{ .long = "--treat-as-nongreenfield", .kind = .bool, .default = .{ .bool = false } },
         .{ .long = "--threshold", .kind = .string, .desc = "Similarity threshold (float as string for now)" },
         .{ .long = "--literal", .kind = .bool, .default = .{ .bool = false } },
+        .{ .long = "--accept-spec", .kind = .string, .desc = "Non-interactive forward-spec selection — slug, comma-separated slugs, or 'all'" },
+        .{ .long = "--no-forward-specs", .kind = .bool, .default = .{ .bool = false }, .desc = "Skip forward-spec processing entirely" },
         .{ .long = "--dry-run", .kind = .bool, .default = .{ .bool = false } },
         .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
     },
@@ -47,6 +49,8 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
             .apply = args.apply,
             .apply_removals = args.apply_removals,
             .scope = args.scope,
+            .accept_spec = args.accept_spec,
+            .no_forward_specs = args.no_forward_specs,
         }) catch |e| switch (e) {
             error.NotFound => exit.die(ctx, e, "repo-root not found or not a directory: {s}", .{args.repo_root}),
             error.InvalidInput => exit.die(ctx, e, "invalid synthesize --literal arguments", .{}),
@@ -95,6 +99,8 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
         .treat_as_greenfield = args.treat_as_greenfield,
         .treat_as_nongreenfield = args.treat_as_nongreenfield,
         .scope = args.scope,
+        .accept_spec = args.accept_spec,
+        .no_forward_specs = args.no_forward_specs,
     }) catch |e| switch (e) {
         error.NotFound => exit.die(ctx, e, "repo-root not found or not a directory: {s}", .{args.repo_root}),
         error.QueryFailed => exit.die(ctx, e, "database apply failed", .{}),

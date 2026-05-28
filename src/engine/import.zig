@@ -18,6 +18,14 @@ pub const Opts = struct {
     apply_removals: bool = false,
     provider_override: ?[]const u8 = null,
     scope: ?[]const u8 = null,
+    /// Non-interactive forward-spec selection: "all" accepts every
+    /// proposal, comma-separated slugs accept that subset, null
+    /// preserves the (deferred) interactive prompt. Mutually
+    /// exclusive with `no_forward_specs`.
+    accept_spec: ?[]const u8 = null,
+    /// Skip forward-spec processing entirely (no prompting, no
+    /// materialization). Mutually exclusive with `accept_spec`.
+    no_forward_specs: bool = false,
 };
 
 pub const Mode = enum { skipped, pending, cache_hit };
@@ -67,6 +75,10 @@ pub fn run(
 ) !Outcome {
     if (opts.apply_removals and !opts.apply) return error.InvalidInput;
     if (opts.interpret and opts.no_interpret) return error.InvalidInput;
+    // --accept-spec and --no-forward-specs are mutually exclusive
+    // — one selects forward specs to materialize, the other skips
+    // the phase entirely. Passing both is operator confusion.
+    if (opts.accept_spec != null and opts.no_forward_specs) return error.InvalidInput;
     if (opts.repo_root.len == 0) return error.InvalidInput;
     if (!isDir(opts.repo_root)) return error.NotFound;
 
