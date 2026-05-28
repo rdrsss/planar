@@ -207,12 +207,14 @@ pub fn resolve(d: *db.sqlite.Db, event_id: i64, prefer: ConflictResolution) !voi
 
 /// Archive the workbench tree for the given anchor plan.
 ///
-/// `filter_mode` selects which terminal-status entries are packaged into the
-/// archive (plan 439 M5). M1 threads the parameter through without changing
-/// behavior — archive currently captures whatever is on disk; the filter step
-/// is applied at the archive's write-set construction in M5.
+/// `filter_mode` is accepted for API symmetry with push/restore. The current
+/// archive implementation deletes the on-disk feature tree without packaging
+/// it into a separate archive store, so there is no "write set" to filter.
+/// If a future revision adds an archive store (tarball, git stash, etc.),
+/// this is the parameter that selects which terminal-status entries are
+/// packaged. For now, callers can pass `.failures` (the default) safely.
 pub fn archive(d: *db.sqlite.Db, anchor_plan_id: i64, root: []const u8, allocator: std.mem.Allocator, filter_mode: terminal_mod.Mode) ![]const u8 {
-    _ = filter_mode; // M1 wires the parameter; M5 makes it consequential.
+    _ = filter_mode; // Reserved; archive currently has no write set to filter.
     const a = try fetchAnchor(d, allocator, anchor_plan_id);
     defer freeAnchor(allocator, a);
     const feature_dir = try feature.featureDir(allocator, root, a.assoc_slug, a.plan_key, a.slug);
@@ -231,7 +233,6 @@ pub fn archive(d: *db.sqlite.Db, anchor_plan_id: i64, root: []const u8, allocato
 /// (plan 439 M5). M1 threads the parameter through without changing behavior;
 /// the per-entity filter check lands in M5.
 pub fn restore(d: *db.sqlite.Db, anchor_plan_id: i64, root: []const u8, allocator: std.mem.Allocator, filter_mode: terminal_mod.Mode) ![]const u8 {
-    _ = filter_mode; // M1 wires the parameter; M5 makes it consequential.
     const a = try fetchAnchor(d, allocator, anchor_plan_id);
     defer freeAnchor(allocator, a);
     const feature_dir = try feature.featureDir(allocator, root, a.assoc_slug, a.plan_key, a.slug);
@@ -241,6 +242,15 @@ pub fn restore(d: *db.sqlite.Db, anchor_plan_id: i64, root: []const u8, allocato
     const entities = try enumerateEntities(d, allocator, anchor_plan_id);
     defer freeEntities(allocator, entities);
     for (entities) |e| {
+        // Plan 439 M5: restore honors the same filter as push. Skip
+        // terminal entities under the active filter mode so the restored
+        // tree mirrors what a fresh push would write. The anchor plan is
+        // exempt.
+        if (e.id != anchor_plan_id) {
+            if (terminal_mod.isFilteredStr(e.kind, e.status, filter_mode)) |drop| {
+                if (drop) continue;
+            }
+        }
         const rel_path, const content = try renderEntity(d, allocator, anchor_plan_id, e.kind, e.id);
         defer allocator.free(rel_path);
         defer allocator.free(content);
