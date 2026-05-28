@@ -48,7 +48,7 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
         try w.print("{{\"ok\":true,\"claim_token\":", .{});
         try std.json.Stringify.encodeJsonString(c.claim_token, .{}, w);
         try w.print(",\"claim\":", .{});
-        try json.writeClaim(w, c);
+        try json.writeClaim(w, c, null);
         try w.print("}}\n", .{});
     } else {
         try ctx.stdout.print("ok claim:{s} expires:{s}\n", .{ c.claim_token, c.lease_expires_at });

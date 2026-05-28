@@ -98,7 +98,7 @@ fn emitOnce(
     if (args.json) {
         try emitJson(w, d, allocator, active, stale_rows, args);
     } else {
-        try emitText(w, active, stale_rows);
+        try emitText(w, d, allocator, active, stale_rows);
     }
 }
 
@@ -110,7 +110,6 @@ fn emitJson(
     stale_rows: []const agentactivity.types.Claim,
     args: anytype,
 ) !void {
-    _ = allocator;
     try w.print("{{\"generated_at\":", .{});
     try writeNowIso(w);
     try w.print(",\"active\":[", .{});
@@ -119,7 +118,9 @@ fn emitJson(
         if (!claimMatches(d, c, args)) continue;
         if (!first) try w.print(",", .{});
         first = false;
-        try agentactivity.json.writeClaim(w, c);
+        const scope = agentactivity.store.resolveClaimScope(d, allocator, c);
+        defer scope.deinit(allocator);
+        try agentactivity.json.writeClaim(w, c, scope);
     }
     try w.print("],\"stale\":[", .{});
     first = true;
@@ -127,31 +128,42 @@ fn emitJson(
         if (!claimMatches(d, c, args)) continue;
         if (!first) try w.print(",", .{});
         first = false;
-        try agentactivity.json.writeClaim(w, c);
+        const scope = agentactivity.store.resolveClaimScope(d, allocator, c);
+        defer scope.deinit(allocator);
+        try agentactivity.json.writeClaim(w, c, scope);
     }
     try w.print("]}}\n", .{});
 }
 
 fn emitText(
     w: *std.Io.Writer,
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
     active: []const agentactivity.types.Claim,
     stale_rows: []const agentactivity.types.Claim,
 ) !void {
     try w.print("active: {d}\n", .{active.len});
-    for (active) |c| try renderClaimLine(w, c);
+    for (active) |c| try renderClaimLine(w, d, allocator, c);
     if (stale_rows.len > 0) {
         try w.print("stale: {d}\n", .{stale_rows.len});
-        for (stale_rows) |c| try renderClaimLine(w, c);
+        for (stale_rows) |c| try renderClaimLine(w, d, allocator, c);
     }
 }
 
-fn renderClaimLine(w: *std.Io.Writer, c: agentactivity.types.Claim) !void {
+fn renderClaimLine(
+    w: *std.Io.Writer,
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    c: agentactivity.types.Claim,
+) !void {
     const branch = c.branch orelse "?";
     const sha_full = c.head_sha_at_claim orelse "?";
     const sha = if (sha_full.len >= 8) sha_full[0..8] else sha_full;
+    const scope = agentactivity.store.resolveClaimScope(d, allocator, c);
+    defer scope.deinit(allocator);
     try w.print(
-        "  {s}:{d}  vendor:{s}  branch:{s}  sha:{s}  token:{s}\n",
-        .{ c.entity_kind.toText(), c.entity_id, c.vendor, branch, sha, c.claim_token },
+        "  {s}:{d}  scope:{s}  vendor:{s}  branch:{s}  sha:{s}  token:{s}\n",
+        .{ c.entity_kind.toText(), c.entity_id, scope.label(), c.vendor, branch, sha, c.claim_token },
     );
 }
 

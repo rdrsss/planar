@@ -183,12 +183,16 @@ fn emitJsonAgents(
     try w.print(",\"claims\":{{\"active\":[", .{});
     for (active_claims, 0..) |c, i| {
         if (i > 0) try w.print(",", .{});
-        try agentactivity.json.writeClaim(w, c);
+        const scope = agentactivity.store.resolveClaimScope(d, allocator, c);
+        defer scope.deinit(allocator);
+        try agentactivity.json.writeClaim(w, c, scope);
     }
     try w.print("],\"stale\":[", .{});
     for (stale_claims, 0..) |c, i| {
         if (i > 0) try w.print(",", .{});
-        try agentactivity.json.writeClaim(w, c);
+        const scope = agentactivity.store.resolveClaimScope(d, allocator, c);
+        defer scope.deinit(allocator);
+        try agentactivity.json.writeClaim(w, c, scope);
     }
     try w.print("]}}", .{});
 

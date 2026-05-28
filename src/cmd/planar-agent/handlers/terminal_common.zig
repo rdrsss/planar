@@ -30,7 +30,7 @@ pub fn emit(
         try w.print("{{\"ok\":true,\"claim_token\":", .{});
         try std.json.Stringify.encodeJsonString(result.claim.claim_token, .{}, w);
         try w.print(",\"claim\":", .{});
-        try json.writeClaim(w, result.claim);
+        try json.writeClaim(w, result.claim, null);
         try w.print(",\"task\":", .{});
         try json.writeTask(w, task);
         try w.print("}}\n", .{});

@@ -104,7 +104,7 @@ fn emitClaim(ctx: *const runtime.Ctx, c: types.Claim, use_json: bool) !void {
         try w.print("{{\"ok\":true,\"claim_token\":", .{});
         try std.json.Stringify.encodeJsonString(c.claim_token, .{}, w);
         try w.print(",\"claim\":", .{});
-        try json.writeClaim(w, c);
+        try json.writeClaim(w, c, null);
         try w.print("}}\n", .{});
     } else {
         try ctx.stdout.print("claim:{s} entity:{s}:{d} status:{s}\n", .{

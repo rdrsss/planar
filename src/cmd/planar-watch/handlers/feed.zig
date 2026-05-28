@@ -161,7 +161,11 @@ fn writeEvent(w: *std.Io.Writer, json: bool, ev: Event) !void {
         try std.json.Stringify.encodeJsonString(ev.at, .{}, w);
         if (ev.claim) |c| {
             try w.print(",\"claim\":", .{});
-            try agentactivity.json.writeClaim(w, c);
+            // feed is a time-ordered event stream — surfacing the
+            // entity_scope on every embedded claim would bloat the
+            // wire shape; consumers wanting "where" should call
+            // ps/claims which carry the resolved scope.
+            try agentactivity.json.writeClaim(w, c, null);
         }
         if (ev.action) |a| {
             try w.print(",\"action\":", .{});

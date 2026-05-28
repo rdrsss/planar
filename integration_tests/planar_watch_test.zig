@@ -271,6 +271,38 @@ test "planar-watch ps --json returns generated_at + active + stale" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\"status\":\"active\"") != null);
 }
 
+test "planar-watch ps surfaces the claim's entity scope (text + json)" {
+    // Operator question: "what work is being done where?" — the
+    // scope column / entity_scope field is the answer. Pinned per
+    // user request 2026-05-28.
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const pid = seedPlanWithTask(&suite, "watch-ps-scope", "ps-scope-task");
+    defer gpa.free(pid);
+    gpa.free(mustRunAgent(&suite, &.{ "pull", pid, "--no-locality-probe", "--json" }));
+
+    // Text rendering: the scope column should appear between the
+    // entity ref and the vendor column. seedPlanWithTask uses
+    // `init --skip-project` so the underlying task lives at global
+    // scope; we just verify the literal "scope:" prefix is present
+    // on the active row (the exact slug depends on test fixture
+    // shape and the engine's scope_kind default).
+    const text_out = mustRunWatch(&suite, &.{"ps"});
+    defer gpa.free(text_out);
+    try std.testing.expect(std.mem.indexOf(u8, text_out, "  scope:") != null);
+
+    // JSON shape: each claim row carries `entity_scope: {kind, slug}`
+    // right after `entity_id`. The kind is a stable string; the
+    // slug may be null for global. Both fields must be present.
+    const json_out = mustRunWatch(&suite, &.{ "ps", "--json" });
+    defer gpa.free(json_out);
+    try std.testing.expect(std.mem.indexOf(u8, json_out, "\"entity_scope\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json_out, "\"kind\":\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json_out, "\"slug\":") != null);
+}
+
 // =========================================================================
 // claims --json.
 // =========================================================================

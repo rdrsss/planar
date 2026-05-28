@@ -228,7 +228,9 @@ fn writeJson(
         try agentactivity.json.writeTask(w, task);
         try w.print(",\"claim\":", .{});
         if (r.claim) |c| {
-            try agentactivity.json.writeClaim(w, c);
+            const scope = agentactivity.store.resolveClaimScope(d, allocator, c);
+            defer scope.deinit(allocator);
+            try agentactivity.json.writeClaim(w, c, scope);
         } else {
             try w.print("null", .{});
         }
@@ -249,7 +251,9 @@ fn writeJson(
         try agentactivity.json.writeTask(w, task);
         try w.print(",\"claim\":", .{});
         if (r.claim) |c| {
-            try agentactivity.json.writeClaim(w, c);
+            const scope = agentactivity.store.resolveClaimScope(d, allocator, c);
+            defer scope.deinit(allocator);
+            try agentactivity.json.writeClaim(w, c, scope);
         } else {
             try w.print("null", .{});
         }
