@@ -40,6 +40,7 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     const filter: engine.planning.question.ListFilter = .{
         .statuses = statuses.items,
         .scopes = scopes.items,
+        .plan_id = args.plan,
     };
 
     const items = if (args.touches) |slug| blk: {

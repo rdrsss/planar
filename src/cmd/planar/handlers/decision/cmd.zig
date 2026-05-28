@@ -47,6 +47,7 @@ pub const verb: cli.Cmd = .{
             .flags = &.{
                 .{ .long = "--scope", .kind = .string },
                 .{ .long = "--status", .kind = .string },
+                .{ .long = "--plan", .kind = .int },
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },
             .run = cli.handler(list.handle),

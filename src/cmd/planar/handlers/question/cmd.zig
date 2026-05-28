@@ -91,6 +91,7 @@ pub const verb: cli.Cmd = .{
                 .{ .long = "--scope", .kind = .string },
                 .{ .long = "--status", .kind = .string },
                 .{ .long = "--touches", .kind = .string },
+                .{ .long = "--plan", .kind = .int },
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },
             .run = cli.handler(list.handle),

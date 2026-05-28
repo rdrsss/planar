@@ -123,6 +123,10 @@ pub const ListFilter = struct {
     /// {proposed, accepted} (open lifecycle states).
     status: ?Status = null,
     scope: ?[]const u8 = null,
+    /// Restrict to decisions linked to this plan via the
+    /// entity_links (decision → plan, relationship='derives-from')
+    /// edge. Mirrors the artifact + question `--plan` filter.
+    plan_id: ?i64 = null,
 };
 
 pub const Error =
@@ -245,6 +249,10 @@ pub fn list(d: *db.sqlite.Db, allocator: std.mem.Allocator, filter: ListFilter) 
                 try params.append(allocator, .{ .int = ref.id.? });
             },
         }
+    }
+    if (filter.plan_id) |pid| {
+        try sql_buf.appendSlice(allocator, " and id in (select from_id from entity_links where from_kind='decision' and to_kind='plan' and relationship='derives-from' and to_id=?)");
+        try params.append(allocator, .{ .int = pid });
     }
     try sql_buf.appendSlice(allocator, " order by id");
 

@@ -88,6 +88,10 @@ pub const ListFilter = struct {
     statuses: []const Status = &.{},
     scope: ?[]const u8 = null,
     scopes: []const []const u8 = &.{},
+    /// Restrict to questions linked to this plan via the
+    /// entity_links (question → plan, relationship='derives-from')
+    /// edge. Mirrors the artifact + decision `--plan` filter.
+    plan_id: ?i64 = null,
 };
 
 pub const Error =
@@ -229,6 +233,10 @@ pub fn list(d: *db.sqlite.Db, allocator: std.mem.Allocator, filter: ListFilter) 
             }
         }
         try sql_buf.appendSlice(allocator, ")");
+    }
+    if (filter.plan_id) |pid| {
+        try sql_buf.appendSlice(allocator, " and id in (select from_id from entity_links where from_kind='question' and to_kind='plan' and relationship='derives-from' and to_id=?)");
+        try params.append(allocator, .{ .int = pid });
     }
     try sql_buf.appendSlice(allocator, " order by id");
 

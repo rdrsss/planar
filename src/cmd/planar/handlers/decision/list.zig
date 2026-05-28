@@ -13,7 +13,10 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     const ctx = runtime.current();
     const d = try runtime.ensureDb();
 
-    var filter: engine.planning.decision.ListFilter = .{ .scope = args.scope };
+    var filter: engine.planning.decision.ListFilter = .{
+        .scope = args.scope,
+        .plan_id = args.plan,
+    };
     if (args.status) |s| {
         filter.status = engine.planning.decision.Status.fromText(s) orelse
             exit.die(ctx, error.InvalidInput, "unknown status '{s}'", .{s});
