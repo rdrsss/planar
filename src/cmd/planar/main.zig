@@ -5,6 +5,7 @@ const planar = @import("planar");
 const cli = @import("cli");
 const runtime = @import("runtime");
 const exit = @import("exit.zig");
+const worktree_gate = @import("worktree_gate.zig");
 
 // Verb groups. Leaf verbs (no subverbs) live at `handlers/<verb>.zig`;
 // group verbs (with subverbs) live at `handlers/<verb>/cmd.zig` with
@@ -120,6 +121,14 @@ pub fn main(init: std.process.Init) !void {
     const db_path = try runtime.resolveDbPath(arena, init.minimal.environ);
     runtime.init(arena, init.io, &stdout_buffer, &stderr_buffer, db_path, init.minimal.environ, args);
     defer runtime.shutdown();
+
+    // Plan 297 M3: refuse planning verbs invoked from inside a git
+    // worktree. Runs AFTER runtime.init so the gate can stderr.print,
+    // but BEFORE cli.dispatch so the refusal short-circuits the
+    // handler's per-verb work. `--scope` does NOT override; see
+    // `worktree_gate.check` and `docs/.../tech-spec § Scope handling
+    // for worktrees`.
+    worktree_gate.check(root, args);
 
     cli.dispatch(root, args, runtime.current().stdout) catch |e| switch (e) {
         cli.Parse.UnknownFlag,

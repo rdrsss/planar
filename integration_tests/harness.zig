@@ -200,6 +200,15 @@ pub const Suite = struct {
 
         var env_map = environ.createMap(gpa) catch @panic("OOM creating env map");
         env_map.put("PLANAR_DB", self.db_path) catch @panic("OOM injecting PLANAR_DB");
+        // Plan 297 M3: disable the worktree planning-verb gate for
+        // the harness. The harness's tmp dirs may inherit a path
+        // containing `.worktrees/` when Planar itself is being
+        // developed inside a worktree (`.../planar/.worktrees/cycle/.../
+        // .zig-cache/tmp/...`), which would unconditionally refuse
+        // every planning verb the scenarios drive. The
+        // worktree-scope scenario test explicitly UN-sets this var
+        // before exercising the refusal path.
+        env_map.put("PLANAR_DISABLE_WORKTREE_GATE", "1") catch @panic("OOM injecting GATE flag");
         return env_map;
     }
 
