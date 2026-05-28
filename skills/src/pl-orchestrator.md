@@ -193,6 +193,105 @@ The five named strategies are bundles of the five underlying axes (`isolation`, 
 
 The promise: introducing the strategy menu does not require existing operators to learn a new flow to keep working as they do. Pick `classic`, get today's behavior. See [`agents/methodology.md` § Continuity guarantee: `classic`](../../agents/methodology.md#continuity-guarantee-classic) for the framing.
 
+### `isolated-sequential` — per-cycle worktree on an epic-child branch
+
+Under `isolated-sequential` the orchestrator drives a strict per-cycle worktree lifecycle so the operator's main checkout stays on master throughout the plan. The authoritative path/branch/topology conventions live in [`agents/methodology.md` § Worktrees](../../agents/methodology.md#worktrees) — do not re-derive them. This subsection describes the *orchestrator's actions* per cycle.
+
+The shape of the topology, repeated only for orientation: main checkout stays on master; the epic branch `epic/<plan-slug>` lives in `<repo>/.worktrees/epic/<plan-slug>/` and persists for the plan's duration; each cycle's child branch `cycle/<plan-slug>/<task-slug>` lives in `<repo>/.worktrees/cycle/<plan-slug>/<task-slug>/` and is removed after reviewer approval. `<repo>` is the *task's owning repo*, not the operator's cwd repo. `epic/<plan-slug>` and `cycle/<plan-slug>/<task-slug>` are disjoint top-level branch namespaces — never the bare `<plan-slug>` form (see methodology § Branch scheme for the ref-hierarchy collision this avoids).
+
+#### Per-cycle worktree creation
+
+Two steps. The first runs once per plan; the second runs every cycle.
+
+```bash
+# 1. First dispatch of any task in the plan — create the epic branch + worktree
+#    if epic/<plan-slug> does not yet exist. Skip on subsequent cycles.
+if ! git -C <repo> show-ref --quiet refs/heads/epic/<plan-slug>; then
+  git -C <repo> branch epic/<plan-slug> master
+  git -C <repo> worktree add <repo>/.worktrees/epic/<plan-slug>/ epic/<plan-slug>
+fi
+
+# 2. Every cycle — create the per-cycle child branch + worktree off the epic.
+git -C <repo> worktree add -b cycle/<plan-slug>/<task-slug> \
+  <repo>/.worktrees/cycle/<plan-slug>/<task-slug>/ epic/<plan-slug>
+```
+
+The `-b` form on step 2 creates the child branch and the worktree in one call; the child is cut from `epic/<plan-slug>`, not master, so the cycle inherits any prior cycles that have already fanned in. The main checkout is never touched by either step. Apply the `.git/info/exclude` ritual described in [`.git/info/exclude` ritual](#gitinfoexclude-ritual) below on the first worktree creation per clone.
+
+#### Coder dispatch under `isolated-sequential`
+
+The orchestrator dispatches the coder Agent with the cycle worktree as the isolation boundary:
+
+- **Agent tool call:** pass `isolation: "worktree"` and point the isolation path at `<repo>/.worktrees/cycle/<plan-slug>/<task-slug>/`. The Agent tool understands `isolation: "worktree"` as the contract that the coder must operate inside the given directory and must not write outside it.
+- **Claim wiring in the brief:** the brief instructs the coder to invoke `planar-agent pull <plan> --role coder --worktree <cycle-worktree-path>` (or `claim --entity task:<id> --worktree <path>` for hand-picked targets). The `--worktree` flag persists the path on `agent_work_claims.worktree_path` so resume/handoff can recover it.
+- **First-action directive:** the brief MUST tell the coder, as its first action before any other work, to `cd <cycle-worktree-path>`. This is defensive — the Agent's cwd at spawn time may not match the isolation path, and a stray edit in the main checkout would violate the topology invariant. State the directive verbatim; do not paraphrase.
+- **Everything else about brief composition is unchanged.** Spec citations, task IDs, claim tokens, locked decisions, gates, report shape, test-spec references — see [Brief composition](#brief-composition) for the full contract. The `isolated-sequential` additions are the isolation parameter, the `--worktree` flag, and the cd directive.
+
+#### Fan-in merge (post-coder-terminal-complete)
+
+After the coder reports terminal-complete and the orchestrator confirms the claim status flipped via the atomic `planar-agent complete`, the orchestrator runs the fan-in inside the *epic* worktree:
+
+```bash
+# cd into the EPIC worktree — NOT the main checkout, NOT the cycle worktree.
+cd <repo>/.worktrees/epic/<plan-slug>/
+
+# Optional: sync master in first when master has advanced since the last sync.
+# Recommended; honest trade-off — this adds one merge commit per sync to the
+# epic's history. Skip when master has not advanced.
+git fetch origin master
+git merge --no-ff origin/master -m "Sync epic/<plan-slug> with master @ <sha>"
+
+# Fan-in: merge the cycle child into the epic. --no-ff preserves the per-cycle
+# history shape (which matters more under parallel-fanout in M8/M9, but the
+# convention is locked here).
+git merge --no-ff cycle/<plan-slug>/<task-slug> \
+  -m "Plan <id> <milestone> fan-in: <one-line summary>"
+```
+
+Outcomes:
+
+- **Clean merge** → proceed to reviewer dispatch (per the `isolated-sequential` per-cycle reviewer cadence) and then to cleanup below.
+- **Conflict** → open a question via `planar question add --plan <plan> ...` capturing the conflict-marker output, halt this branch's fan-in, and **leave both worktrees on disk** (cycle worktree + epic worktree) for operator resolution. Do not attempt to classify "trivial vs. semantic" — that's an operator judgement. See [`agents/methodology.md` § Conflict resolution at fan-in](../../agents/methodology.md#conflict-resolution-at-fan-in) for the full taxonomy.
+
+The main checkout is not involved at any point in fan-in. This is what preserves the "operator pwd stays clean" promise.
+
+#### Post-reviewer-approval cleanup
+
+Cleanup is **post-success only** — never before reviewer approval, so a failed cycle leaves recoverable artifacts on disk. After the reviewer returns `approve` (or `approve` with caveats — caveats are filed as new tasks per [Iteration 5 contract](#iteration-5-contract); they do not block cleanup):
+
+```bash
+# Remove the cycle worktree. Safe to run from the main checkout or anywhere
+# else — the operation targets the worktree by path.
+git -C <repo> worktree remove <repo>/.worktrees/cycle/<plan-slug>/<task-slug>/
+
+# Force-delete the cycle branch. -D (not -d) because the branch is merged
+# into epic/<plan-slug> but NOT into master, and `git branch -d` checks
+# merged-into-HEAD which here is master.
+git -C <repo> branch -D cycle/<plan-slug>/<task-slug>
+```
+
+The **epic worktree and `epic/<plan-slug>` branch persist** through cleanup. They are not removed per cycle. Removal happens only after the operator merges `epic/<plan-slug>` into master (operator-driven, surfaced as "epic/<plan-slug> is N commits ahead of master, reviewer-approved, ready for PR" — the orchestrator does not run the epic→master merge itself).
+
+#### `.git/info/exclude` ritual
+
+On the first worktree creation per clone, the orchestrator checks whether `.worktrees/` is already listed in `.git/info/exclude`. If not, it appends it:
+
+```bash
+if ! grep -qxF '.worktrees/' <repo>/.git/info/exclude 2>/dev/null; then
+  echo '.worktrees/' >> <repo>/.git/info/exclude
+fi
+```
+
+`.git/info/exclude` is per-clone state and does not propagate via git. After the append, the orchestrator surfaces a one-line hint to the operator:
+
+```
+note: appended .worktrees/ to .git/info/exclude (per-clone, no commit).
+      For a shared repo, consider committing a repo-level .gitignore
+      entry so other clones get the same exclusion.
+```
+
+The hint is informational, not blocking. The orchestrator does not commit the `.gitignore` entry itself — that's an operator choice (repo conventions vary on whether `.worktrees/` belongs in `.gitignore` or stays per-clone).
+
 ## Dispatch shape options
 
 Once the strategy is chosen, the orchestrator runs the dispatch-shape gate **nested under the strategy**. The shape describes per-cycle batching, not overall methodology. Under `classic` and `isolated-sequential` the operator picks freely from `strict` / `grouped` / `single`. Under `parallel-fanout` the shape is forced to `fan-out`. Under `barrel-deferred` and `barrel-bypass` the shape is forced to the matching barrel shape.
