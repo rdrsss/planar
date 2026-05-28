@@ -368,41 +368,49 @@ It assembles these into a structured prompt that the new agent session reads at 
 
 ---
 
-## Recipe 5 — Snapshot a Feature for External Consumption
+## Recipe 5 — Publish a Feature to an External System
 
-Use this when you want to commit a workbench snapshot into a git repo's `docs/` or deliver it to a stakeholder.
+Use this when you want to push the rendered workbench content for a
+feature to an external operational system (Jira, GitHub Issues,
+GitHub Projects) so non-Planar collaborators can read or comment on
+it.
 
-**What happens:** `workbench publish` copies the workbench tree into an arbitrary path on disk. The copy is a flat directory snapshot — no sync tracking, no DB references. Useful for archiving a feature spec into the host repo or generating a deliverable.
+**What happens:** `workbench publish` renders the workbench files
+for a plan and pushes them to a registered external system via the
+adapter layer. The destination system, credentials, and projection
+template come from the system registration (see Recipe 7 for
+registration and Recipe 8 for propagation).
 
 ### Publish the workbench tree
 
 ```
-planar workbench publish 42 --to ~/myrepo/docs/planning/billing-export
+planar workbench publish 42 --system github
 ```
 
-Expected output:
-```
-published 12 files → ~/myrepo/docs/planning/billing-export/
-```
+The `--system` flag names a registered external system slug (see
+`planar ext list`). For richer per-entity counterpart creation
+(epics, issues, sub-issues with parent/child links) use `planar ext
+propagate <plan-id> --system <slug>` instead — `propagate` walks the
+full plan tree and creates one external counterpart per entity, while
+`workbench publish` pushes the rendered Markdown body.
 
-### Options
+### Commit local artifacts to a host repo
 
-| Flag | Effect |
-|------|--------|
-| `--include <glob>` | Include only files matching the glob (repeatable) |
-| `--exclude <glob>` | Exclude files matching the glob (repeatable) |
-| `--dry-run` | Print what would be copied without writing |
-| `--delete-removed` | Delete destination files that no longer exist in the workbench |
-
-### Commit the snapshot
+If the goal is "snapshot the feature spec into a git repo's `docs/`
+directory", the supported path today is to copy the workbench files
+manually:
 
 ```bash
+cp -r ~/.planar/workbench/<assoc>/p42-<slug>/ ~/myrepo/docs/planning/billing-export/
 cd ~/myrepo
 git add docs/planning/billing-export/
 git commit -m "snapshot billing-export spec for review"
 ```
 
-The snapshot is a static copy. It does not stay in sync with the workbench automatically — re-run `workbench publish` to refresh it.
+The copy is static — re-run the `cp` to refresh it. For a more
+disciplined "publish internal artifacts as a user-facing doc" path
+that tracks provenance, see [`docs/features/doc-system.md`](features/doc-system.md)
+and `planar doc promote`.
 
 ---
 
@@ -496,7 +504,7 @@ The importer discovers artefacts from the current directory, infers task statuse
   +   task     Add planning tables           [done — git-log match]
   +   task     Add work-item tables          [todo]
   + artifact   docs/tech-spec.md            [kind=tech_spec]
-  + decision   Use pure-Go SQLite           [from: docs/adr/0005-go-as-runtime.md]
+  + decision   Vendor SQLite amalgamation   [from: docs/adrs.md#adr-0009]
 
 5 additions, 0 skipped.
 Run with --apply to commit.
@@ -576,7 +584,7 @@ Items already in the database are reported as **Skipped**. Only new items appear
 
 Use this when the repo is docs-only or has no implementation yet — a freshly cut roadmap, a planning sandbox, or a project where the code tree is intentionally empty. `import` would treat every roadmap-adding commit as evidence that the work is done; `synthesize` reads the source tree and refuses to mark anything done when there is no source to back the claim.
 
-**What happens:** the synthesizer's deterministic floor probes the source tree, sees zero meaningful evidence, and sets `greenfield=true` on the `synthesis.Request`. The vendor skill's contract forbids `status != "todo"` under greenfield; the Go-side `synthesis.Validate` enforces it. Every task lands as todo regardless of what the docs claim.
+**What happens:** the synthesizer's deterministic floor probes the source tree, sees zero meaningful evidence, and sets `greenfield=true` on the `synthesis.Request`. The vendor skill's contract forbids `status != "todo"` under greenfield; `synthesis.Validate` in `src/engine/synthesize.zig` enforces it. Every task lands as todo regardless of what the docs claim.
 
 ### Step 1 — Run synthesize against the greenfield repo
 
@@ -930,13 +938,13 @@ Use `git commit --no-verify` once you have read the failures and decided to defe
 manifest files, READMEs, and dependency declarations, and writes a
 `routing-table.json` containing static signals. Plan 135 M4 adds an
 opt-in enrichment pass that merges LLM-derived summaries, capability
-tags, and dependency hints into the same table — without making the Go
-binary depend on any LLM SDK.
+tags, and dependency hints into the same table — without making the
+Planar binary depend on any LLM SDK.
 
 ### The contract
 
-The Go builder never calls a model. It looks up structured results in
-a content-addressed cache:
+The routing-table builder never calls a model. It looks up structured
+results in a content-addressed cache:
 
 ```
 ~/.planar/cache/workspace-enrichment/<org_id>/<slug>-<sha256>.json
@@ -959,11 +967,12 @@ results into the cache before invoking the builder:
 planar workspace routing build --enrich
 ```
 
-The skill is responsible for temperature-0 + seed discipline. The Go
-side validates only that each result carries a non-empty `provenance`
-string and that the result's `fingerprint_hash` matches the cache
-filename; a result whose `provenance` contains a non-zero temperature
-hint (e.g. `temperature=0.7`) produces a warning but is still applied.
+The skill is responsible for temperature-0 + seed discipline. The
+binary side validates only that each result carries a non-empty
+`provenance` string and that the result's `fingerprint_hash` matches
+the cache filename; a result whose `provenance` contains a non-zero
+temperature hint (e.g. `temperature=0.7`) produces a warning but is
+still applied.
 
 ### Populating the cache (power user): `enrich_command`
 
@@ -1080,7 +1089,7 @@ planar workspace routing build
 planar workspace regenerate
 ```
 
-`routing build` is deterministic and cheap (pure Go, no LLM); run it whenever a shape change should be reflected in the table. `regenerate` re-renders `AGENTS.md` from the latest routing table plus live DB queries (open task counts, open question lists). The symlinks at the workspace root point at the canonical target and never need rewriting.
+`routing build` is deterministic and cheap (in-process, no LLM); run it whenever a shape change should be reflected in the table. `regenerate` re-renders `AGENTS.md` from the latest routing table plus live DB queries (open task counts, open question lists). The symlinks at the workspace root point at the canonical target and never need rewriting.
 
 ### Step 3 — Optional LLM enrichment
 
@@ -1273,7 +1282,7 @@ Skills live as dir-shape sources (`<name>/SKILL.md`); agents stay flat:
 mkdir -p ~/.planar/local/skills/fixup-protos
 cat > ~/.planar/local/skills/fixup-protos/SKILL.md <<'EOF'
 ---
-description: "Rebuild and re-import Go protos in the current repo"
+description: "Rebuild and re-import protobuf bindings in the current repo"
 tier: medium
 ---
 
@@ -1431,13 +1440,22 @@ planar artifact diff 42      # unified diff between DB and FS
 
 ### Step 3 — Resolve a concurrent-change conflict
 
-If the DB changes between editor-open and save (concurrent `task update`, `workbench pull`, etc.), the save detects the conflict and refuses by default. Pick a resolution policy explicitly:
+`task edit` (and the other `edit` verbs) auto-pull the latest DB
+state into the workbench before opening `$EDITOR`. If you already
+have an in-progress edit on disk that you don't want clobbered, pass
+`--no-pull`:
 
 ```
-planar task edit 47 --force-conflict-resolution=remerge   # open a three-way file with conflict markers
-planar task edit 47 --force-conflict-resolution=force     # overwrite (warns naming the discarded changes)
-planar task edit 47 --force-conflict-resolution=abort     # default: refuse and exit non-zero
+planar task edit 47 --no-pull   # skip the pre-edit pull; trust the on-disk file
 ```
+
+If a concurrent `task update` or `workbench pull` lands between
+editor-open and save, the resulting drift surfaces through the
+normal workbench sync flow — inspect via `planar workbench status`
+and settle the conflict with `planar workbench resolve <event-id>
+--prefer fs|db`. For an overwrite that bypasses status guards on the
+update path itself (rather than the editor flow), `planar task
+update <id> --force --reason "<why>"` is the escape hatch.
 
 ### Step 4 — Bulk-review across many entities
 

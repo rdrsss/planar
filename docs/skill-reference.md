@@ -207,7 +207,7 @@ Full workbench management: pull, push, sync, status, resolve, archive, restore, 
 /pl-workbench push 42           # DB → FS for plan 42
 /pl-workbench status            # show all plans with FS/DB divergence
 /pl-workbench resolve 17 --prefer fs
-/pl-workbench publish 42 --to ~/myrepo/docs/planning
+/pl-workbench publish 42 --system github
 ```
 
 Source: `commands/claude/pl-workbench.md` · `skills/codex/pl-workbench.md`

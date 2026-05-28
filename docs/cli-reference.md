@@ -2267,12 +2267,12 @@ id   title                  status   dir
 
 **Synopsis:**
 ```
-planar workbench publish <plan-id> --to <path> [--include <glob>]... [--exclude <glob>]... [--dry-run] [--delete-removed]
+planar workbench publish <plan-id> --system <slug> [--json]
 ```
 
-**Description:** Snapshot the on-disk workbench tree for the named anchor plan to a user-chosen destination directory. The source is `$PLANAR_WORKBENCH_ROOT/<assoc>/<plan-key>-<slug>/`; the destination is created if it does not exist. Files that already exist at the destination with byte-identical content are left unchanged and reported as `unchanged`. Files that differ or are new are (re)written. With `--delete-removed`, files present at the destination but absent from the filtered source are removed. Use `--dry-run` to preview what would be written or deleted without touching the destination.
+**Description:** Render the workbench files for the named anchor plan and push the rendered content to a registered external operational system (Jira, GitHub Issues, GitHub Projects) via the adapter layer. The destination system, credentials, and per-entity projection template come from the system registration (see `planar ext list` / `planar ext create`).
 
-This command reads from the filesystem workbench, not from the database. Users who want the destination to reflect current database state should run `planar workbench push <plan-id>` first to refresh the workbench tree, then `planar workbench publish`.
+For richer per-entity counterpart creation (epics, issues, sub-issues with parent/child links) walking the full plan tree, use `planar ext propagate <plan-id> --system <slug>` instead. `workbench publish` pushes the rendered Markdown body; `ext propagate` creates one external counterpart per entity in the plan subtree.
 
 **Arguments:**
 
@@ -2284,41 +2284,17 @@ This command reads from the filesystem workbench, not from the database. Users w
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--to <path>` | _(required)_ | Destination directory. Created if it does not exist. Fails if the path exists but is a regular file, not a directory. |
-| `--include <glob>` | _(none — publish all)_ | `path.Match` glob pattern; only matching files are published. Repeatable; patterns are combined with OR semantics. |
-| `--exclude <glob>` | _(none — exclude nothing)_ | `path.Match` glob pattern; matching files are skipped. Repeatable. Applied after `--include`. |
-| `--dry-run` | `false` | Preview writes and deletions without modifying the destination. |
-| `--delete-removed` | `false` | Remove files at the destination that no longer exist in the (filtered) source workbench. |
+| `--system <slug>` | _(required)_ | External system slug (must already be registered via `planar ext create`). |
+| `--json` | `false` | Emit a JSON result envelope on stdout. |
 
-**Output (human):**
-```
-  written    product-spec.md
-  written    tech-spec.md
-  unchanged  tasks/116-add-question-struct.md
-  deleted    old-notes.md
-3 written, 1 unchanged, 1 deleted, 0 errors
-```
-
-**Output (JSON, `--json`):**
-```json
-{
-  "Written":   ["product-spec.md", "tech-spec.md"],
-  "Unchanged": ["tasks/116-add-question-struct.md"],
-  "Deleted":   ["old-notes.md"],
-  "Errors":    []
-}
-```
-
-The JSON shape is `workbench.PublishResult` from `src/internal/workbench/publish.go`.
-
-**Schema effects:** None — read-only against the workbench filesystem and the database. The destination path is outside the workbench root and is not tracked by Planar.
+**Schema effects:** None on the local database (other than recording the resulting external link via the adapter, if the adapter persists one). The destination is the external system.
 
 **Capture:** None.
 
 **Exit codes:**
-- `0` — success (including dry-run).
-- `1` — user error: `--to` flag missing, plan not found, source directory missing or is a regular file, destination exists but is a regular file.
-- `2` — system error: destination write failure, filesystem I/O error.
+- `0` — success.
+- `1` — user error: `--system` missing, plan not found, system slug not registered.
+- `2` — system error: adapter / HTTP failure, authentication failure.
 
 ---
 

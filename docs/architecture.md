@@ -295,7 +295,7 @@ Sync is explicit, not automatic:
 
 When a feature is complete, `planar workbench archive <plan>` removes the on-disk tree. The database retains every entity row. `planar workbench restore <plan>` recreates the tree byte-identically from the DB.
 
-`planar workbench publish <plan> --to <path>` copies the workbench tree into an arbitrary host path — useful for committing a snapshot into a git repo's `docs/` directory.
+`planar workbench publish <plan> --system <slug>` renders the workbench files for a plan and pushes the rendered content to a registered external operational system via the adapter layer. For full plan-subtree counterpart creation in an external system, `planar ext propagate <plan> --system <slug>` is the verb of record.
 
 ---
 

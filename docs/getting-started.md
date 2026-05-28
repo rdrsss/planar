@@ -215,7 +215,7 @@ The ingestor creates one sub-plan per `## ` heading and one task
 per bullet. Inspect the result:
 
 ```sh
-planar tree login-flow
+planar plan show login-flow
 ```
 
 ## 7. External-system sync

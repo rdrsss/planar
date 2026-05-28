@@ -15,9 +15,7 @@ vendor:
       /pl-workbench archive plan:42
       /pl-workbench restore plan:42
       /pl-workbench list
-      /pl-workbench publish plan:42 --to ~/work/my-repo/docs/planning/p42
-      /pl-workbench publish plan:42 --to ~/work/my-repo/docs/planning/p42 --include "*.md" --dry-run
-      /pl-workbench publish plan:42 --to ~/work/my-repo/docs/planning/p42 --delete-removed
+      /pl-workbench publish plan:42 --system github
 shared_notes:
   - "Workbench reads and writes route through the CLI; the skill must not edit SQLite rows or generated workbench metadata directly."
 ---
@@ -43,7 +41,7 @@ planar workbench sync <plan>
 planar workbench archive <plan>
 planar workbench restore <plan>
 planar workbench list
-planar workbench publish <plan-id> --to <path> [--include <glob>]... [--exclude <glob>]... [--dry-run] [--delete-removed]
+planar workbench publish <plan-id> --system <slug>
 ```
 
 ## Verb Guide
@@ -58,31 +56,28 @@ planar workbench publish <plan-id> --to <path> [--include <glob>]... [--exclude 
 | `archive` | removes FS tree | Feature is done; remove the on-disk tree. DB retains everything. |
 | `restore` | recreates FS tree | Recreate the tree from the DB after archive, or after accidental deletion. |
 | `list` | read-only | List all features that currently have an active FS tree. |
-| `publish` | FS → external path | Snapshot the workbench tree to a destination outside `~/.planar/workbench/` (e.g. committing planning docs into a host repo). |
+| `publish` | DB → external system | Render the workbench files for a plan and push the rendered content to a registered external operational system (Jira, GitHub Issues, GitHub Projects) via the adapter layer. |
 
 ## `publish` Subcommand
 
 ```
-planar workbench publish <plan-id> --to <path>
+planar workbench publish <plan-id> --system <slug>
 ```
 
-Copies the on-disk workbench tree for `<plan-id>` to `<path>`. The destination is created if it does not exist. Files with byte-identical content are unchanged; others are (re)written. Options:
+Renders the workbench files for `<plan-id>` and pushes the rendered content to the named external operational system. The system slug must already be registered (`planar ext list` / `planar ext create`).
 
 | Flag | Description |
 |------|-------------|
-| `--to <path>` | Destination directory (required). |
-| `--include <glob>` | `path.Match` pattern; only matching files published (repeatable, OR semantics). |
-| `--exclude <glob>` | `path.Match` pattern; matching files skipped (repeatable, applied after include). |
-| `--dry-run` | Preview writes and deletions without modifying the destination. |
-| `--delete-removed` | Remove destination files absent from the (filtered) source workbench. |
+| `--system <slug>` | External system slug (required). |
+| `--json` | Emit a JSON result envelope. |
 
-Human output: per-file `written` / `unchanged` / `deleted` lines followed by a summary count. JSON output (`--json`): `PublishResult` shape with `Written`, `Unchanged`, `Deleted`, `Errors` string arrays. Schema effects: none (read-only). Exit codes: 0 success; 1 user error (missing `--to`, plan not found, source missing or is a regular file, destination is a regular file); 2 destination write failure.
+For full plan-subtree counterpart creation (one external entity per plan / task / artifact, with parent / child links), use `planar ext propagate <plan-id> --system <slug>` — `publish` pushes the rendered Markdown body; `propagate` walks the plan tree.
 
 See [`docs/cli-reference.md#planar-workbench-publish-plan-id`](../../docs/cli-reference.md#planar-workbench-publish-plan-id) for the full specification.
 
 ## When To Invoke
 
-Use `pull` after editing workbench files to persist edits into the DB. Use `push` after DB-side changes (task status transitions, plan updates) to refresh on-disk files. Use `sync` for a full reconciliation round. Use `status` to inspect the workbench state before deciding which direction to sync. Use `archive` when a feature is complete and the tree is no longer needed on disk. Use `publish` to snapshot a feature's workbench tree to an external path (e.g. a host-repo planning docs directory).
+Use `pull` after editing workbench files to persist edits into the DB. Use `push` after DB-side changes (task status transitions, plan updates) to refresh on-disk files. Use `sync` for a full reconciliation round. Use `status` to inspect the workbench state before deciding which direction to sync. Use `archive` when a feature is complete and the tree is no longer needed on disk. Use `publish` to push a feature's rendered workbench content to a registered external operational system.
 
 For a higher-level "sync this feature now" action without choosing between verbs, use `pl-workbench-sync`. For archive/restore lifecycle management, use `pl-workbench-archive`.
 

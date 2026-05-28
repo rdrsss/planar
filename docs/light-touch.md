@@ -194,9 +194,12 @@ planar task review     [<plan>]   # TASKS.md with editable Status/Priority/Next-
 Save the focal file (`REVIEW.md` / `TASKS.md`); each populated block
 applies via the appropriate per-entity verb. Blank blocks skip.
 
-Conflict surface: if the DB changes while you're editing, the save
-detects it and refuses by default. Pass `--force-conflict-resolution=remerge`
-to re-open a three-way file with conflict markers, or `=force` to overwrite.
+Conflict surface: each `edit` verb auto-pulls the latest DB state
+into the workbench before opening `$EDITOR`. Pass `--no-pull` to skip
+that step when you know the workbench is already current and want to
+avoid clobbering an in-progress edit. If a concurrent change lands
+between open and save, the save reports the conflict via the standard
+`workbench resolve` / `workbench status` flow.
 
 ## Setting up your anchor plan
 
@@ -263,11 +266,14 @@ planar artifact list --plan <id>
 planar decision list --plan <id>
 planar question list --plan <id>
 planar task list --plan <id>
-planar tree <id>          # everything at once, hierarchical
+planar plan show <id>     # everything on this plan at once
+planar tree               # hierarchical view of the cwd-derived scope
 ```
 
-`planar tree <id>` is especially useful — gives you a single view of
-the whole exploration.
+`planar plan show <id>` gives a single view of one plan's children
+(child plans, tasks, artifacts, decisions, questions). `planar tree`
+walks the whole scope hierarchically (add `--scope <slug>` to target
+a different association, or `--all-scopes` for everything).
 
 ### Review what you've learned
 
@@ -351,7 +357,8 @@ planar question answer <id> "<resolution>"
 planar question wontfix <id>
 
 # Browse
-planar tree <plan-id>                            # everything, hierarchical
+planar plan show <id>                            # everything on this plan
+planar tree                                      # hierarchical view of the cwd-derived scope
 planar question list --status open                      # what's unresolved
 planar decision list --plan <id>                 # all your choices
 planar artifact list --plan <id>                 # all your captures
