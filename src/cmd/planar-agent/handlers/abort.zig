@@ -83,7 +83,7 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
         try w.print("{{\"ok\":true,\"claim_token\":", .{});
         try std.json.Stringify.encodeJsonString(c.claim_token, .{}, w);
         try w.print(",\"claim\":", .{});
-        try json.writeClaim(w, c);
+        try json.writeClaim(w, c, null);
         try w.print(",\"aborting_session\":{d}}}\n", .{aborting_sid});
     } else {
         try ctx.stdout.print("aborted claim:{s} by session:{d}\n", .{ c.claim_token, aborting_sid });

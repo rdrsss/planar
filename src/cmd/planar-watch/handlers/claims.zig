@@ -95,16 +95,20 @@ fn emitOnce(
             if (!claimMatches(d, c, args)) continue;
             if (!first) try w.print(",", .{});
             first = false;
-            try agentactivity.json.writeClaim(w, c);
+            const scope = agentactivity.store.resolveClaimScope(d, allocator, c);
+            defer scope.deinit(allocator);
+            try agentactivity.json.writeClaim(w, c, scope);
         }
         try w.print("]}}\n", .{});
     } else {
         try w.print("claims: {d}\n", .{rows.len});
         for (rows) |c| {
             if (!claimMatches(d, c, args)) continue;
+            const scope = agentactivity.store.resolveClaimScope(d, allocator, c);
+            defer scope.deinit(allocator);
             try w.print(
-                "  {s}:{d}  status:{s}  vendor:{s}  token:{s}\n",
-                .{ c.entity_kind.toText(), c.entity_id, c.status.toText(), c.vendor, c.claim_token },
+                "  {s}:{d}  scope:{s}  status:{s}  vendor:{s}  token:{s}\n",
+                .{ c.entity_kind.toText(), c.entity_id, scope.label(), c.status.toText(), c.vendor, c.claim_token },
             );
         }
     }

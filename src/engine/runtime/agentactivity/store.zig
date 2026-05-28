@@ -293,6 +293,70 @@ pub fn getClaimByToken(
     };
 }
 
+/// Look up the entity referenced by `c` and resolve its scope
+/// (plans / plan_steps / tasks share the same `scope_kind` +
+/// `scope_id` columns, except plan_steps inherit from the parent
+/// plan). Best-effort: a missing entity returns
+/// `ClaimScopeInfo.unknown` rather than erroring — display surfaces
+/// (planar-watch ps / claims) should not break because one row is
+/// stale.
+///
+/// Caller owns the returned `slug` slice (when non-null) — release
+/// via `info.deinit(allocator)`.
+pub fn resolveClaimScope(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    c: types.Claim,
+) types.ClaimScopeInfo {
+    const sql_z: [:0]const u8 = switch (c.entity_kind) {
+        .plan => "select scope_kind, scope_id from plans where id = ?",
+        .task => "select scope_kind, scope_id from tasks where id = ?",
+        // plan_steps inherit their scope from the parent plan; no
+        // scope columns of their own per the 00003_work_items schema.
+        .plan_step =>
+        \\select p.scope_kind, p.scope_id from plan_steps ps
+        \\  join plans p on ps.plan_id = p.id where ps.id = ?
+        ,
+    };
+    var stmt = d.prepare(sql_z) catch return types.ClaimScopeInfo.unknown;
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .int = c.entity_id }}) catch return types.ClaimScopeInfo.unknown;
+    switch (stmt.step() catch return types.ClaimScopeInfo.unknown) {
+        .done => return types.ClaimScopeInfo.unknown,
+        .row => {},
+    }
+
+    const kind_text = stmt.columnTextAlloc(0, allocator) catch return types.ClaimScopeInfo.unknown;
+    defer allocator.free(kind_text);
+
+    const kind_static: []const u8 = if (std.mem.eql(u8, kind_text, "global"))
+        "global"
+    else if (std.mem.eql(u8, kind_text, "association"))
+        "association"
+    else if (std.mem.eql(u8, kind_text, "repo"))
+        "repo"
+    else
+        "?";
+
+    if (std.mem.eql(u8, kind_static, "global")) {
+        return .{ .kind = "global", .slug = null };
+    }
+    const scope_id = stmt.columnIntOpt(1) orelse return .{ .kind = kind_static, .slug = null };
+
+    const slug_sql: [:0]const u8 = if (std.mem.eql(u8, kind_static, "association"))
+        "select slug from associations where id = ?"
+    else
+        "select slug from projects where id = ?";
+    var slug_stmt = d.prepare(slug_sql) catch return .{ .kind = kind_static, .slug = null };
+    defer slug_stmt.finalize();
+    slug_stmt.bind(&.{.{ .int = scope_id }}) catch return .{ .kind = kind_static, .slug = null };
+    const slug: ?[]const u8 = switch (slug_stmt.step() catch return .{ .kind = kind_static, .slug = null }) {
+        .done => null,
+        .row => slug_stmt.columnTextAlloc(0, allocator) catch null,
+    };
+    return .{ .kind = kind_static, .slug = slug };
+}
+
 /// List all active claims, optionally filtered by session id. Read-only
 /// — uses the default deferred transaction.
 pub fn listActive(

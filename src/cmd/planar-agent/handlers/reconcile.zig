@@ -67,7 +67,7 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
                     "{{\"kind\":\"{s}\",\"id\":{d},\"claim\":",
                     .{ c.entity_kind.toText(), c.entity_id },
                 );
-                try json.writeClaim(w, c);
+                try json.writeClaim(w, c, null);
                 try w.print("}}", .{});
             }
             try w.print("]", .{});

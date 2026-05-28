@@ -158,6 +158,40 @@ pub const Claim = struct {
     }
 };
 
+/// Resolved entity-scope context for a single claim — the scope the
+/// claim's underlying plan / plan_step / task lives in. Surfaced by
+/// planar-watch ps / claims so operators can answer "what work is
+/// being done where" without joining tables by eye.
+///
+/// `kind` is the schema-level scope_kind string ("global" /
+/// "association" / "repo"); the string form is stable across
+/// migrations and what consumers compare against. `slug` is the
+/// human-readable resolution from `associations.slug` / `projects.slug`;
+/// `null` for global, or when the underlying scope row was deleted
+/// out from under the claim.
+///
+/// `slug` is allocator-owned when non-null; release via `deinit`.
+/// `kind` is a static string literal — do not free.
+pub const ClaimScopeInfo = struct {
+    kind: []const u8,
+    slug: ?[]const u8,
+
+    pub fn deinit(self: ClaimScopeInfo, allocator: std.mem.Allocator) void {
+        if (self.slug) |s| allocator.free(s);
+    }
+
+    /// Display label — `slug` when present, otherwise the kind name.
+    /// Operators see `scope:project:planar` or `scope:global`, never
+    /// an empty value.
+    pub fn label(self: ClaimScopeInfo) []const u8 {
+        return self.slug orelse self.kind;
+    }
+
+    /// Sentinel for the "lookup failed / row missing" path. Callers
+    /// can pass this through display surfaces without special-casing.
+    pub const unknown: ClaimScopeInfo = .{ .kind = "?", .slug = null };
+};
+
 /// All action kinds the schema CHECK allows. The probe-default decision
 /// (`probeDefault`) maps each kind to "yes, run git probe" or "no,
 /// short-lived telemetry — skip".

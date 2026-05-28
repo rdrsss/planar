@@ -202,7 +202,10 @@ fn emitMergedJson(
         }
         if (ev.claim_idx) |i| {
             try w.print(",\"claim\":", .{});
-            try agentactivity.json.writeClaim(w, claims[i]);
+            // Embedded in a session-timeline event — keep the lean
+            // shape; ps/claims are the surfaces that carry
+            // entity_scope. See feed.zig for the same rationale.
+            try agentactivity.json.writeClaim(w, claims[i], null);
         }
         try w.print("}}", .{});
     }

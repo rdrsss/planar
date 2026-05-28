@@ -38,13 +38,35 @@ fn writeIntOpt(w: *std.Io.Writer, key: []const u8, val: ?i64) !void {
 
 /// Emit the canonical ClaimRow JSON shape. The helper writes the
 /// surrounding `{ … }`; callers wrap it in the enclosing object.
-pub fn writeClaim(w: *std.Io.Writer, c: types.Claim) !void {
+///
+/// `entity_scope` is optional — pass `null` for the lean shape (used
+/// by surfaces that don't care about the underlying entity's storage
+/// scope, e.g. log timelines) or a resolved
+/// `types.ClaimScopeInfo` from `store.resolveClaimScope` for the
+/// operator-facing surfaces (planar-watch ps / claims / feed). When
+/// non-null, the field is emitted right after `entity_id` so the
+/// "where is this entity stored" context lives next to the "which
+/// entity" reference in the JSON shape.
+pub fn writeClaim(
+    w: *std.Io.Writer,
+    c: types.Claim,
+    entity_scope: ?types.ClaimScopeInfo,
+) !void {
     try w.print("{{\"id\":{d}", .{c.id});
     try w.print(",\"claim_token\":", .{});
     try std.json.Stringify.encodeJsonString(c.claim_token, .{}, w);
     try w.print(",\"session_id\":{d}", .{c.session_id});
     try w.print(",\"entity_kind\":\"{s}\"", .{c.entity_kind.toText()});
     try w.print(",\"entity_id\":{d}", .{c.entity_id});
+    if (entity_scope) |s| {
+        try w.print(",\"entity_scope\":{{\"kind\":\"{s}\",\"slug\":", .{s.kind});
+        if (s.slug) |slug| {
+            try std.json.Stringify.encodeJsonString(slug, .{}, w);
+        } else {
+            try w.print("null", .{});
+        }
+        try w.print("}}", .{});
+    }
     try w.print(",\"claim_scope\":\"{s}\"", .{c.claim_scope.toText()});
     try w.print(",\"status\":\"{s}\"", .{c.status.toText()});
     try w.print(",\"vendor\":", .{});

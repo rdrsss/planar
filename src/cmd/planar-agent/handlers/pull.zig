@@ -112,7 +112,7 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
         try w.print("{{\"ok\":true,\"no_work\":false,\"claim_token\":", .{});
         try std.json.Stringify.encodeJsonString(result.claim.?.claim_token, .{}, w);
         try w.print(",\"claim\":", .{});
-        try json.writeClaim(w, result.claim.?);
+        try json.writeClaim(w, result.claim.?, null);
         try w.print(",\"task\":", .{});
         try json.writeTask(w, task);
         try w.print(",\"action_id\":{d}}}\n", .{result.action_id});
