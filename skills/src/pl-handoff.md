@@ -12,6 +12,7 @@ vendor:
 shared_notes:
   - "Active scope and session state come from the CLI; the skill must not read or write workspace context outside it."
   - "The session id and vendor are recorded on every snapshot created by this workflow."
+  - "Worktree state (path / branch / repo_root) is NOT yet persisted on `handoffs` or `context_snapshots`. Today the resumer recovers it from the active `agent_work_claims` row — keep the claim alive across the handoff or include the worktree path in the snapshot `body` text so the resumer can `cd` correctly."
 ---
 
 # Planar Handoff ({{.VendorTitle}})
@@ -21,6 +22,13 @@ Implements the end-of-session capture ritual: snapshot the current state, create
 ## What It Does
 
 Captures a context snapshot for the current or named task, creates a `handoffs` row in pending status, and automatically validates whether the handoff is resume-ready. Covers the full handoff lifecycle: capture, validate, list, and consume.
+
+## Worktree State And Handoffs
+
+Plan 297 M6 wires the resume packet to surface the `worktree_path` recorded on the active `agent_work_claims` row, so a cold-start resumer can prepend `cd <path>` before continuing. The handoff record itself does NOT yet copy that field — there are no `worktree_path` / `branch` columns on `handoffs` or `context_snapshots` today. Two operator-visible consequences:
+
+- If the source session releases its claim before terminating, the resumer's `planar resume` packet will show `active_claim: null` and the worktree context is lost. Keep the claim alive through the handoff (do not call `planar-agent release` until after the resumer has captured the path) or paste the worktree path explicitly into the snapshot body / `--note`.
+- The next iteration of the worktree-management roadmap will add a `worktree_path` column to either `handoffs` or `context_snapshots` so the resumer can recover the path even when the original claim has been released. Track via the M6 follow-up task.
 
 ## CLI Commands
 
