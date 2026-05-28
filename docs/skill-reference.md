@@ -14,7 +14,7 @@ Planar authors each shared skill once at `skills/src/<name>.md` and renders vend
 - `skills/codex/<name>.md` — generated, materialized as `~/.planar/codex-skills/<name>/SKILL.md`, installed into `~/.codex/skills/<name>`
 - `skills/copilot/<name>.md` — generated, installed to `~/.copilot/skills/<name>.md`
 
-Vendor profile data and model-tier resolution come from `src/configs/vendors.yaml` (embedded into the `planar` binary). Drift between `skills/src/` and generated vendor trees is gated by `planar skills render --check` against an out-of-tree staging directory.
+Vendor profile data and model-tier resolution are embedded directly into the `planar` binary at compile time (the YAML literal lives in `src/engine/skillrender.zig`; see `agents/models.md` for the rendered tier table). Drift between `skills/src/` and generated vendor trees is gated by `planar skills render --check` against an out-of-tree staging directory.
 
 ---
 
@@ -133,7 +133,7 @@ Source: `commands/claude/pl-import.md` · `skills/codex/pl-import.md` · `agents
 
 Synthesize fresh planning artifacts for a repo from its existing docs + git log + source code via an LLM pass. Sibling of `/pl-import` (which transcribes). Reach for `/pl-synthesize` when docs are messy, docs-only, or mid-evolution; reach for `/pl-import` when docs are clean and current.
 
-The LLM runs in the vendor skill (not in Go); the Go side provides the deterministic floor via `codeprobe.EvidenceMap`, writes the `synthesis.Request` to a cache file for the skill to consume, validates the Result, and merges it with the deterministic baseline.
+The LLM runs in the vendor skill, not in the Planar binary. `src/engine/synthesize.zig` builds the deterministic `codeprobe.EvidenceMap` floor, writes a fingerprinted `synthesis.Request` to a cache file for the skill to consume, then on the follow-up invocation validates the skill's `Result` and merges it with the deterministic baseline.
 
 **Example:**
 ```

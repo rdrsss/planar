@@ -31,8 +31,9 @@ about 30 minutes the first time and 5 minutes the second.
 
 ## 1. Install
 
-Planar is a single Go binary plus a SQLite database. Build from
-source and stage the workflow surfaces:
+Planar is a single Zig binary (plus the read-only `planar-watch` and
+the agent-callable `planar-agent` companions) backed by SQLite. Build
+from source and stage the workflow surfaces:
 
 ```sh
 git clone https://github.com/rdrsss/planar.git
@@ -68,10 +69,11 @@ planar init
 
 `init` does three things:
 
-1. Applies every migration under `src/migrations/` against the new
-   database via goose (library mode). The public schema-version
-   contract is the `schema_migrations` table — query it any time
-   with `sqlite3 ~/.planar/planar.db "select * from schema_migrations;"`.
+1. Applies every migration embedded in the binary (sourced from
+   `migrations/` at build time via `tools/gen_migrations.zig`) against
+   the new database. The public schema-version contract is the
+   `schema_migrations` table — query it any time with
+   `sqlite3 ~/.planar/planar.db "select * from schema_migrations;"`.
 2. Resolves the current directory's git remote to a `projects`
    row and creates an `associations` row of kind `project`, then
    wires the two together via `project_associations`.
@@ -212,10 +214,12 @@ planar spec ingest login-flow
 ```
 
 The ingestor creates one sub-plan per `## ` heading and one task
-per bullet. Inspect the result:
+per bullet. Inspect the result hierarchically (`planar plan show`
+only returns the parent plan's own row, so use `tree` to see the
+new sub-plans and tasks):
 
 ```sh
-planar plan show login-flow
+planar tree
 ```
 
 ## 7. External-system sync
