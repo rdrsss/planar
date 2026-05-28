@@ -88,6 +88,87 @@ test "workbench push filters failure-terminal tasks by default" {
     _ = active;
 }
 
+test "workbench push reports + cleans pre-existing terminal files (surprise-free upgrade path)" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_backing = std.heap.ArenaAllocator.init(gpa);
+    defer arena_backing.deinit();
+    const arena = arena_backing.allocator();
+
+    const env = workbenchEnv(arena, &suite);
+
+    const plan = suite.mustRunJSON(IDJSON, arena, &.{ "plan", "create", "--json", "Upgrade Path Plan" });
+    const plan_id = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch @panic("OOM");
+
+    // Step 1: add the task while it's still active and push so the file
+    // lands on disk (simulating the pre-feature state where every entity
+    // wrote a file).
+    const task = suite.mustRunJSON(IDJSON, arena, &.{ "task", "add", "--json", "--plan", plan_id, "Soon-to-be-cancelled task" });
+    const initial_push = suite.execWith(&.{ "workbench", "push", plan_id }, env);
+    defer initial_push.deinit(gpa);
+    try std.testing.expect(initial_push.term == .exited and initial_push.term.exited == 0);
+
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_len = suite.tmp_dir.dir.realPath(std.testing.io, &dir_buf) catch @panic("cannot resolve tmp dir");
+    const wb_root = std.fs.path.join(arena, &.{ dir_buf[0..tmp_len], "workbench" }) catch @panic("OOM");
+
+    var found_task_before = false;
+    var unused_other_before = false;
+    walkForTaskFiles(arena, wb_root, task.id, -1, &found_task_before, &unused_other_before);
+    try std.testing.expect(found_task_before);
+
+    // Step 2: cancel the task. Its FS file is now a pre-existing terminal
+    // file (the filter would drop it; the file is still on disk).
+    const task_id = std.fmt.allocPrint(arena, "{d}", .{task.id}) catch @panic("OOM");
+    const cancel = suite.execWith(&.{ "task", "cancel", task_id }, env);
+    defer cancel.deinit(gpa);
+    try std.testing.expect(cancel.term == .exited and cancel.term.exited == 0);
+
+    // Step 3: push WITHOUT --apply-cleanup. Summary should warn; file stays.
+    const push_warn = suite.execWith(&.{ "workbench", "push", plan_id }, env);
+    defer push_warn.deinit(gpa);
+    try std.testing.expect(push_warn.term == .exited and push_warn.term.exited == 0);
+    try std.testing.expect(std.mem.indexOf(u8, push_warn.stdout, "1 pre-existing terminal file") != null);
+
+    var found_task_after_warn = false;
+    var unused_other_warn = false;
+    walkForTaskFiles(arena, wb_root, task.id, -1, &found_task_after_warn, &unused_other_warn);
+    try std.testing.expect(found_task_after_warn); // still there
+
+    // Step 4: push WITH --apply-cleanup. File should be gone.
+    const push_clean = suite.execWith(&.{ "workbench", "push", plan_id, "--apply-cleanup" }, env);
+    defer push_clean.deinit(gpa);
+    try std.testing.expect(push_clean.term == .exited and push_clean.term.exited == 0);
+    try std.testing.expect(std.mem.indexOf(u8, push_clean.stdout, "1 pre-existing terminal file(s) cleaned") != null);
+
+    var found_task_after_clean = false;
+    var unused_other_clean = false;
+    walkForTaskFiles(arena, wb_root, task.id, -1, &found_task_after_clean, &unused_other_clean);
+    try std.testing.expect(!found_task_after_clean);
+}
+
+test "workbench push --apply-cleanup is rejected with --filter-mode all" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_backing = std.heap.ArenaAllocator.init(gpa);
+    defer arena_backing.deinit();
+    const arena = arena_backing.allocator();
+
+    const env = workbenchEnv(arena, &suite);
+
+    const plan = suite.mustRunJSON(IDJSON, arena, &.{ "plan", "create", "--json", "Mutex Test Plan" });
+    const plan_id = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch @panic("OOM");
+
+    const conflict = suite.execWith(&.{ "workbench", "push", plan_id, "--apply-cleanup", "--filter-mode", "all" }, env);
+    defer conflict.deinit(gpa);
+    try std.testing.expect(conflict.term == .exited and conflict.term.exited != 0);
+    try std.testing.expect(std.mem.indexOf(u8, conflict.stderr, "mutually exclusive") != null);
+}
+
 test "workbench push --filter-mode all also filters done tasks" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);

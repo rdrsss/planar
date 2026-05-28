@@ -199,16 +199,22 @@ pub fn printSyncResult(
         return;
     }
 
-    if (mode == .push and result.filtered > 0) {
+    if (mode == .push) {
         try stdout.print(
             "workbench {s}: plan {d} ({s}) - {d} applied, {d} pending, {d} filtered (mode={s}), {d} conflict(s)\n",
             .{ verb, plan_id, plan_slug, result.applied, result.pending, result.filtered, result.filter_mode, result.conflicts },
         );
-    } else if (mode == .push) {
-        try stdout.print(
-            "workbench {s}: plan {d} ({s}) - {d} applied, {d} pending, 0 filtered (mode={s}), {d} conflict(s)\n",
-            .{ verb, plan_id, plan_slug, result.applied, result.pending, result.filter_mode, result.conflicts },
-        );
+        if (result.pre_existing_terminal > 0 and result.cleaned == 0) {
+            try stdout.print(
+                "  {d} pre-existing terminal file(s) on disk — run 'planar workbench gc {d}' to remove, or re-push with --apply-cleanup\n",
+                .{ result.pre_existing_terminal, plan_id },
+            );
+        } else if (result.cleaned > 0) {
+            try stdout.print(
+                "  {d} pre-existing terminal file(s) cleaned\n",
+                .{result.cleaned},
+            );
+        }
     } else {
         try stdout.print(
             "workbench {s}: plan {d} ({s}) - {d} applied, {d} pending, {d} conflict(s)\n",

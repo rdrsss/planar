@@ -37,6 +37,7 @@ pub const verb: cli.Cmd = .{
                 .{ .long = "--verbose", .kind = .bool, .default = .{ .bool = false } },
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
                 .{ .long = "--filter-mode", .kind = .string, .desc = "Terminal-status filter: 'failures' (default) or 'all'" },
+                .{ .long = "--apply-cleanup", .kind = .bool, .default = .{ .bool = false }, .desc = "Remove pre-existing FS files for entities this push would have filtered" },
             },
             .positionals = &.{.{ .name = "plan", .kind = .string, .required = true }},
             .run = cli.handler(push.handle),

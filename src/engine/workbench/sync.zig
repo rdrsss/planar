@@ -22,6 +22,15 @@ pub const Summary = struct {
     /// Count of terminal-status entities excluded from the FS write set under
     /// the active `filter_mode` (plan 439 M2). Always 0 on non-push runs.
     filtered: usize = 0,
+    /// Count of pre-existing files on the FS for entities this push would
+    /// have filtered. These are the "surprise files" the operator
+    /// accumulated before the filter shipped (plan 439 M3). Reported but
+    /// not removed unless `--apply-cleanup` was passed.
+    pre_existing_terminal: usize = 0,
+    /// Count of pre-existing terminal files this push REMOVED in the same
+    /// pass (only when `--apply-cleanup` was passed). Subset of
+    /// `pre_existing_terminal`.
+    cleaned: usize = 0,
 };
 
 pub const Entry = struct {
@@ -39,6 +48,12 @@ pub const Result = struct {
     conflicts: usize = 0,
     /// Count of terminal-status entities excluded from the FS write set.
     filtered: usize = 0,
+    /// Pre-existing terminal files visible on disk that fall inside this
+    /// push's filter set (plan 439 M3). Reported in the summary; removed
+    /// only when `apply_cleanup` was passed.
+    pre_existing_terminal: usize = 0,
+    /// Number of pre-existing terminal files actually removed in this pass.
+    cleaned: usize = 0,
     /// Active filter mode label (`"failures"` or `"all"`), so the CLI summary
     /// can surface the operative policy. Always `"failures"` for non-push
     /// runs (the field exists; the value is not consulted there).
@@ -85,24 +100,33 @@ pub fn deinitResult(allocator: std.mem.Allocator, result: Result) void {
 }
 
 pub fn status(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan_id: i64) !Result {
-    return run(d, allocator, anchor_plan_id, .status, .failures);
+    return run(d, allocator, anchor_plan_id, .status, .failures, false);
 }
 
 pub fn pull(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan_id: i64) !Result {
-    return run(d, allocator, anchor_plan_id, .pull, .failures);
+    return run(d, allocator, anchor_plan_id, .pull, .failures, false);
 }
 
 /// Push DB → FS for the given anchor plan's feature tree.
 ///
 /// `filter_mode` selects which terminal-status entities are excluded from the
-/// FS write set (plan 439 M2). The filter only fires on push runs; non-push
-/// modes receive the parameter for API symmetry but do not act on it.
-pub fn push(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan_id: i64, filter_mode: terminal_mod.Mode) !Result {
-    return run(d, allocator, anchor_plan_id, .push, filter_mode);
+/// FS write set (plan 439 M2). `apply_cleanup` instructs the push to also
+/// remove pre-existing FS files for entities that the filter would have
+/// dropped (plan 439 M3). The cleanup is narrow-scope: it operates only on
+/// files for entities this push enumerated, not on every terminal-backed
+/// file in the workbench tree (use `planar workbench gc` for that).
+pub fn push(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    anchor_plan_id: i64,
+    filter_mode: terminal_mod.Mode,
+    apply_cleanup: bool,
+) !Result {
+    return run(d, allocator, anchor_plan_id, .push, filter_mode, apply_cleanup);
 }
 
 pub fn sync(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan_id: i64) !Result {
-    return run(d, allocator, anchor_plan_id, .sync, .failures);
+    return run(d, allocator, anchor_plan_id, .sync, .failures, false);
 }
 
 pub fn resolve(d: *db.sqlite.Db, event_id: i64, prefer: ConflictResolution) !void {
@@ -312,6 +336,7 @@ fn run(
     anchor_plan_id: i64,
     mode: Mode,
     filter_mode: terminal_mod.Mode,
+    apply_cleanup: bool,
 ) !Result {
     const a = try fetchAnchor(d, allocator, anchor_plan_id);
     defer freeAnchor(allocator, a);
@@ -355,6 +380,34 @@ fn run(
             if (terminal_mod.isFilteredStr(e.kind, e.status, filter_mode)) |drop| {
                 if (drop) {
                     summary.filtered += 1;
+                    // Plan 439 M3: surprise-free upgrade path. If the
+                    // filtered entity already has a file on disk, that's a
+                    // pre-existing terminal artifact. Count it, and remove
+                    // it if `--apply-cleanup` was passed.
+                    const pre_rel_path, const pre_db_content = try renderEntity(d, allocator, anchor_plan_id, e.kind, e.id);
+                    defer allocator.free(pre_rel_path);
+                    defer allocator.free(pre_db_content);
+                    const pre_abs = try std.fs.path.join(allocator, &.{ feature_dir, pre_rel_path });
+                    defer allocator.free(pre_abs);
+                    if (pathExists(pre_abs)) {
+                        summary.pre_existing_terminal += 1;
+                        if (apply_cleanup) {
+                            const pre_abs_z = try allocator.dupeZ(u8, pre_abs);
+                            defer allocator.free(pre_abs_z);
+                            _ = c.unlink(pre_abs_z.ptr);
+                            summary.cleaned += 1;
+                            // Drop the manifest row so subsequent pushes
+                            // do not treat the missing file as drift.
+                            _ = d.execParams(
+                                "delete from workbench_sync_state where anchor_plan_id = ? and entity_kind = ? and entity_id = ?",
+                                &.{
+                                    .{ .int = anchor_plan_id },
+                                    .{ .text = e.kind },
+                                    .{ .int = e.id },
+                                },
+                            ) catch {};
+                        }
+                    }
                     continue;
                 }
             }
@@ -585,6 +638,8 @@ fn run(
         .pending = summary.pending,
         .conflicts = summary.conflicts,
         .filtered = summary.filtered,
+        .pre_existing_terminal = summary.pre_existing_terminal,
+        .cleaned = summary.cleaned,
         .filter_mode = terminal_mod.Mode.toString(filter_mode),
         .entries = try entries.toOwnedSlice(allocator),
     };
