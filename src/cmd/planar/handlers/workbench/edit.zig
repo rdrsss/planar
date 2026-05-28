@@ -19,7 +19,10 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     };
     defer plan.deinit(ctx.allocator);
 
-    const push_result = engine.workbench.sync.push(d, ctx.allocator, plan.id) catch |e|
+    // `workbench edit` always uses the default failure-terminal filter and
+    // never auto-cleans pre-existing terminal files; the editor-first flow
+    // doesn't expose --filter-mode or --apply-cleanup.
+    const push_result = engine.workbench.sync.push(d, ctx.allocator, plan.id, .failures, false) catch |e|
         exit.die(ctx, e, "workbench push failed: {s}", .{@errorName(e)});
     defer engine.workbench.sync.deinitResult(ctx.allocator, push_result);
 

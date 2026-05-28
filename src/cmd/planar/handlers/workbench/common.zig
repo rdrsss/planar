@@ -67,6 +67,15 @@ pub fn resolveAndEnsureWorkbenchRoot(allocator: std.mem.Allocator, io: std.Io) !
     return root;
 }
 
+/// Parse the `--filter-mode {failures,all}` flag value, defaulting to
+/// `.failures` when the flag was omitted (null pointer). Returns
+/// `error.InvalidInput` for any other string.
+pub fn parseFilterMode(raw: ?[]const u8) !engine.workbench.terminal.Mode {
+    const s = raw orelse return .failures;
+    if (s.len == 0) return .failures;
+    return engine.workbench.terminal.Mode.fromString(s) orelse error.InvalidInput;
+}
+
 fn fetchPlanByID(d: *db.sqlite.Db, allocator: std.mem.Allocator, plan_id: i64) !ResolvedPlan {
     if (plan_id < 1) return error.InvalidInput;
 
@@ -190,10 +199,28 @@ pub fn printSyncResult(
         return;
     }
 
-    try stdout.print(
-        "workbench {s}: plan {d} ({s}) - {d} applied, {d} pending, {d} conflict(s)\n",
-        .{ verb, plan_id, plan_slug, result.applied, result.pending, result.conflicts },
-    );
+    if (mode == .push) {
+        try stdout.print(
+            "workbench {s}: plan {d} ({s}) - {d} applied, {d} pending, {d} filtered (mode={s}), {d} conflict(s)\n",
+            .{ verb, plan_id, plan_slug, result.applied, result.pending, result.filtered, result.filter_mode, result.conflicts },
+        );
+        if (result.pre_existing_terminal > 0 and result.cleaned == 0) {
+            try stdout.print(
+                "  {d} pre-existing terminal file(s) on disk — run 'planar workbench gc {d}' to remove, or re-push with --apply-cleanup\n",
+                .{ result.pre_existing_terminal, plan_id },
+            );
+        } else if (result.cleaned > 0) {
+            try stdout.print(
+                "  {d} pre-existing terminal file(s) cleaned\n",
+                .{result.cleaned},
+            );
+        }
+    } else {
+        try stdout.print(
+            "workbench {s}: plan {d} ({s}) - {d} applied, {d} pending, {d} conflict(s)\n",
+            .{ verb, plan_id, plan_slug, result.applied, result.pending, result.conflicts },
+        );
+    }
     try printConflictDetails(stdout, result.entries);
     if (result.conflicts > 0) {
         try stdout.print("  {d} conflict(s) - run 'workbench resolve <event-id> --prefer fs|db'\n", .{result.conflicts});

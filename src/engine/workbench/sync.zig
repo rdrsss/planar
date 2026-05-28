@@ -4,6 +4,7 @@ const manifest = @import("manifest.zig");
 const feature = @import("feature.zig");
 const parse = @import("parse.zig");
 const render = @import("render.zig");
+const terminal_mod = @import("terminal.zig");
 const c = @cImport({
     @cInclude("fcntl.h");
     @cInclude("unistd.h");
@@ -18,6 +19,18 @@ pub const Summary = struct {
     applied: usize = 0,
     pending: usize = 0,
     conflicts: usize = 0,
+    /// Count of terminal-status entities excluded from the FS write set under
+    /// the active `filter_mode` (plan 439 M2). Always 0 on non-push runs.
+    filtered: usize = 0,
+    /// Count of pre-existing files on the FS for entities this push would
+    /// have filtered. These are the "surprise files" the operator
+    /// accumulated before the filter shipped (plan 439 M3). Reported but
+    /// not removed unless `--apply-cleanup` was passed.
+    pre_existing_terminal: usize = 0,
+    /// Count of pre-existing terminal files this push REMOVED in the same
+    /// pass (only when `--apply-cleanup` was passed). Subset of
+    /// `pre_existing_terminal`.
+    cleaned: usize = 0,
 };
 
 pub const Entry = struct {
@@ -33,6 +46,18 @@ pub const Result = struct {
     applied: usize = 0,
     pending: usize = 0,
     conflicts: usize = 0,
+    /// Count of terminal-status entities excluded from the FS write set.
+    filtered: usize = 0,
+    /// Pre-existing terminal files visible on disk that fall inside this
+    /// push's filter set (plan 439 M3). Reported in the summary; removed
+    /// only when `apply_cleanup` was passed.
+    pre_existing_terminal: usize = 0,
+    /// Number of pre-existing terminal files actually removed in this pass.
+    cleaned: usize = 0,
+    /// Active filter mode label (`"failures"` or `"all"`), so the CLI summary
+    /// can surface the operative policy. Always `"failures"` for non-push
+    /// runs (the field exists; the value is not consulted there).
+    filter_mode: []const u8 = "failures",
     entries: []const Entry,
 };
 
@@ -52,6 +77,9 @@ const Entity = struct {
     kind: []const u8,
     id: i64,
     updated_at: []const u8,
+    /// Current entity status. Empty when the status column is unreachable for
+    /// the kind (defensive — the filter step treats unknown as active).
+    status: []const u8,
 };
 
 const Anchor = struct {
@@ -72,19 +100,33 @@ pub fn deinitResult(allocator: std.mem.Allocator, result: Result) void {
 }
 
 pub fn status(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan_id: i64) !Result {
-    return run(d, allocator, anchor_plan_id, .status);
+    return run(d, allocator, anchor_plan_id, .status, .failures, false);
 }
 
 pub fn pull(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan_id: i64) !Result {
-    return run(d, allocator, anchor_plan_id, .pull);
+    return run(d, allocator, anchor_plan_id, .pull, .failures, false);
 }
 
-pub fn push(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan_id: i64) !Result {
-    return run(d, allocator, anchor_plan_id, .push);
+/// Push DB → FS for the given anchor plan's feature tree.
+///
+/// `filter_mode` selects which terminal-status entities are excluded from the
+/// FS write set (plan 439 M2). `apply_cleanup` instructs the push to also
+/// remove pre-existing FS files for entities that the filter would have
+/// dropped (plan 439 M3). The cleanup is narrow-scope: it operates only on
+/// files for entities this push enumerated, not on every terminal-backed
+/// file in the workbench tree (use `planar workbench gc` for that).
+pub fn push(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    anchor_plan_id: i64,
+    filter_mode: terminal_mod.Mode,
+    apply_cleanup: bool,
+) !Result {
+    return run(d, allocator, anchor_plan_id, .push, filter_mode, apply_cleanup);
 }
 
 pub fn sync(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan_id: i64) !Result {
-    return run(d, allocator, anchor_plan_id, .sync);
+    return run(d, allocator, anchor_plan_id, .sync, .failures, false);
 }
 
 pub fn resolve(d: *db.sqlite.Db, event_id: i64, prefer: ConflictResolution) !void {
@@ -163,7 +205,16 @@ pub fn resolve(d: *db.sqlite.Db, event_id: i64, prefer: ConflictResolution) !voi
     ) catch return error.QueryFailed;
 }
 
-pub fn archive(d: *db.sqlite.Db, anchor_plan_id: i64, root: []const u8, allocator: std.mem.Allocator) ![]const u8 {
+/// Archive the workbench tree for the given anchor plan.
+///
+/// `filter_mode` is accepted for API symmetry with push/restore. The current
+/// archive implementation deletes the on-disk feature tree without packaging
+/// it into a separate archive store, so there is no "write set" to filter.
+/// If a future revision adds an archive store (tarball, git stash, etc.),
+/// this is the parameter that selects which terminal-status entries are
+/// packaged. For now, callers can pass `.failures` (the default) safely.
+pub fn archive(d: *db.sqlite.Db, anchor_plan_id: i64, root: []const u8, allocator: std.mem.Allocator, filter_mode: terminal_mod.Mode) ![]const u8 {
+    _ = filter_mode; // Reserved; archive currently has no write set to filter.
     const a = try fetchAnchor(d, allocator, anchor_plan_id);
     defer freeAnchor(allocator, a);
     const feature_dir = try feature.featureDir(allocator, root, a.assoc_slug, a.plan_key, a.slug);
@@ -176,7 +227,12 @@ pub fn archive(d: *db.sqlite.Db, anchor_plan_id: i64, root: []const u8, allocato
     return feature_dir;
 }
 
-pub fn restore(d: *db.sqlite.Db, anchor_plan_id: i64, root: []const u8, allocator: std.mem.Allocator) ![]const u8 {
+/// Restore the workbench tree for the given anchor plan from DB state.
+///
+/// `filter_mode` selects which terminal-status entries are re-materialized
+/// (plan 439 M5). M1 threads the parameter through without changing behavior;
+/// the per-entity filter check lands in M5.
+pub fn restore(d: *db.sqlite.Db, anchor_plan_id: i64, root: []const u8, allocator: std.mem.Allocator, filter_mode: terminal_mod.Mode) ![]const u8 {
     const a = try fetchAnchor(d, allocator, anchor_plan_id);
     defer freeAnchor(allocator, a);
     const feature_dir = try feature.featureDir(allocator, root, a.assoc_slug, a.plan_key, a.slug);
@@ -186,6 +242,15 @@ pub fn restore(d: *db.sqlite.Db, anchor_plan_id: i64, root: []const u8, allocato
     const entities = try enumerateEntities(d, allocator, anchor_plan_id);
     defer freeEntities(allocator, entities);
     for (entities) |e| {
+        // Plan 439 M5: restore honors the same filter as push. Skip
+        // terminal entities under the active filter mode so the restored
+        // tree mirrors what a fresh push would write. The anchor plan is
+        // exempt.
+        if (e.id != anchor_plan_id) {
+            if (terminal_mod.isFilteredStr(e.kind, e.status, filter_mode)) |drop| {
+                if (drop) continue;
+            }
+        }
         const rel_path, const content = try renderEntity(d, allocator, anchor_plan_id, e.kind, e.id);
         defer allocator.free(rel_path);
         defer allocator.free(content);
@@ -275,7 +340,14 @@ pub fn freeActiveMany(allocator: std.mem.Allocator, values: []const ActiveFeatur
     allocator.free(values);
 }
 
-fn run(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan_id: i64, mode: Mode) !Result {
+fn run(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    anchor_plan_id: i64,
+    mode: Mode,
+    filter_mode: terminal_mod.Mode,
+    apply_cleanup: bool,
+) !Result {
     const a = try fetchAnchor(d, allocator, anchor_plan_id);
     defer freeAnchor(allocator, a);
     const root = try resolveWorkbenchRoot(allocator);
@@ -308,6 +380,48 @@ fn run(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan_id: i64, mode
         seen_files.deinit();
     }
     for (entities) |e| {
+        // Plan 439 M2 filter step. On push runs, drop entities whose status
+        // is in the active filter set. Other I/O modes (status/pull/sync)
+        // are untouched — pull explicitly bypasses the filter (Q336), and
+        // status/sync show the full set so the operator can reason about
+        // what would have been written. The anchor plan itself is exempt:
+        // dropping it would break feature-tree navigation.
+        if (mode == .push and e.id != anchor_plan_id) {
+            if (terminal_mod.isFilteredStr(e.kind, e.status, filter_mode)) |drop| {
+                if (drop) {
+                    summary.filtered += 1;
+                    // Plan 439 M3: surprise-free upgrade path. If the
+                    // filtered entity already has a file on disk, that's a
+                    // pre-existing terminal artifact. Count it, and remove
+                    // it if `--apply-cleanup` was passed.
+                    const pre_rel_path, const pre_db_content = try renderEntity(d, allocator, anchor_plan_id, e.kind, e.id);
+                    defer allocator.free(pre_rel_path);
+                    defer allocator.free(pre_db_content);
+                    const pre_abs = try std.fs.path.join(allocator, &.{ feature_dir, pre_rel_path });
+                    defer allocator.free(pre_abs);
+                    if (pathExists(pre_abs)) {
+                        summary.pre_existing_terminal += 1;
+                        if (apply_cleanup) {
+                            const pre_abs_z = try allocator.dupeZ(u8, pre_abs);
+                            defer allocator.free(pre_abs_z);
+                            _ = c.unlink(pre_abs_z.ptr);
+                            summary.cleaned += 1;
+                            // Drop the manifest row so subsequent pushes
+                            // do not treat the missing file as drift.
+                            _ = d.execParams(
+                                "delete from workbench_sync_state where anchor_plan_id = ? and entity_kind = ? and entity_id = ?",
+                                &.{
+                                    .{ .int = anchor_plan_id },
+                                    .{ .text = e.kind },
+                                    .{ .int = e.id },
+                                },
+                            ) catch {};
+                        }
+                    }
+                    continue;
+                }
+            }
+        }
         const rel_path, const db_content = try renderEntity(d, allocator, anchor_plan_id, e.kind, e.id);
         defer allocator.free(rel_path);
         defer allocator.free(db_content);
@@ -533,6 +647,10 @@ fn run(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan_id: i64, mode
         .applied = summary.applied,
         .pending = summary.pending,
         .conflicts = summary.conflicts,
+        .filtered = summary.filtered,
+        .pre_existing_terminal = summary.pre_existing_terminal,
+        .cleaned = summary.cleaned,
+        .filter_mode = terminal_mod.Mode.toString(filter_mode),
         .entries = try entries.toOwnedSlice(allocator),
     };
 }
@@ -1196,7 +1314,12 @@ fn enumerateEntities(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan
     var out: std.ArrayList(Entity) = .empty;
     errdefer freeEntities(allocator, out.items);
     const anchor_updated = try fetchUpdatedAt(d, allocator, "plan", anchor_plan_id);
-    try out.append(allocator, .{ .kind = try allocator.dupe(u8, "plan"), .id = anchor_plan_id, .updated_at = anchor_updated });
+    try out.append(allocator, .{
+        .kind = try allocator.dupe(u8, "plan"),
+        .id = anchor_plan_id,
+        .updated_at = anchor_updated,
+        .status = try fetchStatus(d, allocator, "plan", anchor_plan_id),
+    });
 
     try appendDerivedEntities(d, allocator, anchor_plan_id, &out);
 
@@ -1217,6 +1340,7 @@ fn enumerateEntities(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan
                         .kind = try allocator.dupe(u8, "plan"),
                         .id = child_id,
                         .updated_at = child_updated,
+                        .status = try fetchStatus(d, allocator, "plan", child_id),
                     });
                 } else allocator.free(child_updated);
             },
@@ -1248,6 +1372,7 @@ fn appendDerivedEntities(d: *db.sqlite.Db, allocator: std.mem.Allocator, plan_id
                         .kind = k,
                         .id = id,
                         .updated_at = try fetchUpdatedAt(d, allocator, k, id),
+                        .status = try fetchStatus(d, allocator, k, id),
                     });
                 } else allocator.free(k);
             },
@@ -1320,8 +1445,37 @@ fn freeEntities(allocator: std.mem.Allocator, entities: []const Entity) void {
     for (entities) |e| {
         allocator.free(e.kind);
         allocator.free(e.updated_at);
+        allocator.free(e.status);
     }
     allocator.free(entities);
+}
+
+/// Fetch the current `status` column for an entity. Returns an empty string
+/// when the kind has no status column or the row is missing.
+fn fetchStatus(d: *db.sqlite.Db, allocator: std.mem.Allocator, kind: []const u8, id: i64) ![]const u8 {
+    const sql = if (std.mem.eql(u8, kind, "plan"))
+        "select coalesce(status, '') from plans where id = ?"
+    else if (std.mem.eql(u8, kind, "task"))
+        "select coalesce(status, '') from tasks where id = ?"
+    else if (std.mem.eql(u8, kind, "decision"))
+        "select coalesce(status, '') from decisions where id = ?"
+    else if (std.mem.eql(u8, kind, "question"))
+        "select coalesce(status, '') from questions where id = ?"
+    else if (std.mem.eql(u8, kind, "scenario") or std.mem.eql(u8, kind, "test_scenario"))
+        "select coalesce(status, '') from test_scenarios where id = ?"
+    else if (std.mem.eql(u8, kind, "artifact"))
+        "select coalesce(status, '') from artifacts where id = ?"
+    else
+        return allocator.dupe(u8, "");
+
+    var stmt = d.prepare(sql) catch return error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .int = id }}) catch return error.QueryFailed;
+
+    return switch (stmt.step() catch return error.QueryFailed) {
+        .done => allocator.dupe(u8, ""),
+        .row => try stmt.columnTextAlloc(0, allocator),
+    };
 }
 
 fn fetchUpdatedAt(d: *db.sqlite.Db, allocator: std.mem.Allocator, kind: []const u8, id: i64) ![]const u8 {

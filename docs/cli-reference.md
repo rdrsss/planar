@@ -1961,22 +1961,40 @@ bidirectional contract between filesystem and database.
 
 ---
 
-### `planar workbench push <plan>`
+### `planar workbench push <plan> [--filter-mode {failures,all}] [--apply-cleanup]`
 
 **Synopsis:**
 ```
-planar workbench push <plan>
+planar workbench push <plan> [--filter-mode failures|all] [--apply-cleanup]
 ```
 
 **Description:** Apply DB→FS changes for the named anchor plan. Each entity linked to the
 plan is rendered as a Markdown file with YAML front matter. Files that match the last-synced
 hash are skipped (no-op). Files are written atomically.
 
+**Terminal-status filter (plan 439).** Entities whose status falls in the active filter set
+are excluded from the FS write set. The default mode is `failures` — cancelled tasks,
+abandoned plans, superseded/withdrawn decisions, wontfix questions, retired test_scenarios,
+and superseded/retired artifacts are filtered. Success terminals (`done` tasks, `answered`
+questions, `verified` test_scenarios) stay visible. Pass `--filter-mode all` to extend the
+filter to success terminals.
+
+**Surprise-free upgrade path.** If files for entities the filter would have dropped already
+exist on disk (typically because they were written before this feature shipped), push reports
+them as `pre-existing terminal file(s)` in its summary but does NOT remove them by default.
+Pass `--apply-cleanup` to remove them in the same pass — narrow-scope: only files this
+specific push enumerated, not every terminal-backed file in the workbench tree (use
+`planar workbench gc` for plan-wide cleanup). `--apply-cleanup` and `--filter-mode all` are
+mutually exclusive (the modes express opposite intents).
+
 **Arguments:**
 
 | Argument | Description |
 |----------|-------------|
 | `<plan>` | Anchor plan ID (numeric) or slug. |
+| `--filter-mode failures` | (default) Filter only failure-terminal statuses. |
+| `--filter-mode all` | Extend the filter to success-terminal statuses too. |
+| `--apply-cleanup` | Remove pre-existing FS files for entities this push would have filtered. |
 
 **Output (human):**
 ```
@@ -2166,16 +2184,21 @@ workbench sync: project_checkout-app/p1-checkout-revamp
 
 ---
 
-### `planar workbench archive <plan>`
+### `planar workbench archive <plan> [--filter-mode {failures,all}]`
 
 **Synopsis:**
 ```
-planar workbench archive <plan>
+planar workbench archive <plan> [--filter-mode failures|all]
 ```
 
 **Description:** Remove the FS tree for the named anchor plan's feature directory. The
 database is not touched — all entity rows and manifest rows are retained. If the parent
 association directory becomes empty after removal, it is also removed (best-effort).
+
+**`--filter-mode`** is accepted for API symmetry with push/restore. The current archive
+implementation deletes the on-disk tree without packaging it into a separate archive store,
+so the flag is currently a no-op. Reserved for a future archive store (tarball, git stash,
+etc.) that would honor the same filter semantics push uses.
 
 **Arguments:**
 
@@ -2200,17 +2223,22 @@ archived: project_checkout-app/p1-checkout-revamp  (directory removed)
 
 ---
 
-### `planar workbench restore <plan>`
+### `planar workbench restore <plan> [--filter-mode {failures,all}]`
 
 **Synopsis:**
 ```
-planar workbench restore <plan>
+planar workbench restore <plan> [--filter-mode failures|all]
 ```
 
 **Description:** Recreate the FS tree from the DB for the named anchor plan. Idempotent
 against existing trees — existing files are overwritten atomically if they differ from the
 DB render. After restore the manifest and `.sync` file are fully up to date; a subsequent
 `workbench status` reports all no-ops.
+
+**Terminal-status filter.** Restore honors the same `--filter-mode` flag as push. Default
+mode is `failures`: re-materialized FS files mirror what a fresh `workbench push` would write.
+Pass `--filter-mode all` to extend the filter to success terminals as well. The anchor plan
+itself is always written regardless of mode so feature-tree navigation remains intact.
 
 **Arguments:**
 
@@ -2232,6 +2260,50 @@ restored: project_checkout-app/p1-checkout-revamp  (7 files written)
 **Exit codes:**
 - `1` — plan not found.
 - `2` — I/O error.
+
+---
+
+### `planar workbench gc [<plan>] [--filter-mode {failures,all}] [--dry-run] [--yes] [--all-scopes] [--json]`
+
+**Synopsis:**
+```
+planar workbench gc <plan> [--filter-mode failures|all] [--dry-run] [--yes]
+planar workbench gc --all-scopes [--filter-mode failures|all] [--dry-run] [--yes]
+```
+
+**Description:** Walk the workbench tree for the named plan (or all plans with `--all-scopes`),
+classify each `.md` file by its backing entity's status, and remove files for entities that
+fall inside the active filter mode. FS-only — never mutates entity rows. The `workbench_sync_state`
+row for each removed file is also dropped so subsequent pushes do not see the missing file as
+drift.
+
+**Drift refusal.** If any to-be-removed file has FS-content drift from its DB-stored hash
+(i.e. the operator hand-edited the cancelled-task file and forgot to push), gc exits 1 with
+the drift list and a hint to either `workbench pull` first or re-run with `--yes` to discard.
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<plan>` | Anchor plan ID or slug. Required unless `--all-scopes` is set. |
+| `--filter-mode failures` | (default) Remove only files for failure-terminal entities. |
+| `--filter-mode all` | Also remove files for success-terminal entities (`done` tasks, etc.). |
+| `--dry-run` | Preview only; print which files would be removed without touching disk. |
+| `--yes` | Discard FS-content drift; remove drifted files anyway. |
+| `--all-scopes` | Walk every top-level plan's workbench tree. |
+| `--json` | Emit a machine-readable summary instead of human text. |
+
+**Output (human):**
+```
+workbench gc: removed 3, kept 7, drifted-skipped 0, errors 0 (mode=failures)
+```
+
+**Exit codes:**
+- `0` — success.
+- `1` — drift refusal (non-empty drifted set without `--yes`), or invalid arguments.
+- `2` — filesystem I/O error.
+
+**See also:** `planar workbench push --apply-cleanup` (in-the-moment narrow-scope cleanup); `docs/concepts.md § Terminal-status filter` for the model.
 
 ---
 

@@ -22,7 +22,10 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         exit.die(ctx, e, "resolving workbench root failed: {s}", .{@errorName(e)});
     defer ctx.allocator.free(root);
 
-    const feature_dir = engine.workbench.sync.restore(d, plan.id, root, ctx.allocator) catch |e|
+    const filter_mode = common.parseFilterMode(args.filter_mode) catch
+        exit.die(ctx, error.InvalidInput, "invalid --filter-mode '{s}' (expected 'failures' or 'all')", .{args.filter_mode orelse ""});
+
+    const feature_dir = engine.workbench.sync.restore(d, plan.id, root, ctx.allocator, filter_mode) catch |e|
         exit.die(ctx, e, "workbench restore failed: {s}", .{@errorName(e)});
     defer ctx.allocator.free(feature_dir);
 
