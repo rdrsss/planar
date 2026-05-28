@@ -6,6 +6,7 @@
 
 comptime {
     _ = @import("capability_boundary_test.zig");
+    _ = @import("workbench_terminal_filter_test.zig");
     _ = @import("config_test.zig");
     _ = @import("cwd_scope_test.zig");
     _ = @import("dashboard_agents_test.zig");

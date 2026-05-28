@@ -41,6 +41,9 @@ pub const Kind = enum {
         if (std.mem.eql(u8, s, "decision")) return .decision;
         if (std.mem.eql(u8, s, "question")) return .question;
         if (std.mem.eql(u8, s, "test_scenario")) return .test_scenario;
+        // The workbench sync layer aliases `test_scenario` as `scenario` in
+        // its entity stream; accept both forms.
+        if (std.mem.eql(u8, s, "scenario")) return .test_scenario;
         if (std.mem.eql(u8, s, "artifact")) return .artifact;
         return null;
     }

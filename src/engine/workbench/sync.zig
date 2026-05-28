@@ -19,6 +19,9 @@ pub const Summary = struct {
     applied: usize = 0,
     pending: usize = 0,
     conflicts: usize = 0,
+    /// Count of terminal-status entities excluded from the FS write set under
+    /// the active `filter_mode` (plan 439 M2). Always 0 on non-push runs.
+    filtered: usize = 0,
 };
 
 pub const Entry = struct {
@@ -34,6 +37,12 @@ pub const Result = struct {
     applied: usize = 0,
     pending: usize = 0,
     conflicts: usize = 0,
+    /// Count of terminal-status entities excluded from the FS write set.
+    filtered: usize = 0,
+    /// Active filter mode label (`"failures"` or `"all"`), so the CLI summary
+    /// can surface the operative policy. Always `"failures"` for non-push
+    /// runs (the field exists; the value is not consulted there).
+    filter_mode: []const u8 = "failures",
     entries: []const Entry,
 };
 
@@ -53,6 +62,9 @@ const Entity = struct {
     kind: []const u8,
     id: i64,
     updated_at: []const u8,
+    /// Current entity status. Empty when the status column is unreachable for
+    /// the kind (defensive — the filter step treats unknown as active).
+    status: []const u8,
 };
 
 const Anchor = struct {
@@ -73,27 +85,24 @@ pub fn deinitResult(allocator: std.mem.Allocator, result: Result) void {
 }
 
 pub fn status(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan_id: i64) !Result {
-    return run(d, allocator, anchor_plan_id, .status);
+    return run(d, allocator, anchor_plan_id, .status, .failures);
 }
 
 pub fn pull(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan_id: i64) !Result {
-    return run(d, allocator, anchor_plan_id, .pull);
+    return run(d, allocator, anchor_plan_id, .pull, .failures);
 }
 
 /// Push DB → FS for the given anchor plan's feature tree.
 ///
 /// `filter_mode` selects which terminal-status entities are excluded from the
-/// FS write set (plan 439). M1 threads the parameter through without changing
-/// behavior — the filter step itself lands in M2. Pull intentionally does not
-/// take this parameter (terminal-backed FS edits are always ingested; see
-/// `terminal.zig` module doc).
+/// FS write set (plan 439 M2). The filter only fires on push runs; non-push
+/// modes receive the parameter for API symmetry but do not act on it.
 pub fn push(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan_id: i64, filter_mode: terminal_mod.Mode) !Result {
-    _ = filter_mode; // M1 wires the parameter; M2 makes the filter fire.
-    return run(d, allocator, anchor_plan_id, .push);
+    return run(d, allocator, anchor_plan_id, .push, filter_mode);
 }
 
 pub fn sync(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan_id: i64) !Result {
-    return run(d, allocator, anchor_plan_id, .sync);
+    return run(d, allocator, anchor_plan_id, .sync, .failures);
 }
 
 pub fn resolve(d: *db.sqlite.Db, event_id: i64, prefer: ConflictResolution) !void {
@@ -297,7 +306,13 @@ pub fn freeActiveMany(allocator: std.mem.Allocator, values: []const ActiveFeatur
     allocator.free(values);
 }
 
-fn run(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan_id: i64, mode: Mode) !Result {
+fn run(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    anchor_plan_id: i64,
+    mode: Mode,
+    filter_mode: terminal_mod.Mode,
+) !Result {
     const a = try fetchAnchor(d, allocator, anchor_plan_id);
     defer freeAnchor(allocator, a);
     const root = try resolveWorkbenchRoot(allocator);
@@ -330,6 +345,20 @@ fn run(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan_id: i64, mode
         seen_files.deinit();
     }
     for (entities) |e| {
+        // Plan 439 M2 filter step. On push runs, drop entities whose status
+        // is in the active filter set. Other I/O modes (status/pull/sync)
+        // are untouched — pull explicitly bypasses the filter (Q336), and
+        // status/sync show the full set so the operator can reason about
+        // what would have been written. The anchor plan itself is exempt:
+        // dropping it would break feature-tree navigation.
+        if (mode == .push and e.id != anchor_plan_id) {
+            if (terminal_mod.isFilteredStr(e.kind, e.status, filter_mode)) |drop| {
+                if (drop) {
+                    summary.filtered += 1;
+                    continue;
+                }
+            }
+        }
         const rel_path, const db_content = try renderEntity(d, allocator, anchor_plan_id, e.kind, e.id);
         defer allocator.free(rel_path);
         defer allocator.free(db_content);
@@ -555,6 +584,8 @@ fn run(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan_id: i64, mode
         .applied = summary.applied,
         .pending = summary.pending,
         .conflicts = summary.conflicts,
+        .filtered = summary.filtered,
+        .filter_mode = terminal_mod.Mode.toString(filter_mode),
         .entries = try entries.toOwnedSlice(allocator),
     };
 }
@@ -1218,7 +1249,12 @@ fn enumerateEntities(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan
     var out: std.ArrayList(Entity) = .empty;
     errdefer freeEntities(allocator, out.items);
     const anchor_updated = try fetchUpdatedAt(d, allocator, "plan", anchor_plan_id);
-    try out.append(allocator, .{ .kind = try allocator.dupe(u8, "plan"), .id = anchor_plan_id, .updated_at = anchor_updated });
+    try out.append(allocator, .{
+        .kind = try allocator.dupe(u8, "plan"),
+        .id = anchor_plan_id,
+        .updated_at = anchor_updated,
+        .status = try fetchStatus(d, allocator, "plan", anchor_plan_id),
+    });
 
     try appendDerivedEntities(d, allocator, anchor_plan_id, &out);
 
@@ -1239,6 +1275,7 @@ fn enumerateEntities(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan
                         .kind = try allocator.dupe(u8, "plan"),
                         .id = child_id,
                         .updated_at = child_updated,
+                        .status = try fetchStatus(d, allocator, "plan", child_id),
                     });
                 } else allocator.free(child_updated);
             },
@@ -1270,6 +1307,7 @@ fn appendDerivedEntities(d: *db.sqlite.Db, allocator: std.mem.Allocator, plan_id
                         .kind = k,
                         .id = id,
                         .updated_at = try fetchUpdatedAt(d, allocator, k, id),
+                        .status = try fetchStatus(d, allocator, k, id),
                     });
                 } else allocator.free(k);
             },
@@ -1342,8 +1380,37 @@ fn freeEntities(allocator: std.mem.Allocator, entities: []const Entity) void {
     for (entities) |e| {
         allocator.free(e.kind);
         allocator.free(e.updated_at);
+        allocator.free(e.status);
     }
     allocator.free(entities);
+}
+
+/// Fetch the current `status` column for an entity. Returns an empty string
+/// when the kind has no status column or the row is missing.
+fn fetchStatus(d: *db.sqlite.Db, allocator: std.mem.Allocator, kind: []const u8, id: i64) ![]const u8 {
+    const sql = if (std.mem.eql(u8, kind, "plan"))
+        "select coalesce(status, '') from plans where id = ?"
+    else if (std.mem.eql(u8, kind, "task"))
+        "select coalesce(status, '') from tasks where id = ?"
+    else if (std.mem.eql(u8, kind, "decision"))
+        "select coalesce(status, '') from decisions where id = ?"
+    else if (std.mem.eql(u8, kind, "question"))
+        "select coalesce(status, '') from questions where id = ?"
+    else if (std.mem.eql(u8, kind, "scenario") or std.mem.eql(u8, kind, "test_scenario"))
+        "select coalesce(status, '') from test_scenarios where id = ?"
+    else if (std.mem.eql(u8, kind, "artifact"))
+        "select coalesce(status, '') from artifacts where id = ?"
+    else
+        return allocator.dupe(u8, "");
+
+    var stmt = d.prepare(sql) catch return error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .int = id }}) catch return error.QueryFailed;
+
+    return switch (stmt.step() catch return error.QueryFailed) {
+        .done => allocator.dupe(u8, ""),
+        .row => try stmt.columnTextAlloc(0, allocator),
+    };
 }
 
 fn fetchUpdatedAt(d: *db.sqlite.Db, allocator: std.mem.Allocator, kind: []const u8, id: i64) ![]const u8 {

@@ -199,10 +199,22 @@ pub fn printSyncResult(
         return;
     }
 
-    try stdout.print(
-        "workbench {s}: plan {d} ({s}) - {d} applied, {d} pending, {d} conflict(s)\n",
-        .{ verb, plan_id, plan_slug, result.applied, result.pending, result.conflicts },
-    );
+    if (mode == .push and result.filtered > 0) {
+        try stdout.print(
+            "workbench {s}: plan {d} ({s}) - {d} applied, {d} pending, {d} filtered (mode={s}), {d} conflict(s)\n",
+            .{ verb, plan_id, plan_slug, result.applied, result.pending, result.filtered, result.filter_mode, result.conflicts },
+        );
+    } else if (mode == .push) {
+        try stdout.print(
+            "workbench {s}: plan {d} ({s}) - {d} applied, {d} pending, 0 filtered (mode={s}), {d} conflict(s)\n",
+            .{ verb, plan_id, plan_slug, result.applied, result.pending, result.filter_mode, result.conflicts },
+        );
+    } else {
+        try stdout.print(
+            "workbench {s}: plan {d} ({s}) - {d} applied, {d} pending, {d} conflict(s)\n",
+            .{ verb, plan_id, plan_slug, result.applied, result.pending, result.conflicts },
+        );
+    }
     try printConflictDetails(stdout, result.entries);
     if (result.conflicts > 0) {
         try stdout.print("  {d} conflict(s) - run 'workbench resolve <event-id> --prefer fs|db'\n", .{result.conflicts});
