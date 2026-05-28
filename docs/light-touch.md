@@ -266,14 +266,14 @@ planar artifact list --plan <id>
 planar decision list --plan <id>
 planar question list --plan <id>
 planar task list --plan <id>
-planar plan show <id>     # everything on this plan at once
 planar tree               # hierarchical view of the cwd-derived scope
 ```
 
-`planar plan show <id>` gives a single view of one plan's children
-(child plans, tasks, artifacts, decisions, questions). `planar tree`
-walks the whole scope hierarchically (add `--scope <slug>` to target
-a different association, or `--all-scopes` for everything).
+`planar plan show <id>` returns just that plan's own row; use the
+per-kind list verbs above for its children. `planar tree` (invoked
+from inside the scope, or with `--scope <slug>` / `--all-scopes`)
+walks plans, tasks, artifacts, decisions, and questions hierarchically
+across the whole scope.
 
 ### Review what you've learned
 
@@ -357,7 +357,6 @@ planar question answer <id> "<resolution>"
 planar question wontfix <id>
 
 # Browse
-planar plan show <id>                            # everything on this plan
 planar tree                                      # hierarchical view of the cwd-derived scope
 planar question list --status open                      # what's unresolved
 planar decision list --plan <id>                 # all your choices
