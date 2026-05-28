@@ -32,7 +32,7 @@ pub const verb: cli.Cmd = .{
         .{ .long = "--vendor", .kind = .string, .default = .{ .string = "planar-agent" }, .desc = "Vendor tag (default: planar-agent)" },
         .{ .long = "--vendor-session", .kind = .string, .desc = "Vendor session id (e.g. claude:s1)" },
         .{ .long = "--role", .kind = .string, .desc = "Role name (planner|coder|reviewer|test_coder|...)" },
-        .{ .long = "--ttl", .kind = .int, .default = .{ .int = 600 }, .desc = "Lease TTL seconds (default 600)" },
+        .{ .long = "--ttl", .kind = .string, .default = .{ .string = "600" }, .desc = "Lease TTL (default 600s; accepts bare int seconds or suffixed duration: 10m, 1h, 500ms)" },
         .{ .long = "--purpose", .kind = .string, .desc = "Free-text purpose recorded on the claim" },
         .{ .long = "--worktree", .kind = .string, .desc = "Worktree id or path for isolation context" },
         .{ .long = "--repo-root", .kind = .string, .desc = "Absolute path of checkout to probe locality against" },
@@ -67,6 +67,9 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
     const session_id = session_mod.ensureActive(d, ctx.allocator, args.vendor, args.vendor_session) catch |e|
         exit.die(ctx, e, "ensureActive: {s}", .{@errorName(e)});
 
+    const ttl_secs = cli.duration.parseSeconds(args.ttl) catch |e|
+        exit.die(ctx, e, "invalid --ttl '{s}': expected bare seconds (e.g. 600) or suffixed duration (e.g. 10m, 1h, 500ms)", .{args.ttl});
+
     // acquireClaim requires BEGIN IMMEDIATE for the "check no active
     // claim then insert" pair to be safe under contention.
     d.exec("BEGIN IMMEDIATE") catch |e| exit.die(ctx, e, "BEGIN IMMEDIATE: {s}", .{@errorName(e)});
@@ -81,7 +84,7 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
         .worktree_id = worktree_id,
         .worktree_path = worktree_path,
         .purpose = args.purpose,
-        .ttl_secs = args.ttl,
+        .ttl_secs = ttl_secs,
         .locality = loc,
         .force = args.force,
     }) catch |e| {

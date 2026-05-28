@@ -17,6 +17,7 @@ const runtime = @import("runtime");
 const main = @import("../main.zig");
 const exit = @import("../exit.zig");
 const follow = @import("follow.zig");
+const planfilter = @import("planfilter.zig");
 const ps = @import("ps.zig");
 
 const agentactivity = engine.runtime.agentactivity;
@@ -27,7 +28,7 @@ pub const verb: cli.Cmd = .{
     .long_desc = "Returns agent_actions rows ordered by started_at descending.\n\n" ++
         "  --kind     : action_kind filter (coder, reviewer, tool_call, etc.).\n" ++
         "  --entity   : restrict to one entity, `kind:id` form (e.g. `task:42`).\n" ++
-        "  --plan     : restrict to actions whose entity is task within plan id.\n" ++
+        "  --plan     : restrict to actions on the plan, or on tasks/plan_steps belonging to it.\n" ++
         "  --task     : restrict to actions whose entity_kind=task, entity_id=N.\n" ++
         "  --vendor   : vendor filter.\n" ++
         "  --limit    : cap row count (default 100).",
@@ -95,7 +96,7 @@ fn emitOnce(
         try w.print(",\"actions\":[", .{});
         var first = true;
         for (rows) |a| {
-            if (!actionMatches(a, args, entity_kind_filter, entity_id_filter)) continue;
+            if (!actionMatches(d, a, args, entity_kind_filter, entity_id_filter)) continue;
             if (!first) try w.print(",", .{});
             first = false;
             try agentactivity.json.writeAction(w, a);
@@ -104,7 +105,7 @@ fn emitOnce(
     } else {
         try w.print("actions: {d}\n", .{rows.len});
         for (rows) |a| {
-            if (!actionMatches(a, args, entity_kind_filter, entity_id_filter)) continue;
+            if (!actionMatches(d, a, args, entity_kind_filter, entity_id_filter)) continue;
             const ent_kind: []const u8 = if (a.entity_kind) |k| k.toText() else "-";
             const ent_id: i64 = a.entity_id orelse 0;
             try w.print(
@@ -116,6 +117,7 @@ fn emitOnce(
 }
 
 fn actionMatches(
+    d: *db.sqlite.Db,
     a: agentactivity.types.Action,
     args: anytype,
     entity_kind_filter: ?[]const u8,
@@ -136,12 +138,10 @@ fn actionMatches(
         if (id != eid) return false;
     }
     if (args.plan) |pid| {
-        // --plan filter: keep actions whose entity is the plan itself.
-        // Same simplification as ps/claims --plan.
+        // Widened --plan: plan-direct + task-on-plan + plan_step-on-plan.
         const k = a.entity_kind orelse return false;
-        if (k != .plan) return false;
         const id = a.entity_id orelse return false;
-        if (id != pid) return false;
+        if (!planfilter.actionBelongsToPlan(d, k, id, pid)) return false;
     }
     return true;
 }

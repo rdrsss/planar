@@ -20,7 +20,7 @@ pub const verb: cli.Cmd = .{
     .desc = "Operator recovery: mark expired claims stale, close orphaned actions.",
     .flags = &.{
         .{ .long = "--dry-run", .kind = .bool, .default = .{ .bool = false }, .desc = "Report candidates without writing" },
-        .{ .long = "--stale-after", .kind = .int, .default = .{ .int = 0 }, .desc = "Additional grace beyond lease expiry (seconds, default 0)" },
+        .{ .long = "--stale-after", .kind = .string, .default = .{ .string = "0" }, .desc = "Additional grace beyond lease expiry (default 0s; accepts bare int seconds or suffixed duration: 10m, 1h, 500ms)" },
         .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
     },
     .run = cli.handler(handle),
@@ -31,6 +31,9 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
     const ctx = runtime.current();
     const d = runtime.ensureDbConsumer() catch |e| exit.die(ctx, e, "{s}", .{@errorName(e)});
 
+    const stale_after_secs = cli.duration.parseSeconds(args.stale_after) catch |e|
+        exit.die(ctx, e, "invalid --stale-after '{s}': expected bare seconds (e.g. 0) or suffixed duration (e.g. 10m, 1h, 500ms)", .{args.stale_after});
+
     // Wrap in BEGIN IMMEDIATE for non-dry-run so reconcile is atomic
     // (partial failure leaves no half-marked-stale claims).
     if (!args.dry_run) {
@@ -38,7 +41,7 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
     }
 
     const result = store.reconcileStale(d, ctx.allocator, .{
-        .stale_after_secs = args.stale_after,
+        .stale_after_secs = stale_after_secs,
         .dry_run = args.dry_run,
     }) catch |e| {
         if (!args.dry_run) d.exec("ROLLBACK") catch {};

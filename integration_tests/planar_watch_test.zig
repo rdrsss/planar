@@ -437,6 +437,67 @@ test "planar-watch feed --json (cross-vendor) emits events in occurrence order" 
 }
 
 // =========================================================================
+// --plan filter widening (plan 85 t#2622): --plan <id> matches plan-direct
+// AND task-on-plan AND plan_step-on-plan events. Pre-fix, only plan-direct
+// rows matched, silently dropping task claim events.
+// =========================================================================
+
+test "planar-watch feed --plan includes task-on-plan claim and action events" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    // Seed: plan with a single todo task.
+    const pid = seedPlanWithTask(&suite, "feed-plan-filter", "child-task");
+    defer gpa.free(pid);
+
+    // Drive: pull the task. The resulting claim has
+    // entity_kind=task / entity_id=<task-id>, NOT entity_kind=plan.
+    // Pre-fix, --plan <plan-id> would drop every event here.
+    const pull_out = mustRunAgent(&suite, &.{ "pull", pid, "--no-locality-probe", "--json" });
+    defer gpa.free(pull_out);
+    const token = extractStringField(gpa, pull_out, "\"claim_token\":\"") catch @panic("no token");
+    defer gpa.free(token);
+    gpa.free(mustRunAgent(&suite, &.{ "complete", "--claim", token, "--summary", "done", "--json" }));
+
+    // Filtered feed view, narrowed to this plan id.
+    const out = mustRunWatch(&suite, &.{ "feed", "--plan", pid, "--json" });
+    defer gpa.free(out);
+
+    // With the widened filter, task-on-plan events MUST be visible.
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"event\":\"claim_acquired\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"event\":\"action_started\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"event\":\"completed\"") != null);
+}
+
+test "planar-watch feed --plan excludes events on a DIFFERENT plan" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    // Two plans, each with one task. Pull from plan A only.
+    const pid_a = seedPlanWithTask(&suite, "feed-plan-a", "task-a");
+    defer gpa.free(pid_a);
+    // seedPlanWithTask runs `init --skip-project` so call a more focused
+    // path for the second plan: just plan create + task add.
+    const plan_b_json = suite.mustRun(&.{ "plan", "create", "--slug", "feed-plan-b", "--json", "feed-plan-b" });
+    defer gpa.free(plan_b_json);
+    const pid_b_int = extractIntField(plan_b_json, "\"id\"") orelse @panic("no plan-b id");
+    const pid_b = std.fmt.allocPrint(gpa, "{d}", .{pid_b_int}) catch @panic("OOM");
+    defer gpa.free(pid_b);
+    gpa.free(suite.mustRun(&.{ "task", "add", "--plan", pid_b, "task-b" }));
+
+    // Pull plan A.
+    gpa.free(mustRunAgent(&suite, &.{ "pull", pid_a, "--no-locality-probe", "--json" }));
+
+    // Filter by plan B — should produce a feed with no claim_acquired
+    // event (the only claim in the system targets a task on plan A).
+    const out = mustRunWatch(&suite, &.{ "feed", "--plan", pid_b, "--json" });
+    defer gpa.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"event\":\"claim_acquired\"") == null);
+}
+
+// =========================================================================
 // Default verb: bare planar-watch routes to feed.
 // =========================================================================
 

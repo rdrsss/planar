@@ -46,6 +46,11 @@ const parser = @import("parser.zig");
 const err_mod = @import("error.zig");
 const platform = @import("platform/root.zig");
 
+/// Duration-string parser shared across CLI flags that accept human
+/// durations (`--ttl`, `--stale-after`, `--interval`). See
+/// `src/cli/duration.zig` for accepted formats.
+pub const duration = @import("duration.zig");
+
 // Types.
 pub const Cmd = cmd.Cmd;
 pub const Flag = flag.Flag;
@@ -102,4 +107,5 @@ test {
     _ = completion_mod;
     _ = parser;
     _ = err_mod;
+    _ = duration;
 }

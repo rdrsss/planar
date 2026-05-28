@@ -27,6 +27,7 @@ const runtime = @import("runtime");
 const main = @import("../main.zig");
 const exit = @import("../exit.zig");
 const follow = @import("follow.zig");
+const planfilter = @import("planfilter.zig");
 
 const agentactivity = engine.runtime.agentactivity;
 
@@ -41,7 +42,7 @@ pub const verb: cli.Cmd = .{
         "  --interval defaults to 1s). Exits 0 on SIGINT.",
     .flags = &.{
         .{ .long = "--vendor", .kind = .string, .desc = "Filter by vendor (claude, codex, copilot, ...)" },
-        .{ .long = "--plan", .kind = .int, .desc = "Filter by plan id (matches the claim's task → plan link)" },
+        .{ .long = "--plan", .kind = .int, .desc = "Filter by plan id (matches plan-direct, task-on-plan, and plan_step-on-plan claims)" },
         .{ .long = "--stale", .kind = .bool, .default = .{ .bool = false }, .desc = "Include stale + lease-expired claims" },
         .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
         .{ .long = "--follow", .kind = .bool, .default = .{ .bool = false }, .desc = "Stream snapshots until SIGINT" },
@@ -89,7 +90,7 @@ fn emitOnce(
     }
 
     if (args.json) {
-        try emitJson(w, allocator, active, stale_rows, args);
+        try emitJson(w, d, allocator, active, stale_rows, args);
     } else {
         try emitText(w, active, stale_rows);
     }
@@ -97,6 +98,7 @@ fn emitOnce(
 
 fn emitJson(
     w: *std.Io.Writer,
+    d: *db.sqlite.Db,
     allocator: std.mem.Allocator,
     active: []const agentactivity.types.Claim,
     stale_rows: []const agentactivity.types.Claim,
@@ -108,7 +110,7 @@ fn emitJson(
     try w.print(",\"active\":[", .{});
     var first = true;
     for (active) |c| {
-        if (!claimMatches(c, args)) continue;
+        if (!claimMatches(d, c, args)) continue;
         if (!first) try w.print(",", .{});
         first = false;
         try agentactivity.json.writeClaim(w, c);
@@ -116,7 +118,7 @@ fn emitJson(
     try w.print("],\"stale\":[", .{});
     first = true;
     for (stale_rows) |c| {
-        if (!claimMatches(c, args)) continue;
+        if (!claimMatches(d, c, args)) continue;
         if (!first) try w.print(",", .{});
         first = false;
         try agentactivity.json.writeClaim(w, c);
@@ -147,21 +149,14 @@ fn renderClaimLine(w: *std.Io.Writer, c: agentactivity.types.Claim) !void {
     );
 }
 
-fn claimMatches(c: agentactivity.types.Claim, args: anytype) bool {
+fn claimMatches(d: *db.sqlite.Db, c: agentactivity.types.Claim, args: anytype) bool {
     if (args.vendor) |v| {
         if (!std.mem.eql(u8, c.vendor, v)) return false;
     }
     if (args.plan) |pid| {
-        // --plan filter on a claim row is best-effort: claims target
-        // entities (mostly tasks). We accept any claim whose entity_id
-        // matches OR (for task claims) whose task's plan_id matches
-        // pid. Cheap path: filter directly on entity_id when the
-        // claim's entity_kind is `plan`. Tasks-to-plans cross-join is
-        // overkill for M8 — the operator's typical narrow-by-plan use
-        // case is "claim on plan:N" not "claim on task whose plan is
-        // N." If demand emerges, the watch verb can do the join.
-        if (c.entity_kind != .plan) return false;
-        if (c.entity_id != pid) return false;
+        // Widened --plan: matches plan-direct claims AND task-on-plan
+        // claims AND plan_step-on-plan claims. See planfilter.zig.
+        if (!planfilter.claimBelongsToPlan(d, c.entity_kind, c.entity_id, pid)) return false;
     }
     return true;
 }

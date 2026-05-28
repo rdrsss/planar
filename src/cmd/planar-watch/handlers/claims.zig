@@ -17,6 +17,7 @@ const runtime = @import("runtime");
 const main = @import("../main.zig");
 const exit = @import("../exit.zig");
 const follow = @import("follow.zig");
+const planfilter = @import("planfilter.zig");
 const ps = @import("ps.zig");
 
 const agentactivity = engine.runtime.agentactivity;
@@ -34,7 +35,7 @@ pub const verb: cli.Cmd = .{
         "                    aborted, stale) — the full claim ledger.",
     .flags = &.{
         .{ .long = "--vendor", .kind = .string, .desc = "Filter by vendor" },
-        .{ .long = "--plan", .kind = .int, .desc = "Filter by plan id (claim's entity_kind=plan, entity_id=N)" },
+        .{ .long = "--plan", .kind = .int, .desc = "Filter by plan id (matches plan-direct, task-on-plan, and plan_step-on-plan claims)" },
         .{ .long = "--status", .kind = .string, .desc = "active (default) | stale | all" },
         .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
         .{ .long = "--follow", .kind = .bool, .default = .{ .bool = false }, .desc = "Stream snapshots until SIGINT" },
@@ -88,7 +89,7 @@ fn emitOnce(
         try w.print(",\"claims\":[", .{});
         var first = true;
         for (rows) |c| {
-            if (!claimMatches(c, args)) continue;
+            if (!claimMatches(d, c, args)) continue;
             if (!first) try w.print(",", .{});
             first = false;
             try agentactivity.json.writeClaim(w, c);
@@ -97,7 +98,7 @@ fn emitOnce(
     } else {
         try w.print("claims: {d}\n", .{rows.len});
         for (rows) |c| {
-            if (!claimMatches(c, args)) continue;
+            if (!claimMatches(d, c, args)) continue;
             try w.print(
                 "  {s}:{d}  status:{s}  vendor:{s}  token:{s}\n",
                 .{ c.entity_kind.toText(), c.entity_id, c.status.toText(), c.vendor, c.claim_token },
@@ -106,13 +107,13 @@ fn emitOnce(
     }
 }
 
-fn claimMatches(c: agentactivity.types.Claim, args: anytype) bool {
+fn claimMatches(d: *db.sqlite.Db, c: agentactivity.types.Claim, args: anytype) bool {
     if (args.vendor) |v| {
         if (!std.mem.eql(u8, c.vendor, v)) return false;
     }
     if (args.plan) |pid| {
-        if (c.entity_kind != .plan) return false;
-        if (c.entity_id != pid) return false;
+        // Widened --plan: plan-direct + task-on-plan + plan_step-on-plan.
+        if (!planfilter.claimBelongsToPlan(d, c.entity_kind, c.entity_id, pid)) return false;
     }
     return true;
 }

@@ -385,6 +385,76 @@ test "planar-agent heartbeat extends lease, returns ok+claim" {
     try std.testing.expect(std.mem.indexOf(u8, hb_out, "\"claim_token\":\"") != null);
 }
 
+// =========================================================================
+// Duration-string parsing (plan 85 t#2620): --ttl / --stale-after accept
+// both bare-int seconds (back-compat) and ISO-style suffixed durations
+// (10m, 1h, 500ms, ...).
+// =========================================================================
+
+test "planar-agent pull --ttl 10m accepts suffixed duration string" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const pid_arg = seedPlanWithTask(&suite, "ag-ttl-suffix", "ttl-task");
+    defer gpa.free(pid_arg);
+
+    // Pre-fix this exited InvalidValue. Should now succeed (600s lease).
+    const pull_out = mustRunAgent(&suite, &.{ "pull", pid_arg, "--no-locality-probe", "--ttl", "10m", "--json" });
+    defer gpa.free(pull_out);
+    try std.testing.expect(std.mem.indexOf(u8, pull_out, "\"ok\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, pull_out, "\"no_work\":false") != null);
+}
+
+test "planar-agent heartbeat --ttl 1h accepts suffixed duration string" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const pid_arg = seedPlanWithTask(&suite, "ag-hb-suffix", "hb-task");
+    defer gpa.free(pid_arg);
+    const pull_out = mustRunAgent(&suite, &.{ "pull", pid_arg, "--no-locality-probe", "--ttl", "60", "--json" });
+    defer gpa.free(pull_out);
+    const token = extractStringField(gpa, pull_out, "\"claim_token\":\"") catch @panic("no token");
+    defer gpa.free(token);
+
+    const hb_out = mustRunAgent(&suite, &.{ "heartbeat", "--claim", token, "--ttl", "1h", "--json" });
+    defer gpa.free(hb_out);
+    try std.testing.expect(std.mem.indexOf(u8, hb_out, "\"ok\":true") != null);
+}
+
+test "planar-agent reconcile --stale-after 5s accepts suffixed duration string" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const pid_arg = seedPlanWithTask(&suite, "ag-recon-suffix", "recon-task");
+    defer gpa.free(pid_arg);
+
+    // No active claim — exits 0 with empty result. The point of the
+    // test is that the flag parser doesn't choke on the "5s" syntax.
+    const out = mustRunAgent(&suite, &.{ "reconcile", "--dry-run", "--stale-after", "5s", "--json" });
+    defer gpa.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"ok\":true") != null);
+}
+
+test "planar-agent --ttl back-compat: bare-int seconds still parse" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const pid_arg = seedPlanWithTask(&suite, "ag-ttl-bareint", "bare-task");
+    defer gpa.free(pid_arg);
+
+    // The pre-existing contract: --ttl 60 (bare seconds) must continue
+    // to work. The change from .int to .string for the flag MUST NOT
+    // break this path.
+    const out = mustRunAgent(&suite, &.{ "pull", pid_arg, "--no-locality-probe", "--ttl", "60", "--json" });
+    defer gpa.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"ok\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"no_work\":false") != null);
+}
+
 test "planar-agent action start/end emits ok+action shape under a claim" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);

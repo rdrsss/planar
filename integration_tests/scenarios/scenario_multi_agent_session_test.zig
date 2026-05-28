@@ -350,16 +350,18 @@ test "three planar-agent workers drain a shared queue with exactly-once + a watc
     defer watcher_env.deinit();
     watcher_env.put("PLANAR_WATCH", resolveWatchBin()) catch @panic("OOM PLANAR_WATCH");
 
-    // We deliberately do NOT pass `--plan <id>` here. The feed
-    // verb's --plan filter matches the claim's `entity_kind = 'plan'`
-    // path, NOT task-on-plan claims (which are what the workers
-    // create). Filtering would drop every event we care about.
-    // The DB is freshly ephemeral, so an unfiltered feed contains
-    // only the activity this scenario generated.
+    // Pin the widened --plan filter end-to-end: as of plan-85 t#2622
+    // the feed verb's --plan id matches plan-direct events AND
+    // task-on-plan / plan_step-on-plan events. This scenario's
+    // workers create task-on-plan claims, so passing --plan <id> here
+    // both validates the contract and narrows the watcher view to
+    // this scenario's traffic (the DB is ephemeral but a parallel
+    // test could theoretically share a parent process — narrowing is
+    // strictly safer).
     const watch_cmd = std.fmt.allocPrint(
         gpa,
-        "exec \"$PLANAR_WATCH\" feed --follow --interval 200ms --json > \"{s}\"",
-        .{watch_log_path},
+        "exec \"$PLANAR_WATCH\" feed --follow --plan {d} --interval 200ms --json > \"{s}\"",
+        .{ plan_id, watch_log_path },
     ) catch @panic("OOM watch_cmd");
     defer gpa.free(watch_cmd);
 

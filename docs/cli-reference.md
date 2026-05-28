@@ -4854,7 +4854,7 @@ Schema-version handshake: `planar-agent` is a **consumer** of the schema, not it
 ```text
 # Atomic operations — each wraps (claim lifecycle + action lifecycle +
 # task status transition) in a single BEGIN IMMEDIATE transaction.
-planar-agent pull       <plan-id> [--vendor-session <vendor:id>] [--role coder] [--ttl <secs>] [--purpose <text>] [--base-ref <git-ref>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--json]
+planar-agent pull       <plan-id> [--vendor-session <vendor:id>] [--role coder] [--ttl <duration>] [--purpose <text>] [--base-ref <git-ref>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--json]
 planar-agent peek       <plan-id> [--json]
 planar-agent complete   --claim <token> [--summary <text>] [--json]
 planar-agent fail       --claim <token> --reason <text> [--json]
@@ -4863,8 +4863,8 @@ planar-agent block      --claim <token> --blocker <task-id> [--reason <text>] [-
 
 # Claim primitives — for orchestrator-dispatch (caller already knows the
 # target entity by id). claim does NOT auto-transition task status.
-planar-agent claim      --entity task:<id>|plan:<id>|plan_step:<id> [--vendor-session <vendor:id>] [--role <r>] [--ttl <secs>] [--purpose <text>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--force] [--json]
-planar-agent heartbeat  --claim <token> [--ttl <secs>] [--json]
+planar-agent claim      --entity task:<id>|plan:<id>|plan_step:<id> [--vendor-session <vendor:id>] [--role <r>] [--ttl <duration>] [--purpose <text>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--force] [--json]
+planar-agent heartbeat  --claim <token> [--ttl <duration>] [--json]
 
 # Nested action lifecycle — for sub-tool-calls or sub-phases inside a
 # claim. Optional; lightweight claims skip these.
@@ -4878,9 +4878,11 @@ planar-agent ingest     --vendor claude --event @<file|-> [--json]
 # Operator recovery — agent_* table writers, which is why they live on
 # planar-agent (not planar). The operator invokes them directly; vendor
 # hooks never do.
-planar-agent reconcile  [--dry-run] [--stale-after <secs>] [--json]
+planar-agent reconcile  [--dry-run] [--stale-after <duration>] [--json]
 planar-agent abort      --claim <token> [--reason <text>] [--vendor <s>] [--vendor-session <vendor:id>] [--json]
 ```
+
+**Duration grammar:** `--ttl`, `--stale-after`, and `--interval` accept either a bare integer (interpreted as seconds for the `--ttl` / `--stale-after` surface; `--interval` follows the same default for back-compat with the legacy parser) or a number with an ISO-style suffix: `ns`, `us`, `ms`, `s`, `m`, `h`. Examples: `--ttl 600` (10 minutes), `--ttl 10m` (same), `--ttl 1h`, `--interval 500ms`. The implementation is the shared `cli.duration` helper.
 
 ### Atomic operation transaction shapes
 
@@ -4987,6 +4989,8 @@ planar-watch completion <bash|zsh|fish>
 ```
 
 `--follow` (default off) turns each subcommand into a streaming view: the initial snapshot prints, then new events append as the underlying tables change. M8 ships **Tier 1** of the wake-tier ladder (poll every `--interval`, default `1s`; sub-second intervals available for tests). The watermark column set and the JSON event shape are part of the public contract — Tier 2 (kqueue / inotify on the SQLite `-wal` file) lands in a follow-up without changing either.
+
+`--plan <id>` widens past the literal `entity_kind='plan'` match: feed / ps / claims / actions all return events whose entity is the plan itself, OR a task on the plan, OR a plan_step on the plan. This is what the operator means by "show me plan N" — task-on-plan events are usually the only ones a session actually generates.
 
 ### JSON shapes
 

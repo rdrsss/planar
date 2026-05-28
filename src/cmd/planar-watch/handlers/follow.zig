@@ -30,6 +30,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const cli = @import("cli");
 const runtime = @import("runtime");
 const engine = @import("engine");
 
@@ -74,32 +75,19 @@ fn sigintHandler(_: std.posix.SIG) callconv(.c) void {
 
 /// Parse a duration spec into nanoseconds. Accepts bare integers
 /// (interpreted as seconds for human ergonomics) and units `ns`,
-/// `us`, `ms`, `s`. Returns `error.InvalidValue` on a malformed
-/// input.
+/// `us`, `ms`, `s`, `m`, `h`. Returns `error.InvalidValue` on a
+/// malformed input.
 ///
 /// Examples:
 ///   "1"     → 1_000_000_000  (1 second)
 ///   "100ms" → 100_000_000    (100 ms)
 ///   "500ns" → 500
+///   "10m"   → 600_000_000_000 (10 minutes)
+///
+/// Implementation delegates to `cli.duration.parseNanos` so every flag
+/// that accepts a human duration uses the same grammar.
 pub fn parseDurationNs(text: []const u8) !u64 {
-    if (text.len == 0) return error.InvalidValue;
-
-    // Find where the digits end.
-    var i: usize = 0;
-    while (i < text.len and (text[i] == '.' or (text[i] >= '0' and text[i] <= '9'))) i += 1;
-    if (i == 0) return error.InvalidValue;
-
-    const num_text = text[0..i];
-    const unit = std.mem.trim(u8, text[i..], " \t");
-
-    const num = std.fmt.parseInt(u64, num_text, 10) catch return error.InvalidValue;
-
-    if (unit.len == 0 or std.mem.eql(u8, unit, "s")) return num *| std.time.ns_per_s;
-    if (std.mem.eql(u8, unit, "ms")) return num *| std.time.ns_per_ms;
-    if (std.mem.eql(u8, unit, "us")) return num *| std.time.ns_per_us;
-    if (std.mem.eql(u8, unit, "ns")) return num;
-
-    return error.InvalidValue;
+    return cli.duration.parseNanos(text);
 }
 
 /// Module-local wake source, initialized lazily on first call to
@@ -193,11 +181,13 @@ pub fn closeWake() void {
     wake_init_failed = false;
 }
 
-test "parseDurationNs accepts bare seconds, ms, us, ns" {
+test "parseDurationNs accepts bare seconds, ms, us, ns, m, h" {
     try std.testing.expectEqual(@as(u64, std.time.ns_per_s), try parseDurationNs("1"));
     try std.testing.expectEqual(@as(u64, std.time.ns_per_s), try parseDurationNs("1s"));
     try std.testing.expectEqual(@as(u64, 100 * std.time.ns_per_ms), try parseDurationNs("100ms"));
     try std.testing.expectEqual(@as(u64, 500), try parseDurationNs("500ns"));
+    try std.testing.expectEqual(@as(u64, 10 * std.time.ns_per_min), try parseDurationNs("10m"));
+    try std.testing.expectEqual(@as(u64, std.time.ns_per_hour), try parseDurationNs("1h"));
 }
 
 test "parseDurationNs rejects malformed input" {

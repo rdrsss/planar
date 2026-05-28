@@ -30,6 +30,7 @@ const runtime = @import("runtime");
 const main = @import("../main.zig");
 const exit = @import("../exit.zig");
 const follow = @import("follow.zig");
+const planfilter = @import("planfilter.zig");
 const ps = @import("ps.zig");
 
 const agentactivity = engine.runtime.agentactivity;
@@ -51,7 +52,7 @@ pub const verb: cli.Cmd = .{
     .flags = &.{
         .{ .long = "--follow", .kind = .bool, .default = .{ .bool = false }, .desc = "Stream new events until SIGINT" },
         .{ .long = "--vendor", .kind = .string, .desc = "Vendor filter" },
-        .{ .long = "--plan", .kind = .int, .desc = "Plan id filter" },
+        .{ .long = "--plan", .kind = .int, .desc = "Plan id filter (matches plan-direct, task-on-plan, and plan_step-on-plan events)" },
         .{ .long = "--task", .kind = .int, .desc = "Task id filter" },
         .{ .long = "--since", .kind = .string, .desc = "Only events with at >= this ISO8601 timestamp" },
         .{ .long = "--limit", .kind = .int, .desc = "Snapshot row cap (default 100)" },
@@ -298,7 +299,7 @@ fn collectClaimEvents(
             .done => break,
             .row => {
                 const c = try readClaimRow(&stmt, allocator);
-                if (!claimMatches(c, args)) {
+                if (!claimMatches(d, c, args)) {
                     c.deinit(allocator);
                     continue;
                 }
@@ -339,7 +340,7 @@ fn collectClaimEvents(
     }
 }
 
-fn claimMatches(c: agentactivity.types.Claim, args: anytype) bool {
+fn claimMatches(d: *db.sqlite.Db, c: agentactivity.types.Claim, args: anytype) bool {
     if (args.vendor) |v| {
         if (!std.mem.eql(u8, c.vendor, v)) return false;
     }
@@ -347,12 +348,14 @@ fn claimMatches(c: agentactivity.types.Claim, args: anytype) bool {
         if (c.entity_kind != .task or c.entity_id != tid) return false;
     }
     if (args.plan) |pid| {
-        if (c.entity_kind != .plan or c.entity_id != pid) return false;
+        // Widened --plan matches plan-direct AND task-on-plan AND
+        // plan_step-on-plan rows.
+        if (!planfilter.claimBelongsToPlan(d, c.entity_kind, c.entity_id, pid)) return false;
     }
     return true;
 }
 
-fn actionMatches(a: agentactivity.types.Action, args: anytype) bool {
+fn actionMatches(d: *db.sqlite.Db, a: agentactivity.types.Action, args: anytype) bool {
     if (args.vendor) |v| {
         if (!std.mem.eql(u8, a.vendor, v)) return false;
     }
@@ -364,9 +367,8 @@ fn actionMatches(a: agentactivity.types.Action, args: anytype) bool {
     }
     if (args.plan) |pid| {
         const k = a.entity_kind orelse return false;
-        if (k != .plan) return false;
         const id = a.entity_id orelse return false;
-        if (id != pid) return false;
+        if (!planfilter.actionBelongsToPlan(d, k, id, pid)) return false;
     }
     return true;
 }
@@ -402,7 +404,7 @@ fn collectActionEvents(
             .done => break,
             .row => {
                 const a = try readActionRow(&stmt, allocator);
-                if (!actionMatches(a, args)) {
+                if (!actionMatches(d, a, args)) {
                     a.deinit(allocator);
                     continue;
                 }
