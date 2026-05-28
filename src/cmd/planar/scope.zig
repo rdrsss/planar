@@ -29,12 +29,27 @@ pub const Reason = engine.identity.scope.Reason;
 /// parsed `--scope` flag value (null if not set). Returns the engine
 /// resolution unchanged so callers can inspect the reason — handlers
 /// that only care about the slug just read `.scope`.
+///
+/// Note: even when `override` is set the wrapper still probes for
+/// worktree-cwd. The runtime worktree gate uses the resolution's
+/// `cwd_is_worktree` flag to refuse planning verbs from inside a
+/// worktree, and per the spec `--scope` does NOT override that rule.
 pub fn resolve(ctx: *const runtime.Ctx, override: ?[]const u8) !Resolution {
     if (override) |slug| {
+        // Probe for worktree-cwd so the runtime gate sees it. Failures
+        // degrade silently to "not a worktree" — same posture as the
+        // engine resolver.
+        const cwd = try operatorCwd(ctx.allocator, ctx.io);
+        defer ctx.allocator.free(cwd);
+        const det = engine.identity.scope.detectWorktree(ctx.io, ctx.allocator, cwd) catch
+            engine.identity.scope.WorktreeDetection{ .is_worktree = false };
         return .{
             .scope = slug,
             .reason = .project_single_association,
             .project_slug = null,
+            .cwd_is_worktree = det.is_worktree,
+            .worktree_root = det.worktree_root,
+            .parent_repo_root = det.parent_repo_root,
         };
     }
     // PWD-first cwd acquisition (task 2375): must use the same
@@ -46,7 +61,7 @@ pub fn resolve(ctx: *const runtime.Ctx, override: ?[]const u8) !Resolution {
     defer ctx.allocator.free(cwd);
 
     const d = try runtime.ensureDb();
-    return try engine.identity.scope.deriveFromCwd(d, ctx.allocator, cwd);
+    return try engine.identity.scope.deriveFromCwd(d, ctx.io, ctx.allocator, cwd);
 }
 
 /// PWD-first cwd resolution (matches Go's os.Getwd). Falls back to

@@ -38,6 +38,8 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     defer if (args.scope == null) {
         if (resolution.scope) |s| ctx.allocator.free(s);
         if (resolution.project_slug) |s| ctx.allocator.free(s);
+        if (resolution.worktree_root) |s| ctx.allocator.free(s);
+        if (resolution.parent_repo_root) |s| ctx.allocator.free(s);
     };
 
     if (args.json) {
