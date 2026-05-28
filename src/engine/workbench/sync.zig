@@ -4,6 +4,7 @@ const manifest = @import("manifest.zig");
 const feature = @import("feature.zig");
 const parse = @import("parse.zig");
 const render = @import("render.zig");
+const terminal_mod = @import("terminal.zig");
 const c = @cImport({
     @cInclude("fcntl.h");
     @cInclude("unistd.h");
@@ -79,7 +80,15 @@ pub fn pull(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan_id: i64)
     return run(d, allocator, anchor_plan_id, .pull);
 }
 
-pub fn push(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan_id: i64) !Result {
+/// Push DB → FS for the given anchor plan's feature tree.
+///
+/// `filter_mode` selects which terminal-status entities are excluded from the
+/// FS write set (plan 439). M1 threads the parameter through without changing
+/// behavior — the filter step itself lands in M2. Pull intentionally does not
+/// take this parameter (terminal-backed FS edits are always ingested; see
+/// `terminal.zig` module doc).
+pub fn push(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan_id: i64, filter_mode: terminal_mod.Mode) !Result {
+    _ = filter_mode; // M1 wires the parameter; M2 makes the filter fire.
     return run(d, allocator, anchor_plan_id, .push);
 }
 
@@ -163,7 +172,14 @@ pub fn resolve(d: *db.sqlite.Db, event_id: i64, prefer: ConflictResolution) !voi
     ) catch return error.QueryFailed;
 }
 
-pub fn archive(d: *db.sqlite.Db, anchor_plan_id: i64, root: []const u8, allocator: std.mem.Allocator) ![]const u8 {
+/// Archive the workbench tree for the given anchor plan.
+///
+/// `filter_mode` selects which terminal-status entries are packaged into the
+/// archive (plan 439 M5). M1 threads the parameter through without changing
+/// behavior — archive currently captures whatever is on disk; the filter step
+/// is applied at the archive's write-set construction in M5.
+pub fn archive(d: *db.sqlite.Db, anchor_plan_id: i64, root: []const u8, allocator: std.mem.Allocator, filter_mode: terminal_mod.Mode) ![]const u8 {
+    _ = filter_mode; // M1 wires the parameter; M5 makes it consequential.
     const a = try fetchAnchor(d, allocator, anchor_plan_id);
     defer freeAnchor(allocator, a);
     const feature_dir = try feature.featureDir(allocator, root, a.assoc_slug, a.plan_key, a.slug);
@@ -176,7 +192,13 @@ pub fn archive(d: *db.sqlite.Db, anchor_plan_id: i64, root: []const u8, allocato
     return feature_dir;
 }
 
-pub fn restore(d: *db.sqlite.Db, anchor_plan_id: i64, root: []const u8, allocator: std.mem.Allocator) ![]const u8 {
+/// Restore the workbench tree for the given anchor plan from DB state.
+///
+/// `filter_mode` selects which terminal-status entries are re-materialized
+/// (plan 439 M5). M1 threads the parameter through without changing behavior;
+/// the per-entity filter check lands in M5.
+pub fn restore(d: *db.sqlite.Db, anchor_plan_id: i64, root: []const u8, allocator: std.mem.Allocator, filter_mode: terminal_mod.Mode) ![]const u8 {
+    _ = filter_mode; // M1 wires the parameter; M5 makes it consequential.
     const a = try fetchAnchor(d, allocator, anchor_plan_id);
     defer freeAnchor(allocator, a);
     const feature_dir = try feature.featureDir(allocator, root, a.assoc_slug, a.plan_key, a.slug);

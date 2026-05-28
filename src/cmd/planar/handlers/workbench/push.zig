@@ -17,7 +17,10 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     };
     defer plan.deinit(ctx.allocator);
 
-    const summary = engine.workbench.sync.push(d, ctx.allocator, plan.id) catch |e|
+    const filter_mode = common.parseFilterMode(args.filter_mode) catch
+        exit.die(ctx, error.InvalidInput, "invalid --filter-mode '{s}' (expected 'failures' or 'all')", .{args.filter_mode orelse ""});
+
+    const summary = engine.workbench.sync.push(d, ctx.allocator, plan.id, filter_mode) catch |e|
         exit.die(ctx, e, "workbench push failed: {s}", .{@errorName(e)});
     defer engine.workbench.sync.deinitResult(ctx.allocator, summary);
     if (args.json) {

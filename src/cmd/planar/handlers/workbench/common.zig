@@ -67,6 +67,15 @@ pub fn resolveAndEnsureWorkbenchRoot(allocator: std.mem.Allocator, io: std.Io) !
     return root;
 }
 
+/// Parse the `--filter-mode {failures,all}` flag value, defaulting to
+/// `.failures` when the flag was omitted (null pointer). Returns
+/// `error.InvalidInput` for any other string.
+pub fn parseFilterMode(raw: ?[]const u8) !engine.workbench.terminal.Mode {
+    const s = raw orelse return .failures;
+    if (s.len == 0) return .failures;
+    return engine.workbench.terminal.Mode.fromString(s) orelse error.InvalidInput;
+}
+
 fn fetchPlanByID(d: *db.sqlite.Db, allocator: std.mem.Allocator, plan_id: i64) !ResolvedPlan {
     if (plan_id < 1) return error.InvalidInput;
 
