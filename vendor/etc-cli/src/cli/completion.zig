@@ -24,15 +24,23 @@ const cmd_mod = @import("cmd.zig");
 const flag_mod = @import("flag.zig");
 
 pub const Shell = enum { bash, zsh, fish };
+pub const Options = struct {
+    include_hidden: bool = false,
+    include_deprecated: bool = true,
+};
 
 /// Generate the completion script for `root` targeted at `shell`. The
 /// returned slice is comptime-allocated and lives in `.rodata`.
 pub fn script(comptime root: cmd_mod.Cmd, comptime shell: Shell) []const u8 {
+    return scriptWithOptions(root, shell, .{});
+}
+
+pub fn scriptWithOptions(comptime root: cmd_mod.Cmd, comptime shell: Shell, comptime options: Options) []const u8 {
     @setEvalBranchQuota(20_000_000);
     return comptime switch (shell) {
-        .bash => bashScript(root),
-        .zsh => zshScript(root),
-        .fish => fishScript(root),
+        .bash => bashScript(root, options),
+        .zsh => zshScript(root, options),
+        .fish => fishScript(root, options),
     };
 }
 
@@ -40,15 +48,21 @@ pub fn script(comptime root: cmd_mod.Cmd, comptime shell: Shell) []const u8 {
 // Bash
 // =========================================================================
 
-fn bashScript(comptime root: cmd_mod.Cmd) []const u8 {
+fn bashScript(comptime root: cmd_mod.Cmd, comptime options: Options) []const u8 {
     comptime {
         var out: []const u8 = "";
         out = out ++ "# " ++ root.name ++ " bash completion (auto-generated)\n";
         out = out ++ "# Source this file or place it in a directory loaded by bash-completion.\n\n";
         out = out ++ "_" ++ root.name ++ "() {\n";
         out = out ++
-            \\    local cur path cmds flags i
+            \\    local cur prev path cmds flags values i
             \\    cur="${COMP_WORDS[COMP_CWORD]}"
+            \\    prev="${COMP_WORDS[COMP_CWORD-1]}"
+            \\
+        ;
+        out = out ++ bashFlagValueCases(root, options);
+        out = out ++
+            \\
             \\    path=""
             \\    for (( i=1; i<COMP_CWORD; i++ )); do
             \\        case "${COMP_WORDS[i]}" in
@@ -69,17 +83,20 @@ fn bashScript(comptime root: cmd_mod.Cmd) []const u8 {
 
         // Root case: empty path → suggest root's subcommands + flags.
         out = out ++ "        \"\")\n";
-        out = out ++ "            cmds=\"" ++ joinCmdNames(root.cmds) ++ "\"\n";
-        out = out ++ "            flags=\"" ++ joinFlagNames(root.flags) ++ "\"\n";
+        out = out ++ "            cmds=\"" ++ joinCmdNames(root.cmds, options) ++ "\"\n";
+        out = out ++ "            flags=\"" ++ joinFlagNames(root.flags, options) ++ "\"\n";
+        out = out ++ "            values=\"" ++ joinPositionalValues(root.positionals) ++ "\"\n";
         out = out ++ "            ;;\n";
 
         // One case per non-root node.
         const nodes = cmd_mod.allNodes(root);
         for (nodes) |n| {
+            if (!visibleCmd(n.cmd, options)) continue;
             out = out ++ "        \"" ++ joinPath(n.path) ++ "\")\n";
-            out = out ++ "            cmds=\"" ++ joinCmdNames(n.cmd.cmds) ++ "\"\n";
+            out = out ++ "            cmds=\"" ++ joinCmdNames(n.cmd.cmds, options) ++ "\"\n";
             const inherited = cmd_mod.collectInheritedFlags(root, n.path);
-            out = out ++ "            flags=\"" ++ joinFlagPair(inherited, n.cmd.flags) ++ "\"\n";
+            out = out ++ "            flags=\"" ++ joinFlagPair(inherited, n.cmd.flags, options) ++ "\"\n";
+            out = out ++ "            values=\"" ++ joinPositionalValues(n.cmd.positionals) ++ "\"\n";
             out = out ++ "            ;;\n";
         }
 
@@ -93,7 +110,11 @@ fn bashScript(comptime root: cmd_mod.Cmd) []const u8 {
             \\    if [[ "$cur" == -* ]]; then
             \\        COMPREPLY=( $(compgen -W "$flags" -- "$cur") )
             \\    else
-            \\        COMPREPLY=( $(compgen -W "$cmds" -- "$cur") )
+            \\        if [[ -n "$cmds" ]]; then
+            \\            COMPREPLY=( $(compgen -W "$cmds" -- "$cur") )
+            \\        else
+            \\            COMPREPLY=( $(compgen -W "$values" -- "$cur") )
+            \\        fi
             \\    fi
             \\}
             \\
@@ -108,15 +129,21 @@ fn bashScript(comptime root: cmd_mod.Cmd) []const u8 {
 // Zsh
 // =========================================================================
 
-fn zshScript(comptime root: cmd_mod.Cmd) []const u8 {
+fn zshScript(comptime root: cmd_mod.Cmd, comptime options: Options) []const u8 {
     comptime {
         var out: []const u8 = "";
         out = out ++ "#compdef " ++ root.name ++ "\n";
         out = out ++ "# " ++ root.name ++ " zsh completion (auto-generated)\n\n";
         out = out ++ "_" ++ root.name ++ "() {\n";
         out = out ++
-            \\    local cur path i
+            \\    local cur prev path i
             \\    cur="${words[CURRENT]}"
+            \\    prev="${words[CURRENT-1]}"
+            \\
+        ;
+        out = out ++ zshFlagValueCases(root, options);
+        out = out ++
+            \\
             \\    path=""
             \\    for (( i=2; i<CURRENT; i++ )); do
             \\        case "${words[i]}" in
@@ -131,23 +158,26 @@ fn zshScript(comptime root: cmd_mod.Cmd) []const u8 {
             \\        esac
             \\    done
             \\
-            \\    local -a cmds flags
+            \\    local -a cmds flags values
             \\    case "$path" in
             \\
         ;
 
         // Root case.
         out = out ++ "        \"\")\n";
-        out = out ++ "            cmds=(" ++ zshCmdPairs(root.cmds) ++ ")\n";
-        out = out ++ "            flags=(" ++ zshFlagPairs(root.flags) ++ ")\n";
+        out = out ++ "            cmds=(" ++ zshCmdPairs(root.cmds, options) ++ ")\n";
+        out = out ++ "            flags=(" ++ zshFlagPairs(root.flags, options) ++ ")\n";
+        out = out ++ "            values=(" ++ zshWords(joinPositionalValues(root.positionals)) ++ ")\n";
         out = out ++ "            ;;\n";
 
         const nodes = cmd_mod.allNodes(root);
         for (nodes) |n| {
+            if (!visibleCmd(n.cmd, options)) continue;
             out = out ++ "        \"" ++ joinPath(n.path) ++ "\")\n";
-            out = out ++ "            cmds=(" ++ zshCmdPairs(n.cmd.cmds) ++ ")\n";
+            out = out ++ "            cmds=(" ++ zshCmdPairs(n.cmd.cmds, options) ++ ")\n";
             const inherited = cmd_mod.collectInheritedFlags(root, n.path);
-            out = out ++ "            flags=(" ++ zshFlagPairsPair(inherited, n.cmd.flags) ++ ")\n";
+            out = out ++ "            flags=(" ++ zshFlagPairsPair(inherited, n.cmd.flags, options) ++ ")\n";
+            out = out ++ "            values=(" ++ zshWords(joinPositionalValues(n.cmd.positionals)) ++ ")\n";
             out = out ++ "            ;;\n";
         }
 
@@ -157,7 +187,11 @@ fn zshScript(comptime root: cmd_mod.Cmd) []const u8 {
             \\    if [[ "$cur" == -* ]]; then
             \\        _describe -t flags 'flags' flags
             \\    else
-            \\        _describe -t commands 'commands' cmds
+            \\        if (( ${#cmds} )); then
+            \\            _describe -t commands 'commands' cmds
+            \\        else
+            \\            _describe -t values 'values' values
+            \\        fi
             \\    fi
             \\}
             \\
@@ -172,7 +206,7 @@ fn zshScript(comptime root: cmd_mod.Cmd) []const u8 {
 // Fish
 // =========================================================================
 
-fn fishScript(comptime root: cmd_mod.Cmd) []const u8 {
+fn fishScript(comptime root: cmd_mod.Cmd, comptime options: Options) []const u8 {
     comptime {
         var out: []const u8 = "";
         out = out ++ "# " ++ root.name ++ " fish completion (auto-generated)\n\n";
@@ -203,24 +237,31 @@ fn fishScript(comptime root: cmd_mod.Cmd) []const u8 {
 
         // Root commands and flags.
         for (root.cmds) |c| {
+            if (!visibleCmd(c, options)) continue;
             out = out ++ fishCmdLine(root.name, "", c);
         }
         for (root.flags) |f| {
+            if (!visibleFlag(f, options)) continue;
             out = out ++ fishFlagLine(root.name, "", f);
         }
+        out = out ++ fishPositionalLine(root.name, "", root.positionals);
 
         // Walk every other node.
         const nodes = cmd_mod.allNodes(root);
         for (nodes) |n| {
+            if (!visibleCmd(n.cmd, options)) continue;
             const path_str = joinPath(n.path);
             for (n.cmd.cmds) |c| {
+                if (!visibleCmd(c, options)) continue;
                 out = out ++ fishCmdLine(root.name, path_str, c);
             }
             // Owned flags only — fish lets the user repeat globals freely;
             // listing inherited flags at every depth would just duplicate.
             for (n.cmd.flags) |f| {
+                if (!visibleFlag(f, options)) continue;
                 out = out ++ fishFlagLine(root.name, path_str, f);
             }
+            out = out ++ fishPositionalLine(root.name, path_str, n.cmd.positionals);
         }
 
         return out;
@@ -240,22 +281,96 @@ fn joinPath(comptime path: []const []const u8) []const u8 {
     }
 }
 
-fn joinCmdNames(comptime cmds: []const cmd_mod.Cmd) []const u8 {
+fn bashFlagValueCases(comptime root: cmd_mod.Cmd, comptime options: Options) []const u8 {
+    comptime {
+        var out: []const u8 = "    case \"$prev\" in\n";
+        out = out ++ bashFlagValueCasesForFlags(root.flags, options);
+        for (cmd_mod.allNodes(root)) |n| {
+            if (!visibleCmd(n.cmd, options)) continue;
+            out = out ++ bashFlagValueCasesForFlags(n.cmd.flags, options);
+        }
+        out = out ++ "    esac\n";
+        return out;
+    }
+}
+
+fn bashFlagValueCasesForFlags(comptime flags: []const flag_mod.Flag, comptime options: Options) []const u8 {
     comptime {
         var out: []const u8 = "";
-        for (cmds, 0..) |c, i| {
-            if (i > 0) out = out ++ " ";
+        for (flags) |f| {
+            if (!visibleFlag(f, options)) continue;
+            if (f.completion.kind == .none) continue;
+            out = out ++ "        " ++ flagCaseNames(f) ++ ")\n";
+            out = out ++ switch (f.completion.kind) {
+                .values => "            COMPREPLY=( $(compgen -W \"" ++ joinWords(f.completion.values) ++ "\" -- \"$cur\") ); return ;;\n",
+                .files => "            COMPREPLY=( $(compgen -f -- \"$cur\") ); return ;;\n",
+                .directories => "            COMPREPLY=( $(compgen -d -- \"$cur\") ); return ;;\n",
+                .none => unreachable,
+            };
+        }
+        return out;
+    }
+}
+
+fn zshFlagValueCases(comptime root: cmd_mod.Cmd, comptime options: Options) []const u8 {
+    comptime {
+        var out: []const u8 = "    case \"$prev\" in\n";
+        out = out ++ zshFlagValueCasesForFlags(root.flags, options);
+        for (cmd_mod.allNodes(root)) |n| {
+            if (!visibleCmd(n.cmd, options)) continue;
+            out = out ++ zshFlagValueCasesForFlags(n.cmd.flags, options);
+        }
+        out = out ++ "    esac\n";
+        return out;
+    }
+}
+
+fn zshFlagValueCasesForFlags(comptime flags: []const flag_mod.Flag, comptime options: Options) []const u8 {
+    comptime {
+        var out: []const u8 = "";
+        for (flags) |f| {
+            if (!visibleFlag(f, options)) continue;
+            if (f.completion.kind == .none) continue;
+            out = out ++ "        " ++ flagCaseNames(f) ++ ")\n";
+            out = out ++ switch (f.completion.kind) {
+                .values => "            _values 'values' " ++ zshWords(joinWords(f.completion.values)) ++ "; return ;;\n",
+                .files => "            _files; return ;;\n",
+                .directories => "            _files -/; return ;;\n",
+                .none => unreachable,
+            };
+        }
+        return out;
+    }
+}
+
+fn flagCaseNames(comptime f: flag_mod.Flag) []const u8 {
+    comptime {
+        var out: []const u8 = f.long;
+        for (f.aliases) |alias| out = out ++ "|" ++ alias;
+        return out;
+    }
+}
+
+fn joinCmdNames(comptime cmds: []const cmd_mod.Cmd, comptime options: Options) []const u8 {
+    comptime {
+        var out: []const u8 = "";
+        var first = true;
+        for (cmds) |c| {
+            if (!visibleCmd(c, options)) continue;
+            if (!first) out = out ++ " ";
+            first = false;
             out = out ++ c.name;
         }
         return out;
     }
 }
 
-fn joinFlagNames(comptime flags: []const flag_mod.Flag) []const u8 {
+fn joinFlagNames(comptime flags: []const flag_mod.Flag, comptime options: Options) []const u8 {
     comptime {
         var out: []const u8 = "";
         var first = true;
         for (flags) |f| {
+            if (!visibleFlag(f, options)) continue;
             if (!first) out = out ++ " ";
             first = false;
             out = out ++ f.long;
@@ -270,40 +385,45 @@ fn joinFlagNames(comptime flags: []const flag_mod.Flag) []const u8 {
 fn joinFlagPair(
     comptime inherited: []const flag_mod.Flag,
     comptime owned: []const flag_mod.Flag,
+    comptime options: Options,
 ) []const u8 {
     comptime {
-        const out: []const u8 = joinFlagNames(inherited);
+        const out: []const u8 = joinFlagNames(inherited, options);
         if (owned.len > 0) {
             // joinFlagNames already appends --help -h; insert owned BEFORE that.
             // Simplest: rebuild from a merged slice.
             const merged = inherited ++ owned;
-            return joinFlagNames(merged);
+            return joinFlagNames(merged, options);
         }
         return out;
     }
 }
 
-fn zshCmdPairs(comptime cmds: []const cmd_mod.Cmd) []const u8 {
+fn zshCmdPairs(comptime cmds: []const cmd_mod.Cmd, comptime options: Options) []const u8 {
     comptime {
         var out: []const u8 = "";
-        for (cmds, 0..) |c, i| {
-            if (i > 0) out = out ++ " ";
-            out = out ++ "\"" ++ c.name ++ ":" ++ c.desc ++ "\"";
+        var first = true;
+        for (cmds) |c| {
+            if (!visibleCmd(c, options)) continue;
+            if (!first) out = out ++ " ";
+            first = false;
+            out = out ++ "\"" ++ zshEscape(c.name) ++ ":" ++ zshEscapeDesc(c.desc) ++ "\"";
         }
         return out;
     }
 }
 
-fn zshFlagPairs(comptime flags: []const flag_mod.Flag) []const u8 {
+fn zshFlagPairs(comptime flags: []const flag_mod.Flag, comptime options: Options) []const u8 {
     comptime {
         var out: []const u8 = "";
         var first = true;
         for (flags) |f| {
+            if (!visibleFlag(f, options)) continue;
             if (!first) out = out ++ " ";
             first = false;
-            out = out ++ "\"" ++ f.long ++ ":" ++ f.desc ++ "\"";
+            out = out ++ "\"" ++ zshEscape(f.long) ++ ":" ++ zshEscapeDesc(f.desc) ++ "\"";
             if (f.short) |s| {
-                out = out ++ " \"-" ++ &[_]u8{s} ++ ":" ++ f.desc ++ "\"";
+                out = out ++ " \"-" ++ &[_]u8{s} ++ ":" ++ zshEscapeDesc(f.desc) ++ "\"";
             }
         }
         if (!first) out = out ++ " ";
@@ -315,10 +435,11 @@ fn zshFlagPairs(comptime flags: []const flag_mod.Flag) []const u8 {
 fn zshFlagPairsPair(
     comptime inherited: []const flag_mod.Flag,
     comptime owned: []const flag_mod.Flag,
+    comptime options: Options,
 ) []const u8 {
     comptime {
         const merged = inherited ++ owned;
-        return zshFlagPairs(merged);
+        return zshFlagPairs(merged, options);
     }
 }
 
@@ -330,8 +451,8 @@ fn fishCmdLine(
     comptime {
         var out: []const u8 = "complete -c " ++ bin ++
             " -n '__fish_" ++ bin ++ "_path \"" ++ path ++ "\"'" ++
-            " -f -a '" ++ c.name ++ "'";
-        if (c.desc.len > 0) out = out ++ " -d '" ++ c.desc ++ "'";
+            " -f -a '" ++ fishSingleQuote(c.name) ++ "'";
+        if (c.desc.len > 0) out = out ++ " -d '" ++ fishSingleQuote(c.desc) ++ "'";
         out = out ++ "\n";
         return out;
     }
@@ -352,10 +473,150 @@ fn fishFlagLine(
             f.long;
         var out: []const u8 = "complete -c " ++ bin ++
             " -n '__fish_" ++ bin ++ "_path \"" ++ path ++ "\"'" ++
-            " -l '" ++ long_bare ++ "'";
+            fishFlagCompletionPrefix(f.completion) ++
+            " -l '" ++ fishSingleQuote(long_bare) ++ "'";
         if (f.short) |s| out = out ++ " -s " ++ &[_]u8{s};
-        if (f.desc.len > 0) out = out ++ " -d '" ++ f.desc ++ "'";
+        out = out ++ fishCompletionArgs(f.completion);
+        if (f.desc.len > 0) out = out ++ " -d '" ++ fishSingleQuote(f.desc) ++ "'";
         out = out ++ "\n";
+        return out;
+    }
+}
+
+fn fishPositionalLine(
+    comptime bin: []const u8,
+    comptime path: []const u8,
+    comptime positionals: []const flag_mod.Positional,
+) []const u8 {
+    comptime {
+        const values = joinPositionalValues(positionals);
+        if (values.len == 0) return "";
+        return "complete -c " ++ bin ++
+            " -n '__fish_" ++ bin ++ "_path \"" ++ path ++ "\"'" ++
+            " -f -a '" ++ fishSingleQuote(values) ++ "'\n";
+    }
+}
+
+fn joinWords(comptime values: []const []const u8) []const u8 {
+    comptime {
+        var out: []const u8 = "";
+        for (values, 0..) |value, idx| {
+            if (idx > 0) out = out ++ " ";
+            out = out ++ value;
+        }
+        return out;
+    }
+}
+
+fn joinPositionalValues(comptime positionals: []const flag_mod.Positional) []const u8 {
+    comptime {
+        var out: []const u8 = "";
+        var first = true;
+        for (positionals) |p| {
+            if (p.completion.kind != .values) continue;
+            for (p.completion.values) |value| {
+                if (!first) out = out ++ " ";
+                first = false;
+                out = out ++ value;
+            }
+        }
+        return out;
+    }
+}
+
+fn zshWords(comptime words: []const u8) []const u8 {
+    comptime {
+        if (words.len == 0) return "";
+        var out: []const u8 = "";
+        var current: []const u8 = "";
+        for (words) |c| {
+            if (c == ' ') {
+                if (current.len > 0) {
+                    if (out.len > 0) out = out ++ " ";
+                    out = out ++ "\"" ++ zshEscape(current) ++ "\"";
+                    current = "";
+                }
+            } else {
+                current = current ++ &[_]u8{c};
+            }
+        }
+        if (current.len > 0) {
+            if (out.len > 0) out = out ++ " ";
+            out = out ++ "\"" ++ zshEscape(current) ++ "\"";
+        }
+        return out;
+    }
+}
+
+fn fishFlagCompletionPrefix(comptime completion: anytype) []const u8 {
+    return switch (completion.kind) {
+        .files, .directories => "",
+        .none, .values => " -f",
+    };
+}
+
+fn fishCompletionArgs(comptime completion: anytype) []const u8 {
+    comptime {
+        return switch (completion.kind) {
+            .none => "",
+            .values => " -a '" ++ fishSingleQuote(joinWords(completion.values)) ++ "'",
+            .files => "",
+            .directories => " -a '(__fish_complete_directories)'",
+        };
+    }
+}
+
+fn visibleCmd(comptime c: cmd_mod.Cmd, comptime options: Options) bool {
+    if (c.hidden and !options.include_hidden) return false;
+    if (c.deprecated != null and !options.include_deprecated) return false;
+    return true;
+}
+
+fn visibleFlag(comptime f: flag_mod.Flag, comptime options: Options) bool {
+    if (f.hidden and !options.include_hidden) return false;
+    if (f.deprecated != null and !options.include_deprecated) return false;
+    return true;
+}
+
+fn zshEscape(comptime s: []const u8) []const u8 {
+    comptime {
+        var out: []const u8 = "";
+        for (s) |c| {
+            out = switch (c) {
+                '\\' => out ++ "\\\\",
+                '"' => out ++ "\\\"",
+                else => out ++ &[_]u8{c},
+            };
+        }
+        return out;
+    }
+}
+
+fn zshEscapeDesc(comptime s: []const u8) []const u8 {
+    comptime {
+        var out: []const u8 = "";
+        for (s) |c| {
+            out = switch (c) {
+                '\\' => out ++ "\\\\",
+                '"' => out ++ "\\\"",
+                ':' => out ++ "\\:",
+                else => out ++ &[_]u8{c},
+            };
+        }
+        return out;
+    }
+}
+
+fn fishSingleQuote(comptime s: []const u8) []const u8 {
+    comptime {
+        var out: []const u8 = "";
+        for (s) |c| {
+            out = switch (c) {
+                '\\' => out ++ "\\\\",
+                '\'' => out ++ "\\'",
+                else => out ++ &[_]u8{c},
+            };
+        }
         return out;
     }
 }

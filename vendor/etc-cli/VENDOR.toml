@@ -1,0 +1,12 @@
+# Hand-vendored from a private GitHub repo. Not managed by
+# tools/vendor_sync.zig (that tool only handles archive-URL deps
+# listed in vendor/manifest.zon). Re-vendor by:
+#
+#   gh repo clone rdrsss/etc-cli vendor/etc-cli && \
+#     rm -rf vendor/etc-cli/{.git,integration_tests,examples,docs,scripts,CHANGELOG.md}
+#
+# Then update the `commit` field below + commit the result.
+name = "etc-cli"
+source = "git@github.com:rdrsss/etc-cli.git"
+commit = "c91a1a4744ababea56bcb3860850ee615dd12876"
+fetched_at = "2026-05-28"

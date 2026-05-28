@@ -12,6 +12,8 @@
 
 const std = @import("std");
 const flag = @import("flag.zig");
+const doc_mod = @import("doc.zig");
+const meta_mod = @import("meta.zig");
 
 /// One node in the command tree.
 ///
@@ -21,6 +23,9 @@ const flag = @import("flag.zig");
 /// `run` is type-erased; use `handler()` below to wrap a typed function.
 pub const Cmd = struct {
     name: []const u8,
+    aliases: []const []const u8 = &.{},
+    hidden: bool = false,
+    deprecated: ?meta_mod.Deprecation = null,
     /// Short one-line description used in subcommand listings (the
     /// COMMANDS table on the parent's help page) AND as the fallback
     /// lead-in on the command's own help page when `long_desc` is
@@ -35,6 +40,9 @@ pub const Cmd = struct {
     long_desc: []const u8 = "",
     flags: []const flag.Flag = &.{},
     positionals: []const flag.Positional = &.{},
+    /// Manual-only metadata used by documentation generators. This does not
+    /// affect parser behavior or generated ArgsType fields.
+    doc: doc_mod.Doc = .{},
     /// When true, parseLeaf ignores unknown `-x` / `--long` tokens for this
     /// leaf command (and consumes one following value token when present).
     allow_unknown_flags: bool = false,

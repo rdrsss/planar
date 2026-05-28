@@ -168,7 +168,7 @@ flowchart LR
         PW["planar-watch/<br/>main + handlers/"]
     end
 
-    subgraph CLI["src/cli/ — hand-rolled parser"]
+    subgraph CLI["vendor/etc-cli/ — vendored CLI parser"]
         CLI1["cmd · parser · flag · help · completion · validate"]
     end
 
@@ -222,9 +222,9 @@ Subsystem modules live at the engine root:
 | `src/engine/workspace/` (+ `workspace.zig`) | Workspace state directory model: routing table, generated AGENTS.md, symlink lifecycle. |
 | `src/engine/llm/` (+ `llm.zig`), `entitylink.zig`, `health.zig`, `policy/`, `promotion.zig`, `local/`, `skillrender.zig`, `docs.zig`, `search.zig`, `init.zig` | Cross-cutting subsystem modules. |
 
-### CLI parser (`src/cli/`)
+### CLI parser ([`vendor/etc-cli/`](https://github.com/rdrsss/etc-cli))
 
-Hand-rolled argv parser — no third-party CLI library. Files: `cmd.zig`, `parser.zig`, `flag.zig`, `help.zig`, `completion.zig`, `validate.zig`, `error.zig`, `duration.zig`, `platform/`. Each binary's `main.zig` builds a `cli.Cmd` tree and dispatches to its handlers.
+Comptime-driven argv parser — no third-party CLI framework, just a small purpose-built library extracted from Planar's former in-tree `src/cli/` into [etc-cli](https://github.com/rdrsss/etc-cli). Vendored under `vendor/etc-cli/` and consumed via a path dependency in `build.zig.zon`; `build.zig` wires it into every binary as the `cli` module. Files in the upstream tree mirror Planar's prior layout: `cmd.zig`, `parser.zig`, `flag.zig`, `help.zig`, `completion.zig`, `validate.zig`, `error.zig`, `duration.zig`, `platform/`. Each binary's `main.zig` builds a `cli.Cmd` tree and dispatches to its handlers.
 
 ### Database layer (`src/db/`)
 
@@ -245,7 +245,7 @@ Hand-rolled argv parser — no third-party CLI library. Files: `cmd.zig`, `parse
 
 ## CLI Binary
 
-`planar` is a Zig executable with a thin `main` in `src/cmd/planar/main.zig` that builds a `cli.Cmd` tree against the hand-rolled parser under `src/cli/`. Each subcommand domain maps to one entity kind or system surface. Parsing, help rendering, shell completion, and validation are all in-tree — there is no third-party CLI library.
+`planar` is a Zig executable with a thin `main` in `src/cmd/planar/main.zig` that builds a `cli.Cmd` tree against the [etc-cli](https://github.com/rdrsss/etc-cli) parser (vendored under `vendor/etc-cli/`). Each subcommand domain maps to one entity kind or system surface. Parsing, help rendering, shell completion, and validation are all in the etc-cli library — Planar does not vendor a CLI framework like cobra or clap.
 
 ### Handler layout
 

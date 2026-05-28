@@ -3740,7 +3740,7 @@ link 7: sync_direction read-only → write-back
 
 ## Domain: `help`
 
-**Note:** `planar help` and `planar <command> --help` are rendered by the in-tree help layer (`src/cli/help.zig`); this section is preserved for discoverability.
+**Note:** `planar help` and `planar <command> --help` are rendered by the [etc-cli](https://github.com/rdrsss/etc-cli) help layer (vendored under `vendor/etc-cli/src/cli/help.zig`); this section is preserved for discoverability.
 
 ---
 

@@ -242,7 +242,7 @@ fn parseImpl(
             if (!passthrough) {
                 var matched = false;
                 for (current.cmds) |c| {
-                    if (std.mem.eql(u8, c.name, tok)) {
+                    if (commandMatches(c, tok)) {
                         path_buf[path_len] = c.name;
                         path_len += 1;
                         ancestors[path_len] = c;
@@ -329,10 +329,12 @@ fn parseImpl(
         return .{ .help = path_buf[0..path_len] };
     }
 
+    const unknown = if (tail_len > 0) tail_buf[0] else if (i < argv.len) argv[i] else null;
     err_out.* = .{
         .kind = err_mod.Parse.UnknownSubcommand,
-        .arg = if (i < argv.len) argv[i] else null,
+        .arg = unknown,
         .cmd_path = current.name,
+        .suggestion = if (unknown) |tok| suggestCommandForPath(root, path_buf[0..path_len], tok) else null,
     };
     return err_mod.Parse.UnknownSubcommand;
 }
@@ -346,7 +348,7 @@ fn flagWantsValue(scope: []const Cmd, tok: []const u8) bool {
     if (tok.len >= 2 and tok[0] == '-' and tok[1] == '-') {
         for (scope) |node| {
             for (node.flags) |f| {
-                if (std.mem.eql(u8, f.long, tok)) return f.kind != .bool;
+                if (flagLongMatches(f, tok)) return f.kind != .bool;
             }
         }
         return false;
@@ -431,12 +433,17 @@ fn parseLeaf(
         }
 
         if (!seen_double_dash and tok.len >= 2 and tok[0] == '-') {
+            if (tok.len > 2 and tok[0] == '-' and tok[1] != '-') {
+                if (try parseShortExpansion(Args, &args, all_flags, tok, &seen, err_out)) continue;
+            }
+
             // Flag.
             // Comptime guard: when a leaf has zero flag specs, the entire
             // matched-flag branch is dead — but Zig's sema still tries to
             // type-check `all_flags[idx]`, which fails on an empty slice.
             // Hoisting the check elides the branch at comptime.
-            const matched_idx = if (all_flags.len == 0) null else matchFlag(all_flags, tok);
+            const matched = if (all_flags.len == 0) null else matchFlag(all_flags, tok);
+            const matched_idx = if (matched) |m| m.idx else null;
             if (all_flags.len > 0 and matched_idx != null) {
                 const idx = matched_idx.?;
                 const f = all_flags[idx];
@@ -447,17 +454,31 @@ fn parseLeaf(
                 seen[idx] = true;
 
                 if (f.kind == .bool) {
-                    setFlagValue(Args, &args, all_flags, idx, .{ .bool = true });
+                    const value = if (matched.?.negated)
+                        false
+                    else if (matched.?.inline_value) |raw|
+                        parseBoolValue(raw) orelse {
+                            err_out.* = .{ .kind = err_mod.Parse.InvalidValue, .flag = f.long, .arg = raw };
+                            return err_mod.Parse.InvalidValue;
+                        }
+                    else
+                        true;
+                    setFlagValue(Args, &args, all_flags, idx, .{ .bool = value });
                     continue;
                 }
 
-                // Non-bool flag needs a value.
-                i += 1;
-                if (i >= tail.len) {
-                    err_out.* = .{ .kind = err_mod.Parse.MissingValue, .flag = f.long };
-                    return err_mod.Parse.MissingValue;
-                }
-                const raw = tail[i];
+                // Non-bool flags accept either `--flag value` or
+                // long-form `--flag=value`.
+                const raw = if (matched.?.inline_value) |value|
+                    value
+                else blk: {
+                    i += 1;
+                    if (i >= tail.len) {
+                        err_out.* = .{ .kind = err_mod.Parse.MissingValue, .flag = f.long };
+                        return err_mod.Parse.MissingValue;
+                    }
+                    break :blk tail[i];
+                };
                 switch (f.kind) {
                     .bool => unreachable,
                     .string => setFlagValue(Args, &args, all_flags, idx, .{ .string = raw }),
@@ -482,7 +503,7 @@ fn parseLeaf(
                     }
                     continue;
                 }
-                err_out.* = .{ .kind = err_mod.Parse.UnknownFlag, .arg = tok };
+                err_out.* = .{ .kind = err_mod.Parse.UnknownFlag, .arg = tok, .suggestion = suggestFlag(all_flags, tok) };
                 return err_mod.Parse.UnknownFlag;
             }
         } else {
@@ -550,11 +571,40 @@ fn parseLeaf(
     return args;
 }
 
-fn matchFlag(comptime all_flags: []const Flag, tok: []const u8) ?usize {
-    // Long form: exact match against f.long.
+const MatchedFlag = struct {
+    idx: usize,
+    inline_value: ?[]const u8 = null,
+    negated: bool = false,
+};
+
+fn matchFlag(comptime all_flags: []const Flag, tok: []const u8) ?MatchedFlag {
+    // Long form: exact match against f.long, or `--long=value` for non-bool
+    // flags. Bool equals syntax remains unsupported and falls through to
+    // UnknownFlag.
     if (tok.len >= 2 and tok[0] == '-' and tok[1] == '-') {
-        for (all_flags, 0..) |f, i| {
-            if (std.mem.eql(u8, f.long, tok)) return i;
+        inline for (all_flags, 0..) |f, i| {
+            if (flagLongMatches(f, tok)) return .{ .idx = i };
+            if (f.kind == .bool and flagNegationMatches(f, tok)) return .{ .idx = i, .negated = true };
+            if (f.kind != .bool) {
+                if (std.mem.startsWith(u8, tok, f.long) and tok.len > f.long.len and tok[f.long.len] == '=') {
+                    return .{ .idx = i, .inline_value = tok[f.long.len + 1 ..] };
+                }
+                inline for (f.aliases) |alias| {
+                    if (std.mem.startsWith(u8, tok, alias) and tok.len > alias.len and tok[alias.len] == '=') {
+                        return .{ .idx = i, .inline_value = tok[alias.len + 1 ..] };
+                    }
+                }
+            }
+            if (f.kind == .bool) {
+                if (std.mem.startsWith(u8, tok, f.long) and tok.len > f.long.len and tok[f.long.len] == '=') {
+                    return .{ .idx = i, .inline_value = tok[f.long.len + 1 ..] };
+                }
+                inline for (f.aliases) |alias| {
+                    if (std.mem.startsWith(u8, tok, alias) and tok.len > alias.len and tok[alias.len] == '=') {
+                        return .{ .idx = i, .inline_value = tok[alias.len + 1 ..] };
+                    }
+                }
+            }
         }
         return null;
     }
@@ -562,10 +612,179 @@ fn matchFlag(comptime all_flags: []const Flag, tok: []const u8) ?usize {
     if (tok.len == 2 and tok[0] == '-') {
         const c = tok[1];
         for (all_flags, 0..) |f, i| {
-            if (f.short) |s| if (s == c) return i;
+            if (f.short) |s| if (s == c) return .{ .idx = i };
         }
         return null;
     }
+    return null;
+}
+
+fn parseShortExpansion(
+    comptime Args: type,
+    args: *Args,
+    comptime all_flags: []const Flag,
+    tok: []const u8,
+    seen: *[all_flags.len]bool,
+    err_out: *err_mod.Detail,
+) err_mod.Parse!bool {
+    if (all_flags.len == 0) return false;
+
+    const first_idx = matchShortFlag(all_flags, tok[1]) orelse return false;
+    const first_flag = all_flags[first_idx];
+    if (first_flag.kind != .bool) {
+        const raw = tok[2..];
+        if (raw.len == 0) return false;
+        if (seen[first_idx]) {
+            err_out.* = .{ .kind = err_mod.Parse.DuplicateFlag, .flag = first_flag.long };
+            return err_mod.Parse.DuplicateFlag;
+        }
+        seen[first_idx] = true;
+        switch (first_flag.kind) {
+            .bool => unreachable,
+            .string => setFlagValue(Args, args, all_flags, first_idx, .{ .string = raw }),
+            .int => {
+                const v = std.fmt.parseInt(i64, raw, 10) catch {
+                    err_out.* = .{ .kind = err_mod.Parse.InvalidValue, .flag = first_flag.long, .arg = raw };
+                    return err_mod.Parse.InvalidValue;
+                };
+                setFlagValue(Args, args, all_flags, first_idx, .{ .int = v });
+            },
+        }
+        return true;
+    }
+
+    var pos: usize = 1;
+    while (pos < tok.len) : (pos += 1) {
+        const idx = matchShortFlag(all_flags, tok[pos]) orelse return false;
+        if (all_flags[idx].kind != .bool) return false;
+    }
+
+    pos = 1;
+    while (pos < tok.len) : (pos += 1) {
+        const idx = matchShortFlag(all_flags, tok[pos]).?;
+        const f = all_flags[idx];
+        if (f.kind != .bool) return false;
+        if (seen[idx]) {
+            err_out.* = .{ .kind = err_mod.Parse.DuplicateFlag, .flag = f.long };
+            return err_mod.Parse.DuplicateFlag;
+        }
+        seen[idx] = true;
+        setFlagValue(Args, args, all_flags, idx, .{ .bool = true });
+    }
+    return true;
+}
+
+fn matchShortFlag(comptime all_flags: []const Flag, short: u8) ?usize {
+    inline for (all_flags, 0..) |f, i| {
+        if (f.short) |s| if (s == short) return i;
+    }
+    return null;
+}
+
+fn commandMatches(command: Cmd, tok: []const u8) bool {
+    if (std.mem.eql(u8, command.name, tok)) return true;
+    for (command.aliases) |alias| {
+        if (std.mem.eql(u8, alias, tok)) return true;
+    }
+    return false;
+}
+
+fn flagLongMatches(f: Flag, tok: []const u8) bool {
+    if (std.mem.eql(u8, f.long, tok)) return true;
+    for (f.aliases) |alias| {
+        if (std.mem.eql(u8, alias, tok)) return true;
+    }
+    return false;
+}
+
+fn flagNegationMatches(comptime f: Flag, tok: []const u8) bool {
+    if (std.mem.startsWith(u8, f.long, "--")) {
+        const negated = "--no-" ++ f.long[2..];
+        if (std.mem.eql(u8, negated, tok)) return true;
+    }
+    inline for (f.aliases) |alias| {
+        if (std.mem.startsWith(u8, alias, "--")) {
+            const negated = "--no-" ++ alias[2..];
+            if (std.mem.eql(u8, negated, tok)) return true;
+        }
+    }
+    return false;
+}
+
+fn suggestCommandForPath(comptime root: Cmd, path: []const []const u8, tok: []const u8) ?[]const u8 {
+    if (path.len == 0) return suggestCommand(root.cmds, tok);
+    const nodes = comptime cmd_mod.allNodes(root);
+    inline for (nodes) |node| {
+        if (pathsEqual(node.path, path)) return suggestCommand(node.cmd.cmds, tok);
+    }
+    return null;
+}
+
+fn suggestCommand(comptime cmds: []const Cmd, tok: []const u8) ?[]const u8 {
+    var best: ?[]const u8 = null;
+    var best_score: usize = std.math.maxInt(usize);
+    inline for (cmds) |c| {
+        bestCandidate(tok, c.name, &best, &best_score);
+        inline for (c.aliases) |alias| bestCandidate(tok, alias, &best, &best_score);
+    }
+    return if (best_score <= 2) best else null;
+}
+
+fn suggestFlag(comptime flags: []const Flag, tok: []const u8) ?[]const u8 {
+    const name = flagSuggestionToken(tok);
+    var best: ?[]const u8 = null;
+    var best_score: usize = std.math.maxInt(usize);
+    inline for (flags) |f| {
+        bestCandidate(name, f.long, &best, &best_score);
+        inline for (f.aliases) |alias| bestCandidate(name, alias, &best, &best_score);
+        if (f.short) |s| {
+            const short = "-" ++ &[_]u8{s};
+            bestCandidate(name, short, &best, &best_score);
+        }
+    }
+    return if (best_score <= 2) best else null;
+}
+
+fn flagSuggestionToken(tok: []const u8) []const u8 {
+    if (std.mem.indexOfScalar(u8, tok, '=')) |idx| return tok[0..idx];
+    return tok;
+}
+
+fn bestCandidate(tok: []const u8, candidate: []const u8, best: *?[]const u8, best_score: *usize) void {
+    const score = editDistanceAtMost(tok, candidate, 3) orelse return;
+    if (score < best_score.*) {
+        best.* = candidate;
+        best_score.* = score;
+    }
+}
+
+fn editDistanceAtMost(a: []const u8, b: []const u8, max: usize) ?usize {
+    if (a.len > b.len + max or b.len > a.len + max) return null;
+    var previous: [128]usize = undefined;
+    var current: [128]usize = undefined;
+    if (b.len + 1 > previous.len) return null;
+
+    for (0..b.len + 1) |j| previous[j] = j;
+    for (a, 0..) |ac, i| {
+        current[0] = i + 1;
+        var row_min = current[0];
+        for (b, 0..) |bc, j| {
+            const cost: usize = if (ac == bc) 0 else 1;
+            const deletion = previous[j + 1] + 1;
+            const insertion = current[j] + 1;
+            const substitution = previous[j] + cost;
+            current[j + 1] = @min(@min(deletion, insertion), substitution);
+            row_min = @min(row_min, current[j + 1]);
+        }
+        if (row_min > max) return null;
+        for (0..b.len + 1) |j| previous[j] = current[j];
+    }
+    return if (previous[b.len] <= max) previous[b.len] else null;
+}
+
+fn parseBoolValue(raw: []const u8) ?bool {
+    if (std.mem.eql(u8, raw, "true")) return true;
+    if (std.mem.eql(u8, raw, "false")) return false;
     return null;
 }
 

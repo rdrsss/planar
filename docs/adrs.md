@@ -152,13 +152,16 @@ applies them on startup. Propagation templates under
 `tools/gen_templates.zig`. There is no `embed.FS`, no goose library,
 no on-disk migration discovery at runtime.
 
-**Hand-rolled CLI parser.** Argv parsing, help rendering, shell
-completion, and validation are all in-tree under `src/cli/` (~1500 LOC,
-no third-party dependency). This is a deliberate choice over both
-cobra (Go) and clap (Rust) because the parser surface is small,
-stable, and integrates with the three-binary capability boundary
-(each binary's verb set is its capability surface, enforced at
-compile time).
+**Purpose-built CLI parser, extracted upstream.** Argv parsing, help
+rendering, shell completion, and validation live in
+[etc-cli](https://github.com/rdrsss/etc-cli) (~1500 LOC, no
+third-party dependency beyond Zig stdlib). Originally hand-rolled
+in-tree under `src/cli/`; extracted into a standalone repo and
+vendored back under `vendor/etc-cli/` so other Zig CLI projects can
+reuse it. The deliberate choice over cobra (Go) or clap (Rust)
+stands: the parser surface is small, stable, and integrates with
+the three-binary capability boundary (each binary's verb set is
+its capability surface, enforced at compile time).
 
 **Bucket layouts carry forward.** ADR-0007 (engine bucket grouping)
 and ADR-0008 (`cmd/planar` subpackage buckets) survive the runtime

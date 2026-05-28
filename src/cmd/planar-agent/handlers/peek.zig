@@ -23,7 +23,7 @@ pub const verb: cli.Cmd = .{
         .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
     },
     .positionals = &.{
-        .{ .name = "plan_id", .kind = .int, .required = true, .desc = "Plan id to peek into" },
+        .{ .name = "plan-id", .kind = .int, .required = true, .desc = "Plan id to peek into" },
     },
     .run = cli.handler(handle),
 };

@@ -134,13 +134,16 @@ pub fn build(b: *std.Build) void {
 
     // -----------------------------------------------------------------
     // `cli` module: comptime-driven command-tree argument parser.
-    // Self-contained, no deps beyond std.
+    // Sourced from the etc-cli package (vendored under vendor/etc-cli;
+    // declared in build.zig.zon as a path dependency). Previously
+    // lived in-tree under src/cli/; extracted upstream so it can be
+    // shared across Planar and other CLI projects.
     // -----------------------------------------------------------------
-    const cli_mod = b.addModule("cli", .{
-        .root_source_file = b.path("src/cli/root.zig"),
+    const etc_cli_dep = b.dependency("etc_cli", .{
         .target = target,
         .optimize = optimize,
     });
+    const cli_mod = etc_cli_dep.module("cli");
 
     // -----------------------------------------------------------------
     // `runtime` module: shared process-context bootstrap. Linked into

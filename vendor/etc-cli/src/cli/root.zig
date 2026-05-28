@@ -18,7 +18,7 @@
 //!
 //!   pub fn main(init: std.process.Init) !void {
 //!       const allocator = init.arena.allocator();
-//!       const argv = try cli.argv(allocator);
+//!       const argv = try cli.argv(allocator, init.minimal.args);
 //!       defer cli.freeArgv(allocator, argv);
 //!
 //!       // Callback mode: dispatch invokes the matched leaf's handler.
@@ -39,9 +39,15 @@
 
 const flag = @import("flag.zig");
 const cmd = @import("cmd.zig");
+const meta_mod = @import("meta.zig");
 const validate_mod = @import("validate.zig");
 const help_mod = @import("help.zig");
 const completion_mod = @import("completion.zig");
+const man_mod = @import("man.zig");
+const doc_mod = @import("doc.zig");
+const schema_mod = @import("schema.zig");
+const artifacts_mod = @import("artifacts.zig");
+const app_mod = @import("app.zig");
 const parser = @import("parser.zig");
 const err_mod = @import("error.zig");
 const platform = @import("platform/root.zig");
@@ -57,7 +63,14 @@ pub const Flag = flag.Flag;
 pub const Positional = flag.Positional;
 pub const Kind = flag.Kind;
 pub const Default = flag.Default;
+pub const Deprecation = meta_mod.Deprecation;
+pub const Completion = meta_mod.Completion;
+pub const CompletionKind = meta_mod.CompletionKind;
+pub const Doc = doc_mod.Doc;
+pub const Example = doc_mod.Example;
+pub const ExitCode = doc_mod.ExitCode;
 pub const Detail = err_mod.Detail;
+pub const StructuredError = err_mod.Structured;
 pub const Parse = err_mod.Parse;
 
 // Comptime helpers (tree introspection + typed args).
@@ -77,16 +90,32 @@ pub const castArgs = cmd.castArgs;
 pub const validate = validate_mod.validate;
 
 // Comptime help-text generation.
+pub const help = help_mod;
 pub const helpText = help_mod.helpText;
+pub const helpTextWithOptions = help_mod.helpTextWithOptions;
 
 // Comptime shell-completion script generation.
 pub const completion = completion_mod;
 pub const Shell = completion_mod.Shell;
 
+// Comptime man-page generation.
+pub const man = man_mod;
+
+// Comptime machine-readable command schema generation.
+pub const schema = schema_mod;
+
+// Pure packaging/install artifact helpers.
+pub const artifacts = artifacts_mod;
+
 // Runtime entry points.
+pub const run = app_mod.run;
+pub const RunOptions = app_mod.Options;
+pub const ExitCodes = app_mod.ExitCodes;
 pub const parse = parser.parse;
 pub const dispatch = parser.dispatch;
 pub const formatError = err_mod.format;
+pub const structuredError = err_mod.structured;
+pub const errorKindName = err_mod.kindName;
 
 // Platform (OS-isolated argv acquisition).
 pub const argv = platform.argv;
@@ -102,9 +131,15 @@ pub const Platform = platform;
 test {
     _ = flag;
     _ = cmd;
+    _ = meta_mod;
     _ = validate_mod;
     _ = help_mod;
     _ = completion_mod;
+    _ = man_mod;
+    _ = doc_mod;
+    _ = schema_mod;
+    _ = artifacts_mod;
+    _ = app_mod;
     _ = parser;
     _ = err_mod;
     _ = duration;

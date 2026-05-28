@@ -15,15 +15,40 @@ const std = @import("std");
 const cmd_mod = @import("cmd.zig");
 const flag_mod = @import("flag.zig");
 
+pub const Options = struct {
+    include_hidden: bool = false,
+    include_deprecated: bool = true,
+    /// Optional target width. Widths <= 48 switch tables to a compact
+    /// two-line form that keeps descriptions out of narrow columns.
+    width: ?usize = null,
+};
+
 pub fn helpText(comptime root: cmd_mod.Cmd, comptime path: []const []const u8) []const u8 {
+    return helpTextWithOptions(root, path, .{});
+}
+
+pub fn helpTextWithOptions(
+    comptime root: cmd_mod.Cmd,
+    comptime path: []const []const u8,
+    comptime options: Options,
+) []const u8 {
     @setEvalBranchQuota(2_000_000);
     const target = comptime cmd_mod.findCmd(root, path) orelse @compileError(
         "helpText: no command at path",
     );
-    return comptime renderCmd(target, path);
+    return comptime renderCmd(target, path, options);
 }
 
-fn renderCmd(comptime node: cmd_mod.Cmd, comptime path: []const []const u8) []const u8 {
+pub fn writeText(
+    comptime root: cmd_mod.Cmd,
+    comptime path: []const []const u8,
+    comptime options: Options,
+    writer: *std.Io.Writer,
+) std.Io.Writer.Error!void {
+    try writer.writeAll(comptime helpTextWithOptions(root, path, options));
+}
+
+fn renderCmd(comptime node: cmd_mod.Cmd, comptime path: []const []const u8, comptime options: Options) []const u8 {
     comptime {
         var out: []const u8 = "";
 
@@ -43,8 +68,8 @@ fn renderCmd(comptime node: cmd_mod.Cmd, comptime path: []const []const u8) []co
 
         // Usage line synthesis.
         var usage: []const u8 = "\nUSAGE:\n  " ++ full_path;
-        if (node.flags.len > 0) usage = usage ++ " [flags]";
-        if (node.cmds.len > 0) usage = usage ++ " <command>";
+        if (hasVisibleFlags(node.flags, options)) usage = usage ++ " [flags]";
+        if (hasVisibleCommands(node.cmds, options)) usage = usage ++ " <command>";
         for (node.positionals) |p| {
             if (p.required) {
                 usage = usage ++ " <" ++ p.name ++ ">";
@@ -55,20 +80,30 @@ fn renderCmd(comptime node: cmd_mod.Cmd, comptime path: []const []const u8) []co
         out = out ++ usage ++ "\n";
 
         // Sub-commands.
-        if (node.cmds.len > 0) {
+        if (hasVisibleCommands(node.cmds, options)) {
             out = out ++ "\nCOMMANDS:\n";
             for (node.cmds) |c| {
+                if (!visibleCmd(c, options)) continue;
+                if (compact(options)) {
+                    out = out ++ "  " ++ c.name;
+                    if (c.deprecated) |d| out = out ++ deprecationSuffix(d);
+                    out = out ++ "\n";
+                    if (c.desc.len > 0) out = out ++ "      " ++ c.desc ++ "\n";
+                    continue;
+                }
                 out = out ++ "  " ++ c.name ++ padTo(c.name, 16);
                 if (c.desc.len > 0) out = out ++ c.desc;
+                if (c.deprecated) |d| out = out ++ deprecationSuffix(d);
                 out = out ++ "\n";
             }
         }
 
         // Flags.
-        if (node.flags.len > 0) {
+        if (hasVisibleFlags(node.flags, options)) {
             out = out ++ "\nFLAGS:\n";
             for (node.flags) |f| {
-                out = out ++ "  " ++ renderFlagLine(f) ++ "\n";
+                if (!visibleFlag(f, options)) continue;
+                out = out ++ "  " ++ renderFlagLine(f, options) ++ "\n";
             }
         }
 
@@ -76,7 +111,7 @@ fn renderCmd(comptime node: cmd_mod.Cmd, comptime path: []const []const u8) []co
         if (node.positionals.len > 0) {
             out = out ++ "\nPOSITIONAL ARGUMENTS:\n";
             for (node.positionals) |p| {
-                out = out ++ "  <" ++ p.name ++ ">" ++ padTo(p.name, 14) ++ "(" ++ @tagName(p.kind) ++ ")";
+                out = out ++ "  <" ++ p.name ++ ">" ++ padTo(p.name, if (compact(options)) 8 else 14) ++ "(" ++ @tagName(p.kind) ++ ")";
                 if (!p.required) out = out ++ " optional";
                 if (p.desc.len > 0) out = out ++ " — " ++ p.desc;
                 out = out ++ "\n";
@@ -96,15 +131,57 @@ fn renderPath(comptime path: []const []const u8, comptime leaf_name: []const u8)
     }
 }
 
-fn renderFlagLine(comptime f: flag_mod.Flag) []const u8 {
+fn renderFlagLine(comptime f: flag_mod.Flag, comptime options: Options) []const u8 {
     comptime {
         var out: []const u8 = f.long;
         if (f.short) |s| out = out ++ ", -" ++ &[_]u8{s};
-        out = out ++ padTo(out, 22) ++ "(" ++ @tagName(f.kind) ++ ")";
+        out = out ++ padTo(out, if (compact(options)) 16 else 22) ++ "(" ++ @tagName(f.kind) ++ ")";
         if (f.required) out = out ++ " required";
         if (f.default) |d| out = out ++ " default=" ++ renderDefault(d);
-        if (f.desc.len > 0) out = out ++ " — " ++ f.desc;
+        if (f.desc.len > 0) {
+            if (compact(options)) {
+                out = out ++ "\n      " ++ f.desc;
+            } else {
+                out = out ++ " — " ++ f.desc;
+            }
+        }
+        if (f.deprecated) |d| out = out ++ deprecationSuffix(d);
         return out;
+    }
+}
+
+fn compact(comptime options: Options) bool {
+    return if (options.width) |width| width <= 48 else false;
+}
+
+fn visibleCmd(comptime c: cmd_mod.Cmd, comptime options: Options) bool {
+    if (c.hidden and !options.include_hidden) return false;
+    if (c.deprecated != null and !options.include_deprecated) return false;
+    return true;
+}
+
+fn visibleFlag(comptime f: flag_mod.Flag, comptime options: Options) bool {
+    if (f.hidden and !options.include_hidden) return false;
+    if (f.deprecated != null and !options.include_deprecated) return false;
+    return true;
+}
+
+fn hasVisibleCommands(comptime cmds: []const cmd_mod.Cmd, comptime options: Options) bool {
+    for (cmds) |c| if (visibleCmd(c, options)) return true;
+    return false;
+}
+
+fn hasVisibleFlags(comptime flags: []const flag_mod.Flag, comptime options: Options) bool {
+    for (flags) |f| if (visibleFlag(f, options)) return true;
+    return false;
+}
+
+fn deprecationSuffix(comptime d: anytype) []const u8 {
+    comptime {
+        var out: []const u8 = " (deprecated";
+        if (d.replacement) |replacement| out = out ++ "; use " ++ replacement;
+        if (d.message.len > 0) out = out ++ "; " ++ d.message;
+        return out ++ ")";
     }
 }
 

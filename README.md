@@ -270,7 +270,7 @@ The repo root IS the Zig package root: `build.zig` and `build.zig.zon` sit at th
 | `build.zig`, `build.zig.zon` | Zig build configuration and package manifest (package name `planar`, minimum Zig `0.16.0`) |
 | `src/` | Zig modules (the runtime source tree) |
 | `src/cmd/planar/` | Executable entry point — `main.zig`, runtime scaffolding, and per-verb handlers |
-| `src/cli/` | Hand-rolled CLI parser and help renderer (`cmd.zig`, `parser.zig`, `flag.zig`, `help.zig`, `completion.zig`, `validate.zig`) |
+| `vendor/etc-cli/` | Vendored CLI parser + help/completion renderer ([etc-cli](https://github.com/rdrsss/etc-cli) extracted from the former in-tree `src/cli/`). Declared as a path dependency in `build.zig.zon`; provides the `cli` module imported by every binary. |
 | `src/db/` | Database layer — connection wrappers, migration application, vendored-SQLite C bindings |
 | `src/engine/` | Domain engine organized into buckets (`identity/`, `planning/`, `external/`, `runtime/`) and subsystem modules |
 | `tools/gen_migrations.zig` | Build-time codegen: scans `migrations/` and emits a `migrations` Zig module the runtime embeds |

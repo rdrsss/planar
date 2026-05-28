@@ -6,6 +6,7 @@
 //! generate the per-command result struct.
 
 const std = @import("std");
+const meta_mod = @import("meta.zig");
 
 /// Value kind for a flag or positional. Drives both parsing and the type of
 /// the corresponding field on the generated args struct.
@@ -25,12 +26,19 @@ pub const Default = union(Kind) {
 /// absent. `required = true` errors at parse time if absent and no default.
 pub const Flag = struct {
     long: []const u8,
+    aliases: []const []const u8 = &.{},
     short: ?u8 = null,
+    hidden: bool = false,
+    deprecated: ?meta_mod.Deprecation = null,
     desc: []const u8 = "",
     kind: Kind = .string,
+    /// Manual/help placeholder for non-bool flag values, such as PATH or
+    /// COUNT. Parsing is still driven only by `kind`.
+    value_name: ?[]const u8 = null,
     default: ?Default = null,
     required: bool = false,
     env: ?[]const u8 = null,
+    completion: meta_mod.Completion = .{},
 };
 
 /// A positional argument spec. Positionals are consumed in declaration order
@@ -41,6 +49,7 @@ pub const Positional = struct {
     desc: []const u8 = "",
     kind: Kind = .string,
     required: bool = true,
+    completion: meta_mod.Completion = .{},
 };
 
 /// Comptime: the field type for a given Kind. Used to generate args structs.

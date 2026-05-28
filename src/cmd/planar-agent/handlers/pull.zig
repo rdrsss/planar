@@ -38,7 +38,7 @@ pub const verb: cli.Cmd = .{
         .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
     },
     .positionals = &.{
-        .{ .name = "plan_id", .kind = .int, .required = true, .desc = "Plan id to pull from" },
+        .{ .name = "plan-id", .kind = .int, .required = true, .desc = "Plan id to pull from" },
     },
     .run = cli.handler(handle),
 };

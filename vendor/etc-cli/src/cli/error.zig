@@ -35,7 +35,45 @@ pub const Detail = struct {
     /// The matched-so-far command path (space-separated), useful in
     /// "unknown subcommand of `planar task ...`" style messages.
     cmd_path: ?[]const u8 = null,
+    /// Optional nearest known flag or subcommand spelling.
+    suggestion: ?[]const u8 = null,
 };
+
+pub const Structured = struct {
+    kind: Parse,
+    kind_name: []const u8,
+    arg: ?[]const u8 = null,
+    flag: ?[]const u8 = null,
+    positional: ?[]const u8 = null,
+    cmd_path: ?[]const u8 = null,
+    suggestion: ?[]const u8 = null,
+};
+
+pub fn structured(detail: Detail) Structured {
+    return .{
+        .kind = detail.kind,
+        .kind_name = kindName(detail.kind),
+        .arg = detail.arg,
+        .flag = detail.flag,
+        .positional = detail.positional,
+        .cmd_path = detail.cmd_path,
+        .suggestion = detail.suggestion,
+    };
+}
+
+pub fn kindName(kind: Parse) []const u8 {
+    return switch (kind) {
+        Parse.UnknownFlag => "unknown_flag",
+        Parse.MissingValue => "missing_value",
+        Parse.InvalidValue => "invalid_value",
+        Parse.MissingRequired => "missing_required",
+        Parse.MissingRequiredPositional => "missing_required_positional",
+        Parse.TooManyPositionals => "too_many_positionals",
+        Parse.UnknownSubcommand => "unknown_subcommand",
+        Parse.UnexpectedArgument => "unexpected_argument",
+        Parse.DuplicateFlag => "duplicate_flag",
+    };
+}
 
 /// Render a parse error to a writer in the form `error: <kind>: <context>`.
 /// Caller decides whether stdout, stderr, or a buffered log gets the output.
@@ -56,6 +94,7 @@ pub fn format(detail: Detail, writer: *std.Io.Writer) std.Io.Writer.Error!void {
     if (detail.positional) |p| try writer.print(": <{s}>", .{p});
     if (detail.arg) |a| try writer.print(" (got {s})", .{a});
     if (detail.cmd_path) |c| try writer.print(" [in: {s}]", .{c});
+    if (detail.suggestion) |s| try writer.print("; did you mean {s}?", .{s});
     try writer.print("\n", .{});
 }
 
@@ -73,4 +112,17 @@ test "format renders unknown flag with context" {
     try std.testing.expect(std.mem.indexOf(u8, out, "unknown flag") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "--bogus") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "planar task") != null);
+}
+
+test "structured exposes stable parse error fields" {
+    const value = structured(.{
+        .kind = Parse.UnknownSubcommand,
+        .arg = "statsu",
+        .cmd_path = "tool",
+        .suggestion = "status",
+    });
+    try std.testing.expectEqual(Parse.UnknownSubcommand, value.kind);
+    try std.testing.expectEqualStrings("unknown_subcommand", value.kind_name);
+    try std.testing.expectEqualStrings("statsu", value.arg.?);
+    try std.testing.expectEqualStrings("status", value.suggestion.?);
 }
