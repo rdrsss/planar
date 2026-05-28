@@ -225,6 +225,107 @@ The dispatch-shape gate's six shapes (`strict`, `grouped`, `single`, `barrel-gro
 - `strict`, `grouped`, `single` — apply within any strategy. They describe per-cycle batching, not overall methodology. Under `classic` or `isolated-sequential` the operator picks freely; under `parallel-fanout` they describe how each fan-out lane is batched; under the barrel strategies they are subsumed.
 - `barrel-grouped`, `barrel-deferred`, `barrel-bypass` — these conflate "dispatch shape" with "reviewer cadence." Under the strategy model, the latter two are subsumed by the `barrel-deferred` and `barrel-bypass` named strategies. Whether the standalone flags get deprecated, kept for backward compatibility, or treated as aliases is an open question deferred until operators have used both paths for a cycle or two.
 
+## Worktrees
+
+Worktrees are the substrate that lets `isolated-sequential` and `parallel-fanout` keep the operator's pwd clean and (under fan-out) run N coders concurrently without clobbering each other. `classic` and the barrel strategies do not use them. The methodology in this section is **authoritative**; the tech-spec artifact for plan 297 (artifact 142) still carries the original bare-`<plan-slug>` convention in its prose and will be amended to match in a follow-up.
+
+### Path scheme
+
+Two worktree shapes, both rooted at the task's owning repo:
+
+| Worktree | Path | Created by |
+|----------|------|------------|
+| Epic (integration) | `<repo>/.worktrees/epic/<plan-slug>/` | Orchestrator, on the first dispatch of any task in the plan. |
+| Cycle (per-cycle working tree) | `<repo>/.worktrees/cycle/<plan-slug>/<task-slug>/` | Orchestrator, on each cycle dispatch. |
+
+`<repo>` is the *task's owning repo*, not the operator's cwd repo. In a polyrepo workspace these may differ; the worktree always lands under the task's repo so the orchestrator's `git` invocations resolve correctly against the right history.
+
+### Branch scheme
+
+Epic and cycle branches live in **disjoint top-level namespaces** so git's ref hierarchy never refuses a nested form:
+
+| Branch | Name | Cut from |
+|--------|------|----------|
+| Epic (integration) | `epic/<plan-slug>` | master |
+| Cycle (per-task working branch) | `cycle/<plan-slug>/<task-slug>` | `epic/<plan-slug>` |
+
+The original spec's bare `<plan-slug>` + `<plan-slug>/<task-slug>` pairing collides: git refuses any ref whose path is a strict prefix of another existing ref (e.g., `worktree-management` cannot coexist with `worktree-management/m2-worktree-convention`). The `epic/` and `cycle/` prefixes guarantee no ref-hierarchy collision. This supersedes the older convention in artifact 142.
+
+Hand-picked solo work (operator runs `planar-agent claim --entity task:<id>` directly with no plan context) uses a single branch `cycle/<task-slug>` cut from master, with no epic. The worktree lands at `<repo>/.worktrees/cycle/<task-slug>/`.
+
+### Topology and main-checkout invariant
+
+The operator's **main checkout stays on master throughout the entire orchestration.** Both the epic branch and each cycle's child branch live in their own worktrees off the main checkout. There is never a moment when the main checkout silently moves to an epic or cycle branch.
+
+- Main checkout: `<repo>/` — always on master, untouched by orchestration.
+- Epic worktree: `<repo>/.worktrees/epic/<plan-slug>/` — checked out on `epic/<plan-slug>`. Created on first dispatch, persists for the plan's duration.
+- Cycle worktree: `<repo>/.worktrees/cycle/<plan-slug>/<task-slug>/` — checked out on `cycle/<plan-slug>/<task-slug>`. One per cycle.
+
+**Fan-in.** The orchestrator cds into the *epic* worktree and runs `git merge --no-ff cycle/<plan-slug>/<task-slug>` there. The main checkout is not involved. This preserves the "operator pwd stays clean" promise that motivates the worktree strategies in the first place.
+
+### Lifecycle
+
+1. **Epic worktree creation** (first dispatch of any task in the plan only). `git -C <repo> branch epic/<plan-slug> master` then `git -C <repo> worktree add <repo>/.worktrees/epic/<plan-slug>/ epic/<plan-slug>`. If `.git/info/exclude` doesn't list `.worktrees/` yet, append it.
+2. **Cycle worktree creation** (each cycle). `git -C <repo> worktree add -b cycle/<plan-slug>/<task-slug> <repo>/.worktrees/cycle/<plan-slug>/<task-slug>/ epic/<plan-slug>`.
+3. **Claim wiring.** `planar-agent pull <plan> --role coder --worktree <cycle-worktree-path>` (or `claim --entity task:<id> --worktree <path>` for hand-picked). The claim row carries `worktree_path`.
+4. **Coder dispatch.** Agent invoked with `isolation: "worktree"` and the cycle worktree path. Coder heartbeats and terminals via the canonical `planar-agent` ritual.
+5. **Fan-in merge.** After terminal-complete the orchestrator cds into the epic worktree and runs `git merge --no-ff cycle/<plan-slug>/<task-slug>`. Clean merge → continue. Conflict → open a question, halt this branch's fan-in, leave the cycle worktree in place for operator resolution.
+6. **Reviewer dispatch.** Per the active strategy: per-cycle under `isolated-sequential`; once per fan-in under `parallel-fanout`.
+7. **Cleanup (post-success only).** After reviewer approval: `git -C <repo> worktree remove <cycle-worktree-path>` and `git -C <repo> branch -d cycle/<plan-slug>/<task-slug>`. The epic worktree persists.
+8. **Epic merge to master.** Operator-driven. Orchestrator surfaces "`epic/<plan-slug>` is N commits ahead of master, reviewer-approved, ready for PR." After the epic→master merge lands, the epic worktree and `epic/<plan-slug>` branch are removed.
+
+Cleanup is **post-success only** — never before merge + reviewer approval, so a failed cycle leaves recoverable artifacts on disk.
+
+### `.git/info/exclude` hint
+
+`.worktrees/` is appended to `.git/info/exclude` on first use per clone (per-clone, no commit needed). Operators working in shared clones may prefer to commit a repo-level `.gitignore` entry instead; either path is fine. The orchestrator does the per-clone append on first dispatch; the gitignore commit is an operator choice.
+
+### Sparse-checkout guidance for monorepos
+
+For repos > ~5 GiB the operator should configure `git sparse-checkout set <paths>` on the source clone before letting the orchestrator dispatch into a worktree. Worktrees inherit sparse-checkout settings via the shared `.git/config`. The orchestrator does not measure repo size and does not prompt for sparse setup — it's a documented operator practice, not an automated flow. The recipe lives in `docs/workflows.md`.
+
+### Scope inside worktrees — parent repo dictates, planning verbs refused
+
+Two invariants govern scope behavior when cwd is inside a worktree:
+
+1. **The parent repo always dictates the scope.** A worktree at `<repo>/.worktrees/{epic,cycle}/...` resolves to the same association as `<repo>`. Worktrees are not separately scoped entities; they inherit. Reads (`planar plan list`, `planar task show`, `planar-watch *`) work transparently from inside a worktree and see the parent's data.
+2. **Planning verbs are refused from inside worktrees.** The runtime entry point refuses the planning-class verb set with a distinct exit code and a message pointing at the parent repo's cwd.
+
+**Planning-class verbs (refused in worktree):** `init`, `plan {add,update,done}`, `task {add,update,done,touches}`, `question {add,answer,wontfix}`, `decision {add,accept,reject}`, `artifact {add,update}`, `scenario {add,update}`, `spec {draft,ingest}`, `link`, `unlink`, `links {add,remove}`, `assoc {add,update}`, `promote`, `demote`.
+
+**Execution / read (allowed in worktree):** every `planar-agent *`, every `planar-watch *`, `planar resume`, `planar dashboard`, `planar handoff *`, `planar capture *`, `planar audit *`, `planar health`, every `* show` / `* list` read, `planar workbench {pull,push,status,sync,resolve}`, `planar workspace *`.
+
+**`task done` is refused on purpose.** Coders advance task state via `planar-agent complete --claim <token>`, the atomic terminal verb that flips claim status and task status in one transaction. This reinforces the three-binary boundary in `CLAUDE.md § Operating Rules` and the canonical claim ritual in [Coordination claims](#coordination-claims).
+
+**`--scope <slug>` does NOT override the refusal.** The rule is about *where the verb runs*, not which scope it targets. To plan against a member repo from elsewhere, cd to the parent repo (or workspace root with `--scope <member>`); do not try to plan from inside a worktree.
+
+The engine-side enforcement of this rule lands in M3 of plan 297 (scope resolver extension + verb-classification table at the runtime entry point). Until M3 lands, the rule is convention-only; the methodology defines it so the engine implementation has a target.
+
+### Parallelizability rules
+
+Used by the `parallel-fanout` strategy's eligibility test and by the per-cycle fan-out width within that strategy. Two tasks in the same plan are **parallel-eligible** iff *all* six rules hold:
+
+1. **No `blocked_by` chain to another not-yet-done task in the plan.** The task's transitive `blocked_by` closure intersected with the plan's not-done tasks must be empty.
+2. **Disjoint `task_touches`.** The candidates' `task_touches` (repo + path) sets must not overlap. Empty `task_touches` is treated as "touches everything" → not parallel-eligible. This deliberately forces touches discipline before fan-out becomes available.
+3. **No schema migration touched.** A task whose touches include `migrations/*.sql` serializes across the whole plan. Planar's migration numbering is linear; two concurrent migrations would collide on the next number.
+4. **No singleton authoritative file touched.** Touches must not include any of: `agents/methodology.md`, `CLAUDE.md`, `AGENTS.md`, `docs/cli-reference.md`, `docs/architecture.md`. These are coordination points; concurrent edits invite needless conflicts. The list lives here and may grow.
+5. **No unresolved open question linked to the task.** Open questions are coordination points by definition.
+6. **No unresolved decision dependency.** A task blocked on a `decisions` row in `proposed` status does not fan out.
+
+The algorithm is greedy: start with the full open-task set, drop ineligible tasks rule-by-rule, return what remains. Ties (e.g., two tasks both touching a migration) drop both, not just one — the orchestrator surfaces both as "serialize-only" with the rule that excluded them. A result of size ≥ 2 makes fan-out an available shape under [`parallel-fanout`](#named-strategies); smaller results fall back to the strategy's sequential shapes (strict / grouped / single).
+
+The forward reference from [Things To Revisit → Parallelism heuristics](#things-to-revisit) now resolves to these six rules.
+
+### Conflict resolution at fan-in
+
+`git merge --no-ff cycle/<plan-slug>/<task-slug>` from inside the epic worktree may fail. The orchestrator's response:
+
+- **Touches mis-prediction.** Tasks claimed disjoint paths but both modified the same file (e.g., a transitive import dragged in a shared header). Orchestrator opens a question with the conflict-marker output, halts that branch's fan-in, leaves the cycle worktree on disk for operator resolution.
+- **Trivial conflict** (adjacent additions, import order, formatter idempotency disagreements). Same path: open a question. The orchestrator does not classify "trivial vs. semantic" — that's an operator judgement call.
+- **Deep semantic conflict** (two children each broke an invariant the other relies on). Open question. Operator decides whether to (a) resolve manually and continue, (b) abort the parallel epic and re-dispatch sequentially, or (c) revert one child and redo it after the other lands.
+
+In every case the orchestrator preserves recoverable state: the cycle worktree stays, the cycle branch stays, the claim records reflect the partial fan-in. Cleanup only runs once the conflict is resolved and the cycle is merge-clean.
+
 ## Dispatch mode selection
 
 Use INLINE (skip reviewer dispatch) if ALL of the following hold:
@@ -508,8 +609,9 @@ and the reviewer cannot recover the loss after the fact.
 
 ## Concurrency
 
-- The orchestrator may dispatch multiple coders in parallel only when tasks are independent and claimable: disjoint file scope, no shared schema or CLI surface changes pending, no decision dependency between them, and no active unexpired claim already owns the same task or child milestone.
-- Reviewers may run in parallel against independent coder outputs.
+- The orchestrator may dispatch multiple coders in parallel only when tasks are independent and claimable: disjoint file scope, no shared schema or CLI surface changes pending, no decision dependency between them, and no active unexpired claim already owns the same task or child milestone. The codified eligibility test is the six rules in [Worktrees § Parallelizability rules](#parallelizability-rules); the [`parallel-fanout`](#named-strategies) strategy is the orchestration frame that uses them.
+- The substrate that lets parallel coders run without clobbering each other is [Worktrees](#worktrees) — each parallel coder runs in its own cycle worktree on its own `cycle/<plan-slug>/<task-slug>` branch, with fan-in merging back onto the plan's epic worktree.
+- Reviewers may run in parallel against independent coder outputs. Under `parallel-fanout` a single reviewer cycle runs against the integrated diff on the epic, not per child.
 - A single task is always coder→reviewer sequential — never two coders on the same task simultaneously.
 - Stale claims are not ignored silently. The operator or orchestrator must reconcile or force-takeover them before treating the work as available.
 
@@ -521,6 +623,6 @@ State capture lives in SQLite per the locked schema. Tasks carry `next_action`. 
 
 - **Iteration cap of 5.** Hard-coded today. Revisit once empirical data on real workloads exists — the right number may be 3, 5, or 8 depending on task shape. Move to the `config` table or methodology frontmatter if it needs to flex per project.
 - **Per-tier reviewer.** Currently all reviewers are `large`-tier. Some review work may not need that; a cheaper review tier could be useful for routine tasks.
-- **Parallelism heuristics.** "Independent task" is judgment-call territory today. The [Orchestration strategies](#orchestration-strategies) section names `parallel-fanout` as the strategy that depends on a parallel-eligibility test, but the rules that decide eligibility (touched-file disjointness, schema-migration serialization, singleton-authoritative-file exclusion, blocker/decision dependencies) land in the M2 worktree-convention section alongside the worktree path scheme and lifecycle. Until M2 lands, treat parallelizability as judgment-call territory and lean conservative.
+- **Parallelism heuristics.** The six rules in [Worktrees § Parallelizability rules](#parallelizability-rules) codify what was previously judgment-call territory. They are deliberately conservative — empty `task_touches` is treated as "touches everything," singleton authoritative files block fan-out, schema migrations serialize. The list of singleton files may grow as new coordination points emerge; revisit once enough fan-out cycles have shipped to identify whether the conservatism has the right shape.
 - **Cross-vendor pairings.** A reviewer may be a different vendor than the coder (Claude reviewing Codex output, etc.). The methodology assumes this works; verify once cross-vendor handoff is exercised in M6.
 - **Reviewer feedback format.** "Concrete remediation" is loose today. As patterns emerge, codify the structure (e.g. file:line + proposed change, or a structured issue list).
