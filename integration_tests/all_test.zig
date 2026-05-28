@@ -53,6 +53,7 @@ comptime {
     _ = @import("scenarios/scenario_external_plane_test.zig");
     _ = @import("scenarios/scenario_feature_lifecycle_test.zig");
     _ = @import("scenarios/scenario_handoff_resume_test.zig");
+    _ = @import("scenarios/scenario_multi_agent_session_test.zig");
     _ = @import("scenarios/scenario_plan_progression_test.zig");
     _ = @import("scenarios/scenario_promote_demote_test.zig");
     _ = @import("scenarios/scenario_question_lifecycle_test.zig");
