@@ -408,9 +408,9 @@ git commit -m "snapshot billing-export spec for review"
 ```
 
 The copy is static — re-run the `cp` to refresh it. For a more
-disciplined "publish internal artifacts as a user-facing doc" path
-that tracks provenance, see [`docs/features/doc-system.md`](features/doc-system.md)
-and `planar doc promote`.
+disciplined "publish a user-facing doc that tracks repo-state
+provenance" path, see [`docs/features/doc-system.md`](features/doc-system.md)
+and `planar-doc cover`.
 
 ---
 
@@ -888,12 +888,12 @@ The `--no-scope-check` escape hatch exists for legacy callers that cannot be upd
 
 ## Recipe 10 — Doc hygiene pre-commit
 
-Outward-facing docs under `docs/` carry citation footnotes and provenance front matter. The `planar doc` verbs validate both halves; a shipped git hook wires that validation into pre-commit so drift cannot land silently.
+Outward-facing docs under `docs/` are tracked by `.planar-manifest`, a repo-state merkle index owned by the `planar-doc` binary. The hook compares the live tree against the manifest so doc-source drift cannot land silently.
 
 ### What it checks
 
-- `planar doc manifest verify` — O(1) compare against the stored `.manifest-docs` root hash. Fails when any doc on disk has drifted, been added, or been deleted relative to the manifest.
-- `planar doc lint` — walks every `*.md` under `docs/`, validates that GFM footnote citations (bracketed-caret-id form) are declared in front matter, that declared references are actually used, that external URLs resolve (cached, 30-day TTL), and that planar entity references resolve in the database.
+- `planar-doc verify` — O(1) compare of the recomputed repo merkle root against `.planar-manifest`'s stored root. Fails on any drift in the covered tree.
+- `planar-doc lint` — walks `docs/` for prose-level issues (the DB-free subset that survived the plan 423 binary split).
 
 ### Opt in
 
@@ -907,24 +907,18 @@ Verify it runs:
 
 ```
 git commit -m 'noop'
-# → runs planar doc manifest verify then planar doc lint
+# → runs planar-doc verify then planar-doc lint
 ```
 
 ### Fixing failures
 
-- `manifest is out of date` — review the drift with `planar doc manifest diff`. The output classifies each path as `regenerate-candidate`, `hand-edit`, `new-authoring`, or `deletion`. Once the docs themselves are settled, refresh the manifest:
+- `verify: DRIFT` — review the breakdown with `planar-doc diff`. The output classifies each changed path as `regenerate-candidate`, `hand-edit`, or `new-authoring` / `deletion`. Once the docs are settled, refresh the manifest:
 
 ```
-planar doc manifest update
+planar-doc build
 ```
 
-- `doc lint: N issue(s)` — each line is `<path>: <type>: <detail>`. Issue types:
-
-  - `undeclared_citation` — a bracketed-caret-id footnote in body with no matching entry in front matter `references:`. Add the declaration.
-  - `unused_declaration` — front matter declares an id never cited. Remove it or cite it.
-  - `unresolvable_external` — external URL HEAD returned non-2xx. Fix the URL.
-  - `unresolvable_planar` — planar entity (e.g. `decision:7`) does not resolve. Fix the ref.
-  - `malformed_entry` — declared entry missing required fields (e.g. external missing `url`).
+- `planar-doc lint: N issue(s)` — each line is `<path>: <type>: <detail>`. The prose-level checks are deliberately minimal; richer checks may land later without affecting the binary's capability boundary.
 
 ### Bypass
 
@@ -1160,62 +1154,48 @@ The `associations` row, the `projects` rows, and their membership links remain i
 
 ## Recipe 13 — Maintaining the docs surface
 
-Outward-facing docs under `docs/` carry citation footnotes, provenance front matter, and a per-doc record in `.manifest-docs`. Recipes 10 (pre-commit hook) and 12 (workspace) cover the mechanical guards; this recipe covers the human-judgement layer: keeping published docs in sync with internal artifacts, decisions, and done plans over the long arc of a feature.
+Outward-facing docs under `docs/` are tracked by `.planar-manifest`, the repo-state merkle index owned by `planar-doc`. Recipes 10 (pre-commit hook) and 12 (workspace) cover the mechanical guards; this recipe covers the human-judgement layer: keeping published docs in sync with what the repo actually looks like.
 
 ### Daily / per-PR loop
 
-Every change that touches `docs/` is covered by two verbs.
+Every change that touches the repo is covered by two verbs.
 
-- `planar doc manifest verify` — O(1) root-hash compare against `.manifest-docs`. The pre-commit hook from [Recipe 10](#recipe-10--doc-hygiene-pre-commit) invokes this; the recipe also explains how to interpret each drift signal.
-- `planar doc lint` — validates footnote citations, front-matter `references:` blocks, and entity refs (`artifact:47`, `decision:3`, `plan:12`). Run with `--no-refs` for the offline / fast path.
+- `planar-doc verify` — O(1) root-hash compare against `.planar-manifest`. The pre-commit hook from [Recipe 10](#recipe-10--doc-hygiene-pre-commit) invokes this; the recipe also explains how to interpret each drift signal.
+- `planar-doc lint` — prose-level checks under `docs/` (the DB-free subset that survived the plan 423 binary split).
 
 When either verb fails, fix the issue and retry — the pre-commit hook keeps drift out of the tree.
 
 ### After landing a body of work
 
-When an anchor plan moves to `done`, its outward-facing record is a doc citing `plan:<id>` (and any decisions / artifacts that crystallised during the work). Before opening the PR that lands the body of work:
+When a work cycle ends, the orchestrator launches the documenter agent with the prior manifest, the current repo merkle, and the changed-subtree set. The agent walks each changed source through three outcomes:
 
-```
-planar doc backlinks plan:<id>
-```
+- **Extend an existing entry.** A doc already covers a related path; add the changed path to its `sources` map via `planar-doc cover --doc <path> --source <repo-path>`.
+- **Author a new doc.** No existing entry covers the change. The agent proposes a doc body; the operator gates the prose, then `planar-doc cover` wires the new entry.
+- **Add to nodoc.** The change is genuinely not worth documenting (vendored code, generated artifacts, etc.). Record the decision via `planar-doc nodoc --source <repo-path>`; the entry is re-evaluated whenever that path's hash changes.
 
-- One or more paths returned: the historical record is already wired up. Done.
-- Empty output: publish a doc that cites the plan. The synthesis prompt lives in the vendor skill — run `pl-doc-promote --kind feature --slug <slug> --source plan:<id>` (or `--kind research` / `--kind getting_started` as appropriate). The skill resolves the doc-prompt template, calls the LLM, writes a synthesised body to a tmpfile, and invokes `planar doc promote --body-file ...` so the result lands atomically with provenance front matter and a manifest entry.
-
-The same loop applies to recording new ADRs (`--source decision:<id>`) or graduating exploratory research notes into a feature catalog entry (`--source artifact:<research-id>`).
+The documenter never writes prose on its own — it produces a worklist the operator reads and acts on.
 
 ### After mutating sources
 
-Editing an artifact, decision, or plan body invalidates any doc synthesised from it. The manifest detects this via per-source xxh64 hashes; surface the affected docs with:
+Touching anything under `src/`, `migrations/`, `templates/`, or `vendor/` may invalidate a doc that covers that subtree. The manifest detects this via the per-entry merkle of `sources`; surface the affected docs with:
 
 ```
-planar doc manifest diff
+planar-doc diff
 ```
 
-Each row is one of:
+Each row carries one of three signals:
 
-- `regenerate-candidate` — the doc was last synthesised from a source whose body has changed. Fix with `pl-doc-regenerate <path>` (single doc) or `pl-doc-regenerate --all` (batch). The verb refuses paths classified as `hand-edit`; review each refusal manually before deciding to merge or override with `--force`.
-- `hand-edit` — the doc has been edited since it was synthesised. Leave it, or run `pl-doc-regenerate --merge <path>` and review the diff.
-- `new-authoring` — a new `*.md` file under `docs/` not yet registered. Either run `planar doc manifest update` (if it's hand-authored) or use `pl-doc-promote` to register it with proper provenance.
-- `deletion` — a manifest entry has no on-disk file. Confirm the removal was intentional, then `planar doc manifest update` to drop the record.
+- `regenerate-candidate` — a source the doc covers drifted. Refresh the prose, then `planar-doc build` to reseat the entry hash.
+- `hand-edit` — the doc body changed without its sources moving. Usually fine; just re-run `planar-doc build` once the prose is settled.
+- `new-authoring` / `deletion` — a path appeared without a covering entry, or an entry's source path is gone. Either wire coverage (`planar-doc cover ...`), mark as `nodoc`, or accept the deletion and rebuild.
 
-The pre-commit hook gates on `manifest verify`, not `manifest diff`, so the diff is your visibility into "what would `manifest update` change". Always read it before running update.
-
-### Quarterly hygiene
-
-Two verbs surface the long-tail debt that daily flow misses.
-
-- `planar doc coverage` — lists every plan with `status=done` that no manifest entry cites. A non-empty list means the historical record has gaps: each row is a done body of work without an outward-facing summary. Pick the highest-value gaps and run `pl-doc-promote --source plan:<id>` to close them.
-- `planar doc orphans --kind research` — lists research artifacts older than 30 days (override via `--since N`) that no manifest entry cites. Research artifacts have an explicit lifecycle of "exploratory → cited → promoted or archived"; orphans surfaces the first transition stalling out. For each row decide: promote into a `feature` or `getting_started` doc, or archive the note via `planar artifact status <id> retired`.
-
-Both verbs accept `--json` for scripting. Suggested cadence: run them at the start of each planning cycle and triage into the backlog before scoping new work.
+The pre-commit hook gates on `verify`, not `diff`, so the diff is your visibility into "what would `build` change". Always read it before running build.
 
 ### Cross-references
 
 - Pre-commit hook: [Recipe 10 — Doc hygiene pre-commit](#recipe-10--doc-hygiene-pre-commit).
 - Workspace docs surface: [Recipe 12 — Working in a polyrepo workspace](#recipe-12--working-in-a-polyrepo-workspace).
-- CLI verbs: [docs/cli-reference.md § Domain: `doc`](cli-reference.md#domain-doc).
-- Skill sources: [commands/claude/pl-doc-promote.md](../commands/claude/pl-doc-promote.md) and [commands/claude/pl-doc-regenerate.md](../commands/claude/pl-doc-regenerate.md).
+- CLI verbs: [docs/cli-reference.md § Binary: `planar-doc`](cli-reference.md#binary-planar-doc).
 
 ---
 
@@ -1798,7 +1778,7 @@ Both error paths are atomic — the surrounding `BEGIN IMMEDIATE` transaction ro
 
 ## Recipe 19 — Live agent cockpit with `planar-watch`
 
-`planar-watch` is the third binary in the three-binary architecture — the **human-facing read-only viewer**. It opens the database in strict read-only mode (`SQLITE_OPEN_READONLY`); the SQLite driver itself refuses every write SQL string, which is the second line of defense behind the binary's "no write verbs registered" capability boundary. The first defense is the verb tree itself: it contains exactly six read verbs — `feed`, `ps`, `claims`, `actions`, `plans`, `log` — plus the conventional `version` and `completion` helpers, and zero anything that mutates state.
+`planar-watch` is the third binary in the four-binary architecture — the **human-facing read-only viewer**. It opens the database in strict read-only mode (`SQLITE_OPEN_READONLY`); the SQLite driver itself refuses every write SQL string, which is the second line of defense behind the binary's "no write verbs registered" capability boundary. The first defense is the verb tree itself: it contains exactly six read verbs — `feed`, `ps`, `claims`, `actions`, `plans`, `log` — plus the conventional `version` and `completion` helpers, and zero anything that mutates state.
 
 This recipe walks the streaming-cockpit workflow. The companion recipe for the operator's read-fold-ins on the `planar` binary lives in Recipe 16.
 

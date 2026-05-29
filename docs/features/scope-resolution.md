@@ -2,20 +2,8 @@
 title: Scope resolution
 doc_kind: feature
 template_version: 1
-source_artifacts: [artifact:63, artifact:64, artifact:65]
-source_plans: [plan:88]
 regenerated_at: 2026-05-18T00:00:00Z
 regenerated_by: hand
-references:
-  scope_product_spec:
-    kind: planar
-    entity: artifact:63
-  scope_tech_spec:
-    kind: planar
-    entity: artifact:64
-  scope_roadmap:
-    kind: planar
-    entity: artifact:65
 ---
 
 # Scope resolution

@@ -42,7 +42,6 @@ const config_h = @import("handlers/config/cmd.zig");
 const templates_h = @import("handlers/templates/cmd.zig");
 const tree_h = @import("handlers/tree.zig");
 const search_h = @import("handlers/search.zig");
-const doc_h = @import("handlers/doc/cmd.zig");
 const local_h = @import("handlers/local/cmd.zig");
 const skills_h = @import("handlers/skills/cmd.zig");
 const import_h = @import("handlers/import.zig");
@@ -92,7 +91,6 @@ pub const root: cli.Cmd = .{
         templates_h.verb,
         tree_h.verb,
         search_h.verb,
-        doc_h.verb,
         local_h.verb,
         skills_h.verb,
         import_h.verb,

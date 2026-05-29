@@ -6,6 +6,7 @@
 
 comptime {
     _ = @import("capability_boundary_test.zig");
+    _ = @import("planar_doc_test.zig");
     _ = @import("workbench_terminal_filter_test.zig");
     _ = @import("workbench_gc_test.zig");
     _ = @import("config_test.zig");
@@ -52,7 +53,6 @@ comptime {
     _ = @import("scenarios/scenario_audit_trail_test.zig");
     _ = @import("scenarios/scenario_cross_scope_polyrepo_test.zig");
     _ = @import("scenarios/scenario_decision_workflow_test.zig");
-    _ = @import("scenarios/scenario_doc_system_test.zig");
     _ = @import("scenarios/scenario_external_plane_test.zig");
     _ = @import("scenarios/scenario_feature_lifecycle_test.zig");
     _ = @import("scenarios/scenario_handoff_resume_test.zig");

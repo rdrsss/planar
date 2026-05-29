@@ -30,6 +30,7 @@ The iteration loop, reviewer decisions, escalation paths, concurrency rules, and
 - Optional flags:
   - `--propagate` — run propagation after execution.
   - `--archive` — run archive after completion.
+  - `--no-docs` — skip Phase 6 (documenter). The default is to run the documenter at the end of every cycle that saw at least one merged coder run.
   - `--strict` — force one coder cycle per task (skip the dispatch-shape gate).
   - `--grouped` — let the orchestrator pick task groupings (skip the gate).
   - `--batch <task-ids>` — explicit grouping; repeatable. Each `--batch` flag describes one cycle's task set (skip the gate).
@@ -158,6 +159,35 @@ The orchestrator selects phases based on the anchor plan's `status` at the time 
 
 **Boundary:** Archive is never automatic on status change. It is an explicit user action.
 
+### Phase 6 — Documenter (`pl-documenter`, default-on)
+
+**Triggered when:** Phase 3 ends with at least one merged coder cycle and `--no-docs` was not supplied at orchestrator invocation. Fires after propagation and archive have been offered (so any source moves they introduce are folded into the diff the documenter sees).
+
+**What happens:**
+1. The orchestrator runs `planar-doc diff --json` against the post-cycle working tree and computes the **envelope** the documenter receives: `{ manifest_path, diff_records, covered_docs, cycle_summary }`. The `cycle_summary` field is one short line per dispatched task identifying its slug and its high-level scope (typically the same slugs from the coder briefs).
+2. The orchestrator invokes the `documenter` agent (`/pl-documenter`) with the envelope as input.
+3. The documenter classifies each diff record into one of `extend-cover` / `create-doc` / `nodoc` / `defer` per [`agents/documenter.md` § Decision policy](documenter.md#decision-policy) and returns a worklist.
+4. The orchestrator surfaces the worklist to the user with the verb each row would run. **No `planar-doc` verb fires until the operator approves the row.**
+5. On row-by-row approval, the orchestrator invokes the chosen verb (`planar-doc cover ...`, `planar-doc nodoc ...`, or — for `create-doc` rows — first stages the proposed doc body for the operator to commit, then `planar-doc cover` once the file is in place). Rejected and deferred rows are left untouched.
+6. After applying the approved rows, the orchestrator runs `planar-doc build` to reseat the manifest and surfaces the new root hash in the cycle summary.
+
+**Boundary:** Phase 6 is **default-on** but the documenter only proposes. The orchestrator gates every action: no manifest write, no cover edge, no nodoc entry, and no doc body lands without explicit operator approval. `--no-docs` opts out of the phase entirely (no `planar-doc diff` is even run). The documenter never touches SQLite, so this phase introduces no agent_action / claim writes — only the planning-side cycle-summary record is emitted.
+
+**Envelope contract:**
+
+```json
+{
+  "manifest_path": ".planar-manifest",
+  "diff_records": [ /* `planar-doc diff --json` rows verbatim */ ],
+  "covered_docs": { /* current entries map for cross-reference */ },
+  "cycle_summary": [
+    { "task_slug": "...", "scope": "..." }
+  ]
+}
+```
+
+The orchestrator constructs the envelope; the documenter consumes it; the operator gates each returned row.
+
 ## Phase Selection Logic
 
 | Anchor plan status | Workbench artifacts | Orchestrator action |
@@ -165,10 +195,10 @@ The orchestrator selects phases based on the anchor plan's `status` at the time 
 | Does not exist     | —                  | Phase 1 (plan) then wait |
 | `draft`, no artifacts | —               | Phase 1 (plan) then wait |
 | `draft`, artifacts present | —          | Phase 2 (ingest preview) then wait |
-| `active` or `paused` | —               | Phase 3 (execute) directly |
-| `done`             | FS tree present    | Offer Phase 5 (archive) |
+| `active` or `paused` | —               | Phase 3 (execute), then Phase 6 (docs) unless `--no-docs` |
+| `done`             | FS tree present    | Offer Phase 5 (archive), then Phase 6 (docs) unless `--no-docs` |
 
-Phases 1 and 2 are only relevant for `draft` features. For an `active` or `paused` feature, the orchestrator goes straight to Phase 3 regardless of workbench state.
+Phases 1 and 2 are only relevant for `draft` features. For an `active` or `paused` feature, the orchestrator goes straight to Phase 3 regardless of workbench state. Phase 6 always runs last so it sees the post-cycle, post-archive working tree.
 
 ## Behavior Summary
 
@@ -178,6 +208,7 @@ Phases 1 and 2 are only relevant for `draft` features. For an `active` or `pause
 4. **Phase 3 (if active/paused tasks).** Propose dispatch shape (strict/grouped/single). Wait for confirmation. Dispatch coders. Route through reviewers. Enforce iteration cap. Surface escalations.
 5. **Phase 4 (if requested).** Propagate to external system. Present summary.
 6. **Phase 5 (if requested).** Archive FS tree. Confirm DB retention.
+7. **Phase 6 (default-on; `--no-docs` opts out).** Run `planar-doc diff`, dispatch the documenter, surface the worklist, apply each operator-approved row, then `planar-doc build`.
 
 ## Boundaries
 

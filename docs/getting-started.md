@@ -2,20 +2,8 @@
 title: Getting started
 doc_kind: getting_started
 template_version: 1
-source_artifacts: [artifact:66, artifact:67, artifact:30, artifact:31]
-source_plans: [plan:96]
 regenerated_at: 2026-05-18T00:00:00Z
 regenerated_by: hand
-references:
-  doc_product_spec:
-    kind: planar
-    entity: artifact:66
-  doc_tech_spec:
-    kind: planar
-    entity: artifact:67
-  founding_tech_spec:
-    kind: planar
-    entity: artifact:30
 ---
 
 # Getting started
@@ -238,24 +226,27 @@ linking the local task row to the GitHub issue via `external_links`.
 Local changes flow out with `planar sync push`; remote changes
 flow in with `planar sync pull`.
 
-## 8. Docs as a first-class artefact
+## 8. Docs as a first-class repo concern
 
-The same artifact plane drives outward-facing
-documentation[^doc_product_spec]. Once you have a tech spec landed,
-synthesise a feature catalog entry from it:
+Outward-facing docs under `docs/` are tracked by `.planar-manifest`,
+a repo-state merkle index owned by the `planar-doc` binary. The
+manifest links each published doc to one or more **repo-path
+sources** (directories or files in the working tree), so any drift
+in covered subtrees surfaces as a regenerate-candidate on the next
+diff. The workflow is:
 
 ```sh
-planar doc promote --kind feature \
-    --slug login-flow \
-    --source artifact:<your-tech-spec-id>
-# (the pl-doc-promote skill provides --body-file)
-planar doc lint --path docs/
-planar doc manifest verify
+# After authoring a new doc, wire it to the source areas it covers:
+planar-doc cover --doc docs/features/login-flow.md --source src/login/
+planar-doc build       # write the manifest atomically
+
+# Routine drift checks:
+planar-doc verify      # O(1) root compare against the live tree
+planar-doc diff        # three-signal breakdown if anything moved
 ```
 
-The published `docs/features/login-flow.md` carries provenance
-naming your tech spec; future edits to the spec show up as a
-regenerate-candidate in `planar doc manifest diff`[^doc_tech_spec].
+Source drift in `src/login/` then surfaces as a
+regenerate-candidate on the next `planar-doc diff`[^doc_tech_spec].
 
 ## 9. Where to go next
 

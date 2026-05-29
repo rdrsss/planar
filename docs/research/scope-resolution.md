@@ -2,29 +2,8 @@
 title: "Research note: scope resolution under cwd / stack disagreement"
 doc_kind: research
 template_version: 1
-source_artifacts: [artifact:63, artifact:64, artifact:65]
-source_plans: [plan:88]
 regenerated_at: 2026-05-18T00:00:00Z
 regenerated_by: hand
-references:
-  cwd_principle:
-    kind: external
-    title: "The Art of Unix Programming — Applying the Rule of Least Surprise"
-    author: "Raymond, Eric S."
-    year: 2003
-    url: "http://www.catb.org/~esr/writings/taoup/html/ch11s01.html"
-  pep20:
-    kind: external
-    title: "PEP 20 — The Zen of Python"
-    author: "Peters, Tim"
-    year: 2004
-    url: "https://peps.python.org/pep-0020/"
-  scope_hardening_spec:
-    kind: planar
-    entity: artifact:63
-  scope_tech_spec:
-    kind: planar
-    entity: artifact:64
 ---
 
 # Research note: scope resolution under cwd / stack disagreement

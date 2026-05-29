@@ -2,7 +2,6 @@
 title: Changelog
 doc_kind: changelog
 template_version: 1
-source_artifacts: [artifact:83, artifact:84, artifact:85, artifact:86]
 regenerated_at: 2026-05-18T00:00:00Z
 regenerated_by: hand
 ---
