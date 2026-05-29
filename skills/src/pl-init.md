@@ -24,7 +24,7 @@ Applies embedded migrations against the configured SQLite database (creating it 
 Wraps [`planar init`](../../docs/cli-reference.md#domain-init):
 
 ```
-planar init [--name <text>] [--db <path>] [--skip-project]
+planar init [--name <text>] [--skip-project] [--allow-no-repo] [--force]
 ```
 
 ## When To Invoke

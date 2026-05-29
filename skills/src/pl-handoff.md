@@ -41,7 +41,7 @@ Wraps [`handoff`](../../docs/cli-reference.md#domain-handoff) and [`capture`](..
 ```
 planar handoff [<task-id>] [--vendor <to-vendor>] [--note <text>]
 planar handoff validate <snapshot-id>
-planar handoff list [--status <status>] [--task <task-id>]
+planar handoff list [--status <status>]
 planar handoff consume <handoff-id>
 planar capture session [--task <task-id>] [--vendor <vendor>]
 planar capture end [<session-id>] [--summary <text>]

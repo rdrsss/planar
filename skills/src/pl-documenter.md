@@ -59,9 +59,9 @@ The trailing `verb` field is printed below each row so the operator can copy it 
 
 The operator reads the worklist and decides per row:
 
-- **extend-cover** → run `planar-doc cover --doc <path> --source <repo-path>` (or refresh prose, then `planar-doc build`).
-- **create-doc** → author the proposed doc body, commit it, then `planar-doc cover --doc <new-path> --source <repo-path>`.
-- **nodoc** → run `planar-doc nodoc --source <repo-path>`.
+- **extend-cover** → run `planar-doc cover <path> <repo-path>` (or refresh prose, then `planar-doc build`).
+- **create-doc** → author the proposed doc body, commit it, then `planar-doc cover <new-path> <repo-path>`.
+- **nodoc** → run `planar-doc nodoc <repo-path>`.
 - **defer** → escalate; no action this cycle.
 
 After applying the chosen rows, close the loop with `planar-doc build` to reseat the manifest.

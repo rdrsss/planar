@@ -8,6 +8,7 @@ const diff_h = @import("diff.zig");
 const cover_h = @import("cover.zig");
 const nodoc_h = @import("nodoc.zig");
 const lint_h = @import("lint.zig");
+const schema_h = @import("schema.zig");
 
 pub const verbs: []const cli.Cmd = &.{
     .{
@@ -68,4 +69,5 @@ pub const verbs: []const cli.Cmd = &.{
         },
         .run = cli.handler(lint_h.handle),
     },
+    schema_h.verb,
 };

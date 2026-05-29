@@ -23,6 +23,7 @@ const cli = @import("cli");
 
 const version_h = @import("version.zig");
 const completion_h = @import("completion.zig");
+const schema_h = @import("schema.zig");
 const feed_h = @import("feed.zig");
 const ps_h = @import("ps.zig");
 const claims_h = @import("claims.zig");
@@ -39,4 +40,5 @@ pub const verbs: []const cli.Cmd = &.{
     log_h.verb,
     version_h.verb,
     completion_h.verb,
+    schema_h.verb,
 };

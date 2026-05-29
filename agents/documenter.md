@@ -35,9 +35,9 @@ A worklist where each row is one of:
 
 | Action | Meaning |
 |--------|---------|
-| `extend-cover` | A drifted subtree should join an existing doc's `sources` map. Proposes `planar-doc cover --doc <path> --source <repo-path>`. |
+| `extend-cover` | A drifted subtree should join an existing doc's `sources` map. Proposes `planar-doc cover <path> <repo-path>`. |
 | `create-doc` | A drifted subtree is not covered and merits a new doc. Proposes a doc path and a draft body for the operator to accept, edit, or reject. |
-| `nodoc` | A drifted subtree is genuinely not worth documenting (vendored code, generated artifacts, build outputs). Proposes `planar-doc nodoc --source <repo-path>`. |
+| `nodoc` | A drifted subtree is genuinely not worth documenting (vendored code, generated artifacts, build outputs). Proposes `planar-doc nodoc <repo-path>`. |
 | `defer` | The drift is significant but the documenter cannot decide between the three actions. Surfaces the subtree to the operator with a brief reason. |
 
 The documenter never invokes the verbs itself — it produces the worklist and stops. The operator runs each row through `planar-doc cover` / `planar-doc nodoc` / a new doc commit, then closes the loop with `planar-doc build` to reseat the manifest.
@@ -94,14 +94,14 @@ These three rules together preserve the `planar-doc` capability invariant: the o
       "signal": "new-authoring",
       "path": "src/engine/foo/",
       "action": "create-doc",
-      "verb": "<operator authors docs/features/foo.md, then `planar-doc cover --doc docs/features/foo.md --source src/engine/foo/`>",
+      "verb": "<operator authors docs/features/foo.md, then `planar-doc cover docs/features/foo.md src/engine/foo/`>",
       "reason": "Net-new engine bucket added by plan 460. No existing doc covers it; the closest ancestor (docs/architecture.md) describes the engine at a higher level."
     },
     {
       "signal": "new-authoring",
       "path": "vendor/some-lib/",
       "action": "nodoc",
-      "verb": "planar-doc nodoc --source vendor/some-lib/",
+      "verb": "planar-doc nodoc vendor/some-lib/",
       "reason": "Vendored third-party code; documentation lives upstream."
     }
   ]

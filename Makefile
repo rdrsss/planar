@@ -80,6 +80,10 @@ test-integration-files: build ## Run integration tests as one executable per tes
 parity-check: build ## Diff zig binary against Go archive binary (plan 351 Phase 5; skips when Go binary unreachable)
 	scripts/parity-check.sh
 
+.PHONY: cli-usage-check
+cli-usage-check: ## Validate authored CLI invocations (agents/, skills/src/, docs/) against the live command schema
+	$(ZIG) build cli-usage-check
+
 .PHONY: bench-verify
 bench-verify: build ## planar-doc verify latency tracker — prints cold + warm wall-clock
 	@echo "planar-doc verify: cold + warm wall-clock (rough; integration tests own the latency contract)"
@@ -107,7 +111,7 @@ coverage-update: build ## Re-seed scripts/coverage-baseline.txt with the current
 	scripts/coverage-check.sh --update
 
 .PHONY: test-all
-test-all: test test-integration parity-check coverage ## Run unit + integration suites + parity-check gate + coverage ratchet
+test-all: test test-integration parity-check coverage cli-usage-check ## Run unit + integration suites + parity-check gate + coverage ratchet + CLI-usage lint
 
 .PHONY: fmt
 fmt: ## Run zig fmt on the source tree

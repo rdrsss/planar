@@ -242,7 +242,6 @@ planar import <path> --no-interpret               # explicitly deterministic-onl
 planar import <path> --strict --apply             # every task must clear --threshold
 planar import <path> --threshold 0.0 --apply      # disable the confidence floor
 planar import <path> --no-status-inference --apply # docs-only / greenfield: all tasks land todo
-planar import <path> --threshold 0.0 --trust-status-inference --apply # bypass >25% refusal
 planar import <path> --roadmap <path>             # override roadmap auto-discovery
 planar import <path> --accept-spec <slug>         # non-interactive forward-spec selection
 planar import <path> --accept-spec all

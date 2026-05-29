@@ -1169,9 +1169,9 @@ When either verb fails, fix the issue and retry — the pre-commit hook keeps dr
 
 When a work cycle ends, the orchestrator launches the documenter agent with the prior manifest, the current repo merkle, and the changed-subtree set. The agent walks each changed source through three outcomes:
 
-- **Extend an existing entry.** A doc already covers a related path; add the changed path to its `sources` map via `planar-doc cover --doc <path> --source <repo-path>`.
+- **Extend an existing entry.** A doc already covers a related path; add the changed path to its `sources` map via `planar-doc cover <path> <repo-path>`.
 - **Author a new doc.** No existing entry covers the change. The agent proposes a doc body; the operator gates the prose, then `planar-doc cover` wires the new entry.
-- **Add to nodoc.** The change is genuinely not worth documenting (vendored code, generated artifacts, etc.). Record the decision via `planar-doc nodoc --source <repo-path>`; the entry is re-evaluated whenever that path's hash changes.
+- **Add to nodoc.** The change is genuinely not worth documenting (vendored code, generated artifacts, etc.). Record the decision via `planar-doc nodoc <repo-path>`; the entry is re-evaluated whenever that path's hash changes.
 
 The documenter never writes prose on its own — it produces a worklist the operator reads and acts on.
 
@@ -1640,7 +1640,7 @@ Notes on the invocation:
 - `--vendor claude` selects the Claude adapter. `--vendor copilot` selects the GitHub Copilot adapter wired in M6 (see Recipe 18); `--vendor codex` parses but exits non-zero — the codex slot is reserved for a future adapter.
 - `--event @-` reads the hook payload from stdin; Claude Code pipes the JSON envelope to the configured command. Use `--event @<path>` if your hook runner stages payloads on disk instead.
 - `PLANAR_DB` MUST point at the same database file `planar` and `planar-watch` open. The hook subprocess does not inherit your shell's `$PLANAR_DB`, so set it explicitly in the hook's `env` block.
-- Each invocation opens its own SQLite connection. WAL mode (set by the engine on connect) lets dozens of concurrent hooks coexist with `planar-watch --follow` readers.
+- Each invocation opens its own SQLite connection. WAL mode (set by the engine on connect) lets dozens of concurrent hooks coexist with `planar-watch feed --follow` readers.
 
 ### Step 2 — Smoke-test the wiring by hand
 
@@ -1726,7 +1726,7 @@ Notes on the invocation:
 - `--vendor copilot` selects the Copilot adapter wired in M6. `--vendor claude` selects the Claude adapter (Recipe 17); `--vendor codex` is reserved and exits non-zero today.
 - `--event @-` reads the hook payload from stdin. Use `--event @<path>` if your runner stages payloads on disk first.
 - `PLANAR_DB` MUST point at the same database file `planar` and `planar-watch` open. Hook subprocesses do not inherit your shell's `$PLANAR_DB`; set it explicitly in the `env` block.
-- Each invocation opens its own SQLite connection. WAL mode (set by the engine on connect) lets dozens of concurrent hooks coexist with `planar-watch --follow` readers.
+- Each invocation opens its own SQLite connection. WAL mode (set by the engine on connect) lets dozens of concurrent hooks coexist with `planar-watch feed --follow` readers.
 
 ### Step 2 — Smoke-test the wiring by hand
 
@@ -2078,7 +2078,7 @@ git merge --no-ff cycle/worktree-management/m3-tests \
     -m "Plan 297 M3 fan-in: tests"
 ```
 
-Per-child conflict handling is conflict-tolerant: a conflict on one child halts that child's merge but does NOT halt the others. The orchestrator runs `git merge --abort`, opens a question via `planar question add --plan 297 --kind blocker ...`, leaves the cycle worktree on disk for operator resolution, and continues to the next child. See [`agents/methodology.md §Conflict resolution at fan-in`](../agents/methodology.md#conflict-resolution-at-fan-in).
+Per-child conflict handling is conflict-tolerant: a conflict on one child halts that child's merge but does NOT halt the others. The orchestrator runs `git merge --abort`, opens a question via `planar question add --plan 297 "<conflict summary>"`, leaves the cycle worktree on disk for operator resolution, and continues to the next child. See [`agents/methodology.md §Conflict resolution at fan-in`](../agents/methodology.md#conflict-resolution-at-fan-in).
 
 ### Step 8 — Integrated reviewer (single pass)
 
