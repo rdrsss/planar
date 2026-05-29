@@ -20,11 +20,36 @@
 //! scope was wrong" (5). The exit code does NOT flow through
 //! `exit.codeFor` — the gate raises and exits directly to keep the
 //! mapping load-bearing in one place.
+//!
+//! Bypass mechanism (Plan 297 M3 follow-up, t#2937):
+//!
+//! The original implementation honored `PLANAR_DISABLE_WORKTREE_GATE=1`
+//! unconditionally. That created a runtime escape hatch that any
+//! operator script or accidental shell config could exploit. The
+//! hardened design uses a two-layer guard:
+//!
+//!   Layer 1 — build-time flag (`-Dtest-binary=true`). The production
+//!     binary compiles with `build_options.test_binary = false`, so the
+//!     env-var check is dead code and the gate is unconditional. Test
+//!     binaries (built by `zig build test-integration -Dtest-binary=true`)
+//!     compile with `test_binary = true`, enabling the env-var pathway.
+//!
+//!   Layer 2 — env var (`PLANAR_DISABLE_WORKTREE_GATE=1`). Honored only
+//!     when `test_binary` is true. The integration harness injects it so
+//!     that fixture commands whose paths happen to live under `.worktrees/`
+//!     (Planar is itself developed inside a worktree) do not trip the gate
+//!     for unrelated tests. The worktree-scope scenario test explicitly
+//!     un-sets it to exercise the actual refusal path.
+//!
+//! Net security posture: setting the env var in production has no effect.
+//! The gate is only defeatable at compile time, which requires deliberate
+//! intent by whoever builds the binary.
 
 const std = @import("std");
 const cli = @import("cli");
 const runtime = @import("runtime");
 const engine = @import("engine");
+const build_options = @import("build_options");
 const classification = @import("verb_classification.zig");
 const scope_mod = @import("scope.zig");
 
@@ -41,14 +66,21 @@ pub const exit_code_worktree_refusal: u8 = 8;
 /// that the rule is about *where the verb runs*, not which scope it
 /// targets. The detection consults cwd-derived state only.
 pub fn check(comptime root: cli.Cmd, argv: []const []const u8) void {
-    // Test / harness escape: `PLANAR_DISABLE_WORKTREE_GATE=1`
-    // skips the check entirely. Used by the integration harness,
-    // whose tmp-dir fixtures inevitably live under this repo's
-    // `.worktrees/` when Planar is itself being developed inside a
-    // worktree. NOT a documented operator-facing flag — it's a test
-    // affordance only.
-    if (getPosixEnv("PLANAR_DISABLE_WORKTREE_GATE")) |v| {
-        if (v.len > 0 and v[0] != '0') return;
+    // Layer 1 (build-time): the env-var bypass is only compiled in for
+    // test binaries (built with -Dtest-binary=true). Production builds
+    // have `build_options.test_binary = false` so this entire branch is
+    // dead code — the gate cannot be suppressed via the environment.
+    //
+    // Layer 2 (runtime, test builds only): `PLANAR_DISABLE_WORKTREE_GATE=1`
+    // skips the check. The integration harness injects this so that
+    // fixture commands running under a `.worktrees/...` path don't
+    // trip the gate for tests that aren't about the gate. The
+    // worktree-scope scenario test explicitly UN-sets this var to
+    // exercise the actual refusal path.
+    if (comptime build_options.test_binary) {
+        if (getPosixEnv("PLANAR_DISABLE_WORKTREE_GATE")) |v| {
+            if (v.len > 0 and v[0] != '0') return;
+        }
     }
 
     // Resolve verb path from argv. We do this without invoking the

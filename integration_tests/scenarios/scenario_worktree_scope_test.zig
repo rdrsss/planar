@@ -185,9 +185,11 @@ test "scenario: worktree scope (convention path) — reads pass, planning verbs 
     // ---- WRITE from worktree: refused with exit 8 + 4-line block.
     //
     // For the refusal-path assertions we explicitly UN-set
-    // PLANAR_DISABLE_WORKTREE_GATE (the harness's default suppresses
-    // the gate to avoid breaking unrelated scenarios). The gate
-    // treats an empty value as "not set."
+    // PLANAR_DISABLE_WORKTREE_GATE (the harness injects "1" by default
+    // to suppress the gate for fixture paths that live under
+    // `.worktrees/`). This test binary was built with -Dtest-binary=true,
+    // so the env var is active; setting it to "" disables the bypass and
+    // lets the gate fire. The gate treats an empty value as "not set."
 
     const ungate = [_]harness.Suite.ExtraEnvEntry{
         .{ .key = "PLANAR_DISABLE_WORKTREE_GATE", .value = "" },
@@ -292,7 +294,8 @@ test "scenario: worktree scope (non-convention path) — fallback detects, plann
 
     // A planning verb run from the non-convention worktree path must
     // still be refused (proves the fallback path fires). Same
-    // un-gate-via-env approach as scenario 1.
+    // un-gate-via-env approach as scenario 1: set the var to "" to
+    // disable the test-binary bypass and let the gate fire.
     const ungate = [_]harness.Suite.ExtraEnvEntry{
         .{ .key = "PLANAR_DISABLE_WORKTREE_GATE", .value = "" },
         .{ .key = "PLANAR_DB", .value = suite.absDbPath() },
@@ -349,7 +352,9 @@ test "scenario: main worktree (canonical checkout) — planning verbs succeed" {
     // From the canonical checkout root, `plan create` should succeed
     // even with the gate enabled. Explicitly un-gate via env so the
     // test exercises the gate's "not a worktree" classification path,
-    // not the harness's default suppression.
+    // not the harness's default suppression. Setting the env var to ""
+    // disables the test-binary bypass; the gate then runs and must
+    // allow the verb because this is the canonical checkout root.
     const ungate = [_]harness.Suite.ExtraEnvEntry{
         .{ .key = "PLANAR_DISABLE_WORKTREE_GATE", .value = "" },
         .{ .key = "PLANAR_DB", .value = suite.absDbPath() },
