@@ -25,10 +25,10 @@ Captures a context snapshot for the current or named task, creates a `handoffs` 
 
 ## Worktree State And Handoffs
 
-Plan 297 M6 wires the resume packet to surface the `worktree_path` recorded on the active `agent_work_claims` row, so a cold-start resumer can prepend `cd <path>` before continuing. The handoff record itself does NOT yet copy that field — there are no `worktree_path` / `branch` columns on `handoffs` or `context_snapshots` today. Two operator-visible consequences:
+Plan 297 M6 wires the resume packet to surface the `worktree_path` recorded on the active `agent_work_claims` row (per the canonical [worktree](../../agents/methodology.md#worktrees) convention — `epic/<plan-slug>` + `cycle/<plan-slug>/<task-slug>` topology, main checkout stays on master), so a cold-start resumer can prepend `cd <path>` before continuing. The handoff record itself does NOT yet copy that field — there are no `worktree_path` / `branch` columns on `handoffs` or `context_snapshots` today. Two operator-visible consequences:
 
 - If the source session releases its claim before terminating, the resumer's `planar resume` packet will show `active_claim: null` and the worktree context is lost. Keep the claim alive through the handoff (do not call `planar-agent release` until after the resumer has captured the path) or paste the worktree path explicitly into the snapshot body / `--note`.
-- The next iteration of the worktree-management roadmap will add a `worktree_path` column to either `handoffs` or `context_snapshots` so the resumer can recover the path even when the original claim has been released. Track via the M6 follow-up task.
+- Deferred handoff-persistence follow-up: a future iteration adds a `worktree_path` column to either `handoffs` or `context_snapshots` so the resumer can recover the path even when the original claim has been released. Tracked as task 2947 on plan 297; see [`docs/architecture.md` §Application tables](../../docs/architecture.md#application-tables) for the gap call-out.
 
 ## CLI Commands
 
