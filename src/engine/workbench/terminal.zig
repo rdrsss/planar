@@ -83,7 +83,6 @@ pub const Classification = enum {
 /// Status enums per kind. These mirror the migration CHECK constraints
 /// verbatim — a divergence is a compile-time error in the classification
 /// switch below.
-
 pub const PlanStatus = enum {
     draft,
     active,
@@ -183,7 +182,6 @@ pub const ArtifactStatus = enum {
 /// Adding a new status to any kind's enum (because a future migration
 /// extended the CHECK constraint) requires updating the matching switch
 /// here; the compiler will refuse to build until every variant is handled.
-
 pub fn classifyPlan(s: PlanStatus) Classification {
     return switch (s) {
         .draft, .active, .paused => .active,
