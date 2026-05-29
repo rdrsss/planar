@@ -292,11 +292,11 @@ note: appended .worktrees/ to .git/info/exclude (per-clone, no commit).
 
 The hint is informational, not blocking. The orchestrator does not commit the `.gitignore` entry itself — that's an operator choice (repo conventions vary on whether `.worktrees/` belongs in `.gitignore` or stays per-clone).
 
-### `parallel-fanout` — fan-out
+### `parallel-fanout` — fan out, fan in, single reviewer
 
-Under `parallel-fanout` the orchestrator picks the parallel-eligible subset of the plan's open tasks, fans out N coders into N cycle worktrees off a shared epic branch, waits for all N terminal returns, and then proceeds to fan-in (covered in a sibling subsection landing in a later cycle — M9 work). This subsection covers the **fan-out half** only: eligibility, per-cycle confirmation, and concurrent dispatch.
+Under `parallel-fanout` the orchestrator picks the parallel-eligible subset of the plan's open tasks, fans out N coders into N cycle worktrees off a shared epic branch, waits for all N terminal returns, then runs a sequential fan-in pass (claim-arrival order, conflict-tolerant), dispatches a single reviewer against the integrated epic state, and cleans up the per-cycle worktrees only after reviewer approval. This subsection covers the full strategy in four phases — eligibility + dispatch (the fan-out half), then terminal aggregation, sequential fan-in, integrated reviewer, and cleanup (the fan-in half).
 
-The per-coder shape under `parallel-fanout` mirrors [`isolated-sequential`](#isolated-sequential--per-cycle-worktree-on-an-epic-child-branch) — each coder runs in its own cycle worktree on its own `cycle/<plan-slug>/<task-slug>` child branch off `epic/<plan-slug>`, with `isolation: "worktree"`, `--worktree <path>` on `planar-agent pull`, and the `cd <cycle-worktree-path>` first-action directive in the brief. The difference is that under `parallel-fanout` there are N of those per cycle and they run concurrently. See `isolated-sequential` for the per-coder ritual; this subsection focuses on what's new (the N-wide eligibility + dispatch).
+The per-coder shape under `parallel-fanout` mirrors [`isolated-sequential`](#isolated-sequential--per-cycle-worktree-on-an-epic-child-branch) — each coder runs in its own cycle worktree on its own `cycle/<plan-slug>/<task-slug>` child branch off `epic/<plan-slug>`, with `isolation: "worktree"`, `--worktree <path>` on `planar-agent pull`, and the `cd <cycle-worktree-path>` first-action directive in the brief. The difference is that under `parallel-fanout` there are N of those per cycle and they run concurrently, with a single consolidated reviewer pass at fan-in instead of per-coder reviewer cadence. See `isolated-sequential` for the per-coder ritual; this subsection focuses on what's new (the N-wide eligibility, concurrent dispatch, sequential fan-in, integrated reviewer).
 
 #### Eligibility algorithm (pre-dispatch)
 
@@ -339,10 +339,118 @@ After the eligibility report and the operator's "fan out N tasks now?" confirmat
 3. **Concurrent Agent dispatch — single message, N tool calls.** Issue all N Agent tool calls in a **single message** (the canonical "multiple tool uses in one message → parallel execution" pattern in the harness). Sequential Agent invocations would serialize and defeat the strategy. Each Agent call carries:
    - `isolation: "worktree"` pointing at the cycle worktree path for that task.
    - A brief that contains the task ID, the claim token, the absolute worktree path, the spec citations the coder needs, the locked decisions, the gates, the report shape, and the `cd <cycle-worktree-path>` first-action directive (per [Brief composition](#brief-composition) and [`isolated-sequential` § Coder dispatch](#coder-dispatch-under-isolated-sequential)). The brief MUST NOT paraphrase the eligibility decision — the coder operates only on its assigned task.
-4. **Wait for terminal returns.** The orchestrator waits for all N Agent tool calls to return. Each returns its coder's terminal status (`complete` / `fail` / `release` / `block`). The orchestrator does **not** proactively monitor heartbeats — coders heartbeat themselves at TTL/2 cadence per [Claim ritual](#claim-ritual-planar-agent). The orchestrator's job between dispatch and aggregation is to wait.
-5. **Aggregated terminal handling.** Inspect each claim's terminal status after all N returns:
-   - **All-complete** → proceed to fan-in (sequential merge of completed children onto the epic in claim-arrival order, single reviewer pass against the integrated diff). Fan-in is a sibling subsection (M9 — out of scope for this cycle).
-   - **Any-fail / any-stale / any-block** → halt the fan-in step, surface the partial state to the operator (which children succeeded, which failed, with claim tokens + worktree paths so the operator can inspect), and escalate. Do not silently merge a partial fan-out — the all-or-nothing terminal contract is what keeps the epic's history clean.
+4. **Wait for terminal returns.** The orchestrator waits for all N Agent tool calls to return. The Agent tool's parallel-execution contract is that the orchestrator's turn does not resume until every parallel call has returned (success or failure), so the wait is implicit — there is no orchestrator-side polling loop. Each returns its coder's terminal status (`complete` / `fail` / `release` / `block`). The orchestrator does **not** proactively monitor heartbeats during the wait — coders heartbeat themselves at TTL/2 cadence per [Claim ritual](#claim-ritual-planar-agent). The orchestrator's job between dispatch and aggregation is to wait.
+5. **Aggregated terminal check (cross-N).** After all N Agent calls return, inspect each claim's terminal status (one read per `claim_token`) before doing anything else:
+   - **All-complete** → proceed to [Fan-in pass (sequential merges)](#fan-in-pass-sequential-merges) below. This is the only path that runs fan-in.
+   - **Any-fail / any-stale / any-block** → halt before any fan-in merge, surface the partial state to the operator (which children succeeded, which failed/blocked, with claim tokens + worktree paths so the operator can inspect each cycle worktree), and escalate. Do not silently merge a partial fan-out — the all-or-nothing terminal contract is what keeps the epic's history clean.
+   - **Any-stale specifically** → before escalating, run the recovery recipe from [Claim ritual](#claim-ritual-planar-agent) (`planar-agent reconcile --dry-run` to confirm staleness, then `planar-agent abort --claim <token> --reason <text>` to force-release if the operator confirms). A stale claim is not silently retried; it surfaces to the operator with both options (reconcile + re-dispatch the single task in a follow-up cycle, or abort the whole fan-out).
+
+#### Fan-in pass (sequential merges)
+
+After the aggregated terminal check returns all-complete, the orchestrator runs the fan-in inside the **epic worktree** — not the main checkout, not any cycle worktree. The merges are sequential in claim-arrival order, `--no-ff` (preserving the per-cycle history shape so the fan-out structure is visible in `git log --graph`), and **conflict-tolerant per branch**: a conflict on child N halts that child's merge but does NOT halt children N+1, N+2, … — each child is evaluated against the current epic HEAD in order and merged if it applies cleanly.
+
+```bash
+# cd into the EPIC worktree. The main checkout is never touched at fan-in.
+cd <repo>/.worktrees/epic/<plan-slug>/
+
+# Optional: sync master in first, per the same convention as isolated-sequential.
+# Recommended when master has advanced since the last sync; one merge commit per
+# sync. Skip when master has not advanced.
+git fetch origin master
+git merge --no-ff origin/master -m "Sync epic/<plan-slug> with master @ <sha>"
+
+# Sequential fan-in in claim-arrival order. Order is fixed by the order the
+# orchestrator's N `planar-agent pull` calls returned (each call is serialized
+# through SQLite's single-writer lock, so the order is deterministic and
+# recoverable from the dispatch entry's recorded claim_tokens).
+for child in cycle/<plan-slug>/<task-slug-1> cycle/<plan-slug>/<task-slug-2> ... ; do
+  if git merge --no-ff "$child" \
+       -m "Plan <id> <milestone> fan-in: <task-summary-for-$child>" ; then
+    # Clean merge — move on to the next child.
+    continue
+  else
+    # Conflict — see "Per-child conflict handling" below. Halt THIS child's
+    # merge (git merge --abort), open a question, leave the cycle worktree on
+    # disk, and CONTINUE to the next child — the fan-in does not abort the
+    # whole pass on a single child conflict.
+    git merge --abort
+    record_conflict_for_operator "$child"
+    continue
+  fi
+done
+```
+
+Per-child conflict handling:
+
+- On `git merge` exit non-zero, `git merge --abort` to restore the epic worktree to its pre-attempt state. The epic's HEAD now reflects every earlier child's clean merge plus the optional master sync; the conflicting child is **not** merged.
+- Open a question via `planar question add --plan <plan> --kind blocker --title "<plan-slug> fan-in conflict: <task-slug> against epic HEAD"` with the conflict-marker output captured in the body. Link the question to the child's task via `planar links add question:<qid> task:<tid> --rel blocks`.
+- Leave the cycle worktree on disk (`<repo>/.worktrees/cycle/<plan-slug>/<task-slug>/`) and the cycle branch in place. The operator resolves the conflict against the post-fan-in epic state by either rebasing the cycle branch onto the current epic HEAD or hand-merging in the epic worktree.
+- The classification of "trivial vs. semantic" conflict is an operator judgement — the orchestrator does not attempt to auto-resolve. See [`agents/methodology.md` § Conflict resolution at fan-in](../../agents/methodology.md#conflict-resolution-at-fan-in) for the full taxonomy (touches mis-prediction, ordering effects, semantic vs. mechanical).
+- Continue to the next child. Other children may legitimately merge cleanly even if an earlier child conflicted, because they touch disjoint files from the conflicting child by construction (the eligibility algorithm's rule 2 enforced disjoint `task_touches`). The deferred-conflict surface is one or more child branches the operator must hand-merge after the cycle's reviewer runs.
+
+After the loop, the orchestrator records the post-fan-in state: which children merged cleanly, which deferred to operator resolution. If at least one child merged cleanly, proceed to the integrated reviewer. If **zero** children merged cleanly, escalate to the operator without dispatching the reviewer — there is no integrated diff to review.
+
+#### Integrated reviewer dispatch (single pass)
+
+After fan-in, the orchestrator dispatches **one** reviewer against the epic's consolidated state — not one reviewer per child. The reviewer's decision applies to the whole fan-out cycle as a unit.
+
+The reviewer's diff target is the epic's integrated state:
+
+```bash
+# In the epic worktree:
+git diff master..HEAD
+```
+
+This diff includes (in commit order) any optional master-sync merge commits, every cleanly merged child's commits + the corresponding `Plan <id> <milestone> fan-in: ...` merge commits, and any earlier fan-in/sync commits already on the epic from prior cycles. The reviewer reads the union, not per-child slices — this is the load-bearing semantic difference between `parallel-fanout` and per-cycle reviewer cadence.
+
+The brief composition rules in [Brief composition](#brief-composition), the reviewer-call shape in [Reviewer dispatch profile](#reviewer-dispatch-profile), and the [Blind-read contract](#blind-read-contract) all apply unchanged. The brief MUST:
+
+- Cite each child's task ID and the cycle branch name (`cycle/<plan-slug>/<task-slug>`) so the reviewer can drill into per-child commits via `git log <branch>` if needed.
+- Note explicitly which children deferred to operator resolution (if any) so the reviewer does not treat their absence from the diff as a missed deliverable — the work exists on the cycle branch but is not yet merged into the epic.
+- Point the reviewer's `cd` at the epic worktree, not the main checkout or any cycle worktree. The reviewer reads `git diff master..HEAD` from inside `<repo>/.worktrees/epic/<plan-slug>/`.
+- Carry the standard report shape, decision options (`approve` / `request-changes` / `open-question` / `abort`), and the [Iteration 5 contract](#iteration-5-contract).
+
+The reviewer's verdict applies to the whole fan-in cycle: an `approve` clears all cleanly merged children (cleanup proceeds for those), a `request-changes` opens a revisions cycle against the epic (see [Reviewer-requested revisions](#reviewer-requested-revisions-against-epic) below), an `open-question` surfaces to the operator and pauses the cycle, an `abort` escalates without cleanup.
+
+#### Cleanup pass (post-reviewer-approval)
+
+Cleanup runs **only after** the reviewer returns `approve` (caveats are filed as new tasks per [Iteration 5 contract](#iteration-5-contract); they do not block cleanup). On `request-changes` / `open-question` / `abort` the per-cycle worktrees and child branches stay in place for the revisions cycle or operator inspection.
+
+When the reviewer approves, remove every cycle worktree and force-delete every child branch that participated in this fan-out cycle (whether it merged cleanly or deferred — the operator resolves deferred children via the open question and a follow-up cycle, not via the cleanup pass):
+
+```bash
+# children = the full list of cycle/<plan-slug>/<task-slug> from this cycle's
+# dispatch entry (cleanly merged + deferred-on-conflict alike).
+for child in cycle/<plan-slug>/<task-slug-1> cycle/<plan-slug>/<task-slug-2> ... ; do
+  slug="${child#cycle/<plan-slug>/}"
+  git -C <repo> worktree remove "<repo>/.worktrees/cycle/<plan-slug>/${slug}/"
+  git -C <repo> branch -D "${child}"
+done
+```
+
+Two locked invariants:
+
+- **The epic worktree and `epic/<plan-slug>` branch persist** through cleanup, same as under `isolated-sequential`. They are removed only after the operator merges `epic/<plan-slug>` into master (operator-driven, surfaced as "epic/<plan-slug> is N commits ahead of master, reviewer-approved, ready for PR" — the orchestrator does not run the epic→master merge itself).
+- **The main checkout is never touched** at any point in fan-out, fan-in, reviewer dispatch, or cleanup. The operator's pwd stays clean.
+
+Force-delete (`-D`, not `-d`) for the same reason as under [`isolated-sequential` § Post-reviewer-approval cleanup](#post-reviewer-approval-cleanup): cycle branches are merged into `epic/<plan-slug>` but NOT into master, and `git branch -d` checks merged-into-HEAD which is master.
+
+If the cleanup loop encounters a `git worktree remove` failure (e.g., the operator has the worktree open in an editor), surface the failure to the operator with the cycle worktree path and stop the cleanup pass at that child. The remaining children's cleanup is the operator's manual call once they free the locked worktree. Do not retry destructively.
+
+#### Reviewer-requested revisions (against epic)
+
+When the reviewer returns `request-changes`, the next coder cycle works **against the epic worktree directly** — not against any per-child branch. The rationale is that reviewer-requested changes on a fan-out cycle typically span the integrated diff (the reviewer is reasoning about the union of children's contributions plus their interactions), so a per-child branch would be too narrow to host the fix.
+
+Mechanics:
+
+1. **Do not clean up the prior cycle's child worktrees yet** — the revisions cycle may need to reference them for context. Cleanup runs only after the eventual approve, post-revisions.
+2. **Cut a new cycle branch from the current epic HEAD** (which already contains all the cleanly merged children from the prior fan-in pass): `git -C <repo> branch cycle/<plan-slug>/m<N>-revisions-iter-<i> epic/<plan-slug>`. The iteration counter `<i>` follows the [Iteration 5 contract](#iteration-5-contract) (revisions iterations count against the 5-cap on the cycle).
+3. **Create a new cycle worktree on that branch**: `git -C <repo> worktree add <repo>/.worktrees/cycle/<plan-slug>/m<N>-revisions-iter-<i>/ cycle/<plan-slug>/m<N>-revisions-iter-<i>`. The branch is cut from the CURRENT epic state (with all prior cleanly merged children integrated), NOT from any N-th child branch.
+4. **Claim and dispatch one coder** against the revisions worktree: `planar-agent claim --entity task:<revisions-task-id> --worktree <abs-path> --role coder --json` (the revisions task is either an existing task the reviewer flagged or a new task the orchestrator creates from the reviewer's verdict — operator's choice surfaced before dispatch). The brief carries the reviewer's verdict verbatim, the integrated diff the reviewer reviewed, and the `cd <revisions-worktree-path>` first-action directive.
+5. **Fan-in the revisions branch back onto the epic** using the same `git merge --no-ff` flow from [Fan-in pass](#fan-in-pass-sequential-merges) above (a one-child fan-in, claim-arrival order trivially satisfied). On a clean merge, dispatch a fresh integrated reviewer against the new epic HEAD. On a conflict, open a question per the per-child conflict handling and halt.
+6. **Iterate.** Each revisions cycle is a normal coder/reviewer iteration that counts against the cycle's 5-iteration cap. On reviewer `approve`, run the full cleanup pass — including the prior cycle's child worktrees that were kept in place at step 1, plus the revisions worktree and branch.
+
+The revisions branch naming (`cycle/<plan-slug>/m<N>-revisions-iter-<i>`) is a convention — the orchestrator may pick any unique name that does not collide with an existing cycle branch. The discriminator MUST encode the milestone and the iteration number so concurrent revisions across milestones do not collide (the M-prefix protects against multi-plan reuse of the same epic worktree, though that is an unsupported topology — one epic per plan).
 
 #### Migration discipline under parallelism
 
