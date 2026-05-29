@@ -52,7 +52,6 @@ comptime {
     _ = @import("scenarios/scenario_audit_trail_test.zig");
     _ = @import("scenarios/scenario_cross_scope_polyrepo_test.zig");
     _ = @import("scenarios/scenario_decision_workflow_test.zig");
-    _ = @import("scenarios/scenario_doc_system_test.zig");
     _ = @import("scenarios/scenario_external_plane_test.zig");
     _ = @import("scenarios/scenario_feature_lifecycle_test.zig");
     _ = @import("scenarios/scenario_handoff_resume_test.zig");

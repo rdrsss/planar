@@ -29,7 +29,7 @@ const harness = @import("harness");
 // resume, search, tree) are excluded.
 const PARENT_VERBS = [_][]const u8{
     "plan",   "task",      "artifact",  "audit",     "capture",
-    "config", "decision",  "doc",       "ext",       "links",
+    "config", "decision",  "ext",       "links",
     "local",  "question",  "scenario",  "scope",     "skills",
     "spec",   "templates", "test-spec", "workbench", "workspace",
     "assoc",

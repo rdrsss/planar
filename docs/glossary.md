@@ -2,7 +2,6 @@
 title: Glossary
 doc_kind: glossary
 template_version: 1
-source_artifacts: [artifact:79, artifact:80, artifact:81, artifact:82]
 regenerated_at: 2026-05-18T00:00:00Z
 regenerated_by: hand
 ---
@@ -23,17 +22,17 @@ associations (the default created by `planar init`) and `org` for
 polyrepo workspaces. Cross-repo features rely on the org-kind
 associations to span repo boundaries cleanly.
 
-## Manifest (`.manifest-docs`)
+## Manifest (`.planar-manifest`)
 
-The xxh3-keyed two-level Merkle index across `docs/`, stored at the
-repo root as `.manifest-docs`. Each entry records the doc's
-`doc_hash` (normalised content hash), a per-source `sources` map
-(one xxh64 per source artifact/decision/plan body at synthesis
-time), a `sources_hash`, and an `entry_hash`. A root hash rolls the
-sorted entry-hash list up. `planar doc manifest verify` is the O(1)
-root compare; `planar doc manifest diff` walks the four-signal
-classifier (regenerate-candidate, hand-edit, new-authoring,
-deletion); `planar doc manifest update` rebuilds and writes
+The xxh64-keyed merkle index over the working tree, stored at the
+repo root as `.planar-manifest`. Each entry records the doc's
+`doc_hash`, a per-source `sources` map (one merkle hash per
+**repo-path** subtree the doc covers — directories or files in the
+working tree), a `sources_hash`, and an `entry_hash`. A merkle root
+rolls everything up. `planar-doc verify` is the O(1) root compare;
+`planar-doc diff` walks the three-signal classifier
+(regenerate-candidate, hand-edit, new-authoring / deletion);
+`planar-doc build` recomputes hashes and writes the manifest
 atomically.
 
 ## Scope

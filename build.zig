@@ -288,6 +288,31 @@ pub fn build(b: *std.Build) void {
         }),
     });
     b.installArtifact(watch_exe);
+
+    // -----------------------------------------------------------------
+    // `planar-doc` executable (plan 423 M6). Fourth binary in the
+    // architecture — repo-state documentation manifest tool. Read-heavy
+    // with one small state file (`.planar-manifest`) as its only write.
+    // Links cli, engine (docs subsystem), runtime, build_options. Does
+    // NOT link db — this binary never opens SQLite. Capability boundary
+    // is the verb set: build, verify, diff, cover, nodoc, lint.
+    // -----------------------------------------------------------------
+    const doc_exe = b.addExecutable(.{
+        .name = "planar-doc",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/cmd/planar-doc/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "cli", .module = cli_mod },
+                .{ .name = "engine", .module = engine_mod },
+                .{ .name = "runtime", .module = runtime_mod },
+                .{ .name = "build_options", .module = build_options_mod },
+            },
+        }),
+    });
+    b.installArtifact(doc_exe);
+
     // Vendored-deps drift check runs before the binary is installed, so
     // `zig build` (which depends on the install step) fails loudly on
     // any vendor/<name>/VENDOR.toml mismatch.
@@ -328,6 +353,9 @@ pub fn build(b: *std.Build) void {
     const watch_exe_tests = b.addTest(.{ .root_module = watch_exe.root_module, .filters = test_filters_opt });
     const run_watch_exe_tests = b.addRunArtifact(watch_exe_tests);
 
+    const doc_exe_tests = b.addTest(.{ .root_module = doc_exe.root_module, .filters = test_filters_opt });
+    const run_doc_exe_tests = b.addRunArtifact(doc_exe_tests);
+
     const db_tests = b.addTest(.{ .root_module = db_mod, .filters = test_filters_opt });
     const run_db_tests = b.addRunArtifact(db_tests);
 
@@ -345,6 +373,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_exe_tests.step);
     test_step.dependOn(&run_agent_exe_tests.step);
     test_step.dependOn(&run_watch_exe_tests.step);
+    test_step.dependOn(&run_doc_exe_tests.step);
     test_step.dependOn(&run_db_tests.step);
     test_step.dependOn(&run_cli_tests.step);
     test_step.dependOn(&run_engine_tests.step);
@@ -395,6 +424,10 @@ pub fn build(b: *std.Build) void {
     run_integration_all.setEnvironmentVariable(
         "PLANAR_WATCH_BIN",
         b.getInstallPath(.bin, "planar-watch"),
+    );
+    run_integration_all.setEnvironmentVariable(
+        "PLANAR_DOC_BIN",
+        b.getInstallPath(.bin, "planar-doc"),
     );
     test_integration_step.dependOn(&run_integration_all.step);
 
@@ -476,6 +509,10 @@ fn registerIntegrationTestDir(
         run.setEnvironmentVariable(
             "PLANAR_WATCH_BIN",
             b.getInstallPath(.bin, "planar-watch"),
+        );
+        run.setEnvironmentVariable(
+            "PLANAR_DOC_BIN",
+            b.getInstallPath(.bin, "planar-doc"),
         );
         test_integration_step.dependOn(&run.step);
     }
