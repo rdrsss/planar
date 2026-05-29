@@ -637,6 +637,58 @@ and the reviewer cannot recover the loss after the fact.
 
 State capture lives in SQLite per the locked schema. Tasks carry `next_action`. `sessions` and `session_entries` capture the iteration timeline. `agent_work_claims` records live ownership and lease state. `agent_actions` records typed time-bounded work inside sessions. `decisions` records reviewer rulings. Open questions are `question` rows linked to the task. Aborts surface as session entries with `prefix='error'` linked to the task and the originating decision, and the corresponding claim is released as `aborted` or later reconciled as `stale`.
 
+## Heartbeat status contract
+
+Agents communicate their current activity to the read surface (`planar-watch ps`, `planar-watch feed`) by supplying an optional `--status <text>` string on every heartbeat call:
+
+```
+planar-agent heartbeat --claim <token> --status "editing src/engine/planning/question.zig"
+```
+
+When `--status` is omitted, the heartbeat refreshes the lease without changing the displayed activity. Status strings are **free-form text** (Decision D1, plan 467 tech-spec § Concepts → Status string vs structured state) — there is no state machine enum. Agents choose strings that describe what they are doing in human-readable terms.
+
+### The `awaiting:` prefix convention
+
+When an agent is blocked on an external event — a downstream sub-agent returning, an operator answering a question, an external API responding — it prefixes the status string with `awaiting:`:
+
+```
+planar-agent heartbeat --claim <token> --status "awaiting:coder"
+planar-agent heartbeat --claim <token> --status "awaiting:reviewer"
+planar-agent heartbeat --claim <token> --status "awaiting:operator-confirmation"
+```
+
+The `awaiting:` prefix is a convention, not a parsed enum. The read surface (`planar-watch ps`) uses it as a color/sort signal but does not parse beyond the prefix boundary. Plain text (no prefix) means the agent is actively working.
+
+### Per-phase-transition cadence rule
+
+Heartbeat with a new `--status` string at every meaningful phase boundary:
+
+- **claim-acquired** → `"claim acquired: task <id>"`
+- **reading brief** → `"reading brief"`
+- **editing files** → `"editing <module-or-area>"` (one status per area)
+- **running gates** → one status per gate (`"running make fmt-check"`, `"running make test"`, etc.)
+- **committing / reporting** → `"committing"` or `"reporting"` as appropriate
+
+Heartbeats between phase transitions (lease-renewal-only) may omit `--status`. The cadence goal is: any operator watching `planar-watch ps` can tell what phase the agent is in without waiting for the next phase transition.
+
+For long operations (> 30 s), heartbeat at least once per TTL/2 even if the status string does not change. Pass `--ttl <secs>` to extend the lease if needed.
+
+### Do not manually duplicate entity-create events
+
+The engine hooks added in plan 467 M1 automatically write an `agent_actions` row when `question.create`, `decision.create`, or `artifact.create` fires under an active claim. Agents MUST NOT also call a separate `planar-agent heartbeat --status "created question X"` for the same event — that produces a duplicate action row and clutters the feed.
+
+Status strings describe the **agent's own state** (what it is doing), not a mirror of entity-create events. Entity creates surface automatically; status strings are the agent's judgment about its current phase.
+
+### 256-byte cap on `--status` payload
+
+`planar-agent heartbeat --status` enforces a 256-byte upper bound on the status string (plan 467 M1, task 3038). Strings longer than 256 bytes are rejected with `error.InvalidInput`. Keep status strings concise: a short phrase is enough for the feed to be readable.
+
+### Cross-references
+
+- Per-role canonical status strings: see the "Status reporting" sections in [`agents/coder.md`](coder.md#status-reporting), [`agents/orchestrator.md`](orchestrator.md#status-reporting), [`agents/planner.md`](planner.md#status-reporting), [`agents/reviewer.md`](reviewer.md#status-reporting), [`agents/test-coder.md`](test-coder.md#status-reporting), and [`agents/ingestor.md`](ingestor.md#status-reporting).
+- `agent_actions` schema: see `docs/architecture.md` § agent_actions.
+- Claim ritual: see [Coordination claims](#coordination-claims) above.
+
 ## Things To Revisit
 
 - **Iteration cap of 5.** Hard-coded today. Revisit once empirical data on real workloads exists — the right number may be 3, 5, or 8 depending on task shape. Move to the `config` table or methodology frontmatter if it needs to flex per project.

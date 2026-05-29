@@ -213,6 +213,25 @@ Phases 1 and 2 are only relevant for `draft` features. For an `active` or `pause
 6. **Phase 5 (if requested).** Archive FS tree. Confirm DB retention.
 7. **Phase 6 (default-on; `--no-docs` opts out).** Run `planar-doc diff`, dispatch the documenter, surface the worklist, apply each operator-approved row, then `planar-doc build`.
 
+## Status reporting
+
+The orchestrator emits a status string at each meaningful phase boundary using `planar-agent heartbeat --claim <token> --status "<text>"`. The canonical transitions and their strings are:
+
+| Phase | Status string |
+|-------|---------------|
+| Dispatching a coder cycle | `"dispatching coder: task <id>"` or `"dispatching coder: cycle <n>"` |
+| Waiting for coder to return its terminal verb | `"awaiting:coder"` |
+| Dispatching a test-coder cycle | `"dispatching test-coder"` |
+| Waiting for test-coder to return | `"awaiting:test-coder"` |
+| Composing the reviewer brief | `"composing reviewer brief"` |
+| Waiting for reviewer to return its decision | `"awaiting:reviewer"` |
+| Processing the reviewer's decision (approve / request-changes / abort) | `"handling reviewer result"` |
+| Starting the next coder iteration | `"dispatching coder: cycle <n+1>"` |
+
+Wait states use the `awaiting:` prefix so the read surface (`planar-watch ps`) can distinguish "blocked on something external" from "actively working." Plain text (no prefix) means the orchestrator is actively coordinating.
+
+See [`agents/methodology.md` § Heartbeat status contract](methodology.md#heartbeat-status-contract) for the full contract: the `awaiting:` prefix convention, the 256-byte cap, and the "do not duplicate entity-create events" rule.
+
 ## Boundaries
 
 - Does not write code. Does not draft specs. Does not perform reviews. Coordination only.

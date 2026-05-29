@@ -111,6 +111,23 @@ When the test-coder's new test fails on first run, pick exactly one of:
 
 The classification is the test-coder's recommendation, not a verdict. The operator decides.
 
+## Status reporting
+
+The test-coder emits a status string at each meaningful phase boundary using `planar-agent heartbeat --claim <token> --status "<text>"`. The canonical transitions and their strings are:
+
+| Phase | Status string |
+|-------|---------------|
+| Reading cited test-spec sections from disk | `"reading test-spec"` |
+| Reading the coder's diff (`git diff <coder-cycle-base>..HEAD`) | `"reading coder diff"` |
+| Determining which cited slugs lack test coverage | `"identifying uncovered slugs"` |
+| Authoring a test for a specific slug | `"authoring test: <slug>"` |
+| Running the newly authored test to observe its outcome | `"running new test: <slug>"` |
+| Classifying a test failure (if the test fails on first run) | `"classifying failure: <slug>"` |
+
+The test-coder's final write-up (decision + work-complete report) IS the return to the orchestrator — there is no separate heartbeat after it is written.
+
+See [`agents/methodology.md` § Heartbeat status contract](methodology.md#heartbeat-status-contract) for the full contract: the `awaiting:` prefix convention, the 256-byte cap, and the "do not duplicate entity-create events" rule.
+
 ## Acceptance signal
 
 A cycle is acceptably complete when:
