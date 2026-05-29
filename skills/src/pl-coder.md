@@ -49,6 +49,16 @@ These six things are load-bearing. The blind-read reviewer cannot recover them a
 - Do not trust the brief over the workbench spec. If they disagree, the spec wins and the gap becomes a `question` or follow-up task.
 - Do not keep working under a stale or mismatched claim. Claim conflicts are synchronization failures, not warnings.
 
+## Worktrees: inherit the cwd, don't manage them
+
+Under the [`isolated-sequential`](../../agents/methodology.md#orchestration-strategies) and [`parallel-fanout`](../../agents/methodology.md#orchestration-strategies) strategies, the orchestrator dispatches the coder into a pre-created [worktree](../../agents/methodology.md#worktrees) on a pre-created child branch. The coder's contract there is narrow:
+
+- **Inherit the dispatched cwd.** That cwd is the worktree path. Stay in it. Do not `cd` out to the main checkout or another worktree to do work.
+- **Do not create, destroy, or relocate worktrees.** `git worktree add/remove/move` are the orchestrator's verbs, not the coder's. If the worktree looks wrong, stop and return to the orchestrator rather than reshaping it.
+- **Commit to the child branch the orchestrator created.** Do not cut a new branch, do not switch branches, do not push to other branches. The orchestrator handles fan-in merge to the epic branch after terminal-complete.
+
+Under the [`classic`](../../agents/methodology.md#orchestration-strategies) strategy there is no worktree: the coder runs in the operator's pwd on the operator's current branch and commits there as it always has.
+
 ## Barrel-bypass: gates are the review
 
 When dispatched under [`barrel-bypass`](../../agents/methodology.md#barrel-bypass), there is no downstream reviewer. The coder's quality-gate output IS the entire review signal: every applicable gate (`make fmt-check` + `make build` + `make test` + `make test-integration` **twice** + `planar skills render --check` against an out-of-tree staging dir + any remaining relevant validators) must run and the report must paste their output verbatim. Real defects become new task rows (`planar task add ...`), not bullets in a Surprises section — there is no reviewer to catch suppressed issues. Phase 3.5 (test-coder) still fires; barrel-bypass bypasses the reviewer, not the coverage gate. See [`agents/coder.md` §Barrel-bypass: gates are the review](../../agents/coder.md#barrel-bypass-gates-are-the-review).
