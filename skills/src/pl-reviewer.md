@@ -72,6 +72,22 @@ When Phase 3.5 ran successfully, the reviewer reads the union of the coder's dif
 
 Under [`barrel-deferred`](../../agents/methodology.md#barrel-deferred), the brief may carry the union of multiple coder cycles' diffs queued since the last review boundary. The reviewer's contract is unchanged — read the diffs blind, run `planar test-spec status` post-diff, apply the six focused responsibilities. Scope is larger: the brief lists every slug and claim token across every cycle in the union, and the reviewer verifies intent↔implementation match against the full claimed list. `request-changes` returns the union to the coder; `abort` halts every cycle in the queue. The blind-read contract still excludes the narrative reports from the queued coder/test-coder cycles. See [`agents/reviewer.md`](../../agents/reviewer.md) §Union-diff briefs under barrel-deferred.
 
+## Status reporting
+
+The reviewer emits a status string at each meaningful phase boundary using `planar-agent heartbeat --claim <token> --status "<text>"`. The canonical transitions and their strings are:
+
+| Phase | Status string |
+|-------|---------------|
+| Loading the brief and task context | `"loading brief"` |
+| Running `git diff HEAD` / `git diff --stat HEAD` and reading the change set | `"reading diff"` |
+| Reading a cited spec or roadmap section independently from disk | `"walking spec: <section-path>"` |
+| Composing a finding for an issue discovered in the diff | `"composing finding"` |
+| Assembling the final verdict (`approve` / `request-changes` / `open-question` / `abort`) | `"drafting verdict"` |
+
+The reviewer's final output IS the return to the orchestrator — there is no separate heartbeat after the verdict is written. Status strings use the `awaiting:` prefix when blocked on an external event. The cap on `--status` payload is 256 bytes.
+
+See [`agents/reviewer.md` § Status reporting](../../agents/reviewer.md#status-reporting) and [`agents/methodology.md` § Heartbeat status contract](../../agents/methodology.md#heartbeat-status-contract) for the full contract.
+
 ## Vendor Differences
 
 - Model resolves to the concrete large-tier model per [`agents/models.md`](../../agents/models.md).

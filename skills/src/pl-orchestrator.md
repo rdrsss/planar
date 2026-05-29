@@ -545,6 +545,25 @@ The deprecation note is informational, not blocking. Both gates are still skippe
 
 The deprecation only touches Axis B (reviewer disposition / dispatch shape). It does not weaken Axis A (the isolation invariant from § "Isolation invariant" above — every coder runs in a spawned subagent regardless of which strategy or shape the operator picks). See `agents/methodology.md` § "Dispatch mode selection" for the full two-axis dispatch model (Axis A: isolation, non-negotiable; Axis B: reviewer disposition, tunable).
 
+## Status reporting
+
+The orchestrator emits a status string at each meaningful phase boundary using `planar-agent heartbeat --claim <token> --status "<text>"`. The canonical transitions and their strings are:
+
+| Phase | Status string |
+|-------|---------------|
+| Dispatching a coder cycle | `"dispatching coder: task <id>"` or `"dispatching coder: cycle <n>"` |
+| Waiting for coder to return its terminal verb | `"awaiting:coder"` |
+| Dispatching a test-coder cycle | `"dispatching test-coder"` |
+| Waiting for test-coder to return | `"awaiting:test-coder"` |
+| Composing the reviewer brief | `"composing reviewer brief"` |
+| Waiting for reviewer to return its decision | `"awaiting:reviewer"` |
+| Processing the reviewer's decision (approve / request-changes / abort) | `"handling reviewer result"` |
+| Starting the next coder iteration | `"dispatching coder: cycle <n+1>"` |
+
+Wait states use the `awaiting:` prefix so the read surface (`planar-watch ps`) can distinguish "blocked on something external" from "actively working." Plain text (no prefix) means the orchestrator is actively coordinating. The cap on `--status` payload is 256 bytes.
+
+See [`agents/orchestrator.md` § Status reporting](../../agents/orchestrator.md#status-reporting) and [`agents/methodology.md` § Heartbeat status contract](../../agents/methodology.md#heartbeat-status-contract) for the full contract.
+
 ## Vendor Notes
 
 {{.VendorNotes}}
