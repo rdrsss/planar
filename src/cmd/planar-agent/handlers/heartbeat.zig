@@ -53,7 +53,20 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
     // current behavior (no action row written). An explicit --status "" is a
     // distinct value from omission: it writes an action row with an empty
     // string in summary (not NULL).
+    //
+    // The --status payload is capped at 256 bytes (the resolved answer to
+    // plan 467 Open Question Q1: see tech-spec § "Open Questions"). This
+    // keeps feed output readable and bounds what lands in agent_actions.summary.
     if (args.status) |status_text| {
+        if (status_text.len > 256) {
+            d.exec("ROLLBACK") catch {};
+            exit.die(
+                ctx,
+                error.InvalidInput,
+                "--status payload is {d} bytes; the cap is 256. Shorten the status string.",
+                .{status_text.len},
+            );
+        }
         const action_id = store.startAction(d, ctx.allocator, .{
             .session_id = c.session_id,
             .claim_id = c.id,
