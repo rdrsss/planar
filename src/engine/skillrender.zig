@@ -19,6 +19,9 @@ const embedded_vendors_yaml =
     \\    invoke: /<slug>
     \\    has_invocation_block: true
     \\    frontmatter_fields: [description, argument-hint, model, source]
+    \\    agents_output_dir: agents/claude
+    \\    agent_format: md-yaml
+    \\    agent_frontmatter_fields: [name, description, tools, model]
     \\    install_bullets:
     \\      - "Installed to `~/.claude/commands/<slug>.md`."
     \\      - "Invoked as `/<slug> <subcommand> [args]`."
@@ -32,6 +35,9 @@ const embedded_vendors_yaml =
     \\    invoke: <slug>
     \\    has_invocation_block: false
     \\    frontmatter_fields: [name, description, model, source]
+    \\    agents_output_dir: agents/codex
+    \\    agent_format: toml
+    \\    agent_frontmatter_fields: [name, description, developer_instructions, model, model_reasoning_effort, sandbox_mode]
     \\    install_bullets:
     \\      - "Installed into `~/.codex/skills/<slug>` from `~/.planar/codex-skills/<slug>`."
     \\    models:
@@ -44,6 +50,9 @@ const embedded_vendors_yaml =
     \\    invoke: <slug>
     \\    has_invocation_block: false
     \\    frontmatter_fields: [name, description, model, source]
+    \\    agents_output_dir: agents/copilot
+    \\    agent_format: md-yaml
+    \\    agent_frontmatter_fields: [name, description, tools, model]
     \\    install_bullets:
     \\      - "Installed to `~/.copilot/skills/<slug>.md`."
     \\      - "Companion instruction and prompt files (when needed) live under `copilot/`."
@@ -67,6 +76,14 @@ pub const VendorProfile = struct {
     frontmatter_fields: [][]const u8,
     install_bullets: [][]const u8,
     models: []VendorModel,
+    /// Relative directory (under the render out-dir) for rendered agent
+    /// role definitions. Empty when the vendor has no agent surface.
+    agents_output_dir: []const u8 = "",
+    /// Output projection for agent role files: `md-yaml` (Claude/Copilot)
+    /// or `toml` (Codex).
+    agent_format: []const u8 = "",
+    /// Ordered frontmatter / body keys emitted for agent role files.
+    agent_frontmatter_fields: [][]const u8 = &.{},
 };
 
 pub const VendorProfiles = struct {
@@ -88,6 +105,10 @@ pub const VendorProfiles = struct {
                 allocator.free(m.model);
             }
             allocator.free(p.models);
+            allocator.free(p.agents_output_dir);
+            allocator.free(p.agent_format);
+            for (p.agent_frontmatter_fields) |v| allocator.free(v);
+            allocator.free(p.agent_frontmatter_fields);
         }
         allocator.free(self.items);
         self.* = .{ .items = &.{} };
@@ -143,6 +164,38 @@ pub const Source = struct {
         allocator.free(self.body);
         self.* = undefined;
     }
+};
+
+/// Parsed agent role spec from `agents/<role>.md`. Frontmatter fields are
+/// `name, description, tier, role, capability`; the Markdown body becomes the
+/// rendered subagent system prompt.
+pub const AgentSource = struct {
+    path: []const u8,
+    name: []const u8,
+    description: []const u8,
+    tier: []const u8,
+    role: []const u8,
+    capability: []const u8,
+    body: []const u8,
+
+    pub fn deinit(self: *AgentSource, allocator: std.mem.Allocator) void {
+        allocator.free(self.path);
+        allocator.free(self.name);
+        allocator.free(self.description);
+        allocator.free(self.tier);
+        allocator.free(self.role);
+        allocator.free(self.capability);
+        allocator.free(self.body);
+        self.* = undefined;
+    }
+};
+
+/// Non-role docs under `agents/` that carry no `role:`/`capability:`
+/// frontmatter and must never be rendered as subagent definitions.
+const agent_non_role_docs = [_][]const u8{
+    "methodology.md",
+    "models.md",
+    "doctrine.md",
 };
 
 pub const RenderOptions = struct {
@@ -249,6 +302,13 @@ pub const RenderError = error{
     UnknownTemplateToken,
     MissingTierTableHeading,
     ParseFailure,
+    MissingAgentName,
+    MissingAgentRole,
+    MissingAgentCapability,
+    MissingAgentTier,
+    UnknownCapability,
+    UnknownAgentFormat,
+    UnknownAgentFrontmatterField,
 };
 
 pub fn loadVendors(allocator: std.mem.Allocator) !VendorProfiles {
@@ -301,6 +361,9 @@ pub fn parseVendorsBytes(allocator: std.mem.Allocator, raw: []const u8) !VendorP
             .frontmatter_fields = &.{},
             .install_bullets = &.{},
             .models = &.{},
+            .agents_output_dir = try allocator.dupe(u8, ""),
+            .agent_format = try allocator.dupe(u8, ""),
+            .agent_frontmatter_fields = &.{},
         };
         errdefer deinitVendorProfile(profile, allocator);
         i += 1;
@@ -308,9 +371,11 @@ pub fn parseVendorsBytes(allocator: std.mem.Allocator, raw: []const u8) !VendorP
         var frontmatter_fields = std.ArrayList([]const u8).empty;
         var install_bullets = std.ArrayList([]const u8).empty;
         var models = std.ArrayList(VendorModel).empty;
+        var agent_frontmatter_fields = std.ArrayList([]const u8).empty;
         defer frontmatter_fields.deinit(allocator);
         defer install_bullets.deinit(allocator);
         defer models.deinit(allocator);
+        defer agent_frontmatter_fields.deinit(allocator);
 
         while (i < lines.items.len) {
             const child_raw = lines.items[i];
@@ -365,6 +430,28 @@ pub fn parseVendorsBytes(allocator: std.mem.Allocator, raw: []const u8) !VendorP
                 i += 1;
                 continue;
             }
+            if (std.mem.eql(u8, key, "agents_output_dir")) {
+                allocator.free(profile.agents_output_dir);
+                profile.agents_output_dir = try dupScalarValue(allocator, val);
+                i += 1;
+                continue;
+            }
+            if (std.mem.eql(u8, key, "agent_format")) {
+                allocator.free(profile.agent_format);
+                profile.agent_format = try dupScalarValue(allocator, val);
+                i += 1;
+                continue;
+            }
+            if (std.mem.eql(u8, key, "agent_frontmatter_fields")) {
+                const arr = try parseInlineList(allocator, val);
+                defer {
+                    for (arr) |item| allocator.free(item);
+                    allocator.free(arr);
+                }
+                for (arr) |item| try agent_frontmatter_fields.append(allocator, try allocator.dupe(u8, item));
+                i += 1;
+                continue;
+            }
             if (std.mem.eql(u8, key, "install_bullets")) {
                 i += 1;
                 while (i < lines.items.len) {
@@ -412,6 +499,7 @@ pub fn parseVendorsBytes(allocator: std.mem.Allocator, raw: []const u8) !VendorP
         profile.frontmatter_fields = try frontmatter_fields.toOwnedSlice(allocator);
         profile.install_bullets = try install_bullets.toOwnedSlice(allocator);
         profile.models = try models.toOwnedSlice(allocator);
+        profile.agent_frontmatter_fields = try agent_frontmatter_fields.toOwnedSlice(allocator);
         try profiles.append(allocator, profile);
     }
 
@@ -654,6 +742,322 @@ pub fn render(allocator: std.mem.Allocator, source: Source, profile: VendorProfi
     return out.toOwnedSlice(allocator);
 }
 
+pub fn parseAgentSourceFile(allocator: std.mem.Allocator, path: []const u8) !AgentSource {
+    const raw = try std.Io.Dir.cwd().readFileAlloc(fsIo(), path, allocator, std.Io.Limit.limited(4 * 1024 * 1024));
+    defer allocator.free(raw);
+    return parseAgentSourceBytes(allocator, path, raw);
+}
+
+pub fn parseAgentSourceBytes(allocator: std.mem.Allocator, path: []const u8, raw: []const u8) !AgentSource {
+    if (!std.mem.startsWith(u8, raw, "---\n")) return RenderError.MissingFrontmatter;
+    const rest = raw[4..];
+    var end = std.mem.indexOf(u8, rest, "\n---\n");
+    var close_len: usize = 5;
+    if (end == null and std.mem.endsWith(u8, rest, "\n---")) {
+        end = rest.len - 4;
+        close_len = 4;
+    }
+    if (end == null) return RenderError.MalformedFrontmatter;
+
+    const yaml_block = rest[0..end.?];
+    try validateFrontmatterSyntax(yaml_block);
+    const after_close = end.? + close_len;
+    const body_src = if (after_close < rest.len) rest[after_close..] else "";
+    const body_trimmed = trimLeadingNewlines(body_src);
+
+    var source = AgentSource{
+        .path = try allocator.dupe(u8, path),
+        .name = try allocator.dupe(u8, ""),
+        .description = try allocator.dupe(u8, ""),
+        .tier = try allocator.dupe(u8, ""),
+        .role = try allocator.dupe(u8, ""),
+        .capability = try allocator.dupe(u8, ""),
+        .body = try allocator.dupe(u8, body_trimmed),
+    };
+    errdefer source.deinit(allocator);
+
+    var lines = splitLines(allocator, yaml_block);
+    defer lines.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < lines.items.len) : (i += 1) {
+        const line_raw = lines.items[i];
+        const line = trimSpace(line_raw);
+        if (line.len == 0) continue;
+        if (indentWidth(line_raw) != 0) continue;
+        const colon = std.mem.indexOfScalar(u8, line, ':') orelse return RenderError.ParseFailure;
+        const key = trimSpace(line[0..colon]);
+        const val = trimSpace(line[colon + 1 ..]);
+        if (std.mem.eql(u8, key, "name")) {
+            allocator.free(source.name);
+            source.name = try dupScalarValue(allocator, val);
+        } else if (std.mem.eql(u8, key, "description")) {
+            allocator.free(source.description);
+            source.description = try dupScalarValue(allocator, val);
+        } else if (std.mem.eql(u8, key, "tier")) {
+            allocator.free(source.tier);
+            source.tier = try dupScalarValue(allocator, val);
+        } else if (std.mem.eql(u8, key, "role")) {
+            allocator.free(source.role);
+            source.role = try dupScalarValue(allocator, val);
+        } else if (std.mem.eql(u8, key, "capability")) {
+            allocator.free(source.capability);
+            source.capability = try dupScalarValue(allocator, val);
+        }
+    }
+
+    if (source.name.len == 0) return RenderError.MissingAgentName;
+    if (source.role.len == 0) return RenderError.MissingAgentRole;
+    if (source.capability.len == 0) return RenderError.MissingAgentCapability;
+    if (source.tier.len == 0) return RenderError.MissingAgentTier;
+    return source;
+}
+
+/// Tools allowlist for the Claude/Copilot `tools:` frontmatter field, keyed by
+/// the neutral capability enum (ADR #260 / decision #343). Order is fixed so the
+/// rendered output is deterministic.
+fn capabilityTools(capability: []const u8) RenderError![]const []const u8 {
+    if (std.mem.eql(u8, capability, "coordinate")) {
+        return &.{ "Bash", "Agent", "Read", "Grep", "Glob" };
+    }
+    if (std.mem.eql(u8, capability, "write")) {
+        return &.{ "Read", "Edit", "Write", "Bash", "Grep", "Glob" };
+    }
+    if (std.mem.eql(u8, capability, "read-only")) {
+        return &.{ "Read", "Grep", "Glob" };
+    }
+    return RenderError.UnknownCapability;
+}
+
+/// Codex `sandbox_mode` for the neutral capability enum. `coordinate` maps to
+/// `workspace-write` (read-only would block legitimate `~/.planar` DB writes);
+/// the weak-enforcement caveat is documented in the agent body (see ADR #260).
+fn capabilitySandboxMode(capability: []const u8) RenderError![]const u8 {
+    if (std.mem.eql(u8, capability, "coordinate")) return "workspace-write";
+    if (std.mem.eql(u8, capability, "write")) return "workspace-write";
+    if (std.mem.eql(u8, capability, "read-only")) return "read-only";
+    return RenderError.UnknownCapability;
+}
+
+/// Codex `model_reasoning_effort` derived from the model tier. `large` tiers
+/// reason at `high`; everything else at `medium`.
+fn reasoningEffortForTier(tier: []const u8) []const u8 {
+    if (std.mem.eql(u8, tier, "large")) return "high";
+    return "medium";
+}
+
+const coordinate_codex_note =
+    "> Codex enforcement caveat: this role is `coordinate` — it runs CLI commands and spawns\n" ++
+    "> subagents but must NOT edit source files. Codex's `sandbox_mode` is a coarse\n" ++
+    "> filesystem-write switch and cannot express that boundary precisely; `workspace-write` is\n" ++
+    "> set so legitimate `planar`/`planar-agent` DB writes succeed. Do not edit repository source\n" ++
+    "> files from this agent — that boundary is doctrinal here, not structurally enforced.\n";
+
+/// resolveAgentModel maps the agent's tier to a concrete model via the vendor's
+/// existing `models:` table.
+fn resolveAgentModel(allocator: std.mem.Allocator, source: AgentSource, profile: VendorProfile) ![]u8 {
+    if (source.tier.len == 0) return allocator.dupe(u8, "");
+    for (profile.models) |m| {
+        if (std.mem.eql(u8, m.tier, source.tier)) return allocator.dupe(u8, m.model);
+    }
+    return RenderError.UnknownModelTier;
+}
+
+/// renderAgent projects one agent role spec into its per-vendor file body.
+/// Claude/Copilot emit YAML frontmatter + body; Codex emits a TOML document with
+/// the body inlined as a triple-quoted `developer_instructions` string.
+pub fn renderAgent(allocator: std.mem.Allocator, source: AgentSource, profile: VendorProfile) ![]u8 {
+    const model = try resolveAgentModel(allocator, source, profile);
+    defer allocator.free(model);
+
+    if (std.mem.eql(u8, profile.agent_format, "md-yaml")) {
+        return renderAgentMdYaml(allocator, source, profile, model);
+    }
+    if (std.mem.eql(u8, profile.agent_format, "toml")) {
+        return renderAgentToml(allocator, source, profile, model);
+    }
+    return RenderError.UnknownAgentFormat;
+}
+
+fn renderAgentMdYaml(
+    allocator: std.mem.Allocator,
+    source: AgentSource,
+    profile: VendorProfile,
+    model: []const u8,
+) ![]u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "---\n");
+    for (profile.agent_frontmatter_fields) |field| {
+        if (std.mem.eql(u8, field, "name")) {
+            const line = try std.fmt.allocPrint(allocator, "name: {s}\n", .{source.name});
+            defer allocator.free(line);
+            try out.appendSlice(allocator, line);
+        } else if (std.mem.eql(u8, field, "description")) {
+            const line = try std.fmt.allocPrint(allocator, "description: {s}\n", .{source.description});
+            defer allocator.free(line);
+            try out.appendSlice(allocator, line);
+        } else if (std.mem.eql(u8, field, "tools")) {
+            const tools = try capabilityTools(source.capability);
+            const joined = try joinFlowList(allocator, tools);
+            defer allocator.free(joined);
+            const line = try std.fmt.allocPrint(allocator, "tools: {s}\n", .{joined});
+            defer allocator.free(line);
+            try out.appendSlice(allocator, line);
+        } else if (std.mem.eql(u8, field, "model")) {
+            if (model.len > 0) {
+                const line = try std.fmt.allocPrint(allocator, "model: {s}\n", .{model});
+                defer allocator.free(line);
+                try out.appendSlice(allocator, line);
+            }
+        } else {
+            return RenderError.UnknownAgentFrontmatterField;
+        }
+    }
+    try out.appendSlice(allocator, "---\n\n");
+    try out.appendSlice(allocator, source.body);
+    if (source.body.len == 0 or source.body[source.body.len - 1] != '\n') try out.append(allocator, '\n');
+    return out.toOwnedSlice(allocator);
+}
+
+fn renderAgentToml(
+    allocator: std.mem.Allocator,
+    source: AgentSource,
+    profile: VendorProfile,
+    model: []const u8,
+) ![]u8 {
+    const sandbox_mode = try capabilitySandboxMode(source.capability);
+    const is_coordinate = std.mem.eql(u8, source.capability, "coordinate");
+
+    // The body becomes developer_instructions. For coordinate roles, prepend
+    // the weak-enforcement caveat so the model has the doctrinal boundary.
+    var body_buf = std.ArrayList(u8).empty;
+    defer body_buf.deinit(allocator);
+    if (is_coordinate) {
+        try body_buf.appendSlice(allocator, coordinate_codex_note);
+        try body_buf.append(allocator, '\n');
+    }
+    try body_buf.appendSlice(allocator, source.body);
+    if (body_buf.items.len == 0 or body_buf.items[body_buf.items.len - 1] != '\n') {
+        try body_buf.append(allocator, '\n');
+    }
+
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    for (profile.agent_frontmatter_fields) |field| {
+        if (std.mem.eql(u8, field, "name")) {
+            try appendTomlKeyValue(allocator, &out, "name", source.name);
+        } else if (std.mem.eql(u8, field, "description")) {
+            try appendTomlKeyValue(allocator, &out, "description", source.description);
+        } else if (std.mem.eql(u8, field, "model")) {
+            if (model.len > 0) try appendTomlKeyValue(allocator, &out, "model", model);
+        } else if (std.mem.eql(u8, field, "model_reasoning_effort")) {
+            try appendTomlKeyValue(allocator, &out, "model_reasoning_effort", reasoningEffortForTier(source.tier));
+        } else if (std.mem.eql(u8, field, "sandbox_mode")) {
+            try appendTomlKeyValue(allocator, &out, "sandbox_mode", sandbox_mode);
+        } else if (std.mem.eql(u8, field, "developer_instructions")) {
+            try out.appendSlice(allocator, "developer_instructions = \"\"\"\n");
+            try out.appendSlice(allocator, body_buf.items);
+            try out.appendSlice(allocator, "\"\"\"\n");
+        } else {
+            return RenderError.UnknownAgentFrontmatterField;
+        }
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+/// joinFlowList renders a YAML inline (flow) sequence: `[a, b, c]`.
+fn joinFlowList(allocator: std.mem.Allocator, items: []const []const u8) ![]u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.append(allocator, '[');
+    for (items, 0..) |item, idx| {
+        if (idx > 0) try out.appendSlice(allocator, ", ");
+        try out.appendSlice(allocator, item);
+    }
+    try out.append(allocator, ']');
+    return out.toOwnedSlice(allocator);
+}
+
+/// appendTomlKeyValue appends `key = "value"\n` to `out`, escaping the value as
+/// a basic TOML string.
+fn appendTomlKeyValue(allocator: std.mem.Allocator, out: *std.ArrayList(u8), key: []const u8, value: []const u8) !void {
+    const quoted = try tomlString(allocator, value);
+    defer allocator.free(quoted);
+    try out.appendSlice(allocator, key);
+    try out.appendSlice(allocator, " = ");
+    try out.appendSlice(allocator, quoted);
+    try out.append(allocator, '\n');
+}
+
+/// tomlString renders a basic single-line TOML string literal with the standard
+/// escapes. Returns a caller-owned slice.
+fn tomlString(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.append(allocator, '"');
+    for (value) |c| {
+        switch (c) {
+            '"' => try out.appendSlice(allocator, "\\\""),
+            '\\' => try out.appendSlice(allocator, "\\\\"),
+            '\n' => try out.appendSlice(allocator, "\\n"),
+            '\t' => try out.appendSlice(allocator, "\\t"),
+            '\r' => try out.appendSlice(allocator, "\\r"),
+            else => try out.append(allocator, c),
+        }
+    }
+    try out.append(allocator, '"');
+    return out.toOwnedSlice(allocator);
+}
+
+/// isAgentRoleFile returns true when an `agents/` entry is a renderable role
+/// spec (a `.md` file that is not one of the non-role doctrine docs).
+fn isAgentRoleFile(name: []const u8) bool {
+    if (!std.mem.endsWith(u8, name, ".md")) return false;
+    for (agent_non_role_docs) |doc| {
+        if (std.mem.eql(u8, name, doc)) return false;
+    }
+    return true;
+}
+
+/// listAgentSources enumerates renderable agent role files directly under
+/// `agents_dir` (the `<out_dir>/agents` directory). Returns an empty slice when
+/// the directory does not exist.
+fn listAgentSources(allocator: std.mem.Allocator, agents_dir: []const u8) ![][]const u8 {
+    var dir = std.Io.Dir.cwd().openDir(fsIo(), agents_dir, .{ .iterate = true }) catch |e| switch (e) {
+        error.FileNotFound => return allocator.alloc([]const u8, 0),
+        else => return e,
+    };
+    defer dir.close(fsIo());
+    var out = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (out.items) |p| allocator.free(p);
+        out.deinit(allocator);
+    }
+    var it = dir.iterate();
+    while (try it.next(fsIo())) |entry| {
+        if (entry.kind != .file) continue;
+        if (!isAgentRoleFile(entry.name)) continue;
+        const joined = try std.fs.path.join(allocator, &.{ agents_dir, entry.name });
+        try out.append(allocator, joined);
+    }
+    std.mem.sort([]const u8, out.items, {}, lessString);
+    return out.toOwnedSlice(allocator);
+}
+
+/// agentOutputName returns the rendered file name for a role under a vendor's
+/// agents_output_dir: `<role>.agent.md` for Copilot, `<role>.toml` for Codex,
+/// `<role>.md` otherwise (Claude).
+fn agentOutputName(allocator: std.mem.Allocator, role: []const u8, profile: VendorProfile) ![]u8 {
+    if (std.mem.eql(u8, profile.name, "copilot")) {
+        return std.fmt.allocPrint(allocator, "{s}.agent.md", .{role});
+    }
+    if (std.mem.eql(u8, profile.agent_format, "toml")) {
+        return std.fmt.allocPrint(allocator, "{s}.toml", .{role});
+    }
+    return std.fmt.allocPrint(allocator, "{s}.md", .{role});
+}
+
 pub fn renderTree(allocator: std.mem.Allocator, opts: RenderOptions) !RenderResult {
     const vendors_owned = if (opts.vendors) |v| v else try loadVendors(allocator);
     var vendors = vendors_owned;
@@ -706,6 +1110,34 @@ pub fn renderTree(allocator: std.mem.Allocator, opts: RenderOptions) !RenderResu
 
     const agents_dir = try std.fs.path.join(allocator, &.{ opts.out_dir, "agents" });
     defer allocator.free(agents_dir);
+
+    // Agent role render: walk <out_dir>/agents/*.md role specs (skipping the
+    // non-role doctrine docs) and project each per vendor into agents_output_dir.
+    // The vendor agent dirs (agents/<vendor>/) are written into the SAME pending
+    // list, but the models.md tier-table patch below keys on `agents_dir`
+    // (== <out_dir>/agents) existing — which is the agent SOURCE dir, not a
+    // vendor subdir we create. Writes are flushed only after this whole block,
+    // so creating agents/<vendor>/ never causes the models.md patch to
+    // double-fire within a single renderTree call.
+    {
+        const agent_paths = try listAgentSources(allocator, agents_dir);
+        defer freeStringSlice(allocator, agent_paths);
+        for (agent_paths) |apath| {
+            var asrc = try parseAgentSourceFile(allocator, apath);
+            defer asrc.deinit(allocator);
+            if (!slugIncluded(asrc.name, opts.slug_filter)) continue;
+            for (names) |vendor_name| {
+                const profile = vendors.get(vendor_name).?;
+                if (profile.agents_output_dir.len == 0) continue;
+                const bytes = try renderAgent(allocator, asrc, profile);
+                const rel_name = try agentOutputName(allocator, asrc.name, profile);
+                defer allocator.free(rel_name);
+                const dst = try std.fs.path.join(allocator, &.{ opts.out_dir, profile.agents_output_dir, rel_name });
+                try pending.append(allocator, .{ .dst = dst, .bytes = bytes });
+            }
+        }
+    }
+
     if (pathIsDir(agents_dir)) {
         const models_path = try std.fs.path.join(allocator, &.{ opts.out_dir, AgentsModelsPath });
         defer allocator.free(models_path);
@@ -870,6 +1302,102 @@ pub fn checkTree(allocator: std.mem.Allocator, opts: CheckOptions) !CheckResult 
 
     const agents_dir = try std.fs.path.join(allocator, &.{ opts.out_dir, "agents" });
     defer allocator.free(agents_dir);
+
+    // Agent render-target drift: content/missing for each vendor's rendered
+    // role file, plus orphan detection in each agents_output_dir. The expected
+    // set is (vendor, rendered-filename) because the extensions differ per
+    // vendor (.md / .agent.md / .toml).
+    {
+        var expected_agents = std.ArrayList(ExpectedSlug).empty;
+        defer {
+            for (expected_agents.items) |e| allocator.free(e.slug);
+            expected_agents.deinit(allocator);
+        }
+        const agent_paths = listAgentSources(allocator, agents_dir) catch |e| switch (e) {
+            error.FileNotFound => try allocator.alloc([]const u8, 0),
+            else => return e,
+        };
+        defer freeStringSlice(allocator, agent_paths);
+        for (agent_paths) |apath| {
+            var asrc = try parseAgentSourceFile(allocator, apath);
+            defer asrc.deinit(allocator);
+            if (!slugIncluded(asrc.name, opts.slug_filter)) continue;
+            for (names) |vendor_name| {
+                const profile = vendors.get(vendor_name).?;
+                if (profile.agents_output_dir.len == 0) continue;
+                const rel_file = try agentOutputName(allocator, asrc.name, profile);
+                defer allocator.free(rel_file);
+                const rel = try std.fs.path.join(allocator, &.{ profile.agents_output_dir, rel_file });
+                defer allocator.free(rel);
+                try expected_agents.append(allocator, .{
+                    .vendor = vendor_name,
+                    .slug = try allocator.dupe(u8, rel_file),
+                });
+
+                const rendered = try renderAgent(allocator, asrc, profile);
+                defer allocator.free(rendered);
+                const dst = try std.fs.path.join(allocator, &.{ opts.out_dir, rel });
+                defer allocator.free(dst);
+                const on_disk = std.Io.Dir.cwd().readFileAlloc(fsIo(), dst, allocator, std.Io.Limit.limited(4 * 1024 * 1024)) catch |e| switch (e) {
+                    error.FileNotFound => null,
+                    else => return e,
+                };
+                if (on_disk == null) {
+                    try drift.append(allocator, .{
+                        .path = try allocator.dupe(u8, rel),
+                        .vendor = try allocator.dupe(u8, vendor_name),
+                        .slug = try allocator.dupe(u8, asrc.name),
+                        .reason = .missing,
+                    });
+                    continue;
+                }
+                defer allocator.free(on_disk.?);
+                if (!std.mem.eql(u8, rendered, on_disk.?)) {
+                    try drift.append(allocator, .{
+                        .path = try allocator.dupe(u8, rel),
+                        .vendor = try allocator.dupe(u8, vendor_name),
+                        .slug = try allocator.dupe(u8, asrc.name),
+                        .reason = .content,
+                    });
+                    if (opts.emit_diff) {
+                        const body = try unifiedDiff(allocator, rel, on_disk.?, rendered);
+                        try diffs.append(allocator, .{
+                            .path = try allocator.dupe(u8, rel),
+                            .body = body,
+                        });
+                    }
+                }
+            }
+        }
+
+        if (opts.slug_filter.len == 0) {
+            for (names) |vendor_name| {
+                const profile = vendors.get(vendor_name).?;
+                if (profile.agents_output_dir.len == 0) continue;
+                const dir_abs = try std.fs.path.join(allocator, &.{ opts.out_dir, profile.agents_output_dir });
+                defer allocator.free(dir_abs);
+                var dir = std.Io.Dir.cwd().openDir(fsIo(), dir_abs, .{ .iterate = true }) catch |e| switch (e) {
+                    error.FileNotFound => continue,
+                    else => return e,
+                };
+                defer dir.close(fsIo());
+                var it = dir.iterate();
+                while (try it.next(fsIo())) |entry| {
+                    if (entry.kind != .file) continue;
+                    if (isExpected(expected_agents.items, vendor_name, entry.name)) continue;
+                    const rel = try std.fs.path.join(allocator, &.{ profile.agents_output_dir, entry.name });
+                    defer allocator.free(rel);
+                    try drift.append(allocator, .{
+                        .path = try allocator.dupe(u8, rel),
+                        .vendor = try allocator.dupe(u8, vendor_name),
+                        .slug = try allocator.dupe(u8, entry.name),
+                        .reason = .orphan,
+                    });
+                }
+            }
+        }
+    }
+
     if (pathIsDir(agents_dir)) {
         const models_path = try std.fs.path.join(allocator, &.{ opts.out_dir, AgentsModelsPath });
         defer allocator.free(models_path);
@@ -1520,6 +2048,10 @@ fn deinitVendorProfile(profile: VendorProfile, allocator: std.mem.Allocator) voi
         allocator.free(m.model);
     }
     allocator.free(profile.models);
+    allocator.free(profile.agents_output_dir);
+    allocator.free(profile.agent_format);
+    for (profile.agent_frontmatter_fields) |f| allocator.free(f);
+    allocator.free(profile.agent_frontmatter_fields);
 }
 
 fn freeStringSlice(allocator: std.mem.Allocator, vals: []const []const u8) void {
@@ -1775,6 +2307,364 @@ test "render rejects stray template end" {
     };
     defer src.deinit(gpa);
     try std.testing.expectError(RenderError.UnknownTemplateToken, render(gpa, src, vendors.get("claude").?));
+}
+
+const agent_orchestrator_fixture =
+    \\---
+    \\name: orchestrator
+    \\description: Top-level dispatcher.
+    \\tier: large
+    \\role: orchestrator
+    \\capability: coordinate
+    \\---
+    \\
+    \\# Orchestrator
+    \\
+    \\Coordination only.
+;
+
+const agent_coder_fixture =
+    \\---
+    \\name: coder
+    \\description: Coding agent.
+    \\tier: medium
+    \\role: coder
+    \\capability: write
+    \\---
+    \\
+    \\# Coder
+    \\
+    \\Implements tasks.
+;
+
+const agent_reviewer_fixture =
+    \\---
+    \\name: reviewer
+    \\description: Reviews coder output.
+    \\tier: medium
+    \\role: reviewer
+    \\capability: read-only
+    \\---
+    \\
+    \\# Reviewer
+    \\
+    \\Reviews only.
+;
+
+test "parseAgentSourceFile parses frontmatter and body" {
+    const gpa = std.testing.allocator;
+    var src = try parseAgentSourceBytes(gpa, "agents/orchestrator.md", agent_orchestrator_fixture);
+    defer src.deinit(gpa);
+    try std.testing.expectEqualStrings("orchestrator", src.name);
+    try std.testing.expectEqualStrings("orchestrator", src.role);
+    try std.testing.expectEqualStrings("coordinate", src.capability);
+    try std.testing.expectEqualStrings("large", src.tier);
+    try std.testing.expect(std.mem.indexOf(u8, src.body, "# Orchestrator") != null);
+}
+
+test "parseAgentSourceFile requires name, role, capability, tier" {
+    const gpa = std.testing.allocator;
+    const missing_cap =
+        \\---
+        \\name: x
+        \\description: d
+        \\tier: medium
+        \\role: coder
+        \\---
+        \\body
+    ;
+    try std.testing.expectError(RenderError.MissingAgentCapability, parseAgentSourceBytes(gpa, "agents/x.md", missing_cap));
+}
+
+test "capability maps to tools allowlist per ADR 260" {
+    const coord = try capabilityTools("coordinate");
+    try std.testing.expectEqual(@as(usize, 5), coord.len);
+    // coordinate omits Edit/Write.
+    for (coord) |t| {
+        try std.testing.expect(!std.mem.eql(u8, t, "Edit"));
+        try std.testing.expect(!std.mem.eql(u8, t, "Write"));
+    }
+    const write = try capabilityTools("write");
+    var has_edit = false;
+    var has_write = false;
+    for (write) |t| {
+        if (std.mem.eql(u8, t, "Edit")) has_edit = true;
+        if (std.mem.eql(u8, t, "Write")) has_write = true;
+    }
+    try std.testing.expect(has_edit and has_write);
+    const ro = try capabilityTools("read-only");
+    try std.testing.expectEqual(@as(usize, 3), ro.len);
+    try std.testing.expectError(RenderError.UnknownCapability, capabilityTools("nonsense"));
+}
+
+test "capability maps to codex sandbox mode" {
+    try std.testing.expectEqualStrings("workspace-write", try capabilitySandboxMode("coordinate"));
+    try std.testing.expectEqualStrings("workspace-write", try capabilitySandboxMode("write"));
+    try std.testing.expectEqualStrings("read-only", try capabilitySandboxMode("read-only"));
+    try std.testing.expectError(RenderError.UnknownCapability, capabilitySandboxMode("nonsense"));
+}
+
+test "tier maps to model via existing models table" {
+    const gpa = std.testing.allocator;
+    var vendors = try loadVendors(gpa);
+    defer vendors.deinit(gpa);
+    var coder = try parseAgentSourceBytes(gpa, "agents/coder.md", agent_coder_fixture);
+    defer coder.deinit(gpa);
+    const claude = vendors.get("claude").?;
+    const model = try resolveAgentModel(gpa, coder, claude);
+    defer gpa.free(model);
+    try std.testing.expectEqualStrings("claude-sonnet-4-6", model);
+}
+
+test "renderAgent emits Claude md-yaml frontmatter with tools and model" {
+    const gpa = std.testing.allocator;
+    var vendors = try loadVendors(gpa);
+    defer vendors.deinit(gpa);
+    var coder = try parseAgentSourceBytes(gpa, "agents/coder.md", agent_coder_fixture);
+    defer coder.deinit(gpa);
+    const out = try renderAgent(gpa, coder, vendors.get("claude").?);
+    defer gpa.free(out);
+    try std.testing.expect(std.mem.startsWith(u8, out, "---\n"));
+    try std.testing.expect(std.mem.indexOf(u8, out, "name: coder") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "tools: [Read, Edit, Write, Bash, Grep, Glob]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "model: claude-sonnet-4-6") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "# Coder") != null);
+}
+
+test "renderAgent emits Codex TOML with sandbox_mode and developer_instructions" {
+    const gpa = std.testing.allocator;
+    var vendors = try loadVendors(gpa);
+    defer vendors.deinit(gpa);
+    var coder = try parseAgentSourceBytes(gpa, "agents/coder.md", agent_coder_fixture);
+    defer coder.deinit(gpa);
+    const out = try renderAgent(gpa, coder, vendors.get("codex").?);
+    defer gpa.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "name = \"coder\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "sandbox_mode = \"workspace-write\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "model = \"gpt-5-codex\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "model_reasoning_effort = \"medium\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "developer_instructions = \"\"\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "# Coder") != null);
+}
+
+test "renderAgent Codex coordinate role injects weak-enforcement note" {
+    const gpa = std.testing.allocator;
+    var vendors = try loadVendors(gpa);
+    defer vendors.deinit(gpa);
+    var orch = try parseAgentSourceBytes(gpa, "agents/orchestrator.md", agent_orchestrator_fixture);
+    defer orch.deinit(gpa);
+    const out = try renderAgent(gpa, orch, vendors.get("codex").?);
+    defer gpa.free(out);
+    // coordinate -> workspace-write per the caveat (read-only would block DB writes).
+    try std.testing.expect(std.mem.indexOf(u8, out, "sandbox_mode = \"workspace-write\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Codex enforcement caveat") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "model_reasoning_effort = \"high\"") != null);
+}
+
+test "orchestrator renders with NO Edit/Write; coder renders WITH them at sonnet (Claude)" {
+    const gpa = std.testing.allocator;
+    var vendors = try loadVendors(gpa);
+    defer vendors.deinit(gpa);
+    const claude = vendors.get("claude").?;
+
+    var orch = try parseAgentSourceBytes(gpa, "agents/orchestrator.md", agent_orchestrator_fixture);
+    defer orch.deinit(gpa);
+    const orch_out = try renderAgent(gpa, orch, claude);
+    defer gpa.free(orch_out);
+    try std.testing.expect(std.mem.indexOf(u8, orch_out, "tools: [Bash, Agent, Read, Grep, Glob]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, orch_out, "Edit") == null);
+    try std.testing.expect(std.mem.indexOf(u8, orch_out, "Write") == null);
+    try std.testing.expect(std.mem.indexOf(u8, orch_out, "model: claude-opus-4-7") != null);
+
+    var coder = try parseAgentSourceBytes(gpa, "agents/coder.md", agent_coder_fixture);
+    defer coder.deinit(gpa);
+    const coder_out = try renderAgent(gpa, coder, claude);
+    defer gpa.free(coder_out);
+    try std.testing.expect(std.mem.indexOf(u8, coder_out, "Edit") != null);
+    try std.testing.expect(std.mem.indexOf(u8, coder_out, "Write") != null);
+    try std.testing.expect(std.mem.indexOf(u8, coder_out, "model: claude-sonnet-4-6") != null);
+}
+
+test "Copilot agent files use .agent.md extension" {
+    const gpa = std.testing.allocator;
+    var vendors = try loadVendors(gpa);
+    defer vendors.deinit(gpa);
+    const copilot = vendors.get("copilot").?;
+    const name = try agentOutputName(gpa, "orchestrator", copilot);
+    defer gpa.free(name);
+    try std.testing.expectEqualStrings("orchestrator.agent.md", name);
+
+    const codex_name = try agentOutputName(gpa, "orchestrator", vendors.get("codex").?);
+    defer gpa.free(codex_name);
+    try std.testing.expectEqualStrings("orchestrator.toml", codex_name);
+
+    const claude_name = try agentOutputName(gpa, "orchestrator", vendors.get("claude").?);
+    defer gpa.free(claude_name);
+    try std.testing.expectEqualStrings("orchestrator.md", claude_name);
+}
+
+test "isAgentRoleFile skips non-role docs" {
+    try std.testing.expect(isAgentRoleFile("orchestrator.md"));
+    try std.testing.expect(!isAgentRoleFile("methodology.md"));
+    try std.testing.expect(!isAgentRoleFile("models.md"));
+    try std.testing.expect(!isAgentRoleFile("doctrine.md"));
+    try std.testing.expect(!isAgentRoleFile("README.txt"));
+}
+
+test "renderTree renders agents per vendor and leaves models.md patch intact" {
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try std.fs.path.join(gpa, &.{ ".zig-cache/tmp", &tmp.sub_path, "agents-render" });
+    defer gpa.free(root);
+    const src_dir = try std.fs.path.join(gpa, &.{ root, "skills", "src" });
+    defer gpa.free(src_dir);
+    const agents_src = try std.fs.path.join(gpa, &.{ root, "agents" });
+    defer gpa.free(agents_src);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, src_dir);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, agents_src);
+
+    // one skill source so renderTree has a skill leaf too
+    const skill_path = try std.fs.path.join(gpa, &.{ src_dir, "pl-a.md" });
+    defer gpa.free(skill_path);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{
+        .sub_path = skill_path,
+        .data =
+        \\---
+        \\slug: pl-a
+        \\description: a
+        \\source: docs/a
+        \\---
+        \\A {{.VendorTitle}}
+        ,
+    });
+    // agent role specs + a non-role doc that must be skipped
+    const orch_path = try std.fs.path.join(gpa, &.{ agents_src, "orchestrator.md" });
+    defer gpa.free(orch_path);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = orch_path, .data = agent_orchestrator_fixture });
+    const coder_path = try std.fs.path.join(gpa, &.{ agents_src, "coder.md" });
+    defer gpa.free(coder_path);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = coder_path, .data = agent_coder_fixture });
+    const methodology_path = try std.fs.path.join(gpa, &.{ agents_src, "methodology.md" });
+    defer gpa.free(methodology_path);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = methodology_path, .data = "# Methodology\n\nNo frontmatter.\n" });
+    // models.md with a tier table for the patch path
+    const models_path = try std.fs.path.join(gpa, &.{ agents_src, "models.md" });
+    defer gpa.free(models_path);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{
+        .sub_path = models_path,
+        .data =
+        \\# Models
+        \\
+        \\## Tier Table
+        \\
+        \\| Tier | Claude | Codex | Copilot |
+        \\|------|--------|-------|---------|
+        \\| medium | stale | stale | stale |
+        \\| large | stale | stale | stale |
+        \\
+        \\## Agent Assignments
+        ,
+    });
+
+    var res = try renderTree(gpa, .{ .src_dir = src_dir, .out_dir = root });
+    defer res.deinit(gpa);
+
+    // agent files rendered per vendor
+    const claude_orch = try std.fs.path.join(gpa, &.{ root, "agents", "claude", "orchestrator.md" });
+    defer gpa.free(claude_orch);
+    const claude_orch_bytes = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, claude_orch, gpa, std.Io.Limit.limited(1 << 20));
+    defer gpa.free(claude_orch_bytes);
+    try std.testing.expect(std.mem.indexOf(u8, claude_orch_bytes, "tools: [Bash, Agent, Read, Grep, Glob]") != null);
+
+    const codex_coder = try std.fs.path.join(gpa, &.{ root, "agents", "codex", "coder.toml" });
+    defer gpa.free(codex_coder);
+    const codex_coder_bytes = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, codex_coder, gpa, std.Io.Limit.limited(1 << 20));
+    defer gpa.free(codex_coder_bytes);
+    try std.testing.expect(std.mem.indexOf(u8, codex_coder_bytes, "sandbox_mode = \"workspace-write\"") != null);
+
+    const copilot_orch = try std.fs.path.join(gpa, &.{ root, "agents", "copilot", "orchestrator.agent.md" });
+    defer gpa.free(copilot_orch);
+    const copilot_orch_bytes = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, copilot_orch, gpa, std.Io.Limit.limited(1 << 20));
+    defer gpa.free(copilot_orch_bytes);
+    try std.testing.expect(std.mem.indexOf(u8, copilot_orch_bytes, "tools: [Bash, Agent, Read, Grep, Glob]") != null);
+
+    // methodology.md (non-role) was NOT rendered as an agent
+    const claude_methodology = try std.fs.path.join(gpa, &.{ root, "agents", "claude", "methodology.md" });
+    defer gpa.free(claude_methodology);
+    try std.testing.expectError(error.FileNotFound, std.Io.Dir.cwd().readFileAlloc(std.testing.io, claude_methodology, gpa, std.Io.Limit.limited(1 << 20)));
+
+    // models.md tier table patched (stale replaced)
+    const models_after = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, models_path, gpa, std.Io.Limit.limited(1 << 20));
+    defer gpa.free(models_after);
+    try std.testing.expect(std.mem.indexOf(u8, models_after, "stale") == null);
+    try std.testing.expect(std.mem.indexOf(u8, models_after, "claude-sonnet-4-6") != null);
+
+    // re-running checkTree should report in-sync (idempotent render + agent check)
+    var check = try checkTree(gpa, .{ .src_dir = src_dir, .out_dir = root });
+    defer check.deinit(gpa);
+    if (!check.inSync()) {
+        for (check.drifted) |d| std.debug.print("unexpected drift: [{s}] {s}\n", .{ d.reason.text(), d.path });
+    }
+    try std.testing.expect(check.inSync());
+}
+
+test "checkTree detects agent content drift and orphan" {
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try std.fs.path.join(gpa, &.{ ".zig-cache/tmp", &tmp.sub_path, "agents-check" });
+    defer gpa.free(root);
+    const src_dir = try std.fs.path.join(gpa, &.{ root, "skills", "src" });
+    defer gpa.free(src_dir);
+    const agents_src = try std.fs.path.join(gpa, &.{ root, "agents" });
+    defer gpa.free(agents_src);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, src_dir);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, agents_src);
+    const orch_path = try std.fs.path.join(gpa, &.{ agents_src, "orchestrator.md" });
+    defer gpa.free(orch_path);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = orch_path, .data = agent_orchestrator_fixture });
+    const models_path = try std.fs.path.join(gpa, &.{ agents_src, "models.md" });
+    defer gpa.free(models_path);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{
+        .sub_path = models_path,
+        .data =
+        \\# Models
+        \\
+        \\## Tier Table
+        \\
+        \\| Tier | Claude | Codex | Copilot |
+        \\|------|--------|-------|---------|
+        \\| medium | a | b | c |
+        \\| large | a | b | c |
+        \\
+        \\## End
+        ,
+    });
+
+    var rendered = try renderTree(gpa, .{ .src_dir = src_dir, .out_dir = root });
+    defer rendered.deinit(gpa);
+
+    // tamper the Claude agent file
+    const tampered = try std.fs.path.join(gpa, &.{ root, "agents", "claude", "orchestrator.md" });
+    defer gpa.free(tampered);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = tampered, .data = "tampered\n" });
+    // add an orphan in the codex agents dir
+    const orphan = try std.fs.path.join(gpa, &.{ root, "agents", "codex", "ghost.toml" });
+    defer gpa.free(orphan);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = orphan, .data = "name = \"ghost\"\n" });
+
+    var check = try checkTree(gpa, .{ .src_dir = src_dir, .out_dir = root, .emit_diff = true });
+    defer check.deinit(gpa);
+    try std.testing.expect(!check.inSync());
+    var saw_content = false;
+    var saw_orphan = false;
+    for (check.drifted) |d| {
+        if (d.reason == .content and std.mem.indexOf(u8, d.path, "agents/claude/orchestrator.md") != null) saw_content = true;
+        if (d.reason == .orphan and std.mem.indexOf(u8, d.path, "agents/codex/ghost.toml") != null) saw_orphan = true;
+    }
+    try std.testing.expect(saw_content);
+    try std.testing.expect(saw_orphan);
 }
 
 test "renderModelsDoc preserves preferred tier order and separator widths" {
