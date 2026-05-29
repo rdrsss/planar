@@ -35,7 +35,10 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     } else {
         try ctx.stdout.print("planar-doc lint: {d} issue(s)\n", .{issues});
     }
-    if (issues > 0) std.process.exit(1);
+    if (issues > 0) {
+        runtime.flush() catch {};
+        std.process.exit(1);
+    }
 }
 
 fn walkDocs(allocator: std.mem.Allocator, dir: []const u8, issues: *usize) !void {

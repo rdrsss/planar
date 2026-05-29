@@ -72,7 +72,34 @@ pub fn addCover(
         return error.SourceAlreadyCoveredByDifferentDoc;
     }
 
-    const entry_idx = findEntryIndex(m, doc_path) orelse return error.DocEntryMissing;
+    const entry_idx = findEntryIndex(m, doc_path) orelse blk: {
+        // Auto-register the doc entry. This is the path the documenter
+        // agent's "create-doc" action takes: the operator authors a new
+        // doc body and runs `planar-doc cover` to wire its first source.
+        // The entry's doc_hash is computed from the doc body on disk;
+        // sources_hash + entry_hash are sealed by recomputeAndWrite at
+        // the end of addCover.
+        const doc_hash = try computePathHashStr(allocator, repo_root, doc_path);
+        const empty_sources = try allocator.alloc(manifest_v2.SourceRow, 0);
+        const sources_hash = try manifest_v2.computeSourcesHash(allocator, empty_sources);
+        const entry_hash = try manifest_v2.computeEntryHash(allocator, doc_hash, sources_hash);
+        const new_entry: manifest_v2.EntryRow = .{
+            .path = try allocator.dupe(u8, doc_path),
+            .entry = .{
+                .doc_hash = doc_hash,
+                .sources = empty_sources,
+                .sources_hash = sources_hash,
+                .entry_hash = entry_hash,
+            },
+        };
+        const new_entries = try allocator.alloc(manifest_v2.EntryRow, m.entries.len + 1);
+        for (m.entries, 0..) |row, i| new_entries[i] = row;
+        new_entries[m.entries.len] = new_entry;
+        std.mem.sort(manifest_v2.EntryRow, new_entries, {}, manifest_v2.lessThanEntryPath);
+        allocator.free(m.entries);
+        m.entries = new_entries;
+        break :blk findEntryIndex(m, doc_path).?;
+    };
 
     // Build a new sources slice with the added row.
     const old_sources = m.entries[entry_idx].entry.sources;
@@ -413,17 +440,29 @@ fn readFileAllocOpt(allocator: std.mem.Allocator, path: []const u8) !?[]u8 {
 
 const testing = std.testing;
 
-test "addCover refuses when doc entry does not exist" {
+test "addCover auto-registers a new doc entry on first source" {
+    // Plan 423 M7 contract change: addCover creates the entry if it
+    // doesn't exist yet, so the documenter agent's `create-doc` flow
+    // (operator commits doc body → runs cover) works end-to-end.
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root_len = try tmp.dir.realPath(std.testing.io, &buf);
     const root = buf[0..root_len];
 
+    try tmp.dir.createDirPath(std.testing.io, "src/foo");
+    var src_f = try tmp.dir.createFile(std.testing.io, "src/foo/lib.zig", .{});
+    try src_f.writeStreamingAll(std.testing.io, "pub fn foo() void {}\n");
+    src_f.close(std.testing.io);
+    try tmp.dir.createDirPath(std.testing.io, "docs/features");
+    var doc_f = try tmp.dir.createFile(std.testing.io, "docs/features/foo.md", .{});
+    try doc_f.writeStreamingAll(std.testing.io, "# Foo\n");
+    doc_f.close(std.testing.io);
+
     const built = try builder.build(testing.allocator, root);
     manifest_v2.deinitManifest(testing.allocator, built.manifest);
 
-    try testing.expectError(error.DocEntryMissing, addCover(testing.allocator, root, "docs/missing.md", "src/foo/"));
+    try addCover(testing.allocator, root, "docs/features/foo.md", "src/foo/");
 }
 
 test "addNodoc + removeNodoc round-trip" {

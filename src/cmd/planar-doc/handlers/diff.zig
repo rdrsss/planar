@@ -24,5 +24,8 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         }
         if (result.records.len == 0) try ctx.stdout.print("planar-doc diff: no drift\n", .{});
     }
-    if (result.records.len > 0) std.process.exit(1);
+    if (result.records.len > 0) {
+        runtime.flush() catch {};
+        std.process.exit(1);
+    }
 }

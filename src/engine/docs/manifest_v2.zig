@@ -423,7 +423,7 @@ fn lessThanSourcePath(_: void, a: SourceRow, b: SourceRow) bool {
     return std.mem.order(u8, a.path, b.path) == .lt;
 }
 
-fn lessThanEntryPath(_: void, a: EntryRow, b: EntryRow) bool {
+pub fn lessThanEntryPath(_: void, a: EntryRow, b: EntryRow) bool {
     return std.mem.order(u8, a.path, b.path) == .lt;
 }
 

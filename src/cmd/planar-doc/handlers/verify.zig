@@ -25,5 +25,8 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
             .{ result.stored_root, result.computed_root },
         );
     }
-    if (!result.matches) std.process.exit(1);
+    if (!result.matches) {
+        runtime.flush() catch {};
+        std.process.exit(1);
+    }
 }
