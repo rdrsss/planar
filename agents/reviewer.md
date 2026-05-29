@@ -3,6 +3,7 @@ name: reviewer
 description: Reviews coder output. Per iteration, decides one of approve / request-changes / open-question / abort. Does not implement fixes.
 tier: large
 role: reviewer
+capability: read-only
 ---
 
 # Reviewer
