@@ -12,6 +12,7 @@ pub const queries = @import("docs/queries.zig");
 pub const merkle = @import("docs/merkle.zig");
 pub const manifest_v2 = @import("docs/manifest_v2.zig");
 pub const walk = @import("docs/walk.zig");
+pub const builder = @import("docs/builder.zig");
 
 test {
     _ = lint;
@@ -22,4 +23,5 @@ test {
     _ = merkle;
     _ = manifest_v2;
     _ = walk;
+    _ = builder;
 }
