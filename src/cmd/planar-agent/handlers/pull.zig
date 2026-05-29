@@ -35,6 +35,7 @@ pub const verb: cli.Cmd = .{
         .{ .long = "--worktree", .kind = .string, .desc = "Worktree id or path for isolation context" },
         .{ .long = "--repo-root", .kind = .string, .desc = "Absolute path of checkout to probe locality against" },
         .{ .long = "--no-locality-probe", .kind = .bool, .default = .{ .bool = false }, .desc = "Skip the git locality probe" },
+        .{ .long = "--metadata", .kind = .string, .desc = "Opaque text (typically JSON) persisted on the dispatch action row; validated as well-formed JSON when supplied" },
         .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
     },
     .positionals = &.{
@@ -77,6 +78,15 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
     const ttl_secs = cli.duration.parseSeconds(args.ttl) catch |e|
         exit.die(ctx, e, "invalid --ttl '{s}': expected bare seconds (e.g. 600) or suffixed duration (e.g. 10m, 1h, 500ms)", .{args.ttl});
 
+    // Validate --metadata is well-formed JSON at parse time. Engine
+    // stores it opaquely; failing here keeps malformed text out of the
+    // database.
+    if (args.metadata) |m| {
+        var parsed = std.json.parseFromSlice(std.json.Value, ctx.allocator, m, .{}) catch
+            exit.die(ctx, error.InvalidInput, "--metadata is not valid JSON: {s}", .{m});
+        parsed.deinit();
+    }
+
     const result = atomic.pullNext(d, ctx.allocator, .{
         .plan_id = args.plan_id,
         .session_id = session_id,
@@ -90,6 +100,7 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
         .ttl_secs = ttl_secs,
         .locality = loc,
         .action_kind = action_kind,
+        .metadata = args.metadata,
     }) catch |e| exit.die(ctx, e, "pull: {s}", .{@errorName(e)});
     defer result.deinit(ctx.allocator);
 

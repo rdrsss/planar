@@ -160,7 +160,8 @@ fn listActions(
         \\       action_kind, entity_kind, entity_id,
         \\       vendor, vendor_role, model,
         \\       started_at, ended_at, outcome, summary,
-        \\       head_sha, dirty
+        \\       head_sha, dirty,
+        \\       metadata
         \\from agent_actions
         \\order by started_at desc, id desc
         \\limit {d}
@@ -229,5 +230,6 @@ fn readActionRow(
         .summary = try stmt.columnTextOpt(14, allocator),
         .head_sha = try stmt.columnTextOpt(15, allocator),
         .dirty = dirty,
+        .metadata = try stmt.columnTextOpt(17, allocator),
     };
 }

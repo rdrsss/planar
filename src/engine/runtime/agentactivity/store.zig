@@ -562,6 +562,13 @@ pub const StartActionArgs = struct {
     model: ?[]const u8 = null,
     /// Locality at action start. Use `types.Locality.skipped` to skip.
     locality: types.Locality = .{},
+    /// Free-form opaque text persisted to `agent_actions.metadata`.
+    /// Typically a JSON document encoded by the caller (e.g. the
+    /// orchestrator strategy gate writes
+    /// `{"strategy":"<name>","axes":{...},...}`). The engine does NOT
+    /// parse or validate the content — that's the caller's contract.
+    /// NULL to leave the column unset.
+    metadata: ?[]const u8 = null,
 };
 
 /// Insert an agent_actions row with `started_at` defaulted to now and
@@ -587,12 +594,14 @@ pub fn startAction(
         \\  session_id, session_entry_id, parent_action_id, claim_id,
         \\  action_kind, entity_kind, entity_id,
         \\  vendor, vendor_role, model,
-        \\  head_sha, dirty
+        \\  head_sha, dirty,
+        \\  metadata
         \\) values (
         \\  ?, ?, ?, ?,
         \\  ?, ?, ?,
         \\  ?, ?, ?,
-        \\  ?, ?
+        \\  ?, ?,
+        \\  ?
         \\)
     , &.{
         .{ .int = args.session_id },
@@ -607,6 +616,7 @@ pub fn startAction(
         textOrNull(args.model),
         textOrNull(args.locality.head_sha),
         textOrNull(dirty_text),
+        textOrNull(args.metadata),
     }) catch return Error.QueryFailed;
     return id;
 }
@@ -949,7 +959,8 @@ const action_select_by_id: [:0]const u8 =
     \\       action_kind, entity_kind, entity_id,
     \\       vendor, vendor_role, model,
     \\       started_at, ended_at, outcome, summary,
-    \\       head_sha, dirty
+    \\       head_sha, dirty,
+    \\       metadata
     \\from agent_actions where id = ?
 ;
 
@@ -1042,6 +1053,7 @@ fn readActionRow(stmt: *db.sqlite.Stmt, allocator: std.mem.Allocator) Error!type
         .summary = try stmt.columnTextOpt(14, allocator),
         .head_sha = try stmt.columnTextOpt(15, allocator),
         .dirty = dirty,
+        .metadata = try stmt.columnTextOpt(17, allocator),
     };
 }
 
@@ -1395,6 +1407,39 @@ test "nextWork classifies tasks into available, claimed, blocked buckets" {
     try std.testing.expectEqual(@as(usize, 1), n_claimed);
     try std.testing.expectEqual(@as(usize, 1), n_blocked);
     _ = t3;
+}
+
+test "startAction persists metadata text and getActionById round-trips it" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const sid = try insertTestSession(&d);
+    const meta = "{\"strategy\":\"isolated-sequential\",\"axes\":{\"isolation\":\"worktree\"},\"rationale\":\"2-task plan\"}";
+    const id = try startAction(&d, a, .{
+        .session_id = sid,
+        .action_kind = .orchestrator,
+        .vendor = "test",
+        .metadata = meta,
+    });
+    const got = try getActionById(&d, a, id);
+    defer got.deinit(a);
+    try std.testing.expect(got.metadata != null);
+    try std.testing.expectEqualStrings(meta, got.metadata.?);
+}
+
+test "startAction with null metadata leaves the column NULL" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const sid = try insertTestSession(&d);
+    const id = try startAction(&d, a, .{
+        .session_id = sid,
+        .action_kind = .coder,
+        .vendor = "test",
+    });
+    const got = try getActionById(&d, a, id);
+    defer got.deinit(a);
+    try std.testing.expect(got.metadata == null);
 }
 
 test "acquireClaim records locality columns when provided" {

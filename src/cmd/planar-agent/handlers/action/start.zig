@@ -26,6 +26,7 @@ pub const verb: cli.Cmd = .{
         .{ .long = "--vendor-role", .kind = .string, .desc = "Optional vendor role tag" },
         .{ .long = "--repo-root", .kind = .string, .desc = "Absolute path of checkout to probe locality against" },
         .{ .long = "--no-locality-probe", .kind = .bool, .default = .{ .bool = false }, .desc = "Skip the git locality probe" },
+        .{ .long = "--metadata", .kind = .string, .desc = "Opaque text (typically JSON) persisted on the action row; validated as well-formed JSON when supplied" },
         .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
     },
     .run = cli.handler(handle),
@@ -78,6 +79,15 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
         entity_id_a = eid;
     }
 
+    // Validate --metadata is well-formed JSON at the CLI parse layer so
+    // callers see a friendly error instead of opaque text round-tripping
+    // through the engine. The engine stores it as opaque text.
+    if (args.metadata) |m| {
+        var parsed = std.json.parseFromSlice(std.json.Value, ctx.allocator, m, .{}) catch
+            exit.die(ctx, error.InvalidInput, "--metadata is not valid JSON: {s}", .{m});
+        parsed.deinit();
+    }
+
     const id = store.startAction(d, ctx.allocator, .{
         .session_id = claim.session_id,
         .parent_action_id = parent_id,
@@ -88,6 +98,7 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
         .vendor = claim.vendor,
         .vendor_role = args.vendor_role,
         .locality = loc,
+        .metadata = args.metadata,
     }) catch |e| exit.die(ctx, e, "startAction: {s}", .{@errorName(e)});
 
     const action = store.getActionById(d, ctx.allocator, id) catch |e|
