@@ -117,6 +117,46 @@ test "planar-doc verify exits 0 on clean tree, 1 on drift after cover wires docâ
     try std.testing.expectEqual(@as(u32, 1), r.term.exited);
 }
 
+test "orchestrator Phase 6 envelope: planar-doc diff JSON is the diff_records payload (plan 423 M8 task 2839)" {
+    // Phase 6 sends the documenter agent an envelope
+    //   { manifest_path, diff_records, covered_docs, cycle_summary }
+    // where `diff_records` is the verbatim JSON `planar-doc diff --json`
+    // emits. This test pins the JSON shape contract so a future
+    // change to the diff output can't silently break the orchestrator
+    // wiring. The orchestrator-as-LLM end-to-end test belongs in the
+    // vendor-skill harness; here we lock the upstream payload only.
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cwd = try tmpAbsPath(&tmp, gpa);
+    defer gpa.free(cwd);
+
+    try writeFile(&tmp, gpa, "src/foo/lib.zig", "pub fn foo() void {}\n");
+    try writeFile(&tmp, gpa, "docs/features/foo.md", "# Foo\n");
+    {
+        const r = try runDoc(gpa, cwd, &.{"build"});
+        defer r.deinit();
+        try std.testing.expectEqual(@as(u32, 0), r.term.exited);
+    }
+    {
+        const r = try runDoc(gpa, cwd, &.{ "cover", "docs/features/foo.md", "src/foo/" });
+        defer r.deinit();
+        try std.testing.expectEqual(@as(u32, 0), r.term.exited);
+    }
+
+    try writeFile(&tmp, gpa, "src/foo/lib.zig", "pub fn foo() void { return; }\n");
+
+    const r = try runDoc(gpa, cwd, &.{ "diff", "--json" });
+    defer r.deinit();
+    try std.testing.expectEqual(@as(u32, 1), r.term.exited);
+    // Envelope-required fields. The orchestrator wraps these in
+    // `diff_records` and ships them; the documenter expects them.
+    try std.testing.expect(std.mem.indexOf(u8, r.stdout, "\"signal\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.stdout, "\"path\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.stdout, "\"doc\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.stdout, "\"detail\":") != null);
+}
+
 test "planar-doc diff JSON rows carry signal/path fields for documenter agent" {
     // The documenter agent constructs its worklist from `planar-doc diff
     // --json`. M7 task 2816's contract is: each diff row carries the

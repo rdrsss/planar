@@ -5,7 +5,7 @@ source: agents/orchestrator.md
 model_tier: large
 vendor:
   claude:
-    argument_hint: "<goal|plan-id|task-id> [<task-id>...] [--propagate] [--archive] [--strict | --grouped | --batch <ids>]"
+    argument_hint: "<goal|plan-id|task-id> [<task-id>...] [--propagate] [--archive] [--no-docs] [--strict | --grouped | --batch <ids>]"
     invocation_examples: |
       /orchestrator <goal>                          # start from scratch: plan → wait → ingest → wait → execute
       /orchestrator <anchor-plan-id>                # resume from current anchor plan status
@@ -46,6 +46,8 @@ The orchestrator selects phases based on the anchor plan's current `status`:
 
 5. **Archive (Phase 5, optional)** — marks anchor plan `done` and invokes `planar workbench archive <anchor>` when the user requests `--archive` or confirms interactively. Never archives automatically.
 
+6. **Documenter (Phase 6, default-on)** — at the end of every cycle (unless `--no-docs` was supplied), runs `planar-doc diff --json`, packages the envelope `{ manifest_path, diff_records, covered_docs, cycle_summary }`, dispatches `pl-documenter`, surfaces the returned worklist to the user, and applies each operator-approved row through `planar-doc cover` / `planar-doc nodoc` / a staged doc-body commit, then closes with `planar-doc build`. The documenter only proposes — no `planar-doc` verb fires until the operator approves the row. See [`agents/orchestrator.md` § Phase 6 (Documenter)](../../agents/orchestrator.md#phase-6--documenter-pl-documenter-default-on).
+
 ## User Gates
 
 - Between Phase 1 and Phase 2: user must review artifacts.
@@ -55,8 +57,9 @@ The orchestrator selects phases based on the anchor plan's current `status`:
 - Phase 3.5 `failure-surfaced` outcome: when a test the test-coder authored fails on first run, user must resolve (fix the test or fix the code) before the reviewer is dispatched. The orchestrator never decides which side is wrong.
 - Phase 4: user must request propagation.
 - Phase 5: user must request archive.
+- Phase 6 worklist: user must approve each row before `planar-doc cover` / `nodoc` / a staged doc body / `planar-doc build` fires. `--no-docs` opts out of the phase entirely.
 
-These gates exist to prevent silent side effects on spec/task creation and FS cleanup.
+These gates exist to prevent silent side effects on spec/task creation, FS cleanup, and the doc-state manifest.
 
 ## Claim ritual (`planar-agent`)
 
