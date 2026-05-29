@@ -18,12 +18,12 @@
 //!   - Releasing the claim flips the field back to null on the next
 //!     resume invocation.
 //!
-//! Handoff-side persistence (sections describing snapshot capture of
-//! worktree_path) is intentionally NOT exercised here: per M6 task
-//! 2914's deferral, today the resumer recovers the worktree path from
-//! the still-active claim row rather than from the handoff record
-//! itself. Follow-up task (filed during M6) will add explicit columns
-//! on either `handoffs` or `context_snapshots`.
+//! Handoff-side persistence (capture of worktree_path on the
+//! handoff record itself) IS exercised in the
+//! "resume falls back to handoff worktree_path" test below — that
+//! path closes plan 297 followup t#2947 (handoffs.worktree_path
+//! column landed in migration 00017), so a resumer can recover
+//! `cd <path>` even after the originating claim has been released.
 
 const std = @import("std");
 const harness = @import("harness");
@@ -118,9 +118,30 @@ const ActiveClaimJSON = struct {
     branch: []const u8 = "",
 };
 
+const FromHandoffJSON = struct {
+    handoff_id: i64,
+    worktree_path: []const u8 = "",
+    repo_root: []const u8 = "",
+    branch: []const u8 = "",
+};
+
 const ResumeJSON = struct {
     identity: struct { task_id: i64 },
     active_claim: ?ActiveClaimJSON = null,
+    from_handoff: ?FromHandoffJSON = null,
+};
+
+const HandoffShowJSON = struct {
+    id: i64,
+    status: []const u8,
+    worktree_path: []const u8 = "",
+    repo_root: []const u8 = "",
+    branch: []const u8 = "",
+};
+
+const HandoffCaptureJSON = struct {
+    ok: bool,
+    handoff_id: i64,
 };
 
 // ============================================================================
@@ -284,4 +305,103 @@ test "scenario: resume active_claim present but worktree_path empty when claim h
     try std.testing.expect(std.mem.indexOf(u8, resume_text, "active claim:") != null);
     try std.testing.expect(std.mem.indexOf(u8, resume_text, "\n  cd:") == null);
     try std.testing.expect(std.mem.indexOf(u8, resume_text, "\n  worktree:") == null);
+}
+
+// ============================================================================
+// Test 4 — handoff captures worktree_path, resume recovers it from the
+// handoff record after the claim has been released. Plan 297 followup
+// t#2947 (handoffs.worktree_path column landed in migration 00017).
+// ============================================================================
+
+test "scenario: resume falls back to handoff worktree_path after claim released" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    gpa.free(suite.mustRun(&.{ "init", "--skip-project" }));
+
+    const plan = suite.mustRunJSON(PlanIdJSON, arena, &.{
+        "plan", "create", "--slug", "t2947-fallback", "--json", "T2947 handoff fallback",
+    });
+    const pid = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch @panic("OOM");
+
+    const task = suite.mustRunJSON(TaskAddJSON, arena, &.{
+        "task",   "add",           "--plan",                    pid,
+        "--json", "--next-action", "verify handoff carries wt", "wt-handoff-target",
+    });
+    const tid = std.fmt.allocPrint(arena, "{d}", .{task.id}) catch @panic("OOM");
+
+    // Acquire a claim with --worktree pointing at a fake path.
+    const fake_wt = "/tmp/planar-t2947-fake-worktree/cycle/feat";
+    const pull_raw = mustRunAgent(&suite, &.{
+        "pull", pid, "--no-locality-probe", "--worktree", fake_wt, "--json",
+    });
+    defer gpa.free(pull_raw);
+
+    const pull_parsed = std.json.parseFromSlice(PullJSON, arena, pull_raw, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    }) catch |e| {
+        std.debug.print("\npull JSON decode failed: {s}\nraw: {s}\n", .{ @errorName(e), pull_raw });
+        @panic("pull JSON");
+    };
+    const claim_token = pull_parsed.value.claim_token orelse @panic("pull lacked claim_token");
+
+    // Open a capture session bound to the task — required for the
+    // `planar handoff <task>` combined ritual.
+    gpa.free(suite.mustRunWith(&.{ "capture", "session", "--task", tid }, &.{
+        .{ .key = "PLANAR_VENDOR", .value = "claude" },
+    }));
+
+    // Run the combined handoff ritual. The handler must copy
+    // worktree_path from the active claim onto the new handoff row.
+    const handoff_json_raw = suite.mustRunWith(&.{ "handoff", tid, "--json", "--note", "captured" }, &.{
+        .{ .key = "PLANAR_VENDOR", .value = "claude" },
+    });
+    defer gpa.free(handoff_json_raw);
+    const hc = std.json.parseFromSlice(HandoffCaptureJSON, arena, handoff_json_raw, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    }) catch |e| {
+        std.debug.print("\nhandoff JSON decode failed: {s}\nraw: {s}\n", .{ @errorName(e), handoff_json_raw });
+        @panic("handoff JSON");
+    };
+    const hid = std.fmt.allocPrint(arena, "{d}", .{hc.value.handoff_id}) catch @panic("OOM");
+
+    // ---- Assertion 4a — handoff show --json carries worktree_path.
+    const show = suite.mustRunJSON(HandoffShowJSON, arena, &.{
+        "handoff", "show", hid, "--json",
+    });
+    try std.testing.expectEqualStrings(fake_wt, show.worktree_path);
+
+    // ---- Release the claim. Active claim row is now gone.
+    gpa.free(mustRunAgent(&suite, &.{ "release", "--claim", claim_token }));
+
+    // ---- Assertion 4b — resume --json now has no active_claim,
+    // but from_handoff surfaces the worktree_path recovered from
+    // the handoff record.
+    const resume_pkt = suite.mustRunJSON(ResumeJSON, arena, &.{
+        "resume", "--json", tid,
+    });
+    try std.testing.expect(resume_pkt.active_claim == null);
+    const fh = resume_pkt.from_handoff orelse {
+        std.debug.print("\nresume --json missing from_handoff fallback after claim release\n", .{});
+        try std.testing.expect(false);
+        unreachable;
+    };
+    try std.testing.expectEqualStrings(fake_wt, fh.worktree_path);
+    try std.testing.expectEqual(hc.value.handoff_id, fh.handoff_id);
+
+    // ---- Assertion 4c — resume text surfaces the `from handoff:`
+    // label and the `cd:` / `worktree:` lines under the audit footer.
+    const resume_text = suite.mustRun(&.{ "resume", tid });
+    defer gpa.free(resume_text);
+    try std.testing.expect(std.mem.indexOf(u8, resume_text, "from handoff:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resume_text, "worktree:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resume_text, "cd:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resume_text, fake_wt) != null);
 }
