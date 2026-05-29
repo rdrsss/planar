@@ -1,4 +1,4 @@
-//! handlers/ps — `planar-watch ps [--vendor v] [--plan id] [--stale] [--json] [--follow] [--interval D] [--sort-by <lease|heartbeat>]`
+//! handlers/ps — `planar-watch ps [--vendor v] [--plan id] [--stale] [--json] [--follow] [--interval D] [--sort-by <lease|heartbeat>] [--group-by <role|scope|vendor>]`
 //!
 //! Snapshot of active claims (and, with --stale, also claims whose
 //! lease has expired or that reconcile has marked stale). Same JSON
@@ -12,16 +12,24 @@
 //!   - JSON field `latest_action:{kind,summary,started_at}` (task 3056)
 //!   - Default sort by `last_heartbeat_at desc`; `--sort-by lease`
 //!     restores the old `claimed_at desc` ordering (task 3057)
+//!   - `--group-by role|scope|vendor` — group active/stale rows by a
+//!     dimension (task 3058). Text: one section header per group;
+//!     JSON: `groups: {key: [...]}` wrapper inside each bucket.
 //!
 //! JSON shape (tech-spec § "JSON shapes"):
-//!   {
-//!     generated_at: ISO8601,
-//!     active: [ClaimRow],
-//!     stale:  [ClaimRow]   // present when --stale or always (matches
-//!                           // the documented contract — both keys
-//!                           // are always emitted, possibly with empty
-//!                           // arrays so the schema is stable).
-//!   }
+//!   Without --group-by:
+//!     {
+//!       generated_at: ISO8601,
+//!       active: [ClaimRow],
+//!       stale:  [ClaimRow]
+//!     }
+//!   With --group-by:
+//!     {
+//!       generated_at: ISO8601,
+//!       groups: { "<key>": [ClaimRow], ... }
+//!     }
+//!   (The top-level `active`/`stale` envelope is UNCHANGED when
+//!   `--group-by` is absent — strict backward compat.)
 //!
 //! ClaimRow now includes `latest_action: {kind, summary, started_at}|null`.
 //!
@@ -51,6 +59,16 @@ const SortBy = enum {
     lease,
 };
 
+/// Grouping dimension for `--group-by` (task 3058).
+const GroupBy = enum {
+    /// Group by the claim's `role` field (coder, reviewer, planner, ...).
+    role,
+    /// Group by the resolved scope slug of the claim's entity.
+    scope,
+    /// Group by the claim's `vendor` field (claude, codex, copilot, ...).
+    vendor,
+};
+
 pub const verb: cli.Cmd = .{
     .name = "ps",
     .desc = "Snapshot of active (and stale) agent claims.",
@@ -70,6 +88,7 @@ pub const verb: cli.Cmd = .{
         .{ .long = "--follow", .kind = .bool, .default = .{ .bool = false }, .desc = "Stream snapshots until SIGINT" },
         .{ .long = "--interval", .kind = .string, .desc = "Poll interval for --follow (default 1s; e.g. 100ms)" },
         .{ .long = "--sort-by", .kind = .string, .desc = "Sort order for active claims: heartbeat (default) or lease" },
+        .{ .long = "--group-by", .kind = .string, .desc = "Group claims by dimension: role, scope, or vendor" },
     },
     .run = cli.handler(handle),
 };
@@ -81,12 +100,13 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
 
     const interval_ns = parseIntervalOrDefault(args.interval);
     const sort_by = parseSortBy(args.sort_by) catch |e| exit.die(ctx, e, "ps: --sort-by: accepted values are 'heartbeat' (default) or 'lease'", .{});
+    const group_by_opt = parseGroupBy(args.group_by) catch |e| exit.die(ctx, e, "ps: --group-by: accepted values are 'role', 'scope', or 'vendor'", .{});
 
     if (args.follow) follow.installSigintHandler();
 
     var live_d = d;
     while (true) {
-        emitOnce(ctx.stdout, live_d, ctx.allocator, args, sort_by) catch |e|
+        emitOnce(ctx.stdout, live_d, ctx.allocator, args, sort_by, group_by_opt) catch |e|
             exit.die(ctx, e, "ps: {s}", .{@errorName(e)});
         try ctx.stdout.flush();
 
@@ -102,6 +122,14 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
     }
 }
 
+fn parseGroupBy(opt: ?[]const u8) error{InvalidValue}!?GroupBy {
+    const s = opt orelse return null;
+    if (std.mem.eql(u8, s, "role")) return .role;
+    if (std.mem.eql(u8, s, "scope")) return .scope;
+    if (std.mem.eql(u8, s, "vendor")) return .vendor;
+    return error.InvalidValue;
+}
+
 fn parseSortBy(opt: ?[]const u8) error{InvalidValue}!SortBy {
     const s = opt orelse return .heartbeat; // default
     if (std.mem.eql(u8, s, "heartbeat")) return .heartbeat;
@@ -115,6 +143,7 @@ fn emitOnce(
     allocator: std.mem.Allocator,
     args: anytype,
     sort_by: SortBy,
+    group_by_opt: ?GroupBy,
 ) !void {
     const active = try listActiveSorted(d, allocator, sort_by);
     defer agentactivity.types.Claim.deinitMany(active, allocator);
@@ -128,9 +157,17 @@ fn emitOnce(
     }
 
     if (args.json) {
-        try emitJson(w, d, allocator, active, stale_rows, args);
+        if (group_by_opt) |gb| {
+            try emitJsonGrouped(w, d, allocator, active, stale_rows, args, gb);
+        } else {
+            try emitJson(w, d, allocator, active, stale_rows, args);
+        }
     } else {
-        try emitText(w, d, allocator, active, stale_rows);
+        if (group_by_opt) |gb| {
+            try emitTextGrouped(w, d, allocator, active, stale_rows, args, gb);
+        } else {
+            try emitText(w, d, allocator, active, stale_rows);
+        }
     }
 }
 
@@ -245,6 +282,167 @@ fn emitJson(
         try agentactivity.json.writeClaimWithActivity(w, c, scope, true, action_info);
     }
     try w.print("]}}\n", .{});
+}
+
+// =========================================================================
+// Group-by rendering (task 3058)
+// =========================================================================
+
+/// Return the group key for a claim under the given `GroupBy` dimension.
+/// Returned slice is borrowed from the claim's allocator-owned memory or
+/// a static literal — do NOT free it.
+fn groupKeyForClaim(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    c: agentactivity.types.Claim,
+    gb: GroupBy,
+    scope_out: *?agentactivity.types.ClaimScopeInfo,
+) []const u8 {
+    switch (gb) {
+        .role => return c.role orelse "unknown",
+        .vendor => return c.vendor,
+        .scope => {
+            // Resolve scope and cache it for the caller (avoids double resolve).
+            const s = agentactivity.store.resolveClaimScope(d, allocator, c);
+            scope_out.* = s;
+            return s.label();
+        },
+    }
+}
+
+/// Write the JSON grouped shape:
+///   { "generated_at": ..., "groups": { "<key>": [ClaimRow, ...], ... } }
+/// All rows from both active and stale (when --stale is set) are merged
+/// into the groups object. A claim filtered by --vendor/--plan is excluded.
+fn emitJsonGrouped(
+    w: *std.Io.Writer,
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    active: []const agentactivity.types.Claim,
+    stale_rows: []const agentactivity.types.Claim,
+    args: anytype,
+    gb: GroupBy,
+) !void {
+    // Build a map from group-key → claim indices (active then stale).
+    // Use an ArrayList of {key, claim} pairs sorted by first-seen key so the
+    // output order is deterministic.
+    const GroupEntry = struct { key: []const u8, claim: agentactivity.types.Claim };
+    var entries: std.ArrayList(GroupEntry) = .empty;
+    defer entries.deinit(allocator);
+
+    // Merge active + stale into one flat sequence after filtering.
+    const all_slices = [_][]const agentactivity.types.Claim{ active, stale_rows };
+    for (all_slices) |slice| {
+        for (slice) |c| {
+            if (!claimMatches(d, c, args)) continue;
+            var scope_cached: ?agentactivity.types.ClaimScopeInfo = null;
+            // For scope grouping we resolve and free below; for other dims we
+            // don't allocate.  Track whether we own the scope object.
+            const key = groupKeyForClaim(d, allocator, c, gb, &scope_cached);
+            // We free the scope right away — we only needed `label()` which
+            // is a borrowed slice from the scope's internal storage.  Since
+            // `label()` returns either a static literal or a field of the scope
+            // struct itself, we must dupe the key string before freeing.
+            const key_owned = try allocator.dupe(u8, key);
+            if (scope_cached) |s| s.deinit(allocator);
+            try entries.append(allocator, .{ .key = key_owned, .claim = c });
+        }
+    }
+    defer for (entries.items) |e| allocator.free(e.key);
+
+    // Collect unique keys in insertion order.
+    var seen_keys: std.ArrayList([]const u8) = .empty;
+    defer seen_keys.deinit(allocator);
+    outer: for (entries.items) |e| {
+        for (seen_keys.items) |k| {
+            if (std.mem.eql(u8, k, e.key)) continue :outer;
+        }
+        try seen_keys.append(allocator, e.key);
+    }
+
+    try w.print("{{\"generated_at\":", .{});
+    try writeNowIso(w);
+    try w.print(",\"groups\":{{", .{});
+
+    var first_group = true;
+    for (seen_keys.items) |grp_key| {
+        if (!first_group) try w.print(",", .{});
+        first_group = false;
+        try std.json.Stringify.encodeJsonString(grp_key, .{}, w);
+        try w.print(":[", .{});
+        var first_claim = true;
+        for (entries.items) |e| {
+            if (!std.mem.eql(u8, e.key, grp_key)) continue;
+            if (!first_claim) try w.print(",", .{});
+            first_claim = false;
+            const scope = agentactivity.store.resolveClaimScope(d, allocator, e.claim);
+            defer scope.deinit(allocator);
+            const action_row = agentactivity.store.latestActionForClaim(d, allocator, e.claim.id) catch null;
+            defer if (action_row) |a| a.deinit(allocator);
+            const action_info: ?agentactivity.json.LatestActionInfo = if (action_row) |a| .{
+                .kind = a.action_kind.toText(),
+                .summary = a.summary,
+                .started_at = a.started_at,
+            } else null;
+            try agentactivity.json.writeClaimWithActivity(w, e.claim, scope, true, action_info);
+        }
+        try w.print("]", .{});
+    }
+    try w.print("}}}}\n", .{});
+}
+
+/// Text grouped output: one section header per group key, claims indented
+/// beneath. Section header format: `[group: <key>]` (two spaces indent for
+/// claims matching the existing renderClaimLine indentation).
+fn emitTextGrouped(
+    w: *std.Io.Writer,
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    active: []const agentactivity.types.Claim,
+    stale_rows: []const agentactivity.types.Claim,
+    args: anytype,
+    gb: GroupBy,
+) !void {
+    // Build (key, claim) sequence.
+    const GroupEntry = struct { key: []const u8, claim: agentactivity.types.Claim };
+    var entries: std.ArrayList(GroupEntry) = .empty;
+    defer entries.deinit(allocator);
+
+    const all_slices = [_][]const agentactivity.types.Claim{ active, stale_rows };
+    for (all_slices) |slice| {
+        for (slice) |c| {
+            if (!claimMatches(d, c, args)) continue;
+            var scope_cached: ?agentactivity.types.ClaimScopeInfo = null;
+            const key = groupKeyForClaim(d, allocator, c, gb, &scope_cached);
+            const key_owned = try allocator.dupe(u8, key);
+            if (scope_cached) |s| s.deinit(allocator);
+            try entries.append(allocator, .{ .key = key_owned, .claim = c });
+        }
+    }
+    defer for (entries.items) |e| allocator.free(e.key);
+
+    if (entries.items.len == 0) {
+        try w.print("active: 0\n", .{});
+        return;
+    }
+
+    // Collect unique keys in insertion order.
+    var seen_keys: std.ArrayList([]const u8) = .empty;
+    defer seen_keys.deinit(allocator);
+    outer: for (entries.items) |e| {
+        for (seen_keys.items) |k| {
+            if (std.mem.eql(u8, k, e.key)) continue :outer;
+        }
+        try seen_keys.append(allocator, e.key);
+    }
+
+    for (seen_keys.items) |grp_key| {
+        try w.print("[group: {s}]\n", .{grp_key});
+        for (entries.items) |e| {
+            if (!std.mem.eql(u8, e.key, grp_key)) continue;
+            try renderClaimLine(w, d, allocator, e.claim);
+        }
+    }
 }
 
 // =========================================================================
