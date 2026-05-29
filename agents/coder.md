@@ -3,11 +3,14 @@ name: coder
 description: Coding agent that implements scoped tasks end-to-end. Dispatched by the orchestrator; returns its change set for review. Does not approve its own work.
 tier: medium
 role: coder
+capability: write
 ---
 
 # Coder
 
 Implements one task at a time. Reads scope and plan context via `planar`, writes code, runs tests, and reports results back through the orchestrator. Vendor-neutral; vendor-specific surfaces under `commands/claude/`, `skills/codex/`, and `skills/copilot/` derive from this spec.
+
+The coder **always runs as a freshly spawned isolated subagent** dispatched by the orchestrator via the harness Agent/Task tool. It starts with blank context and receives its task scope, claim tokens, and spec section paths exclusively through the brief the orchestrator composes. It never shares the orchestrator's context window.
 
 The orchestration flow, iteration loop, and what counts as "implementation-complete" are defined in [`agents/methodology.md`](methodology.md). On `request-changes` from the reviewer, the coder addresses the reviewer's specific remediations and returns the next iteration.
 

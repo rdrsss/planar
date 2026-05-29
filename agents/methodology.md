@@ -328,7 +328,21 @@ In every case the orchestrator preserves recoverable state: the cycle worktree s
 
 ## Dispatch mode selection
 
-Use INLINE (skip reviewer dispatch) if ALL of the following hold:
+Dispatch has two orthogonal axes. They are independent and must not be conflated.
+
+### Axis A — Isolation (non-negotiable)
+
+Every working-tree mutation happens inside a **freshly spawned coder subagent** with blank context. This is independent of file count, edit triviality, and model tier.
+
+The orchestrator's own loop carries **no Edit/Write capability** and never edits repository files directly. It only runs `planar` / `planar-agent` CLI verbs and spawns / collects subagents. "Dispatch" means: spawn a coder subagent via the harness Agent/Task tool (subagent type `coder`). It does **not** mean invoking `/pl-coder` inline — a slash command runs in the caller's own context and model, which is the defect this rule closes. Even when the orchestrator is running as `large` (opus), the coder must be a separate spawned subagent; "I'm already opus, spawning adds nothing" is a rationalization that violates isolation.
+
+Isolation is always-on. There are no conditions under which the orchestrator may edit repository files itself.
+
+### Axis B — Reviewer disposition (tunable)
+
+Whether a reviewer pass runs after the coder is a separate, per-cycle decision. The six dispatch shapes (`strict`, `grouped`, `single`, `barrel-grouped`, `barrel-deferred`, `barrel-bypass`) and the [Reviewer dispatch profile](#reviewer-dispatch-profile) below are entirely Axis B. All six shapes must be preserved and are not affected by the isolation rule.
+
+Use **no-review** (skip reviewer dispatch) if ALL of the following hold:
   (a) ≤3 files modified
   (b) Only mechanical edits: renames, deletions, mass symbol-replace,
       comment-only changes, or whitespace normalization
@@ -338,11 +352,15 @@ Use INLINE (skip reviewer dispatch) if ALL of the following hold:
       grep checks pass, `planar skills render --check` against an
       out-of-tree staging dir and any remaining relevant validators pass
 
-Use STRICT (full coder + reviewer dispatch) if ANY of the following hold:
+Use **review** (full coder + reviewer dispatch) if ANY of the following hold:
   - More than 3 files modified
   - Logic changes, new functions, new types, or new DB access
   - Spec, ADR, or migration changes
   - Reviewer failed the previous cycle on the same area
+
+### Axis C — Tier (separate from A)
+
+The coder subagent defaults to `medium` tier (sonnet). The orchestrator may escalate to `large` (opus) for schema changes, engine-judgment calls, or large architectural cycles — but tier is independent of isolation. Even an opus-tier coder must run as a separately spawned subagent. See [`agents/models.md`](models.md) for tier-to-model resolution.
 
 ## Common defects pre-flight checklist
 

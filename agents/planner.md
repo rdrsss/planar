@@ -3,6 +3,7 @@ name: planner
 description: Drafts product specs, tech specs, roadmaps, and initial test scenarios for a new feature given a goal and the cwd-derived scope. Does not decompose into tasks — that is the ingestor's job.
 tier: large
 role: planner
+capability: write
 ---
 
 # Planner
