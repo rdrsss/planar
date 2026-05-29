@@ -757,6 +757,42 @@ pub fn getActionById(
     };
 }
 
+/// Return the action with the highest `(started_at, id)` for `claim_id`,
+/// or `null` when no actions exist for the claim.
+///
+/// Implements Decision D4 (tech-spec line 165): read live from
+/// `agent_actions` — no denormalized column on `agent_work_claims`.
+/// The query is backed by `ix_agent_actions_claim` (migration 00015)
+/// so the O(1) lookup cost is acceptable for the typical N ≤ 30 active
+/// claims rendered by `planar-watch ps`.
+///
+/// Tie-breaking: `started_at desc, id desc` — the highest id wins when
+/// two actions share the same `started_at` timestamp.
+pub fn latestActionForClaim(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    claim_id: i64,
+) Error!?types.Action {
+    var stmt = d.prepare(
+        \\select id, session_id, session_entry_id, parent_action_id, claim_id,
+        \\       action_kind, entity_kind, entity_id,
+        \\       vendor, vendor_role, model,
+        \\       started_at, ended_at, outcome, summary,
+        \\       head_sha, dirty,
+        \\       metadata
+        \\from agent_actions
+        \\where claim_id = ?
+        \\order by started_at desc, id desc
+        \\limit 1
+    ) catch return Error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .int = claim_id }}) catch return Error.QueryFailed;
+    return switch (stmt.step() catch return Error.QueryFailed) {
+        .done => null,
+        .row => try readActionRow(&stmt, allocator),
+    };
+}
+
 // =========================================================================
 // nextWork — claim-aware "what's available" selector
 // =========================================================================
@@ -1593,6 +1629,104 @@ test "latestActiveClaimForSession returns the claim id when exactly one active c
     const result = try latestActiveClaimForSession(&d, sid);
     try std.testing.expect(result != null);
     try std.testing.expectEqual(c.id, result.?);
+}
+
+test "latestActionForClaim returns null when no actions exist for the claim" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const sid = try insertTestSession(&d);
+    const tid = try insertTestTask(&d);
+    const c = try acquireClaim(&d, a, .{
+        .session_id = sid,
+        .entity_kind = .task,
+        .entity_id = tid,
+        .vendor = "test",
+    });
+    defer c.deinit(a);
+
+    const result = try latestActionForClaim(&d, a, c.id);
+    try std.testing.expect(result == null);
+}
+
+test "latestActionForClaim returns the single action when exactly one exists" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const sid = try insertTestSession(&d);
+    const tid = try insertTestTask(&d);
+    const c = try acquireClaim(&d, a, .{
+        .session_id = sid,
+        .entity_kind = .task,
+        .entity_id = tid,
+        .vendor = "test",
+    });
+    defer c.deinit(a);
+
+    const action_id = try startAction(&d, a, .{
+        .session_id = sid,
+        .claim_id = c.id,
+        .action_kind = .heartbeat,
+        .vendor = "test",
+    });
+    try endAction(&d, a, action_id, .ok, "doing work");
+
+    const result = try latestActionForClaim(&d, a, c.id);
+    try std.testing.expect(result != null);
+    defer result.?.deinit(a);
+    try std.testing.expectEqual(action_id, result.?.id);
+    try std.testing.expectEqualStrings("doing work", result.?.summary.?);
+}
+
+test "latestActionForClaim returns the most-recent action (highest started_at then id) when several exist" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const sid = try insertTestSession(&d);
+    const tid = try insertTestTask(&d);
+    const c = try acquireClaim(&d, a, .{
+        .session_id = sid,
+        .entity_kind = .task,
+        .entity_id = tid,
+        .vendor = "test",
+    });
+    defer c.deinit(a);
+
+    // Insert three actions. Because SQLite's strftime precision is
+    // milliseconds and these inserts happen within the same millisecond
+    // in CI, we cannot rely on started_at differing. We rely on id
+    // ordering as the tiebreaker — the last-inserted id is highest and
+    // must be returned by latestActionForClaim.
+    const id1 = try startAction(&d, a, .{
+        .session_id = sid,
+        .claim_id = c.id,
+        .action_kind = .heartbeat,
+        .vendor = "test",
+    });
+    try endAction(&d, a, id1, .ok, "first");
+
+    const id2 = try startAction(&d, a, .{
+        .session_id = sid,
+        .claim_id = c.id,
+        .action_kind = .heartbeat,
+        .vendor = "test",
+    });
+    try endAction(&d, a, id2, .ok, "second");
+
+    const id3 = try startAction(&d, a, .{
+        .session_id = sid,
+        .claim_id = c.id,
+        .action_kind = .heartbeat,
+        .vendor = "test",
+    });
+    try endAction(&d, a, id3, .ok, "third");
+
+    const result = try latestActionForClaim(&d, a, c.id);
+    try std.testing.expect(result != null);
+    defer result.?.deinit(a);
+    // The highest id (id3) must be returned regardless of timestamp ties.
+    try std.testing.expectEqual(id3, result.?.id);
+    try std.testing.expectEqualStrings("third", result.?.summary.?);
 }
 
 test "latestActiveClaimForSession returns the most-recent claim id when multiple active claims exist" {
