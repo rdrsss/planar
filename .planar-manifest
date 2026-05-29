@@ -1,0 +1,87 @@
+{
+  "version": 2,
+  "algo": "xxh64",
+  "root": "b17097d2f9c7b58a",
+  "generated_at": "",
+  "entries": {
+    "docs/architecture.md": {
+      "doc_hash": "e4492d5ff1fd762b",
+      "sources": {
+        "build.zig": "85342fa208dfd707",
+        "migrations/": "020578d7b8979aac",
+        "src/db/": "38cf4bc9a75dc1bc",
+        "src/engine/": "46f0eb823df851a4",
+        "src/root.zig": "a50330d9f5048cdf",
+        "src/runtime/runtime.zig": "4c4cd01b77f9847b",
+        "vendor/sqlite/": "35d54c0413373c40"
+      },
+      "sources_hash": "aa341fc8414656ff",
+      "entry_hash": "afaac36a31e00279"
+    },
+    "docs/cli-reference.md": {
+      "doc_hash": "be7024e0ca2efe5d",
+      "sources": {
+        "src/cmd/": "10a727d6ad64b5c7",
+        "vendor/etc-cli/": "ae2205bfe1dd4027"
+      },
+      "sources_hash": "5c245adb578222de",
+      "entry_hash": "9aa8884e55e05810"
+    },
+    "docs/features/doc-system.md": {
+      "doc_hash": "4b8a44058ac4a733",
+      "sources": {
+        "src/cmd/planar-doc/": "b1dbc302c4f49d58",
+        "src/engine/docs/": "d46c111a7cbd9ba4"
+      },
+      "sources_hash": "e5c11b34ecff6869",
+      "entry_hash": "86f47a478ab90f2e"
+    },
+    "docs/features/scope-resolution.md": {
+      "doc_hash": "270b6c9054821d9f",
+      "sources": {
+        "src/engine/identity/": "86c64ad63c76a0b7"
+      },
+      "sources_hash": "73c0cd9906cde188",
+      "entry_hash": "2703064a490f54e1"
+    },
+    "docs/skill-reference.md": {
+      "doc_hash": "d0ccce0664809267",
+      "sources": {
+        "agents/": "07b8c57deecb3353",
+        "skills/": "ff1cc5e5a2484308"
+      },
+      "sources_hash": "52883b96c6f5dc53",
+      "entry_hash": "8a93a86255ce5f2f"
+    },
+    "docs/workflows.md": {
+      "doc_hash": "c63612ccdda79e16",
+      "sources": {
+        "scripts/": "655cd4a608e015b7"
+      },
+      "sources_hash": "8fb9d8c345b0b903",
+      "entry_hash": "dfbeab5e28baf0c6"
+    }
+  },
+  "nodoc": {
+    "AGENTS.md": "53b31f4985bcf0d0",
+    "CLAUDE.md": "53b31f4985bcf0d0",
+    "INSTALL.md": "ae3d1575e58192c4",
+    "Makefile": "918f6daf79d3c1d3",
+    "README.md": "2bba73565ae4bf55",
+    "build.zig.zon": "8b850fea29cf6175",
+    "docs/adrs.md": "46beb4fa54405655",
+    "docs/changelog.md": "74783a1b27c20cc0",
+    "docs/concepts.md": "52653e20c9557023",
+    "docs/features/workspace-agents.md": "1a5f17b1bff36838",
+    "docs/getting-started.md": "47397fc6f0a65444",
+    "docs/glossary.md": "e7cba86def7a4b4d",
+    "docs/light-touch.md": "24e8c08f94fb20c0",
+    "docs/research/scenario-coverage-long-tail.md": "f10ca0379d6a6bb3",
+    "docs/research/scope-resolution.md": "065c85818949d0c1",
+    "install.sh": "f8b0b31e47608afd",
+    "integration_tests/": "60ec78357b50dee5",
+    "templates/": "7538253a8a401486",
+    "tools/": "9163699b5d05a1b7",
+    "vendor/manifest.zon": "55ed479d3a046998"
+  }
+}

@@ -145,6 +145,7 @@ Several verb classes were audited and explicitly left unguarded; the absence is 
 - **All read-only verbs.** `show`, `list`, `status`, `audit trail`, `tree` — reads do not corrupt state and the audit-from-anywhere case is the common case.
 - **Identity-bucket verbs** (`assoc`, `init`, `promote`/`demote`, `scope`, `workspace`). Associations *are* scope; `promote`/`demote` deliberately cross scopes (that is the verb's job).
 - **Operator-state verbs** (`handoff`, `capture`, `resume`). These manage vendor-session rows, not project-scoped entities. The legitimate polyrepo handoff workflow is "a session inside repo A captures a handoff that references a task in repo B".
+- **`planar-doc` verbs** (`build`, `verify`, `diff`, `cover`, `nodoc`, `lint`). The `planar-doc` binary never opens SQLite, so there is no operator-vs-entity scope comparison to make. Its only write is `.planar-manifest` at the repo root — a repo-state artifact, not a scope-owned planning entity.
 
 ### Escape hatch
 

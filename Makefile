@@ -76,6 +76,20 @@ test-integration-files: build ## Run integration tests as one executable per tes
 parity-check: build ## Diff zig binary against Go archive binary (plan 351 Phase 5; skips when Go binary unreachable)
 	scripts/parity-check.sh
 
+.PHONY: bench-verify
+bench-verify: build ## planar-doc verify latency tracker — prints cold + warm wall-clock
+	@echo "planar-doc verify: cold + warm wall-clock (rough; integration tests own the latency contract)"
+	@$(DOC_BIN) build > /dev/null 2>&1 || true
+	@start_cold=$$(date +%s%N); \
+	  $(DOC_BIN) verify > /dev/null 2>&1 || true; \
+	  end_cold=$$(date +%s%N); \
+	  cold_ms=$$(( (end_cold - start_cold) / 1000000 )); \
+	  start_warm=$$(date +%s%N); \
+	  $(DOC_BIN) verify > /dev/null 2>&1 || true; \
+	  end_warm=$$(date +%s%N); \
+	  warm_ms=$$(( (end_warm - start_warm) / 1000000 )); \
+	  echo "verify: $${warm_ms}ms (warm) / $${cold_ms}ms (cold)"
+
 .PHONY: coverage
 coverage: build ## Check integration-test leaf-coverage ratio against scripts/coverage-baseline.txt
 	scripts/coverage-check.sh

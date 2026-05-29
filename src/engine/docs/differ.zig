@@ -113,6 +113,10 @@ pub fn diff(allocator: std.mem.Allocator, repo_root: []const u8) anyerror!DiffRe
     var covered: std.StringHashMap(void) = .init(allocator);
     defer covered.deinit();
     for (stored.entries) |row| {
+        // The entry's own path (the doc itself) is implicitly covered.
+        // Without this, every doc body appears as new-authoring on
+        // every `diff` run.
+        try covered.put(row.path, {});
         for (row.entry.sources) |sr| {
             try covered.put(sr.path, {});
         }
