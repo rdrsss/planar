@@ -207,6 +207,21 @@ if [[ "$UNINSTALL" -eq 1 ]]; then
     rm -rf "$PLANAR_HOME/copilot-skills"
   fi
 
+  # Remove agent symlinks installed by symlink_vendor_agents. Mirrors the
+  # prune_stale_vendor_agents safety semantics: only remove files whose symlink
+  # target points into $PLANAR_HOME; regular files and operator-authored links
+  # are left untouched.
+  for agent_dir in "$HOME/.claude/agents" "$CODEX_HOME/agents" "$HOME/.copilot/agents"; do
+    [[ -d "$agent_dir" ]] || continue
+    while IFS= read -r -d '' link; do
+      target="$(readlink "$link" 2>/dev/null || true)"
+      if [[ "$target" == "$PLANAR_HOME"/* ]]; then
+        log "removing agent symlink: $link"
+        rm -f "$link"
+      fi
+    done < <(find "$agent_dir" -maxdepth 1 -type l -print0)
+  done
+
   if [[ -d "$PLANAR_HOME" ]]; then
     log "removing install root: $PLANAR_HOME"
     log "(planar.db is preserved if you have data — re-run with --force or rm manually)"

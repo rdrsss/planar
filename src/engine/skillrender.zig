@@ -956,8 +956,17 @@ fn renderAgentToml(
         } else if (std.mem.eql(u8, field, "sandbox_mode")) {
             try appendTomlKeyValue(allocator, &out, "sandbox_mode", sandbox_mode);
         } else if (std.mem.eql(u8, field, "developer_instructions")) {
+            // Use TOML multi-line basic string ("""). Backslash escapes ARE
+            // processed, so we must escape `\` as `\\`. A literal `"""` in the
+            // body would prematurely close the string; per the TOML spec the
+            // sequence can be written as `""\` (escaped-quote trick) which the
+            // parser reassembles as three unescaped quotes. We do NOT use
+            // multi-line literal strings (''') because they cannot contain ''' —
+            // same class of problem — and markdown bodies are far more likely to
+            // hold triple-double-quotes (Python docstrings, JSON examples) than
+            // triple-single-quotes.
             try out.appendSlice(allocator, "developer_instructions = \"\"\"\n");
-            try out.appendSlice(allocator, body_buf.items);
+            try appendTomlMlbsBody(allocator, &out, body_buf.items);
             try out.appendSlice(allocator, "\"\"\"\n");
         } else {
             return RenderError.UnknownAgentFrontmatterField;
@@ -977,6 +986,30 @@ fn joinFlowList(allocator: std.mem.Allocator, items: []const []const u8) ![]u8 {
     }
     try out.append(allocator, ']');
     return out.toOwnedSlice(allocator);
+}
+
+/// appendTomlMlbsBody writes `body` into an already-opened TOML multi-line basic
+/// string (the caller has already emitted `"""\n`). Escapes that keep the emitted
+/// TOML valid for arbitrary prose:
+///   `\`   → `\\`   (MLBS processes backslash escapes; literal backslash must be doubled)
+///   `"""` → `""\"` (three literal quotes would close the string; the escaped-quote
+///                   trick reassembles to three unescaped quotes on parse)
+fn appendTomlMlbsBody(allocator: std.mem.Allocator, out: *std.ArrayList(u8), body: []const u8) !void {
+    var i: usize = 0;
+    while (i < body.len) {
+        if (body[i] == '\\') {
+            try out.appendSlice(allocator, "\\\\");
+            i += 1;
+        } else if (i + 2 < body.len and body[i] == '"' and body[i + 1] == '"' and body[i + 2] == '"') {
+            // Emit the first two quotes literally; escape the third so the
+            // parser sees \" and reconstructs three unescaped quotes.
+            try out.appendSlice(allocator, "\"\"\\\"");
+            i += 3;
+        } else {
+            try out.append(allocator, body[i]);
+            i += 1;
+        }
+    }
 }
 
 /// appendTomlKeyValue appends `key = "value"\n` to `out`, escaping the value as
@@ -2445,6 +2478,57 @@ test "renderAgent emits Codex TOML with sandbox_mode and developer_instructions"
     try std.testing.expect(std.mem.indexOf(u8, out, "model_reasoning_effort = \"medium\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "developer_instructions = \"\"\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "# Coder") != null);
+}
+
+test "renderAgent Codex TOML developer_instructions escapes triple-quote and backslash" {
+    // A body that contains `"""` (e.g. a Python docstring example) and a
+    // backslash (e.g. a regex or path) must not prematurely close the
+    // TOML multi-line basic string and must survive a round-trip through
+    // the TOML escape rules.
+    const gpa = std.testing.allocator;
+    var vendors = try loadVendors(gpa);
+    defer vendors.deinit(gpa);
+    const tricky_fixture =
+        \\---
+        \\name: tricky
+        \\description: Agent with tricky body.
+        \\tier: medium
+        \\role: coder
+        \\capability: write
+        \\---
+        \\
+        \\Use `"""` for Python docstrings.
+        \\Also a backslash: C:\Users\foo
+    ;
+    var src = try parseAgentSourceBytes(gpa, "agents/tricky.md", tricky_fixture);
+    defer src.deinit(gpa);
+    const out = try renderAgent(gpa, src, vendors.get("codex").?);
+    defer gpa.free(out);
+
+    // The emitted TOML must open and close developer_instructions exactly once.
+    const open_idx = std.mem.indexOf(u8, out, "developer_instructions = \"\"\"\n");
+    try std.testing.expect(open_idx != null);
+    // There must be a closing """ that is NOT premature — the body's """ must
+    // have been escaped. Verify the raw sequence `"""\n` appears only twice
+    // (once to open, once to close) — if the body `"""` leaked unescaped
+    // there would be a third occurrence closing mid-body.
+    var count: usize = 0;
+    var search = out;
+    while (std.mem.indexOf(u8, search, "\"\"\"\n")) |pos| {
+        count += 1;
+        search = search[pos + 4 ..];
+    }
+    try std.testing.expectEqual(@as(usize, 2), count);
+
+    // The body's backslash must be doubled in the TOML output.
+    try std.testing.expect(std.mem.indexOf(u8, out, "C:\\\\Users\\\\foo") != null);
+    // The body's `"""` must be escaped (not appear raw in body section).
+    // After the opening `"""\n`, the next `"""` must be the closing one —
+    // verify no unescaped `"""` exists before the final `"""\n`.
+    const body_start = open_idx.? + "developer_instructions = \"\"\"\n".len;
+    const closing_idx = std.mem.lastIndexOf(u8, out, "\"\"\"\n").?;
+    const body_region = out[body_start..closing_idx];
+    try std.testing.expect(std.mem.indexOf(u8, body_region, "\"\"\"") == null);
 }
 
 test "renderAgent Codex coordinate role injects weak-enforcement note" {
