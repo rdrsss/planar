@@ -12,7 +12,7 @@ vendor:
 shared_notes:
   - "Active scope and session state come from the CLI; the skill must not read or write workspace context outside it."
   - "The session id and vendor are recorded on every snapshot created by this workflow."
-  - "Worktree state (path / branch / repo_root) is NOT yet persisted on `handoffs` or `context_snapshots`. Today the resumer recovers it from the active `agent_work_claims` row — keep the claim alive across the handoff or include the worktree path in the snapshot `body` text so the resumer can `cd` correctly."
+  - "Worktree state (path / branch / repo_root) is persisted on the handoff row at create time, copied from the active `agent_work_claims` row on the target task. `planar resume` reads it from the live claim when one exists, and falls back to the most-recent worktree-bearing handoff once the claim has been released — operators do not need to keep the claim alive across the handoff."
 ---
 
 # Planar Handoff ({{.VendorTitle}})
@@ -25,10 +25,14 @@ Captures a context snapshot for the current or named task, creates a `handoffs` 
 
 ## Worktree State And Handoffs
 
-Plan 297 M6 wires the resume packet to surface the `worktree_path` recorded on the active `agent_work_claims` row (per the canonical [worktree](../../agents/methodology.md#worktrees) convention — `epic/<plan-slug>` + `cycle/<plan-slug>/<task-slug>` topology, main checkout stays on master), so a cold-start resumer can prepend `cd <path>` before continuing. The handoff record itself does NOT yet copy that field — there are no `worktree_path` / `branch` columns on `handoffs` or `context_snapshots` today. Two operator-visible consequences:
+`planar handoff` automatically captures the active claim's worktree context onto the handoff row at create time. The fields persisted — `worktree_path`, `repo_root`, `branch` — mirror the canonical [worktree](../../agents/methodology.md#worktrees) convention (`epic/<plan-slug>` + `cycle/<plan-slug>/<task-slug>` topology, main checkout stays on master). When no claim is held on the target task at handoff time, the columns are left NULL and no fallback path is created — that's the legacy / no-isolation flow.
 
-- If the source session releases its claim before terminating, the resumer's `planar resume` packet will show `active_claim: null` and the worktree context is lost. Keep the claim alive through the handoff (do not call `planar-agent release` until after the resumer has captured the path) or paste the worktree path explicitly into the snapshot body / `--note`.
-- Deferred handoff-persistence follow-up: a future iteration adds a `worktree_path` column to either `handoffs` or `context_snapshots` so the resumer can recover the path even when the original claim has been released. Tracked as task 2947 (linked to plan 458 / M6); see [`docs/architecture.md` §Application tables](../../docs/architecture.md#application-tables) for the related `agent_actions.metadata` gap and the broader deferred-schema-work pattern.
+`planar resume <task>` reads the worktree context from two sources, in priority order:
+
+1. **Live claim** — when an `agent_work_claims` row with status `active` exists for the task, its `worktree_path` is surfaced as `active_claim.worktree_path` in JSON and as the `worktree:` / `cd:` lines in the text packet's audit footer.
+2. **Handoff fallback** — when no active claim exists (or the active claim row has a NULL `worktree_path`), the resumer reads the most-recent non-abandoned handoff for the task with a non-null `worktree_path`. The recovered fields surface as `from_handoff.worktree_path` in JSON and as the `from handoff: <id>` block in the text packet's audit footer.
+
+The fallback is the cold-start recovery path: a session that captured a handoff and then released its claim can still be resumed from a fresh process. Operators no longer need to keep the claim alive across the handoff.
 
 ## CLI Commands
 

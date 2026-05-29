@@ -48,6 +48,14 @@ pub const Handoff = struct {
     validated_at: ?[]const u8,
     consumed_at: ?[]const u8,
     created_at: []const u8,
+    /// Worktree context copied from the active `agent_work_claims`
+    /// row at handoff-create time. NULL when no claim was held at
+    /// creation (legacy / no-isolation flows). Read by `planar
+    /// resume` as the cold-start fallback when the originating
+    /// claim has been released. Plan 297 followup t#2947.
+    worktree_path: ?[]const u8,
+    repo_root: ?[]const u8,
+    branch: ?[]const u8,
 };
 
 pub fn deinit(h: Handoff, allocator: std.mem.Allocator) void {
@@ -56,6 +64,9 @@ pub fn deinit(h: Handoff, allocator: std.mem.Allocator) void {
     if (h.validated_at) |v| allocator.free(v);
     if (h.consumed_at) |v| allocator.free(v);
     allocator.free(h.created_at);
+    if (h.worktree_path) |v| allocator.free(v);
+    if (h.repo_root) |v| allocator.free(v);
+    if (h.branch) |v| allocator.free(v);
 }
 
 pub fn deinitMany(items: []const Handoff, allocator: std.mem.Allocator) void {
@@ -67,6 +78,13 @@ pub const CreateArgs = struct {
     from_snapshot_id: i64,
     from_vendor: []const u8,
     to_vendor: ?[]const u8 = null,
+    /// Worktree context to persist on the handoff row. Caller (the
+    /// `planar handoff` handler) populates these from the active
+    /// `agent_work_claims` row when one exists on the target task.
+    /// All three left null when no claim is held.
+    worktree_path: ?[]const u8 = null,
+    repo_root: ?[]const u8 = null,
+    branch: ?[]const u8 = null,
 };
 
 pub const ListFilter = struct {
@@ -108,12 +126,16 @@ pub fn create(
     args: CreateArgs,
 ) Error!Handoff {
     const id = d.execParams(
-        \\insert into handoffs (from_snapshot_id, from_vendor, to_vendor, status)
-        \\values (?, ?, ?, 'pending')
+        \\insert into handoffs (from_snapshot_id, from_vendor, to_vendor, status,
+        \\                     worktree_path, repo_root, branch)
+        \\values (?, ?, ?, 'pending', ?, ?, ?)
     , &.{
         .{ .int = args.from_snapshot_id },
         .{ .text = args.from_vendor },
         if (args.to_vendor) |v| (if (v.len > 0) db.sqlite.Param{ .text = v } else .{ .null = {} }) else .{ .null = {} },
+        if (args.worktree_path) |v| (if (v.len > 0) db.sqlite.Param{ .text = v } else .{ .null = {} }) else .{ .null = {} },
+        if (args.repo_root) |v| (if (v.len > 0) db.sqlite.Param{ .text = v } else .{ .null = {} }) else .{ .null = {} },
+        if (args.branch) |v| (if (v.len > 0) db.sqlite.Param{ .text = v } else .{ .null = {} }) else .{ .null = {} },
     }) catch return Error.QueryFailed;
 
     const summary = try std.fmt.allocPrint(
@@ -250,7 +272,7 @@ pub fn list(
 ) Error![]Handoff {
     var sql_buf: std.ArrayList(u8) = .empty;
     defer sql_buf.deinit(allocator);
-    try sql_buf.appendSlice(allocator, "select h.");
+    try sql_buf.appendSlice(allocator, "select ");
     try sql_buf.appendSlice(allocator, select_columns_qualified);
     try sql_buf.appendSlice(allocator, " from handoffs h");
 
@@ -299,6 +321,38 @@ pub fn list(
     return try out.toOwnedSlice(allocator);
 }
 
+/// Return the most-recent handoff for the given task that has a
+/// non-null `worktree_path`, or null when none exists. Used by
+/// `planar resume` as the cold-start recovery path when the source
+/// claim has been released. Joins via context_snapshots.task_id —
+/// the snapshot is the entity that knows which task the handoff
+/// belongs to. Status filter is intentionally permissive (any
+/// non-abandoned handoff): a consumed handoff still carries
+/// authoritative worktree context for the prior cycle.
+pub fn getLatestWithWorktreeForTask(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    task_id: i64,
+) Error!?Handoff {
+    const sql: [:0]const u8 =
+        "select " ++ select_columns_qualified ++
+        \\ from handoffs h
+        \\ join context_snapshots cs on cs.id = h.from_snapshot_id
+        \\ where cs.task_id = ?
+        \\   and h.worktree_path is not null
+        \\   and h.status != 'abandoned'
+        \\ order by h.created_at desc, h.id desc
+        \\ limit 1
+        ;
+    var stmt = d.prepare(sql) catch return Error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .int = task_id }}) catch return Error.QueryFailed;
+    return switch (stmt.step() catch return Error.QueryFailed) {
+        .done => null,
+        .row => try readRow(&stmt, allocator),
+    };
+}
+
 /// Return the most-recent non-terminal handoff anchored at the snapshot,
 /// or null if none.
 pub fn getPendingForSnapshot(
@@ -327,11 +381,13 @@ pub fn getPendingForSnapshot(
 
 const select_columns =
     "id, from_snapshot_id, to_session_id, from_vendor, to_vendor, " ++
-    "status, validated_at, consumed_at, created_at";
+    "status, validated_at, consumed_at, created_at, " ++
+    "worktree_path, repo_root, branch";
 
 const select_columns_qualified =
-    "id, from_snapshot_id, to_session_id, from_vendor, to_vendor, " ++
-    "status, validated_at, consumed_at, created_at";
+    "h.id, h.from_snapshot_id, h.to_session_id, h.from_vendor, h.to_vendor, " ++
+    "h.status, h.validated_at, h.consumed_at, h.created_at, " ++
+    "h.worktree_path, h.repo_root, h.branch";
 
 const select_one_sql: [:0]const u8 =
     "select " ++ select_columns ++ " from handoffs where id = ?";
@@ -351,6 +407,9 @@ fn readRow(stmt: *db.sqlite.Stmt, allocator: std.mem.Allocator) Error!Handoff {
         .validated_at = try stmt.columnTextOpt(6, allocator),
         .consumed_at = try stmt.columnTextOpt(7, allocator),
         .created_at = try stmt.columnTextAlloc(8, allocator),
+        .worktree_path = try stmt.columnTextOpt(9, allocator),
+        .repo_root = try stmt.columnTextOpt(10, allocator),
+        .branch = try stmt.columnTextOpt(11, allocator),
     };
 }
 
@@ -513,6 +572,126 @@ test "list with explicit statuses filters" {
     const got = try list(&d, a, .{ .statuses = &.{.consumed} });
     defer deinitMany(got, a);
     try std.testing.expectEqual(@as(usize, 1), got.len);
+}
+
+test "create + show round-trip persists worktree_path / repo_root / branch" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const fx = try setupFixture(&d, a);
+    defer session.deinit(fx.sess, a);
+    defer snapshot.deinit(fx.snap, a);
+
+    const h = try create(&d, a, .{
+        .from_snapshot_id = fx.snap.id,
+        .from_vendor = "claude",
+        .worktree_path = "/tmp/wt/cycle/feat",
+        .repo_root = "/repo",
+        .branch = "cycle/feat/task",
+    });
+    defer deinit(h, a);
+    try std.testing.expectEqualStrings("/tmp/wt/cycle/feat", h.worktree_path.?);
+    try std.testing.expectEqualStrings("/repo", h.repo_root.?);
+    try std.testing.expectEqualStrings("cycle/feat/task", h.branch.?);
+}
+
+test "create without worktree args leaves columns NULL" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const fx = try setupFixture(&d, a);
+    defer session.deinit(fx.sess, a);
+    defer snapshot.deinit(fx.snap, a);
+
+    const h = try create(&d, a, .{ .from_snapshot_id = fx.snap.id, .from_vendor = "v" });
+    defer deinit(h, a);
+    try std.testing.expect(h.worktree_path == null);
+    try std.testing.expect(h.repo_root == null);
+    try std.testing.expect(h.branch == null);
+}
+
+test "getLatestWithWorktreeForTask returns null when no worktree-bearing handoff exists" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const tid = try d.execParams(
+        "insert into tasks (scope_kind, title, status) values ('global', 't', 'todo')",
+        &.{},
+    );
+    try std.testing.expect((try getLatestWithWorktreeForTask(&d, a, tid)) == null);
+}
+
+test "getLatestWithWorktreeForTask returns most recent worktree-bearing handoff" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const tid = try d.execParams(
+        "insert into tasks (scope_kind, title, status) values ('global', 't', 'todo')",
+        &.{},
+    );
+    const sess = try session.startSession(&d, a, .{ .vendor = "v", .task_id = tid });
+    defer session.deinit(sess, a);
+    const snap1 = try snapshot.create(&d, a, .{
+        .session_id = sess.id,
+        .task_id = tid,
+        .vendor = "v",
+        .body = "first",
+        .next_action = "n",
+    });
+    defer snapshot.deinit(snap1, a);
+    // First handoff has no worktree path — should not be selected.
+    const h1 = try create(&d, a, .{ .from_snapshot_id = snap1.id, .from_vendor = "v" });
+    deinit(h1, a);
+    // Second handoff carries worktree state.
+    const snap2 = try snapshot.create(&d, a, .{
+        .session_id = sess.id,
+        .task_id = tid,
+        .vendor = "v",
+        .body = "second",
+        .next_action = "n",
+    });
+    defer snapshot.deinit(snap2, a);
+    const h2 = try create(&d, a, .{
+        .from_snapshot_id = snap2.id,
+        .from_vendor = "v",
+        .worktree_path = "/tmp/wt/feat",
+        .branch = "cycle/feat/task",
+    });
+    defer deinit(h2, a);
+
+    const got = (try getLatestWithWorktreeForTask(&d, a, tid)).?;
+    defer deinit(got, a);
+    try std.testing.expectEqual(h2.id, got.id);
+    try std.testing.expectEqualStrings("/tmp/wt/feat", got.worktree_path.?);
+}
+
+test "getLatestWithWorktreeForTask skips abandoned handoffs" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const tid = try d.execParams(
+        "insert into tasks (scope_kind, title, status) values ('global', 't', 'todo')",
+        &.{},
+    );
+    const sess = try session.startSession(&d, a, .{ .vendor = "v", .task_id = tid });
+    defer session.deinit(sess, a);
+    const snap1 = try snapshot.create(&d, a, .{
+        .session_id = sess.id,
+        .task_id = tid,
+        .vendor = "v",
+        .body = "x",
+        .next_action = "n",
+    });
+    defer snapshot.deinit(snap1, a);
+    const h1 = try create(&d, a, .{
+        .from_snapshot_id = snap1.id,
+        .from_vendor = "v",
+        .worktree_path = "/tmp/wt/abandoned",
+    });
+    defer deinit(h1, a);
+    const abandoned = try abandon(&d, a, h1.id, null);
+    deinit(abandoned, a);
+    try std.testing.expect((try getLatestWithWorktreeForTask(&d, a, tid)) == null);
 }
 
 test "show returns NotFound" {

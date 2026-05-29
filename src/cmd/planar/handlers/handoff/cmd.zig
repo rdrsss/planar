@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const cli = @import("cli");
+const db = @import("db");
 const engine = @import("engine");
 const main = @import("../../main.zig");
 const runtime = @import("runtime");
@@ -135,11 +136,22 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
     }) catch |e| exit.die(ctx, e, "snapshot create: {s}", .{@errorName(e)});
     defer engine.runtime.snapshot.deinit(snap, ctx.allocator);
 
+    // Resolve worktree context from the active claim on this task,
+    // if any. Persisted on the handoff row so the resumer can recover
+    // the worktree path even after the claim is released. Plan 297
+    // followup t#2947.
+    var wt_owned: WorktreeContext = .{};
+    defer wt_owned.deinit(ctx.allocator);
+    if (task_id_opt) |tid| wt_owned = resolveWorktreeForTask(d, ctx.allocator, tid);
+
     // Step 2: create handoff (pending).
     const h_pending = engine.runtime.handoff.create(d, ctx.allocator, .{
         .from_snapshot_id = snap.id,
         .from_vendor = vendor,
         .to_vendor = args.vendor,
+        .worktree_path = wt_owned.worktree_path,
+        .repo_root = wt_owned.repo_root,
+        .branch = wt_owned.branch,
     }) catch |e| exit.die(ctx, e, "handoff create: {s}", .{@errorName(e)});
     engine.runtime.handoff.deinit(h_pending, ctx.allocator);
 
@@ -214,4 +226,57 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
         }
     }
     _ = render.emitOne; // keep import live in case the file is re-used.
+}
+
+/// Worktree fields copied from an active `agent_work_claims` row at
+/// handoff-create time. All allocations live on the caller-supplied
+/// allocator and are freed via `deinit`. Empty when no active claim
+/// is held on the task, or when the claim row has all-NULL worktree
+/// fields.
+pub const WorktreeContext = struct {
+    worktree_path: ?[]const u8 = null,
+    repo_root: ?[]const u8 = null,
+    branch: ?[]const u8 = null,
+
+    pub fn deinit(self: *WorktreeContext, allocator: std.mem.Allocator) void {
+        if (self.worktree_path) |s| allocator.free(s);
+        if (self.repo_root) |s| allocator.free(s);
+        if (self.branch) |s| allocator.free(s);
+        self.* = .{};
+    }
+};
+
+/// Look up the active claim on `task_id` and copy its worktree fields
+/// into a WorktreeContext. Returns an empty struct on any lookup
+/// failure or when no active claim is held — handoff creation is
+/// best-effort and must not fail because the agent-coordination
+/// store hiccupped. Caller owns the returned strings via deinit.
+pub fn resolveWorktreeForTask(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    task_id: i64,
+) WorktreeContext {
+    const rows = engine.runtime.agentactivity.store.listByEntity(
+        d,
+        allocator,
+        .task,
+        task_id,
+    ) catch return .{};
+    defer engine.runtime.agentactivity.types.Claim.deinitMany(rows, allocator);
+
+    for (rows) |c| {
+        if (c.status != .active) continue;
+        var out: WorktreeContext = .{};
+        if (c.worktree_path) |p| {
+            out.worktree_path = allocator.dupe(u8, p) catch null;
+        }
+        if (c.repo_root) |p| {
+            out.repo_root = allocator.dupe(u8, p) catch null;
+        }
+        if (c.branch) |b| {
+            out.branch = allocator.dupe(u8, b) catch null;
+        }
+        return out;
+    }
+    return .{};
 }

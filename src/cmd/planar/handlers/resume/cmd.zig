@@ -159,6 +159,22 @@ fn renderText(ctx: *const runtime.Ctx, p: engine.runtime.@"resume".Packet) !void
         if (ac.branch.len > 0) try ctx.stdout.print("  branch: {s}\n", .{ac.branch});
         if (ac.repo_root.len > 0) try ctx.stdout.print("  repo_root: {s}\n", .{ac.repo_root});
     }
+    // Cold-start fallback: if no active claim carried a worktree path
+    // but a prior handoff persisted one, surface it under a clearly
+    // distinct label so the operator knows the value is recovered
+    // from a released claim, not a live one. Plan 297 followup t#2947.
+    if (p.from_handoff) |fh| {
+        const ac_has_wt = if (p.active_claim) |ac| ac.worktree_path.len > 0 else false;
+        if (!ac_has_wt) {
+            try ctx.stdout.print("  from handoff: {d}\n", .{@as(u64, @intCast(fh.handoff_id))});
+            if (fh.worktree_path.len > 0) {
+                try ctx.stdout.print("  worktree: {s}\n", .{fh.worktree_path});
+                try ctx.stdout.print("  cd: {s}\n", .{fh.worktree_path});
+            }
+            if (fh.branch.len > 0) try ctx.stdout.print("  branch: {s}\n", .{fh.branch});
+            if (fh.repo_root.len > 0) try ctx.stdout.print("  repo_root: {s}\n", .{fh.repo_root});
+        }
+    }
     try ctx.stdout.print("\n", .{});
 }
 
