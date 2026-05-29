@@ -5006,7 +5006,7 @@ Schema-version handshake: `planar-watch` is a **consumer** of the schema, not it
 
 A process invoked as `planar-watch` performs **no writes**. Two defenses:
 
-1. The command tree (`src/cmd/planar-watch/handlers/cmd.zig`) registers exactly six read verbs plus the conventional `version` / `completion` helpers. There is no write verb anywhere in the tree.
+1. The command tree (`src/cmd/planar-watch/handlers/cmd.zig`) registers exactly seven read verbs plus the conventional `version` / `completion` helpers. There is no write verb anywhere in the tree.
 2. The bootstrap calls `runtime.ensureDbStrictReadOnly` which opens the DB via `sqlite3_open_v2(..., SQLITE_OPEN_READONLY, ...)`. The SQLite driver itself returns `SQLITE_READONLY` on any attempted `INSERT` / `UPDATE` / `DELETE` / DDL — verified by the `openReadOnly: write SQL is rejected at the driver layer` unit test in `src/db/sqlite.zig`.
 
 A vendor hook or operator script configured with only `planar-watch` on its PATH cannot modify the database under any circumstances.
@@ -5033,6 +5033,9 @@ planar-watch plans    [--follow]  [--in-flight-only] [--json] [--interval <D>]
 
 # Per-entity / per-claim history (union of actions + claim transitions).
 planar-watch log      (--task <id> | --plan <id> | --entity <kind:id> | --session <id> | --claim <token>) [--limit N] [--json]
+
+# Orchestrator → sub-agent topology forest (M4 addition, plan 467).
+planar-watch tree     [--root-session <id>] [--follow] [--interval <D>]
 
 # Conventional helpers.
 planar-watch version
@@ -5067,6 +5070,39 @@ Implementation: `src/cmd/planar-watch/handlers/ps.zig` (tasks 3053–3058).
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--tail <N>` | Emit only the most-recent N events on the initial snapshot (the `journalctl -f -n` idiom). Must be a positive integer (`N > 0`); `N ≤ 0` exits with `InvalidValue`. Composes with `--follow`: the tail is emitted first, then only events newer than the tailed set stream (no re-emit of tailed events). When `--tail` and `--limit` are both given, `--tail` takes precedence for the snapshot cap. | unset (uses `--limit`, default 100) |
+
+### `planar-watch tree` — M4 addition (plan 467)
+
+Renders the orchestrator → sub-agent action forest by walking the `agent_actions.parent_action_id` chain using a `WITH RECURSIVE` CTE. Root actions are rows where `parent_action_id IS NULL`; children are rendered beneath their parent, indented with unicode tree characters.
+
+**Flags:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--root-session <id>` | Scope output to the subtree rooted at actions from the named session. Error (exit non-zero) when the session id is unknown or `< 1`. | unset (all sessions) |
+| `--follow` | Stream: re-renders on WAL change (Tier-2 wake). | off |
+| `--interval <D>` | Maximum poll cadence for `--follow` (e.g. `100ms`, `1s`). | `1s` |
+
+**Text row format (depth 0 = root):**
+
+```
+action:<id>  scope:<label>  vendor:<v>  activity:<summary>  worktree:<wt>  branch:<b>  last_hb:<rel>
+    └── scope:<label>  vendor:<v>  activity:<summary>  ...
+```
+
+Each row shows the same columns as `ps`: `scope`, `vendor`, `activity`, `worktree`, `branch`, `last_hb`. When the action has no linked claim the row shows `session:<id>  (no claim)` instead of the claim columns.
+
+**Tree characters** (unicode):
+
+| Context | Characters |
+|---------|-----------|
+| Non-last child | `├── ` (U+251C U+2500 U+2500 + space) |
+| Last child | `└── ` (U+2514 U+2500 U+2500 + space) |
+| Vertical guide (ancestor still open) | `│   ` (U+2502 + 3 spaces) |
+
+**Choosing `tree` vs `ps --group-by`:** `ps --group-by role` is the flat-by-role view — use it when each claim's identity (role, vendor, heartbeat recency) is the question. `tree` is the topology view — use it when the orchestrator→coder dispatch fanout is the question (e.g. "which sub-agents did orchestrator A dispatch?"). When fanout density exceeds what `--group-by` makes readable (≥ 3 orchestrators each with multiple coders), prefer `tree`.
+
+**Implementation:** `src/cmd/planar-watch/handlers/tree.zig` (plan 467 M4, tasks 3064–3067).
 
 ### JSON shapes
 

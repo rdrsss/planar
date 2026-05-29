@@ -1030,3 +1030,96 @@ test "planar-watch tree empty DB emits empty-forest sentinel" {
 
     try std.testing.expect(std.mem.indexOf(u8, out, "(no action chains)") != null);
 }
+
+// task 3069 — synthetic orchestrator → coder dispatch chain renders as a
+// 2-level tree (spec: line 90 "a synthetic orchestrator → coder dispatch
+// chain ... renders as a 2-level tree under `planar-watch tree`").
+//
+// Methodology: `planar-agent pull` writes the root (orchestrator) action row.
+// A second action row with `parent_action_id` pointing at the root is inserted
+// directly via the `sqlite3` CLI, emulating what `planar-agent pull` would do
+// when dispatching a coder sub-agent. The tree verb must render both nodes with
+// the `└──` child prefix on the coder row.
+test "planar-watch tree synthetic orchestrator→coder chain renders 2-level tree" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const pid = seedPlanWithTask(&suite, "watch-tree-2level", "tree-2level-task");
+    defer gpa.free(pid);
+
+    // Pull inserts a root orchestrator action row. Capture the JSON output so
+    // we can extract the session_id and the root action_id for the SQL insert.
+    const pull_out = mustRunAgent(&suite, &.{ "pull", pid, "--no-locality-probe", "--json" });
+    defer gpa.free(pull_out);
+
+    // Extract session_id from the pull JSON ("session":{...,"id":<N>,...}).
+    const session_id = extractIntField(pull_out, "\"session_id\":") orelse
+        @panic("no session_id in pull output");
+
+    // Query the DB for the root action's id (the one just inserted by pull).
+    // We use `sqlite3 <db> "select max(id) from agent_actions"` — there may
+    // be only one row, so max(id) is the root action we just created.
+    const root_id_sql = "select max(id) from agent_actions where parent_action_id is null;";
+    const sqlite3_query_res = std.process.run(gpa, std.testing.io, .{
+        .argv = &.{ "sqlite3", suite.db_path, root_id_sql },
+    }) catch |e| {
+        std.debug.print("sqlite3 not available ({s}); skipping synthetic chain test\n", .{@errorName(e)});
+        return error.SkipZigTest;
+    };
+    defer gpa.free(sqlite3_query_res.stderr);
+    const root_id_str = std.mem.trim(u8, sqlite3_query_res.stdout, " \t\r\n");
+    const root_id = std.fmt.parseInt(i64, root_id_str, 10) catch {
+        gpa.free(sqlite3_query_res.stdout);
+        std.debug.print("could not parse root action id from sqlite3 output: '{s}'\n", .{root_id_str});
+        @panic("synthetic chain test: could not resolve root action id");
+    };
+    gpa.free(sqlite3_query_res.stdout);
+
+    // Insert the child (coder) action row directly, wiring parent_action_id
+    // to the root action. This emulates what planar-agent pull would do when
+    // dispatching a sub-agent from within an orchestrator action.
+    const insert_sql = std.fmt.allocPrint(
+        gpa,
+        "insert into agent_actions (session_id, parent_action_id, action_kind, vendor, started_at)" ++
+            " values ({d}, {d}, 'coder', 'zig-test-synthetic', strftime('%Y-%m-%dT%H:%M:%fZ','now'));",
+        .{ session_id, root_id },
+    ) catch @panic("OOM");
+    defer gpa.free(insert_sql);
+
+    const insert_res = std.process.run(gpa, std.testing.io, .{
+        .argv = &.{ "sqlite3", suite.db_path, insert_sql },
+    }) catch |e| {
+        std.debug.print("sqlite3 insert failed ({s}); skipping\n", .{@errorName(e)});
+        return error.SkipZigTest;
+    };
+    gpa.free(insert_res.stdout);
+    gpa.free(insert_res.stderr);
+    if (insert_res.term != .exited or insert_res.term.exited != 0) {
+        std.debug.print("sqlite3 insert non-zero exit: {any}\n", .{insert_res.term});
+        @panic("synthetic chain test: sqlite3 insert failed");
+    }
+
+    // Run planar-watch tree. The forest now has one root at depth 0 and one
+    // child at depth 1. The child must be rendered with the `└──` last-sibling
+    // tree character (UTF-8: 0xE2 0x94 0x94 0xE2 0x94 0x80 0xE2 0x94 0x80).
+    const out = mustRunWatch(&suite, &.{"tree"});
+    defer gpa.free(out);
+
+    // The empty-forest sentinel must NOT appear.
+    if (std.mem.indexOf(u8, out, "(no action chains)") != null) {
+        std.debug.print("tree: unexpected empty forest with 2 action rows:\n{s}\n", .{out});
+        return error.UnexpectedEmptyForest;
+    }
+
+    // The `└──` (last-child tree character) must appear — proof that the
+    // recursive CTE picked up the parent→child edge and rendered depth-1.
+    const last_child_marker = "\xE2\x94\x94\xE2\x94\x80\xE2\x94\x80"; // └──
+    if (std.mem.indexOf(u8, out, last_child_marker) == null) {
+        std.debug.print(
+            "tree: 2-level chain did not render child prefix '└──':\n{s}\n",
+            .{out},
+        );
+        return error.Missing2LevelTreePrefix;
+    }
+}
