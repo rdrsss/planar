@@ -5095,6 +5095,59 @@ Each `--follow` verb installs a SIGINT handler that flips an atomic flag. The po
 
 ---
 
+## Binary: `planar-doc`
+
+`planar-doc` is the **repo-state documentation manifest tool**. Fourth binary in the architecture (plan 423 M6). It owns `.planar-manifest` — an xxh64-keyed, merkle-rooted index over the working tree that links published docs under `docs/` to source-area subtrees. The binary never opens SQLite; its only write is the manifest file itself.
+
+See `docs/features/doc-system.md` for the model, `docs/architecture.md` for the four-binary boundary, and `docs/workflows.md` § Recipe 13 for the end-to-end docs-maintenance workflow.
+
+### Capability invariant
+
+A process invoked as `planar-doc` performs **no DB writes** — it never opens SQLite at all. The binary's writes are limited to `.planar-manifest` at the repo root. The capability boundary is the verb set: build, verify, diff, cover, nodoc, lint.
+
+### Verbs
+
+```
+# Recompute hashes over the working tree and write the manifest atomically.
+planar-doc build       [--json]
+
+# O(1) compare of the recomputed merkle root against the stored manifest.
+planar-doc verify      [--json]
+
+# Three-signal drift breakdown.
+planar-doc diff        [--json]
+
+# Add or remove a (doc, source) coverage edge.
+planar-doc cover       --doc <path> --source <repo-path> [--remove]
+
+# Mark a repo path as intentionally undocumented (or remove from nodoc).
+planar-doc nodoc       --source <repo-path> [--remove]
+
+# Minimal prose linter under `docs/` (the DB-free subset that survived
+# the plan 423 binary split).
+planar-doc lint        [--path <dir>] [--json]
+```
+
+### Drift signals
+
+`planar-doc diff` emits one of three signals per changed path:
+
+| Signal | Meaning |
+|--------|---------|
+| `regenerate-candidate` | a source the doc covers drifted |
+| `hand-edit` | the doc body changed without its sources moving |
+| `new-authoring` / `deletion` | a path appeared without a covering entry, or an entry's source is gone |
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success. |
+| 1 | Drift detected (`verify` or `diff` found differences) OR generic failure. |
+| 2 | User-input failure (unknown flag, malformed argument). |
+
+---
+
 ## Command Index
 
 For quick reference, all documented commands grouped by domain:

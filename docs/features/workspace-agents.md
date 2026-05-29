@@ -2,20 +2,8 @@
 title: Workspace AGENTS.md generation
 doc_kind: feature
 template_version: 1
-source_artifacts: [artifact:76, artifact:77, artifact:78]
-source_plans: [plan:135]
 regenerated_at: 2026-05-18T00:00:00Z
 regenerated_by: hand
-references:
-  workspace_product_spec:
-    kind: planar
-    entity: artifact:76
-  workspace_tech_spec:
-    kind: planar
-    entity: artifact:77
-  workspace_roadmap:
-    kind: planar
-    entity: artifact:78
 ---
 
 # Workspace AGENTS.md generation

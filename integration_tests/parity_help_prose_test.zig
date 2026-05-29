@@ -40,7 +40,6 @@ const CASES = [_]ProseCase{
     .{ .verb = "config", .must_contain = &.{ "configuration file", "~/.planar/config.toml" } },
     .{ .verb = "decision", .must_contain = &.{ "rationale for choices", "Status lifecycle: proposed" } },
     .{ .verb = "demote", .must_contain = &.{ "Reverse a promotion", "global personal scope" } },
-    .{ .verb = "doc", .must_contain = &.{ "lint subcommand", ".manifest-docs" } },
     .{ .verb = "ext", .must_contain = &.{ "external systems", "operational plane", "Sub-commands:" } },
     .{ .verb = "handoff", .must_contain = &.{ "context snapshot", "context_snapshots" } },
     .{ .verb = "health", .must_contain = &.{ "schema version currency", "Exit codes:" } },

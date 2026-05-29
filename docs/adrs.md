@@ -2,15 +2,6 @@
 title: Architecture decision records
 doc_kind: adr_index
 template_version: 1
-source_artifacts:
-  - artifact:35
-  - artifact:36
-  - artifact:37
-  - artifact:38
-  - artifact:39
-  - artifact:40
-  - artifact:41
-  - artifact:75
 regenerated_at: 2026-05-18T00:00:00Z
 regenerated_by: hand
 ---

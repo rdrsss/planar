@@ -6,19 +6,22 @@ This document explains the core concepts in Planar. Read it after `planar init` 
 
 ## Binaries
 
-Planar ships as three executables, each with a disjoint capability boundary enforced **by the verb set the binary registers** (not by runtime ACLs). The boundary is a compile-time and install-time property: the binary on PATH literally has no verb for the work it is not allowed to do. This makes vendor-hook blast radius bounded — a hook configured with only `planar-agent` on its PATH cannot mutate planning state regardless of how it is invoked.
+Planar ships as four executables, each with a disjoint capability boundary enforced **by the verb set the binary registers** (not by runtime ACLs). The boundary is a compile-time and install-time property: the binary on PATH literally has no verb for the work it is not allowed to do. This makes vendor-hook blast radius bounded — a hook configured with only `planar-agent` on its PATH cannot mutate planning state regardless of how it is invoked.
 
 | Binary | Audience | Writes to |
 |---|---|---|
 | `planar` | Operator (human + scripts) | Planning entities (`plans`, `tasks.status` via manual transitions, `decisions`, `questions`, `scenarios`, `artifacts`, `annotations`, …) — everything **except** `agent_actions` / `agent_work_claims`. |
 | `planar-agent` | Agent (vendor hook, orchestrator dispatch) + operator recovery | `agent_actions`, `agent_work_claims`, and `tasks.status` (the last only as part of atomic coordinated operations: `pull`, `complete`, `fail`, `release`, `block`). **Never** to plan / decision / question / scenario / artifact / annotation. |
 | `planar-watch` | Operator (live view) + scripts (`--json`) | **Nothing.** Opens SQLite via `file:?mode=ro` so the driver itself rejects every write SQL string. |
+| `planar-doc` | Operator + documenter agent | **`.planar-manifest` only** — the repo-state merkle index at the repo root. Never opens SQLite at all. |
 
 **Capability invariant — `planar-agent`:** a process invoked as `planar-agent` has no verbs that mutate any planning entity. The verb set is exactly `pull`, `peek`, `claim`, `heartbeat`, `complete`, `fail`, `release`, `block`, `action start`/`action end`, `ingest`, `reconcile`, `abort`, `version`.
 
 **Capability invariant — `planar-watch`:** the binary's verb set contains zero write verbs (`feed`, `ps`, `claims`, `actions`, `plans`, `log`, `version`, `completion` only). Enforced two ways: (1) the verb set; (2) the read-only DB handle.
 
-Both invariants are locked by `integration_tests/capability_boundary_test.zig` — a future change that registers a write verb on `planar-watch` or a planning-entity verb on `planar-agent` fails CI immediately. The `planar agent <verb>` subcommand namespace deliberately does not exist; agent observability lives on `planar-watch`, agent-table writes live on `planar-agent`.
+**Capability invariant — `planar-doc`:** the binary has no SQLite driver linked at all. Its verb set is exactly `build`, `verify`, `diff`, `cover`, `nodoc`, `lint`. The only write is `.planar-manifest` at the repo root.
+
+All three invariants are locked by `integration_tests/capability_boundary_test.zig` — a future change that registers a write verb on `planar-watch`, a planning-entity verb on `planar-agent`, or any SQLite-touching verb on `planar-doc` fails CI immediately. The `planar agent <verb>` subcommand namespace deliberately does not exist; agent observability lives on `planar-watch`, agent-table writes live on `planar-agent`.
 
 The ritual every code-writing agent dispatch follows is `planar-agent pull → heartbeat → complete|fail|release|block` (atomic across all three tables). See [agents/methodology.md § Coordination claims](../agents/methodology.md#coordination-claims) and the tech spec § "Agent methodology contract" for the full sequence.
 
@@ -142,6 +145,7 @@ Several verb classes were audited and explicitly left unguarded; the absence is 
 - **All read-only verbs.** `show`, `list`, `status`, `audit trail`, `tree` — reads do not corrupt state and the audit-from-anywhere case is the common case.
 - **Identity-bucket verbs** (`assoc`, `init`, `promote`/`demote`, `scope`, `workspace`). Associations *are* scope; `promote`/`demote` deliberately cross scopes (that is the verb's job).
 - **Operator-state verbs** (`handoff`, `capture`, `resume`). These manage vendor-session rows, not project-scoped entities. The legitimate polyrepo handoff workflow is "a session inside repo A captures a handoff that references a task in repo B".
+- **`planar-doc` verbs** (`build`, `verify`, `diff`, `cover`, `nodoc`, `lint`). The `planar-doc` binary never opens SQLite, so there is no operator-vs-entity scope comparison to make. Its only write is `.planar-manifest` at the repo root — a repo-state artifact, not a scope-owned planning entity.
 
 ### Escape hatch
 
