@@ -47,7 +47,36 @@ pub const Resolution = struct {
     scope: Scope,
     reason: Reason,
     project_slug: ?[]const u8 = null,
+    /// True when `cwd` lives inside a secondary git worktree. Detected
+    /// via a two-level check (fast path `.worktrees/<x>/` segment + an
+    /// authoritative `git rev-parse --git-common-dir` fallback). When
+    /// true, `scope` is still the parent repo's association: reads are
+    /// transparent. Writes consult this flag at the runtime gate to
+    /// refuse planning verbs from inside worktrees.
+    cwd_is_worktree: bool = false,
+    /// Absolute path to the worktree root. Owned by the allocator
+    /// passed to `deriveFromCwd`. Populated only when `cwd_is_worktree`.
+    worktree_root: ?[]const u8 = null,
+    /// Absolute path to the parent repo (the canonical checkout the
+    /// worktree was branched from). Owned by the allocator passed to
+    /// `deriveFromCwd`. Populated only when `cwd_is_worktree`.
+    parent_repo_root: ?[]const u8 = null,
 };
+
+/// Result of the worktree-detection probe. Caller owns any non-null
+/// paths and frees them via `deinitWorktreeDetection`.
+pub const WorktreeDetection = struct {
+    is_worktree: bool,
+    /// The worktree's working-tree root (the dir the operator was in).
+    worktree_root: ?[]const u8 = null,
+    /// The parent repo's working-tree root (sibling of `.git/`).
+    parent_repo_root: ?[]const u8 = null,
+};
+
+pub fn deinitWorktreeDetection(allocator: std.mem.Allocator, d: WorktreeDetection) void {
+    if (d.worktree_root) |s| allocator.free(s);
+    if (d.parent_repo_root) |s| allocator.free(s);
+}
 
 /// ScopeRef is returned by resolveSlug: the resolved kind + database id.
 pub const ScopeKind = enum {
@@ -63,58 +92,107 @@ pub const ScopeRef = struct {
     id: ?i64,
 };
 
+/// Internal: a project row's id + slug. Returned by
+/// `lookupProjectByPrefix` so the worktree-aware lookup can try
+/// multiple paths without duplicating the SQL.
+const ProjectMatch = struct { id: i64, slug: []const u8 };
+
+/// Internal: find the project whose `root_path` is the longest prefix
+/// of `path`. Returns null when no row matches. The returned `slug`
+/// is owned by the caller.
+fn lookupProjectByPrefix(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    path: []const u8,
+) Error!?ProjectMatch {
+    var stmt = d.prepare(
+        "select id, slug, root_path from projects " ++
+            "where root_path is not null order by length(root_path) desc",
+    ) catch return Error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(&.{}) catch return Error.QueryFailed;
+
+    while (true) {
+        switch (stmt.step() catch return Error.QueryFailed) {
+            .done => return null,
+            .row => {
+                const rp = try stmt.columnTextOpt(2, allocator);
+                if (rp) |root| {
+                    defer allocator.free(root);
+                    if (pathHasPrefix(path, root)) {
+                        const pid = stmt.columnInt(0);
+                        const pslug = try stmt.columnTextAlloc(1, allocator);
+                        return .{ .id = pid, .slug = pslug };
+                    }
+                }
+            },
+        }
+    }
+}
+
 /// Derive the scope from `cwd`. Returns `.scope = null` plus a `reason`
 /// explaining why when no unambiguous association can be selected.
-/// Caller owns any non-null `scope` and `project_slug` strings.
+/// Caller owns any non-null `scope`, `project_slug`, `worktree_root`,
+/// and `parent_repo_root` strings.
+///
+/// When `cwd` lives inside a secondary git worktree (per the two-level
+/// detection in `detectWorktree`), the association lookup is performed
+/// against the *parent repo's* root, not the worktree's cwd, so reads
+/// from inside a worktree transparently return the parent repo's
+/// scope. The runtime gate uses `cwd_is_worktree` to refuse planning
+/// verbs invoked from within a worktree.
 ///
 /// Algorithm (mirrors Go's `scopearg.DeriveFromCwd` + `scopearg.ResolveForWrite`):
-///   1. Load all projects with a non-null root_path, ordered longest-first.
-///   2. Pick the first (longest) whose root_path is a prefix of (or equals) cwd.
-///   3. Query that project's association memberships.
-///   4. Branch on count: 0 → project_unassociated, 1 → project_single_association,
+///   1. Probe for worktree-cwd via `detectWorktree`.
+///   2. Load all projects with a non-null root_path, ordered longest-first.
+///   3. Pick the first (longest) whose root_path is a prefix of (or equals)
+///      the lookup path (parent repo root when in a worktree, otherwise cwd).
+///   4. Query that project's association memberships.
+///   5. Branch on count: 0 → project_unassociated, 1 → project_single_association,
 ///      2+ → project_multiple_associations.
 pub fn deriveFromCwd(
     d: *db.sqlite.Db,
+    io: std.Io,
     allocator: std.mem.Allocator,
     cwd: []const u8,
 ) Error!Resolution {
     if (cwd.len == 0 or cwd[0] != '/') return Error.InvalidPath;
 
-    // Step 1 + 2: find the project with the longest root_path that is a
-    // prefix of cwd. We iterate rows ordered by length(root_path) DESC so
-    // the first match is the longest.
-    const ProjectMatch = struct { id: i64, slug: []const u8 };
+    // Probe for worktree-cwd. Detection failures (git not installed,
+    // not a git repo, etc.) degrade silently to "not a worktree" — the
+    // caller stays on the normal cwd → project lookup path. This is
+    // load-bearing for non-git fixtures (the harness's tmp dirs aren't
+    // git repos by default).
+    const det = detectWorktree(io, allocator, cwd) catch WorktreeDetection{ .is_worktree = false };
+    errdefer deinitWorktreeDetection(allocator, det);
 
-    var match: ?ProjectMatch = null;
-    {
-        var stmt = d.prepare(
-            "select id, slug, root_path from projects " ++
-                "where root_path is not null order by length(root_path) desc",
-        ) catch return Error.QueryFailed;
-        defer stmt.finalize();
-        stmt.bind(&.{}) catch return Error.QueryFailed;
-
-        while (match == null) {
-            switch (stmt.step() catch return Error.QueryFailed) {
-                .done => break,
-                .row => {
-                    // column 2 = root_path
-                    const rp = try stmt.columnTextOpt(2, allocator);
-                    if (rp) |root| {
-                        defer allocator.free(root);
-                        if (pathHasPrefix(cwd, root)) {
-                            const pid = stmt.columnInt(0);
-                            const pslug = try stmt.columnTextAlloc(1, allocator);
-                            match = .{ .id = pid, .slug = pslug };
-                        }
-                    }
-                },
-            }
+    // Project lookup. When in a worktree, the spec wants the parent
+    // repo's association. But we also need to handle the case where
+    // the cwd ITSELF is a registered project (e.g. integration test
+    // fixtures that incidentally live under a `.worktrees/` path that
+    // belongs to an unrelated repo). Strategy: try the literal cwd
+    // FIRST; only fall back to parent_repo_root if no registered
+    // project matches.
+    //
+    // The cwd-first ordering means a registered worktree-cwd "wins"
+    // its own scope (rare, but matches operator expectation if they
+    // explicitly registered the worktree). The fallback handles the
+    // common case: cwd is unregistered, but the parent repo is.
+    var match: ?ProjectMatch = try lookupProjectByPrefix(d, allocator, cwd);
+    if (match == null and det.is_worktree) {
+        if (det.parent_repo_root) |parent| {
+            match = try lookupProjectByPrefix(d, allocator, parent);
         }
     }
 
     if (match == null) {
-        return .{ .scope = null, .reason = .no_project_match };
+        return .{
+            .scope = null,
+            .reason = .no_project_match,
+            .cwd_is_worktree = det.is_worktree,
+            .worktree_root = det.worktree_root,
+            .parent_repo_root = det.parent_repo_root,
+        };
     }
 
     const pid = match.?.id;
@@ -169,6 +247,9 @@ pub fn deriveFromCwd(
                 .scope = null,
                 .reason = .project_unassociated,
                 .project_slug = pslug,
+                .cwd_is_worktree = det.is_worktree,
+                .worktree_root = det.worktree_root,
+                .parent_repo_root = det.parent_repo_root,
             };
         },
         1 => {
@@ -180,6 +261,9 @@ pub fn deriveFromCwd(
                 .scope = scope_slug,
                 .reason = .project_single_association,
                 .project_slug = pslug,
+                .cwd_is_worktree = det.is_worktree,
+                .worktree_root = det.worktree_root,
+                .parent_repo_root = det.parent_repo_root,
             };
         },
         else => {
@@ -190,9 +274,170 @@ pub fn deriveFromCwd(
                 .scope = null,
                 .reason = .project_multiple_associations,
                 .project_slug = pslug,
+                .cwd_is_worktree = det.is_worktree,
+                .worktree_root = det.worktree_root,
+                .parent_repo_root = det.parent_repo_root,
             };
         },
     }
+}
+
+/// Detect whether `cwd` lives inside a secondary git worktree using a
+/// two-level check:
+///
+/// 1. **Fast path (convention):** `cwd` contains a `.worktrees/<x>/`
+///    path segment. Cheap; no subprocess. Matches the orchestrator's
+///    convention from `agents/methodology.md`.
+/// 2. **Authoritative fallback:** when the fast path missed, shell out
+///    to `git rev-parse --git-common-dir` and `--show-toplevel`. If the
+///    common dir is NOT the `.git` directly under the toplevel, the
+///    cwd is a secondary worktree.
+///
+/// On any failure (git not installed, cwd not in a git repo, subprocess
+/// timeout) the function returns `is_worktree=false` — the caller stays
+/// on the normal cwd → project path. Worktree detection is best-effort
+/// enrichment, not a hard precondition.
+///
+/// Caller owns the returned path strings; release via
+/// `deinitWorktreeDetection`.
+pub fn detectWorktree(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    cwd: []const u8,
+) !WorktreeDetection {
+    // ---- Fast path: scan for `.worktrees/<segment>/`. -------------
+    if (fastPathWorktreeRoot(cwd)) |wt_root| {
+        // `wt_root` is a slice into `cwd`; for the worktree path we
+        // descend down to and including the segment immediately after
+        // `.worktrees/`. The parent repo root is the directory just
+        // above `.worktrees/`.
+        const parent = parentOfDotWorktrees(wt_root);
+        return .{
+            .is_worktree = true,
+            .worktree_root = try allocator.dupe(u8, wt_root),
+            .parent_repo_root = try allocator.dupe(u8, parent),
+        };
+    }
+
+    // ---- Authoritative fallback: shell to `git rev-parse`. --------
+    // Capture both --git-common-dir and --show-toplevel in a single
+    // invocation. Output is two lines on stdout. The cwd is a
+    // secondary worktree when the common dir is NOT
+    // `<toplevel>/.git`.
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const argv = [_][]const u8{
+        "git",
+        "-C",
+        cwd,
+        "rev-parse",
+        "--show-toplevel",
+        "--git-common-dir",
+    };
+
+    const result = std.process.run(arena, io, .{ .argv = &argv }) catch
+        return WorktreeDetection{ .is_worktree = false };
+
+    switch (result.term) {
+        .exited => |code| if (code != 0) return WorktreeDetection{ .is_worktree = false },
+        else => return WorktreeDetection{ .is_worktree = false },
+    }
+
+    // Parse two lines.
+    var lines = std.mem.tokenizeScalar(u8, result.stdout, '\n');
+    const toplevel_raw = lines.next() orelse return WorktreeDetection{ .is_worktree = false };
+    const common_dir_raw = lines.next() orelse return WorktreeDetection{ .is_worktree = false };
+    const toplevel = std.mem.trim(u8, toplevel_raw, " \r\n\t");
+    const common_dir = std.mem.trim(u8, common_dir_raw, " \r\n\t");
+    if (toplevel.len == 0 or common_dir.len == 0) return WorktreeDetection{ .is_worktree = false };
+
+    // `--git-common-dir` may return a relative path (relative to the
+    // git process's cwd). When relative, resolve it against `toplevel`
+    // — NOT the operator's literal cwd — because git internally
+    // canonicalizes its cwd via realpath, so a relative path returned
+    // by git refers to git's canonical view, which matches
+    // `--show-toplevel`. Using the operator's cwd (which may differ
+    // by /var → /private/var on macOS) would produce a path that
+    // never matches the synthesized `<toplevel>/.git` and would
+    // mis-classify the main checkout as a worktree.
+    const common_dir_abs: []const u8 = blk: {
+        if (std.fs.path.isAbsolute(common_dir)) break :blk common_dir;
+        const joined = std.fs.path.join(arena, &.{ toplevel, common_dir }) catch
+            return WorktreeDetection{ .is_worktree = false };
+        break :blk joined;
+    };
+
+    // Expected primary path: `<toplevel>/.git` (a directory). For a
+    // secondary worktree, `--git-common-dir` points at the *primary
+    // repo's* `.git`, which is NOT `<toplevel>/.git` (because
+    // `--show-toplevel` returns the secondary worktree's working tree).
+    const expected_primary_git = std.fmt.allocPrint(
+        arena,
+        "{s}/.git",
+        .{toplevel},
+    ) catch return WorktreeDetection{ .is_worktree = false };
+
+    if (std.mem.eql(u8, common_dir_abs, expected_primary_git)) {
+        // Common dir matches toplevel/.git → this IS the main worktree.
+        return WorktreeDetection{ .is_worktree = false };
+    }
+
+    // Secondary worktree. The parent repo root is the directory
+    // containing the common-dir's `.git/` (i.e., common_dir's parent).
+    const parent_repo_root = std.fs.path.dirname(common_dir_abs) orelse
+        return WorktreeDetection{ .is_worktree = false };
+
+    return .{
+        .is_worktree = true,
+        .worktree_root = try allocator.dupe(u8, toplevel),
+        .parent_repo_root = try allocator.dupe(u8, parent_repo_root),
+    };
+}
+
+/// Scan `cwd` for a `.worktrees/<segment>` boundary. Returns the slice
+/// of `cwd` up to and including the segment immediately after
+/// `.worktrees/`, treating that as the worktree root. Returns null if
+/// there is no such segment, or if `.worktrees/` appears at the end
+/// of the path with no segment following it.
+fn fastPathWorktreeRoot(cwd: []const u8) ?[]const u8 {
+    // Look for `/.worktrees/` anywhere in the path. The fast path needs
+    // BOTH a leading slash (so we don't catch a directory literally
+    // named `something.worktrees`) and a trailing slash (so we know a
+    // segment follows).
+    const needle = "/.worktrees/";
+    const idx = std.mem.indexOf(u8, cwd, needle) orelse return null;
+    const after = idx + needle.len;
+    if (after >= cwd.len) return null; // `.worktrees/` with no segment
+    // Find the next `/` after the worktree-id segment, or use end of
+    // string. The slice we return covers up to AND including the
+    // segment after `.worktrees/` (so for the orchestrator convention
+    // path `/repo/.worktrees/<plan>/<task>/...`, we return
+    // `/repo/.worktrees/<plan>/<task>`). The plan-segment vs task-
+    // segment shape is encoded by the methodology, not by the
+    // resolver; we don't need to know which is which here.
+    //
+    // For the methodology's two-level convention (`<plan>/<task>`),
+    // the resolver still classifies the *cwd* as a worktree — and
+    // that's all the runtime gate needs. The `worktree_root` we return
+    // is the path up to the FIRST segment under `.worktrees/`, which
+    // covers the hand-picked single-segment case too.
+    const tail_start = after;
+    const rel = cwd[tail_start..];
+    const next_slash = std.mem.indexOfScalar(u8, rel, '/');
+    const end = if (next_slash) |s| tail_start + s else cwd.len;
+    return cwd[0..end];
+}
+
+/// Given a worktree-root path of the form `<parent>/.worktrees/<seg>`,
+/// return the `<parent>` slice (the parent repo root).
+fn parentOfDotWorktrees(wt_root: []const u8) []const u8 {
+    // wt_root ends with `/.worktrees/<seg>`. Strip the trailing
+    // `/.worktrees/<seg>` to recover `<parent>`.
+    const marker = "/.worktrees/";
+    const idx = std.mem.indexOf(u8, wt_root, marker) orelse return wt_root;
+    return wt_root[0..idx];
 }
 
 /// Resolve a --scope flag value to a (kind, id) pair.
@@ -408,14 +653,14 @@ test "deriveFromCwd rejects relative paths" {
     const a = std.testing.allocator;
     var d = try setupTestDb(a);
     defer d.close();
-    try std.testing.expectError(Error.InvalidPath, deriveFromCwd(&d, a, "relative"));
+    try std.testing.expectError(Error.InvalidPath, deriveFromCwd(&d, std.testing.io, a, "relative"));
 }
 
 test "deriveFromCwd on empty DB reports no project match" {
     const a = std.testing.allocator;
     var d = try setupTestDb(a);
     defer d.close();
-    const res = try deriveFromCwd(&d, a, "/some/path");
+    const res = try deriveFromCwd(&d, std.testing.io, a, "/some/path");
     try std.testing.expect(res.scope == null);
     try std.testing.expectEqual(Reason.no_project_match, res.reason);
 }
@@ -440,9 +685,11 @@ test "deriveFromCwd: project + 1 association → slug + reason=project_single_as
         &.{ .{ .int = project_id }, .{ .int = assoc_id } },
     );
 
-    const res = try deriveFromCwd(&d, a, "/work/myrepo/src/foo");
+    const res = try deriveFromCwd(&d, std.testing.io, a, "/work/myrepo/src/foo");
     defer if (res.scope) |s| a.free(s);
     defer if (res.project_slug) |s| a.free(s);
+    defer if (res.worktree_root) |s| a.free(s);
+    defer if (res.parent_repo_root) |s| a.free(s);
 
     try std.testing.expectEqual(Reason.project_single_association, res.reason);
     try std.testing.expect(res.scope != null);
@@ -460,9 +707,11 @@ test "deriveFromCwd: project + 0 associations → null + reason=project_unassoci
         &.{},
     );
 
-    const res = try deriveFromCwd(&d, a, "/work/lone/src");
+    const res = try deriveFromCwd(&d, std.testing.io, a, "/work/lone/src");
     defer if (res.scope) |s| a.free(s);
     defer if (res.project_slug) |s| a.free(s);
+    defer if (res.worktree_root) |s| a.free(s);
+    defer if (res.parent_repo_root) |s| a.free(s);
 
     try std.testing.expectEqual(Reason.project_unassociated, res.reason);
     try std.testing.expect(res.scope == null);
@@ -494,9 +743,11 @@ test "deriveFromCwd: project + 2 associations → null + reason=project_multiple
         &.{ .{ .int = pid }, .{ .int = aid2 } },
     );
 
-    const res = try deriveFromCwd(&d, a, "/work/multi/lib");
+    const res = try deriveFromCwd(&d, std.testing.io, a, "/work/multi/lib");
     defer if (res.scope) |s| a.free(s);
     defer if (res.project_slug) |s| a.free(s);
+    defer if (res.worktree_root) |s| a.free(s);
+    defer if (res.parent_repo_root) |s| a.free(s);
 
     try std.testing.expectEqual(Reason.project_multiple_associations, res.reason);
     try std.testing.expect(res.scope == null);
@@ -514,9 +765,11 @@ test "deriveFromCwd: no project prefix match → null + reason=no_project_match"
         &.{},
     );
 
-    const res = try deriveFromCwd(&d, a, "/home/user/unrelated");
+    const res = try deriveFromCwd(&d, std.testing.io, a, "/home/user/unrelated");
     defer if (res.scope) |s| a.free(s);
     defer if (res.project_slug) |s| a.free(s);
+    defer if (res.worktree_root) |s| a.free(s);
+    defer if (res.parent_repo_root) |s| a.free(s);
 
     try std.testing.expectEqual(Reason.no_project_match, res.reason);
     try std.testing.expect(res.scope == null);
@@ -553,9 +806,11 @@ test "deriveFromCwd: longest-prefix wins when multiple projects match" {
         &.{ .{ .int = child_id }, .{ .int = child_assoc } },
     );
 
-    const res = try deriveFromCwd(&d, a, "/work/child/src");
+    const res = try deriveFromCwd(&d, std.testing.io, a, "/work/child/src");
     defer if (res.scope) |s| a.free(s);
     defer if (res.project_slug) |s| a.free(s);
+    defer if (res.worktree_root) |s| a.free(s);
+    defer if (res.parent_repo_root) |s| a.free(s);
 
     // The child project (/work/child) is a longer prefix than parent (/work).
     try std.testing.expectEqual(Reason.project_single_association, res.reason);
@@ -684,4 +939,162 @@ test "reasonFromSource: known + unknown values" {
     try std.testing.expectEqualStrings("from language ecosystem", reasonFromSource("auto:lang"));
     // Unknown sources pass through.
     try std.testing.expectEqualStrings("auto:custom", reasonFromSource("auto:custom"));
+}
+
+// =========================================================================
+// Worktree-detection tests
+// =========================================================================
+
+test "detectWorktree fast path: matches .worktrees/<seg> segment" {
+    const a = std.testing.allocator;
+    const cwd = "/work/repo/.worktrees/feature-x/src/foo";
+    const det = try detectWorktree(std.testing.io, a, cwd);
+    defer deinitWorktreeDetection(a, det);
+    try std.testing.expect(det.is_worktree);
+    try std.testing.expectEqualStrings("/work/repo/.worktrees/feature-x", det.worktree_root.?);
+    try std.testing.expectEqualStrings("/work/repo", det.parent_repo_root.?);
+}
+
+test "detectWorktree fast path: orchestrator <plan>/<task> shape" {
+    const a = std.testing.allocator;
+    const cwd = "/work/repo/.worktrees/p297/m3-engine-scope";
+    const det = try detectWorktree(std.testing.io, a, cwd);
+    defer deinitWorktreeDetection(a, det);
+    try std.testing.expect(det.is_worktree);
+    // We return up to the FIRST segment under .worktrees/ — the plan slug.
+    try std.testing.expectEqualStrings("/work/repo/.worktrees/p297", det.worktree_root.?);
+    try std.testing.expectEqualStrings("/work/repo", det.parent_repo_root.?);
+}
+
+test "detectWorktree fast path: ignores .worktrees with no segment" {
+    const a = std.testing.allocator;
+    // Trailing .worktrees/ with nothing after → no match.
+    const det = try detectWorktree(std.testing.io, a, "/work/repo/.worktrees/");
+    defer deinitWorktreeDetection(a, det);
+    // Fast path bails, then we shell to git (this path likely isn't a
+    // repo). Either way: not classified as worktree.
+    try std.testing.expect(!det.is_worktree);
+}
+
+test "fastPathWorktreeRoot: misses dirs literally named foo.worktrees" {
+    // Without the leading slash sentinel the function would incorrectly
+    // classify `/work/myrepo.worktrees/x` as a worktree.
+    try std.testing.expect(fastPathWorktreeRoot("/work/myrepo.worktrees/x") == null);
+}
+
+test "fastPathWorktreeRoot: returns parent path before .worktrees" {
+    const got = fastPathWorktreeRoot("/work/repo/.worktrees/foo/bar/baz").?;
+    try std.testing.expectEqualStrings("/work/repo/.worktrees/foo", got);
+}
+
+test "parentOfDotWorktrees: strips trailing /.worktrees/<seg>" {
+    try std.testing.expectEqualStrings(
+        "/work/repo",
+        parentOfDotWorktrees("/work/repo/.worktrees/foo"),
+    );
+}
+
+test "detectWorktree: non-worktree cwd in non-git path returns is_worktree=false" {
+    const a = std.testing.allocator;
+    // /tmp is not under any .worktrees segment and probably not a git
+    // repo. The fast path misses; the authoritative fallback returns
+    // an error from git, which we degrade to not-a-worktree.
+    const det = try detectWorktree(std.testing.io, a, "/tmp");
+    defer deinitWorktreeDetection(a, det);
+    try std.testing.expect(!det.is_worktree);
+}
+
+// Authoritative-fallback test that spawns real `git`. Skipped if git
+// is not on PATH. Builds a tmp dir with a primary repo and a
+// secondary worktree at a path that does NOT contain `.worktrees/`,
+// so only the fallback can detect it.
+test "detectWorktree authoritative fallback: secondary worktree at non-convention path" {
+    const a = std.testing.allocator;
+
+    // Skip if git is unavailable.
+    {
+        const probe = std.process.run(a, std.testing.io, .{
+            .argv = &.{ "git", "--version" },
+        }) catch return error.SkipZigTest;
+        defer a.free(probe.stdout);
+        defer a.free(probe.stderr);
+        switch (probe.term) {
+            .exited => |code| if (code != 0) return error.SkipZigTest,
+            else => return error.SkipZigTest,
+        }
+    }
+
+    // Use mktemp instead of std.testing.tmpDir so the test path is
+    // under /var/folders (or /tmp on Linux), not under
+    // .zig-cache/tmp/. The Planar dev tree lives at
+    // .../.worktrees/cycle/...; a .zig-cache tmp under it would
+    // trigger the fast-path before the authoritative fallback ever
+    // runs.
+    const mk = try std.process.run(a, std.testing.io, .{
+        .argv = &.{ "mktemp", "-d", "-t", "planar-scope-test.XXXXXX" },
+    });
+    defer a.free(mk.stderr);
+    switch (mk.term) {
+        .exited => |code| if (code != 0) {
+            a.free(mk.stdout);
+            return error.MktempFailed;
+        },
+        else => {
+            a.free(mk.stdout);
+            return error.MktempFailed;
+        },
+    }
+    const tmp_owned = try a.dupe(u8, std.mem.trim(u8, mk.stdout, " \r\n\t"));
+    a.free(mk.stdout);
+    defer a.free(tmp_owned);
+    defer cleanupTmpDir(a, tmp_owned);
+
+    const primary = try std.fs.path.join(a, &.{ tmp_owned, "primary" });
+    defer a.free(primary);
+    const secondary = try std.fs.path.join(a, &.{ tmp_owned, "secondary-wt" });
+    defer a.free(secondary);
+
+    // Init primary repo and a starter commit.
+    try runGit(a, tmp_owned, &.{ "init", "primary" });
+    try runGit(a, primary, &.{ "config", "user.email", "test@example.com" });
+    try runGit(a, primary, &.{ "config", "user.name", "Test" });
+    try runGit(a, primary, &.{ "commit", "--allow-empty", "-m", "init" });
+    // Create a secondary worktree at a non-`.worktrees/` path.
+    try runGit(a, primary, &.{ "worktree", "add", "-b", "feat-branch", secondary });
+
+    // Detect from inside the secondary.
+    const det = try detectWorktree(std.testing.io, a, secondary);
+    defer deinitWorktreeDetection(a, det);
+    try std.testing.expect(det.is_worktree);
+    try std.testing.expect(det.parent_repo_root != null);
+
+    // Main checkout: should NOT classify as worktree.
+    const main_det = try detectWorktree(std.testing.io, a, primary);
+    defer deinitWorktreeDetection(a, main_det);
+    try std.testing.expect(!main_det.is_worktree);
+}
+
+fn cleanupTmpDir(allocator: std.mem.Allocator, dir: []const u8) void {
+    const rm = std.process.run(allocator, std.testing.io, .{
+        .argv = &.{ "rm", "-rf", dir },
+    }) catch return;
+    allocator.free(rm.stdout);
+    allocator.free(rm.stderr);
+}
+
+fn runGit(allocator: std.mem.Allocator, cwd: []const u8, args: []const []const u8) !void {
+    var argv = std.ArrayList([]const u8).empty;
+    defer argv.deinit(allocator);
+    try argv.append(allocator, "git");
+    try argv.append(allocator, "-C");
+    try argv.append(allocator, cwd);
+    for (args) |arg| try argv.append(allocator, arg);
+
+    const result = try std.process.run(allocator, std.testing.io, .{ .argv = argv.items });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    switch (result.term) {
+        .exited => |code| if (code != 0) return error.GitFailed,
+        else => return error.GitFailed,
+    }
 }

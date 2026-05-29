@@ -63,6 +63,11 @@ pub const PullArgs = struct {
     /// Role the action_kind defaults to. Coder is the typical case;
     /// the CLI surfaces a --role flag mapping to ActionKind.
     action_kind: types.ActionKind = .coder,
+    /// Optional opaque text persisted on the dispatch action row
+    /// (`agent_actions.metadata`). The orchestrator strategy gate
+    /// writes the chosen strategy + axes blob here so the next cycle
+    /// can read it back.
+    metadata: ?[]const u8 = null,
 };
 
 /// Atomic pull: pick the next eligible task (highest-priority todo
@@ -138,6 +143,7 @@ pub fn pullNext(
         .vendor_role = args.role,
         .model = args.model,
         .locality = args.locality,
+        .metadata = args.metadata,
     }) catch |e| return e;
 
     try commit(d);

@@ -406,7 +406,8 @@ fn collectActionEvents(
         \\       action_kind, entity_kind, entity_id,
         \\       vendor, vendor_role, model,
         \\       started_at, ended_at, outcome, summary,
-        \\       head_sha, dirty
+        \\       head_sha, dirty,
+        \\       metadata
         \\from agent_actions
         \\where started_at > ? or coalesce(ended_at, '') > ?
         \\order by started_at desc
@@ -558,6 +559,7 @@ fn readActionRow(
         .summary = try stmt.columnTextOpt(14, allocator),
         .head_sha = try stmt.columnTextOpt(15, allocator),
         .dirty = dirty,
+        .metadata = try stmt.columnTextOpt(17, allocator),
     };
 }
 
@@ -609,6 +611,7 @@ fn cloneAction(x: agentactivity.types.Action, a: std.mem.Allocator) !agentactivi
         .summary = try dupeOpt(a, x.summary),
         .head_sha = try dupeOpt(a, x.head_sha),
         .dirty = x.dirty,
+        .metadata = try dupeOpt(a, x.metadata),
     };
 }
 

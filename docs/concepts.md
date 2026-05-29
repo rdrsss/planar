@@ -355,6 +355,103 @@ For the canonical contract see [`agents/methodology.md` §Barrel modes](../agent
 
 ---
 
+## Orchestration strategy
+
+An orchestration strategy is the operator-facing dispatch frame for a plan. It bundles five underlying axes into one named choice the operator confirms at the strategy gate — Phase 3's first sub-step, run **before** the existing dispatch-shape gate. Strategy answers "what is the overall methodology for this plan?" Dispatch shape (the next gate, nested under it) answers "within that strategy, how do I batch *this cycle's* work?"
+
+### The five named strategies
+
+| Strategy | One-line description |
+|----------|----------------------|
+| `classic` | Coder runs in the operator's pwd on the current branch. Sequential cycles, reviewer per cycle. No worktrees, no epic branch, no parallelism. The explicit continuity default — today's behavior bit-for-bit. |
+| `isolated-sequential` | Coder runs in a dedicated [worktree](#worktree) on a `cycle/<plan-slug>/<task-slug>` branch off an `epic/<plan-slug>` branch. Sequential cycles, reviewer per cycle. Operator pwd stays clean. |
+| `parallel-fanout` | Fan out to N parallel coders on the parallel-eligible subset of the plan's open tasks; each in its own worktree off the shared epic branch; one consolidated reviewer pass at fan-in. |
+| `barrel-deferred` | Coder cycles run back-to-back in pwd; reviewer fires once at a milestone or plan boundary on the union diff. The existing `barrel-deferred` dispatch shape promoted to a named strategy. |
+| `barrel-bypass` | No reviewer dispatch at all. Quality gates (`make fmt-check` + `make build` + `make test` + `make test-integration` twice + render check + remaining validators) are the entire signal. Sequential, in-pwd. |
+
+### The five underlying axes
+
+Every strategy is a row in the axis table — locked values for each:
+
+| Axis | Values | What it controls |
+|------|--------|------------------|
+| `isolation` | `in-pwd`, `worktree` | Where the coder runs — operator's checkout vs. a dedicated worktree. |
+| `branch_model` | `current-branch`, `epic-child` | Where commits land — current branch vs. `cycle/<plan-slug>/<task-slug>` off `epic/<plan-slug>`. |
+| `concurrency` | `sequential`, `fan-out` | How cycles batch — one at a time vs. N parallel coders per cycle. |
+| `reviewer_cadence` | `per-cycle`, `per-fanin`, `at-boundary`, `gates-only` | When the reviewer runs. |
+| `test_coder_cadence` | `per-cycle`, `per-fanin`, `at-boundary`, `none` | When the test-coder (Phase 3.5) runs. |
+
+Advanced operators can compose a custom strategy with `--strategy custom` plus per-axis flags (`--isolation`, `--branch-model`, `--concurrency`, `--reviewer-cadence`, `--test-coder-cadence`). The named bundles are the recommended common cases; the axis flags are the escape hatch.
+
+### The two gates
+
+Phase 3 runs the strategy gate first, then the dispatch-shape gate nested under the chosen strategy:
+
+1. **Strategy gate.** Orchestrator surfaces its recommendation + a one-line rationale + the full menu of named strategies. Operator confirms or overrides. Skipped only when `--strategy <name>` (or `--strategy custom --isolation X ...`) was passed at invocation. The recommendation algorithm is plan-shape-driven with status-quo bias — see [`agents/methodology.md` §Recommendation algorithm](../agents/methodology.md#recommendation-algorithm).
+2. **Dispatch-shape gate.** Constrained by the strategy: `parallel-fanout` forces the `fan-out` shape; `barrel-deferred` and `barrel-bypass` force their matching shapes; `classic` and `isolated-sequential` keep the full strict / grouped / single menu.
+
+Neither gate has an auto-default — the recommendation never silently turns into an action. `classic` is the continuity guarantee: an operator who always picks (or accepts the recommendation of) `classic` sees no behavioral change relative to today.
+
+### Persistence
+
+No new schema. The chosen strategy + axes ride in the existing `agent_actions.metadata` JSON column on the dispatch row. The "last-used strategy for this plan" lookup that drives the recommendation algorithm's stickiness rule is a single indexed read against the most recent dispatch entry's metadata. The `metadata` column wiring is itself a deferred follow-up (task 2939); until that lands, the orchestrator re-derives the recommendation from plan shape each cycle.
+
+For the canonical axis table, named bundles, invalid-combination list, and recommendation algorithm see [`agents/methodology.md` §Orchestration strategies](../agents/methodology.md#orchestration-strategies). For the "pick a strategy" recipe and a worked `parallel-fanout` example see [`docs/workflows.md` §Recipe 21](workflows.md#recipe-21--pick-an-orchestration-strategy-for-a-plan) and [§Recipe 22](workflows.md#recipe-22--orchestrate-a-multi-task-plan-with-parallel-coders).
+
+**SQLite tables:** none — strategy is metadata on the dispatch row. **Primary entry points:** `/pl-orchestrator` (the gate), `agents/methodology.md` §Orchestration strategies (the contract).
+
+---
+
+## Worktree
+
+A Planar worktree is a git working tree the orchestrator created for an isolated coder cycle. It is a real `git worktree add` checkout — Planar does not reinvent the git primitive, it just owns the path convention and the persistence of which claim owns which worktree.
+
+### Topology — epic + child, main checkout stays on master
+
+Worktrees come in two shapes, both rooted at the task's owning repo (not the operator's cwd repo, which may differ under a polyrepo workspace):
+
+| Worktree | Path | Branch | Lifetime |
+|----------|------|--------|----------|
+| Epic (integration) | `<repo>/.worktrees/epic/<plan-slug>/` | `epic/<plan-slug>` | Created on first dispatch of any task in the plan; persists for the plan's duration; removed after the operator merges the epic into master. |
+| Cycle (per-cycle working tree) | `<repo>/.worktrees/cycle/<plan-slug>/<task-slug>/` | `cycle/<plan-slug>/<task-slug>` | Created at cycle dispatch; removed after reviewer approval. |
+
+**Topology invariant: the main checkout stays on master throughout the entire orchestration.** Both the epic branch and each cycle's child branch live in their own worktrees off the main checkout. The orchestrator's fan-in merge runs inside the *epic* worktree (`cd <repo>/.worktrees/epic/<plan-slug>/`), never in the main checkout. This is what preserves the "operator pwd stays clean" promise that motivates the worktree strategies.
+
+The `epic/` and `cycle/` prefixes are **disjoint top-level branch namespaces** by design: git refuses any ref whose path is a strict prefix of another existing ref, so the older bare `<plan-slug>` + `<plan-slug>/<task-slug>` pairing would collide on plans whose slug appears in a task slug. The prefixes guarantee no ref-hierarchy collision.
+
+### Persistence on `agent_work_claims.worktree_path`
+
+When the orchestrator dispatches into a worktree, it persists the absolute path on the claim row's `worktree_path` column (introduced in migration 00015 — see [`docs/architecture.md` §Application tables](architecture.md#application-tables)). The persistence model is deliberately claim-attached, not a standalone `worktrees` table:
+
+- **Resume reads it.** `planar resume <task>` surfaces `active_claim.worktree_path` in its JSON output and as a `cd:` line in the text packet so a cold-start resumer can `cd` into the same checkout the prior session was running in.
+- **`planar-watch` surfaces it.** Every claim-bearing view (`claims`, `log`, `feed`, `ps`) and `planar dashboard --agents` include the column.
+- **`planar-agent pull` and `claim --entity` accept `--worktree <path>`** as the canonical write path.
+
+The standalone-entity alternative remains available — the forward-compat `validateWorktreeId` hook in `src/engine/runtime/agentactivity/store.zig` is the seam — but the claim-attached model satisfies every current use case (dispatch persistence, resume recovery, observability).
+
+### Which strategies use worktrees
+
+| Strategy | Worktree? |
+|----------|-----------|
+| `classic` | No — coder runs in pwd on the current branch. |
+| `isolated-sequential` | Yes — one cycle worktree per cycle off the persistent epic worktree. |
+| `parallel-fanout` | Yes — N cycle worktrees per cycle off the persistent epic worktree, dispatched concurrently. |
+| `barrel-deferred` | No — coder cycles run back-to-back in pwd. |
+| `barrel-bypass` | No — coder cycles run back-to-back in pwd. |
+
+### Scope inside a worktree
+
+Two invariants govern scope behavior when cwd is inside a worktree:
+
+1. **The parent repo dictates the scope.** A worktree at `<repo>/.worktrees/{epic,cycle}/...` resolves to the same association as `<repo>`. Worktrees are not separately scoped; they inherit. Reads (`planar plan list`, `planar task show`, `planar-watch *`) work transparently from inside a worktree.
+2. **Planning verbs are refused from inside worktrees.** Verbs that mutate planning state (`plan add/update/done`, `task add/update/done/touches`, `question`, `decision`, `artifact add/update`, `scenario`, `spec draft/ingest`, `link/unlink/links`, `assoc`, `promote`, `demote`, `init`) refuse with a distinct exit code and a message pointing at the parent repo's cwd. `task done` is refused on purpose — coders use `planar-agent complete --claim <token>`, the atomic terminal verb. `--scope <slug>` does NOT override the refusal; the rule is about *where the verb runs*, not which scope it targets.
+
+For the canonical path scheme, branch scheme, lifecycle, parallelizability rules, and conflict-resolution taxonomy see [`agents/methodology.md` §Worktrees](../agents/methodology.md#worktrees). For the recovery recipe when a coder dies mid-cycle see [`docs/workflows.md` §Recipe 23](workflows.md#recipe-23--recover-a-dead-coder-from-its-worktree).
+
+**SQLite tables:** `agent_work_claims` (`worktree_path` column, migration 00015). **Primary entry points:** `planar-agent pull --worktree <path>`, `planar resume <task>`, `planar-watch claims`, `planar dashboard --agents`.
+
+---
+
 ## Question
 
 A question is an open inquiry attached to a scope, plan, or task. Agents record open questions rather than proceeding with uncertain assumptions. Questions gate on explicit answers before a task can be marked done.

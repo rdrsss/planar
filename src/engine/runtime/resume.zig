@@ -22,6 +22,9 @@ const db = @import("db");
 const session_mod = @import("session.zig");
 const snapshot_mod = @import("snapshot.zig");
 const extlink = @import("../external/link.zig");
+const claim_store = @import("agentactivity/store.zig");
+const claim_types = @import("agentactivity/types.zig");
+const handoff_mod = @import("handoff.zig");
 
 // =========================================================================
 // Types — JSON-stable (used in handler emission too)
@@ -107,6 +110,32 @@ pub const Audit = struct {
     started_at: []const u8,
 };
 
+/// Worktree + locality state read from the active `agent_work_claims`
+/// row when an exclusive claim is held on the task. The resumer's shell
+/// wrapper inspects `worktree_path` to decide whether to prepend a
+/// `cd <path>` directive before continuing. All string fields are owned
+/// by the packet's allocator; empty string means "claim row had NULL".
+pub const ActiveClaim = struct {
+    claim_id: i64,
+    claim_token: []const u8,
+    vendor: []const u8,
+    worktree_path: []const u8 = "",
+    repo_root: []const u8 = "",
+    branch: []const u8 = "",
+};
+
+/// Worktree context recovered from the most-recent worktree-bearing
+/// handoff for a task, used as a cold-start fallback when the
+/// originating `agent_work_claims` row has already been released.
+/// Surfaced in the resume packet as `from_handoff` alongside (or in
+/// place of) `active_claim`. Plan 297 followup t#2947.
+pub const HandoffWorktree = struct {
+    handoff_id: i64,
+    worktree_path: []const u8 = "",
+    repo_root: []const u8 = "",
+    branch: []const u8 = "",
+};
+
 pub const Packet = struct {
     identity: Identity,
     state: State,
@@ -117,6 +146,16 @@ pub const Packet = struct {
     questions: []const QuestionSummary,
     artifacts: []const ArtifactLink,
     audit: ?Audit = null,
+    /// Active exclusive claim on this task, if any. Surfaces the
+    /// worktree the prior session was running in so the resumer can
+    /// `cd` there before continuing.
+    active_claim: ?ActiveClaim = null,
+    /// Cold-start fallback: when no active claim exists but a prior
+    /// handoff persisted worktree state, surface that here so the
+    /// resumer can still recover `cd <path>`. Mutually informative
+    /// with `active_claim` rather than mutually exclusive — when both
+    /// are present, `active_claim` is authoritative.
+    from_handoff: ?HandoffWorktree = null,
 };
 
 pub fn deinitPacket(p: Packet, allocator: std.mem.Allocator) void {
@@ -172,6 +211,18 @@ pub fn deinitPacket(p: Packet, allocator: std.mem.Allocator) void {
     if (p.audit) |au| {
         allocator.free(au.vendor);
         allocator.free(au.started_at);
+    }
+    if (p.active_claim) |ac| {
+        allocator.free(ac.claim_token);
+        allocator.free(ac.vendor);
+        if (ac.worktree_path.len > 0) allocator.free(ac.worktree_path);
+        if (ac.repo_root.len > 0) allocator.free(ac.repo_root);
+        if (ac.branch.len > 0) allocator.free(ac.branch);
+    }
+    if (p.from_handoff) |fh| {
+        if (fh.worktree_path.len > 0) allocator.free(fh.worktree_path);
+        if (fh.repo_root.len > 0) allocator.free(fh.repo_root);
+        if (fh.branch.len > 0) allocator.free(fh.branch);
     }
 }
 
@@ -396,6 +447,23 @@ pub fn buildPacket(
         };
     }
 
+    // ---- Active claim — surfaces worktree state for cd-prefix ---------
+    const active_claim_opt = try buildActiveClaim(d, allocator, task_id);
+
+    // ---- Handoff-fallback worktree — cold-start recovery path --------
+    // Populated when EITHER no active claim is held OR the active
+    // claim row lacks a worktree_path. Lets a resumer recover `cd
+    // <path>` after the originating claim has been released. Plan
+    // 297 followup t#2947.
+    var from_handoff_opt: ?HandoffWorktree = null;
+    const need_fallback = blk: {
+        if (active_claim_opt) |ac| break :blk ac.worktree_path.len == 0;
+        break :blk true;
+    };
+    if (need_fallback) {
+        from_handoff_opt = try buildHandoffWorktree(d, allocator, task_id);
+    }
+
     // Take ownership of the recent slice.
     const recent_slice = try recent.toOwnedSlice(allocator);
 
@@ -409,7 +477,78 @@ pub fn buildPacket(
         .questions = questions,
         .artifacts = artifacts,
         .audit = audit_opt,
+        .active_claim = active_claim_opt,
+        .from_handoff = from_handoff_opt,
     };
+}
+
+/// Cold-start fallback: read the most-recent worktree-bearing
+/// handoff for the task and surface its worktree fields. Returns
+/// null when no such handoff exists.
+fn buildHandoffWorktree(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    task_id: i64,
+) Error!?HandoffWorktree {
+    const h_opt = handoff_mod.getLatestWithWorktreeForTask(d, allocator, task_id) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return Error.QueryFailed,
+    };
+    const h = h_opt orelse return null;
+    defer handoff_mod.deinit(h, allocator);
+    return .{
+        .handoff_id = h.id,
+        .worktree_path = if (h.worktree_path) |p|
+            try allocator.dupe(u8, p)
+        else
+            "",
+        .repo_root = if (h.repo_root) |p|
+            try allocator.dupe(u8, p)
+        else
+            "",
+        .branch = if (h.branch) |b|
+            try allocator.dupe(u8, b)
+        else
+            "",
+    };
+}
+
+/// Return the active exclusive claim on this task (most recent), or
+/// null when no active claim exists. Surfaces the worktree path the
+/// prior session was operating in.
+fn buildActiveClaim(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    task_id: i64,
+) Error!?ActiveClaim {
+    const rows = claim_store.listByEntity(d, allocator, .task, task_id) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return Error.QueryFailed,
+    };
+    defer claim_types.Claim.deinitMany(rows, allocator);
+
+    // listByEntity orders by claimed_at desc; pick the first active row.
+    for (rows) |c| {
+        if (c.status != .active) continue;
+        return .{
+            .claim_id = c.id,
+            .claim_token = try allocator.dupe(u8, c.claim_token),
+            .vendor = try allocator.dupe(u8, c.vendor),
+            .worktree_path = if (c.worktree_path) |p|
+                try allocator.dupe(u8, p)
+            else
+                "",
+            .repo_root = if (c.repo_root) |p|
+                try allocator.dupe(u8, p)
+            else
+                "",
+            .branch = if (c.branch) |b|
+                try allocator.dupe(u8, b)
+            else
+                "",
+        };
+    }
+    return null;
 }
 
 fn buildOperationalPlane(

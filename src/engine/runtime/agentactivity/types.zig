@@ -279,6 +279,11 @@ pub const Outcome = enum {
 };
 
 /// One row from `agent_actions`. Owned strings released via `deinit`.
+///
+/// `metadata` is free-form caller-attached JSON text (migration 00016).
+/// The engine treats it as opaque text — only consumers like the
+/// orchestrator strategy gate parse it. NULL when the caller did not
+/// supply metadata.
 pub const Action = struct {
     id: i64,
     session_id: i64,
@@ -297,6 +302,7 @@ pub const Action = struct {
     summary: ?[]const u8,
     head_sha: ?[]const u8,
     dirty: ?Dirty,
+    metadata: ?[]const u8 = null,
 
     pub fn deinit(self: Action, allocator: std.mem.Allocator) void {
         allocator.free(self.vendor);
@@ -306,6 +312,7 @@ pub const Action = struct {
         if (self.ended_at) |s| allocator.free(s);
         if (self.summary) |s| allocator.free(s);
         if (self.head_sha) |s| allocator.free(s);
+        if (self.metadata) |s| allocator.free(s);
     }
 
     pub fn deinitMany(items: []const Action, allocator: std.mem.Allocator) void {

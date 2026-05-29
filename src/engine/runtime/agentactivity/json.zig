@@ -158,5 +158,10 @@ pub fn writeAction(w: *std.Io.Writer, a: types.Action) !void {
     } else {
         try w.print("null", .{});
     }
+    // metadata is opaque caller-attached text (typically JSON). Emit as
+    // a string field for stability — surfaces that want to round-trip
+    // it as structured JSON parse the string themselves. NULL when
+    // unset.
+    try writeStringOpt(w, "metadata", a.metadata);
     try w.print("}}", .{});
 }

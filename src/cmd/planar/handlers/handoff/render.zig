@@ -68,6 +68,18 @@ fn writeJson(ctx: *const runtime.Ctx, h: engine.runtime.handoff.Handoff) !void {
         try ctx.stdout.print(",\"consumed_at\":", .{});
         try output.writeJsonString(ctx.stdout, v);
     }
+    if (h.worktree_path) |v| {
+        try ctx.stdout.print(",\"worktree_path\":", .{});
+        try output.writeJsonString(ctx.stdout, v);
+    }
+    if (h.repo_root) |v| {
+        try ctx.stdout.print(",\"repo_root\":", .{});
+        try output.writeJsonString(ctx.stdout, v);
+    }
+    if (h.branch) |v| {
+        try ctx.stdout.print(",\"branch\":", .{});
+        try output.writeJsonString(ctx.stdout, v);
+    }
     try ctx.stdout.print("}}", .{});
 }
 
@@ -80,4 +92,7 @@ fn writeText(ctx: *const runtime.Ctx, h: engine.runtime.handoff.Handoff) !void {
     if (h.validated_at) |v| try ctx.stdout.print("  validated_at:  {s}\n", .{v});
     if (h.consumed_at) |v| try ctx.stdout.print("  consumed_at:   {s}\n", .{v});
     try ctx.stdout.print("  created_at:    {s}\n", .{h.created_at});
+    if (h.worktree_path) |v| try ctx.stdout.print("  worktree_path: {s}\n", .{v});
+    if (h.repo_root) |v| try ctx.stdout.print("  repo_root:     {s}\n", .{v});
+    if (h.branch) |v| try ctx.stdout.print("  branch:        {s}\n", .{v});
 }

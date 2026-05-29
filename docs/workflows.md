@@ -1881,3 +1881,363 @@ in one shot. The same drift-refusal applies per-plan.
 **See also:** `docs/concepts.md § Workbench § Terminal-status filter` for the underlying
 model; `planar workbench push --apply-cleanup` for the in-the-moment narrow-scope variant
 that runs cleanup as part of the next push.
+
+---
+
+## Recipe 21 — Pick an orchestration strategy for a plan
+
+Use this when you start `/orchestrator <plan-id>` on an `active` plan and want to understand the strategy gate (Phase 3's first sub-step). The strategy answers "what is the overall methodology for this plan?" — the dispatch-shape gate (nested under it) answers "within that strategy, how do I batch this cycle's work?" For the concept overview see [`docs/concepts.md §Orchestration strategy`](concepts.md#orchestration-strategy); for the canonical contract see [`agents/methodology.md §Orchestration strategies`](../agents/methodology.md#orchestration-strategies).
+
+### Step 1 — Invoke the orchestrator
+
+```
+/orchestrator 297
+```
+
+The orchestrator reads the plan's task graph, computes the parallel-eligible subset, and surfaces its recommendation:
+
+```
+Plan 297 "worktree-management" — 4 todo tasks, 3 parallel-eligible
+
+Recommended strategy: parallel-fanout
+Rationale: ≥3 tasks and ≥2 parallel-eligible (rule 3 of the recommendation algorithm)
+
+Alternatives:
+  classic                Coder in pwd on current branch; sequential cycles, reviewer per cycle.
+                         [continuity guarantee — today's behavior bit-for-bit]
+  isolated-sequential    Coder in a worktree on an epic-child branch; sequential, reviewer per cycle.
+                         [pwd hygiene + per-task rollback]
+  parallel-fanout        Fan out to N coders on the parallel-eligible subset; reviewer at fan-in.
+                         [throughput + integrated review]                                 ← recommended
+  barrel-deferred        Back-to-back coder cycles in pwd; reviewer at boundary on union diff.
+                         [throughput + late review safety net]
+  barrel-bypass          No reviewer; gates are the entire signal. Sequential, in-pwd.
+                         [maximum throughput; trust the gates]
+
+  --strategy custom      Per-axis flags for advanced operators.
+
+Confirm strategy? [parallel-fanout / classic / isolated-sequential / barrel-deferred / barrel-bypass / custom]
+```
+
+This is a hard operator gate identical in strength to the Phase 2 ingestion gate. Auto-defaulting without confirmation is **not** supported — the recommendation never silently becomes an action.
+
+### Step 2 — Confirm or override
+
+Type the name of the strategy you want. The orchestrator records the choice in the dispatch row's `agent_actions.metadata` (when that wiring lands — task 2939) and proceeds to the dispatch-shape gate constrained by your chosen strategy.
+
+### Skip the gate via flag
+
+Operators who already know which strategy fits — typically because they always want the same one for a given plan shape — can pre-commit at invocation:
+
+```
+/orchestrator 297 --strategy parallel-fanout
+/orchestrator 297 --strategy isolated-sequential
+/orchestrator 297 --strategy classic                # explicit continuity
+/orchestrator 297 --strategy barrel-deferred
+/orchestrator 297 --strategy barrel-bypass
+```
+
+The strategy gate is skipped; the dispatch-shape gate still runs (unless it also has a pre-committed answer via `--strict` / `--grouped` / `--batch`, or is forced by the strategy — `parallel-fanout` forces `fan-out`, the barrel strategies force their matching shape).
+
+### Custom axis escape hatch
+
+For shapes outside the named menu, compose by axis:
+
+```
+/orchestrator 297 --strategy custom \
+    --isolation worktree \
+    --branch-model epic-child \
+    --concurrency sequential \
+    --reviewer-cadence at-boundary \
+    --test-coder-cadence at-boundary
+```
+
+The per-axis flags are hidden from default `--help` and surfaced via `--help-advanced`. The orchestrator refuses invalid axis combinations (e.g. `concurrency=fan-out` with `isolation=in-pwd` — parallel coders would clobber pwd) with a diagnostic before any dispatch runs. See [`agents/methodology.md §Invalid combinations`](../agents/methodology.md#invalid-combinations) for the full list.
+
+### Worked example — a 4-task plan accepts `parallel-fanout`
+
+You have plan 297 with four open tasks (`m1-foundation`, `m2-handlers`, `m3-tests`, `m4-docs`). Tasks 1 and 4 touch disjoint paths; tasks 2 and 3 each touch `src/cmd/planar/handlers/` but not the same file. None touch migrations or singleton files. Run:
+
+```
+$ /orchestrator 297
+Plan 297 "feature-x" — 4 todo tasks, 3 parallel-eligible
+Recommended strategy: parallel-fanout
+Rationale: ≥3 tasks and ≥2 parallel-eligible (rule 3)
+...
+Confirm strategy? parallel-fanout
+```
+
+The orchestrator records the choice and moves on to the parallel-fanout per-cycle eligibility report — see [Recipe 22](#recipe-22--orchestrate-a-multi-task-plan-with-parallel-coders) for the full lifecycle.
+
+---
+
+## Recipe 22 — Orchestrate a multi-task plan with parallel coders
+
+The full `parallel-fanout` lifecycle, from strategy confirmation through fan-in and reviewer to cleanup. Use this when you have a plan in `active` status with ≥3 tasks, at least 2 of which are parallel-eligible (disjoint `task_touches`, no migration, no singleton-file touch, no blocking open question or proposed-decision dependency). For the eligibility rules see [`agents/methodology.md §Parallelizability rules`](../agents/methodology.md#parallelizability-rules); for the per-axis bundle see [`docs/concepts.md §Orchestration strategy`](concepts.md#orchestration-strategy).
+
+### Prerequisites
+
+- Plan 297 is `active` with 4 todo tasks: `m1-foundation`, `m2-handlers`, `m3-tests`, `m4-docs`.
+- Tasks 2 and 3 have `task_touches` declared via `planar task touches add`; the paths do not overlap.
+- No open question or proposed decision blocks any of the four tasks.
+
+### Step 1 — Strategy gate
+
+```
+$ /orchestrator 297
+Plan 297 "worktree-management" — 4 todo tasks, 3 parallel-eligible
+Recommended strategy: parallel-fanout
+...
+Confirm strategy? parallel-fanout
+```
+
+See [Recipe 21](#recipe-21--pick-an-orchestration-strategy-for-a-plan) for the full strategy-gate output.
+
+### Step 2 — Per-cycle eligibility report
+
+The orchestrator runs the parallelizability rules against the open task set and surfaces the parallel-eligible subset plus the serialized remainder:
+
+```
+Cycle 1 of plan 297 — parallel-fanout eligibility
+
+Parallel-eligible (3 tasks):
+  task:2930  m1-foundation       disjoint touches; no migration; no singleton; no open Q
+  task:2931  m2-handlers-a       disjoint touches; no migration; no singleton; no open Q
+  task:2932  m3-tests            disjoint touches; no migration; no singleton; no open Q
+
+Serialized (1 task):
+  task:2933  m4-docs             excluded by rule 4: touches docs/architecture.md (singleton)
+
+Estimated wall-clock saving: ~(3 - 1) * avg_cycle_min = 2 cycles worth
+  (rough estimate, no telemetry)
+
+Fan out 3 tasks now? [yes / no / edit subset]
+```
+
+A `parallel-fanout` plan does not silently fan out — every cycle's batch is confirmed by the operator. The strategy gate (Step 1) was per-plan; this is per-cycle.
+
+### Step 3 — Confirm the batch
+
+Type `yes`. The orchestrator now executes the fan-out.
+
+### Step 4 — Epic + cycle worktree creation, claim acquisition
+
+You'll see the orchestrator's `git` invocations (or their effects) in your terminal:
+
+```bash
+# Once per plan (skipped on subsequent cycles):
+git -C /repo branch epic/worktree-management master
+git -C /repo worktree add /repo/.worktrees/epic/worktree-management/ epic/worktree-management
+# .git/info/exclude appended with '.worktrees/' (per-clone, no commit)
+
+# Per parallel-eligible task:
+git -C /repo worktree add -b cycle/worktree-management/m1-foundation \
+    /repo/.worktrees/cycle/worktree-management/m1-foundation/ epic/worktree-management
+git -C /repo worktree add -b cycle/worktree-management/m2-handlers-a \
+    /repo/.worktrees/cycle/worktree-management/m2-handlers-a/ epic/worktree-management
+git -C /repo worktree add -b cycle/worktree-management/m3-tests \
+    /repo/.worktrees/cycle/worktree-management/m3-tests/ epic/worktree-management
+
+# Per cycle worktree, atomic claim acquisition:
+planar-agent pull 297 --role coder --worktree /repo/.worktrees/cycle/worktree-management/m1-foundation --json
+planar-agent pull 297 --role coder --worktree /repo/.worktrees/cycle/worktree-management/m2-handlers-a --json
+planar-agent pull 297 --role coder --worktree /repo/.worktrees/cycle/worktree-management/m3-tests --json
+```
+
+The main checkout (`/repo/`) stays on master — neither the epic branch nor any cycle branch is ever checked out there. See [`docs/concepts.md §Worktree`](concepts.md#worktree) for the topology invariant.
+
+### Step 5 — Concurrent coder dispatch
+
+The orchestrator issues N Agent tool calls **in a single message** (the canonical "multiple tool uses in one message → parallel execution" pattern). Each brief carries the task ID, the claim token, the absolute cycle-worktree path, the spec citations, the locked decisions, the gates, the report shape, and the `cd <cycle-worktree-path>` first-action directive. The three coders run concurrently.
+
+### Step 6 — Wait for terminal returns + aggregated check
+
+The orchestrator's turn does not resume until every parallel call has returned. Each coder calls one of `planar-agent complete | fail | release | block --claim <token>` (the atomic terminal verbs flip claim status and task status in one transaction). After all N return, the orchestrator inspects each claim's status:
+
+- **All-complete** → proceed to fan-in.
+- **Any-fail / any-stale / any-block** → halt before any fan-in merge; surface the partial state with claim tokens + worktree paths; escalate to the operator.
+
+This is the all-or-nothing terminal contract — partial fan-ins are not silently merged.
+
+### Step 7 — Sequential fan-in merge
+
+The orchestrator cds into the **epic worktree** (never the main checkout, never any cycle worktree) and merges each cycle branch onto `epic/<plan-slug>` in claim-arrival order with `--no-ff` (preserves the per-cycle history shape in `git log --graph`):
+
+```bash
+cd /repo/.worktrees/epic/worktree-management/
+
+# Optional: sync master in first if it advanced since the last sync.
+git fetch origin master
+git merge --no-ff origin/master -m "Sync epic/worktree-management with master @ <sha>"
+
+git merge --no-ff cycle/worktree-management/m1-foundation \
+    -m "Plan 297 M1 fan-in: foundation"
+git merge --no-ff cycle/worktree-management/m2-handlers-a \
+    -m "Plan 297 M2 fan-in: handlers-a"
+git merge --no-ff cycle/worktree-management/m3-tests \
+    -m "Plan 297 M3 fan-in: tests"
+```
+
+Per-child conflict handling is conflict-tolerant: a conflict on one child halts that child's merge but does NOT halt the others. The orchestrator runs `git merge --abort`, opens a question via `planar question add --plan 297 --kind blocker ...`, leaves the cycle worktree on disk for operator resolution, and continues to the next child. See [`agents/methodology.md §Conflict resolution at fan-in`](../agents/methodology.md#conflict-resolution-at-fan-in).
+
+### Step 8 — Integrated reviewer (single pass)
+
+After fan-in, the orchestrator dispatches **one** reviewer against the epic's consolidated state — not one reviewer per child. The reviewer reads `git diff master..HEAD` from inside the epic worktree. The verdict applies to the whole fan-out cycle as a unit.
+
+```
+Reviewer dispatched against epic/worktree-management
+  cd /repo/.worktrees/epic/worktree-management/
+  git diff master..HEAD
+  (3 children fanned in cleanly; 0 deferred)
+
+Verdict: approve
+```
+
+On `approve` → cleanup proceeds. On `request-changes` → see [`skills/src/pl-orchestrator.md §Reviewer-requested revisions (against epic)`](../skills/src/pl-orchestrator.md) for the revisions-cycle mechanics. On `open-question` or `abort` → escalates without cleanup.
+
+### Step 9 — Cleanup (post-success only)
+
+After reviewer approval, the orchestrator removes every cycle worktree and force-deletes every cycle branch (`-D` because the branches are merged into the epic but NOT into master, and `git branch -d` checks merged-into-HEAD which is master):
+
+```bash
+git -C /repo worktree remove /repo/.worktrees/cycle/worktree-management/m1-foundation/
+git -C /repo branch -D cycle/worktree-management/m1-foundation
+# … repeated per cycle branch
+```
+
+The **epic worktree and `epic/<plan-slug>` branch persist** through cleanup. They are removed only after the operator merges the epic into master.
+
+### Step 10 — Operator merges epic → master
+
+The orchestrator surfaces readiness and exits:
+
+```
+epic/worktree-management is 7 commits ahead of master, reviewer-approved, ready for PR.
+```
+
+The orchestrator does **not** run the epic→master merge itself. You drive it through your project's normal PR or fast-forward path:
+
+```bash
+# PR path (recommended for review-trail):
+cd /repo
+git push origin epic/worktree-management
+gh pr create --base master --head epic/worktree-management
+
+# After PR merge:
+git -C /repo worktree remove /repo/.worktrees/epic/worktree-management/
+git -C /repo branch -D epic/worktree-management
+```
+
+For the per-step orchestrator behavior under `parallel-fanout` see [`skills/src/pl-orchestrator.md §parallel-fanout`](../skills/src/pl-orchestrator.md). For the per-coder shape under `isolated-sequential` (which is the same per-cycle ritual, minus the fan-out) see the same skill's `isolated-sequential` section.
+
+---
+
+## Recipe 23 — Recover a dead coder from its worktree
+
+A coder dispatched under `isolated-sequential` or `parallel-fanout` died mid-cycle — its heartbeat lapsed past TTL, its claim is now stale, and the cycle worktree on disk holds whatever partial state the coder committed before dying. This recipe recovers it. The persisted `agent_work_claims.worktree_path` is the recovery key.
+
+### Step 1 — Surface the stale claim
+
+```
+planar-watch claims --plan 297 --json
+```
+
+Look for a row with `status: "expired"` (or `"active"` past its TTL — the reconcile pass below converts them to `expired`):
+
+```json
+{
+  "claim_token": "9f2c1e44b8a7c3d6...",
+  "entity_kind": "task",
+  "entity_id": 2931,
+  "status": "expired",
+  "expires_at": "2026-05-29T14:23:00Z",
+  "worktree_path": "/repo/.worktrees/cycle/worktree-management/m2-handlers-a",
+  "branch": "cycle/worktree-management/m2-handlers-a",
+  "head_sha_at_claim": "a1b2c3d4...",
+  "dirty_at_claim": "clean"
+}
+```
+
+The `worktree_path` is what makes recovery deterministic — without it you'd be guessing which on-disk directory belonged to which dead coder.
+
+### Step 2 — Dry-run the reconciler
+
+```
+planar-agent reconcile --dry-run
+```
+
+Shows what reconciliation would do without writing:
+
+```
+reconcile (dry-run):
+  would mark stale: claim:9f2c1e44... task:2931 (last heartbeat 47m ago, TTL 10m)
+  would mark stale: 0 actions
+```
+
+If the only stale row is the dead coder you already identified, you're safe to reconcile. If unexpected claims show up, investigate before proceeding.
+
+### Step 3 — Inspect the on-disk worktree
+
+```
+cd /repo/.worktrees/cycle/worktree-management/m2-handlers-a
+git status
+git log --oneline master..HEAD
+```
+
+Look for:
+- **Uncommitted changes** (working tree modified, index modified). The coder died mid-edit; partial state is unrecoverable without the operator's judgement.
+- **Unmerged commits on the cycle branch** that did not make it into the epic. The coder committed before dying but did not call the terminal verb. Recoverable.
+- **A clean tree with no commits ahead of the epic.** The coder claimed but never made progress. Abandon-and-restart is the easy path.
+
+### Step 4 — Pick a recovery option
+
+Two paths. Pick based on what you found in Step 3.
+
+#### Option A — Re-dispatch a fresh coder into the same worktree
+
+When the coder made meaningful progress (committed work on the cycle branch) and you want a new coder to continue from where it left off.
+
+```
+# 1. Reconcile to mark the stale claim expired.
+planar-agent reconcile
+
+# 2. Claim the task again, reusing the existing worktree path.
+planar-agent claim --entity task:2931 --role coder \
+    --worktree /repo/.worktrees/cycle/worktree-management/m2-handlers-a \
+    --json
+#   → returns a fresh claim_token bound to the same worktree_path
+
+# 3. Dispatch the fresh coder. The brief tells it to cd into the worktree
+#    and continue against the existing cycle branch.
+```
+
+The orchestrator's normal heartbeat-and-terminal ritual takes over from there. The new coder inherits the cycle branch's commits and works on top of them.
+
+#### Option B — Abandon the worktree and resolve manually
+
+When the on-disk state is unrecoverable (mid-edit garbage), or when the operator wants the partial work preserved for offline review before deciding what to do.
+
+```
+# 1. (Optional) Preserve the partial work on a forensic branch so the
+#    cycle worktree's contents are not lost when the worktree is removed.
+cd /repo/.worktrees/cycle/worktree-management/m2-handlers-a
+git add -A && git commit -m "WIP: dead-coder partial state for task:2931 (forensic)"
+git push origin cycle/worktree-management/m2-handlers-a
+
+# 2. Abort the claim so the task returns to the pickable pool.
+planar-agent abort --claim 9f2c1e44b8a7c3d6... --reason "operator: coder died, partial state preserved on origin"
+
+# 3. Clean up the worktree and (if you don't want the cycle branch locally) the branch.
+cd /repo
+git worktree remove /repo/.worktrees/cycle/worktree-management/m2-handlers-a
+# Keep the cycle branch locally if you want to refer to it; otherwise:
+git branch -D cycle/worktree-management/m2-handlers-a
+```
+
+The task is now back in the pickable pool. You can either dispatch a fresh coder against a freshly-cut cycle branch (the orchestrator will create both), or hand-edit the recovery against the epic worktree directly if the task no longer fits the cycle shape.
+
+### Why this recipe works
+
+The persisted `worktree_path` on the (now stale or aborted) claim is the recovery key. Without it you'd be left scanning `/repo/.worktrees/` and guessing which directory belonged to which dead coder. With it, every operator-side recovery verb (`planar-watch claims`, `planar-agent reconcile`, `planar-agent abort`) surfaces or operates against the path deterministically, and a fresh `planar-agent claim --worktree <path>` reuses the on-disk checkout instead of creating a new one.
+
+For the persistence-on-claim contract see [`docs/concepts.md §Worktree`](concepts.md#worktree); for the canonical claim ritual see [`agents/methodology.md §Coordination claims`](../agents/methodology.md#coordination-claims).

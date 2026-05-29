@@ -195,6 +195,16 @@ pub fn build(b: *std.Build) void {
     const sha_opt = b.option([]const u8, "git-sha", "Override git commit sha embedded in `planar version`");
     const date_opt = b.option([]const u8, "build-date", "Override ISO8601 build date embedded in `planar version`");
     const dirty_opt = b.option(bool, "git-dirty", "Override git-dirty marker embedded in `planar version`");
+    // Plan 297 t#2937: test-binary flag gates the worktree-gate env-var
+    // bypass. Production builds default to false — the env var
+    // PLANAR_DISABLE_WORKTREE_GATE is dead code in that case and cannot
+    // be used to bypass the gate. Integration-test builds pass
+    // -Dtest-binary=true so the harness can inject the env var to
+    // suppress the gate for fixture commands that run under a
+    // `.worktrees/...` path (Planar is itself developed inside a
+    // worktree). The worktree-scope scenario test un-sets the env var
+    // to exercise the actual refusal path.
+    const test_binary_opt = b.option(bool, "test-binary", "Mark this as a test binary (enables PLANAR_DISABLE_WORKTREE_GATE env-var bypass in worktree_gate)") orelse false;
 
     const resolved_sha = sha_opt orelse resolveGitSha(b) orelse "unknown";
     const resolved_date = date_opt orelse resolveBuildDate(b) orelse "unknown";
@@ -204,6 +214,7 @@ pub fn build(b: *std.Build) void {
     build_options.addOption([]const u8, "git_sha", resolved_sha);
     build_options.addOption([]const u8, "build_date", resolved_date);
     build_options.addOption(bool, "git_dirty", resolved_dirty);
+    build_options.addOption(bool, "test_binary", test_binary_opt);
     const build_options_mod = build_options.createModule();
 
     // -----------------------------------------------------------------
