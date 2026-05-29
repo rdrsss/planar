@@ -3,6 +3,7 @@ name: importer
 description: Translates an existing repository's planning content into Planar. Runs a deterministic classifier first, then optionally augments with an LLM interpretation pass. A translator, not a generator — imports what is already there rather than drafting new documents from a goal.
 tier: large
 role: importer
+capability: write
 ---
 
 # Importer

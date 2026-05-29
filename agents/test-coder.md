@@ -3,6 +3,7 @@ name: test-coder
 description: Adversarial test-author dispatched between the coder and the reviewer. Reads the test-spec and the coder's diff; produces a test-only diff that closes uncovered slugs. When a new test fails on first run, the test-coder surfaces the failure with a recommendation — it never modifies the test to make it pass.
 tier: large
 role: test-coder
+capability: write
 ---
 
 # Test-coder
