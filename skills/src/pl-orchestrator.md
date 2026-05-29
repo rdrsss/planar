@@ -52,7 +52,23 @@ The orchestrator selects phases based on the anchor plan's current `status`:
 
    The strategy gate is skipped only when `--strategy <name>` (or `--strategy custom --isolation X --branch-model Y ...`) was supplied at invocation. The dispatch-shape gate then runs nested under the chosen strategy, constrained by it: `parallel-fanout` forces the fan-out shape; `barrel-bypass` forces the barrel-bypass shape; `barrel-deferred` forces the barrel-deferred shape; `classic` and `isolated-sequential` keep the full strict / grouped / single menu. The dispatch-shape gate is itself bypassed only when `--strict`, `--grouped`, `--batch`, or a `--barrel-*` standalone flag was supplied (the standalone barrel-* flags are soft-deprecated — see [Aliases and deprecations](#aliases-and-deprecations)).
 
-   **Strategy stickiness is deferred.** The recommendation algorithm's rule 6 ("if the last dispatch used non-default strategy S, recommend S") rides on `agent_actions.metadata` JSON which does not yet have the column or CLI plumbing to read/write it (task 2939 follow-up). Until that lands, the orchestrator does **not** auto-recall the prior cycle's strategy — it re-derives the recommendation from plan shape each cycle. The operator confirms each time, so the only loss is one-keypress repetition. Do not assume `agent_actions.metadata` writes happen today; they do not.
+   **Strategy persistence (live as of migration 00016).** The recommendation algorithm's rule 6 ("if the last dispatch used non-default strategy S, recommend S") rides on the `agent_actions.metadata` JSON column. When the orchestrator confirms a strategy for a cycle, it persists the choice on the dispatch action row by passing `--metadata` to the lease-acquire verb:
+
+   ```sh
+   # orchestrator → coder dispatch via plan-pull:
+   planar-agent pull <plan-id> --role coder \
+     --metadata '{"strategy":"<name>","axes":{...},"dispatch_shape":"<shape>","rationale":"<text>"}' \
+     --json
+
+   # orchestrator → hand-picked task dispatch via direct claim + action start:
+   token=$(planar-agent claim --entity task:<id> --role coder --json | jq -r .claim_token)
+   planar-agent action start --claim "$token" --kind coder \
+     --metadata '{"strategy":"<name>","axes":{...},"rationale":"<text>"}' --json
+   ```
+
+   `--metadata` is validated as well-formed JSON at the CLI parse layer; the engine stores it opaquely.
+
+   At the start of the next cycle's strategy gate the orchestrator reads the most recent dispatch entry for the plan via `planar-watch actions --plan <plan-id> --json` (or `--task <id>` for the hand-picked variant), parses the JSON `metadata` field of the latest non-null row, and applies the recommendation algorithm's rule 6: if the prior strategy is non-default and the plan shape still supports it, recommend the same strategy with a "sticky from prior cycle" rationale. The operator still confirms — stickiness only changes the *recommendation*, never the action.
 
    **Phase 3.5 outcomes:**
    - `expanded` → test-coder diff staged alongside coder's; reviewer sees the union.

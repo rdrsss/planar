@@ -259,7 +259,8 @@ fn listActionsByEntity(
         \\       action_kind, entity_kind, entity_id,
         \\       vendor, vendor_role, model,
         \\       started_at, ended_at, outcome, summary,
-        \\       head_sha, dirty
+        \\       head_sha, dirty,
+        \\       metadata
         \\from agent_actions
         \\where entity_kind = ? and entity_id = ?
         \\order by started_at asc, id asc
@@ -285,7 +286,8 @@ fn listActionsBySession(
         \\       action_kind, entity_kind, entity_id,
         \\       vendor, vendor_role, model,
         \\       started_at, ended_at, outcome, summary,
-        \\       head_sha, dirty
+        \\       head_sha, dirty,
+        \\       metadata
         \\from agent_actions
         \\where session_id = ?
         \\order by started_at asc, id asc
@@ -310,7 +312,8 @@ fn listActionsByClaimToken(
         \\       a.action_kind, a.entity_kind, a.entity_id,
         \\       a.vendor, a.vendor_role, a.model,
         \\       a.started_at, a.ended_at, a.outcome, a.summary,
-        \\       a.head_sha, a.dirty
+        \\       a.head_sha, a.dirty,
+        \\       a.metadata
         \\from agent_actions a
         \\where a.claim_id = (select id from agent_work_claims where claim_token = ?)
         \\order by a.started_at asc, a.id asc
@@ -471,6 +474,7 @@ fn readActionRow(
         .summary = try stmt.columnTextOpt(14, allocator),
         .head_sha = try stmt.columnTextOpt(15, allocator),
         .dirty = dirty,
+        .metadata = try stmt.columnTextOpt(17, allocator),
     };
 }
 

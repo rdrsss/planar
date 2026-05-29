@@ -351,6 +351,29 @@ test "planar-watch actions --json returns {generated_at, actions}" {
     // The pull action carries vendor="zig-test" or similar; pin on
     // the started_at key existing.
     try std.testing.expect(std.mem.indexOf(u8, out, "\"started_at\":\"") != null);
+    // metadata field is present (null since no --metadata was supplied
+    // on the pull).
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"metadata\":null") != null);
+}
+
+test "planar-watch actions --json surfaces metadata field set by pull --metadata" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const pid = seedPlanWithTask(&suite, "watch-actions-meta", "meta-task");
+    defer gpa.free(pid);
+    const meta = "{\"strategy\":\"isolated-sequential\",\"axes\":{\"isolation\":\"worktree\"}}";
+    gpa.free(mustRunAgent(&suite, &.{
+        "pull", pid, "--metadata", meta, "--no-locality-probe", "--json",
+    }));
+
+    const out = mustRunWatch(&suite, &.{ "actions", "--json" });
+    defer gpa.free(out);
+    // metadata is encoded as a JSON string field — the inner content's
+    // quotes are escaped. Spot-check the strategy value text appears.
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"metadata\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "isolated-sequential") != null);
 }
 
 // =========================================================================

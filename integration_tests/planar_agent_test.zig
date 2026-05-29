@@ -455,6 +455,88 @@ test "planar-agent --ttl back-compat: bare-int seconds still parse" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\"no_work\":false") != null);
 }
 
+test "planar-agent pull --metadata persists JSON on the dispatch action row" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const pid_arg = seedPlanWithTask(&suite, "ag-meta-pull", "meta-task");
+    defer gpa.free(pid_arg);
+
+    const meta = "{\"strategy\":\"isolated-sequential\",\"axes\":{\"isolation\":\"worktree\"},\"rationale\":\"2-task plan\"}";
+    const out = mustRunAgent(&suite, &.{
+        "pull",                pid_arg,
+        "--metadata",          meta,
+        "--role",              "coder",
+        "--no-locality-probe", "--json",
+    });
+    defer gpa.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"ok\":true") != null);
+
+    // The pull response does not embed the action row, but the action_id
+    // is present. Round-trip through getActionById by ending the action
+    // (which emits the full action JSON shape) — that surface includes
+    // the metadata field.
+    const action_id = extractIntField(out, "\"action_id\":") orelse @panic("no action_id");
+    const aid_arg = std.fmt.allocPrint(gpa, "{d}", .{action_id}) catch @panic("OOM");
+    defer gpa.free(aid_arg);
+
+    const end_out = mustRunAgent(&suite, &.{
+        "action", "end", "--action", aid_arg, "--outcome", "ok", "--summary", "wrap", "--json",
+    });
+    defer gpa.free(end_out);
+    // The action JSON should round-trip the metadata text as the encoded
+    // string field.
+    try std.testing.expect(std.mem.indexOf(u8, end_out, "\"metadata\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, end_out, "isolated-sequential") != null);
+}
+
+test "planar-agent pull --metadata rejects malformed JSON" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    const pid_arg = seedPlanWithTask(&suite, "ag-meta-bad", "meta-bad-task");
+    defer gpa.free(pid_arg);
+
+    const res = runAgent(&suite, &.{
+        "pull",                pid_arg,
+        "--metadata",          "{not json",
+        "--no-locality-probe", "--json",
+    });
+    defer res.deinit(gpa);
+    try std.testing.expect(res.term == .exited);
+    try std.testing.expect(res.term.exited != 0);
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "metadata") != null);
+}
+
+test "planar-agent action start --metadata persists JSON; null when absent" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const pid_arg = seedPlanWithTask(&suite, "ag-meta-action", "meta-act-task");
+    defer gpa.free(pid_arg);
+    const pull_out = mustRunAgent(&suite, &.{ "pull", pid_arg, "--no-locality-probe", "--json" });
+    defer gpa.free(pull_out);
+    const token = extractStringField(gpa, pull_out, "\"claim_token\":\"") catch @panic("no token");
+    defer gpa.free(token);
+
+    // Action start without --metadata → metadata:null.
+    const start_no = mustRunAgent(&suite, &.{ "action", "start", "--claim", token, "--kind", "tool_call", "--json" });
+    defer gpa.free(start_no);
+    try std.testing.expect(std.mem.indexOf(u8, start_no, "\"metadata\":null") != null);
+
+    // Action start WITH --metadata → metadata round-trips.
+    const meta = "{\"k\":\"v\"}";
+    const start_yes = mustRunAgent(&suite, &.{ "action", "start", "--claim", token, "--kind", "tool_call", "--metadata", meta, "--json" });
+    defer gpa.free(start_yes);
+    try std.testing.expect(std.mem.indexOf(u8, start_yes, "\"metadata\":") != null);
+    // The metadata is encoded as a JSON string field, so the inner quotes
+    // are escaped. Spot-check the key + value text appear.
+    try std.testing.expect(std.mem.indexOf(u8, start_yes, "\\\"k\\\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, start_yes, "\\\"v\\\"") != null);
+}
+
 test "planar-agent action start/end emits ok+action shape under a claim" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
