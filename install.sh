@@ -29,6 +29,9 @@
 #   ~/.claude/commands/pl-*.md   ->   ~/.planar/commands/claude/pl-*.md
 #   ~/.codex/skills/pl-*         # real Codex skill dirs copied from ~/.planar/codex-skills/pl-*
 #   ~/.copilot/skills/pl-*       # real Copilot skill dirs copied from ~/.planar/copilot-skills/pl-*
+#   ~/.claude/agents/<name>.md   ->   ~/.planar/agents/claude/<name>.md
+#   ~/.codex/agents/<name>.toml  ->   ~/.planar/agents/codex/<name>.toml
+#   ~/.copilot/agents/<name>.agent.md -> ~/.planar/agents/copilot/<name>.agent.md
 #
 # The binary lives at ~/.planar/bin/planar. Add ~/.planar/bin to your PATH:
 #
@@ -525,6 +528,48 @@ if [[ -n "$VENDORS" ]]; then
     log "copilot: installed $count skill directories into $dst_dir"
   }
 
+  # symlink_vendor_agents links every file in the rendered agents/<vendor>/
+  # directory into the vendor's agents/ harness directory. Mirrors symlink_vendor
+  # but uses a wildcard pattern that covers all file extensions (.md, .toml,
+  # .agent.md) rather than the pl-*.md skill pattern.
+  symlink_vendor_agents() {
+    local name="$1" src_dir="$2" dst_dir="$3"
+    if [[ ! -d "$src_dir" ]]; then
+      log "$name agents: source $src_dir not found, skipping"
+      return 0
+    fi
+    mkdir -p "$dst_dir"
+    local count=0
+    while IFS= read -r -d '' f; do
+      symlink_to "$f" "$dst_dir/$(basename "$f")"
+      count=$((count + 1))
+    done < <(find "$src_dir" -maxdepth 1 -type f -print0)
+    log "$name agents: linked $count file(s) into $dst_dir"
+  }
+
+  # prune_stale_vendor_agents removes destination entries that look like
+  # Planar-installed agent symlinks but whose source counterpart no longer
+  # exists. Mirrors prune_stale_vendor but covers all file extensions.
+  prune_stale_vendor_agents() {
+    local name="$1" src_dir="$2" dst_dir="$3"
+    [[ "$NO_PRUNE" -eq 1 ]] && return 0
+    [[ -d "$dst_dir" ]] || return 0
+    local removed=0
+    while IFS= read -r -d '' link; do
+      local target
+      target="$(readlink "$link" 2>/dev/null || true)"
+      [[ -z "$target" ]] && continue                 # not a symlink — operator file
+      [[ "$target" == "$src_dir/"* ]] || continue    # target outside Planar source — leave alone
+      [[ -e "$target" ]] && continue                 # source still exists — keep
+      log "$name agents: pruning stale symlink $(basename "$link") (source removed)"
+      rm -f "$link"
+      removed=$((removed + 1))
+    done < <(find "$dst_dir" -maxdepth 1 -type f -print0)
+    if [[ "$removed" -gt 0 ]]; then
+      log "$name agents: pruned $removed stale entr$([[ $removed -eq 1 ]] && echo y || echo ies)"
+    fi
+  }
+
   # prune_stale_vendor removes destination entries that look like Planar-installed
   # symlinks but whose source counterpart no longer exists. Catches the rename
   # case: a previous `make install` created dst/pl-adopt.md → src/pl-adopt.md,
@@ -610,14 +655,20 @@ if [[ -n "$VENDORS" ]]; then
       claude)
         symlink_vendor "claude" "$PLANAR_HOME/commands/claude" "$HOME/.claude/commands"
         prune_stale_vendor "claude" "$PLANAR_HOME/commands/claude" "$HOME/.claude/commands"
+        symlink_vendor_agents "claude" "$PLANAR_HOME/agents/claude" "$HOME/.claude/agents"
+        prune_stale_vendor_agents "claude" "$PLANAR_HOME/agents/claude" "$HOME/.claude/agents"
         ;;
       codex)
         install_codex_vendor "$PLANAR_HOME/skills/codex" "$PLANAR_HOME/codex-skills" "$CODEX_HOME/skills"
         prune_stale_codex "$CODEX_HOME/skills"
+        symlink_vendor_agents "codex" "$PLANAR_HOME/agents/codex" "$CODEX_HOME/agents"
+        prune_stale_vendor_agents "codex" "$PLANAR_HOME/agents/codex" "$CODEX_HOME/agents"
         ;;
       copilot)
         install_copilot_vendor "$PLANAR_HOME/skills/copilot" "$PLANAR_HOME/copilot-skills" "$HOME/.copilot/skills"
         prune_stale_copilot "$HOME/.copilot/skills"
+        symlink_vendor_agents "copilot" "$PLANAR_HOME/agents/copilot" "$HOME/.copilot/agents"
+        prune_stale_vendor_agents "copilot" "$PLANAR_HOME/agents/copilot" "$HOME/.copilot/agents"
         # Also link the copilot/ instructions+prompts root if present.
         if [[ -d "$PLANAR_HOME/copilot" ]]; then
           while IFS= read -r -d '' f; do
