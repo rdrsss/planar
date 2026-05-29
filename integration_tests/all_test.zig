@@ -5,6 +5,7 @@
 //! available as `zig build test-integration-files` for failure isolation.
 
 comptime {
+    _ = @import("agents_render_test.zig");
     _ = @import("capability_boundary_test.zig");
     _ = @import("planar_doc_test.zig");
     _ = @import("workbench_terminal_filter_test.zig");
