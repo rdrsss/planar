@@ -6,10 +6,18 @@ pub const promote = @import("docs/promote.zig");
 pub const regenerate = @import("docs/regenerate.zig");
 pub const queries = @import("docs/queries.zig");
 
+// Plan 423 (Documenter) v2 modules. Plan 423 M6 deletes the v1 manifest +
+// the lint / promote / regenerate / queries handlers; until then v1 and v2
+// co-exist so the build stays green per-milestone.
+pub const merkle = @import("docs/merkle.zig");
+pub const manifest_v2 = @import("docs/manifest_v2.zig");
+
 test {
     _ = lint;
     _ = manifest;
     _ = promote;
     _ = regenerate;
     _ = queries;
+    _ = merkle;
+    _ = manifest_v2;
 }
