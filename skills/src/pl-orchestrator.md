@@ -292,6 +292,64 @@ note: appended .worktrees/ to .git/info/exclude (per-clone, no commit).
 
 The hint is informational, not blocking. The orchestrator does not commit the `.gitignore` entry itself — that's an operator choice (repo conventions vary on whether `.worktrees/` belongs in `.gitignore` or stays per-clone).
 
+### `parallel-fanout` — fan-out
+
+Under `parallel-fanout` the orchestrator picks the parallel-eligible subset of the plan's open tasks, fans out N coders into N cycle worktrees off a shared epic branch, waits for all N terminal returns, and then proceeds to fan-in (covered in a sibling subsection landing in a later cycle — M9 work). This subsection covers the **fan-out half** only: eligibility, per-cycle confirmation, and concurrent dispatch.
+
+The per-coder shape under `parallel-fanout` mirrors [`isolated-sequential`](#isolated-sequential--per-cycle-worktree-on-an-epic-child-branch) — each coder runs in its own cycle worktree on its own `cycle/<plan-slug>/<task-slug>` child branch off `epic/<plan-slug>`, with `isolation: "worktree"`, `--worktree <path>` on `planar-agent pull`, and the `cd <cycle-worktree-path>` first-action directive in the brief. The difference is that under `parallel-fanout` there are N of those per cycle and they run concurrently. See `isolated-sequential` for the per-coder ritual; this subsection focuses on what's new (the N-wide eligibility + dispatch).
+
+#### Eligibility algorithm (pre-dispatch)
+
+Before each cycle the orchestrator computes the parallel-eligible subset of the plan's open tasks. The authoritative rule set is [`agents/methodology.md` § Parallelizability rules](../../agents/methodology.md#parallelizability-rules) — six rules, evaluated greedily, drop-both-on-tie. **Do not restate the rule text here**; cite the methodology and walk the rules procedurally.
+
+Steps:
+
+1. **Enumerate candidates.** `planar plan show <plan-id> --json` for context, then `planar task list --plan <plan-id> --status todo --json` to get the open task set. Exclude any task with an active unexpired claim (`planar-watch ps --plan <plan-id> --json` shows live claims; the task's `id` appears under an active claim row iff it's currently leased).
+2. **Apply the six rules procedurally** against the candidate set. The skill walks each rule against every candidate task and every candidate pair; failures are recorded with the rule that excluded them so the operator sees per-task reasons. There is no `planar plan next --parallel-eligible` flag yet — that engine-side affordance is task 2933 (M10) and is deferred per the tech-spec's "skill-side first, flag if the skill drifts" decision. When the flag lands, the orchestrator should migrate to the single CLI call and delete the procedural recipe. Until then, follow the procedure below using only existing CLI verbs.
+3. **Greedy + drop-both-on-tie.** When two candidate tasks both fail a rule against each other (rule 2 overlap, rule 3 both touching `migrations/*.sql`, rule 4 both touching the same singleton), **both** are dropped from the parallel-eligible set, not just one. This mirrors the tech-spec's eligibility algorithm and is what guarantees the result is a maximal mutually-non-conflicting subset rather than an arbitrary winner.
+4. **Partition.** Yield (a) the parallel-eligible subset, and (b) the serialized remainder with a per-task list of the rule(s) that excluded each.
+5. **Eligibility report.** Surface to the operator:
+   - The parallel-eligible task list (id, slug, brief title) with the rule-pass reasons summarized ("disjoint touches; no migration; no singleton; no open Q; no proposed-decision dep").
+   - The serialized remainder with per-task exclusion reasons ("excluded by rule 2: overlaps task 17 on `src/cli/parser.zig`"; "excluded by rule 3: touches `migrations/00016_*.sql`"; etc.).
+   - A rough estimated wall-clock saving: `(N_eligible - 1) × avg_cycle_min` where `avg_cycle_min` is the operator's working estimate (no telemetry; the skill prints "rough estimate, no telemetry" inline so the operator is not misled into expecting precision).
+   - The per-cycle confirmation prompt: **"fan out N tasks now?"** The strategy-gate confirmation (in [Phase Behavior § strategy gate](#phase-behavior)) is per-plan and already happened; this is the **per-cycle** confirmation that the operator approves *this cycle's* fan-out width and subset. A `parallel-fanout` plan does not silently fan out — every cycle's batch is confirmed.
+
+##### Per-rule procedural recipe
+
+For each candidate task, walk the six rules using only existing CLI verbs. Treat any non-trivial JSON shape as parseable via `jq` from the skill; the orchestrator does not need to materialize Zig.
+
+- **Rule 1 — no `blocked_by` chain to another not-yet-done task in the plan.** `planar links list task:<id> --json | jq '.[] | select(.relationship == "blocks" and .from_kind == "task")'` enumerates the task's blockers. For each blocker, check `planar task show <blocker-id> --json | jq .status` — if any blocker is in the plan and not `done`, drop the candidate.
+- **Rule 2 — disjoint `task_touches`.** `planar task touches list <task-id> --json` per candidate gives the `(repo, path)` set. The orchestrator intersects every candidate pair; non-empty intersection drops **both** tasks (greedy drop-both-on-tie). Empty `task_touches` is treated as "touches everything" per the methodology — the candidate is dropped with a "no touches declared; declare touches to fan out" reason so the operator can fix it before the next cycle.
+- **Rule 3 — no schema migration.** Substring-check each candidate's touches for `migrations/` and `.sql`. If both substrings appear in any one touch row's path, the candidate is migration-touching and is dropped. If two candidates both touch migrations, both drop (greedy drop-both-on-tie) — they would collide on migration numbering anyway.
+- **Rule 4 — no singleton authoritative file.** Static list (the methodology owns the canonical list; mirror it here only as the lookup target the skill compares against): `agents/methodology.md`, `CLAUDE.md`, `AGENTS.md`, `docs/cli-reference.md`, `docs/architecture.md`. Any candidate touching any of those drops. If two candidates both touch the same singleton, both drop.
+- **Rule 5 — no unresolved open question linked to the task.** `planar question list --json | jq '.[] | select(.entity_links[]? | .kind == "task" and .id == <task-id>) | select(.status == "open")'` — any hit drops the candidate.
+- **Rule 6 — no unresolved decision dependency.** `planar links list task:<id> --json | jq '.[] | select(.to_kind == "decision")'` enumerates decision links. For each, `planar decision show <decision-id> --json | jq .status` — if any linked decision is in `proposed` status, drop the candidate.
+
+After all six rules have run, what remains is the parallel-eligible subset. A subset of size ≥ 2 makes fan-out available; smaller falls back to the strategy's sequential shape (the operator can re-confirm `parallel-fanout` for a subsequent cycle once more tasks become eligible, or switch shape per cycle).
+
+#### Per-cycle confirmation and dispatch
+
+After the eligibility report and the operator's "fan out N tasks now?" confirmation, the orchestrator executes the fan-out:
+
+1. **Epic-branch ensure (per-plan, idempotent).** Same as [`isolated-sequential`](#isolated-sequential--per-cycle-worktree-on-an-epic-child-branch): `git -C <repo> branch epic/<plan-slug> master` if `epic/<plan-slug>` does not yet exist, and `git -C <repo> worktree add <repo>/.worktrees/epic/<plan-slug>/ epic/<plan-slug>` if the worktree is not present. Skip on subsequent cycles. Apply the `.git/info/exclude` ritual on first creation per clone.
+2. **Per-task: cycle worktree + claim acquisition.** For each task in the parallel-eligible batch:
+   - `git -C <repo> worktree add -b cycle/<plan-slug>/<task-slug> <repo>/.worktrees/cycle/<plan-slug>/<task-slug>/ epic/<plan-slug>` — creates the child branch and the cycle worktree in one call, branching from the epic so prior fan-ins are inherited.
+   - `planar-agent pull <plan-id> --role coder --worktree <abs-cycle-worktree-path> --json` — claims the specific task and persists the worktree path on the claim row (`agent_work_claims.worktree_path`) so resume/handoff can recover it. Each `pull` returns its own `claim_token`; record all N tokens in the cycle's dispatch entry.
+   - Claim acquisition is serialized through SQLite's single-writer lock but completes in milliseconds; this is not a parallelism bottleneck.
+3. **Concurrent Agent dispatch — single message, N tool calls.** Issue all N Agent tool calls in a **single message** (the canonical "multiple tool uses in one message → parallel execution" pattern in the harness). Sequential Agent invocations would serialize and defeat the strategy. Each Agent call carries:
+   - `isolation: "worktree"` pointing at the cycle worktree path for that task.
+   - A brief that contains the task ID, the claim token, the absolute worktree path, the spec citations the coder needs, the locked decisions, the gates, the report shape, and the `cd <cycle-worktree-path>` first-action directive (per [Brief composition](#brief-composition) and [`isolated-sequential` § Coder dispatch](#coder-dispatch-under-isolated-sequential)). The brief MUST NOT paraphrase the eligibility decision — the coder operates only on its assigned task.
+4. **Wait for terminal returns.** The orchestrator waits for all N Agent tool calls to return. Each returns its coder's terminal status (`complete` / `fail` / `release` / `block`). The orchestrator does **not** proactively monitor heartbeats — coders heartbeat themselves at TTL/2 cadence per [Claim ritual](#claim-ritual-planar-agent). The orchestrator's job between dispatch and aggregation is to wait.
+5. **Aggregated terminal handling.** Inspect each claim's terminal status after all N returns:
+   - **All-complete** → proceed to fan-in (sequential merge of completed children onto the epic in claim-arrival order, single reviewer pass against the integrated diff). Fan-in is a sibling subsection (M9 — out of scope for this cycle).
+   - **Any-fail / any-stale / any-block** → halt the fan-in step, surface the partial state to the operator (which children succeeded, which failed, with claim tokens + worktree paths so the operator can inspect), and escalate. Do not silently merge a partial fan-out — the all-or-nothing terminal contract is what keeps the epic's history clean.
+
+#### Migration discipline under parallelism
+
+Rule 3 of the eligibility algorithm refuses to mark migration-touching tasks as parallel-eligible. Consequence: when a plan has a migration task, it serializes against the rest of the plan — either it runs in a `classic` or `isolated-sequential` cycle before/after the fan-out cycles, or the parallel-fanout cycle simply excludes it from the eligible subset and the operator addresses it sequentially. The orchestrator does not attempt to schedule migrations around fan-outs automatically; the eligibility algorithm surfaces the constraint and the operator picks the order. See [`agents/methodology.md` § Parallelizability rules](../../agents/methodology.md#parallelizability-rules) (rule 3) for the rationale.
+
+If a coder mid-cycle discovers it needs a migration the eligibility algorithm did not predict (the task's `task_touches` was under-declared at dispatch time), the cycle still completes — the migration lands in the child branch, the fan-in merge succeeds (the migration number was allocated against the epic's view of `migrations/`), and the next fan-out cycle sees the new count. This is documented leniency, not a guarantee; under-declaring touches is an operator hygiene issue.
+
 ## Dispatch shape options
 
 Once the strategy is chosen, the orchestrator runs the dispatch-shape gate **nested under the strategy**. The shape describes per-cycle batching, not overall methodology. Under `classic` and `isolated-sequential` the operator picks freely from `strict` / `grouped` / `single`. Under `parallel-fanout` the shape is forced to `fan-out`. Under `barrel-deferred` and `barrel-bypass` the shape is forced to the matching barrel shape.
