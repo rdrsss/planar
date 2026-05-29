@@ -271,7 +271,7 @@ The operator's **main checkout stays on master throughout the entire orchestrati
 4. **Coder dispatch.** Agent invoked with `isolation: "worktree"` and the cycle worktree path. Coder heartbeats and terminals via the canonical `planar-agent` ritual.
 5. **Fan-in merge.** After terminal-complete the orchestrator cds into the epic worktree and runs `git merge --no-ff cycle/<plan-slug>/<task-slug>`. Clean merge → continue. Conflict → open a question, halt this branch's fan-in, leave the cycle worktree in place for operator resolution.
 6. **Reviewer dispatch.** Per the active strategy: per-cycle under `isolated-sequential`; once per fan-in under `parallel-fanout`.
-7. **Cleanup (post-success only).** After reviewer approval: `git -C <repo> worktree remove <cycle-worktree-path>` and `git -C <repo> branch -d cycle/<plan-slug>/<task-slug>`. The epic worktree persists.
+7. **Cleanup (post-success only).** After reviewer approval: `git -C <repo> worktree remove <cycle-worktree-path>` and `git -C <repo> branch -D cycle/<plan-slug>/<task-slug>` (force delete because cycle branches are merged into epic but not into master HEAD). The epic worktree persists.
 8. **Epic merge to master.** Operator-driven. Orchestrator surfaces "`epic/<plan-slug>` is N commits ahead of master, reviewer-approved, ready for PR." After the epic→master merge lands, the epic worktree and `epic/<plan-slug>` branch are removed.
 
 Cleanup is **post-success only** — never before merge + reviewer approval, so a failed cycle leaves recoverable artifacts on disk.
