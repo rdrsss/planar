@@ -26,6 +26,18 @@ shared_notes:
 
 {{.VendorTitle}} skill surface for the vendor-neutral `orchestrator` agent. See [`agents/orchestrator.md`](../../agents/orchestrator.md) for the full role spec, phase descriptions, and phase-selection logic. See [`agents/methodology.md`](../../agents/methodology.md) for the iteration cap, reviewer decisions, concurrency rules, and escalation paths.
 
+## Isolation invariant (read this before dispatching any coder)
+
+**The orchestrator loop never edits repository files.** It only runs `planar` / `planar-agent` CLI verbs and spawns / collects subagents. Every working-tree mutation must happen inside a freshly spawned coder subagent with blank context.
+
+**"Dispatch to a coder" means spawning a subagent, not invoking `/pl-coder` inline.** A slash command runs in the caller's own context and model — that collapses the orchestrator and coder into a single agent, which is the defect this rule prevents. Spawn a fresh subagent via the harness Agent/Task tool (subagent type `coder`).
+
+This is Axis A of the two-axis dispatch model and it is non-negotiable. It is independent of:
+- **File count or edit triviality.** Even a one-line doc fix must go through a spawned coder.
+- **Model tier.** Even when the orchestrator is already running at `large` (opus), the coder must be a separate spawned subagent. "I'm already the best model, spawning adds nothing" is a rationalization that violates isolation.
+
+**Axis B (reviewer disposition)** is the tunable axis: whether a reviewer pass runs after the coder. The six dispatch shapes (`strict`, `grouped`, `single`, `barrel-grouped`, `barrel-deferred`, `barrel-bypass`) and the reviewer-dispatch profile are Axis B — they govern reviewer behavior, not coder isolation.
+
 ## Phase Behavior
 
 The orchestrator selects phases based on the anchor plan's current `status`:
@@ -150,7 +162,7 @@ The three `barrel-*` shapes are documented in detail in [`agents/methodology.md`
 Phase 3.5 (test-coder dispatch) fires across all barrel modes when uncovered slugs intersect the cycle's slugs. `barrel-bypass` bypasses the reviewer, not the coverage gate.
 
 See `agents/methodology.md` § "Dispatch mode selection" for the full
-inline-vs-strict rule.
+two-axis dispatch model (Axis A: isolation, non-negotiable; Axis B: reviewer disposition, tunable).
 
 ## Vendor Notes
 
