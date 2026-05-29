@@ -30,6 +30,10 @@ Agent specs in `agents/` reference abstract tiers (`medium`, `large`). The sourc
 - Removing or renaming a tier requires updating every agent file under `agents/` and every vendor surface in the same change.
 - The agent spec owns the tier; this file owns the tier-to-model resolution. Agents must not name concrete model identifiers directly.
 
+## Coder tier policy
+
+The coder defaults to `medium` (sonnet). The orchestrator may escalate the spawned coder subagent to `large` (opus) for cycles that involve schema changes, engine-judgment calls, or large architectural diffs where the higher model tier materially improves the output. Tier is Axis C of the dispatch model and is independent of isolation (Axis A) — even a `large`-tier coder must run as a separately spawned subagent with blank context. Routine implementation, doc changes, and mechanical sweeps do not warrant escalation.
+
 ## Notes On Identifiers
 
 - `claude-sonnet-4-6` and `claude-opus-4-7` are the current Anthropic identifiers as of 2026-05.
