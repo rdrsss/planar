@@ -144,9 +144,8 @@ test "scenario: resume surfaces worktree_path from active claim (json + text)" {
     const pid = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch @panic("OOM");
 
     const task = suite.mustRunJSON(TaskAddJSON, arena, &.{
-        "task",      "add",   "--plan", pid,
-        "--json",    "--next-action", "verify worktree surfacing",
-        "wt-target",
+        "task",   "add",           "--plan",                    pid,
+        "--json", "--next-action", "verify worktree surfacing", "wt-target",
     });
     const tid = std.fmt.allocPrint(arena, "{d}", .{task.id}) catch @panic("OOM");
 
@@ -215,9 +214,8 @@ test "scenario: resume omits active_claim when no claim is held on the task" {
     const pid = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch @panic("OOM");
 
     const task = suite.mustRunJSON(TaskAddJSON, arena, &.{
-        "task",   "add",     "--plan", pid,
-        "--json", "--next-action", "no claim path",
-        "loner",
+        "task",   "add",           "--plan",        pid,
+        "--json", "--next-action", "no claim path", "loner",
     });
     const tid = std.fmt.allocPrint(arena, "{d}", .{task.id}) catch @panic("OOM");
 
@@ -258,9 +256,8 @@ test "scenario: resume active_claim present but worktree_path empty when claim h
     const pid = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch @panic("OOM");
 
     const task = suite.mustRunJSON(TaskAddJSON, arena, &.{
-        "task",   "add",     "--plan", pid,
-        "--json", "--next-action", "bare claim",
-        "bare-target",
+        "task",   "add",           "--plan",     pid,
+        "--json", "--next-action", "bare claim", "bare-target",
     });
     const tid = std.fmt.allocPrint(arena, "{d}", .{task.id}) catch @panic("OOM");
 
