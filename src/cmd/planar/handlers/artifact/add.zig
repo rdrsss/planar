@@ -60,6 +60,18 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         body_value = body_owned;
     }
 
+    // Resolve the session id for the entity-create activity hook (plan 467
+    // Phase 1). Same env-var resolution pattern as question/add.zig.
+    const vendor: []const u8 = if (ctx.environ.getPosix("PLANAR_VENDOR")) |v|
+        (if (v.len > 0) @as([]const u8, v) else "cli")
+    else
+        "cli";
+    const vsid: ?[]const u8 = if (ctx.environ.getPosix("PLANAR_VENDOR_SESSION_ID")) |v|
+        (if (v.len > 0) @as([]const u8, v) else null)
+    else
+        null;
+    const session_id: ?i64 = engine.runtime.session.ensureActive(d, ctx.allocator, vendor, vsid) catch null;
+
     const art = engine.planning.artifact.create(d, ctx.allocator, .{
         .title = args.title,
         .kind = kind,
@@ -68,6 +80,7 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         .status = status,
         .plan_id = args.plan,
         .scope = effective_scope,
+        .session_id = session_id,
     }) catch |e| exit.die(ctx, e, "artifact add: {s}", .{@errorName(e)});
 
     try output.emit(ctx, engine.planning.artifact, art, .{ .json = args.json });
