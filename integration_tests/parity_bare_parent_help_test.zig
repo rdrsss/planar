@@ -28,11 +28,10 @@ const harness = @import("harness");
 // health, demote, link, unlink, promote, import, synthesize,
 // resume, search, tree) are excluded.
 const PARENT_VERBS = [_][]const u8{
-    "plan",   "task",      "artifact",  "audit",     "capture",
-    "config", "decision",  "ext",       "links",
-    "local",  "question",  "scenario",  "scope",     "skills",
-    "spec",   "templates", "test-spec", "workbench", "workspace",
-    "assoc",
+    "plan",      "task",      "artifact",  "audit",     "capture",
+    "config",    "decision",  "ext",       "links",     "local",
+    "question",  "scenario",  "scope",     "skills",    "spec",
+    "templates", "test-spec", "workbench", "workspace", "assoc",
 };
 
 test "parity: bare parent-verb prints help and exits 0 (Cluster A, Q234; red until parser change)" {
