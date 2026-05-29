@@ -45,6 +45,7 @@ const runtime = @import("runtime");
 const main = @import("../main.zig");
 const exit = @import("../exit.zig");
 const follow = @import("follow.zig");
+const format = @import("format.zig");
 const planfilter = @import("planfilter.zig");
 
 const agentactivity = engine.runtime.agentactivity;
@@ -516,95 +517,22 @@ fn renderClaimLine(
 }
 
 /// Render the activity summary for text output (task 3053).
-/// Returns a heap-allocated string that must be freed by the caller.
-/// Format: `"<summary>"` (quoted). Truncation: > 80 bytes → truncated
-/// at a safe byte boundary with U+2026 (…, 3 UTF-8 bytes) as the
-/// trailing marker such that the total rendered length including quotes
-/// is ≤ 82 bytes (80 content bytes + 2 quote bytes).
-/// Empty quotes (`""`) when the summary is null or empty.
+/// Delegates to format.renderActivitySummary; kept here for backward
+/// compat with callers already referencing ps.renderActivitySummary.
 fn renderActivitySummary(allocator: std.mem.Allocator, summary: ?[]const u8) ![]u8 {
-    const s = summary orelse "";
-    if (s.len == 0) return allocator.dupe(u8, "\"\"");
-
-    // Truncation limit: 80 bytes of content. The ellipsis is 3 bytes (…),
-    // so the payload before ellipsis is at most 77 bytes.
-    const limit = 80;
-    if (s.len <= limit) {
-        // No truncation needed — allocate `"<s>"`.
-        var buf = try allocator.alloc(u8, s.len + 2);
-        buf[0] = '"';
-        @memcpy(buf[1 .. 1 + s.len], s);
-        buf[1 + s.len] = '"';
-        return buf;
-    }
-
-    // Need to truncate. Walk back from byte 77 to find a safe UTF-8
-    // codepoint boundary so we don't split a multi-byte sequence.
-    const ellipsis = "\xE2\x80\xA6"; // U+2026, 3 bytes
-    const content_max = limit - ellipsis.len; // 77
-    var cut = content_max;
-    // Walk backwards while we're in the middle of a UTF-8 continuation byte
-    // (0x80..0xBF). This is safe to call up to 3 times.
-    while (cut > 0 and (s[cut] & 0xC0) == 0x80) cut -= 1;
-
-    // Build the output: `"<s[0..cut]>…"`
-    const out_len = 1 + cut + ellipsis.len + 1; // `"` + payload + `…` + `"`
-    var buf = try allocator.alloc(u8, out_len);
-    buf[0] = '"';
-    @memcpy(buf[1 .. 1 + cut], s[0..cut]);
-    @memcpy(buf[1 + cut .. 1 + cut + ellipsis.len], ellipsis);
-    buf[out_len - 1] = '"';
-    return buf;
+    return format.renderActivitySummary(allocator, summary);
 }
 
 /// Render the worktree column for text output (task 3054).
-/// Returns a heap-allocated string that must be freed by the caller.
-/// When `worktree_path` is null → `""`.
-/// When the full path is ≤ 40 chars → the basename only.
-/// When the full path is > 40 chars → `…<basename>`.
+/// Delegates to format.renderWorktreeColumn.
 fn renderWorktreeColumn(allocator: std.mem.Allocator, worktree_path: ?[]const u8) ![]u8 {
-    const path = worktree_path orelse return allocator.dupe(u8, "\"\"");
-    if (path.len == 0) return allocator.dupe(u8, "\"\"");
-
-    // Extract the basename (last path component after '/').
-    const basename: []const u8 = if (std.mem.lastIndexOfScalar(u8, path, '/')) |idx|
-        path[idx + 1 ..]
-    else
-        path;
-
-    if (path.len <= 40) {
-        return std.fmt.allocPrint(allocator, "{s}", .{basename});
-    }
-    // Long path: prefix with the U+2026 ellipsis marker.
-    return std.fmt.allocPrint(allocator, "\xE2\x80\xA6{s}", .{basename});
+    return format.renderWorktreeColumn(allocator, worktree_path);
 }
 
 /// Render the relative-heartbeat column for text output (task 3055).
-/// Returns a heap-allocated string that must be freed by the caller.
-/// Format strips the " ago" suffix from relativeTime output since the
-/// column key `last_hb:` already provides context.
-/// Returns `""` when `last_heartbeat_at` is empty.
+/// Delegates to format.renderRelativeHeartbeat.
 fn renderRelativeHeartbeat(allocator: std.mem.Allocator, last_heartbeat_at: []const u8) ![]u8 {
-    if (last_heartbeat_at.len == 0) return allocator.dupe(u8, "");
-
-    // Build the "now" millisecond timestamp the same way writeNowIso does.
-    const ctx = runtime.current();
-    const ts = std.Io.Clock.now(.real, ctx.io);
-    const now_ms = ts.toMilliseconds();
-
-    const rel = follow.relativeTime(allocator, now_ms, last_heartbeat_at) catch {
-        // Parse failure — return empty rather than propagating the error.
-        return allocator.dupe(u8, "");
-    };
-    defer allocator.free(rel);
-
-    // Strip the trailing " ago" when present.
-    const suffix = " ago";
-    if (std.mem.endsWith(u8, rel, suffix)) {
-        return allocator.dupe(u8, rel[0 .. rel.len - suffix.len]);
-    }
-    // "just now" has no " ago" — return as-is.
-    return allocator.dupe(u8, rel);
+    return format.renderRelativeHeartbeat(allocator, last_heartbeat_at);
 }
 
 // =========================================================================

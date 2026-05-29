@@ -154,7 +154,7 @@ fn extractStringField(gpa: std.mem.Allocator, json: []const u8, prefix: []const 
 // Capability boundary: --help enumerates the read-only verb set only.
 // =========================================================================
 
-test "planar-watch --help lists ONLY the 6 read verbs + version + completion" {
+test "planar-watch --help lists the read verbs + version + completion" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
@@ -167,7 +167,7 @@ test "planar-watch --help lists ONLY the 6 read verbs + version + completion" {
 
     // Must mention each read verb.
     inline for ([_][]const u8{
-        "feed", "ps", "claims", "actions", "plans", "log", "version", "completion",
+        "feed", "ps", "claims", "actions", "plans", "log", "tree", "version", "completion",
     }) |v| {
         if (std.mem.indexOf(u8, res.stdout, v) == null) {
             std.debug.print("missing verb '{s}' in --help:\n{s}\n", .{ v, res.stdout });
@@ -962,4 +962,71 @@ test "planar-watch feed --follow survives WAL rotation without losing events" {
         );
         return error.RotationEventMissed;
     }
+}
+
+// =========================================================================
+// M4 — planar-watch tree (tasks 3064–3067).
+// =========================================================================
+
+test "planar-watch tree renders at least one row after a pull" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const pid = seedPlanWithTask(&suite, "watch-tree-basic", "tree-task");
+    defer gpa.free(pid);
+    // pull inserts an action row for the orchestrator dispatch.
+    gpa.free(mustRunAgent(&suite, &.{ "pull", pid, "--no-locality-probe", "--json" }));
+
+    const out = mustRunWatch(&suite, &.{"tree"});
+    defer gpa.free(out);
+
+    // After a pull there is at least one action row; the tree must not
+    // emit the empty-forest sentinel.
+    if (std.mem.indexOf(u8, out, "(no action chains)") != null) {
+        std.debug.print("tree: unexpected empty forest after pull:\n{s}\n", .{out});
+        return error.UnexpectedEmptyForest;
+    }
+}
+
+test "planar-watch tree --root-session with unknown id exits non-zero" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    gpa.free(suite.mustRun(&.{ "init", "--skip-project" }));
+
+    const res = runBin(&suite, resolveWatchBin(), &.{ "tree", "--root-session", "99999" });
+    defer res.deinit(gpa);
+
+    try std.testing.expect(res.term == .exited);
+    try std.testing.expect(res.term.exited != 0);
+}
+
+test "planar-watch tree --root-session with invalid (negative) id exits non-zero" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    gpa.free(suite.mustRun(&.{ "init", "--skip-project" }));
+
+    const res = runBin(&suite, resolveWatchBin(), &.{ "tree", "--root-session", "-1" });
+    defer res.deinit(gpa);
+
+    try std.testing.expect(res.term == .exited);
+    try std.testing.expect(res.term.exited != 0);
+}
+
+test "planar-watch tree empty DB emits empty-forest sentinel" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    // init with no tasks/claims so no action rows exist.
+    gpa.free(suite.mustRun(&.{ "init", "--skip-project" }));
+
+    const out = mustRunWatch(&suite, &.{"tree"});
+    defer gpa.free(out);
+
+    try std.testing.expect(std.mem.indexOf(u8, out, "(no action chains)") != null);
 }
