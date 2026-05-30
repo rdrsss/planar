@@ -1181,6 +1181,48 @@ test "planar-watch tree production orchestrator→coder --parent-action produces
         @panic("coder pull must find the second task");
     }
 
+    // Capture the coder's task id so we can scope the actions query.
+    // The pull JSON carries `"task":{"id":<N>,...}` for the claimed task.
+    const coder_task_id = extractIntField(coder_out, "\"task\":{\"id\"") orelse
+        @panic("no task id in coder pull output");
+    const coder_task_arg = std.fmt.allocPrint(gpa, "{d}", .{coder_task_id}) catch @panic("OOM");
+    defer gpa.free(coder_task_arg);
+
+    // === Structural correctness assertion ===
+    // Query planar-watch actions --task <coder-task-id> --json and verify that
+    // the coder's action row carries parent_action_id == orch_action_id.
+    // This proves the hierarchy EDGE is correct, not merely that some `└──`
+    // glyph appears in the rendered output.
+    //
+    // Without this assertion, the prior glyph check would pass even if the
+    // coder attached to the wrong parent or if the renderer emitted `└──`
+    // for an unrelated reason. The two assertions together pin both the
+    // data layer (correct FK) and the rendering layer (correct glyph).
+    const actions_out = mustRunWatch(&suite, &.{ "actions", "--task", coder_task_arg, "--json" });
+    defer gpa.free(actions_out);
+
+    // The JSON shape is: { "generated_at": "...", "actions": [ActionRow, ...] }
+    // ActionRow includes "parent_action_id": <int|null>.
+    // We scan for the first occurrence — there should be exactly one action row
+    // for this task (the pull-side action).  extractIntField returns the first
+    // integer it finds after the given key prefix.
+    const found_parent_id = extractIntField(actions_out, "\"parent_action_id\":") orelse {
+        std.debug.print(
+            "actions --task {s} --json did not contain a parent_action_id field:\n{s}\n",
+            .{ coder_task_arg, actions_out },
+        );
+        return error.MissingParentActionId;
+    };
+    if (found_parent_id != orch_action_id) {
+        std.debug.print(
+            "coder action parent_action_id={d} does not match orchestrator action_id={d}.\n" ++
+                "The --parent-action flag did not wire the correct hierarchy edge.\n" ++
+                "actions JSON:\n{s}\n",
+            .{ found_parent_id, orch_action_id, actions_out },
+        );
+        return error.WrongParentActionId;
+    }
+
     // Run planar-watch tree. The hierarchy must render the coder at depth 1
     // under the orchestrator (depth 0).
     const out = mustRunWatch(&suite, &.{"tree"});
@@ -1194,6 +1236,9 @@ test "planar-watch tree production orchestrator→coder --parent-action produces
 
     // The `└──` (last-child tree character) must appear — the coder action
     // is the only child of the orchestrator and is therefore the last sibling.
+    // This assertion proves the hierarchy RENDERS correctly.  The parent_action_id
+    // assertion above proves the underlying edge is correct; together they are
+    // the full contract.
     const last_child_marker = "\xE2\x94\x94\xE2\x94\x80\xE2\x94\x80"; // └──
     if (std.mem.indexOf(u8, out, last_child_marker) == null) {
         std.debug.print(
