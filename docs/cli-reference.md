@@ -4927,7 +4927,7 @@ planar-agent ingest     --vendor claude --event @<file|-> [--json]
 # Operator recovery — agent_* table writers, which is why they live on
 # planar-agent (not planar). The operator invokes them directly; vendor
 # hooks never do.
-planar-agent reconcile  [--dry-run] [--stale-after <duration>] [--json]
+planar-agent reconcile  [--session <session-id>] [--dry-run] [--stale-after <duration>] [--json]
 planar-agent abort      --claim <token> [--reason <text>] [--vendor <s>] [--vendor-session <vendor:id>] [--json]
 ```
 
@@ -4939,13 +4939,13 @@ planar-agent abort      --claim <token> [--reason <text>] [--vendor <s>] [--vend
 
 | Verb       | Transaction body |
 |------------|------------------|
-| `pull`     | SELECT next eligible task → INSERT `agent_work_claims (status=active)` → UPDATE `tasks.status='doing'` → INSERT `agent_actions`. Returns `{ok, no_work, claim_token, claim, task, action_id}`. No writes on no-eligible-task path. |
+| `pull`     | SELECT next eligible task → INSERT `agent_work_claims (status=active)` → UPDATE `tasks.status='doing'` → INSERT `agent_actions`. Returns `{ok, no_work, claim_token, claim, task, action_id}`. No writes on no-eligible-task path. Selector honors `plan next`'s runnable classification: a `doing` task whose worker crashed (claim-less or stale claim) is re-pullable without manual `task update` — a stale claim no longer blocks pull. |
 | `complete` | Verify claim active → UPDATE action ended_at + outcome='ok' → UPDATE task status='done' → UPDATE claim status='completed'. |
 | `fail`     | Same as complete with outcome='error', task status='todo', claim status='aborted'. |
 | `release`  | Same as fail with outcome='aborted', claim status='released'. (Distinct semantically from fail — "graceful give-up" vs "I tried and failed".) |
 | `block`    | INSERT `entity_links(from=task, to=blocker, relationship='blocks')` → UPDATE task status='blocked' → UPDATE action ended_at + outcome='aborted' → UPDATE claim status='released'. |
-| `peek`     | Read-only: same SELECT as step 1 of pull; no writes. |
-| `reconcile`| SELECT expired active claims → UPDATE status='stale' → UPDATE orphaned actions ended_at + outcome='aborted'. Does NOT touch tasks.status. `--dry-run` returns candidates without writing. |
+| `peek`     | Read-only: same SELECT as step 1 of pull; no writes. Shares the widened selector — also surfaces claim-less or stale-claimed `doing` tasks. |
+| `reconcile`| SELECT expired active claims → UPDATE status='stale' → UPDATE orphaned actions ended_at + outcome='aborted'. Does NOT touch tasks.status. `--dry-run` returns candidates without writing. `--session <id>` restricts the sweep to claims from the given session; omit for global (today's default behavior preserved). |
 | `abort`    | UPDATE claim status='aborted' + released_at + release_reason → INSERT audit `agent_actions` row naming the aborting session. Does NOT touch tasks.status. |
 
 All write verbs open `BEGIN IMMEDIATE` so the writer lock blocks any concurrent claim attempt on the same row. The status-transition guard (`policy.status.check`) is consulted before each `UPDATE tasks SET status` — refusal rolls the transaction back and the claim keeps its previous state.
