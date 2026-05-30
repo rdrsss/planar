@@ -673,3 +673,100 @@ test "peekNext returns the same id pullNext would acquire" {
     defer pulled.deinit(a);
     try std.testing.expectEqual(tid, pulled.task_id);
 }
+
+// =========================================================================
+// Plan 493 F1 — claim-less `doing` tasks are re-pullable.
+//
+// Contract (per tech-spec artifact 265, methodology.md L100): a task whose
+// worker crashed (lease lapsed; no unexpired active claim) MUST be
+// re-selected by pickNextEligible / pullNext / peekNext, with or without a
+// prior reconcile. The widened predicate is:
+//
+//     tasks.status = 'todo'
+//     OR (tasks.status = 'doing' AND no active unexpired claim)
+//
+// where "active unexpired claim" matches the existing nextWork predicate
+// (status = 'active' AND lease_expires_at >= now). The unit tests below
+// drive `peekNext`, which routes through `pickNextEligible`, so they
+// exercise the selector directly.
+// =========================================================================
+
+test "pickNextEligible selects a claim-less doing task (F1 — post-reconcile state)" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const sp = try newSessionAndPlan(&d);
+    // Mirror the post-crash post-reconcile state: a task stranded in
+    // `doing` with no claim row at all. Pre-F1 `pickNextEligible`
+    // requires `status='todo'` and returns no_work; post-F1 it returns
+    // this task.
+    const tid = try d.execParams(
+        "insert into tasks (scope_kind, plan_id, title, status, priority) values ('global', ?, 'crashed', 'doing', 100)",
+        &.{.{ .int = sp.pid }},
+    );
+    const peeked = try peekNext(&d, sp.pid);
+    try std.testing.expect(!peeked.no_work);
+    try std.testing.expectEqual(tid, peeked.task_id);
+}
+
+test "pickNextEligible selects a doing task whose claim is expired-but-still-active (F1 pre-reconcile window)" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const sp = try newSessionAndPlan(&d);
+    const tid = try d.execParams(
+        "insert into tasks (scope_kind, plan_id, title, status, priority) values ('global', ?, 'crashed', 'doing', 100)",
+        &.{.{ .int = sp.pid }},
+    );
+    // An `active` claim whose lease_expires_at is far in the past —
+    // i.e. the worker crashed but `reconcile` has not yet flipped the
+    // claim to `stale`. F1 says the widened predicate must still pick
+    // the task because the claim is not an UNEXPIRED active claim.
+    _ = try d.execParams(
+        \\insert into agent_work_claims (
+        \\  claim_token, session_id, entity_kind, entity_id,
+        \\  status, vendor,
+        \\  claimed_at, last_heartbeat_at, lease_expires_at
+        \\) values (
+        \\  'expired-token', ?, 'task', ?,
+        \\  'active', 'test',
+        \\  '2020-01-01T00:00:00.000Z',
+        \\  '2020-01-01T00:00:00.000Z',
+        \\  '2020-01-01T00:00:00.000Z'
+        \\)
+    , &.{ .{ .int = sp.sid }, .{ .int = tid } });
+
+    const peeked = try peekNext(&d, sp.pid);
+    try std.testing.expect(!peeked.no_work);
+    try std.testing.expectEqual(tid, peeked.task_id);
+}
+
+test "pickNextEligible still skips a doing task whose claim is active+unexpired (F1 regression fence)" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const sp = try newSessionAndPlan(&d);
+    const tid = try d.execParams(
+        "insert into tasks (scope_kind, plan_id, title, status, priority) values ('global', ?, 'live', 'doing', 100)",
+        &.{.{ .int = sp.pid }},
+    );
+    // A genuinely-live claim: lease expires far in the future. The
+    // widened predicate MUST NOT pick this task — it is real work in
+    // flight.
+    _ = try d.execParams(
+        \\insert into agent_work_claims (
+        \\  claim_token, session_id, entity_kind, entity_id,
+        \\  status, vendor,
+        \\  claimed_at, last_heartbeat_at, lease_expires_at
+        \\) values (
+        \\  'live-token', ?, 'task', ?,
+        \\  'active', 'test',
+        \\  '2025-01-01T00:00:00.000Z',
+        \\  '2025-01-01T00:00:00.000Z',
+        \\  '2099-01-01T00:00:00.000Z'
+        \\)
+    , &.{ .{ .int = sp.sid }, .{ .int = tid } });
+
+    const peeked = try peekNext(&d, sp.pid);
+    try std.testing.expect(peeked.no_work);
+}

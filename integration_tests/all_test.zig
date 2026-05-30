@@ -15,6 +15,7 @@ comptime {
     _ = @import("dashboard_agents_test.zig");
     _ = @import("json_shape_lint_test.zig");
     _ = @import("list_plan_filter_test.zig");
+    _ = @import("liveness_repull_test.zig");
     _ = @import("editflow_diff_review_test.zig");
     _ = @import("editflow_edit_test.zig");
     _ = @import("editflow_view_test.zig");
