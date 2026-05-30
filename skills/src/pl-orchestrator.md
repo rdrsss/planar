@@ -125,6 +125,16 @@ planar-agent block    --claim <token> --blocker <id>  # atomic: task → blocked
 
 For hand-picked targets, swap `pull <plan>` with `claim --entity task:<id>` (does NOT auto-transition task status — caller decides). For parallel windows, run the heuristic against `entity_links` + task touches to identify mutually-non-conflicting tasks, then issue independent `pull` calls; each returns its own `claim_token`. For operator-side recovery use `planar-agent reconcile [--dry-run]` and `planar-agent abort --claim <token> --reason <text>`.
 
+**Cross-session dispatch hierarchy.** To make a coder's action appear as a child of the orchestrator's own action in `planar-watch tree`, pass `--parent-action <action-id>` to `planar-agent pull`. The orchestrator's action id is the `action_id` field returned by its own `pull` call:
+
+```sh
+orch=$(planar-agent pull $PLAN_ID --role orchestrator --json)
+orch_action=$(echo "$orch" | jq -r .action_id)
+planar-agent pull $PLAN_ID --role coder --parent-action "$orch_action" --json
+```
+
+Without `--parent-action`, each pull starts a new root action and `planar-watch tree` shows flat disjoint chains — correct for non-orchestrated work, a gap for orchestrator → coder dispatch. The flag is optional; omitting it preserves today's behavior bit-for-bit.
+
 ## Brief composition
 
 The dispatcher's brief is the input the coder runs on. Sloppy briefs are a dispatcher problem to prevent, not a coder problem to recover from. Every coder brief composed by the orchestrator MUST:
@@ -544,6 +554,25 @@ The deprecation note is informational, not blocking. Both gates are still skippe
 `--strict`, `--grouped`, and `--batch` are **not** deprecated — they remain first-class dispatch-shape skips and compose with any strategy that admits them (`classic`, `isolated-sequential`; refused under the forced-shape strategies). Removal of the standalone `--barrel-*` flags is a future cycle's decision, not this cycle's.
 
 The deprecation only touches Axis B (reviewer disposition / dispatch shape). It does not weaken Axis A (the isolation invariant from § "Isolation invariant" above — every coder runs in a spawned subagent regardless of which strategy or shape the operator picks). See `agents/methodology.md` § "Dispatch mode selection" for the full two-axis dispatch model (Axis A: isolation, non-negotiable; Axis B: reviewer disposition, tunable).
+
+## Status reporting
+
+The orchestrator emits a status string at each meaningful phase boundary using `planar-agent heartbeat --claim <token> --status "<text>"`. The canonical transitions and their strings are:
+
+| Phase | Status string |
+|-------|---------------|
+| Dispatching a coder cycle | `"dispatching coder: task <id>"` or `"dispatching coder: cycle <n>"` |
+| Waiting for coder to return its terminal verb | `"awaiting:coder"` |
+| Dispatching a test-coder cycle | `"dispatching test-coder"` |
+| Waiting for test-coder to return | `"awaiting:test-coder"` |
+| Composing the reviewer brief | `"composing reviewer brief"` |
+| Waiting for reviewer to return its decision | `"awaiting:reviewer"` |
+| Processing the reviewer's decision (approve / request-changes / abort) | `"handling reviewer result"` |
+| Starting the next coder iteration | `"dispatching coder: cycle <n+1>"` |
+
+Wait states use the `awaiting:` prefix so the read surface (`planar-watch ps`) can distinguish "blocked on something external" from "actively working." Plain text (no prefix) means the orchestrator is actively coordinating. The cap on `--status` payload is 256 bytes.
+
+See [`agents/orchestrator.md` § Status reporting](../../agents/orchestrator.md#status-reporting) and [`agents/methodology.md` § Heartbeat status contract](../../agents/methodology.md#heartbeat-status-contract) for the full contract.
 
 ## Vendor Notes
 

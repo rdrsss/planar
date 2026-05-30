@@ -59,6 +59,26 @@ Under the [`isolated-sequential`](../../agents/methodology.md#orchestration-stra
 
 Under the [`classic`](../../agents/methodology.md#orchestration-strategies) strategy there is no worktree: the coder runs in the operator's pwd on the operator's current branch and commits there as it always has.
 
+## Status reporting
+
+The coder emits a status string at each meaningful phase boundary using `planar-agent heartbeat --claim <token> --status "<text>"`. The canonical transitions and their strings are:
+
+| Phase | Status string |
+|-------|---------------|
+| Claim acquired | `"claim acquired: task <id>"` |
+| Reading brief and spec sections | `"reading brief"` |
+| Editing files (one status per area of work) | `"editing <module-or-area>"` |
+| Running `make fmt-check` | `"running make fmt-check"` |
+| Running `make build` | `"running make build"` |
+| Running `make test` | `"running make test"` |
+| Running `make test-integration` | `"running make test-integration"` |
+| Committing (non-barrel-deferred strategies) | `"committing"` |
+| Producing the work-complete report (barrel-deferred; no commit) | `"reporting"` |
+
+Under barrel-deferred strategies the coder does not commit — the cycle ends with a work-complete report handed back to the orchestrator. Under barrel-bypass the coder owns the full terminal verb ritual (`planar-agent complete`); the last heartbeat before the terminal verb uses `"reporting"`. The terminal verb is the final event; no heartbeat is needed after it. Status strings use the `awaiting:` prefix when blocked on an external event. The cap on `--status` payload is 256 bytes.
+
+See [`agents/coder.md` § Status reporting](../../agents/coder.md#status-reporting) and [`agents/methodology.md` § Heartbeat status contract](../../agents/methodology.md#heartbeat-status-contract) for the full contract.
+
 ## Barrel-bypass: gates are the review
 
 When dispatched under [`barrel-bypass`](../../agents/methodology.md#barrel-bypass), there is no downstream reviewer. The coder's quality-gate output IS the entire review signal: every applicable gate (`make fmt-check` + `make build` + `make test` + `make test-integration` **twice** + `planar skills render --check` against an out-of-tree staging dir + any remaining relevant validators) must run and the report must paste their output verbatim. Real defects become new task rows (`planar task add ...`), not bullets in a Surprises section — there is no reviewer to catch suppressed issues. Phase 3.5 (test-coder) still fires; barrel-bypass bypasses the reviewer, not the coverage gate. See [`agents/coder.md` §Barrel-bypass: gates are the review](../../agents/coder.md#barrel-bypass-gates-are-the-review).

@@ -205,6 +205,153 @@ fn interruptibleSleepLegacy(ns: u64) void {
     refreshDb();
 }
 
+/// Format the duration between `now_ms` (milliseconds since UNIX epoch)
+/// and the timestamp represented by `then_iso` (an ISO 8601 UTC string
+/// in the form `YYYY-MM-DDTHH:MM:SS.mmmZ` as emitted by SQLite's
+/// `strftime('%Y-%m-%dT%H:%M:%fZ','now')`).
+///
+/// Output conventions:
+///   delta < 5s    → "just now"   (covers future timestamps gracefully)
+///   delta < 60s   → "Ns ago"
+///   delta < 3600s → "Nm ago"
+///   delta < 86400s→ "Nh ago"
+///   delta ≥ 86400s→ "Nd ago"
+///
+/// The returned slice is caller-owned and allocated via `allocator`.
+/// Returns `error.InvalidValue` when `then_iso` cannot be parsed.
+/// Returns `error.OutOfMemory` on allocation failure.
+pub fn relativeTime(allocator: std.mem.Allocator, now_ms: i64, then_iso: []const u8) ![]const u8 {
+    const then_ms = isoToMs(then_iso) catch return error.InvalidValue;
+    const delta_ms = now_ms - then_ms;
+
+    // Future timestamps and near-zero deltas both map to "just now".
+    if (delta_ms < 5_000) {
+        return allocator.dupe(u8, "just now");
+    }
+
+    const delta_s = @divFloor(delta_ms, 1_000);
+    if (delta_s < 60) {
+        return std.fmt.allocPrint(allocator, "{d}s ago", .{delta_s});
+    }
+    const delta_m = @divFloor(delta_s, 60);
+    if (delta_m < 60) {
+        return std.fmt.allocPrint(allocator, "{d}m ago", .{delta_m});
+    }
+    const delta_h = @divFloor(delta_m, 60);
+    if (delta_h < 24) {
+        return std.fmt.allocPrint(allocator, "{d}h ago", .{delta_h});
+    }
+    const delta_d = @divFloor(delta_h, 24);
+    return std.fmt.allocPrint(allocator, "{d}d ago", .{delta_d});
+}
+
+/// Parse an ISO 8601 UTC string of the form produced by SQLite's
+/// `strftime('%Y-%m-%dT%H:%M:%fZ','now')`:
+///   `YYYY-MM-DDTHH:MM:SS.mmmZ`  (millisecond precision)
+///   `YYYY-MM-DDTHH:MM:SSZ`      (second precision, e.g. older rows)
+///
+/// Returns milliseconds since UNIX epoch, or `error.InvalidValue` on
+/// any parse failure.
+fn isoToMs(iso: []const u8) error{InvalidValue}!i64 {
+    // Minimum valid: "YYYY-MM-DDTHH:MM:SSZ" = 20 chars
+    if (iso.len < 20) return error.InvalidValue;
+    // Must end with 'Z'
+    if (iso[iso.len - 1] != 'Z') return error.InvalidValue;
+
+    const year = parseInt4(iso[0..4]) catch return error.InvalidValue;
+    if (iso[4] != '-') return error.InvalidValue;
+    const month = parseInt2(iso[5..7]) catch return error.InvalidValue;
+    if (iso[7] != '-') return error.InvalidValue;
+    const day = parseInt2(iso[8..10]) catch return error.InvalidValue;
+    if (iso[10] != 'T') return error.InvalidValue;
+    const hour = parseInt2(iso[11..13]) catch return error.InvalidValue;
+    if (iso[13] != ':') return error.InvalidValue;
+    const min = parseInt2(iso[14..16]) catch return error.InvalidValue;
+    if (iso[16] != ':') return error.InvalidValue;
+    const sec = parseInt2(iso[17..19]) catch return error.InvalidValue;
+
+    // Optional sub-second: ".NNN" before the 'Z'
+    var ms: i64 = 0;
+    if (iso.len > 20 and iso[19] == '.') {
+        // Fraction part: up to 3 digits before 'Z'
+        const frac_end = iso.len - 1; // points at 'Z'
+        const frac_start: usize = 20;
+        const frac_len = frac_end - frac_start;
+        if (frac_len == 0 or frac_len > 3) {
+            // Non-standard precision — truncate or reject conservatively.
+            if (frac_len > 3) {
+                // Take only the first 3 digits.
+                ms = parseInt3(iso[frac_start .. frac_start + 3]) catch return error.InvalidValue;
+            }
+        } else {
+            var raw = parseInt3(iso[frac_start..frac_end]) catch return error.InvalidValue;
+            // Normalise: ".1" → 100ms, ".12" → 120ms, ".123" → 123ms
+            if (frac_len == 1) raw *= 100;
+            if (frac_len == 2) raw *= 10;
+            ms = raw;
+        }
+    } else if (iso.len != 20) {
+        // "YYYY-MM-DDTHH:MM:SSZ" is exactly 20 chars; anything else is invalid.
+        return error.InvalidValue;
+    }
+
+    // Validate ranges.
+    if (month < 1 or month > 12) return error.InvalidValue;
+    if (day < 1 or day > 31) return error.InvalidValue;
+    if (hour > 23 or min > 59 or sec > 60) return error.InvalidValue; // 60 for leap seconds
+
+    // Days since UNIX epoch (1970-01-01). Use std.time.epoch helpers.
+    const year_u: u32 = @intCast(year);
+    // Count days from epoch year (1970) to start of `year`.
+    var days: i64 = 0;
+    var y: u32 = 1970;
+    while (y < year_u) : (y += 1) {
+        days += if (isLeapYear(y)) 366 else 365;
+    }
+    if (year_u < 1970) {
+        // Handle dates before epoch by going backward.
+        y = year_u;
+        while (y < 1970) : (y += 1) {
+            days -= if (isLeapYear(y)) 366 else 365;
+        }
+    }
+
+    // Days within the year up to the start of `month`.
+    const leap = isLeapYear(year_u);
+    const month_days = [_]u8{ 31, if (leap) 29 else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+    var m: u8 = 1;
+    while (m < month) : (m += 1) {
+        days += month_days[m - 1];
+    }
+
+    days += @as(i64, day) - 1;
+
+    const total_secs = days * 86400 +
+        @as(i64, hour) * 3600 +
+        @as(i64, min) * 60 +
+        @as(i64, sec);
+    return total_secs * 1000 + ms;
+}
+
+fn isLeapYear(y: u32) bool {
+    return (y % 4 == 0 and y % 100 != 0) or (y % 400 == 0);
+}
+
+fn parseInt4(s: []const u8) !i64 {
+    if (s.len != 4) return error.InvalidValue;
+    return std.fmt.parseInt(i64, s, 10);
+}
+
+fn parseInt3(s: []const u8) !i64 {
+    if (s.len > 3) return error.InvalidValue;
+    return std.fmt.parseInt(i64, s, 10);
+}
+
+fn parseInt2(s: []const u8) !i64 {
+    if (s.len != 2) return error.InvalidValue;
+    return std.fmt.parseInt(i64, s, 10);
+}
+
 /// Release the wake source. Idempotent. Called from the binary's
 /// shutdown path so kqueue/inotify fds are returned to the kernel
 /// promptly — not strictly required since the process is exiting,
@@ -215,6 +362,75 @@ pub fn closeWake() void {
         wake_storage = null;
     }
     wake_init_failed = false;
+}
+
+// A representative "now" anchor for relativeTime unit tests.
+// 2026-05-29T12:00:00.000Z = 1780056000000 ms since epoch.
+const test_now_ms: i64 = 1_780_056_000_000;
+
+test "relativeTime: < 5s returns 'just now'" {
+    const a = std.testing.allocator;
+    // then_iso is 3 seconds before now_ms.
+    // now_ms = 1748520000000  → 2026-05-29T12:00:00.000Z
+    // minus 3s               → 2026-05-29T11:59:57.000Z
+    const s = try relativeTime(a, test_now_ms, "2026-05-29T11:59:57.000Z");
+    defer a.free(s);
+    try std.testing.expectEqualStrings("just now", s);
+}
+
+test "relativeTime: 15s ago" {
+    const a = std.testing.allocator;
+    // 15 seconds before anchor
+    const s = try relativeTime(a, test_now_ms, "2026-05-29T11:59:45.000Z");
+    defer a.free(s);
+    try std.testing.expectEqualStrings("15s ago", s);
+}
+
+test "relativeTime: 3m ago" {
+    const a = std.testing.allocator;
+    // 3 minutes = 180 seconds before anchor
+    const s = try relativeTime(a, test_now_ms, "2026-05-29T11:57:00.000Z");
+    defer a.free(s);
+    try std.testing.expectEqualStrings("3m ago", s);
+}
+
+test "relativeTime: 2h ago" {
+    const a = std.testing.allocator;
+    // 2 hours = 7200 seconds before anchor
+    const s = try relativeTime(a, test_now_ms, "2026-05-29T10:00:00.000Z");
+    defer a.free(s);
+    try std.testing.expectEqualStrings("2h ago", s);
+}
+
+test "relativeTime: future timestamp returns 'just now'" {
+    const a = std.testing.allocator;
+    // 5 seconds in the future relative to anchor
+    const s = try relativeTime(a, test_now_ms, "2026-05-29T12:00:05.000Z");
+    defer a.free(s);
+    try std.testing.expectEqualStrings("just now", s);
+}
+
+test "relativeTime: > 24h returns Nd ago" {
+    const a = std.testing.allocator;
+    // 36 hours = 1.5 days before anchor → 1d ago
+    const s = try relativeTime(a, test_now_ms, "2026-05-28T00:00:00.000Z");
+    defer a.free(s);
+    // 36h / 24 = 1d
+    try std.testing.expectEqualStrings("1d ago", s);
+}
+
+test "relativeTime: 5d ago" {
+    const a = std.testing.allocator;
+    // 5 days before anchor
+    const s = try relativeTime(a, test_now_ms, "2026-05-24T12:00:00.000Z");
+    defer a.free(s);
+    try std.testing.expectEqualStrings("5d ago", s);
+}
+
+test "relativeTime: rejects malformed ISO" {
+    const a = std.testing.allocator;
+    try std.testing.expectError(error.InvalidValue, relativeTime(a, test_now_ms, "not-a-date"));
+    try std.testing.expectError(error.InvalidValue, relativeTime(a, test_now_ms, ""));
 }
 
 test "parseDurationNs accepts bare seconds, ms, us, ns, m, h" {

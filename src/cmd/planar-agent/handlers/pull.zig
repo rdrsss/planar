@@ -36,6 +36,7 @@ pub const verb: cli.Cmd = .{
         .{ .long = "--repo-root", .kind = .string, .desc = "Absolute path of checkout to probe locality against" },
         .{ .long = "--no-locality-probe", .kind = .bool, .default = .{ .bool = false }, .desc = "Skip the git locality probe" },
         .{ .long = "--metadata", .kind = .string, .desc = "Opaque text (typically JSON) persisted on the dispatch action row; validated as well-formed JSON when supplied" },
+        .{ .long = "--parent-action", .kind = .int, .desc = "Parent action id; wires the new action as a child of this action in `planar-watch tree` (cross-session hierarchy)" },
         .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
     },
     .positionals = &.{
@@ -87,6 +88,28 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
         parsed.deinit();
     }
 
+    // Validate --parent-action: must be a positive integer when supplied.
+    // Optionally verify the parent action exists (cheap select 1 probe).
+    if (args.parent_action) |pa| {
+        if (pa <= 0) {
+            exit.die(ctx, error.InvalidInput, "--parent-action must be a positive integer (got {d})", .{pa});
+        }
+        // Existence probe: reject an unknown parent action id to surface
+        // wiring errors early (e.g. wrong action id in an orchestrator script).
+        const exists = blk: {
+            var stmt = d.prepare("select 1 from agent_actions where id = ? limit 1") catch break :blk false;
+            defer stmt.finalize();
+            stmt.bind(&.{.{ .int = pa }}) catch break :blk false;
+            break :blk switch (stmt.step() catch break :blk false) {
+                .row => true,
+                .done => false,
+            };
+        };
+        if (!exists) {
+            exit.die(ctx, error.NotFound, "--parent-action {d}: action not found", .{pa});
+        }
+    }
+
     const result = atomic.pullNext(d, ctx.allocator, .{
         .plan_id = args.plan_id,
         .session_id = session_id,
@@ -101,6 +124,7 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
         .locality = loc,
         .action_kind = action_kind,
         .metadata = args.metadata,
+        .parent_action_id = args.parent_action,
     }) catch |e| exit.die(ctx, e, "pull: {s}", .{@errorName(e)});
     defer result.deinit(ctx.allocator);
 

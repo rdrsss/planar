@@ -56,6 +56,23 @@ The test-coder's dispatch trigger is the coverage gate (uncovered slugs ∩ cycl
 
 The command resolves the task (or plan), refuses to proceed on `resume validate` failure, reads the cited test-spec scenarios plus the coder diff, writes a test-only diff, runs `make test` and `make test-integration`, and returns the change set plus a work-complete report to the orchestrator. The orchestrator decides whether to dispatch the reviewer.
 
+## Status reporting
+
+The test-coder emits a status string at each meaningful phase boundary using `planar-agent heartbeat --claim <token> --status "<text>"`. The canonical transitions and their strings are:
+
+| Phase | Status string |
+|-------|---------------|
+| Reading cited test-spec sections from disk | `"reading test-spec"` |
+| Reading the coder's diff (`git diff <coder-cycle-base>..HEAD`) | `"reading coder diff"` |
+| Determining which cited slugs lack test coverage | `"identifying uncovered slugs"` |
+| Authoring a test for a specific slug | `"authoring test: <slug>"` |
+| Running the newly authored test to observe its outcome | `"running new test: <slug>"` |
+| Classifying a test failure (if the test fails on first run) | `"classifying failure: <slug>"` |
+
+The test-coder's final write-up (decision + work-complete report) IS the return to the orchestrator — there is no separate heartbeat after it is written. Status strings use the `awaiting:` prefix when blocked on an external event. The cap on `--status` payload is 256 bytes.
+
+See [`agents/test-coder.md` § Status reporting](../../agents/test-coder.md#status-reporting) and [`agents/methodology.md` § Heartbeat status contract](../../agents/methodology.md#heartbeat-status-contract) for the full contract.
+
 ## Vendor Notes
 
 {{.VendorNotes}}

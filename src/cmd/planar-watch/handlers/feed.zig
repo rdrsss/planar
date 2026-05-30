@@ -1,4 +1,4 @@
-//! handlers/feed — `planar-watch feed [--follow] [--vendor v] [--plan id] [--task id] [--since S] [--limit N] [--json] [--interval D]`
+//! handlers/feed — `planar-watch feed [--follow] [--vendor v] [--plan id] [--task id] [--since S] [--limit N] [--tail N] [--json] [--interval D]`
 //!
 //! Cross-cutting activity feed: one line per claim transition, action
 //! transition, or task status change, ordered by occurrence time.
@@ -45,6 +45,10 @@ pub const verb: cli.Cmd = .{
         "  events (default 100), newest first.\n" ++
         "  With --follow: print the snapshot, then stream new events as\n" ++
         "  they appear. Tier-1 poll; --interval defaults to 1s.\n\n" ++
+        "  --tail N: emit the most-recent N events on first call (the\n" ++
+        "  journalctl -f -n idiom). --tail 0 or negative exits with\n" ++
+        "  InvalidValue. Combined with --follow: the tail emission comes\n" ++
+        "  first, then only NEW events stream (no re-emit of tailed events).\n\n" ++
         "  Filters (--vendor / --plan / --task / --since) narrow both the\n" ++
         "  snapshot and the streaming view.\n\n" ++
         "  --json emits NDJSON — one JSON object per line, no surrounding\n" ++
@@ -56,6 +60,7 @@ pub const verb: cli.Cmd = .{
         .{ .long = "--task", .kind = .int, .desc = "Task id filter" },
         .{ .long = "--since", .kind = .string, .desc = "Only events with at >= this ISO8601 timestamp" },
         .{ .long = "--limit", .kind = .int, .desc = "Snapshot row cap (default 100)" },
+        .{ .long = "--tail", .kind = .int, .desc = "Return only the most-recent N events (must be > 0)" },
         .{ .long = "--json", .kind = .bool, .default = .{ .bool = false }, .desc = "Emit NDJSON" },
         .{ .long = "--interval", .kind = .string, .desc = "Poll interval for --follow (default 1s)" },
     },
@@ -69,6 +74,11 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
 
     const interval_ns = ps.parseIntervalOrDefault(args.interval);
     if (args.follow) follow.installSigintHandler();
+
+    // Validate --tail: must be a positive integer when supplied.
+    if (args.tail) |t| {
+        if (t <= 0) exit.die(ctx, error.InvalidValue, "feed: --tail must be a positive integer", .{});
+    }
 
     // Watermark starts at --since (if supplied) else at 1970-01-01
     // so the initial snapshot pulls everything up to --limit.
@@ -84,7 +94,14 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
         break :blk watermark_buf[0..empty.len];
     };
 
-    const initial_limit = if (args.limit) |n| n else 100;
+    // When --tail N is set, use N as the snapshot limit; otherwise fall
+    // back to --limit (default 100).
+    const initial_limit: i64 = if (args.tail) |t|
+        t
+    else if (args.limit) |n|
+        n
+    else
+        100;
 
     // Initial snapshot — most-recent N events. We render them in
     // chronological order so streaming continues naturally.

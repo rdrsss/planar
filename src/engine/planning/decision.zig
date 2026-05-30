@@ -23,6 +23,7 @@ const std = @import("std");
 const db = @import("db");
 const identity = @import("../identity.zig");
 const policy = @import("../policy.zig");
+const agentactivity_store = @import("../runtime/agentactivity/store.zig");
 
 // =========================================================================
 // Types
@@ -199,6 +200,30 @@ pub fn create(d: *db.sqlite.Db, allocator: std.mem.Allocator, args: CreateArgs) 
             \\insert into entity_links (from_kind, from_id, to_kind, to_id, relationship)
             \\values ('decision', ?, 'plan', ?, 'derives-from')
         , &.{ .{ .int = id }, .{ .int = pid } }) catch return Error.QueryFailed;
+    }
+
+    // Entity-create activity hook (plan 467 Phase 1, task 3036). Best-effort
+    // per Decision D2: the INSERT has already committed; a failure here is
+    // logged by recordEntityCreateAction and does not affect the caller.
+    // Per Decision D3: always fires when an active claim exists; when session_id
+    // is null (operator shell, no agent context) the call is a silent no-op.
+    if (args.session_id) |sid| {
+        const action_summary = std.fmt.allocPrint(
+            allocator,
+            "created decision: {s}",
+            .{args.title},
+        ) catch null;
+        if (action_summary) |s| {
+            defer allocator.free(s);
+            agentactivity_store.recordEntityCreateAction(
+                d,
+                allocator,
+                sid,
+                .decision,
+                id,
+                s,
+            );
+        }
     }
 
     return try show(d, allocator, id);
@@ -773,4 +798,72 @@ test "supersede LinkExists: entity_links unique constraint and status rollback" 
     const after_rollback = try show(&d, a, old.id);
     defer deinit(after_rollback, a);
     try std.testing.expectEqual(Status.proposed, after_rollback.status);
+}
+
+// =========================================================================
+// Tests — entity-create activity hook (plan 467 Phase 1, task 3040)
+// =========================================================================
+
+test "decision create under active claim inserts agent_actions row" {
+    const a = std.testing.allocator;
+    var dn = try setupTestDb(a);
+    defer dn.close();
+
+    const sid = try dn.execParams("insert into sessions (vendor) values ('test')", &.{});
+    const tid = try dn.execParams(
+        "insert into tasks (scope_kind, title, status) values ('global','hook-test','todo')",
+        &.{},
+    );
+    _ = try dn.execParams(
+        \\insert into agent_work_claims (
+        \\  claim_token, session_id, entity_kind, entity_id, claim_scope,
+        \\  status, vendor, lease_expires_at
+        \\) values (
+        \\  lower(hex(randomblob(16))), ?, 'task', ?, 'exclusive',
+        \\  'active', 'test',
+        \\  strftime('%Y-%m-%dT%H:%M:%fZ','now', '+600 seconds')
+        \\)
+    , &.{ .{ .int = sid }, .{ .int = tid } });
+
+    const dec = try create(&dn, a, .{ .title = "hook decision", .body = "body", .session_id = sid });
+    defer deinit(dec, a);
+
+    // One agent_actions row with correct entity_kind, entity_id, and summary.
+    var stmt = try dn.prepare(
+        "select count(*) from agent_actions where entity_kind='decision' and entity_id=? and summary='created decision: hook decision'",
+    );
+    defer stmt.finalize();
+    try stmt.bind(&.{.{ .int = dec.id }});
+    const count = switch (try stmt.step()) {
+        .row => stmt.columnInt(0),
+        .done => 0,
+    };
+    try std.testing.expectEqual(@as(i64, 1), count);
+}
+
+test "decision create under no active claim inserts no agent_actions row" {
+    const a = std.testing.allocator;
+    var dn = try setupTestDb(a);
+    defer dn.close();
+
+    // Session exists but has no active claim — hook is a silent no-op.
+    const sid = try dn.execParams("insert into sessions (vendor) values ('test')", &.{});
+    const dec = try create(&dn, a, .{ .title = "no-claim decision", .body = "body", .session_id = sid });
+    defer deinit(dec, a);
+
+    const count = try dn.intQuery("select count(*) from agent_actions where entity_kind='decision'");
+    try std.testing.expectEqual(@as(i64, 0), count);
+}
+
+test "decision create with null session_id inserts no agent_actions row" {
+    const a = std.testing.allocator;
+    var dn = try setupTestDb(a);
+    defer dn.close();
+
+    // Default (session_id=null) — operator interactive shell path.
+    const dec = try create(&dn, a, .{ .title = "shell decision", .body = "body" });
+    defer deinit(dec, a);
+
+    const count = try dn.intQuery("select count(*) from agent_actions where entity_kind='decision'");
+    try std.testing.expectEqual(@as(i64, 0), count);
 }

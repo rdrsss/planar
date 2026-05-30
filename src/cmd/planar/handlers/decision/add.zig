@@ -36,12 +36,25 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     }
     const body_required = body orelse exit.die(ctx, error.InvalidInput, "--body is required (or run interactively to use the editor flow)", .{});
 
+    // Resolve the session id for the entity-create activity hook (plan 467
+    // Phase 1). Same env-var resolution pattern as question/add.zig.
+    const vendor: []const u8 = if (ctx.environ.getPosix("PLANAR_VENDOR")) |v|
+        (if (v.len > 0) @as([]const u8, v) else "cli")
+    else
+        "cli";
+    const vsid: ?[]const u8 = if (ctx.environ.getPosix("PLANAR_VENDOR_SESSION_ID")) |v|
+        (if (v.len > 0) @as([]const u8, v) else null)
+    else
+        null;
+    const session_id: ?i64 = engine.runtime.session.ensureActive(d, ctx.allocator, vendor, vsid) catch null;
+
     const dec = engine.planning.decision.create(d, ctx.allocator, .{
         .title = args.title,
         .body = body_required,
         .rationale = args.rationale,
         .plan_id = args.plan,
         .scope = effective_scope,
+        .session_id = session_id,
     }) catch |e| exit.die(ctx, e, "decision add: {s}", .{@errorName(e)});
 
     try output.emit(ctx, engine.planning.decision, dec, .{ .json = args.json });

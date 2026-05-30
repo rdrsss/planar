@@ -103,6 +103,24 @@ A task is considered **non-trivial** when its rendered body contains two or more
 
 This heuristic is intentionally simple and deterministic. The user can always add or remove scenarios manually via `planar scenario add`.
 
+## Status reporting
+
+The ingestor emits a status string at each meaningful phase boundary using `planar-agent heartbeat --claim <token> --status "<text>"`. The canonical transitions and their strings are:
+
+| Phase | Status string |
+|-------|---------------|
+| Reading `tech-spec.md` and `roadmap.md` from the workbench | `"reading workbench specs"` |
+| Computing the diff (additions, updates, proposed removals) | `"decomposing tasks"` |
+| Rendering and presenting the preview diff | `"writing preview"` |
+| Waiting for operator to confirm before `--apply` | `"awaiting:operator-confirmation"` |
+| Committing additions and updates via `--apply` | `"applying"` |
+
+The ingestor's final write-up (summary of applied entities) IS the return to the orchestrator — there is no separate heartbeat after it is written.
+
+The `awaiting:operator-confirmation` string uses the `awaiting:` prefix because the ingestor is genuinely blocked: the orchestrator has surfaced the preview diff and is waiting for an explicit user gate before `--apply` may run.
+
+See [`agents/methodology.md` § Heartbeat status contract](methodology.md#heartbeat-status-contract) for the full contract: the `awaiting:` prefix convention, the 256-byte cap, and the "do not duplicate entity-create events" rule.
+
 ## CLI commands composed
 
 ```

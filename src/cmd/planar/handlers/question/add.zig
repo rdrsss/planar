@@ -23,11 +23,27 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         exit.die(ctx, e, "question add: resolving scope failed: {s}", .{@errorName(e)});
     const effective_scope: ?[]const u8 = if (resolution.scope) |s| s else null;
 
+    // Resolve the session id for the entity-create activity hook (plan 467
+    // Phase 1). When running under an agent dispatch, $PLANAR_VENDOR and
+    // $PLANAR_VENDOR_SESSION_ID identify the session that holds the active
+    // claim; ensureActive returns it (or creates a fresh "cli" session when
+    // neither var is set, which has no active claim and the hook is a no-op).
+    const vendor: []const u8 = if (ctx.environ.getPosix("PLANAR_VENDOR")) |v|
+        (if (v.len > 0) @as([]const u8, v) else "cli")
+    else
+        "cli";
+    const vsid: ?[]const u8 = if (ctx.environ.getPosix("PLANAR_VENDOR_SESSION_ID")) |v|
+        (if (v.len > 0) @as([]const u8, v) else null)
+    else
+        null;
+    const session_id: ?i64 = engine.runtime.session.ensureActive(d, ctx.allocator, vendor, vsid) catch null;
+
     const q = engine.planning.question.create(d, ctx.allocator, .{
         .title = args.title,
         .body = args.body,
         .scope = effective_scope,
         .plan_id = args.plan,
+        .session_id = session_id,
     }) catch |e| exit.die(ctx, e, "question add: {s}", .{@errorName(e)});
 
     try output.emit(ctx, engine.planning.question, q, .{ .json = args.json });

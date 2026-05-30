@@ -24,6 +24,7 @@ const std = @import("std");
 const db = @import("db");
 const identity = @import("../identity.zig");
 const policy = @import("../policy.zig");
+const agentactivity_store = @import("../runtime/agentactivity/store.zig");
 
 // =========================================================================
 // Types
@@ -166,6 +167,11 @@ pub const CreateArgs = struct {
     /// and stored for future use; currently ignored by the engine.
     plan_id: ?i64 = null,
     scope: ?[]const u8 = null,
+    /// Session id used to look up the caller's active claim for the
+    /// entity-create activity hook (plan 467 Phase 1). When null (e.g.
+    /// an operator invocation from an interactive shell with no session),
+    /// the hook is a no-op per Decision D3.
+    session_id: ?i64 = null,
 };
 
 pub const UpdateArgs = struct {
@@ -283,6 +289,31 @@ pub fn create(d: *db.sqlite.Db, allocator: std.mem.Allocator, args: CreateArgs) 
         else => return Error.WriteFailed,
     };
     savepoint_released = true;
+
+    // Entity-create activity hook (plan 467 Phase 1, task 3037). Best-effort
+    // per Decision D2: the savepoint has been released (INSERT committed);
+    // a failure here is logged by recordEntityCreateAction and does not affect
+    // the caller. Per Decision D3: always fires when an active claim exists;
+    // when session_id is null (operator shell, no agent context) the call is
+    // a silent no-op.
+    if (args.session_id) |sid| {
+        const action_summary = std.fmt.allocPrint(
+            allocator,
+            "created artifact: {s} (kind={s})",
+            .{ args.title, @tagName(args.kind) },
+        ) catch null;
+        if (action_summary) |s| {
+            defer allocator.free(s);
+            agentactivity_store.recordEntityCreateAction(
+                d,
+                allocator,
+                sid,
+                .artifact,
+                id,
+                s,
+            );
+        }
+    }
 
     return try show(d, allocator, id);
 }
@@ -791,4 +822,72 @@ test "Kind.fromText accepts every schema-valid value" {
     try std.testing.expectEqual(Kind.glossary_term, Kind.fromText("glossary_term").?);
     try std.testing.expectEqual(Kind.test_spec, Kind.fromText("test_spec").?);
     try std.testing.expect(Kind.fromText("not_a_kind") == null);
+}
+
+// =========================================================================
+// Tests — entity-create activity hook (plan 467 Phase 1, task 3040)
+// =========================================================================
+
+test "artifact create under active claim inserts agent_actions row" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const sid = try d.execParams("insert into sessions (vendor) values ('test')", &.{});
+    const tid = try d.execParams(
+        "insert into tasks (scope_kind, title, status) values ('global','hook-test','todo')",
+        &.{},
+    );
+    _ = try d.execParams(
+        \\insert into agent_work_claims (
+        \\  claim_token, session_id, entity_kind, entity_id, claim_scope,
+        \\  status, vendor, lease_expires_at
+        \\) values (
+        \\  lower(hex(randomblob(16))), ?, 'task', ?, 'exclusive',
+        \\  'active', 'test',
+        \\  strftime('%Y-%m-%dT%H:%M:%fZ','now', '+600 seconds')
+        \\)
+    , &.{ .{ .int = sid }, .{ .int = tid } });
+
+    const art = try create(&d, a, .{ .title = "hook artifact", .kind = .tech_spec, .session_id = sid });
+    defer deinit(art, a);
+
+    // One agent_actions row with correct entity_kind, entity_id, and summary.
+    var stmt = try d.prepare(
+        "select count(*) from agent_actions where entity_kind='artifact' and entity_id=? and summary='created artifact: hook artifact (kind=tech_spec)'",
+    );
+    defer stmt.finalize();
+    try stmt.bind(&.{.{ .int = art.id }});
+    const count = switch (try stmt.step()) {
+        .row => stmt.columnInt(0),
+        .done => 0,
+    };
+    try std.testing.expectEqual(@as(i64, 1), count);
+}
+
+test "artifact create under no active claim inserts no agent_actions row" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    // Session exists but has no active claim — hook is a silent no-op.
+    const sid = try d.execParams("insert into sessions (vendor) values ('test')", &.{});
+    const art = try create(&d, a, .{ .title = "no-claim artifact", .kind = .other, .session_id = sid });
+    defer deinit(art, a);
+
+    const count = try d.intQuery("select count(*) from agent_actions where entity_kind='artifact'");
+    try std.testing.expectEqual(@as(i64, 0), count);
+}
+
+test "artifact create with null session_id inserts no agent_actions row" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    // Default (session_id=null) — operator interactive shell path.
+    const art = try create(&d, a, .{ .title = "shell artifact", .kind = .other });
+    defer deinit(art, a);
+
+    const count = try d.intQuery("select count(*) from agent_actions where entity_kind='artifact'");
+    try std.testing.expectEqual(@as(i64, 0), count);
 }

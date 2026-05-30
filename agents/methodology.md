@@ -89,6 +89,19 @@ The claim ritual is expressed entirely in `planar-agent` verbs (the dedicated ag
 1. **Check.** Before selecting work, the orchestrator runs `planar plan next <plan>` (operator-side claim-aware read) or `planar-agent peek <plan>` (agent-side dry-run of "what would `pull` pick"). Do not derive next work from `task list --status todo` alone.
 2. **Pull.** `planar-agent pull <plan-id> [--role coder] [--worktree <id-or-path>]` atomically picks the next eligible task, claims it (`agent_work_claims.status='active'`), flips the task to `doing`, and starts a top-level `agent_actions` row. Returns `{claim_token, task, action_id}`. When no work is available it returns `{ok:true, no_work:true}` and the agent terminates cleanly.
    For dispatch where the caller already has a specific task ID (orchestrator hand-picking), use `planar-agent claim --entity task:<id> [--role <r>] [--worktree <path>]` instead. `claim` does not auto-transition the task; the caller is responsible for the status flip (or for invoking `planar-agent action start` to mark work as begun without touching task status).
+
+   **Cross-session dispatch hierarchy (`--parent-action`).** When an orchestrator dispatches a coder sub-agent and wants the dispatch to appear as a child of the orchestrator's own action in `planar-watch tree`, it passes `--parent-action <its-own-action-id>` to `planar-agent pull`. The orchestrator's action id is the `action_id` field returned by its own `pull` or `action start`. Example:
+
+   ```sh
+   # Orchestrator pulls its own task and captures its action id:
+   orch_result=$(planar-agent pull $PLAN_ID --role orchestrator --json)
+   orch_action=$(echo "$orch_result" | jq -r .action_id)
+
+   # Coder dispatch: --parent-action wires the cross-session hierarchy edge:
+   planar-agent pull $PLAN_ID --role coder --parent-action "$orch_action" --json
+   ```
+
+   Without `--parent-action`, the coder's action is a root (no parent); `planar-watch tree` renders it as a separate, disjoint chain with no connection to the orchestrator. Omitting the flag preserves today's behavior bit-for-bit and is the correct choice when the caller does not want tree hierarchy (e.g. bare `pull` for non-orchestrated work). The flag is validated as a positive integer; an unknown action id causes `--parent-action` to fail with `NotFound`.
 3. **Heartbeat.** `planar-agent heartbeat --claim <token> [--ttl <secs>]` at least once per TTL/2 while work continues. A long-running tool call may delay the heartbeat, but the agent should heartbeat immediately before and after such calls.
 4. **Report sub-actions (optional).** For granular telemetry, wrap tool calls in `planar-agent action start --claim <token> --kind tool_call` / `planar-agent action end --action <id> --outcome ok`. Most agents skip this and let the top-level action started by `pull` cover the whole work session.
 5. **Terminate** with exactly one of:
@@ -636,6 +649,58 @@ and the reviewer cannot recover the loss after the fact.
 ## State Capture
 
 State capture lives in SQLite per the locked schema. Tasks carry `next_action`. `sessions` and `session_entries` capture the iteration timeline. `agent_work_claims` records live ownership and lease state. `agent_actions` records typed time-bounded work inside sessions. `decisions` records reviewer rulings. Open questions are `question` rows linked to the task. Aborts surface as session entries with `prefix='error'` linked to the task and the originating decision, and the corresponding claim is released as `aborted` or later reconciled as `stale`.
+
+## Heartbeat status contract
+
+Agents communicate their current activity to the read surface (`planar-watch ps`, `planar-watch feed`) by supplying an optional `--status <text>` string on every heartbeat call:
+
+```
+planar-agent heartbeat --claim <token> --status "editing src/engine/planning/question.zig"
+```
+
+When `--status` is omitted, the heartbeat refreshes the lease without changing the displayed activity. Status strings are **free-form text** (Decision D1, plan 467 tech-spec § Concepts → Status string vs structured state) — there is no state machine enum. Agents choose strings that describe what they are doing in human-readable terms.
+
+### The `awaiting:` prefix convention
+
+When an agent is blocked on an external event — a downstream sub-agent returning, an operator answering a question, an external API responding — it prefixes the status string with `awaiting:`:
+
+```
+planar-agent heartbeat --claim <token> --status "awaiting:coder"
+planar-agent heartbeat --claim <token> --status "awaiting:reviewer"
+planar-agent heartbeat --claim <token> --status "awaiting:operator-confirmation"
+```
+
+The `awaiting:` prefix is a convention, not a parsed enum. The read surface (`planar-watch ps`) uses it as a color/sort signal but does not parse beyond the prefix boundary. Plain text (no prefix) means the agent is actively working.
+
+### Per-phase-transition cadence rule
+
+Heartbeat with a new `--status` string at every meaningful phase boundary:
+
+- **claim-acquired** → `"claim acquired: task <id>"`
+- **reading brief** → `"reading brief"`
+- **editing files** → `"editing <module-or-area>"` (one status per area)
+- **running gates** → one status per gate (`"running make fmt-check"`, `"running make test"`, etc.)
+- **committing / reporting** → `"committing"` or `"reporting"` as appropriate
+
+Heartbeats between phase transitions (lease-renewal-only) may omit `--status`. The cadence goal is: any operator watching `planar-watch ps` can tell what phase the agent is in without waiting for the next phase transition.
+
+For long operations (> 30 s), heartbeat at least once per TTL/2 even if the status string does not change. Pass `--ttl <secs>` to extend the lease if needed.
+
+### Do not manually duplicate entity-create events
+
+The engine hooks added in plan 467 M1 automatically write an `agent_actions` row when `question.create`, `decision.create`, or `artifact.create` fires under an active claim. Agents MUST NOT also call a separate `planar-agent heartbeat --status "created question X"` for the same event — that produces a duplicate action row and clutters the feed.
+
+Status strings describe the **agent's own state** (what it is doing), not a mirror of entity-create events. Entity creates surface automatically; status strings are the agent's judgment about its current phase.
+
+### 256-byte cap on `--status` payload
+
+`planar-agent heartbeat --status` enforces a 256-byte upper bound on the status string (plan 467 M1, task 3038). Strings longer than 256 bytes are rejected with `error.InvalidInput`. Keep status strings concise: a short phrase is enough for the feed to be readable.
+
+### Cross-references
+
+- Per-role canonical status strings: see the "Status reporting" sections in [`agents/coder.md`](coder.md#status-reporting), [`agents/orchestrator.md`](orchestrator.md#status-reporting), [`agents/planner.md`](planner.md#status-reporting), [`agents/reviewer.md`](reviewer.md#status-reporting), [`agents/test-coder.md`](test-coder.md#status-reporting), and [`agents/ingestor.md`](ingestor.md#status-reporting).
+- `agent_actions` schema: see `docs/architecture.md` § agent_actions.
+- Claim ritual: see [Coordination claims](#coordination-claims) above.
 
 ## Things To Revisit
 

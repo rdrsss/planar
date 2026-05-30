@@ -68,6 +68,14 @@ pub const PullArgs = struct {
     /// writes the chosen strategy + axes blob here so the next cycle
     /// can read it back.
     metadata: ?[]const u8 = null,
+    /// Optional parent action id. When the orchestrator dispatches a
+    /// coder sub-agent and wants the dispatch to appear as a child of
+    /// its own action in `planar-watch tree`, it passes the
+    /// orchestrator's own action id here. The resulting action row's
+    /// `parent_action_id` is set to this value, establishing the
+    /// cross-session hierarchy edge that `walkTree` relies on.
+    /// When null (default), the new action is a root (no parent).
+    parent_action_id: ?i64 = null,
 };
 
 /// Atomic pull: pick the next eligible task (highest-priority todo
@@ -135,6 +143,7 @@ pub fn pullNext(
 
     const action_id = store.startAction(d, allocator, .{
         .session_id = args.session_id,
+        .parent_action_id = args.parent_action_id,
         .claim_id = claim.id,
         .action_kind = args.action_kind,
         .entity_kind = .task,

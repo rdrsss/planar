@@ -432,6 +432,103 @@ pub fn listBySession(
     return try out.toOwnedSlice(allocator);
 }
 
+/// Return the `id` of the most-recently-claimed active claim owned by
+/// `session_id`, or `null` when the session has no active claims. Used
+/// by entity-create hooks to decide whether to write an action row.
+///
+/// "Most recent" is determined by `claimed_at desc` then `id desc` as a
+/// tiebreaker (the same ordering `listActive` uses). A claim must have
+/// `status = 'active'` and a non-expired `lease_expires_at` to qualify.
+pub fn latestActiveClaimForSession(
+    d: *db.sqlite.Db,
+    session_id: i64,
+) Error!?i64 {
+    var stmt = d.prepare(
+        \\select id from agent_work_claims
+        \\where session_id = ?
+        \\  and status = 'active'
+        \\  and lease_expires_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        \\order by claimed_at desc, id desc
+        \\limit 1
+    ) catch return Error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .int = session_id }}) catch return Error.QueryFailed;
+    return switch (stmt.step() catch return Error.QueryFailed) {
+        .done => null,
+        .row => stmt.columnInt(0),
+    };
+}
+
+/// Write a completed `agent_actions` row recording that the session's active
+/// claim performed an entity-create. Best-effort per Decision D2: errors are
+/// logged via `std.log.scoped(.agentactivity)` and swallowed — the entity-
+/// create write is the contract; activity surfacing is not.
+///
+/// When the session has no active claim (e.g. an operator running
+/// `planar question add` from a shell), returns immediately — no row, no error.
+///
+/// The row is written with `action_kind = other` and both `started_at` and
+/// `ended_at` set to now, `outcome = 'ok'`. The `vendor` is resolved from the
+/// claim row so the caller does not need to pass it.
+pub fn recordEntityCreateAction(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    session_id: i64,
+    entity_kind: types.ActionEntityKind,
+    entity_id: i64,
+    summary: []const u8,
+) void {
+    recordEntityCreateActionInner(d, allocator, session_id, entity_kind, entity_id, summary) catch |e| {
+        std.log.scoped(.agentactivity).warn(
+            "recordEntityCreateAction: failed to write action row: {s}",
+            .{@errorName(e)},
+        );
+    };
+}
+
+fn recordEntityCreateActionInner(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    session_id: i64,
+    entity_kind: types.ActionEntityKind,
+    entity_id: i64,
+    summary: []const u8,
+) Error!void {
+    // Resolve the latest active claim for the session. Get both `id` and
+    // `vendor` in one query to avoid a second round-trip.
+    var stmt = d.prepare(
+        \\select id, vendor from agent_work_claims
+        \\where session_id = ?
+        \\  and status = 'active'
+        \\  and lease_expires_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        \\order by claimed_at desc, id desc
+        \\limit 1
+    ) catch return Error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .int = session_id }}) catch return Error.QueryFailed;
+    switch (stmt.step() catch return Error.QueryFailed) {
+        // No active claim: operator shell invocation — return silently.
+        .done => return,
+        .row => {},
+    }
+    const claim_id = stmt.columnInt(0);
+    const vendor = stmt.columnTextAlloc(1, allocator) catch return Error.QueryFailed;
+    defer allocator.free(vendor);
+
+    // Insert the action row as a completed-immediately write (start + end).
+    // Uses startAction + endAction so the row shape matches the existing
+    // heartbeat pattern from heartbeat.zig.
+    const action_id = try startAction(d, allocator, .{
+        .session_id = session_id,
+        .claim_id = claim_id,
+        .action_kind = .other,
+        .entity_kind = entity_kind,
+        .entity_id = entity_id,
+        .vendor = vendor,
+    });
+    try endAction(d, allocator, action_id, .ok, summary);
+}
+
 // =========================================================================
 // Reconcile
 // =========================================================================
@@ -656,6 +753,42 @@ pub fn getActionById(
     stmt.bind(&.{.{ .int = id }}) catch return Error.QueryFailed;
     return switch (stmt.step() catch return Error.QueryFailed) {
         .done => Error.ClaimNotFound, // overload: action not found maps here
+        .row => try readActionRow(&stmt, allocator),
+    };
+}
+
+/// Return the action with the highest `(started_at, id)` for `claim_id`,
+/// or `null` when no actions exist for the claim.
+///
+/// Implements Decision D4 (tech-spec line 165): read live from
+/// `agent_actions` — no denormalized column on `agent_work_claims`.
+/// The query is backed by `ix_agent_actions_claim` (migration 00015)
+/// so the O(1) lookup cost is acceptable for the typical N ≤ 30 active
+/// claims rendered by `planar-watch ps`.
+///
+/// Tie-breaking: `started_at desc, id desc` — the highest id wins when
+/// two actions share the same `started_at` timestamp.
+pub fn latestActionForClaim(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    claim_id: i64,
+) Error!?types.Action {
+    var stmt = d.prepare(
+        \\select id, session_id, session_entry_id, parent_action_id, claim_id,
+        \\       action_kind, entity_kind, entity_id,
+        \\       vendor, vendor_role, model,
+        \\       started_at, ended_at, outcome, summary,
+        \\       head_sha, dirty,
+        \\       metadata
+        \\from agent_actions
+        \\where claim_id = ?
+        \\order by started_at desc, id desc
+        \\limit 1
+    ) catch return Error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .int = claim_id }}) catch return Error.QueryFailed;
+    return switch (stmt.step() catch return Error.QueryFailed) {
+        .done => null,
         .row => try readActionRow(&stmt, allocator),
     };
 }
@@ -1466,4 +1599,172 @@ test "acquireClaim records locality columns when provided" {
     try std.testing.expectEqualStrings("feat/x", c.branch.?);
     try std.testing.expectEqualStrings("abc123", c.head_sha_at_claim.?);
     try std.testing.expectEqual(types.Dirty.clean, c.dirty_at_claim.?);
+}
+
+test "latestActiveClaimForSession returns null when no claims exist for the session" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const sid = try insertTestSession(&d);
+
+    const result = try latestActiveClaimForSession(&d, sid);
+    try std.testing.expect(result == null);
+}
+
+test "latestActiveClaimForSession returns the claim id when exactly one active claim exists" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const sid = try insertTestSession(&d);
+    const tid = try insertTestTask(&d);
+
+    const c = try acquireClaim(&d, a, .{
+        .session_id = sid,
+        .entity_kind = .task,
+        .entity_id = tid,
+        .vendor = "test",
+    });
+    defer c.deinit(a);
+
+    const result = try latestActiveClaimForSession(&d, sid);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(c.id, result.?);
+}
+
+test "latestActionForClaim returns null when no actions exist for the claim" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const sid = try insertTestSession(&d);
+    const tid = try insertTestTask(&d);
+    const c = try acquireClaim(&d, a, .{
+        .session_id = sid,
+        .entity_kind = .task,
+        .entity_id = tid,
+        .vendor = "test",
+    });
+    defer c.deinit(a);
+
+    const result = try latestActionForClaim(&d, a, c.id);
+    try std.testing.expect(result == null);
+}
+
+test "latestActionForClaim returns the single action when exactly one exists" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const sid = try insertTestSession(&d);
+    const tid = try insertTestTask(&d);
+    const c = try acquireClaim(&d, a, .{
+        .session_id = sid,
+        .entity_kind = .task,
+        .entity_id = tid,
+        .vendor = "test",
+    });
+    defer c.deinit(a);
+
+    const action_id = try startAction(&d, a, .{
+        .session_id = sid,
+        .claim_id = c.id,
+        .action_kind = .heartbeat,
+        .vendor = "test",
+    });
+    try endAction(&d, a, action_id, .ok, "doing work");
+
+    const result = try latestActionForClaim(&d, a, c.id);
+    try std.testing.expect(result != null);
+    defer result.?.deinit(a);
+    try std.testing.expectEqual(action_id, result.?.id);
+    try std.testing.expectEqualStrings("doing work", result.?.summary.?);
+}
+
+test "latestActionForClaim returns the most-recent action (highest started_at then id) when several exist" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const sid = try insertTestSession(&d);
+    const tid = try insertTestTask(&d);
+    const c = try acquireClaim(&d, a, .{
+        .session_id = sid,
+        .entity_kind = .task,
+        .entity_id = tid,
+        .vendor = "test",
+    });
+    defer c.deinit(a);
+
+    // Insert three actions. Because SQLite's strftime precision is
+    // milliseconds and these inserts happen within the same millisecond
+    // in CI, we cannot rely on started_at differing. We rely on id
+    // ordering as the tiebreaker — the last-inserted id is highest and
+    // must be returned by latestActionForClaim.
+    const id1 = try startAction(&d, a, .{
+        .session_id = sid,
+        .claim_id = c.id,
+        .action_kind = .heartbeat,
+        .vendor = "test",
+    });
+    try endAction(&d, a, id1, .ok, "first");
+
+    const id2 = try startAction(&d, a, .{
+        .session_id = sid,
+        .claim_id = c.id,
+        .action_kind = .heartbeat,
+        .vendor = "test",
+    });
+    try endAction(&d, a, id2, .ok, "second");
+
+    const id3 = try startAction(&d, a, .{
+        .session_id = sid,
+        .claim_id = c.id,
+        .action_kind = .heartbeat,
+        .vendor = "test",
+    });
+    try endAction(&d, a, id3, .ok, "third");
+
+    const result = try latestActionForClaim(&d, a, c.id);
+    try std.testing.expect(result != null);
+    defer result.?.deinit(a);
+    // The highest id (id3) must be returned regardless of timestamp ties.
+    try std.testing.expectEqual(id3, result.?.id);
+    try std.testing.expectEqualStrings("third", result.?.summary.?);
+}
+
+test "latestActiveClaimForSession returns the most-recent claim id when multiple active claims exist" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const sid = try insertTestSession(&d);
+    const tid1 = try insertTestTask(&d);
+    const tid2 = try insertTestTask(&d);
+    const tid3 = try insertTestTask(&d);
+
+    // Acquire three claims for the same session (on distinct entities so
+    // acquireClaim does not see ClaimContention). The last one inserted
+    // has the highest id and claimed_at, so it should be returned.
+    const c1 = try acquireClaim(&d, a, .{
+        .session_id = sid,
+        .entity_kind = .task,
+        .entity_id = tid1,
+        .vendor = "test",
+    });
+    defer c1.deinit(a);
+    const c2 = try acquireClaim(&d, a, .{
+        .session_id = sid,
+        .entity_kind = .task,
+        .entity_id = tid2,
+        .vendor = "test",
+    });
+    defer c2.deinit(a);
+    const c3 = try acquireClaim(&d, a, .{
+        .session_id = sid,
+        .entity_kind = .task,
+        .entity_id = tid3,
+        .vendor = "test",
+    });
+    defer c3.deinit(a);
+
+    const result = try latestActiveClaimForSession(&d, sid);
+    try std.testing.expect(result != null);
+    // c3 was acquired last so it has the highest claimed_at and id.
+    try std.testing.expectEqual(c3.id, result.?);
 }

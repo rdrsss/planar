@@ -154,7 +154,7 @@ fn extractStringField(gpa: std.mem.Allocator, json: []const u8, prefix: []const 
 // Capability boundary: --help enumerates the read-only verb set only.
 // =========================================================================
 
-test "planar-watch --help lists ONLY the 6 read verbs + version + completion" {
+test "planar-watch --help lists the read verbs + version + completion" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
@@ -167,7 +167,7 @@ test "planar-watch --help lists ONLY the 6 read verbs + version + completion" {
 
     // Must mention each read verb.
     inline for ([_][]const u8{
-        "feed", "ps", "claims", "actions", "plans", "log", "version", "completion",
+        "feed", "ps", "claims", "actions", "plans", "log", "tree", "version", "completion",
     }) |v| {
         if (std.mem.indexOf(u8, res.stdout, v) == null) {
             std.debug.print("missing verb '{s}' in --help:\n{s}\n", .{ v, res.stdout });
@@ -961,5 +961,397 @@ test "planar-watch feed --follow survives WAL rotation without losing events" {
             .{ stdout_buf.items, stderr_buf.items },
         );
         return error.RotationEventMissed;
+    }
+}
+
+// =========================================================================
+// M4 — planar-watch tree (tasks 3064–3067).
+// =========================================================================
+
+test "planar-watch tree renders at least one row after a pull" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const pid = seedPlanWithTask(&suite, "watch-tree-basic", "tree-task");
+    defer gpa.free(pid);
+    // pull inserts an action row for the orchestrator dispatch.
+    gpa.free(mustRunAgent(&suite, &.{ "pull", pid, "--no-locality-probe", "--json" }));
+
+    const out = mustRunWatch(&suite, &.{"tree"});
+    defer gpa.free(out);
+
+    // After a pull there is at least one action row; the tree must not
+    // emit the empty-forest sentinel.
+    if (std.mem.indexOf(u8, out, "(no action chains)") != null) {
+        std.debug.print("tree: unexpected empty forest after pull:\n{s}\n", .{out});
+        return error.UnexpectedEmptyForest;
+    }
+}
+
+test "planar-watch tree --root-session with unknown id exits non-zero" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    gpa.free(suite.mustRun(&.{ "init", "--skip-project" }));
+
+    const res = runBin(&suite, resolveWatchBin(), &.{ "tree", "--root-session", "99999" });
+    defer res.deinit(gpa);
+
+    try std.testing.expect(res.term == .exited);
+    try std.testing.expect(res.term.exited != 0);
+}
+
+test "planar-watch tree --root-session with invalid (negative) id exits non-zero" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    gpa.free(suite.mustRun(&.{ "init", "--skip-project" }));
+
+    const res = runBin(&suite, resolveWatchBin(), &.{ "tree", "--root-session", "-1" });
+    defer res.deinit(gpa);
+
+    try std.testing.expect(res.term == .exited);
+    try std.testing.expect(res.term.exited != 0);
+}
+
+test "planar-watch tree empty DB emits empty-forest sentinel" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    // init with no tasks/claims so no action rows exist.
+    gpa.free(suite.mustRun(&.{ "init", "--skip-project" }));
+
+    const out = mustRunWatch(&suite, &.{"tree"});
+    defer gpa.free(out);
+
+    try std.testing.expect(std.mem.indexOf(u8, out, "(no action chains)") != null);
+}
+
+// task 3069 — synthetic orchestrator → coder dispatch chain renders as a
+// 2-level tree (spec: line 90 "a synthetic orchestrator → coder dispatch
+// chain ... renders as a 2-level tree under `planar-watch tree`").
+//
+// Methodology: `planar-agent pull` writes the root (orchestrator) action row.
+// A second action row with `parent_action_id` pointing at the root is inserted
+// directly via the `sqlite3` CLI, emulating what `planar-agent pull` would do
+// when dispatching a coder sub-agent. The tree verb must render both nodes with
+// the `└──` child prefix on the coder row.
+test "planar-watch tree synthetic orchestrator→coder chain renders 2-level tree" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const pid = seedPlanWithTask(&suite, "watch-tree-2level", "tree-2level-task");
+    defer gpa.free(pid);
+
+    // Pull inserts a root orchestrator action row. Capture the JSON output so
+    // we can extract the session_id and the root action_id for the SQL insert.
+    const pull_out = mustRunAgent(&suite, &.{ "pull", pid, "--no-locality-probe", "--json" });
+    defer gpa.free(pull_out);
+
+    // Extract session_id from the pull JSON ("session":{...,"id":<N>,...}).
+    const session_id = extractIntField(pull_out, "\"session_id\":") orelse
+        @panic("no session_id in pull output");
+
+    // Query the DB for the root action's id (the one just inserted by pull).
+    // We use `sqlite3 <db> "select max(id) from agent_actions"` — there may
+    // be only one row, so max(id) is the root action we just created.
+    const root_id_sql = "select max(id) from agent_actions where parent_action_id is null;";
+    const sqlite3_query_res = std.process.run(gpa, std.testing.io, .{
+        .argv = &.{ "sqlite3", suite.db_path, root_id_sql },
+    }) catch |e| {
+        std.debug.print("sqlite3 not available ({s}); skipping synthetic chain test\n", .{@errorName(e)});
+        return error.SkipZigTest;
+    };
+    defer gpa.free(sqlite3_query_res.stderr);
+    const root_id_str = std.mem.trim(u8, sqlite3_query_res.stdout, " \t\r\n");
+    const root_id = std.fmt.parseInt(i64, root_id_str, 10) catch {
+        gpa.free(sqlite3_query_res.stdout);
+        std.debug.print("could not parse root action id from sqlite3 output: '{s}'\n", .{root_id_str});
+        @panic("synthetic chain test: could not resolve root action id");
+    };
+    gpa.free(sqlite3_query_res.stdout);
+
+    // Insert the child (coder) action row directly, wiring parent_action_id
+    // to the root action. This emulates what planar-agent pull would do when
+    // dispatching a sub-agent from within an orchestrator action.
+    const insert_sql = std.fmt.allocPrint(
+        gpa,
+        "insert into agent_actions (session_id, parent_action_id, action_kind, vendor, started_at)" ++
+            " values ({d}, {d}, 'coder', 'zig-test-synthetic', strftime('%Y-%m-%dT%H:%M:%fZ','now'));",
+        .{ session_id, root_id },
+    ) catch @panic("OOM");
+    defer gpa.free(insert_sql);
+
+    const insert_res = std.process.run(gpa, std.testing.io, .{
+        .argv = &.{ "sqlite3", suite.db_path, insert_sql },
+    }) catch |e| {
+        std.debug.print("sqlite3 insert failed ({s}); skipping\n", .{@errorName(e)});
+        return error.SkipZigTest;
+    };
+    gpa.free(insert_res.stdout);
+    gpa.free(insert_res.stderr);
+    if (insert_res.term != .exited or insert_res.term.exited != 0) {
+        std.debug.print("sqlite3 insert non-zero exit: {any}\n", .{insert_res.term});
+        @panic("synthetic chain test: sqlite3 insert failed");
+    }
+
+    // Run planar-watch tree. The forest now has one root at depth 0 and one
+    // child at depth 1. The child must be rendered with the `└──` last-sibling
+    // tree character (UTF-8: 0xE2 0x94 0x94 0xE2 0x94 0x80 0xE2 0x94 0x80).
+    const out = mustRunWatch(&suite, &.{"tree"});
+    defer gpa.free(out);
+
+    // The empty-forest sentinel must NOT appear.
+    if (std.mem.indexOf(u8, out, "(no action chains)") != null) {
+        std.debug.print("tree: unexpected empty forest with 2 action rows:\n{s}\n", .{out});
+        return error.UnexpectedEmptyForest;
+    }
+
+    // The `└──` (last-child tree character) must appear — proof that the
+    // recursive CTE picked up the parent→child edge and rendered depth-1.
+    const last_child_marker = "\xE2\x94\x94\xE2\x94\x80\xE2\x94\x80"; // └──
+    if (std.mem.indexOf(u8, out, last_child_marker) == null) {
+        std.debug.print(
+            "tree: 2-level chain did not render child prefix '└──':\n{s}\n",
+            .{out},
+        );
+        return error.Missing2LevelTreePrefix;
+    }
+}
+
+// =========================================================================
+// Task 3089 — production-path orchestrator → coder dispatch chain.
+//
+// Spec: test-spec line 90 ("tree verb renders an orchestrator → coder chain").
+//
+// This test builds a 2-level tree using ONLY production verbs — no raw
+// sqlite3 INSERT. The orchestrator pulls task A and captures its action_id.
+// The coder pulls task B with --parent-action=<orch-action-id>. The tree
+// must then render the coder action as a child of the orchestrator action.
+//
+// Design: two tasks are required because `pull` picks the next todo task
+// and marks it doing. We need the orchestrator to own one task while the
+// coder pulls a second one. The orchestrator action is the parent; the coder
+// action is the child. This is the most honest model of the real dispatch
+// (orchestrator claims its task, then dispatches the coder for the next task
+// via --parent-action so the tree edge is wired).
+// =========================================================================
+
+test "planar-watch tree production orchestrator→coder --parent-action produces 2-level hierarchy" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    // Seed plan with TWO todo tasks so orchestrator and coder can each pull one.
+    gpa.free(suite.mustRun(&.{ "init", "--skip-project" }));
+    const plan_json = suite.mustRun(&.{ "plan", "create", "--slug", "watch-tree-prod", "--json", "watch-tree-prod" });
+    defer gpa.free(plan_json);
+    const plan_id = extractIntField(plan_json, "\"id\"") orelse @panic("no plan id");
+    const plan_id_arg = std.fmt.allocPrint(gpa, "{d}", .{plan_id}) catch @panic("OOM");
+    defer gpa.free(plan_id_arg);
+    gpa.free(suite.mustRun(&.{ "task", "add", "--plan", plan_id_arg, "orch-task" }));
+    gpa.free(suite.mustRun(&.{ "task", "add", "--plan", plan_id_arg, "coder-task" }));
+
+    // Orchestrator pull: claims the first task and gets its action_id.
+    const orch_out = mustRunAgent(&suite, &.{
+        "pull", plan_id_arg, "--role", "orchestrator", "--no-locality-probe", "--json",
+    });
+    defer gpa.free(orch_out);
+
+    const orch_action_id = extractIntField(orch_out, "\"action_id\":") orelse
+        @panic("no action_id in orchestrator pull output");
+    const orch_action_arg = std.fmt.allocPrint(gpa, "{d}", .{orch_action_id}) catch @panic("OOM");
+    defer gpa.free(orch_action_arg);
+
+    // Coder dispatch: --parent-action wires the cross-session hierarchy edge.
+    const coder_out = mustRunAgent(&suite, &.{
+        "pull",            plan_id_arg,     "--role",              "coder",
+        "--parent-action", orch_action_arg, "--no-locality-probe", "--json",
+    });
+    defer gpa.free(coder_out);
+
+    // Verify the coder got a task (not no_work).
+    if (std.mem.indexOf(u8, coder_out, "\"no_work\":true") != null) {
+        std.debug.print("coder pull returned no_work — expected a second task:\n{s}\n", .{coder_out});
+        @panic("coder pull must find the second task");
+    }
+
+    // Run planar-watch tree. The hierarchy must render the coder at depth 1
+    // under the orchestrator (depth 0).
+    const out = mustRunWatch(&suite, &.{"tree"});
+    defer gpa.free(out);
+
+    // Empty forest is wrong — two pulls happened.
+    if (std.mem.indexOf(u8, out, "(no action chains)") != null) {
+        std.debug.print("tree: unexpected empty forest after two pulls:\n{s}\n", .{out});
+        return error.UnexpectedEmptyForest;
+    }
+
+    // The `└──` (last-child tree character) must appear — the coder action
+    // is the only child of the orchestrator and is therefore the last sibling.
+    const last_child_marker = "\xE2\x94\x94\xE2\x94\x80\xE2\x94\x80"; // └──
+    if (std.mem.indexOf(u8, out, last_child_marker) == null) {
+        std.debug.print(
+            "tree: production dispatch chain did not render child prefix '└──';\n" ++
+                "the --parent-action flag did not produce the hierarchy edge:\n{s}\n",
+            .{out},
+        );
+        return error.Missing2LevelTreePrefix;
+    }
+}
+
+test "planar-agent pull --parent-action with non-positive id exits non-zero" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const pid = seedPlanWithTask(&suite, "tree-parent-invalid", "task-invalid");
+    defer gpa.free(pid);
+
+    // --parent-action 0 must be rejected with InvalidInput.
+    const res_zero = runBin(&suite, resolveAgentBin(), &.{
+        "pull", pid, "--parent-action", "0", "--no-locality-probe", "--json",
+    });
+    defer res_zero.deinit(gpa);
+    try std.testing.expect(res_zero.term == .exited);
+    try std.testing.expect(res_zero.term.exited != 0);
+
+    // --parent-action with an unknown (but positive) id must exit non-zero.
+    const res_unknown = runBin(&suite, resolveAgentBin(), &.{
+        "pull", pid, "--parent-action", "999999", "--no-locality-probe", "--json",
+    });
+    defer res_unknown.deinit(gpa);
+    try std.testing.expect(res_unknown.term == .exited);
+    try std.testing.expect(res_unknown.term.exited != 0);
+}
+
+// =========================================================================
+// Task 3090 — tree --root-session with multiple action chains under one session.
+//
+// Spec: test-spec line 222 ("tree --root-session with multiple action chains
+// under the same session").
+//
+// Two distinct root action chains under the same session. The anchor selects
+// root actions WHERE session_id = <id>; the recursive term extends each chain
+// to its children. Both chains must appear in the --root-session output.
+//
+// Production verbs alone cannot create two separate root action chains in the
+// SAME session without additional tasks — `pull` starts one root action per
+// call but each call uses ensureActive which may return the same session when
+// the vendor+vendor_session pair matches. To get two unambiguously disjoint
+// roots in the same session, we use `action start` on the same claim (which
+// resolves the parent to the existing open action, giving a child, not a new
+// root). Instead we use `pull` twice on the SAME vendor+vendor_session pair
+// so ensureActive returns the same session for both, then rely on the fact
+// that each pull writes a NEW root action row with parent_action_id IS NULL.
+// A second pull on the same session (different task) produces a second root
+// because pull does not inherit the prior pull's action as parent — that is
+// exactly the production gap that --parent-action fixes. Here we WANT two
+// roots to test the multi-chain scenario, so we intentionally omit
+// --parent-action.
+// =========================================================================
+
+test "planar-watch tree --root-session renders two disjoint chains under one session" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    // Seed plan with TWO todo tasks.
+    gpa.free(suite.mustRun(&.{ "init", "--skip-project" }));
+    const plan_json = suite.mustRun(&.{ "plan", "create", "--slug", "tree-multi-chain", "--json", "tree-multi-chain" });
+    defer gpa.free(plan_json);
+    const plan_id = extractIntField(plan_json, "\"id\"") orelse @panic("no plan id");
+    const plan_id_arg = std.fmt.allocPrint(gpa, "{d}", .{plan_id}) catch @panic("OOM");
+    defer gpa.free(plan_id_arg);
+    gpa.free(suite.mustRun(&.{ "task", "add", "--plan", plan_id_arg, "chain-a-task" }));
+    gpa.free(suite.mustRun(&.{ "task", "add", "--plan", plan_id_arg, "chain-b-task" }));
+
+    // First pull: chain A root. Use a fixed vendor-session so both pulls
+    // land in the same session via ensureActive.
+    const pull_a = mustRunAgent(&suite, &.{
+        "pull",                plan_id_arg,
+        "--vendor-session",    "multi-chain-session",
+        "--role",              "coder",
+        "--no-locality-probe", "--json",
+    });
+    defer gpa.free(pull_a);
+
+    // Extract session_id from the first pull's claim.
+    const session_id = extractIntField(pull_a, "\"session_id\":") orelse
+        @panic("no session_id in pull_a output");
+
+    // Add a child to chain A: use `action start` on the claim from pull_a.
+    // This gives chain A depth 1 (root + one child).
+    const token_a = extractStringField(gpa, pull_a, "\"claim_token\":\"") catch
+        @panic("no claim_token in pull_a output");
+    defer gpa.free(token_a);
+    gpa.free(mustRunAgent(&suite, &.{
+        "action",              "start",
+        "--claim",             token_a,
+        "--kind",              "tool_call",
+        "--no-locality-probe", "--json",
+    }));
+
+    // Second pull: chain B root. Same vendor-session → same session id.
+    // No --parent-action → new root action (parent_action_id IS NULL).
+    const pull_b = mustRunAgent(&suite, &.{
+        "pull",                plan_id_arg,
+        "--vendor-session",    "multi-chain-session",
+        "--role",              "coder",
+        "--no-locality-probe", "--json",
+    });
+    defer gpa.free(pull_b);
+
+    if (std.mem.indexOf(u8, pull_b, "\"no_work\":true") != null) {
+        std.debug.print("pull_b returned no_work — expected a second task:\n{s}\n", .{pull_b});
+        @panic("chain B pull must find the second task");
+    }
+
+    // Add a child to chain B as well.
+    const token_b = extractStringField(gpa, pull_b, "\"claim_token\":\"") catch
+        @panic("no claim_token in pull_b output");
+    defer gpa.free(token_b);
+    gpa.free(mustRunAgent(&suite, &.{
+        "action",              "start",
+        "--claim",             token_b,
+        "--kind",              "tool_call",
+        "--no-locality-probe", "--json",
+    }));
+
+    // Run planar-watch tree --root-session <id>. Both chain-A and chain-B
+    // roots share this session and must both appear in the output.
+    const session_arg = std.fmt.allocPrint(gpa, "{d}", .{session_id}) catch @panic("OOM");
+    defer gpa.free(session_arg);
+
+    const out = mustRunWatch(&suite, &.{ "tree", "--root-session", session_arg });
+    defer gpa.free(out);
+
+    // Neither chain should be absent — both roots belong to the session.
+    if (std.mem.indexOf(u8, out, "(no action chains)") != null) {
+        std.debug.print("tree --root-session: unexpected empty forest:\n{s}\n", .{out});
+        return error.UnexpectedEmptyForest;
+    }
+
+    // Both chains have a child, so both must render the `└──` depth-1 marker.
+    // The forest has two roots each with one child → the marker appears twice.
+    const last_child_marker = "\xE2\x94\x94\xE2\x94\x80\xE2\x94\x80"; // └──
+    var count: usize = 0;
+    var search_buf = out;
+    while (std.mem.indexOf(u8, search_buf, last_child_marker)) |pos| {
+        count += 1;
+        search_buf = search_buf[pos + last_child_marker.len ..];
+    }
+    if (count < 2) {
+        std.debug.print(
+            "tree --root-session: expected at least 2 '└──' markers (one per chain child);\n" ++
+                "got {d}. Both chains under the same session must render.\n{s}\n",
+            .{ count, out },
+        );
+        return error.MissingMultiChainRender;
     }
 }
