@@ -125,6 +125,16 @@ planar-agent block    --claim <token> --blocker <id>  # atomic: task → blocked
 
 For hand-picked targets, swap `pull <plan>` with `claim --entity task:<id>` (does NOT auto-transition task status — caller decides). For parallel windows, run the heuristic against `entity_links` + task touches to identify mutually-non-conflicting tasks, then issue independent `pull` calls; each returns its own `claim_token`. For operator-side recovery use `planar-agent reconcile [--dry-run]` and `planar-agent abort --claim <token> --reason <text>`.
 
+**Cross-session dispatch hierarchy.** To make a coder's action appear as a child of the orchestrator's own action in `planar-watch tree`, pass `--parent-action <action-id>` to `planar-agent pull`. The orchestrator's action id is the `action_id` field returned by its own `pull` call:
+
+```sh
+orch=$(planar-agent pull $PLAN_ID --role orchestrator --json)
+orch_action=$(echo "$orch" | jq -r .action_id)
+planar-agent pull $PLAN_ID --role coder --parent-action "$orch_action" --json
+```
+
+Without `--parent-action`, each pull starts a new root action and `planar-watch tree` shows flat disjoint chains — correct for non-orchestrated work, a gap for orchestrator → coder dispatch. The flag is optional; omitting it preserves today's behavior bit-for-bit.
+
 ## Brief composition
 
 The dispatcher's brief is the input the coder runs on. Sloppy briefs are a dispatcher problem to prevent, not a coder problem to recover from. Every coder brief composed by the orchestrator MUST:

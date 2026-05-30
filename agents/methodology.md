@@ -89,6 +89,19 @@ The claim ritual is expressed entirely in `planar-agent` verbs (the dedicated ag
 1. **Check.** Before selecting work, the orchestrator runs `planar plan next <plan>` (operator-side claim-aware read) or `planar-agent peek <plan>` (agent-side dry-run of "what would `pull` pick"). Do not derive next work from `task list --status todo` alone.
 2. **Pull.** `planar-agent pull <plan-id> [--role coder] [--worktree <id-or-path>]` atomically picks the next eligible task, claims it (`agent_work_claims.status='active'`), flips the task to `doing`, and starts a top-level `agent_actions` row. Returns `{claim_token, task, action_id}`. When no work is available it returns `{ok:true, no_work:true}` and the agent terminates cleanly.
    For dispatch where the caller already has a specific task ID (orchestrator hand-picking), use `planar-agent claim --entity task:<id> [--role <r>] [--worktree <path>]` instead. `claim` does not auto-transition the task; the caller is responsible for the status flip (or for invoking `planar-agent action start` to mark work as begun without touching task status).
+
+   **Cross-session dispatch hierarchy (`--parent-action`).** When an orchestrator dispatches a coder sub-agent and wants the dispatch to appear as a child of the orchestrator's own action in `planar-watch tree`, it passes `--parent-action <its-own-action-id>` to `planar-agent pull`. The orchestrator's action id is the `action_id` field returned by its own `pull` or `action start`. Example:
+
+   ```sh
+   # Orchestrator pulls its own task and captures its action id:
+   orch_result=$(planar-agent pull $PLAN_ID --role orchestrator --json)
+   orch_action=$(echo "$orch_result" | jq -r .action_id)
+
+   # Coder dispatch: --parent-action wires the cross-session hierarchy edge:
+   planar-agent pull $PLAN_ID --role coder --parent-action "$orch_action" --json
+   ```
+
+   Without `--parent-action`, the coder's action is a root (no parent); `planar-watch tree` renders it as a separate, disjoint chain with no connection to the orchestrator. Omitting the flag preserves today's behavior bit-for-bit and is the correct choice when the caller does not want tree hierarchy (e.g. bare `pull` for non-orchestrated work). The flag is validated as a positive integer; an unknown action id causes `--parent-action` to fail with `NotFound`.
 3. **Heartbeat.** `planar-agent heartbeat --claim <token> [--ttl <secs>]` at least once per TTL/2 while work continues. A long-running tool call may delay the heartbeat, but the agent should heartbeat immediately before and after such calls.
 4. **Report sub-actions (optional).** For granular telemetry, wrap tool calls in `planar-agent action start --claim <token> --kind tool_call` / `planar-agent action end --action <id> --outcome ok`. Most agents skip this and let the top-level action started by `pull` cover the whole work session.
 5. **Terminate** with exactly one of:
