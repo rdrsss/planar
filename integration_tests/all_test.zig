@@ -17,6 +17,7 @@ comptime {
     _ = @import("list_plan_filter_test.zig");
     _ = @import("liveness_repull_test.zig");
     _ = @import("liveness_reconcile_scope_test.zig");
+    _ = @import("liveness_happy_path_test.zig");
     _ = @import("editflow_diff_review_test.zig");
     _ = @import("editflow_edit_test.zig");
     _ = @import("editflow_view_test.zig");
