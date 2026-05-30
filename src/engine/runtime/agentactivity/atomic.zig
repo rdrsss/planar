@@ -92,10 +92,12 @@ pub fn pullNext(
         if (!committed) rollback(d);
     }
 
-    // Pick the next eligible task: status=todo, plan matches, no
-    // active unexpired claim. The exclusivity check is inside
-    // store.acquireClaim too, so this query is the candidate filter,
-    // not a contract.
+    // Pick the next eligible task: plan matches, status in {todo,
+    // doing}, no active unexpired claim. The `doing` branch is the
+    // plan 493 F1 liveness path — a task whose previous worker
+    // crashed is re-pullable. The exclusivity check also lives
+    // inside store.acquireClaim, so this query is the candidate
+    // filter, not a contract.
     const task_id = pickNextEligible(d, args.plan_id) catch |e| switch (e) {
         store.Error.QueryFailed => {
             rollback(d);
@@ -109,8 +111,13 @@ pub fn pullNext(
         return .{ .no_work = true };
     };
 
-    // Status guard: todo → doing. Refusal rolls back.
-    policy.status.check(.task, "todo", "doing") catch |e| {
+    // Status guard. Read the actual current status so the policy
+    // check matches reality — when the predicate selected a `doing`
+    // task (post-crash liveness path), this is a `doing → doing`
+    // identity transition; otherwise it's the normal `todo → doing`.
+    const current_pull_status = currentTaskStatus(d, allocator, task_id) catch |e| return e;
+    defer allocator.free(current_pull_status);
+    policy.status.check(.task, current_pull_status, "doing") catch |e| {
         rollback(d);
         committed = true;
         return e;
@@ -356,13 +363,30 @@ fn terminalTransition(
     return .{ .claim = released, .task_id = task_id };
 }
 
-/// Find the next eligible task: `tasks.status='todo'` on the requested
-/// plan with no active unexpired claim. Returns null when no candidate.
+/// Find the next eligible task on the requested plan. A task is
+/// eligible when (a) it has no active unexpired claim AND (b) its
+/// status is either `todo` (the normal case) or `doing` (the
+/// claim-less liveness case — its previous worker crashed and the
+/// lease lapsed).
+///
+/// The `doing`-no-active-claim branch is plan 493 F1 (tech-spec
+/// artifact 265, methodology.md L100: "a stale claim no longer
+/// blocks pull"). Without it, a task whose worker crashed stays
+/// `doing` forever (reconcile only mutates claim rows, never
+/// `tasks.status`) and is unreachable from `pull`/`peek` until an
+/// operator manually flips it back to `todo`.
+///
+/// The "no active unexpired claim" predicate matches the existing
+/// `nextWork` predicate (status = 'active' AND lease_expires_at >=
+/// now) so the selector and the operator viewer agree by
+/// construction — every task `nextWork` surfaces in its
+/// `available` or `stale` bucket is selectable by `pull`. Returns
+/// null when no candidate exists.
 fn pickNextEligible(d: *db.sqlite.Db, plan_id: i64) store.Error!?i64 {
     var stmt = d.prepare(
         \\select t.id from tasks t
         \\where t.plan_id = ?
-        \\  and t.status = 'todo'
+        \\  and t.status in ('todo', 'doing')
         \\  and not exists (
         \\    select 1 from agent_work_claims c
         \\    where c.entity_kind = 'task'
