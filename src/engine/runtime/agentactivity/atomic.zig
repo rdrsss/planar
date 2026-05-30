@@ -92,10 +92,12 @@ pub fn pullNext(
         if (!committed) rollback(d);
     }
 
-    // Pick the next eligible task: status=todo, plan matches, no
-    // active unexpired claim. The exclusivity check is inside
-    // store.acquireClaim too, so this query is the candidate filter,
-    // not a contract.
+    // Pick the next eligible task: plan matches, status in {todo,
+    // doing}, no active unexpired claim. The `doing` branch is the
+    // plan 493 F1 liveness path — a task whose previous worker
+    // crashed is re-pullable. The exclusivity check also lives
+    // inside store.acquireClaim, so this query is the candidate
+    // filter, not a contract.
     const task_id = pickNextEligible(d, args.plan_id) catch |e| switch (e) {
         store.Error.QueryFailed => {
             rollback(d);
@@ -109,8 +111,13 @@ pub fn pullNext(
         return .{ .no_work = true };
     };
 
-    // Status guard: todo → doing. Refusal rolls back.
-    policy.status.check(.task, "todo", "doing") catch |e| {
+    // Status guard. Read the actual current status so the policy
+    // check matches reality — when the predicate selected a `doing`
+    // task (post-crash liveness path), this is a `doing → doing`
+    // identity transition; otherwise it's the normal `todo → doing`.
+    const current_pull_status = currentTaskStatus(d, allocator, task_id) catch |e| return e;
+    defer allocator.free(current_pull_status);
+    policy.status.check(.task, current_pull_status, "doing") catch |e| {
         rollback(d);
         committed = true;
         return e;
@@ -356,13 +363,30 @@ fn terminalTransition(
     return .{ .claim = released, .task_id = task_id };
 }
 
-/// Find the next eligible task: `tasks.status='todo'` on the requested
-/// plan with no active unexpired claim. Returns null when no candidate.
+/// Find the next eligible task on the requested plan. A task is
+/// eligible when (a) it has no active unexpired claim AND (b) its
+/// status is either `todo` (the normal case) or `doing` (the
+/// claim-less liveness case — its previous worker crashed and the
+/// lease lapsed).
+///
+/// The `doing`-no-active-claim branch is plan 493 F1 (tech-spec
+/// artifact 265, methodology.md L100: "a stale claim no longer
+/// blocks pull"). Without it, a task whose worker crashed stays
+/// `doing` forever (reconcile only mutates claim rows, never
+/// `tasks.status`) and is unreachable from `pull`/`peek` until an
+/// operator manually flips it back to `todo`.
+///
+/// The "no active unexpired claim" predicate matches the existing
+/// `nextWork` predicate (status = 'active' AND lease_expires_at >=
+/// now) so the selector and the operator viewer agree by
+/// construction — every task `nextWork` surfaces in its
+/// `available` or `stale` bucket is selectable by `pull`. Returns
+/// null when no candidate exists.
 fn pickNextEligible(d: *db.sqlite.Db, plan_id: i64) store.Error!?i64 {
     var stmt = d.prepare(
         \\select t.id from tasks t
         \\where t.plan_id = ?
-        \\  and t.status = 'todo'
+        \\  and t.status in ('todo', 'doing')
         \\  and not exists (
         \\    select 1 from agent_work_claims c
         \\    where c.entity_kind = 'task'
@@ -672,4 +696,101 @@ test "peekNext returns the same id pullNext would acquire" {
     const pulled = try pullNext(&d, a, .{ .plan_id = sp.pid, .session_id = sp.sid, .vendor = "t" });
     defer pulled.deinit(a);
     try std.testing.expectEqual(tid, pulled.task_id);
+}
+
+// =========================================================================
+// Plan 493 F1 — claim-less `doing` tasks are re-pullable.
+//
+// Contract (per tech-spec artifact 265, methodology.md L100): a task whose
+// worker crashed (lease lapsed; no unexpired active claim) MUST be
+// re-selected by pickNextEligible / pullNext / peekNext, with or without a
+// prior reconcile. The widened predicate is:
+//
+//     tasks.status = 'todo'
+//     OR (tasks.status = 'doing' AND no active unexpired claim)
+//
+// where "active unexpired claim" matches the existing nextWork predicate
+// (status = 'active' AND lease_expires_at >= now). The unit tests below
+// drive `peekNext`, which routes through `pickNextEligible`, so they
+// exercise the selector directly.
+// =========================================================================
+
+test "pickNextEligible selects a claim-less doing task (F1 — post-reconcile state)" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const sp = try newSessionAndPlan(&d);
+    // Mirror the post-crash post-reconcile state: a task stranded in
+    // `doing` with no claim row at all. Pre-F1 `pickNextEligible`
+    // requires `status='todo'` and returns no_work; post-F1 it returns
+    // this task.
+    const tid = try d.execParams(
+        "insert into tasks (scope_kind, plan_id, title, status, priority) values ('global', ?, 'crashed', 'doing', 100)",
+        &.{.{ .int = sp.pid }},
+    );
+    const peeked = try peekNext(&d, sp.pid);
+    try std.testing.expect(!peeked.no_work);
+    try std.testing.expectEqual(tid, peeked.task_id);
+}
+
+test "pickNextEligible selects a doing task whose claim is expired-but-still-active (F1 pre-reconcile window)" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const sp = try newSessionAndPlan(&d);
+    const tid = try d.execParams(
+        "insert into tasks (scope_kind, plan_id, title, status, priority) values ('global', ?, 'crashed', 'doing', 100)",
+        &.{.{ .int = sp.pid }},
+    );
+    // An `active` claim whose lease_expires_at is far in the past —
+    // i.e. the worker crashed but `reconcile` has not yet flipped the
+    // claim to `stale`. F1 says the widened predicate must still pick
+    // the task because the claim is not an UNEXPIRED active claim.
+    _ = try d.execParams(
+        \\insert into agent_work_claims (
+        \\  claim_token, session_id, entity_kind, entity_id,
+        \\  status, vendor,
+        \\  claimed_at, last_heartbeat_at, lease_expires_at
+        \\) values (
+        \\  'expired-token', ?, 'task', ?,
+        \\  'active', 'test',
+        \\  '2020-01-01T00:00:00.000Z',
+        \\  '2020-01-01T00:00:00.000Z',
+        \\  '2020-01-01T00:00:00.000Z'
+        \\)
+    , &.{ .{ .int = sp.sid }, .{ .int = tid } });
+
+    const peeked = try peekNext(&d, sp.pid);
+    try std.testing.expect(!peeked.no_work);
+    try std.testing.expectEqual(tid, peeked.task_id);
+}
+
+test "pickNextEligible still skips a doing task whose claim is active+unexpired (F1 regression fence)" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const sp = try newSessionAndPlan(&d);
+    const tid = try d.execParams(
+        "insert into tasks (scope_kind, plan_id, title, status, priority) values ('global', ?, 'live', 'doing', 100)",
+        &.{.{ .int = sp.pid }},
+    );
+    // A genuinely-live claim: lease expires far in the future. The
+    // widened predicate MUST NOT pick this task — it is real work in
+    // flight.
+    _ = try d.execParams(
+        \\insert into agent_work_claims (
+        \\  claim_token, session_id, entity_kind, entity_id,
+        \\  status, vendor,
+        \\  claimed_at, last_heartbeat_at, lease_expires_at
+        \\) values (
+        \\  'live-token', ?, 'task', ?,
+        \\  'active', 'test',
+        \\  '2025-01-01T00:00:00.000Z',
+        \\  '2025-01-01T00:00:00.000Z',
+        \\  '2099-01-01T00:00:00.000Z'
+        \\)
+    , &.{ .{ .int = sp.sid }, .{ .int = tid } });
+
+    const peeked = try peekNext(&d, sp.pid);
+    try std.testing.expect(peeked.no_work);
 }
