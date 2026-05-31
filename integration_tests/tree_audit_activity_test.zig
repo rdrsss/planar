@@ -416,7 +416,13 @@ test "orchestrator surfaces reference `planar-agent peek` for parallelism-aware 
         const body = try readRepoFile(gpa, rel);
         defer gpa.free(body);
         try std.testing.expect(std.mem.indexOf(u8, body, "planar-agent peek") != null);
-        try std.testing.expect(std.mem.indexOf(u8, body, "parallelism-aware") != null);
+        // The orchestrator surfaces still reason about parallel dispatch, but
+        // the model orchestrator skill no longer claims to be "parallelism-
+        // aware" itself — plan 492 moved worktree/parallel fan-out to the
+        // planar-orchestrate harness. The load-bearing check is the
+        // `planar-agent peek` namespace-purity reference plus a parallel-
+        // dispatch mention; the exact framing differs per surface.
+        try std.testing.expect(std.mem.indexOf(u8, body, "parallel") != null);
     }
 }
 
