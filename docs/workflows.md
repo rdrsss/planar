@@ -2045,7 +2045,9 @@ The orchestrator records the choice and moves on to the parallel-fanout per-cycl
 
 ## Recipe 22 — Orchestrate a multi-task plan with parallel coders
 
-The full `parallel-fanout` lifecycle, from strategy confirmation through fan-in and reviewer to cleanup. Use this when you have a plan in `active` status with ≥3 tasks, at least 2 of which are parallel-eligible (disjoint `task_touches`, no migration, no singleton-file touch, no blocking open question or proposed-decision dependency). For the eligibility rules see [`agents/methodology.md §Parallelizability rules`](../agents/methodology.md#parallelizability-rules); for the per-axis bundle see [`docs/concepts.md §Orchestration strategy`](concepts.md#orchestration-strategy).
+> **Ownership note (plan 492).** The `parallel-fanout` and `isolated-sequential` lifecycles — worktree creation, the epic/cycle branch model, fan-in merge, and cleanup — are **owned by the `planar-orchestrate` harness**, not the model-driven `/orchestrator` skill. `/orchestrator` runs `classic` (in-pwd) only; when a plan is a fit for parallel fan-out it recommends handing the plan to the harness. The walkthrough below is retained as **the specification of that lifecycle** (what the harness automates) and as the manual git procedure an operator can run by hand in the interim until `planar-orchestrate` ships. The `$ /orchestrator …` transcripts illustrate the flow; in the harness era the driver is `planar-orchestrate`, not the model orchestrator. The six eligibility rules and the path/branch conventions live in plan 492's tech spec.
+
+The full `parallel-fanout` lifecycle, from strategy confirmation through fan-in and reviewer to cleanup. Use this when you have a plan in `active` status with ≥3 tasks, at least 2 of which are parallel-eligible (disjoint `task_touches`, no migration, no singleton-file touch, no blocking open question or proposed-decision dependency).
 
 ### Prerequisites
 
@@ -2150,7 +2152,7 @@ git merge --no-ff cycle/worktree-management/m3-tests \
     -m "Plan 297 M3 fan-in: tests"
 ```
 
-Per-child conflict handling is conflict-tolerant: a conflict on one child halts that child's merge but does NOT halt the others. The orchestrator runs `git merge --abort`, opens a question via `planar question add --plan 297 "<conflict summary>"`, leaves the cycle worktree on disk for operator resolution, and continues to the next child. See [`agents/methodology.md §Conflict resolution at fan-in`](../agents/methodology.md#conflict-resolution-at-fan-in).
+Per-child conflict handling is conflict-tolerant: a conflict on one child halts that child's merge but does NOT halt the others. The orchestrator runs `git merge --abort`, opens a question via `planar question add --plan 297 "<conflict summary>"`, leaves the cycle worktree on disk for operator resolution, and continues to the next child. The fan-in conflict protocol (touches mis-prediction / trivial / deep-semantic) lives in plan 492's tech spec.
 
 ### Step 8 — Integrated reviewer (single pass)
 
@@ -2206,7 +2208,7 @@ For the per-step orchestrator behavior under `parallel-fanout` see [`skills/src/
 
 ## Recipe 23 — Recover a dead coder from its worktree
 
-A coder dispatched under `isolated-sequential` or `parallel-fanout` died mid-cycle — its heartbeat lapsed past TTL, its claim is now stale, and the cycle worktree on disk holds whatever partial state the coder committed before dying. This recipe recovers it. The persisted `agent_work_claims.worktree_path` is the recovery key.
+A coder dispatched into a worktree (under the harness-owned `isolated-sequential` or `parallel-fanout` strategies — plan 492) died mid-cycle — its heartbeat lapsed past TTL, its claim is now stale, and the cycle worktree on disk holds whatever partial state the coder committed before dying. This recipe recovers it; it applies to any worktree-isolated coder regardless of who dispatched it. The persisted `agent_work_claims.worktree_path` is the recovery key.
 
 ### Step 1 — Surface the stale claim
 
