@@ -44,7 +44,7 @@ const exit = @import("exit.zig");
 /// derive their typed Args via `cli.castArgs(main.root, &.{…}, ptr)`.
 pub const root: cli.Cmd = .{
     .name = "planar-watch",
-    .desc = "Read-only viewer for live agent activity (feed / ps / claims / actions / plans / log).",
+    .desc = "Read-only viewer for live agent activity (feed / ps / claims / actions / plans / log / tree).",
     .long_desc = "planar-watch is the human-facing live cockpit for agent activity.\n\n" ++
         "  The default invocation with no args is the activity feed.\n" ++
         "  Subcommands narrow the view; `--follow` turns each one into a\n" ++
@@ -52,7 +52,9 @@ pub const root: cli.Cmd = .{
         "  change. The binary opens the database in strict read-only mode\n" ++
         "  (SQLITE_OPEN_READONLY) — every write SQL string is rejected by\n" ++
         "  the SQLite driver itself, the second line of defense behind\n" ++
-        "  this binary's `no write verbs registered` capability boundary.",
+        "  this binary's `no write verbs registered` capability boundary.\n\n" ++
+        "  `tree` renders the orchestrator → sub-agent forest by walking\n" ++
+        "  agent_actions.parent_action_id chains.",
     .cmds = cmd_tree.verbs,
 };
 
@@ -135,9 +137,9 @@ fn maybeInjectDefaultVerb(
 
     // Known verb names — leave argv alone.
     inline for ([_][]const u8{
-        "feed",    "ps",         "claims",
-        "actions", "plans",      "log",
-        "version", "completion",
+        "feed",    "ps",      "claims",
+        "actions", "plans",   "log",
+        "tree",    "version", "completion",
     }) |v| {
         if (std.mem.eql(u8, first, v)) return raw_args;
     }

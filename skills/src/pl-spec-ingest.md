@@ -163,6 +163,10 @@ reconciled product-spec.md: 4 questions (2 new, 2 unchanged, 0 stale)
 planar spec ingest <plan> [--apply] [--apply-removals] [--format text|json]
 ```
 
+## Status reporting
+
+See [`agents/ingestor.md` § Status reporting](../../agents/ingestor.md#status-reporting) for the canonical phase-transition strings (`"reading workbench specs"`, `"decomposing tasks"`, `"writing preview"`, `"awaiting:operator-confirmation"`, `"applying"`). Emit each via `planar-agent heartbeat --claim <token> --status "<text>"`; cap is 256 bytes. The `awaiting:operator-confirmation` string uses the `awaiting:` prefix because the ingestor is genuinely blocked waiting for the explicit user gate before `--apply` may run. See [`agents/methodology.md` § Heartbeat status contract](../../agents/methodology.md#heartbeat-status-contract) for the full convention.
+
 ## Vendor Notes
 
 {{.VendorNotes}}

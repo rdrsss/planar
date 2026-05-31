@@ -162,6 +162,10 @@ without requiring a manual rewrite.
 For the full rationale see the plan 97 tech spec at
 `~/.planar/workbench/project_planar/p97-spec-draft-questions/tech-spec.md`.
 
+## Status reporting
+
+See [`agents/planner.md` § Status reporting](../../agents/planner.md#status-reporting) for the canonical phase-transition strings (`"drafting product-spec"`, `"drafting tech-spec"`, `"drafting roadmap"`, `"drafting test-spec"`, `"ready for review"`). Emit each via `planar-agent heartbeat --claim <token> --status "<text>"`; cap is 256 bytes. See [`agents/methodology.md` § Heartbeat status contract](../../agents/methodology.md#heartbeat-status-contract) for the `awaiting:` prefix convention.
+
 ## Vendor Notes
 
 {{.VendorNotes}}

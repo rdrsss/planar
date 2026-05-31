@@ -89,6 +89,19 @@ The claim ritual is expressed entirely in `planar-agent` verbs (the dedicated ag
 1. **Check.** Before selecting work, the orchestrator runs `planar plan next <plan>` (operator-side claim-aware read) or `planar-agent peek <plan>` (agent-side dry-run of "what would `pull` pick"). Do not derive next work from `task list --status todo` alone.
 2. **Pull.** `planar-agent pull <plan-id> [--role coder] [--worktree <id-or-path>]` atomically picks the next eligible task, claims it (`agent_work_claims.status='active'`), flips the task to `doing`, and starts a top-level `agent_actions` row. Returns `{claim_token, task, action_id}`. When no work is available it returns `{ok:true, no_work:true}` and the agent terminates cleanly.
    For dispatch where the caller already has a specific task ID (orchestrator hand-picking), use `planar-agent claim --entity task:<id> [--role <r>] [--worktree <path>]` instead. `claim` does not auto-transition the task; the caller is responsible for the status flip (or for invoking `planar-agent action start` to mark work as begun without touching task status).
+
+   **Cross-session dispatch hierarchy (`--parent-action`).** When an orchestrator dispatches a coder sub-agent and wants the dispatch to appear as a child of the orchestrator's own action in `planar-watch tree`, it passes `--parent-action <its-own-action-id>` to `planar-agent pull`. The orchestrator's action id is the `action_id` field returned by its own `pull` or `action start`. Example:
+
+   ```sh
+   # Orchestrator pulls its own task and captures its action id:
+   orch_result=$(planar-agent pull $PLAN_ID --role orchestrator --json)
+   orch_action=$(echo "$orch_result" | jq -r .action_id)
+
+   # Coder dispatch: --parent-action wires the cross-session hierarchy edge:
+   planar-agent pull $PLAN_ID --role coder --parent-action "$orch_action" --json
+   ```
+
+   Without `--parent-action`, the coder's action is a root (no parent); `planar-watch tree` renders it as a separate, disjoint chain with no connection to the orchestrator. Omitting the flag preserves today's behavior bit-for-bit and is the correct choice when the caller does not want tree hierarchy (e.g. bare `pull` for non-orchestrated work). The flag is validated as a positive integer; an unknown action id causes `--parent-action` to fail with `NotFound`.
 3. **Heartbeat.** `planar-agent heartbeat --claim <token> [--ttl <secs>]` at least once per TTL/2 while work continues. A long-running tool call may delay the heartbeat, but the agent should heartbeat immediately before and after such calls.
 4. **Report sub-actions (optional).** For granular telemetry, wrap tool calls in `planar-agent action start --claim <token> --kind tool_call` / `planar-agent action end --action <id> --outcome ok`. Most agents skip this and let the top-level action started by `pull` cover the whole work session.
 5. **Terminate** with exactly one of:
@@ -132,13 +145,13 @@ Storage is path-of-least-resistance: **no schema delta.** The strategy choice fo
 
 ### Named strategies
 
-Five named strategies ship. Each is one row in the bundle table below; an operator who wants something outside the menu can assemble a custom combination via axis-by-axis flags (see [Strategy gate](#strategy-gate) below).
+Three named strategies run in the **model-driven orchestrator** — all in-pwd. Each is one row in the bundle table below; an operator who wants something outside the menu can assemble a custom combination via axis-by-axis flags (see [Strategy gate](#strategy-gate) below).
 
 - **`classic`** — Coder runs in the operator's cwd on whatever branch is currently checked out. Sequential cycles, reviewer per cycle, test-coder per cycle. No worktrees, no epic branch, no parallelism. Recommended for: single-task changes, small plans, high-stakes invariant-touching work where the operator wants to watch the diff land in their own checkout.
-- **`isolated-sequential`** — Coder runs in a dedicated worktree on a child branch off an epic branch. Sequential cycles, reviewer per cycle. The operator's pwd stays clean; recovery from a dead coder is straightforward; `git log --graph` shows per-task working branches. Recommended for: multi-task plans where pwd hygiene matters, cross-cutting work, plans where easy per-task rollback is valuable.
-- **`parallel-fanout`** — Fan out to N parallel coders on a parallel-eligible subset of the plan's open tasks, consolidate at fan-in, single reviewer pass per fan-in cycle. Each coder runs in its own worktree on its own child branch. Recommended for: plans with ≥3 tasks and ≥2 parallel-eligible. Refused for: schema-migration-heavy plans, singleton-file-editing plans (the parallelizability rules surface this automatically — see the forward pointer in [Things To Revisit](#things-to-revisit)).
-- **`barrel-deferred`** — Coder cycles run back-to-back in pwd; reviewer dispatched once at a milestone or plan boundary on the union diff. No isolation. Recommended for: long sequential plans where per-cycle reviewer overhead exceeds the value. This is the existing `barrel-deferred` dispatch shape promoted to a named strategy.
+- **`barrel-deferred`** — Coder cycles run back-to-back in pwd; reviewer dispatched once at a milestone or plan boundary on the union diff. No isolation. Recommended for: long sequential plans where per-cycle reviewer overhead exceeds the value.
 - **`barrel-bypass`** — No reviewer at all; quality gates (`make fmt-check`, `make build`, `make test`, `make test-integration` twice, `planar skills render --check` against an out-of-tree staging dir, and any remaining relevant validators) are the entire signal. Sequential, in-pwd. Recommended for: mechanical sweeps, docs-polish, single-verb additions where the contract is fully gated.
+
+Two further strategies — **`isolated-sequential`** (coder in a dedicated worktree on an epic-child branch; sequential) and **`parallel-fanout`** (N coders fanned out across parallel-eligible tasks, each in its own worktree, consolidated at fan-in) — require deterministic worktree and branch management and are therefore **owned by the `planar-orchestrate` harness** (plan 492), not the model-driven orchestrator. The model orchestrator never creates worktrees, cuts epic branches, or fans out; for that work it hands the plan to the harness. Their axis bundles, the six parallel-eligibility rules, and the fan-in conflict protocol live in the plan-492 tech spec.
 
 ### Continuity guarantee: `classic`
 
@@ -146,7 +159,7 @@ Five named strategies ship. Each is one row in the bundle table below; an operat
 
 ### Axes
 
-The five axes underlying every strategy. A custom strategy (`--strategy custom` with per-axis flags) is the escape hatch for advanced operators outside the named menu.
+The five axes underlying every strategy. The model-driven orchestrator only reaches the in-pwd subset of axis values; the `worktree` / `epic-child` / `fan-out` / `per-fanin` values are reachable only through the `planar-orchestrate` harness (plan 492). A custom strategy (`--strategy custom` with per-axis flags) is the escape hatch for advanced operators outside the named menu.
 
 | Axis | Values | `classic` default |
 |------|--------|-------------------|
@@ -163,18 +176,14 @@ Each strategy locks in one value per axis:
 | Strategy | `isolation` | `branch_model` | `concurrency` | `reviewer_cadence` | `test_coder_cadence` |
 |----------|-------------|----------------|---------------|--------------------|----------------------|
 | `classic`             | in-pwd   | current-branch | sequential | per-cycle    | per-cycle    |
-| `isolated-sequential` | worktree | epic-child     | sequential | per-cycle    | per-cycle    |
-| `parallel-fanout`     | worktree | epic-child     | fan-out    | per-fanin    | per-fanin    |
 | `barrel-deferred`     | in-pwd   | current-branch | sequential | at-boundary  | at-boundary  |
 | `barrel-bypass`       | in-pwd   | current-branch | sequential | gates-only   | none         |
 
+The two worktree bundles (`isolated-sequential`, `parallel-fanout`) are documented in the plan-492 tech spec; the model orchestrator does not run them.
+
 ### Invalid combinations
 
-The orchestrator refuses these axis combinations with a diagnostic before any dispatch runs:
-
-- `concurrency=fan-out` with `isolation=in-pwd` — parallel coders would clobber pwd.
-- `concurrency=fan-out` with `branch_model=current-branch` — no fan-in target.
-- `reviewer_cadence=per-cycle` with `concurrency=fan-out` — contradicts the fan-out reviewer model; reviewer-per-child is a separate decision tracked as an open question.
+Because the model orchestrator only reaches the in-pwd axis subset, the fan-out invalid-combination guards (`fan-out` + `in-pwd`, `fan-out` + `current-branch`, `per-cycle` + `fan-out`) are enforced by the `planar-orchestrate` harness, which owns the `fan-out` axis. A `--strategy custom` request that selects a `worktree`/`fan-out` value from the model orchestrator is refused with a pointer to the harness.
 
 ### Recommendation algorithm
 
@@ -182,11 +191,10 @@ The orchestrator proposes a strategy per plan based on plan shape, with status-q
 
 1. If the plan is tagged as mechanical, docs-only, or single-verb → recommend `barrel-bypass`.
 2. Else if the plan has a multi-milestone roadmap and at most one parallel-eligible task per milestone → recommend `barrel-deferred`.
-3. Else if the plan has ≥3 tasks and the parallel-eligible subset has ≥2 tasks → recommend `parallel-fanout` (with the eligible subset surfaced for confirmation).
-4. Else if the plan has 2–3 tasks and none are parallel-eligible → recommend `isolated-sequential`.
-5. Else if the plan has exactly 1 task → recommend `classic`.
-6. Else if the most recent dispatch on this plan used a non-default strategy `S` → recommend `S` (stickiness — the operator already made a choice for this plan).
-7. Otherwise → recommend `classic` (status-quo bias).
+3. Else if the plan has ≥3 tasks with ≥2 parallel-eligible, or 2–3 tasks where worktree isolation would help → surface that the plan is a fit for the `planar-orchestrate` harness (`isolated-sequential` / `parallel-fanout`) and recommend handing it off; the model orchestrator itself recommends `classic` for the in-pwd path.
+4. Else if the plan has exactly 1 task → recommend `classic`.
+5. Else if the most recent dispatch on this plan used a non-default strategy `S` → recommend `S` (stickiness — the operator already made a choice for this plan).
+6. Otherwise → recommend `classic` (status-quo bias).
 
 The recommendation is a proposal, never an action. The strategy gate (below) is what turns it into a chosen strategy.
 
@@ -195,8 +203,8 @@ The recommendation is a proposal, never an action. The strategy gate (below) is 
 Phase 3 of the orchestrator now runs **two** gates in order before dispatch:
 
 1. **Strategy gate** (new). "Which strategy for this plan?" The orchestrator surfaces its recommended strategy + a one-line rationale + the named alternatives. The operator confirms or overrides.
-2. **Dispatch-shape gate** (existing — see [Dispatch Granularity](#dispatch-granularity)). "Within that strategy, which shape for this cycle?" Constrained by the strategy: `parallel-fanout` forces the `fan-out` shape; `barrel-bypass` forces the `barrel-bypass` shape; `barrel-deferred` forces the `barrel-deferred` shape; `classic` and `isolated-sequential` keep the full strict / grouped / single menu.
-3. **Dispatch.** Orchestrator creates worktrees and branches (under strategies with `isolation=worktree`), claims tasks, dispatches coders.
+2. **Dispatch-shape gate** (existing — see [Dispatch Granularity](#dispatch-granularity)). "Within that strategy, which shape for this cycle?" Constrained by the strategy: `barrel-bypass` forces the `barrel-bypass` shape; `barrel-deferred` forces the `barrel-deferred` shape; `classic` keeps the full strict / grouped / single menu.
+3. **Dispatch.** Orchestrator claims tasks and dispatches coders in pwd. (Worktree creation and fan-out dispatch belong to the `planar-orchestrate` harness, not this loop.)
 
 The strategy gate is operator-confirmed by default. Skip flags:
 
@@ -209,10 +217,10 @@ Auto-defaulting without confirmation is **not** a supported mode — the recomme
 
 ```json
 {
-  "strategy": "isolated-sequential",
-  "axes": {"isolation": "worktree", "branch_model": "epic-child", "concurrency": "sequential", "reviewer_cadence": "per-cycle", "test_coder_cadence": "per-cycle"},
-  "dispatch_shape": "strict",
-  "rationale": "2-task plan, neither parallel-eligible"
+  "strategy": "barrel-deferred",
+  "axes": {"isolation": "in-pwd", "branch_model": "current-branch", "concurrency": "sequential", "reviewer_cadence": "at-boundary", "test_coder_cadence": "at-boundary"},
+  "dispatch_shape": "grouped",
+  "rationale": "multi-milestone plan, low per-cycle review value"
 }
 ```
 
@@ -222,69 +230,23 @@ The "last-used strategy for this plan" lookup that drives rule 6 of the recommen
 
 The dispatch-shape gate's six shapes (`strict`, `grouped`, `single`, `barrel-grouped`, `barrel-deferred`, `barrel-bypass`) map onto the strategy axes as follows:
 
-- `strict`, `grouped`, `single` — apply within any strategy. They describe per-cycle batching, not overall methodology. Under `classic` or `isolated-sequential` the operator picks freely; under `parallel-fanout` they describe how each fan-out lane is batched; under the barrel strategies they are subsumed.
+- `strict`, `grouped`, `single` — apply within any in-pwd strategy. They describe per-cycle batching, not overall methodology. Under `classic` the operator picks freely; under the barrel strategies they are subsumed. (Under the harness-owned worktree strategies they describe how each lane is batched — see the plan-492 tech spec.)
 - `barrel-grouped`, `barrel-deferred`, `barrel-bypass` — these conflate "dispatch shape" with "reviewer cadence." Under the strategy model, the latter two are subsumed by the `barrel-deferred` and `barrel-bypass` named strategies. Whether the standalone flags get deprecated, kept for backward compatibility, or treated as aliases is an open question deferred until operators have used both paths for a cycle or two.
 
 ## Worktrees
 
-Worktrees are the substrate that lets `isolated-sequential` and `parallel-fanout` keep the operator's pwd clean and (under fan-out) run N coders concurrently without clobbering each other. `classic` and the barrel strategies do not use them. The methodology in this section is **authoritative**; the tech-spec artifact for plan 297 (artifact 142) still carries the original bare-`<plan-slug>` convention in its prose and will be amended to match in a follow-up.
+Worktree lifecycle — the `epic/` integration branch and per-task `cycle/`
+working branches, their creation, fan-in merge, and cleanup — is **owned by the
+`planar-orchestrate` harness** (plan 492), not by the model-driven orchestrator.
+The model orchestrator runs `classic` (in-pwd) only and creates no worktrees.
+The branch/path naming scheme, the six parallel-eligibility rules, and the
+fan-in conflict protocol live in the plan-492 tech spec.
 
-### Path scheme
+`classic` and the barrel strategies never use worktrees. The runtime invariant
+below still governs scope whenever a process (such as a harness-spawned coder)
+runs with cwd inside a worktree, regardless of who created it.
 
-Two worktree shapes, both rooted at the task's owning repo:
-
-| Worktree | Path | Created by |
-|----------|------|------------|
-| Epic (integration) | `<repo>/.worktrees/epic/<plan-slug>/` | Orchestrator, on the first dispatch of any task in the plan. |
-| Cycle (per-cycle working tree) | `<repo>/.worktrees/cycle/<plan-slug>/<task-slug>/` | Orchestrator, on each cycle dispatch. |
-
-`<repo>` is the *task's owning repo*, not the operator's cwd repo. In a polyrepo workspace these may differ; the worktree always lands under the task's repo so the orchestrator's `git` invocations resolve correctly against the right history.
-
-### Branch scheme
-
-Epic and cycle branches live in **disjoint top-level namespaces** so git's ref hierarchy never refuses a nested form:
-
-| Branch | Name | Cut from |
-|--------|------|----------|
-| Epic (integration) | `epic/<plan-slug>` | master |
-| Cycle (per-task working branch) | `cycle/<plan-slug>/<task-slug>` | `epic/<plan-slug>` |
-
-The original spec's bare `<plan-slug>` + `<plan-slug>/<task-slug>` pairing collides: git refuses any ref whose path is a strict prefix of another existing ref (e.g., `worktree-management` cannot coexist with `worktree-management/m2-worktree-convention`). The `epic/` and `cycle/` prefixes guarantee no ref-hierarchy collision. This supersedes the older convention in artifact 142.
-
-Hand-picked solo work (operator runs `planar-agent claim --entity task:<id>` directly with no plan context) uses a single branch `cycle/<task-slug>` cut from master, with no epic. The worktree lands at `<repo>/.worktrees/cycle/<task-slug>/`.
-
-### Topology and main-checkout invariant
-
-The operator's **main checkout stays on master throughout the entire orchestration.** Both the epic branch and each cycle's child branch live in their own worktrees off the main checkout. There is never a moment when the main checkout silently moves to an epic or cycle branch.
-
-- Main checkout: `<repo>/` — always on master, untouched by orchestration.
-- Epic worktree: `<repo>/.worktrees/epic/<plan-slug>/` — checked out on `epic/<plan-slug>`. Created on first dispatch, persists for the plan's duration.
-- Cycle worktree: `<repo>/.worktrees/cycle/<plan-slug>/<task-slug>/` — checked out on `cycle/<plan-slug>/<task-slug>`. One per cycle.
-
-**Fan-in.** The orchestrator cds into the *epic* worktree and runs `git merge --no-ff cycle/<plan-slug>/<task-slug>` there. The main checkout is not involved. This preserves the "operator pwd stays clean" promise that motivates the worktree strategies in the first place.
-
-### Lifecycle
-
-1. **Epic worktree creation** (first dispatch of any task in the plan only). `git -C <repo> branch epic/<plan-slug> master` then `git -C <repo> worktree add <repo>/.worktrees/epic/<plan-slug>/ epic/<plan-slug>`. If `.git/info/exclude` doesn't list `.worktrees/` yet, append it.
-2. **Cycle worktree creation** (each cycle). `git -C <repo> worktree add -b cycle/<plan-slug>/<task-slug> <repo>/.worktrees/cycle/<plan-slug>/<task-slug>/ epic/<plan-slug>`.
-3. **Claim wiring.** `planar-agent pull <plan> --role coder --worktree <cycle-worktree-path>` (or `claim --entity task:<id> --worktree <path>` for hand-picked). The claim row carries `worktree_path`.
-4. **Coder dispatch.** Agent invoked with `isolation: "worktree"` and the cycle worktree path. Coder heartbeats and terminals via the canonical `planar-agent` ritual.
-5. **Fan-in merge.** After terminal-complete the orchestrator cds into the epic worktree and runs `git merge --no-ff cycle/<plan-slug>/<task-slug>`. Clean merge → continue. Conflict → open a question, halt this branch's fan-in, leave the cycle worktree in place for operator resolution.
-6. **Reviewer dispatch.** Per the active strategy: per-cycle under `isolated-sequential`; once per fan-in under `parallel-fanout`.
-7. **Cleanup (post-success only).** After reviewer approval: `git -C <repo> worktree remove <cycle-worktree-path>` and `git -C <repo> branch -D cycle/<plan-slug>/<task-slug>` (force delete because cycle branches are merged into epic but not into master HEAD). The epic worktree persists.
-8. **Epic merge to master.** Operator-driven. Orchestrator surfaces "`epic/<plan-slug>` is N commits ahead of master, reviewer-approved, ready for PR." After the epic→master merge lands, the epic worktree and `epic/<plan-slug>` branch are removed.
-
-Cleanup is **post-success only** — never before merge + reviewer approval, so a failed cycle leaves recoverable artifacts on disk.
-
-### `.git/info/exclude` hint
-
-`.worktrees/` is appended to `.git/info/exclude` on first use per clone (per-clone, no commit needed). Operators working in shared clones may prefer to commit a repo-level `.gitignore` entry instead; either path is fine. The orchestrator does the per-clone append on first dispatch; the gitignore commit is an operator choice.
-
-### Sparse-checkout guidance for monorepos
-
-For repos > ~5 GiB the operator should configure `git sparse-checkout set <paths>` on the source clone before letting the orchestrator dispatch into a worktree. Worktrees inherit sparse-checkout settings via the shared `.git/config`. The orchestrator does not measure repo size and does not prompt for sparse setup — it's a documented operator practice, not an automated flow. The recipe lives in `docs/workflows.md`.
-
-### Scope inside worktrees — parent repo dictates, planning verbs refused
+## Scope inside worktrees — parent repo dictates, planning verbs refused
 
 Two invariants govern scope behavior when cwd is inside a worktree:
 
@@ -299,32 +261,7 @@ Two invariants govern scope behavior when cwd is inside a worktree:
 
 **`--scope <slug>` does NOT override the refusal.** The rule is about *where the verb runs*, not which scope it targets. To plan against a member repo from elsewhere, cd to the parent repo (or workspace root with `--scope <member>`); do not try to plan from inside a worktree.
 
-The engine-side enforcement of this rule lands in M3 of plan 297 (scope resolver extension + verb-classification table at the runtime entry point). Until M3 lands, the rule is convention-only; the methodology defines it so the engine implementation has a target.
-
-### Parallelizability rules
-
-Used by the `parallel-fanout` strategy's eligibility test and by the per-cycle fan-out width within that strategy. Two tasks in the same plan are **parallel-eligible** iff *all* six rules hold:
-
-1. **No `blocked_by` chain to another not-yet-done task in the plan.** The task's transitive `blocked_by` closure intersected with the plan's not-done tasks must be empty.
-2. **Disjoint `task_touches`.** The candidates' `task_touches` (repo + path) sets must not overlap. Empty `task_touches` is treated as "touches everything" → not parallel-eligible. This deliberately forces touches discipline before fan-out becomes available.
-3. **No schema migration touched.** A task whose touches include `migrations/*.sql` serializes across the whole plan. Planar's migration numbering is linear; two concurrent migrations would collide on the next number.
-4. **No singleton authoritative file touched.** Touches must not include any of: `agents/methodology.md`, `CLAUDE.md`, `AGENTS.md`, `docs/cli-reference.md`, `docs/architecture.md`. These are coordination points; concurrent edits invite needless conflicts. The list lives here and may grow.
-5. **No unresolved open question linked to the task.** Open questions are coordination points by definition.
-6. **No unresolved decision dependency.** A task blocked on a `decisions` row in `proposed` status does not fan out.
-
-The algorithm is greedy: start with the full open-task set, drop ineligible tasks rule-by-rule, return what remains. Ties (e.g., two tasks both touching a migration) drop both, not just one — the orchestrator surfaces both as "serialize-only" with the rule that excluded them. A result of size ≥ 2 makes fan-out an available shape under [`parallel-fanout`](#named-strategies); smaller results fall back to the strategy's sequential shapes (strict / grouped / single).
-
-The forward reference from [Things To Revisit → Parallelism heuristics](#things-to-revisit) now resolves to these six rules.
-
-### Conflict resolution at fan-in
-
-`git merge --no-ff cycle/<plan-slug>/<task-slug>` from inside the epic worktree may fail. The orchestrator's response:
-
-- **Touches mis-prediction.** Tasks claimed disjoint paths but both modified the same file (e.g., a transitive import dragged in a shared header). Orchestrator opens a question with the conflict-marker output, halts that branch's fan-in, leaves the cycle worktree on disk for operator resolution.
-- **Trivial conflict** (adjacent additions, import order, formatter idempotency disagreements). Same path: open a question. The orchestrator does not classify "trivial vs. semantic" — that's an operator judgement call.
-- **Deep semantic conflict** (two children each broke an invariant the other relies on). Open question. Operator decides whether to (a) resolve manually and continue, (b) abort the parallel epic and re-dispatch sequentially, or (c) revert one child and redo it after the other lands.
-
-In every case the orchestrator preserves recoverable state: the cycle worktree stays, the cycle branch stays, the claim records reflect the partial fan-in. Cleanup only runs once the conflict is resolved and the cycle is merge-clean.
+The engine-side enforcement of this rule shipped in plan 297 M3: the runtime entry point classifies the verb (`src/cmd/planar/verb_classification.zig`) and refuses planning verbs from inside a worktree (`src/cmd/planar/worktree_gate.zig`, exit code 8). Worktree detection (`engine.identity.scope.detectWorktree`) resolves the parent repo two ways — a `.worktrees/<segment>/` fast path, and a `git rev-parse --show-toplevel --git-common-dir` fallback — so the parent-dictates-scope rule holds whether or not the worktree lives physically under the repo. Scope resolution is cwd-first: the literal cwd's registered project wins if one exists; otherwise it falls back to the git-derived parent repo's scope.
 
 ## Dispatch mode selection
 
@@ -627,8 +564,8 @@ and the reviewer cannot recover the loss after the fact.
 
 ## Concurrency
 
-- The orchestrator may dispatch multiple coders in parallel only when tasks are independent and claimable: disjoint file scope, no shared schema or CLI surface changes pending, no decision dependency between them, and no active unexpired claim already owns the same task or child milestone. The codified eligibility test is the six rules in [Worktrees § Parallelizability rules](#parallelizability-rules); the [`parallel-fanout`](#named-strategies) strategy is the orchestration frame that uses them.
-- The substrate that lets parallel coders run without clobbering each other is [Worktrees](#worktrees) — each parallel coder runs in its own cycle worktree on its own `cycle/<plan-slug>/<task-slug>` branch, with fan-in merging back onto the plan's epic worktree.
+- Parallel coder dispatch is owned by the `planar-orchestrate` harness (plan 492), not the model-driven orchestrator. The codified eligibility test (six parallelizability rules) and the `parallel-fanout` frame that uses them live in the plan-492 tech spec. The model orchestrator runs `classic` (one coder, in pwd) only.
+- The substrate that lets parallel coders run without clobbering each other — per-task worktrees on epic-child branches with fan-in merge — is owned by the harness (plan 492). See [Worktrees](#worktrees) for the ownership boundary.
 - Reviewers may run in parallel against independent coder outputs. Under `parallel-fanout` a single reviewer cycle runs against the integrated diff on the epic, not per child.
 - A single task is always coder→reviewer sequential — never two coders on the same task simultaneously.
 - Stale claims are not ignored silently. The operator or orchestrator must reconcile or force-takeover them before treating the work as available.
@@ -637,10 +574,62 @@ and the reviewer cannot recover the loss after the fact.
 
 State capture lives in SQLite per the locked schema. Tasks carry `next_action`. `sessions` and `session_entries` capture the iteration timeline. `agent_work_claims` records live ownership and lease state. `agent_actions` records typed time-bounded work inside sessions. `decisions` records reviewer rulings. Open questions are `question` rows linked to the task. Aborts surface as session entries with `prefix='error'` linked to the task and the originating decision, and the corresponding claim is released as `aborted` or later reconciled as `stale`.
 
+## Heartbeat status contract
+
+Agents communicate their current activity to the read surface (`planar-watch ps`, `planar-watch feed`) by supplying an optional `--status <text>` string on every heartbeat call:
+
+```
+planar-agent heartbeat --claim <token> --status "editing src/engine/planning/question.zig"
+```
+
+When `--status` is omitted, the heartbeat refreshes the lease without changing the displayed activity. Status strings are **free-form text** (Decision D1, plan 467 tech-spec § Concepts → Status string vs structured state) — there is no state machine enum. Agents choose strings that describe what they are doing in human-readable terms.
+
+### The `awaiting:` prefix convention
+
+When an agent is blocked on an external event — a downstream sub-agent returning, an operator answering a question, an external API responding — it prefixes the status string with `awaiting:`:
+
+```
+planar-agent heartbeat --claim <token> --status "awaiting:coder"
+planar-agent heartbeat --claim <token> --status "awaiting:reviewer"
+planar-agent heartbeat --claim <token> --status "awaiting:operator-confirmation"
+```
+
+The `awaiting:` prefix is a convention, not a parsed enum. The read surface (`planar-watch ps`) uses it as a color/sort signal but does not parse beyond the prefix boundary. Plain text (no prefix) means the agent is actively working.
+
+### Per-phase-transition cadence rule
+
+Heartbeat with a new `--status` string at every meaningful phase boundary:
+
+- **claim-acquired** → `"claim acquired: task <id>"`
+- **reading brief** → `"reading brief"`
+- **editing files** → `"editing <module-or-area>"` (one status per area)
+- **running gates** → one status per gate (`"running make fmt-check"`, `"running make test"`, etc.)
+- **committing / reporting** → `"committing"` or `"reporting"` as appropriate
+
+Heartbeats between phase transitions (lease-renewal-only) may omit `--status`. The cadence goal is: any operator watching `planar-watch ps` can tell what phase the agent is in without waiting for the next phase transition.
+
+For long operations (> 30 s), heartbeat at least once per TTL/2 even if the status string does not change. Pass `--ttl <secs>` to extend the lease if needed.
+
+### Do not manually duplicate entity-create events
+
+The engine hooks added in plan 467 M1 automatically write an `agent_actions` row when `question.create`, `decision.create`, or `artifact.create` fires under an active claim. Agents MUST NOT also call a separate `planar-agent heartbeat --status "created question X"` for the same event — that produces a duplicate action row and clutters the feed.
+
+Status strings describe the **agent's own state** (what it is doing), not a mirror of entity-create events. Entity creates surface automatically; status strings are the agent's judgment about its current phase.
+
+### 256-byte cap on `--status` payload
+
+`planar-agent heartbeat --status` enforces a 256-byte upper bound on the status string (plan 467 M1, task 3038). Strings longer than 256 bytes are rejected with `error.InvalidInput`. Keep status strings concise: a short phrase is enough for the feed to be readable.
+
+### Cross-references
+
+- Per-role canonical status strings: see the "Status reporting" sections in [`agents/coder.md`](coder.md#status-reporting), [`agents/orchestrator.md`](orchestrator.md#status-reporting), [`agents/planner.md`](planner.md#status-reporting), [`agents/reviewer.md`](reviewer.md#status-reporting), [`agents/test-coder.md`](test-coder.md#status-reporting), and [`agents/ingestor.md`](ingestor.md#status-reporting).
+- `agent_actions` schema: see `docs/architecture.md` § agent_actions.
+- Claim ritual: see [Coordination claims](#coordination-claims) above.
+
 ## Things To Revisit
 
 - **Iteration cap of 5.** Hard-coded today. Revisit once empirical data on real workloads exists — the right number may be 3, 5, or 8 depending on task shape. Move to the `config` table or methodology frontmatter if it needs to flex per project.
 - **Per-tier reviewer.** Currently all reviewers are `large`-tier. Some review work may not need that; a cheaper review tier could be useful for routine tasks.
-- **Parallelism heuristics.** The six rules in [Worktrees § Parallelizability rules](#parallelizability-rules) codify what was previously judgment-call territory. They are deliberately conservative — empty `task_touches` is treated as "touches everything," singleton authoritative files block fan-out, schema migrations serialize. The list of singleton files may grow as new coordination points emerge; revisit once enough fan-out cycles have shipped to identify whether the conservatism has the right shape.
+- **Parallelism heuristics.** The six parallel-eligibility rules — deliberately conservative (empty `task_touches` is "touches everything," singleton authoritative files block fan-out, schema migrations serialize) — are owned by the `planar-orchestrate` harness and specified in the plan-492 tech spec. The list of singleton files may grow as new coordination points emerge; revisit once enough fan-out cycles have shipped to identify whether the conservatism has the right shape.
 - **Cross-vendor pairings.** A reviewer may be a different vendor than the coder (Claude reviewing Codex output, etc.). The methodology assumes this works; verify once cross-vendor handoff is exercised in M6.
 - **Reviewer feedback format.** "Concrete remediation" is loose today. As patterns emerge, codify the structure (e.g. file:line + proposed change, or a structured issue list).

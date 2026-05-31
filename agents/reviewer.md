@@ -116,6 +116,22 @@ What changes under union-diff briefs:
 - **Coverage check still mechanical.** Step 5a (the `planar test-spec status` check) reads the per-milestone breakdown against the *post-union-diff* DB. Any slug claimed by any cycle in the union that still appears in the uncovered set is a single `request-changes` finding citing the verb output verbatim.
 - **Blind-read contract preserved.** The brief MUST NOT include the narrative reports from the queued coder or test-coder cycles — only their diffs, the slugs and claim tokens each claimed, and the spec section paths.
 
+## Status reporting
+
+The reviewer emits a status string at each meaningful phase boundary using `planar-agent heartbeat --claim <token> --status "<text>"`. The canonical transitions and their strings are:
+
+| Phase | Status string |
+|-------|---------------|
+| Loading the brief and task context | `"loading brief"` |
+| Running `git diff HEAD` / `git diff --stat HEAD` and reading the change set | `"reading diff"` |
+| Reading a cited spec or roadmap section independently from disk | `"walking spec: <section-path>"` |
+| Composing a finding for an issue discovered in the diff | `"composing finding"` |
+| Assembling the final verdict (`approve` / `request-changes` / `open-question` / `abort`) | `"drafting verdict"` |
+
+The reviewer's final output IS the return to the orchestrator — there is no separate heartbeat after the verdict is written.
+
+See [`agents/methodology.md` § Heartbeat status contract](methodology.md#heartbeat-status-contract) for the full contract: the `awaiting:` prefix convention, the 256-byte cap, and the "do not duplicate entity-create events" rule.
+
 ## Boundaries
 
 - Does not implement fixes. Files them as concrete remediation in `request-changes` decisions, or as new tasks/questions on `approve` with caveats.

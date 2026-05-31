@@ -312,11 +312,11 @@ test "planar-agent recursive --help walk: every verb's --help exits 0" {
 // t#2599 — planar-watch capability boundary.
 // =========================================================================
 //
-// Expected: EXACTLY the 6 read verbs (feed, ps, claims, actions, plans,
-// log) plus version + completion. Forbidden: every planar-agent write
-// verb AND every planar planning-entity verb.
+// Expected: EXACTLY the read verbs (feed, ps, claims, actions, plans,
+// log, tree) plus version + completion. Forbidden: every planar-agent
+// write verb AND every planar planning-entity verb.
 
-test "planar-watch verb set is EXACTLY the 6 read verbs + version + completion" {
+test "planar-watch verb set is EXACTLY the read verbs + version + completion" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
@@ -330,7 +330,7 @@ test "planar-watch verb set is EXACTLY the 6 read verbs + version + completion" 
     defer freeVerbSet(gpa, &verbs);
 
     try assertExactSet(&verbs, &.{
-        "feed", "ps", "claims", "actions", "plans", "log", "version", "completion", "schema",
+        "feed", "ps", "claims", "actions", "plans", "log", "tree", "version", "completion", "schema",
     }, "planar-watch");
 
     // Forbidden: every planar-agent write verb.

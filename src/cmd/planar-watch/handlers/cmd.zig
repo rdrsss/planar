@@ -2,11 +2,10 @@
 //!
 //! Imported by `src/cmd/planar-watch/main.zig` as the root tree's
 //! `.cmds` slice. Per the tech-spec § "CLI surface → planar-watch":
-//! exactly six read verbs plus the conventional `version` /
-//! `completion` helpers. There is no write verb anywhere in this
-//! tree — that is the FIRST line of defense behind this binary's
-//! capability boundary (the SECOND is the strict-read-only DB
-//! handle).
+//! read verbs plus the conventional `version` / `completion` helpers.
+//! There is no write verb anywhere in this tree — that is the FIRST
+//! line of defense behind this binary's capability boundary (the
+//! SECOND is the strict-read-only DB handle).
 //!
 //! Verb set:
 //!   - feed       — cross-cutting activity feed (default invocation).
@@ -16,6 +15,7 @@
 //!   - plans      — plans with in-flight work.
 //!   - log        — per-entity / per-claim history (union of
 //!                  actions + claim transitions).
+//!   - tree       — orchestrator → sub-agent forest (M4).
 //!   - version    — print binary version (no DB touch).
 //!   - completion — shell autocompletion script (no DB touch).
 
@@ -30,6 +30,7 @@ const claims_h = @import("claims.zig");
 const actions_h = @import("actions.zig");
 const plans_h = @import("plans.zig");
 const log_h = @import("log.zig");
+const tree_h = @import("tree.zig");
 
 pub const verbs: []const cli.Cmd = &.{
     feed_h.verb,
@@ -38,6 +39,7 @@ pub const verbs: []const cli.Cmd = &.{
     actions_h.verb,
     plans_h.verb,
     log_h.verb,
+    tree_h.verb,
     version_h.verb,
     completion_h.verb,
     schema_h.verb,

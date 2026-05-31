@@ -79,6 +79,20 @@ Vendor-neutral. Vendor-specific surfaces are under `commands/claude/pl-spec-draf
 6. Seed the manifest: `planar workbench push <plan-id>`.
 7. Report to the user: the plan id, the workbench path, and the four artifact ids. Note that the user should review and edit the docs before invoking `pl-spec-ingest`.
 
+## Status reporting
+
+The planner emits a status string at each meaningful phase boundary using `planar-agent heartbeat --claim <token> --status "<text>"`. The canonical transitions and their strings follow the four authoring phases:
+
+| Phase | Status string |
+|-------|---------------|
+| Authoring Phase 1 — product spec | `"drafting product-spec"` |
+| Authoring Phase 2 — tech spec | `"drafting tech-spec"` |
+| Authoring Phase 3 — roadmap | `"drafting roadmap"` |
+| Authoring Phase 4 — test spec | `"drafting test-spec"` |
+| All four documents written and pushed; waiting for operator review | `"ready for review"` |
+
+See [`agents/methodology.md` § Heartbeat status contract](methodology.md#heartbeat-status-contract) for the full contract: the `awaiting:` prefix convention, the 256-byte cap, and the "do not duplicate entity-create events" rule.
+
 ## Boundaries
 
 - DB writes only through `planar` CLI verbs. No direct SQL.

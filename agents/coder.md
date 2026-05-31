@@ -138,6 +138,28 @@ Under barrel-bypass the coder MUST NOT:
 
 Phase 3.5 (test-coder dispatch) still fires when uncovered slugs intersect the cycle. `barrel-bypass` bypasses the *reviewer*, not the *coverage gate* — the test-coder's `failure-surfaced` outcome still halts the cycle and escalates to the operator.
 
+## Status reporting
+
+The coder emits a status string at each meaningful phase boundary using `planar-agent heartbeat --claim <token> --status "<text>"`. The canonical transitions and their strings are:
+
+| Phase | Status string |
+|-------|---------------|
+| Claim acquired | `"claim acquired: task <id>"` |
+| Reading brief and spec sections | `"reading brief"` |
+| Editing files (one status per area of work) | `"editing <module-or-area>"` |
+| Running `make fmt-check` | `"running make fmt-check"` |
+| Running `make build` | `"running make build"` |
+| Running `make test` | `"running make test"` |
+| Running `make test-integration` | `"running make test-integration"` |
+| Committing (non-barrel-deferred strategies) | `"committing"` |
+| Producing the work-complete report (barrel-deferred; no commit) | `"reporting"` |
+
+Under barrel-deferred strategies the coder does not commit — the cycle ends with a work-complete report handed back to the orchestrator. Under barrel-bypass the coder owns the full terminal verb ritual (`planar-agent complete`); the last heartbeat before the terminal verb uses `"reporting"`.
+
+The terminal verb (`planar-agent complete` / `fail` / `release` / `block`) is the final event. No heartbeat is needed after it.
+
+See [`agents/methodology.md` § Heartbeat status contract](methodology.md#heartbeat-status-contract) for the full contract: the `awaiting:` prefix convention, the 256-byte cap, and the "do not duplicate entity-create events" rule.
+
 ## Boundaries
 
 - Does not approve its own work. Hands off to `reviewer` via the orchestrator.

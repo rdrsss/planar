@@ -21,10 +21,12 @@
 //!       next_available_by_plan: { "<plan_id>": [Task] } }
 //!
 //! `ClaimRow` is the canonical shape from
-//! `engine.runtime.agentactivity.json.writeClaim` and includes the
-//! locality columns (`repo_root`, `branch`, `head_sha_at_claim`,
-//! `dirty_at_claim`) plus the worktree columns. The integration
-//! suite asserts on those columns specifically.
+//! `engine.runtime.agentactivity.json.writeClaimWithActivity` and
+//! includes the locality columns (`repo_root`, `branch`,
+//! `head_sha_at_claim`, `dirty_at_claim`), the worktree columns, and
+//! (plan 467 M3 task 3060) the `latest_action` field matching the shape
+//! emitted by `planar-watch ps --json`. The integration suite asserts on
+//! those columns specifically.
 
 const std = @import("std");
 const cli = @import("cli");
@@ -185,14 +187,30 @@ fn emitJsonAgents(
         if (i > 0) try w.print(",", .{});
         const scope = agentactivity.store.resolveClaimScope(d, allocator, c);
         defer scope.deinit(allocator);
-        try agentactivity.json.writeClaim(w, c, scope);
+        // Plan 467 M3 task 3060: enrich dashboard claims with latest_action,
+        // matching the shape that planar-watch ps --json emits (task 3056).
+        const action_row = agentactivity.store.latestActionForClaim(d, allocator, c.id) catch null;
+        defer if (action_row) |a| a.deinit(allocator);
+        const action_info: ?agentactivity.json.LatestActionInfo = if (action_row) |a| .{
+            .kind = a.action_kind.toText(),
+            .summary = a.summary,
+            .started_at = a.started_at,
+        } else null;
+        try agentactivity.json.writeClaimWithActivity(w, c, scope, true, action_info);
     }
     try w.print("],\"stale\":[", .{});
     for (stale_claims, 0..) |c, i| {
         if (i > 0) try w.print(",", .{});
         const scope = agentactivity.store.resolveClaimScope(d, allocator, c);
         defer scope.deinit(allocator);
-        try agentactivity.json.writeClaim(w, c, scope);
+        const action_row = agentactivity.store.latestActionForClaim(d, allocator, c.id) catch null;
+        defer if (action_row) |a| a.deinit(allocator);
+        const action_info: ?agentactivity.json.LatestActionInfo = if (action_row) |a| .{
+            .kind = a.action_kind.toText(),
+            .summary = a.summary,
+            .started_at = a.started_at,
+        } else null;
+        try agentactivity.json.writeClaimWithActivity(w, c, scope, true, action_info);
     }
     try w.print("]}}", .{});
 

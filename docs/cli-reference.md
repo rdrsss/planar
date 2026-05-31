@@ -3632,6 +3632,8 @@ The `--agents` fold-in is the planar binary's view of agent activity. The `plana
 
 `ClaimRow` includes the locality columns (`repo_root`, `branch`, `head_sha_at_claim`, `dirty_at_claim`) and the worktree columns (`worktree_id`, `worktree_path`). The text-mode renderer surfaces `branch:<branch>  sha:<8-char>  dirty:<state>  repo:<repo_root>` for every active claim so an operator can spot mismatched checkouts at a glance.
 
+**M3 addition:** each `ClaimRow` in the `--agents` fold-in carries a `latest_action` field matching the shape emitted by `planar-watch ps --json` — see [M3 addition — `ClaimRow.latest_action`](#binary-planar-watch) above. No new CLI flags on `planar dashboard`.
+
 The `stale` bucket aggregates both `status='stale'` rows and `status='active'` rows whose lease has expired without a reconcile pass.
 
 **Schema effects:** Reads `plans`, `agent_work_claims`, `tasks`.
@@ -4911,7 +4913,7 @@ planar-agent block      --claim <token> --blocker <task-id> [--reason <text>] [-
 # Claim primitives — for orchestrator-dispatch (caller already knows the
 # target entity by id). claim does NOT auto-transition task status.
 planar-agent claim      --entity task:<id>|plan:<id>|plan_step:<id> [--vendor-session <vendor:id>] [--role <r>] [--ttl <duration>] [--purpose <text>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--force] [--json]
-planar-agent heartbeat  --claim <token> [--ttl <duration>] [--json]
+planar-agent heartbeat  --claim <token> [--ttl <duration>] [--status <text>] [--json]
 
 # Nested action lifecycle — for sub-tool-calls or sub-phases inside a
 # claim. Optional; lightweight claims skip these.
@@ -4930,6 +4932,8 @@ planar-agent abort      --claim <token> [--reason <text>] [--vendor <s>] [--vend
 ```
 
 **Duration grammar:** `--ttl`, `--stale-after`, and `--interval` accept either a bare integer (interpreted as seconds for the `--ttl` / `--stale-after` surface; `--interval` follows the same default for back-compat with the legacy parser) or a number with an ISO-style suffix: `ns`, `us`, `ms`, `s`, `m`, `h`. Examples: `--ttl 600` (10 minutes), `--ttl 10m` (same), `--ttl 1h`, `--interval 500ms`. The implementation is the shared `cli.duration` helper.
+
+**`planar-agent heartbeat --status <text>` (plan 467 M1):** When `--status` is provided, `heartbeat` inserts a closed `heartbeat`-kind `agent_actions` row with the text in the `summary` column alongside the lease refresh. This makes current activity visible in `planar-watch ps` (`activity:"<summary>"` text column) and `planar-watch feed`. When `--status` is omitted no action row is written (pre-M1 behavior preserved). The payload is capped at **256 bytes**; oversize values exit with `InvalidInput`. An explicit `--status ""` (empty string) writes an action row with an empty summary — distinct from omission.
 
 ### Atomic operation transaction shapes
 
@@ -5002,7 +5006,7 @@ Schema-version handshake: `planar-watch` is a **consumer** of the schema, not it
 
 A process invoked as `planar-watch` performs **no writes**. Two defenses:
 
-1. The command tree (`src/cmd/planar-watch/handlers/cmd.zig`) registers exactly six read verbs plus the conventional `version` / `completion` helpers. There is no write verb anywhere in the tree.
+1. The command tree (`src/cmd/planar-watch/handlers/cmd.zig`) registers exactly seven read verbs plus the conventional `version` / `completion` helpers. There is no write verb anywhere in the tree.
 2. The bootstrap calls `runtime.ensureDbStrictReadOnly` which opens the DB via `sqlite3_open_v2(..., SQLITE_OPEN_READONLY, ...)`. The SQLite driver itself returns `SQLITE_READONLY` on any attempted `INSERT` / `UPDATE` / `DELETE` / DDL — verified by the `openReadOnly: write SQL is rejected at the driver layer` unit test in `src/db/sqlite.zig`.
 
 A vendor hook or operator script configured with only `planar-watch` on its PATH cannot modify the database under any circumstances.
@@ -5013,10 +5017,10 @@ A vendor hook or operator script configured with only `planar-watch` on its PATH
 # Cross-cutting activity feed (default invocation; `planar-watch` with no
 # args routes here).
 planar-watch              # alias for `planar-watch feed`
-planar-watch feed     [--follow]  [--vendor <v>] [--plan <id>] [--task <id>] [--since <ISO>] [--limit N] [--json] [--interval <D>]
+planar-watch feed     [--follow]  [--vendor <v>] [--plan <id>] [--task <id>] [--since <ISO>] [--limit N] [--tail N] [--json] [--interval <D>]
 
 # Snapshot: active (and stale) claims.
-planar-watch ps       [--follow]  [--vendor <v>] [--plan <id>] [--stale]  [--json] [--interval <D>]
+planar-watch ps       [--follow]  [--vendor <v>] [--plan <id>] [--stale]  [--sort-by heartbeat|lease] [--group-by role|scope|vendor] [--json] [--interval <D>]
 
 # Claim ledger (active | stale | all buckets).
 planar-watch claims   [--follow]  [--vendor <v>] [--plan <id>] [--status active|stale|all] [--json] [--interval <D>]
@@ -5030,6 +5034,9 @@ planar-watch plans    [--follow]  [--in-flight-only] [--json] [--interval <D>]
 # Per-entity / per-claim history (union of actions + claim transitions).
 planar-watch log      (--task <id> | --plan <id> | --entity <kind:id> | --session <id> | --claim <token>) [--limit N] [--json]
 
+# Orchestrator → sub-agent topology forest (M4 addition, plan 467).
+planar-watch tree     [--root-session <id>] [--follow] [--interval <D>]
+
 # Conventional helpers.
 planar-watch version
 planar-watch completion <bash|zsh|fish>
@@ -5038,6 +5045,64 @@ planar-watch completion <bash|zsh|fish>
 `--follow` (default off) turns each subcommand into a streaming view: the initial snapshot prints, then new events append as the underlying tables change. M8 ships **Tier 1** of the wake-tier ladder (poll every `--interval`, default `1s`; sub-second intervals available for tests). The watermark column set and the JSON event shape are part of the public contract — Tier 2 (kqueue / inotify on the SQLite `-wal` file) lands in a follow-up without changing either.
 
 `--plan <id>` widens past the literal `entity_kind='plan'` match: feed / ps / claims / actions all return events whose entity is the plan itself, OR a task on the plan, OR a plan_step on the plan. This is what the operator means by "show me plan N" — task-on-plan events are usually the only ones a session actually generates.
+
+### `planar-watch ps` — M3 flag additions (plan 467)
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--sort-by heartbeat\|lease` | Sort order for active claims. `heartbeat` (default) orders by `last_heartbeat_at desc` — freshest-heartbeated agent first. `lease` restores the pre-M3 behavior: `claimed_at desc`. Null `last_heartbeat_at` sorts to the end. Invalid values exit with `InvalidValue`. | `heartbeat` |
+| `--group-by role\|scope\|vendor` | Group active (and, with `--stale`, also stale) rows by a dimension. Text output emits one `[group: <key>]` section header per distinct key, with matching claim lines beneath. JSON wraps claims in `"groups": {"<key>": [...]}` instead of the flat `active`/`stale` envelope. When absent, the pre-M3 `active`/`stale` envelope shape is preserved (strict backward compat). Invalid values exit with `InvalidValue`. | unset (no grouping) |
+
+**M3 text columns** (appended after `scope:`, before or after `vendor:` in the order below):
+
+| Column | Format | Source |
+|--------|--------|--------|
+| `activity:"<summary>"` | Quoted string; truncated at 80 bytes with `…` (U+2026). Empty quotes `""` when no action exists. | Most-recent `agent_actions.summary` for the claim. |
+| `worktree:<basename>` | Basename of `worktree_path`. Prefixed with `…` when the full path exceeds 40 chars. Empty quotes `""` when `worktree_path` is null. | `agent_work_claims.worktree_path`. |
+| `last_hb:<rel>` | Relative time (e.g. `15s`, `2m`, `just now`) produced by the `relativeTime` helper; the trailing ` ago` suffix is stripped. Empty string when `last_heartbeat_at` is empty. | `agent_work_claims.last_heartbeat_at`. |
+
+Full text column order (M3): `<entity>:<id>  scope:<label>  activity:"<summary>"  vendor:<v>  branch:<b>  worktree:<basename>  sha:<8-char>  last_hb:<rel>  token:<tok>`.
+
+Implementation: `src/cmd/planar-watch/handlers/ps.zig` (tasks 3053–3058).
+
+### `planar-watch feed` — M3 flag addition (plan 467)
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--tail <N>` | Emit only the most-recent N events on the initial snapshot (the `journalctl -f -n` idiom). Must be a positive integer (`N > 0`); `N ≤ 0` exits with `InvalidValue`. Composes with `--follow`: the tail is emitted first, then only events newer than the tailed set stream (no re-emit of tailed events). When `--tail` and `--limit` are both given, `--tail` takes precedence for the snapshot cap. | unset (uses `--limit`, default 100) |
+
+### `planar-watch tree` — M4 addition (plan 467)
+
+Renders the orchestrator → sub-agent action forest by walking the `agent_actions.parent_action_id` chain using a `WITH RECURSIVE` CTE. Root actions are rows where `parent_action_id IS NULL`; children are rendered beneath their parent, indented with unicode tree characters.
+
+**Flags:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--root-session <id>` | Scope output to the subtree rooted at actions from the named session. Error (exit non-zero) when the session id is unknown or `< 1`. | unset (all sessions) |
+| `--follow` | Stream: re-renders on WAL change (Tier-2 wake). | off |
+| `--interval <D>` | Maximum poll cadence for `--follow` (e.g. `100ms`, `1s`). | `1s` |
+
+**Text row format (depth 0 = root):**
+
+```
+action:<id>  scope:<label>  vendor:<v>  activity:<summary>  worktree:<wt>  branch:<b>  last_hb:<rel>
+    └── scope:<label>  vendor:<v>  activity:<summary>  ...
+```
+
+Each row shows the same columns as `ps`: `scope`, `vendor`, `activity`, `worktree`, `branch`, `last_hb`. When the action has no linked claim the row shows `session:<id>  (no claim)` instead of the claim columns.
+
+**Tree characters** (unicode):
+
+| Context | Characters |
+|---------|-----------|
+| Non-last child | `├── ` (U+251C U+2500 U+2500 + space) |
+| Last child | `└── ` (U+2514 U+2500 U+2500 + space) |
+| Vertical guide (ancestor still open) | `│   ` (U+2502 + 3 spaces) |
+
+**Choosing `tree` vs `ps --group-by`:** `ps --group-by role` is the flat-by-role view — use it when each claim's identity (role, vendor, heartbeat recency) is the question. `tree` is the topology view — use it when the orchestrator→coder dispatch fanout is the question (e.g. "which sub-agents did orchestrator A dispatch?"). When fanout density exceeds what `--group-by` makes readable (≥ 3 orchestrators each with multiple coders), prefer `tree`.
+
+**Implementation:** `src/cmd/planar-watch/handlers/tree.zig` (plan 467 M4, tasks 3064–3067).
 
 ### JSON shapes
 
@@ -5051,8 +5116,11 @@ planar-watch feed --json  (NDJSON, one event per line):
     action?: ActionRow,
     task?: { id, status_before, status_after } }
 
-planar-watch ps --json:
+planar-watch ps --json (without --group-by):
   { generated_at: ISO8601, active: [ClaimRow], stale: [ClaimRow] }
+
+planar-watch ps --json --group-by <dim>:
+  { generated_at: ISO8601, groups: { "<key>": [ClaimRow, ...], ... } }
 
 planar-watch claims --json:
   { generated_at: ISO8601, claims: [ClaimRow] }
@@ -5079,6 +5147,14 @@ planar-watch log --json:
 ```
 
 `ClaimRow` matches the canonical shape from `engine.runtime.agentactivity.json.writeClaim` (snake_case keys mirroring the `agent_work_claims` columns, including the locality columns `repo_root`, `branch`, `head_sha_at_claim`, `dirty_at_claim` and the worktree columns). `ActionRow` mirrors `agent_actions`. `Plan` matches `planar plan show --json`.
+
+**M3 addition — `ClaimRow.latest_action`:** `planar-watch ps --json` and `planar dashboard --agents --json` each embed a `latest_action` field on every `ClaimRow` returned by those two verbs:
+
+```
+latest_action: { kind: string, summary: string, started_at: ISO8601 } | null
+```
+
+`null` when no `agent_actions` row exists for the claim. The field is sourced from `agentactivity.store.latestActionForClaim` (implementation: `src/cmd/planar-watch/handlers/ps.zig`). The `feed` and `log` verbs do **not** embed `latest_action` on their claim payloads — they are time-ordered event streams where the action rows are already present as first-class events.
 
 ### Exit codes
 

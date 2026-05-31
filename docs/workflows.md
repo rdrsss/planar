@@ -1778,7 +1778,7 @@ Both error paths are atomic — the surrounding `BEGIN IMMEDIATE` transaction ro
 
 ## Recipe 19 — Live agent cockpit with `planar-watch`
 
-`planar-watch` is the third binary in the four-binary architecture — the **human-facing read-only viewer**. It opens the database in strict read-only mode (`SQLITE_OPEN_READONLY`); the SQLite driver itself refuses every write SQL string, which is the second line of defense behind the binary's "no write verbs registered" capability boundary. The first defense is the verb tree itself: it contains exactly six read verbs — `feed`, `ps`, `claims`, `actions`, `plans`, `log` — plus the conventional `version` and `completion` helpers, and zero anything that mutates state.
+`planar-watch` is the third binary in the four-binary architecture — the **human-facing read-only viewer**. It opens the database in strict read-only mode (`SQLITE_OPEN_READONLY`); the SQLite driver itself refuses every write SQL string, which is the second line of defense behind the binary's "no write verbs registered" capability boundary. The first defense is the verb tree itself: it contains exactly seven read verbs — `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree` — plus the conventional `version` and `completion` helpers, and zero anything that mutates state.
 
 This recipe walks the streaming-cockpit workflow. The companion recipe for the operator's read-fold-ins on the `planar` binary lives in Recipe 16.
 
@@ -1787,12 +1787,15 @@ This recipe walks the streaming-cockpit workflow. The companion recipe for the o
 ```
 planar-watch                                     # default: feed
 planar-watch feed --follow                       # stream until SIGINT
+planar-watch feed --follow --tail 50             # show last 50 events, then stream new ones
 planar-watch feed --follow --json | jq -c .      # NDJSON, one event per line
 planar-watch feed --vendor claude --plan 85      # narrow by vendor + plan
 planar-watch feed --since 2026-05-27T00:00:00Z   # only newer events
 ```
 
 `feed` is the lowest-friction view: every claim transition, action transition, and (where applicable) task status change ordered by occurrence time. With `--follow` the loop polls every `--interval` (default `1s`; e.g. `100ms` for tests). The JSON event shape is stable across the transport-tier ladder — see `docs/architecture.md` § "Live tail / follow implementation".
+
+**M3 addition — `--tail N` (plan 467):** emits the most-recent N events on the initial render, then with `--follow` streams only events that arrived after the tail — no re-emit. Equivalent to `journalctl -f -n N`. N must be a positive integer; N ≤ 0 exits with `InvalidValue`. See [CLI reference: planar-watch feed](cli-reference.md#binary-planar-watch).
 
 ### Step 2 — Snapshot the active claims (`ps`)
 
@@ -1801,9 +1804,16 @@ planar-watch ps                                  # text table
 planar-watch ps --json                           # generated_at + active + stale arrays
 planar-watch ps --stale                          # also include lease-expired / stale
 planar-watch ps --vendor codex --follow          # live filter
+planar-watch ps --sort-by heartbeat --follow     # freshest-heartbeated first (M3 default)
+planar-watch ps --sort-by lease                  # pre-M3 claimed_at ordering
+planar-watch ps --group-by role                  # one section per agent role
+planar-watch ps --group-by scope                 # one section per project scope
+planar-watch ps --group-by vendor                # one section per vendor
 ```
 
 `ps` is the operator's "what's running right now" snapshot. With `--stale` it also includes claims whose lease has expired (and that `planar-agent reconcile` would mark stale on its next sweep) — the diagnostic surface for wedged agents.
+
+**M3 columns (plan 467):** each text row now carries `activity:"<summary>"` (most-recent action description, truncated at 80 bytes), `worktree:<basename>` (basename of the agent's worktree path), and `last_hb:<rel>` (relative heartbeat age, e.g. `15s`, `2m`). The `--sort-by` flag controls ordering; `--group-by` emits `[group: <key>]` section headers in text mode and a `groups: {key: [...]}` JSON envelope instead of the flat `active`/`stale` arrays. See [CLI reference: planar-watch ps](cli-reference.md#binary-planar-watch) for the full flag table.
 
 ### Step 3 — Drill into one claim or task
 
@@ -1835,6 +1845,68 @@ planar-watch actions --entity task:541 --json
 ```
 
 `claims` and `actions` are the unbucketed ledgers — they return whatever rows match the filters in one flat array, suitable for downstream tools that need full table reads rather than the synthesized buckets `ps` / `plans` emit.
+
+### Step 6 — Operator observation loop (recommended two-pane layout)
+
+For sustained observation of an active plan, open two terminal panes side by side.
+
+**Pane A — live process list:**
+
+```
+planar-watch ps --follow
+```
+
+Refreshes every second (default interval). Columns at a glance: entity id, scope, `activity:"<summary>"` (what the agent is doing right now, sourced from its last `planar-agent heartbeat --status` call), `worktree:<basename>`, `last_hb:<rel>` (how long since the last heartbeat). The freshest-heartbeated agent surfaces at the top (`--sort-by heartbeat` is the M3 default).
+
+To orient by role rather than by recency:
+
+```
+planar-watch ps --follow --group-by role
+```
+
+This emits `[group: coder]`, `[group: reviewer]`, etc. — a quick "how many agents of each type are alive and what are they doing".
+
+**Pane B — event stream:**
+
+```
+planar-watch feed --follow --tail 50
+```
+
+Renders the 50 most-recent events on startup (so the pane is not blank at launch), then streams every new event without re-emitting the initial tail. Add `--plan <id>` or `--vendor <v>` to narrow when multiple plans run in parallel.
+
+**Higher-level overview:**
+
+```
+planar dashboard --agents
+```
+
+The `planar` binary's fold-in view — rolls up active plans, claim counts, and per-plan next-available-work tallies in one snapshot. Each claim in the `--agents` JSON output carries a `latest_action` field (the same field `planar-watch ps --json` emits) for scripting dashboards. Suitable for a third monitoring pane or a status-bar widget. Does not stream; re-run on demand or wrap in `watch`.
+
+### Step 7 — Topology view for orchestrator-heavy sessions (`tree`)
+
+When a session runs multiple orchestrators, each dispatching several coders in parallel, `ps --group-by role` shows what each agent is doing but flattens the parent→child structure. Use `planar-watch tree` to see the dispatch fanout explicitly:
+
+```
+planar-watch tree                         # full forest snapshot
+planar-watch tree --follow                # stream; re-renders on WAL change
+planar-watch tree --root-session <id>     # scope to one session's subtree
+```
+
+Each root action (orchestrator dispatch, `parent_action_id IS NULL`) renders flush left; sub-agents dispatched from it render beneath with `├──` / `└──` tree characters. Example output for a single orchestrator with two coders:
+
+```
+action:12  scope:project:my-app  vendor:claude  activity:"dispatching M4 coders"  branch:feat/m4  last_hb:2s
+└── scope:project:my-app  vendor:claude  activity:"writing tree.zig"  branch:feat/m4  last_hb:5s
+└── scope:project:my-app  vendor:claude  activity:"writing tests"     branch:feat/m4  last_hb:8s
+```
+
+**When to use `tree` vs `ps --group-by role`:**
+- `ps --group-by role` — use when the question is "what role is each agent and how recently did it heartbeat?" (flat view, sorted by recency or role).
+- `tree` — use when the question is "which orchestrator dispatched which coders?" (topology view). This is the M4-conditional view: reach for it when you are running three or more orchestrators and `--group-by` output is too dense to read at a glance.
+
+Decision D5 (plan 467) gates the `tree` verb on an operator opting into the M4 conditional: if you have only one orchestrator and one or two coders, `ps --follow` is sufficient.
+
+See [CLI reference: planar-watch tree](cli-reference.md#planar-watch-tree--m4-addition-plan-467) for flags and the tree-character reference.
 
 ### Capability boundary
 

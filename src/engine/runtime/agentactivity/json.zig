@@ -36,6 +36,15 @@ fn writeIntOpt(w: *std.Io.Writer, key: []const u8, val: ?i64) !void {
     }
 }
 
+/// Compact latest-action snapshot for the `latest_action` JSON field on
+/// `planar-watch ps` claim rows. Pass `null` to omit the field (callers
+/// outside `planar-watch ps` do not need it).
+pub const LatestActionInfo = struct {
+    kind: []const u8,
+    summary: ?[]const u8,
+    started_at: []const u8,
+};
+
 /// Emit the canonical ClaimRow JSON shape. The helper writes the
 /// surrounding `{ … }`; callers wrap it in the enclosing object.
 ///
@@ -47,10 +56,30 @@ fn writeIntOpt(w: *std.Io.Writer, key: []const u8, val: ?i64) !void {
 /// non-null, the field is emitted right after `entity_id` so the
 /// "where is this entity stored" context lives next to the "which
 /// entity" reference in the JSON shape.
+///
+/// `latest_action` is optional — pass a `LatestActionInfo` to add a
+/// `"latest_action":{kind,summary,started_at}` field near the end of
+/// the claim object. Pass `null` to omit the field for backward
+/// compatibility. Used by `planar-watch ps` (plan 467 M3 task 3056).
 pub fn writeClaim(
     w: *std.Io.Writer,
     c: types.Claim,
     entity_scope: ?types.ClaimScopeInfo,
+) !void {
+    return writeClaimWithActivity(w, c, entity_scope, false, null);
+}
+
+/// Like `writeClaim` but also emits `"latest_action"` when
+/// `include_latest_action` is true. `action` may be null (→ emits
+/// `"latest_action":null`) or populated (→ emits the object).
+/// All callers outside `planar-watch ps` use `writeClaim` which sets
+/// `include_latest_action = false` so backward compatibility is preserved.
+pub fn writeClaimWithActivity(
+    w: *std.Io.Writer,
+    c: types.Claim,
+    entity_scope: ?types.ClaimScopeInfo,
+    include_latest_action: bool,
+    action: ?LatestActionInfo,
 ) !void {
     try w.print("{{\"id\":{d}", .{c.id});
     try w.print(",\"claim_token\":", .{});
@@ -95,6 +124,21 @@ pub fn writeClaim(
     try std.json.Stringify.encodeJsonString(c.lease_expires_at, .{}, w);
     try writeStringOpt(w, "released_at", c.released_at);
     try writeStringOpt(w, "release_reason", c.release_reason);
+    // latest_action — emitted only by planar-watch ps (plan 467 M3
+    // task 3056). When include_latest_action is false the field is
+    // omitted entirely for backward compatibility with other consumers
+    // of writeClaim. When true, emits an object or null.
+    if (include_latest_action) {
+        if (action) |a| {
+            try w.print(",\"latest_action\":{{\"kind\":\"{s}\"", .{a.kind});
+            try writeStringOpt(w, "summary", a.summary);
+            try w.print(",\"started_at\":", .{});
+            try std.json.Stringify.encodeJsonString(a.started_at, .{}, w);
+            try w.print("}}", .{});
+        } else {
+            try w.print(",\"latest_action\":null", .{});
+        }
+    }
     try w.print("}}", .{});
 }
 
