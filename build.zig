@@ -329,6 +329,30 @@ pub fn build(b: *std.Build) void {
     // any vendor/<name>/VENDOR.toml mismatch.
     b.getInstallStep().dependOn(&vendor_check_run.step);
 
+    // -----------------------------------------------------------------
+    // CLI-usage lint. Dumps each binary's `schema` JSON and validates
+    // that authored prose (agents/, skills/src/, docs/) never references
+    // a flag the binary does not expose. Wired into `make test-all` /
+    // CI via the `cli-usage-check` step.
+    // -----------------------------------------------------------------
+    const cli_usage_lint_exe = b.addExecutable(.{
+        .name = "cli_usage_lint",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/cli_usage_lint.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+    const cli_usage_check_step = b.step("cli-usage-check", "Validate authored CLI invocations against the live command schema");
+    const cli_usage_check_run = b.addRunArtifact(cli_usage_lint_exe);
+    cli_usage_check_run.step.dependOn(b.getInstallStep());
+    cli_usage_check_run.addArg(b.pathFromRoot("."));
+    cli_usage_check_run.addArg(b.getInstallPath(.bin, "planar"));
+    cli_usage_check_run.addArg(b.getInstallPath(.bin, "planar-agent"));
+    cli_usage_check_run.addArg(b.getInstallPath(.bin, "planar-watch"));
+    cli_usage_check_run.addArg(b.getInstallPath(.bin, "planar-doc"));
+    cli_usage_check_step.dependOn(&cli_usage_check_run.step);
+
     const run_step = b.step("run", "Run the app");
     const run_cmd = b.addRunArtifact(exe);
     run_step.dependOn(&run_cmd.step);
@@ -367,6 +391,9 @@ pub fn build(b: *std.Build) void {
     const doc_exe_tests = b.addTest(.{ .root_module = doc_exe.root_module, .filters = test_filters_opt });
     const run_doc_exe_tests = b.addRunArtifact(doc_exe_tests);
 
+    const cli_usage_lint_tests = b.addTest(.{ .root_module = cli_usage_lint_exe.root_module, .filters = test_filters_opt });
+    const run_cli_usage_lint_tests = b.addRunArtifact(cli_usage_lint_tests);
+
     const db_tests = b.addTest(.{ .root_module = db_mod, .filters = test_filters_opt });
     const run_db_tests = b.addRunArtifact(db_tests);
 
@@ -385,6 +412,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_agent_exe_tests.step);
     test_step.dependOn(&run_watch_exe_tests.step);
     test_step.dependOn(&run_doc_exe_tests.step);
+    test_step.dependOn(&run_cli_usage_lint_tests.step);
     test_step.dependOn(&run_db_tests.step);
     test_step.dependOn(&run_cli_tests.step);
     test_step.dependOn(&run_engine_tests.step);

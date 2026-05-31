@@ -32,7 +32,7 @@ Wraps [`ext`](../../docs/cli-reference.md#domain-ext), [`link`, and `unlink`](..
 
 ```
 planar ext register jira <slug> --base-url <url> --project <key> --auth-env <var>
-planar ext register github <slug> --project <owner/repo> --auth gh-cli
+planar ext register github <slug> --project <owner/repo> [--auth-env <var>]
 planar ext list
 planar ext test <slug>
 planar ext create <system-slug> --from <kind:id> [--type <issue-type>] [--role <kind>] [--sync <direction>]

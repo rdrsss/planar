@@ -237,7 +237,7 @@ diff. The workflow is:
 
 ```sh
 # After authoring a new doc, wire it to the source areas it covers:
-planar-doc cover --doc docs/features/login-flow.md --source src/login/
+planar-doc cover docs/features/login-flow.md src/login/
 planar-doc build       # write the manifest atomically
 
 # Routine drift checks:

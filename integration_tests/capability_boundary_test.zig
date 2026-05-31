@@ -239,6 +239,7 @@ test "planar-agent verb set is EXACTLY the 13 documented agent verbs" {
         "ingest",
         "reconcile",
         "abort",
+        "schema",
     }, "planar-agent");
 
     // Forbidden set: planning-entity verbs and operator-only namespaces.
@@ -280,7 +281,7 @@ test "planar-agent recursive --help walk: every verb's --help exits 0" {
     const top = [_][]const u8{
         "version", "pull",      "peek",  "complete",  "fail",
         "release", "block",     "claim", "heartbeat", "action",
-        "ingest",  "reconcile", "abort",
+        "ingest",  "reconcile", "abort", "schema",
     };
     for (top) |v| {
         const res = runBin(&suite, resolveAgentBin(), &.{ v, "--help" });
@@ -329,7 +330,7 @@ test "planar-watch verb set is EXACTLY the read verbs + version + completion" {
     defer freeVerbSet(gpa, &verbs);
 
     try assertExactSet(&verbs, &.{
-        "feed", "ps", "claims", "actions", "plans", "log", "tree", "version", "completion",
+        "feed", "ps", "claims", "actions", "plans", "log", "tree", "version", "completion", "schema",
     }, "planar-watch");
 
     // Forbidden: every planar-agent write verb.

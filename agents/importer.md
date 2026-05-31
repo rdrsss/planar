@@ -90,7 +90,6 @@ planar import <repo-root> --no-interpret
 planar import <repo-root> --strict --threshold 0.85 --apply
 planar import <repo-root> --threshold 0.0 --apply
 planar import <repo-root> --no-status-inference --apply
-planar import <repo-root> --threshold 0.0 --trust-status-inference --apply
 planar import <repo-root> --roadmap docs/ROADMAP.md
 planar import <repo-root> --accept-spec <slug>
 planar import <repo-root> --accept-spec all

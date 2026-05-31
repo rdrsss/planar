@@ -28,6 +28,7 @@ const action_cmd = @import("action/cmd.zig");
 const ingest_h = @import("ingest.zig");
 const reconcile_h = @import("reconcile.zig");
 const abort_h = @import("abort.zig");
+const schema_h = @import("schema.zig");
 
 pub const verbs: []const cli.Cmd = &.{
     version_h.verb,
@@ -43,4 +44,5 @@ pub const verbs: []const cli.Cmd = &.{
     ingest_h.verb,
     reconcile_h.verb,
     abort_h.verb,
+    schema_h.verb,
 };

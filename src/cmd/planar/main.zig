@@ -48,6 +48,7 @@ const import_h = @import("handlers/import.zig");
 const synthesize_h = @import("handlers/synthesize.zig");
 const version_h = @import("handlers/version.zig");
 const completion_h = @import("handlers/completion.zig");
+const schema_h = @import("handlers/schema.zig");
 
 /// Root command tree. `pub` because each `handlers/*.zig` imports it to
 /// derive its typed args via `cli.castArgs(main.root, &.{…}, ptr)`.
@@ -97,6 +98,7 @@ pub const root: cli.Cmd = .{
         synthesize_h.verb,
         version_h.verb,
         completion_h.verb,
+        schema_h.verb,
     },
 };
 

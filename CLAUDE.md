@@ -126,6 +126,19 @@ distinction is load-bearing — never collapse them.
   suite remains the always-on parity guard. Pass `--strict` to
   `parity-check.sh` to fail when the Go binary is unreachable.
 
+- **CLI-usage lint gate** — `make cli-usage-check` (also `zig build
+  cli-usage-check`) dumps each binary's `schema` JSON catalog and
+  validates that the authored workflow surfaces (`agents/`,
+  `skills/src/`, `docs/`) never reference a flag a binary does not
+  expose. Every binary exposes a `schema` verb (a comptime-built flat
+  JSON catalog of commands + flags + aliases + positionals) for this
+  purpose; the linter lives in `tools/cli_usage_lint.zig`. A line
+  containing `cli-lint-ignore` is skipped — the escape hatch for
+  intentional references to not-yet-existing or removed flags.
+  `make test-all` wires the gate in. This is what catches drift like a
+  skill telling an operator to run `planar workbench list --plan` when
+  `workbench list` has no `--plan` flag.
+
 #### Integration test methodology
 
 Integration tests cover the user-visible CLI contract. Two test styles

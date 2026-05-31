@@ -31,7 +31,7 @@ Wraps [`question`](../../docs/cli-reference.md#domain-question):
 planar question add <title> [--body <text>] [--scope <scope>]
 planar question answer <question-id> <answer>
 planar question wontfix <question-id>
-planar question list [--open] [--scope <scope>]
+planar question list [--status <status>] [--scope <scope>]
 planar question show <question-id>
 planar question link <question-id> <to-kind:to-id> --relationship <kind>
 ```

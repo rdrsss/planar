@@ -97,10 +97,10 @@ planar-doc verify
 planar-doc diff [--json]
 
 # Add or remove a (doc, source) coverage edge.
-planar-doc cover --doc <path> --source <repo-path> [--remove]
+planar-doc cover <doc-path> <repo-path> [--remove]
 
 # Mark a path as intentionally undocumented (or remove from nodoc).
-planar-doc nodoc --source <repo-path> [--remove]
+planar-doc nodoc <repo-path> [--remove]
 
 # Minimal docs prose linter (URL footnotes etc.; DB-free).
 planar-doc lint [--path <dir>]

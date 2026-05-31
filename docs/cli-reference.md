@@ -70,9 +70,10 @@ planar [GLOBAL FLAGS] <subcommand> [subcommand args]
 
 ### Global Flags
 
+The database path is overridden via the `PLANAR_DB` environment variable (not a `--db` flag); it defaults to `~/.planar/planar.db`.
+
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--db <path>` | Path to the SQLite database. | `~/.planar/planar.db` |
 | `--json` | Emit machine-readable newline-delimited JSON instead of human text. | off |
 | `--quiet` / `-q` | Suppress informational output; only emit errors and explicit results. | off |
 | `-v` | Enable info-level logging. | off |
@@ -191,7 +192,7 @@ Initializes the Planar database and registers the current directory as a project
 
 **Synopsis:**
 ```
-planar init [--name <text>] [--db <path>]
+planar init [--name <text>] [--skip-project] [--allow-no-repo] [--force]
 ```
 
 **Description:** Idempotently ensure the config file exists (via `config init`), apply the embedded migration corpus (compiled into the binary at build time from `migrations/` via `tools/gen_migrations.zig`) against the configured database (creating it if absent), then register the current working directory as a project if it is not already registered. Emits a summary of schema version and project id. Order: ensure config → apply migrations → create project row.
@@ -203,7 +204,6 @@ planar init [--name <text>] [--db <path>]
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--name <text>` | Human-readable project name. | Basename of current working directory. |
-| `--db <path>` | (Also accepted as global flag.) Override database path. | `~/.planar/planar.db` |
 | `--skip-project` | Apply migrations only; do not register a project. | off |
 | `--allow-no-repo` | Proceed even when cwd has no `.git` but contains child repos (escape hatch for the workspace-shape guardrail). | off |
 | `--force` | Alias for `--allow-no-repo`. | off |
@@ -365,7 +365,7 @@ Manages associations — the many-to-many tags that group repos into named scope
 
 **Synopsis:**
 ```
-planar assoc list [--kind <kind>] [--workbench]
+planar assoc list [--kind <kind>] [--json]
 ```
 
 **Description:** List all known associations.
@@ -1349,7 +1349,7 @@ planar question wontfix <question-id>
 
 **Synopsis:**
 ```
-planar question list [--scope <scope>] [--open] [--status <status>] [--touches <repo-slug>]
+planar question list [--scope <scope>] [--status <status>] [--touches <repo-slug>] [--plan <id>]
 ```
 
 **Description:** List questions matching the given filters.
@@ -3273,7 +3273,7 @@ planar handoff validate <snapshot-id>
 
 **Synopsis:**
 ```
-planar handoff list [--status <status>] [--task <task-id>]
+planar handoff list [--status <status>]
 ```
 
 **Description:** List handoffs by status.
@@ -5194,10 +5194,10 @@ planar-doc verify      [--json]
 planar-doc diff        [--json]
 
 # Add or remove a (doc, source) coverage edge.
-planar-doc cover       --doc <path> --source <repo-path> [--remove]
+planar-doc cover       <doc-path> <repo-path> [--remove]
 
 # Mark a repo path as intentionally undocumented (or remove from nodoc).
-planar-doc nodoc       --source <repo-path> [--remove]
+planar-doc nodoc       <repo-path> [--remove]
 
 # Minimal prose linter under `docs/` (the DB-free subset that survived
 # the plan 423 binary split).
@@ -5221,6 +5221,21 @@ planar-doc lint        [--path <dir>] [--json]
 | 0 | Success. |
 | 1 | Drift detected (`verify` or `diff` found differences) OR generic failure. |
 | 2 | User-input failure (unknown flag, malformed argument). |
+
+---
+
+## Introspection: `schema` (all binaries)
+
+Every Planar binary — `planar`, `planar-agent`, `planar-watch`, `planar-doc` — exposes a `schema` verb that prints a deterministic flat JSON catalog of its entire command tree: each command's full path, subcommands, aliases, positionals, and flags (with inherited flags merged in). Output is always JSON.
+
+```sh
+planar schema
+planar-agent schema
+planar-watch schema
+planar-doc schema
+```
+
+The catalog is built at comptime from the command tree, so the verb is a pure write with no DB access. It is intended for structured consumers — LLM tool routers, editor integrations, and the CLI-usage linter (`make cli-usage-check`) that validates authored agent/skill/doc surfaces never reference a flag a binary does not expose (implemented in `tools/cli_usage_lint.zig`).
 
 ---
 
@@ -5261,3 +5276,4 @@ For quick reference, all documented commands grouped by domain:
 | `synthesize` | `synthesize <repo-root>` |
 | `local` | `local list`, `local link`, `local unlink`, `local import`, `local migrate` |
 | `help` | `help` |
+| `schema` | `schema` (also on `planar-agent`, `planar-watch`, `planar-doc`) |
