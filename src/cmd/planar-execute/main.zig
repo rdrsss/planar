@@ -60,6 +60,11 @@ pub const state = @import("state.zig");
 /// Imported here so its `test` blocks run under the `execute_exe_tests` target.
 pub const schema = @import("schema.zig");
 
+/// Brief compiler — pure function `(plan state, spec citations, schema) → brief string`
+/// (task 3171 m2-brief-compiler).
+/// Imported here so its `test` blocks run under the `execute_exe_tests` target.
+pub const brief = @import("brief.zig");
+
 const c = @cImport({
     @cInclude("lua.h");
     @cInclude("lauxlib.h");
