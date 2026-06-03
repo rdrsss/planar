@@ -12,15 +12,15 @@
     //   3. Commit the manifest + the regenerated files under `vendor/<name>/`.
     //
     // To add a new dep: add another entry to `.deps`. Supported archive types:
-    //   - .zip   (zig fetch strips the single top-level directory; use strip_prefix = "")
-    //   - .tar_gz (zig fetch preserves the top-level directory; set strip_prefix = "name-ver/")
+    //   - .zip    (zig fetch strips the single top-level directory; use strip_prefix = "")
+    //   - .tar_gz (zig fetch also strips the single top-level directory; use strip_prefix = "")
     //
     // strip_prefix semantics (decision 364):
     //   `strip_prefix` is the path **within the zig-normalised cached tree** after
-    //   the `<content-hash>/` prefix that zig fetch prepends.  Because zig fetch
-    //   strips the single top-level directory from zip archives but not from
-    //   tar archives, zip deps use `strip_prefix = ""` while tar.gz deps set
-    //   `strip_prefix` to the original top-level directory name (e.g. "foo-1.2/").
+    //   the `<content-hash>/` prefix that zig fetch prepends.  Zig fetch strips
+    //   the single top-level directory from BOTH zip and tar.gz archives during
+    //   normalisation, so both archive types use `strip_prefix = ""` unless you
+    //   want to import from a specific subdirectory of the normalised tree.
     .deps = .{
         .{
             .name = "sqlite",
@@ -32,6 +32,82 @@
             // from zip archives, so the normalised tree has files at root level.
             .strip_prefix = "",
             .keep = .{ "sqlite3.c", "sqlite3.h", "sqlite3ext.h" },
+        },
+        .{
+            .name = "lua",
+            .version = "5.4.7",
+            .url = "https://www.lua.org/ftp/lua-5.4.7.tar.gz",
+            .sha256 = "9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30",
+            .archive = .tar_gz,
+            // zig fetch strips the single top-level dir from tar archives
+            // as well as zip archives during normalisation; the normalised
+            // tree has files at root level (e.g. "src/lapi.c").
+            .strip_prefix = "",
+            // Library sources only — lua.c (interpreter main) and luac.c
+            // (compiler main) are excluded; they define their own `main`
+            // and must not be compiled into the static library.
+            .keep = .{
+                "src/lapi.c",
+                "src/lapi.h",
+                "src/lauxlib.c",
+                "src/lauxlib.h",
+                "src/lbaselib.c",
+                "src/lcode.c",
+                "src/lcode.h",
+                "src/lcorolib.c",
+                "src/lctype.c",
+                "src/lctype.h",
+                "src/ldblib.c",
+                "src/ldebug.c",
+                "src/ldebug.h",
+                "src/ldo.c",
+                "src/ldo.h",
+                "src/ldump.c",
+                "src/lfunc.c",
+                "src/lfunc.h",
+                "src/lgc.c",
+                "src/lgc.h",
+                "src/linit.c",
+                "src/liolib.c",
+                "src/ljumptab.h",
+                "src/llex.c",
+                "src/llex.h",
+                "src/llimits.h",
+                "src/lmathlib.c",
+                "src/lmem.c",
+                "src/lmem.h",
+                "src/loadlib.c",
+                "src/lobject.c",
+                "src/lobject.h",
+                "src/lopcodes.c",
+                "src/lopcodes.h",
+                "src/lopnames.h",
+                "src/loslib.c",
+                "src/lparser.c",
+                "src/lparser.h",
+                "src/lprefix.h",
+                "src/lstate.c",
+                "src/lstate.h",
+                "src/lstring.c",
+                "src/lstring.h",
+                "src/lstrlib.c",
+                "src/ltable.c",
+                "src/ltable.h",
+                "src/ltablib.c",
+                "src/ltm.c",
+                "src/ltm.h",
+                "src/lua.h",
+                "src/lua.hpp",
+                "src/luaconf.h",
+                "src/lualib.h",
+                "src/lundump.c",
+                "src/lundump.h",
+                "src/lutf8lib.c",
+                "src/lvm.c",
+                "src/lvm.h",
+                "src/lzio.c",
+                "src/lzio.h",
+            },
         },
     },
 }

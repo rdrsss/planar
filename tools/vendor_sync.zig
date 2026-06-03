@@ -23,16 +23,15 @@
 //!
 //! After `zig fetch <archive>`, the normalised package is stored at
 //! `<global-cache>/p/<content-hash>.tar.gz`.  The files inside that
-//! archive are prefixed with `<content-hash>/`.  Zig normalises zip
-//! archives by stripping the single top-level directory, so for a dep
-//! originally packaged as `foo-1.2/file.c` the cached copy contains only
-//! `<hash>/file.c`.  Tar archives are not stripped; a dep packaged as
-//! `foo-1.2/file.c` appears as `<hash>/foo-1.2/file.c`.  The
-//! `strip_prefix` field in `manifest.zon` therefore means the path
-//! **within the zig-normalised tree** (after `<hash>/`):
+//! archive are prefixed with `<content-hash>/`.  Zig normalises BOTH zip
+//! and tar archives by stripping the single top-level directory, so for a
+//! dep originally packaged as `foo-1.2/file.c` the cached copy contains
+//! only `<hash>/file.c`.  The `strip_prefix` field in `manifest.zon`
+//! therefore means the path **within the zig-normalised tree** (after
+//! `<hash>/`):
 //!
-//!   - zip deps: `strip_prefix = ""` (zig already stripped the top-level)
-//!   - tar.gz deps: `strip_prefix = "foo-1.2/"` (the preserved top-level dir)
+//!   - zip deps:    `strip_prefix = ""` (zig stripped the top-level)
+//!   - tar.gz deps: `strip_prefix = ""` (zig also strips the top-level)
 //!
 //! The build wires `check` as a configure-time fail-fast step so a stale
 //! checkout cannot silently compile against the wrong upstream; `sync`
@@ -53,9 +52,10 @@ const Dep = struct {
     sha256: []const u8,
     archive: Archive,
     /// Path prefix within the zig-normalised cached tree (after `<hash>/`).
-    /// For zip deps this is empty string — zig strips the single top-level
-    /// directory.  For tar.gz deps this is the original top-level directory
-    /// name (e.g. `"foo-1.2/"`).
+    /// Zig strips the single top-level directory from both zip and tar.gz
+    /// archives during normalisation, so this is typically empty string for
+    /// both archive formats.  Set to a non-empty sub-path only when you want
+    /// to import files from a specific subdirectory of the normalised tree.
     strip_prefix: []const u8,
     keep: []const []const u8,
 };

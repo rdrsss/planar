@@ -2,8 +2,8 @@
 # Regenerate via `zig build vendor-sync`. The `check` step in
 # build.zig compares the fields below against vendor/manifest.zon
 # and fails the build on drift.
-name = "sqlite"
-version = "3.50.2"
-url = "https://sqlite.org/2025/sqlite-amalgamation-3500200.zip"
-sha256 = "387991de2834b5da2894119ff4173a9ea0779ea55ebcf53d9a40b24d1dc2484e"
-fetched_at = "2026-06-03T11:12:54Z"
+name = "lua"
+version = "5.4.7"
+url = "https://www.lua.org/ftp/lua-5.4.7.tar.gz"
+sha256 = "9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30"
+fetched_at = "2026-06-03T11:12:55Z"
