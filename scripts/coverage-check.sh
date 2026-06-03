@@ -93,6 +93,16 @@ sort -u -o "$TMP_ALL" "$TMP_ALL"
 # with no second arg counts as (verb, "."). The Python pass handles
 # multi-line `&.{ \n "verb", \n "sub", ... }` forms which a bare grep
 # regex would miss.
+#
+# KNOWN BLIND SPOT: this only sees STRING-LITERAL verb/subcommand pairs.
+# A test that drives the verb through a variable — e.g. a table-driven
+# loop `&.{ tc.kind, "view", id }` or a helper `&.{ kind, "view", id }`
+# — genuinely exercises the leaf but reads here as uncovered, so the leaf
+# can be under-counted. editflow_diff_review_test.zig (parameterized over
+# tc.kind) and any `kind`-variable helper are affected. When you add such
+# a test, prefer passing the FULL literal arg slice from the call site
+# (`&.{ "task", "view", id }`) so the leaf is counted (see
+# entity_view_test.zig), or accept the under-count knowingly.
 TEST_FILES=$(collect_test_files)
 if [[ -n "$TEST_FILES" ]]; then
   python3 - "$TMP_EXERCISED" $TEST_FILES <<'PY'

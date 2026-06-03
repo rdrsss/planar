@@ -2,8 +2,9 @@
 //!
 //! Scenario M8 of plan 352. Workbench sync: operator pulls a plan's
 //! spec content from the DB into a filesystem tree, edits a file,
-//! pushes the edit back, exercises the conflict-resolve path,
-//! atomically syncs, then archives and restores the tree.
+//! pushes the edit back, drives a divergent FS+DB conflict through
+//! `workbench resolve --prefer fs`, atomically syncs, then archives and
+//! restores the tree.
 //!
 //! Workbench root isolation: each block overrides
 //! PLANAR_WORKBENCH_ROOT to a sub-path under the suite's tmp_dir
@@ -13,8 +14,8 @@
 //! Verbs exercised:
 //!     init, plan create, artifact add (with body), workbench push,
 //!     workbench status, workbench pull, workbench sync,
-//!     workbench list, workbench archive, workbench restore,
-//!     workbench extract-questions.
+//!     workbench resolve, workbench list, workbench archive,
+//!     workbench restore, workbench extract-questions.
 //!
 //! Verifies (roadmap slugs):
 //!     [ws/workbench-pull] — clean pull populates the FS tree from
@@ -66,6 +67,26 @@ const ExtractedFile = struct {
     artifact_id: i64,
     file: []const u8,
     questions: []const ExtractedQuestion,
+};
+
+const StatusEntry = struct {
+    class: []const u8,
+    file_path: []const u8,
+    conflict_id: i64 = 0,
+};
+
+const StatusResult = struct {
+    entries: []const StatusEntry,
+};
+
+const ResolveResult = struct {
+    resolved: bool,
+    event_id: i64,
+};
+
+const ArtifactBody = struct {
+    id: i64,
+    body: ?[]const u8 = null,
 };
 
 // =========================================================================
@@ -195,6 +216,119 @@ test "scenario: workbench sync — push seeds FS, status round-trips, list surfa
         if (saw_question) break;
     }
     try std.testing.expect(saw_question);
+}
+
+// =========================================================================
+// Conflict path: divergent FS + DB edits → `workbench resolve --prefer fs`
+// =========================================================================
+
+test "scenario: workbench conflict — divergent FS+DB edits resolve via workbench resolve" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    _ = suite.registerProject("wb-conflict");
+    const wb_root = std.fmt.allocPrint(arena, "{s}/wb", .{suite.tmpAbsPath()}) catch unreachable;
+    const env = [_]harness.Suite.ExtraEnvEntry{
+        .{ .key = "PLANAR_WORKBENCH_ROOT", .value = wb_root },
+    };
+
+    // ---- 1. Plan + artifact carrying a recognizable body marker.
+    const plan_raw = suite.mustRunWith(&.{ "plan", "create", "--json", "Conflict target" }, &env);
+    const plan = std.json.parseFromSlice(PlanJSON, arena, plan_raw, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    }) catch unreachable;
+    gpa.free(plan_raw);
+    const plan_id_str = std.fmt.allocPrint(arena, "{d}", .{plan.value.id}) catch unreachable;
+
+    const art_raw = suite.mustRunWith(&.{
+        "artifact", "add",         "--json", "--plan",               plan_id_str,
+        "--kind",   "design_note", "--body", "ORIGINAL_MARKER_BODY", "Conflict spec",
+    }, &env);
+    const art = std.json.parseFromSlice(ArtifactBody, arena, art_raw, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    }) catch unreachable;
+    gpa.free(art_raw);
+    const art_id_str = std.fmt.allocPrint(arena, "{d}", .{art.value.id}) catch unreachable;
+
+    // ---- 2. push seeds the FS tree + manifest baseline.
+    gpa.free(suite.mustRunWith(&.{ "workbench", "push", plan_id_str, "--json" }, &env));
+
+    // ---- 3. Locate the artifact's rendered file via status (skip README).
+    const status_raw = suite.mustRunWith(&.{ "workbench", "status", plan_id_str, "--json" }, &env);
+    const status = std.json.parseFromSlice(StatusResult, arena, status_raw, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    }) catch unreachable;
+    gpa.free(status_raw);
+    var rel_path: ?[]const u8 = null;
+    for (status.value.entries) |e| {
+        if (!std.mem.endsWith(u8, e.file_path, "README.md")) {
+            rel_path = arena.dupe(u8, e.file_path) catch unreachable;
+            break;
+        }
+    }
+    try std.testing.expect(rel_path != null);
+    const abs = std.fmt.allocPrint(arena, "{s}/{s}", .{ wb_root, rel_path.? }) catch unreachable;
+
+    // ---- 4. Diverge BOTH sides: edit the FS body marker in place (keeping
+    //         the frontmatter so the file stays parseable) AND update the DB.
+    const content = std.Io.Dir.cwd().readFileAlloc(std.testing.io, abs, gpa, .limited(1024 * 1024)) catch unreachable;
+    defer gpa.free(content);
+    const fs_edited = std.mem.replaceOwned(u8, gpa, content, "ORIGINAL_MARKER_BODY", "FS_MARKER_BODY") catch unreachable;
+    defer gpa.free(fs_edited);
+    std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = abs, .data = fs_edited }) catch unreachable;
+
+    gpa.free(suite.mustRunWith(&.{ "artifact", "update", art_id_str, "--body", "DB_MARKER_BODY" }, &env));
+
+    // ---- 5. sync now reports a conflict (exit 3) and persists a conflict
+    //         event; recover its id from the entries.
+    const sync_res = suite.execWith(&.{ "workbench", "sync", plan_id_str, "--json" }, &env);
+    defer sync_res.deinit(gpa);
+    try std.testing.expect(sync_res.term == .exited and sync_res.term.exited == 3);
+    const sync = std.json.parseFromSlice(StatusResult, arena, sync_res.stdout, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    }) catch unreachable;
+    var conflict_event: i64 = 0;
+    for (sync.value.entries) |e| {
+        if (std.mem.eql(u8, e.class, "conflict")) {
+            conflict_event = e.conflict_id;
+            break;
+        }
+    }
+    try std.testing.expect(conflict_event > 0);
+    const event_str = std.fmt.allocPrint(arena, "{d}", .{conflict_event}) catch unreachable;
+
+    // ---- 6. resolve preferring FS: applies the FS body to the DB.
+    const resolve_raw = suite.mustRunWith(&.{ "workbench", "resolve", event_str, "--prefer", "fs", "--json" }, &env);
+    const resolve = std.json.parseFromSlice(ResolveResult, arena, resolve_raw, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    }) catch unreachable;
+    gpa.free(resolve_raw);
+    try std.testing.expect(resolve.value.resolved);
+    try std.testing.expectEqual(conflict_event, resolve.value.event_id);
+
+    // ---- 7. The DB body now reflects the FS side, and status is clean.
+    const show_raw = suite.mustRunWith(&.{ "artifact", "show", art_id_str, "--json" }, &env);
+    const shown = std.json.parseFromSlice(ArtifactBody, arena, show_raw, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    }) catch unreachable;
+    gpa.free(show_raw);
+    try std.testing.expect(shown.value.body != null);
+    try std.testing.expect(std.mem.containsAtLeast(u8, shown.value.body.?, 1, "FS_MARKER_BODY"));
+
+    const final_status = suite.execWith(&.{ "workbench", "status", plan_id_str, "--json" }, &env);
+    defer final_status.deinit(gpa);
+    try std.testing.expect(final_status.term == .exited and final_status.term.exited == 0);
 }
 
 // =========================================================================
