@@ -375,3 +375,151 @@ test "planar-execute --dry-run: compile error still exits 3 (load/validate share
 
     try std.testing.expectEqual(@as(u32, 3), res.exitCode());
 }
+
+// ---------------------------------------------------------------------------
+// task 3168 (m2-host-fns) + 3169 (m2-sandbox) — host functions on ctx + sandbox
+//
+// These exercise the user-visible contract through the compiled binary: the
+// host functions are recording stubs carried on ctx, and the sandbox closes the
+// os/io/os.time/math.random holes while exposing host-injected determinism.
+// In-process observability of the recorded calls is covered by the unit tests;
+// here we assert the run-success / run-failure contract the operator sees.
+// ---------------------------------------------------------------------------
+
+test "planar-execute: workflow calling ctx host fns runs successfully (task 3168)" {
+    // A workflow whose run(ctx) drives phase/log/agent/parallel/pipeline/
+    // workflow/budget must exit 0 — the stubs record and return, never erroring.
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_abs = try tmpAbsPath(&tmp, gpa);
+    defer gpa.free(tmp_abs);
+
+    const wf_src =
+        \\return {
+        \\  meta = { name = "host-fns", description = "drive every host fn", phases = {} },
+        \\  run = function(ctx)
+        \\    ctx.phase("Build")
+        \\    ctx.log("working")
+        \\    local r = ctx.agent("do the thing", { role = "coder" })
+        \\    assert(r.status == "stub", "agent must return a stub result table")
+        \\    ctx.parallel({ function() end, function() end })
+        \\    ctx.pipeline({ "a", "b" }, function() end)
+        \\    ctx.workflow("sub", {})
+        \\    assert(ctx.budget.total == 100, "budget.total injected")
+        \\    assert(ctx.budget:remaining() == 100, "remaining = total - spent")
+        \\  end,
+        \\}
+    ;
+    try writeWorkflow(&tmp, "host_fns.lua", wf_src);
+    const wf_path = try workflowPath(tmp_abs, "host_fns.lua", gpa);
+    defer gpa.free(wf_path);
+
+    const res = try runExecute(gpa, &.{wf_path});
+    defer res.deinit();
+
+    try std.testing.expectEqual(@as(u32, 0), res.exitCode());
+}
+
+test "planar-execute sandbox: os.execute call fails (absent) (task 3169)" {
+    // os is never opened → os is nil → os.execute is an index-on-nil runtime
+    // error. The workflow must exit non-zero.
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_abs = try tmpAbsPath(&tmp, gpa);
+    defer gpa.free(tmp_abs);
+
+    const wf_src =
+        \\return {
+        \\  meta = { name = "os-exec", description = "must fail", phases = {} },
+        \\  run = function(ctx) os.execute("echo pwned") end,
+        \\}
+    ;
+    try writeWorkflow(&tmp, "os_exec.lua", wf_src);
+    const wf_path = try workflowPath(tmp_abs, "os_exec.lua", gpa);
+    defer gpa.free(wf_path);
+
+    const res = try runExecute(gpa, &.{wf_path});
+    defer res.deinit();
+
+    try std.testing.expect(res.exitCode() != 0);
+    try std.testing.expect(res.stderr.len > 0);
+}
+
+test "planar-execute sandbox: io / os.time / math.random absent, ctx.now/seed present (task 3169)" {
+    // Single workflow that asserts the full sandbox contract: io and os nil,
+    // math.random / randomseed nil, math/string/table still work, and the
+    // host-injected ctx.now / ctx.seed are present. Exit 0 proves every assert
+    // held.
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_abs = try tmpAbsPath(&tmp, gpa);
+    defer gpa.free(tmp_abs);
+
+    const wf_src =
+        \\return {
+        \\  meta = { name = "sandbox", description = "holes closed", phases = {} },
+        \\  run = function(ctx)
+        \\    assert(io == nil, "io must be absent")
+        \\    assert(os == nil, "os must be absent (os.time unreachable)")
+        \\    assert(math.random == nil, "math.random stripped")
+        \\    assert(math.randomseed == nil, "math.randomseed stripped")
+        \\    assert(load == nil, "load stripped")
+        \\    assert(math.floor(2.9) == 2, "math.floor kept")
+        \\    assert(string.upper("x") == "X", "string lib kept")
+        \\    assert(type(ctx.now) == "number", "ctx.now injected")
+        \\    assert(type(ctx.seed) == "number", "ctx.seed injected")
+        \\  end,
+        \\}
+    ;
+    try writeWorkflow(&tmp, "sandbox.lua", wf_src);
+    const wf_path = try workflowPath(tmp_abs, "sandbox.lua", gpa);
+    defer gpa.free(wf_path);
+
+    const res = try runExecute(gpa, &.{wf_path});
+    defer res.deinit();
+
+    try std.testing.expectEqual(@as(u32, 0), res.exitCode());
+}
+
+test "planar-execute --dry-run: host-fn workflow still never enters run (task 3168/3169)" {
+    // The dry-run guarantee is unchanged by the host surface: a workflow whose
+    // run body would error must still exit 0 under --dry-run (run not entered),
+    // and exit non-zero without it (run entered, error raised).
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_abs = try tmpAbsPath(&tmp, gpa);
+    defer gpa.free(tmp_abs);
+
+    const wf_src =
+        \\return {
+        \\  meta = {
+        \\    name = "dry-host",
+        \\    description = "run errors; dry-run must skip it",
+        \\    phases = { { title = "P", detail = "" } },
+        \\  },
+        \\  run = function(ctx)
+        \\    ctx.phase("Build")
+        \\    error("run body must not execute under --dry-run")
+        \\  end,
+        \\}
+    ;
+    try writeWorkflow(&tmp, "dry_host.lua", wf_src);
+    const wf_path = try workflowPath(tmp_abs, "dry_host.lua", gpa);
+    defer gpa.free(wf_path);
+
+    // ARM 1: --dry-run → exit 0, run never entered.
+    const dry = try runExecute(gpa, &.{ "run", "--dry-run", wf_path });
+    defer dry.deinit();
+    try std.testing.expectEqual(@as(u32, 0), dry.exitCode());
+    try std.testing.expect(std.mem.indexOf(u8, dry.stdout, "dry-host") != null);
+
+    // ARM 2: live run → exit non-zero, error surfaced.
+    const live = try runExecute(gpa, &.{wf_path});
+    defer live.deinit();
+    try std.testing.expect(live.exitCode() != 0);
+    try std.testing.expect(std.mem.indexOf(u8, live.stderr, "must not execute under --dry-run") != null);
+}

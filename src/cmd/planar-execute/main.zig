@@ -22,11 +22,29 @@
 //!               trailing [args…] are threaded into ctx.args as a 1-based Lua
 //!               sequence of strings. Lua errors map to non-zero exit.
 //!
+//! M2 scope (this change — tasks 3168 m2-host-fns + 3169 m2-sandbox):
+//!   task 3168 — host-function surface (agent/parallel/pipeline/phase/log/
+//!               budget/workflow) registered as Lua C functions backed by Zig,
+//!               carried on `ctx` per the spec ("ctx carries args and the host
+//!               functions"). At M2 they are RECORDING STUBS: they record their
+//!               call (prompt/opts/title/msg + arg shapes) into a host-side
+//!               HostState and return a stub result; no real claude -p spawn, no
+//!               worktrees, no DB, no scheduler (those are M3/M4/M5). Recorded
+//!               calls are observable from Zig via HostState.calls so tests can
+//!               assert what the script invoked.
+//!   task 3169 — sandbox: luaL_openlibs is replaced with a curated set of safe
+//!               libraries (base, string, table, math, utf8, coroutine). os and
+//!               io are NEVER opened; math.random / math.randomseed are nil'd
+//!               out of the math table after open. Determinism is host-injected:
+//!               ctx.now (timestamp) and ctx.seed (PRNG seed) are the script's
+//!               only time/random source, mirroring the Workflow tool's
+//!               Date.now / Math.random ban.
+//!
 //! What is intentionally absent (later tasks):
-//!   - host-function surface (agent/parallel/pipeline/phase/log/budget/
-//!     workflow): m2-host-fns
-//!   - stdlib sandboxing (strip os/io/os.time/math.random): m2-sandbox
-//!   - --dry-run flag (stops after loadModule, prints meta/phases): task 3166
+//!   - real host-fn behavior: claude -p spawn / worktrees / DB / scheduler are
+//!     M3 (3170 state-reads), M4, M5 (coroutine agent()). The M2 stubs only
+//!     record.
+//!   - brief compiler (3171), state-reads (3170), schema ingestion (3172).
 //!   - named built-in workflow registry: m10-quality-spine (no entries yet)
 
 const std = @import("std");
@@ -145,6 +163,377 @@ pub const WorkflowModule = struct {
         allocator.free(self.meta.description);
     }
 };
+
+// ---------------------------------------------------------------------------
+// Host-function surface — task 3168 (m2-host-fns), recording stubs.
+//
+// Each host function (agent/parallel/pipeline/phase/log/workflow) is a Lua C
+// closure backed by Zig. At M2 they do NO real work — no `claude -p` spawn, no
+// worktrees, no DB, no scheduler. They RECORD their invocation (the call name
+// and a small set of stringified argument fields) into a HostState owned by the
+// Zig host, then return a stub result. `budget` is a host-backed Lua table whose
+// `total` is an injected number and whose `spent()` / `remaining()` are C
+// closures reading injected host values.
+//
+// Observability: a pointer to the HostState is threaded into every C closure as
+// a light-userdata upvalue (lua_upvalueindex(1)). The closure recovers the
+// pointer with lua_touserdata. This lets the Zig host (and tests) inspect
+// HostState.calls after run(ctx) returns and assert "agent called with prompt X",
+// "phase('Build') recorded", etc. We use a light-userdata upvalue rather than
+// lua_getextraspace because lua_getextraspace is a C macro (not exposed by
+// @cImport) and the upvalue approach keeps the binding explicit per closure.
+// ---------------------------------------------------------------------------
+
+/// The kind of host-function call recorded by a stub. The discriminant lets a
+/// test match on which host function fired without string-comparing a name.
+pub const HostCallKind = enum {
+    agent,
+    parallel,
+    pipeline,
+    phase,
+    log,
+    workflow,
+    budget_spent,
+    budget_remaining,
+};
+
+/// A single recorded host-function invocation. All fields are heap-owned copies
+/// (via the HostState allocator) so they outlive the Lua stack values they were
+/// read from. `arg0` / `arg1` carry the salient stringified arguments:
+///   agent    → arg0 = prompt, arg1 = opts (type/summary, e.g. "table" or "nil")
+///   phase    → arg0 = title
+///   log      → arg0 = msg
+///   workflow → arg0 = name, arg1 = args (type)
+///   parallel → arg0 = "<n> thunks" (the thunk-count shape)
+///   pipeline → arg0 = "<n> items", arg1 = "<m> stages"
+/// Fields not relevant to a kind are the empty string.
+pub const HostCall = struct {
+    kind: HostCallKind,
+    arg0: []const u8,
+    arg1: []const u8,
+};
+
+/// HostState is the Zig-side record of everything the workflow's host functions
+/// did during a run. It is allocated by the caller (runModule), pointed-to by
+/// every host C closure via a light-userdata upvalue, and inspected by the host
+/// after run(ctx) returns.
+///
+/// Determinism injection (task 3169): `now` and `seed` are host-supplied values
+/// exposed to the script as `ctx.now` and `ctx.seed`. With os.time and
+/// math.random removed from the sandbox, these are the script's ONLY source of
+/// time / randomness, keeping runs replayable.
+///
+/// `budget_total` backs the `budget.total` field and `budget:remaining()`.
+/// `budget_spent` is a fixed injected value at M2 (no real token accounting).
+pub const HostState = struct {
+    allocator: std.mem.Allocator,
+    calls: std.ArrayList(HostCall),
+
+    /// Host-injected timestamp (e.g. a Unix epoch second). Exposed as ctx.now.
+    now: i64,
+    /// Host-injected PRNG seed. Exposed as ctx.seed.
+    seed: i64,
+    /// Host-injected budget ceiling, exposed as budget.total / budget:remaining().
+    budget_total: i64,
+    /// Host-injected spent amount (fixed at M2; no real accounting). Backs
+    /// budget:spent() and budget:remaining() = total - spent.
+    budget_spent: i64,
+
+    pub fn init(allocator: std.mem.Allocator, now: i64, seed: i64, budget_total: i64, budget_spent: i64) HostState {
+        return .{
+            .allocator = allocator,
+            .calls = .empty,
+            .now = now,
+            .seed = seed,
+            .budget_total = budget_total,
+            .budget_spent = budget_spent,
+        };
+    }
+
+    pub fn deinit(self: *HostState) void {
+        for (self.calls.items) |call| {
+            self.allocator.free(call.arg0);
+            self.allocator.free(call.arg1);
+        }
+        self.calls.deinit(self.allocator);
+    }
+
+    /// record appends a HostCall, taking ownership of heap-duped copies of the
+    /// argument strings. On OOM it returns the error to the caller; the C-closure
+    /// shim turns that into a Lua error rather than a panic.
+    fn record(self: *HostState, kind: HostCallKind, arg0: []const u8, arg1: []const u8) std.mem.Allocator.Error!void {
+        const a0 = try self.allocator.dupe(u8, arg0);
+        errdefer self.allocator.free(a0);
+        const a1 = try self.allocator.dupe(u8, arg1);
+        errdefer self.allocator.free(a1);
+        try self.calls.append(self.allocator, .{ .kind = kind, .arg0 = a0, .arg1 = a1 });
+    }
+};
+
+/// hostStateUpvalue recovers the *HostState pointer stashed as the first
+/// upvalue (light userdata) of a host C closure.
+fn hostStateUpvalue(L: ?*c.lua_State) *HostState {
+    const ptr = c.lua_touserdata(L, c.lua_upvalueindex(1));
+    return @ptrCast(@alignCast(ptr.?));
+}
+
+/// luaArgString reads the argument at stack index `idx` as a string view into
+/// Lua-owned memory. Returns "" when the argument is absent or not a string.
+/// The returned slice is only valid until the Lua stack is unwound, so callers
+/// must dupe it (HostState.record does) before it escapes.
+fn luaArgString(L: ?*c.lua_State, idx: c_int) []const u8 {
+    if (c.lua_type(L, idx) != c.LUA_TSTRING) return "";
+    var len: usize = 0;
+    const raw = c.lua_tolstring(L, idx, &len);
+    if (raw == null) return "";
+    return raw[0..len];
+}
+
+/// luaTypeName returns the Lua type name of the value at `idx` ("table", "nil",
+/// "function", ...) as a static string. Used to record the *shape* of opaque
+/// arguments (opts tables, thunk closures) without serializing them.
+fn luaTypeName(L: ?*c.lua_State, idx: c_int) []const u8 {
+    const t = c.lua_type(L, idx);
+    const raw = c.lua_typename(L, t);
+    return std.mem.span(@as([*:0]const u8, @ptrCast(raw)));
+}
+
+/// recordOrError records a host call; on OOM it raises a Lua error (via
+/// luaL_error, which longjmps) rather than returning to Zig. Safe to call from
+/// inside a C closure.
+fn recordOrError(L: ?*c.lua_State, hs: *HostState, kind: HostCallKind, arg0: []const u8, arg1: []const u8) void {
+    hs.record(kind, arg0, arg1) catch {
+        _ = c.luaL_error(L, "planar-execute: host out of memory recording call");
+    };
+}
+
+/// hostAgent — `agent(prompt, opts)`. RECORDING STUB. Records the prompt string
+/// and the opts type, returns a stub result table `{ status = "stub" }`.
+/// No claude -p spawn, no worktree, no DB (M3/M4/M5).
+fn hostAgent(L: ?*c.lua_State) callconv(.c) c_int {
+    const hs = hostStateUpvalue(L);
+    const prompt = luaArgString(L, 1);
+    const opts_shape = luaTypeName(L, 2);
+    recordOrError(L, hs, .agent, prompt, opts_shape);
+    // Return a stub result table: { status = "stub" }.
+    c.lua_createtable(L, 0, 1);
+    _ = c.lua_pushlstring(L, "stub", 4);
+    c.lua_setfield(L, -2, "status");
+    return 1;
+}
+
+/// hostParallel — `parallel({thunks})`. RECORDING STUB. Records the count of
+/// thunks in the passed array (the call shape); does NOT drive any thunk
+/// (scheduling is M5). Returns an empty stub results array.
+fn hostParallel(L: ?*c.lua_State) callconv(.c) c_int {
+    const hs = hostStateUpvalue(L);
+    var n: c.lua_Integer = 0;
+    if (c.lua_type(L, 1) == c.LUA_TTABLE) n = @intCast(c.lua_rawlen(L, 1));
+    var buf: [32]u8 = undefined;
+    const shape = std.fmt.bufPrint(&buf, "{d} thunks", .{n}) catch "? thunks";
+    recordOrError(L, hs, .parallel, shape, "");
+    // Stub: return an empty results array.
+    c.lua_createtable(L, 0, 0);
+    return 1;
+}
+
+/// hostPipeline — `pipeline(items, ...stages)`. RECORDING STUB. Records the item
+/// count and the stage count; does NOT run any item through any stage (M5).
+/// Returns an empty stub results array.
+fn hostPipeline(L: ?*c.lua_State) callconv(.c) c_int {
+    const hs = hostStateUpvalue(L);
+    var items: c.lua_Integer = 0;
+    if (c.lua_type(L, 1) == c.LUA_TTABLE) items = @intCast(c.lua_rawlen(L, 1));
+    // Remaining varargs (indices 2..top) are the stages.
+    const top = c.lua_gettop(L);
+    const stages: c_int = if (top >= 2) top - 1 else 0;
+    var buf0: [32]u8 = undefined;
+    var buf1: [32]u8 = undefined;
+    const items_shape = std.fmt.bufPrint(&buf0, "{d} items", .{items}) catch "? items";
+    const stages_shape = std.fmt.bufPrint(&buf1, "{d} stages", .{stages}) catch "? stages";
+    recordOrError(L, hs, .pipeline, items_shape, stages_shape);
+    c.lua_createtable(L, 0, 0);
+    return 1;
+}
+
+/// hostPhase — `phase(title)`. Records the phase title. Recording IS the real
+/// M2 behavior (progress reporting); returns nothing.
+fn hostPhase(L: ?*c.lua_State) callconv(.c) c_int {
+    const hs = hostStateUpvalue(L);
+    const title = luaArgString(L, 1);
+    recordOrError(L, hs, .phase, title, "");
+    return 0;
+}
+
+/// hostLog — `log(msg)`. Records the log message. Recording IS the real M2
+/// behavior; returns nothing.
+fn hostLog(L: ?*c.lua_State) callconv(.c) c_int {
+    const hs = hostStateUpvalue(L);
+    const msg = luaArgString(L, 1);
+    recordOrError(L, hs, .log, msg, "");
+    return 0;
+}
+
+/// hostWorkflow — `workflow(name, args)`. RECORDING STUB. Records the workflow
+/// name and the args type; does NOT load or run another module inline (M5).
+/// Returns a stub result table `{ status = "stub" }`.
+fn hostWorkflow(L: ?*c.lua_State) callconv(.c) c_int {
+    const hs = hostStateUpvalue(L);
+    const name = luaArgString(L, 1);
+    const args_shape = luaTypeName(L, 2);
+    recordOrError(L, hs, .workflow, name, args_shape);
+    c.lua_createtable(L, 0, 1);
+    _ = c.lua_pushlstring(L, "stub", 4);
+    c.lua_setfield(L, -2, "status");
+    return 1;
+}
+
+/// hostBudgetSpent — `budget:spent()`. Returns the host-injected spent value.
+/// Also records the call so a test can confirm the method form was reached.
+fn hostBudgetSpent(L: ?*c.lua_State) callconv(.c) c_int {
+    const hs = hostStateUpvalue(L);
+    recordOrError(L, hs, .budget_spent, "", "");
+    c.lua_pushinteger(L, @intCast(hs.budget_spent));
+    return 1;
+}
+
+/// hostBudgetRemaining — `budget:remaining()`. Returns total - spent from the
+/// host-injected values. Records the call.
+fn hostBudgetRemaining(L: ?*c.lua_State) callconv(.c) c_int {
+    const hs = hostStateUpvalue(L);
+    recordOrError(L, hs, .budget_remaining, "", "");
+    c.lua_pushinteger(L, @intCast(hs.budget_total - hs.budget_spent));
+    return 1;
+}
+
+/// pushHostClosure pushes a C closure for `fn_ptr` that carries `hs` as its
+/// single light-userdata upvalue, then assigns it as field `name` on the table
+/// at `tbl_idx`. The light-userdata upvalue is how the closure recovers the
+/// *HostState at call time (see hostStateUpvalue).
+fn pushHostClosure(
+    L: ?*c.lua_State,
+    tbl_idx: c_int,
+    name: [*:0]const u8,
+    fn_ptr: *const fn (?*c.lua_State) callconv(.c) c_int,
+    hs: *HostState,
+) void {
+    c.lua_pushlightuserdata(L, hs);
+    c.lua_pushcclosure(L, @ptrCast(fn_ptr), 1);
+    c.lua_setfield(L, tbl_idx, name);
+}
+
+/// installHostFns builds the host-function surface ON the ctx table at
+/// `ctx_idx` (the spec is literal: "ctx carries args and the host functions").
+/// It also injects determinism (ctx.now, ctx.seed) and the budget table.
+///
+/// Placement rationale (ctx vs globals): the tech spec's "Workflow module shape"
+/// section states *"ctx carries `args` and the host functions"*. We follow that
+/// literally — host fns are fields on the ctx table the run(ctx) call receives,
+/// NOT injected as Lua globals. A workflow calls `ctx.agent(...)`, `ctx.phase(...)`,
+/// `ctx.budget`, `ctx.now`, `ctx.seed`. This keeps the sandbox's global
+/// environment free of host capabilities (defense in depth) and makes the host
+/// surface explicit at every call site.
+fn installHostFns(L: ?*c.lua_State, ctx_idx: c_int, hs: *HostState) void {
+    pushHostClosure(L, ctx_idx, "agent", hostAgent, hs);
+    pushHostClosure(L, ctx_idx, "parallel", hostParallel, hs);
+    pushHostClosure(L, ctx_idx, "pipeline", hostPipeline, hs);
+    pushHostClosure(L, ctx_idx, "phase", hostPhase, hs);
+    pushHostClosure(L, ctx_idx, "log", hostLog, hs);
+    pushHostClosure(L, ctx_idx, "workflow", hostWorkflow, hs);
+
+    // Determinism injection (task 3169): ctx.now and ctx.seed are the only
+    // time/random source available to the sandboxed script.
+    c.lua_pushinteger(L, @intCast(hs.now));
+    c.lua_setfield(L, ctx_idx, "now");
+    c.lua_pushinteger(L, @intCast(hs.seed));
+    c.lua_setfield(L, ctx_idx, "seed");
+
+    // budget: a host-backed table { total = <n>, spent = fn, remaining = fn }.
+    // total is an injected number; spent()/remaining() are C closures over the
+    // injected host values. Both method and dot call forms work (the closures
+    // ignore the implicit self argument), so `budget:spent()` and
+    // `budget.spent()` both return the injected value.
+    c.lua_createtable(L, 0, 3);
+    const budget_idx = c.lua_absindex(L, -1);
+    c.lua_pushinteger(L, @intCast(hs.budget_total));
+    c.lua_setfield(L, budget_idx, "total");
+    pushHostClosure(L, budget_idx, "spent", hostBudgetSpent, hs);
+    pushHostClosure(L, budget_idx, "remaining", hostBudgetRemaining, hs);
+    c.lua_setfield(L, ctx_idx, "budget");
+}
+
+// ---------------------------------------------------------------------------
+// Sandbox — task 3169 (m2-sandbox), curated stdlib + determinism injection.
+// ---------------------------------------------------------------------------
+
+/// openSandboxedLibs replaces the blanket luaL_openlibs with a curated set of
+/// safe standard libraries, opened individually via luaL_requiref so each lands
+/// in the global environment under its conventional name.
+///
+/// Opened (the workflow language's needs): base (assert/pairs/type/tostring/
+/// error/pcall/...), string, table, math, utf8, coroutine. Coroutine is opened
+/// because the M5 concurrency model is Lua-coroutine-based (the spec's
+/// "Concurrency model — Lua coroutines + a Zig scheduler"); it exposes no host
+/// capability.
+///
+/// NEVER opened: `os` and `io`. They are simply not requiref'd, so `os` and `io`
+/// are nil globals — `os.execute`, `os.time`, `io.open`, `io.*` are all
+/// unreachable (indexing nil errors).
+///
+/// Stripped after open: `math.random` and `math.randomseed` are set to nil on
+/// the math table — non-deterministic sources. With os.time and math.random
+/// gone, the script's only time/seed source is the host-injected ctx.now /
+/// ctx.seed (see installHostFns).
+///
+/// Remaining sandboxed surface (documented contract):
+///   base (sans dofile/loadfile? see below), string, table, math (sans random/
+///   randomseed), utf8, coroutine. No os, no io.
+///   The base library DOES include `load`, `dofile`, `loadfile`, `require`,
+///   `collectgarbage`, `print`. At M2 we strip the filesystem/loader escape
+///   hatches that re-introduce host reach: dofile, loadfile, load, require,
+///   loadstring are nil'd from the global env. `print` is left (writes to the
+///   inherited stdout — benign for progress) and `collectgarbage` is left
+///   (memory only). This keeps the global namespace free of any path back to
+///   the filesystem or arbitrary code loading.
+fn openSandboxedLibs(L: ?*c.lua_State) void {
+    // luaL_requiref(L, modname, openf, glb): runs openf, caches it in
+    // package.loaded[modname], and (glb != 0) sets it as a global. It leaves
+    // the module table on the stack, which we pop after each.
+    const Lib = struct {
+        name: [*:0]const u8,
+        open: *const fn (?*c.lua_State) callconv(.c) c_int,
+    };
+    const libs = [_]Lib{
+        .{ .name = c.LUA_GNAME, .open = @ptrCast(&c.luaopen_base) },
+        .{ .name = c.LUA_TABLIBNAME, .open = @ptrCast(&c.luaopen_table) },
+        .{ .name = c.LUA_STRLIBNAME, .open = @ptrCast(&c.luaopen_string) },
+        .{ .name = c.LUA_MATHLIBNAME, .open = @ptrCast(&c.luaopen_math) },
+        .{ .name = c.LUA_UTF8LIBNAME, .open = @ptrCast(&c.luaopen_utf8) },
+        .{ .name = c.LUA_COLIBNAME, .open = @ptrCast(&c.luaopen_coroutine) },
+    };
+    inline for (libs) |lib| {
+        c.luaL_requiref(L, lib.name, @ptrCast(lib.open), 1);
+        luaPop(L, 1); // pop the module table luaL_requiref left on the stack
+    }
+
+    // Strip non-deterministic math sources: math.random, math.randomseed.
+    const math_type = c.lua_getglobal(L, "math");
+    if (math_type == c.LUA_TTABLE) {
+        const math_idx = c.lua_absindex(L, -1);
+        c.lua_pushnil(L);
+        c.lua_setfield(L, math_idx, "random");
+        c.lua_pushnil(L);
+        c.lua_setfield(L, math_idx, "randomseed");
+    }
+    luaPop(L, 1); // pop math (or the non-table value)
+
+    // Strip the loader / filesystem escape hatches from the global env so a
+    // workflow cannot re-acquire host reach via arbitrary code loading.
+    inline for ([_][*:0]const u8{ "dofile", "loadfile", "load", "loadstring", "require" }) |g| {
+        c.lua_pushnil(L);
+        c.lua_setglobal(L, g);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -272,13 +661,17 @@ pub fn evalString(source: [*:0]const u8, err_buf: []u8) LuaError!f64 {
 /// On success the module table is at absolute stack index 1 (the bottom of
 /// the user stack); the caller owns the state and MUST call lua_close.
 ///
-/// Consolidation note (task 3229): opening one state with luaL_openlibs
-/// here means both loadModule (meta extraction) and runModule (run call)
-/// share the same compiled chunk rather than parsing the source twice.
-/// luaL_openlibs is needed for run() to call tostring/print/error/etc.
-/// The real M2 sandbox (m2-sandbox) will trim the stdlib here; the host-
-/// function registrations (m2-host-fns, M4) will also happen in this
-/// function before the chunk executes.
+/// Consolidation note (task 3229): opening one state here means both loadModule
+/// (meta extraction) and runModule (run call) share the same compiled chunk
+/// rather than parsing the source twice.
+///
+/// Sandbox (task 3169): the environment is opened via openSandboxedLibs — a
+/// curated stdlib (base, string, table, math, utf8, coroutine), no os, no io,
+/// with math.random / math.randomseed and the loader escape-hatches stripped.
+/// This applies to BOTH the validate/dry-run path and the run path: a workflow
+/// that references os/io at module-construction time (top-level chunk) is
+/// sandboxed too. The dry-run guarantee (run never entered) is unchanged —
+/// dry-run still stops after extracting meta and never calls run.
 ///
 /// On any error the state is closed before returning and err_buf is written.
 fn loadModuleState(
@@ -289,8 +682,8 @@ fn loadModuleState(
     const L = c.luaL_newstate() orelse return LuaError.LuaAllocFailed;
     errdefer c.lua_close(L);
 
-    // Open standard libraries.  Sandboxing (m2-sandbox) will trim this set.
-    c.luaL_openlibs(L);
+    // Open the curated, sandboxed standard library set (task 3169).
+    openSandboxedLibs(L);
 
     // Compile the chunk; on error, push error message.
     const load_rc = c.luaL_loadbufferx(L, source.ptr, source.len, chunkname, null);
@@ -530,9 +923,12 @@ pub fn loadModule(
 /// An empty `args` slice produces an empty `ctx.args` table, preserving the
 /// existing invariant that `ctx.args` is always a table.
 ///
-/// Real host functions (agent/parallel/pipeline/log/budget/workflow)
-/// are M2 work. A workflow whose `run` calls any of those globals will get
-/// a Lua "attempt to call a nil value" runtime error — expected at M1.
+/// Host functions (task 3168): when `host` is non-null the ctx table is given
+/// the host-function surface (agent/parallel/pipeline/phase/log/workflow +
+/// budget) and the injected determinism fields (ctx.now / ctx.seed) via
+/// installHostFns. Recorded calls accumulate in `host.calls`. When `host` is
+/// null, ctx carries only `args` (the M1 shape) — used by tests that exercise
+/// pure-Lua run bodies.
 ///
 /// On Lua runtime errors, `err_buf` is populated and `LuaRuntimeError`
 /// returned.
@@ -540,6 +936,7 @@ pub fn runModule(
     source: []const u8,
     chunkname: [*:0]const u8,
     args: []const []const u8,
+    host: ?*HostState,
     err_buf: []u8,
 ) LuaError!void {
     const L = try loadModuleState(source, chunkname, err_buf);
@@ -573,6 +970,11 @@ pub fn runModule(
     c.lua_setfield(L, ctx_idx, "args");
     // Stack: [module_table, run_function, ctx_table].
 
+    // Install the host-function surface + determinism on ctx (task 3168/3169).
+    // Per the spec ("ctx carries args and the host functions") these are ctx
+    // fields, not globals.
+    if (host) |hs| installHostFns(L, ctx_idx, hs);
+
     // Call run(ctx): 1 argument, 0 expected return values, no error handler.
     const run_rc = c.lua_pcallk(L, 1, 0, 0, 0, null);
     if (run_rc != c.LUA_OK) {
@@ -581,12 +983,18 @@ pub fn runModule(
     }
 }
 
-/// callRun is a backwards-compatible alias for runModule.
-///
-/// All internal call sites now use runModule directly.  callRun is kept so
-/// that any external callers and existing unit tests that reference it by name
-/// continue to compile without modification.
-pub const callRun = runModule;
+/// callRun is a backwards-compatible wrapper for runModule with no HostState
+/// (ctx carries only `args`, the M1 shape). Existing unit tests that exercise
+/// pure-Lua run bodies use this 4-argument form unchanged; the host-fn surface
+/// is opted into by passing a *HostState to runModule directly.
+pub fn callRun(
+    source: []const u8,
+    chunkname: [*:0]const u8,
+    args: []const []const u8,
+    err_buf: []u8,
+) LuaError!void {
+    return runModule(source, chunkname, args, null, err_buf);
+}
 
 // ---------------------------------------------------------------------------
 // CLI surface — task 3165.
@@ -649,9 +1057,14 @@ const run_verb: cli.Cmd = .{
     \\    2   Invalid module structure (bad meta/run shape).
     \\    3   Lua compile error.
     \\
-    \\  Note: host functions (agent/parallel/pipeline/log) are not yet
-    \\  registered at M1. A workflow that calls them will get a Lua runtime
-    \\  error — this is expected and will be addressed in m2-host-fns.
+    \\  Host functions are carried on ctx (ctx.agent / ctx.parallel /
+    \\  ctx.pipeline / ctx.phase / ctx.log / ctx.workflow / ctx.budget) plus
+    \\  the injected determinism fields ctx.now and ctx.seed. At M2 the host
+    \\  functions are recording stubs — they record their call and return a
+    \\  stub result; real spawning/scheduling arrives in later milestones.
+    \\
+    \\  The environment is sandboxed: os and io are unavailable, and
+    \\  math.random / os.time are stripped — use ctx.now / ctx.seed instead.
     ,
     .flags = &.{
         .{ .long = "--dry-run", .kind = .bool, .default = .{ .bool = false }, .desc = "Load and validate the workflow, print meta and phases, exit without running." },
@@ -814,8 +1227,17 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
         return; // exit 0 — no runModule
     }
 
-    // Invoke run(ctx) with the trailing args threaded into ctx.args.
-    runModule(source, chunkname, rest_args, &err_buf) catch |e| {
+    // Build the HostState that backs the host-function surface (task 3168) and
+    // injects determinism (task 3169). At M2 the now/seed/budget values are
+    // fixed injected constants — no real clock, RNG, or token accounting. The
+    // point is structural: the script's only time/random/budget source is
+    // host-controlled, so runs are replayable. M3+ wires real values here.
+    var host = HostState.init(allocator, 0, 0, 100, 0);
+    defer host.deinit();
+
+    // Invoke run(ctx) with the trailing args threaded into ctx.args and the
+    // host-function surface + determinism installed on ctx.
+    runModule(source, chunkname, rest_args, &host, &err_buf) catch |e| {
         const msg = std.mem.span(@as([*:0]const u8, @ptrCast(&err_buf)));
         if (msg.len > 0) {
             try ctx.stderr.print("planar-execute: {s}\n", .{msg});
@@ -1317,4 +1739,216 @@ test "extractMeta: empty-title phase — no leak on OOM during detail copy (task
 
     // Verify no leak: every rawAlloc was matched by a rawFree.
     try std.testing.expectEqual(failing.allocations, failing.deallocations);
+}
+
+// ---------------------------------------------------------------------------
+// task 3168 (m2-host-fns) + task 3169 (m2-sandbox) tests
+// ---------------------------------------------------------------------------
+
+/// findCall returns the first recorded HostCall of `kind`, or null.
+fn findCall(host: *const HostState, kind: HostCallKind) ?HostCall {
+    for (host.calls.items) |call| {
+        if (call.kind == kind) return call;
+    }
+    return null;
+}
+
+test "host fns: agent/phase/log recorded on ctx with expected args (task 3168)" {
+    // A workflow whose run(ctx) calls ctx.agent / ctx.phase / ctx.log must
+    // succeed, and the recorded calls must be observable from the Zig host with
+    // the expected prompt / title / msg and argument shapes.
+    const src =
+        \\return {
+        \\  meta = { name = "host-fns", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    ctx.phase("Build")
+        \\    ctx.log("starting work")
+        \\    local r = ctx.agent("do the thing", { role = "coder" })
+        \\    assert(type(r) == "table", "agent must return a table")
+        \\    assert(r.status == "stub", "agent stub must return status=stub")
+        \\  end,
+        \\}
+    ;
+    var host = HostState.init(testing_alloc, 0, 0, 100, 0);
+    defer host.deinit();
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:host-fns", &.{}, &host, &err_buf);
+
+    // phase("Build") recorded.
+    const phase = findCall(&host, .phase) orelse return error.TestExpectedPhase;
+    try std.testing.expectEqualStrings("Build", phase.arg0);
+
+    // log("starting work") recorded.
+    const log = findCall(&host, .log) orelse return error.TestExpectedLog;
+    try std.testing.expectEqualStrings("starting work", log.arg0);
+
+    // agent("do the thing", {table}) recorded with prompt + opts shape.
+    const agent = findCall(&host, .agent) orelse return error.TestExpectedAgent;
+    try std.testing.expectEqualStrings("do the thing", agent.arg0);
+    try std.testing.expectEqualStrings("table", agent.arg1);
+}
+
+test "host fns: parallel/pipeline/workflow record call shapes (task 3168)" {
+    // parallel({thunks}) records the thunk count; pipeline(items, ...stages)
+    // records item + stage counts; workflow(name, args) records the name. None
+    // drive real work at M2 — recording the shape is the deliverable.
+    const src =
+        \\return {
+        \\  meta = { name = "shapes", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    ctx.parallel({ function() end, function() end, function() end })
+        \\    ctx.pipeline({ "a", "b" }, function() end, function() end)
+        \\    ctx.workflow("sub-flow", { k = 1 })
+        \\  end,
+        \\}
+    ;
+    var host = HostState.init(testing_alloc, 0, 0, 100, 0);
+    defer host.deinit();
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:shapes", &.{}, &host, &err_buf);
+
+    const par = findCall(&host, .parallel) orelse return error.TestExpectedParallel;
+    try std.testing.expectEqualStrings("3 thunks", par.arg0);
+
+    const pipe = findCall(&host, .pipeline) orelse return error.TestExpectedPipeline;
+    try std.testing.expectEqualStrings("2 items", pipe.arg0);
+    try std.testing.expectEqualStrings("2 stages", pipe.arg1);
+
+    const wf = findCall(&host, .workflow) orelse return error.TestExpectedWorkflow;
+    try std.testing.expectEqualStrings("sub-flow", wf.arg0);
+    try std.testing.expectEqualStrings("table", wf.arg1);
+}
+
+test "host fns: budget.total / spent() / remaining() return injected values (task 3168)" {
+    // budget is a host-backed table: total is the injected ceiling, and the
+    // method forms budget:spent() / budget:remaining() read the injected host
+    // values (remaining = total - spent).
+    const src =
+        \\return {
+        \\  meta = { name = "budget", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    assert(ctx.budget.total == 250, "total: got " .. tostring(ctx.budget.total))
+        \\    assert(ctx.budget:spent() == 40, "spent: got " .. tostring(ctx.budget:spent()))
+        \\    assert(ctx.budget:remaining() == 210, "remaining: got " .. tostring(ctx.budget:remaining()))
+        \\  end,
+        \\}
+    ;
+    var host = HostState.init(testing_alloc, 0, 0, 250, 40);
+    defer host.deinit();
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:budget", &.{}, &host, &err_buf);
+
+    // The method-form calls were recorded (twice spent, once remaining above —
+    // spent is called twice because the assert message also evaluates it).
+    try std.testing.expect(findCall(&host, .budget_spent) != null);
+    try std.testing.expect(findCall(&host, .budget_remaining) != null);
+}
+
+test "sandbox: os.execute and io are absent (task 3169)" {
+    // os and io are never opened, so they are nil globals. Referencing
+    // os.execute (indexing a nil) raises a runtime error; io is nil.
+    const src_os =
+        \\return {
+        \\  meta = { name = "os", description = "d", phases = {} },
+        \\  run = function(ctx) os.execute("echo hi") end,
+        \\}
+    ;
+    var host_a = HostState.init(testing_alloc, 0, 0, 100, 0);
+    defer host_a.deinit();
+    var err_buf: [256]u8 = @splat(0);
+    const err_os = runModule(src_os, "test:os", &.{}, &host_a, &err_buf);
+    try std.testing.expectError(LuaError.LuaRuntimeError, err_os);
+
+    // io must be nil — assert it explicitly inside the sandbox.
+    const src_io =
+        \\return {
+        \\  meta = { name = "io", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    assert(io == nil, "io must be absent")
+        \\    assert(os == nil, "os must be absent")
+        \\  end,
+        \\}
+    ;
+    var host_b = HostState.init(testing_alloc, 0, 0, 100, 0);
+    defer host_b.deinit();
+    try runModule(src_io, "test:io", &.{}, &host_b, &err_buf);
+}
+
+test "sandbox: os.time and math.random are absent/nil (task 3169)" {
+    // os is nil entirely (so os.time unreachable) and math.random / randomseed
+    // are stripped from the math table. base/string/table/math otherwise work.
+    const src =
+        \\return {
+        \\  meta = { name = "det", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    assert(os == nil, "os (and os.time) must be absent")
+        \\    assert(math.random == nil, "math.random must be stripped")
+        \\    assert(math.randomseed == nil, "math.randomseed must be stripped")
+        \\    -- math itself still works (deterministic functions kept).
+        \\    assert(math.floor(3.7) == 3, "math.floor must remain")
+        \\    -- string/table libs remain.
+        \\    assert(string.upper("a") == "A", "string lib must remain")
+        \\    assert(#({1,2,3}) == 3, "tables work")
+        \\  end,
+        \\}
+    ;
+    var host = HostState.init(testing_alloc, 0, 0, 100, 0);
+    defer host.deinit();
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:determinism", &.{}, &host, &err_buf);
+}
+
+test "sandbox: ctx.now and ctx.seed are host-injected and deterministic (task 3169)" {
+    // With os.time / math.random gone, the script's only time/random source is
+    // the host-injected ctx.now / ctx.seed. They must equal what the host set.
+    const src =
+        \\return {
+        \\  meta = { name = "inject", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    assert(ctx.now == 1717200000, "ctx.now: got " .. tostring(ctx.now))
+        \\    assert(ctx.seed == 4242, "ctx.seed: got " .. tostring(ctx.seed))
+        \\  end,
+        \\}
+    ;
+    var host = HostState.init(testing_alloc, 1717200000, 4242, 100, 0);
+    defer host.deinit();
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:inject", &.{}, &host, &err_buf);
+}
+
+test "sandbox: loader escape-hatches (load/dofile/loadfile/require) are nil (task 3169)" {
+    // The filesystem / arbitrary-code-loading escape hatches are stripped so a
+    // workflow cannot re-acquire host reach.
+    const src =
+        \\return {
+        \\  meta = { name = "loaders", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    assert(load == nil, "load must be stripped")
+        \\    assert(dofile == nil, "dofile must be stripped")
+        \\    assert(loadfile == nil, "loadfile must be stripped")
+        \\    assert(require == nil, "require must be stripped")
+        \\  end,
+        \\}
+    ;
+    var host = HostState.init(testing_alloc, 0, 0, 100, 0);
+    defer host.deinit();
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:loaders", &.{}, &host, &err_buf);
+}
+
+test "host fns: no host means ctx carries only args (callRun M1 shape preserved)" {
+    // callRun (no HostState) must leave ctx.agent etc. nil — the M1 shape. This
+    // pins that the host surface is opt-in via runModule(..., host, ...).
+    const src =
+        \\return {
+        \\  meta = { name = "m1-shape", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    assert(ctx.agent == nil, "ctx.agent must be nil without a HostState")
+        \\    assert(ctx.budget == nil, "ctx.budget must be nil without a HostState")
+        \\    assert(type(ctx.args) == "table", "ctx.args must still be a table")
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    try callRun(src, "test:m1-shape", &.{}, &err_buf);
 }
