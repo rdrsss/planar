@@ -182,11 +182,12 @@ pub const BriefInputs = struct {
 pub fn compileBrief(
     allocator: std.mem.Allocator,
     inputs: BriefInputs,
-) error{OutOfMemory}![]const u8 {
-    var buf = std.ArrayList(u8).empty;
-    errdefer buf.deinit(allocator);
-
-    const w = buf.writer(allocator);
+) error{ OutOfMemory, WriteFailed }![]const u8 {
+    // std.Io.Writer.Allocating is the Zig 0.16 idiomatic growable byte buffer
+    // with a writer interface. It stores its allocator internally so all write
+    // calls are arg-free; toOwnedSlice() transfers ownership to the caller.
+    var buf: std.Io.Writer.Allocating = .init(allocator);
+    defer buf.deinit();
 
     // -----------------------------------------------------------------------
     // Section 1 — Header: plan identity, task IDs, claim token.
@@ -194,26 +195,26 @@ pub fn compileBrief(
     // Methodology requirement: "List task IDs explicitly" and "List claim
     // tokens explicitly."
     // -----------------------------------------------------------------------
-    try w.writeAll("# Coder Brief\n\n");
+    try buf.writer.writeAll("# Coder Brief\n\n");
 
-    try w.print("**Plan:** {s} (id {d})\n", .{ inputs.plan.title, inputs.plan.id });
+    try buf.writer.print("**Plan:** {s} (id {d})\n", .{ inputs.plan.title, inputs.plan.id });
     if (inputs.plan.slug) |slug| {
-        try w.print("**Plan slug:** {s}\n", .{slug});
+        try buf.writer.print("**Plan slug:** {s}\n", .{slug});
     }
-    try w.print("**Plan status:** {s}\n\n", .{inputs.plan.status});
+    try buf.writer.print("**Plan status:** {s}\n\n", .{inputs.plan.status});
 
-    try w.writeAll("**Task(s) dispatched:**\n");
+    try buf.writer.writeAll("**Task(s) dispatched:**\n");
     for (inputs.tasks) |t| {
         if (t.slug) |slug| {
-            try w.print("- task:{d} — {s} [slug: {s}]\n", .{ t.id, t.title, slug });
+            try buf.writer.print("- task:{d} — {s} [slug: {s}]\n", .{ t.id, t.title, slug });
         } else {
-            try w.print("- task:{d} — {s}\n", .{ t.id, t.title });
+            try buf.writer.print("- task:{d} — {s}\n", .{ t.id, t.title });
         }
     }
-    try w.writeByte('\n');
+    try buf.writer.writeByte('\n');
 
     // Methodology requirement: claim token listed explicitly.
-    try w.print("**Claim token:** `{s}`\n\n", .{inputs.claim_token});
+    try buf.writer.print("**Claim token:** `{s}`\n\n", .{inputs.claim_token});
 
     // -----------------------------------------------------------------------
     // Section 2 — Problem statement.
@@ -221,9 +222,9 @@ pub fn compileBrief(
     // Methodology requirement: "Pose the problem; do not include the solution."
     // The caller supplies the problem_statement verbatim; we render it as-is.
     // -----------------------------------------------------------------------
-    try w.writeAll("## Problem\n\n");
-    try w.writeAll(inputs.problem_statement);
-    try w.writeAll("\n\n");
+    try buf.writer.writeAll("## Problem\n\n");
+    try buf.writer.writeAll(inputs.problem_statement);
+    try buf.writer.writeAll("\n\n");
 
     // -----------------------------------------------------------------------
     // Section 3 — Spec citations ("Read firsthand").
@@ -235,23 +236,23 @@ pub fn compileBrief(
     // When spec_citations is empty the section header is still emitted (for
     // structural completeness) but no bullet items appear.
     // -----------------------------------------------------------------------
-    try w.writeAll("## Read firsthand (do not paraphrase)\n\n");
+    try buf.writer.writeAll("## Read firsthand (do not paraphrase)\n\n");
     if (inputs.spec_citations.len == 0) {
-        try w.writeAll("_(no spec citations for this cycle)_\n\n");
+        try buf.writer.writeAll("_(no spec citations for this cycle)_\n\n");
     } else {
         for (inputs.spec_citations) |cit| {
-            try w.print("- `{s}`\n", .{cit.path});
+            try buf.writer.print("- `{s}`\n", .{cit.path});
             if (cit.verbatim_slice) |excerpt| {
                 // Render verbatim — never inject a paraphrase.
-                try w.writeAll("  > (verbatim excerpt):\n");
+                try buf.writer.writeAll("  > (verbatim excerpt):\n");
                 // Indent each line of the excerpt with "> " for a block-quote.
                 var lines = std.mem.splitScalar(u8, excerpt, '\n');
                 while (lines.next()) |line| {
-                    try w.print("  > {s}\n", .{line});
+                    try buf.writer.print("  > {s}\n", .{line});
                 }
             }
         }
-        try w.writeByte('\n');
+        try buf.writer.writeByte('\n');
     }
 
     // -----------------------------------------------------------------------
@@ -259,14 +260,14 @@ pub fn compileBrief(
     //
     // Methodology requirement: "Note locked decisions inline."
     // -----------------------------------------------------------------------
-    try w.writeAll("## Locked decisions\n\n");
+    try buf.writer.writeAll("## Locked decisions\n\n");
     if (inputs.locked_decisions.len == 0) {
-        try w.writeAll("_(no locked decisions for this cycle)_\n\n");
+        try buf.writer.writeAll("_(no locked decisions for this cycle)_\n\n");
     } else {
         for (inputs.locked_decisions) |d| {
-            try w.print("- **{s}**: {s}\n", .{ d.id, d.text });
+            try buf.writer.print("- **{s}**: {s}\n", .{ d.id, d.text });
         }
-        try w.writeByte('\n');
+        try buf.writer.writeByte('\n');
     }
 
     // -----------------------------------------------------------------------
@@ -280,7 +281,7 @@ pub fn compileBrief(
     // `command` field equals the binary root name) with its flags.  Hidden
     // commands are internal/deprecated and not available to the worker.
     // -----------------------------------------------------------------------
-    try w.writeAll("## Available verbs (from schema catalog)\n\n");
+    try buf.writer.writeAll("## Available verbs (from schema catalog)\n\n");
     const bin_root = inputs.agent_schema.root();
     var has_cmds = false;
     for (inputs.agent_schema.commands()) |cmd| {
@@ -289,43 +290,43 @@ pub fn compileBrief(
         // Skip hidden commands (internal / deprecated).
         if (cmd.hidden) continue;
         has_cmds = true;
-        try w.print("- `{s}`", .{cmd.command});
+        try buf.writer.print("- `{s}`", .{cmd.command});
         if (cmd.flags.len > 0) {
             var first = true;
             for (cmd.flags) |f| {
                 if (first) {
-                    try w.writeAll(" — flags:");
+                    try buf.writer.writeAll(" — flags:");
                     first = false;
                 }
-                try w.print(" `{s}`", .{f.long});
-                if (f.required) try w.writeAll("*");
+                try buf.writer.print(" `{s}`", .{f.long});
+                if (f.required) try buf.writer.writeAll("*");
                 if (f.aliases.len > 0) {
                     for (f.aliases) |alias| {
-                        try w.print(" / `{s}`", .{alias});
+                        try buf.writer.print(" / `{s}`", .{alias});
                     }
                 }
             }
         }
-        try w.writeByte('\n');
+        try buf.writer.writeByte('\n');
     }
     if (!has_cmds) {
-        try w.writeAll("_(schema catalog is empty or contains only the root command)_\n");
+        try buf.writer.writeAll("_(schema catalog is empty or contains only the root command)_\n");
     }
-    try w.writeAll("\n(`*` = required flag)\n\n");
+    try buf.writer.writeAll("\n(`*` = required flag)\n\n");
 
     // -----------------------------------------------------------------------
     // Section 6 — Named gates.
     //
     // Methodology requirement: "Specify the gates the coder must run."
     // -----------------------------------------------------------------------
-    try w.writeAll("## Gates (run all; paste counts verbatim in report)\n\n");
+    try buf.writer.writeAll("## Gates (run all; paste counts verbatim in report)\n\n");
     if (inputs.gates.len == 0) {
-        try w.writeAll("_(no gates specified — check the orchestrator brief)_\n\n");
+        try buf.writer.writeAll("_(no gates specified — check the orchestrator brief)_\n\n");
     } else {
         for (inputs.gates) |g| {
-            try w.print("- `{s}`\n", .{g});
+            try buf.writer.print("- `{s}`\n", .{g});
         }
-        try w.writeByte('\n');
+        try buf.writer.writeByte('\n');
     }
 
     // -----------------------------------------------------------------------
@@ -334,16 +335,16 @@ pub fn compileBrief(
     // Methodology requirement: "Specify the report shape."  Per
     // `agents/coder.md §Work-complete report template`.
     // -----------------------------------------------------------------------
-    try w.writeAll("## Work-complete report (<=400 words)\n\n");
-    try w.writeAll("Return a report with ALL of the following sections (write \"N/A\" only\n");
-    try w.writeAll("if the section genuinely does not apply):\n\n");
-    try w.writeAll("1. **Files changed** — enumerated list with one-line description per file\n");
-    try w.writeAll("2. **Validation run** — commands executed and their outcomes (paste verbatim;\n");
-    try w.writeAll("   a claim of \"clean\" without command output is not valid)\n");
-    try w.writeAll("3. **Claim state** — claim token(s), last heartbeat, work stayed inside scope\n");
-    try w.writeAll("4. **Pre-flight checklist** — confirmation each methodology checklist item ran\n");
-    try w.writeAll("5. **Residual risk** — known gaps, assumptions, deferred items\n");
-    try w.writeAll("6. **Reviewer focus** — areas needing most scrutiny\n\n");
+    try buf.writer.writeAll("## Work-complete report (<=400 words)\n\n");
+    try buf.writer.writeAll("Return a report with ALL of the following sections (write \"N/A\" only\n");
+    try buf.writer.writeAll("if the section genuinely does not apply):\n\n");
+    try buf.writer.writeAll("1. **Files changed** — enumerated list with one-line description per file\n");
+    try buf.writer.writeAll("2. **Validation run** — commands executed and their outcomes (paste verbatim;\n");
+    try buf.writer.writeAll("   a claim of \"clean\" without command output is not valid)\n");
+    try buf.writer.writeAll("3. **Claim state** — claim token(s), last heartbeat, work stayed inside scope\n");
+    try buf.writer.writeAll("4. **Pre-flight checklist** — confirmation each methodology checklist item ran\n");
+    try buf.writer.writeAll("5. **Residual risk** — known gaps, assumptions, deferred items\n");
+    try buf.writer.writeAll("6. **Reviewer focus** — areas needing most scrutiny\n\n");
 
     // -----------------------------------------------------------------------
     // Section 8 — Terminal-verb instruction.
@@ -351,16 +352,16 @@ pub fn compileBrief(
     // Tech-spec requirement (§Context compilation): "end with exactly one
     // terminal verb; `block` rather than ask when stuck."
     // -----------------------------------------------------------------------
-    try w.writeAll("## Terminal verb\n\n");
-    try w.writeAll("End this cycle with **exactly one** terminal verb:\n\n");
-    try w.writeAll("- `planar-agent complete --claim <token>` — work succeeded\n");
-    try w.writeAll("- `planar-agent fail --claim <token> --reason <text>` — work failed\n");
-    try w.writeAll("- `planar-agent release --claim <token>` — graceful give-up\n");
-    try w.writeAll("- `planar-agent block --claim <token> --blocker <task-id> --reason <text>` — external blocker\n\n");
-    try w.writeAll("**Use `block` rather than asking a question when you hit an external blocker.**\n");
-    try w.writeAll("Do NOT call two terminal verbs.\n");
+    try buf.writer.writeAll("## Terminal verb\n\n");
+    try buf.writer.writeAll("End this cycle with **exactly one** terminal verb:\n\n");
+    try buf.writer.writeAll("- `planar-agent complete --claim <token>` — work succeeded\n");
+    try buf.writer.writeAll("- `planar-agent fail --claim <token> --reason <text>` — work failed\n");
+    try buf.writer.writeAll("- `planar-agent release --claim <token>` — graceful give-up\n");
+    try buf.writer.writeAll("- `planar-agent block --claim <token> --blocker <task-id> --reason <text>` — external blocker\n\n");
+    try buf.writer.writeAll("**block rather than ask when you hit an external blocker.**\n");
+    try buf.writer.writeAll("Do NOT call two terminal verbs.\n");
 
-    return buf.toOwnedSlice(allocator);
+    return buf.toOwnedSlice();
 }
 
 // ---------------------------------------------------------------------------

@@ -507,7 +507,7 @@ test "RawSchema: malformed JSON → ParseFailed error kind" {
         .ignore_unknown_fields = true,
     });
     // Must return an error (any parse error); must NOT succeed.
-    try std.testing.expectError(error.UnexpectedToken, result);
+    try std.testing.expectError(error.SyntaxError, result);
 }
 
 test "BinSchema: commands() returns all entries; findCommand returns correct entry" {

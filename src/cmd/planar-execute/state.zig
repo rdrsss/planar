@@ -439,7 +439,7 @@ test "PlanShow: malformed JSON → error" {
     const result = std.json.parseFromSlice(PlanShow, std.testing.allocator, fixture, .{
         .ignore_unknown_fields = true,
     });
-    try std.testing.expectError(error.UnexpectedToken, result);
+    try std.testing.expectError(error.SyntaxError, result);
 }
 
 test "PlanNext: parse real fixture — available tasks decoded" {
@@ -533,7 +533,7 @@ test "PlanNext: malformed JSON → error" {
     const result = std.json.parseFromSlice(PlanNext, std.testing.allocator, fixture, .{
         .ignore_unknown_fields = true,
     });
-    try std.testing.expectError(error.UnexpectedToken, result);
+    try std.testing.expectError(error.SyntaxError, result);
 }
 
 // RED-THEN-GREEN: populated claimed + stale wrapper arrays.
@@ -748,5 +748,5 @@ test "testSpecStatus helper: malformed coverage line → ParseFailed equivalent"
     const result = std.json.parseFromSlice(PlanCoverage, std.testing.allocator, bad, .{
         .ignore_unknown_fields = true,
     });
-    try std.testing.expectError(error.UnexpectedToken, result);
+    try std.testing.expectError(error.SyntaxError, result);
 }

@@ -1356,6 +1356,31 @@ pub fn main(init: std.process.Init) !void {
 // Unit tests
 // ---------------------------------------------------------------------------
 
+// Force-analyze every declaration reachable from this file (including
+// state.zig / schema.zig / brief.zig and all their functions) and pull
+// their test{} blocks into the execute_exe_tests artifact.
+//
+// Without this, Zig 0.16 lazy evaluation only analyzes declarations that
+// are referenced by a code-gen or execution path. The pub-const aliases at
+// the top of this file (pub const state = @import("state.zig"), etc.)
+// provide types but do not force the compiler to analyze every function or
+// test block inside the imported modules, so the execute_exe_tests pass
+// count was observed as both 28 and 48 across runs — a non-deterministic
+// hollow gate.
+//
+// std.testing.refAllDecls(@This()) forces analysis of all top-level
+// declarations in main.zig, which includes the pub-const module aliases
+// (state, schema, brief). Referencing a module alias causes the compiler
+// to analyze its entire namespace including test blocks, making the
+// execute_exe_tests count deterministic and complete.
+//
+// Note: Zig 0.16 ships refAllDecls (non-recursive); refAllDeclsRecursive
+// is not available. refAllDecls on @This() is sufficient here because the
+// sub-module aliases are direct top-level pub consts of this file.
+test {
+    std.testing.refAllDecls(@This());
+}
+
 test "lua state round-trip" {
     // Create a Lua state, assert it is non-null, then close it.
     // M1 acceptance signal: the static library links and the Lua allocator
