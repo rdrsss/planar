@@ -43,6 +43,7 @@ comptime {
     _ = @import("handoff_resume_validate_test.zig");
     _ = @import("link_lifecycle_test.zig");
     _ = @import("assoc_lifecycle_test.zig");
+    _ = @import("remaining_coverage_test.zig");
     _ = @import("entity_create_feed_test.zig");
     _ = @import("m1_heartbeat_status_integration_test.zig");
     _ = @import("m3_ps_feed_test.zig");
