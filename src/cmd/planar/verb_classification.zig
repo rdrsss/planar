@@ -59,7 +59,7 @@ pub const Class = enum {
 ///  - `capture * | audit * | health`         → execution_or_read
 ///  - `workbench {pull, push, status, sync, resolve}` → execution_or_read
 ///  - `workspace * | config * | templates *` → execution_or_read
-///  - `tree | search | scope * | version | completion | doc *`
+///  - `tree | search | scope * | version | completion | schema | doc *`
 ///                                            → execution_or_read
 ///  - `local * | skills *`                   → execution_or_read
 ///  - `test-spec *`                          → execution_or_read
@@ -86,6 +86,7 @@ pub fn classify(path: []const []const u8) Class {
         eq(top, "search") or
         eq(top, "version") or
         eq(top, "completion") or
+        eq(top, "schema") or
         eq(top, "import") or
         eq(top, "synthesize"))
     {
@@ -201,6 +202,15 @@ test "classify: top-level reads are execution_or_read" {
     for (reads) |p| {
         try std.testing.expectEqual(Class.execution_or_read, classify(p));
     }
+}
+
+test "classify: schema is execution_or_read (pure rodata catalog, no DB)" {
+    // `schema` emits a comptime `.rodata` catalog and opens no database,
+    // so it must run from any cwd like `version`/`completion`. Regression
+    // guard: when it fell through to `.planning` the worktree gate refused
+    // it (exit 8), false-failing the cli-usage and coverage gates that
+    // shell out to `planar schema`.
+    try std.testing.expectEqual(Class.execution_or_read, classify(&.{"schema"}));
 }
 
 test "classify: plan mutations are planning" {
