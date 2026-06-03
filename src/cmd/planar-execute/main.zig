@@ -52,6 +52,10 @@ const Io = std.Io;
 
 const cli = @import("cli");
 
+/// State-read helpers — subprocess + JSON parse layer (task 3170 m2-state-reads).
+/// Imported here so its `test` blocks run under the `execute_exe_tests` target.
+pub const state = @import("state.zig");
+
 const c = @cImport({
     @cInclude("lua.h");
     @cInclude("lauxlib.h");
