@@ -2,7 +2,8 @@
 //!
 //! Fifth binary in the Planar family. Unlike the other binaries, this one
 //! does NOT open SQLite and does NOT link the runtime / engine / db modules.
-//! Its sole dependency in M1 is liblua54 (vendored under vendor/lua/).
+//! Its sole dependency beyond the standard library is liblua54 (vendored
+//! under vendor/lua/) and the cli module (etc-cli, for argument parsing).
 //!
 //! M1 scope:
 //!   task 3209 — vendor Lua, link it, prove the link with a newstate/close
@@ -15,15 +16,23 @@
 //!               allocator (closes task 3221 — string return from Lua); call
 //!               run(ctx) with a minimal stub ctx; chunkname-bearing loader
 //!               (closes task 3223).
+//!   task 3165 — CLI surface: `planar-execute <workflow.lua> [args…]` (default
+//!               run-path), `planar-execute version`, `planar-execute --help`.
+//!               The first positional is resolved as a workflow file path;
+//!               trailing [args…] are threaded into ctx.args as a 1-based Lua
+//!               sequence of strings. Lua errors map to non-zero exit.
 //!
 //! What is intentionally absent (later tasks):
 //!   - host-function surface (agent/parallel/pipeline/phase/log/budget/
 //!     workflow): m2-host-fns
 //!   - stdlib sandboxing (strip os/io/os.time/math.random): m2-sandbox
-//!   - CLI flag parsing / version / --dry-run: tasks 3165/3166
+//!   - --dry-run flag (stops after loadModule, prints meta/phases): task 3166
+//!   - named built-in workflow registry: m10-quality-spine (no entries yet)
 
 const std = @import("std");
 const Io = std.Io;
+
+const cli = @import("cli");
 
 const c = @cImport({
     @cInclude("lua.h");
@@ -31,7 +40,51 @@ const c = @cImport({
     @cInclude("lualib.h");
 });
 
-/// Errors that evalString and loadModule can surface to Zig callers.
+// ---------------------------------------------------------------------------
+// Process-global I/O context (no runtime module — planar-execute has no DB).
+// ---------------------------------------------------------------------------
+
+/// Lightweight process context for planar-execute. Does not inherit from
+/// runtime.Ctx because this binary intentionally has no DB handle.
+pub const ExecCtx = struct {
+    allocator: std.mem.Allocator,
+    io: Io,
+    stdout: *Io.Writer,
+    stderr: *Io.Writer,
+};
+
+var stdout_buf: [4096]u8 = undefined;
+var stderr_buf: [1024]u8 = undefined;
+var stdout_writer_storage: ?Io.File.Writer = null;
+var stderr_writer_storage: ?Io.File.Writer = null;
+var global_ctx: ?ExecCtx = null;
+
+fn initCtx(allocator: std.mem.Allocator, io: Io) void {
+    stdout_writer_storage = Io.File.Writer.init(.stdout(), io, &stdout_buf);
+    stderr_writer_storage = Io.File.Writer.init(.stderr(), io, &stderr_buf);
+    global_ctx = .{
+        .allocator = allocator,
+        .io = io,
+        .stdout = &stdout_writer_storage.?.interface,
+        .stderr = &stderr_writer_storage.?.interface,
+    };
+}
+
+fn currentCtx() *const ExecCtx {
+    return &(global_ctx orelse @panic("planar-execute: ctx not initialized"));
+}
+
+fn flushCtx() !void {
+    if (global_ctx) |_| {
+        try stdout_writer_storage.?.interface.flush();
+        try stderr_writer_storage.?.interface.flush();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Errors that evalString and loadModule can surface to Zig callers.
+// ---------------------------------------------------------------------------
+
 pub const LuaError = error{
     /// luaL_newstate returned null — allocator failure.
     LuaAllocFailed,
@@ -367,24 +420,33 @@ pub fn loadModule(
 }
 
 // ---------------------------------------------------------------------------
-// callRun — task 3164: call run(ctx) with a minimal stub ctx.
+// callRun — task 3164/3165: call run(ctx) with ctx.args populated.
 // ---------------------------------------------------------------------------
 
 /// callRun re-loads a workflow module from `source` and invokes its `run`
-/// function with a minimal stub `ctx` table.
+/// function with a `ctx` table carrying the caller-supplied `args`.
 ///
-/// The stub ctx carries only an empty `args` sub-table. Real host functions
-/// (agent, parallel, pipeline, log, budget, workflow) are M2 work.
+/// `args` is a slice of CLI argument strings (the trailing positionals from
+/// the command line, excluding the workflow file path itself). They are
+/// threaded into `ctx.args` as a 1-based Lua sequence of strings:
+///   ctx.args[1] = args[0], ctx.args[2] = args[1], ...
+///
+/// An empty `args` slice produces an empty `ctx.args` table, preserving the
+/// existing invariant that `ctx.args` is always a table.
+///
+/// Real host functions (agent, parallel, pipeline, log, budget, workflow)
+/// are M2 work. A workflow whose `run` calls any of those globals will get
+/// a Lua "attempt to call a nil value" runtime error — expected at M1.
 ///
 /// `source` and `chunkname` must match what was passed to `loadModule`.
 /// The Lua state is fresh and closed on return.
 ///
 /// On Lua runtime errors, `err_buf` is populated and `LuaRuntimeError`
-/// returned. The script may write to Lua globals or upvalues to signal that
-/// `run` was actually invoked — this is the observable side effect in tests.
+/// returned.
 pub fn callRun(
     source: []const u8,
     chunkname: [*:0]const u8,
+    args: []const []const u8,
     err_buf: []u8,
 ) LuaError!void {
     const L = c.luaL_newstate();
@@ -416,12 +478,25 @@ pub fn callRun(
     if (run_type != c.LUA_TFUNCTION) return LuaError.LuaModuleMissingRun;
     // Stack: [-2] module table, [-1] run function.
 
-    // Build a minimal stub ctx table: { args = {} }.
+    // Build ctx table: { args = { [1]=args[0], [2]=args[1], ... } }.
     // Stack before: [-2] module table, [-1] run function.
     c.lua_createtable(L, 0, 1); // push ctx table
     // Stack: [-3] module, [-2] run, [-1] ctx.
-    c.lua_createtable(L, 0, 0); // push args table
-    // Stack: [-4] module, [-3] run, [-2] ctx, [-1] args.
+    c.lua_createtable(L, @intCast(args.len), 0); // push args table (sequence hint)
+    // Stack: [-4] module, [-3] run, [-2] ctx, [-1] args table.
+
+    // Populate args as a 1-indexed Lua sequence.
+    for (args, 0..) |arg, idx| {
+        // lua_pushstring copies the C string. We pass a pointer to the first
+        // byte; the slice must be null-terminated for lua_pushstring. Since
+        // Zig slices are NOT guaranteed null-terminated, we use lua_pushlstring
+        // which accepts a length, making it safe for arbitrary []const u8.
+        _ = c.lua_pushlstring(L, arg.ptr, arg.len);
+        // lua_rawseti(L, table_idx, key): args_table[idx+1] = arg_string
+        // The args table is at [-2] after the string push ([-1] = string, [-2] = args table).
+        c.lua_rawseti(L, -2, @intCast(idx + 1));
+    }
+
     // lua_setfield(L, idx, k): sets t[idx][k] = stack[-1], pops stack[-1].
     // idx=-2 is ctx; sets ctx["args"] = args_table, pops args_table.
     c.lua_setfield(L, -2, "args");
@@ -435,33 +510,253 @@ pub fn callRun(
     }
 }
 
-var stdout_buf: [1024]u8 = undefined;
+// ---------------------------------------------------------------------------
+// CLI surface — task 3165.
+// ---------------------------------------------------------------------------
 
-pub fn main(init: std.process.Init) !void {
-    var stdout_writer = Io.File.Writer.init(.stdout(), init.io, &stdout_buf);
-    const out = &stdout_writer.interface;
+/// Version string for planar-execute. Embeds the Lua version constant.
+/// The Lua version string is defined as a comptime constant in lua.h:
+///   #define LUA_VERSION "Lua 5.4"
+/// We pair it with the binary name for consistency with the other binaries'
+/// `<binary> <version-info>` format.
+const planar_execute_version = "planar-execute 0.1.0 (lua " ++ c.LUA_VERSION_MAJOR ++ "." ++ c.LUA_VERSION_MINOR ++ ")";
 
-    try out.print("planar-execute {s}\n", .{c.LUA_VERSION});
+/// The `run` subcommand: execute a workflow file.
+///
+/// This is the default path. When `planar-execute <workflow.lua>` is
+/// invoked, `main` injects "run" before dispatching so the parser sees
+/// `planar-execute run <workflow.lua>`.
+///
+/// Note: there is NO `--dry-run` flag here — that is task 3166's scope.
+/// Note: there is NO named-built-in registry — that is m10-quality-spine's
+/// scope. Built-in workflows do not exist yet; the file-path form is the
+/// only run-path in M1.
+const run_verb: cli.Cmd = .{
+    .name = "run",
+    .desc = "Execute a workflow Lua file.",
+    .long_desc =
+    \\Execute a Lua 5.4 workflow script.
+    \\
+    \\  Usage:
+    \\    planar-execute run <workflow.lua> [args...]
+    \\
+    \\  The workflow file must return a table:
+    \\    { meta = { name, description, phases }, run = function(ctx) ... end }
+    \\
+    \\  Trailing [args...] are passed to run(ctx) as ctx.args[1], ctx.args[2], ...
+    \\
+    \\  Exit codes:
+    \\    0   run() completed without error.
+    \\    1   Lua runtime error or missing/invalid workflow file.
+    \\    2   Invalid module structure (bad meta/run shape).
+    \\    3   Lua compile error.
+    \\
+    \\  Note: host functions (agent/parallel/pipeline/log) are not yet
+    \\  registered at M1. A workflow that calls them will get a Lua runtime
+    \\  error — this is expected and will be addressed in m2-host-fns.
+    ,
+    .positionals = &.{
+        .{ .name = "workflow", .kind = .string, .required = true },
+    },
+    .rest_field = "rest_args",
+    .run = cli.handler(handleRun),
+};
 
-    // Prove the link works: create and close a Lua state.
-    const L = c.luaL_newstate();
-    if (L == null) {
-        std.debug.print("planar-execute: luaL_newstate returned null\n", .{});
-        std.process.exit(1);
-    }
-    c.lua_close(L);
-    try out.print("lua state ok\n", .{});
+/// Root CLI command tree for `planar-execute`.
+///
+/// The default run-path is activated when the first non-flag, non-subcommand
+/// argument is a file path. `main` detects this and injects "run" before
+/// dispatch so the etc-cli parser sees the explicit `run` subcommand path.
+pub const root: cli.Cmd = .{
+    .name = "planar-execute",
+    .desc = "Execute a Lua workflow script.",
+    .long_desc =
+    \\planar-execute — Lua 5.4 workflow execution harness (plan 492).
+    \\
+    \\  Usage:
+    \\    planar-execute <workflow.lua> [args...]   Run a workflow file (default).
+    \\    planar-execute run <workflow.lua> [args…] Explicit run subcommand.
+    \\    planar-execute version                   Print version.
+    \\    planar-execute --help                    Show this help.
+    \\
+    \\  The workflow file must return a Lua table:
+    \\    { meta = { name, description, phases }, run = function(ctx) ... end }
+    \\
+    \\  Trailing [args...] are passed to the workflow as ctx.args[1], ctx.args[2], ...
+    ,
+    .cmds = &.{
+        run_verb,
+        version_verb,
+    },
+};
 
-    // Exercise the load→execute→read-return-value path.
-    var err_buf: [256]u8 = undefined;
-    const result = evalString("return 6 * 7", &err_buf) catch |e| {
-        try out.print("evalString error: {s} — {s}\n", .{ @errorName(e), err_buf });
-        try out.flush();
+comptime {
+    @setEvalBranchQuota(10_000);
+    cli.validate(root);
+}
+
+/// `planar-execute version` — print version and exit 0.
+const version_verb: cli.Cmd = .{
+    .name = "version",
+    .desc = "Print the planar-execute version and Lua runtime version.",
+    .run = cli.handler(handleVersion),
+};
+
+fn handleVersion(args_ptr: *const anyopaque) anyerror!void {
+    _ = args_ptr;
+    const ctx = currentCtx();
+    try ctx.stdout.print("{s}\n", .{planar_execute_version});
+}
+
+/// handleRun is the default handler: resolve the first positional as a
+/// workflow file path, read the source, load the module, and invoke run(ctx).
+///
+/// Trailing positionals (rest_args) are threaded into ctx.args as a
+/// 1-based Lua sequence.
+///
+/// Error mapping:
+///   - File not found / read error   → exit 1 (message on stderr)
+///   - Lua compile error             → exit 3 (message on stderr)
+///   - Invalid module shape          → exit 2 (message on stderr)
+///   - Lua runtime error in run()    → exit 1 (message on stderr)
+fn handleRun(args_ptr: *const anyopaque) anyerror!void {
+    const args = cli.castArgs(root, &.{"run"}, args_ptr);
+    const ctx = currentCtx();
+
+    const workflow_path = args.workflow;
+    const rest_args: []const []const u8 = args.rest_args;
+
+    // Read the workflow source from disk.
+    // Use the arena allocator from the process context. All allocations
+    // within this handler are freed when the arena is torn down at exit.
+    const allocator = ctx.allocator;
+
+    const source = std.Io.Dir.cwd().readFileAlloc(ctx.io, workflow_path, allocator, .limited(16 * 1024 * 1024)) catch |e| {
+        try ctx.stderr.print("planar-execute: cannot read '{s}': {s}\n", .{ workflow_path, @errorName(e) });
+        try flushCtx();
         std.process.exit(1);
     };
-    try out.print("eval result: {d}\n", .{result});
+    defer allocator.free(source);
 
-    try out.flush();
+    // Build a null-terminated chunkname from the workflow path.
+    // Prefix with '@' so Lua shows the path as a filename in error messages
+    // (e.g. "path/to/wf.lua:4: ...") rather than the "[string ...]" form.
+    const chunkname_owned = allocator.alloc(u8, workflow_path.len + 2) catch {
+        try ctx.stderr.print("planar-execute: out of memory\n", .{});
+        try flushCtx();
+        std.process.exit(1);
+    };
+    defer allocator.free(chunkname_owned);
+    chunkname_owned[0] = '@';
+    @memcpy(chunkname_owned[1 .. 1 + workflow_path.len], workflow_path);
+    chunkname_owned[1 + workflow_path.len] = 0;
+    const chunkname: [*:0]const u8 = @ptrCast(chunkname_owned.ptr);
+
+    // Validate the module structure without running run().
+    // Zero-init so that structural errors (LuaModuleNotTable etc.) that do
+    // not write a Lua error string produce a clean "empty" message check.
+    var err_buf: [512]u8 = @splat(0);
+    var mod = loadModule(source, chunkname, allocator, &err_buf) catch |e| {
+        const exit_code: u8 = switch (e) {
+            LuaError.LuaCompileError => 3,
+            LuaError.LuaModuleNotTable,
+            LuaError.LuaModuleMissingMeta,
+            LuaError.LuaModuleMissingRun,
+            LuaError.LuaModuleInvalidMeta,
+            => 2,
+            else => 1,
+        };
+        const msg = std.mem.span(@as([*:0]const u8, @ptrCast(&err_buf)));
+        if (msg.len > 0) {
+            try ctx.stderr.print("planar-execute: {s}\n", .{msg});
+        } else {
+            try ctx.stderr.print("planar-execute: workflow load error: {s}\n", .{@errorName(e)});
+        }
+        try flushCtx();
+        std.process.exit(exit_code);
+    };
+    defer mod.deinit(allocator);
+
+    // Invoke run(ctx) with the trailing args threaded into ctx.args.
+    callRun(source, chunkname, rest_args, &err_buf) catch |e| {
+        const msg = std.mem.span(@as([*:0]const u8, @ptrCast(&err_buf)));
+        if (msg.len > 0) {
+            try ctx.stderr.print("planar-execute: {s}\n", .{msg});
+        } else {
+            try ctx.stderr.print("planar-execute: run error: {s}\n", .{@errorName(e)});
+        }
+        try flushCtx();
+        std.process.exit(1);
+    };
+}
+
+// ---------------------------------------------------------------------------
+// main
+// ---------------------------------------------------------------------------
+
+/// Inject "run" as the first positional when the user invoked the binary as
+///   planar-execute <workflow.lua> [args…]
+/// without the explicit `run` subcommand keyword. This mirrors how
+/// `planar-watch` injects its default "feed" verb.
+///
+/// Injection is skipped when:
+///   - the first non-binary token is already a known subcommand name, or
+///   - it starts with `-` (flag — let the parser handle it), or
+///   - argv has no extra tokens at all (bare invocation → show help).
+fn maybeInjectRun(arena: std.mem.Allocator, raw_args: []const []const u8) []const []const u8 {
+    // argv[0] is the binary name; anything beyond is operator-supplied.
+    if (raw_args.len <= 1) return raw_args; // bare invocation → no injection; parser shows help.
+
+    const first = raw_args[1];
+
+    // Known subcommand names and help flags — leave argv alone.
+    inline for ([_][]const u8{ "run", "version", "--help", "-h" }) |v| {
+        if (std.mem.eql(u8, first, v)) return raw_args;
+    }
+
+    // First non-binary token is a flag or option → leave for parser.
+    if (first.len > 0 and first[0] == '-') return raw_args;
+
+    // Looks like a file path (or positional) — inject "run" at position 1.
+    var out = arena.alloc([]const u8, raw_args.len + 1) catch return raw_args;
+    out[0] = raw_args[0];
+    out[1] = "run";
+    for (raw_args[1..], 0..) |a, i| out[2 + i] = a;
+    return out;
+}
+
+pub fn main(init: std.process.Init) !void {
+    const arena: std.mem.Allocator = init.arena.allocator();
+    const raw_args = try init.minimal.args.toSlice(arena);
+    const args = maybeInjectRun(arena, raw_args);
+
+    initCtx(arena, init.io);
+    defer flushCtx() catch {};
+
+    const ctx = currentCtx();
+
+    cli.dispatch(root, args, ctx.stdout) catch |e| switch (e) {
+        cli.Parse.UnknownFlag,
+        cli.Parse.MissingValue,
+        cli.Parse.InvalidValue,
+        cli.Parse.MissingRequired,
+        cli.Parse.MissingRequiredPositional,
+        cli.Parse.TooManyPositionals,
+        cli.Parse.UnknownSubcommand,
+        cli.Parse.UnexpectedArgument,
+        cli.Parse.DuplicateFlag,
+        => {
+            try ctx.stderr.print("planar-execute: {s}\n", .{@errorName(e)});
+            try flushCtx();
+            std.process.exit(1);
+        },
+        error.NotImplemented => {
+            try ctx.stderr.print("planar-execute: not implemented\n", .{});
+            try flushCtx();
+            std.process.exit(1);
+        },
+        else => return e,
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -635,7 +930,7 @@ test "loadModule: chunkname appears in compile error" {
     try std.testing.expect(std.mem.indexOf(u8, msg, "my-workflow.lua") != null);
 }
 
-test "callRun: run(ctx) is actually invoked" {
+test "callRun: run(ctx) is actually invoked — empty args" {
     // The script uses a global to record that run was called.  callRun must
     // actually invoke run; the global is set inside run.  We verify the
     // invocation by confirming no error is returned (run completes without
@@ -663,7 +958,42 @@ test "callRun: run(ctx) is actually invoked" {
         \\}
     ;
     var err_buf: [256]u8 = undefined;
-    try callRun(src, "test:callrun", &err_buf);
+    try callRun(src, "test:callrun", &.{}, &err_buf);
+}
+
+test "callRun: ctx.args receives CLI positionals as 1-based sequence" {
+    // The workflow's run receives ctx.args[1], ctx.args[2], ... matching the
+    // order of the slice passed to callRun. This is the threading invariant
+    // that task 3165 requires.
+    const src =
+        \\return {
+        \\  meta = { name = "args-test", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    if ctx.args[1] ~= "hello" then error("expected ctx.args[1]='hello', got: " .. tostring(ctx.args[1])) end
+        \\    if ctx.args[2] ~= "world" then error("expected ctx.args[2]='world', got: " .. tostring(ctx.args[2])) end
+        \\    if ctx.args[3] ~= nil    then error("expected ctx.args[3]=nil, got: " .. tostring(ctx.args[3])) end
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = undefined;
+    const cli_args: []const []const u8 = &.{ "hello", "world" };
+    try callRun(src, "test:args-threading", cli_args, &err_buf);
+}
+
+test "callRun: ctx.args length matches slice length" {
+    // #ctx.args must equal the number of args passed.
+    const src =
+        \\return {
+        \\  meta = { name = "len-test", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local n = #ctx.args
+        \\    if n ~= 3 then error("expected #ctx.args=3, got " .. n) end
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = undefined;
+    const cli_args: []const []const u8 = &.{ "a", "b", "c" };
+    try callRun(src, "test:args-len", cli_args, &err_buf);
 }
 
 test "callRun: runtime error in run is surfaced" {
@@ -675,7 +1005,7 @@ test "callRun: runtime error in run is surfaced" {
         \\}
     ;
     var err_buf: [256]u8 = undefined;
-    const err = callRun(src, "test:callrun-err", &err_buf);
+    const err = callRun(src, "test:callrun-err", &.{}, &err_buf);
     try std.testing.expectError(LuaError.LuaRuntimeError, err);
     try std.testing.expect(err_buf[0] != 0);
 }

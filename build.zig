@@ -408,6 +408,9 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .link_libc = true,
+            .imports = &.{
+                .{ .name = "cli", .module = cli_mod },
+            },
         }),
     });
     execute_exe.root_module.addIncludePath(b.path(lua_src_dir));
@@ -562,6 +565,10 @@ pub fn build(b: *std.Build) void {
         "PLANAR_DOC_BIN",
         b.getInstallPath(.bin, "planar-doc"),
     );
+    run_integration_all.setEnvironmentVariable(
+        "PLANAR_EXECUTE_BIN",
+        b.getInstallPath(.bin, "planar-execute"),
+    );
     test_integration_step.dependOn(&run_integration_all.step);
 
     // Per-file executables remain available when failure isolation is worth
@@ -646,6 +653,10 @@ fn registerIntegrationTestDir(
         run.setEnvironmentVariable(
             "PLANAR_DOC_BIN",
             b.getInstallPath(.bin, "planar-doc"),
+        );
+        run.setEnvironmentVariable(
+            "PLANAR_EXECUTE_BIN",
+            b.getInstallPath(.bin, "planar-execute"),
         );
         test_integration_step.dependOn(&run.step);
     }
