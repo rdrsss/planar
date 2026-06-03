@@ -13,6 +13,7 @@
     //
     // To add a new dep: add another entry to `.deps`. Supported archive types:
     //   - .zip
+    //   - .tar_gz
     .deps = .{
         .{
             .name = "sqlite",

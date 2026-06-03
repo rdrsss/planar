@@ -19,7 +19,7 @@
 const std = @import("std");
 const Io = std.Io;
 
-const Archive = enum { zip };
+const Archive = enum { zip, tar_gz };
 
 const Dep = struct {
     name: []const u8,
@@ -250,7 +250,37 @@ fn extractArchive(
 
             try std.zip.extract(dest, &fr, .{});
         },
+        .tar_gz => {
+            var dest = try cwd.openDir(io, tmp_dir_rel, .{});
+            defer dest.close(io);
+            try extractTarGz(io, dest, data);
+        },
     }
+}
+
+/// Extract a gzip-compressed tar archive from `data` into `dest`.
+///
+/// Uses std.compress.flate.Decompress (gzip container) layered over
+/// std.tar.extract — entirely in-process, no subprocess. The archive
+/// sha256 is verified by the caller before this function is invoked;
+/// this function handles only decompression + extraction.
+///
+/// The tar content is extracted verbatim (strip_components = 0), so
+/// the top-level directory from the tarball (the strip_prefix value
+/// in the manifest) lands as a subdirectory of `dest`, matching the
+/// behaviour of the .zip path.
+fn extractTarGz(io: Io, dest: Io.Dir, data: []const u8) !void {
+    // Build a Reader over the raw gzipped bytes.
+    var raw_reader: std.Io.Reader = .fixed(data);
+    // Decompress window: gzip requires flate.max_window_len bytes.
+    var decomp_buf: [std.compress.flate.max_window_len]u8 = undefined;
+    var decomp: std.compress.flate.Decompress = .init(
+        &raw_reader,
+        .gzip,
+        &decomp_buf,
+    );
+    // Extract the uncompressed tar stream into dest.
+    try std.tar.extract(io, dest, &decomp.reader, .{});
 }
 
 fn replaceDepFiles(
@@ -338,4 +368,33 @@ fn isoUtcNow(arena: std.mem.Allocator, init: *const std.process.Init) ![]const u
     });
     if (result.term != .exited or result.term.exited != 0) return error.DateFailed;
     return std.mem.trim(u8, result.stdout, " \t\n\r");
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests
+// ---------------------------------------------------------------------------
+
+test "extractTarGz: extract fixture into tmpdir and verify files" {
+    // Fixture: a pre-built testpkg-1.0.tar.gz containing:
+    //   testpkg-1.0/src/hello.txt  ("hello\n")
+    //   testpkg-1.0/src/world.txt  ("world\n")
+    const fixture = @embedFile("testdata/testpkg-1.0.tar.gz");
+
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // tmp.dir is already an Io.Dir — pass it directly to extractTarGz.
+    try extractTarGz(io, tmp.dir, fixture);
+
+    // Verify the top-level dir was created and files exist with expected content.
+    const limit: std.Io.Limit = .limited(256);
+
+    const hello = try tmp.dir.readFileAlloc(io, "testpkg-1.0/src/hello.txt", std.testing.allocator, limit);
+    defer std.testing.allocator.free(hello);
+    try std.testing.expectEqualStrings("hello\n", hello);
+
+    const world = try tmp.dir.readFileAlloc(io, "testpkg-1.0/src/world.txt", std.testing.allocator, limit);
+    defer std.testing.allocator.free(world);
+    try std.testing.expectEqualStrings("world\n", world);
 }
