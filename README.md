@@ -8,7 +8,7 @@ It is **vendor-agnostic by design**: Claude, Codex, and Copilot are first-class 
 
 ## Status
 
-Planar is a feature-complete, single-binary local-first tool. The schema (thirteen per-domain migration files, `migrations/00001_foundation.up.sql` through `00013_test_spec_artifact_kind.up.sql`) is versioned and stable; the runtime applies migrations automatically from an embedded `migrations` Zig module produced by build-time codegen. **608+ unit tests, 64+ integration tests**; `zig fmt`, `zig build`, `zig build test`, `zig build test-integration` all clean. Vendored SQLite amalgamation compiled by `build.zig` (no system library dependency). Schema at version 13.
+Planar is a feature-complete, local-first tool built as four binaries (`planar`, `planar-agent`, `planar-watch`, `planar-doc`). The schema (seventeen per-domain migration files, `migrations/00001_foundation.up.sql` through `00017_handoffs_worktree.up.sql`) is versioned and stable; the runtime applies migrations automatically from an embedded `migrations` Zig module produced by build-time codegen. **608+ unit tests, 64+ integration tests**; `zig fmt`, `zig build`, `zig build test`, `zig build test-integration` all clean. Vendored SQLite amalgamation compiled by `build.zig` (no system library dependency). Schema at version 17.
 
 **History.** Repo split — the original Go implementation (M1–M19) is preserved at `github.com/rdrsss/planar-go-archive.git`; the current canonical Zig implementation lives at `github.com/rdrsss/planar.git`.
 
@@ -241,7 +241,7 @@ Three threads run through everything:
 
 ## The schema is the contract
 
-Thirteen per-domain migration files (`migrations/00001_foundation.up.sql` through `migrations/00013_test_spec_artifact_kind.up.sql`) are the authoritative definition of every Planar entity. The runtime applies all thirteen migrations from an embedded `migrations` Zig module produced by build-time codegen (`tools/gen_migrations.zig`); the public schema-version tracker is `schema_migrations`.
+Seventeen per-domain migration files (`migrations/00001_foundation.up.sql` through `migrations/00017_handoffs_worktree.up.sql`) are the authoritative definition of every Planar entity. The runtime applies all seventeen migrations from an embedded `migrations` Zig module produced by build-time codegen (`tools/gen_migrations.zig`); the public schema-version tracker is `schema_migrations`.
 
 Read-side tooling — viewers, query CLIs, Obsidian bridges, future binaries — opens `~/.planar/planar.db` with `PRAGMA query_only = 1`, reads `schema_migrations` to verify version compatibility, and operates without going through the binary. The contract is the schema, not the codebase. See [docs/architecture.md](docs/architecture.md) for the schema overview.
 
