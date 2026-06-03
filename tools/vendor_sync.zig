@@ -273,6 +273,37 @@ fn cmdSync(
         // addDirectoryArg(b.path(...)), so archive_rel and cache_dir_rel are
         // already absolute.  We use them directly for subprocess arguments.
 
+        // Snapshot the zig-pkg/ subdirectory names inside the build root
+        // before running zig fetch.  zig fetch writes a zig-pkg/<hash>/
+        // directory in its cwd (the build root) as a side-effect even with
+        // --global-cache-dir redirecting the package cache.  After the fetch
+        // we diff and deleteTree only the newly created entries so the build
+        // root stays clean without touching any pre-existing zig-pkg/<hash>/
+        // dirs from other processes or prior runs.
+        var build_root_dir = cwd.openDir(io, build_root, .{}) catch null;
+        defer if (build_root_dir) |*d| d.close(io);
+
+        // Snapshot the zig-pkg/ entries that already exist, if any.
+        // We store the names as a sorted list so we can diff after the fetch.
+        var pre_zig_pkg = std.ArrayList([]const u8).empty;
+        defer {
+            for (pre_zig_pkg.items) |n| arena.free(n);
+            pre_zig_pkg.deinit(arena);
+        }
+        var zig_pkg_existed_before = false;
+        if (build_root_dir) |*brd| {
+            var zpd = brd.openDir(io, "zig-pkg", .{ .iterate = true }) catch null;
+            if (zpd) |*d| {
+                zig_pkg_existed_before = true;
+                defer d.close(io);
+                var it = d.iterate();
+                while (it.next(io) catch null) |entry| {
+                    if (entry.kind != .directory) continue;
+                    try pre_zig_pkg.append(arena, try arena.dupe(u8, entry.name));
+                }
+            }
+        }
+
         // Run: zig fetch --global-cache-dir <cache_dir> <archive_path>
         // Must be run from a directory containing build.zig (the build root).
         const fetch_result = std.process.run(arena, io, .{
@@ -290,6 +321,44 @@ fn cmdSync(
                 .{ dep.name, fetch_result.stderr },
             );
             std.process.exit(1);
+        }
+
+        // Clean up any zig-pkg/<hash>/ dirs that zig fetch created in the
+        // build root.  Delete only entries that are new (not in the snapshot);
+        // if zig-pkg/ itself was not present before and is now empty after
+        // removing the new hashes, remove the zig-pkg/ dir too.
+        if (build_root_dir) |*brd| {
+            var zpd_after = brd.openDir(io, "zig-pkg", .{ .iterate = true }) catch null;
+            if (zpd_after) |*d| {
+                defer d.close(io);
+                var new_hashes = std.ArrayList([]const u8).empty;
+                defer new_hashes.deinit(arena);
+                var it = d.iterate();
+                while (it.next(io) catch null) |entry| {
+                    if (entry.kind != .directory) continue;
+                    // Is this entry new (not in the pre-fetch snapshot)?
+                    var was_pre: bool = false;
+                    for (pre_zig_pkg.items) |pre| {
+                        if (std.mem.eql(u8, pre, entry.name)) {
+                            was_pre = true;
+                            break;
+                        }
+                    }
+                    if (!was_pre) {
+                        try new_hashes.append(arena, try arena.dupe(u8, entry.name));
+                    }
+                }
+                // Delete the newly created zig-pkg/<hash>/ subdirs.
+                for (new_hashes.items) |hash_name| {
+                    const rel = try std.fmt.allocPrint(arena, "zig-pkg/{s}", .{hash_name});
+                    brd.deleteTree(io, rel) catch {};
+                }
+                // If zig-pkg/ was not present before this fetch and is now
+                // empty (all new entries removed), delete the empty dir too.
+                if (!zig_pkg_existed_before) {
+                    brd.deleteDir(io, "zig-pkg") catch {};
+                }
+            }
         }
 
         const content_hash = std.mem.trim(u8, fetch_result.stdout, " \t\n\r");
