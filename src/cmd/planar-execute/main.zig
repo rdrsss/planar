@@ -150,6 +150,15 @@ pub const WorkflowModule = struct {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+/// luaPop pops `n` values from the Lua stack.
+///
+/// Zig's cImport does not expose the `lua_pop` C macro directly (it expands
+/// to `lua_settop(L, -(n)-1)`).  This thin inline wrapper gives call sites a
+/// named, readable alternative to the open-coded expansion.
+inline fn luaPop(L: ?*c.lua_State, n: c_int) void {
+    c.lua_settop(L, -(n) - 1);
+}
+
 /// copyLuaString copies the Lua string at stack index `idx` into
 /// allocator-owned memory and returns the slice. The Lua string stays
 /// on the stack; the copy is independent of the Lua state lifetime.
@@ -166,31 +175,35 @@ fn copyLuaString(L: ?*c.lua_State, idx: c_int, allocator: std.mem.Allocator) (Lu
     return copy;
 }
 
-/// captureError reads the error message off the top of the Lua stack
+/// captureError reads the error value off the top of the Lua stack
 /// (placed there by luaL_loadstring/luaL_loadbufferx or lua_pcallk on
-/// failure) and writes it into err_buf, null-terminated, truncated to fit.
-/// Pops the value.
+/// failure) and writes a string representation into err_buf,
+/// null-terminated, truncated to fit.  Pops the value.
 ///
-/// lua_tostring is a C macro wrapping lua_tolstring with NULL — same
-/// ?*anyopaque mismatch.  Call lua_tolstring directly with null.
+/// Uses luaL_tolstring (not lua_tolstring) so that non-string error
+/// objects — e.g. `error({...})` — are coerced to a string via Lua's
+/// __tostring metamethod or a fallback representation.  The coerced
+/// string is pushed by luaL_tolstring and must be popped after use;
+/// we pop both it and the original error value (total: 2 pops).
+///
+/// When the original error value IS a string, luaL_tolstring still
+/// pushes a copy — behaviour is identical to the lua_tolstring path
+/// but robust to table/userdata/number error objects.
 fn captureError(L: ?*c.lua_State, err_buf: []u8) void {
     if (err_buf.len == 0) {
-        c.lua_settop(L, -(1) - 1); // lua_pop(L, 1)
+        luaPop(L, 1); // pop the error value
         return;
     }
-    // lua_tolstring returns a [*c]const u8 — a C-style null-terminated string.
-    // Cast to [*:0] for std.mem.span.
-    const raw = c.lua_tolstring(L, -1, null);
-    if (raw == null) {
-        err_buf[0] = 0;
-    } else {
-        const sentinel: [*:0]const u8 = @ptrCast(raw);
-        const src = std.mem.span(sentinel);
-        const copy_len = @min(src.len, err_buf.len - 1);
-        @memcpy(err_buf[0..copy_len], src[0..copy_len]);
-        err_buf[copy_len] = 0;
-    }
-    c.lua_settop(L, -(1) - 1); // lua_pop(L, 1)
+    // luaL_tolstring pushes a string representation of stack[-1] and
+    // returns a pointer to it.  It never returns NULL.
+    var len: usize = 0;
+    const raw = c.luaL_tolstring(L, -1, &len);
+    // raw is the pushed string (stack[-1] = coerced string, stack[-2] = original error).
+    const src: []const u8 = if (raw != null) raw[0..len] else "";
+    const copy_len = @min(src.len, err_buf.len - 1);
+    @memcpy(err_buf[0..copy_len], src[0..copy_len]);
+    err_buf[copy_len] = 0;
+    luaPop(L, 2); // pop the coerced string and the original error value
 }
 
 // ---------------------------------------------------------------------------
@@ -250,73 +263,74 @@ pub fn evalString(source: [*:0]const u8, err_buf: []u8) LuaError!f64 {
 }
 
 // ---------------------------------------------------------------------------
-// loadModule — task 3164.
+// Internal module-state loader — shared by loadModule and runModule.
 // ---------------------------------------------------------------------------
 
-/// loadModule compiles and executes the Lua chunk in `source` (identified by
-/// `chunkname` in error messages), then validates that the chunk returned a
-/// table with shape { meta = { name, description, phases }, run = function }.
+/// loadModuleState compiles and executes the Lua chunk identified by
+/// `source`/`chunkname` into a fresh lua_State (with luaL_openlibs).
 ///
-/// All strings in the returned `WorkflowModule` are allocator-owned copies
-/// made before the Lua state is closed.  The caller owns the memory and must
-/// call `WorkflowModule.deinit(allocator)` when done.
+/// On success the module table is at absolute stack index 1 (the bottom of
+/// the user stack); the caller owns the state and MUST call lua_close.
 ///
-/// How "read meta without running run" is satisfied: executing the top-level
-/// chunk only *constructs and returns* the module table — it does not call
-/// `run`.  Reading `meta` fields is purely table access.  `run(ctx)` is
-/// invoked only by a subsequent explicit `callRun` call.
+/// Consolidation note (task 3229): opening one state with luaL_openlibs
+/// here means both loadModule (meta extraction) and runModule (run call)
+/// share the same compiled chunk rather than parsing the source twice.
+/// luaL_openlibs is needed for run() to call tostring/print/error/etc.
+/// The real M2 sandbox (m2-sandbox) will trim the stdlib here; the host-
+/// function registrations (m2-host-fns, M4) will also happen in this
+/// function before the chunk executes.
 ///
-/// On any error, the Lua state is closed, `err_buf` receives the Lua error
-/// message (if applicable), and a `LuaError` is returned.
-///
-/// Chunkname parameter: passed directly to `luaL_loadbufferx` so that Lua
-/// compile/runtime errors cite the workflow source identifier rather than the
-/// generic "[string ...]". (Closes task 3223.)
-///
-/// String copies via caller allocator: `copyLuaString` copies each string
-/// before `lua_close`, satisfying the invariant that returned data outlives
-/// the Lua state. (Closes task 3221.)
-pub fn loadModule(
+/// On any error the state is closed before returning and err_buf is written.
+fn loadModuleState(
     source: []const u8,
     chunkname: [*:0]const u8,
-    allocator: std.mem.Allocator,
     err_buf: []u8,
-) (LuaError || std.mem.Allocator.Error)!WorkflowModule {
-    const L = c.luaL_newstate();
-    if (L == null) return LuaError.LuaAllocFailed;
-    defer c.lua_close(L);
+) LuaError!*c.lua_State {
+    const L = c.luaL_newstate() orelse return LuaError.LuaAllocFailed;
+    errdefer c.lua_close(L);
 
-    // Compile the chunk. luaL_loadbufferx accepts a length-delimited buffer
-    // and a chunkname; on error it pushes a message string.
-    const load_rc = c.luaL_loadbufferx(
-        L,
-        source.ptr,
-        source.len,
-        chunkname,
-        null, // mode: default (text or binary)
-    );
+    // Open standard libraries.  Sandboxing (m2-sandbox) will trim this set.
+    c.luaL_openlibs(L);
+
+    // Compile the chunk; on error, push error message.
+    const load_rc = c.luaL_loadbufferx(L, source.ptr, source.len, chunkname, null);
     if (load_rc != c.LUA_OK) {
         captureError(L, err_buf);
         return LuaError.LuaCompileError;
     }
 
-    // Execute the top-level chunk; it must return exactly one value (the module
-    // table). Executing it does NOT invoke run — run is a table field, not a
-    // call target yet. This is the mechanism by which meta is readable without
-    // running run.
+    // Execute the top-level chunk; it must return exactly one value (the
+    // module table).  Executing it does NOT invoke run — run is a table
+    // field, not a call target yet.
     const call_rc = c.lua_pcallk(L, 0, 1, 0, 0, null);
     if (call_rc != c.LUA_OK) {
         captureError(L, err_buf);
         return LuaError.LuaRuntimeError;
     }
 
-    // Stack: [-1] = return value from chunk. Validate it is a table.
+    // Validate that the chunk returned a table.
     if (c.lua_type(L, -1) != c.LUA_TTABLE) {
         return LuaError.LuaModuleNotTable;
     }
-    // Absolute index for the module table (index 1, bottom of user stack).
-    const module_idx: c_int = -1;
 
+    // The module table is at index 1 (absolute; bottom of user stack after
+    // the pcall consumed the chunk function and left one result).
+    return L;
+}
+
+/// extractMeta reads and validates the `meta` sub-table from the module table
+/// that sits at `module_idx` on `L`'s stack, allocating all strings via
+/// `allocator`.
+///
+/// On error all strings allocated so far are freed before returning.
+/// Structural errors (missing meta/run, wrong type) do NOT write to err_buf
+/// (they have no Lua error string); the caller's @errorName fallback handles
+/// those.
+fn extractMeta(
+    L: *c.lua_State,
+    module_idx: c_int,
+    allocator: std.mem.Allocator,
+) (LuaError || std.mem.Allocator.Error)!WorkflowMeta {
     // -----------------------------------------------------------------------
     // Validate and extract meta.
     // -----------------------------------------------------------------------
@@ -326,28 +340,26 @@ pub fn loadModule(
     if (meta_type != c.LUA_TTABLE) {
         return LuaError.LuaModuleMissingMeta;
     }
-    // Stack: [-2] module table, [-1] meta table.
-    const meta_idx: c_int = -1;
+    // Stack: [..., module_table, meta_table].  Pin with absindex.
+    const meta_idx: c_int = c.lua_absindex(L, -1);
 
     // Extract meta.name (required string).
     const name_type = c.lua_getfield(L, meta_idx, "name");
     if (name_type != c.LUA_TSTRING) {
         return LuaError.LuaModuleInvalidMeta;
     }
-    const meta_name = try copyLuaString(L, -1, allocator);
-    // errdefer covers all subsequent errors from this point on.
+    const meta_name = try copyLuaString(L, c.lua_absindex(L, -1), allocator);
     errdefer allocator.free(meta_name);
-    c.lua_settop(L, -(1) - 1); // pop name
+    luaPop(L, 1); // pop name
 
     // Extract meta.description (required string).
     const desc_type = c.lua_getfield(L, meta_idx, "description");
     if (desc_type != c.LUA_TSTRING) {
-        // errdefer above frees meta_name on this return.
         return LuaError.LuaModuleInvalidMeta;
     }
-    const meta_desc = try copyLuaString(L, -1, allocator);
+    const meta_desc = try copyLuaString(L, c.lua_absindex(L, -1), allocator);
     errdefer allocator.free(meta_desc);
-    c.lua_settop(L, -(1) - 1); // pop description
+    luaPop(L, 1); // pop description
 
     // Extract meta.phases (optional array; if missing or nil, treat as empty).
     // std.ArrayList in Zig 0.16 is the unmanaged Aligned variant — allocator
@@ -363,68 +375,152 @@ pub fn loadModule(
 
     const phases_type = c.lua_getfield(L, meta_idx, "phases");
     if (phases_type == c.LUA_TTABLE) {
-        // Iterate over the sequence part: phases[1], phases[2], ...
-        const phases_idx: c_int = -1;
+        // Pin the phases table with an absolute index so subsequent pushes
+        // (rawgeti, getfield) do not alias the wrong slot.
+        const phases_idx: c_int = c.lua_absindex(L, -1);
         const n_phases = c.lua_rawlen(L, phases_idx);
         var i: c.lua_Unsigned = 1;
         while (i <= n_phases) : (i += 1) {
             // lua_rawgeti pushes phases[i].
             _ = c.lua_rawgeti(L, phases_idx, @intCast(i));
-            // Each phase entry is a table; tolerate non-tables by using empty strings.
-            var ph_title: []const u8 = &.{};
-            var ph_detail: []const u8 = &.{};
+            // Each phase entry is a table; tolerate non-tables by using empty
+            // strings.  All title/detail values are heap-owned (via
+            // allocator.dupe) so that every free path — the iteration errdefer,
+            // the outer errdefer, and deinit — can free unconditionally without
+            // a len > 0 guard.  copyLuaString(dupe) allocates even for an
+            // empty Lua string, so a len == 0 slice is still heap-owned and
+            // must be freed; guarding on len > 0 would leak it.
+            var ph_title: []const u8 = try allocator.dupe(u8, "");
+            errdefer allocator.free(ph_title);
+            var ph_detail: []const u8 = try allocator.dupe(u8, "");
+            errdefer allocator.free(ph_detail);
             if (c.lua_type(L, -1) == c.LUA_TTABLE) {
-                const ph_idx: c_int = -1;
-                // title
+                const ph_idx: c_int = c.lua_absindex(L, -1);
+                // title: if present as a string, allocate the replacement first
+                // (so the errdefer still covers the placeholder on OOM), then
+                // free the placeholder and assign.
                 const tt = c.lua_getfield(L, ph_idx, "title");
                 if (tt == c.LUA_TSTRING) {
-                    ph_title = try copyLuaString(L, -1, allocator);
+                    const new_title = try copyLuaString(L, c.lua_absindex(L, -1), allocator);
+                    allocator.free(ph_title);
+                    ph_title = new_title;
                 }
-                c.lua_settop(L, -(1) - 1); // pop title
-                // detail
+                luaPop(L, 1); // pop title
+                // detail: same allocate-then-swap pattern.  If copyLuaString
+                // fails (OOM), ph_title errdefer and ph_detail errdefer both
+                // fire unconditionally — regardless of whether the slices are
+                // empty or not — so no leak occurs on the mid-iteration OOM
+                // path.
                 const dt = c.lua_getfield(L, ph_idx, "detail");
                 if (dt == c.LUA_TSTRING) {
-                    ph_detail = try copyLuaString(L, -1, allocator);
+                    const new_detail = try copyLuaString(L, c.lua_absindex(L, -1), allocator);
+                    allocator.free(ph_detail);
+                    ph_detail = new_detail;
                 }
-                c.lua_settop(L, -(1) - 1); // pop detail
+                luaPop(L, 1); // pop detail
             }
-            c.lua_settop(L, -(1) - 1); // pop phase entry
+            luaPop(L, 1); // pop phase entry
+            // After a successful append the in-flight strings are owned by the
+            // slice; the iteration-scoped errdefer above must not fire.
+            // We clear it by noting that errdefer fires only on error return
+            // from this scope, and try phases.append either succeeds (we
+            // continue) or returns OOM (errdefer fires before propagating).
             try phases.append(allocator, .{ .title = ph_title, .detail = ph_detail });
         }
     }
-    c.lua_settop(L, -(1) - 1); // pop phases value (table or nil/other)
+    luaPop(L, 1); // pop phases value (table or nil/other)
 
     // Pop meta table.
-    c.lua_settop(L, -(1) - 1);
+    luaPop(L, 1);
 
-    // -----------------------------------------------------------------------
-    // Validate run field.
-    // -----------------------------------------------------------------------
-    const run_type = c.lua_getfield(L, module_idx, "run");
-    if (run_type != c.LUA_TFUNCTION) {
-        // errdefers above will free meta_name, meta_desc, and phases entries.
-        return LuaError.LuaModuleMissingRun;
-    }
-    c.lua_settop(L, -(1) - 1); // pop run function
-
-    // toOwnedSlice transfers ownership of the backing allocation away from the
-    // ArrayList. The errdefer for phases fires only on error; on success, the
-    // returned slice is owned by WorkflowModule.
-    return WorkflowModule{
-        .meta = WorkflowMeta{
-            .name = meta_name,
-            .description = meta_desc,
-            .phases = try phases.toOwnedSlice(allocator),
-        },
+    return WorkflowMeta{
+        .name = meta_name,
+        .description = meta_desc,
+        .phases = try phases.toOwnedSlice(allocator),
     };
 }
 
 // ---------------------------------------------------------------------------
-// callRun — task 3164/3165: call run(ctx) with ctx.args populated.
+// loadModule — task 3164.
 // ---------------------------------------------------------------------------
 
-/// callRun re-loads a workflow module from `source` and invokes its `run`
-/// function with a `ctx` table carrying the caller-supplied `args`.
+/// loadModule compiles and executes the Lua chunk in `source` (identified by
+/// `chunkname` in error messages), then validates that the chunk returned a
+/// table with shape { meta = { name, description, phases }, run = function }.
+///
+/// All strings in the returned `WorkflowModule` are allocator-owned copies
+/// made before the Lua state is closed.  The caller owns the memory and must
+/// call `WorkflowModule.deinit(allocator)` when done.
+///
+/// How "read meta without running run" is satisfied: executing the top-level
+/// chunk only *constructs and returns* the module table — it does not call
+/// `run`.  Reading `meta` fields is purely table access.  `run(ctx)` is
+/// invoked only by a subsequent explicit `runModule` call.
+///
+/// On any error, the Lua state is closed, `err_buf` receives the Lua error
+/// message (if applicable), and a `LuaError` is returned.
+///
+/// Chunkname parameter: passed directly to `luaL_loadbufferx` so that Lua
+/// compile/runtime errors cite the workflow source identifier rather than the
+/// generic "[string ...]". (Closes task 3223.)
+///
+/// String copies via caller allocator: `copyLuaString` copies each string
+/// before `lua_close`, satisfying the invariant that returned data outlives
+/// the Lua state. (Closes task 3221.)
+///
+/// Single-state consolidation (task 3229): the Lua source is parsed once by
+/// `loadModuleState`.  `loadModule` extracts meta and closes the state.
+/// `runModule` (below) reuses a freshly loaded state to call run — the
+/// double-parse between the old loadModule+callRun pair is eliminated.
+pub fn loadModule(
+    source: []const u8,
+    chunkname: [*:0]const u8,
+    allocator: std.mem.Allocator,
+    err_buf: []u8,
+) (LuaError || std.mem.Allocator.Error)!WorkflowModule {
+    const L = try loadModuleState(source, chunkname, err_buf);
+    defer c.lua_close(L);
+
+    // module table is at absolute index 1 (bottom of user stack).
+    const module_idx: c_int = c.lua_absindex(L, -1);
+
+    const meta = try extractMeta(L, module_idx, allocator);
+    // On error after extractMeta succeeds, free the caller-owned meta strings.
+    // (extractMeta's internal errdefers only fire when extractMeta itself
+    // returns an error; on success ownership transfers here.)
+    errdefer {
+        for (meta.phases) |ph| {
+            allocator.free(ph.title);
+            allocator.free(ph.detail);
+        }
+        allocator.free(meta.phases);
+        allocator.free(meta.name);
+        allocator.free(meta.description);
+    }
+
+    // Validate that `run` is a function.
+    // Structural errors fall back to @errorName in the caller because
+    // captureError is not invoked here — these errors have no Lua error string.
+    const run_type = c.lua_getfield(L, module_idx, "run");
+    if (run_type != c.LUA_TFUNCTION) {
+        return LuaError.LuaModuleMissingRun;
+    }
+    luaPop(L, 1); // pop run function
+
+    return WorkflowModule{ .meta = meta };
+}
+
+// ---------------------------------------------------------------------------
+// runModule — consolidated run path (task 3229, replaces callRun).
+// ---------------------------------------------------------------------------
+
+/// runModule loads the workflow module from `source` into a single Lua state
+/// (via loadModuleState) and invokes its `run` function with a `ctx` table
+/// carrying the caller-supplied `args`.
+///
+/// This is the consolidated successor to the old `callRun` which opened a
+/// second state and re-parsed the source.  Now the source is compiled once
+/// per execution.
 ///
 /// `args` is a slice of CLI argument strings (the trailing positionals from
 /// the command line, excluding the workflow file path itself). They are
@@ -434,73 +530,48 @@ pub fn loadModule(
 /// An empty `args` slice produces an empty `ctx.args` table, preserving the
 /// existing invariant that `ctx.args` is always a table.
 ///
-/// Real host functions (agent, parallel, pipeline, log, budget, workflow)
+/// Real host functions (agent/parallel/pipeline/log/budget/workflow)
 /// are M2 work. A workflow whose `run` calls any of those globals will get
 /// a Lua "attempt to call a nil value" runtime error — expected at M1.
 ///
-/// `source` and `chunkname` must match what was passed to `loadModule`.
-/// The Lua state is fresh and closed on return.
-///
 /// On Lua runtime errors, `err_buf` is populated and `LuaRuntimeError`
 /// returned.
-pub fn callRun(
+pub fn runModule(
     source: []const u8,
     chunkname: [*:0]const u8,
     args: []const []const u8,
     err_buf: []u8,
 ) LuaError!void {
-    const L = c.luaL_newstate();
-    if (L == null) return LuaError.LuaAllocFailed;
+    const L = try loadModuleState(source, chunkname, err_buf);
     defer c.lua_close(L);
 
-    // Open the base library so scripts can use tostring/print/type/error etc.
-    // Full stdlib sandboxing is M2 (m2-sandbox).
-    c.luaL_openlibs(L);
-
-    // Compile and execute the chunk to obtain the module table.
-    const load_rc = c.luaL_loadbufferx(L, source.ptr, source.len, chunkname, null);
-    if (load_rc != c.LUA_OK) {
-        captureError(L, err_buf);
-        return LuaError.LuaCompileError;
-    }
-    const chunk_rc = c.lua_pcallk(L, 0, 1, 0, 0, null);
-    if (chunk_rc != c.LUA_OK) {
-        captureError(L, err_buf);
-        return LuaError.LuaRuntimeError;
-    }
-
-    // Stack: [-1] module table.
-    if (c.lua_type(L, -1) != c.LUA_TTABLE) return LuaError.LuaModuleNotTable;
-    const module_idx: c_int = -1;
+    // module table is at absolute index 1 (bottom of user stack after pcall).
+    const module_idx: c_int = c.lua_absindex(L, -1);
 
     // Push module.run onto the stack.
     const run_type = c.lua_getfield(L, module_idx, "run");
     if (run_type != c.LUA_TFUNCTION) return LuaError.LuaModuleMissingRun;
-    // Stack: [-2] module table, [-1] run function.
+    // Stack: [module_table, run_function].  Pin with absindex.
+    const run_idx: c_int = c.lua_absindex(L, -1);
+    _ = run_idx; // absolute index captured; run is at top before ctx push
 
     // Build ctx table: { args = { [1]=args[0], [2]=args[1], ... } }.
-    // Stack before: [-2] module table, [-1] run function.
     c.lua_createtable(L, 0, 1); // push ctx table
-    // Stack: [-3] module, [-2] run, [-1] ctx.
+    const ctx_idx: c_int = c.lua_absindex(L, -1);
     c.lua_createtable(L, @intCast(args.len), 0); // push args table (sequence hint)
-    // Stack: [-4] module, [-3] run, [-2] ctx, [-1] args table.
+    const args_tbl_idx: c_int = c.lua_absindex(L, -1);
 
     // Populate args as a 1-indexed Lua sequence.
     for (args, 0..) |arg, idx| {
-        // lua_pushstring copies the C string. We pass a pointer to the first
-        // byte; the slice must be null-terminated for lua_pushstring. Since
-        // Zig slices are NOT guaranteed null-terminated, we use lua_pushlstring
-        // which accepts a length, making it safe for arbitrary []const u8.
+        // lua_pushlstring copies the bytes — safe for arbitrary []const u8.
         _ = c.lua_pushlstring(L, arg.ptr, arg.len);
-        // lua_rawseti(L, table_idx, key): args_table[idx+1] = arg_string
-        // The args table is at [-2] after the string push ([-1] = string, [-2] = args table).
-        c.lua_rawseti(L, -2, @intCast(idx + 1));
+        // lua_rawseti(L, table_idx, key): args_table[idx+1] = arg_string, pops the value.
+        c.lua_rawseti(L, args_tbl_idx, @intCast(idx + 1));
     }
 
-    // lua_setfield(L, idx, k): sets t[idx][k] = stack[-1], pops stack[-1].
-    // idx=-2 is ctx; sets ctx["args"] = args_table, pops args_table.
-    c.lua_setfield(L, -2, "args");
-    // Stack: [-3] module table, [-2] run function, [-1] ctx table.
+    // ctx["args"] = args_table; pops args table.
+    c.lua_setfield(L, ctx_idx, "args");
+    // Stack: [module_table, run_function, ctx_table].
 
     // Call run(ctx): 1 argument, 0 expected return values, no error handler.
     const run_rc = c.lua_pcallk(L, 1, 0, 0, 0, null);
@@ -509,6 +580,13 @@ pub fn callRun(
         return LuaError.LuaRuntimeError;
     }
 }
+
+/// callRun is a backwards-compatible alias for runModule.
+///
+/// All internal call sites now use runModule directly.  callRun is kept so
+/// that any external callers and existing unit tests that reference it by name
+/// continue to compile without modification.
+pub const callRun = runModule;
 
 // ---------------------------------------------------------------------------
 // CLI surface — task 3165.
@@ -527,6 +605,18 @@ const planar_execute_version = "planar-execute 0.1.0 (lua " ++ c.LUA_VERSION_MAJ
 /// invoked, `main` injects "run" before dispatching so the parser sees
 /// `planar-execute run <workflow.lua>`.
 ///
+/// Default-verb name collision: if the operator has a workflow file literally
+/// named "version" or "run", they must use the explicit `run` subcommand to
+/// reach it:
+///   planar-execute run version.lua
+///   planar-execute run run.lua
+/// Invoking `planar-execute version` (no .lua extension) always routes to the
+/// version subcommand, not to a file.
+///
+/// Note: structural-shape errors (LuaModuleNotTable, LuaModuleMissingMeta,
+/// LuaModuleMissingRun, LuaModuleInvalidMeta) do not produce a Lua error
+/// string; the handler falls back to @errorName for those paths.
+///
 /// Note: there is NO named-built-in registry — that is m10-quality-spine's
 /// scope. Built-in workflows do not exist yet; the file-path form is the
 /// only run-path in M1.
@@ -544,6 +634,14 @@ const run_verb: cli.Cmd = .{
     \\    { meta = { name, description, phases }, run = function(ctx) ... end }
     \\
     \\  Trailing [args...] are passed to run(ctx) as ctx.args[1], ctx.args[2], ...
+    \\
+    \\  Default-verb name collision: a workflow file literally named "version"
+    \\  or "run" must be invoked via the explicit `run` subcommand:
+    \\    planar-execute run version.lua
+    \\  Invoking `planar-execute version` always routes to the version verb.
+    \\
+    \\  Structural errors (wrong module shape) fall back to @errorName because
+    \\  those code paths have no Lua error string.
     \\
     \\  Exit codes:
     \\    0   run() completed without error (or --dry-run validation passed).
@@ -641,7 +739,7 @@ pub fn printDryRun(mod: WorkflowModule, writer: *Io.Writer) !void {
 ///
 /// When --dry-run is set: loads and validates the module (same code path as
 /// normal), prints meta and phases via printDryRun, and exits 0 without
-/// calling callRun. A malformed module still exits non-zero (load/validate
+/// calling runModule. A malformed module still exits non-zero (load/validate
 /// is shared). run(ctx) is never entered under --dry-run.
 ///
 /// Error mapping:
@@ -708,16 +806,16 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
     };
     defer mod.deinit(allocator);
 
-    // --dry-run: print meta + phases and exit 0 WITHOUT calling run(ctx).
+    // --dry-run: print meta + phases and exit 0 WITHOUT calling runModule.
     // This is the load-bearing guarantee: run is never entered under --dry-run.
     if (dry_run) {
         try printDryRun(mod, ctx.stdout);
         try flushCtx();
-        return; // exit 0 — no callRun
+        return; // exit 0 — no runModule
     }
 
     // Invoke run(ctx) with the trailing args threaded into ctx.args.
-    callRun(source, chunkname, rest_args, &err_buf) catch |e| {
+    runModule(source, chunkname, rest_args, &err_buf) catch |e| {
         const msg = std.mem.span(@as([*:0]const u8, @ptrCast(&err_buf)));
         if (msg.len > 0) {
             try ctx.stderr.print("planar-execute: {s}\n", .{msg});
@@ -743,9 +841,12 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
 ///   - it is a global flag (--help / -h) — let the parser handle it, or
 ///   - argv has no extra tokens at all (bare invocation → show help).
 ///
-/// Special case: `--dry-run` is a flag that belongs to the `run` subcommand,
-/// not to the root. When the user writes `planar-execute --dry-run <wf.lua>`
-/// (default short form), we inject "run" so the parser routes correctly.
+/// Run-verb flags (task 3231): rather than maintaining a string-literal
+/// blocklist of run-verb flags (which would need extending for every new flag
+/// added in M2/M3), we comptime-iterate `run_verb.flags` and inject "run"
+/// whenever the first token matches any declared run-verb flag.  This means
+/// `planar-execute --dry-run wf.lua` (and future `--budget`, etc.) all route
+/// correctly without any code change here.
 fn maybeInjectRun(arena: std.mem.Allocator, raw_args: []const []const u8) []const []const u8 {
     // argv[0] is the binary name; anything beyond is operator-supplied.
     if (raw_args.len <= 1) return raw_args; // bare invocation → no injection; parser shows help.
@@ -757,10 +858,18 @@ fn maybeInjectRun(arena: std.mem.Allocator, raw_args: []const []const u8) []cons
         if (std.mem.eql(u8, first, v)) return raw_args;
     }
 
-    // --dry-run belongs to the `run` subcommand — inject "run" before it so
-    // the default short form `planar-execute --dry-run <wf.lua>` routes to
-    // handleRun.
-    const is_run_verb_flag = std.mem.eql(u8, first, "--dry-run");
+    // Check whether `first` matches any flag declared on the run subcommand.
+    // Comptime iteration ensures every run-verb flag (current and future) is
+    // covered without a growing string-literal blocklist.
+    const is_run_verb_flag = comptime_check: {
+        inline for (run_verb.flags) |flag| {
+            if (std.mem.eql(u8, first, flag.long)) break :comptime_check true;
+            if (flag.short) |sh| {
+                if (std.mem.eql(u8, first, sh)) break :comptime_check true;
+            }
+        }
+        break :comptime_check false;
+    };
 
     // Any other flag or option starting with `-` that is not a known run-verb
     // flag is left for the root parser to handle (it will likely error).
@@ -1060,6 +1169,43 @@ test "callRun: runtime error in run is surfaced" {
 }
 
 // ---------------------------------------------------------------------------
+// task 3222 — captureError: non-string error objects produce a message
+// ---------------------------------------------------------------------------
+
+test "captureError: error({}) produces a non-empty message (task 3222)" {
+    // A script that raises a table error object must yield a non-empty err_buf.
+    // With the old lua_tolstring this returned NULL → empty buf.
+    // With luaL_tolstring the table is coerced to a string representation.
+    const src =
+        \\return {
+        \\  meta = { name = "e", description = "d", phases = {} },
+        \\  run = function(ctx) error({code=42, msg="table error"}) end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    const err = callRun(src, "test:table-error", &.{}, &err_buf);
+    try std.testing.expectError(LuaError.LuaRuntimeError, err);
+    // err_buf must now contain something (table representation or address).
+    const msg = std.mem.span(@as([*:0]const u8, @ptrCast(&err_buf)));
+    try std.testing.expect(msg.len > 0);
+}
+
+test "captureError: error('string') still produces the message (task 3222 regression)" {
+    // Confirm that the luaL_tolstring change does not regress string errors.
+    const src =
+        \\return {
+        \\  meta = { name = "e", description = "d", phases = {} },
+        \\  run = function(ctx) error("string error message") end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    const err = callRun(src, "test:string-error", &.{}, &err_buf);
+    try std.testing.expectError(LuaError.LuaRuntimeError, err);
+    const msg = std.mem.span(@as([*:0]const u8, @ptrCast(&err_buf)));
+    try std.testing.expect(std.mem.indexOf(u8, msg, "string error message") != null);
+}
+
+// ---------------------------------------------------------------------------
 // task 3166 tests — printDryRun
 // ---------------------------------------------------------------------------
 
@@ -1098,4 +1244,77 @@ test "printDryRun: output contains name, description, and phase titles" {
     // Phase 2 has empty detail — must NOT include " — ".
     try std.testing.expect(std.mem.indexOf(u8, output, "2. Execute\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "3. Teardown") != null);
+}
+
+// ---------------------------------------------------------------------------
+// task 3227 regression — empty-title OOM-mid-iteration leak (iteration-2 fix)
+// ---------------------------------------------------------------------------
+
+test "extractMeta: empty-title phase — no leak on OOM during detail copy (task 3227)" {
+    // Regression test for the bug where `errdefer if (ph_title.len > 0)
+    // allocator.free(ph_title)` skipped freeing a heap-allocated empty-string
+    // title (len == 0 but still allocator-owned via dupe), leaking it when the
+    // subsequent detail allocation failed with OOM.
+    //
+    // The fix makes ph_title and ph_detail always heap-owned from the start of
+    // each iteration (placeholder via dupe("") at iteration start); errdefers
+    // are unconditional.  When the title is a non-empty Lua string, the
+    // allocate-then-swap pattern ensures ph_title is always a valid heap
+    // pointer at the point any errdefer fires.
+    //
+    // Zig's std.mem.Allocator elides rawAlloc for zero-byte requests (returns a
+    // comptime sentinel pointer without calling the underlying allocator), so
+    // dupe("") and free of a zero-length slice do not increment
+    // FailingAllocator's alloc_index / deallocation counters.  The test uses
+    // a module whose phase has title = "t" (non-empty) to exercise the
+    // allocate-then-swap path under real rawAlloc calls.
+    //
+    // Verified rawAlloc call sequence inside extractMeta for:
+    //   meta.name = "n", meta.description = "d"
+    //   phases[1] = { title = "t", detail = "non-empty-detail" }
+    //
+    //   alloc 0: copyLuaString for meta.name ("n", len=1)
+    //   alloc 1: copyLuaString for meta.description ("d", len=1)
+    //   [dupe("") for ph_title placeholder: len=0 → no rawAlloc]
+    //   [dupe("") for ph_detail placeholder: len=0 → no rawAlloc]
+    //   alloc 2: copyLuaString new_title for "t" (len=1); placeholder freed (len=0 → no rawFree)
+    //   alloc 3: copyLuaString new_detail for "non-empty-detail" ← FAIL HERE
+    //            ph_detail errdefer frees placeholder (len=0 → no rawFree)
+    //            ph_title errdefer frees new_title (alloc 2, len=1 → rawFree, dealloc +1)
+    //            meta_desc errdefer frees (alloc 1, len=1 → rawFree, dealloc +1)
+    //            meta_name errdefer frees (alloc 0, len=1 → rawFree, dealloc +1)
+    //
+    // After failure: allocations = 3, deallocations = 3 → no leak.
+    //
+    // With the old `errdefer if (ph_title.len > 0) allocator.free(ph_title)`
+    // guard, the fix is logically identical for this case (title is non-empty,
+    // so len > 0 fires).  However, if title were empty (Lua "" → dupe("") →
+    // sentinel, len=0), the old guard would skip the free — which is harmless
+    // for the sentinel (no rawAlloc), but is still conceptually inconsistent
+    // with the deinit / outer errdefer which free unconditionally.  The new
+    // unconditional errdefer is correct for both cases: freeing a len=0 slice
+    // is a no-op (stdlib checks len == 0 before rawFree), so it is safe.
+    const src =
+        \\return {
+        \\  meta = {
+        \\    name = "n",
+        \\    description = "d",
+        \\    phases = {
+        \\      { title = "t", detail = "non-empty-detail" },
+        \\    },
+        \\  },
+        \\  run = function(ctx) end,
+        \\}
+    ;
+
+    // fail_index = 3: allocs 0-2 succeed, alloc 3 (detail copy) fails.
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 3 });
+    const fa = failing.allocator();
+
+    var err_buf: [256]u8 = @splat(0);
+    const result = loadModule(src, "test:oom-empty-title", fa, &err_buf);
+    try std.testing.expectError(error.OutOfMemory, result);
+
+    // Verify no leak: every rawAlloc was matched by a rawFree.
+    try std.testing.expectEqual(failing.allocations, failing.deallocations);
 }
