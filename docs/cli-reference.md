@@ -154,9 +154,9 @@ Verbs that perform an explicit cross-scope check on every invocation. The "guard
 | `task done <task-id>` | `task` | |
 | `task reopen <task-id>` | `task` | |
 | `task block <task-id> --on <task-id>` | `task` (both blocked and blocking) | Guard fires on both endpoints. |
-| `question update <question-id>` | `question` | |
-| `scenario update <scenario-id>` | `scenario` | |
-| `decision update <decision-id>` | `decision` | |
+| `question edit <question-id>` | `question` | |
+| `scenario edit <scenario-id>` | `scenario` | |
+| `decision edit <decision-id>` | `decision` | |
 | `decision supersede <old> --by <new>` | `decision` (both old and new) | Guard fires on both endpoints. |
 | `artifact update <artifact-id>` | `artifact` | |
 | `audit publish-decision <decision-id>` | `decision` | Posts to every external link reachable from the decision. |
@@ -3124,8 +3124,7 @@ The resume packet contains:
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--budget <tokens>` | Token budget for the packet (recent activity is trimmed to fit). | `8000` |
-| `--no-pull` | Skip the operational plane pull. Use with caution — packet may be stale. | off |
+| `--json` | Emit the resume packet as a single JSON object instead of structured text. | off |
 
 **Output:** The resume packet, formatted as structured text (human mode) or a single JSON object (`--json`). The JSON shape is:
 
@@ -3150,7 +3149,7 @@ The resume packet contains:
 **Exit codes:**
 - `0` — packet produced.
 - `1` — task not found; or no active task in scope (when called without an id).
-- `1` — task fails `resume validate` with `--no-pull` not set and a capture failure is detected.
+- `1` — `resume validate` fails (e.g. a capture failure is detected).
 - `3` — conflicts detected on operational pull; conflicts are included in the packet but exit code signals the condition.
 
 ---
@@ -3244,27 +3243,27 @@ handoff captured for task:42
 
 ---
 
-### `planar handoff validate <snapshot-id>`
+### `planar handoff validate <handoff-id>`
 
 **Synopsis:**
 ```
-planar handoff validate <snapshot-id>
+planar handoff validate <handoff-id> [--json]
 ```
 
-**Description:** Validate that the handoff anchored at the given snapshot is resume-ready. Checks the same criteria as `resume validate` plus snapshot presence and handoff status. On success, writes the `validated` state to the handoff row, making it eligible for `handoff consume`.
+**Description:** Transition the `pending` handoff with the given id to `validated`, making it eligible for `handoff consume`. Checks the same readiness criteria as `resume validate` plus snapshot presence and handoff status. On success, writes the `validated` state to the handoff row.
 
-**Output:** Same structure as `resume validate` output.
+**Output:** Same structure as `resume validate` output (add `--json` for a single JSON object).
 
 **Schema effects:**
 - Reads `context_snapshots`, `handoffs`, `tasks`.
-- On success: updates `handoffs(status='validated', validated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'))` for the latest `pending` handoff anchored at `<snapshot-id>`.
+- On success: updates `handoffs(status='validated', validated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'))` for the handoff with the given `<handoff-id>`.
 
 **Capture:** None.
 
 **Exit codes:**
 - `0` — handoff is resume-ready; status updated to `validated`.
-- `1` — validation failures found; status not changed.
-- `1` — snapshot not found.
+- `1` — `<handoff-id>` not found.
+- `1` — handoff cannot transition to `validated` (not `pending`).
 - `1` — no pending handoff found for this snapshot.
 
 ---

@@ -129,7 +129,7 @@ The motivating incident: an operator running from `~/work/lectio/` invoked `plan
 Two classes of verb are guarded:
 
 - **Bulk-write-from-parent.** Verbs that take a parent entity id (typically a plan) and write a tree of derived rows. The parent's scope is the natural scope for the derived rows; running from a cwd that resolves to a different scope is the lectio incident pattern. Verbs: `spec ingest`, `ext propagate`, `sync push <link|kind:id>`, `sync pull <link|kind:id>`, `sync resolve`.
-- **Mutating-existing-entity.** Verbs that take an existing entity id and rewrite it (or its links). Routing such a mutation through the wrong cwd updates the row but skews future writes that follow the same code path. Verbs: `plan update`, `plan step add/done/skip`, `task update/done/block` (both endpoints on `block`), `question update`, `scenario update`, `decision update`, `decision supersede` (both old and new), `artifact update`, `audit publish-decision`, `ext create --from`, `link <kind:id> --to`, `unlink`, `links update`.
+- **Mutating-existing-entity.** Verbs that take an existing entity id and rewrite it (or its links). Routing such a mutation through the wrong cwd updates the row but skews future writes that follow the same code path. Verbs: `plan update`, `plan step add/done/skip`, `task update/done/block` (both endpoints on `block`), `question edit`, `scenario edit`, `decision edit`, `decision supersede` (both old and new), `artifact update`, `audit publish-decision`, `ext create --from`, `link <kind:id> --to`, `unlink`, `links update`.
 
 ### Membership-aware coverage
 
