@@ -56,6 +56,10 @@ const cli = @import("cli");
 /// Imported here so its `test` blocks run under the `execute_exe_tests` target.
 pub const state = @import("state.zig");
 
+/// Schema ingestion — `<bin> schema` subprocess + parse layer (task 3172 m2-schema-into-brief).
+/// Imported here so its `test` blocks run under the `execute_exe_tests` target.
+pub const schema = @import("schema.zig");
+
 const c = @cImport({
     @cInclude("lua.h");
     @cInclude("lauxlib.h");
