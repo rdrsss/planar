@@ -72,7 +72,7 @@ either form and reports back.
 planar workspace init --name platform --slug platform
 
 # Refresh the routing table from current static signals.
-planar workspace scan
+planar workspace routing build
 
 # Re-render AGENTS.md from the current routing table and DB.
 planar workspace regenerate
