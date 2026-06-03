@@ -75,6 +75,11 @@ fn runBinWith(
     var env_map = environ.createMap(gpa) catch @panic("OOM creating env map");
     defer env_map.deinit();
     env_map.put("PLANAR_DB", suite.db_path) catch @panic("OOM injecting PLANAR_DB");
+    // Mirror harness.execWith: disable the worktree gate so planning
+    // verbs (e.g. `question add`) run when the suite itself is executed
+    // from a worktree checkout. Without this the gate refuses them and
+    // the test crashes only in worktree-based dev (CI runs non-worktree).
+    env_map.put("PLANAR_DISABLE_WORKTREE_GATE", "1") catch @panic("OOM injecting GATE flag");
     for (extra_env) |kv| {
         env_map.put(kv[0], kv[1]) catch @panic("OOM injecting extra env");
     }
