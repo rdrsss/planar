@@ -10,16 +10,16 @@ Planar ships as four executables, each with a disjoint capability boundary enfor
 
 | Binary | Audience | Writes to |
 |---|---|---|
-| `planar` | Operator (human + scripts) | Planning entities (`plans`, `tasks.status` via manual transitions, `decisions`, `questions`, `scenarios`, `artifacts`, `annotations`, …) — everything **except** `agent_actions` / `agent_work_claims`. |
+| `planar` | Operator (human + scripts) | Planning entities (`plans`, `tasks.status` via manual transitions, `decisions`, `questions`, `scenarios`, `artifacts`, `annotations`, …) — everything **except** `agent_work_claims`. It does not write `agent_actions` either, save for one best-effort exception: the entity-create provenance hook (plan 467 D2/D3) appends a `created <entity>` action when `decision`/`question`/`artifact add` runs under an active agent claim; with no active claim it is a silent no-op. |
 | `planar-agent` | Agent (vendor hook, orchestrator dispatch) + operator recovery | `agent_actions`, `agent_work_claims`, and `tasks.status` (the last only as part of atomic coordinated operations: `pull`, `complete`, `fail`, `release`, `block`). **Never** to plan / decision / question / scenario / artifact / annotation. |
 | `planar-watch` | Operator (live view) + scripts (`--json`) | **Nothing.** Opens SQLite via `file:?mode=ro` so the driver itself rejects every write SQL string. |
 | `planar-doc` | Operator + documenter agent | **`.planar-manifest` only** — the repo-state merkle index at the repo root. Never opens SQLite at all. |
 
-**Capability invariant — `planar-agent`:** a process invoked as `planar-agent` has no verbs that mutate any planning entity. The verb set is exactly `pull`, `peek`, `claim`, `heartbeat`, `complete`, `fail`, `release`, `block`, `action start`/`action end`, `ingest`, `reconcile`, `abort`, `version`.
+**Capability invariant — `planar-agent`:** a process invoked as `planar-agent` has no verbs that mutate any planning entity. The verb set is exactly `pull`, `peek`, `claim`, `heartbeat`, `complete`, `fail`, `release`, `block`, `action start`/`action end`, `ingest`, `reconcile`, `abort`, `version`, `schema`.
 
-**Capability invariant — `planar-watch`:** the binary's verb set contains zero write verbs (`feed`, `ps`, `claims`, `actions`, `plans`, `log`, `version`, `completion` only). Enforced two ways: (1) the verb set; (2) the read-only DB handle.
+**Capability invariant — `planar-watch`:** the binary's verb set contains zero write verbs (`feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `version`, `completion`, `schema` only). Enforced two ways: (1) the verb set; (2) the read-only DB handle.
 
-**Capability invariant — `planar-doc`:** the binary has no SQLite driver linked at all. Its verb set is exactly `build`, `verify`, `diff`, `cover`, `nodoc`, `lint`. The only write is `.planar-manifest` at the repo root.
+**Capability invariant — `planar-doc`:** the binary has no SQLite driver linked at all. Its verb set is exactly `build`, `verify`, `diff`, `cover`, `nodoc`, `lint`, `schema`. The only write is `.planar-manifest` at the repo root.
 
 All three invariants are locked by `integration_tests/capability_boundary_test.zig` — a future change that registers a write verb on `planar-watch`, a planning-entity verb on `planar-agent`, or any SQLite-touching verb on `planar-doc` fails CI immediately. The `planar agent <verb>` subcommand namespace deliberately does not exist; agent observability lives on `planar-watch`, agent-table writes live on `planar-agent`.
 

@@ -1,16 +1,20 @@
 //! planar-agent — agent-callable coordination binary.
 //!
-//! Owns every write to `agent_actions` and `agent_work_claims`. Operator
-//! recovery verbs (`reconcile`, `abort`) live here too because both are
-//! agent_* table writers; the capability boundary tracks tables, not
-//! audience.
+//! Owns every write to `agent_work_claims` and every agent-coordination
+//! write to `agent_actions`. Operator recovery verbs (`reconcile`,
+//! `abort`) live here too because both are agent_* table writers; the
+//! capability boundary tracks tables, not audience. (One narrow
+//! exception: the `planar` operator binary also appends a best-effort
+//! entity-create provenance row to `agent_actions` when a planning
+//! entity is created under an active claim — plan 467 D2/D3.)
 //!
-//! Three-binary architecture:
+//! Four-binary architecture:
 //!   - `planar`         : operator surface; runs migrations; writes
 //!                        planning + tasks.status.
 //!   - `planar-agent`   : THIS binary; writes agent_* + tasks.status
 //!                        only as part of atomic coordinated operations.
 //!   - `planar-watch`   : read-only viewer; opens DB with `?mode=ro`.
+//!   - `planar-doc`     : doc-system manifest tool; no SQLite driver.
 //!
 //! Schema-version handshake: planar-agent is a CONSUMER of the schema,
 //! not its owner. Startup queries `schema_migrations.max(version)` and

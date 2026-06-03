@@ -99,10 +99,14 @@ Planar ships FOUR binaries that share one schema, one engine module, and one run
 Capability invariant — non-overlapping write surfaces enforced at
 compile time by each binary's verb set, not by runtime ACLs:
 
-- `planar` NEVER writes to `agent_actions` or `agent_work_claims`. The
-  `planar agent` subcommand namespace does not exist; agent
-  observability lives on `planar-watch`, agent-table mutation lives on
-  `planar-agent`.
+- `planar` NEVER writes to `agent_work_claims`. It writes `agent_actions`
+  only through the best-effort entity-create provenance hook (plan 467
+  D2/D3): when `decision` / `question` / `artifact add` runs under an
+  active agent claim it appends a `created <entity>` action; with no
+  active claim (the ordinary operator shell) the call is a silent no-op.
+  No other `agent_*` write path exists on `planar`. The `planar agent`
+  subcommand namespace does not exist; agent observability lives on
+  `planar-watch`, agent-table mutation lives on `planar-agent`.
 - `planar-agent` NEVER writes to plan / decision / question / scenario
   / artifact / annotation rows. A vendor hook configured with only
   `planar-agent` on its PATH has bounded blast radius — it cannot
@@ -118,7 +122,7 @@ The operator-recovery verbs `planar-agent reconcile` and
 are `agent_*` table writers. The capability boundary tracks tables,
 not audience.
 
-The shared engine module lives at `src/engine/runtime/agentactivity/`; per-binary handlers live under `src/cmd/<binary>/handlers/`. `planar-agent` carries the full 13-verb coordination surface; `planar-watch` carries the read-only viewer surface (`feed`, `ps`, `claims`, `actions`, `plans`, `log`, `version`, `completion`) with a Tier-2 event-driven `--follow` loop.
+The shared engine module lives at `src/engine/runtime/agentactivity/`; per-binary handlers live under `src/cmd/<binary>/handlers/`. `planar-agent` carries the full coordination surface; `planar-watch` carries the read-only viewer surface (`feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `version`, `completion`, `schema`) with a Tier-2 event-driven `--follow` loop.
 
 ### Live tail wake abstraction
 
