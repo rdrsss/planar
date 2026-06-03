@@ -12,8 +12,15 @@
     //   3. Commit the manifest + the regenerated files under `vendor/<name>/`.
     //
     // To add a new dep: add another entry to `.deps`. Supported archive types:
-    //   - .zip
-    //   - .tar_gz
+    //   - .zip   (zig fetch strips the single top-level directory; use strip_prefix = "")
+    //   - .tar_gz (zig fetch preserves the top-level directory; set strip_prefix = "name-ver/")
+    //
+    // strip_prefix semantics (decision 364):
+    //   `strip_prefix` is the path **within the zig-normalised cached tree** after
+    //   the `<content-hash>/` prefix that zig fetch prepends.  Because zig fetch
+    //   strips the single top-level directory from zip archives but not from
+    //   tar archives, zip deps use `strip_prefix = ""` while tar.gz deps set
+    //   `strip_prefix` to the original top-level directory name (e.g. "foo-1.2/").
     .deps = .{
         .{
             .name = "sqlite",
@@ -21,7 +28,9 @@
             .url = "https://sqlite.org/2025/sqlite-amalgamation-3500200.zip",
             .sha256 = "387991de2834b5da2894119ff4173a9ea0779ea55ebcf53d9a40b24d1dc2484e",
             .archive = .zip,
-            .strip_prefix = "sqlite-amalgamation-3500200/",
+            // zig fetch strips the single top-level dir ("sqlite-amalgamation-3500200/")
+            // from zip archives, so the normalised tree has files at root level.
+            .strip_prefix = "",
             .keep = .{ "sqlite3.c", "sqlite3.h", "sqlite3ext.h" },
         },
     },
