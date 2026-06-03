@@ -17,7 +17,6 @@ pub const verb: cli.Cmd = .{
             .flags = &.{
                 .{ .long = "--all", .kind = .bool, .default = .{ .bool = false } },
                 .{ .long = "--system", .kind = .string },
-                .{ .long = "--scope", .kind = .string },
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },
             .positionals = &.{.{ .name = "ref", .kind = .string, .required = false, .desc = "<link-id | kind:id>" }},
@@ -29,7 +28,6 @@ pub const verb: cli.Cmd = .{
             .flags = &.{
                 .{ .long = "--all", .kind = .bool, .default = .{ .bool = false } },
                 .{ .long = "--system", .kind = .string },
-                .{ .long = "--scope", .kind = .string },
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },
             .positionals = &.{.{ .name = "ref", .kind = .string, .required = false, .desc = "<link-id | kind:id>" }},
@@ -39,7 +37,7 @@ pub const verb: cli.Cmd = .{
             .name = "status",
             .desc = "Report sync status for links.",
             .flags = &.{
-                .{ .long = "--scope", .kind = .string, .desc = "Filter by entity, e.g. task:42" },
+                .{ .long = "--entity", .kind = .string, .desc = "Filter by entity, e.g. task:42" },
                 .{ .long = "--system", .kind = .string, .desc = "Filter by system slug" },
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },
@@ -50,7 +48,6 @@ pub const verb: cli.Cmd = .{
             .desc = "Settle a sync conflict on a link.",
             .flags = &.{
                 .{ .long = "--keep", .kind = .string, .required = true, .desc = "Which side to keep (local|remote)" },
-                .{ .long = "--scope", .kind = .string },
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },
             .positionals = &.{.{ .name = "event-id", .kind = .string, .required = true }},

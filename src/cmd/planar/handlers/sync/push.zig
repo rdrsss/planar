@@ -17,7 +17,6 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     const args = cli.castArgs(main.root, &.{ "sync", "push" }, args_ptr);
     const ctx = runtime.current();
     const d = try runtime.ensureDb();
-    _ = args.scope;
 
     if (!args.all and args.ref == null) {
         exit.die(ctx, error.InvalidInput, "sync push requires <link-id>, <kind:id>, or --all", .{});

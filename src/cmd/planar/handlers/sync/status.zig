@@ -1,7 +1,9 @@
-//! handlers/sync/status — `planar sync status [--scope <kind:id>] [--system <slug>] [--json]`
+//! handlers/sync/status — `planar sync status [--entity <kind:id>] [--system <slug>] [--json]`
 //!
 //! Report sync status for one or more external links, optionally filtered by
-//! local entity (`--scope`) and/or external system slug (`--system`).
+//! local entity (`--entity`, e.g. `task:42`) and/or external system slug
+//! (`--system`). The filter is an entity reference, NOT a scope slug — hence
+//! `--entity`, not `--scope` (which means a scope slug on every other verb).
 
 const std = @import("std");
 const cli = @import("cli");
@@ -19,9 +21,9 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     var filter: engine.external.link.ListFilter = .{
         .system_slug = args.system,
     };
-    if (args.scope) |scope_ref| {
-        const ref = parseKindIDRef(scope_ref) catch
-            exit.die(ctx, error.InvalidInput, "invalid --scope value '{s}'; expected <kind>:<integer-id>", .{scope_ref});
+    if (args.entity) |entity_ref| {
+        const ref = parseKindIDRef(entity_ref) catch
+            exit.die(ctx, error.InvalidInput, "invalid --entity value '{s}'; expected <kind>:<integer-id>", .{entity_ref});
         filter.entity_kind = ref.kind;
         filter.entity_id = ref.id;
     }

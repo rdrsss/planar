@@ -3032,7 +3032,7 @@ Sync commands pull and push data between the local plane and registered external
 
 **Synopsis:**
 ```
-planar sync pull <link-id | kind:id | --all> [--system <slug>] [--scope <slug>]
+planar sync pull <link-id | kind:id | --all> [--system <slug>]
 ```
 
 **Description:** Pull remote state for one or more links. Updates `external_links.last_synced_at` and mirrors selected fields onto the local entity if `sync_direction` permits. Records a `sync_events` row per link touched.
@@ -3105,7 +3105,7 @@ planar sync push <link-id | kind:id | --all> [--system <slug>]
 
 **Synopsis:**
 ```
-planar sync status [--scope <scope>] [--system <slug>]
+planar sync status [--entity <kind:id>] [--system <slug>]
 ```
 
 **Description:** Show the sync status of all links in scope. Highlights conflicts and errors.
