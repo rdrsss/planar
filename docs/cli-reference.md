@@ -2,7 +2,7 @@
 
 Reference for every `planar` subcommand. Authoritative current surface for the installed binary. For machine-readable help, use `planar <subcommand> --help`.
 
-**Source of truth:** schema across `migrations/00001_foundation.up.sql` through `migrations/00015_agent_activity.up.sql`. Every "schema effects" section below cites real columns from those migrations. See [docs/architecture.md § Application tables](architecture.md#application-tables) for the migration-by-migration table inventory.
+**Source of truth:** schema across `migrations/00001_foundation.up.sql` through `migrations/00017_handoffs_worktree.up.sql`. Every "schema effects" section below cites real columns from those migrations. See [docs/architecture.md § Application tables](architecture.md#application-tables) for the migration-by-migration table inventory.
 
 ---
 
@@ -4122,8 +4122,9 @@ See also: `spec ingest` (decompose workbench planning docs), `ext propagate` (pu
 ```
 planar import <repo-root> [--from-github] [--dry-run] [--strict]
                             [--threshold <float>] [--roadmap <path>]
-                            [--apply] [--refresh-status] [--scope <slug>]
-                            [--no-status-inference] [--trust-status-inference]
+                            [--apply] [--apply-removals] [--scope <slug>]
+                            [--no-status-inference] [--interpret] [--no-interpret]
+                            [--accept-spec] [--no-forward-specs]
 ```
 
 **Description:** Walk the repository at `<repo-root>`, parse planning artefacts from the filesystem and git history, infer task completion status, build an ImportPlan, and (optionally) commit it to the database.
@@ -4150,26 +4151,22 @@ Idempotency: items already present in the database (matched by title and source-
 | `--threshold <float>` | `0.7` | Confidence threshold for git-log correlation (0.0–1.0). Items whose best git-log match scores below this value are considered ambiguous. |
 | `--roadmap <path>` | auto | Explicit path to the roadmap file. Overrides auto-discovery. Useful when the roadmap has a non-standard name or location. |
 | `--apply` | off | Commit the import to the database. Without this flag, preview only. |
-| `--refresh-status` | off | Re-run inference on already-imported tasks and update their status if the inferred status now differs (e.g. new commits match a previously-todo task). Status is the only field updated; title, body, and all other fields are left intact. No-op when status is already current. Has no effect without `--apply` unless combined with `--dry-run` to preview what would change. |
+| `--apply-removals` | off | When applying, also remove entities that are gone from the source. |
 | `--scope <slug>` | cwd-derived | Scope for all created entities. Overrides cwd derivation for this invocation. |
 | `--no-status-inference` | off | Default every imported task to `status=todo`, `signal=no-inference`, `confidence=0`. Skips layers 2-3 (branch + git-log correlation) of `adopter.Infer`; the checkbox layer still runs because checkbox state is operator-explicit. Use for greenfield, docs-only, or fresh-fork repos where status correlation is unreliable by construction. |
-| `--trust-status-inference` | off | Explicit bypass for the >25% auto-done refusal (see below). Pass when you have a clean repo with a high genuinely-done count and have manually verified the inferred done marks. Mutually exclusive with `--no-status-inference`. |
+| `--interpret` | off | Run the optional LLM interpretation pass after the deterministic classifier (see the `pl-import` skill). |
+| `--no-interpret` | off | Force the deterministic-only path, skipping the LLM interpretation pass. |
+| `--accept-spec` / `--no-forward-specs` | off | Spec-forwarding controls for imported planning specs. |
 
-**>25% auto-done refusal:** When `--threshold 0.0` disables the [confidence floor](#confidence-floor) and more than 25% of inferred tasks would land as `status=done` via git-log correlation, `import` refuses the import. The refusal text is:
-
-```
-warning: --threshold 0.0 would auto-mark <N>/<TOTAL> tasks (<P>%) as `status=done`
-         based on git-log correlation. In docs-only or fresh repos this is
-         almost always wrong. Refusing the import.
-
-Options:
-  --no-status-inference         skip inference entirely; default every task
-                                to status=todo
-  --trust-status-inference      explicit bypass; commit the done-marks (only
-                                when you've verified them)
-```
-
-Operators who passed `--threshold 0.0` to bypass the confidence floor but ended up with the >25% refusal should reach for `--no-status-inference` first. Run `task reopen <id>` to recover any individually wrongly-marked tasks from an earlier import.
+**>25% auto-done refusal (not yet in the Zig port):** The Go implementation
+refused an import when `--threshold 0.0` disabled the [confidence
+floor](#confidence-floor) and more than 25% of inferred tasks would land as
+`status=done`, offering `--trust-status-inference` as the explicit bypass.
+Neither the refusal nor the `--trust-status-inference` flag is wired into
+the current Zig binary. For an unreliable correlation today, reach for
+`--no-status-inference` (which IS implemented) to default every task to
+`status=todo`, and `task reopen <id>` to recover any individually
+wrongly-marked tasks from an earlier import.
 
 **Output (human, preview mode):**
 
@@ -4222,24 +4219,6 @@ github links created: 5
 
 The `github links created` line appears only when `--from-github` is set and issues were linked.
 
-The `tasks refreshed` line appears only when `--refresh-status` is set and at least one task status was updated.
-
-**Output (`--apply --refresh-status`, when refreshes occur):**
-
-```
-applied: 1 plans, 0 tasks, 0 artifacts, 0 decisions, 5 skipped
-anchor plan id: 87
-tasks refreshed: 1
-```
-
-**Preview output with `--refresh-status` (before `--apply`):**
-
-```
-~   task     Implement login form    [todo → done, refreshed]
-```
-
-The `~` marker indicates a status-only update on an already-imported task.
-
 **Schema effects:**
 
 Reads:
@@ -4288,7 +4267,6 @@ Use `import` instead when docs are clean and structured. See [Transcription vs S
 **Synopsis:**
 ```
 planar synthesize <repo-root> [--apply] [--apply-removals] [--scope <slug>]
-                                 [--no-status-inference] [--trust-status-inference]
                                  [--threshold <float>] [--code-layout <name>]
                                  [--treat-as-greenfield] [--treat-as-nongreenfield]
                                  [--accept-spec <slug>] [--no-forward-specs]
@@ -4314,8 +4292,6 @@ The LLM never runs in Go. The Go side writes a `synthesis.Request` to `$PLANAR_H
 | `--apply` | off | Commit additions and updates. |
 | `--apply-removals` | off | Commit removals (soft-cancel). Requires `--apply`. |
 | `--scope <slug>` | cwd-derived | Override scope resolution. |
-| `--no-status-inference` | off | Default every task to `status=todo`. Skips status inference entirely. |
-| `--trust-status-inference` | off | Bypass the >25% auto-done refusal. Mutually exclusive with `--no-status-inference`. |
 | `--threshold <0..1>` | `0.7` | Confidence floor for ambiguous items. |
 | `--code-layout <name>` | auto | Override layout detection. One of `swift`, `go`, `node`, `python`, `mixed`. |
 | `--treat-as-greenfield` | off | Force greenfield mode even when code is detected. Forces every task to land `status=todo`. |
@@ -4323,7 +4299,6 @@ The LLM never runs in Go. The Go side writes a `synthesis.Request` to `$PLANAR_H
 | `--accept-spec <slug>` | interactive | Non-interactive forward-spec selection; `all` accepts every proposed forward spec. |
 | `--no-forward-specs` | off | Skip the forward-spec phase entirely. |
 | `--literal` | off | Delegate to `import` (transcription). Useful when you started with `synthesize` but realize the repo is clean enough for transcription. |
-| `--greenfield` | off | Deprecated alias for `--treat-as-greenfield`. |
 | `--dry-run` | off | Emit the ImportPlan as JSON without writing, regardless of `--apply`. |
 | `--json` | off | Machine-readable output. |
 
