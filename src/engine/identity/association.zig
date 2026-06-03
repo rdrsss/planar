@@ -102,6 +102,10 @@ pub const CreateArgs = struct {
     /// Defaults to `.@"ad-hoc"` if null — matches the Go side's default
     /// for `planar association create` with no --kind.
     kind: ?Kind = null,
+    /// Optional `config_json` blob (e.g. the workspace root-path config
+    /// for an org association). Null leaves the column NULL — the prior
+    /// behavior for callers that do not set it.
+    config_json: ?[]const u8 = null,
 };
 
 pub const AddMemberSource = enum {
@@ -142,11 +146,12 @@ pub fn create(d: *db.sqlite.Db, allocator: std.mem.Allocator, args: CreateArgs) 
     const kind = args.kind orelse .@"ad-hoc";
 
     const id = d.execParams(
-        \\insert into associations (slug, name, kind) values (?, ?, ?)
+        \\insert into associations (slug, name, kind, config_json) values (?, ?, ?, ?)
     , &.{
         .{ .text = args.slug },
         .{ .text = name },
         .{ .text = @tagName(kind) },
+        if (args.config_json) |c| .{ .text = c } else .{ .null = {} },
     }) catch |e| {
         if (d.lastWasUniqueViolation()) return Error.SlugConflict;
         std.log.err("association.create exec failed: {s}", .{@errorName(e)});

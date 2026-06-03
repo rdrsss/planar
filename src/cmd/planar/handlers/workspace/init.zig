@@ -276,11 +276,17 @@ fn upsertOrg(
 
     const config_json = try rootPathJSON(allocator, root_path);
     defer allocator.free(config_json);
-    const id = d.execParams(
-        \\insert into associations (slug, name, kind, auto_detected, config_json)
-        \\values (?, ?, 'org', 0, ?)
-    , &.{ .{ .text = slug }, .{ .text = name }, .{ .text = config_json } }) catch return error.QueryFailed;
-    return .{ .id = id, .created = true };
+    // Route the write through the identity engine so the org creation is
+    // audited like every other association create (auto_detected falls to
+    // the column default 0, matching the prior raw insert).
+    const assoc = engine.identity.association.create(d, allocator, .{
+        .slug = slug,
+        .name = name,
+        .kind = .org,
+        .config_json = config_json,
+    }) catch return error.QueryFailed;
+    defer engine.identity.association.deinit(assoc, allocator);
+    return .{ .id = assoc.id, .created = true };
 }
 
 fn upsertProject(
@@ -300,18 +306,24 @@ fn upsertProject(
 
     const remote = gitRemoteOrigin(allocator, root_path) catch null;
     defer if (remote) |value| allocator.free(value);
-    const id = d.execParams(
-        \\insert into projects (slug, name, root_path, git_remote)
-        \\values (?, ?, ?, ?)
-    , &.{
-        .{ .text = slug },
-        .{ .text = name },
-        .{ .text = root_path },
-        if (remote) |value| .{ .text = value } else .{ .null = {} },
+    // Route the write through the identity engine so the project create is
+    // audited; project.add takes the same (slug, name, root_path,
+    // git_remote) shape as the prior raw insert.
+    const project = engine.identity.project.add(d, allocator, .{
+        .slug = slug,
+        .name = name,
+        .root_path = root_path,
+        .git_remote = remote,
     }) catch return error.QueryFailed;
-    return .{ .id = id, .created = true };
+    defer engine.identity.project.deinit(project, allocator);
+    return .{ .id = project.id, .created = true };
 }
 
+// NOTE: this stays a direct write because the identity engine has no
+// project_id-based link API — `association.addMember` resolves the project
+// by path (findOrCreateProjectByPath) rather than taking the project_id we
+// already hold here. A future `association.linkProject(project_id,
+// assoc_id, source)` would let this delegate like upsertOrg/upsertProject.
 fn upsertMembership(d: *db.sqlite.Db, project_id: i64, org_id: i64) !bool {
     var stmt = d.prepare(
         \\select count(*) from project_associations
