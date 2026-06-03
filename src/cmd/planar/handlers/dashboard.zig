@@ -79,7 +79,7 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
         exit.die(ctx, e, "claims list: {s}", .{@errorName(e)});
     defer agentactivity.types.Claim.deinitMany(all_claims, ctx.allocator);
 
-    const stale_claims = listStaleClaims(d, ctx.allocator) catch |e|
+    const stale_claims = agentactivity.store.listStale(d, ctx.allocator) catch |e|
         exit.die(ctx, e, "stale claims list: {s}", .{@errorName(e)});
     defer agentactivity.types.Claim.deinitMany(stale_claims, ctx.allocator);
 
@@ -272,100 +272,4 @@ fn writePlan(w: *std.Io.Writer, p: plan_mod.Plan) !void {
     try w.print(",\"updated_at\":", .{});
     try std.json.Stringify.encodeJsonString(p.updated_at, .{}, w);
     try w.print("}}", .{});
-}
-
-/// List every claim whose status is `stale` (reconcile-marked) OR
-/// `active` with an expired lease. The latter set is "stale in
-/// practice" — reconcile has not run yet but the claim is no longer
-/// honored. The dashboard surfaces both so the operator can decide
-/// whether to abort or wait for the next reconcile pass.
-fn listStaleClaims(
-    d: *db.sqlite.Db,
-    allocator: std.mem.Allocator,
-) ![]agentactivity.types.Claim {
-    var stmt = d.prepare(
-        \\select id, claim_token, session_id, entity_kind, entity_id, claim_scope,
-        \\       status, vendor, vendor_session_id, role, model,
-        \\       worktree_id, worktree_path,
-        \\       repo_root, branch, head_sha_at_claim, dirty_at_claim,
-        \\       purpose, base_ref,
-        \\       claimed_at, last_heartbeat_at, lease_expires_at,
-        \\       released_at, release_reason
-        \\from agent_work_claims
-        \\where status = 'stale'
-        \\   or (status = 'active' and lease_expires_at < strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-        \\order by claimed_at desc
-    ) catch return error.QueryFailed;
-    defer stmt.finalize();
-
-    var out: std.ArrayList(agentactivity.types.Claim) = .empty;
-    errdefer {
-        for (out.items) |c| c.deinit(allocator);
-        out.deinit(allocator);
-    }
-    while (true) {
-        switch (stmt.step() catch return error.QueryFailed) {
-            .done => break,
-            .row => try out.append(allocator, try readClaimRow(&stmt, allocator)),
-        }
-    }
-    return try out.toOwnedSlice(allocator);
-}
-
-/// Read one `agent_work_claims` row off `stmt`. Column order must
-/// match the SELECT in `listStaleClaims`. Kept private here because
-/// the engine's `store.zig` already has a near-identical helper, but
-/// it's private to that module. Lifting it is overkill for one
-/// caller.
-fn readClaimRow(
-    stmt: *db.sqlite.Stmt,
-    allocator: std.mem.Allocator,
-) !agentactivity.types.Claim {
-    const types = agentactivity.types;
-
-    const kind_text = try stmt.columnTextAlloc(3, allocator);
-    defer allocator.free(kind_text);
-    const kind = types.EntityKind.fromText(kind_text) orelse return error.QueryFailed;
-
-    const scope_text = try stmt.columnTextAlloc(5, allocator);
-    defer allocator.free(scope_text);
-    const scope = types.ClaimScope.fromText(scope_text) orelse return error.QueryFailed;
-
-    const status_text = try stmt.columnTextAlloc(6, allocator);
-    defer allocator.free(status_text);
-    const status = types.ClaimStatus.fromText(status_text) orelse return error.QueryFailed;
-
-    const dirty_opt = try stmt.columnTextOpt(16, allocator);
-    var dirty: ?types.Dirty = null;
-    if (dirty_opt) |d_text| {
-        defer allocator.free(d_text);
-        dirty = types.Dirty.fromText(d_text);
-    }
-
-    return .{
-        .id = stmt.columnInt(0),
-        .claim_token = try stmt.columnTextAlloc(1, allocator),
-        .session_id = stmt.columnInt(2),
-        .entity_kind = kind,
-        .entity_id = stmt.columnInt(4),
-        .claim_scope = scope,
-        .status = status,
-        .vendor = try stmt.columnTextAlloc(7, allocator),
-        .vendor_session_id = try stmt.columnTextOpt(8, allocator),
-        .role = try stmt.columnTextOpt(9, allocator),
-        .model = try stmt.columnTextOpt(10, allocator),
-        .worktree_id = stmt.columnIntOpt(11),
-        .worktree_path = try stmt.columnTextOpt(12, allocator),
-        .repo_root = try stmt.columnTextOpt(13, allocator),
-        .branch = try stmt.columnTextOpt(14, allocator),
-        .head_sha_at_claim = try stmt.columnTextOpt(15, allocator),
-        .dirty_at_claim = dirty,
-        .purpose = try stmt.columnTextOpt(17, allocator),
-        .base_ref = try stmt.columnTextOpt(18, allocator),
-        .claimed_at = try stmt.columnTextAlloc(19, allocator),
-        .last_heartbeat_at = try stmt.columnTextAlloc(20, allocator),
-        .lease_expires_at = try stmt.columnTextAlloc(21, allocator),
-        .released_at = try stmt.columnTextOpt(22, allocator),
-        .release_reason = try stmt.columnTextOpt(23, allocator),
-    };
 }

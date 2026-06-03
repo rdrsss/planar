@@ -384,6 +384,31 @@ pub fn listActive(
     return try out.toOwnedSlice(allocator);
 }
 
+/// List claims that are stale in practice: rows with `status='stale'`,
+/// plus `active` rows whose lease has already expired (reconcile has not
+/// run yet but the claim is no longer honored). Shares `claim_columns`
+/// and `readClaimRow` with the other claim-list APIs so the column order
+/// lives in exactly one place. Used by the operator dashboard.
+pub fn listStale(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+) Error![]types.Claim {
+    var stmt = d.prepare(claim_select_stale) catch return Error.QueryFailed;
+    defer stmt.finalize();
+    var out: std.ArrayList(types.Claim) = .empty;
+    errdefer {
+        for (out.items) |c| c.deinit(allocator);
+        out.deinit(allocator);
+    }
+    while (true) {
+        switch (stmt.step() catch return Error.QueryFailed) {
+            .done => break,
+            .row => try out.append(allocator, try readClaimRow(&stmt, allocator)),
+        }
+    }
+    return try out.toOwnedSlice(allocator);
+}
+
 pub fn listByEntity(
     d: *db.sqlite.Db,
     allocator: std.mem.Allocator,
@@ -1058,6 +1083,20 @@ const claim_select_active_for_session: [:0]const u8 =
     \\       released_at, release_reason
     \\from agent_work_claims
     \\where status = 'active' and session_id = ?
+    \\order by claimed_at desc
+;
+
+const claim_select_stale: [:0]const u8 =
+    \\select id, claim_token, session_id, entity_kind, entity_id, claim_scope,
+    \\       status, vendor, vendor_session_id, role, model,
+    \\       worktree_id, worktree_path,
+    \\       repo_root, branch, head_sha_at_claim, dirty_at_claim,
+    \\       purpose, base_ref,
+    \\       claimed_at, last_heartbeat_at, lease_expires_at,
+    \\       released_at, release_reason
+    \\from agent_work_claims
+    \\where status = 'stale'
+    \\   or (status = 'active' and lease_expires_at < strftime('%Y-%m-%dT%H:%M:%fZ','now'))
     \\order by claimed_at desc
 ;
 
