@@ -16,7 +16,7 @@ pub const verb: cli.Cmd = .{
         .{ .long = "--from-github", .kind = .bool, .default = .{ .bool = false }, .desc = "Pull source from GitHub issues" },
         .{ .long = "--dry-run", .kind = .bool, .default = .{ .bool = false } },
         .{ .long = "--strict", .kind = .bool, .default = .{ .bool = false } },
-        .{ .long = "--threshold", .kind = .string, .desc = "Similarity threshold (float as string for now)" },
+        .{ .long = "--threshold", .kind = .string, .desc = "Similarity threshold, e.g. 0.7" },
         .{ .long = "--roadmap", .kind = .string, .desc = "Path to a roadmap source" },
         .{ .long = "--apply", .kind = .bool, .default = .{ .bool = false } },
         .{ .long = "--apply-removals", .kind = .bool, .default = .{ .bool = false } },

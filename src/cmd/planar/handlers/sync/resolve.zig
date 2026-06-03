@@ -25,7 +25,6 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     const args = cli.castArgs(main.root, &.{ "sync", "resolve" }, args_ptr);
     const ctx = runtime.current();
     const d = try runtime.ensureDb();
-    _ = args.scope;
 
     const event_id = std.fmt.parseInt(i64, args.event_id, 10) catch
         exit.die(ctx, error.InvalidInput, "invalid event-id '{s}'", .{args.event_id});

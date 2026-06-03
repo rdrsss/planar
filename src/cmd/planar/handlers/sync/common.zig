@@ -11,6 +11,34 @@ const adapter_factory = @import("../ext/adapter_factory.zig");
 
 pub const Op = enum { pull, push };
 
+/// A parsed `<kind>:<id>` external-entity reference (e.g. `task:42`). Uses
+/// the narrower `ExternalEntityKind` (the kinds an external link can point
+/// at), NOT the wider entity-link `EntityKind` — so kinds like `plan_step`
+/// or `repo` are rejected here by design.
+pub const KindID = struct {
+    kind: engine.external.link.ExternalEntityKind,
+    id: i64,
+};
+
+/// Parse a `<kind>:<id>` reference into a `KindID`. Splits on the LAST
+/// colon so external ids that themselves contain colons are handled.
+/// Returns `error.InvalidInput` on any malformed or unknown-kind input.
+/// Shared by sync pull / push / status (was duplicated byte-for-byte).
+pub fn parseKindIDRef(s: []const u8) !KindID {
+    var i: usize = s.len;
+    while (i > 0) : (i -= 1) {
+        if (s[i - 1] == ':') {
+            const kind_text = s[0 .. i - 1];
+            const id_text = s[i..];
+            if (kind_text.len == 0 or id_text.len == 0) break;
+            const kind = engine.external.link.ExternalEntityKind.fromText(kind_text) orelse break;
+            const id = std.fmt.parseInt(i64, id_text, 10) catch break;
+            return .{ .kind = kind, .id = id };
+        }
+    }
+    return error.InvalidInput;
+}
+
 pub const PullPushResult = struct {
     link_id: i64,
     outcome: engine.external.sync.Outcome,

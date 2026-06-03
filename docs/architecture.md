@@ -76,6 +76,7 @@ Authoring rules (file naming, the `schema_migrations` insert/delete contract, th
 | 0015 agent activity | `agent_work_claims`, `agent_actions` (claims carry `repo_root` / `branch` / `head_sha_at_claim` / `dirty_at_claim` + optional worktree id/path; actions carry `head_sha` / `dirty`) |
 | 0016 agent_actions metadata | adds nullable `agent_actions.metadata` text column for caller-attached opaque JSON (orchestrator strategy persistence; first consumer is `pl-orchestrator` rule-6 stickiness) |
 | 0017 handoffs worktree | adds nullable `handoffs.worktree_path` / `repo_root` / `branch` columns; `planar handoff create` copies them from the active `agent_work_claims` row on the target task so `planar resume` can recover `cd <path>` even after the originating claim has been released |
+| 0018 fix migration descriptions | data-only: corrects the `schema_migrations.description` text for versions 2-7, which had been copy-pasted from unrelated Go-archive migrations. No schema change; the `description` column is not read at runtime (the version contract is the numeric `version`). |
 
 Migration 0015 (`migrations/00015_agent_activity.up.sql`) lands the claim + action store that the agent-coordination feature is built on. `claim_token` is generated in SQL via `lower(hex(randomblob(16)))` (32-char opaque handle). Exclusivity of `(entity_kind, entity_id)` is enforced transactionally in the engine store (`src/engine/runtime/agentactivity/`) under `BEGIN IMMEDIATE` because SQLite cannot express the time-dependent "unexpired" predicate in a partial unique index. WAL mode is enabled per-connection in `src/cmd/planar/runtime.zig` — load-bearing for the wake-tier ladder behind `--follow` AND for cross-binary concurrency between the operator and agent binaries (see Four-binary architecture below).
 
@@ -99,10 +100,14 @@ Planar ships FOUR binaries that share one schema, one engine module, and one run
 Capability invariant — non-overlapping write surfaces enforced at
 compile time by each binary's verb set, not by runtime ACLs:
 
-- `planar` NEVER writes to `agent_actions` or `agent_work_claims`. The
-  `planar agent` subcommand namespace does not exist; agent
-  observability lives on `planar-watch`, agent-table mutation lives on
-  `planar-agent`.
+- `planar` NEVER writes to `agent_work_claims`. It writes `agent_actions`
+  only through the best-effort entity-create provenance hook (plan 467
+  D2/D3): when `decision` / `question` / `artifact add` runs under an
+  active agent claim it appends a `created <entity>` action; with no
+  active claim (the ordinary operator shell) the call is a silent no-op.
+  No other `agent_*` write path exists on `planar`. The `planar agent`
+  subcommand namespace does not exist; agent observability lives on
+  `planar-watch`, agent-table mutation lives on `planar-agent`.
 - `planar-agent` NEVER writes to plan / decision / question / scenario
   / artifact / annotation rows. A vendor hook configured with only
   `planar-agent` on its PATH has bounded blast radius — it cannot
@@ -118,7 +123,7 @@ The operator-recovery verbs `planar-agent reconcile` and
 are `agent_*` table writers. The capability boundary tracks tables,
 not audience.
 
-The shared engine module lives at `src/engine/runtime/agentactivity/`; per-binary handlers live under `src/cmd/<binary>/handlers/`. `planar-agent` carries the full 13-verb coordination surface; `planar-watch` carries the read-only viewer surface (`feed`, `ps`, `claims`, `actions`, `plans`, `log`, `version`, `completion`) with a Tier-2 event-driven `--follow` loop.
+The shared engine module lives at `src/engine/runtime/agentactivity/`; per-binary handlers live under `src/cmd/<binary>/handlers/`. `planar-agent` carries the full coordination surface; `planar-watch` carries the read-only viewer surface (`feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `version`, `completion`, `schema`) with a Tier-2 event-driven `--follow` loop.
 
 ### Live tail wake abstraction
 

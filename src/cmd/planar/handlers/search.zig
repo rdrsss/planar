@@ -26,8 +26,8 @@ pub const verb: cli.Cmd = .{
     .desc = "Full-text search across plans, tasks, questions, scenarios, decisions, and artifacts.",
     .long_desc = "Run a full-text search across every searchable entity kind.\n\n  Queries are passed to SQLite's FTS5 MATCH operator directly.\n  Multi-word queries are AND'd unless the operator is given\n  explicitly (OR, NOT, NEAR, \"phrase\"). Tokens are unicode61-folded\n  (case-insensitive, diacritic-stripped).",
     .flags = &.{
-        .{ .long = "--kind", .kind = .string, .desc = "Restrict to one kind (repeatable in Go)" },
-        .{ .long = "--status", .kind = .string, .desc = "Restrict by status (repeatable in Go)" },
+        .{ .long = "--kind", .kind = .string, .desc = "Restrict to a single kind" },
+        .{ .long = "--status", .kind = .string, .desc = "Restrict to a single status" },
         .{ .long = "--scope", .kind = .string, .desc = "Restrict to a scope slug" },
         .{ .long = "--plan", .kind = .int, .desc = "Restrict to a plan id" },
         .{ .long = "--limit", .kind = .int, .default = .{ .int = 50 }, .desc = "Max results" },

@@ -33,9 +33,9 @@ Wraps [`sync`](../../docs/cli-reference.md#domain-sync):
 > escape (not for routine use). See [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard) for the full guarded/unguarded matrix.
 
 ```
-planar sync pull <link-id | kind:id | --all> [--system <slug>] [--scope <slug>]
+planar sync pull <link-id | kind:id | --all> [--system <slug>]
 planar sync push <link-id | kind:id | --all> [--system <slug>]
-planar sync status [--scope <scope>] [--system <slug>]
+planar sync status [--entity <kind:id>] [--system <slug>]
 planar sync resolve <event-id> --keep <local|remote>
 ```
 

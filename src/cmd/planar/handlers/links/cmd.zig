@@ -70,6 +70,11 @@ pub const verb: cli.Cmd = .{
         },
         .{
             .name = "update",
+            // Hidden: this is an M11-deferred stub that returns
+            // NotImplemented (exit 64). Keeping it hidden stops it
+            // surfacing in `links --help` / the schema catalog as a live
+            // primary verb until the external-plane work lands.
+            .hidden = true,
             .desc = "Change sync_direction on an existing external_links row (deferred to M11).",
             .flags = &.{
                 .{ .long = "--sync", .kind = .string, .required = true },
