@@ -71,25 +71,18 @@ test "entity view: task/question/decision/scenario/artifact all render their tit
     const task = suite.mustRunJSON(Id, arena, &.{ "task", "add", "--json", "--plan", pid, "--next-action", "do", "TaskView" });
     const question = suite.mustRunJSON(Id, arena, &.{ "question", "add", "--json", "--plan", pid, "QuestionView" });
     const decision = suite.mustRunJSON(Id, arena, &.{ "decision", "add", "--json", "--plan", pid, "--body", "rationale", "DecisionView" });
+    const scenario = suite.mustRunJSON(Id, arena, &.{ "scenario", "add", "--json", "--plan", pid, "ScenarioView" });
     const artifact = suite.mustRunJSON(Id, arena, &.{ "artifact", "add", "--json", "--plan", pid, "--kind", "tech_spec", "ArtifactView" });
 
     const task_id = std.fmt.allocPrint(arena, "{d}", .{task.id}) catch unreachable;
     const question_id = std.fmt.allocPrint(arena, "{d}", .{question.id}) catch unreachable;
     const decision_id = std.fmt.allocPrint(arena, "{d}", .{decision.id}) catch unreachable;
+    const scenario_id = std.fmt.allocPrint(arena, "{d}", .{scenario.id}) catch unreachable;
     const artifact_id = std.fmt.allocPrint(arena, "{d}", .{artifact.id}) catch unreachable;
 
     assertView(&suite, gpa, wb_root, &.{ "task", "view", task_id }, "TaskView");
     assertView(&suite, gpa, wb_root, &.{ "question", "view", question_id }, "QuestionView");
     assertView(&suite, gpa, wb_root, &.{ "decision", "view", decision_id }, "DecisionView");
+    assertView(&suite, gpa, wb_root, &.{ "scenario", "view", scenario_id }, "ScenarioView");
     assertView(&suite, gpa, wb_root, &.{ "artifact", "view", artifact_id }, "ArtifactView");
-
-    // KNOWN GAP — `scenario view` is intentionally NOT covered here.
-    // `scenario add --plan <id>` accepts the flag but prints
-    // "--plan accepted but not yet linked (entity_links not wired)" and
-    // does NOT create the anchor-plan link, and `links add scenario:<id>
-    // …` rejects the `scenario` kind — so a freshly-added scenario has no
-    // anchor plan and `scenario view` fails with NoPlanLink. There is no
-    // public-CLI path to make a scenario viewable today. This is a real
-    // gap (scenario add --plan should wire the link, or scenario view
-    // should fall back to scope) — fix that, then add scenario here.
 }

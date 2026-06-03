@@ -22,9 +22,6 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     if (args.editor) {
         try ctx.stderr.print("warning: --editor not yet implemented; falling back to inline create\n", .{});
     }
-    if (args.plan != null) {
-        try ctx.stderr.print("warning: --plan accepted but not yet linked (entity_links not wired)\n", .{});
-    }
 
     const s = engine.planning.scenario.create(d, ctx.allocator, .{
         .title = args.title,
