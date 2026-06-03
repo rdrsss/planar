@@ -1359,7 +1359,6 @@ planar question list [--scope <scope>] [--status <status>] [--touches <repo-slug
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--scope <scope>` | Filter by scope. | Active scope. |
-| `--open` | Shorthand for `--status open`. | off |
 | `--status <status>` | Filter: `open`, `answered`, `wontfix`. Repeatable. | `open` |
 | `--touches <repo-slug>` | Return questions scoped to this repo plus questions with `entity_links(relationship='touches', to_kind='repo')` for this repo. | off |
 
@@ -1859,6 +1858,90 @@ planar artifact link <artifact-id> <to-kind:to-id> --relationship <kind>
 **Schema effects:** Inserts into `entity_links(from_kind='artifact', from_id, to_kind, to_id, relationship)`.
 
 **Capture:** Appends `session_entries` row with `prefix='action'`.
+
+---
+
+## Domain: `annotate`
+
+Annotations are anchored review notes — a short note attached to a file path and optional line range, captured during a code review or agent pass. Each annotation can carry a `commit_sha` and `text_hash` so its anchor can later be **verified** against the current workspace state (the anchored lines may have moved or changed). Annotations have a lifecycle (`open` → `resolved` / `dismissed` / `archived`), free-form tags, and bulk operations over a filter. They are scope-aware like every other planning entity.
+
+---
+
+### `planar annotate add`
+
+**Synopsis:**
+```
+planar annotate add --text <note> [--anchor-path <path>] [--line-start <n>] [--line-end <n>] [--commit-sha <sha>] [--text-hash <hash>] [--title <t>] [--slug <s>] [--body <text>] [--vendor <v>] [--plan <id>] [--task <id>] [--tags <csv>] [--scope <scope>] [--json]
+```
+
+**Description:** Create a new annotation. `--anchor-path` (+ optional `--line-start`/`--line-end`) locates the note in the tree; `--commit-sha` and `--text-hash` record what the anchored content looked like at capture time so `annotate verify` can detect drift. `--plan` / `--task` associate the note with a planning entity; `--tags` is a comma-separated list.
+
+**Options:** `--text` is the note body (the load-bearing field). `--anchor-path`, `--line-start`, `--line-end`, `--commit-sha`, `--text-hash` form the anchor. `--title`, `--slug`, `--body`, `--vendor`, `--plan`, `--task`, `--tags`, `--scope` are optional metadata.
+
+**Schema effects:** Inserts into `annotations(...)` (and `annotation_tags` for each tag).
+
+---
+
+### `planar annotate show <annotation-id>` / `planar annotate remove <annotation-id>`
+
+`show` prints one annotation (add `--json`). `remove` hard-deletes it (and its `annotation_tags`).
+
+---
+
+### `planar annotate list`
+
+**Synopsis:**
+```
+planar annotate list [--anchor-path <path>] [--status <status>] [--plan <id>] [--task <id>] [--vendor <v>] [--tag <tag>] [--scope <scope>] [--json]
+```
+
+**Description:** List annotations in scope, filtered by any combination of anchor path, `--status` (`open`/`resolved`/`dismissed`/`archived`), associated `--plan`/`--task`, `--vendor`, or a single `--tag`.
+
+---
+
+### `planar annotate update <annotation-id>`
+
+**Synopsis:**
+```
+planar annotate update <annotation-id> [--title <t>] [--slug <s>] [--body <text>] [--status <status>] [--plan <id>] [--task <id>] [--scope <scope>] [--json]
+```
+
+**Description:** Rewrite an annotation's fields. Only the flags you pass are changed.
+
+---
+
+### `planar annotate tag <annotation-id> <tag> [--remove]`
+
+Add a tag to an annotation, or remove it with `--remove`. Writes/deletes an `annotation_tags` row.
+
+---
+
+### `planar annotate resolve|dismiss|archive <annotation-id>`
+
+Lifecycle transitions on a single annotation: `resolve` marks it handled, `dismiss` marks it won't-fix, `archive` retires it. Each takes the annotation id and an optional `--json`.
+
+---
+
+### `planar annotate bulk-resolve|bulk-dismiss|bulk-archive`
+
+**Synopsis:**
+```
+planar annotate bulk-resolve [--anchor-path <path>] [--plan <id>] [--task <id>] [--vendor <v>] [--tag <tag>] [--scope <scope>] [--json]
+```
+
+**Description:** Apply the lifecycle transition to **every** annotation matching the filter. `bulk-resolve` and `bulk-dismiss` act on active annotations; `bulk-archive` includes already-terminal ones. The filter flags mirror `annotate list`. Use these to clear a whole review pass at once.
+
+---
+
+### `planar annotate verify [--anchor-path <path>] [--scope <scope>] [--json]`
+
+**Description:** Verify annotation anchors against current workspace state — re-reads each anchored path/line range and compares against the stored `text_hash` / `commit_sha`, reporting which annotations are still anchored cleanly and which have drifted (the underlying content moved or changed). Restrict to one path with `--anchor-path`.
+
+---
+
+### `planar annotate sweep [--since-days <n>] [--scope <scope>] [--json]`
+
+**Description:** Sweep stale annotations — archive `resolved` / `dismissed` annotations older than `--since-days`. Housekeeping for a scope whose review notes have accumulated.
 
 ---
 
@@ -3296,6 +3379,31 @@ id  snapshot  task  from-vendor  to-vendor  status   created-at
 
 ---
 
+### `planar handoff create <snapshot-id> [--vendor <v>] [--note <text>] [--json]`
+
+**Description:** Create a `pending` handoff anchored to an existing context snapshot (see `planar capture snapshot`). `--note` attaches a free-form handoff message; `--vendor` records the originating vendor. The handoff must then pass `handoff validate` before it is eligible for `handoff consume`.
+
+**Schema effects:** Inserts a `handoffs` row with `status='pending'`.
+
+---
+
+### `planar handoff show <handoff-id> [--json]`
+
+**Description:** Show one handoff's details — its status, anchoring snapshot, note, and timestamps.
+
+---
+
+### `planar handoff abandon <handoff-id> [--reason <text>] [--vendor <v>] [--note <text>] [--json]`
+
+**Description:** Abandon a non-terminal handoff (`pending` or `validated`), recording an optional `--reason`. Terminal handoffs (already `consumed`/`abandoned`) cannot be abandoned again.
+
+**Schema effects:** Updates the `handoffs` row to `status='abandoned'`.
+
+**Exit codes:**
+- `1` — handoff not found, or already terminal.
+
+---
+
 ### `planar handoff consume <handoff-id>`
 
 **Synopsis:**
@@ -3528,6 +3636,20 @@ session 101  vendor: claude  task: 42  2026-05-10T09:00Z → 2026-05-10T11:30Z
 
 **Exit codes:**
 - `1` — session not found.
+
+---
+
+### `planar audit publish-decision <decision-id> [--json]`
+
+**Description:** Post a decision's body to every operational-plane target reachable from that decision's external links — the bridge that pushes a recorded local decision out to the linked Jira issue / GitHub issue as a comment. Subject to the cross-scope guard (the decision's scope must agree with the operator's, or pass `--scope`).
+
+**Schema effects:** Reads `decisions`, `external_links`, `external_systems`; inserts `sync_events`. Performs outbound HTTP to each linked system.
+
+---
+
+### `planar audit handoff-readiness [--threshold <n>] [--json]`
+
+**Description:** Check resume-readiness across all in-flight tasks at once — the fleet-wide companion to `resume validate`. Reports which tasks would resume cleanly and which are missing a next action or capture context. `--threshold` tunes the staleness cutoff.
 
 ---
 
@@ -3768,7 +3890,18 @@ entity link 22 removed
 
 ---
 
+### `planar links trail <link-id> [--json]`
+
+**Description:** Show the audit trail for an `entity_links` row — the sequence of `sync_events` and related activity recorded against that link over its lifetime. The read-side companion to the link-mutation verbs.
+
+---
+
 ### `planar links update <link-id>`
+
+> **Not yet implemented.** This verb is deferred to the M11 external-plane
+> work. Invoking it prints `links update is deferred to M11` and makes no
+> change; use `links remove` + `links add` as a workaround. The behavior
+> described below is the intended contract, not the current one.
 
 **Synopsis:**
 ```
@@ -4902,7 +5035,7 @@ Schema-version handshake: `planar-agent` is a **consumer** of the schema, not it
 ```text
 # Atomic operations — each wraps (claim lifecycle + action lifecycle +
 # task status transition) in a single BEGIN IMMEDIATE transaction.
-planar-agent pull       <plan-id> [--vendor-session <vendor:id>] [--role coder] [--ttl <duration>] [--purpose <text>] [--base-ref <git-ref>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--json]
+planar-agent pull       <plan-id> [--vendor <v>] [--vendor-session <vendor:id>] [--role coder] [--ttl <duration>] [--purpose <text>] [--base-ref <git-ref>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--metadata <json>] [--parent-action <action-id>] [--json]
 planar-agent peek       <plan-id> [--json]
 planar-agent complete   --claim <token> [--summary <text>] [--json]
 planar-agent fail       --claim <token> --reason <text> [--json]
@@ -4911,12 +5044,12 @@ planar-agent block      --claim <token> --blocker <task-id> [--reason <text>] [-
 
 # Claim primitives — for orchestrator-dispatch (caller already knows the
 # target entity by id). claim does NOT auto-transition task status.
-planar-agent claim      --entity task:<id>|plan:<id>|plan_step:<id> [--vendor-session <vendor:id>] [--role <r>] [--ttl <duration>] [--purpose <text>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--force] [--json]
+planar-agent claim      --entity task:<id>|plan:<id>|plan_step:<id> [--vendor <v>] [--vendor-session <vendor:id>] [--role <r>] [--ttl <duration>] [--purpose <text>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--force] [--json]
 planar-agent heartbeat  --claim <token> [--ttl <duration>] [--status <text>] [--json]
 
 # Nested action lifecycle — for sub-tool-calls or sub-phases inside a
 # claim. Optional; lightweight claims skip these.
-planar-agent action start  --claim <token> --kind <kind> [--entity <kind>:<id>] [--vendor-role <s>] [--repo-root <path>] [--no-locality-probe] [--json]
+planar-agent action start  --claim <token> --kind <kind> [--entity <kind>:<id>] [--vendor-role <s>] [--repo-root <path>] [--no-locality-probe] [--metadata <json>] [--json]
 planar-agent action end    --action <id> [--outcome ok|error|aborted|timeout] [--summary <s>] [--json]
 
 # Vendor hook ingestion — translates hook events into the primitives.
@@ -5238,6 +5371,16 @@ The catalog is built at comptime from the command tree, so the verb is a pure wr
 
 ---
 
+## Domain: `search`
+
+### `planar search <query> [--kind <kind>] [--status <status>] [--scope <scope>] [--plan <id>] [--limit <n>] [--json]`
+
+**Description:** Full-text search across plans, tasks, questions, scenarios, decisions, and artifacts (backed by the FTS5 index from migration `00011_slug_refs_fts`). The positional `<query>` is the search string. Narrow results with `--kind` (restrict to a single entity kind), `--status`, `--scope`, or `--plan` (entities under a given plan); cap with `--limit`. `--json` emits the structured result list.
+
+**Schema effects:** Reads the FTS index and the underlying entity tables. No writes.
+
+---
+
 ## Command Index
 
 For quick reference, all documented commands grouped by domain:
@@ -5257,6 +5400,7 @@ For quick reference, all documented commands grouped by domain:
 | `scenario` | `scenario add`, `scenario verify`, `scenario list`, `scenario show`, `scenario edit`, `scenario view`, `scenario diff`, `scenario retire` |
 | `decision` | `decision add`, `decision accept`, `decision supersede`, `decision withdraw`, `decision list`, `decision show`, `decision edit`, `decision view`, `decision diff` |
 | `artifact` | `artifact add`, `artifact show`, `artifact list`, `artifact update`, `artifact edit`, `artifact view`, `artifact diff`, `artifact link` |
+| `annotate` | `annotate add`, `annotate show`, `annotate list`, `annotate update`, `annotate remove`, `annotate tag`, `annotate resolve`, `annotate dismiss`, `annotate archive`, `annotate bulk-resolve`, `annotate bulk-dismiss`, `annotate bulk-archive`, `annotate verify`, `annotate sweep` |
 | `promote` | `promote`, `demote` |
 | `workbench` | `workbench push`, `workbench pull`, `workbench status`, `workbench resolve`, `workbench sync`, `workbench archive`, `workbench restore`, `workbench list`, `workbench publish`, `workbench edit` |
 | `workspace` | `workspace init`, `workspace doctor`, `workspace routing build`, `workspace routing show`, `workspace regenerate` |
@@ -5264,11 +5408,12 @@ For quick reference, all documented commands grouped by domain:
 | `link` | `link`, `unlink` |
 | `sync` | `sync pull`, `sync push`, `sync status`, `sync resolve` |
 | `resume` | `resume`, `resume validate` |
-| `handoff` | `handoff`, `handoff validate`, `handoff list`, `handoff consume` |
+| `handoff` | `handoff`, `handoff create`, `handoff validate`, `handoff list`, `handoff show`, `handoff consume`, `handoff abandon` |
 | `capture` | `capture session`, `capture end`, `capture note`, `capture command`, `capture file`, `capture snapshot` |
-| `audit` | `audit trail`, `audit session` |
+| `audit` | `audit trail`, `audit session`, `audit publish-decision`, `audit handoff-readiness` |
 | `health` | `health` |
-| `links` | `links list`, `links remove` |
+| `links` | `links add`, `links list`, `links remove`, `links trail`, `links update` (deferred to M11) |
+| `search` | `search <query>` |
 | `spec` | `spec ingest` |
 | `test-spec` | `test-spec status` |
 | `import` | `import <repo-root>` |
