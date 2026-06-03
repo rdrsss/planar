@@ -2,7 +2,7 @@
 
 Reference for every `planar` subcommand. Authoritative current surface for the installed binary. For machine-readable help, use `planar <subcommand> --help`.
 
-**Source of truth:** schema across `migrations/00001_foundation.up.sql` through `migrations/00017_handoffs_worktree.up.sql`. Every "schema effects" section below cites real columns from those migrations. See [docs/architecture.md § Application tables](architecture.md#application-tables) for the migration-by-migration table inventory.
+**Source of truth:** schema across `migrations/00001_foundation.up.sql` through `migrations/00018_fix_schema_migration_descriptions.up.sql`. Every "schema effects" section below cites real columns from those migrations. See [docs/architecture.md § Application tables](architecture.md#application-tables) for the migration-by-migration table inventory.
 
 ---
 
