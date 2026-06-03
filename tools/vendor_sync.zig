@@ -295,29 +295,32 @@ fn cmdSync(
         const content_hash = std.mem.trim(u8, fetch_result.stdout, " \t\n\r");
         std.debug.print("vendor_sync: zig fetch content hash: {s}\n", .{content_hash});
 
-        // --- 3. Extract the normalised cached archive. ---
+        // --- 3. Extract the normalised cached archive (in-process). ---
         //
         // The cached archive lives at <cache_dir>/p/<hash>.tar.gz.
         // Files inside are prefixed with `<hash>/`, then dep.strip_prefix.
-        // We extract into a dedicated subdirectory of the cache dir.
+        // We extract into a dedicated subdirectory of the cache dir entirely
+        // in-process via std.compress.flate + std.tar — no external `tar`
+        // subprocess, making extraction hermetic and cross-platform.
         const cached_tar = try std.fmt.allocPrint(arena, "{s}/p/{s}.tar.gz", .{ cache_dir_rel, content_hash });
         const extract_dir = try std.fs.path.join(arena, &.{ cache_dir_rel, "extract" });
         try cwd.createDirPath(io, extract_dir);
 
-        const tar_result = std.process.run(arena, io, .{
-            .argv = &.{ "tar", "-C", extract_dir, "-xf", cached_tar },
-            .stdout_limit = .limited(1024),
-            .stderr_limit = .limited(64 * 1024),
-        }) catch |err| {
-            std.debug.print("vendor_sync: tar extract failed for {s}: {s}\n", .{ dep.name, @errorName(err) });
-            std.process.exit(1);
-        };
-        if (tar_result.term != .exited or tar_result.term.exited != 0) {
-            std.debug.print(
-                "vendor_sync: tar exited with error for {s}:\n{s}\n",
-                .{ dep.name, tar_result.stderr },
-            );
-            std.process.exit(1);
+        {
+            const tar_limit: Io.Limit = .limited(512 * 1024 * 1024);
+            const tar_bytes = cwd.readFileAlloc(io, cached_tar, arena, tar_limit) catch |err| {
+                std.debug.print("vendor_sync: failed to read cached archive for {s}: {s}\n", .{ dep.name, @errorName(err) });
+                std.process.exit(1);
+            };
+            var dest = cwd.openDir(io, extract_dir, .{}) catch |err| {
+                std.debug.print("vendor_sync: failed to open extract dir for {s}: {s}\n", .{ dep.name, @errorName(err) });
+                std.process.exit(1);
+            };
+            defer dest.close(io);
+            extractTarGz(io, dest, tar_bytes) catch |err| {
+                std.debug.print("vendor_sync: in-process tar extract failed for {s}: {s}\n", .{ dep.name, @errorName(err) });
+                std.process.exit(1);
+            };
         }
 
         // --- 4. Copy the whitelisted files into vendor/<name>/. ---
@@ -337,6 +340,31 @@ fn cmdSync(
         try writeStamp(arena, io, &cwd, init, dep, actual_sha, dep_dir_rel);
         std.debug.print("vendor_sync: {s} synced (archive-sha256={s})\n", .{ dep.name, actual_sha });
     }
+}
+
+/// Extract a gzip-compressed tar archive from `data` into `dest`.
+///
+/// Uses std.compress.flate.Decompress (gzip container) layered over
+/// std.tar.extract — entirely in-process, no subprocess. The archive
+/// sha256 is verified by the caller before this function is invoked;
+/// this function handles only decompression + extraction.
+///
+/// The tar content is extracted verbatim (strip_components = 0), so
+/// the top-level directory from the tarball (the strip_prefix value
+/// in the manifest) lands as a subdirectory of `dest`, matching the
+/// behaviour of the .zip path.
+fn extractTarGz(io: Io, dest: Io.Dir, data: []const u8) !void {
+    // Build a Reader over the raw gzipped bytes.
+    var raw_reader: std.Io.Reader = .fixed(data);
+    // Decompress window: gzip requires flate.max_window_len bytes.
+    var decomp_buf: [std.compress.flate.max_window_len]u8 = undefined;
+    var decomp: std.compress.flate.Decompress = .init(
+        &raw_reader,
+        .gzip,
+        &decomp_buf,
+    );
+    // Extract the uncompressed tar stream into dest.
+    try std.tar.extract(io, dest, &decomp.reader, .{});
 }
 
 fn replaceDepFiles(
