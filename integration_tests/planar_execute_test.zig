@@ -246,3 +246,132 @@ test "planar-execute: help flag exits 0" {
         std.mem.indexOf(u8, res.stdout, "planar-execute") != null,
     );
 }
+
+// ---------------------------------------------------------------------------
+// task 3166 — --dry-run integration tests
+// ---------------------------------------------------------------------------
+
+test "planar-execute --dry-run: well-formed workflow prints meta and phases, exits 0" {
+    // --dry-run on a well-formed workflow with ≥2 phases must print the
+    // workflow name, description, and each phase title, then exit 0.
+    // run(ctx) must NOT be called (the run body errors; that error must be silent).
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_abs = try tmpAbsPath(&tmp, gpa);
+    defer gpa.free(tmp_abs);
+
+    const wf_src =
+        \\return {
+        \\  meta = {
+        \\    name = "preview-workflow",
+        \\    description = "A workflow to preview",
+        \\    phases = {
+        \\      { title = "Initialize", detail = "set up the env" },
+        \\      { title = "Execute", detail = "run the tasks" },
+        \\      { title = "Finalize", detail = "clean up" },
+        \\    },
+        \\  },
+        \\  run = function(ctx)
+        \\    error("run must not be called under --dry-run")
+        \\  end,
+        \\}
+    ;
+    try writeWorkflow(&tmp, "preview.lua", wf_src);
+    const wf_path = try workflowPath(tmp_abs, "preview.lua", gpa);
+    defer gpa.free(wf_path);
+
+    const res = try runExecute(gpa, &.{ "run", "--dry-run", wf_path });
+    defer res.deinit();
+
+    // Must exit 0 — run() was never called despite its error body.
+    try std.testing.expectEqual(@as(u32, 0), res.exitCode());
+
+    // Output must contain the workflow name.
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "preview-workflow") != null);
+    // Output must contain the description.
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "A workflow to preview") != null);
+    // Output must contain each phase title.
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "Initialize") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "Execute") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "Finalize") != null);
+}
+
+test "planar-execute --dry-run: run body that would error still exits 0 (run not entered)" {
+    // Load-bearing test: a workflow whose run body calls error() MUST still
+    // exit 0 under --dry-run. Without --dry-run the same workflow exits non-zero.
+    // Both arms are asserted to pin the flag's effect.
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_abs = try tmpAbsPath(&tmp, gpa);
+    defer gpa.free(tmp_abs);
+
+    const wf_src =
+        \\return {
+        \\  meta = {
+        \\    name = "error-in-run",
+        \\    description = "run would fail",
+        \\    phases = {
+        \\      { title = "Only phase", detail = "" },
+        \\    },
+        \\  },
+        \\  run = function(ctx)
+        \\    error("must not run under dry-run")
+        \\  end,
+        \\}
+    ;
+    try writeWorkflow(&tmp, "error_run.lua", wf_src);
+    const wf_path = try workflowPath(tmp_abs, "error_run.lua", gpa);
+    defer gpa.free(wf_path);
+
+    // ARM 1: --dry-run → exit 0, run never entered.
+    const dry = try runExecute(gpa, &.{ "run", "--dry-run", wf_path });
+    defer dry.deinit();
+    try std.testing.expectEqual(@as(u32, 0), dry.exitCode());
+    try std.testing.expect(std.mem.indexOf(u8, dry.stdout, "error-in-run") != null);
+
+    // ARM 2: no --dry-run → exit non-zero, error message on stderr.
+    const live = try runExecute(gpa, &.{wf_path});
+    defer live.deinit();
+    try std.testing.expect(live.exitCode() != 0);
+    try std.testing.expect(std.mem.indexOf(u8, live.stderr, "must not run under dry-run") != null);
+}
+
+test "planar-execute --dry-run: malformed module still exits non-zero (load/validate shared)" {
+    // --dry-run does NOT bypass load+validate. A workflow that returns a
+    // non-table must still exit with code 2 under --dry-run.
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_abs = try tmpAbsPath(&tmp, gpa);
+    defer gpa.free(tmp_abs);
+
+    try writeWorkflow(&tmp, "not_table_dr.lua", "return 42\n");
+    const wf_path = try workflowPath(tmp_abs, "not_table_dr.lua", gpa);
+    defer gpa.free(wf_path);
+
+    const res = try runExecute(gpa, &.{ "run", "--dry-run", wf_path });
+    defer res.deinit();
+
+    try std.testing.expectEqual(@as(u32, 2), res.exitCode());
+}
+
+test "planar-execute --dry-run: compile error still exits 3 (load/validate shared)" {
+    // A syntactically invalid workflow must exit 3 under --dry-run, same as
+    // without the flag — the load+validate path is shared.
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_abs = try tmpAbsPath(&tmp, gpa);
+    defer gpa.free(tmp_abs);
+
+    try writeWorkflow(&tmp, "bad_syntax_dr.lua", "this is not valid lua @@@@\n");
+    const wf_path = try workflowPath(tmp_abs, "bad_syntax_dr.lua", gpa);
+    defer gpa.free(wf_path);
+
+    const res = try runExecute(gpa, &.{ "run", "--dry-run", wf_path });
+    defer res.deinit();
+
+    try std.testing.expectEqual(@as(u32, 3), res.exitCode());
+}

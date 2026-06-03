@@ -527,7 +527,6 @@ const planar_execute_version = "planar-execute 0.1.0 (lua " ++ c.LUA_VERSION_MAJ
 /// invoked, `main` injects "run" before dispatching so the parser sees
 /// `planar-execute run <workflow.lua>`.
 ///
-/// Note: there is NO `--dry-run` flag here — that is task 3166's scope.
 /// Note: there is NO named-built-in registry — that is m10-quality-spine's
 /// scope. Built-in workflows do not exist yet; the file-path form is the
 /// only run-path in M1.
@@ -539,6 +538,7 @@ const run_verb: cli.Cmd = .{
     \\
     \\  Usage:
     \\    planar-execute run <workflow.lua> [args...]
+    \\    planar-execute run --dry-run <workflow.lua>
     \\
     \\  The workflow file must return a table:
     \\    { meta = { name, description, phases }, run = function(ctx) ... end }
@@ -546,7 +546,7 @@ const run_verb: cli.Cmd = .{
     \\  Trailing [args...] are passed to run(ctx) as ctx.args[1], ctx.args[2], ...
     \\
     \\  Exit codes:
-    \\    0   run() completed without error.
+    \\    0   run() completed without error (or --dry-run validation passed).
     \\    1   Lua runtime error or missing/invalid workflow file.
     \\    2   Invalid module structure (bad meta/run shape).
     \\    3   Lua compile error.
@@ -555,6 +555,9 @@ const run_verb: cli.Cmd = .{
     \\  registered at M1. A workflow that calls them will get a Lua runtime
     \\  error — this is expected and will be addressed in m2-host-fns.
     ,
+    .flags = &.{
+        .{ .long = "--dry-run", .kind = .bool, .default = .{ .bool = false }, .desc = "Load and validate the workflow, print meta and phases, exit without running." },
+    },
     .positionals = &.{
         .{ .name = "workflow", .kind = .string, .required = true },
     },
@@ -608,11 +611,38 @@ fn handleVersion(args_ptr: *const anyopaque) anyerror!void {
     try ctx.stdout.print("{s}\n", .{planar_execute_version});
 }
 
+/// printDryRun writes the dry-run preview to `writer`:
+///   workflow: <name>
+///   description: <description>
+///   phases: <N>
+///     1. <title>[ — <detail>]
+///     2. ...
+///
+/// Lines are newline-terminated. Detail is omitted when the phase's detail
+/// string is empty. This is the stable output format pinned by integration tests.
+pub fn printDryRun(mod: WorkflowModule, writer: *Io.Writer) !void {
+    try writer.print("workflow: {s}\n", .{mod.meta.name});
+    try writer.print("description: {s}\n", .{mod.meta.description});
+    try writer.print("phases: {d}\n", .{mod.meta.phases.len});
+    for (mod.meta.phases, 0..) |phase, i| {
+        if (phase.detail.len > 0) {
+            try writer.print("  {d}. {s} — {s}\n", .{ i + 1, phase.title, phase.detail });
+        } else {
+            try writer.print("  {d}. {s}\n", .{ i + 1, phase.title });
+        }
+    }
+}
+
 /// handleRun is the default handler: resolve the first positional as a
 /// workflow file path, read the source, load the module, and invoke run(ctx).
 ///
 /// Trailing positionals (rest_args) are threaded into ctx.args as a
 /// 1-based Lua sequence.
+///
+/// When --dry-run is set: loads and validates the module (same code path as
+/// normal), prints meta and phases via printDryRun, and exits 0 without
+/// calling callRun. A malformed module still exits non-zero (load/validate
+/// is shared). run(ctx) is never entered under --dry-run.
 ///
 /// Error mapping:
 ///   - File not found / read error   → exit 1 (message on stderr)
@@ -625,6 +655,7 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
 
     const workflow_path = args.workflow;
     const rest_args: []const []const u8 = args.rest_args;
+    const dry_run: bool = args.dry_run;
 
     // Read the workflow source from disk.
     // Use the arena allocator from the process context. All allocations
@@ -677,6 +708,14 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
     };
     defer mod.deinit(allocator);
 
+    // --dry-run: print meta + phases and exit 0 WITHOUT calling run(ctx).
+    // This is the load-bearing guarantee: run is never entered under --dry-run.
+    if (dry_run) {
+        try printDryRun(mod, ctx.stdout);
+        try flushCtx();
+        return; // exit 0 — no callRun
+    }
+
     // Invoke run(ctx) with the trailing args threaded into ctx.args.
     callRun(source, chunkname, rest_args, &err_buf) catch |e| {
         const msg = std.mem.span(@as([*:0]const u8, @ptrCast(&err_buf)));
@@ -701,23 +740,33 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
 ///
 /// Injection is skipped when:
 ///   - the first non-binary token is already a known subcommand name, or
-///   - it starts with `-` (flag — let the parser handle it), or
+///   - it is a global flag (--help / -h) — let the parser handle it, or
 ///   - argv has no extra tokens at all (bare invocation → show help).
+///
+/// Special case: `--dry-run` is a flag that belongs to the `run` subcommand,
+/// not to the root. When the user writes `planar-execute --dry-run <wf.lua>`
+/// (default short form), we inject "run" so the parser routes correctly.
 fn maybeInjectRun(arena: std.mem.Allocator, raw_args: []const []const u8) []const []const u8 {
     // argv[0] is the binary name; anything beyond is operator-supplied.
     if (raw_args.len <= 1) return raw_args; // bare invocation → no injection; parser shows help.
 
     const first = raw_args[1];
 
-    // Known subcommand names and help flags — leave argv alone.
+    // Known subcommand names and global flags — leave argv alone.
     inline for ([_][]const u8{ "run", "version", "--help", "-h" }) |v| {
         if (std.mem.eql(u8, first, v)) return raw_args;
     }
 
-    // First non-binary token is a flag or option → leave for parser.
-    if (first.len > 0 and first[0] == '-') return raw_args;
+    // --dry-run belongs to the `run` subcommand — inject "run" before it so
+    // the default short form `planar-execute --dry-run <wf.lua>` routes to
+    // handleRun.
+    const is_run_verb_flag = std.mem.eql(u8, first, "--dry-run");
 
-    // Looks like a file path (or positional) — inject "run" at position 1.
+    // Any other flag or option starting with `-` that is not a known run-verb
+    // flag is left for the root parser to handle (it will likely error).
+    if (first.len > 0 and first[0] == '-' and !is_run_verb_flag) return raw_args;
+
+    // Looks like a file path, positional, or a run-verb flag — inject "run".
     var out = arena.alloc([]const u8, raw_args.len + 1) catch return raw_args;
     out[0] = raw_args[0];
     out[1] = "run";
@@ -1008,4 +1057,45 @@ test "callRun: runtime error in run is surfaced" {
     const err = callRun(src, "test:callrun-err", &.{}, &err_buf);
     try std.testing.expectError(LuaError.LuaRuntimeError, err);
     try std.testing.expect(err_buf[0] != 0);
+}
+
+// ---------------------------------------------------------------------------
+// task 3166 tests — printDryRun
+// ---------------------------------------------------------------------------
+
+test "printDryRun: output contains name, description, and phase titles" {
+    // printDryRun must emit the workflow name, description, and each phase
+    // title to the writer. This pins the stable output format.
+    //
+    // printDryRun takes an *Io.Writer; we capture output via
+    // std.Io.Writer.Allocating — the allocating variant available in Zig 0.16.
+    const alloc = std.testing.allocator;
+
+    var buf: std.Io.Writer.Allocating = .init(alloc);
+    defer buf.deinit();
+    const w = &buf.writer;
+
+    const phases = [_]PhaseMeta{
+        .{ .title = "Setup", .detail = "initialize" },
+        .{ .title = "Execute", .detail = "" },
+        .{ .title = "Teardown", .detail = "clean up" },
+    };
+    const mod = WorkflowModule{
+        .meta = WorkflowMeta{
+            .name = "my-workflow",
+            .description = "Does things",
+            .phases = @constCast(&phases),
+        },
+    };
+
+    try printDryRun(mod, w);
+
+    const output = buf.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, output, "workflow: my-workflow") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "description: Does things") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "phases: 3") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "1. Setup") != null);
+    // Phase 2 has empty detail — must NOT include " — ".
+    try std.testing.expect(std.mem.indexOf(u8, output, "2. Execute\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "3. Teardown") != null);
 }
