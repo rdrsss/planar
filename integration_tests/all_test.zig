@@ -39,6 +39,7 @@ comptime {
     _ = @import("parity_tree_cwd_derive_test.zig");
     _ = @import("parity_tree_render_test.zig");
     _ = @import("plan_next_buckets_test.zig");
+    _ = @import("plan_recommend_strategy_test.zig");
     _ = @import("plan_update_test.zig");
     _ = @import("entity_create_feed_test.zig");
     _ = @import("m1_heartbeat_status_integration_test.zig");

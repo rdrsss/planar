@@ -793,6 +793,57 @@ Same underlying selector as `planar-agent peek`, but returns the FULL bucket bre
 
 ---
 
+### `planar plan recommend-strategy <plan-id>`
+
+**Synopsis:**
+```
+planar plan recommend-strategy <plan-id> [--json]
+```
+
+**Description:** Read-only execution-strategy recommender. Computes the parallel-eligible subset of a plan's open (`todo`) tasks by applying the six parallel-eligibility rules and reports the eligible subset plus the serialized remainder with per-task exclusion reasons. This is the single source of truth for parallelizability (decision 370) consumed by the orchestrator and the parallel-fan-out gate; the rules are not re-derived elsewhere. Writes nothing.
+
+Two open tasks are parallel-eligible iff **all six** hold:
+
+| Rule | Condition |
+|------|-----------|
+| 1 | No `blocked_by` chain (transitive `blocks` closure) to another not-done task in the plan. |
+| 2 | Disjoint touch set. A task's touch set is the repo slugs it touches (`entity_links` `touches`) plus the file paths it touches (`annotations.anchor_path`). An **empty** touch set is treated as "touches everything" and is never eligible. Two tasks whose touch sets intersect **both** drop (drop-both-on-tie). |
+| 3 | No schema migration touched — any task touching `migrations/*.sql` serializes (migration numbering is linear). Unilateral drop. |
+| 4 | No singleton authoritative file touched — `agents/methodology.md`, `CLAUDE.md`, `AGENTS.md`, `docs/cli-reference.md`, `docs/architecture.md`. Unilateral drop. |
+| 5 | No `open` question linked to the task. |
+| 6 | No `proposed` decision linked to the task. |
+
+A task may be excluded by multiple rules; every rule it trips is listed in `excluded_by`.
+
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--json` | Emit JSON instead of text. | off |
+
+**JSON shape:**
+
+```json
+{
+  "plan_id": 12,
+  "parallel_eligible": [ { "id": 1, "slug": null, "title": "..." } ],
+  "serialized": [
+    { "id": 5, "slug": null, "title": "...",
+      "excluded_by": [ { "rule": 3, "reason": "excluded by rule 3: touches migrations/00099_x.sql" } ] }
+  ],
+  "summary": { "open_tasks": 6, "eligible": 3, "serialized": 3, "fan_out_available": true },
+  "recommended_note": "parallel-fanout available: 3 eligible tasks"
+}
+```
+
+`summary.fan_out_available` is `true` when at least two tasks are eligible.
+
+**Exit codes:**
+- `0` — success, including plans with no eligible tasks.
+- `1` — plan id not found, or invalid integer.
+
+---
+
 ### `planar plan step add <plan-id> <body>`
 
 **Synopsis:**
