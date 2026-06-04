@@ -65,6 +65,11 @@ pub const schema = @import("schema.zig");
 /// Imported here so its `test` blocks run under the `execute_exe_tests` target.
 pub const brief = @import("brief.zig");
 
+/// Worktree manager — `git worktree` lifecycle on epic-child branches
+/// (task 3173 m3-worktree-lifecycle): ensureEpic / createCycle / teardownCycle.
+/// Imported here so its `test` blocks run under the `execute_exe_tests` target.
+pub const worktree = @import("worktree.zig");
+
 const c = @cImport({
     @cInclude("lua.h");
     @cInclude("lauxlib.h");
