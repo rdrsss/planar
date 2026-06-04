@@ -95,19 +95,35 @@
 //!
 //! 1. **Copies the host env** as the baseline.
 //! 2. **Overrides `PATH`** to the shim directory (the constrained PATH).
-//! 3. **Strips a small set of planar-internal env vars** that could leak the
-//!    operator's real `planar` binary path back to the worker:
+//! 3. **Strips a small set of planar-internal env vars** that could steer
+//!    operator-binary behavior the constrained worker should not control:
 //!
-//!    - `PLANAR_BIN` — used by the integration suite to point at a freshly
-//!      built `./bin/planar`. A worker that reads this can shell directly to
-//!      the operator's planar binary, bypassing the shim entirely.
-//!    - `PLANAR_HOME` — controls `~/.planar/` redirection. Stripping is
-//!      defense-in-depth: a worker that mutates this could redirect the
-//!      operator's planar-agent calls to a sandbox path the operator does not
-//!      know about. (Whether to inherit `PLANAR_HOME` is debatable for the
-//!      genuine "test against an alt ~/.planar/" use case; if that surfaces
-//!      as a real need, the spawner can re-inject it explicitly. The default
-//!      stays "strip" for the security-default-on principle.)
+//!    - `PLANAR_BIN` — alt-binary pointer; bypass of shim PATH. Used by the
+//!      integration suite to point at a freshly built `./bin/planar`; a
+//!      worker that reads this can shell directly to the operator's planar
+//!      binary, bypassing the shim entirely.
+//!    - `PLANAR_HOME` — redirects `~/.planar/` lookups (templates, config,
+//!      workspace state). Stripping is defense-in-depth: a worker that
+//!      reads or mutates this could steer the operator's planar-agent calls
+//!      to a sandbox path the operator does not know about.
+//!    - `PLANAR_DB` — overrides the SQLite DB path (honored by
+//!      `runtime.resolveDbPath` and inherited by BOTH `planar` and
+//!      `planar-agent`). A worker inheriting this from the integration suite,
+//!      or from any operator who has set it, will direct its `planar-agent`
+//!      writes to the operator's real DB instead of the cycle-scoped one the
+//!      harness expects. Catastrophic; strip unconditionally.
+//!    - `PLANAR_CONFIG_PATH` — overrides the operator's `config.toml`
+//!      resolution (`src/cmd/planar/handlers/config/path.zig`). A worker
+//!      should not be able to steer config resolution from outside its
+//!      brief.
+//!    - `PLANAR_TEMPLATES_DIR` — overrides template lookup for propagation
+//!      and doc rendering (`src/engine/config/effective.zig`). Stripping
+//!      keeps template-driven external-system behavior pinned to the
+//!      operator's chosen layer.
+//!    - `PLANAR_DISABLE_WORKTREE_GATE` — disables the cross-scope guard
+//!      (`src/cmd/planar/worktree_gate.zig`). The integration-suite escape
+//!      hatch that lifts the worktree-scope check must not leak to a
+//!      worker; the worker is expected to honor scope guards.
 //!
 //!    `PATH` is overwritten, not "stripped + re-added", so any host-PATH
 //!    surface that happened to expose `planar` is replaced wholesale.
@@ -115,7 +131,8 @@
 //! `PLANAR_WORKBENCH_ROOT` is INTENTIONALLY inherited: the worker may need to
 //! read workbench content for spec citations the brief references. The
 //! worker's mutation path is `planar-agent`, which carries its own write
-//! discipline; reading the workbench is not a privilege escalation.
+//! discipline; reading the workbench is not a privilege escalation. This is
+//! a deliberate carve-out from the strip list.
 //!
 //! ## Memory ownership
 //!
@@ -173,6 +190,10 @@ pub const SHIM_GIT: []const u8 = "git";
 pub const STRIPPED_ENV_VARS = [_][]const u8{
     "PLANAR_BIN",
     "PLANAR_HOME",
+    "PLANAR_DB",
+    "PLANAR_CONFIG_PATH",
+    "PLANAR_TEMPLATES_DIR",
+    "PLANAR_DISABLE_WORKTREE_GATE",
 };
 
 // ---------------------------------------------------------------------------
@@ -606,6 +627,71 @@ test "constrainEnvMap: no-op strip when the keys are absent; PATH still overridd
     try std.testing.expect(map.get("PLANAR_HOME") == null);
     const path = map.get("PATH") orelse @panic("PATH missing");
     try std.testing.expectEqualStrings("/tmp/shim2", path);
+}
+
+test "constrainEnvMap: strips every entry in STRIPPED_ENV_VARS (table-driven)" {
+    const a = std.testing.allocator;
+
+    // Pre-populate the map with one fixture value per stripped key plus a
+    // benign entry. The post-constrain assertion walks STRIPPED_ENV_VARS so
+    // any new addition to that list is automatically exercised — the test
+    // does not hard-code the key list a second time.
+    var map = std.process.Environ.Map.init(a);
+    defer map.deinit();
+    try map.put("PATH", "/usr/bin:/bin");
+    try map.put("HOME", "/home/operator");
+    try map.put("PLANAR_WORKBENCH_ROOT", "/home/operator/.planar/workbench");
+
+    // Fixture values for every stripped var.
+    try map.put("PLANAR_BIN", "/opt/leak/planar");
+    try map.put("PLANAR_HOME", "/opt/leak/.planar");
+    try map.put("PLANAR_DB", "/opt/leak/planar.db");
+    try map.put("PLANAR_CONFIG_PATH", "/opt/leak/config.toml");
+    try map.put("PLANAR_TEMPLATES_DIR", "/opt/leak/templates");
+    try map.put("PLANAR_DISABLE_WORKTREE_GATE", "1");
+
+    try constrainEnvMap(&map, "/tmp/shim-table");
+
+    // Every stripped key must be absent post-constrain.
+    for (STRIPPED_ENV_VARS) |key| {
+        if (map.get(key) != null) {
+            std.debug.print("\nSTRIPPED_ENV_VARS member {s} survived constrainEnvMap\n", .{key});
+        }
+        try std.testing.expect(map.get(key) == null);
+    }
+
+    // Benign entries survive.
+    const home = map.get("HOME") orelse @panic("HOME missing");
+    try std.testing.expectEqualStrings("/home/operator", home);
+    // PLANAR_WORKBENCH_ROOT is the deliberate carve-out — it MUST be
+    // inherited, the worker reads workbench content via this path.
+    const wb = map.get("PLANAR_WORKBENCH_ROOT") orelse @panic("PLANAR_WORKBENCH_ROOT must be inherited");
+    try std.testing.expectEqualStrings("/home/operator/.planar/workbench", wb);
+
+    // PATH overridden.
+    const path = map.get("PATH") orelse @panic("PATH missing");
+    try std.testing.expectEqualStrings("/tmp/shim-table", path);
+}
+
+test "constrainEnvMap: strips PLANAR_DB so worker planar-agent calls cannot reach operator DB" {
+    // Focused regression test for the iter-2 finding: PLANAR_DB is honored
+    // by runtime.resolveDbPath and inherited by both planar and planar-agent.
+    // A worker that inherits PLANAR_DB from the harness (or from any operator
+    // who has set it ambiently) would direct its planar-agent writes to the
+    // operator's real DB instead of the cycle-scoped one. The constrain step
+    // MUST drop it.
+    const a = std.testing.allocator;
+
+    var map = std.process.Environ.Map.init(a);
+    defer map.deinit();
+    try map.put("PATH", "/usr/bin:/bin");
+    try map.put("PLANAR_DB", "/Users/operator/.planar/planar.db");
+
+    try constrainEnvMap(&map, "/tmp/shim-db");
+
+    try std.testing.expect(map.get("PLANAR_DB") == null);
+    const path = map.get("PATH") orelse @panic("PATH missing");
+    try std.testing.expectEqualStrings("/tmp/shim-db", path);
 }
 
 // ---------------------------------------------------------------------------
