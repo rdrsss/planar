@@ -70,6 +70,11 @@ pub const brief = @import("brief.zig");
 /// Imported here so its `test` blocks run under the `execute_exe_tests` target.
 pub const worktree = @import("worktree.zig");
 
+/// doctor — read-only health check that drives the state/schema/reconcile read
+/// helpers against live binaries (task 3236 m3-doctor-livegate).
+/// Imported here so its `test` blocks run under the `execute_exe_tests` target.
+pub const doctor = @import("doctor.zig");
+
 const c = @cImport({
     @cInclude("lua.h");
     @cInclude("lauxlib.h");
@@ -1118,9 +1123,86 @@ pub const root: cli.Cmd = .{
     ,
     .cmds = &.{
         run_verb,
+        doctor_verb,
         version_verb,
     },
 };
+
+/// `planar-execute doctor --plan <id> [--json]` — read-only health check.
+///
+/// Drives the planar-execute read helpers (schema ingestion, plan-state reads,
+/// reconcile dry-run) against the ambient DB and PATH-resolved sibling binaries
+/// and reports whether each read path works. NON-DESTRUCTIVE: the reconcile
+/// probe is a dry-run only; doctor writes nothing to the DB or agent_* tables.
+///
+/// Exit code: 0 iff every probe is ok (all_ok), non-zero otherwise. A failed
+/// probe records its error and doctor continues — all failures are collected
+/// before the exit decision.
+const doctor_verb: cli.Cmd = .{
+    .name = "doctor",
+    .desc = "Read-only health check: drive the read helpers against live binaries.",
+    .long_desc =
+    \\Read-only / non-destructive diagnostic for planar-execute's read paths.
+    \\
+    \\  Usage:
+    \\    planar-execute doctor --plan <id> [--json]
+    \\
+    \\  Drives, in order (collecting every probe's outcome — never bails on the
+    \\  first failure):
+    \\    1. planar schema ingestion        (schema.loadSchema "planar")
+    \\    2. planar-agent schema ingestion  (schema.loadSchema "planar-agent")
+    \\    3. plan show <id>                  (state.planShow)
+    \\    4. plan next <id>                  (state.planNext)
+    \\    5. test-spec status <id>           (state.testSpecStatus)
+    \\    6. reconcile DRY-RUN               (worktree.reconcileAndPrune dry_run=true)
+    \\
+    \\  The reconcile probe is a dry-run ONLY: it computes the stale-cycle set
+    \\  but performs no teardown and no `git worktree prune`. doctor never
+    \\  claims, completes, or writes anything.
+    \\
+    \\  With --json, emits a machine-readable report. Without it, a short
+    \\  one-line-per-probe human report.
+    \\
+    \\  Exit codes:
+    \\    0   every probe ok (all_ok: true).
+    \\    1   at least one probe failed (all_ok: false).
+    ,
+    .flags = &.{
+        .{ .long = "--plan", .kind = .int, .required = true, .desc = "Plan id to drive the plan-state read probes against." },
+        .{ .long = "--json", .kind = .bool, .default = .{ .bool = false }, .desc = "Emit the report as JSON (the load-bearing machine form)." },
+    },
+    .run = cli.handler(handleDoctor),
+};
+
+/// handleDoctor runs all six read probes and emits the report (JSON or human),
+/// exiting 0 iff every probe is ok.
+fn handleDoctor(args_ptr: *const anyopaque) anyerror!void {
+    const args = cli.castArgs(root, &.{"doctor"}, args_ptr);
+    const ctx = currentCtx();
+
+    if (args.plan <= 0) {
+        try ctx.stderr.print("planar-execute: doctor --plan must be a positive plan id\n", .{});
+        try flushCtx();
+        std.process.exit(1);
+    }
+    const plan: u64 = @intCast(args.plan);
+
+    // doctor's probe results borrow strings (title/slug) parsed during the run;
+    // an arena keeps them alive until after serialization, then frees in one shot.
+    var probe_arena = std.heap.ArenaAllocator.init(ctx.allocator);
+    defer probe_arena.deinit();
+
+    const report = doctor.run(probe_arena.allocator(), ctx.io, plan);
+
+    if (args.json) {
+        try doctor.printJson(report, ctx.stdout);
+    } else {
+        try doctor.printHuman(report, ctx.stdout);
+    }
+    try flushCtx();
+
+    if (!report.all_ok) std.process.exit(1);
+}
 
 comptime {
     @setEvalBranchQuota(10_000);
@@ -1294,7 +1376,7 @@ fn maybeInjectRun(arena: std.mem.Allocator, raw_args: []const []const u8) []cons
     const first = raw_args[1];
 
     // Known subcommand names and global flags — leave argv alone.
-    inline for ([_][]const u8{ "run", "version", "--help", "-h" }) |v| {
+    inline for ([_][]const u8{ "run", "doctor", "version", "--help", "-h" }) |v| {
         if (std.mem.eql(u8, first, v)) return raw_args;
     }
 

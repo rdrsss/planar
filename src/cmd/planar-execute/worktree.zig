@@ -805,25 +805,48 @@ fn freeActiveSlugs(allocator: std.mem.Allocator, slugs: [][]const u8) void {
 // Top-level orchestrator: reconcileAndPrune
 // ---------------------------------------------------------------------------
 
-/// reconcileAndPrune is the startup reconcile pass (task 3174).
+/// Outcome of a `reconcileAndPrune` pass.
 ///
-/// It orchestrates (live coverage deferred to the M3+ integration pass, same
-/// deferral as task 3236; its pure constituents are unit-tested):
-///   1. Shell `planar-agent reconcile` — mark expired claims stale, close
-///      orphaned actions. (Run first so a crashed cycle's claim is staled
-///      BEFORE we read active claims, otherwise an about-to-expire claim could
-///      wrongly look active.)
+/// `stale` is the number of cycle worktrees the classifier flagged as stale
+/// (i.e. their owning task no longer holds an active claim). `pruned` is the
+/// number actually torn down. In a normal (non-dry-run) pass `pruned == stale`
+/// once teardown succeeds for every flagged cycle. Under a dry run NO teardown
+/// is performed, so `pruned == 0` while `stale` still reports what *would* be
+/// pruned — this is what the read-only `doctor` probe reports as `stale_cycles`.
+pub const ReconcileResult = struct {
+    /// Cycle worktrees classified as stale (would-be / actual prune targets).
+    stale: usize,
+    /// Cycle worktrees actually torn down this pass (0 under dry run).
+    pruned: usize,
+};
+
+/// reconcileAndPrune is the startup reconcile pass (task 3174), with a
+/// non-destructive dry-run mode (task 3236).
+///
+/// It orchestrates (its pure constituents are unit-tested; the live subprocess
+/// half is covered end-to-end by `integration_tests/planar_execute_doctor_test.zig`
+/// via the `doctor` verb's dry-run probe — task 3236):
+///   1. Shell `planar-agent reconcile [--dry-run]` — mark expired claims stale,
+///      close orphaned actions (under `--dry-run` it only reports candidates).
+///      Run first so a crashed cycle's claim is staled BEFORE we read active
+///      claims, otherwise an about-to-expire claim could wrongly look active.
 ///   2. Read the now-current active task-slugs for `plan_id` (`activeTaskSlugs`).
 ///   3. Enumerate worktrees (`git worktree list --porcelain`) → parse.
 ///   4. `staleCycleWorktrees` (PURE) → the cycle worktrees to prune.
 ///   5. `teardownCycle` each stale one (plan-scoped, epic excluded, foreign
-///      worktrees never returned by the classifier).
+///      worktrees never returned by the classifier). SKIPPED under dry run.
 ///   6. `git worktree prune` — clear admin entries for cycle dirs already
-///      manually deleted (dir gone, git metadata lingering).
+///      manually deleted (dir gone, git metadata lingering). SKIPPED under dry run.
+///
+/// When `dry_run == true` the function performs steps 1–4 (reads only — step 1
+/// passes `--dry-run` to `planar-agent reconcile` so it does not write) and
+/// returns the computed stale count WITHOUT mutating anything: no `teardownCycle`,
+/// no `git worktree prune`. The non-dry path is bit-identical to the task-3174
+/// approved behavior.
 ///
 /// Errors from steps 1–4 propagate (a failed reconcile/read is a hard startup
-/// problem). A `teardownCycle` failure on one stale cycle is logged-and-skipped
-/// is NOT done here — we let it propagate so the operator sees the first
+/// problem). A `teardownCycle` failure on one stale cycle is NOT
+/// logged-and-skipped — we let it propagate so the operator sees the first
 /// failure rather than silently leaving half-pruned state; the caller decides
 /// whether a partial prune is fatal. (M6 will refine this under the run-lock.)
 pub fn reconcileAndPrune(
@@ -832,9 +855,14 @@ pub fn reconcileAndPrune(
     repo_root: []const u8,
     plan_slug: []const u8,
     plan_id: u64,
-) WorktreeError!void {
-    // 1) Claim side: global reconcile (mark expired claims stale).
-    const rec_out = try runBin(allocator, io, "planar-agent", &.{ "reconcile", "--json" }, 256 * 1024);
+    dry_run: bool,
+) WorktreeError!ReconcileResult {
+    // 1) Claim side: global reconcile (mark expired claims stale). Under a dry
+    //    run pass `--dry-run` so the verb only reports candidates (no write).
+    const rec_out = if (dry_run)
+        try runBin(allocator, io, "planar-agent", &.{ "reconcile", "--dry-run", "--json" }, 256 * 1024)
+    else
+        try runBin(allocator, io, "planar-agent", &.{ "reconcile", "--json" }, 256 * 1024);
     allocator.free(rec_out);
 
     // 2) Read the current active task-slug set for the plan.
@@ -859,6 +887,11 @@ pub fn reconcileAndPrune(
     const stale = try staleCycleWorktrees(allocator, worktrees, canon_root, plan_slug, active);
     defer freeStaleList(allocator, stale);
 
+    // Dry run: report the computed stale count, mutate nothing.
+    if (dry_run) {
+        return .{ .stale = stale.len, .pruned = 0 };
+    }
+
     // 5) Teardown each stale cycle worktree.
     for (stale) |s| {
         try teardownCycle(allocator, io, repo_root, plan_slug, s.task_slug);
@@ -867,6 +900,8 @@ pub fn reconcileAndPrune(
     // 6) git worktree prune — clear admin entries for already-deleted dirs.
     const prune_out = try runGit(allocator, io, &.{ "-C", repo_root, "worktree", "prune" });
     allocator.free(prune_out);
+
+    return .{ .stale = stale.len, .pruned = stale.len };
 }
 
 // ---------------------------------------------------------------------------

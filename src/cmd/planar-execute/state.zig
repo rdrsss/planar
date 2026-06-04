@@ -261,8 +261,16 @@ pub fn planShow(
     const stdout = try spawnPlanar(allocator, io, &.{ "plan", "show", id_str, "--json" }, 256 * 1024);
     defer allocator.free(stdout);
 
+    // `.allocate = .alloc_always`: the returned `Parsed` owns copies of every
+    // string. Without this, `parseFromSlice` defaults to `.alloc_if_needed`,
+    // which makes escape-free string fields (e.g. `title`, `slug`) BORROW into
+    // `stdout` — which the `defer` above frees the instant we return, leaving
+    // the caller holding dangling pointers (observed as 0xAA poison bytes via
+    // the task-3236 `doctor` probe; the fixture-parse unit tests never freed
+    // the input so they could not surface this).
     return std.json.parseFromSlice(PlanShow, allocator, stdout, .{
         .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
     }) catch return StateError.ParseFailed;
 }
 
@@ -284,8 +292,12 @@ pub fn planNext(
     const stdout = try spawnPlanar(allocator, io, &.{ "plan", "next", id_str, "--json" }, 4 * 1024 * 1024);
     defer allocator.free(stdout);
 
+    // `.allocate = .alloc_always`: see `planShow` — the returned `Parsed` must
+    // own its strings, otherwise escape-free fields borrow into the `stdout`
+    // buffer that the `defer` frees on return.
     return std.json.parseFromSlice(PlanNext, allocator, stdout, .{
         .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
     }) catch return StateError.ParseFailed;
 }
 
