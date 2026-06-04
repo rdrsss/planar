@@ -201,9 +201,70 @@ pub const TestSpecStatus = struct {
     }
 };
 
+/// Live status of a single agent work-claim, as observed via
+/// `planar-watch ps --plan <id> --stale --json` (task 3242).
+///
+/// The harness uses this to decide whether the worker already ran its own
+/// terminal verb (the happy path per tech-spec L182-186). `planar-watch ps`
+/// only reports claims that are still rows in `agent_work_claims` with a
+/// live-ish status — once a claim has reached a terminal verb
+/// (completed / aborted / released) it no longer appears in either array,
+/// so "absent" is the signal for "already terminal".
+pub const ClaimState = enum {
+    /// The claim token appears in the `active[]` array — the lease is live
+    /// and the worker has NOT run its own terminal verb.
+    active,
+    /// The claim token appears in the `stale[]` array — the lease expired
+    /// mid-run without a terminal verb.
+    stale,
+    /// The claim token appears in NEITHER array — it already reached a
+    /// terminal verb (completed / aborted / released) and is no longer live.
+    terminal,
+};
+
 // ---------------------------------------------------------------------------
 // Internal subprocess helper
 // ---------------------------------------------------------------------------
+
+/// spawnBin runs `<bin> <argv_tail...>` and returns the captured stdout.
+///
+/// The caller owns the returned slice and must free it with `allocator`.
+/// Maps subprocess and non-zero-exit errors into `StateError`. `planShow`/
+/// `planNext`/`testSpecStatus` use `spawnPlanar` (bin = "planar"); the
+/// claim-status reader uses this with bin = "planar-watch".
+fn spawnBin(
+    allocator: std.mem.Allocator,
+    io: Io,
+    bin: []const u8,
+    argv_tail: []const []const u8,
+    stdout_limit: usize,
+) StateError![]u8 {
+    // Build argv: [bin] ++ argv_tail. argv_tail is variable-length so we
+    // cannot use a comptime stack array. One exact-size alloc collapses N
+    // per-append OOM branches into a single failure point. (task 3237)
+    const argv = allocator.alloc([]const u8, argv_tail.len + 1) catch return StateError.OutOfMemory;
+    defer allocator.free(argv);
+    argv[0] = bin;
+    for (argv_tail, 0..) |arg, i| argv[i + 1] = arg;
+
+    const result = std.process.run(allocator, io, .{
+        .argv = argv,
+        .stdout_limit = Io.Limit.limited(stdout_limit),
+        .stderr_limit = Io.Limit.limited(4096),
+    }) catch return StateError.SubprocessFailed;
+
+    // Free stderr immediately (not used by callers).
+    allocator.free(result.stderr);
+
+    // Map non-zero exit to an error.  Free stdout before returning the error.
+    const exit_ok = result.term == .exited and result.term.exited == 0;
+    if (!exit_ok) {
+        allocator.free(result.stdout);
+        return StateError.SubprocessNonZero;
+    }
+
+    return result.stdout;
+}
 
 /// spawnPlanar runs `planar <argv_tail...>` and returns the captured stdout.
 ///
@@ -394,9 +455,214 @@ pub fn testSpecStatus(
     };
 }
 
+/// A single claim row inside `planar-watch ps --json`'s `active` / `stale`
+/// arrays. Only the `claim_token` field is consumed — membership in the
+/// `active` vs `stale` array (vs absence) is what determines `ClaimState`.
+///
+/// Real shape (captured 2026-06-04 via `planar-watch ps --plan 492 --stale
+/// --json`):
+///   {"id":408,"claim_token":"807e...","session_id":12,"entity_kind":"task",
+///    ...,"status":"active",...}
+const PsClaimRow = struct {
+    claim_token: []const u8,
+};
+
+/// Top-level shape of `planar-watch ps --plan <id> --stale --json`.
+///
+/// Shape: {"generated_at":"...","active":[PsClaimRow],"stale":[PsClaimRow]}
+const PsResult = struct {
+    active: []PsClaimRow,
+    stale: []PsClaimRow,
+};
+
+/// claimStatus shells `planar-watch ps --plan <plan_id> --stale --json` and
+/// reports whether `claim_token` is currently `active`, `stale`, or already
+/// `terminal` (no longer present in either array). (task 3242)
+///
+/// The `--stale` flag is REQUIRED so expired/staled claims appear in the
+/// `stale` array; without it a claim whose lease expired mid-run would be
+/// indistinguishable from one that reached a terminal verb.
+///
+/// IMPORTANT: `planar-watch ps` filters by `--vendor` / `--plan` / `--stale`
+/// ONLY — there is NO `--claim` flag. We fetch the full plan-scoped listing
+/// and match `claim_token` in-process.
+///
+/// Memory: this call allocates and frees its own buffers; the returned enum
+/// is by-value, so the caller owns nothing.
+pub fn claimStatus(
+    allocator: std.mem.Allocator,
+    io: Io,
+    plan_id: u64,
+    claim_token: []const u8,
+) StateError!ClaimState {
+    var id_buf: [32]u8 = undefined;
+    const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{plan_id}) catch return StateError.SubprocessFailed;
+
+    const stdout = try spawnBin(allocator, io, "planar-watch", &.{ "ps", "--plan", id_str, "--stale", "--json" }, 4 * 1024 * 1024);
+    defer allocator.free(stdout);
+
+    const parsed = std.json.parseFromSlice(PsResult, allocator, stdout, .{
+        .ignore_unknown_fields = true,
+    }) catch return StateError.ParseFailed;
+    defer parsed.deinit();
+
+    return classifyClaim(parsed.value, claim_token);
+}
+
+/// classifyClaim is the PURE classification half of `claimStatus`: given a
+/// parsed `PsResult` and a claim token, decide the `ClaimState`. Factored out
+/// so the subprocess-free unit test can exercise the membership logic against
+/// a fixture without spawning `planar-watch`. (task 3242)
+fn classifyClaim(ps: PsResult, claim_token: []const u8) ClaimState {
+    for (ps.active) |row| {
+        if (std.mem.eql(u8, row.claim_token, claim_token)) return .active;
+    }
+    for (ps.stale) |row| {
+        if (std.mem.eql(u8, row.claim_token, claim_token)) return .stale;
+    }
+    // Absent from both arrays → already reached a terminal verb.
+    return .terminal;
+}
+
 // ---------------------------------------------------------------------------
 // Unit tests — fixture-parse only, no live planar binary required.
 // ---------------------------------------------------------------------------
+
+// (task 3242) classifyClaim: claim-token membership → ClaimState.
+//
+// Pins the live-claim-status classification logic against fixtures matching
+// the real `planar-watch ps --plan <id> --stale --json` shape, without
+// spawning planar-watch. The live `claimStatus` subprocess path's end-to-end
+// coverage is deferred to the live-spawn smoke (task 3241).
+test "classifyClaim: token in active[] → .active (task 3242)" {
+    // Real-shape fixture from `planar-watch ps --plan 492 --stale --json`.
+    const fixture =
+        \\{"generated_at":"2026-06-04T17:37:18.491Z",
+        \\"active":[{"id":408,"claim_token":"807e66282b68d5db34667ab42046b84c",
+        \\           "session_id":12,"entity_kind":"task","entity_id":3242,
+        \\           "status":"active","vendor":"planar-agent"}],
+        \\"stale":[]}
+    ;
+    const parsed = try std.json.parseFromSlice(PsResult, std.testing.allocator, fixture, .{
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+
+    try std.testing.expectEqual(ClaimState.active, classifyClaim(parsed.value, "807e66282b68d5db34667ab42046b84c"));
+}
+
+test "classifyClaim: token in stale[] → .stale (task 3242)" {
+    const fixture =
+        \\{"generated_at":"2026-06-04T17:37:18.491Z",
+        \\"active":[],
+        \\"stale":[{"id":9,"claim_token":"aabbccdd11223344aabbccdd11223344",
+        \\          "session_id":2,"entity_kind":"task","entity_id":3174,
+        \\          "status":"stale","vendor":"claude"}]}
+    ;
+    const parsed = try std.json.parseFromSlice(PsResult, std.testing.allocator, fixture, .{
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+
+    try std.testing.expectEqual(ClaimState.stale, classifyClaim(parsed.value, "aabbccdd11223344aabbccdd11223344"));
+}
+
+test "classifyClaim: token in NEITHER array → .terminal (worker already finished) (task 3242)" {
+    // The bug-fix path: a worker that ran its own terminal verb (complete /
+    // release / fail) no longer appears in active[] or stale[]. The harness
+    // must read this as .terminal and NOT issue a redundant terminal verb.
+    const fixture =
+        \\{"generated_at":"2026-06-04T17:37:18.491Z",
+        \\"active":[{"id":408,"claim_token":"some-other-live-token",
+        \\           "session_id":12,"entity_kind":"task","status":"active"}],
+        \\"stale":[{"id":9,"claim_token":"some-stale-token",
+        \\          "session_id":2,"entity_kind":"task","status":"stale"}]}
+    ;
+    const parsed = try std.json.parseFromSlice(PsResult, std.testing.allocator, fixture, .{
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+
+    try std.testing.expectEqual(ClaimState.terminal, classifyClaim(parsed.value, "the-self-completed-token"));
+}
+
+test "classifyClaim: both arrays empty → .terminal (task 3242)" {
+    const fixture =
+        \\{"generated_at":"2026-06-04T17:37:18.491Z","active":[],"stale":[]}
+    ;
+    const parsed = try std.json.parseFromSlice(PsResult, std.testing.allocator, fixture, .{
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+
+    try std.testing.expectEqual(ClaimState.terminal, classifyClaim(parsed.value, "anything"));
+}
+
+// (task 3239) RED-THEN-GREEN: pin the planShow/planNext use-after-free fix.
+//
+// state.planShow / planNext parse with `.allocate = .alloc_always` precisely
+// so escape-free string fields (`title`, `slug`) are COPIED into the Parsed
+// arena rather than borrowed into the subprocess-stdout buffer that the
+// caller's `defer allocator.free(stdout)` frees on return.
+//
+// This test reproduces that lifetime: it heap-dupes a fixture (no `\` escapes
+// in the string fields, the exact case `.alloc_if_needed` would borrow),
+// parses with `.alloc_always`, then FREES the input buffer and reads the
+// string fields back. Under `.alloc_always` the strings survive (own copies);
+// under the old `.alloc_if_needed` this reads freed/poisoned memory and the
+// testing allocator trips. Verified red/green: flip line 273/301 to
+// `.alloc_if_needed` and this test fails; restore and it passes.
+test "PlanShow: .alloc_always copies escape-free strings — survive freed input (task 3239)" {
+    const a = std.testing.allocator;
+
+    // Escape-free string fields: this is the case .alloc_if_needed BORROWS.
+    const fixture_src =
+        \\{"id":492,"title":"Autonomous workflow harness","slug":"orchestrate-harness","status":"active","parent_plan_id":null}
+    ;
+    // Heap-dup the input so we can free it after parsing and prove the parsed
+    // strings do NOT borrow into it.
+    const input = try a.dupe(u8, fixture_src);
+
+    const parsed = try std.json.parseFromSlice(PlanShow, a, input, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+
+    // Free + poison the input buffer. Under .alloc_if_needed the title/slug
+    // pointers borrow into this slice; reading them after free is a UAF.
+    @memset(input, 0xAA);
+    a.free(input);
+
+    // The strings must still equal the originals (copied into the arena).
+    try std.testing.expectEqualStrings("Autonomous workflow harness", parsed.value.title);
+    try std.testing.expectEqualStrings("orchestrate-harness", parsed.value.slug.?);
+    try std.testing.expectEqualStrings("active", parsed.value.status);
+}
+
+test "PlanNext: .alloc_always copies escape-free task strings — survive freed input (task 3239)" {
+    const a = std.testing.allocator;
+
+    const fixture_src =
+        \\{"plan_id":496,"available":[{"id":3173,"plan_id":496,"title":"git worktree add","slug":"m3-worktree-lifecycle","status":"todo"}],"claimed":[],"stale":[],"blocked":[],"summary":{"available":1,"claimed":0,"stale":0,"blocked":0,"done":0}}
+    ;
+    const input = try a.dupe(u8, fixture_src);
+
+    const parsed = try std.json.parseFromSlice(PlanNext, a, input, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+
+    @memset(input, 0xAA);
+    a.free(input);
+
+    try std.testing.expectEqual(@as(u64, 496), parsed.value.plan_id);
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.available.len);
+    try std.testing.expectEqualStrings("git worktree add", parsed.value.available[0].title);
+    try std.testing.expectEqualStrings("m3-worktree-lifecycle", parsed.value.available[0].slug.?);
+    try std.testing.expectEqualStrings("todo", parsed.value.available[0].status);
+}
 
 test "PlanShow: parse real fixture — known fields decoded, extras ignored" {
     // Real JSON captured from `planar plan show 492 --json` on 2026-06-03.

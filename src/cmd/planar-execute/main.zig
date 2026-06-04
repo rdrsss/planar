@@ -367,7 +367,8 @@ fn hostStateUpvalue(L: ?*c.lua_State) *HostState {
 /// `worker_env.buildWorkerEnv` with the driver's pre-resolved binary paths and
 /// a per-cycle shim dir under the cycle worktree). Tests can substitute a
 /// stub builder that produces a synthetic env without touching the filesystem
-/// — see `synthEnvBuilder` in the test block.
+/// — see the "env_builder wiring" test in the test block (task 3243), which
+/// installs a sentinel builder and asserts the env reaches the spawn boundary.
 ///
 /// The returned `WorkerEnv` is heap-owned; the caller MUST call
 /// `WorkerEnv.deinit(allocator, io)` when the spawn completes.
@@ -415,7 +416,37 @@ pub const AgentDriver = struct {
     /// `DefaultEnvBuilderCtx` (below) carries the pre-resolved planar-agent
     /// + git absolute paths and the host environ.
     env_builder_ctx: ?*anyopaque = null,
+
+    /// The anchor/milestone plan id the claimed task lives under. Threaded to
+    /// the claim-status reader so it can scope `planar-watch ps --plan <id>`.
+    /// Zero means "skip the live read" (the reader returns `.active`); tests
+    /// that inject a `claim_status_reader` ignore this field.
+    plan_id: u64 = 0,
+
+    /// Reads the live claim status for the terminal-verb decision (task 3242).
+    /// When null, `readClaimStatusOrActive` calls the production reader
+    /// (`defaultClaimStatusReader`, which shells `planar-watch ps`). Tests
+    /// inject a fake reader so they can pin the worker-self-completed → harness
+    /// no-op path WITHOUT a live binary — mirroring how `Spawner` and
+    /// `env_builder` are injected.
+    claim_status_reader: ?ClaimStatusFn = null,
+    /// Opaque context pointer passed to `claim_status_reader`. Unused by the
+    /// production reader (it reads `driver.plan_id` directly); tests stash a
+    /// pointer to their canned `terminal.ClaimStatus` here.
+    claim_status_ctx: ?*anyopaque = null,
 };
+
+/// ClaimStatusFn reads the live claim status for one `agent()` call. Injectable
+/// on `AgentDriver` so unit tests can drive the terminal-verb decision matrix
+/// without shelling `planar-watch` (task 3242). The production wiring leaves it
+/// null and `readClaimStatusOrActive` falls back to `defaultClaimStatusReader`.
+pub const ClaimStatusFn = *const fn (
+    ctx: ?*anyopaque,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    plan_id: u64,
+    claim_token: []const u8,
+) terminal.ClaimStatus;
 
 /// Context for `defaultEnvBuilder` — the production env-builder. Carries the
 /// pre-resolved absolute paths to `planar-agent` and `git`, plus the host
@@ -640,23 +671,13 @@ fn driveAgentCall(
         break :blk false;
     };
 
-    // 5) Read the claim status. For M4 we read directly via a sidecar
-    // `planar-agent`/`planar-watch` call. Until the read helper lands we
-    // default to .active (the harness applies the terminal verb based on
-    // exit_code + commit_present alone). The integration test exercises the
-    // active path; tests that need to pin a terminal-status pre-condition
-    // override this via the driver flag (see below).
-    //
-    // TODO(plan:492, task:3242): wire readClaimStatusOrActive
-    // to a live `planar-watch ps --claim <token> --json` read so that when
-    // the worker has already run its own terminal verb the harness's call
-    // is suppressed instead of issuing a redundant terminal call that
-    // returns ClaimNotActive. Tracked as a separate follow-up task on
-    // plan 492 (Item A from the cycle C iter-1 review); the
-    // ClaimNotActive error is recoverable (not corrupting) per
-    // src/engine/runtime/agentactivity/atomic.zig:324, so this defers
-    // safely.
-    const claim_status: terminal.ClaimStatus = readClaimStatusOrActive(alloc, io, opts.claim_token);
+    // 5) Read the LIVE claim status (task 3242). When the worker already ran
+    // its own terminal verb (the happy path per tech-spec L182-186), the claim
+    // is no longer live and `decideTerminalVerb` returns `.none` so the harness
+    // does NOT issue a redundant terminal-verb subprocess that would error with
+    // ClaimNotActive. The reader is injectable on the driver so unit tests pin
+    // this no-op path without a live binary.
+    const claim_status: terminal.ClaimStatus = readClaimStatusOrActive(driver, alloc, io, opts.claim_token);
 
     // 6) Decide + (optionally) apply the terminal verb.
     const verb = terminal.decideTerminalVerb(.{
@@ -684,38 +705,69 @@ fn driveAgentCall(
     return 1;
 }
 
-/// readClaimStatusOrActive returns the claim's status, defaulting to .active
-/// when the read cannot be performed (the harness then applies the terminal
-/// verb based on exit_code + commit_present alone). At M4 this is a minimal
-/// implementation: we always return .active. A later milestone may shell
-/// `planar-watch ps --json` here.
+/// readClaimStatusOrActive returns the claim's LIVE status for the terminal-verb
+/// decision (task 3242). It dispatches to the injected `driver.claim_status_reader`
+/// (tests), or to `defaultClaimStatusReader` (production), which shells
+/// `planar-watch ps --plan <id> --stale --json` and classifies the claim token.
 ///
-/// TODO(plan:492, task:3242): Reviewer caveat from cycle C
-/// iter 1 (Item A). When a worker correctly runs its own terminal verb
-/// (the happy path per tech-spec L182–186), `decideTerminalVerb` still
-/// sees `.active` here and issues a redundant terminal-verb subprocess
-/// call. That second call errors with `ClaimNotActive` (recoverable,
-/// non-corrupting per `src/engine/runtime/agentactivity/atomic.zig:324`)
-/// but the agent() Lua return table mis-reports
-/// `terminal_verb = "complete"` when the harness's second call was in
-/// fact rejected. Fix: extend `state.zig` with a `watchPsClaim(allocator,
-/// io, claim_token) -> ClaimStatus` reader and call it from here; the
-/// task on plan 492 carries the full plan + a `FakeSpawner`-driven unit
-/// test for the live-call-then-no-op path. Deferred to follow-up because
-/// the failure mode is observable but not destructive — the harness's
-/// idempotency-by-error-class catches it.
+/// Defaults to `.active` when the token is empty or `driver.plan_id` is unset —
+/// the harness then applies the terminal verb on exit_code + commit_present
+/// alone (the pre-3242 behavior, kept for the no-claim test paths).
+///
+/// This closes the cycle C iter-1 Item-A bug: when a worker correctly runs its
+/// own terminal verb, the claim disappears from `planar-watch ps`, the reader
+/// returns `.terminal`, `decideTerminalVerb` returns `.none`, and the harness
+/// no longer issues a redundant terminal-verb subprocess (which would have
+/// errored with ClaimNotActive while the Lua result table mis-reported success).
 fn readClaimStatusOrActive(
+    driver: *AgentDriver,
     allocator: std.mem.Allocator,
     io: std.Io,
     claim_token: []const u8,
 ) terminal.ClaimStatus {
-    _ = allocator;
-    _ = io;
-    _ = claim_token;
-    // M4: skipping the live read. The decision matrix on .active is the
-    // common case; the .completed-respect path is exercised by the unit tests
-    // by passing a synthetic ClaimStatus directly to decideTerminalVerb.
-    return .active;
+    if (claim_token.len == 0) return .active;
+    if (driver.claim_status_reader) |read| {
+        return read(driver.claim_status_ctx, allocator, io, driver.plan_id, claim_token);
+    }
+    return defaultClaimStatusReader(null, allocator, io, driver.plan_id, claim_token);
+}
+
+/// defaultClaimStatusReader is the production `ClaimStatusFn`. It shells
+/// `planar-watch ps --plan <plan_id> --stale --json` via `state.claimStatus`
+/// and maps the resulting `state.ClaimState` to the `terminal.ClaimStatus` the
+/// decision matrix consumes:
+///
+///   - `.active`   → `.active`   — lease live, worker did NOT self-finish; the
+///                                  harness owns the terminal verb.
+///   - `.terminal` → `.completed`— worker already ran its own terminal verb;
+///                                  `decideTerminalVerb` returns `.none`. (the fix)
+///   - `.stale`    → `.active`   — the lease expired mid-run, so the HARNESS
+///                                  owns the terminal transition (the worker's
+///                                  lease died before it could). Treating stale
+///                                  as active makes the harness reconcile it via
+///                                  the exit_code + commit_present matrix.
+///
+/// On any read/parse failure we conservatively return `.active`: the harness
+/// then applies a terminal verb based on the spawn signals, and the
+/// ClaimNotActive error class (recoverable, non-corrupting per
+/// src/engine/runtime/agentactivity/atomic.zig:324) catches a double-write.
+fn defaultClaimStatusReader(
+    ctx: ?*anyopaque,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    plan_id: u64,
+    claim_token: []const u8,
+) terminal.ClaimStatus {
+    _ = ctx;
+    // plan_id == 0 means the caller did not thread a plan scope; skip the live
+    // read and let the spawn-signal matrix decide (matches the no-claim paths).
+    if (plan_id == 0) return .active;
+    const st = state.claimStatus(allocator, io, plan_id, claim_token) catch return .active;
+    return switch (st) {
+        .active => .active,
+        .stale => .active,
+        .terminal => .completed,
+    };
 }
 
 /// luaArgString reads the argument at stack index `idx` as a string view into
@@ -2742,4 +2794,154 @@ test "M4 agent: missing worktree_path raises a Lua error" {
     var err_buf: [256]u8 = @splat(0);
     const err = runModule(src, "test:m4-nowt", &.{}, &host, &err_buf);
     try std.testing.expectError(LuaError.LuaRuntimeError, err);
+}
+
+// ---------------------------------------------------------------------------
+// task 3242 — live-claim-status read → harness no-op when the worker already
+// ran its own terminal verb. Exercised via an INJECTED claim_status_reader so
+// the test never shells planar-watch (the live `state.claimStatus` subprocess
+// is covered by the live-spawn smoke, task 3241).
+// ---------------------------------------------------------------------------
+
+/// terminalClaimReader is an injected ClaimStatusFn that always reports the
+/// claim as `.completed` — simulating a worker that ran its own
+/// `planar-agent complete`. `decideTerminalVerb` must then return `.none`.
+fn terminalClaimReader(
+    ctx: ?*anyopaque,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    plan_id: u64,
+    claim_token: []const u8,
+) terminal.ClaimStatus {
+    _ = ctx;
+    _ = allocator;
+    _ = io;
+    _ = plan_id;
+    _ = claim_token;
+    return .completed;
+}
+
+test "M4 agent: worker self-completed (claim terminal) → harness emits no terminal verb (task 3242)" {
+    // The bug-fix path (cycle C iter-1 Item A): a worker that already ran its
+    // own terminal verb leaves the claim no longer live. The injected reader
+    // reports .completed; decideTerminalVerb returns .none; the result table
+    // reports status="respected" / terminal_verb="none" — NOT a redundant
+    // "complete" that would have errored with ClaimNotActive.
+    const a = testing_alloc;
+    // exit==0 + (would-be) commit would normally drive .complete on an active
+    // claim; the terminal claim must override that to .none.
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+        .claim_status_reader = terminalClaimReader,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+
+    const src =
+        \\return {
+        \\  meta = { name = "m4-respected", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local r = ctx.agent("the brief", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/abs/wt",
+        \\      claim_token = "tok-self-completed",
+        \\      task_slug = "ts1",
+        \\    })
+        \\    assert(r.terminal_verb == "none", "expected no harness terminal verb, got " .. tostring(r.terminal_verb))
+        \\    assert(r.status == "respected", "expected status=respected, got " .. tostring(r.status))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:m4-respected", &.{}, &host, &err_buf);
+
+    // The spawn still happened (the harness ran the worker); only the
+    // redundant terminal verb is suppressed.
+    try std.testing.expectEqual(@as(usize, 1), fake.invocations.items.len);
+}
+
+// ---------------------------------------------------------------------------
+// task 3243 — pin driveAgentCall → env_builder → SpawnInputs.env_map → Spawner.
+// A non-null env_builder installed on the driver must be CALLED and its env
+// must reach the FakeSpawner's recorded snapshot. Cutting any link in that
+// chain (e.g. not threading env_map into SpawnInputs) fails this test.
+// ---------------------------------------------------------------------------
+
+/// SENTINEL_WORKER_VAR is a marker env var the test env-builder injects; the
+/// test asserts the FakeSpawner recorded it, proving the wire is intact.
+const SENTINEL_WORKER_VAR = "PLANAR_EXECUTE_TEST_SENTINEL";
+const SENTINEL_WORKER_VAL = "wired-through-driveAgentCall";
+
+/// sentinelEnvBuilder is a test EnvBuilderFn that produces a recognizable
+/// WorkerEnv WITHOUT touching the filesystem. The shim_dir / path strings are
+/// heap-allocated (so WorkerEnv.deinit can free them safely) but never
+/// materialized on disk — deinit's deleteTree no-ops on the missing dir.
+fn sentinelEnvBuilder(
+    ctx: ?*anyopaque,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    worktree_path: []const u8,
+) anyerror!worker_env.WorkerEnv {
+    _ = ctx;
+    _ = io;
+    _ = worktree_path;
+    var map = std.process.Environ.Map.init(allocator);
+    errdefer map.deinit();
+    try map.put("PATH", "/tmp/planar-execute-test-shim");
+    try map.put(SENTINEL_WORKER_VAR, SENTINEL_WORKER_VAL);
+    return .{
+        .shim_dir = try allocator.dupe(u8, "/tmp/planar-execute-test-shim-nonexistent"),
+        .path = try allocator.dupe(u8, "/tmp/planar-execute-test-shim"),
+        .env_map = map,
+    };
+}
+
+test "M4 agent: non-null env_builder → constrained env reaches the spawn boundary (task 3243)" {
+    // Pins the full thread: AgentDriver.env_builder is called inside
+    // driveAgentCall, its WorkerEnv.env_map is threaded into
+    // SpawnInputs.env_map, and the FakeSpawner records it. Cutting any link
+    // (e.g. dropping env_map from SpawnInputs) makes the sentinel disappear.
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+        .env_builder = sentinelEnvBuilder,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+
+    const src =
+        \\return {
+        \\  meta = { name = "m4-envwire", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    ctx.agent("the brief", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/abs/wt",
+        \\      claim_token = "tok-env",
+        \\      task_slug = "ts1",
+        \\    })
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:m4-envwire", &.{}, &host, &err_buf);
+
+    try std.testing.expectEqual(@as(usize, 1), fake.invocations.items.len);
+    const inv = fake.invocations.items[0];
+    // The sentinel var produced by the env_builder MUST be present in the
+    // recorded snapshot — proving the env_builder ran AND its env reached the
+    // spawn boundary (not an inherited/empty env).
+    const got = inv.envGet(SENTINEL_WORKER_VAR) orelse return error.TestSentinelEnvMissing;
+    try std.testing.expectEqualStrings(SENTINEL_WORKER_VAL, got);
+    // And it was a non-empty snapshot (a null env_map would record zero pairs).
+    try std.testing.expect(inv.env_pairs.len >= 2);
 }
