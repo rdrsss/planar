@@ -418,6 +418,101 @@ pub fn teardownCycle(
 }
 
 // ---------------------------------------------------------------------------
+// Fan-in merge — task 3177 (M4): merge a completed cycle branch into epic.
+// ---------------------------------------------------------------------------
+
+/// Outcome of `mergeCycleIntoEpic`.
+///
+/// - `clean`     — the merge committed cleanly (or was a fast-forward / no-op).
+/// - `conflict`  — git reported merge conflicts. The cycle worktree is LEFT IN
+///                 PLACE and the merge in the epic worktree has been aborted
+///                 (`git merge --abort`). The caller is expected to open a
+///                 `planar question` and stop the cycle; the harness MUST NOT
+///                 attempt auto-resolution (tech-spec appendix § "Conflict
+///                 resolution at fan-in").
+pub const MergeResult = enum { clean, conflict };
+
+/// mergeCycleIntoEpic runs `git -C <epic_worktree> merge --no-ff
+/// <cycle_branch> -m "<commit_msg>"` from inside the epic worktree.
+///
+/// On clean merge the function returns `MergeResult.clean`. On conflict the
+/// function aborts the merge (`git merge --abort`) so the epic worktree is left
+/// in a consistent pre-merge state, and returns `MergeResult.conflict`. The
+/// cycle worktree is NOT torn down on conflict — the operator may want to
+/// inspect it before opening a question.
+///
+/// `commit_msg` is the merge-commit subject. The caller chooses it (typically
+/// `"Plan <id> task <id>: <task title>"`).
+///
+/// Pre-conditions: the epic worktree exists (call `ensureEpic` first) and the
+/// cycle branch exists (the worker has committed at least once on it).
+pub fn mergeCycleIntoEpic(
+    allocator: std.mem.Allocator,
+    io: Io,
+    repo_root: []const u8,
+    plan_slug: []const u8,
+    task_slug: []const u8,
+    commit_msg: []const u8,
+) WorktreeError!MergeResult {
+    const epic_wt = try epicPath(allocator, repo_root, plan_slug);
+    defer allocator.free(epic_wt);
+
+    const cycle_ref = try cycleBranch(allocator, plan_slug, task_slug);
+    defer allocator.free(cycle_ref);
+
+    // Run the merge from inside the epic worktree (`git -C <epic_wt>`). The
+    // `--no-ff` flag forces a merge commit even when fast-forwardable, so the
+    // cycle's identity is preserved in the epic history (the integration view
+    // shows "merged cycle X" as a discrete commit).
+    const merged = gitOk(allocator, io, &.{
+        "-C", epic_wt,    "merge",   "--no-ff",
+        "-m", commit_msg, cycle_ref,
+    }) catch |err| return err;
+
+    if (merged) return .clean;
+
+    // Conflict path: abort so the epic worktree is restored. `git merge
+    // --abort` is itself a fallible operation (no merge in progress, etc.); we
+    // call it best-effort — the caller already knows there is a conflict.
+    _ = gitOk(allocator, io, &.{ "-C", epic_wt, "merge", "--abort" }) catch {};
+    return .conflict;
+}
+
+// ---------------------------------------------------------------------------
+// Pre/post commit sampling — task 3180 supporting helper.
+// ---------------------------------------------------------------------------
+
+/// branchHead returns the commit SHA at the tip of `<branch>` in `repo_root`,
+/// or null when the branch does not exist (e.g. the worker has not yet created
+/// the cycle branch). Used by the terminal-fallback decision matrix to compare
+/// pre-spawn vs post-spawn cycle HEADs and infer commit-presence.
+///
+/// The returned slice is heap-owned (caller frees) on success; trimmed of the
+/// trailing newline `git rev-parse` emits.
+pub fn branchHead(
+    allocator: std.mem.Allocator,
+    io: Io,
+    repo_root: []const u8,
+    branch: []const u8,
+) WorktreeError!?[]u8 {
+    const exists = branchExists(allocator, io, repo_root, branch) catch |err| return err;
+    if (!exists) return null;
+
+    const out = try runGit(allocator, io, &.{ "-C", repo_root, "rev-parse", branch });
+    // Trim trailing whitespace (rev-parse appends a newline).
+    const trimmed = std.mem.trim(u8, out, " \t\r\n");
+    if (trimmed.len == out.len) {
+        return out; // no trim needed
+    }
+    const owned = allocator.dupe(u8, trimmed) catch {
+        allocator.free(out);
+        return WorktreeError.OutOfMemory;
+    };
+    allocator.free(out);
+    return owned;
+}
+
+// ---------------------------------------------------------------------------
 // Startup reconcile pass — task 3174 (m3-startup-reconcile).
 //
 // On startup a prior `planar-execute` run may have crashed mid-cycle, leaving
@@ -1418,4 +1513,165 @@ test "git worktree prune: already-deleted cycle dir → no error, metadata clean
     try std.testing.expect(findByBranch(worktrees, "cycle/planx/ghost-task") == null);
     // The epic remains.
     try std.testing.expect(findByBranch(worktrees, "epic/planx") != null);
+}
+
+// ---------------------------------------------------------------------------
+// M4 fan-in merge tests — task 3177.
+// ---------------------------------------------------------------------------
+
+test "mergeCycleIntoEpic: clean merge of a cycle with one commit lands on epic" {
+    const a = std.testing.allocator;
+    if (!gitAvailable(a)) return error.SkipZigTest;
+
+    const repo = mkTmpRepoDir(a);
+    defer a.free(repo);
+    defer rmTree(a, repo);
+    initRepo(a, repo);
+
+    var epic = try ensureEpic(a, std.testing.io, repo, "planx");
+    defer epic.deinit(a);
+    var cyc = try createCycle(a, std.testing.io, repo, "planx", "happy-task");
+    defer cyc.deinit(a);
+
+    // Commit something on the cycle branch (inside the cycle worktree).
+    runGitIn(a, cyc.path, &.{ "config", "user.email", "test@planar.local" });
+    runGitIn(a, cyc.path, &.{ "config", "user.name", "Planar Test" });
+    runGitIn(a, cyc.path, &.{ "commit", "--allow-empty", "-m", "worker commit" });
+
+    // Configure the epic worktree's identity so the merge commit succeeds.
+    runGitIn(a, epic.path, &.{ "config", "user.email", "test@planar.local" });
+    runGitIn(a, epic.path, &.{ "config", "user.name", "Planar Test" });
+
+    const result = try mergeCycleIntoEpic(a, std.testing.io, repo, "planx", "happy-task", "merge: happy-task");
+    try std.testing.expectEqual(MergeResult.clean, result);
+
+    // Epic tip now reachable-from-includes the cycle tip (the merge commit
+    // parent-walk includes cycle's tip). Cheapest probe: `git merge-base
+    // --is-ancestor cycle/planx/happy-task epic/planx` exits 0.
+    const is_anc = try gitOk(a, std.testing.io, &.{
+        "-C",
+        repo,
+        "merge-base",
+        "--is-ancestor",
+        "cycle/planx/happy-task",
+        "epic/planx",
+    });
+    try std.testing.expect(is_anc);
+}
+
+test "mergeCycleIntoEpic: conflict path returns .conflict and aborts (epic worktree clean)" {
+    const a = std.testing.allocator;
+    if (!gitAvailable(a)) return error.SkipZigTest;
+
+    const repo = mkTmpRepoDir(a);
+    defer a.free(repo);
+    defer rmTree(a, repo);
+    initRepo(a, repo);
+
+    // Configure identity on the main repo so subsequent commits succeed.
+    runGitIn(a, repo, &.{ "config", "user.email", "test@planar.local" });
+    runGitIn(a, repo, &.{ "config", "user.name", "Planar Test" });
+
+    var epic = try ensureEpic(a, std.testing.io, repo, "conf");
+    defer epic.deinit(a);
+    var cyc = try createCycle(a, std.testing.io, repo, "conf", "ct1");
+    defer cyc.deinit(a);
+
+    // Identity inside both worktrees.
+    runGitIn(a, epic.path, &.{ "config", "user.email", "test@planar.local" });
+    runGitIn(a, epic.path, &.{ "config", "user.name", "Planar Test" });
+    runGitIn(a, cyc.path, &.{ "config", "user.email", "test@planar.local" });
+    runGitIn(a, cyc.path, &.{ "config", "user.name", "Planar Test" });
+
+    // Both sides modify the same file with different content → real conflict.
+    // Cycle side: write "from-cycle\n" to README.md and commit.
+    {
+        const wf = std.fs.path.join(a, &.{ cyc.path, "README.md" }) catch unreachable;
+        defer a.free(wf);
+        std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = wf, .data = "from-cycle\n" }) catch
+            return error.SkipZigTest;
+    }
+    runGitIn(a, cyc.path, &.{ "add", "README.md" });
+    runGitIn(a, cyc.path, &.{ "commit", "-m", "cycle writes readme" });
+
+    // Epic side: write "from-epic\n" to README.md and commit.
+    {
+        const wf = std.fs.path.join(a, &.{ epic.path, "README.md" }) catch unreachable;
+        defer a.free(wf);
+        std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = wf, .data = "from-epic\n" }) catch
+            return error.SkipZigTest;
+    }
+    runGitIn(a, epic.path, &.{ "add", "README.md" });
+    runGitIn(a, epic.path, &.{ "commit", "-m", "epic writes readme" });
+
+    const result = try mergeCycleIntoEpic(a, std.testing.io, repo, "conf", "ct1", "merge attempt");
+    try std.testing.expectEqual(MergeResult.conflict, result);
+
+    // After conflict + abort, the epic worktree is clean (no MERGE_HEAD).
+    const has_merge_head = std.Io.Dir.cwd().openDir(std.testing.io, epic.path, .{}) catch return;
+    var dir = has_merge_head;
+    defer dir.close(std.testing.io);
+    // Probe for .git/MERGE_HEAD by attempting to open it; absent ⇒ aborted.
+    const merge_head_path = std.fs.path.join(a, &.{ epic.path, ".git", "MERGE_HEAD" }) catch unreachable;
+    defer a.free(merge_head_path);
+    // .git inside a worktree is a file (gitlink), so MERGE_HEAD sits next to
+    // the real git dir under .git/worktrees/<name>/. The simplest probe is
+    // `git -C <epic.path> rev-parse MERGE_HEAD` — succeeds iff a merge is in
+    // progress.
+    const in_merge = try gitOk(a, std.testing.io, &.{ "-C", epic.path, "rev-parse", "--verify", "-q", "MERGE_HEAD" });
+    try std.testing.expect(!in_merge);
+}
+
+test "branchHead: returns null for absent branch, sha for present (task 3180 helper)" {
+    const a = std.testing.allocator;
+    if (!gitAvailable(a)) return error.SkipZigTest;
+
+    const repo = mkTmpRepoDir(a);
+    defer a.free(repo);
+    defer rmTree(a, repo);
+    initRepo(a, repo);
+
+    // Absent branch.
+    const absent = try branchHead(a, std.testing.io, repo, "no-such-branch");
+    try std.testing.expect(absent == null);
+
+    // Present branch (master, created by initRepo).
+    const present = try branchHead(a, std.testing.io, repo, "master");
+    try std.testing.expect(present != null);
+    defer if (present) |p| a.free(p);
+    // SHA is hex, 40 chars (or 64 for sha256; allow either).
+    try std.testing.expect(present.?.len == 40 or present.?.len == 64);
+    for (present.?) |ch| {
+        try std.testing.expect(std.ascii.isHex(ch));
+    }
+}
+
+test "branchHead: detects a new commit on the cycle branch (commit-presence proxy)" {
+    const a = std.testing.allocator;
+    if (!gitAvailable(a)) return error.SkipZigTest;
+
+    const repo = mkTmpRepoDir(a);
+    defer a.free(repo);
+    defer rmTree(a, repo);
+    initRepo(a, repo);
+
+    var epic = try ensureEpic(a, std.testing.io, repo, "cp");
+    defer epic.deinit(a);
+    var cyc = try createCycle(a, std.testing.io, repo, "cp", "ct");
+    defer cyc.deinit(a);
+
+    const before = try branchHead(a, std.testing.io, repo, "cycle/cp/ct");
+    try std.testing.expect(before != null);
+    defer if (before) |b| a.free(b);
+
+    // Worker commits something on the cycle branch.
+    runGitIn(a, cyc.path, &.{ "config", "user.email", "t@p.l" });
+    runGitIn(a, cyc.path, &.{ "config", "user.name", "Planar" });
+    runGitIn(a, cyc.path, &.{ "commit", "--allow-empty", "-m", "worker did work" });
+
+    const after = try branchHead(a, std.testing.io, repo, "cycle/cp/ct");
+    try std.testing.expect(after != null);
+    defer if (after) |x| a.free(x);
+
+    try std.testing.expect(!std.mem.eql(u8, before.?, after.?));
 }
