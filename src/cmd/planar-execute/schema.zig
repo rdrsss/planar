@@ -226,17 +226,15 @@ fn spawnBin(
     io: Io,
     bin_name: []const u8,
 ) SchemaError![]u8 {
-    // Build argv: [bin_name, "schema"].
-    var argv = std.ArrayList([]const u8).empty;
-    defer argv.deinit(allocator);
-    argv.append(allocator, bin_name) catch return SchemaError.OutOfMemory;
-    argv.append(allocator, "schema") catch return SchemaError.OutOfMemory;
+    // Build argv: fixed 2-element stack array — always [bin_name, "schema"].
+    // No ArrayList needed; the size is a compile-time constant. (task 3237)
+    const argv = [_][]const u8{ bin_name, "schema" };
 
     // 512 KiB cap: generous for schema growth, safe against pathological output.
     const stdout_limit: usize = 512 * 1024;
 
     const result = std.process.run(allocator, io, .{
-        .argv = argv.items,
+        .argv = &argv,
         .stdout_limit = Io.Limit.limited(stdout_limit),
         .stderr_limit = Io.Limit.limited(4096),
     }) catch return SchemaError.SubprocessFailed;

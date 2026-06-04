@@ -215,14 +215,16 @@ fn spawnPlanar(
     argv_tail: []const []const u8,
     stdout_limit: usize,
 ) StateError![]u8 {
-    // Build argv: ["planar"] ++ argv_tail.
-    var argv = std.ArrayList([]const u8).empty;
-    defer argv.deinit(allocator);
-    argv.append(allocator, "planar") catch return StateError.OutOfMemory;
-    for (argv_tail) |arg| argv.append(allocator, arg) catch return StateError.OutOfMemory;
+    // Build argv: ["planar"] ++ argv_tail. argv_tail is variable-length so we
+    // cannot use a comptime stack array. One exact-size alloc collapses N
+    // per-append OOM branches into a single failure point. (task 3237)
+    const argv = allocator.alloc([]const u8, argv_tail.len + 1) catch return StateError.OutOfMemory;
+    defer allocator.free(argv);
+    argv[0] = "planar";
+    for (argv_tail, 0..) |arg, i| argv[i + 1] = arg;
 
     const result = std.process.run(allocator, io, .{
-        .argv = argv.items,
+        .argv = argv,
         .stdout_limit = Io.Limit.limited(stdout_limit),
         .stderr_limit = Io.Limit.limited(4096),
     }) catch return StateError.SubprocessFailed;
@@ -321,8 +323,15 @@ pub fn testSpecStatus(
         const line = std.mem.trim(u8, raw_line, " \t\r");
         if (line.len == 0) continue;
 
-        // Determine line type by checking for the anchor key.
-        if (std.mem.indexOf(u8, line, "\"anchor_plan_id\"") != null) {
+        // Determine line type by checking the FIRST JSON key of the line.
+        // The emitter's contract: anchor summary lines always start with
+        // `{"anchor_plan_id":...}`; per-plan rows start with `{"plan_id":...}`.
+        // We check that `"anchor_plan_id"` is the leading key (immediately after
+        // the opening `{` with optional whitespace), not a free substring scan —
+        // a per-plan row whose title value contains the literal text
+        // `"anchor_plan_id"` would otherwise be misclassified. (task 3234)
+        const body = std.mem.trimStart(u8, line, "{ \t");
+        if (std.mem.startsWith(u8, body, "\"anchor_plan_id\"")) {
             // Anchor summary line.
             const parsed_anchor = std.json.parseFromSlice(TestSpecAnchor, allocator, line, .{
                 .ignore_unknown_fields = true,
@@ -669,7 +678,12 @@ test "testSpecStatus helper: NDJSON fixture — per-plan rows and anchor decoded
     while (lines.next()) |raw| {
         const line = std.mem.trim(u8, raw, " \t\r");
         if (line.len == 0) continue;
-        if (std.mem.indexOf(u8, line, "\"anchor_plan_id\"") != null) {
+        // Mirror the production classification rule (task 3234): check that
+        // "anchor_plan_id" is the FIRST key in the JSON object, not a free
+        // substring scan that would misclassify a per-plan row whose title
+        // contains the literal text "anchor_plan_id".
+        const body = std.mem.trimStart(u8, line, "{ \t");
+        if (std.mem.startsWith(u8, body, "\"anchor_plan_id\"")) {
             const p = try std.json.parseFromSlice(TestSpecAnchor, std.testing.allocator, line, .{
                 .ignore_unknown_fields = true,
             });
@@ -749,4 +763,74 @@ test "testSpecStatus helper: malformed coverage line → ParseFailed equivalent"
         .ignore_unknown_fields = true,
     });
     try std.testing.expectError(error.SyntaxError, result);
+}
+
+// (task 3234) RED-THEN-GREEN: per-plan row whose title contains the literal
+// substring "anchor_plan_id" must NOT be misclassified as the anchor line.
+//
+// With the old `std.mem.indexOf(u8, line, "\"anchor_plan_id\"") != null` logic
+// the per-plan row below would match and be decoded as a TestSpecAnchor (wrong).
+// With the new first-key prefix check it is correctly decoded as a PlanCoverage.
+test "testSpecStatus helper: per-plan row with anchor_plan_id in title is classified correctly (task 3234)" {
+    // The pathological fixture: one per-plan row whose title contains the
+    // literal text `anchor_plan_id`, plus a genuine anchor summary line.
+    const ndjson =
+        \\{"plan_id":500,"title":"M-anchor_plan_id-naming","total_tasks":3,"tasks_with_slug":2,"tasks_covered":1,"happy":1,"empty":0,"error":0,"edge":0,"other":0}
+        \\{"anchor_plan_id":492,"total_tasks":3,"tasks_with_slug":2,"tasks_covered":1,"total_scenarios":1}
+    ;
+
+    var per_plan = std.ArrayList(PlanCoverage).empty;
+    defer {
+        for (per_plan.items) |row| std.testing.allocator.free(row.title);
+        per_plan.deinit(std.testing.allocator);
+    }
+    var maybe_anchor: ?TestSpecAnchor = null;
+
+    var lines = std.mem.splitScalar(u8, ndjson, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0) continue;
+        // Production classification rule (task 3234): first-key prefix check.
+        const body = std.mem.trimStart(u8, line, "{ \t");
+        if (std.mem.startsWith(u8, body, "\"anchor_plan_id\"")) {
+            const p = try std.json.parseFromSlice(TestSpecAnchor, std.testing.allocator, line, .{
+                .ignore_unknown_fields = true,
+            });
+            defer p.deinit();
+            maybe_anchor = p.value;
+        } else {
+            const p = try std.json.parseFromSlice(PlanCoverage, std.testing.allocator, line, .{
+                .ignore_unknown_fields = true,
+            });
+            defer p.deinit();
+            const title_copy = try std.testing.allocator.dupe(u8, p.value.title);
+            errdefer std.testing.allocator.free(title_copy);
+            const row: PlanCoverage = .{
+                .plan_id = p.value.plan_id,
+                .title = title_copy,
+                .total_tasks = p.value.total_tasks,
+                .tasks_with_slug = p.value.tasks_with_slug,
+                .tasks_covered = p.value.tasks_covered,
+                .happy = p.value.happy,
+                .empty = p.value.empty,
+                .@"error" = p.value.@"error",
+                .edge = p.value.edge,
+                .other = p.value.other,
+            };
+            try per_plan.append(std.testing.allocator, row);
+        }
+    }
+
+    // The per-plan row with the poisoned title must be classified as PlanCoverage.
+    try std.testing.expectEqual(@as(usize, 1), per_plan.items.len);
+    try std.testing.expectEqual(@as(u64, 500), per_plan.items[0].plan_id);
+    try std.testing.expectEqualStrings("M-anchor_plan_id-naming", per_plan.items[0].title);
+    try std.testing.expectEqual(@as(u64, 3), per_plan.items[0].total_tasks);
+    try std.testing.expectEqual(@as(u64, 1), per_plan.items[0].happy);
+
+    // The genuine anchor line must be classified as TestSpecAnchor.
+    const anchor = maybe_anchor orelse return error.TestUnexpectedNull;
+    try std.testing.expectEqual(@as(u64, 492), anchor.anchor_plan_id);
+    try std.testing.expectEqual(@as(u64, 3), anchor.total_tasks);
+    try std.testing.expectEqual(@as(u64, 1), anchor.total_scenarios);
 }
