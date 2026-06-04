@@ -1041,19 +1041,254 @@ fn hostAgent(L: ?*c.lua_State) callconv(.c) c_int {
     return driveAgentCallPreYield(L, hs, driver, prompt, opts);
 }
 
-/// hostParallel — `parallel({thunks})`. RECORDING STUB. Records the count of
-/// thunks in the passed array (the call shape); does NOT drive any thunk
-/// (scheduling is M5). Returns an empty stub results array.
+/// ParallelChild is the per-thunk drive bookkeeping for one `parallel` call.
+/// One entry per thunk, in ORIGINAL order (so `results[i]` lands in the right
+/// slot regardless of completion order).
+const ParallelChild = struct {
+    /// The child coroutine running thunk[i]. Anchored against GC for the whole
+    /// `parallel` lifetime by an anchor table on the parent stack (see below).
+    co: *c.lua_State,
+    /// Has this child been resumed at least once (its thunk started running)?
+    started: bool = false,
+    /// Has this child finished (returned or errored)? Its result is captured.
+    done: bool = false,
+    /// Is this child currently parked on an in-flight worker (yielded from
+    /// agent())? True between the yield and the wait-for-any that resumes it.
+    in_flight: bool = false,
+};
+
+/// hostParallel — `parallel({thunks})`. The N-way concurrency barrier (plan 492
+/// M5 task 3183), modeled on the Claude Workflow tool's `parallel`:
+///
+///   - Input is a Lua array of THUNKS (zero-arg functions); each typically calls
+///     `agent()` (which yields).
+///   - BARRIER: returns only when ALL thunks have completed, as a results ARRAY
+///     where `results[i]` = thunk[i]'s return value, in ORIGINAL order
+///     regardless of completion order.
+///   - CONCURRENCY: all thunks run concurrently (their workers in flight at
+///     once), capped at MAX_SLOTS (16). N>MAX_SLOTS thunks QUEUE and start as
+///     slots free.
+///   - ERROR HANDLING: a thunk that errors (or whose agent() errors) resolves to
+///     `nil` in the results array — `parallel` itself never fails.
+///
+/// ## Drive shape (nested drive from the C call — main coroutine stays parked)
+///
+/// `hostParallel` runs on the main `run()` coroutine. It does NOT yield the main
+/// coroutine: `parallel` is a SYNCHRONOUS barrier from the script's view. It
+/// instead drives N CHILD coroutines itself via `lua_resume`. When a child calls
+/// `agent()` it `lua_yield`s back to THIS function's resume call (not runModule's
+/// loop, because THIS function resumed the child). The child's worker is already
+/// registered in the shared scheduler slot registry by `driveAgentCallPreYield`,
+/// so `parallel` records the child as in-flight and starts the next one. Once the
+/// concurrency cap is reached (or all children started), it `waitForAny`s across
+/// the in-flight workers, finds the owning child by `slot.co`, and resumes it
+/// (its `agentContinue` produces the agent result; the thunk continues or
+/// returns).
 fn hostParallel(L: ?*c.lua_State) callconv(.c) c_int {
     const hs = hostStateUpvalue(L);
-    var n: c.lua_Integer = 0;
-    if (c.lua_type(L, 1) == c.LUA_TTABLE) n = @intCast(c.lua_rawlen(L, 1));
-    var buf: [32]u8 = undefined;
-    const shape = std.fmt.bufPrint(&buf, "{d} thunks", .{n}) catch "? thunks";
+
+    // Validate + count. A non-table arg is a script-author bug → record shape
+    // and return an empty results array (consistent with the no-fail contract).
+    if (c.lua_type(L, 1) != c.LUA_TTABLE) {
+        recordOrError(L, hs, .parallel, "0 thunks", "");
+        c.lua_createtable(L, 0, 0);
+        return 1;
+    }
+    const n: usize = @intCast(c.lua_rawlen(L, 1));
+    var shape_buf: [32]u8 = undefined;
+    const shape = std.fmt.bufPrint(&shape_buf, "{d} thunks", .{n}) catch "? thunks";
     recordOrError(L, hs, .parallel, shape, "");
-    // Stub: return an empty results array.
-    c.lua_createtable(L, 0, 0);
+
+    // Empty thunks table → empty results array.
+    if (n == 0) {
+        c.lua_createtable(L, 0, 0);
+        return 1;
+    }
+
+    const sched = hs.sched orelse {
+        _ = c.luaL_error(L, "parallel: no scheduler installed (internal wiring bug)");
+        return 0;
+    };
+
+    // Anchor table: a Lua table holding every child coroutine for the whole
+    // `parallel` lifetime so the GC cannot collect a coroutine we still hold a
+    // pointer to (the use-after-free hazard). Lives at a fixed stack index on L.
+    c.lua_createtable(L, @intCast(n), 0); // L: [..., thunks(1), anchors]
+    const anchors_idx: c_int = c.lua_absindex(L, -1);
+
+    // Results table — 1-indexed, original order. Built on L; returned at the end.
+    c.lua_createtable(L, @intCast(n), 0); // L: [..., thunks, anchors, results]
+    const results_idx: c_int = c.lua_absindex(L, -1);
+
+    // Per-child bookkeeping. Heap-allocated (N is unbounded; MAX_SLOTS only caps
+    // concurrency, not the thunk count).
+    const children = hs.allocator.alloc(ParallelChild, n) catch {
+        _ = c.luaL_error(L, "parallel: out of memory");
+        return 0;
+    };
+    defer hs.allocator.free(children);
+
+    // Materialize one child coroutine per thunk and anchor it.
+    for (0..n) |i| {
+        const co = c.lua_newthread(L) orelse {
+            _ = c.luaL_error(L, "parallel: out of memory creating coroutine");
+            return 0;
+        };
+        // Anchor the new thread (currently on L's top) into the anchor table at
+        // index i+1, which pops it from L's top. We keep the *raw pointer* in
+        // `children`; the anchor table keeps it alive against GC.
+        c.lua_rawseti(L, anchors_idx, @intCast(i + 1)); // pops thread
+        // Move thunk[i] from the thunks table onto the child coroutine's stack.
+        _ = c.lua_rawgeti(L, 1, @intCast(i + 1)); // L top: thunk[i]
+        c.lua_xmove(L, co, 1); // co: [thunk]
+        children[i] = .{ .co = co };
+    }
+
+    driveParallelChildren(L, sched, children, results_idx);
+
+    // The results table is at results_idx; make it the single return value.
+    // Push a copy to the top so we can return it (anchors + results stay on the
+    // stack but Lua returns the top `1` value).
+    c.lua_pushvalue(L, results_idx);
     return 1;
+}
+
+/// resumeStatusOf classifies a raw `lua_resume` rc the same way the scheduler
+/// does, local alias for readability inside the parallel drive.
+fn resumeStatusOf(rc: c_int) scheduler.ResumeStatus {
+    return scheduler.classifyResume(rc);
+}
+
+/// driveParallelChildren is the core N-way drive loop. It resumes children up to
+/// the concurrency cap, parks those that yield (their worker is in flight),
+/// waits-for-any when it cannot start more, resumes the owning child, and
+/// captures each child's terminal result into `results[i]` (original order;
+/// errors → nil). Returns when every child is done.
+fn driveParallelChildren(
+    L: ?*c.lua_State,
+    sched: *scheduler.Scheduler,
+    children: []ParallelChild,
+    results_idx: c_int,
+) void {
+    const n = children.len;
+    var done_count: usize = 0;
+    var next_to_start: usize = 0;
+
+    while (done_count < n) {
+        // 1) Start as many not-yet-started children as the concurrency cap
+        // allows. A child occupies a scheduler slot only once it yields from
+        // agent(); we gate starts on free slots so N>MAX_SLOTS queues instead
+        // of erroring. A pure-Lua thunk (no agent) returns on its first resume
+        // without ever occupying a slot.
+        while (next_to_start < n and sched.inflightCount() < scheduler.MAX_SLOTS) {
+            const i = next_to_start;
+            next_to_start += 1;
+            if (children[i].done) continue;
+            children[i].started = true;
+            done_count += resumeOneChild(L, children, i, results_idx);
+        }
+
+        // If everything is done, we're finished.
+        if (done_count >= n) break;
+
+        // 2) Nothing more can be started right now (cap reached or all started).
+        // If there are in-flight workers, wait for ANY to finish and resume its
+        // owning child. If there are NONE in flight yet not all started, the cap
+        // logic above will start more on the next loop iteration.
+        if (sched.inflightCount() > 0) {
+            const slot_idx = sched.waitForAny() catch {
+                // No in-flight worker (NoInflight) or a spawn poll failed
+                // (SpawnFailed). Either way we cannot make progress on the
+                // parked children: resolve every not-done child to nil and bail.
+                for (children, 0..) |*ch, i| {
+                    if (!ch.done) {
+                        setResultNil(L, results_idx, i);
+                        ch.done = true;
+                        done_count += 1;
+                    }
+                }
+                break;
+            };
+            // Find the child that owns this slot (keyed by coroutine pointer).
+            const owner_co = sched.slot(slot_idx).co.?;
+            const owner = findChildByCo(children, owner_co) orelse {
+                // Should not happen: a terminal worker whose coroutine is not a
+                // parallel child. Release the slot's outcome to avoid a leak.
+                var leaked = sched.slot(slot_idx).outcome;
+                if (leaked) |*o| o.deinit(sched.allocator);
+                sched.slot(slot_idx).outcome = null;
+                sched.releaseSlot(slot_idx);
+                continue;
+            };
+            children[owner].in_flight = false;
+            done_count += resumeOneChild(L, children, owner, results_idx);
+        } else if (next_to_start >= n) {
+            // All started, none in flight, but not all done — every remaining
+            // child must have finished already; loop guard handles it. Defensive
+            // break to avoid a spin.
+            break;
+        }
+    }
+}
+
+/// resumeOneChild resumes child `i` once and reacts to the outcome. Returns 1 if
+/// the child reached a terminal state (done — result captured), 0 if it yielded
+/// (parked on an in-flight worker). On terminal it captures the return value
+/// (or nil on error) into `results[i]`.
+fn resumeOneChild(
+    L: ?*c.lua_State,
+    children: []ParallelChild,
+    i: usize,
+    results_idx: c_int,
+) usize {
+    const co = children[i].co;
+    var nres: c_int = 0;
+    const rc = c.lua_resume(co, L, 0, &nres);
+    switch (resumeStatusOf(rc)) {
+        .yielded => {
+            // The child's agent() registered a worker + yielded. Park it.
+            children[i].in_flight = true;
+            return 0;
+        },
+        .done => {
+            // Capture the first return value (if any) into results[i]; nil if
+            // the thunk returned nothing.
+            if (nres >= 1) {
+                c.lua_xmove(co, L, 1); // move return value onto L's top
+                // discard any extra returns left on co (keep co stack tidy).
+                if (nres > 1) c.lua_pop(co, nres - 1);
+                c.lua_rawseti(L, results_idx, @intCast(i + 1)); // pops value
+            } else {
+                setResultNil(L, results_idx, i);
+            }
+            children[i].done = true;
+            return 1;
+        },
+        .err => {
+            // A thunk (or its agent()) errored → results[i] = nil. `parallel`
+            // never propagates the error. Pop the error object off co's stack.
+            c.lua_settop(co, 0);
+            setResultNil(L, results_idx, i);
+            children[i].done = true;
+            return 1;
+        },
+    }
+}
+
+/// setResultNil sets `results[i+1] = nil`.
+fn setResultNil(L: ?*c.lua_State, results_idx: c_int, i: usize) void {
+    c.lua_pushnil(L);
+    c.lua_rawseti(L, results_idx, @intCast(i + 1));
+}
+
+/// findChildByCo returns the index of the child whose coroutine pointer matches
+/// `co`, or null if none (used to map a terminal scheduler slot back to the
+/// owning parallel child).
+fn findChildByCo(children: []ParallelChild, co: *c.lua_State) ?usize {
+    for (children, 0..) |ch, i| {
+        if (ch.co == co) return i;
+    }
+    return null;
 }
 
 /// hostPipeline — `pipeline(items, ...stages)`. RECORDING STUB. Records the item
@@ -1715,13 +1950,14 @@ pub fn runModule(
     // outcome on resume). The scheduler's spawner comes from the driver.
     var sched_storage: scheduler.Scheduler = undefined;
     if (host) |hs| {
-        sched_storage = scheduler.Scheduler.init(hs.allocator, blk: {
-            // The driver's Io is the genuine subprocess Io; for pure-Lua hosts
-            // (no driver) there is no spawning, so any Io is fine — borrow the
-            // driver's when present, else a placeholder is never used.
-            if (hs.agent_driver) |d| break :blk d.io;
-            break :blk undefined_io;
-        });
+        // The drive Io comes from the driver (the genuine subprocess Io) when a
+        // driver is installed. For pure-Lua hosts (no driver → no spawning → no
+        // worker ever registered) the scheduler's Io stays NULL — the
+        // worker-drive paths are unreachable, and Scheduler.unwrapIo traps loudly
+        // if a future wiring bug ever reaches them. This replaces the former
+        // `undefined_io` landmine (plan 492 task 3260): no `undefined` Io exists.
+        const drive_io: ?std.Io = if (hs.agent_driver) |d| d.io else null;
+        sched_storage = scheduler.Scheduler.init(hs.allocator, drive_io);
         if (hs.agent_driver) |d| sched_storage.spawner = d.spawner;
         hs.sched = &sched_storage;
     }
@@ -1776,12 +2012,6 @@ fn findInflightSlot(sched: *scheduler.Scheduler, co: *c.lua_State) ?usize {
     }
     return null;
 }
-
-/// undefined_io is a never-dereferenced Io placeholder for the pure-Lua run
-/// path (no driver → no spawning → the scheduler's io is unused). Pure-Lua
-/// workflows finish on the first resume (LUA_OK) and never register a worker,
-/// so `driveInflight` (the only consumer of `Scheduler.io`) is never reached.
-const undefined_io: std.Io = undefined;
 
 /// callRun is a backwards-compatible wrapper for runModule with no HostState
 /// (ctx carries only `args`, the M1 shape). Existing unit tests that exercise
@@ -3599,4 +3829,259 @@ test "M5 scheduler: Lua error BEFORE any agent() call propagates (pure-coroutine
     try std.testing.expectError(LuaError.LuaRuntimeError, err);
     const msg = std.mem.span(@as([*:0]const u8, @ptrCast(&err_buf)));
     try std.testing.expect(std.mem.indexOf(u8, msg, "boom before agent") != null);
+}
+
+// ---------------------------------------------------------------------------
+// M5 parallel() — N-way concurrency barrier (task 3183).
+//
+// All tests drive the FakeSpawner's async surface (start → poll* → terminal)
+// so there is NO live process cost. `poll_until_done_seq` models per-worker
+// completion order; `peak_inflight` proves genuine concurrency (not sequential)
+// and the MAX_SLOTS queueing cap.
+// ---------------------------------------------------------------------------
+
+test "M5 parallel: N=3 all succeed, OUT-OF-ORDER completion yields ORIGINAL-ORDER results + proves concurrency" {
+    // Three thunks each call agent() then return a distinct marker. The fakes
+    // are tuned so completion order is child1 → child2 → child0 (NOT the
+    // registration order 0,1,2). We assert:
+    //   * results[i] is thunk[i]'s return value, in ORIGINAL order, and
+    //   * all three workers were in flight at once (peak_inflight == 3),
+    //     proving concurrency rather than sequential start→wait→start.
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    // child0 needs 3 polls, child1 0 (terminal first), child2 1 → completion
+    // order: 1, 2, 0 (out of registration order).
+    const seq = [_]u32{ 3, 0, 1 };
+    fake.poll_until_done_seq = &seq;
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+
+    const src =
+        \\return {
+        \\  meta = { name = "m5-par3", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local function mk(tag)
+        \\      return function()
+        \\        ctx.agent("brief-" .. tag, { role = "coder", worktree_path = "/tmp/" .. tag, claim_token = "t-" .. tag, task_slug = tag })
+        \\        return "result-" .. tag
+        \\      end
+        \\    end
+        \\    local results = ctx.parallel({ mk("zero"), mk("one"), mk("two") })
+        \\    assert(#results == 3, "len: " .. tostring(#results))
+        \\    assert(results[1] == "result-zero", "r1: " .. tostring(results[1]))
+        \\    assert(results[2] == "result-one", "r2: " .. tostring(results[2]))
+        \\    assert(results[3] == "result-two", "r3: " .. tostring(results[3]))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    runModule(src, "test:m5-par3", &.{}, &host, &err_buf) catch |e| {
+        std.debug.print("parallel N=3 failed: {s}\n", .{std.mem.span(@as([*:0]const u8, @ptrCast(&err_buf)))});
+        return e;
+    };
+
+    // Three workers started, all concurrent (peak == 3 proves not-sequential).
+    try std.testing.expectEqual(@as(u32, 3), fake.start_count);
+    try std.testing.expectEqual(@as(u32, 3), fake.peak_inflight);
+    try std.testing.expectEqual(@as(u32, 0), fake.live_inflight);
+}
+
+test "M5 parallel: a thunk that errors resolves to nil; siblings still succeed; parallel returns normally" {
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+
+    // Middle thunk raises a Lua error (a thunk-level throw) → results[2] == nil.
+    // The other two each agent() + return their marker.
+    const src =
+        \\return {
+        \\  meta = { name = "m5-par-err", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local ok1 = function()
+        \\      ctx.agent("b1", { role = "coder", worktree_path = "/tmp/1", claim_token = "t1", task_slug = "s1" })
+        \\      return "ok1"
+        \\    end
+        \\    local boom = function() error("thunk blew up") end
+        \\    local ok3 = function()
+        \\      ctx.agent("b3", { role = "coder", worktree_path = "/tmp/3", claim_token = "t3", task_slug = "s3" })
+        \\      return "ok3"
+        \\    end
+        \\    local r = ctx.parallel({ ok1, boom, ok3 })
+        \\    assert(#r >= 1, "len got: " .. tostring(#r))
+        \\    assert(r[1] == "ok1", "r1: " .. tostring(r[1]))
+        \\    assert(r[2] == nil, "r2 should be nil, got: " .. tostring(r[2]))
+        \\    assert(r[3] == "ok3", "r3: " .. tostring(r[3]))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    runModule(src, "test:m5-par-err", &.{}, &host, &err_buf) catch |e| {
+        std.debug.print("parallel err-thunk failed: {s}\n", .{std.mem.span(@as([*:0]const u8, @ptrCast(&err_buf)))});
+        return e;
+    };
+    // Only the two non-erroring thunks ever spawned a worker.
+    try std.testing.expectEqual(@as(u32, 2), fake.start_count);
+}
+
+test "M5 parallel: N=20 > MAX_SLOTS queues — all 20 results return, at most MAX_SLOTS in flight at once" {
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    // Each worker takes one poll to finish, forcing the drive loop to actually
+    // cycle workers through the slot registry (so queueing is exercised).
+    fake.poll_until_done = 1;
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+
+    const src =
+        \\return {
+        \\  meta = { name = "m5-par20", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local thunks = {}
+        \\    for i = 1, 20 do
+        \\      local idx = i
+        \\      thunks[i] = function()
+        \\        ctx.agent("b", { role = "coder", worktree_path = "/tmp/w" .. idx, claim_token = "t" .. idx, task_slug = "s" .. idx })
+        \\        return idx
+        \\      end
+        \\    end
+        \\    local r = ctx.parallel(thunks)
+        \\    assert(#r == 20, "len: " .. tostring(#r))
+        \\    for i = 1, 20 do
+        \\      assert(r[i] == i, "r[" .. i .. "] = " .. tostring(r[i]))
+        \\    end
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    runModule(src, "test:m5-par20", &.{}, &host, &err_buf) catch |e| {
+        std.debug.print("parallel N=20 failed: {s}\n", .{std.mem.span(@as([*:0]const u8, @ptrCast(&err_buf)))});
+        return e;
+    };
+    try std.testing.expectEqual(@as(u32, 20), fake.start_count);
+    // The concurrency cap held: never more than MAX_SLOTS in flight at once.
+    try std.testing.expect(fake.peak_inflight <= scheduler.MAX_SLOTS);
+    // And it actually queued (more thunks than the cap → peak hit the cap).
+    try std.testing.expectEqual(@as(u32, scheduler.MAX_SLOTS), fake.peak_inflight);
+    try std.testing.expectEqual(@as(u32, 0), fake.live_inflight);
+}
+
+test "M5 parallel: empty thunks table returns an empty results array" {
+    const a = testing_alloc;
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    // No driver needed — no thunk ever calls agent().
+    const src =
+        \\return {
+        \\  meta = { name = "m5-par0", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local r = ctx.parallel({})
+        \\    assert(type(r) == "table", "type: " .. type(r))
+        \\    assert(#r == 0, "len: " .. tostring(#r))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:m5-par0", &.{}, &host, &err_buf);
+    // parallel was recorded with "0 thunks".
+    const call = findCall(&host, .parallel) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("0 thunks", call.arg0);
+}
+
+test "M5 parallel: pure-Lua thunks (no agent) return their values without registering any worker" {
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+
+    const src =
+        \\return {
+        \\  meta = { name = "m5-par-pure", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local r = ctx.parallel({
+        \\      function() return 10 end,
+        \\      function() return 20 end,
+        \\      function() return 30 end,
+        \\    })
+        \\    assert(#r == 3, "len: " .. tostring(#r))
+        \\    assert(r[1] == 10 and r[2] == 20 and r[3] == 30, "values wrong")
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:m5-par-pure", &.{}, &host, &err_buf);
+    // No worker ever started — pure-Lua thunks never call agent().
+    try std.testing.expectEqual(@as(u32, 0), fake.start_count);
+}
+
+test "M5 parallel: a thunk may call agent() MULTIPLE times (re-yield), still returns its value in order" {
+    // Proves a child that yields, resumes, then yields AGAIN is handled (the
+    // re-yield path of the drive loop), and its final return still lands in
+    // original order alongside a single-agent sibling.
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+
+    const src =
+        \\return {
+        \\  meta = { name = "m5-par-multi", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local twice = function()
+        \\      ctx.agent("a", { role = "coder", worktree_path = "/tmp/a", claim_token = "ta", task_slug = "sa" })
+        \\      ctx.agent("b", { role = "coder", worktree_path = "/tmp/b", claim_token = "tb", task_slug = "sb" })
+        \\      return "two-calls"
+        \\    end
+        \\    local once = function()
+        \\      ctx.agent("c", { role = "coder", worktree_path = "/tmp/c", claim_token = "tc", task_slug = "sc" })
+        \\      return "one-call"
+        \\    end
+        \\    local r = ctx.parallel({ twice, once })
+        \\    assert(r[1] == "two-calls", "r1: " .. tostring(r[1]))
+        \\    assert(r[2] == "one-call", "r2: " .. tostring(r[2]))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    runModule(src, "test:m5-par-multi", &.{}, &host, &err_buf) catch |e| {
+        std.debug.print("parallel multi-agent failed: {s}\n", .{std.mem.span(@as([*:0]const u8, @ptrCast(&err_buf)))});
+        return e;
+    };
+    // Three total agent() spawns: twice(2) + once(1).
+    try std.testing.expectEqual(@as(u32, 3), fake.start_count);
 }

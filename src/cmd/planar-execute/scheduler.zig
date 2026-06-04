@@ -21,18 +21,19 @@
 //! terminal) and resumes the coroutine, whose continuation reads the outcome
 //! and returns the result table to the script.
 //!
-//! ## SCOPE — single coroutine, single in-flight worker (this cycle)
+//! ## SCOPE — single coroutine (N=1) AND N-way concurrency (parallel)
 //!
-//! This module proves the yield/resume machinery for ONE coroutine driving ONE
-//! in-flight worker (N=1). For N=1 the observable behavior is IDENTICAL to M4:
-//! the script calls `agent()` and gets the same result table. The change is
-//! purely the internal mechanism (blocking → yield/resume).
+//! Task 3182 proved the yield/resume machinery for ONE coroutine driving ONE
+//! in-flight worker (N=1): `runModule` waits the single handle (`driveInflight`)
+//! and resumes. For N=1 the observable behavior is IDENTICAL to M4.
 //!
-//! The structure generalizes to N coroutines (task 3183, `parallel`): the slot
-//! registry is an array, `driveCoroutine` runs a resume loop, and the
-//! in-flight-worker drive is a `wait` on the single handle (which 3183 will
-//! generalize to wait-for-any across N handles via the `Spawner.poll` surface).
-//! No `parallel`/`pipeline` (3183/3184), no heartbeat/timeout/SIGINT (M6), no
+//! Task 3183 (`parallel`) widens the in-flight-worker registry to N slots and
+//! adds the WAIT-FOR-ANY primitives consumed by `parallel`'s N-child drive loop
+//! (in main.zig): `pollReadyOnce` (non-blocking probe of every in-use slot,
+//! returns the first terminal) and `waitForAny` (poll-loop + short sleep until
+//! ANY worker completes — the FIRST in completion order, not registration
+//! order). `inflightCount` gates the MAX_SLOTS concurrency cap so N>MAX_SLOTS
+//! children QUEUE. No `pipeline` (3184), no heartbeat/timeout/SIGINT (M6), no
 //! run-id/journal (M6/M8) here.
 //!
 //! ## State threading across the yield
@@ -90,11 +91,29 @@ pub const Scheduler = struct {
     /// scheduler still drives the coroutine, it just never registers a worker.
     spawner: ?spawn.Spawner = null,
     allocator: std.mem.Allocator,
-    io: std.Io,
+    /// The Io used to drive in-flight workers (wait/poll/sleep). OPTIONAL:
+    /// `null` for pure-Lua runs that never spawn (no `agent()` → no worker →
+    /// no driver → no genuine Io). It is set ONLY when a spawner is installed,
+    /// so the worker-drive paths can `unwrapIo()` it with a loud panic instead
+    /// of carrying an `undefined` landmine (plan 492 task 3260). The invariant:
+    /// a slot is registered only when a spawner+io pair was wired, so any code
+    /// reaching `unwrapIo` legitimately has a real Io.
+    io: ?std.Io = null,
     slots: [MAX_SLOTS]Slot = .{Slot{}} ** MAX_SLOTS,
 
-    pub fn init(allocator: std.mem.Allocator, io: std.Io) Scheduler {
+    pub fn init(allocator: std.mem.Allocator, io: ?std.Io) Scheduler {
         return .{ .allocator = allocator, .io = io };
+    }
+
+    /// unwrapIo returns the drive Io or panics loudly. Reached only by the
+    /// worker-drive paths (driveInflight/pollReadyOnce/waitForAny), which run
+    /// only after a worker was registered — which requires a spawner+io. A null
+    /// here is therefore a wiring bug, not a reachable state, and we trap it
+    /// rather than propagate `undefined` UB.
+    fn unwrapIo(self: *Scheduler) std.Io {
+        return self.io orelse @panic(
+            "scheduler: worker drive reached with no Io installed — a slot was registered without a spawner+io pair (wiring bug). See Scheduler.io (task 3260).",
+        );
     }
 
     /// registerInflight claims a free slot for the in-flight worker `handle`
@@ -129,20 +148,84 @@ pub const Scheduler = struct {
     }
 
     /// driveInflight waits the slot's in-flight worker to its terminal state
-    /// (N=1: a blocking `wait` on the single handle) and stores the outcome on
-    /// the slot. The continuation reads it from there.
-    ///
-    /// For N>1 (task 3183) this is where a wait-for-any across the in-use slots'
-    /// handles goes (poll-loop with a small sleep, or block on whichever
-    /// completes first); for N=1 a blocking wait on the one handle is exactly
-    /// correct and the scheduler resumes the single coroutine right after.
+    /// (a blocking `wait` on the single handle) and stores the outcome on the
+    /// slot. The continuation reads it from there. This is the N=1 fast path
+    /// (one coroutine, one worker) and the per-`agent()` drive in `runModule`.
     pub fn driveInflight(self: *Scheduler, idx: usize) spawn.SpawnError!void {
         const s = &self.slots[idx];
         std.debug.assert(s.in_use);
         const sp = self.spawner orelse @panic(
             "scheduler.driveInflight: no spawner installed but a worker was registered — the agent() host must only register an in-flight worker when a driver/spawner is wired.",
         );
-        s.outcome = try sp.wait(self.allocator, self.io, &s.handle);
+        s.outcome = try sp.wait(self.allocator, self.unwrapIo(), &s.handle);
+    }
+
+    /// The poll-loop sleep between non-blocking probe rounds in `waitForAny`.
+    /// A cooperative wait (no threads — the heartbeat thread is M6); ~10ms keeps
+    /// latency low without busy-spinning the CPU.
+    pub const POLL_SLEEP: std.Io.Duration = .{ .nanoseconds = 10 * std.time.ns_per_ms };
+
+    /// pollReadyOnce probes EVERY in-use slot once (non-blocking) and, on the
+    /// FIRST slot whose worker has reached terminal, stores its outcome on the
+    /// slot and returns that slot's index. Returns `null` when no in-use slot is
+    /// terminal yet (all still running) — the caller then sleeps + retries.
+    ///
+    /// This is the wait-for-any primitive for `parallel` (task 3183): polling
+    /// slot[i] never blocks on a sibling slot[j] that has not finished. A slot
+    /// that already has a stored `outcome` (driven by a prior round but not yet
+    /// consumed) is skipped — the caller consumes it via the slot index.
+    pub fn pollReadyOnce(self: *Scheduler) spawn.SpawnError!?usize {
+        const sp = self.spawner orelse @panic(
+            "scheduler.pollReadyOnce: no spawner installed but a worker was registered.",
+        );
+        const io = self.unwrapIo();
+        for (&self.slots, 0..) |*s, idx| {
+            if (!s.in_use) continue;
+            if (s.outcome != null) continue; // already terminal, awaiting consume
+            if (try sp.poll(self.allocator, io, &s.handle)) |outcome| {
+                s.outcome = outcome;
+                return idx;
+            }
+        }
+        return null;
+    }
+
+    /// waitForAny drives the in-use slots until ANY worker reaches terminal,
+    /// then returns that slot's index (its `outcome` is stored on the slot for
+    /// the caller to consume). It is a cooperative poll-loop: each round probes
+    /// every in-use slot via `pollReadyOnce`; if none is terminal it sleeps
+    /// `POLL_SLEEP_NS` and retries. Returns `error.NoInflight` if no slot is in
+    /// use (a caller bug — there is nothing to wait for).
+    ///
+    /// This is genuine wait-for-any: the FIRST worker to finish (in completion
+    /// order, NOT registration order) is the one returned, so `parallel` resumes
+    /// the owning child as soon as its worker is done regardless of order.
+    pub fn waitForAny(self: *Scheduler) error{ NoInflight, SpawnFailed }!usize {
+        // Cheap guard: nothing in flight means the caller has nothing to wait on.
+        var any_in_use = false;
+        for (&self.slots) |*s| {
+            if (s.in_use and s.outcome == null) any_in_use = true;
+        }
+        if (!any_in_use) return error.NoInflight;
+
+        while (true) {
+            const ready = self.pollReadyOnce() catch return error.SpawnFailed;
+            if (ready) |idx| return idx;
+            // No worker terminal this round — sleep briefly, then poll again.
+            // Sleep cancellation is benign here (we just re-poll immediately).
+            self.unwrapIo().sleep(POLL_SLEEP, .awake) catch {};
+        }
+    }
+
+    /// inflightCount returns the number of slots whose worker is in flight and
+    /// has NOT yet had its outcome consumed. Used by `parallel`'s drive loop to
+    /// decide when it must wait-for-any (cap reached or all children started).
+    pub fn inflightCount(self: *Scheduler) usize {
+        var n: usize = 0;
+        for (&self.slots) |*s| {
+            if (s.in_use and s.outcome == null) n += 1;
+        }
+        return n;
     }
 
     /// releaseSlot marks the slot free for reuse and clears its fields. Does NOT
@@ -262,4 +345,70 @@ test "scheduler: registry fills and reports RegistryFull beyond capacity" {
         sched.slot(i).outcome.?.deinit(a);
         sched.releaseSlot(i);
     }
+}
+
+test "scheduler: waitForAny returns the FIRST-completing slot (wait-for-any, not block-on-one)" {
+    const a = testing.allocator;
+    // Three workers with different poll countdowns so completion order ≠
+    // registration order: slot0 needs 3 polls, slot1 0, slot2 1.
+    var fake = spawn.FakeSpawnerState.init(a, 0, "OUT", "");
+    defer fake.deinit();
+    const seq = [_]u32{ 3, 0, 1 };
+    fake.poll_until_done_seq = &seq;
+
+    var sched = Scheduler.init(a, std.testing.io);
+    sched.spawner = fake.spawner();
+
+    const cos: [3]*c.lua_State = .{
+        @ptrFromInt(0x1000),
+        @ptrFromInt(0x2000),
+        @ptrFromInt(0x3000),
+    };
+    for (0..3) |k| {
+        const h = try sched.spawner.?.start(a, std.testing.io, .{
+            .role = .coder,
+            .worktree_path = "/tmp/wt",
+            .brief = "",
+            .role_spec = "",
+            .env_map = null,
+        });
+        _ = try sched.registerInflight(cos[k], h, null);
+    }
+    try testing.expectEqual(@as(usize, 3), sched.inflightCount());
+
+    // First wait-for-any: slot1 (0 remaining) completes first — proves the
+    // FIRST-completing worker is returned, not slot0 (registered first).
+    const first = try sched.waitForAny();
+    try testing.expectEqual(@as(usize, 1), first);
+    sched.slot(first).outcome.?.deinit(a);
+    sched.releaseSlot(first);
+    try testing.expectEqual(@as(usize, 2), sched.inflightCount());
+
+    // Second: slot2 (1 remaining) finishes before slot0 (3 remaining).
+    const second = try sched.waitForAny();
+    try testing.expectEqual(@as(usize, 2), second);
+    sched.slot(second).outcome.?.deinit(a);
+    sched.releaseSlot(second);
+
+    // Third: only slot0 left.
+    const third = try sched.waitForAny();
+    try testing.expectEqual(@as(usize, 0), third);
+    sched.slot(third).outcome.?.deinit(a);
+    sched.releaseSlot(third);
+
+    try testing.expectEqual(@as(usize, 0), sched.inflightCount());
+    // Nothing in flight → NoInflight.
+    try testing.expectError(error.NoInflight, sched.waitForAny());
+}
+
+test "scheduler: pure-Lua run leaves Io null and never reaches the worker drive (task 3260)" {
+    // The undefined_io replacement: a scheduler with no spawner+io is valid; the
+    // worker-drive paths are simply never reached (no worker is registered).
+    const a = testing.allocator;
+    var sched = Scheduler.init(a, null);
+    try testing.expect(sched.io == null);
+    try testing.expect(sched.spawner == null);
+    try testing.expectEqual(@as(usize, 0), sched.inflightCount());
+    // No registration ⇒ waitForAny reports NoInflight rather than touching Io.
+    try testing.expectError(error.NoInflight, sched.waitForAny());
 }

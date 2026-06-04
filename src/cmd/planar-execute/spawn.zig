@@ -88,6 +88,8 @@
 
 const std = @import("std");
 const Io = std.Io;
+const builtin = @import("builtin");
+const posix = std.posix;
 
 const role_model = @import("role_model.zig");
 const worker_env = @import("worker_env.zig");
@@ -477,6 +479,46 @@ fn realStartFn(
     return .{ .real = .{ .child = child } };
 }
 
+/// drainAndBuildOutcome drains the (already-exited) child's stdout/stderr and
+/// returns the captured `SpawnOutcome` with the given exit code. Shared by the
+/// blocking `realWaitFn` and the non-blocking `realPollFn` so both produce an
+/// identical outcome shape once the child is terminal. The caller has already
+/// reaped the pid (wait or WNOHANG) and is responsible for cleaning up the
+/// process handle (`child.id`); this function only drains the pipes (which
+/// `drainPipe` closes + nulls).
+fn drainAndBuildOutcome(
+    allocator: std.mem.Allocator,
+    io: Io,
+    child: *std.process.Child,
+    exit_code: u32,
+) SpawnError!SpawnOutcome {
+    // Drain stdout and stderr. Both are bounded at 4 MiB to avoid runaway
+    // memory on a misbehaving worker.
+    const max_capture: usize = 4 * 1024 * 1024;
+    const stdout_slice = drainPipe(allocator, io, &child.stdout, max_capture) catch
+        return SpawnError.SubprocessFailed;
+    errdefer allocator.free(stdout_slice);
+    const stderr_slice = drainPipe(allocator, io, &child.stderr, max_capture) catch
+        return SpawnError.SubprocessFailed;
+    errdefer allocator.free(stderr_slice);
+
+    return .{
+        .exit_code = exit_code,
+        .stdout = stdout_slice,
+        .stderr = stderr_slice,
+    };
+}
+
+/// termExitCode maps a process `Term` to the SpawnOutcome exit code: the literal
+/// exit status on normal termination, or the 255 sentinel for signal/abnormal
+/// termination (the terminal-fallback matrix only branches on 0 vs non-zero).
+fn termExitCode(term: std.process.Child.Term) u32 {
+    return switch (term) {
+        .exited => |code| code,
+        else => 255,
+    };
+}
+
 /// realWaitFn blocks until the in-flight child exits, drains its stdout/stderr,
 /// and returns the captured `SpawnOutcome`. Consumes the handle.
 fn realWaitFn(
@@ -489,8 +531,8 @@ fn realWaitFn(
     var child = &handle.real.child;
     errdefer child.kill(io);
 
-    // Drain stdout and stderr. Both are bounded at 4 MiB to avoid runaway
-    // memory on a misbehaving worker.
+    // Drain stdout and stderr BEFORE waiting so a worker that fills its pipe
+    // buffer cannot deadlock against our wait. Both bounded at 4 MiB.
     const max_capture: usize = 4 * 1024 * 1024;
     const stdout_slice = drainPipe(allocator, io, &child.stdout, max_capture) catch {
         _ = child.wait(io) catch {};
@@ -504,32 +546,80 @@ fn realWaitFn(
     errdefer allocator.free(stderr_slice);
 
     const term = child.wait(io) catch return SpawnError.SubprocessFailed;
-    const exit_code: u32 = switch (term) {
-        .exited => |code| code,
-        else => 255,
-    };
 
     return .{
-        .exit_code = exit_code,
+        .exit_code = termExitCode(term),
         .stdout = stdout_slice,
         .stderr = stderr_slice,
     };
 }
 
-/// realPollFn is a non-blocking probe. For the real child we cannot portably
-/// peek liveness without consuming the term in this stdlib version, so the
-/// real poll path simply delegates to wait (the N=1 scheduler uses wait, not
-/// poll, on the real path). Task 3183 — which needs genuine wait-for-any across
-/// N real children — will add an OS-level non-blocking wait here; for N=1 this
-/// is correct and never reached (the scheduler calls wait for the single
-/// handle). Documented loudly so 3183 knows where to extend.
+/// realPollFn is a GENUINE non-blocking probe (plan 492 M5 task 3183). It checks
+/// whether the child has exited WITHOUT blocking, via `waitpid(pid, &status,
+/// WNOHANG)` on POSIX:
+///
+///   - waitpid returns 0  → the child is still running → return `null` (the
+///     scheduler's wait-for-any loop sleeps briefly and polls the next handle).
+///   - waitpid returns pid → the child has exited; we have ALREADY reaped it
+///     (WNOHANG consumed the zombie), so we must NOT call `child.wait` (that
+///     would double-reap, an errnoBug panic in the stdlib). We drain the pipes,
+///     null out `child.id`, and return the `SpawnOutcome`.
+///   - waitpid errors      → SubprocessFailed.
+///
+/// This is what makes `parallel`'s wait-for-any correct: polling handle[i] never
+/// stalls on a sibling that has not finished. The blocking `wait` remains for
+/// the N=1 fast path. On Windows we fall back to the blocking `wait` (the M5
+/// orchestrator is POSIX-only; documented so a future Windows port extends here).
 fn realPollFn(
     ctx: ?*anyopaque,
     allocator: std.mem.Allocator,
     io: Io,
     handle: *Handle,
 ) SpawnError!?SpawnOutcome {
-    return try realWaitFn(ctx, allocator, io, handle);
+    if (builtin.os.tag == .windows) {
+        // No non-blocking peek wired for Windows; the orchestrator is POSIX-only
+        // this milestone. Fall back to the blocking wait so the contract holds.
+        return try realWaitFn(ctx, allocator, io, handle);
+    }
+
+    const child = &handle.real.child;
+    const pid = child.id orelse return SpawnError.SubprocessFailed;
+
+    var status: c_int = 0;
+    const rc = std.c.waitpid(pid, &status, @intCast(posix.W.NOHANG));
+    if (rc == 0) {
+        // Still running — non-blocking probe reports "not yet".
+        return null;
+    }
+    if (rc < 0) {
+        return SpawnError.SubprocessFailed;
+    }
+
+    // The child has exited and WE reaped it via WNOHANG. Null `child.id`
+    // IMMEDIATELY so neither a later `child.wait`/`child.kill` nor the error
+    // path below can double-reap the pid (a `wait4`/`waitpid` on a reaped pid
+    // returns ECHILD, which the stdlib treats as an errnoBug panic). After this
+    // point only the pipes need closing — `drainPipe` closes them per-stream;
+    // on a drain failure we close any still-open pipe explicitly (no re-wait).
+    child.id = null;
+    const term = std.Io.Threaded.statusToTerm(@bitCast(status));
+    const exit_code = termExitCode(term);
+
+    return drainAndBuildOutcome(allocator, io, child, exit_code) catch |err| {
+        if (child.stdin) |f| {
+            f.close(io);
+            child.stdin = null;
+        }
+        if (child.stdout) |f| {
+            f.close(io);
+            child.stdout = null;
+        }
+        if (child.stderr) |f| {
+            f.close(io);
+            child.stderr = null;
+        }
+        return err;
+    };
 }
 
 /// drainPipe reads up to `max_bytes` from a piped child stream and returns the
@@ -653,6 +743,14 @@ pub const FakeSpawnerState = struct {
     /// value; each null-returning poll decrements it. `wait` ignores it (the
     /// N=1 scheduler path waits the single handle and gets the outcome at once).
     poll_until_done: u32 = 0,
+    /// Per-start poll countdowns, consumed in `start` order (plan 492 task 3183
+    /// N-way tests). When non-empty, the i-th `start` uses `poll_until_done_seq[i]`
+    /// as its handle's `poll_remaining` instead of the scalar `poll_until_done`.
+    /// This lets a test model OUT-OF-ORDER completion across N concurrent
+    /// workers (worker 2 finishes before worker 0, etc.) so the wait-for-any +
+    /// original-order-results contract can be asserted. Borrowed slice; not
+    /// owned by the state. `start`s beyond its length fall back to the scalar.
+    poll_until_done_seq: []const u32 = &.{},
     /// Number of times `start` was called.
     start_count: u32 = 0,
     /// Number of times `poll` was called.
@@ -664,6 +762,13 @@ pub const FakeSpawnerState = struct {
     /// the scheduler resumed the coroutine BEFORE the worker reached terminal —
     /// the ordering bug the async model exists to prevent.
     reached_terminal: bool = false,
+    /// Live count of workers currently in flight: incremented at `start`,
+    /// decremented when a handle reports terminal (poll/wait). `peak_inflight`
+    /// records the high-water mark. Used by the N>MAX_SLOTS test to prove
+    /// queueing (peak never exceeds the concurrency cap) and by the N-way test
+    /// to prove genuine concurrency (peak > 1, not sequential).
+    live_inflight: u32 = 0,
+    peak_inflight: u32 = 0,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -795,10 +900,20 @@ fn fakeStartFn(
     _ = allocator;
     _ = io;
     const state: *FakeSpawnerState = @ptrCast(@alignCast(ctx.?));
+    const start_index = state.start_count;
     state.start_count += 1;
     if (state.forced_error) |e| return e;
     try recordFakeInvocation(state, inputs);
-    return .{ .fake = .{ .state = state, .poll_remaining = state.poll_until_done } };
+    // Per-start poll countdown (N-way out-of-order tests) when a sequence is
+    // supplied; else the scalar default.
+    const poll_remaining: u32 = if (start_index < state.poll_until_done_seq.len)
+        state.poll_until_done_seq[start_index]
+    else
+        state.poll_until_done;
+    // Track live + peak in-flight for the concurrency/queueing assertions.
+    state.live_inflight += 1;
+    if (state.live_inflight > state.peak_inflight) state.peak_inflight = state.live_inflight;
+    return .{ .fake = .{ .state = state, .poll_remaining = poll_remaining } };
 }
 
 /// fakePollFn is the non-blocking probe. Returns null (still running) while
@@ -818,6 +933,7 @@ fn fakePollFn(
         return null;
     }
     state.reached_terminal = true;
+    if (state.live_inflight > 0) state.live_inflight -= 1;
     return try cannedOutcome(state, allocator);
 }
 
@@ -834,6 +950,7 @@ fn fakeWaitFn(
     const state: *FakeSpawnerState = @ptrCast(@alignCast(ctx.?));
     state.wait_count += 1;
     state.reached_terminal = true;
+    if (state.live_inflight > 0) state.live_inflight -= 1;
     return try cannedOutcome(state, allocator);
 }
 
