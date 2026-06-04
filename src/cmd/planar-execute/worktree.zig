@@ -56,12 +56,29 @@
 //! All subprocess and non-zero-exit errors are mapped into `WorktreeError`.
 //! No error is silently swallowed.
 //!
-//! ## Scope (M3 task 3173)
+//! ## Scope (M3 tasks 3173 + 3174)
 //!
-//! This module implements create / ensure / teardown only. Run-id tagging, the
-//! O_EXCL run-lock, run-id-scoped reconcile, basic global reconcile/prune
-//! (task 3174), fan-in merge logic, and the Lua `agent()` wiring (M4) are
-//! deliberately NOT here.
+//! Task 3173 added create / ensure / teardown. Task 3174 adds the startup
+//! reconcile pass — `reconcileAndPrune` + its pure pieces (`parseWorktreeList`,
+//! `staleCycleWorktrees`) — which prunes stale planar-execute cycle worktrees
+//! and calls `planar-agent reconcile` so a prior abnormal exit leaves no
+//! stranded state.
+//!
+//! Still deliberately NOT here (later milestones): fan-in merge logic, the Lua
+//! `agent()` wiring (M4), and — critically — the M6 run-isolation hardening.
+//!
+//! ## M3-vs-M6 boundary on the prune predicate (READ BEFORE CHANGING)
+//!
+//! The task-3174 prune predicate is intentionally GLOBAL / OWNERSHIP-TAG-FREE:
+//! a cycle worktree is stale iff its task has no *active* claim (after
+//! `planar-agent reconcile` has run). The tech-spec § "Run isolation —
+//! single-instance lock + run-id-scoped reconcile / prune" documents that this
+//! global predicate is provisional and is HARDENED in M6 (depends on engine
+//! F2): M6 adds an `O_EXCL` plan-id run-lock carrying run-id + PID, run-id-
+//! scoped reconcile via `--session`, run-id-TAGGED worktrees, a prune predicate
+//! of "run-id-mismatch AND PID-not-alive", and a single-instance-per-plan
+//! refusal. NONE of that belongs here — a future maintainer must not mistake
+//! this global, no-ownership-tag predicate for the final design.
 
 const std = @import("std");
 const Io = std.Io;
@@ -81,6 +98,9 @@ pub const WorktreeError = error{
     /// A filesystem operation (open / read / write of `.git/info/exclude`,
     /// directory existence probe) failed.
     FsError,
+    /// `std.json.parseFromSlice` rejected a subprocess's `--json` output
+    /// (`planar-watch ps`, `planar task list`, `planar-agent reconcile`).
+    ParseFailed,
     /// Allocator returned OOM while building a path, branch, or argv.
     OutOfMemory,
 };
@@ -398,6 +418,458 @@ pub fn teardownCycle(
 }
 
 // ---------------------------------------------------------------------------
+// Startup reconcile pass — task 3174 (m3-startup-reconcile).
+//
+// On startup a prior `planar-execute` run may have crashed mid-cycle, leaving
+// (a) a cycle worktree on disk and (b) a now-expired claim on that cycle's
+// task. The reconcile pass removes BOTH classes of stranded state:
+//
+//   1. Claim side — shell `planar-agent reconcile` (the existing global verb)
+//      to mark expired claims stale and close orphaned actions.
+//   2. Worktree side — enumerate `git worktree list --porcelain`, filter to
+//      THIS plan's planar-execute-managed worktrees, and prune cycle worktrees
+//      whose task no longer holds an *active* claim. The epic worktree PERSISTS
+//      (it survives until the operator merges epic→master). Foreign plans'
+//      worktrees are NEVER touched (plan-scoped filter).
+//
+// Testability seam (load-bearing): the *decision* — given the on-disk
+// planar-execute worktrees for this plan and the set of task-slugs that still
+// have an active claim, which cycle worktrees are stale? — is the pure function
+// `staleCycleWorktrees`, unit-tested with hand-built inputs (no git, no DB).
+// The porcelain parse is the pure `parseWorktreeList`. Only `reconcileAndPrune`
+// touches subprocesses; its live end-to-end coverage is deferred to the M3+
+// integration pass (the same deferral as task 3236 for subprocess reads).
+// ---------------------------------------------------------------------------
+
+/// A single entry parsed from `git worktree list --porcelain`.
+///
+/// `path` is the worktree's absolute filesystem path. `branch` is the short
+/// branch name (`refs/heads/` stripped) checked out in it, or null for a
+/// detached-HEAD / bare worktree. Both strings are heap-owned by the slice the
+/// parser returns; free via `freeWorktreeList`.
+pub const WorktreeEntry = struct {
+    path: []const u8,
+    branch: ?[]const u8,
+};
+
+/// The classification of a planar-execute-managed worktree this plan owns.
+pub const WorktreeRole = enum {
+    /// `epic/<plan_slug>` — PERSISTS, never pruned.
+    epic,
+    /// `cycle/<plan_slug>/<task_slug>` — prune candidate.
+    cycle,
+};
+
+/// A cycle worktree the classifier has determined is stale and must be pruned.
+///
+/// `task_slug` is heap-owned (duped from the parsed branch); free via
+/// `freeStaleList`. `path` is a borrow into the caller's `WorktreeEntry` slice
+/// (not owned) — it is provided for diagnostics; the pruner re-derives the path
+/// from `task_slug` via `cyclePath` so it never depends on the borrowed string
+/// outliving the entry list.
+pub const StaleCycle = struct {
+    task_slug: []const u8,
+    path: []const u8,
+};
+
+/// freeWorktreeList frees a slice returned by `parseWorktreeList`.
+pub fn freeWorktreeList(allocator: std.mem.Allocator, list: []WorktreeEntry) void {
+    for (list) |e| {
+        allocator.free(e.path);
+        if (e.branch) |b| allocator.free(b);
+    }
+    allocator.free(list);
+}
+
+/// freeStaleList frees a slice returned by `staleCycleWorktrees`.
+pub fn freeStaleList(allocator: std.mem.Allocator, list: []StaleCycle) void {
+    for (list) |s| allocator.free(s.task_slug);
+    allocator.free(list);
+}
+
+// ---------------------------------------------------------------------------
+// Pure: porcelain parser
+// ---------------------------------------------------------------------------
+
+/// parseWorktreeList parses `git worktree list --porcelain` output into a slice
+/// of `WorktreeEntry`.
+///
+/// PURE — no subprocess, no DB. Unit-tested against fixture porcelain strings.
+///
+/// The porcelain format emits one record per worktree, records separated by a
+/// blank line. Each record is a set of `key value` (or bare `key`) lines:
+///   worktree <abs-path>
+///   HEAD <sha>
+///   branch refs/heads/<branch>      (absent for detached HEAD)
+///   bare                            (for the bare main repo, no `worktree` HEAD)
+///   detached                        (for detached-HEAD worktrees)
+///
+/// We capture `worktree <path>` (record start) and `branch refs/heads/<branch>`
+/// (short branch name = the ref with the `refs/heads/` prefix stripped). A
+/// record with no `branch` line yields `branch = null`.
+///
+/// The caller owns the returned slice and MUST free it via `freeWorktreeList`.
+pub fn parseWorktreeList(
+    allocator: std.mem.Allocator,
+    porcelain: []const u8,
+) WorktreeError![]WorktreeEntry {
+    var list = std.ArrayList(WorktreeEntry).empty;
+    errdefer {
+        for (list.items) |e| {
+            allocator.free(e.path);
+            if (e.branch) |b| allocator.free(b);
+        }
+        list.deinit(allocator);
+    }
+
+    // Per-record in-flight state. A record is committed on the blank-line
+    // boundary (or at EOF) when it has a `worktree <path>` line.
+    var cur_path: ?[]const u8 = null;
+    var cur_branch: ?[]const u8 = null;
+    errdefer {
+        if (cur_path) |p| allocator.free(p);
+        if (cur_branch) |b| allocator.free(b);
+    }
+
+    var lines = std.mem.splitScalar(u8, porcelain, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trimEnd(u8, raw, "\r");
+        if (line.len == 0) {
+            // Record boundary: commit the in-flight record (if any).
+            if (cur_path) |p| {
+                try list.append(allocator, .{ .path = p, .branch = cur_branch });
+                cur_path = null;
+                cur_branch = null;
+            }
+            continue;
+        }
+
+        if (std.mem.startsWith(u8, line, "worktree ")) {
+            // A new `worktree` line starting before a blank-line boundary means
+            // the previous record had no trailing blank (rare). Commit it.
+            if (cur_path) |p| {
+                try list.append(allocator, .{ .path = p, .branch = cur_branch });
+                cur_branch = null;
+            }
+            const val = line["worktree ".len..];
+            cur_path = allocator.dupe(u8, val) catch return WorktreeError.OutOfMemory;
+        } else if (std.mem.startsWith(u8, line, "branch ")) {
+            const ref = line["branch ".len..];
+            const short = if (std.mem.startsWith(u8, ref, "refs/heads/"))
+                ref["refs/heads/".len..]
+            else
+                ref;
+            cur_branch = allocator.dupe(u8, short) catch return WorktreeError.OutOfMemory;
+        }
+        // All other lines (HEAD, bare, detached, locked, prunable, ...) ignored.
+    }
+
+    // EOF: commit a final record with no trailing blank line.
+    if (cur_path) |p| {
+        try list.append(allocator, .{ .path = p, .branch = cur_branch });
+        cur_path = null;
+        cur_branch = null;
+    }
+
+    return list.toOwnedSlice(allocator) catch return WorktreeError.OutOfMemory;
+}
+
+// ---------------------------------------------------------------------------
+// Pure: plan-scoped classifier
+// ---------------------------------------------------------------------------
+
+/// classifyManaged decides whether `entry` is a planar-execute-managed worktree
+/// for `plan_slug`, and if so whether it is the epic or a cycle (returning the
+/// cycle's task-slug). Returns null for anything NOT managed by this plan —
+/// foreign plans' worktrees, the bare main checkout, detached worktrees, or
+/// paths outside `<repo_root>/.worktrees/`.
+///
+/// PURE. The branch name carries the authoritative identity (the naming helpers
+/// `epicBranch` / `cycleBranch` define it); the path check is a defense-in-depth
+/// guard that the worktree lives under our `.worktrees/` tree so a foreign
+/// worktree that merely shares a branch-name shape is still excluded.
+fn classifyManaged(
+    entry: WorktreeEntry,
+    repo_root: []const u8,
+    plan_slug: []const u8,
+) ?struct { role: WorktreeRole, task_slug: []const u8 } {
+    const branch = entry.branch orelse return null;
+
+    // Path guard: must live under `<repo_root>/.worktrees/`. We match the
+    // segment rather than a raw prefix so `<repo_root>/.worktrees-foo` does not
+    // sneak through.
+    const wt_marker = ".worktrees" ++ std.fs.path.sep_str;
+    const under_repo = std.mem.startsWith(u8, entry.path, repo_root);
+    if (!under_repo) return null;
+    if (std.mem.indexOf(u8, entry.path, wt_marker) == null) return null;
+
+    // Epic: branch == `epic/<plan_slug>` exactly.
+    {
+        var buf: [256]u8 = undefined;
+        const epic = std.fmt.bufPrint(&buf, "epic/{s}", .{plan_slug}) catch return null;
+        if (std.mem.eql(u8, branch, epic)) {
+            return .{ .role = .epic, .task_slug = "" };
+        }
+    }
+
+    // Cycle: branch == `cycle/<plan_slug>/<task_slug>`. The task-slug is
+    // everything after the `cycle/<plan_slug>/` prefix (task-slugs do not
+    // themselves contain `/`, but we take the full remainder for safety).
+    {
+        var buf: [256]u8 = undefined;
+        const prefix = std.fmt.bufPrint(&buf, "cycle/{s}/", .{plan_slug}) catch return null;
+        if (std.mem.startsWith(u8, branch, prefix)) {
+            const task_slug = branch[prefix.len..];
+            if (task_slug.len == 0) return null; // malformed; not a cycle
+            return .{ .role = .cycle, .task_slug = task_slug };
+        }
+    }
+
+    return null;
+}
+
+/// staleCycleWorktrees is the pure core of the prune decision.
+///
+/// Given the parsed on-disk worktree list, the current `plan_slug`, and the set
+/// of task-slugs that STILL have an active claim, it returns the cycle
+/// worktrees that are stale and must be pruned.
+///
+/// PURE — no git, no DB. Inject `active_task_slugs` (derived at runtime by
+/// correlating `planar-watch ps` active claims with the task id↔slug mapping)
+/// and unit-test the decision directly.
+///
+/// Invariants (each pinned by a unit test):
+///   - The epic worktree is NEVER returned (it persists until epic→master merge).
+///   - A cycle whose task-slug IS in `active_task_slugs` is NEVER returned
+///     (a live run owns it).
+///   - Foreign-plan worktrees are NEVER returned (classifyManaged excludes them).
+///
+/// The caller owns the returned slice and MUST free it via `freeStaleList`.
+pub fn staleCycleWorktrees(
+    allocator: std.mem.Allocator,
+    all_worktrees: []const WorktreeEntry,
+    repo_root: []const u8,
+    plan_slug: []const u8,
+    active_task_slugs: []const []const u8,
+) WorktreeError![]StaleCycle {
+    var stale = std.ArrayList(StaleCycle).empty;
+    errdefer {
+        for (stale.items) |s| allocator.free(s.task_slug);
+        stale.deinit(allocator);
+    }
+
+    for (all_worktrees) |entry| {
+        const managed = classifyManaged(entry, repo_root, plan_slug) orelse continue;
+        if (managed.role == .epic) continue; // epic persists, never prune
+
+        // Cycle: stale iff its task-slug is NOT in the active set.
+        var is_active = false;
+        for (active_task_slugs) |slug| {
+            if (std.mem.eql(u8, slug, managed.task_slug)) {
+                is_active = true;
+                break;
+            }
+        }
+        if (is_active) continue;
+
+        const owned_slug = allocator.dupe(u8, managed.task_slug) catch return WorktreeError.OutOfMemory;
+        errdefer allocator.free(owned_slug);
+        try stale.append(allocator, .{ .task_slug = owned_slug, .path = entry.path });
+    }
+
+    return stale.toOwnedSlice(allocator) catch return WorktreeError.OutOfMemory;
+}
+
+// ---------------------------------------------------------------------------
+// Subprocess: generic binary spawn (planar / planar-watch / planar-agent)
+// ---------------------------------------------------------------------------
+
+/// runBin runs `<bin> <argv_tail...>` and returns captured stdout, mirroring
+/// `runGit` (PATH-resolved argv[0], stdout/stderr caps, error mapping, caller
+/// owns stdout, stderr freed). Used for `planar-agent` / `planar-watch` /
+/// `planar` invocations in the reconcile path.
+fn runBin(
+    allocator: std.mem.Allocator,
+    io: Io,
+    bin: []const u8,
+    argv_tail: []const []const u8,
+    stdout_limit: usize,
+) WorktreeError![]u8 {
+    const argv = allocator.alloc([]const u8, argv_tail.len + 1) catch return WorktreeError.OutOfMemory;
+    defer allocator.free(argv);
+    argv[0] = bin;
+    for (argv_tail, 0..) |arg, i| argv[i + 1] = arg;
+
+    const result = std.process.run(allocator, io, .{
+        .argv = argv,
+        .stdout_limit = Io.Limit.limited(stdout_limit),
+        .stderr_limit = Io.Limit.limited(8192),
+    }) catch return WorktreeError.SubprocessFailed;
+
+    allocator.free(result.stderr);
+
+    const exit_ok = result.term == .exited and result.term.exited == 0;
+    if (!exit_ok) {
+        allocator.free(result.stdout);
+        return WorktreeError.SubprocessNonZero;
+    }
+
+    return result.stdout;
+}
+
+// ---------------------------------------------------------------------------
+// Runtime correlation: active task-slugs for a plan
+// ---------------------------------------------------------------------------
+
+/// Minimal view of an active-claim row from `planar-watch ps --plan <id> --json`.
+/// Only `entity_kind` / `entity_id` are consumed (we want active task claims).
+const PsClaim = struct {
+    entity_kind: []const u8,
+    entity_id: u64,
+};
+
+/// Minimal view of `planar-watch ps --plan <id> --json`.
+/// Shape: {"generated_at":"...","active":[<claim>...],"stale":[<claim>...]}.
+const PsResult = struct {
+    active: []PsClaim,
+};
+
+/// Minimal view of a task row from `planar task list --plan <id> --json`.
+const TaskListRow = struct {
+    id: u64,
+    slug: ?[]const u8 = null,
+};
+
+/// activeTaskSlugs returns the set of task-slugs that currently hold an ACTIVE
+/// claim on `plan_id`, by correlating `planar-watch ps --plan <id> --json`'s
+/// `active` array (entity task ids) with `planar task list --plan <id> --json`
+/// (task id↔slug). Only `entity_kind == "task"` claims with a non-null slug are
+/// included.
+///
+/// The correlation lives here (subprocess side); the resulting slug set is then
+/// injected into the PURE `staleCycleWorktrees` so the decision stays testable.
+///
+/// The caller owns the returned slice and each slug within; free via
+/// `freeActiveSlugs`.
+fn activeTaskSlugs(
+    allocator: std.mem.Allocator,
+    io: Io,
+    plan_id: u64,
+) WorktreeError![][]const u8 {
+    var id_buf: [32]u8 = undefined;
+    const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{plan_id}) catch return WorktreeError.SubprocessFailed;
+
+    // 1) Active claims for the plan.
+    const ps_out = try runBin(allocator, io, "planar-watch", &.{ "ps", "--plan", id_str, "--json" }, 4 * 1024 * 1024);
+    defer allocator.free(ps_out);
+    const ps = std.json.parseFromSlice(PsResult, allocator, ps_out, .{ .ignore_unknown_fields = true }) catch
+        return WorktreeError.ParseFailed;
+    defer ps.deinit();
+
+    // 2) Task id↔slug mapping for the plan.
+    const tl_out = try runBin(allocator, io, "planar", &.{ "task", "list", "--plan", id_str, "--json" }, 4 * 1024 * 1024);
+    defer allocator.free(tl_out);
+    const tasks = std.json.parseFromSlice([]TaskListRow, allocator, tl_out, .{ .ignore_unknown_fields = true }) catch
+        return WorktreeError.ParseFailed;
+    defer tasks.deinit();
+
+    var slugs = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (slugs.items) |s| allocator.free(s);
+        slugs.deinit(allocator);
+    }
+
+    for (ps.value.active) |claim| {
+        if (!std.mem.eql(u8, claim.entity_kind, "task")) continue;
+        // Find the slug for this entity_id.
+        for (tasks.value) |t| {
+            if (t.id != claim.entity_id) continue;
+            const slug = t.slug orelse break;
+            const owned = allocator.dupe(u8, slug) catch return WorktreeError.OutOfMemory;
+            errdefer allocator.free(owned);
+            try slugs.append(allocator, owned);
+            break;
+        }
+    }
+
+    return slugs.toOwnedSlice(allocator) catch return WorktreeError.OutOfMemory;
+}
+
+/// freeActiveSlugs frees the slice (and each slug) returned by `activeTaskSlugs`.
+fn freeActiveSlugs(allocator: std.mem.Allocator, slugs: [][]const u8) void {
+    for (slugs) |s| allocator.free(s);
+    allocator.free(slugs);
+}
+
+// ---------------------------------------------------------------------------
+// Top-level orchestrator: reconcileAndPrune
+// ---------------------------------------------------------------------------
+
+/// reconcileAndPrune is the startup reconcile pass (task 3174).
+///
+/// It orchestrates (live coverage deferred to the M3+ integration pass, same
+/// deferral as task 3236; its pure constituents are unit-tested):
+///   1. Shell `planar-agent reconcile` — mark expired claims stale, close
+///      orphaned actions. (Run first so a crashed cycle's claim is staled
+///      BEFORE we read active claims, otherwise an about-to-expire claim could
+///      wrongly look active.)
+///   2. Read the now-current active task-slugs for `plan_id` (`activeTaskSlugs`).
+///   3. Enumerate worktrees (`git worktree list --porcelain`) → parse.
+///   4. `staleCycleWorktrees` (PURE) → the cycle worktrees to prune.
+///   5. `teardownCycle` each stale one (plan-scoped, epic excluded, foreign
+///      worktrees never returned by the classifier).
+///   6. `git worktree prune` — clear admin entries for cycle dirs already
+///      manually deleted (dir gone, git metadata lingering).
+///
+/// Errors from steps 1–4 propagate (a failed reconcile/read is a hard startup
+/// problem). A `teardownCycle` failure on one stale cycle is logged-and-skipped
+/// is NOT done here — we let it propagate so the operator sees the first
+/// failure rather than silently leaving half-pruned state; the caller decides
+/// whether a partial prune is fatal. (M6 will refine this under the run-lock.)
+pub fn reconcileAndPrune(
+    allocator: std.mem.Allocator,
+    io: Io,
+    repo_root: []const u8,
+    plan_slug: []const u8,
+    plan_id: u64,
+) WorktreeError!void {
+    // 1) Claim side: global reconcile (mark expired claims stale).
+    const rec_out = try runBin(allocator, io, "planar-agent", &.{ "reconcile", "--json" }, 256 * 1024);
+    allocator.free(rec_out);
+
+    // 2) Read the current active task-slug set for the plan.
+    const active = try activeTaskSlugs(allocator, io, plan_id);
+    defer freeActiveSlugs(allocator, active);
+
+    // 3) Enumerate + parse worktrees.
+    const porcelain = try runGit(allocator, io, &.{ "-C", repo_root, "worktree", "list", "--porcelain" });
+    defer allocator.free(porcelain);
+    const worktrees = try parseWorktreeList(allocator, porcelain);
+    defer freeWorktreeList(allocator, worktrees);
+
+    // 4) Classify (PURE). Compare against the CANONICAL repo root: `git worktree
+    // list --porcelain` emits symlink-resolved absolute paths, so the path-guard
+    // in the classifier must use the same canonical form (a non-canonical
+    // `repo_root` — e.g. a `/var/...` mktemp path on macOS that git reports as
+    // `/private/var/...` — would otherwise exclude every managed worktree). The
+    // FIRST porcelain record is always the main checkout, whose path git has
+    // already canonicalized; use it as the canonical root (falling back to the
+    // passed `repo_root` if the list is somehow empty).
+    const canon_root = if (worktrees.len > 0) worktrees[0].path else repo_root;
+    const stale = try staleCycleWorktrees(allocator, worktrees, canon_root, plan_slug, active);
+    defer freeStaleList(allocator, stale);
+
+    // 5) Teardown each stale cycle worktree.
+    for (stale) |s| {
+        try teardownCycle(allocator, io, repo_root, plan_slug, s.task_slug);
+    }
+
+    // 6) git worktree prune — clear admin entries for already-deleted dirs.
+    const prune_out = try runGit(allocator, io, &.{ "-C", repo_root, "worktree", "prune" });
+    allocator.free(prune_out);
+}
+
+// ---------------------------------------------------------------------------
 // Unit tests — operate against real throwaway git repos.
 //
 // Each test creates an isolated repo via std.testing.tmpDir + `git init`, with
@@ -662,4 +1134,253 @@ test "ensureEpic appends .worktrees/ to exclude on first epic creation" {
     const contents = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, exclude_path, a, .limited(1 << 20));
     defer a.free(contents);
     try std.testing.expect(std.mem.indexOf(u8, contents, ".worktrees/") != null);
+}
+
+// ---------------------------------------------------------------------------
+// Reconcile/prune tests — task 3174.
+//
+// The porcelain parser and the classifier are PURE: tested with hand-built
+// fixtures, no git, no DB. The prune-action test drives a real throwaway git
+// repo (skip-probed via gitAvailable). The `planar-agent reconcile` shell-out
+// and the live claim read are NOT unit-tested here (no live binary + DB) — that
+// live end-to-end coverage is deferred to the M3+ integration pass (task 3236).
+// ---------------------------------------------------------------------------
+
+/// finds the index of the entry whose branch equals `branch` (or null).
+fn findByBranch(list: []const WorktreeEntry, branch: []const u8) ?usize {
+    for (list, 0..) |e, i| {
+        if (e.branch) |b| {
+            if (std.mem.eql(u8, b, branch)) return i;
+        }
+    }
+    return null;
+}
+
+test "parseWorktreeList: multi-plan fixture — records parsed, foreign + bare tolerated" {
+    const a = std.testing.allocator;
+    // Fixture mirrors real `git worktree list --porcelain` output: the bare main
+    // checkout, this plan's epic + a cycle, a FOREIGN plan's epic, and a
+    // detached-HEAD worktree (no branch). Paths use the host path separator so
+    // the classifier's path-guard test below is portable.
+    const sep = std.fs.path.sep_str;
+    const fixture = try std.fmt.allocPrint(a,
+        \\worktree {0s}{1s}repo
+        \\HEAD 06b95ef9b113e480abc060dbcb30874462bdef93
+        \\branch refs/heads/master
+        \\
+        \\worktree {0s}{1s}repo{1s}.worktrees{1s}epic{1s}p492
+        \\HEAD aaaa1111
+        \\branch refs/heads/epic/p492
+        \\
+        \\worktree {0s}{1s}repo{1s}.worktrees{1s}cycle{1s}p492{1s}m3-startup
+        \\HEAD bbbb2222
+        \\branch refs/heads/cycle/p492/m3-startup
+        \\
+        \\worktree {0s}{1s}repo{1s}.worktrees{1s}epic{1s}p493
+        \\HEAD cccc3333
+        \\branch refs/heads/epic/p493
+        \\
+        \\worktree {0s}{1s}repo{1s}.worktrees{1s}detached-one
+        \\HEAD dddd4444
+        \\detached
+        \\
+    , .{ sep, sep });
+    defer a.free(fixture);
+
+    const list = try parseWorktreeList(a, fixture);
+    defer freeWorktreeList(a, list);
+
+    try std.testing.expectEqual(@as(usize, 5), list.len);
+    // master worktree: branch short-name strips refs/heads/.
+    try std.testing.expect(findByBranch(list, "master") != null);
+    try std.testing.expect(findByBranch(list, "epic/p492") != null);
+    try std.testing.expect(findByBranch(list, "cycle/p492/m3-startup") != null);
+    try std.testing.expect(findByBranch(list, "epic/p493") != null);
+    // The detached worktree has a null branch.
+    var detached_count: usize = 0;
+    for (list) |e| {
+        if (e.branch == null) detached_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), detached_count);
+}
+
+test "parseWorktreeList: final record without trailing blank line is committed" {
+    const a = std.testing.allocator;
+    const fixture =
+        \\worktree /r/.worktrees/cycle/p1/t1
+        \\HEAD abc
+        \\branch refs/heads/cycle/p1/t1
+    ;
+    const list = try parseWorktreeList(a, fixture);
+    defer freeWorktreeList(a, list);
+    try std.testing.expectEqual(@as(usize, 1), list.len);
+    try std.testing.expectEqualStrings("cycle/p1/t1", list[0].branch.?);
+}
+
+test "parseWorktreeList: empty input yields empty list" {
+    const a = std.testing.allocator;
+    const list = try parseWorktreeList(a, "");
+    defer freeWorktreeList(a, list);
+    try std.testing.expectEqual(@as(usize, 0), list.len);
+}
+
+test "staleCycleWorktrees: epic persists, foreign excluded, active cycle kept, stale cycle pruned" {
+    const a = std.testing.allocator;
+    const sep = std.fs.path.sep_str;
+    const repo = try std.fmt.allocPrint(a, "{0s}{1s}repo", .{ sep, sep });
+    defer a.free(repo);
+
+    // Build the on-disk worktree set for plan slug "p492":
+    //   - epic/p492            → must NEVER be stale
+    //   - cycle/p492/active-t  → has an active claim → NOT pruned
+    //   - cycle/p492/stale-t   → no active claim → PRUNED
+    //   - epic/p493 (FOREIGN)  → never returned
+    //   - cycle/p493/x (FOREIGN) → never returned
+    //   - master               → never returned (not managed)
+    const epic_p492_path = try std.fmt.allocPrint(a, "{0s}{1s}.worktrees{1s}epic{1s}p492", .{ repo, sep });
+    defer a.free(epic_p492_path);
+    const cyc_active_path = try std.fmt.allocPrint(a, "{0s}{1s}.worktrees{1s}cycle{1s}p492{1s}active-t", .{ repo, sep });
+    defer a.free(cyc_active_path);
+    const cyc_stale_path = try std.fmt.allocPrint(a, "{0s}{1s}.worktrees{1s}cycle{1s}p492{1s}stale-t", .{ repo, sep });
+    defer a.free(cyc_stale_path);
+    const epic_p493_path = try std.fmt.allocPrint(a, "{0s}{1s}.worktrees{1s}epic{1s}p493", .{ repo, sep });
+    defer a.free(epic_p493_path);
+    const cyc_p493_path = try std.fmt.allocPrint(a, "{0s}{1s}.worktrees{1s}cycle{1s}p493{1s}x", .{ repo, sep });
+    defer a.free(cyc_p493_path);
+
+    const worktrees = [_]WorktreeEntry{
+        .{ .path = repo, .branch = "master" },
+        .{ .path = epic_p492_path, .branch = "epic/p492" },
+        .{ .path = cyc_active_path, .branch = "cycle/p492/active-t" },
+        .{ .path = cyc_stale_path, .branch = "cycle/p492/stale-t" },
+        .{ .path = epic_p493_path, .branch = "epic/p493" },
+        .{ .path = cyc_p493_path, .branch = "cycle/p493/x" },
+    };
+
+    const active = [_][]const u8{"active-t"};
+
+    const stale = try staleCycleWorktrees(a, &worktrees, repo, "p492", &active);
+    defer freeStaleList(a, stale);
+
+    // Exactly one stale cycle: stale-t. Epic excluded; active-t kept; foreign
+    // plan p493 worktrees never returned.
+    try std.testing.expectEqual(@as(usize, 1), stale.len);
+    try std.testing.expectEqualStrings("stale-t", stale[0].task_slug);
+}
+
+test "staleCycleWorktrees: all cycles active → nothing pruned; epic still excluded" {
+    const a = std.testing.allocator;
+    const sep = std.fs.path.sep_str;
+    const repo = try std.fmt.allocPrint(a, "{0s}{1s}repo", .{ sep, sep });
+    defer a.free(repo);
+    const epic_path = try std.fmt.allocPrint(a, "{0s}{1s}.worktrees{1s}epic{1s}p492", .{ repo, sep });
+    defer a.free(epic_path);
+    const cyc_path = try std.fmt.allocPrint(a, "{0s}{1s}.worktrees{1s}cycle{1s}p492{1s}t1", .{ repo, sep });
+    defer a.free(cyc_path);
+
+    const worktrees = [_]WorktreeEntry{
+        .{ .path = epic_path, .branch = "epic/p492" },
+        .{ .path = cyc_path, .branch = "cycle/p492/t1" },
+    };
+    const active = [_][]const u8{"t1"};
+
+    const stale = try staleCycleWorktrees(a, &worktrees, repo, "p492", &active);
+    defer freeStaleList(a, stale);
+    try std.testing.expectEqual(@as(usize, 0), stale.len);
+}
+
+test "staleCycleWorktrees: a cycle branch-name shape OUTSIDE .worktrees/ is not managed" {
+    const a = std.testing.allocator;
+    const sep = std.fs.path.sep_str;
+    const repo = try std.fmt.allocPrint(a, "{0s}{1s}repo", .{ sep, sep });
+    defer a.free(repo);
+    // A worktree whose branch matches the cycle shape but whose PATH is not under
+    // <repo>/.worktrees/ — the path-guard must exclude it (defense in depth).
+    const foreign_path = try std.fmt.allocPrint(a, "{0s}{1s}repo{1s}somewhere-else{1s}t1", .{ sep, sep });
+    defer a.free(foreign_path);
+    const worktrees = [_]WorktreeEntry{
+        .{ .path = foreign_path, .branch = "cycle/p492/t1" },
+    };
+    const active = [_][]const u8{};
+    const stale = try staleCycleWorktrees(a, &worktrees, repo, "p492", &active);
+    defer freeStaleList(a, stale);
+    try std.testing.expectEqual(@as(usize, 0), stale.len);
+}
+
+test "prune action: stale cycle removed, active cycle + epic remain (real git repo)" {
+    const a = std.testing.allocator;
+    if (!gitAvailable(a)) return error.SkipZigTest;
+
+    const repo = mkTmpRepoDir(a);
+    defer a.free(repo);
+    defer rmTree(a, repo);
+    initRepo(a, repo);
+
+    var epic = try ensureEpic(a, std.testing.io, repo, "planx");
+    defer epic.deinit(a);
+    var c1 = try createCycle(a, std.testing.io, repo, "planx", "keep-task");
+    defer c1.deinit(a);
+    var c2 = try createCycle(a, std.testing.io, repo, "planx", "drop-task");
+    defer c2.deinit(a);
+
+    // Enumerate via the real porcelain, parse it, classify with keep-task active.
+    const porcelain = try runGit(a, std.testing.io, &.{ "-C", repo, "worktree", "list", "--porcelain" });
+    defer a.free(porcelain);
+    const worktrees = try parseWorktreeList(a, porcelain);
+    defer freeWorktreeList(a, worktrees);
+
+    // Compare against the canonical repo root — the first porcelain record is
+    // the main checkout, whose path git has canonicalized (matching production's
+    // reconcileAndPrune, which also derives canon_root from worktrees[0]).
+    try std.testing.expect(worktrees.len > 0);
+    const canon = worktrees[0].path;
+    const active = [_][]const u8{"keep-task"};
+    const stale = try staleCycleWorktrees(a, worktrees, canon, "planx", &active);
+    defer freeStaleList(a, stale);
+
+    try std.testing.expectEqual(@as(usize, 1), stale.len);
+    try std.testing.expectEqualStrings("drop-task", stale[0].task_slug);
+
+    // Tear down the stale cycle (the action reconcileAndPrune performs).
+    try teardownCycle(a, std.testing.io, repo, "planx", stale[0].task_slug);
+
+    // drop-task gone; keep-task + epic remain.
+    try std.testing.expect(!dirExists(std.testing.io, c2.path));
+    try std.testing.expect(!branchListed(a, repo, "cycle/planx/drop-task"));
+    try std.testing.expect(dirExists(std.testing.io, c1.path));
+    try std.testing.expect(branchListed(a, repo, "cycle/planx/keep-task"));
+    try std.testing.expect(dirExists(std.testing.io, epic.path));
+    try std.testing.expect(branchListed(a, repo, "epic/planx"));
+}
+
+test "git worktree prune: already-deleted cycle dir → no error, metadata cleaned" {
+    const a = std.testing.allocator;
+    if (!gitAvailable(a)) return error.SkipZigTest;
+
+    const repo = mkTmpRepoDir(a);
+    defer a.free(repo);
+    defer rmTree(a, repo);
+    initRepo(a, repo);
+
+    var epic = try ensureEpic(a, std.testing.io, repo, "planx");
+    defer epic.deinit(a);
+    var cyc = try createCycle(a, std.testing.io, repo, "planx", "ghost-task");
+    defer cyc.deinit(a);
+
+    // Delete the cycle worktree dir out from under git (dir gone, git metadata
+    // lingering) — git worktree prune must clear the admin entry without error.
+    rmTree(a, cyc.path);
+    try std.testing.expect(!dirExists(std.testing.io, cyc.path));
+
+    const prune_out = try runGit(a, std.testing.io, &.{ "-C", repo, "worktree", "prune" });
+    a.free(prune_out);
+
+    // After prune, the ghost worktree is no longer listed.
+    const porcelain = try runGit(a, std.testing.io, &.{ "-C", repo, "worktree", "list", "--porcelain" });
+    defer a.free(porcelain);
+    const worktrees = try parseWorktreeList(a, porcelain);
+    defer freeWorktreeList(a, worktrees);
+    try std.testing.expect(findByBranch(worktrees, "cycle/planx/ghost-task") == null);
+    // The epic remains.
+    try std.testing.expect(findByBranch(worktrees, "epic/planx") != null);
 }
