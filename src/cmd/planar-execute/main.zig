@@ -75,6 +75,13 @@ pub const worktree = @import("worktree.zig");
 /// Imported here so its `test` blocks run under the `execute_exe_tests` target.
 pub const doctor = @import("doctor.zig");
 
+/// worker_env — constrained PATH / env builder for `claude -p` worker spawns
+/// (task 3179 m4-constrained-path). Materializes a per-worker shim directory
+/// that exposes `planar-agent` + `git` but NOT `planar`, plus the matching
+/// env map with planar-internal env vars stripped.
+/// Imported here so its `test` blocks run under the `execute_exe_tests` target.
+pub const worker_env = @import("worker_env.zig");
+
 const c = @cImport({
     @cInclude("lua.h");
     @cInclude("lauxlib.h");
