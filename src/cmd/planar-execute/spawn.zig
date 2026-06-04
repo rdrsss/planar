@@ -765,7 +765,7 @@ test "spawn: FakeSpawner records the env_map snapshot so the constrained env is 
     // the FakeSpawner records a snapshot we can assert against. This is the
     // test the reviewer asked for — it pins the contract that:
     //   * PATH inside the recorded env is the shim dir, NOT the host PATH.
-    //   * Every entry in worker_env.STRIPPED_ENV_VARS is absent.
+    //   * Every non-allow-listed PLANAR_* var is absent (allow-list posture).
     //   * PLANAR_WORKBENCH_ROOT (the deliberate carve-out) IS preserved when
     //     present in the host env.
     // Together with realRunFn's panic on null env_map, this makes the iter-1
@@ -813,11 +813,22 @@ test "spawn: FakeSpawner records the env_map snapshot so the constrained env is 
     const home = inv.envGet("HOME") orelse @panic("HOME missing");
     try testing.expectEqualStrings("/home/operator", home);
 
-    // Every entry in the stripped set is absent — the constrained env never
-    // re-introduces them. We import worker_env's STRIPPED_ENV_VARS to keep
-    // the test in lockstep with the constrain step: a future addition to the
-    // strip list is automatically exercised.
-    for (worker_env.STRIPPED_ENV_VARS) |stripped_key| {
+    // Every planar-internal var is absent — the constrained env never
+    // re-introduces them. worker_env now applies an ALLOW-LIST (strip all
+    // PLANAR_* except worker_env.ALLOWED_PLANAR_VARS), so we assert a fixture
+    // list of representative PLANAR_* names is absent. PLANAR_WORKBENCH_ROOT
+    // (allow-listed, asserted preserved above) is intentionally excluded.
+    const stripped_fixtures = [_][]const u8{
+        "PLANAR_BIN",
+        "PLANAR_HOME",
+        "PLANAR_DB",
+        "PLANAR_CONFIG_PATH",
+        "PLANAR_TEMPLATES_DIR",
+        "PLANAR_DISABLE_WORKTREE_GATE",
+        "PLANAR_SCOPE",
+        "PLANAR_GITHUB_AUTH",
+    };
+    for (stripped_fixtures) |stripped_key| {
         if (inv.envGet(stripped_key) != null) {
             std.debug.print(
                 "\nFakeInvocation.env_pairs unexpectedly contains stripped key {s}\n",

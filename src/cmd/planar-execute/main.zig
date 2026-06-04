@@ -460,8 +460,9 @@ pub const DefaultEnvBuilderCtx = struct {
     /// Absolute path to `git`. Allow-listed in the worker's shim directory.
     git_path: []const u8,
     /// The host environ the worker env baselines from (PATH gets overridden
-    /// to the shim dir; STRIPPED_ENV_VARS are removed; PLANAR_WORKBENCH_ROOT
-    /// is intentionally inherited).
+    /// to the shim dir; ALL PLANAR_* vars are stripped except the allow-listed
+    /// worker_env.ALLOWED_PLANAR_VARS — PLANAR_WORKBENCH_ROOT is intentionally
+    /// inherited).
     host_environ: std.process.Environ,
 };
 

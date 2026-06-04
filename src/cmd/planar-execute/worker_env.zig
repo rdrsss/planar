@@ -87,7 +87,7 @@
 //! by construction (a new binary cannot leak in by being installed in the same
 //! dir as an allowed one).
 //!
-//! ## Env-var policy
+//! ## Env-var policy — ALLOW-LIST (deny-by-default for the `PLANAR_*` namespace)
 //!
 //! Inheriting the entire host env is generally the right default (the worker
 //! needs `HOME`, `USER`, `TMPDIR`, `LANG`, terminal/TTY hints, etc., to behave
@@ -95,44 +95,56 @@
 //!
 //! 1. **Copies the host env** as the baseline.
 //! 2. **Overrides `PATH`** to the shim directory (the constrained PATH).
-//! 3. **Strips a small set of planar-internal env vars** that could steer
-//!    operator-binary behavior the constrained worker should not control:
+//! 3. **Strips ALL `PLANAR_*` env vars by default**, allowing only the small
+//!    explicitly-justified set in `ALLOWED_PLANAR_VARS`.
 //!
-//!    - `PLANAR_BIN` — alt-binary pointer; bypass of shim PATH. Used by the
-//!      integration suite to point at a freshly built `./bin/planar`; a
-//!      worker that reads this can shell directly to the operator's planar
-//!      binary, bypassing the shim entirely.
-//!    - `PLANAR_HOME` — redirects `~/.planar/` lookups (templates, config,
-//!      workspace state). Stripping is defense-in-depth: a worker that
-//!      reads or mutates this could steer the operator's planar-agent calls
-//!      to a sandbox path the operator does not know about.
-//!    - `PLANAR_DB` — overrides the SQLite DB path (honored by
-//!      `runtime.resolveDbPath` and inherited by BOTH `planar` and
-//!      `planar-agent`). A worker inheriting this from the integration suite,
-//!      or from any operator who has set it, will direct its `planar-agent`
-//!      writes to the operator's real DB instead of the cycle-scoped one the
-//!      harness expects. Catastrophic; strip unconditionally.
-//!    - `PLANAR_CONFIG_PATH` — overrides the operator's `config.toml`
-//!      resolution (`src/cmd/planar/handlers/config/path.zig`). A worker
-//!      should not be able to steer config resolution from outside its
-//!      brief.
-//!    - `PLANAR_TEMPLATES_DIR` — overrides template lookup for propagation
-//!      and doc rendering (`src/engine/config/effective.zig`). Stripping
-//!      keeps template-driven external-system behavior pinned to the
-//!      operator's chosen layer.
-//!    - `PLANAR_DISABLE_WORKTREE_GATE` — disables the cross-scope guard
-//!      (`src/cmd/planar/worktree_gate.zig`). The integration-suite escape
-//!      hatch that lifts the worktree-scope check must not leak to a
-//!      worker; the worker is expected to honor scope guards.
+//! ### Why an allow-list, not a deny-list (the inversion)
 //!
-//!    `PATH` is overwritten, not "stripped + re-added", so any host-PATH
-//!    surface that happened to expose `planar` is replaced wholesale.
+//! This module previously enumerated a deny-list of the handful of
+//! `PLANAR_*` vars known to be dangerous. That posture is **latent-by-default
+//! unsafe**: the runtime honors a growing set of `PLANAR_*` env vars
+//! (`PLANAR_BIN`, `PLANAR_HOME`, `PLANAR_DB`, `PLANAR_CONFIG_PATH`,
+//! `PLANAR_TEMPLATES_DIR`, `PLANAR_DISABLE_WORKTREE_GATE`, `PLANAR_SCOPE`,
+//! `PLANAR_LOCAL_HOME`, `PLANAR_VENDOR`, `PLANAR_VENDOR_SESSION_ID`,
+//! `PLANAR_TEMPLATES_DEFAULT_SET`, `PLANAR_GITHUB_AUTH`,
+//! `PLANAR_GITHUB_PROJECTS_PARENT_FIELDS`, `PLANAR_LLM_PROVIDER`,
+//! `PLANAR_EDITOR`, …), and every one of them is a potential steer-point for
+//! an unconstrained worker. Under a deny-list, the next contributor who adds
+//! `PLANAR_FOO` to the runtime silently ships an env-steerable worker
+//! behavior unless they remember to update THIS file.
 //!
-//! `PLANAR_WORKBENCH_ROOT` is INTENTIONALLY inherited: the worker may need to
-//! read workbench content for spec citations the brief references. The
-//! worker's mutation path is `planar-agent`, which carries its own write
-//! discipline; reading the workbench is not a privilege escalation. This is
-//! a deliberate carve-out from the strip list.
+//! Inverting to an allow-list closes that gap by construction: any `PLANAR_*`
+//! var — known TODAY or added TOMORROW — is stripped unless it appears in
+//! `ALLOWED_PLANAR_VARS`. New `PLANAR_*` vars are denied by default; opting a
+//! var IN is an explicit, reviewable edit to the allow-set. The strip is a
+//! prefix match (`std.mem.startsWith(u8, key, "PLANAR_")`), not an enumerated
+//! lookup.
+//!
+//! ### The allow-set
+//!
+//! `ALLOWED_PLANAR_VARS` is deliberately minimal. Each member needs a
+//! standing justification:
+//!
+//!    - `PLANAR_WORKBENCH_ROOT` — the worker may need to read workbench
+//!      content for spec citations the brief references. The worker's
+//!      mutation path is `planar-agent`, which carries its own write
+//!      discipline; reading the workbench is not a privilege escalation.
+//!      This is the SOLE justified carve-out today.
+//!
+//! Everything else in the `PLANAR_*` namespace is stripped, including the
+//! historically-catastrophic cases the old deny-list named explicitly —
+//! e.g. `PLANAR_DB` (would direct the worker's `planar-agent` writes to the
+//! operator's real DB instead of the cycle-scoped one) and `PLANAR_BIN`
+//! (alt-binary pointer that bypasses the shim PATH).
+//!
+//! `PATH` is overwritten, not "stripped + re-added", so any host-PATH surface
+//! that happened to expose `planar` is replaced wholesale. `PATH` is not a
+//! `PLANAR_*` var; the shim-dir PATH override (step 2) is a separate
+//! mechanism and is unaffected by the prefix strip.
+//!
+//! Non-`PLANAR_*` vars (`HOME`, `USER`, `TMPDIR`, `LANG`, `EDITOR`, …) are
+//! inherited untouched — the inversion is scoped to the `PLANAR_*` namespace
+//! only; the worker still needs the rest of a normal host env to behave.
 //!
 //! ## Memory ownership
 //!
@@ -184,17 +196,34 @@ pub const SHIM_PLANAR_AGENT: []const u8 = "planar-agent";
 /// The exact filename the `git` symlink takes inside the shim directory.
 pub const SHIM_GIT: []const u8 = "git";
 
-/// Env vars that are stripped from the inherited host environment to prevent
-/// the worker from re-discovering the operator's `planar` binary by other
-/// means than PATH. See top-of-file "Env-var policy" section for rationale.
-pub const STRIPPED_ENV_VARS = [_][]const u8{
-    "PLANAR_BIN",
-    "PLANAR_HOME",
-    "PLANAR_DB",
-    "PLANAR_CONFIG_PATH",
-    "PLANAR_TEMPLATES_DIR",
-    "PLANAR_DISABLE_WORKTREE_GATE",
+/// The `PLANAR_` prefix. Every env key starting with this is in the
+/// planar-internal namespace and is stripped from the worker env UNLESS it
+/// appears in `ALLOWED_PLANAR_VARS`. See top-of-file "Env-var policy" for the
+/// allow-list rationale.
+pub const PLANAR_ENV_PREFIX: []const u8 = "PLANAR_";
+
+/// The ALLOW-LIST: the only `PLANAR_*` env vars a constrained worker is
+/// permitted to inherit. Everything else in the `PLANAR_*` namespace is
+/// stripped by default (deny-by-default), so a future `PLANAR_FOO` added to
+/// the runtime is denied automatically without any edit to this file. Each
+/// member here needs a standing justification (see top-of-file doc block).
+pub const ALLOWED_PLANAR_VARS = [_][]const u8{
+    // The worker may need to read workbench content for spec citations the
+    // brief references. Reading the workbench is not a privilege escalation;
+    // the worker's mutation path is the constrained `planar-agent`.
+    "PLANAR_WORKBENCH_ROOT",
 };
+
+/// Reports whether `key` is in the planar-internal namespace
+/// (`PLANAR_`-prefixed) but NOT in the allow-list — i.e. whether the
+/// constrain step should strip it.
+fn isStrippedPlanarVar(key: []const u8) bool {
+    if (!std.mem.startsWith(u8, key, PLANAR_ENV_PREFIX)) return false;
+    for (ALLOWED_PLANAR_VARS) |allowed| {
+        if (std.mem.eql(u8, key, allowed)) return false;
+    }
+    return true;
+}
 
 // ---------------------------------------------------------------------------
 // WorkerEnv — heap-owned env state for a single worker invocation.
@@ -391,21 +420,51 @@ fn createConstrainedEnvMap(
     return map;
 }
 
-/// Strips the deny-list env vars (see `STRIPPED_ENV_VARS`) and overrides
-/// `PATH` to `path_value`. Pure operation on an already-populated Map; lets
-/// tests drive the constrain step from a synthetic Map without needing to
-/// mutate the live process environment.
+/// Applies the allow-list policy: strips EVERY `PLANAR_*` env var that is not
+/// in `ALLOWED_PLANAR_VARS`, then overrides `PATH` to `path_value`. This is a
+/// deny-by-default posture over the `PLANAR_*` namespace — an unknown future
+/// `PLANAR_FOO` is stripped without any code change here. Pure operation on an
+/// already-populated Map; lets tests drive the constrain step from a synthetic
+/// Map without needing to mutate the live process environment.
+///
+/// Mutating a Map while iterating it is unsafe, so we collect the keys to
+/// strip in a first pass (into a temporary `ArrayList`) and remove them in a
+/// second pass. The collected key slices are borrowed from the map's own
+/// storage; we must NOT use them after `swapRemove` frees them, so the second
+/// pass removes-then-discards each in order.
 ///
 /// `Map.swapRemove` (NOT the bare ArrayHashMap one) frees both halves of the
-/// kv pair, so no manual ownership management is needed. `Map.put` copies
-/// `path_value`, so ownership of the caller's slice is not transferred.
+/// kv pair, so no manual ownership management of the entries is needed.
+/// `Map.put` copies `path_value`, so ownership of the caller's slice is not
+/// transferred. The temporary key list itself uses an arena tied to this call
+/// so its backing storage is freed on return.
 pub fn constrainEnvMap(
     map: *std.process.Environ.Map,
     path_value: []const u8,
 ) error{OutOfMemory}!void {
-    for (STRIPPED_ENV_VARS) |key| {
+    // First pass: collect the keys to strip. We dupe each key into a
+    // scratch arena because `swapRemove` in the second pass frees the map's
+    // copy of the key, which would dangle a borrowed slice.
+    var arena = std.heap.ArenaAllocator.init(map.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var to_strip = std.ArrayList([]const u8).empty;
+
+    var it = map.iterator();
+    while (it.next()) |entry| {
+        const key = entry.key_ptr.*;
+        if (isStrippedPlanarVar(key)) {
+            const owned = scratch.dupe(u8, key) catch return error.OutOfMemory;
+            to_strip.append(scratch, owned) catch return error.OutOfMemory;
+        }
+    }
+
+    // Second pass: remove the collected keys (now safe — not iterating).
+    for (to_strip.items) |key| {
         _ = map.swapRemove(key);
     }
+
     try map.put("PATH", path_value);
 }
 
@@ -629,33 +688,77 @@ test "constrainEnvMap: no-op strip when the keys are absent; PATH still overridd
     try std.testing.expectEqualStrings("/tmp/shim2", path);
 }
 
-test "constrainEnvMap: strips every entry in STRIPPED_ENV_VARS (table-driven)" {
+test "constrainEnvMap: strips a future-unknown PLANAR_ var without any code change (allow-list posture)" {
+    // THE load-bearing allow-list test. PLANAR_QWERTY_FUTURE is a name that
+    // does NOT appear anywhere in the codebase and is NOT in
+    // ALLOWED_PLANAR_VARS. Under the OLD deny-list (STRIPPED_ENV_VARS, which
+    // enumerated only 6 known vars), this key would have SURVIVED
+    // constrainEnvMap — the deny-list only stripped the enumerated members.
+    // Under the inverted allow-list, the prefix strip removes it by default.
+    // This test is the proof of the future-proofing: it would FAIL under the
+    // pre-inversion code.
     const a = std.testing.allocator;
 
-    // Pre-populate the map with one fixture value per stripped key plus a
-    // benign entry. The post-constrain assertion walks STRIPPED_ENV_VARS so
-    // any new addition to that list is automatically exercised — the test
-    // does not hard-code the key list a second time.
+    var map = std.process.Environ.Map.init(a);
+    defer map.deinit();
+    try map.put("PATH", "/usr/bin:/bin");
+    try map.put("HOME", "/home/operator");
+    try map.put("PLANAR_QWERTY_FUTURE", "/opt/leak/whatever");
+
+    try constrainEnvMap(&map, "/tmp/shim-future");
+
+    if (map.get("PLANAR_QWERTY_FUTURE") != null) {
+        std.debug.print("\nPLANAR_QWERTY_FUTURE survived constrainEnvMap — allow-list strip regressed\n", .{});
+    }
+    try std.testing.expect(map.get("PLANAR_QWERTY_FUTURE") == null);
+
+    // Non-PLANAR_ entry survives; PATH overridden.
+    const home = map.get("HOME") orelse @panic("HOME missing");
+    try std.testing.expectEqualStrings("/home/operator", home);
+    const path = map.get("PATH") orelse @panic("PATH missing");
+    try std.testing.expectEqualStrings("/tmp/shim-future", path);
+}
+
+test "constrainEnvMap: strips the old deny-list + newly-covered PLANAR_ vars (table-driven)" {
+    const a = std.testing.allocator;
+
+    // A fixture list mixing the 6 vars the old deny-list named explicitly
+    // with several of the 7+ PLANAR_* vars the runtime honors that the old
+    // deny-list MISSED. Under the allow-list, every one of these is stripped
+    // by prefix because none are in ALLOWED_PLANAR_VARS.
+    const should_strip = [_][]const u8{
+        // Old deny-list members:
+        "PLANAR_BIN",
+        "PLANAR_HOME",
+        "PLANAR_DB",
+        "PLANAR_CONFIG_PATH",
+        "PLANAR_TEMPLATES_DIR",
+        "PLANAR_DISABLE_WORKTREE_GATE",
+        // Newly-covered by the inversion (the old deny-list did NOT strip these):
+        "PLANAR_SCOPE",
+        "PLANAR_LOCAL_HOME",
+        "PLANAR_VENDOR",
+        "PLANAR_VENDOR_SESSION_ID",
+        "PLANAR_TEMPLATES_DEFAULT_SET",
+        "PLANAR_GITHUB_AUTH",
+        "PLANAR_GITHUB_PROJECTS_PARENT_FIELDS",
+        "PLANAR_LLM_PROVIDER",
+        "PLANAR_EDITOR",
+    };
+
     var map = std.process.Environ.Map.init(a);
     defer map.deinit();
     try map.put("PATH", "/usr/bin:/bin");
     try map.put("HOME", "/home/operator");
     try map.put("PLANAR_WORKBENCH_ROOT", "/home/operator/.planar/workbench");
-
-    // Fixture values for every stripped var.
-    try map.put("PLANAR_BIN", "/opt/leak/planar");
-    try map.put("PLANAR_HOME", "/opt/leak/.planar");
-    try map.put("PLANAR_DB", "/opt/leak/planar.db");
-    try map.put("PLANAR_CONFIG_PATH", "/opt/leak/config.toml");
-    try map.put("PLANAR_TEMPLATES_DIR", "/opt/leak/templates");
-    try map.put("PLANAR_DISABLE_WORKTREE_GATE", "1");
+    for (should_strip) |key| try map.put(key, "/opt/leak/value");
 
     try constrainEnvMap(&map, "/tmp/shim-table");
 
-    // Every stripped key must be absent post-constrain.
-    for (STRIPPED_ENV_VARS) |key| {
+    // Every fixture key must be absent post-constrain.
+    for (should_strip) |key| {
         if (map.get(key) != null) {
-            std.debug.print("\nSTRIPPED_ENV_VARS member {s} survived constrainEnvMap\n", .{key});
+            std.debug.print("\nPLANAR_ var {s} survived constrainEnvMap\n", .{key});
         }
         try std.testing.expect(map.get(key) == null);
     }
@@ -671,6 +774,61 @@ test "constrainEnvMap: strips every entry in STRIPPED_ENV_VARS (table-driven)" {
     // PATH overridden.
     const path = map.get("PATH") orelse @panic("PATH missing");
     try std.testing.expectEqualStrings("/tmp/shim-table", path);
+}
+
+test "constrainEnvMap: every ALLOWED_PLANAR_VARS member is preserved" {
+    const a = std.testing.allocator;
+
+    var map = std.process.Environ.Map.init(a);
+    defer map.deinit();
+    try map.put("PATH", "/usr/bin:/bin");
+    // Populate one fixture value per allow-listed var. The assertion walks
+    // ALLOWED_PLANAR_VARS so any future addition is exercised automatically.
+    for (ALLOWED_PLANAR_VARS) |key| try map.put(key, "/allowed/value");
+
+    try constrainEnvMap(&map, "/tmp/shim-allow");
+
+    for (ALLOWED_PLANAR_VARS) |key| {
+        const v = map.get(key) orelse {
+            std.debug.print("\nALLOWED_PLANAR_VARS member {s} was wrongly stripped\n", .{key});
+            return error.TestUnexpectedResult;
+        };
+        try std.testing.expectEqualStrings("/allowed/value", v);
+    }
+}
+
+test "constrainEnvMap: non-PLANAR_ vars are inherited untouched" {
+    const a = std.testing.allocator;
+
+    var map = std.process.Environ.Map.init(a);
+    defer map.deinit();
+    try map.put("HOME", "/home/operator");
+    try map.put("USER", "operator");
+    try map.put("EDITOR", "vim");
+    // A var whose name merely CONTAINS "PLANAR" but does not start with the
+    // prefix must NOT be stripped — the policy is a prefix match.
+    try map.put("MY_PLANAR_HINT", "keep-me");
+
+    try constrainEnvMap(&map, "/tmp/shim-nonplanar");
+
+    try std.testing.expectEqualStrings("/home/operator", map.get("HOME") orelse @panic("HOME missing"));
+    try std.testing.expectEqualStrings("operator", map.get("USER") orelse @panic("USER missing"));
+    try std.testing.expectEqualStrings("vim", map.get("EDITOR") orelse @panic("EDITOR missing"));
+    try std.testing.expectEqualStrings("keep-me", map.get("MY_PLANAR_HINT") orelse @panic("MY_PLANAR_HINT missing"));
+}
+
+test "isStrippedPlanarVar: prefix + allow-list logic" {
+    // PLANAR_-prefixed, not allowed -> strip.
+    try std.testing.expect(isStrippedPlanarVar("PLANAR_DB"));
+    try std.testing.expect(isStrippedPlanarVar("PLANAR_QWERTY_FUTURE"));
+    // Allow-listed -> keep.
+    try std.testing.expect(!isStrippedPlanarVar("PLANAR_WORKBENCH_ROOT"));
+    // Not PLANAR_-prefixed -> keep.
+    try std.testing.expect(!isStrippedPlanarVar("HOME"));
+    try std.testing.expect(!isStrippedPlanarVar("PATH"));
+    try std.testing.expect(!isStrippedPlanarVar("MY_PLANAR_HINT"));
+    // Bare "PLANAR" without the underscore is NOT prefixed.
+    try std.testing.expect(!isStrippedPlanarVar("PLANAR"));
 }
 
 test "constrainEnvMap: strips PLANAR_DB so worker planar-agent calls cannot reach operator DB" {
