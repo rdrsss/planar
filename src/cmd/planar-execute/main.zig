@@ -101,11 +101,20 @@ pub const spawn = @import("spawn.zig");
 /// Imported here so its `test` blocks run under the `execute_exe_tests` target.
 pub const terminal = @import("terminal.zig");
 
-const c = @cImport({
-    @cInclude("lua.h");
-    @cInclude("lauxlib.h");
-    @cInclude("lualib.h");
-});
+/// lua — the single shared `@cImport` of the vendored Lua 5.4 C API. Both this
+/// module and `scheduler.zig` use it so `*c.lua_State` is the SAME type across
+/// the coroutine-drive boundary (a fresh `@cImport` per module would make them
+/// distinct). See lua.zig.
+pub const lua = @import("lua.zig");
+const c = lua.c;
+
+/// scheduler — the M5 coroutine event loop (task 3182). `runModule` drives
+/// `run(ctx)` inside a Lua coroutine via `scheduler.driveCoroutine`; `agent()`
+/// yields (non-blocking spawn → register → `lua_yieldk`) and the scheduler
+/// resumes the coroutine once its single in-flight worker reaches terminal.
+/// Aliased here so its `test` blocks run under the execute_exe_tests target
+/// (memory: planar_execute_gate_lazy_eval — a pub-const alias forces analysis).
+pub const scheduler = @import("scheduler.zig");
 
 // ---------------------------------------------------------------------------
 // Process-global I/O context (no runtime module — planar-execute has no DB).
@@ -302,6 +311,17 @@ pub const HostState = struct {
     // unchanged: agent(prompt, opts) returns a result table.
     agent_driver: ?*AgentDriver = null,
 
+    // M5 coroutine event loop (task 3182).
+    //
+    // The scheduler owns the in-flight-worker registry and drives each yielded
+    // `agent()` coroutine to completion. `runModule` constructs it and points
+    // this at it before driving `run(ctx)` on a coroutine thread. `hostAgent`
+    // recovers it (via the HostState upvalue) to register the worker + yield;
+    // `agentContinue` recovers it to read the worker outcome on resume. Null
+    // for pure-Lua run paths that never call `agent()` (e.g. callRun tests),
+    // in which case `hostAgent` is never reached with a driver installed.
+    sched: ?*scheduler.Scheduler = null,
+
     pub fn init(allocator: std.mem.Allocator, now: i64, seed: i64, budget_total: i64, budget_spent: i64) HostState {
         return .{
             .allocator = allocator,
@@ -311,6 +331,7 @@ pub const HostState = struct {
             .budget_total = budget_total,
             .budget_spent = budget_spent,
             .agent_driver = null,
+            .sched = null,
         };
     }
 
@@ -611,14 +632,63 @@ fn pushAgentResult(
     c.lua_setfield(L, -2, "terminal_verb");
 }
 
-/// driveAgentCall runs the full M4 pipeline for one `agent(prompt, opts)`
-/// invocation, using the injected `AgentDriver`. Returns the Lua result table
-/// pushed onto the stack (always one value).
+/// AgentCallState is the per-`agent()`-call state threaded ACROSS the coroutine
+/// yield (plan 492 M5 task 3182). The pre-yield half (`driveAgentCallPreYield`)
+/// allocates it, fills the fields the continuation needs, and stashes a pointer
+/// to it as the scheduler slot's opaque `payload`. The continuation
+/// (`agentContinue`) recovers it from the slot, reads the worker outcome, and
+/// frees it.
 ///
-/// The prompt is the brief (multi-KB text the workflow has pre-compiled via
-/// `brief.compileBrief` or similar). It is delivered to the worker via stdin
-/// (decision pinned in `spawn.zig`).
-fn driveAgentCall(
+/// Why heap state and not Lua-stack borrows: the continuation runs in a LATER
+/// `lua_resume`, after the C-call stack that produced the borrowed Lua strings
+/// has unwound. Anything the continuation reads MUST be host-owned. So the
+/// pre-yield half DUPES the opts strings it needs (worktree_path, claim_token,
+/// task_slug) and the pre-spawn HEAD onto `allocator`, and keeps the
+/// `worker_env` alive (the spawn handle borrows its env map) until the
+/// continuation frees it after the worker is done.
+const AgentCallState = struct {
+    allocator: std.mem.Allocator,
+    driver: *AgentDriver,
+    /// Owned dupes of the opts strings the continuation needs.
+    worktree_path: []u8,
+    claim_token: []u8,
+    task_slug: []u8,
+    /// Pre-spawn cycle-branch HEAD (commit-presence proxy). Owned; may be null.
+    head_before: ?[]u8,
+    /// The constrained worker env kept alive across the spawn. The in-flight
+    /// handle's env map borrows into this; freed in the continuation after the
+    /// worker has exited. Null when no env_builder was installed (FakeSpawner
+    /// test paths).
+    worker_env_built: ?worker_env.WorkerEnv,
+    /// The scheduler slot index this call registered its in-flight worker in.
+    slot_index: usize,
+
+    fn destroy(self: *AgentCallState) void {
+        const a = self.allocator;
+        if (self.worker_env_built) |*we| we.deinit(a, self.driver.io);
+        if (self.head_before) |h| a.free(h);
+        a.free(self.worktree_path);
+        a.free(self.claim_token);
+        a.free(self.task_slug);
+        a.destroy(self);
+    }
+};
+
+/// driveAgentCallPreYield is the FIRST half of one `agent(prompt, opts)` call
+/// (the M5 coroutine split). It runs on the coroutine thread `L` (== `co`):
+///
+///   1. Resolve role + validate worktree_path (script-author errors → Lua error).
+///   2. Sample the pre-spawn cycle-branch HEAD (commit-presence proxy).
+///   3. Build the constrained worker env (decisions 358 + 365).
+///   4. Spawn the worker NON-BLOCKING (`Spawner.start` → in-flight handle).
+///   5. Register the handle + the per-call `AgentCallState` with the scheduler.
+///   6. `lua_yieldk(L, 0, slot_index, agentContinue)` — yields across the C
+///      boundary. Does NOT return (longjmp); execution resumes in
+///      `agentContinue` once the scheduler has driven the worker to terminal.
+///
+/// The second half (post-spawn HEAD sample, commit-presence, claim read,
+/// terminal-verb decision + run, result table) lives in `agentContinue`.
+fn driveAgentCallPreYield(
     L: ?*c.lua_State,
     hs: *HostState,
     driver: *AgentDriver,
@@ -638,66 +708,164 @@ fn driveAgentCall(
         return 0;
     }
 
+    const sched = hs.sched orelse {
+        _ = c.luaL_error(L, "agent: no scheduler installed (internal wiring bug)");
+        return 0;
+    };
+
     const alloc = hs.allocator;
     const io = driver.io;
 
+    // Allocate the cross-yield call state up front. Everything the continuation
+    // reads is duped onto it (the Lua-stack borrows do not survive the yield).
+    const acs = alloc.create(AgentCallState) catch {
+        _ = c.luaL_error(L, "agent: out of memory");
+        return 0;
+    };
+    // Initialize the owned dupes; on any failure below before the yield we must
+    // free what we allocated (the yield is the point of no return).
+    acs.* = .{
+        .allocator = alloc,
+        .driver = driver,
+        .worktree_path = alloc.dupe(u8, opts.worktree_path) catch {
+            alloc.destroy(acs);
+            _ = c.luaL_error(L, "agent: out of memory");
+            return 0;
+        },
+        .claim_token = &.{},
+        .task_slug = &.{},
+        .head_before = null,
+        .worker_env_built = null,
+        .slot_index = 0,
+    };
+    acs.claim_token = alloc.dupe(u8, opts.claim_token) catch {
+        alloc.free(acs.worktree_path);
+        alloc.destroy(acs);
+        _ = c.luaL_error(L, "agent: out of memory");
+        return 0;
+    };
+    acs.task_slug = alloc.dupe(u8, opts.task_slug) catch {
+        alloc.free(acs.claim_token);
+        alloc.free(acs.worktree_path);
+        alloc.destroy(acs);
+        _ = c.luaL_error(L, "agent: out of memory");
+        return 0;
+    };
+
     // 1) Sample the pre-spawn cycle branch HEAD (commit-presence proxy).
-    var head_before: ?[]u8 = null;
-    defer if (head_before) |h| alloc.free(h);
-    if (driver.repo_root.len > 0 and driver.plan_slug.len > 0 and opts.task_slug.len > 0) {
-        const branch = worktree.cycleBranch(alloc, driver.plan_slug, opts.task_slug) catch {
+    if (driver.repo_root.len > 0 and driver.plan_slug.len > 0 and acs.task_slug.len > 0) {
+        const branch = worktree.cycleBranch(alloc, driver.plan_slug, acs.task_slug) catch {
+            acs.destroy();
             _ = c.luaL_error(L, "agent: out of memory");
             return 0;
         };
         defer alloc.free(branch);
-        head_before = worktree.branchHead(alloc, io, driver.repo_root, branch) catch null;
+        acs.head_before = worktree.branchHead(alloc, io, driver.repo_root, branch) catch null;
     }
 
-    // 2) Build the constrained worker env when a builder is installed. This is
-    // the Item-J wiring: decisions 358 + 365 require that the worker's PATH
-    // be the per-cycle shim (planar-agent + git only) and that
-    // PLANAR_DB / PLANAR_CONFIG_PATH / etc. are stripped. The real spawner
-    // PANICS if env_map is null (see spawn.realRunFn), so production wiring
-    // MUST install a builder; tests with FakeSpawner can omit it and the
-    // FakeSpawner records an empty env snapshot.
-    var worker_env_built: ?worker_env.WorkerEnv = null;
-    defer if (worker_env_built) |*we| we.deinit(alloc, io);
+    // 2) Build the constrained worker env when a builder is installed. The real
+    // spawner PANICS if env_map is null (decisions 358 + 365); production wiring
+    // MUST install a builder. Tests with FakeSpawner omit it and the FakeSpawner
+    // records an empty env snapshot.
     if (driver.env_builder) |build_env| {
-        worker_env_built = build_env(driver.env_builder_ctx, alloc, io, opts.worktree_path) catch |err| {
+        acs.worker_env_built = build_env(driver.env_builder_ctx, alloc, io, acs.worktree_path) catch |err| {
+            acs.destroy();
             _ = c.luaL_error(L, "agent: env builder failed: %s", @errorName(err).ptr);
             return 0;
         };
     }
-    const env_map_ptr: ?*const std.process.Environ.Map = if (worker_env_built) |*we| &we.env_map else null;
+    const env_map_ptr: ?*const std.process.Environ.Map =
+        if (acs.worker_env_built) |*we| &we.env_map else null;
 
-    // 3) Spawn the worker. The brief is the prompt (already-compiled methodology
-    // brief; the workflow drives compileBrief separately, then passes the
-    // resulting string in). env_map (the constrained worker env) is passed
-    // through SpawnInputs; the real spawner threads it as `environ_map` on
+    // 3) Spawn the worker NON-BLOCKING. The brief is the prompt (already-compiled
+    // methodology brief). env_map (the constrained worker env) is threaded into
+    // SpawnInputs; the real spawner passes it as `environ_map` on
     // std.process.spawn so the child does NOT inherit the parent's full env.
     const spawn_inputs = spawn.SpawnInputs{
         .role = role,
-        .worktree_path = opts.worktree_path,
+        .worktree_path = acs.worktree_path,
         .brief = prompt,
         .role_spec = opts.role_spec,
         .env_map = env_map_ptr,
     };
-    var outcome = driver.spawner.run(alloc, io, spawn_inputs) catch |err| {
+    const handle = driver.spawner.start(alloc, io, spawn_inputs) catch |err| {
+        acs.destroy();
         _ = c.luaL_error(L, "agent: spawn failed: %s", @errorName(err).ptr);
         return 0;
     };
-    defer outcome.deinit(alloc);
 
-    // 4) Sample the post-spawn cycle branch HEAD.
-    var head_after: ?[]u8 = null;
-    defer if (head_after) |h| alloc.free(h);
-    if (driver.repo_root.len > 0 and driver.plan_slug.len > 0 and opts.task_slug.len > 0) {
-        const branch = worktree.cycleBranch(alloc, driver.plan_slug, opts.task_slug) catch {
-            _ = c.luaL_error(L, "agent: out of memory");
+    // 4) Register the in-flight worker + this call state with the scheduler.
+    const slot_index = sched.registerInflight(L.?, handle, acs) catch {
+        // Registry full — N>MAX_SLOTS concurrent workers. Impossible at N=1.
+        // Drain the handle so the child is not orphaned, then error.
+        var h = handle;
+        var drained = driver.spawner.wait(alloc, io, &h) catch {
+            acs.destroy();
+            _ = c.luaL_error(L, "agent: scheduler registry full");
             return 0;
         };
-        defer alloc.free(branch);
-        head_after = worktree.branchHead(alloc, io, driver.repo_root, branch) catch null;
+        drained.deinit(alloc);
+        acs.destroy();
+        _ = c.luaL_error(L, "agent: scheduler registry full");
+        return 0;
+    };
+    acs.slot_index = slot_index;
+
+    // 5) Yield across the C boundary. The continuation `agentContinue` resumes
+    // once the scheduler has driven the worker to terminal. `lua_yieldk` does
+    // NOT return (it longjmps); the `return 0` below is unreachable.
+    _ = c.lua_yieldk(L, 0, @intCast(slot_index), agentContinue);
+    return 0; // unreachable
+}
+
+/// agentContinue is the continuation for one `agent()` call — the SECOND half
+/// of the M5 coroutine split. By the time the scheduler resumes this coroutine,
+/// the in-flight worker has reached terminal (process exit) and the scheduler
+/// has stored its `SpawnOutcome` on the slot. This function:
+///
+///   1. Recovers the scheduler + the per-call `AgentCallState` (from the slot
+///      keyed by `ctx`, the `lua_KContext` index the pre-yield half passed).
+///   2. Reads the worker outcome from the slot.
+///   3. Samples the post-spawn cycle-branch HEAD → commit-presence.
+///   4. Reads the LIVE claim status (task 3242) → terminal-verb decision.
+///   5. Optionally runs the terminal verb (`planar-agent <verb>`).
+///   6. Builds + pushes the Lua result table and returns 1.
+///   7. Frees the call state + the worker outcome + releases the slot.
+///
+/// `status` is the resume status (`LUA_YIELD` here — the value Lua passes a
+/// continuation invoked after a yield); we do not branch on it because the
+/// scheduler only resumes after the worker is terminal.
+fn agentContinue(L: ?*c.lua_State, status: c_int, ctx: c.lua_KContext) callconv(.c) c_int {
+    _ = status;
+    const hs = hostStateUpvalue(L);
+    const sched = hs.sched orelse @panic("agentContinue: scheduler missing on resume");
+    const slot_index: usize = @intCast(ctx);
+    const slot = sched.slot(slot_index);
+    const acs: *AgentCallState = @ptrCast(@alignCast(slot.payload.?));
+    const driver = acs.driver;
+    const alloc = acs.allocator;
+    const io = driver.io;
+
+    // The scheduler stored the worker outcome on the slot. Take ownership.
+    var outcome = slot.outcome.?;
+    slot.outcome = null;
+    defer outcome.deinit(alloc);
+    // Free the call state + release the slot when we leave (the result table is
+    // already on the Lua stack by then; nothing below borrows acs after this).
+    defer {
+        acs.destroy();
+        sched.releaseSlot(slot_index);
+    }
+
+    // 3) Sample the post-spawn cycle branch HEAD.
+    var head_after: ?[]u8 = null;
+    defer if (head_after) |h| alloc.free(h);
+    if (driver.repo_root.len > 0 and driver.plan_slug.len > 0 and acs.task_slug.len > 0) {
+        const branch = worktree.cycleBranch(alloc, driver.plan_slug, acs.task_slug) catch null;
+        if (branch) |b| {
+            defer alloc.free(b);
+            head_after = worktree.branchHead(alloc, io, driver.repo_root, b) catch null;
+        }
     }
 
     // commit_present = post-sample exists AND differs from pre-sample.
@@ -705,36 +873,30 @@ fn driveAgentCall(
     // created during the spawn.)
     const commit_present = blk: {
         if (head_after) |hi| {
-            if (head_before) |hi0| break :blk !std.mem.eql(u8, hi0, hi);
+            if (acs.head_before) |hi0| break :blk !std.mem.eql(u8, hi0, hi);
             break :blk true;
         }
         break :blk false;
     };
 
-    // 5) Read the LIVE claim status (task 3242). When the worker already ran
-    // its own terminal verb (the happy path per tech-spec L182-186), the claim
-    // is no longer live and `decideTerminalVerb` returns `.none` so the harness
-    // does NOT issue a redundant terminal-verb subprocess that would error with
-    // ClaimNotActive. The reader is injectable on the driver so unit tests pin
-    // this no-op path without a live binary.
-    const claim_status: terminal.ClaimStatus = readClaimStatusOrActive(driver, alloc, io, opts.claim_token);
-
-    // 6) Decide + (optionally) apply the terminal verb.
+    // 4) Read the LIVE claim status (task 3242) → terminal-verb decision.
+    const claim_status: terminal.ClaimStatus =
+        readClaimStatusOrActive(driver, alloc, io, acs.claim_token);
     const verb = terminal.decideTerminalVerb(.{
         .claim_status = claim_status,
         .exit_code = outcome.exit_code,
         .commit_present = commit_present,
     });
 
-    if (!driver.skip_terminal_subprocess and opts.claim_token.len > 0) {
-        terminal.runTerminalVerb(alloc, io, verb, opts.claim_token) catch {
-            // We do NOT raise a Lua error here — the harness has tried its
-            // best; the operator can recover via planar-agent reconcile. The
+    // 5) Optionally apply the terminal verb.
+    if (!driver.skip_terminal_subprocess and acs.claim_token.len > 0) {
+        terminal.runTerminalVerb(alloc, io, verb, acs.claim_token) catch {
+            // The harness tried its best; operator recovers via reconcile. The
             // returned Lua table still carries the decision.
         };
     }
 
-    // 7) Build the result table and push.
+    // 6) Build the result table and push (one return value to the script).
     const status_str: []const u8 = switch (verb) {
         .none => "respected",
         .complete => "completed",
@@ -870,9 +1032,13 @@ fn hostAgent(L: ?*c.lua_State) callconv(.c) c_int {
         return 1;
     };
 
-    // M4 mode — drive the full spawn pipeline through the injected driver.
+    // M4/M5 mode — drive the spawn pipeline through the injected driver. M5
+    // (task 3182) splits this into a pre-yield half (spawn non-blocking +
+    // register + lua_yield) and a continuation (agentContinue) the scheduler
+    // resumes once the worker is terminal. driveAgentCallPreYield does NOT
+    // return — it yields via lua_yieldk.
     const opts = readAgentOpts(L, 2);
-    return driveAgentCall(L, hs, driver, prompt, opts);
+    return driveAgentCallPreYield(L, hs, driver, prompt, opts);
 }
 
 /// hostParallel — `parallel({thunks})`. RECORDING STUB. Records the count of
@@ -1498,43 +1664,124 @@ pub fn runModule(
     // module table is at absolute index 1 (bottom of user stack after pcall).
     const module_idx: c_int = c.lua_absindex(L, -1);
 
-    // Push module.run onto the stack.
+    // ---- M5 coroutine drive (task 3182) ----
+    //
+    // run(ctx) executes inside a Lua COROUTINE thread, driven by lua_resume —
+    // NOT a blocking lua_pcallk. This is the load-bearing change: yielding from
+    // a C function (hostAgent → agentContinue) across a lua_pcallk boundary is
+    // forbidden in Lua 5.4 ("attempt to yield across a C-call boundary"), but a
+    // C function called from a lua_resume'd coroutine CAN yield via lua_yieldk.
+    // For N=1 the observable result is identical to the M4 lua_pcallk path; the
+    // mechanism is now yield/resume so task 3183 can run N coroutines.
+    //
+    // Stack discipline:
+    //   1. co = lua_newthread(L)   → L: [module, thread]
+    //   2. push module.run on L, xmove it to co → co: [run]
+    //   3. build ctx (args + host fns) ON co     → co: [run, ctx]
+    //   4. drive co with lua_resume(co, L, 1, &nres) via the scheduler loop.
+    const co = c.lua_newthread(L) orelse return LuaError.LuaAllocFailed;
+    // The thread is now on L's stack (index -1); keeping it referenced there
+    // anchors it against GC for the lifetime of this function.
+
+    // Push module.run onto L, then move it to the coroutine's stack.
     const run_type = c.lua_getfield(L, module_idx, "run");
     if (run_type != c.LUA_TFUNCTION) return LuaError.LuaModuleMissingRun;
-    // Stack: [module_table, run_function].  Pin with absindex.
-    const run_idx: c_int = c.lua_absindex(L, -1);
-    _ = run_idx; // absolute index captured; run is at top before ctx push
+    c.lua_xmove(L, co, 1); // co: [run]
 
-    // Build ctx table: { args = { [1]=args[0], [2]=args[1], ... } }.
-    c.lua_createtable(L, 0, 1); // push ctx table
-    const ctx_idx: c_int = c.lua_absindex(L, -1);
-    c.lua_createtable(L, @intCast(args.len), 0); // push args table (sequence hint)
-    const args_tbl_idx: c_int = c.lua_absindex(L, -1);
+    // Build ctx table ON the coroutine: { args = { ... } } + host fns.
+    c.lua_createtable(co, 0, 1); // co: [run, ctx]
+    const ctx_idx: c_int = c.lua_absindex(co, -1);
+    c.lua_createtable(co, @intCast(args.len), 0); // co: [run, ctx, args]
+    const args_tbl_idx: c_int = c.lua_absindex(co, -1);
 
     // Populate args as a 1-indexed Lua sequence.
     for (args, 0..) |arg, idx| {
-        // lua_pushlstring copies the bytes — safe for arbitrary []const u8.
-        _ = c.lua_pushlstring(L, arg.ptr, arg.len);
-        // lua_rawseti(L, table_idx, key): args_table[idx+1] = arg_string, pops the value.
-        c.lua_rawseti(L, args_tbl_idx, @intCast(idx + 1));
+        _ = c.lua_pushlstring(co, arg.ptr, arg.len);
+        c.lua_rawseti(co, args_tbl_idx, @intCast(idx + 1));
     }
 
-    // ctx["args"] = args_table; pops args table.
-    c.lua_setfield(L, ctx_idx, "args");
-    // Stack: [module_table, run_function, ctx_table].
+    // ctx["args"] = args_table; pops args table. co: [run, ctx].
+    c.lua_setfield(co, ctx_idx, "args");
 
     // Install the host-function surface + determinism on ctx (task 3168/3169).
-    // Per the spec ("ctx carries args and the host functions") these are ctx
-    // fields, not globals.
-    if (host) |hs| installHostFns(L, ctx_idx, hs);
+    // The closures are created on `co` so their upvalue (the *HostState) is the
+    // same one the scheduler reads. Per the spec these are ctx fields.
+    if (host) |hs| installHostFns(co, ctx_idx, hs);
 
-    // Call run(ctx): 1 argument, 0 expected return values, no error handler.
-    const run_rc = c.lua_pcallk(L, 1, 0, 0, 0, null);
-    if (run_rc != c.LUA_OK) {
-        captureError(L, err_buf);
-        return LuaError.LuaRuntimeError;
+    // ---- Scheduler-driven resume loop ----
+    //
+    // Build the scheduler and point the HostState at it (so hostAgent can
+    // register the in-flight worker + yield, and agentContinue can read the
+    // outcome on resume). The scheduler's spawner comes from the driver.
+    var sched_storage: scheduler.Scheduler = undefined;
+    if (host) |hs| {
+        sched_storage = scheduler.Scheduler.init(hs.allocator, blk: {
+            // The driver's Io is the genuine subprocess Io; for pure-Lua hosts
+            // (no driver) there is no spawning, so any Io is fine — borrow the
+            // driver's when present, else a placeholder is never used.
+            if (hs.agent_driver) |d| break :blk d.io;
+            break :blk undefined_io;
+        });
+        if (hs.agent_driver) |d| sched_storage.spawner = d.spawner;
+        hs.sched = &sched_storage;
+    }
+    defer if (host) |hs| {
+        hs.sched = null;
+    };
+
+    // Drive co to completion. lua_resume returns LUA_OK (finished), LUA_YIELD
+    // (a worker is in flight — drive it, then resume), or an error code.
+    var nres: c_int = 0;
+    var resume_rc = c.lua_resume(co, L, 1, &nres); // 1 arg = ctx
+    while (true) {
+        switch (scheduler.classifyResume(resume_rc)) {
+            .done => return, // pure-Lua workflows hit this on the first resume
+            .err => {
+                // The error value is on co's stack top; capture it from co.
+                captureError(co, err_buf);
+                return LuaError.LuaRuntimeError;
+            },
+            .yielded => {
+                // A worker is in flight. The pre-yield half registered it; find
+                // the slot the coroutine yielded against and drive it to
+                // terminal (N=1: wait the single handle). The scheduler stores
+                // the outcome on the slot for the continuation to read.
+                const hs = host orelse @panic("runModule: coroutine yielded with no HostState");
+                const sched = hs.sched.?;
+                const slot_index = findInflightSlot(sched, co) orelse
+                    @panic("runModule: coroutine yielded but no in-flight worker was registered");
+                sched.driveInflight(slot_index) catch {
+                    // The worker drive itself failed (spawner.wait error). We
+                    // cannot meaningfully resume the continuation without an
+                    // outcome; report a run error.
+                    @memcpy(err_buf[0..@min(err_buf.len - 1, 28)], "agent: worker drive failed\x00"[0..@min(err_buf.len - 1, 28)]);
+                    return LuaError.LuaRuntimeError;
+                };
+                // Resume the coroutine: the continuation runs and reads the
+                // outcome. No args pushed onto co — the continuation pushes its
+                // own result; nargs=0 here.
+                resume_rc = c.lua_resume(co, L, 0, &nres);
+            },
+        }
     }
 }
+
+/// findInflightSlot returns the index of the scheduler slot whose registered
+/// coroutine is `co` (the one that just yielded). For N=1 there is exactly one
+/// in-use slot; the scan generalizes to N (task 3183) where multiple coroutines
+/// each own a slot.
+fn findInflightSlot(sched: *scheduler.Scheduler, co: *c.lua_State) ?usize {
+    for (&sched.slots, 0..) |*slot, idx| {
+        if (slot.in_use and slot.co == co) return idx;
+    }
+    return null;
+}
+
+/// undefined_io is a never-dereferenced Io placeholder for the pure-Lua run
+/// path (no driver → no spawning → the scheduler's io is unused). Pure-Lua
+/// workflows finish on the first resume (LUA_OK) and never register a worker,
+/// so `driveInflight` (the only consumer of `Scheduler.io`) is never reached.
+const undefined_io: std.Io = undefined;
 
 /// callRun is a backwards-compatible wrapper for runModule with no HostState
 /// (ctx carries only `args`, the M1 shape). Existing unit tests that exercise
@@ -3123,4 +3370,233 @@ test "task 3241: resolveHostBinary errors when the binary is not on PATH" {
     // A name no real binary will ever carry → command -v exits non-zero.
     const r = resolveHostBinary(a, std.testing.io, "planar-nonexistent-binary-zzz-3241");
     try std.testing.expectError(error.BinaryNotResolvable, r);
+}
+
+// ---------------------------------------------------------------------------
+// task 3182 — M5 coroutine scheduler tests.
+//
+// These pin the NEW internal mechanism (run(ctx) on a coroutine, agent()
+// yields, the scheduler drives the single in-flight worker, the continuation
+// resumes). The observable result of a single agent() call is UNCHANGED from
+// M4 (behavior-equivalence anchor) — the M4 tests above already exercise the
+// result table THROUGH the coroutine drive (runModule now uses lua_resume).
+// The tests below additionally assert the async machinery itself.
+// ---------------------------------------------------------------------------
+
+test "M5 scheduler: pure-Lua workflow (no agent) finishes on the first resume (LUA_OK)" {
+    // Backward-compat anchor: a workflow that never calls agent() never yields;
+    // the first lua_resume returns LUA_OK and the run completes. The scheduler
+    // is installed but no worker is ever registered.
+    const a = testing_alloc;
+    var driver = AgentDriver{
+        .spawner = undefined, // never used — no agent() call
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+    };
+    var host = HostState.init(a, 7, 11, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+
+    const src =
+        \\return {
+        \\  meta = { name = "m5-pure", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    ctx.phase("doing pure work")
+        \\    ctx.log("no agent here")
+        \\    assert(ctx.now == 7, "ctx.now threaded through the coroutine")
+        \\    assert(ctx.seed == 11, "ctx.seed threaded through the coroutine")
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:m5-pure", &.{}, &host, &err_buf);
+
+    // The recording host fns still fired on the coroutine.
+    try std.testing.expect(findCall(&host, .phase) != null);
+    try std.testing.expect(findCall(&host, .log) != null);
+}
+
+test "M5 scheduler: single agent() yields, scheduler drives the worker, continuation resumes (async machinery)" {
+    // The load-bearing yield/resume assertion: a single agent() call spawns the
+    // worker via start() (NON-BLOCKING), yields, the scheduler drives it via
+    // wait(), and ONLY THEN does the continuation run. We prove the ordering via
+    // the FakeSpawner's counters: start_count==1, wait_count==1, and
+    // reached_terminal==true at the point the result table is observable.
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+
+    const src =
+        \\return {
+        \\  meta = { name = "m5-yield", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local r = ctx.agent("the brief", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/abs/wt",
+        \\      claim_token = "tok-xyz",
+        \\      role_spec = "you are a coder",
+        \\      task_slug = "ts1",
+        \\    })
+        \\    -- The continuation produced the result table; by here the worker
+        \\    -- has already reached terminal (the scheduler waited it).
+        \\    assert(r.status == "released", "status: " .. tostring(r.status))
+        \\    assert(r.exit_code == 0, "exit_code: " .. tostring(r.exit_code))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:m5-yield", &.{}, &host, &err_buf);
+
+    // The worker was started non-blocking and driven via wait — proving the
+    // coroutine yielded and the scheduler resumed it only after terminal.
+    try std.testing.expectEqual(@as(u32, 1), fake.start_count);
+    try std.testing.expectEqual(@as(u32, 1), fake.wait_count);
+    try std.testing.expect(fake.reached_terminal);
+    // The blocking run() path was NOT used (the scheduler uses start/wait).
+    try std.testing.expectEqual(@as(usize, 1), fake.invocations.items.len);
+}
+
+test "M5 scheduler: behavior-equivalence — the agent() result table matches M4 for the same canned outcome" {
+    // The N=1 equivalence anchor: exit==0 + no commit → released; exit==7 →
+    // failed; these are the SAME tables M4 produced. (M4's own tests assert the
+    // same via runModule, which now routes through the coroutine drive — so
+    // their green is itself the equivalence proof; this test states it
+    // explicitly for the failed branch.)
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 7, "", "boom");
+    defer fake.deinit();
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+
+    const src =
+        \\return {
+        \\  meta = { name = "m5-equiv", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local r = ctx.agent("brief", {
+        \\      role = "reviewer",
+        \\      worktree_path = "/tmp/abs",
+        \\      claim_token = "tok",
+        \\      task_slug = "tx",
+        \\    })
+        \\    assert(r.status == "failed", "status: " .. tostring(r.status))
+        \\    assert(r.exit_code == 7, "exit_code: " .. tostring(r.exit_code))
+        \\    assert(r.terminal_verb == "fail", "verb: " .. tostring(r.terminal_verb))
+        \\    assert(r.commit_present == false, "commit_present: " .. tostring(r.commit_present))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:m5-equiv", &.{}, &host, &err_buf);
+}
+
+test "M5 scheduler: two sequential agent() calls each yield + resume cleanly (slot reuse)" {
+    // Two agent() calls in one run() must each register an in-flight worker,
+    // yield, get driven, and resume — with the slot freed + reused between
+    // them. This proves releaseSlot works and the registry does not leak slots
+    // across sequential calls (the structure 3183 widens to concurrent calls).
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+
+    const src =
+        \\return {
+        \\  meta = { name = "m5-seq", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local r1 = ctx.agent("brief one", { role = "coder", worktree_path = "/tmp/a", claim_token = "t1", task_slug = "s1" })
+        \\    local r2 = ctx.agent("brief two", { role = "reviewer", worktree_path = "/tmp/b", claim_token = "t2", task_slug = "s2" })
+        \\    assert(r1.status == "released", "r1: " .. tostring(r1.status))
+        \\    assert(r2.status == "released", "r2: " .. tostring(r2.status))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:m5-seq", &.{}, &host, &err_buf);
+
+    try std.testing.expectEqual(@as(u32, 2), fake.start_count);
+    try std.testing.expectEqual(@as(u32, 2), fake.wait_count);
+    try std.testing.expectEqual(@as(usize, 2), fake.invocations.items.len);
+    try std.testing.expectEqualStrings("brief one", fake.invocations.items[0].brief);
+    try std.testing.expectEqualStrings("brief two", fake.invocations.items[1].brief);
+}
+
+test "M5 scheduler: Lua error AFTER an agent() call still propagates (continuation ran, then run() errored)" {
+    // A run() that calls agent() successfully (yield → resume → result) and
+    // THEN raises a Lua error must still surface LuaRuntimeError with the error
+    // string. This pins that the coroutine error path (captured off `co`) works
+    // even after a successful yield/resume round trip.
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+
+    const src =
+        \\return {
+        \\  meta = { name = "m5-err-after", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    ctx.agent("brief", { role = "coder", worktree_path = "/tmp/a", claim_token = "t1", task_slug = "s1" })
+        \\    error("boom after agent")
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    const err = runModule(src, "test:m5-err-after", &.{}, &host, &err_buf);
+    try std.testing.expectError(LuaError.LuaRuntimeError, err);
+    const msg = std.mem.span(@as([*:0]const u8, @ptrCast(&err_buf)));
+    try std.testing.expect(std.mem.indexOf(u8, msg, "boom after agent") != null);
+    // The agent() call DID complete before the error (worker started + waited).
+    try std.testing.expectEqual(@as(u32, 1), fake.start_count);
+    try std.testing.expectEqual(@as(u32, 1), fake.wait_count);
+}
+
+test "M5 scheduler: Lua error BEFORE any agent() call propagates (pure-coroutine error path)" {
+    // A run() that errors with NO agent() call must surface LuaRuntimeError on
+    // the first resume (the coroutine raised before yielding). Pins the
+    // first-resume error branch of the drive loop.
+    const a = testing_alloc;
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    // No driver needed — the error fires before any agent() call.
+
+    const src =
+        \\return {
+        \\  meta = { name = "m5-err-before", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    error("boom before agent")
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    const err = runModule(src, "test:m5-err-before", &.{}, &host, &err_buf);
+    try std.testing.expectError(LuaError.LuaRuntimeError, err);
+    const msg = std.mem.span(@as([*:0]const u8, @ptrCast(&err_buf)));
+    try std.testing.expect(std.mem.indexOf(u8, msg, "boom before agent") != null);
 }

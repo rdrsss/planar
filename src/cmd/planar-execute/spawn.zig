@@ -47,9 +47,32 @@
 //! pains become impossible" § Caveat: the worktree is pwd-hygiene, NOT a jail —
 //! containment is the constrained PATH from `worker_env.zig`.)
 //!
+//! ## Async surface (plan 492 M5 task 3182 — coroutine scheduler)
+//!
+//! The scheduler needs NON-BLOCKING spawn semantics so a yielded `agent()`
+//! coroutine can be parked while its `claude -p` worker runs, and resumed when
+//! the worker reaches a terminal state. The `Spawner` therefore grows three
+//! methods alongside the legacy blocking `run`:
+//!
+//!   - `start(allocator, io, inputs) -> Handle` — launches the worker WITHOUT
+//!     waiting. Returns an in-flight handle. RealSpawner uses
+//!     `std.process.spawn` (NOT `std.process.run`) per tech-spec L160-164 so a
+//!     supervisor can wait on its child while (in M6) a heartbeat thread
+//!     refreshes the lease.
+//!   - `poll(handle) -> ?SpawnOutcome` — non-blocking probe: `null` while the
+//!     worker is still running, an Outcome once it is terminal.
+//!   - `wait(handle) -> SpawnOutcome` — blocks until THIS handle completes.
+//!
+//! For N=1 (this cycle) the scheduler simply `wait`s the single handle. The
+//! poll surface exists so task 3183 (`parallel`, N concurrent coroutines) can
+//! wait-for-any across N handles (poll-loop with a small sleep, or block on
+//! whichever completes first). The legacy `run` is retained for the
+//! buildSpawnArgv unit tests and any direct blocking call site.
+//!
 //! ## What this module does NOT do
 //!
-//! - **No coroutine scheduler** (M5). Spawn is blocking; one worker at a time.
+//! - **No N-way parallel scheduling** (3183). The async surface supports it but
+//!   this cycle only exercises one in-flight handle.
 //! - **No heartbeat thread** (M6). The caller heartbeats the claim from the
 //!   harness's main thread between Lua call returns.
 //! - **No run-id tagging / O_EXCL lock** (M6).
@@ -245,7 +268,8 @@ pub const Spawner = struct {
     ctx: ?*anyopaque,
 
     /// Run one spawn. `inputs.brief` is fed to stdin; argv is derived from the
-    /// other inputs.
+    /// other inputs. BLOCKING — retained for direct call sites and the
+    /// buildSpawnArgv unit tests. The scheduler path uses start/poll/wait.
     runFn: *const fn (
         ctx: ?*anyopaque,
         allocator: std.mem.Allocator,
@@ -253,7 +277,37 @@ pub const Spawner = struct {
         inputs: SpawnInputs,
     ) SpawnError!SpawnOutcome,
 
-    /// Drives the spawn. Thin wrapper that just dispatches through `runFn`.
+    /// Launch one worker WITHOUT waiting. Returns an in-flight `Handle` the
+    /// scheduler parks the coroutine against. NON-BLOCKING.
+    startFn: *const fn (
+        ctx: ?*anyopaque,
+        allocator: std.mem.Allocator,
+        io: Io,
+        inputs: SpawnInputs,
+    ) SpawnError!Handle,
+
+    /// Probe an in-flight handle without blocking. Returns `null` while the
+    /// worker is still running, the `SpawnOutcome` once it is terminal. After a
+    /// non-null return the handle is consumed (its resources freed) and MUST NOT
+    /// be polled/waited again.
+    pollFn: *const fn (
+        ctx: ?*anyopaque,
+        allocator: std.mem.Allocator,
+        io: Io,
+        handle: *Handle,
+    ) SpawnError!?SpawnOutcome,
+
+    /// Block until `handle` completes and return its outcome. Consumes the
+    /// handle.
+    waitFn: *const fn (
+        ctx: ?*anyopaque,
+        allocator: std.mem.Allocator,
+        io: Io,
+        handle: *Handle,
+    ) SpawnError!SpawnOutcome,
+
+    /// Drives the spawn (BLOCKING). Thin wrapper that just dispatches through
+    /// `runFn`.
     pub fn run(
         self: Spawner,
         allocator: std.mem.Allocator,
@@ -262,6 +316,72 @@ pub const Spawner = struct {
     ) SpawnError!SpawnOutcome {
         return self.runFn(self.ctx, allocator, io, inputs);
     }
+
+    /// Launch a worker non-blocking; returns the in-flight handle.
+    pub fn start(
+        self: Spawner,
+        allocator: std.mem.Allocator,
+        io: Io,
+        inputs: SpawnInputs,
+    ) SpawnError!Handle {
+        return self.startFn(self.ctx, allocator, io, inputs);
+    }
+
+    /// Non-blocking probe of an in-flight handle.
+    pub fn poll(
+        self: Spawner,
+        allocator: std.mem.Allocator,
+        io: Io,
+        handle: *Handle,
+    ) SpawnError!?SpawnOutcome {
+        return self.pollFn(self.ctx, allocator, io, handle);
+    }
+
+    /// Block until `handle` completes.
+    pub fn wait(
+        self: Spawner,
+        allocator: std.mem.Allocator,
+        io: Io,
+        handle: *Handle,
+    ) SpawnError!SpawnOutcome {
+        return self.waitFn(self.ctx, allocator, io, handle);
+    }
+};
+
+/// Handle is an in-flight worker — the result of `Spawner.start`. It carries the
+/// per-spawner state needed to poll/wait the worker to completion. A tagged
+/// union so RealSpawner (a live `std.process.Child`) and FakeSpawner (a canned
+/// outcome with a countdown) share one type at the scheduler boundary.
+///
+/// The scheduler treats a Handle opaquely: it `poll`s or `wait`s it via the
+/// owning Spawner and never inspects the variant.
+pub const Handle = union(enum) {
+    /// A live `std.process.spawn`'d child. stdout/stderr are drained at
+    /// poll/wait time (after the child exits) so start() stays non-blocking.
+    real: RealHandle,
+    /// A fake in-flight worker: returns its canned outcome after `poll_until`
+    /// polls report "still running". `wait` returns it immediately.
+    fake: FakeHandle,
+};
+
+/// RealHandle is the live-child state for an in-flight RealSpawner worker.
+pub const RealHandle = struct {
+    /// The spawned child process. stdin has already been written + closed at
+    /// start() time; stdout/stderr are drained at poll/wait time.
+    child: std.process.Child,
+};
+
+/// FakeHandle is the in-flight state for a FakeSpawner worker. It models an
+/// async transition: `poll_remaining` non-blocking probes report "still
+/// running" (null) before the handle reports its canned outcome. `wait` returns
+/// the canned outcome immediately (the N=1 scheduler path).
+pub const FakeHandle = struct {
+    /// Pointer back to the FakeSpawnerState so poll/wait can read the canned
+    /// outcome + record that the transition was observed.
+    state: *FakeSpawnerState,
+    /// Number of `poll` calls that still report "still running" before the
+    /// handle reports terminal. Zero ⇒ the next poll returns the outcome.
+    poll_remaining: u32,
 };
 
 // ---------------------------------------------------------------------------
@@ -283,6 +403,25 @@ fn realRunFn(
     io: Io,
     inputs: SpawnInputs,
 ) SpawnError!SpawnOutcome {
+    // The blocking path is now start() + wait() — identical observable
+    // behavior to the pre-M5 inline spawn+drain+wait, just routed through the
+    // async surface so there is a single code path to maintain.
+    var handle = try realStartFn(ctx, allocator, io, inputs);
+    return realWaitFn(ctx, allocator, io, &handle);
+}
+
+/// realStartFn launches the worker WITHOUT waiting (the M5 non-blocking start).
+/// It builds the argv, spawns `claude` via `std.process.spawn`, writes the
+/// brief to the child's stdin and closes it (so the child sees EOF and begins
+/// work), then returns the in-flight `Handle`. stdout/stderr are NOT drained
+/// here — that happens in `realWaitFn`/`realPollFn` after the child exits, so
+/// `start` stays non-blocking.
+fn realStartFn(
+    ctx: ?*anyopaque,
+    allocator: std.mem.Allocator,
+    io: Io,
+    inputs: SpawnInputs,
+) SpawnError!Handle {
     _ = ctx;
 
     const argv = try buildSpawnArgv(allocator, inputs);
@@ -297,7 +436,7 @@ fn realRunFn(
     // and threads it via inputs.env_map. A null here is a wiring bug: panic
     // loudly so a future regression is impossible to ship silently.
     const env_map = inputs.env_map orelse @panic(
-        "spawn.realRunFn: inputs.env_map is null — the constrained worker env was not built. Decisions 358 + 365 require the worker to be spawned with worker_env.buildWorkerEnv. See AgentDriver.env_builder in main.zig.",
+        "spawn.realStartFn: inputs.env_map is null — the constrained worker env was not built. Decisions 358 + 365 require the worker to be spawned with worker_env.buildWorkerEnv. See AgentDriver.env_builder in main.zig.",
     );
 
     // Spawn the child with stdin piped (so we can stream the brief), stdout/
@@ -319,7 +458,9 @@ fn realRunFn(
 
     // Write the brief to the child's stdin, then close it so the child sees
     // EOF and starts processing. EPIPE (child already exited) is converted to
-    // StdinWriteFailed; we still wait() to collect the term.
+    // StdinWriteFailed; we still wait() to collect the term. The brief is
+    // bounded (multi-KB) so a single write+close is acceptable at start; the
+    // OS pipe buffer holds it while the worker runs.
     if (child.stdin) |stdin_file| {
         var write_failed = false;
         stdin_file.writeStreamingAll(io, inputs.brief) catch {
@@ -332,6 +473,21 @@ fn realRunFn(
             return SpawnError.StdinWriteFailed;
         }
     }
+
+    return .{ .real = .{ .child = child } };
+}
+
+/// realWaitFn blocks until the in-flight child exits, drains its stdout/stderr,
+/// and returns the captured `SpawnOutcome`. Consumes the handle.
+fn realWaitFn(
+    ctx: ?*anyopaque,
+    allocator: std.mem.Allocator,
+    io: Io,
+    handle: *Handle,
+) SpawnError!SpawnOutcome {
+    _ = ctx;
+    var child = &handle.real.child;
+    errdefer child.kill(io);
 
     // Drain stdout and stderr. Both are bounded at 4 MiB to avoid runaway
     // memory on a misbehaving worker.
@@ -358,6 +514,22 @@ fn realRunFn(
         .stdout = stdout_slice,
         .stderr = stderr_slice,
     };
+}
+
+/// realPollFn is a non-blocking probe. For the real child we cannot portably
+/// peek liveness without consuming the term in this stdlib version, so the
+/// real poll path simply delegates to wait (the N=1 scheduler uses wait, not
+/// poll, on the real path). Task 3183 — which needs genuine wait-for-any across
+/// N real children — will add an OS-level non-blocking wait here; for N=1 this
+/// is correct and never reached (the scheduler calls wait for the single
+/// handle). Documented loudly so 3183 knows where to extend.
+fn realPollFn(
+    ctx: ?*anyopaque,
+    allocator: std.mem.Allocator,
+    io: Io,
+    handle: *Handle,
+) SpawnError!?SpawnOutcome {
+    return try realWaitFn(ctx, allocator, io, handle);
 }
 
 /// drainPipe reads up to `max_bytes` from a piped child stream and returns the
@@ -395,6 +567,9 @@ pub fn realSpawner() Spawner {
     return .{
         .ctx = null,
         .runFn = realRunFn,
+        .startFn = realStartFn,
+        .pollFn = realPollFn,
+        .waitFn = realWaitFn,
     };
 }
 
@@ -460,11 +635,35 @@ pub const FakeSpawnerState = struct {
     canned_exit_code: u32,
     canned_stdout: []const u8,
     canned_stderr: []const u8,
-    /// Recorded invocations, appended in spawn order.
+    /// Recorded invocations, appended in spawn order (at `start` time).
     invocations: std.ArrayList(FakeInvocation),
     /// Forced error to return instead of an outcome (null = return outcome).
     /// Lets tests exercise the SubprocessFailed / StdinWriteFailed branches.
     forced_error: ?SpawnError = null,
+
+    // ---- M5 async-model observability (task 3182) ----
+    //
+    // The scheduler must drive the worker async: start → (poll*) → terminal.
+    // These counters let a unit test assert the scheduler actually drove the
+    // handle through the async surface rather than blocking inline, and that
+    // the coroutine resumed ONLY after the worker reached terminal.
+    //
+    /// How many `poll` calls report "still running" (null) before a polled
+    /// handle reports its canned outcome. The fake handle starts with this
+    /// value; each null-returning poll decrements it. `wait` ignores it (the
+    /// N=1 scheduler path waits the single handle and gets the outcome at once).
+    poll_until_done: u32 = 0,
+    /// Number of times `start` was called.
+    start_count: u32 = 0,
+    /// Number of times `poll` was called.
+    poll_count: u32 = 0,
+    /// Number of times `wait` was called.
+    wait_count: u32 = 0,
+    /// Set true the first time a handle reported its terminal outcome (via
+    /// poll or wait). A continuation that runs before this is set would mean
+    /// the scheduler resumed the coroutine BEFORE the worker reached terminal —
+    /// the ordering bug the async model exists to prevent.
+    reached_terminal: bool = false,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -491,24 +690,18 @@ pub const FakeSpawnerState = struct {
         return .{
             .ctx = self,
             .runFn = fakeRunFn,
+            .startFn = fakeStartFn,
+            .pollFn = fakePollFn,
+            .waitFn = fakeWaitFn,
         };
     }
 };
 
-/// fakeRunFn is the runFn for FakeSpawner. It builds the argv via
-/// `buildSpawnArgv`, dupes it onto the state's allocator, records the
-/// invocation, and returns a duped copy of the canned outcome.
-fn fakeRunFn(
-    ctx: ?*anyopaque,
-    allocator: std.mem.Allocator,
-    io: Io,
-    inputs: SpawnInputs,
-) SpawnError!SpawnOutcome {
-    _ = io;
-    const state: *FakeSpawnerState = @ptrCast(@alignCast(ctx.?));
-
-    if (state.forced_error) |e| return e;
-
+/// recordFakeInvocation dupes the spawn inputs (argv, worktree, brief, env
+/// snapshot) onto the state's allocator and appends a FakeInvocation. Shared by
+/// the blocking `fakeRunFn` and the async `fakeStartFn` so both record an
+/// identical observable invocation.
+fn recordFakeInvocation(state: *FakeSpawnerState, inputs: SpawnInputs) SpawnError!void {
     // Build argv via the same pure function the real spawner uses, then dupe
     // each element so the invocation owns its storage (the borrowed inputs
     // may go out of scope before tests inspect the record).
@@ -576,17 +769,89 @@ fn fakeRunFn(
         .brief = brief_owned,
         .env_pairs = env_pairs_owned,
     }) catch return SpawnError.OutOfMemory;
+}
 
-    // Duped outcome (caller owns + frees).
+/// cannedOutcome produces a caller-owned copy of the state's canned outcome.
+fn cannedOutcome(state: *FakeSpawnerState, allocator: std.mem.Allocator) SpawnError!SpawnOutcome {
     const stdout = allocator.dupe(u8, state.canned_stdout) catch return SpawnError.OutOfMemory;
     errdefer allocator.free(stdout);
     const stderr = allocator.dupe(u8, state.canned_stderr) catch return SpawnError.OutOfMemory;
-
     return .{
         .exit_code = state.canned_exit_code,
         .stdout = stdout,
         .stderr = stderr,
     };
+}
+
+/// fakeStartFn records the invocation and returns an in-flight FakeHandle. The
+/// handle reports "still running" for `poll_until_done` poll probes before
+/// reporting the canned outcome (so a test can assert the scheduler polled).
+fn fakeStartFn(
+    ctx: ?*anyopaque,
+    allocator: std.mem.Allocator,
+    io: Io,
+    inputs: SpawnInputs,
+) SpawnError!Handle {
+    _ = allocator;
+    _ = io;
+    const state: *FakeSpawnerState = @ptrCast(@alignCast(ctx.?));
+    state.start_count += 1;
+    if (state.forced_error) |e| return e;
+    try recordFakeInvocation(state, inputs);
+    return .{ .fake = .{ .state = state, .poll_remaining = state.poll_until_done } };
+}
+
+/// fakePollFn is the non-blocking probe. Returns null (still running) while
+/// `poll_remaining > 0`, decrementing it each call; once it reaches zero the
+/// next poll returns the canned outcome and marks the handle terminal.
+fn fakePollFn(
+    ctx: ?*anyopaque,
+    allocator: std.mem.Allocator,
+    io: Io,
+    handle: *Handle,
+) SpawnError!?SpawnOutcome {
+    _ = io;
+    const state: *FakeSpawnerState = @ptrCast(@alignCast(ctx.?));
+    state.poll_count += 1;
+    if (handle.fake.poll_remaining > 0) {
+        handle.fake.poll_remaining -= 1;
+        return null;
+    }
+    state.reached_terminal = true;
+    return try cannedOutcome(state, allocator);
+}
+
+/// fakeWaitFn blocks (trivially, for the fake) and returns the canned outcome.
+/// Marks the handle terminal.
+fn fakeWaitFn(
+    ctx: ?*anyopaque,
+    allocator: std.mem.Allocator,
+    io: Io,
+    handle: *Handle,
+) SpawnError!SpawnOutcome {
+    _ = io;
+    _ = handle;
+    const state: *FakeSpawnerState = @ptrCast(@alignCast(ctx.?));
+    state.wait_count += 1;
+    state.reached_terminal = true;
+    return try cannedOutcome(state, allocator);
+}
+
+/// fakeRunFn is the runFn for FakeSpawner. It builds the argv via
+/// `buildSpawnArgv`, dupes it onto the state's allocator, records the
+/// invocation, and returns a duped copy of the canned outcome.
+fn fakeRunFn(
+    ctx: ?*anyopaque,
+    allocator: std.mem.Allocator,
+    io: Io,
+    inputs: SpawnInputs,
+) SpawnError!SpawnOutcome {
+    _ = io;
+    const state: *FakeSpawnerState = @ptrCast(@alignCast(ctx.?));
+
+    if (state.forced_error) |e| return e;
+    try recordFakeInvocation(state, inputs);
+    return cannedOutcome(state, allocator);
 }
 
 // ---------------------------------------------------------------------------
@@ -759,6 +1024,92 @@ test "spawn: realSpawner is constructible and exposes the right surface" {
     const s = realSpawner();
     try testing.expect(s.ctx == null);
     try testing.expect(@intFromPtr(s.runFn) != 0);
+    try testing.expect(@intFromPtr(s.startFn) != 0);
+    try testing.expect(@intFromPtr(s.pollFn) != 0);
+    try testing.expect(@intFromPtr(s.waitFn) != 0);
+}
+
+test "spawn: FakeSpawner async surface — start records, wait returns canned outcome (task 3182)" {
+    const alloc = testing.allocator;
+    var fake = FakeSpawnerState.init(alloc, 0, "ASYNC-OUT", "ASYNC-ERR");
+    defer fake.deinit();
+    const spawner = fake.spawner();
+
+    const inputs = SpawnInputs{
+        .role = .coder,
+        .worktree_path = "/tmp/wt/cycle/plan-1/task-2",
+        .brief = "ASYNC BRIEF",
+        .role_spec = "ROLE SPEC",
+        .env_map = null,
+    };
+
+    // start() records the invocation up front (NON-BLOCKING).
+    var handle = try spawner.start(alloc, std.testing.io, inputs);
+    try testing.expectEqual(@as(u32, 1), fake.start_count);
+    try testing.expectEqual(@as(usize, 1), fake.invocations.items.len);
+    try testing.expect(!fake.reached_terminal); // not yet waited/polled
+
+    // wait() returns the canned outcome and marks terminal.
+    var outcome = try spawner.wait(alloc, std.testing.io, &handle);
+    defer outcome.deinit(alloc);
+    try testing.expectEqual(@as(u32, 1), fake.wait_count);
+    try testing.expect(fake.reached_terminal);
+    try testing.expectEqual(@as(u32, 0), outcome.exit_code);
+    try testing.expectEqualStrings("ASYNC-OUT", outcome.stdout);
+
+    // The recorded invocation matches the blocking path's shape.
+    const inv = fake.invocations.items[0];
+    try testing.expectEqualStrings("ASYNC BRIEF", inv.brief);
+    try testing.expectEqualStrings("ROLE SPEC", inv.argv[9]);
+}
+
+test "spawn: FakeSpawner poll reports still-running then terminal (task 3182)" {
+    const alloc = testing.allocator;
+    var fake = FakeSpawnerState.init(alloc, 0, "OUT", "");
+    defer fake.deinit();
+    // Two polls report "still running" before the third returns the outcome.
+    fake.poll_until_done = 2;
+    const spawner = fake.spawner();
+
+    var handle = try spawner.start(alloc, std.testing.io, .{
+        .role = .coder,
+        .worktree_path = "/tmp/wt",
+        .brief = "B",
+        .role_spec = "",
+        .env_map = null,
+    });
+
+    // First two polls: still running (null).
+    try testing.expect((try spawner.poll(alloc, std.testing.io, &handle)) == null);
+    try testing.expect(!fake.reached_terminal);
+    try testing.expect((try spawner.poll(alloc, std.testing.io, &handle)) == null);
+    try testing.expect(!fake.reached_terminal);
+
+    // Third poll: terminal — returns the outcome.
+    var maybe = try spawner.poll(alloc, std.testing.io, &handle);
+    try testing.expect(maybe != null);
+    try testing.expect(fake.reached_terminal);
+    try testing.expectEqual(@as(u32, 3), fake.poll_count);
+    maybe.?.deinit(alloc);
+}
+
+test "spawn: FakeSpawner async forced_error short-circuits at start (task 3182)" {
+    const alloc = testing.allocator;
+    var fake = FakeSpawnerState.init(alloc, 0, "", "");
+    defer fake.deinit();
+    fake.forced_error = SpawnError.SubprocessFailed;
+    const spawner = fake.spawner();
+
+    try testing.expectError(SpawnError.SubprocessFailed, spawner.start(alloc, std.testing.io, .{
+        .role = .coder,
+        .worktree_path = "/tmp/wt",
+        .brief = "",
+        .role_spec = "",
+        .env_map = null,
+    }));
+    // start_count incremented but no invocation recorded.
+    try testing.expectEqual(@as(u32, 1), fake.start_count);
+    try testing.expectEqual(@as(usize, 0), fake.invocations.items.len);
 }
 
 test "spawn: FakeSpawner records the env_map snapshot so the constrained env is asserted at the spawn boundary (Item J)" {
