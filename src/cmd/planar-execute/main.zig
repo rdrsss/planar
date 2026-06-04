@@ -362,6 +362,24 @@ fn hostStateUpvalue(L: ?*c.lua_State) *HostState {
 ///
 /// Testability: pass a `FakeSpawner` and a fake `Io` (`std.testing.io`) to
 /// drive the entire pipeline in unit tests without touching the network.
+/// EnvBuilderFn produces the constrained worker env for a single agent() call.
+/// Production wiring points this at `defaultEnvBuilder` (which calls
+/// `worker_env.buildWorkerEnv` with the driver's pre-resolved binary paths and
+/// a per-cycle shim dir under the cycle worktree). Tests can substitute a
+/// stub builder that produces a synthetic env without touching the filesystem
+/// — see `synthEnvBuilder` in the test block.
+///
+/// The returned `WorkerEnv` is heap-owned; the caller MUST call
+/// `WorkerEnv.deinit(allocator, io)` when the spawn completes.
+pub const EnvBuilderFn = *const fn (
+    ctx: ?*anyopaque,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    worktree_path: []const u8,
+) anyerror!worker_env.WorkerEnv;
+
+/// AgentDriver bundles the (injected) machinery hostAgent needs to drive ONE
+/// `agent(prompt, opts)` call end-to-end.
 pub const AgentDriver = struct {
     /// The spawner used for the worker invocation. Tests pass a FakeSpawner;
     /// production uses spawn.realSpawner().
@@ -380,7 +398,70 @@ pub const AgentDriver = struct {
     /// returned Lua result table. Tests set this to true so we never write to
     /// the agent_actions / agent_work_claims tables from a unit test.
     skip_terminal_subprocess: bool = false,
+
+    /// Builds the constrained worker env per spawn. When null, the driver does
+    /// NOT thread an env into the spawner — which means `spawn.realRunFn` will
+    /// panic loudly (decisions 358 + 365 enforcement). The intent: production
+    /// wiring MUST install an env_builder; test paths that use FakeSpawner can
+    /// leave it null because FakeSpawner accepts a null env_map (recording an
+    /// empty snapshot instead).
+    ///
+    /// Plan 492 M4 cycle C iter 2 wiring (Item J): the RealSpawner path is
+    /// driven via this builder. See `defaultEnvBuilder` for the production
+    /// shape; tests inject their own to assert the constrained env reaches
+    /// the spawn boundary.
+    env_builder: ?EnvBuilderFn = null,
+    /// Opaque context pointer passed to `env_builder`. The production
+    /// `DefaultEnvBuilderCtx` (below) carries the pre-resolved planar-agent
+    /// + git absolute paths and the host environ.
+    env_builder_ctx: ?*anyopaque = null,
 };
+
+/// Context for `defaultEnvBuilder` — the production env-builder. Carries the
+/// pre-resolved absolute paths to `planar-agent` and `git`, plus the host
+/// environ to baseline from. The harness resolves the binary paths once at
+/// startup (via PATH lookup) and pins them on the driver, so the per-spawn
+/// builder call is cheap.
+pub const DefaultEnvBuilderCtx = struct {
+    /// Absolute path to the operator's `planar-agent` binary. Allow-listed
+    /// in the worker's shim directory.
+    planar_agent_path: []const u8,
+    /// Absolute path to `git`. Allow-listed in the worker's shim directory.
+    git_path: []const u8,
+    /// The host environ the worker env baselines from (PATH gets overridden
+    /// to the shim dir; STRIPPED_ENV_VARS are removed; PLANAR_WORKBENCH_ROOT
+    /// is intentionally inherited).
+    host_environ: std.process.Environ,
+};
+
+/// defaultEnvBuilder is the production EnvBuilderFn. It materializes a
+/// per-spawn shim dir at `<worktree>/.planar-execute/shim/` and builds the
+/// constrained env via `worker_env.buildWorkerEnv`. The per-cycle shim
+/// location keeps concurrent cycle workers (M5) from racing on a shared shim.
+///
+/// `ctx` MUST be a `*DefaultEnvBuilderCtx` — the harness pins it at driver
+/// construction time and never mutates it after.
+pub fn defaultEnvBuilder(
+    ctx: ?*anyopaque,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    worktree_path: []const u8,
+) anyerror!worker_env.WorkerEnv {
+    const dctx: *DefaultEnvBuilderCtx = @ptrCast(@alignCast(ctx orelse return error.InvalidEnvBuilderCtx));
+    // Per-cycle shim dir under the worktree's .planar-execute scratch space.
+    // Keeping it under the worktree means the worktree teardown automatically
+    // sweeps it; we don't need a separate cleanup pass.
+    const shim_dir = try std.fmt.allocPrint(allocator, "{s}/.planar-execute/shim", .{worktree_path});
+    defer allocator.free(shim_dir);
+    return try worker_env.buildWorkerEnv(
+        allocator,
+        io,
+        dctx.host_environ,
+        shim_dir,
+        dctx.planar_agent_path,
+        dctx.git_path,
+    );
+}
 
 /// AgentCallOpts is the parsed view of the Lua `opts` table for one
 /// `agent(prompt, opts)` call. All strings borrow into Lua-owned memory and
@@ -501,14 +582,34 @@ fn driveAgentCall(
         head_before = worktree.branchHead(alloc, io, driver.repo_root, branch) catch null;
     }
 
-    // 2) Spawn the worker. The brief is the prompt (already-compiled methodology
+    // 2) Build the constrained worker env when a builder is installed. This is
+    // the Item-J wiring: decisions 358 + 365 require that the worker's PATH
+    // be the per-cycle shim (planar-agent + git only) and that
+    // PLANAR_DB / PLANAR_CONFIG_PATH / etc. are stripped. The real spawner
+    // PANICS if env_map is null (see spawn.realRunFn), so production wiring
+    // MUST install a builder; tests with FakeSpawner can omit it and the
+    // FakeSpawner records an empty env snapshot.
+    var worker_env_built: ?worker_env.WorkerEnv = null;
+    defer if (worker_env_built) |*we| we.deinit(alloc, io);
+    if (driver.env_builder) |build_env| {
+        worker_env_built = build_env(driver.env_builder_ctx, alloc, io, opts.worktree_path) catch |err| {
+            _ = c.luaL_error(L, "agent: env builder failed: %s", @errorName(err).ptr);
+            return 0;
+        };
+    }
+    const env_map_ptr: ?*const std.process.Environ.Map = if (worker_env_built) |*we| &we.env_map else null;
+
+    // 3) Spawn the worker. The brief is the prompt (already-compiled methodology
     // brief; the workflow drives compileBrief separately, then passes the
-    // resulting string in).
+    // resulting string in). env_map (the constrained worker env) is passed
+    // through SpawnInputs; the real spawner threads it as `environ_map` on
+    // std.process.spawn so the child does NOT inherit the parent's full env.
     const spawn_inputs = spawn.SpawnInputs{
         .role = role,
         .worktree_path = opts.worktree_path,
         .brief = prompt,
         .role_spec = opts.role_spec,
+        .env_map = env_map_ptr,
     };
     var outcome = driver.spawner.run(alloc, io, spawn_inputs) catch |err| {
         _ = c.luaL_error(L, "agent: spawn failed: %s", @errorName(err).ptr);
@@ -516,7 +617,7 @@ fn driveAgentCall(
     };
     defer outcome.deinit(alloc);
 
-    // 3) Sample the post-spawn cycle branch HEAD.
+    // 4) Sample the post-spawn cycle branch HEAD.
     var head_after: ?[]u8 = null;
     defer if (head_after) |h| alloc.free(h);
     if (driver.repo_root.len > 0 and driver.plan_slug.len > 0 and opts.task_slug.len > 0) {
@@ -539,15 +640,25 @@ fn driveAgentCall(
         break :blk false;
     };
 
-    // 4) Read the claim status. For M4 we read directly via a sidecar
+    // 5) Read the claim status. For M4 we read directly via a sidecar
     // `planar-agent`/`planar-watch` call. Until the read helper lands we
     // default to .active (the harness applies the terminal verb based on
     // exit_code + commit_present alone). The integration test exercises the
     // active path; tests that need to pin a terminal-status pre-condition
     // override this via the driver flag (see below).
+    //
+    // TODO(plan:492, task:3242): wire readClaimStatusOrActive
+    // to a live `planar-watch ps --claim <token> --json` read so that when
+    // the worker has already run its own terminal verb the harness's call
+    // is suppressed instead of issuing a redundant terminal call that
+    // returns ClaimNotActive. Tracked as a separate follow-up task on
+    // plan 492 (Item A from the cycle C iter-1 review); the
+    // ClaimNotActive error is recoverable (not corrupting) per
+    // src/engine/runtime/agentactivity/atomic.zig:324, so this defers
+    // safely.
     const claim_status: terminal.ClaimStatus = readClaimStatusOrActive(alloc, io, opts.claim_token);
 
-    // 5) Decide + (optionally) apply the terminal verb.
+    // 6) Decide + (optionally) apply the terminal verb.
     const verb = terminal.decideTerminalVerb(.{
         .claim_status = claim_status,
         .exit_code = outcome.exit_code,
@@ -562,7 +673,7 @@ fn driveAgentCall(
         };
     }
 
-    // 6) Build the result table and push.
+    // 7) Build the result table and push.
     const status_str: []const u8 = switch (verb) {
         .none => "respected",
         .complete => "completed",
@@ -578,6 +689,21 @@ fn driveAgentCall(
 /// verb based on exit_code + commit_present alone). At M4 this is a minimal
 /// implementation: we always return .active. A later milestone may shell
 /// `planar-watch ps --json` here.
+///
+/// TODO(plan:492, task:3242): Reviewer caveat from cycle C
+/// iter 1 (Item A). When a worker correctly runs its own terminal verb
+/// (the happy path per tech-spec L182–186), `decideTerminalVerb` still
+/// sees `.active` here and issues a redundant terminal-verb subprocess
+/// call. That second call errors with `ClaimNotActive` (recoverable,
+/// non-corrupting per `src/engine/runtime/agentactivity/atomic.zig:324`)
+/// but the agent() Lua return table mis-reports
+/// `terminal_verb = "complete"` when the harness's second call was in
+/// fact rejected. Fix: extend `state.zig` with a `watchPsClaim(allocator,
+/// io, claim_token) -> ClaimStatus` reader and call it from here; the
+/// task on plan 492 carries the full plan + a `FakeSpawner`-driven unit
+/// test for the live-call-then-no-op path. Deferred to follow-up because
+/// the failure mode is observable but not destructive — the harness's
+/// idempotency-by-error-class catches it.
 fn readClaimStatusOrActive(
     allocator: std.mem.Allocator,
     io: std.Io,

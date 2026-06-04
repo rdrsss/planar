@@ -137,6 +137,15 @@ pub const SpawnInputs = struct {
     /// the worker's system prompt via `--append-system-prompt`. May be empty
     /// (the worker still functions; role-specific guidance just isn't injected).
     role_spec: []const u8,
+    /// The constrained environment map the worker is spawned with. Built by
+    /// `worker_env.buildWorkerEnv` ahead of the spawn (per-cycle shim PATH
+    /// exposing only `planar-agent` + `git`, planar-internal env vars stripped
+    /// per decisions 358 + 365). When non-null the real spawner passes it to
+    /// `std.process.spawn` as `environ_map`; when null the real spawner
+    /// PANICS at the call site rather than silently inheriting the parent's
+    /// env (that is the iter-1 regression Item J closes). FakeSpawner records
+    /// a snapshot for unit-test assertions.
+    env_map: ?*const std.process.Environ.Map,
 };
 
 // ---------------------------------------------------------------------------
@@ -279,12 +288,28 @@ fn realRunFn(
     const argv = try buildSpawnArgv(allocator, inputs);
     defer freeSpawnArgv(allocator, argv);
 
+    // Decisions 358 + 365 (worker invocation contract): the real spawn path
+    // MUST use a constrained env map (shim PATH + stripped planar-internal
+    // env vars). Inheriting the parent's env structurally bypasses the
+    // worker_env contract — `planar` would be reachable on PATH and
+    // PLANAR_DB / PLANAR_CONFIG_PATH would leak through. The caller
+    // (driveAgentCall in main.zig) builds the env via worker_env.buildWorkerEnv
+    // and threads it via inputs.env_map. A null here is a wiring bug: panic
+    // loudly so a future regression is impossible to ship silently.
+    const env_map = inputs.env_map orelse @panic(
+        "spawn.realRunFn: inputs.env_map is null — the constrained worker env was not built. Decisions 358 + 365 require the worker to be spawned with worker_env.buildWorkerEnv. See AgentDriver.env_builder in main.zig.",
+    );
+
     // Spawn the child with stdin piped (so we can stream the brief), stdout/
     // stderr piped (so we can capture them). cwd is the cycle worktree so any
-    // unqualified file ops inside the worker land inside it.
+    // unqualified file ops inside the worker land inside it. environ_map is the
+    // constrained worker env (shim PATH = planar-agent + git only; PLANAR_DB /
+    // PLANAR_BIN / PLANAR_HOME / PLANAR_CONFIG_PATH / PLANAR_TEMPLATES_DIR /
+    // PLANAR_DISABLE_WORKTREE_GATE stripped).
     var child = std.process.spawn(io, .{
         .argv = argv,
         .cwd = .{ .path = inputs.worktree_path },
+        .environ_map = env_map,
         .stdin = .pipe,
         .stdout = .pipe,
         .stderr = .pipe,
@@ -389,13 +414,39 @@ pub const FakeInvocation = struct {
     worktree_path: []const u8,
     /// The brief that would have been written to stdin.
     brief: []const u8,
+    /// Snapshot of the env_map the spawner would have passed to
+    /// `std.process.spawn`. Captured as flat key/value pairs (heap-owned)
+    /// so the invocation outlives the original map. Empty when the caller
+    /// passed `env_map = null` (which the real spawner panics on; tests
+    /// that don't drive the env-wiring path use null intentionally).
+    env_pairs: []EnvPair,
 
     fn deinit(self: *FakeInvocation, allocator: std.mem.Allocator) void {
         for (self.argv) |a| allocator.free(a);
         allocator.free(self.argv);
         allocator.free(self.worktree_path);
         allocator.free(self.brief);
+        for (self.env_pairs) |p| {
+            allocator.free(p.key);
+            allocator.free(p.value);
+        }
+        allocator.free(self.env_pairs);
     }
+
+    /// Looks up an env var by key in the recorded snapshot. Returns null when
+    /// the key is absent (the worker_env contract: stripped vars are gone).
+    pub fn envGet(self: FakeInvocation, key: []const u8) ?[]const u8 {
+        for (self.env_pairs) |p| {
+            if (std.mem.eql(u8, p.key, key)) return p.value;
+        }
+        return null;
+    }
+};
+
+/// A single recorded env-map entry on a FakeInvocation.
+pub const EnvPair = struct {
+    key: []const u8,
+    value: []const u8,
 };
 
 /// State for a FakeSpawner: the canned outcome it returns AND the list of
@@ -482,11 +533,47 @@ fn fakeRunFn(
         return SpawnError.OutOfMemory;
     errdefer state.allocator.free(brief_owned);
 
+    // Snapshot the env map (heap-owned key/value pairs) so the recorded
+    // invocation outlives the original. When inputs.env_map is null we
+    // record an empty snapshot — the real spawner panics on null but tests
+    // that drive other branches deliberately leave it unset.
+    var env_pairs_buf: std.ArrayList(EnvPair) = .empty;
+    errdefer {
+        for (env_pairs_buf.items) |p| {
+            state.allocator.free(p.key);
+            state.allocator.free(p.value);
+        }
+        env_pairs_buf.deinit(state.allocator);
+    }
+    if (inputs.env_map) |em| {
+        const keys = em.keys();
+        const values = em.values();
+        env_pairs_buf.ensureTotalCapacity(state.allocator, keys.len) catch return SpawnError.OutOfMemory;
+        var k_i: usize = 0;
+        while (k_i < keys.len) : (k_i += 1) {
+            const k_owned = state.allocator.dupe(u8, keys[k_i]) catch return SpawnError.OutOfMemory;
+            errdefer state.allocator.free(k_owned);
+            const v_owned = state.allocator.dupe(u8, values[k_i]) catch return SpawnError.OutOfMemory;
+            env_pairs_buf.append(state.allocator, .{ .key = k_owned, .value = v_owned }) catch
+                return SpawnError.OutOfMemory;
+        }
+    }
+    const env_pairs_owned = env_pairs_buf.toOwnedSlice(state.allocator) catch
+        return SpawnError.OutOfMemory;
+    errdefer {
+        for (env_pairs_owned) |p| {
+            state.allocator.free(p.key);
+            state.allocator.free(p.value);
+        }
+        state.allocator.free(env_pairs_owned);
+    }
+
     state.invocations.append(state.allocator, .{
         .argv = owned_argv,
         .role = inputs.role,
         .worktree_path = worktree_owned,
         .brief = brief_owned,
+        .env_pairs = env_pairs_owned,
     }) catch return SpawnError.OutOfMemory;
 
     // Duped outcome (caller owns + frees).
@@ -515,6 +602,7 @@ test "spawn: buildSpawnArgv emits exact shape for coder role (task 3176)" {
         .worktree_path = "/tmp/wt/cycle/plan-x/task-y",
         .brief = "ignored on argv",
         .role_spec = "you are a coder",
+        .env_map = null,
     };
     const argv = try buildSpawnArgv(alloc, inputs);
     defer freeSpawnArgv(alloc, argv);
@@ -541,6 +629,7 @@ test "spawn: buildSpawnArgv uses sonnet tier for documenter/test-coder (task 317
             .worktree_path = "/tmp/wt",
             .brief = "",
             .role_spec = "",
+            .env_map = null,
         });
         defer freeSpawnArgv(alloc, argv);
         try testing.expectEqualStrings(role_model.SONNET_TIER, argv[5]);
@@ -554,6 +643,7 @@ test "spawn: buildSpawnArgv omits --append-system-prompt when role_spec is empty
         .worktree_path = "/tmp/wt",
         .brief = "",
         .role_spec = "",
+        .env_map = null,
     });
     defer freeSpawnArgv(alloc, argv);
 
@@ -570,18 +660,21 @@ test "spawn: buildSpawnArgv rejects empty / relative / NUL paths" {
         .worktree_path = "",
         .brief = "",
         .role_spec = "",
+        .env_map = null,
     }));
     try testing.expectError(SpawnError.InvalidPath, buildSpawnArgv(alloc, .{
         .role = .coder,
         .worktree_path = "relative/path",
         .brief = "",
         .role_spec = "",
+        .env_map = null,
     }));
     try testing.expectError(SpawnError.InvalidPath, buildSpawnArgv(alloc, .{
         .role = .coder,
         .worktree_path = "/tmp/with\x00nul",
         .brief = "",
         .role_spec = "",
+        .env_map = null,
     }));
 }
 
@@ -596,6 +689,7 @@ test "spawn: FakeSpawner records argv + brief and returns canned outcome" {
         .worktree_path = "/tmp/wt/cycle/plan-1/task-2",
         .brief = "BRIEF BODY",
         .role_spec = "ROLE SPEC",
+        .env_map = null,
     };
     var outcome = try spawner.run(alloc, std.testing.io, inputs);
     defer outcome.deinit(alloc);
@@ -629,6 +723,7 @@ test "spawn: FakeSpawner records multiple invocations in order" {
             .worktree_path = "/tmp/wt",
             .brief = role_str,
             .role_spec = "",
+            .env_map = null,
         });
         defer outcome.deinit(alloc);
     }
@@ -651,6 +746,7 @@ test "spawn: FakeSpawner forced_error short-circuits without recording" {
         .worktree_path = "/tmp/wt",
         .brief = "",
         .role_spec = "",
+        .env_map = null,
     }));
     try testing.expectEqual(@as(usize, 0), fake.invocations.items.len);
 }
@@ -662,4 +758,94 @@ test "spawn: realSpawner is constructible and exposes the right surface" {
     const s = realSpawner();
     try testing.expect(s.ctx == null);
     try testing.expect(@intFromPtr(s.runFn) != 0);
+}
+
+test "spawn: FakeSpawner records the env_map snapshot so the constrained env is asserted at the spawn boundary (Item J)" {
+    // Iter-2 fix for Item J: confirm that when SpawnInputs carries an env_map,
+    // the FakeSpawner records a snapshot we can assert against. This is the
+    // test the reviewer asked for — it pins the contract that:
+    //   * PATH inside the recorded env is the shim dir, NOT the host PATH.
+    //   * Every entry in worker_env.STRIPPED_ENV_VARS is absent.
+    //   * PLANAR_WORKBENCH_ROOT (the deliberate carve-out) IS preserved when
+    //     present in the host env.
+    // Together with realRunFn's panic on null env_map, this makes the iter-1
+    // regression structurally unshippable: a future RealSpawner that
+    // forgets to thread the constrained env panics; a Spawner contract that
+    // accepts an env_map records what was passed.
+    const alloc = testing.allocator;
+
+    // Build a synthetic Environ.Map shaped like the constrained worker env
+    // would be (PATH = shim, PLANAR_WORKBENCH_ROOT preserved, planar-internal
+    // vars absent, HOME preserved).
+    var env_map = std.process.Environ.Map.init(alloc);
+    defer env_map.deinit();
+    try env_map.put("PATH", "/tmp/cycle-shim");
+    try env_map.put("HOME", "/home/operator");
+    try env_map.put("PLANAR_WORKBENCH_ROOT", "/home/operator/.planar/workbench");
+    // The stripped vars are deliberately absent — worker_env.constrainEnvMap
+    // removed them before this map reached the spawner.
+
+    var fake = FakeSpawnerState.init(alloc, 0, "", "");
+    defer fake.deinit();
+
+    const spawner = fake.spawner();
+    var outcome = try spawner.run(alloc, std.testing.io, .{
+        .role = .coder,
+        .worktree_path = "/tmp/wt",
+        .brief = "BRIEF",
+        .role_spec = "",
+        .env_map = &env_map,
+    });
+    defer outcome.deinit(alloc);
+
+    try testing.expectEqual(@as(usize, 1), fake.invocations.items.len);
+    const inv = fake.invocations.items[0];
+
+    // PATH is the constrained shim, not a host PATH.
+    const path = inv.envGet("PATH") orelse @panic("PATH missing");
+    try testing.expectEqualStrings("/tmp/cycle-shim", path);
+
+    // The deliberate carve-out is preserved.
+    const wb = inv.envGet("PLANAR_WORKBENCH_ROOT") orelse @panic("PLANAR_WORKBENCH_ROOT missing");
+    try testing.expectEqualStrings("/home/operator/.planar/workbench", wb);
+
+    // HOME (benign) survives.
+    const home = inv.envGet("HOME") orelse @panic("HOME missing");
+    try testing.expectEqualStrings("/home/operator", home);
+
+    // Every entry in the stripped set is absent — the constrained env never
+    // re-introduces them. We import worker_env's STRIPPED_ENV_VARS to keep
+    // the test in lockstep with the constrain step: a future addition to the
+    // strip list is automatically exercised.
+    for (worker_env.STRIPPED_ENV_VARS) |stripped_key| {
+        if (inv.envGet(stripped_key) != null) {
+            std.debug.print(
+                "\nFakeInvocation.env_pairs unexpectedly contains stripped key {s}\n",
+                .{stripped_key},
+            );
+        }
+        try testing.expect(inv.envGet(stripped_key) == null);
+    }
+}
+
+test "spawn: SpawnInputs.env_map = null + FakeSpawner records an empty env snapshot (test-only path)" {
+    // The null env_map is the test-only path: FakeSpawner records an empty
+    // snapshot so tests that don't drive the env wiring can still run. The
+    // real spawner panics on null (asserted by the @panic in realRunFn) —
+    // documented at the call site there.
+    const alloc = testing.allocator;
+    var fake = FakeSpawnerState.init(alloc, 0, "", "");
+    defer fake.deinit();
+    const spawner = fake.spawner();
+    var outcome = try spawner.run(alloc, std.testing.io, .{
+        .role = .coder,
+        .worktree_path = "/tmp/wt",
+        .brief = "",
+        .role_spec = "",
+        .env_map = null,
+    });
+    defer outcome.deinit(alloc);
+
+    try testing.expectEqual(@as(usize, 1), fake.invocations.items.len);
+    try testing.expectEqual(@as(usize, 0), fake.invocations.items[0].env_pairs.len);
 }

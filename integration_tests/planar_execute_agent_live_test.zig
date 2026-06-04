@@ -1,29 +1,42 @@
-//! Live-spawn integration test for `planar-execute`'s `agent()` host function
-//! (plan 492 M4 tasks 3175 + 3176 + 3178 + 3180).
+//! Live-spawn integration test connection point for `planar-execute`'s
+//! `agent()` host function (plan 492 M4 tasks 3175 + 3176 + 3178 + 3180).
+//!
+//! ## Honest framing
+//!
+//! This test is a CONNECTION POINT — the gate (`PLANAR_EXECUTE_LIVE_AGENT=1`)
+//! triggers a real `claude --print ...` spawn, but the smoke body is
+//! INTENTIONALLY UNIMPLEMENTED in this milestone. It returns
+//! `error.SkipZigTest` whether the gate is set or not, with the gated path
+//! falling through to an explicit unimplemented marker.
+//!
+//! The follow-up implementation work is tracked as **plan 497, task 3241**
+//! (filed during cycle C iter 2 of plan 492). An operator with the
+//! `claude` CLI and an active subscription fills it in for occasional
+//! local verification; CI never runs it.
+//!
+//! ## Why this is deliberately deferred
+//!
+//! Real `claude -p` spawns cost API credit (~$0.10–$0.50 each) and cannot
+//! run on CI. The contract surface that needs live coverage is narrow —
+//! "the spawn happens, the worker can write a commit inside the worktree,
+//! and the harness recognises it" — and is fully pinned by FakeSpawner
+//! unit tests at the `planar-execute` crate level. The live path's only
+//! purpose is to confirm that the FakeSpawner contract matches what
+//! `claude --print` actually does on the operator's machine.
 //!
 //! ## Gate: PLANAR_EXECUTE_LIVE_AGENT=1
 //!
-//! This test spawns a REAL `claude --print ...` worker. That costs API credit
-//! (~$0.10–$0.50 per run depending on the brief) and is therefore default-off:
-//! when the `PLANAR_EXECUTE_LIVE_AGENT` env var is absent or unset, the test
-//! returns `error.SkipZigTest`. `make test-integration` does NOT set the var,
-//! so CI never burns credit; an operator opts in explicitly with:
+//! When the env var is absent (the default — `make test-integration`
+//! never sets it), the test returns `error.SkipZigTest`. CI never burns
+//! credit. When the operator opts in:
 //!
 //!     PLANAR_EXECUTE_LIVE_AGENT=1 make test-integration
 //!
-//! ## What this exercises
-//!
-//! - End-to-end driveAgentCall path: brief stdin delivery, --model selection,
-//!   --permission-mode bypassPermissions (decision 365), worktree cwd.
-//! - The worker (claude --print) is told to write a single file "m4-smoke.txt"
-//!   containing "ok" and commit it. We assert the cycle branch advanced.
-//! - The terminal-fallback decision matrix's "complete" branch.
-//!
-//! This is intentionally ONE test, not a suite — the contract surface that
-//! actually needs live coverage is "the spawn happens, the worker can write a
-//! commit inside the worktree, and the harness recognises it". The decision
-//! matrix, argv shape, and brief delivery are covered by pure unit tests in
-//! the planar-execute crate.
+//! the test currently still returns `error.SkipZigTest` with an explicit
+//! marker — the smoke body has not been wired up yet. See plan 497 task
+//! 3241 for the implementation outline (fixture plan + cycle worktree +
+//! real driver spawn + post-spawn assertions on cycle-branch HEAD, task
+//! status, and stranded-worktree absence).
 
 const std = @import("std");
 const harness = @import("harness");
@@ -40,26 +53,30 @@ fn envValue(key: []const u8) ?[]const u8 {
     return null;
 }
 
-test "planar-execute agent() LIVE spawn — worker writes a commit on the cycle branch" {
-    // Gated behind PLANAR_EXECUTE_LIVE_AGENT=1 — CI / make test-integration
-    // never sets it, so this test is a default-off documentation-of-intent.
+test "planar-execute agent() LIVE spawn — connection point (smoke body deferred to plan 497 task 3241)" {
+    // CI / make test-integration: skip silently. PLANAR_EXECUTE_LIVE_AGENT
+    // is the opt-in gate; without it, return SkipZigTest immediately.
     if (envValue("PLANAR_EXECUTE_LIVE_AGENT") == null) return error.SkipZigTest;
 
-    // The bare existence of this gate is the deliverable. The actual live-spawn
-    // workflow (Lua script + fixture worktree setup + post-spawn commit check)
-    // is intentionally minimal: the M4 spawn driver's correctness is pinned by
-    // the FakeSpawner unit tests at the planar-execute crate level. This test
-    // exists to document the live opt-in path and to be wired up by the
-    // operator on demand. When PLANAR_EXECUTE_LIVE_AGENT=1 is set on a host
-    // that has both `claude` CLI and an active Claude subscription, the
-    // operator can extend this test body to drive a tiny smoke script through
-    // the live spawner; until then the gate-presence is the contract.
+    // Operator-gated path: the smoke body is NOT implemented yet. Tracked
+    // as plan 497 task 3241 (filed cycle C iter 2 of plan 492). The
+    // implementation will:
+    //   1. Seed a fixture DB with a tiny plan + task.
+    //   2. ensureEpic + createCycle; capture pre-spawn cycle-branch HEAD.
+    //   3. Drive `driveAgentCall` via the real spawner + the
+    //      `defaultEnvBuilder` (so PATH = shim, PLANAR_DB stripped, etc.).
+    //   4. Wait for the spawn to complete.
+    //   5. Assert: post-spawn cycle-branch HEAD != pre-spawn HEAD; task
+    //      status == "done"; no active claims; no stranded worktrees.
+    //   6. Teardown the fixture plan + repo.
     //
-    // Why minimal? The full live wiring requires (a) a workflow .lua script
-    // that calls ctx.agent(...) with a real claim_token sourced from
-    // planar-agent pull, (b) an epic+cycle worktree pair created via the
-    // worktree.* helpers, and (c) post-spawn assertions on the cycle branch
-    // commit. Each piece is exercised independently by unit / focused
-    // integration tests; this gate is the connection point.
-    return; // skip — gate-presence is the documented surface
+    // Until that lands, the gate's purpose is to refuse to silently pass
+    // when the operator opts in. SkipZigTest with the explicit message
+    // makes the deferred status visible.
+    std.debug.print(
+        "\nplanar_execute_agent_live_test: PLANAR_EXECUTE_LIVE_AGENT is set, but the smoke body is intentionally unimplemented. " ++
+            "Tracked as plan 497 task 3241.\n",
+        .{},
+    );
+    return error.SkipZigTest;
 }
