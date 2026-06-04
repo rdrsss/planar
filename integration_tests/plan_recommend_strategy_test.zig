@@ -274,6 +274,61 @@ test "recommend-strategy: empty-touches task is excluded by rule 2" {
     try std.testing.expect(!rec.summary.fan_out_available);
 }
 
+/// Declare a coarse whole-repo touch (no `--path`) via the real CLI
+/// surface: `task touches add <task-id> <repo-slug>`. Writes the coarse
+/// entity_links edge only — the whole-repo claim that must conflict with
+/// any same-repo path touch.
+fn touchRepo(
+    suite: *harness.Suite,
+    repo_slug: []const u8,
+    task_id: i64,
+) void {
+    const gpa = suite.allocator;
+    const tid = std.fmt.allocPrint(gpa, "{d}", .{task_id}) catch unreachable;
+    defer gpa.free(tid);
+    const out = suite.mustRun(&.{ "task", "touches", "add", tid, repo_slug });
+    gpa.free(out);
+}
+
+test "recommend-strategy: a whole-repo touch conflicts with a same-repo path touch (B.3)" {
+    // Iter-3 regression guard. Task A touches repo R at a specific path;
+    // task B touches repo R coarsely (no --path) = the whole repo, which
+    // subsumes A's path. Pre-fix the bare-path token "src/a.zig" never
+    // equalled the bare slug, so both were marked parallel-eligible — a
+    // false positive that produces a real merge conflict on fan-out. They
+    // MUST both serialize.
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const repo = registerRepoSlug(&suite, arena);
+    const plan = suite.mustRunJSON(PlanJSON, arena, &.{
+        "plan", "create", "--slug", "rs-b3", "--json", "RS_B3",
+    });
+    const pid = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch unreachable;
+
+    const t_path = addTask(&suite, arena, pid, "path-toucher");
+    touchPath(&suite, repo, t_path, "src/foo.zig");
+    const t_repo = addTask(&suite, arena, pid, "whole-repo-toucher");
+    touchRepo(&suite, repo, t_repo); // NO --path: whole repo
+
+    const rec = suite.mustRunJSON(RecommendJSON, arena, &.{
+        "plan", "recommend-strategy", pid, "--json",
+    });
+
+    // Neither eligible; both serialized via rule 2.
+    try std.testing.expect(!isEligible(rec, t_path));
+    try std.testing.expect(!isEligible(rec, t_repo));
+    try std.testing.expectEqual(@as(usize, 0), rec.parallel_eligible.len);
+    try std.testing.expect(hasRule(serializedById(rec, t_path), 2));
+    try std.testing.expect(hasRule(serializedById(rec, t_repo), 2));
+    try std.testing.expect(!rec.summary.fan_out_available);
+}
+
 test "recommend-strategy on a missing plan exits non-zero" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);

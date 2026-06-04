@@ -43,20 +43,25 @@
 //!
 //! ## Touch-granularity note
 //!
-//! Rule 2 is "disjoint task_touches (repo + path)". The touch dimension is
-//! sourced from two structures:
+//! Rule 2 is "disjoint task_touches (repo + path)". Each touch is a
+//! `{ repo_id, path }` pair (see the `Touch` type) sourced from two
+//! structures:
 //!   - repo touches: entity_links(from='task', to='repo', rel='touches')
-//!     — seeded by `planar task touches add <task> <repo>`.
+//!     — seeded by `planar task touches add <task> <repo>`. These produce a
+//!     whole-repo touch `{ repo_id, path = null }`.
 //!   - path touches: task_touch_paths rows joined on task_touch_paths.task_id
 //!     — seeded by `planar task touches add <task> <repo> --path <path>`
-//!     (migration 00018). These carry the file-path precision rules 2/3/4
-//!     need; the repo edge remains the coarse signal.
-//! Repo slugs and file paths never false-collide (a slug like "r1" never
-//! equals "migrations/x.sql"). Eligibility is only as complete as the
-//! declared touches: a task that under-declares its touches may be marked
-//! eligible against another task it actually conflicts with — declaring
-//! touches accurately is operator/orchestrator hygiene, the same discipline
-//! any touches-based system requires. An EMPTY touch set is treated as
+//!     (migration 00018). These produce `{ repo_id, path }` and carry the
+//!     file-path precision rules 2/3/4 need.
+//! Because BOTH granularities carry repo identity, a whole-repo touch
+//! conflicts with ANY same-repo touch (coarse or path) — two whole-repo
+//! claims on R collide, and a whole-repo claim on R collides with a path
+//! touch on R, while two distinct path touches on R do not. Cross-repo
+//! touches never collide. Eligibility is only as complete as the declared
+//! touches: a task that under-declares its touches may be marked eligible
+//! against another task it actually conflicts with — declaring touches
+//! accurately is operator/orchestrator hygiene, the same discipline any
+//! touches-based system requires. An EMPTY touch set is treated as
 //! "touches everything" → never eligible, so the failure mode of omission
 //! is safe (serialize), not unsafe (false-parallel).
 
@@ -152,23 +157,48 @@ fn freeRefs(refs: []const TaskRef, allocator: std.mem.Allocator) void {
 // Internal working representation
 // =========================================================================
 
+/// A single declared touch. `repo_id` identifies the repo; `path` is the
+/// repo-relative file path for a path-level touch, or `null` for a coarse
+/// whole-repo touch (`task touches add <task> <repo>` with no `--path`).
+///
+/// Two touches CONFLICT iff they target the same repo AND at least one is
+/// whole-repo OR they name the same path:
+///
+///   - same repo, both specific paths, different paths  -> NO conflict
+///     (this is what enables intra-repo parallelism);
+///   - same repo, both the same path                    -> conflict;
+///   - same repo, at least one whole-repo (path = null) -> conflict
+///     (a whole-repo claim subsumes any same-repo path-touch);
+///   - different repos                                  -> no conflict.
+///
+/// Repo identity is carried EXPLICITLY (not folded into a flat string
+/// token) so a coarse whole-repo claim can collide with a same-repo
+/// path-touch — a bare path string carries no repo identity and so could
+/// not express that overlap (the iter-2 false-positive this fixes).
+const Touch = struct {
+    repo_id: i64,
+    /// Heap-owned (report allocator) when present.
+    path: ?[]const u8,
+
+    /// True when this touch conflicts with `other` per the rule above.
+    fn conflicts(self: Touch, other: Touch) bool {
+        if (self.repo_id != other.repo_id) return false;
+        const sp = self.path orelse return true; // self is whole-repo
+        const op = other.path orelse return true; // other is whole-repo
+        return std.mem.eql(u8, sp, op);
+    }
+};
+
 const WorkTask = struct {
     id: i64,
     slug: ?[]const u8,
     title: []const u8,
-    /// Touch set: repo slugs ∪ declared path touches (heap-owned strings).
-    touches: [][]const u8,
+    /// Touch set: declared repo + path touches (path heap-owned strings).
+    touches: []Touch,
     /// Accumulated exclusions (heap-owned reason strings).
     exclusions: std.ArrayList(Exclusion),
     /// Set once any rule drops this task.
     dropped: bool,
-
-    fn hasTouch(self: WorkTask, t: []const u8) bool {
-        for (self.touches) |x| {
-            if (std.mem.eql(u8, x, t)) return true;
-        }
-        return false;
-    }
 };
 
 // =========================================================================
@@ -241,8 +271,11 @@ pub fn recommend(
     }
 
     // ---- Rule 3: migration touched (unilateral) ----------------------
+    // Reads the RAW declared path (not a qualified token) so the
+    // `migrations/*.sql` match still works after repo-qualification.
     for (tasks.items) |*t| {
-        for (t.touches) |path| {
+        for (t.touches) |touch| {
+            const path = touch.path orelse continue;
             if (isMigrationPath(path)) {
                 try addExclusion(allocator, t, 3, try std.fmt.allocPrint(
                     allocator,
@@ -255,8 +288,11 @@ pub fn recommend(
     }
 
     // ---- Rule 4: singleton authoritative file (unilateral) -----------
+    // Also reads the RAW declared path so singleton detection survives
+    // repo-qualification.
     for (tasks.items) |*t| {
-        for (t.touches) |path| {
+        for (t.touches) |touch| {
+            const path = touch.path orelse continue;
             if (isSingletonFile(path)) {
                 try addExclusion(allocator, t, 4, try std.fmt.allocPrint(
                     allocator,
@@ -282,15 +318,17 @@ pub fn recommend(
         while (j < n) : (j += 1) {
             const overlap = sharedTouch(tasks.items[i], tasks.items[j]);
             if (overlap) |shared| {
+                const desc = try describeTouch(allocator, shared);
+                defer allocator.free(desc);
                 try addExclusion(allocator, &tasks.items[i], 2, try std.fmt.allocPrint(
                     allocator,
                     "excluded by rule 2: overlaps task {d} on {s}",
-                    .{ tasks.items[j].id, shared },
+                    .{ tasks.items[j].id, desc },
                 ));
                 try addExclusion(allocator, &tasks.items[j], 2, try std.fmt.allocPrint(
                     allocator,
                     "excluded by rule 2: overlaps task {d} on {s}",
-                    .{ tasks.items[i].id, shared },
+                    .{ tasks.items[i].id, desc },
                 ));
             }
         }
@@ -348,12 +386,25 @@ fn freeRefsList(list: *std.ArrayList(TaskRef), allocator: std.mem.Allocator) voi
     list.deinit(allocator);
 }
 
-/// Return the first touch shared between a and b, or null if disjoint.
-fn sharedTouch(a: WorkTask, b: WorkTask) ?[]const u8 {
-    for (a.touches) |t| {
-        if (b.hasTouch(t)) return t;
+/// Return the first conflicting touch from `a` (the touch whose conflict
+/// with some touch of `b` made the pair overlap), or null if the two
+/// touch-sets are disjoint. The returned touch carries the repo + path
+/// context for the exclusion reason.
+fn sharedTouch(a: WorkTask, b: WorkTask) ?Touch {
+    for (a.touches) |ta| {
+        for (b.touches) |tb| {
+            if (ta.conflicts(tb)) return ta;
+        }
     }
     return null;
+}
+
+/// Render a touch for an operator-facing exclusion reason. A path-touch
+/// shows the path; a whole-repo touch shows `repo:<id> (whole repo)`.
+/// Caller owns the returned string.
+fn describeTouch(allocator: std.mem.Allocator, t: Touch) Error![]const u8 {
+    if (t.path) |p| return allocator.dupe(u8, p);
+    return std.fmt.allocPrint(allocator, "repo:{d} (whole repo)", .{t.repo_id});
 }
 
 /// Add an exclusion to a task and mark it dropped. Takes ownership of
@@ -444,38 +495,45 @@ fn loadOpenTasks(
     return out;
 }
 
-/// Touch set for a task. Two granularities feed the set, and path-level
-/// detail REFINES the coarse repo signal:
+/// Touch set for a task as a list of `Touch{ repo_id, path }`. Two
+/// granularities feed the set, and path-level detail REFINES the coarse
+/// repo signal — but BOTH carry repo identity now, so a coarse whole-repo
+/// touch correctly conflicts with a same-repo path-touch:
 ///
 ///   - For a repo a task touches at the file level (task_touch_paths rows,
-///     migration 00018), the touch tokens are the declared FILE PATHS for
-///     that repo — NOT the repo slug. Two tasks editing different files in
-///     the SAME repo are therefore disjoint (parallel-eligible), which is
-///     the whole point of path-level precision.
+///     migration 00018), each declared FILE PATH becomes a touch
+///     `{ repo_id, path }`. Two tasks editing different files in the SAME
+///     repo are therefore disjoint (parallel-eligible), which is the whole
+///     point of path-level precision.
 ///   - For a repo a task touches only via the coarse entity_links edge
-///     (`task touches add <task> <repo>` with no --path), the touch token
-///     is the REPO SLUG — a whole-repo claim that conflicts with any other
-///     task touching that repo (coarse or fine). This preserves the
-///     conservative behavior when an operator under-declares.
+///     (`task touches add <task> <repo>` with no --path), the touch is a
+///     whole-repo claim `{ repo_id, path = null }` that conflicts with any
+///     other task touching that repo (coarse or fine — see
+///     `Touch.conflicts`). This preserves the conservative behavior when an
+///     operator under-declares.
 ///
-/// Rules 3/4 match on the raw repo-relative path (`migrations/*.sql`,
-/// singleton files), so paths enter the set verbatim. Repo slugs and file
-/// paths never false-collide (a slug never equals a `migrations/x.sql`
-/// path). Returns heap-owned strings.
+/// A repo that has ANY path-level declaration does NOT also contribute a
+/// coarse whole-repo touch — the path detail wins, which is what enables
+/// intra-repo parallelism. (Adding a whole-repo touch alongside the paths
+/// would re-introduce the conflict the path precision is meant to avoid.)
+///
+/// Rules 3/4 read the raw repo-relative `path` (`migrations/*.sql`,
+/// singleton files) directly off each touch, so paths are stored verbatim.
+/// Returns heap-owned path strings (whole-repo touches have null paths).
 fn loadTouches(
     d: *db.sqlite.Db,
     allocator: std.mem.Allocator,
     task_id: i64,
-) Error![][]const u8 {
-    var out: std.ArrayList([]const u8) = .empty;
+) Error![]Touch {
+    var out: std.ArrayList(Touch) = .empty;
     errdefer {
-        for (out.items) |s| allocator.free(s);
+        for (out.items) |t| if (t.path) |p| allocator.free(p);
         out.deinit(allocator);
     }
 
     // Repos with path-level declarations: those repos contribute their
-    // FILE PATHS, not the coarse slug. Collect the set of refined repo ids
-    // so the coarse pass below can skip them.
+    // FILE PATHS, not a coarse whole-repo touch. Collect the set of
+    // refined repo ids so the coarse pass below can skip them.
     var refined = std.AutoHashMap(i64, void).init(allocator);
     defer refined.deinit();
 
@@ -490,21 +548,21 @@ fn loadTouches(
             switch (stmt.step() catch return Error.QueryFailed) {
                 .done => break,
                 .row => {
-                    refined.put(stmt.columnInt(0), {}) catch return Error.OutOfMemory;
-                    const s = stmt.columnTextAlloc(1, allocator) catch return Error.QueryFailed;
-                    try appendUnique(allocator, &out, s);
+                    const repo_id = stmt.columnInt(0);
+                    refined.put(repo_id, {}) catch return Error.OutOfMemory;
+                    const p = stmt.columnTextAlloc(1, allocator) catch return Error.QueryFailed;
+                    try appendUniquePath(allocator, &out, repo_id, p);
                 },
             }
         }
     }
 
-    // Coarse repo slugs via entity_links — only for repos WITHOUT any
-    // path-level declaration (path detail wins over the coarse slug).
+    // Coarse whole-repo touches via entity_links — only for repos WITHOUT
+    // any path-level declaration (path detail wins over the coarse signal).
     {
         var stmt = d.prepare(
-            \\select p.id, p.slug
+            \\select el.to_id
             \\from entity_links el
-            \\join projects p on p.id = el.to_id
             \\where el.from_kind = 'task' and el.from_id = ?
             \\  and el.to_kind = 'repo' and el.relationship = 'touches'
         ) catch return Error.QueryFailed;
@@ -515,12 +573,8 @@ fn loadTouches(
                 .done => break,
                 .row => {
                     const repo_id = stmt.columnInt(0);
-                    const s = stmt.columnTextAlloc(1, allocator) catch return Error.QueryFailed;
-                    if (refined.contains(repo_id)) {
-                        allocator.free(s);
-                        continue;
-                    }
-                    try appendUnique(allocator, &out, s);
+                    if (refined.contains(repo_id)) continue;
+                    try appendUniqueWholeRepo(allocator, &out, repo_id);
                 },
             }
         }
@@ -529,19 +583,38 @@ fn loadTouches(
     return try out.toOwnedSlice(allocator);
 }
 
-/// Append `s` to `out` if not already present; free `s` when duplicate.
-fn appendUnique(
+/// Append a path-touch `{ repo_id, path }` if an identical one is not
+/// already present; free `path` when it is a duplicate.
+fn appendUniquePath(
     allocator: std.mem.Allocator,
-    out: *std.ArrayList([]const u8),
-    s: []const u8,
+    out: *std.ArrayList(Touch),
+    repo_id: i64,
+    path: []const u8,
 ) Error!void {
     for (out.items) |existing| {
-        if (std.mem.eql(u8, existing, s)) {
-            allocator.free(s);
-            return;
+        if (existing.repo_id == repo_id) {
+            if (existing.path) |ep| {
+                if (std.mem.eql(u8, ep, path)) {
+                    allocator.free(path);
+                    return;
+                }
+            }
         }
     }
-    try out.append(allocator, s);
+    try out.append(allocator, .{ .repo_id = repo_id, .path = path });
+}
+
+/// Append a whole-repo touch `{ repo_id, path = null }` if one is not
+/// already present for that repo.
+fn appendUniqueWholeRepo(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(Touch),
+    repo_id: i64,
+) Error!void {
+    for (out.items) |existing| {
+        if (existing.repo_id == repo_id and existing.path == null) return;
+    }
+    try out.append(allocator, .{ .repo_id = repo_id, .path = null });
 }
 
 /// Rule 1: walk the transitive closure of outgoing `blocks` edges
@@ -620,7 +693,7 @@ fn linkedToUnresolved(
 fn deinitWorkTask(t: *WorkTask, allocator: std.mem.Allocator) void {
     allocator.free(t.title);
     if (t.slug) |s| allocator.free(s);
-    for (t.touches) |s| allocator.free(s);
+    for (t.touches) |touch| if (touch.path) |p| allocator.free(p);
     allocator.free(t.touches);
     for (t.exclusions.items) |e| allocator.free(e.reason);
     t.exclusions.deinit(allocator);
@@ -742,6 +815,93 @@ test "drop-both-on-tie: overlapping touches drop BOTH tasks" {
         }
         try testing.expect(has_rule2);
     }
+}
+
+test "mixed B.1: same repo, different paths -> both eligible" {
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const plan_id = try seedPlan(&d);
+    const t1 = try seedTask(&d, plan_id, "A");
+    const t2 = try seedTask(&d, plan_id, "B");
+    const r = try seedRepo(&d, "r");
+    try touchPath(&d, t1, r, "src/foo.zig");
+    try touchPath(&d, t2, r, "src/bar.zig");
+
+    const rec = try recommend(&d, a, plan_id);
+    defer rec.deinit(a);
+    try testing.expectEqual(@as(usize, 2), rec.parallel_eligible.len);
+    try testing.expectEqual(@as(usize, 0), rec.serialized.len);
+}
+
+test "mixed B.2: same repo, same path -> both serialized" {
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const plan_id = try seedPlan(&d);
+    const t1 = try seedTask(&d, plan_id, "A");
+    const t2 = try seedTask(&d, plan_id, "B");
+    const r = try seedRepo(&d, "r");
+    try touchPath(&d, t1, r, "src/foo.zig");
+    try touchPath(&d, t2, r, "src/foo.zig");
+
+    const rec = try recommend(&d, a, plan_id);
+    defer rec.deinit(a);
+    try testing.expectEqual(@as(usize, 0), rec.parallel_eligible.len);
+    try testing.expectEqual(@as(usize, 2), rec.serialized.len);
+    for (rec.serialized) |s| {
+        var has_rule2 = false;
+        for (s.excluded_by) |e| if (e.rule == 2) {
+            has_rule2 = true;
+        };
+        try testing.expect(has_rule2);
+    }
+}
+
+test "mixed B.3: whole-repo touch conflicts with same-repo path touch -> both serialized" {
+    // The false-positive iter-2 fix targets. Task A touches repo R at a
+    // specific path; task B touches repo R coarsely (no --path) = the whole
+    // repo, which subsumes A's path. They MUST both serialize, never be
+    // marked parallel-eligible.
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const plan_id = try seedPlan(&d);
+    const t_a = try seedTask(&d, plan_id, "A");
+    const t_b = try seedTask(&d, plan_id, "B");
+    const r = try seedRepo(&d, "r");
+    try touchPath(&d, t_a, r, "src/foo.zig"); // A: path-level on R
+    try linkTouchesRepo(&d, t_b, r); // B: whole-repo on R (no path)
+
+    const rec = try recommend(&d, a, plan_id);
+    defer rec.deinit(a);
+    try testing.expectEqual(@as(usize, 0), rec.parallel_eligible.len);
+    try testing.expectEqual(@as(usize, 2), rec.serialized.len);
+    for (rec.serialized) |s| {
+        var has_rule2 = false;
+        for (s.excluded_by) |e| if (e.rule == 2) {
+            has_rule2 = true;
+        };
+        try testing.expect(has_rule2);
+    }
+}
+
+test "mixed: whole-repo touch on R does NOT conflict with a path touch on a different repo" {
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const plan_id = try seedPlan(&d);
+    const t_a = try seedTask(&d, plan_id, "A");
+    const t_b = try seedTask(&d, plan_id, "B");
+    const r1 = try seedRepo(&d, "r1");
+    const r2 = try seedRepo(&d, "r2");
+    try touchPath(&d, t_a, r1, "src/foo.zig"); // A: path on r1
+    try linkTouchesRepo(&d, t_b, r2); // B: whole-repo on r2
+
+    const rec = try recommend(&d, a, plan_id);
+    defer rec.deinit(a);
+    try testing.expectEqual(@as(usize, 2), rec.parallel_eligible.len);
+    try testing.expectEqual(@as(usize, 0), rec.serialized.len);
 }
 
 test "rule 3: a task touching a migration is dropped unilaterally" {
