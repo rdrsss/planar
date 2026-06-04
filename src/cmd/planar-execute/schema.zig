@@ -100,8 +100,8 @@ pub const FlagEntry = struct {
     long: []const u8,
     /// Alias long names (often empty).
     aliases: [][]const u8 = &.{},
-    /// Optional single-char short flag, e.g. `'h'` for `-h`. Null when absent.
-    short: ?u8 = null,
+    /// Optional single-char short flag as a string, e.g. `"h"` for `-h`. Null when absent.
+    short: ?[]const u8 = null,
     /// Whether this flag is required.
     required: bool = false,
     /// Human-readable description of the flag's purpose.
@@ -558,6 +558,37 @@ test "BinSchema: findCommand for 'planar-agent heartbeat' — --claim required, 
     // --json is optional.
     try std.testing.expectEqualStrings("--json", cmd.flags[2].long);
     try std.testing.expect(!cmd.flags[2].required);
+}
+
+test "FlagEntry: short field parses as string — emitter shape match (task 3235)" {
+    // The etc-cli emitter serializes `short` as a JSON string: "short":"v", NOT
+    // a JSON number. This test confirms ?[]const u8 parses that correctly and
+    // that the prior ?u8 declaration (which would ParseFailed on a string) is fixed.
+    const fixture =
+        \\{"schemaVersion":1,"layout":"flat","root":"planar","commands":[
+        \\  {"name":"verbose","command":"planar verbose",
+        \\   "subcommands":[],"hidden":false,
+        \\   "flags":[
+        \\     {"long":"--verbose","aliases":[],"hidden":false,"deprecated":null,
+        \\      "short":"v","kind":"bool","required":false,"source":"local",
+        \\      "valueName":"","default":false,"description":"Enable verbose output",
+        \\      "completion":{"kind":"none","values":[]},"env":null}
+        \\   ],"positionals":[],
+        \\   "docs":{"examples":[],"exitCodes":[],"notes":[],"seeAlso":[],"files":[],"bugs":[],
+        \\           "authors":[],"homepage":"","license":"","copyright":"","version":"","sourceUrl":""}}
+        \\]}
+    ;
+    const parsed = try std.json.parseFromSlice(RawSchema, std.testing.allocator, fixture, .{
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.commands.len);
+    const flag = parsed.value.commands[0].flags[0];
+    try std.testing.expectEqualStrings("--verbose", flag.long);
+    // short must be non-null and equal to the string "v" (not a byte value).
+    const s = flag.short orelse return error.TestUnexpectedNull;
+    try std.testing.expectEqualStrings("v", s);
 }
 
 test "BinSchema: commands() iteration yields correct command paths (brief compiler enumeration pattern)" {

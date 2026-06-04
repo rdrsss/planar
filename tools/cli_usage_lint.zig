@@ -43,7 +43,8 @@ const scan_dirs = [_][]const u8{ "agents", "skills/src", "docs" };
 const FlagJson = struct {
     long: []const u8,
     aliases: [][]const u8 = &.{},
-    short: ?u8 = null,
+    /// Optional single-char short flag as a string, e.g. `"h"` for `-h`. Null when absent.
+    short: ?[]const u8 = null,
 };
 
 const CommandJson = struct {
@@ -171,7 +172,7 @@ fn loadSchema(arena: std.mem.Allocator, io: Io, catalog: *Catalog, bin_path: []c
             try cmd.flags.put(arena, f.long, {});
             for (f.aliases) |a| try cmd.flags.put(arena, a, {});
             if (f.short) |s| {
-                const short = try std.fmt.allocPrint(arena, "-{c}", .{s});
+                const short = try std.fmt.allocPrint(arena, "-{s}", .{s});
                 try cmd.flags.put(arena, short, {});
             }
         }
@@ -583,4 +584,33 @@ test "inline span extraction finds invocations in prose" {
     try scanInlineSpans(arena, &c, &.{"planar"}, "f.md", 3, line, &v);
     try testing.expectEqual(@as(usize, 1), v.items.len);
     try testing.expectEqualStrings("--plan", v.items[0].flag);
+}
+
+test "FlagJson: short field parses as string — emitter shape match (task 3235)" {
+    // The etc-cli emitter serializes `short` as a JSON string: "short":"v", NOT
+    // a JSON number. Confirms ?[]const u8 parses the emitter output correctly
+    // (the prior ?u8 declaration would have produced ParseFailed on any binary
+    // that defines a short flag).
+    var arena_i = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_i.deinit();
+    const arena = arena_i.allocator();
+
+    const fixture =
+        \\{"commands":[
+        \\  {"command":"planar verbose","subcommands":[],
+        \\   "flags":[
+        \\     {"long":"--verbose","aliases":[],"short":"v"}
+        \\   ]}
+        \\]}
+    ;
+    const parsed = try std.json.parseFromSlice(SchemaJson, arena, fixture, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    try testing.expectEqual(@as(usize, 1), parsed.value.commands.len);
+    const flag = parsed.value.commands[0].flags[0];
+    try testing.expectEqualStrings("--verbose", flag.long);
+    // short must be the string "v", not null or a numeric byte.
+    const s = flag.short orelse return error.TestUnexpectedNull;
+    try testing.expectEqualStrings("v", s);
 }
