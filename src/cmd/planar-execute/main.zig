@@ -118,6 +118,10 @@ pub const ExecCtx = struct {
     io: Io,
     stdout: *Io.Writer,
     stderr: *Io.Writer,
+    /// The host process environ. Threaded from `std.process.Init.minimal.environ`
+    /// so the gated live-agent driver (handleRun) can baseline the constrained
+    /// worker env from the real host environment.
+    environ: std.process.Environ,
 };
 
 var stdout_buf: [4096]u8 = undefined;
@@ -126,7 +130,7 @@ var stdout_writer_storage: ?Io.File.Writer = null;
 var stderr_writer_storage: ?Io.File.Writer = null;
 var global_ctx: ?ExecCtx = null;
 
-fn initCtx(allocator: std.mem.Allocator, io: Io) void {
+fn initCtx(allocator: std.mem.Allocator, io: Io, environ: std.process.Environ) void {
     stdout_writer_storage = Io.File.Writer.init(.stdout(), io, &stdout_buf);
     stderr_writer_storage = Io.File.Writer.init(.stderr(), io, &stderr_buf);
     global_ctx = .{
@@ -134,6 +138,7 @@ fn initCtx(allocator: std.mem.Allocator, io: Io) void {
         .io = io,
         .stdout = &stdout_writer_storage.?.interface,
         .stderr = &stderr_writer_storage.?.interface,
+        .environ = environ,
     };
 }
 
@@ -493,6 +498,40 @@ pub fn defaultEnvBuilder(
         dctx.planar_agent_path,
         dctx.git_path,
     );
+}
+
+/// resolveHostBinary resolves `name` to an absolute path on the HOST PATH by
+/// shelling `/bin/sh -c "command -v <name>"`. Returns an allocator-owned
+/// absolute path string, or `error.BinaryNotResolvable` when the binary is not
+/// on PATH (or `command -v` exits non-zero / emits a relative path).
+///
+/// This is the production binary-resolution step for the gated live-agent
+/// driver: we resolve the REAL `planar-agent` and `git` on the host PATH so the
+/// per-cycle shim can symlink them in. We resolve against the host PATH (not the
+/// constrained worker PATH) because the whole point is to find the real binaries
+/// to allow-list into the worker's shim.
+fn resolveHostBinary(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    name: []const u8,
+) error{ OutOfMemory, BinaryNotResolvable }![]u8 {
+    const sh_cmd = std.fmt.allocPrint(allocator, "command -v {s}", .{name}) catch return error.OutOfMemory;
+    defer allocator.free(sh_cmd);
+
+    const result = std.process.run(allocator, io, .{
+        .argv = &.{ "/bin/sh", "-c", sh_cmd },
+    }) catch return error.BinaryNotResolvable;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    if (result.term != .exited or result.term.exited != 0) return error.BinaryNotResolvable;
+
+    const trimmed = std.mem.trim(u8, result.stdout, " \t\r\n");
+    // command -v can print a shell keyword/alias/relative builtin name; require
+    // an absolute path so the shim symlink target is unambiguous.
+    if (trimmed.len == 0 or trimmed[0] != '/') return error.BinaryNotResolvable;
+
+    return allocator.dupe(u8, trimmed) catch error.OutOfMemory;
 }
 
 /// AgentCallOpts is the parsed view of the Lua `opts` table for one
@@ -1582,6 +1621,7 @@ const run_verb: cli.Cmd = .{
     ,
     .flags = &.{
         .{ .long = "--dry-run", .kind = .bool, .default = .{ .bool = false }, .desc = "Load and validate the workflow, print meta and phases, exit without running." },
+        .{ .long = "--plan", .kind = .int, .default = .{ .int = 0 }, .desc = "Plan id the live agent run is scoped to. Required only when PLANAR_EXECUTE_LIVE_AGENT=1 (the gated live-spawn path); ignored otherwise." },
     },
     .positionals = &.{
         .{ .name = "workflow", .kind = .string, .required = true },
@@ -1826,6 +1866,116 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
     var host = HostState.init(allocator, 0, 0, 100, 0);
     defer host.deinit();
 
+    // ---- Gated production agent() driver wiring (plan 492 M4 task 3241) ----
+    //
+    // INVARIANT: `planar-execute run` NEVER spawns a real `claude -p` worker by
+    // default. The M2 recording stub (`agent()` → { status = "stub" }) is the
+    // shipped behavior of every normal run and all of CI. ONLY an explicit
+    // opt-in via the env gate PLANAR_EXECUTE_LIVE_AGENT=1 attaches a real
+    // AgentDriver; without it, `host.agent_driver` stays null and `hostAgent`
+    // returns the stub table bit-for-bit. One gate, two effects: it also gates
+    // the live integration test (integration_tests/planar_execute_agent_live_test.zig).
+    //
+    // SCOPE FENCE (M4): the driver only runs the EXISTING `driveAgentCall`
+    // pipeline. It does NOT create the cycle worktree or acquire the claim —
+    // the workflow author passes a PRE-PREPARED worktree_path + claim_token
+    // into agent() via opts. The front-half (ensureEpic/createCycle/claim) and
+    // the back-half (merge/teardown) are M5 (the scheduler).
+    //
+    // These locals must outlive `runModule` (the driver is borrowed by the
+    // HostState across the whole run), so they live on this stack frame.
+    var live_driver: AgentDriver = undefined;
+    var live_env_ctx: DefaultEnvBuilderCtx = undefined;
+    var live_planar_agent_path: ?[]u8 = null;
+    defer if (live_planar_agent_path) |p| allocator.free(p);
+    var live_git_path: ?[]u8 = null;
+    defer if (live_git_path) |p| allocator.free(p);
+    var live_repo_root: ?[]u8 = null;
+    defer if (live_repo_root) |p| allocator.free(p);
+    var live_plan_slug: ?std.json.Parsed(state.PlanShow) = null;
+    defer if (live_plan_slug) |*p| p.deinit();
+
+    if (ctx.environ.getPosix("PLANAR_EXECUTE_LIVE_AGENT") != null) {
+        const plan: u64 = blk: {
+            if (args.plan <= 0) {
+                try ctx.stderr.print(
+                    "planar-execute: --plan <id> is required for live agent runs (PLANAR_EXECUTE_LIVE_AGENT=1)\n",
+                    .{},
+                );
+                try flushCtx();
+                std.process.exit(1);
+            }
+            break :blk @intCast(args.plan);
+        };
+
+        // repo_root = the cwd's git top-level. The cycle worktree lives under
+        // this repo, and branchHead samples are rooted here.
+        live_repo_root = worktree.gitTopLevel(allocator, ctx.io) catch {
+            try ctx.stderr.print(
+                "planar-execute: could not resolve git top-level of cwd (required for live agent runs)\n",
+                .{},
+            );
+            try flushCtx();
+            std.process.exit(1);
+        };
+
+        // plan_slug = the plan's slug (the reader requires the plan to exist).
+        live_plan_slug = state.planShow(allocator, ctx.io, plan) catch {
+            try ctx.stderr.print(
+                "planar-execute: plan show {d} failed (required for live agent runs)\n",
+                .{plan},
+            );
+            try flushCtx();
+            std.process.exit(1);
+        };
+        const slug: []const u8 = live_plan_slug.?.value.slug orelse {
+            try ctx.stderr.print(
+                "planar-execute: plan {d} has no slug (required to derive the cycle branch name)\n",
+                .{plan},
+            );
+            try flushCtx();
+            std.process.exit(1);
+        };
+
+        // Resolve the REAL planar-agent + git on the HOST PATH so the worker's
+        // shim can symlink them in (decision 358: worker PATH = planar-agent +
+        // git, not planar).
+        live_planar_agent_path = resolveHostBinary(allocator, ctx.io, "planar-agent") catch {
+            try ctx.stderr.print(
+                "planar-execute: could not resolve 'planar-agent' on PATH (required for live agent runs)\n",
+                .{},
+            );
+            try flushCtx();
+            std.process.exit(1);
+        };
+        live_git_path = resolveHostBinary(allocator, ctx.io, "git") catch {
+            try ctx.stderr.print(
+                "planar-execute: could not resolve 'git' on PATH (required for live agent runs)\n",
+                .{},
+            );
+            try flushCtx();
+            std.process.exit(1);
+        };
+
+        live_env_ctx = .{
+            .planar_agent_path = live_planar_agent_path.?,
+            .git_path = live_git_path.?,
+            .host_environ = ctx.environ,
+        };
+        live_driver = .{
+            .spawner = spawn.realSpawner(),
+            .io = ctx.io,
+            .repo_root = live_repo_root.?,
+            .plan_slug = slug,
+            .plan_id = plan,
+            .env_builder = defaultEnvBuilder,
+            .env_builder_ctx = &live_env_ctx,
+            .claim_status_reader = null, // → defaultClaimStatusReader against plan_id
+            .skip_terminal_subprocess = false, // production runs the real terminal verb
+        };
+        host.agent_driver = &live_driver;
+    }
+
     // Invoke run(ctx) with the trailing args threaded into ctx.args and the
     // host-function surface + determinism installed on ctx.
     runModule(source, chunkname, rest_args, &host, &err_buf) catch |e| {
@@ -1901,7 +2051,7 @@ pub fn main(init: std.process.Init) !void {
     const raw_args = try init.minimal.args.toSlice(arena);
     const args = maybeInjectRun(arena, raw_args);
 
-    initCtx(arena, init.io);
+    initCtx(arena, init.io, init.minimal.environ);
     defer flushCtx() catch {};
 
     const ctx = currentCtx();
@@ -2945,4 +3095,32 @@ test "M4 agent: non-null env_builder → constrained env reaches the spawn bound
     try std.testing.expectEqualStrings(SENTINEL_WORKER_VAL, got);
     // And it was a non-empty snapshot (a null env_map would record zero pairs).
     try std.testing.expect(inv.env_pairs.len >= 2);
+}
+
+// ---------------------------------------------------------------------------
+// task 3241 — gated production agent() driver wiring.
+//
+// handleRun itself is process-global + process.exit-driven, so it is exercised
+// by the gated integration test (planar_execute_agent_live_test.zig). The
+// load-bearing NEW unit here is the host-PATH binary resolver the gated driver
+// uses to find the real planar-agent + git to symlink into the worker shim.
+// ---------------------------------------------------------------------------
+
+test "task 3241: resolveHostBinary resolves an on-PATH binary to an absolute path" {
+    const a = testing_alloc;
+    // `sh` is always on PATH at an absolute location on any POSIX host the test
+    // runs on. (We resolve `sh` rather than `git` because `git` may be absent
+    // in a minimal CI sandbox; `sh` is a harder guarantee.)
+    const p = resolveHostBinary(a, std.testing.io, "sh") catch return error.SkipZigTest;
+    defer a.free(p);
+    try std.testing.expect(p.len > 0);
+    try std.testing.expect(p[0] == '/'); // absolute
+    try std.testing.expect(std.mem.endsWith(u8, p, "/sh"));
+}
+
+test "task 3241: resolveHostBinary errors when the binary is not on PATH" {
+    const a = testing_alloc;
+    // A name no real binary will ever carry → command -v exits non-zero.
+    const r = resolveHostBinary(a, std.testing.io, "planar-nonexistent-binary-zzz-3241");
+    try std.testing.expectError(error.BinaryNotResolvable, r);
 }

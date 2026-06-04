@@ -279,21 +279,49 @@ fn validateBinaryPath(path: []const u8) WorkerEnvError!void {
 // buildWorkerPath — pure: returns the PATH value for the constrained worker.
 // ---------------------------------------------------------------------------
 
-/// Returns the PATH value (a single shim-directory entry) the worker should
-/// see. The caller owns the returned slice and MUST free it. This is the
-/// pure-function piece of `buildWorkerEnv`; it does not touch the filesystem.
+/// The standard system bin directories appended AFTER the shim dir on the
+/// worker PATH. These hold the OS toolchain a real `claude -p` worker depends
+/// on at runtime — notably the macOS Keychain credential helper
+/// (`/usr/bin/security`) that `claude` shells out to for auth, plus `/bin/sh`,
+/// `node` shims, coreutils, etc. Decision 358's stated intent is "expose
+/// planar-agent + git but NOT planar so the worker cannot bypass the claim
+/// ritual"; it is about keeping the `planar` OPERATOR binary off PATH, not
+/// about denying the OS toolchain. `planar` installs to `~/.planar/bin`, never
+/// to a system dir, so appending these keeps `planar` unreachable (the shim
+/// carries only `planar-agent` + `git`) while letting `claude` authenticate.
 ///
-/// Validates that `shim_dir` is absolute. The returned string is precisely
-/// `shim_dir` (duped onto the allocator). The shim directory is the SOLE
-/// PATH entry — every other directory in the host PATH is intentionally
-/// excluded, including dirs that happen to contain `planar-agent` or `git`
-/// alongside `planar`.
+/// Verified empirically (task 3241 live-spawn): with PATH = shim-only, `claude`
+/// on macOS reports "Not logged in" and does nothing; with the system dirs
+/// appended it authenticates and commits. The broader worker permission/PATH
+/// surface is tracked as task 3244 (decision 358 explicitly defers it to "after
+/// the A3 probe").
+const SYSTEM_BIN_DIRS = [_][]const u8{ "/usr/bin", "/bin", "/usr/sbin", "/sbin" };
+
+/// Returns the PATH value the worker should see: the per-worker shim directory
+/// FIRST (so its curated `planar-agent` + `git` symlinks always win), followed
+/// by the standard system bin dirs (`SYSTEM_BIN_DIRS`). The caller owns the
+/// returned slice and MUST free it. This is the pure-function piece of
+/// `buildWorkerEnv`; it does not touch the filesystem.
+///
+/// `planar` is NOT reachable on this PATH: it lives in `~/.planar/bin`, which
+/// is not among the appended system dirs, and the shim dir holds no `planar`
+/// entry. The decision-358 containment (worker cannot invoke the operator
+/// binary to bypass the claim ritual) is therefore preserved; the worker-scoped
+/// negative tests still hold (they fabricate `planar` in a tmp bin dir, never a
+/// system dir).
+///
+/// Validates that `shim_dir` is absolute.
 pub fn buildWorkerPath(
     allocator: std.mem.Allocator,
     shim_dir: []const u8,
 ) WorkerEnvError![]u8 {
     try validateBinaryPath(shim_dir);
-    return allocator.dupe(u8, shim_dir) catch return WorkerEnvError.OutOfMemory;
+    // shim_dir : /usr/bin : /bin : /usr/sbin : /sbin
+    var parts = std.ArrayList([]const u8).empty;
+    defer parts.deinit(allocator);
+    parts.append(allocator, shim_dir) catch return WorkerEnvError.OutOfMemory;
+    for (SYSTEM_BIN_DIRS) |d| parts.append(allocator, d) catch return WorkerEnvError.OutOfMemory;
+    return std.mem.join(allocator, ":", parts.items) catch return WorkerEnvError.OutOfMemory;
 }
 
 // ---------------------------------------------------------------------------
@@ -549,11 +577,17 @@ fn writeStubBinary(allocator: std.mem.Allocator, path: []const u8) void {
     defer allocator.free(r.stderr);
 }
 
-test "buildWorkerPath: returns the shim dir as a single owned string" {
+test "buildWorkerPath: shim dir FIRST, then the system bin dirs" {
     const a = std.testing.allocator;
     const p = try buildWorkerPath(a, "/tmp/shim-xyz");
     defer a.free(p);
-    try std.testing.expectEqualStrings("/tmp/shim-xyz", p);
+    // The shim dir is the leading PATH entry (its curated symlinks always win).
+    try std.testing.expectEqualStrings("/tmp/shim-xyz:/usr/bin:/bin:/usr/sbin:/sbin", p);
+    // And it is the FIRST entry, so a shim `git`/`planar-agent` shadows any
+    // system copy.
+    try std.testing.expect(std.mem.startsWith(u8, p, "/tmp/shim-xyz:"));
+    // `planar` is NOT reachable: none of the appended dirs is ~/.planar/bin.
+    try std.testing.expect(std.mem.indexOf(u8, p, ".planar/bin") == null);
 }
 
 test "buildWorkerPath: rejects non-absolute paths" {
@@ -635,11 +669,15 @@ test "buildWorkerEnv: constructs a complete env; deinit cleans up the shim dir" 
     var env = try buildWorkerEnv(a, std.testing.io, std.testing.environ, shim, stub_agent, stub_git);
     defer env.deinit(a, std.testing.io);
 
-    try std.testing.expectEqualStrings(shim, env.path);
+    // env.path leads with the shim dir, then the system bin dirs.
+    const shim_prefix = try std.fmt.allocPrint(a, "{s}:", .{shim});
+    defer a.free(shim_prefix);
+    try std.testing.expect(std.mem.startsWith(u8, env.path, shim_prefix));
+    try std.testing.expect(std.mem.indexOf(u8, env.path, "/usr/bin") != null);
 
-    // PATH is in the env map.
+    // PATH is in the env map and matches env.path.
     const path_in_map = env.env_map.get("PATH") orelse @panic("PATH missing");
-    try std.testing.expectEqualStrings(shim, path_in_map);
+    try std.testing.expectEqualStrings(env.path, path_in_map);
 
     // Shim dir exists.
     var d = std.Io.Dir.cwd().openDir(std.testing.io, shim, .{}) catch

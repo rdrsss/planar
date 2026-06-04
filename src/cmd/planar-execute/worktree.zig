@@ -512,6 +512,25 @@ pub fn branchHead(
     return owned;
 }
 
+/// gitTopLevel resolves the git top-level (repository root) of the current
+/// working directory via `git rev-parse --show-toplevel`. Returns the trimmed
+/// absolute path (heap-owned; caller frees) on success, or a WorktreeError when
+/// the cwd is not inside a git work tree.
+///
+/// Used by the gated live-agent driver (plan 492 M4) to root the cycle-branch
+/// HEAD samples at the repo that owns the cycle worktree.
+pub fn gitTopLevel(allocator: std.mem.Allocator, io: Io) WorktreeError![]u8 {
+    const out = try runGit(allocator, io, &.{ "rev-parse", "--show-toplevel" });
+    const trimmed = std.mem.trim(u8, out, " \t\r\n");
+    if (trimmed.len == out.len) return out;
+    const owned = allocator.dupe(u8, trimmed) catch {
+        allocator.free(out);
+        return WorktreeError.OutOfMemory;
+    };
+    allocator.free(out);
+    return owned;
+}
+
 // ---------------------------------------------------------------------------
 // Startup reconcile pass — task 3174 (m3-startup-reconcile).
 //

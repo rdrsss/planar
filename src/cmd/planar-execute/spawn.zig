@@ -303,9 +303,10 @@ fn realRunFn(
     // Spawn the child with stdin piped (so we can stream the brief), stdout/
     // stderr piped (so we can capture them). cwd is the cycle worktree so any
     // unqualified file ops inside the worker land inside it. environ_map is the
-    // constrained worker env (shim PATH = planar-agent + git only; PLANAR_DB /
-    // PLANAR_BIN / PLANAR_HOME / PLANAR_CONFIG_PATH / PLANAR_TEMPLATES_DIR /
-    // PLANAR_DISABLE_WORKTREE_GATE stripped).
+    // constrained worker env (shim PATH = planar-agent + git only). The env
+    // policy is an ALLOW-LIST, not a deny-list: ALL PLANAR_* vars are stripped
+    // except those in worker_env.ALLOWED_PLANAR_VARS (currently just
+    // PLANAR_WORKBENCH_ROOT), and PATH is overwritten with the shim dir.
     var child = std.process.spawn(io, .{
         .argv = argv,
         .cwd = .{ .path = inputs.worktree_path },
