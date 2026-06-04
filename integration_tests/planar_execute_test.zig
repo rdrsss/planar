@@ -484,6 +484,76 @@ test "planar-execute sandbox: io / os.time / math.random absent, ctx.now/seed pr
     try std.testing.expectEqual(@as(u32, 0), res.exitCode());
 }
 
+test "planar-execute sandbox: debug and package globals are absent (task 3232)" {
+    // Regression guard: debug.getupvalue could pierce the HostState
+    // light-userdata upvalue; debug.getregistry reaches LUA_LOADED_TABLE.
+    // package exposes module-loader internals. Neither is opened in
+    // openSandboxedLibs, so both globals must be nil. A future maintainer
+    // adding luaopen_debug "for diagnostics" must get a red test here.
+    // (extended task 3232)
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_abs = try tmpAbsPath(&tmp, gpa);
+    defer gpa.free(tmp_abs);
+
+    const wf_src =
+        \\return {
+        \\  meta = { name = "no-debug-pkg", description = "absent", phases = {} },
+        \\  run = function(ctx)
+        \\    assert(debug == nil, "debug must be absent (task 3232)")
+        \\    assert(package == nil, "package must be absent (task 3232)")
+        \\  end,
+        \\}
+    ;
+    try writeWorkflow(&tmp, "no_debug_pkg.lua", wf_src);
+    const wf_path = try workflowPath(tmp_abs, "no_debug_pkg.lua", gpa);
+    defer gpa.free(wf_path);
+
+    const res = try runExecute(gpa, &.{wf_path});
+    defer res.deinit();
+
+    try std.testing.expectEqual(@as(u32, 0), res.exitCode());
+}
+
+test "planar-execute sandbox: string.dump present, load nil — bytecode out, no re-execution path (task 3233)" {
+    // string.dump IS present (full string lib is opened) and CAN serialize
+    // function bytecode. But load/loadstring/dofile/loadfile/require are all
+    // nil'd, closing every re-execution path. Both halves are pinned here:
+    // bytecode serialization works, bytecode re-execution is impossible.
+    // A future maintainer re-opening load must get a red test here. (task 3233)
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_abs = try tmpAbsPath(&tmp, gpa);
+    defer gpa.free(tmp_abs);
+
+    const wf_src =
+        \\return {
+        \\  meta = { name = "dump-no-load", description = "bytecode guard", phases = {} },
+        \\  run = function(ctx)
+        \\    local fn = function(x) return x + 1 end
+        \\    local bytecode = string.dump(fn)
+        \\    assert(type(bytecode) == "string" and #bytecode > 0,
+        \\           "string.dump must return non-empty bytecode (task 3233)")
+        \\    assert(load == nil,       "load must be nil (task 3233)")
+        \\    assert(loadstring == nil, "loadstring must be nil (task 3233)")
+        \\    assert(loadfile == nil,   "loadfile must be nil (task 3233)")
+        \\    assert(dofile == nil,     "dofile must be nil (task 3233)")
+        \\    assert(require == nil,    "require must be nil (task 3233)")
+        \\  end,
+        \\}
+    ;
+    try writeWorkflow(&tmp, "dump_no_load.lua", wf_src);
+    const wf_path = try workflowPath(tmp_abs, "dump_no_load.lua", gpa);
+    defer gpa.free(wf_path);
+
+    const res = try runExecute(gpa, &.{wf_path});
+    defer res.deinit();
+
+    try std.testing.expectEqual(@as(u32, 0), res.exitCode());
+}
+
 test "planar-execute --dry-run: host-fn workflow still never enters run (task 3168/3169)" {
     // The dry-run guarantee is unchanged by the host surface: a workflow whose
     // run body would error must still exit 0 under --dry-run (run not entered),

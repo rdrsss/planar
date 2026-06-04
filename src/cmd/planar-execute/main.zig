@@ -1974,6 +1974,55 @@ test "sandbox: loader escape-hatches (load/dofile/loadfile/require) are nil (tas
     try runModule(src, "test:loaders", &.{}, &host, &err_buf);
 }
 
+test "sandbox: debug and package libraries are absent (task 3232)" {
+    // debug.getupvalue could pierce the HostState light-userdata upvalue and
+    // debug.getregistry reaches LUA_LOADED_TABLE. package exposes the module
+    // loader internals. Neither library is opened in openSandboxedLibs, so both
+    // globals must be nil. This is a security-boundary regression guard: a future
+    // maintainer adding luaopen_debug "for diagnostics" must get a red test here.
+    const src =
+        \\return {
+        \\  meta = { name = "no-debug-pkg", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    assert(debug == nil, "debug must be absent (task 3232)")
+        \\    assert(package == nil, "package must be absent (task 3232)")
+        \\  end,
+        \\}
+    ;
+    var host = HostState.init(testing_alloc, 0, 0, 100, 0);
+    defer host.deinit();
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:no-debug-pkg", &.{}, &host, &err_buf);
+}
+
+test "sandbox: string.dump present but load is nil — bytecode out, no re-execution path (task 3233)" {
+    // string.dump IS present (full string lib is opened) and CAN serialize
+    // function bytecode. But load/loadstring/dofile/loadfile/require are all
+    // nil'd, closing every path back in. This test pins both halves: bytecode
+    // serialization works, bytecode re-execution is impossible. Belt-and-
+    // suspenders: a future maintainer re-opening load must get a red test here.
+    const src =
+        \\return {
+        \\  meta = { name = "dump-no-load", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local fn = function(x) return x + 1 end
+        \\    local bytecode = string.dump(fn)
+        \\    assert(type(bytecode) == "string" and #bytecode > 0,
+        \\           "string.dump must return non-empty bytecode (task 3233)")
+        \\    assert(load == nil,       "load must be nil (task 3233)")
+        \\    assert(loadstring == nil, "loadstring must be nil (task 3233)")
+        \\    assert(loadfile == nil,   "loadfile must be nil (task 3233)")
+        \\    assert(dofile == nil,     "dofile must be nil (task 3233)")
+        \\    assert(require == nil,    "require must be nil (task 3233)")
+        \\  end,
+        \\}
+    ;
+    var host = HostState.init(testing_alloc, 0, 0, 100, 0);
+    defer host.deinit();
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:dump-no-load", &.{}, &host, &err_buf);
+}
+
 test "host fns: no host means ctx carries only args (callRun M1 shape preserved)" {
     // callRun (no HostState) must leave ctx.agent etc. nil — the M1 shape. This
     // pins that the host surface is opt-in via runModule(..., host, ...).
