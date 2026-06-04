@@ -22,7 +22,8 @@
 //!      intersected with the plan's not-done tasks must be empty.
 //!   2. Disjoint touch sets. A task's touch set = repo slugs it touches
 //!      (entity_links task -[touches]-> repo) ∪ file paths it touches
-//!      (annotations.anchor_path where annotations.task_id = task). An
+//!      (task_touch_paths rows where task_touch_paths.task_id = task,
+//!      seeded by `planar task touches add <task> <repo> --path <p>`). An
 //!      EMPTY touch set is treated as "touches everything" → NOT eligible
 //!      (forces touches-declaration discipline). Two tasks whose touch
 //!      sets intersect BOTH drop (drop-both-on-tie) — the result is a
@@ -40,18 +41,24 @@
 //!   6. No unresolved decision dependency (any entity_links edge between
 //!      the task and a decision whose status = 'proposed').
 //!
-//! ## Touch-granularity note (schema reality vs. tech-spec wording)
+//! ## Touch-granularity note
 //!
-//! The tech-spec appendix phrases rule 2 as "disjoint task_touches (repo
-//! + path)". The live schema has NO path-level task-touches table; the
-//! touch dimension is sourced from two existing structures:
+//! Rule 2 is "disjoint task_touches (repo + path)". The touch dimension is
+//! sourced from two structures:
 //!   - repo touches: entity_links(from='task', to='repo', rel='touches')
 //!     — seeded by `planar task touches add <task> <repo>`.
-//!   - path touches: annotations.anchor_path joined on annotations.task_id
-//!     — seeded by `planar annotate add --task <id> --anchor-path <path>`.
-//! Adding a path-level touches table would be a migration, which is
-//! explicitly out of scope for this task. Repo slugs and file paths never
-//! false-collide (a slug like "r1" never equals "migrations/x.sql").
+//!   - path touches: task_touch_paths rows joined on task_touch_paths.task_id
+//!     — seeded by `planar task touches add <task> <repo> --path <path>`
+//!     (migration 00018). These carry the file-path precision rules 2/3/4
+//!     need; the repo edge remains the coarse signal.
+//! Repo slugs and file paths never false-collide (a slug like "r1" never
+//! equals "migrations/x.sql"). Eligibility is only as complete as the
+//! declared touches: a task that under-declares its touches may be marked
+//! eligible against another task it actually conflicts with — declaring
+//! touches accurately is operator/orchestrator hygiene, the same discipline
+//! any touches-based system requires. An EMPTY touch set is treated as
+//! "touches everything" → never eligible, so the failure mode of omission
+//! is safe (serialize), not unsafe (false-parallel).
 
 const std = @import("std");
 const db = @import("db");
@@ -149,7 +156,7 @@ const WorkTask = struct {
     id: i64,
     slug: ?[]const u8,
     title: []const u8,
-    /// Touch set: repo slugs ∪ anchor paths (heap-owned strings).
+    /// Touch set: repo slugs ∪ declared path touches (heap-owned strings).
     touches: [][]const u8,
     /// Accumulated exclusions (heap-owned reason strings).
     exclusions: std.ArrayList(Exclusion),
@@ -437,8 +444,24 @@ fn loadOpenTasks(
     return out;
 }
 
-/// Touch set for a task: repo slugs (via entity_links touches) ∪ anchor
-/// paths (via annotations on the task). Returns heap-owned strings.
+/// Touch set for a task. Two granularities feed the set, and path-level
+/// detail REFINES the coarse repo signal:
+///
+///   - For a repo a task touches at the file level (task_touch_paths rows,
+///     migration 00018), the touch tokens are the declared FILE PATHS for
+///     that repo — NOT the repo slug. Two tasks editing different files in
+///     the SAME repo are therefore disjoint (parallel-eligible), which is
+///     the whole point of path-level precision.
+///   - For a repo a task touches only via the coarse entity_links edge
+///     (`task touches add <task> <repo>` with no --path), the touch token
+///     is the REPO SLUG — a whole-repo claim that conflicts with any other
+///     task touching that repo (coarse or fine). This preserves the
+///     conservative behavior when an operator under-declares.
+///
+/// Rules 3/4 match on the raw repo-relative path (`migrations/*.sql`,
+/// singleton files), so paths enter the set verbatim. Repo slugs and file
+/// paths never false-collide (a slug never equals a `migrations/x.sql`
+/// path). Returns heap-owned strings.
 fn loadTouches(
     d: *db.sqlite.Db,
     allocator: std.mem.Allocator,
@@ -450,10 +473,36 @@ fn loadTouches(
         out.deinit(allocator);
     }
 
-    // Repo slugs touched via entity_links.
+    // Repos with path-level declarations: those repos contribute their
+    // FILE PATHS, not the coarse slug. Collect the set of refined repo ids
+    // so the coarse pass below can skip them.
+    var refined = std.AutoHashMap(i64, void).init(allocator);
+    defer refined.deinit();
+
+    // Declared file paths via task_touch_paths (migration 00018).
     {
         var stmt = d.prepare(
-            \\select p.slug
+            "select repo_id, path from task_touch_paths where task_id = ?",
+        ) catch return Error.QueryFailed;
+        defer stmt.finalize();
+        stmt.bind(&.{.{ .int = task_id }}) catch return Error.QueryFailed;
+        while (true) {
+            switch (stmt.step() catch return Error.QueryFailed) {
+                .done => break,
+                .row => {
+                    refined.put(stmt.columnInt(0), {}) catch return Error.OutOfMemory;
+                    const s = stmt.columnTextAlloc(1, allocator) catch return Error.QueryFailed;
+                    try appendUnique(allocator, &out, s);
+                },
+            }
+        }
+    }
+
+    // Coarse repo slugs via entity_links — only for repos WITHOUT any
+    // path-level declaration (path detail wins over the coarse slug).
+    {
+        var stmt = d.prepare(
+            \\select p.id, p.slug
             \\from entity_links el
             \\join projects p on p.id = el.to_id
             \\where el.from_kind = 'task' and el.from_id = ?
@@ -465,25 +514,12 @@ fn loadTouches(
             switch (stmt.step() catch return Error.QueryFailed) {
                 .done => break,
                 .row => {
-                    const s = stmt.columnTextAlloc(0, allocator) catch return Error.QueryFailed;
-                    try appendUnique(allocator, &out, s);
-                },
-            }
-        }
-    }
-
-    // Anchor paths via annotations directly attached to the task.
-    {
-        var stmt = d.prepare(
-            "select distinct anchor_path from annotations where task_id = ?",
-        ) catch return Error.QueryFailed;
-        defer stmt.finalize();
-        stmt.bind(&.{.{ .int = task_id }}) catch return Error.QueryFailed;
-        while (true) {
-            switch (stmt.step() catch return Error.QueryFailed) {
-                .done => break,
-                .row => {
-                    const s = stmt.columnTextAlloc(0, allocator) catch return Error.QueryFailed;
+                    const repo_id = stmt.columnInt(0);
+                    const s = stmt.columnTextAlloc(1, allocator) catch return Error.QueryFailed;
+                    if (refined.contains(repo_id)) {
+                        allocator.free(s);
+                        continue;
+                    }
                     try appendUnique(allocator, &out, s);
                 },
             }
@@ -631,10 +667,10 @@ fn linkTouchesRepo(d: *db.sqlite.Db, task_id: i64, repo_id: i64) !void {
     );
 }
 
-fn annotatePath(d: *db.sqlite.Db, task_id: i64, path: []const u8) !void {
+fn touchPath(d: *db.sqlite.Db, task_id: i64, repo_id: i64, path: []const u8) !void {
     _ = try d.execParams(
-        "insert into annotations (scope_kind, anchor_path, title, body, status, vendor, task_id) values ('global', ?, 't', 'b', 'active', '', ?)",
-        &.{ .{ .text = path }, .{ .int = task_id } },
+        "insert into task_touch_paths (task_id, repo_id, path) values (?, ?, ?)",
+        &.{ .{ .int = task_id }, .{ .int = repo_id }, .{ .text = path } },
     );
 }
 
@@ -717,7 +753,8 @@ test "rule 3: a task touching a migration is dropped unilaterally" {
     const r1 = try seedRepo(&d, "ra");
     try linkTouchesRepo(&d, t1, r1);
     const t2 = try seedTask(&d, plan_id, "migrator");
-    try annotatePath(&d, t2, "migrations/00099_x.sql");
+    const r2 = try seedRepo(&d, "rmig");
+    try touchPath(&d, t2, r2, "migrations/00099_x.sql");
 
     const rec = try recommend(&d, a, plan_id);
     defer rec.deinit(a);
@@ -741,7 +778,8 @@ test "rule 4: a task touching a singleton file is dropped" {
     const r1 = try seedRepo(&d, "ra");
     try linkTouchesRepo(&d, t1, r1);
     const t2 = try seedTask(&d, plan_id, "doc-toucher");
-    try annotatePath(&d, t2, "CLAUDE.md");
+    const r2 = try seedRepo(&d, "rdoc");
+    try touchPath(&d, t2, r2, "CLAUDE.md");
 
     const rec = try recommend(&d, a, plan_id);
     defer rec.deinit(a);

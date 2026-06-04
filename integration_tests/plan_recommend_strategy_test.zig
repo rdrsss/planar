@@ -3,17 +3,17 @@
 //!
 //! Black-box coverage for the parallelizability-rules engine verb
 //! (decision 370, M5 task 3186). Walks a realistic operator workflow:
-//! seed a plan with several open tasks, declare touches (via annotations'
-//! anchor_path — the path-level touch surface the engine reads), link an
+//! seed a plan with several open tasks, declare path-level touches (via
+//! `task touches add <task> <repo> --path <p>`, migration 00018), link an
 //! open question and a proposed decision, and set up a blocked_by edge,
 //! then assert the eligibility partition + per-rule exclusion reasons.
 //!
-//! Touch-granularity note: the live schema models path-level touches via
-//! annotations(anchor_path, task_id); `planar task touches add` records
-//! only repo-level (entity_links task -> repo). Both feed the engine's
-//! touch set. This test uses `annotate add --task --anchor-path` because
-//! rules 2/3/4 are path-shaped (overlap on a file, migrations/*.sql,
-//! singleton files), which repo-slug touches cannot express.
+//! Touch-granularity note: rules 2/3/4 are path-shaped (overlap on a file,
+//! migrations/*.sql, singleton files), so this test declares per-file
+//! touches via the `--path` flag. Path-level detail refines the coarse
+//! repo signal: two tasks editing different files in the SAME repo are
+//! disjoint (parallel-eligible), which is the whole point of path
+//! precision. All tasks here touch one registered repo at distinct paths.
 //!
 //! Asserts:
 //!   - genuinely-disjoint tasks land in parallel_eligible;
@@ -73,8 +73,13 @@ fn addTask(
     return t.id;
 }
 
-fn annotate(
+/// Declare a path-level touch on a task via the real CLI surface:
+/// `task touches add <task-id> <repo-slug> --path <p>`. This writes a
+/// task_touch_paths row (and the coarse repo edge), exactly the data
+/// `recommend-strategy` reads for rules 2/3/4.
+fn touchPath(
     suite: *harness.Suite,
+    repo_slug: []const u8,
     task_id: i64,
     path: []const u8,
 ) void {
@@ -82,10 +87,28 @@ fn annotate(
     const tid = std.fmt.allocPrint(gpa, "{d}", .{task_id}) catch unreachable;
     defer gpa.free(tid);
     const out = suite.mustRun(&.{
-        "annotate", "add",   "--task", tid,     "--anchor-path", path,
-        "--title",  "touch", "--body", "touch",
+        "task", "touches", "add", tid, repo_slug, "--path", path,
     });
     gpa.free(out);
+}
+
+/// Register a project at the suite tmp dir and return its slug (read back
+/// via `assoc members --json`, the same surface the polyrepo scenario uses).
+fn registerRepoSlug(suite: *harness.Suite, arena: std.mem.Allocator) []const u8 {
+    _ = suite.registerProject("rs-repo");
+    const assoc_slug = "rs-org";
+    const cr = suite.mustRun(&.{ "assoc", "create", assoc_slug, "--kind", "org" });
+    suite.allocator.free(cr);
+    const root = suite.tmpAbsPath();
+    const ad = suite.mustRun(&.{ "assoc", "add", assoc_slug, root });
+    suite.allocator.free(ad);
+
+    const Member = struct { id: i64, slug: []const u8, name: []const u8 };
+    const members = suite.mustRunJSON([]Member, arena, &.{ "assoc", "members", assoc_slug, "--json" });
+    for (members) |m| {
+        if (std.mem.eql(u8, m.name, "rs-repo")) return m.slug;
+    }
+    std.debug.panic("registered repo slug not found in assoc members", .{});
 }
 
 /// Find a serialized task by id; panic if absent (test contract).
@@ -119,7 +142,7 @@ test "recommend-strategy partitions a realistic plan across all six rules" {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    gpa.free(suite.mustRun(&.{ "init", "--skip-project" }));
+    const repo = registerRepoSlug(&suite, arena);
     const plan = suite.mustRunJSON(PlanJSON, arena, &.{
         "plan", "create", "--slug", "rs-mixed", "--json", "RS_MIXED",
     });
@@ -127,28 +150,28 @@ test "recommend-strategy partitions a realistic plan across all six rules" {
 
     // Two genuinely-disjoint tasks -> both eligible.
     const t_a = addTask(&suite, arena, pid, "alpha");
-    annotate(&suite, t_a, "src/alpha.zig");
+    touchPath(&suite, repo, t_a, "src/alpha.zig");
     const t_b = addTask(&suite, arena, pid, "beta");
-    annotate(&suite, t_b, "src/beta.zig");
+    touchPath(&suite, repo, t_b, "src/beta.zig");
 
     // Drop-both-on-tie: two tasks overlap on the same path.
     const t_o1 = addTask(&suite, arena, pid, "overlap-one");
-    annotate(&suite, t_o1, "src/shared.zig");
+    touchPath(&suite, repo, t_o1, "src/shared.zig");
     const t_o2 = addTask(&suite, arena, pid, "overlap-two");
-    annotate(&suite, t_o2, "src/shared.zig");
+    touchPath(&suite, repo, t_o2, "src/shared.zig");
 
     // Rule 3: touches a migration.
     const t_mig = addTask(&suite, arena, pid, "migrator");
-    annotate(&suite, t_mig, "migrations/00099_widget.sql");
+    touchPath(&suite, repo, t_mig, "migrations/00099_widget.sql");
 
     // Rule 4: touches a singleton authoritative file.
     const t_sing = addTask(&suite, arena, pid, "doc-toucher");
-    annotate(&suite, t_sing, "CLAUDE.md");
+    touchPath(&suite, repo, t_sing, "CLAUDE.md");
 
     // Rule 5: linked to an open question. Also give it a distinct touch
     // so it is not also caught by rule 2 (isolate the rule-5 signal).
     const t_q = addTask(&suite, arena, pid, "questioned");
-    annotate(&suite, t_q, "src/questioned.zig");
+    touchPath(&suite, repo, t_q, "src/questioned.zig");
     const q = suite.mustRunJSON(QuestionJSON, arena, &.{
         "question", "add", "--json", "open question",
     });
@@ -158,7 +181,7 @@ test "recommend-strategy partitions a realistic plan across all six rules" {
 
     // Rule 6: linked to a proposed decision (with a distinct touch).
     const t_d = addTask(&suite, arena, pid, "decided");
-    annotate(&suite, t_d, "src/decided.zig");
+    touchPath(&suite, repo, t_d, "src/decided.zig");
     const dec = suite.mustRunJSON(DecisionJSON, arena, &.{
         "decision", "add", "--body", "rationale", "--json", "proposed decision",
     });
@@ -169,9 +192,9 @@ test "recommend-strategy partitions a realistic plan across all six rules" {
     // Rule 1: a task blocked_by another not-done task in the plan. Give
     // both distinct touches so only rule 1 fires on the blocked task.
     const t_blocker = addTask(&suite, arena, pid, "blocker");
-    annotate(&suite, t_blocker, "src/blocker.zig");
+    touchPath(&suite, repo, t_blocker, "src/blocker.zig");
     const t_blocked = addTask(&suite, arena, pid, "blocked");
-    annotate(&suite, t_blocked, "src/blocked.zig");
+    touchPath(&suite, repo, t_blocked, "src/blocked.zig");
     // `task block <id> --on <blocker>` records the blocks edge AND flips
     // status to blocked (which removes it from the open/todo candidate
     // set). To exercise rule 1 on a STILL-OPEN task we insert the
@@ -227,7 +250,7 @@ test "recommend-strategy: empty-touches task is excluded by rule 2" {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    gpa.free(suite.mustRun(&.{ "init", "--skip-project" }));
+    const repo = registerRepoSlug(&suite, arena);
     const plan = suite.mustRunJSON(PlanJSON, arena, &.{
         "plan", "create", "--slug", "rs-empty", "--json", "RS_EMPTY",
     });
@@ -235,7 +258,7 @@ test "recommend-strategy: empty-touches task is excluded by rule 2" {
 
     // One task declares a touch; one declares nothing (touches-everything).
     const t_decl = addTask(&suite, arena, pid, "declared");
-    annotate(&suite, t_decl, "src/declared.zig");
+    touchPath(&suite, repo, t_decl, "src/declared.zig");
     const t_none = addTask(&suite, arena, pid, "no-touches");
 
     const rec = suite.mustRunJSON(RecommendJSON, arena, &.{

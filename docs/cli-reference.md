@@ -807,7 +807,7 @@ Two open tasks are parallel-eligible iff **all six** hold:
 | Rule | Condition |
 |------|-----------|
 | 1 | No `blocked_by` chain (transitive `blocks` closure) to another not-done task in the plan. |
-| 2 | Disjoint touch set. A task's touch set is the repo slugs it touches (`entity_links` `touches`) plus the file paths it touches (`annotations.anchor_path`). An **empty** touch set is treated as "touches everything" and is never eligible. Two tasks whose touch sets intersect **both** drop (drop-both-on-tie). |
+| 2 | Disjoint touch set. A task's touch set is the file paths it declares via `task touches add <task> <repo> --path <p>` (`task_touch_paths`), with the coarse repo slug (`entity_links` `touches`) used only for repos that have no path-level declaration. Path detail refines the coarse signal: two tasks editing different files in the same repo are disjoint (eligible). An **empty** touch set is treated as "touches everything" and is never eligible. Two tasks whose touch sets intersect **both** drop (drop-both-on-tie). Eligibility is only as complete as the declared touches — declaring touches accurately is operator/orchestrator hygiene (the omission failure mode is safe: an undeclared task serializes rather than falsely parallelizing). |
 | 3 | No schema migration touched — any task touching `migrations/*.sql` serializes (migration numbering is linear). Unilateral drop. |
 | 4 | No singleton authoritative file touched — `agents/methodology.md`, `CLAUDE.md`, `AGENTS.md`, `docs/cli-reference.md`, `docs/architecture.md`. Unilateral drop. |
 | 5 | No `open` question linked to the task. |
@@ -1241,14 +1241,17 @@ planar task link <task-id> <to-kind:to-id> --relationship <kind>
 
 ---
 
-### `planar task touches add <task-id> <repo-slug>`
+### `planar task touches add <task-id> <repo-slug> [--path <p>]`
 
 **Synopsis:**
 ```
-planar task touches add <task-id> <repo-slug>
+planar task touches add <task-id> <repo-slug> [--path <p>]
 ```
 
-**Description:** Record that a task touches the given repo (cross-repo dependency). Inserts an `entity_links(relationship='touches', from_kind='task', to_kind='repo')` row. The repo slug must be registered via `planar init` (present in `projects`). If a touches link already exists between this task and this repo, the command surfaces a clean user error from the UNIQUE constraint — re-adding is not silently no-op'd; remove the link first with `planar task touches remove` if you want to verify or reset it.
+**Description:** Record that a task touches the given repo (and, with `--path`, a specific file). The repo slug must be registered via `planar init` (present in `projects`).
+
+- **Without `--path`** (repo-level): inserts an `entity_links(relationship='touches', from_kind='task', to_kind='repo')` row — the coarse signal used by `task list --touches`. If a repo-level touches link already exists, the command surfaces a clean user error from the UNIQUE constraint — re-adding is not silently no-op'd; remove it with `planar task touches remove` first.
+- **With `--path <p>`** (path-level): writes a `task_touch_paths` row `(task_id, repo_id, path)` where `<p>` is a repo-relative file path, **and** writes the coarse repo-level edge (a path-touch implies the repo-touch; a pre-existing repo edge is tolerated in this mode rather than erroring). Path-level rows are idempotent against `unique(task_id, repo_id, path)` — re-declaring the same path is a no-op. Declare touches per file (repeat the verb), not as a list. These declarations are what `plan recommend-strategy` reads for the path-shaped rules 2/3/4; path detail refines the coarse repo signal (two tasks editing different files in the same repo stay parallel-eligible).
 
 **Arguments:**
 
@@ -1257,19 +1260,57 @@ planar task touches add <task-id> <repo-slug>
 | `<task-id>` | Task to annotate (required). |
 | `<repo-slug>` | Repo slug to link as touched (required). |
 
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--path <p>` | Repo-relative file path the task touches; writes a path-level `task_touch_paths` row (plus the coarse repo edge). | none (repo-level only) |
+
 **Output (`--json`):**
 ```json
-{"ok":true,"task_id":42,"repo_id":7,"repo_slug":"acme/protos"}
+{"ok":true,"task_id":42,"repo_id":7,"repo_slug":"acme/protos","path":"src/foo.zig"}
 ```
+(`path` is `null` for a repo-level add.)
 
-**Schema effects:** Inserts into `entity_links(from_kind='task', from_id=<task-id>, to_kind='repo', to_id=<repo-id>, relationship='touches')`.
+**Schema effects:** Inserts into `entity_links(from_kind='task', from_id=<task-id>, to_kind='repo', to_id=<repo-id>, relationship='touches')`; with `--path`, also inserts `task_touch_paths(task_id=<task-id>, repo_id=<repo-id>, path=<p>)`.
 
 **Capture:** Appends `session_entries` row with `prefix='action'`.
 
 **Exit codes:**
 - `1` — task not found.
 - `1` — repo slug not found (not registered).
-- `1` — link already exists (duplicate constraint).
+- `1` — repo-level link already exists (duplicate constraint; only without `--path`).
+
+---
+
+### `planar task touches list <task-id>`
+
+**Synopsis:**
+```
+planar task touches list <task-id> [--json]
+```
+
+**Description:** List the touches declared on a task at both granularities: the repo slugs it touches (repo-level `entity_links` edges) and the file paths it touches (`task_touch_paths` rows). Read-only.
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<task-id>` | Task to inspect (required). |
+
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--json` | Emit JSON instead of text. | off |
+
+**Output (`--json`):**
+```json
+{"task_id":42,"repos":["acme/protos"],"paths":[{"repo":"acme/protos","path":"src/foo.zig"}]}
+```
+
+**Exit codes:**
+- `1` — task id not an integer.
 
 ---
 
