@@ -21,6 +21,7 @@ pub const verb: cli.Cmd = .{
     .flags = &.{
         .{ .long = "--dry-run", .kind = .bool, .default = .{ .bool = false }, .desc = "Report candidates without writing" },
         .{ .long = "--stale-after", .kind = .string, .default = .{ .string = "0" }, .desc = "Additional grace beyond lease expiry (default 0s; accepts bare int seconds or suffixed duration: 10m, 1h, 500ms)" },
+        .{ .long = "--session", .kind = .int, .default = .{ .int = 0 }, .desc = "Scope the sweep to a single session id (0 = global sweep, the default)" },
         .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
     },
     .run = cli.handler(handle),
@@ -43,6 +44,7 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
     const result = store.reconcileStale(d, ctx.allocator, .{
         .stale_after_secs = stale_after_secs,
         .dry_run = args.dry_run,
+        .session_id = if (args.session > 0) args.session else null,
     }) catch |e| {
         if (!args.dry_run) d.exec("ROLLBACK") catch {};
         exit.die(ctx, e, "reconcile: {s}", .{@errorName(e)});
