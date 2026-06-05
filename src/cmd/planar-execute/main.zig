@@ -153,6 +153,15 @@ pub const journal = @import("journal.zig");
 /// planar_execute_gate_lazy_eval — a pub-const alias forces analysis).
 pub const runlock = @import("runlock.zig");
 
+/// budget — budgets and ceilings, the hard kill-switch (M8 task 3198). Per-task
+/// max-attempt → block (fail-count derived from the journal so resume respects
+/// prior attempts) + whole-run ceiling (max-total-spawns / max-wall-clock →
+/// clean exit + journal terminus). Pure decision logic; wired into the pre-spawn
+/// point + the run-drive loop. Aliased here so its `test` blocks run under the
+/// execute_exe_tests target (memory: planar_execute_gate_lazy_eval — a pub-const
+/// alias forces analysis).
+pub const budget = @import("budget.zig");
+
 // ---------------------------------------------------------------------------
 // Process-global I/O context (no runtime module — planar-execute has no DB).
 // ---------------------------------------------------------------------------
@@ -428,6 +437,27 @@ pub const HostState = struct {
     timeout_clock_ctx: ?*anyopaque = null,
     timeout_max_wall_clock_ns: ?i128 = null,
 
+    // M8 budgets + ceilings — the hard kill-switch (task 3198).
+    //
+    // `budgets` carries the per-task max-attempt + whole-run ceiling knobs
+    // (generous defaults; env-overridable via `budget.Budgets.fromEnv`). It is
+    // read at TWO points: the pre-spawn max-attempt check (in
+    // `driveAgentCallPreYield`, which counts this task's prior failed attempts
+    // from the journal) and the pre-spawn whole-run ceiling check.
+    //
+    // `run_counters` is the IN-MEMORY per-run ceiling state (spawn count + run
+    // start time). `run_start_mono_ns` is stamped once at run start (from the
+    // scheduler's injectable clock) in `runModule`; `spawn_count` is incremented
+    // at each actual spawn. Distinct from the per-task journal fail-count, which
+    // is persistent (so resume respects prior attempts).
+    //
+    // `ceiling_tripped` records WHICH ceiling fired when the run was
+    // ceiling-terminated, so the drive loop can emit the operator-facing
+    // "run ceiling exceeded: <which>" message after the clean shutdown.
+    budgets: budget.Budgets = .default,
+    run_counters: budget.RunCounters = .{},
+    ceiling_tripped: ?budget.Ceiling = null,
+
     pub fn init(allocator: std.mem.Allocator, now: i64, seed: i64, budget_total: i64, budget_spent: i64) HostState {
         return .{
             .allocator = allocator,
@@ -619,7 +649,36 @@ pub const AgentDriver = struct {
     /// Opaque context pointer passed to `task_live_status_reader`. Unused by the
     /// production reader; tests stash a pointer to their canned status here.
     task_live_status_ctx: ?*anyopaque = null,
+
+    /// Counts a task's PRIOR FAILED attempts for the M8 max-attempt budget
+    /// (task 3198). When null, `readFailedAttemptCount` calls the production
+    /// reader (`defaultFailedAttemptReader`, which reads the journal file under
+    /// `repo_root`/`plan_id` and counts via `budget.failedAttemptCount`). Tests
+    /// inject a fake reader so they can drive the max-attempt path with a CANNED
+    /// count WITHOUT writing a journal file — mirroring `task_live_status_reader`.
+    /// The journal-derived production path is what makes resume respect prior
+    /// attempts (the count is persistent across runs).
+    failed_attempt_reader: ?FailedAttemptFn = null,
+    /// Opaque context pointer passed to `failed_attempt_reader`.
+    failed_attempt_ctx: ?*anyopaque = null,
+    /// True ⇒ do NOT shell `planar-agent block` for the max-attempt block
+    /// (unit-test paths). Mirrors `skip_terminal_subprocess` but specific to the
+    /// budget-block subprocess so a test can exercise the no-spawn decision
+    /// without a live `planar-agent`. Production leaves it false.
+    skip_block_subprocess: bool = false,
 };
+
+/// FailedAttemptFn counts a task's PRIOR FAILED attempts for the M8 max-attempt
+/// budget (task 3198). Injectable on `AgentDriver` so unit tests can drive the
+/// max-attempt block path with a canned count WITHOUT a real journal file. The
+/// production wiring leaves it null and `readFailedAttemptCount` falls back to
+/// `defaultFailedAttemptReader` (which reads the persistent journal).
+pub const FailedAttemptFn = *const fn (
+    ctx: ?*anyopaque,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    task_slug: []const u8,
+) u32;
 
 /// ClaimStatusFn reads the live claim status for one `agent()` call. Injectable
 /// on `AgentDriver` so unit tests can drive the terminal-verb decision matrix
@@ -875,6 +934,33 @@ fn pushSkippedResult(L: ?*c.lua_State, skip_reason: []const u8) void {
     c.lua_setfield(L, -2, "terminal_verb");
 }
 
+/// pushBlockedByBudgetResult builds the Lua return table for one `agent()` call
+/// that the M8 max-attempt budget BLOCKED without spawning (task 3198):
+///   { status = "blocked", skip_reason = "max-attempts", exit_code = 0,
+///     commit_present = false, terminal_verb = "block" }
+/// The shape mirrors `pushSkippedResult` / `pushAgentResult` so a workflow that
+/// inspects `.status` reads it uniformly. `status` is "blocked" (the task WAS
+/// blocked) so the workflow's own control flow treats it like a worker that
+/// self-blocked; `skip_reason = "max-attempts"` distinguishes a budget-block
+/// from an M7 worker self-block in the result table. No claim was re-acquired,
+/// no worker spawned.
+fn pushBlockedByBudgetResult(L: ?*c.lua_State) void {
+    c.lua_createtable(L, 0, 5);
+    const status = "blocked";
+    _ = c.lua_pushlstring(L, status.ptr, status.len);
+    c.lua_setfield(L, -2, "status");
+    const reason = "max-attempts";
+    _ = c.lua_pushlstring(L, reason.ptr, reason.len);
+    c.lua_setfield(L, -2, "skip_reason");
+    c.lua_pushinteger(L, 0);
+    c.lua_setfield(L, -2, "exit_code");
+    c.lua_pushboolean(L, 0);
+    c.lua_setfield(L, -2, "commit_present");
+    const verb_name = "block";
+    _ = c.lua_pushlstring(L, verb_name.ptr, verb_name.len);
+    c.lua_setfield(L, -2, "terminal_verb");
+}
+
 /// AgentCallState is the per-`agent()`-call state threaded ACROSS the coroutine
 /// yield (plan 492 M5 task 3182). The pre-yield half (`driveAgentCallPreYield`)
 /// allocates it, fills the fields the continuation needs, and stashes a pointer
@@ -998,6 +1084,59 @@ fn driveAgentCallPreYield(
         }
     }
 
+    // M8 WHOLE-RUN CEILING (task 3198). The kill-switch's HARD STOP: before
+    // spawning ANYTHING, check whether this run has hit its ceiling
+    // (max-total-spawns or max-wall-clock). If so, do NOT spawn — trip the clean
+    // interrupt shutdown (REUSE the task-3189 machinery via the `interrupt`
+    // flag) so the run-drive loop tears down in-flight workers in order
+    // (heartbeat stop → kill → release → teardown) and exits cleanly. The
+    // released workers are recoverable on the next resume. We record WHICH
+    // ceiling tripped on the HostState + write the journal terminus so a
+    // post-mortem / resume knows the run was ceiling-terminated, not crashed.
+    // We raise a Lua error to unwind this `agent()` call immediately; the drive
+    // loop observes `interrupt.requested()` at the next safe point and runs the
+    // shutdown. The ceiling is checked BEFORE the max-attempt check: a run that
+    // is winding down must not spend effort blocking a task.
+    if (hs.sched) |sched_for_ceiling| {
+        const now_ns = sched_for_ceiling.clockNow();
+        if (budget.ceilingTripped(hs.run_counters, hs.budgets, now_ns)) |which| {
+            hs.ceiling_tripped = which;
+            // Journal terminus: a distinct final record naming the ceiling, so a
+            // resume / post-mortem distinguishes a clean ceiling stop from a
+            // crash. Best-effort (the journal is durability metadata).
+            writeCeilingTerminus(driver, hs.allocator, which);
+            // Trip the SAME clean-shutdown the SIGINT path uses. The drive loop
+            // observes this flag and runs interrupt.shutdown in order.
+            interrupt.interrupt_requested.store(true, .seq_cst);
+            _ = c.luaL_error(
+                L,
+                "agent: run ceiling exceeded (%s) — winding down",
+                which.name().ptr,
+            );
+            return 0; // unreachable — luaL_error longjmps
+        }
+    }
+
+    // M8 PER-TASK MAX-ATTEMPT → BLOCK (task 3198). After the resume skip (a done
+    // task skips regardless of attempts) and the run-ceiling check. Count this
+    // task's PRIOR FAILED attempts from the PERSISTENT journal; when the count
+    // reaches `max_attempts`, do NOT spawn again — `block` the task (the roadmap
+    // says "→ block (not re-queue)") and return a "blocked" result so the
+    // workflow moves on and the M7 end-of-run summary surfaces it. Because the
+    // count is journal-derived, a RESUMED run respects the prior run's failures
+    // (the budget is not reset). Requires a task_id-bearing call (the block
+    // shells `planar-agent block --blocker <task_id>`); when task_id is 0 the
+    // budget is skipped (mirrors the resume skip's task_id guard).
+    if (opts.task_id != 0 and hs.budgets.max_attempts > 0) {
+        const fail_count = readFailedAttemptCount(driver, hs.allocator, driver.io, opts.task_slug);
+        if (fail_count >= hs.budgets.max_attempts) {
+            runBudgetBlock(driver, hs.allocator, driver.io, opts.claim_token, opts.task_id, fail_count);
+            hs.recordBlocked(opts.task_slug, "self/max-attempts", "max attempts exceeded") catch {};
+            pushBlockedByBudgetResult(L);
+            return 1;
+        }
+    }
+
     // Resolve role; unknown roles raise a Lua error (the script author's bug).
     const role = role_model.Role.fromString(opts.role) catch {
         _ = c.luaL_error(L, "agent: unknown role '%s'", opts.role.ptr);
@@ -1115,6 +1254,11 @@ fn driveAgentCallPreYield(
         _ = c.luaL_error(L, "agent: spawn failed: %s", @errorName(err).ptr);
         return 0;
     };
+
+    // M8 whole-run ceiling: count the spawn that just happened (task 3198). The
+    // ceiling check above is "spawn_count >= max_total_spawns", so we increment
+    // AFTER a successful start — the (max+1)th spawn attempt is the one refused.
+    hs.run_counters.spawn_count += 1;
 
     // 4) Register the in-flight worker + this call state with the scheduler.
     const slot_index = sched.registerInflight(L.?, handle, acs) catch {
@@ -1400,6 +1544,58 @@ fn writeJournalRecord(
     };
 }
 
+/// writeCeilingTerminus appends the M8 whole-run-ceiling TERMINUS record to the
+/// journal (task 3198) — a DISTINCT final record marking the run as cleanly
+/// ceiling-terminated (not crashed). The `terminal_verb` sentinel is
+/// `budget.CEILING_TERMINUS_VERB` ("ceiling"); the `task_slug` carries which
+/// ceiling tripped (`max-total-spawns` / `max-wall-clock`) so a resume /
+/// post-mortem can name it. A reader recognizes this record (it never counts
+/// toward any task's max-attempt budget — `budget.failedAttemptStatus` excludes
+/// it). Most fields are sentinels: there is no worker, claim, or worktree for a
+/// run-level marker.
+///
+/// SKIP + BEST-EFFORT: same guards as `writeJournalRecord` — no journal location
+/// (empty repo_root / plan_id 0) skips silently, and a write failure is logged +
+/// swallowed (the run is winding down regardless).
+fn writeCeilingTerminus(
+    driver: *AgentDriver,
+    allocator: std.mem.Allocator,
+    which: budget.Ceiling,
+) void {
+    if (driver.repo_root.len == 0 or driver.plan_id == 0) return;
+    const io = driver.io;
+
+    const path = journal.journalPath(allocator, driver.repo_root, driver.plan_id) catch |err| {
+        std.log.scoped(.planar_execute).warn(
+            "journal: could not derive terminus path (plan {d}): {s}",
+            .{ driver.plan_id, @errorName(err) },
+        );
+        return;
+    };
+    defer allocator.free(path);
+
+    const record = journal.JournalRecord{
+        .prompt_hash = "",
+        .worktree = "",
+        .branch = "",
+        .claim_token = "",
+        .model = "",
+        .role = "",
+        .task_slug = which.name(), // which ceiling tripped.
+        .exit_code = 0,
+        .terminal_verb = budget.CEILING_TERMINUS_VERB,
+        .wall_clock_ms = 0,
+        .timestamp = nowUnixSeconds(),
+    };
+
+    journal.append(allocator, io, path, record) catch |err| {
+        std.log.scoped(.planar_execute).warn(
+            "journal: ceiling terminus append failed (plan {d}): {s}",
+            .{ driver.plan_id, @errorName(err) },
+        );
+    };
+}
+
 /// nowUnixSeconds reads a wall-clock Unix-seconds timestamp for the journal
 /// `timestamp` field via the C `clock_gettime(REALTIME)` (mirrors runlock.zig's
 /// `nowNanos`; there is no `std.time.timestamp` in this Zig). Informational
@@ -1409,6 +1605,111 @@ fn nowUnixSeconds() i64 {
     var ts: std.c.timespec = undefined;
     if (std.c.clock_gettime(.REALTIME, &ts) != 0) return 0;
     return @intCast(ts.sec);
+}
+
+/// readFailedAttemptCount returns the number of PRIOR FAILED attempts for
+/// `task_slug` — the M8 max-attempt budget input (task 3198). It dispatches to
+/// the injected `driver.failed_attempt_reader` (tests) or to
+/// `defaultFailedAttemptReader` (production, which reads the persistent journal).
+///
+/// Returns 0 when there is no journal location (empty `repo_root` / `plan_id`
+/// 0): no journal ⇒ no prior attempts ⇒ the budget never blocks (the spawn
+/// proceeds). This is the same degraded-path guard `writeJournalRecord` uses, so
+/// the max-attempt budget is active EXACTLY when journaling is (a real run).
+fn readFailedAttemptCount(
+    driver: *AgentDriver,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    task_slug: []const u8,
+) u32 {
+    if (driver.failed_attempt_reader) |read| {
+        return read(driver.failed_attempt_ctx, allocator, io, task_slug);
+    }
+    return defaultFailedAttemptReader(driver, allocator, io, task_slug);
+}
+
+/// defaultFailedAttemptReader is the production `FailedAttemptFn`. It reads the
+/// PERSISTENT run journal at `<repo_root>/.worktrees/.planar-execute/journal-
+/// <plan_id>.ndjson` and counts records for `task_slug` whose `terminal_verb` is
+/// a failed-attempt status (`budget.failedAttemptStatus`). Because the journal
+/// is persistent, a RESUMED run sees the prior run's failures and does NOT reset
+/// the budget — this is the load-bearing reason the count is journal-derived.
+///
+/// BEST-EFFORT: a missing journal (`journal.read` → empty) or any read/parse
+/// error returns 0. A failed read must NOT spuriously block a task (that would
+/// strand work on a transient FS hiccup); the conservative default is "no prior
+/// attempts ⇒ spawn".
+fn defaultFailedAttemptReader(
+    driver: *AgentDriver,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    task_slug: []const u8,
+) u32 {
+    // No journal location → no prior attempts (mirrors the writeJournalRecord
+    // skip guard). The max-attempt budget is active exactly when journaling is.
+    if (driver.repo_root.len == 0 or driver.plan_id == 0) return 0;
+
+    const path = journal.journalPath(allocator, driver.repo_root, driver.plan_id) catch return 0;
+    defer allocator.free(path);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const records = journal.read(allocator, arena.allocator(), io, path) catch return 0;
+    return budget.failedAttemptCount(records, task_slug);
+}
+
+/// runBudgetBlock shells `planar-agent block --claim <token> --blocker
+/// <task_id> --reason <max-attempt reason>` for the M8 max-attempt budget
+/// (task 3198). The blocker is the task ITSELF (a self-block: the task is parked
+/// on its own repeated-failure history awaiting operator triage). BEST-EFFORT:
+/// a subprocess failure is logged and swallowed — the harness still returns the
+/// "blocked" result so the workflow moves on, and the un-blocked task is the
+/// operator's backstop view (`planar plan next`).
+///
+/// No-op when `skip_block_subprocess` is set (unit-test paths), the claim token
+/// is empty, or `task_id` is 0.
+fn runBudgetBlock(
+    driver: *AgentDriver,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    claim_token: []const u8,
+    task_id: u64,
+    attempts: u32,
+) void {
+    if (driver.skip_block_subprocess) return;
+    if (claim_token.len == 0 or task_id == 0) return;
+
+    const blocker_str = std.fmt.allocPrint(allocator, "{d}", .{task_id}) catch return;
+    defer allocator.free(blocker_str);
+    const reason = std.fmt.allocPrint(
+        allocator,
+        "planar-execute: max attempts ({d}) exceeded — blocked for operator triage",
+        .{attempts},
+    ) catch return;
+    defer allocator.free(reason);
+
+    const argv = [_][]const u8{
+        "planar-agent", "block", "--claim", claim_token, "--blocker", blocker_str, "--reason", reason,
+    };
+    const result = std.process.run(allocator, io, .{
+        .argv = &argv,
+        .stdout_limit = std.Io.Limit.limited(64 * 1024),
+        .stderr_limit = std.Io.Limit.limited(8192),
+    }) catch |err| {
+        std.log.scoped(.planar_execute).warn(
+            "budget: max-attempt block subprocess failed (task {d}): {s}",
+            .{ task_id, @errorName(err) },
+        );
+        return;
+    };
+    allocator.free(result.stdout);
+    allocator.free(result.stderr);
+    if (!(result.term == .exited and result.term.exited == 0)) {
+        std.log.scoped(.planar_execute).warn(
+            "budget: planar-agent block exited non-zero (task {d})",
+            .{task_id},
+        );
+    }
 }
 
 /// readTaskStatusBlocked returns true iff the `agent()` call's task is now in
@@ -2908,6 +3209,21 @@ pub fn runModule(
         if (hs.timeout_clock_ctx) |cc| sched_storage.clock_ctx = cc;
         if (hs.timeout_max_wall_clock_ns) |mx| sched_storage.max_wall_clock_ns = mx;
         hs.sched = &sched_storage;
+        // M8 whole-run ceiling (task 3198): stamp the run start time ONCE, from
+        // the scheduler's injectable clock, so the per-spawn wall-clock-ceiling
+        // check is deterministic under an injected fake clock. The spawn counter
+        // starts at 0 (HostState default).
+        //
+        // Guard: `clockNow()` reads `realMonotonicNow`, which needs the drive Io.
+        // A pure-Lua host (no driver) has a null scheduler Io, so calling
+        // `clockNow()` here would trap `unwrapIo`. We only need the run-start
+        // stamp on a path that can actually spawn (driver+io) OR when a custom
+        // clock is injected (the ceiling tests use a FakeClock that ignores Io).
+        // When neither holds, no spawn happens and the ceiling never fires, so a
+        // 0 stamp is harmless.
+        if (drive_io != null or hs.timeout_clock_fn != null) {
+            hs.run_counters.run_start_mono_ns = sched_storage.clockNow();
+        }
     }
     defer if (host) |hs| {
         hs.sched = null;
@@ -3519,6 +3835,14 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
     // no PLANAR_EXECUTE_LIVE_AGENT gate required.
     host.io = ctx.io;
 
+    // M8 budgets + ceilings — the hard kill-switch (task 3198). Read the knobs
+    // from the host environment (generous defaults; see budget.Budgets). The
+    // per-task max-attempt budget is only ACTIVE when journaling is (a gated
+    // real-agent run with a journal location); the whole-run ceiling is checked
+    // on every spawn. Reading the env here (not gated on the live driver) keeps
+    // the config wiring uniform and lets a dry/stub run still report the knobs.
+    host.budgets = budget.Budgets.fromEnv(ctx.environ);
+
     // ---- Gated production agent() driver wiring (plan 492 M4 task 3241) ----
     //
     // INVARIANT: `planar-execute run` NEVER spawns a real `claude -p` worker by
@@ -3679,6 +4003,20 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
     // Invoke run(ctx) with the trailing args threaded into ctx.args and the
     // host-function surface + determinism installed on ctx.
     runModule(source, chunkname, rest_args, &host, &err_buf) catch |e| {
+        // M8 whole-run ceiling (task 3198): a ceiling-terminated run unwinds
+        // through here AFTER the clean interrupt shutdown ran (in-flight workers
+        // released + worktrees torn down, journal terminus written). Emit a
+        // clear, distinct "run ceiling exceeded: <which>" message and exit
+        // non-zero — this is a clean kill-switch stop, NOT a crash, and the
+        // released work is recoverable on the next `planar-execute run` resume.
+        if (host.ceiling_tripped) |which| {
+            try ctx.stderr.print(
+                "planar-execute: run ceiling exceeded: {s} — run wound down cleanly; in-flight work released and recoverable on resume.\n",
+                .{which.name()},
+            );
+            try flushCtx();
+            std.process.exit(1);
+        }
         const msg = std.mem.span(@as([*:0]const u8, @ptrCast(&err_buf)));
         if (msg.len > 0) {
             try ctx.stderr.print("planar-execute: {s}\n", .{msg});
@@ -5485,6 +5823,367 @@ test "M8 journal: with no repo_root/plan_id the journal write is skipped (no fil
     const recs = try journal.read(a, arena.allocator(), io, path);
     try std.testing.expectEqual(@as(usize, 0), recs.len);
     try std.testing.expectEqual(@as(u32, 1), fake.start_count); // worker DID run
+}
+
+// ---------------------------------------------------------------------------
+// M8 budgets + ceilings — the hard kill-switch (task 3198).
+//
+// Two halves, both driven deterministically through runModule with a
+// FakeSpawner:
+//   1. Per-task max-attempt → block. Fail-count comes from the journal
+//      (failedAttemptStatus ∈ {failed, timed-out, released}); at/above
+//      max_attempts the call BLOCKS (no spawn) and returns status="blocked".
+//      Resume respects prior attempts: a real journal fixture written by a
+//      first HostState is re-read by a second HostState → blocks at the budget
+//      (the count is persistent, not in-memory).
+//   2. Whole-run ceiling → clean exit + journal terminus. max-total-spawns and
+//      max-wall-clock are checked before each spawn; on trip the run sets the
+//      interrupt flag (REUSING the task-3189 shutdown), writes a terminus
+//      record, and runModule returns LuaRuntimeError (clean wind-down).
+//
+// The clock/counters are injected via the scheduler's clock_fn + the
+// HostState's run_counters/budgets; journal fixtures live in tmp dirs (NOT the
+// real .worktrees/).
+// ---------------------------------------------------------------------------
+
+/// FakeFailCountCtx maps a task_slug to a canned prior-failed-attempt count for
+/// the max-attempt tests — no real journal file required.
+const FakeFailCountCtx = struct {
+    slug: []const u8,
+    count: u32,
+};
+
+fn fakeFailCountReader(
+    ctx: ?*anyopaque,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    task_slug: []const u8,
+) u32 {
+    _ = allocator;
+    _ = io;
+    const fc: *FakeFailCountCtx = @ptrCast(@alignCast(ctx.?));
+    if (std.mem.eql(u8, fc.slug, task_slug)) return fc.count;
+    return 0;
+}
+
+test "M8 budget: task at max_attempts → BLOCKED, NO spawn (task 3198)" {
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    // The journal reports 3 prior failed attempts for this task.
+    var fc = FakeFailCountCtx{ .slug = "m8-runaway", .count = 3 };
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+        .skip_block_subprocess = true, // do not shell planar-agent block in a unit test
+        .failed_attempt_reader = fakeFailCountReader,
+        .failed_attempt_ctx = &fc,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+    host.budgets = .{ .max_attempts = 3 }; // budget == prior failures → block
+
+    const src =
+        \\return {
+        \\  meta = { name = "m8-maxattempt", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local r = ctx.agent("the brief", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/abs/wt",
+        \\      claim_token = "tok",
+        \\      task_slug = "m8-runaway",
+        \\      task_id = 4400,
+        \\    })
+        \\    assert(r.status == "blocked", "expected status=blocked, got " .. tostring(r.status))
+        \\    assert(r.skip_reason == "max-attempts", "expected skip_reason=max-attempts, got " .. tostring(r.skip_reason))
+        \\    assert(r.terminal_verb == "block", "expected terminal_verb=block, got " .. tostring(r.terminal_verb))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:m8-maxattempt", &.{}, &host, &err_buf);
+
+    // The budget refused the spawn: FakeSpawner never started.
+    try std.testing.expectEqual(@as(u32, 0), fake.start_count);
+    try std.testing.expectEqual(@as(usize, 0), fake.invocations.items.len);
+    // The block is surfaced to the M7 end-of-run triage summary.
+    try std.testing.expectEqual(@as(usize, 1), host.blocked_items.items.len);
+}
+
+test "M8 budget: task BELOW max_attempts → spawns normally (task 3198)" {
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    // Only 2 prior failures, budget is 3 → still room for one more.
+    var fc = FakeFailCountCtx{ .slug = "m8-retry", .count = 2 };
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+        .skip_block_subprocess = true,
+        .failed_attempt_reader = fakeFailCountReader,
+        .failed_attempt_ctx = &fc,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+    host.budgets = .{ .max_attempts = 3 };
+
+    const src =
+        \\return {
+        \\  meta = { name = "m8-belowbudget", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local r = ctx.agent("the brief", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/abs/wt",
+        \\      claim_token = "tok",
+        \\      task_slug = "m8-retry",
+        \\      task_id = 4401,
+        \\    })
+        \\    assert(r.status ~= "blocked", "below-budget task must spawn, got " .. tostring(r.status))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:m8-belowbudget", &.{}, &host, &err_buf);
+
+    try std.testing.expectEqual(@as(u32, 1), fake.start_count);
+    try std.testing.expectEqual(@as(usize, 0), host.blocked_items.items.len);
+}
+
+test "M8 budget: resume respects prior attempts — fail-count is journal-derived (task 3198)" {
+    const a = testing_alloc;
+    const io = std.testing.io;
+
+    const repo_root = jMkTmpDir(a);
+    defer a.free(repo_root);
+    defer jRmTree(a, repo_root);
+
+    // --- Seed the PERSISTENT journal with 3 failed records for the task (as if a
+    // prior run had failed it three times). We write the fixture via the same
+    // journal.append the production write path uses, to the production path.
+    const jpath = try journal.journalPath(a, repo_root, 8800);
+    defer a.free(jpath);
+    inline for (.{ "failed", "released", "timed-out" }) |verb| {
+        try journal.append(a, io, jpath, .{
+            .prompt_hash = "h",
+            .worktree = "/wt",
+            .branch = "b",
+            .claim_token = "tok",
+            .model = "claude-opus-4-8",
+            .role = "coder",
+            .task_slug = "m8-persist",
+            .exit_code = 1,
+            .terminal_verb = verb,
+            .wall_clock_ms = 0,
+            .timestamp = 0,
+        });
+    }
+
+    // --- A "second run": a brand-new HostState + the PRODUCTION journal-reading
+    // path (no injected reader). The driver points at the same repo_root/plan_id
+    // so defaultFailedAttemptReader reads the fixture above. budget == 3 → block.
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = io,
+        .repo_root = repo_root, // → journal location resolvable
+        .plan_slug = "p8800",
+        .plan_id = 8800, // → defaultFailedAttemptReader reads the fixture
+        .skip_terminal_subprocess = true,
+        .skip_block_subprocess = true,
+        .claim_status_reader = activeClaimReader,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+    host.budgets = .{ .max_attempts = 3 };
+
+    const src =
+        \\return {
+        \\  meta = { name = "m8-resume-budget", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local r = ctx.agent("brief", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/abs/wt",
+        \\      claim_token = "tok",
+        \\      task_slug = "m8-persist",
+        \\      task_id = 4402,
+        \\    })
+        \\    assert(r.status == "blocked", "resumed run must respect prior 3 failures, got " .. tostring(r.status))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    runModule(src, "test:m8-resume-budget", &.{}, &host, &err_buf) catch |e| {
+        std.debug.print("m8 resume-budget failed: {s}\n", .{std.mem.span(@as([*:0]const u8, @ptrCast(&err_buf)))});
+        return e;
+    };
+
+    // The persistent count (3) tripped the budget → no spawn in the second run.
+    try std.testing.expectEqual(@as(u32, 0), fake.start_count);
+}
+
+/// CeilingSpawnClock returns a value that ADVANCES with the run's spawn_count:
+/// `base + spawn_count * step`. run_start is stamped at spawn_count==0 (== base);
+/// the ceiling check for the Nth spawn reads at spawn_count==N-1. Drives the
+/// wall-clock ceiling deterministically with no real sleep.
+const CeilingSpawnClock = struct {
+    counters: *budget.RunCounters,
+    step_ns: i128,
+    fn clockFn(ctx: ?*anyopaque, cio: std.Io) i128 {
+        _ = cio;
+        const self: *CeilingSpawnClock = @ptrCast(@alignCast(ctx.?));
+        return @as(i128, self.counters.spawn_count) * self.step_ns;
+    }
+};
+
+test "M8 ceiling: max-total-spawns → clean exit + journal terminus (task 3198)" {
+    const a = testing_alloc;
+    const io = std.testing.io;
+    interrupt.reset();
+    defer interrupt.reset();
+
+    const repo_root = jMkTmpDir(a);
+    defer a.free(repo_root);
+    defer jRmTree(a, repo_root);
+
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = io,
+        .repo_root = repo_root,
+        .plan_slug = "p9001",
+        .plan_id = 9001, // → journal terminus is written
+        .skip_terminal_subprocess = true,
+        .claim_status_reader = activeClaimReader,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+    // Ceiling of 2 spawns; the workflow tries to spawn 3 sequentially.
+    host.budgets = .{ .max_total_spawns = 2, .max_wall_clock_ns = std.math.maxInt(i128) };
+    // Fixed clock so the wall-clock ceiling never fires here.
+    var clock = JournalTestClock{};
+    host.timeout_clock_fn = JournalTestClock.clockFn;
+    host.timeout_clock_ctx = &clock;
+
+    const src =
+        \\return {
+        \\  meta = { name = "m8-ceil-spawns", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    for i = 1, 3 do
+        \\      ctx.agent("brief-" .. i, {
+        \\        role = "coder",
+        \\        worktree_path = "/tmp/wt" .. i,
+        \\        claim_token = "tok-" .. i,
+        \\        task_slug = "ts-" .. i,
+        \\        task_id = 4500 + i,
+        \\      })
+        \\    end
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    // A ceiling-terminated run unwinds via LuaRuntimeError (the clean wind-down).
+    const res = runModule(src, "test:m8-ceil-spawns", &.{}, &host, &err_buf);
+    try std.testing.expectError(LuaError.LuaRuntimeError, res);
+
+    // The spawn counter is capped at the ceiling (exactly 2 workers started).
+    try std.testing.expectEqual(@as(u32, 2), fake.start_count);
+    try std.testing.expectEqual(@as(u32, 2), host.run_counters.spawn_count);
+    // The ceiling that tripped is recorded.
+    try std.testing.expectEqual(@as(?budget.Ceiling, .spawns), host.ceiling_tripped);
+
+    // The journal has a TERMINUS record naming the spawns ceiling.
+    const tpath = try journal.journalPath(a, repo_root, 9001);
+    defer a.free(tpath);
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const recs = try journal.read(a, arena.allocator(), io, tpath);
+    var saw_terminus = false;
+    for (recs) |r| {
+        if (std.mem.eql(u8, r.terminal_verb, budget.CEILING_TERMINUS_VERB)) {
+            saw_terminus = true;
+            try std.testing.expectEqualStrings("max-total-spawns", r.task_slug);
+        }
+    }
+    try std.testing.expect(saw_terminus);
+}
+
+test "M8 ceiling: max-wall-clock → clean exit + journal terminus (task 3198)" {
+    const a = testing_alloc;
+    const io = std.testing.io;
+    interrupt.reset();
+    defer interrupt.reset();
+
+    const repo_root = jMkTmpDir(a);
+    defer a.free(repo_root);
+    defer jRmTree(a, repo_root);
+
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = io,
+        .repo_root = repo_root,
+        .plan_slug = "p9002",
+        .plan_id = 9002,
+        .skip_terminal_subprocess = true,
+        .claim_status_reader = activeClaimReader,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+    // Generous spawn ceiling; tight wall-clock. The clock advances by a big step
+    // per spawn so the 2nd spawn's ceiling check crosses max_wall_clock_ns.
+    host.budgets = .{ .max_total_spawns = 1000, .max_wall_clock_ns = 1_000 };
+    var clock = CeilingSpawnClock{ .counters = &host.run_counters, .step_ns = 10_000 };
+    host.timeout_clock_fn = CeilingSpawnClock.clockFn;
+    host.timeout_clock_ctx = &clock;
+
+    const src =
+        \\return {
+        \\  meta = { name = "m8-ceil-wall", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    for i = 1, 5 do
+        \\      ctx.agent("brief-" .. i, {
+        \\        role = "coder",
+        \\        worktree_path = "/tmp/wt" .. i,
+        \\        claim_token = "tok-" .. i,
+        \\        task_slug = "ts-" .. i,
+        \\        task_id = 4600 + i,
+        \\      })
+        \\    end
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    const res = runModule(src, "test:m8-ceil-wall", &.{}, &host, &err_buf);
+    try std.testing.expectError(LuaError.LuaRuntimeError, res);
+
+    // First spawn happened at elapsed 0; the second spawn's pre-check read
+    // elapsed 10_000 >= 1_000 → refused. Exactly one worker started.
+    try std.testing.expectEqual(@as(u32, 1), fake.start_count);
+    try std.testing.expectEqual(@as(?budget.Ceiling, .wall_clock), host.ceiling_tripped);
+
+    const tpath = try journal.journalPath(a, repo_root, 9002);
+    defer a.free(tpath);
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const recs = try journal.read(a, arena.allocator(), io, tpath);
+    var saw_terminus = false;
+    for (recs) |r| {
+        if (std.mem.eql(u8, r.terminal_verb, budget.CEILING_TERMINUS_VERB)) {
+            saw_terminus = true;
+            try std.testing.expectEqualStrings("max-wall-clock", r.task_slug);
+        }
+    }
+    try std.testing.expect(saw_terminus);
 }
 
 // ---------------------------------------------------------------------------
