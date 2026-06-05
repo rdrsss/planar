@@ -304,6 +304,29 @@ pub const HostCall = struct {
     arg1: []const u8,
 };
 
+/// BlockedItem records ONE worker that self-blocked during the run (plan 492 M7
+/// tasks 3194+3195). A worker hits a genuine blocker, runs `planar-agent block`
+/// (per the brief — "block rather than ask"), and exits cleanly; `block`
+/// atomically flips the task to `blocked` and releases the claim. `agentContinue`
+/// detects the `blocked` task status, sets the agent() result `status = "blocked"`
+/// (NOT failed/released — the run continues, no retry, no global halt), and
+/// appends one of these to `HostState.blocked_items`. `handleRun` prints them all
+/// at run end as an operator-triage summary.
+///
+/// All three strings are HEAP-OWNED copies (duped by `HostState.recordBlocked`)
+/// so they survive the per-call `AgentCallState` teardown and the freed
+/// `taskShow` parse arena. `task_blocker` / `reason` may be empty when the
+/// blocker/reason are not cleanly available.
+pub const BlockedItem = struct {
+    /// The blocked task's slug (e.g. "m5-foo"). Empty if unknown.
+    task_slug: []const u8,
+    /// The blocking task id, as the worker passed to `--blocker` (e.g.
+    /// "task:3199" or "3199"). Empty if not cleanly available.
+    task_blocker: []const u8,
+    /// The worker's free-text `--reason`. Empty if not cleanly available.
+    reason: []const u8,
+};
+
 /// HostState is the Zig-side record of everything the workflow's host functions
 /// did during a run. It is allocated by the caller (runModule), pointed-to by
 /// every host C closure via a light-userdata upvalue, and inspected by the host
@@ -319,6 +342,13 @@ pub const HostCall = struct {
 pub const HostState = struct {
     allocator: std.mem.Allocator,
     calls: std.ArrayList(HostCall),
+
+    /// Run-scoped accumulator of self-blocked workers (plan 492 M7 task 3195).
+    /// `agentContinue` appends one entry per worker whose task ended up
+    /// `blocked`; `handleRun` prints them all at run end for operator triage.
+    /// Owns heap-duped copies of every string (mirrors `calls`). Quiet when
+    /// empty — no summary is printed when zero workers blocked.
+    blocked_items: std.ArrayList(BlockedItem) = .empty,
 
     /// Host-injected timestamp (e.g. a Unix epoch second). Exposed as ctx.now.
     now: i64,
@@ -407,6 +437,12 @@ pub const HostState = struct {
             self.allocator.free(call.arg1);
         }
         self.calls.deinit(self.allocator);
+        for (self.blocked_items.items) |bi| {
+            self.allocator.free(bi.task_slug);
+            self.allocator.free(bi.task_blocker);
+            self.allocator.free(bi.reason);
+        }
+        self.blocked_items.deinit(self.allocator);
     }
 
     /// record appends a HostCall, taking ownership of heap-duped copies of the
@@ -418,6 +454,23 @@ pub const HostState = struct {
         const a1 = try self.allocator.dupe(u8, arg1);
         errdefer self.allocator.free(a1);
         try self.calls.append(self.allocator, .{ .kind = kind, .arg0 = a0, .arg1 = a1 });
+    }
+
+    /// recordBlocked appends a BlockedItem (plan 492 M7 task 3195), taking
+    /// ownership of heap-duped copies of all three strings so they survive the
+    /// per-call AgentCallState teardown and the freed taskShow parse arena.
+    /// On OOM it returns the error; `agentContinue` swallows it best-effort
+    /// (the block was already recorded on the claim/task by the worker; losing
+    /// the in-memory summary entry is non-fatal — the operator still sees the
+    /// blocked task in `planar plan next`).
+    fn recordBlocked(self: *HostState, task_slug: []const u8, task_blocker: []const u8, reason: []const u8) std.mem.Allocator.Error!void {
+        const s = try self.allocator.dupe(u8, task_slug);
+        errdefer self.allocator.free(s);
+        const b = try self.allocator.dupe(u8, task_blocker);
+        errdefer self.allocator.free(b);
+        const r = try self.allocator.dupe(u8, reason);
+        errdefer self.allocator.free(r);
+        try self.blocked_items.append(self.allocator, .{ .task_slug = s, .task_blocker = b, .reason = r });
     }
 };
 
@@ -533,6 +586,18 @@ pub const AgentDriver = struct {
     /// Tests always leave this at the default (true); the degraded live case
     /// (binary resolution failed at gate attachment) sets it to false.
     live_binaries_resolved: bool = true,
+
+    /// Reads the live TASK status for the M7 block-detection path (task 3194).
+    /// When null, `readTaskStatusBlocked` calls the production reader
+    /// (`defaultTaskStatusReader`, which shells `planar task show <id> --json`).
+    /// Tests inject a fake reader so they can simulate "task is blocked" (or
+    /// "completed") WITHOUT a live `planar task show` — mirroring how
+    /// `claim_status_reader`, `Spawner`, and `env_builder` are injected.
+    task_status_reader: ?TaskStatusFn = null,
+    /// Opaque context pointer passed to `task_status_reader`. Unused by the
+    /// production reader (it reads the task_id arg directly); tests stash a
+    /// pointer to their canned status string here.
+    task_status_ctx: ?*anyopaque = null,
 };
 
 /// ClaimStatusFn reads the live claim status for one `agent()` call. Injectable
@@ -546,6 +611,19 @@ pub const ClaimStatusFn = *const fn (
     plan_id: u64,
     claim_token: []const u8,
 ) terminal.ClaimStatus;
+
+/// TaskStatusFn reads whether one `agent()` call's task ended up `blocked`
+/// (plan 492 M7 task 3194). Injectable on `AgentDriver` so unit tests can drive
+/// the block-detection path WITHOUT shelling `planar task show`. Returns `true`
+/// iff the task's live status is `blocked` (the worker self-blocked via
+/// `planar-agent block`). The production wiring leaves it null and
+/// `readTaskStatusBlocked` falls back to `defaultTaskStatusReader`.
+pub const TaskStatusFn = *const fn (
+    ctx: ?*anyopaque,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    task_id: u64,
+) bool;
 
 /// Context for `defaultEnvBuilder` — the production env-builder. Carries the
 /// pre-resolved absolute paths to `planar-agent` and `git`, plus the host
@@ -640,6 +718,13 @@ const AgentCallOpts = struct {
     /// task_slug is required to derive the cycle branch name for the
     /// commit-presence sample.
     task_slug: []const u8,
+    /// task_id is the numeric id of the claimed task. The workflow/caller knows
+    /// the task it is dispatching, so it passes it here (a small contract
+    /// addition for plan 492 M7 task 3194). It backs the post-exit task-status
+    /// read that detects a self-blocked worker (`planar task show <id>`). Zero
+    /// means "not supplied" → block detection is skipped (the no-id test paths
+    /// and any workflow that declines to pass it).
+    task_id: u64,
 };
 
 /// luaOptString fetches `opts[name]` as a Lua-owned string view, defaulting to
@@ -654,6 +739,19 @@ fn luaOptString(L: ?*c.lua_State, opts_idx: c_int, name: [*:0]const u8, default:
     return raw[0..len];
 }
 
+/// luaOptInt fetches `opts[name]` as a u64, defaulting to `default` when the
+/// field is absent or not a number. Negative / non-integral values clamp to 0
+/// (a u64 task id is always non-negative; a malformed value is treated as
+/// "not supplied").
+fn luaOptInt(L: ?*c.lua_State, opts_idx: c_int, name: [*:0]const u8, default: u64) u64 {
+    const t = c.lua_getfield(L, opts_idx, name);
+    defer luaPop(L, 1);
+    if (t != c.LUA_TNUMBER) return default;
+    const n = c.lua_tointegerx(L, -1, null);
+    if (n < 0) return 0;
+    return @intCast(n);
+}
+
 /// readAgentOpts pulls the required and optional fields out of the opts table
 /// at stack index `opts_idx`. Returns AgentCallOpts with all string views still
 /// borrowing into Lua memory.
@@ -665,6 +763,7 @@ fn readAgentOpts(L: ?*c.lua_State, opts_idx: c_int) AgentCallOpts {
             .claim_token = "",
             .role_spec = "",
             .task_slug = "",
+            .task_id = 0,
         };
     }
     return .{
@@ -673,6 +772,7 @@ fn readAgentOpts(L: ?*c.lua_State, opts_idx: c_int) AgentCallOpts {
         .claim_token = luaOptString(L, opts_idx, "claim_token", ""),
         .role_spec = luaOptString(L, opts_idx, "role_spec", ""),
         .task_slug = luaOptString(L, opts_idx, "task_slug", ""),
+        .task_id = luaOptInt(L, opts_idx, "task_id", 0),
     };
 }
 
@@ -726,6 +826,9 @@ const AgentCallState = struct {
     worktree_path: []u8,
     claim_token: []u8,
     task_slug: []u8,
+    /// The numeric task id (copy of opts.task_id; a scalar — no dupe needed).
+    /// Backs the M7 block-detection read in `agentContinue`. Zero → skip.
+    task_id: u64,
     /// Pre-spawn cycle-branch HEAD (commit-presence proxy). Owned; may be null.
     head_before: ?[]u8,
     /// The constrained worker env kept alive across the spawn. The in-flight
@@ -807,6 +910,7 @@ fn driveAgentCallPreYield(
         },
         .claim_token = &.{},
         .task_slug = &.{},
+        .task_id = opts.task_id,
         .head_before = null,
         .worker_env_built = null,
         .slot_index = 0,
@@ -1037,7 +1141,35 @@ fn agentContinue(L: ?*c.lua_State, status: c_int, ctx: c.lua_KContext) callconv(
         };
     }
 
-    // 6) Build the result table and push (one return value to the script).
+    // 6) M7 BLOCK DETECTION (task 3194). A worker that hit a genuine blocker
+    // ran `planar-agent block` itself (per the brief — "block rather than ask";
+    // brief.zig ~L353). `block` atomically flips the TASK to `blocked` AND
+    // releases the claim in one transaction. So by this point:
+    //   - the claim is RELEASED → `claim_status` read above returned `.terminal`
+    //     → `decideTerminalVerb` returned `.none` → the harness ran NO redundant
+    //     terminal verb (confirmed: the worker owns its own terminal verb).
+    //   - the TASK is `blocked` → the reliable, unambiguous signal we key on.
+    // We read the live task status (keyed on the explicit task_id threaded
+    // through opts) and, when it is `blocked`, surface a DISTINCT status string
+    // and accumulate the item for the end-of-run operator-triage summary
+    // (task 3195). This is SET-ASIDE-AND-CONTINUE: we do NOT fail, do NOT retry,
+    // do NOT halt — the slot is reclaimed and `parallel`/`pipeline` proceed past
+    // it exactly like any other terminal worker (the verb is already `.none`).
+    const blocked = readTaskStatusBlocked(driver, alloc, io, acs.task_id);
+    if (blocked) {
+        // Accumulate for the end-of-run summary. The blocker id / reason are not
+        // cleanly available from the task-status read alone (the worker passed
+        // them to `planar-agent block`, not onto the task row), so we record the
+        // slug and leave blocker/reason empty — the summary still points the
+        // operator at the blocked task. Best-effort: an OOM here loses only the
+        // in-memory summary entry (the operator still sees the blocked task via
+        // `planar plan next`); never abort the run for it.
+        hs.recordBlocked(acs.task_slug, "", "") catch {};
+        pushAgentResult(L, "blocked", outcome.exit_code, commit_present, .none);
+        return 1;
+    }
+
+    // 7) Build the result table and push (one return value to the script).
     const status_str: []const u8 = switch (verb) {
         .none => "respected",
         .complete => "completed",
@@ -1046,6 +1178,50 @@ fn agentContinue(L: ?*c.lua_State, status: c_int, ctx: c.lua_KContext) callconv(
     };
     pushAgentResult(L, status_str, outcome.exit_code, commit_present, verb);
     return 1;
+}
+
+/// readTaskStatusBlocked returns true iff the `agent()` call's task is now in
+/// status `blocked` — the M7 block-detection signal (task 3194). It dispatches
+/// to the injected `driver.task_status_reader` (tests) or to
+/// `defaultTaskStatusReader` (production, which shells `planar task show`).
+///
+/// Returns false when `task_id` is 0 (the caller did not thread a task id, e.g.
+/// the no-id test paths): block detection is then simply skipped and the normal
+/// terminal-verb status applies.
+fn readTaskStatusBlocked(
+    driver: *AgentDriver,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    task_id: u64,
+) bool {
+    if (task_id == 0) return false;
+    if (driver.task_status_reader) |read| {
+        return read(driver.task_status_ctx, allocator, io, task_id);
+    }
+    // Production path is only meaningful when the harness actually drives the
+    // terminal subprocess (a real run). Unit tests that leave the reader null
+    // AND skip the terminal subprocess never want a live `planar task show`.
+    if (driver.skip_terminal_subprocess) return false;
+    return defaultTaskStatusReader(null, allocator, io, task_id);
+}
+
+/// defaultTaskStatusReader is the production `TaskStatusFn`. It shells
+/// `planar task show <task_id> --json` via `state.taskShow` and returns true iff
+/// the task's `status` field is `blocked`. On any read/parse failure it returns
+/// false — a failed read must NOT spuriously classify a worker as blocked (that
+/// would suppress the normal terminal status + pollute the triage summary). The
+/// conservative default is "not blocked"; the normal terminal-verb path then
+/// applies, and `planar plan next` remains the operator's backstop view.
+fn defaultTaskStatusReader(
+    ctx: ?*anyopaque,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    task_id: u64,
+) bool {
+    _ = ctx;
+    var parsed = state.taskShow(allocator, io, task_id) catch return false;
+    defer parsed.deinit();
+    return std.mem.eql(u8, parsed.value.status, "blocked");
 }
 
 /// readClaimStatusOrActive returns the claim's LIVE status for the terminal-verb
@@ -3234,6 +3410,35 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
         try flushCtx();
         std.process.exit(1);
     };
+
+    // ---- M7 end-of-run blocked-items summary (task 3195) ----
+    //
+    // The run completed (all coroutines done — `runModule` returned). If any
+    // worker self-blocked during the run, list them for operator triage. The run
+    // NEVER globally halted for input on a blocked item — each was set aside and
+    // the slot reclaimed; this summary is the triage mechanism, not a prompt.
+    // Quiet when zero blocked: a clean run prints nothing here.
+    try printBlockedSummary(host.blocked_items.items, ctx.stdout);
+    try flushCtx();
+}
+
+/// printBlockedSummary writes the end-of-run operator-triage listing (plan 492
+/// M7 task 3195). One line per self-blocked worker, under a count header. PURE
+/// formatting over the accumulated `BlockedItem`s — no I/O beyond the writer.
+/// Emits NOTHING when `items` is empty (a clean run is quiet).
+fn printBlockedSummary(items: []const BlockedItem, w: *Io.Writer) !void {
+    if (items.len == 0) return;
+    try w.print("Run complete. {d} task(s) blocked for operator triage:\n", .{items.len});
+    for (items) |bi| {
+        // task <slug> blocked by <blocker> — "<reason>"
+        // Each clause is omitted when its field is empty so a partial record
+        // still reads cleanly.
+        try w.print("  - task", .{});
+        if (bi.task_slug.len > 0) try w.print(" {s}", .{bi.task_slug});
+        if (bi.task_blocker.len > 0) try w.print(" blocked by {s}", .{bi.task_blocker});
+        if (bi.reason.len > 0) try w.print(" — \"{s}\"", .{bi.reason});
+        try w.print("\n", .{});
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4260,6 +4465,200 @@ test "M4 agent: worker self-completed (claim terminal) → harness emits no term
     // The spawn still happened (the harness ran the worker); only the
     // redundant terminal verb is suppressed.
     try std.testing.expectEqual(@as(usize, 1), fake.invocations.items.len);
+}
+
+// ---------------------------------------------------------------------------
+// task 3194/3195 — M7 local-block detection + end-of-run summary.
+//
+// A worker that hits a genuine blocker runs `planar-agent block` itself (per the
+// brief). `block` flips the TASK to `blocked` + releases the claim. The harness
+// detects the `blocked` task status (via an INJECTED task_status_reader here, so
+// the test never shells `planar task show`), surfaces status="blocked" WITHOUT a
+// redundant terminal verb, accumulates the item, and the run continues.
+// ---------------------------------------------------------------------------
+
+/// BlockedReaderCtx lets a test reader report a specific task_id as blocked.
+/// `blocked_id == 0` means "no task is blocked" (every read returns false).
+const BlockedReaderCtx = struct {
+    blocked_id: u64,
+};
+
+/// fakeTaskStatusReader is an injected TaskStatusFn: it returns true iff the
+/// queried task_id matches the ctx's `blocked_id`. No subprocess, no allocation.
+fn fakeTaskStatusReader(
+    ctx: ?*anyopaque,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    task_id: u64,
+) bool {
+    _ = allocator;
+    _ = io;
+    const rc: *BlockedReaderCtx = @ptrCast(@alignCast(ctx.?));
+    return task_id == rc.blocked_id;
+}
+
+test "M7 block: worker self-blocked (task=blocked) → status=blocked, NO terminal verb, item accumulated (task 3194/3195)" {
+    const a = testing_alloc;
+    // exit==0 + commit-present would normally drive .complete; the worker
+    // self-blocked though (claim already released → .terminal → verb .none),
+    // and the blocked TASK status is what we surface.
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    // claim reader reports .completed (worker ran its own block → claim gone).
+    var blocked_ctx = BlockedReaderCtx{ .blocked_id = 3201 };
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+        .claim_status_reader = terminalClaimReader,
+        .task_status_reader = fakeTaskStatusReader,
+        .task_status_ctx = &blocked_ctx,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+
+    const src =
+        \\return {
+        \\  meta = { name = "m7-block", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local r = ctx.agent("the brief", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/abs/wt",
+        \\      claim_token = "tok-blocked",
+        \\      task_slug = "m7-foo",
+        \\      task_id = 3201,
+        \\    })
+        \\    assert(r.status == "blocked", "expected status=blocked, got " .. tostring(r.status))
+        \\    assert(r.terminal_verb == "none", "expected no harness terminal verb, got " .. tostring(r.terminal_verb))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:m7-block", &.{}, &host, &err_buf);
+
+    // The worker ran (spawn happened) and the item was accumulated for triage.
+    try std.testing.expectEqual(@as(usize, 1), fake.invocations.items.len);
+    try std.testing.expectEqual(@as(usize, 1), host.blocked_items.items.len);
+    try std.testing.expectEqualStrings("m7-foo", host.blocked_items.items[0].task_slug);
+}
+
+test "M7 block: a normal completed worker is NOT mis-detected as blocked (task 3194)" {
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    // Reader reports NO task blocked (blocked_id 0 never matches a real id).
+    var blocked_ctx = BlockedReaderCtx{ .blocked_id = 0 };
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+        // active claim + exit 0 + commit → .complete → status "completed".
+        .task_status_reader = fakeTaskStatusReader,
+        .task_status_ctx = &blocked_ctx,
+        .repo_root = "",
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+
+    const src =
+        \\return {
+        \\  meta = { name = "m7-notblocked", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local r = ctx.agent("brief", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/abs/wt",
+        \\      claim_token = "tok",
+        \\      task_slug = "m7-bar",
+        \\      task_id = 9999,
+        \\    })
+        \\    assert(r.status ~= "blocked", "must not be blocked, got " .. tostring(r.status))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:m7-notblocked", &.{}, &host, &err_buf);
+
+    // Nothing accumulated for a non-blocked worker.
+    try std.testing.expectEqual(@as(usize, 0), host.blocked_items.items.len);
+}
+
+test "M7 block: in a parallel set, one worker blocks, others complete; parallel returns normally, original order (task 3194)" {
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    // Only task_id 3202 (the "two" thunk) is blocked; 3200 and 3201 complete.
+    var blocked_ctx = BlockedReaderCtx{ .blocked_id = 3202 };
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+        .task_status_reader = fakeTaskStatusReader,
+        .task_status_ctx = &blocked_ctx,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+
+    const src =
+        \\return {
+        \\  meta = { name = "m7-par-block", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local function mk(tag, id)
+        \\      return function()
+        \\        local r = ctx.agent("b-" .. tag, { role = "coder", worktree_path = "/tmp/" .. tag, claim_token = "t-" .. tag, task_slug = tag, task_id = id })
+        \\        return r.status
+        \\      end
+        \\    end
+        \\    local results = ctx.parallel({ mk("zero", 3200), mk("one", 3201), mk("two", 3202) })
+        \\    assert(#results == 3, "len: " .. tostring(#results))
+        \\    -- order preserved: results[i] is thunk[i]'s status.
+        \\    assert(results[1] ~= "blocked", "r1 should not be blocked: " .. tostring(results[1]))
+        \\    assert(results[2] ~= "blocked", "r2 should not be blocked: " .. tostring(results[2]))
+        \\    assert(results[3] == "blocked", "r3 should be blocked: " .. tostring(results[3]))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    runModule(src, "test:m7-par-block", &.{}, &host, &err_buf) catch |e| {
+        std.debug.print("m7 parallel-block failed: {s}\n", .{std.mem.span(@as([*:0]const u8, @ptrCast(&err_buf)))});
+        return e;
+    };
+
+    // All three workers ran; the run did NOT halt or fail; exactly one blocked.
+    try std.testing.expectEqual(@as(u32, 3), fake.start_count);
+    try std.testing.expectEqual(@as(u32, 0), fake.live_inflight);
+    try std.testing.expectEqual(@as(usize, 1), host.blocked_items.items.len);
+    try std.testing.expectEqualStrings("two", host.blocked_items.items[0].task_slug);
+}
+
+test "M7 summary: printBlockedSummary lists items; quiet when zero (task 3195)" {
+    const a = testing_alloc;
+
+    // Zero items → no output.
+    {
+        var buf: std.Io.Writer.Allocating = .init(a);
+        defer buf.deinit();
+        try printBlockedSummary(&.{}, &buf.writer);
+        try std.testing.expectEqual(@as(usize, 0), buf.written().len);
+    }
+
+    // Two items → header + one line each.
+    {
+        const items = [_]BlockedItem{
+            .{ .task_slug = "m5-foo", .task_blocker = "task:3199", .reason = "needs schema decision" },
+            .{ .task_slug = "m5-bar", .task_blocker = "", .reason = "" },
+        };
+        var buf: std.Io.Writer.Allocating = .init(a);
+        defer buf.deinit();
+        try printBlockedSummary(&items, &buf.writer);
+        const out = buf.written();
+        try std.testing.expect(std.mem.indexOf(u8, out, "2 task(s) blocked for operator triage") != null);
+        try std.testing.expect(std.mem.indexOf(u8, out, "task m5-foo blocked by task:3199 — \"needs schema decision\"") != null);
+        // Partial record reads cleanly (no trailing "blocked by"/reason clause).
+        try std.testing.expect(std.mem.indexOf(u8, out, "  - task m5-bar\n") != null);
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -80,6 +80,26 @@ pub const PlanShow = struct {
     parent_plan_id: ?u64 = null,
 };
 
+/// Minimal view of `planar task show <id> --json`.
+///
+/// Real shape (captured 2026-06-04):
+///   {"id":3194,"scope_kind":"association","scope_id":1,"plan_id":500,
+///    "parent_task_id":null,"title":"...","body":"...","slug":"m7-...",
+///    "status":"todo","priority":100,"next_action":"...","due_at":null,
+///    "created_at":"...","updated_at":"..."}
+///
+/// Fields declared: only those the M7 block-detection path consumes
+/// (`id`, `slug`, `status`). `status == "blocked"` is the reliable signal
+/// that a worker self-blocked via `planar-agent block` (which atomically
+/// flips `tasks.status → blocked` + releases the claim).
+pub const TaskShow = struct {
+    id: u64,
+    /// `slug` is set on task creation; declared optional for defensive
+    /// parsing against older rows.
+    slug: ?[]const u8 = null,
+    status: []const u8,
+};
+
 /// A single task entry inside `planar plan next <id> --json`'s task arrays.
 ///
 /// The verb returns tasks in four arrays: `available`, `claimed`, `stale`,
@@ -330,6 +350,37 @@ pub fn planShow(
     // the task-3236 `doctor` probe; the fixture-parse unit tests never freed
     // the input so they could not surface this).
     return std.json.parseFromSlice(PlanShow, allocator, stdout, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    }) catch return StateError.ParseFailed;
+}
+
+/// taskShow shells `planar task show <task_id> --json` and returns a
+/// `std.json.Parsed(TaskShow)`.
+///
+/// The caller owns the memory and MUST call `.deinit()` on the returned value.
+///
+/// This is the M7 block-detection read (task 3194): after a worker exits, the
+/// harness reads the task's LIVE status. `status == "blocked"` means the worker
+/// self-blocked via `planar-agent block` (the atomic verb flips the task to
+/// `blocked` and releases the claim in one transaction) — the harness then sets
+/// the agent() result `status = "blocked"` and accumulates the item for the
+/// end-of-run operator-triage summary. It NEVER fails or retries the task.
+pub fn taskShow(
+    allocator: std.mem.Allocator,
+    io: Io,
+    task_id: u64,
+) StateError!std.json.Parsed(TaskShow) {
+    var id_buf: [32]u8 = undefined;
+    const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{task_id}) catch return StateError.SubprocessFailed;
+
+    const stdout = try spawnPlanar(allocator, io, &.{ "task", "show", id_str, "--json" }, 256 * 1024);
+    defer allocator.free(stdout);
+
+    // `.allocate = .alloc_always`: see `planShow` — the returned `Parsed` must
+    // own copies of every string (`status`, `slug`), otherwise escape-free
+    // fields borrow into the `stdout` buffer that the `defer` frees on return.
+    return std.json.parseFromSlice(TaskShow, allocator, stdout, .{
         .ignore_unknown_fields = true,
         .allocate = .alloc_always,
     }) catch return StateError.ParseFailed;
@@ -721,6 +772,31 @@ test "PlanShow: .alloc_always copies escape-free strings — survive freed input
     try std.testing.expectEqualStrings("Autonomous workflow harness", parsed.value.title);
     try std.testing.expectEqualStrings("orchestrate-harness", parsed.value.slug.?);
     try std.testing.expectEqualStrings("active", parsed.value.status);
+}
+
+// (task 3194) M7 block detection: taskShow parses the `status` + `slug` fields
+// the harness keys the block decision on. Same `.alloc_always` lifetime
+// requirement as PlanShow — the strings must survive the freed stdout buffer.
+test "TaskShow: parses status=blocked + slug, .alloc_always survives freed input (task 3194)" {
+    const a = std.testing.allocator;
+
+    const fixture_src =
+        \\{"id":3194,"plan_id":500,"title":"m7-local-block","body":"x","slug":"m7-local-block","status":"blocked","priority":100}
+    ;
+    const input = try a.dupe(u8, fixture_src);
+
+    const parsed = try std.json.parseFromSlice(TaskShow, a, input, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+
+    @memset(input, 0xAA);
+    a.free(input);
+
+    try std.testing.expectEqual(@as(u64, 3194), parsed.value.id);
+    try std.testing.expectEqualStrings("blocked", parsed.value.status);
+    try std.testing.expectEqualStrings("m7-local-block", parsed.value.slug.?);
 }
 
 test "PlanNext: .alloc_always copies escape-free task strings — survive freed input (task 3239)" {
