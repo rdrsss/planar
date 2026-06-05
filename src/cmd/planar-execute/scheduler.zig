@@ -52,6 +52,7 @@ const std = @import("std");
 const lua = @import("lua.zig");
 const c = lua.c;
 const spawn = @import("spawn.zig");
+const interrupt = @import("interrupt.zig");
 
 /// MAX_SLOTS is the in-flight-worker registry capacity. This cycle exercises
 /// N=1; the array shape is what task 3183 widens (a real N-coroutine `parallel`
@@ -258,7 +259,7 @@ pub const Scheduler = struct {
     /// wall-clock deadline it times it out (kill + synthetic outcome). A bare
     /// `wait` could never catch a hung child — the heartbeat thread keeps its
     /// lease fresh forever, so the timeout is the only reclaim path. Task 3188.
-    pub fn driveInflight(self: *Scheduler, idx: usize) spawn.SpawnError!void {
+    pub fn driveInflight(self: *Scheduler, idx: usize) DriveError!void {
         const s = &self.slots[idx];
         std.debug.assert(s.in_use);
         const sp = self.spawner orelse @panic(
@@ -266,6 +267,12 @@ pub const Scheduler = struct {
         );
         const io = self.unwrapIo();
         while (true) {
+            // Observe a SIGINT each round (task 3189): a SIGINT during a long
+            // worker wait must be seen PROMPTLY, not after the worker finishes.
+            // The off-signal shutdown sequence runs in runModule once this
+            // returns `error.Interrupted` — we do NOT touch any claim/worktree
+            // here (this layer stays Lua-free and claim-free).
+            if (interrupt.requested()) return DriveError.Interrupted;
             if (s.outcome != null) return; // already terminal (e.g. timed out).
             if (try sp.poll(self.allocator, io, &s.handle)) |outcome| {
                 s.outcome = outcome;
@@ -279,6 +286,12 @@ pub const Scheduler = struct {
             io.sleep(POLL_SLEEP, .awake) catch {};
         }
     }
+
+    /// DriveError is `driveInflight`'s error set: the spawner's `SpawnError`
+    /// plus `Interrupted` (a SIGINT was observed mid-wait — the caller runs the
+    /// off-signal shutdown). Kept distinct so the caller can branch on the
+    /// interrupt without conflating it with a genuine spawn failure.
+    pub const DriveError = spawn.SpawnError || error{Interrupted};
 
     /// The poll-loop sleep between non-blocking probe rounds in `waitForAny`.
     /// A cooperative wait (no threads — the heartbeat thread is M6); ~10ms keeps
@@ -338,7 +351,7 @@ pub const Scheduler = struct {
     /// This is genuine wait-for-any: the FIRST worker to finish (in completion
     /// order, NOT registration order) is the one returned, so `parallel` resumes
     /// the owning child as soon as its worker is done regardless of order.
-    pub fn waitForAny(self: *Scheduler) error{ NoInflight, SpawnFailed }!usize {
+    pub fn waitForAny(self: *Scheduler) error{ NoInflight, SpawnFailed, Interrupted }!usize {
         // Cheap guard: nothing in flight means the caller has nothing to wait on.
         var any_in_use = false;
         for (&self.slots) |*s| {
@@ -347,6 +360,11 @@ pub const Scheduler = struct {
         if (!any_in_use) return error.NoInflight;
 
         while (true) {
+            // Observe a SIGINT each round (task 3189): the parallel/pipeline
+            // drive must see a Ctrl-C promptly even mid-wait-for-any, not after
+            // a worker happens to finish. The caller (driveChildren) breaks out
+            // and runModule runs the off-signal shutdown sequence.
+            if (interrupt.requested()) return error.Interrupted;
             const ready = self.pollReadyOnce() catch return error.SpawnFailed;
             if (ready) |idx| return idx;
             // No worker terminal this round — sleep briefly, then poll again.

@@ -127,6 +127,14 @@ pub const scheduler = @import("scheduler.zig");
 /// (memory: planar_execute_gate_lazy_eval — a pub-const alias forces analysis).
 pub const heartbeat = @import("heartbeat.zig");
 
+/// interrupt — SIGINT handling (M6 tasks 3193 + 3189). The async-signal-safe
+/// handler (sets ONLY an atomic flag) plus the off-signal-path shutdown
+/// sequence (stop heartbeat → kill children → release claims → teardown
+/// worktrees) the drive loops run when they observe the flag. Aliased here so
+/// its `test` blocks run under the execute_exe_tests target (memory:
+/// planar_execute_gate_lazy_eval — a pub-const alias forces analysis).
+pub const interrupt = @import("interrupt.zig");
+
 // ---------------------------------------------------------------------------
 // Process-global I/O context (no runtime module — planar-execute has no DB).
 // ---------------------------------------------------------------------------
@@ -2482,11 +2490,33 @@ pub fn runModule(
         if (host) |hs| hs.heartbeat_reg = null;
     };
 
+    // ---- M6 SIGINT handler (tasks 3193 + 3189) ----
+    //
+    // Arm the async-signal-safe handler around the run ONLY when a spawn driver
+    // is attached (only then are there workers/claims/worktrees to clean up; a
+    // pure-Lua run has nothing to reclaim and Ctrl-C can fall through to the
+    // default disposition). The handler sets ONLY `interrupt.interrupt_requested`;
+    // the resume loop below OBSERVES it at safe points (between resumes) and runs
+    // the off-signal shutdown sequence on the MAIN thread. Restored on exit so a
+    // second Ctrl-C hard-kills and the disposition is not left installed.
+    const interrupt_armed = if (host) |hs| (hs.agent_driver != null) else false;
+    if (interrupt_armed) interrupt.install();
+    defer if (interrupt_armed) interrupt.restore();
+
     // Drive co to completion. lua_resume returns LUA_OK (finished), LUA_YIELD
     // (a worker is in flight — drive it, then resume), or an error code.
     var nres: c_int = 0;
     var resume_rc = c.lua_resume(co, L, 1, &nres); // 1 arg = ctx
     while (true) {
+        // Observe the interrupt flag at this safe point (between resumes). A
+        // SIGINT seen here BREAKS out of the normal drive into the off-signal
+        // shutdown sequence (stop heartbeat → kill children → release claims →
+        // teardown worktrees) — see runInterruptShutdown. Best-effort cleanup;
+        // residual state is reconcilable on next startup.
+        if (interrupt_armed and interrupt.requested()) {
+            if (host) |hs| runInterruptShutdown(hs);
+            return LuaError.LuaRuntimeError;
+        }
         switch (scheduler.classifyResume(resume_rc)) {
             .done => return, // pure-Lua workflows hit this on the first resume
             .err => {
@@ -2503,12 +2533,23 @@ pub fn runModule(
                 const sched = hs.sched.?;
                 const slot_index = findInflightSlot(sched, co) orelse
                     @panic("runModule: coroutine yielded but no in-flight worker was registered");
-                sched.driveInflight(slot_index) catch {
-                    // The worker drive itself failed (spawner.wait error). We
-                    // cannot meaningfully resume the continuation without an
-                    // outcome; report a run error.
-                    @memcpy(err_buf[0..@min(err_buf.len - 1, 28)], "agent: worker drive failed\x00"[0..@min(err_buf.len - 1, 28)]);
-                    return LuaError.LuaRuntimeError;
+                sched.driveInflight(slot_index) catch |err| switch (err) {
+                    // A SIGINT was observed mid-wait (task 3189): break out of
+                    // the drive into the off-signal shutdown sequence rather than
+                    // resuming the continuation. The worker is still in flight
+                    // (its handle un-consumed) — runInterruptShutdown kills it +
+                    // releases its claim + tears down its worktree.
+                    error.Interrupted => {
+                        runInterruptShutdown(hs);
+                        return LuaError.LuaRuntimeError;
+                    },
+                    else => {
+                        // The worker drive itself failed (spawner.wait error). We
+                        // cannot meaningfully resume the continuation without an
+                        // outcome; report a run error.
+                        @memcpy(err_buf[0..@min(err_buf.len - 1, 28)], "agent: worker drive failed\x00"[0..@min(err_buf.len - 1, 28)]);
+                        return LuaError.LuaRuntimeError;
+                    },
                 };
                 // Resume the coroutine: the continuation runs and reads the
                 // outcome. No args pushed onto co — the continuation pushes its
@@ -2528,6 +2569,158 @@ fn findInflightSlot(sched: *scheduler.Scheduler, co: *c.lua_State) ?usize {
         if (slot.in_use and slot.co == co) return idx;
     }
     return null;
+}
+
+// ---------------------------------------------------------------------------
+// SIGINT off-signal-path shutdown bridge (M6 task 3189).
+//
+// The async-signal-safe handler (interrupt.zig task 3193) only sets the
+// `interrupt_requested` flag. When the drive/poll loop OBSERVES the flag at a
+// safe point it calls `runInterruptShutdown`, which builds an
+// `interrupt.ShutdownPlan` from the scheduler's in-flight slots and runs the
+// ordered cleanup (stop heartbeat → kill children → release claims → teardown
+// worktrees) — all on the MAIN thread, NEVER in the handler.
+// ---------------------------------------------------------------------------
+
+/// SlotKillCtx is the kill thunk's context for one in-flight slot: the slot's
+/// spawner + Io + a pointer to the slot's live `Handle`. `interruptKill` hard-
+/// kills that child via the spawner. Kept separate from `interrupt.zig` so that
+/// module carries no spawn.zig dependency (it is a pure callback-driven
+/// sequencer).
+const SlotKillCtx = struct {
+    spawner: spawn.Spawner,
+    io: std.Io,
+    handle: *spawn.Handle,
+};
+
+fn interruptKill(ctx: ?*anyopaque) void {
+    const k: *SlotKillCtx = @ptrCast(@alignCast(ctx.?));
+    k.spawner.kill(k.io, k.handle);
+}
+
+/// InterruptShutdownCtx carries the per-run state the release/teardown/heartbeat
+/// callbacks need: the heartbeat registry to stop+unregister against, plus the
+/// allocator/io and the `skip_terminal_subprocess` gate (so unit-test paths
+/// that drive a FakeSpawner never shell `planar-agent`/`git`).
+const InterruptShutdownCtx = struct {
+    heartbeat_reg: ?*heartbeat.HeartbeatRegistry,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    repo_root: []const u8,
+    /// True ⇒ do NOT shell terminal verbs / git teardown (unit-test paths).
+    skip_subprocess: bool,
+};
+
+fn interruptStopHeartbeat(ctx: ?*anyopaque) void {
+    const sc: *InterruptShutdownCtx = @ptrCast(@alignCast(ctx.?));
+    // Stop FIRST (§12): join the refresher before any claim is released so it
+    // cannot re-extend a lease the release is about to expire.
+    if (sc.heartbeat_reg) |hb| hb.stop();
+}
+
+fn interruptUnregister(ctx: ?*anyopaque, token: []const u8) void {
+    const sc: *InterruptShutdownCtx = @ptrCast(@alignCast(ctx.?));
+    if (sc.heartbeat_reg) |hb| hb.unregister(token);
+}
+
+fn interruptRelease(ctx: ?*anyopaque, token: []const u8) void {
+    const sc: *InterruptShutdownCtx = @ptrCast(@alignCast(ctx.?));
+    if (sc.skip_subprocess) return;
+    // SIGINT → release (operator interrupt = abandon-for-retry, not fail).
+    // Best-effort: a failure is recovered by next-startup reconcile.
+    terminal.runTerminalVerb(sc.allocator, sc.io, .release, token) catch {};
+}
+
+fn interruptTeardown(ctx: ?*anyopaque, plan_slug: []const u8, task_slug: []const u8) void {
+    const sc: *InterruptShutdownCtx = @ptrCast(@alignCast(ctx.?));
+    if (sc.skip_subprocess) return;
+    if (sc.repo_root.len == 0) return;
+    // Best-effort: a run-id-scoped worktree-prune on next startup is the backstop.
+    worktree.teardownCycle(sc.allocator, sc.io, sc.repo_root, plan_slug, task_slug) catch {};
+}
+
+/// runInterruptShutdown builds an `interrupt.ShutdownPlan` from every in-flight
+/// scheduler slot and runs the ordered off-signal cleanup. Called on the MAIN
+/// thread the moment the drive loop observes `interrupt.requested()`. Each
+/// in-use slot's `payload` is its `AgentCallState` (claim token + task slug +
+/// driver); the kill context is the slot's spawner + live handle.
+///
+/// MAX_SLOTS-bounded fixed buffers keep this allocation-free on the shutdown
+/// path (the slot registry is itself fixed at MAX_SLOTS).
+fn runInterruptShutdown(hs: *HostState) void {
+    const sched = hs.sched orelse {
+        // No scheduler ⇒ pure-Lua run with no workers. Still stop the heartbeat
+        // (a no-op if none was started) so the contract holds uniformly.
+        if (hs.heartbeat_reg) |hb| hb.stop();
+        return;
+    };
+
+    var workers: [scheduler.MAX_SLOTS]interrupt.InflightWorker = undefined;
+    var kill_ctxs: [scheduler.MAX_SLOTS]SlotKillCtx = undefined;
+    var n: usize = 0;
+
+    // The driver supplies the allocator/io/repo_root + the skip-subprocess gate.
+    // When no driver is attached (no workers possible) the per-worker loops are
+    // empty and only the heartbeat stop fires.
+    var sc = InterruptShutdownCtx{
+        .heartbeat_reg = hs.heartbeat_reg,
+        .allocator = hs.allocator,
+        .io = undefined,
+        .repo_root = "",
+        .skip_subprocess = true,
+    };
+
+    for (&sched.slots) |*slot| {
+        if (!slot.in_use) continue;
+        const payload = slot.payload orelse continue;
+        const acs: *AgentCallState = @ptrCast(@alignCast(payload));
+        const driver = acs.driver;
+        // Fill the shutdown ctx from the first live slot's driver (all slots in a
+        // run share the same driver wiring).
+        sc.io = driver.io;
+        sc.repo_root = driver.repo_root;
+        sc.skip_subprocess = driver.skip_terminal_subprocess;
+
+        kill_ctxs[n] = .{ .spawner = driver.spawner, .io = driver.io, .handle = &slot.handle };
+        workers[n] = .{
+            .claim_token = acs.claim_token,
+            .plan_slug = driver.plan_slug,
+            .task_slug = acs.task_slug,
+            .kill_ctx = &kill_ctxs[n],
+        };
+        n += 1;
+    }
+
+    interrupt.shutdown(.{
+        .workers = workers[0..n],
+        .stop_heartbeat_fn = interruptStopHeartbeat,
+        .stop_heartbeat_ctx = &sc,
+        .kill_fn = interruptKill,
+        .unregister_fn = interruptUnregister,
+        .unregister_ctx = &sc,
+        .release_fn = interruptRelease,
+        .release_ctx = &sc,
+        .teardown_fn = interruptTeardown,
+        .teardown_ctx = &sc,
+    });
+
+    // The coroutine drive is abandoned (we are unwinding the run, not resuming
+    // the parked continuations). Free each in-flight slot's host-owned state:
+    // the `AgentCallState` payload (its token/slug/env dupes) and any
+    // already-driven-but-unconsumed `outcome`, then release the slot. The kill
+    // above consumed each live handle, so no handle drain is needed here.
+    for (&sched.slots, 0..) |*slot, idx| {
+        if (!slot.in_use) continue;
+        if (slot.outcome) |*o| {
+            o.deinit(hs.allocator);
+            slot.outcome = null;
+        }
+        if (slot.payload) |payload| {
+            const acs: *AgentCallState = @ptrCast(@alignCast(payload));
+            acs.destroy();
+        }
+        sched.releaseSlot(idx);
+    }
 }
 
 /// callRun is a backwards-compatible wrapper for runModule with no HostState
