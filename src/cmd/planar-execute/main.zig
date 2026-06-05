@@ -135,6 +135,14 @@ pub const heartbeat = @import("heartbeat.zig");
 /// planar_execute_gate_lazy_eval — a pub-const alias forces analysis).
 pub const interrupt = @import("interrupt.zig");
 
+/// runlock — single-instance-per-plan run-lock (M6 task 3191). An O_EXCL lock
+/// keyed by plan-id carrying run-id + PID: refuse start on a LIVE lock,
+/// take over a stale one gated on PID liveness. Acquired at gated-real-agent
+/// run start, released on clean exit + best-effort on interrupt. Aliased here
+/// so its `test` blocks run under the execute_exe_tests target (memory:
+/// planar_execute_gate_lazy_eval — a pub-const alias forces analysis).
+pub const runlock = @import("runlock.zig");
+
 // ---------------------------------------------------------------------------
 // Process-global I/O context (no runtime module — planar-execute has no DB).
 // ---------------------------------------------------------------------------
@@ -3086,6 +3094,19 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
     var live_plan_slug: ?std.json.Parsed(state.PlanShow) = null;
     defer if (live_plan_slug) |*p| p.deinit();
 
+    // The single-instance-per-plan run-lock (task 3191). Acquired below ONLY for
+    // a gated real-agent run (binaries resolved + a plan id), where claim /
+    // worktree contention between two runs on the same plan can actually
+    // corrupt state. It must outlive `runModule` (held for the whole run), so it
+    // lives on this frame; released on clean exit (defer) and best-effort on the
+    // SIGINT path (the interrupt drive loop tears down via interrupt.shutdown;
+    // the stale-takeover is the backstop for a crashed run that never releases).
+    var run_lock: ?runlock.RunLock = null;
+    defer if (run_lock) |*l| {
+        l.release();
+        l.deinit();
+    };
+
     if (ctx.environ.getPosix("PLANAR_EXECUTE_LIVE_AGENT") != null) {
         // --- task 3264: best-effort attachment --------------------------------
         //
@@ -3163,6 +3184,42 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
             .live_binaries_resolved = binaries_ok,
         };
         host.agent_driver = &live_driver;
+
+        // --- task 3191: single-instance-per-plan run-lock --------------------
+        //
+        // A gated real-agent run scoped to a plan cuts worktrees and claims
+        // tasks under that plan. Two such runs on the SAME plan would corrupt
+        // each other (racing claims, colliding cycle worktrees, one run's
+        // reconcile pruning the other's live state). Take an O_EXCL lock keyed
+        // by plan-id BEFORE any worker/claim/worktree exists. On a LIVE holder
+        // we REFUSE (exit non-zero); on a stale lock (dead holder PID) we take
+        // over. The lock is scoped to gated runs WITH a plan: an agent-free /
+        // pure-Lua run (no real workers, no claims, no worktrees) has no
+        // contention to guard, and a gated run without --plan has no plan key.
+        if (binaries_ok and plan > 0) {
+            if (runlock.acquire(allocator, ctx.io, plan, .{
+                .repo_root = if (live_repo_root) |r| r else "",
+            })) |lock| {
+                run_lock = lock;
+            } else |e| switch (e) {
+                error.RunLockHeld => {
+                    try ctx.stderr.print(
+                        "planar-execute: refusing to start: another run already holds the single-instance lock for plan {d} (see the run-lock note above). Stop the other run, or wait for it to finish, before re-running.\n",
+                        .{plan},
+                    );
+                    try flushCtx();
+                    std.process.exit(1);
+                },
+                else => {
+                    // FsError / OutOfMemory: degrade gracefully — proceed
+                    // without the lock rather than block an otherwise-valid run.
+                    try ctx.stderr.print(
+                        "planar-execute: NOTE: could not acquire the single-instance run-lock for plan {d}: {s}; proceeding without it\n",
+                        .{ plan, @errorName(e) },
+                    );
+                },
+            }
+        }
     }
 
     // Invoke run(ctx) with the trailing args threaded into ctx.args and the
