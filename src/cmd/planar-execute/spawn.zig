@@ -384,6 +384,10 @@ pub const FakeHandle = struct {
     /// Number of `poll` calls that still report "still running" before the
     /// handle reports terminal. Zero ⇒ the next poll returns the outcome.
     poll_remaining: u32,
+    /// Monotonic id assigned at `start` (== the start_count at start time).
+    /// Used to remove this worker from the live-worker overlap registry at
+    /// terminal (poll/wait), so the registry tracks exactly the in-flight set.
+    id: u32 = 0,
 };
 
 // ---------------------------------------------------------------------------
@@ -715,6 +719,32 @@ pub const EnvPair = struct {
     value: []const u8,
 };
 
+/// A worker currently in flight, tracked for the overlap (no-barrier) registry.
+/// `id` matches the FakeHandle id so terminal can remove the right entry; `brief`
+/// is a heap-owned dupe identifying the worker.
+pub const LiveWorker = struct {
+    id: u32,
+    brief: []const u8,
+};
+
+/// One overlap observation recorded at a `start`: `brief` is the worker being
+/// started; `concurrent` is the set of briefs of every OTHER worker already in
+/// flight at that instant. Both are heap-owned. Used by the pipeline no-barrier
+/// test to prove two named workers overlapped in time.
+pub const OverlapObs = struct {
+    brief: []const u8,
+    concurrent: [][]const u8,
+
+    /// Returns true if `other` was among the workers in flight when this worker
+    /// started — i.e. the two workers overlapped in time.
+    pub fn overlapsWith(self: OverlapObs, other: []const u8) bool {
+        for (self.concurrent) |b| {
+            if (std.mem.eql(u8, b, other)) return true;
+        }
+        return false;
+    }
+};
+
 /// State for a FakeSpawner: the canned outcome it returns AND the list of
 /// invocations it has recorded. Tests inspect `invocations` after their run to
 /// assert what the harness would have spawned.
@@ -770,6 +800,25 @@ pub const FakeSpawnerState = struct {
     live_inflight: u32 = 0,
     peak_inflight: u32 = 0,
 
+    // ---- M5 pipeline no-barrier observability (task 3184) ----
+    //
+    // `peak_inflight` is only a high-water count; the pipeline "no barrier
+    // between stages" contract needs to prove that a SPECIFIC pair of workers
+    // overlapped in time (e.g. item-A's stage-2 worker was in flight while
+    // item-B's stage-1 worker had NOT yet finished). These two structures make
+    // that provable: `live_workers` is the set of workers currently in flight
+    // (keyed by the brief they were started with), and `overlap_obs` records,
+    // at each `start`, the briefs of every OTHER worker already in flight at
+    // that instant. A test asserts "when stage2-A started, stage1-B was live".
+    /// Briefs of the workers currently in flight (added at `start`, removed at
+    /// terminal). Heap-owned dupes; freed in `deinit`. Bounded by MAX_SLOTS in
+    /// practice but stored as a growable list for simplicity.
+    live_workers: std.ArrayList(LiveWorker) = .empty,
+    /// One observation per `start`: the brief of the worker being started and a
+    /// snapshot of the briefs of every OTHER worker live at that instant. Lets a
+    /// test prove temporal overlap between two named workers.
+    overlap_obs: std.ArrayList(OverlapObs) = .empty,
+
     pub fn init(
         allocator: std.mem.Allocator,
         canned_exit_code: u32,
@@ -788,6 +837,25 @@ pub const FakeSpawnerState = struct {
     pub fn deinit(self: *FakeSpawnerState) void {
         for (self.invocations.items) |*inv| inv.deinit(self.allocator);
         self.invocations.deinit(self.allocator);
+        for (self.live_workers.items) |w| self.allocator.free(w.brief);
+        self.live_workers.deinit(self.allocator);
+        for (self.overlap_obs.items) |o| {
+            self.allocator.free(o.brief);
+            for (o.concurrent) |b| self.allocator.free(b);
+            self.allocator.free(o.concurrent);
+        }
+        self.overlap_obs.deinit(self.allocator);
+    }
+
+    /// overlapObsFor returns the overlap observation recorded when the worker
+    /// started with `brief` was spawned, or null if no such start was recorded.
+    /// Returns the FIRST matching observation (briefs are unique per worker in
+    /// the pipeline tests).
+    pub fn overlapObsFor(self: *FakeSpawnerState, brief: []const u8) ?OverlapObs {
+        for (self.overlap_obs.items) |o| {
+            if (std.mem.eql(u8, o.brief, brief)) return o;
+        }
+        return null;
     }
 
     /// Build a Spawner that drives this state.
@@ -913,7 +981,59 @@ fn fakeStartFn(
     // Track live + peak in-flight for the concurrency/queueing assertions.
     state.live_inflight += 1;
     if (state.live_inflight > state.peak_inflight) state.peak_inflight = state.live_inflight;
-    return .{ .fake = .{ .state = state, .poll_remaining = poll_remaining } };
+
+    // Overlap (no-barrier) instrumentation: snapshot every OTHER worker live at
+    // this instant, then register this worker as live. A recording failure
+    // surfaces as OutOfMemory (the test would catch it loudly).
+    recordOverlapStart(state, start_index, inputs.brief) catch return SpawnError.OutOfMemory;
+
+    return .{ .fake = .{ .state = state, .poll_remaining = poll_remaining, .id = start_index } };
+}
+
+/// recordOverlapStart snapshots the set of currently-live worker briefs into a
+/// new `OverlapObs` for the worker being started (with `brief`), then registers
+/// the new worker in `live_workers`. The snapshot is taken BEFORE adding the new
+/// worker, so `concurrent` is exactly the OTHER workers in flight at this start.
+fn recordOverlapStart(state: *FakeSpawnerState, id: u32, brief: []const u8) !void {
+    var concurrent: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (concurrent.items) |b| state.allocator.free(b);
+        concurrent.deinit(state.allocator);
+    }
+    for (state.live_workers.items) |w| {
+        const dup = try state.allocator.dupe(u8, w.brief);
+        errdefer state.allocator.free(dup);
+        try concurrent.append(state.allocator, dup);
+    }
+    const concurrent_owned = try concurrent.toOwnedSlice(state.allocator);
+    errdefer {
+        for (concurrent_owned) |b| state.allocator.free(b);
+        state.allocator.free(concurrent_owned);
+    }
+    const brief_for_obs = try state.allocator.dupe(u8, brief);
+    errdefer state.allocator.free(brief_for_obs);
+    try state.overlap_obs.append(state.allocator, .{
+        .brief = brief_for_obs,
+        .concurrent = concurrent_owned,
+    });
+
+    // Register the new worker as live (a separate owned dupe of the brief).
+    const brief_for_live = try state.allocator.dupe(u8, brief);
+    errdefer state.allocator.free(brief_for_live);
+    try state.live_workers.append(state.allocator, .{ .id = id, .brief = brief_for_live });
+}
+
+/// removeLiveWorker drops the worker with `id` from the live-worker registry
+/// (called at terminal). Freeing its owned brief. A no-op if absent (a worker
+/// driven via `wait` after already removed — defensive).
+fn removeLiveWorker(state: *FakeSpawnerState, id: u32) void {
+    for (state.live_workers.items, 0..) |w, i| {
+        if (w.id == id) {
+            state.allocator.free(w.brief);
+            _ = state.live_workers.orderedRemove(i);
+            return;
+        }
+    }
 }
 
 /// fakePollFn is the non-blocking probe. Returns null (still running) while
@@ -934,6 +1054,7 @@ fn fakePollFn(
     }
     state.reached_terminal = true;
     if (state.live_inflight > 0) state.live_inflight -= 1;
+    removeLiveWorker(state, handle.fake.id);
     return try cannedOutcome(state, allocator);
 }
 
@@ -946,11 +1067,11 @@ fn fakeWaitFn(
     handle: *Handle,
 ) SpawnError!SpawnOutcome {
     _ = io;
-    _ = handle;
     const state: *FakeSpawnerState = @ptrCast(@alignCast(ctx.?));
     state.wait_count += 1;
     state.reached_terminal = true;
     if (state.live_inflight > 0) state.live_inflight -= 1;
+    removeLiveWorker(state, handle.fake.id);
     return try cannedOutcome(state, allocator);
 }
 

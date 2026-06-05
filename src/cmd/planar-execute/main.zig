@@ -1041,14 +1041,22 @@ fn hostAgent(L: ?*c.lua_State) callconv(.c) c_int {
     return driveAgentCallPreYield(L, hs, driver, prompt, opts);
 }
 
-/// ParallelChild is the per-thunk drive bookkeeping for one `parallel` call.
-/// One entry per thunk, in ORIGINAL order (so `results[i]` lands in the right
-/// slot regardless of completion order).
-const ParallelChild = struct {
-    /// The child coroutine running thunk[i]. Anchored against GC for the whole
-    /// `parallel` lifetime by an anchor table on the parent stack (see below).
+/// DriveChild is the per-child drive bookkeeping for one N-way concurrent run.
+/// Shared by `parallel` (one child per thunk) and `pipeline` (one child per
+/// item, running the shared stage-runner over that item's stage chain). One
+/// entry per child, in ORIGINAL order (so `results[i]` lands in the right slot
+/// regardless of completion order).
+const DriveChild = struct {
+    /// The child coroutine. Anchored against GC for the whole drive lifetime by
+    /// an anchor table on the parent stack (see the caller).
     co: *c.lua_State,
-    /// Has this child been resumed at least once (its thunk started running)?
+    /// Number of arguments already pushed on `co`'s stack to pass on the FIRST
+    /// resume. `parallel` thunks take 0; `pipeline` item-runners take 3
+    /// (`stages, item, index`). Reset to 0 after the first resume — a
+    /// resume-after-yield passes no values back to the yield point (the agent
+    /// continuation reads its result from the scheduler slot).
+    pending_nargs: c_int = 0,
+    /// Has this child been resumed at least once (its body started running)?
     started: bool = false,
     /// Has this child finished (returned or errored)? Its result is captured.
     done: bool = false,
@@ -1056,6 +1064,10 @@ const ParallelChild = struct {
     /// agent())? True between the yield and the wait-for-any that resumes it.
     in_flight: bool = false,
 };
+
+/// ParallelChild is retained as an alias for DriveChild so existing call sites
+/// and tests read naturally. The struct is shared with `pipeline`.
+const ParallelChild = DriveChild;
 
 /// hostParallel — `parallel({thunks})`. The N-way concurrency barrier (plan 492
 /// M5 task 3183), modeled on the Claude Workflow tool's `parallel`:
@@ -1144,7 +1156,7 @@ fn hostParallel(L: ?*c.lua_State) callconv(.c) c_int {
         children[i] = .{ .co = co };
     }
 
-    driveParallelChildren(L, sched, children, results_idx);
+    driveChildren(L, sched, children, results_idx);
 
     // The results table is at results_idx; make it the single return value.
     // Push a copy to the top so we can return it (anchors + results stay on the
@@ -1159,15 +1171,23 @@ fn resumeStatusOf(rc: c_int) scheduler.ResumeStatus {
     return scheduler.classifyResume(rc);
 }
 
-/// driveParallelChildren is the core N-way drive loop. It resumes children up to
-/// the concurrency cap, parks those that yield (their worker is in flight),
-/// waits-for-any when it cannot start more, resumes the owning child, and
-/// captures each child's terminal result into `results[i]` (original order;
-/// errors → nil). Returns when every child is done.
-fn driveParallelChildren(
+/// driveChildren is the core N-way drive loop, SHARED by `parallel` and
+/// `pipeline`. It resumes children up to the concurrency cap, parks those that
+/// yield (their worker is in flight), waits-for-any when it cannot start more,
+/// resumes the owning child, and captures each child's terminal result into
+/// `results[i]` (original order; errors → nil). Returns when every child is
+/// done.
+///
+/// The ONLY difference between the two callers is how each child coroutine is
+/// SET UP before this loop runs: `parallel` pushes a zero-arg thunk
+/// (`pending_nargs = 0`); `pipeline` pushes the stage-runner + `(stages, item,
+/// index)` (`pending_nargs = 3`). The concurrency machinery — slot registry,
+/// wait-for-any, owner lookup, original-order capture, MAX_SLOTS gating — is
+/// identical, so it lives here once.
+fn driveChildren(
     L: ?*c.lua_State,
     sched: *scheduler.Scheduler,
-    children: []ParallelChild,
+    children: []DriveChild,
     results_idx: c_int,
 ) void {
     const n = children.len;
@@ -1237,13 +1257,19 @@ fn driveParallelChildren(
 /// (or nil on error) into `results[i]`.
 fn resumeOneChild(
     L: ?*c.lua_State,
-    children: []ParallelChild,
+    children: []DriveChild,
     i: usize,
     results_idx: c_int,
 ) usize {
     const co = children[i].co;
+    // The FIRST resume passes the child's pre-pushed arguments (0 for a parallel
+    // thunk, 3 for a pipeline item-runner). Every resume-after-yield passes 0
+    // (the agent continuation reads its result from the scheduler slot, not from
+    // resume args). We consume pending_nargs and clear it so re-yields use 0.
+    const nargs = children[i].pending_nargs;
+    children[i].pending_nargs = 0;
     var nres: c_int = 0;
-    const rc = c.lua_resume(co, L, 0, &nres);
+    const rc = c.lua_resume(co, L, nargs, &nres);
     switch (resumeStatusOf(rc)) {
         .yielded => {
             // The child's agent() registered a worker + yielded. Park it.
@@ -1284,29 +1310,183 @@ fn setResultNil(L: ?*c.lua_State, results_idx: c_int, i: usize) void {
 /// findChildByCo returns the index of the child whose coroutine pointer matches
 /// `co`, or null if none (used to map a terminal scheduler slot back to the
 /// owning parallel child).
-fn findChildByCo(children: []ParallelChild, co: *c.lua_State) ?usize {
+fn findChildByCo(children: []DriveChild, co: *c.lua_State) ?usize {
     for (children, 0..) |ch, i| {
         if (ch.co == co) return i;
     }
     return null;
 }
 
-/// hostPipeline — `pipeline(items, ...stages)`. RECORDING STUB. Records the item
-/// count and the stage count; does NOT run any item through any stage (M5).
-/// Returns an empty stub results array.
+/// PIPELINE_RUNNER_SRC is the per-item stage-chain runner (plan 492 task 3184).
+/// It is a Lua chunk that, when loaded + executed, RETURNS the runner function:
+///
+///   runner(stages, item, index) -> finalResult | nil
+///
+/// It runs `item` through every stage in `stages` in order, threading each
+/// stage's result into the next stage's first argument and passing the ORIGINAL
+/// item + 1-based index as the 2nd/3rd args (the Workflow-tool stage signature
+/// `(prevResult, originalItem, index)`). Each stage is invoked under `pcall`:
+///
+///   - A stage that ERRORS drops the item to `nil` and SKIPS its remaining
+///     stages (the Workflow-tool contract — `pipeline` never propagates the
+///     error). The runner returns nil for that item.
+///   - Lua 5.4's `pcall` is YIELDABLE: when a stage calls `agent()` (which
+///     `lua_yield`s across the C boundary), the yield propagates out THROUGH the
+///     pcall to the scheduler, and the scheduler's resume re-enters the pcall on
+///     continuation. This is why a stage may spawn a worker even though it runs
+///     under pcall — the runner-with-pcall shape is correct precisely because
+///     5.4 made pcall continuation-aware.
+const PIPELINE_RUNNER_SRC =
+    \\return function(stages, item, index)
+    \\  local r = item
+    \\  for k = 1, #stages do
+    \\    local ok, res = pcall(stages[k], r, item, index)
+    \\    if not ok then return nil end
+    \\    r = res
+    \\  end
+    \\  return r
+    \\end
+;
+
+/// hostPipeline — `pipeline(items, ...stages)`. The per-item stage-chain runner
+/// (plan 492 M5 task 3184), modeled on the Claude Workflow tool's `pipeline`:
+///
+///   - Input is a Lua array `items` followed by zero or more STAGE functions.
+///   - Each item flows through ALL stages independently, with NO BARRIER between
+///     stages: item A can be in stage 3 while item B is still in stage 1. This
+///     falls out for free because each item runs its WHOLE stage chain in its
+///     own coroutine, all N concurrent — wall-clock is the slowest single-item
+///     chain, not the sum of per-stage barriers.
+///   - Stage signature `(prevResult, originalItem, index)`. Stage 1 gets
+///     `(item, item, index)`; stage 2 gets `(stage1_result, item, index)`; etc.
+///   - Returns an array of final results, `results[i]` = the last stage's value
+///     for item i, in ORIGINAL item order.
+///   - A stage that errors drops THAT item to `nil` and skips its remaining
+///     stages; `pipeline` itself never propagates the error.
+///
+/// ## Reuse — the shared N-coroutine drive
+///
+/// `pipeline` reuses the EXACT concurrency machinery `parallel` (task 3183)
+/// built: one child coroutine per item, driven by the shared `driveChildren`
+/// loop over the scheduler's slot registry + `waitForAny`, capped at MAX_SLOTS.
+/// The only pipeline-specific work is the SETUP: each child runs the shared
+/// stage-runner (`PIPELINE_RUNNER_SRC`) with `(stages, item, index)` pre-pushed
+/// (`pending_nargs = 3`). Everything downstream — wait-for-any, owner lookup,
+/// original-order capture, error→nil — is identical to parallel and lives in
+/// `driveChildren`, not duplicated here.
 fn hostPipeline(L: ?*c.lua_State) callconv(.c) c_int {
     const hs = hostStateUpvalue(L);
-    var items: c.lua_Integer = 0;
-    if (c.lua_type(L, 1) == c.LUA_TTABLE) items = @intCast(c.lua_rawlen(L, 1));
-    // Remaining varargs (indices 2..top) are the stages.
+
+    // Validate items. A non-table first arg is a script-author bug → record the
+    // shape and return an empty results array (consistent no-fail contract).
+    if (c.lua_type(L, 1) != c.LUA_TTABLE) {
+        recordOrError(L, hs, .pipeline, "0 items", "0 stages");
+        c.lua_createtable(L, 0, 0);
+        return 1;
+    }
+    const n: usize = @intCast(c.lua_rawlen(L, 1));
+    // Stage count: every vararg after `items` (indices 2..top) is a stage.
     const top = c.lua_gettop(L);
-    const stages: c_int = if (top >= 2) top - 1 else 0;
+    const m: usize = if (top >= 2) @intCast(top - 1) else 0;
+
     var buf0: [32]u8 = undefined;
     var buf1: [32]u8 = undefined;
-    const items_shape = std.fmt.bufPrint(&buf0, "{d} items", .{items}) catch "? items";
-    const stages_shape = std.fmt.bufPrint(&buf1, "{d} stages", .{stages}) catch "? stages";
+    const items_shape = std.fmt.bufPrint(&buf0, "{d} items", .{n}) catch "? items";
+    const stages_shape = std.fmt.bufPrint(&buf1, "{d} stages", .{m}) catch "? stages";
     recordOrError(L, hs, .pipeline, items_shape, stages_shape);
-    c.lua_createtable(L, 0, 0);
+
+    // Empty items → empty results array (regardless of stage count).
+    if (n == 0) {
+        c.lua_createtable(L, 0, 0);
+        return 1;
+    }
+
+    const sched = hs.sched orelse {
+        _ = c.luaL_error(L, "pipeline: no scheduler installed (internal wiring bug)");
+        return 0;
+    };
+
+    // Collect the stage varargs (2..top) into a single `stages` table so the
+    // runner receives them as `stages[1..m]`. With zero stages this is an empty
+    // table — the runner's `for k = 1, #stages` body never runs and each item
+    // passes through unchanged (identity), which is the sane zero-stage answer.
+    c.lua_createtable(L, @intCast(m), 0); // L: [..., stages_table]
+    const stages_idx: c_int = c.lua_absindex(L, -1);
+    for (0..m) |k| {
+        c.lua_pushvalue(L, @intCast(2 + k)); // copy stage arg onto top
+        c.lua_rawseti(L, stages_idx, @intCast(k + 1)); // stages[k+1] = stage; pops
+    }
+
+    // Load the shared stage-runner chunk and execute it to obtain the runner
+    // FUNCTION (the chunk `return`s the function). Errors here are internal
+    // wiring bugs (the source is a compile-time constant).
+    if (c.luaL_loadstring(L, PIPELINE_RUNNER_SRC) != c.LUA_OK) {
+        _ = c.luaL_error(L, "pipeline: failed to load stage-runner (internal bug)");
+        return 0;
+    }
+    // Use lua_pcallk directly (the Zig cImport of the lua_pcall macro mis-infers
+    // its errfunc argument; the codebase calls lua_pcallk with typed nulls — see
+    // loadModuleState). No continuation needed: this runs at module-load time,
+    // never across a yield.
+    if (c.lua_pcallk(L, 0, 1, 0, 0, null) != c.LUA_OK) {
+        _ = c.luaL_error(L, "pipeline: failed to build stage-runner (internal bug)");
+        return 0;
+    }
+    const runner_idx: c_int = c.lua_absindex(L, -1); // L: [..., stages, runner]
+
+    // Anchor table: holds every child coroutine for the whole pipeline lifetime
+    // so the GC cannot collect a coroutine we still hold a raw pointer to (the
+    // use-after-free hazard the parallel reviewer pinned). Lives at a fixed
+    // stack index on L; nothing pops it before driveChildren returns.
+    c.lua_createtable(L, @intCast(n), 0); // L: [..., stages, runner, anchors]
+    const anchors_idx: c_int = c.lua_absindex(L, -1);
+
+    // Results table — 1-indexed, original order. Built on L; returned at the end.
+    c.lua_createtable(L, @intCast(n), 0); // L: [..., stages, runner, anchors, results]
+    const results_idx: c_int = c.lua_absindex(L, -1);
+
+    // Per-item child bookkeeping. Heap-allocated (N is unbounded; MAX_SLOTS only
+    // caps concurrency, not the item count).
+    const children = hs.allocator.alloc(DriveChild, n) catch {
+        _ = c.luaL_error(L, "pipeline: out of memory");
+        return 0;
+    };
+    defer hs.allocator.free(children);
+
+    // Materialize one child coroutine per item and anchor it. Each child's stack
+    // gets `[runner, stages, item_i, index_i]` so its first resume calls
+    // runner(stages, item_i, index_i) — pending_nargs = 3.
+    for (0..n) |i| {
+        const co = c.lua_newthread(L) orelse {
+            _ = c.luaL_error(L, "pipeline: out of memory creating coroutine");
+            return 0;
+        };
+        // Anchor the new thread (currently on L's top) into the anchor table at
+        // index i+1, which pops it from L's top. We keep the raw pointer in
+        // `children`; the anchor table keeps it alive against GC. Done BEFORE any
+        // further GC-triggering allocation below (the parallel discipline).
+        c.lua_rawseti(L, anchors_idx, @intCast(i + 1)); // pops thread
+
+        // Push runner (a copy) onto the child stack.
+        c.lua_pushvalue(L, runner_idx); // L top: runner
+        c.lua_xmove(L, co, 1); // co: [runner]
+        // Push stages table (a copy) onto the child stack.
+        c.lua_pushvalue(L, stages_idx); // L top: stages
+        c.lua_xmove(L, co, 1); // co: [runner, stages]
+        // Push item_i (from the items table at index 1) onto the child stack.
+        _ = c.lua_rawgeti(L, 1, @intCast(i + 1)); // L top: item_i
+        c.lua_xmove(L, co, 1); // co: [runner, stages, item_i]
+        // Push the 1-based index onto the child stack.
+        c.lua_pushinteger(co, @intCast(i + 1)); // co: [runner, stages, item_i, index]
+
+        children[i] = .{ .co = co, .pending_nargs = 3 };
+    }
+
+    driveChildren(L, sched, children, results_idx);
+
+    // Return the results table (push a copy to the top; the other entries stay
+    // on the stack but Lua returns only the top `1` value).
+    c.lua_pushvalue(L, results_idx);
     return 1;
 }
 
@@ -4084,4 +4264,345 @@ test "M5 parallel: a thunk may call agent() MULTIPLE times (re-yield), still ret
     };
     // Three total agent() spawns: twice(2) + once(1).
     try std.testing.expectEqual(@as(u32, 3), fake.start_count);
+}
+
+// ---------------------------------------------------------------------------
+// M5 pipeline() — per-item stage chains, NO barrier between stages (task 3184).
+//
+// pipeline reuses parallel's N-coroutine drive (driveChildren) over per-item
+// stage-runner coroutines. The defining property is the ABSENCE of a per-stage
+// barrier: item A can be in stage 2 while item B is still in stage 1. The
+// FakeSpawner's overlap-observation registry (overlap_obs / overlapObsFor)
+// makes that temporal overlap provable: each agent() call is tagged with a
+// distinct brief, and we assert that when A's stage-2 worker STARTED, B's
+// stage-1 worker was still in flight.
+// ---------------------------------------------------------------------------
+
+test "M5 pipeline: NO BARRIER — item A reaches stage 2 while item B is still in stage 1" {
+    // items = { "A", "B" }, two stages, each stage calls agent() with a
+    // brief tagging (item, stage). Fakes are tuned so:
+    //   start 0 = A-s1 (poll 0 → terminal first),
+    //   start 1 = B-s1 (poll 5 → slow),
+    //   start 2 = A-s2 (poll 0 → fast), start 3 = B-s2.
+    // A-s1 finishes first → A advances into stage 2 and spawns A-s2 WHILE
+    // B-s1 is still in flight. The overlap registry proves A-s2 overlapped
+    // B-s1 — i.e. there is no barrier forcing A to wait for B to clear stage 1.
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    const seq = [_]u32{ 0, 5, 0, 0 };
+    fake.poll_until_done_seq = &seq;
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+
+    const src =
+        \\return {
+        \\  meta = { name = "m5-pipe-nobarrier", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local function stage(s)
+        \\      return function(prev, item, idx)
+        \\        ctx.agent(item .. "-s" .. s, { role = "coder", worktree_path = "/tmp/" .. item .. s, claim_token = "t-" .. item .. s, task_slug = item })
+        \\        return prev .. "-s" .. s
+        \\      end
+        \\    end
+        \\    local r = ctx.pipeline({ "A", "B" }, stage(1), stage(2))
+        \\    assert(#r == 2, "len: " .. tostring(#r))
+        \\    assert(r[1] == "A-s1-s2", "r1: " .. tostring(r[1]))
+        \\    assert(r[2] == "B-s1-s2", "r2: " .. tostring(r[2]))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    runModule(src, "test:m5-pipe-nobarrier", &.{}, &host, &err_buf) catch |e| {
+        std.debug.print("pipeline no-barrier failed: {s}\n", .{std.mem.span(@as([*:0]const u8, @ptrCast(&err_buf)))});
+        return e;
+    };
+
+    // Four agent() spawns total: A-s1, B-s1, A-s2, B-s2.
+    try std.testing.expectEqual(@as(u32, 4), fake.start_count);
+
+    // THE DEFINING ASSERTION: when A's stage-2 worker started, B's stage-1
+    // worker was still in flight — proving A crossed the stage-1→stage-2
+    // boundary WITHOUT waiting for B to finish stage 1 (no barrier).
+    const a_s2 = fake.overlapObsFor("A-s2") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(a_s2.overlapsWith("B-s1"));
+}
+
+test "M5 pipeline: a stage that errors drops THAT item to nil and SKIPS its remaining stages; siblings normal" {
+    // 3-stage pipeline over { "X", "Y" }. Item X's stage 2 errors → results[X]
+    // == nil AND stage 3 NEVER runs for X. Item Y flows through all three.
+    // We prove stage-3-skip-for-X via the agent brief registry: there must be a
+    // "Y-s3" spawn but NO "X-s3" spawn.
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+
+    const src =
+        \\return {
+        \\  meta = { name = "m5-pipe-err", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local s1 = function(prev, item, idx)
+        \\      ctx.agent(item .. "-s1", { role = "coder", worktree_path = "/tmp/" .. item .. "1", claim_token = "t", task_slug = item })
+        \\      return prev .. "-1"
+        \\    end
+        \\    local s2 = function(prev, item, idx)
+        \\      if item == "X" then error("X blew up in stage 2") end
+        \\      ctx.agent(item .. "-s2", { role = "coder", worktree_path = "/tmp/" .. item .. "2", claim_token = "t", task_slug = item })
+        \\      return prev .. "-2"
+        \\    end
+        \\    local s3 = function(prev, item, idx)
+        \\      ctx.agent(item .. "-s3", { role = "coder", worktree_path = "/tmp/" .. item .. "3", claim_token = "t", task_slug = item })
+        \\      return prev .. "-3"
+        \\    end
+        \\    local r = ctx.pipeline({ "X", "Y" }, s1, s2, s3)
+        \\    assert(r[1] == nil, "r1 should be nil (X dropped), got: " .. tostring(r[1]))
+        \\    assert(r[2] == "Y-1-2-3", "r2: " .. tostring(r[2]))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    runModule(src, "test:m5-pipe-err", &.{}, &host, &err_buf) catch |e| {
+        std.debug.print("pipeline stage-error failed: {s}\n", .{std.mem.span(@as([*:0]const u8, @ptrCast(&err_buf)))});
+        return e;
+    };
+
+    // Prove stage 3 was SKIPPED for X but ran for Y, by scanning the recorded
+    // spawn briefs. X spawned s1 only (s2 errored before agent()); Y spawned
+    // s1, s2, s3.
+    var saw_x_s3 = false;
+    var saw_y_s3 = false;
+    for (fake.invocations.items) |inv| {
+        if (std.mem.eql(u8, inv.brief, "X-s3")) saw_x_s3 = true;
+        if (std.mem.eql(u8, inv.brief, "Y-s3")) saw_y_s3 = true;
+    }
+    try std.testing.expect(!saw_x_s3); // stage 3 NEVER ran for the dropped item
+    try std.testing.expect(saw_y_s3); // the sibling completed all stages
+}
+
+test "M5 pipeline: items complete OUT OF ORDER → results in ORIGINAL order" {
+    // Three items, one stage that calls agent(). Tune completion so item 2
+    // finishes first, then item 3, then item 1 — yet results stay in original
+    // item order.
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    const seq = [_]u32{ 3, 0, 1 }; // item0 slow, item1 first, item2 middle
+    fake.poll_until_done_seq = &seq;
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+
+    const src =
+        \\return {
+        \\  meta = { name = "m5-pipe-order", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local s = function(prev, item, idx)
+        \\      ctx.agent("w" .. item, { role = "coder", worktree_path = "/tmp/" .. item, claim_token = "t", task_slug = tostring(item) })
+        \\      return "done-" .. item
+        \\    end
+        \\    local r = ctx.pipeline({ "one", "two", "three" }, s)
+        \\    assert(#r == 3, "len: " .. tostring(#r))
+        \\    assert(r[1] == "done-one", "r1: " .. tostring(r[1]))
+        \\    assert(r[2] == "done-two", "r2: " .. tostring(r[2]))
+        \\    assert(r[3] == "done-three", "r3: " .. tostring(r[3]))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    runModule(src, "test:m5-pipe-order", &.{}, &host, &err_buf) catch |e| {
+        std.debug.print("pipeline order failed: {s}\n", .{std.mem.span(@as([*:0]const u8, @ptrCast(&err_buf)))});
+        return e;
+    };
+    try std.testing.expectEqual(@as(u32, 3), fake.start_count);
+    // All three were in flight at once (no per-stage barrier with one stage =
+    // pure concurrency, like parallel).
+    try std.testing.expectEqual(@as(u32, 3), fake.peak_inflight);
+}
+
+test "M5 pipeline: stage signature is (prevResult, originalItem, index) with correct values" {
+    // Pure-Lua stages (no agent) that assert their arguments. Stage 1 sees
+    // prev == item; stage 2 sees prev == stage1's output; index is 1-based and
+    // correct per item.
+    const a = testing_alloc;
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    // No driver — pure-Lua stages.
+    const src =
+        \\return {
+        \\  meta = { name = "m5-pipe-sig", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local s1 = function(prev, item, idx)
+        \\      assert(prev == item, "stage1 prev should equal item: " .. tostring(prev) .. " vs " .. tostring(item))
+        \\      return "S1(" .. item .. "," .. idx .. ")"
+        \\    end
+        \\    local s2 = function(prev, item, idx)
+        \\      assert(prev == "S1(" .. item .. "," .. idx .. ")", "stage2 prev wrong: " .. tostring(prev))
+        \\      return "S2:" .. prev
+        \\    end
+        \\    local r = ctx.pipeline({ "alpha", "beta" }, s1, s2)
+        \\    assert(r[1] == "S2:S1(alpha,1)", "r1: " .. tostring(r[1]))
+        \\    assert(r[2] == "S2:S1(beta,2)", "r2: " .. tostring(r[2]))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    runModule(src, "test:m5-pipe-sig", &.{}, &host, &err_buf) catch |e| {
+        std.debug.print("pipeline signature failed: {s}\n", .{std.mem.span(@as([*:0]const u8, @ptrCast(&err_buf)))});
+        return e;
+    };
+}
+
+test "M5 pipeline: pure-Lua stages (no agent) run to completion, 0 workers" {
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+
+    const src =
+        \\return {
+        \\  meta = { name = "m5-pipe-pure", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local double = function(prev, item, idx) return prev * 2 end
+        \\    local inc = function(prev, item, idx) return prev + 1 end
+        \\    local r = ctx.pipeline({ 1, 2, 3 }, double, inc)
+        \\    assert(r[1] == 3 and r[2] == 5 and r[3] == 7, "values wrong: " .. tostring(r[1]) .. "," .. tostring(r[2]) .. "," .. tostring(r[3]))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:m5-pipe-pure", &.{}, &host, &err_buf);
+    // No worker ever started — no stage called agent().
+    try std.testing.expectEqual(@as(u32, 0), fake.start_count);
+}
+
+test "M5 pipeline: empty items returns empty results; zero stages is identity" {
+    const a = testing_alloc;
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    const src =
+        \\return {
+        \\  meta = { name = "m5-pipe-edge", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    -- empty items → empty results (regardless of stage count)
+        \\    local r0 = ctx.pipeline({}, function(p) return p end)
+        \\    assert(type(r0) == "table" and #r0 == 0, "empty items: " .. tostring(#r0))
+        \\    -- zero stages → identity (each item passes through unchanged)
+        \\    local r1 = ctx.pipeline({ "x", "y" })
+        \\    assert(#r1 == 2, "zero-stage len: " .. tostring(#r1))
+        \\    assert(r1[1] == "x" and r1[2] == "y", "zero-stage identity failed")
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:m5-pipe-edge", &.{}, &host, &err_buf);
+    // The first pipeline call recorded "0 items"; confirm the recording fires.
+    const call = findCall(&host, .pipeline) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("0 items", call.arg0);
+}
+
+test "M5 pipeline: N > MAX_SLOTS items queue — all results return, cap held" {
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    fake.poll_until_done = 1; // force the drive loop to cycle workers
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+
+    const src =
+        \\return {
+        \\  meta = { name = "m5-pipe-cap", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local items = {}
+        \\    for i = 1, 20 do items[i] = i end
+        \\    local s = function(prev, item, idx)
+        \\      ctx.agent("w" .. item, { role = "coder", worktree_path = "/tmp/w" .. item, claim_token = "t" .. item, task_slug = "s" .. item })
+        \\      return item * 10
+        \\    end
+        \\    local r = ctx.pipeline(items, s)
+        \\    assert(#r == 20, "len: " .. tostring(#r))
+        \\    for i = 1, 20 do assert(r[i] == i * 10, "r[" .. i .. "] = " .. tostring(r[i])) end
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    runModule(src, "test:m5-pipe-cap", &.{}, &host, &err_buf) catch |e| {
+        std.debug.print("pipeline N=20 failed: {s}\n", .{std.mem.span(@as([*:0]const u8, @ptrCast(&err_buf)))});
+        return e;
+    };
+    try std.testing.expectEqual(@as(u32, 20), fake.start_count);
+    // The concurrency cap held: never more than MAX_SLOTS workers at once.
+    try std.testing.expect(fake.peak_inflight <= scheduler.MAX_SLOTS);
+    try std.testing.expectEqual(@as(u32, scheduler.MAX_SLOTS), fake.peak_inflight);
+    try std.testing.expectEqual(@as(u32, 0), fake.live_inflight);
+}
+
+test "M5 pipeline: a single item's stage chain runs its agent() calls SEQUENTIALLY (one in flight at a time)" {
+    // One item, three stages each calling agent(). The chain is sequential
+    // WITHIN an item (stage k+1 cannot start until stage k's agent() resolves),
+    // so peak_inflight for a lone item is exactly 1 — confirming the in-flight
+    // count is bounded by items-in-an-agent-call, not items × stages.
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+
+    const src =
+        \\return {
+        \\  meta = { name = "m5-pipe-seq", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local mk = function(s) return function(prev, item, idx)
+        \\      ctx.agent("s" .. s, { role = "coder", worktree_path = "/tmp/" .. s, claim_token = "t" .. s, task_slug = "k" })
+        \\      return (prev or "") .. s
+        \\    end end
+        \\    local r = ctx.pipeline({ "X" }, mk(1), mk(2), mk(3))
+        \\    assert(r[1] == "X123", "r1: " .. tostring(r[1]))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    runModule(src, "test:m5-pipe-seq", &.{}, &host, &err_buf) catch |e| {
+        std.debug.print("pipeline single-item seq failed: {s}\n", .{std.mem.span(@as([*:0]const u8, @ptrCast(&err_buf)))});
+        return e;
+    };
+    try std.testing.expectEqual(@as(u32, 3), fake.start_count); // 3 stages = 3 agent() calls
+    try std.testing.expectEqual(@as(u32, 1), fake.peak_inflight); // never 2 at once for one item
 }
