@@ -258,6 +258,7 @@ pub const HostCallKind = enum {
     workflow,
     budget_spent,
     budget_remaining,
+    eligible,
 };
 
 /// A single recorded host-function invocation. All fields are heap-owned copies
@@ -310,6 +311,18 @@ pub const HostState = struct {
     // so the existing M2 tests still pass. The Lua-facing contract is
     // unchanged: agent(prompt, opts) returns a result table.
     agent_driver: ?*AgentDriver = null,
+
+    // M5 control-plane read context (task 3185).
+    //
+    // `ctx.eligible(plan_id)` shells `planar plan recommend-strategy` and
+    // returns the parallel-eligible subset as a Lua table. It needs an `Io`
+    // context for the subprocess call. This is separate from `agent_driver.io`
+    // (which is only present when the live-spawn gate is open) — `ctx.eligible`
+    // is a read-only control-plane verb and works whether or not
+    // PLANAR_EXECUTE_LIVE_AGENT is set. `handleRun` populates this from
+    // `currentCtx().io`; unit-test callers that do not exercise `ctx.eligible`
+    // may leave it null (the host fn returns an empty table when io is null).
+    io: ?std.Io = null,
 
     // M5 coroutine event loop (task 3182).
     //
@@ -1522,6 +1535,158 @@ fn hostWorkflow(L: ?*c.lua_State) callconv(.c) c_int {
     return 1;
 }
 
+/// hostEligible — `ctx.eligible(plan_id)` (task 3185, M5 fan-out eligibility).
+///
+/// Calls `state.recommendStrategy(allocator, io, plan_id)` — the `planar plan
+/// recommend-strategy <id> --json` verb (task 3186, decision 370) — and returns
+/// a Lua TABLE of the form:
+///
+///   {
+///     eligible = {                    -- mutually-non-conflicting parallel subset
+///       { id = <int>, slug = <str|nil>, title = <str> }, ...
+///     },
+///     fan_out_available = <bool>,     -- summary.fan_out_available (eligible >= 2)
+///     serialized = {                  -- rule-excluded remainder
+///       { id = <int>, slug = <str|nil>, title = <str>,
+///         excluded_by = { { rule = <int>, reason = <str> }, ... } },
+///       ...
+///     },
+///   }
+///
+/// This lets a workflow do:
+///   local r = ctx.eligible(plan)
+///   if r.fan_out_available then
+///     local thunks = {}
+///     for _, t in ipairs(r.eligible) do
+///       thunks[#thunks+1] = function() return ctx.agent(brief(t), {...}) end
+///     end
+///     parallel(thunks)
+///   end
+///
+/// ## Gating
+///
+/// Unlike `ctx.agent`, this is a CONTROL-PLANE READ (it only shells
+/// `planar plan recommend-strategy`) and NEVER requires PLANAR_EXECUTE_LIVE_AGENT.
+/// It works in any run — gated or not.
+///
+/// ## io availability
+///
+/// `io` comes from `hs.io`, which `handleRun` populates unconditionally from
+/// `currentCtx().io` before calling `runModule`. Unit-test callers that do not
+/// exercise `ctx.eligible` may leave `hs.io = null`; when null the function
+/// records the call and returns an empty-eligible table so tests that call
+/// `ctx.eligible` in isolation can detect the call via HostState.calls.
+fn hostEligible(L: ?*c.lua_State) callconv(.c) c_int {
+    const hs = hostStateUpvalue(L);
+
+    // Plan id: first Lua argument, must be an integer.
+    if (c.lua_type(L, 1) != c.LUA_TNUMBER) {
+        _ = c.luaL_error(L, "ctx.eligible: plan_id (integer) required as first argument");
+        return 0;
+    }
+    const plan_id_raw = c.lua_tointegerx(L, 1, null);
+    if (plan_id_raw <= 0) {
+        _ = c.luaL_error(L, "ctx.eligible: plan_id must be a positive integer");
+        return 0;
+    }
+    const plan_id: u64 = @intCast(plan_id_raw);
+
+    // Record the call (plan_id as decimal string in arg0).
+    var id_buf: [32]u8 = undefined;
+    const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{plan_id}) catch "?";
+    recordOrError(L, hs, .eligible, id_str, "");
+
+    // io not available → return an empty-eligible table (no-op; test paths use this).
+    const io = hs.io orelse {
+        pushEmptyEligibleTable(L);
+        return 1;
+    };
+
+    const alloc = hs.allocator;
+    const parsed = state.recommendStrategy(alloc, io, plan_id) catch |err| {
+        _ = c.luaL_error(L, "ctx.eligible: recommend-strategy failed: %s", @errorName(err).ptr);
+        return 0;
+    };
+    defer parsed.deinit();
+    const rs = parsed.value;
+
+    // Build the return table: { eligible = [...], fan_out_available = bool, serialized = [...] }
+    c.lua_createtable(L, 0, 3); // top-level table (3 string-keyed fields)
+    const top_idx: c_int = c.lua_absindex(L, -1);
+
+    // eligible array
+    c.lua_createtable(L, @intCast(rs.parallel_eligible.len), 0);
+    const elig_idx: c_int = c.lua_absindex(L, -1);
+    for (rs.parallel_eligible, 0..) |t, i| {
+        c.lua_createtable(L, 0, 3); // { id, slug, title }
+        const eti: c_int = c.lua_absindex(L, -1);
+        c.lua_pushinteger(L, @intCast(t.id));
+        c.lua_setfield(L, eti, "id");
+        if (t.slug) |sl| {
+            _ = c.lua_pushlstring(L, sl.ptr, sl.len);
+        } else {
+            c.lua_pushnil(L);
+        }
+        c.lua_setfield(L, eti, "slug");
+        _ = c.lua_pushlstring(L, t.title.ptr, t.title.len);
+        c.lua_setfield(L, eti, "title");
+        c.lua_rawseti(L, elig_idx, @intCast(i + 1)); // pops the task table
+    }
+    c.lua_setfield(L, top_idx, "eligible"); // pops eligible array
+
+    // fan_out_available boolean
+    c.lua_pushboolean(L, if (rs.summary.fan_out_available) 1 else 0);
+    c.lua_setfield(L, top_idx, "fan_out_available");
+
+    // serialized array
+    c.lua_createtable(L, @intCast(rs.serialized.len), 0);
+    const ser_idx: c_int = c.lua_absindex(L, -1);
+    for (rs.serialized, 0..) |t, i| {
+        c.lua_createtable(L, 0, 4); // { id, slug, title, excluded_by }
+        const sti: c_int = c.lua_absindex(L, -1);
+        c.lua_pushinteger(L, @intCast(t.id));
+        c.lua_setfield(L, sti, "id");
+        if (t.slug) |sl| {
+            _ = c.lua_pushlstring(L, sl.ptr, sl.len);
+        } else {
+            c.lua_pushnil(L);
+        }
+        c.lua_setfield(L, sti, "slug");
+        _ = c.lua_pushlstring(L, t.title.ptr, t.title.len);
+        c.lua_setfield(L, sti, "title");
+        // excluded_by sub-array
+        c.lua_createtable(L, @intCast(t.excluded_by.len), 0);
+        const exci: c_int = c.lua_absindex(L, -1);
+        for (t.excluded_by, 0..) |ex, j| {
+            c.lua_createtable(L, 0, 2); // { rule, reason }
+            const exi: c_int = c.lua_absindex(L, -1);
+            c.lua_pushinteger(L, @intCast(ex.rule));
+            c.lua_setfield(L, exi, "rule");
+            _ = c.lua_pushlstring(L, ex.reason.ptr, ex.reason.len);
+            c.lua_setfield(L, exi, "reason");
+            c.lua_rawseti(L, exci, @intCast(j + 1)); // pops exclusion table
+        }
+        c.lua_setfield(L, sti, "excluded_by"); // pops excluded_by array
+        c.lua_rawseti(L, ser_idx, @intCast(i + 1)); // pops the serialized task table
+    }
+    c.lua_setfield(L, top_idx, "serialized"); // pops serialized array
+
+    return 1; // return top-level table
+}
+
+/// pushEmptyEligibleTable pushes the "no-io" fallback table:
+///   { eligible = {}, fan_out_available = false, serialized = {} }
+fn pushEmptyEligibleTable(L: ?*c.lua_State) void {
+    c.lua_createtable(L, 0, 3);
+    const top_idx: c_int = c.lua_absindex(L, -1);
+    c.lua_createtable(L, 0, 0);
+    c.lua_setfield(L, top_idx, "eligible");
+    c.lua_pushboolean(L, 0);
+    c.lua_setfield(L, top_idx, "fan_out_available");
+    c.lua_createtable(L, 0, 0);
+    c.lua_setfield(L, top_idx, "serialized");
+}
+
 /// hostBudgetSpent — `budget:spent()`. Returns the host-injected spent value.
 /// Also records the call so a test can confirm the method form was reached.
 fn hostBudgetSpent(L: ?*c.lua_State) callconv(.c) c_int {
@@ -1574,6 +1739,10 @@ fn installHostFns(L: ?*c.lua_State, ctx_idx: c_int, hs: *HostState) void {
     pushHostClosure(L, ctx_idx, "phase", hostPhase, hs);
     pushHostClosure(L, ctx_idx, "log", hostLog, hs);
     pushHostClosure(L, ctx_idx, "workflow", hostWorkflow, hs);
+    // M5 fan-out eligibility (task 3185): ctx.eligible(plan_id) shells
+    // `planar plan recommend-strategy` and returns the parallel-eligible subset.
+    // Works ungated (read-only, no PLANAR_EXECUTE_LIVE_AGENT required).
+    pushHostClosure(L, ctx_idx, "eligible", hostEligible, hs);
 
     // Determinism injection (task 3169): ctx.now and ctx.seed are the only
     // time/random source available to the sandboxed script.
@@ -2522,6 +2691,10 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
     // host-controlled, so runs are replayable. M3+ wires real values here.
     var host = HostState.init(allocator, 0, 0, 100, 0);
     defer host.deinit();
+    // Wire the Io context so ctx.eligible(plan_id) can shell `planar plan
+    // recommend-strategy` (task 3185). This is a read-only control-plane verb —
+    // no PLANAR_EXECUTE_LIVE_AGENT gate required.
+    host.io = ctx.io;
 
     // ---- Gated production agent() driver wiring (plan 492 M4 task 3241) ----
     //

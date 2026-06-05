@@ -475,6 +475,89 @@ const PsResult = struct {
     stale: []PsClaimRow,
 };
 
+// ---------------------------------------------------------------------------
+// RecommendStrategy — structs for `planar plan recommend-strategy <id> --json`
+// ---------------------------------------------------------------------------
+
+/// One task in the `parallel_eligible` array.
+pub const EligibleTask = struct {
+    id: u64,
+    slug: ?[]const u8 = null,
+    title: []const u8,
+};
+
+/// One exclusion reason inside a `SerializedTask.excluded_by` array.
+pub const ExclusionReason = struct {
+    rule: u32,
+    reason: []const u8,
+};
+
+/// One task in the `serialized` array.
+pub const SerializedTask = struct {
+    id: u64,
+    slug: ?[]const u8 = null,
+    title: []const u8,
+    excluded_by: []ExclusionReason,
+};
+
+/// The `summary` sub-object inside `planar plan recommend-strategy --json`.
+pub const RecommendSummary = struct {
+    open_tasks: u64,
+    eligible: u64,
+    serialized: u64,
+    fan_out_available: bool,
+};
+
+/// Typed view of `planar plan recommend-strategy <id> --json`.
+///
+/// Real shape (confirmed 2026-06-04):
+///   { "plan_id": int,
+///     "parallel_eligible": [EligibleTask],
+///     "serialized":        [SerializedTask],
+///     "summary":           { open_tasks, eligible, serialized,
+///                            fan_out_available },
+///     "recommended_note":  string   // may be absent; ignore_unknown_fields covers it }
+///
+/// `.allocate = .alloc_always` is mandatory (same as `planShow`/`planNext`) so
+/// that escape-free string fields (slug, title, reason) are COPIED into the
+/// `Parsed` arena rather than borrowed into the subprocess-stdout buffer that
+/// the caller's `defer allocator.free(stdout)` frees on return.
+pub const RecommendStrategy = struct {
+    plan_id: u64,
+    parallel_eligible: []EligibleTask,
+    serialized: []SerializedTask,
+    summary: RecommendSummary,
+};
+
+/// recommendStrategy shells `planar plan recommend-strategy <plan_id> --json`
+/// and returns a `std.json.Parsed(RecommendStrategy)`.
+///
+/// The caller owns the memory and MUST call `.deinit()` on the returned value.
+/// All string fields in the parsed structs are arena-owned copies (`.alloc_always`
+/// prevents use-after-free from the freed stdout buffer — see the planShow doc).
+pub fn recommendStrategy(
+    allocator: std.mem.Allocator,
+    io: Io,
+    plan_id: u64,
+) StateError!std.json.Parsed(RecommendStrategy) {
+    var id_buf: [32]u8 = undefined;
+    const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{plan_id}) catch return StateError.SubprocessFailed;
+
+    // 4 MiB cap: a large plan can have many tasks with long exclusion reasons.
+    const stdout = try spawnPlanar(allocator, io, &.{ "plan", "recommend-strategy", id_str, "--json" }, 4 * 1024 * 1024);
+    defer allocator.free(stdout);
+
+    // `.allocate = .alloc_always`: the returned `Parsed` must own copies of every
+    // string. Without this, escape-free string fields (slug, title, reason) borrow
+    // into `stdout` — which the `defer` above frees on return → use-after-free.
+    // `ignore_unknown_fields = true`: the verb may emit `recommended_note` and
+    // other future fields; we don't need them.
+    return std.json.parseFromSlice(RecommendStrategy, allocator, stdout, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    }) catch return StateError.ParseFailed;
+}
+
 /// claimStatus shells `planar-watch ps --plan <plan_id> --stale --json` and
 /// reports whether `claim_token` is currently `active`, `stale`, or already
 /// `terminal` (no longer present in either array). (task 3242)
@@ -1111,4 +1194,157 @@ test "testSpecStatus helper: per-plan row with anchor_plan_id in title is classi
     try std.testing.expectEqual(@as(u64, 492), anchor.anchor_plan_id);
     try std.testing.expectEqual(@as(u64, 3), anchor.total_tasks);
     try std.testing.expectEqual(@as(u64, 1), anchor.total_scenarios);
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests — RecommendStrategy fixture parsing (task 3185)
+// ---------------------------------------------------------------------------
+
+// Real-shape fixture built from `planar plan recommend-strategy <id> --json`
+// output (2026-06-04). Two eligible tasks, one serialized via rule 2, one via
+// rule 5. `recommended_note` is present in the real output and must be silently
+// ignored (ignore_unknown_fields = true).
+const RECOMMEND_FIXTURE =
+    \\{
+    \\  "plan_id": 498,
+    \\  "parallel_eligible": [
+    \\    {"id": 17, "slug": "m5-fan-out", "title": "fan-out eligibility"},
+    \\    {"id": 18, "slug": null, "title": "disjoint task"}
+    \\  ],
+    \\  "serialized": [
+    \\    {"id": 3185, "slug": "m5-parallel-eligibility", "title": "eligibility filter",
+    \\     "excluded_by": [
+    \\       {"rule": 2, "reason": "excluded by rule 2: overlapping path src/shared.zig"},
+    \\       {"rule": 5, "reason": "excluded by rule 5: linked open question"}
+    \\     ]},
+    \\    {"id": 3186, "slug": null, "title": "no-slug task",
+    \\     "excluded_by": [{"rule": 1, "reason": "excluded by rule 1: blocked_by task 3185"}]}
+    \\  ],
+    \\  "summary": {
+    \\    "open_tasks": 4,
+    \\    "eligible": 2,
+    \\    "serialized": 2,
+    \\    "fan_out_available": true
+    \\  },
+    \\  "recommended_note": "fan-out available; 2 tasks eligible for parallel dispatch"
+    \\}
+;
+
+test "RecommendStrategy: parse fixture — eligible tasks, serialized with excluded_by, summary (task 3185)" {
+    const parsed = try std.json.parseFromSlice(RecommendStrategy, std.testing.allocator, RECOMMEND_FIXTURE, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+
+    // Top-level plan_id.
+    try std.testing.expectEqual(@as(u64, 498), parsed.value.plan_id);
+
+    // parallel_eligible: 2 entries, second has null slug.
+    try std.testing.expectEqual(@as(usize, 2), parsed.value.parallel_eligible.len);
+    try std.testing.expectEqual(@as(u64, 17), parsed.value.parallel_eligible[0].id);
+    try std.testing.expectEqualStrings("m5-fan-out", parsed.value.parallel_eligible[0].slug.?);
+    try std.testing.expectEqualStrings("fan-out eligibility", parsed.value.parallel_eligible[0].title);
+    try std.testing.expectEqual(@as(u64, 18), parsed.value.parallel_eligible[1].id);
+    try std.testing.expectEqual(@as(?[]const u8, null), parsed.value.parallel_eligible[1].slug);
+
+    // serialized: 2 entries with excluded_by.
+    try std.testing.expectEqual(@as(usize, 2), parsed.value.serialized.len);
+    const s0 = parsed.value.serialized[0];
+    try std.testing.expectEqual(@as(u64, 3185), s0.id);
+    try std.testing.expectEqualStrings("m5-parallel-eligibility", s0.slug.?);
+    try std.testing.expectEqualStrings("eligibility filter", s0.title);
+    try std.testing.expectEqual(@as(usize, 2), s0.excluded_by.len);
+    try std.testing.expectEqual(@as(u32, 2), s0.excluded_by[0].rule);
+    try std.testing.expect(std.mem.indexOf(u8, s0.excluded_by[0].reason, "rule 2") != null);
+    try std.testing.expectEqual(@as(u32, 5), s0.excluded_by[1].rule);
+
+    // Second serialized: null slug.
+    const s1 = parsed.value.serialized[1];
+    try std.testing.expectEqual(@as(u64, 3186), s1.id);
+    try std.testing.expectEqual(@as(?[]const u8, null), s1.slug);
+    try std.testing.expectEqual(@as(usize, 1), s1.excluded_by.len);
+    try std.testing.expectEqual(@as(u32, 1), s1.excluded_by[0].rule);
+
+    // Summary.
+    try std.testing.expectEqual(@as(u64, 4), parsed.value.summary.open_tasks);
+    try std.testing.expectEqual(@as(u64, 2), parsed.value.summary.eligible);
+    try std.testing.expectEqual(@as(u64, 2), parsed.value.summary.serialized);
+    try std.testing.expect(parsed.value.summary.fan_out_available);
+}
+
+// (task 3185 / task 3236 pattern) .alloc_always regression: parse with alloc_always,
+// free the input buffer, verify strings survive.
+test "RecommendStrategy: .alloc_always copies strings — survive freed input (task 3185)" {
+    const a = std.testing.allocator;
+
+    // Escape-free string fields — the case .alloc_if_needed would borrow.
+    const fixture_src =
+        \\{"plan_id":498,"parallel_eligible":[{"id":17,"slug":"m5-fan-out","title":"fan-out eligibility"}],"serialized":[],"summary":{"open_tasks":1,"eligible":1,"serialized":0,"fan_out_available":false}}
+    ;
+    const input = try a.dupe(u8, fixture_src);
+
+    const parsed = try std.json.parseFromSlice(RecommendStrategy, a, input, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+
+    // Poison the input buffer to detect any borrow into it.
+    @memset(input, 0xAA);
+    a.free(input);
+
+    // Strings must survive (they are owned by the Parsed arena, not the input buffer).
+    try std.testing.expectEqual(@as(u64, 498), parsed.value.plan_id);
+    try std.testing.expectEqualStrings("m5-fan-out", parsed.value.parallel_eligible[0].slug.?);
+    try std.testing.expectEqualStrings("fan-out eligibility", parsed.value.parallel_eligible[0].title);
+}
+
+test "RecommendStrategy: fan_out_available false when eligible < 2" {
+    const fixture =
+        \\{"plan_id":1,"parallel_eligible":[{"id":10,"slug":null,"title":"only one"}],"serialized":[],"summary":{"open_tasks":1,"eligible":1,"serialized":0,"fan_out_available":false}}
+    ;
+    const parsed = try std.json.parseFromSlice(RecommendStrategy, std.testing.allocator, fixture, .{
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.parallel_eligible.len);
+    try std.testing.expect(!parsed.value.summary.fan_out_available);
+}
+
+test "RecommendStrategy: empty eligible and serialized — zero tasks" {
+    const fixture =
+        \\{"plan_id":99,"parallel_eligible":[],"serialized":[],"summary":{"open_tasks":0,"eligible":0,"serialized":0,"fan_out_available":false}}
+    ;
+    const parsed = try std.json.parseFromSlice(RecommendStrategy, std.testing.allocator, fixture, .{
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+
+    try std.testing.expectEqual(@as(u64, 99), parsed.value.plan_id);
+    try std.testing.expectEqual(@as(usize, 0), parsed.value.parallel_eligible.len);
+    try std.testing.expectEqual(@as(usize, 0), parsed.value.serialized.len);
+    try std.testing.expect(!parsed.value.summary.fan_out_available);
+}
+
+test "RecommendStrategy: ignore_unknown_fields — future top-level keys ignored" {
+    // recommended_note and future_field must not cause a parse error.
+    const fixture =
+        \\{"plan_id":1,"parallel_eligible":[],"serialized":[],"summary":{"open_tasks":0,"eligible":0,"serialized":0,"fan_out_available":false},"recommended_note":"future text","future_field":42}
+    ;
+    const parsed = try std.json.parseFromSlice(RecommendStrategy, std.testing.allocator, fixture, .{
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+
+    try std.testing.expectEqual(@as(u64, 1), parsed.value.plan_id);
+}
+
+test "RecommendStrategy: malformed JSON → error" {
+    const fixture = "{not valid recommend json {{";
+    const result = std.json.parseFromSlice(RecommendStrategy, std.testing.allocator, fixture, .{
+        .ignore_unknown_fields = true,
+    });
+    try std.testing.expectError(error.SyntaxError, result);
 }
