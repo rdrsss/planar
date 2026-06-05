@@ -666,7 +666,36 @@ pub const AgentDriver = struct {
     /// budget-block subprocess so a test can exercise the no-spawn decision
     /// without a live `planar-agent`. Production leaves it false.
     skip_block_subprocess: bool = false,
+
+    /// Opens the operator-triage `planar question` on an M9 fan-in CONFLICT
+    /// (tasks 3199/3200). When null, `runFanInQuestion` shells `planar question
+    /// add --plan <id> --json --body <body> <title>` and parses the returned
+    /// id. Tests inject a fake runner so the conflict path is deterministic
+    /// WITHOUT a live binary + DB — mirroring `claim_status_reader`,
+    /// `task_status_reader`, and friends. Returns the opened question id, or 0
+    /// when the open failed (the harness then surfaces `merge="conflict"` with
+    /// `question_id=0` — never fails the run for a failed question open).
+    question_runner: ?QuestionRunnerFn = null,
+    /// Opaque context pointer passed to `question_runner`. Unused by the
+    /// production runner; tests stash a pointer to their canned/recording state.
+    question_runner_ctx: ?*anyopaque = null,
 };
+
+/// QuestionRunnerFn opens the operator-triage question on an M9 fan-in conflict
+/// (plan 492 tasks 3199/3200). Injectable on `AgentDriver` so unit tests drive
+/// the conflict path WITHOUT a live `planar question add` + DB. Returns the
+/// opened question's id (0 ⇒ the open failed; the harness still returns the
+/// `agent()` call normally with `merge="conflict"` and `question_id=0`). The
+/// production wiring leaves it null and `runFanInQuestion` falls back to
+/// `defaultQuestionRunner`.
+pub const QuestionRunnerFn = *const fn (
+    ctx: ?*anyopaque,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    plan_id: u64,
+    title: []const u8,
+    body: []const u8,
+) u64;
 
 /// FailedAttemptFn counts a task's PRIOR FAILED attempts for the M8 max-attempt
 /// budget (task 3198). Injectable on `AgentDriver` so unit tests can drive the
@@ -1477,7 +1506,233 @@ fn agentContinue(L: ?*c.lua_State, status: c_int, ctx: c.lua_KContext) callconv(
     };
     writeJournalRecord(acs, status_str, outcome.exit_code, terminal_mono_ns);
     pushAgentResult(L, status_str, outcome.exit_code, commit_present, verb);
+
+    // 8) M9 FAN-IN (tasks 3199/3200/3201). On a COMPLETED worker (the
+    // terminal-verb decision was `.complete` — exit 0, commit present, claim
+    // active) the cycle branch carries a real commit to fold into the epic. We
+    // merge cycle→epic INSIDE THE EPIC WORKTREE (never the main checkout, never
+    // epic→master — 3201) and surface the outcome to the Lua workflow as
+    // `r.merge`. A conflict does NOT halt the run (3200): it opens a triage
+    // question, leaves the cycle worktree for resolution, and returns normally.
+    //
+    // The merge runs on the cooperative-scheduler main thread (agentContinue is
+    // the continuation the scheduler resumes — one coroutine at a time), so two
+    // fan-in merges into the same epic worktree's `.git/index` cannot race; the
+    // single-threaded resume IS the serialization mutex (3201). The heartbeat /
+    // timeout threads never merge.
+    //
+    // Only the COMPLETED verb reaches fan-in — released / failed / respected
+    // workers produced no mergeable commit (and the M5/M6/M7/M8 paths above
+    // return before here), so this is additive and cannot regress them.
+    if (verb == .complete) {
+        runFanIn(L, acs, commit_present);
+    }
     return 1;
+}
+
+/// runFanIn performs the M9 cycle→epic fan-in for a COMPLETED worker and stamps
+/// the outcome onto the agent() result table already on top of the Lua stack
+/// (tasks 3199/3200/3201). It is called ONLY from the COMPLETED branch of
+/// `agentContinue` (verb == .complete) — the one terminal status whose cycle
+/// branch carries a commit worth folding into the epic.
+///
+/// Topology guard: fan-in runs ONLY when the worktree topology is present — the
+/// epic worktree exists AND the cycle branch exists. Absent (a classic in-pwd
+/// run, or a caller that never built the topology) ⇒ `merge="skipped"` and the
+/// agent() call completes normally (backward compat). The guard also short-
+/// circuits when `repo_root`/`plan_slug`/`task_slug` are unset (degraded /
+/// pure-Lua test paths) or when `commit_present` is false (no commit to merge).
+///
+/// On `.clean`: the cycle merged into the epic; we tear down the cycle worktree
+/// (post-success cleanup) and stamp `merge="clean"`. The epic worktree + branch
+/// PERSIST — the operator merges epic→master later (the harness NEVER does, per
+/// 3201). On `.conflict`: `mergeCycleIntoEpicCapture` already aborted (epic
+/// restored); we open a `planar question` naming the conflicting files, LEAVE
+/// the cycle worktree for resolution, and stamp `merge="conflict"` +
+/// `question_id`. Either way the function RETURNS — it never raises a Lua error
+/// or halts the scheduler, so sibling children proceed (3200).
+fn runFanIn(L: ?*c.lua_State, acs: *AgentCallState, commit_present: bool) void {
+    const driver = acs.driver;
+    const alloc = acs.allocator;
+    const io = driver.io;
+
+    // Topology / context guard. Any missing piece ⇒ skip (no fan-in for
+    // non-worktree runs). `commit_present` false ⇒ nothing to merge.
+    if (driver.repo_root.len == 0 or driver.plan_slug.len == 0 or
+        acs.task_slug.len == 0 or !commit_present)
+    {
+        stampMerge(L, "skipped", 0);
+        return;
+    }
+    if (!worktree.epicWorktreePresent(alloc, io, driver.repo_root, driver.plan_slug) or
+        !worktree.cycleBranchPresent(alloc, io, driver.repo_root, driver.plan_slug, acs.task_slug))
+    {
+        stampMerge(L, "skipped", 0);
+        return;
+    }
+
+    // Build the merge-commit subject: "Plan <id> fan-in: <task-slug>".
+    const commit_msg = std.fmt.allocPrint(
+        alloc,
+        "Plan {d} fan-in: {s}",
+        .{ driver.plan_id, acs.task_slug },
+    ) catch {
+        // OOM building the message ⇒ skip the merge (best-effort; never crash
+        // the run). The cycle worktree is left intact for the operator.
+        stampMerge(L, "skipped", 0);
+        return;
+    };
+    defer alloc.free(commit_msg);
+
+    var cap = worktree.mergeCycleIntoEpicCapture(
+        alloc,
+        io,
+        driver.repo_root,
+        driver.plan_slug,
+        acs.task_slug,
+        commit_msg,
+    ) catch {
+        // A merge-subprocess failure (could not spawn git, etc.) is treated as
+        // a skip — we do NOT tear down the cycle worktree (the operator may
+        // want to inspect / retry) and we do NOT fail the run.
+        stampMerge(L, "skipped", 0);
+        return;
+    };
+    defer cap.deinit(alloc);
+
+    switch (cap.outcome) {
+        .clean => {
+            // The cycle merged into the epic. Tear down the cycle worktree
+            // (post-success cleanup runs ONLY merge-clean). The epic worktree +
+            // branch persist for the operator's later epic→master merge.
+            worktree.teardownCycle(alloc, io, driver.repo_root, driver.plan_slug, acs.task_slug) catch {
+                // Best-effort: a startup worktree-prune is the backstop. The
+                // merge already landed, so this never changes the merge outcome.
+            };
+            stampMerge(L, "clean", 0);
+        },
+        .conflict => {
+            // mergeCycleIntoEpicCapture already aborted (epic restored). Open
+            // the operator-triage question (naming the conflicting files) and
+            // LEAVE the cycle worktree for resolution. The conflict NEVER halts
+            // the run (3200) — we stamp the outcome and return normally.
+            const qid = openFanInConflictQuestion(acs, cap.conflict_files);
+            stampMerge(L, "conflict", qid);
+        },
+    }
+}
+
+/// openFanInConflictQuestion opens the operator-triage `planar question` for an
+/// M9 fan-in conflict and returns the opened question id (0 ⇒ open failed). The
+/// title is `"<plan-slug> fan-in conflict: <task-slug> against epic HEAD"`; the
+/// body names the conflicting files (or a generic line when the capture was
+/// empty). Dispatches to `driver.question_runner` (tests) or the production
+/// shell-out (`defaultQuestionRunner`). Best-effort: any allocation failure
+/// degrades to a question id of 0 — a failed question open NEVER halts the run.
+fn openFanInConflictQuestion(acs: *AgentCallState, conflict_files: []const []const u8) u64 {
+    const driver = acs.driver;
+    const alloc = acs.allocator;
+    const io = driver.io;
+
+    const title = std.fmt.allocPrint(
+        alloc,
+        "{s} fan-in conflict: {s} against epic HEAD",
+        .{ driver.plan_slug, acs.task_slug },
+    ) catch return 0;
+    defer alloc.free(title);
+
+    const body = buildConflictBody(alloc, driver, acs, conflict_files) catch return 0;
+    defer alloc.free(body);
+
+    return runFanInQuestion(driver, alloc, io, driver.plan_id, title, body);
+}
+
+/// buildConflictBody composes the fan-in conflict question body: the conflicting
+/// FILE LIST (one per line) plus the cycle worktree path so the operator knows
+/// where to resolve. Falls back to a generic line when no files were captured
+/// (the `mergeCycleIntoEpicCapture` capture was best-effort). Heap-owned; caller
+/// frees.
+fn buildConflictBody(
+    alloc: std.mem.Allocator,
+    driver: *AgentDriver,
+    acs: *AgentCallState,
+    conflict_files: []const []const u8,
+) ![]u8 {
+    const cycle_path = worktree.cyclePath(alloc, driver.repo_root, driver.plan_slug, acs.task_slug) catch
+        return error.OutOfMemory;
+    defer alloc.free(cycle_path);
+
+    var buf: std.Io.Writer.Allocating = .init(alloc);
+    defer buf.deinit();
+
+    try buf.writer.print(
+        "git merge --no-ff cycle/{s}/{s} into epic/{s} reported conflicts.\n",
+        .{ driver.plan_slug, acs.task_slug, driver.plan_slug },
+    );
+    if (conflict_files.len > 0) {
+        try buf.writer.writeAll("Conflicting files:\n");
+        for (conflict_files) |f| try buf.writer.print("  - {s}\n", .{f});
+    } else {
+        try buf.writer.writeAll("Conflicting files: (not captured)\n");
+    }
+    try buf.writer.print(
+        "The merge was aborted (epic restored). Resolve in the cycle worktree, then re-merge:\n  {s}\n",
+        .{cycle_path},
+    );
+    return buf.toOwnedSlice();
+}
+
+/// runFanInQuestion dispatches to the injected `driver.question_runner` (tests)
+/// or to `defaultQuestionRunner` (production, which shells `planar question
+/// add`). Returns the opened question id (0 ⇒ failed). When the runner is null
+/// AND the harness skips the terminal subprocess (FakeSpawner unit-test paths
+/// that did not inject a runner) it returns 0 — a unit test that wants the
+/// question opened injects a runner.
+fn runFanInQuestion(
+    driver: *AgentDriver,
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    plan_id: u64,
+    title: []const u8,
+    body: []const u8,
+) u64 {
+    if (driver.question_runner) |run| {
+        return run(driver.question_runner_ctx, alloc, io, plan_id, title, body);
+    }
+    if (driver.skip_terminal_subprocess) return 0;
+    return defaultQuestionRunner(null, alloc, io, plan_id, title, body);
+}
+
+/// defaultQuestionRunner is the production `QuestionRunnerFn`. It shells
+/// `planar question add --plan <id> --json --body <body> <title>` via
+/// `state.questionAdd` and returns the opened question id. On any
+/// read/parse/subprocess failure it returns 0 — a failed question open must NOT
+/// crash the run; the merge was already aborted and the cycle worktree is left
+/// for the operator regardless.
+fn defaultQuestionRunner(
+    ctx: ?*anyopaque,
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    plan_id: u64,
+    title: []const u8,
+    body: []const u8,
+) u64 {
+    _ = ctx;
+    return state.questionAdd(alloc, io, plan_id, title, body) catch 0;
+}
+
+/// stampMerge sets the M9 fan-in fields on the agent() result table already on
+/// top of the Lua stack: `merge = "clean"|"conflict"|"skipped"` and (on
+/// conflict) `question_id = <id>`. Called from `runFanIn` after
+/// `pushAgentResult` has built the base table; it mutates that same table in
+/// place (index -1) so the workflow reads `r.merge` / `r.question_id`.
+fn stampMerge(L: ?*c.lua_State, merge: []const u8, question_id: u64) void {
+    _ = c.lua_pushlstring(L, merge.ptr, merge.len);
+    c.lua_setfield(L, -2, "merge");
+    if (question_id != 0) {
+        c.lua_pushinteger(L, @intCast(question_id));
+        c.lua_setfield(L, -2, "question_id");
+    }
 }
 
 /// writeJournalRecord appends ONE append-only run-journal record for a finished
@@ -7203,4 +7458,597 @@ test "M5 pipeline: a single item's stage chain runs its agent() calls SEQUENTIAL
     };
     try std.testing.expectEqual(@as(u32, 3), fake.start_count); // 3 stages = 3 agent() calls
     try std.testing.expectEqual(@as(u32, 1), fake.peak_inflight); // never 2 at once for one item
+}
+
+// ---------------------------------------------------------------------------
+// M9 fan-in tests — tasks 3199 (merge), 3200 (conflict isolation),
+// 3201 (no auto-merge / master untouched).
+//
+// The merge is exercised against REAL throwaway git repos (skip-probed via
+// `git --version`); the conflict question-open is INJECTED via a recording
+// `question_runner` so the conflict path is deterministic WITHOUT a live
+// `planar question add` + DB. The fan-in driver (`runFanIn`) is exercised
+// directly with a hand-built Lua result table + a minimal AgentCallState — the
+// same code path `agentContinue`'s COMPLETED branch invokes — so the tests are
+// deterministic without forcing the full coroutine pipeline to the
+// commit-present `.complete` decision (which a FakeSpawner cannot produce: it
+// performs no filesystem work between the pre-yield and continue HEAD samples).
+// ---------------------------------------------------------------------------
+
+/// m9GitAvailable mirrors worktree.zig's `gitAvailable` skip-probe.
+fn m9GitAvailable(allocator: std.mem.Allocator) bool {
+    const r = std.process.run(allocator, std.testing.io, .{
+        .argv = &.{ "git", "--version" },
+    }) catch return false;
+    defer allocator.free(r.stdout);
+    defer allocator.free(r.stderr);
+    return r.term == .exited and r.term.exited == 0;
+}
+
+/// m9MkTmpRepoDir creates a fresh system temp dir via `mktemp -d` (heap-owned;
+/// caller frees). Mirrors worktree.zig's `mkTmpRepoDir`: an absolute path NOT
+/// nested under this checkout's `.worktrees/` so `git worktree` is well-behaved.
+fn m9MkTmpRepoDir(allocator: std.mem.Allocator) []const u8 {
+    const r = std.process.run(allocator, std.testing.io, .{
+        .argv = &.{ "mktemp", "-d", "-t", "planar-m9.XXXXXX" },
+    }) catch @panic("m9MkTmpRepoDir: mktemp spawn failed");
+    defer allocator.free(r.stderr);
+    if (!(r.term == .exited and r.term.exited == 0)) {
+        allocator.free(r.stdout);
+        @panic("m9MkTmpRepoDir: mktemp non-zero exit");
+    }
+    const trimmed = std.mem.trim(u8, r.stdout, " \t\r\n");
+    const owned = allocator.dupe(u8, trimmed) catch @panic("OOM");
+    allocator.free(r.stdout);
+    return owned;
+}
+
+fn m9RmTree(allocator: std.mem.Allocator, path: []const u8) void {
+    const r = std.process.run(allocator, std.testing.io, .{ .argv = &.{ "rm", "-rf", path } }) catch return;
+    allocator.free(r.stdout);
+    allocator.free(r.stderr);
+}
+
+/// m9RunGitIn runs a git command in `cwd`, panicking on failure.
+fn m9RunGitIn(allocator: std.mem.Allocator, cwd: []const u8, args: []const []const u8) void {
+    var argv = std.ArrayList([]const u8).empty;
+    defer argv.deinit(allocator);
+    argv.append(allocator, "git") catch @panic("OOM");
+    argv.append(allocator, "-C") catch @panic("OOM");
+    argv.append(allocator, cwd) catch @panic("OOM");
+    for (args) |a| argv.append(allocator, a) catch @panic("OOM");
+    const r = std.process.run(allocator, std.testing.io, .{ .argv = argv.items }) catch
+        @panic("m9RunGitIn: spawn failed");
+    defer allocator.free(r.stdout);
+    defer allocator.free(r.stderr);
+    switch (r.term) {
+        .exited => |code| if (code != 0) {
+            std.debug.print("\nm9RunGitIn failed (exit {d}) in {s} args[0]={s}\nstderr: {s}\n", .{ code, cwd, args[0], r.stderr });
+            @panic("m9RunGitIn: non-zero exit");
+        },
+        else => @panic("m9RunGitIn: abnormal termination"),
+    }
+}
+
+/// m9InitRepo creates a throwaway git repo at `dir` with an initial commit on a
+/// `master` branch (identity configured locally so commits succeed in CI).
+fn m9InitRepo(allocator: std.mem.Allocator, dir: []const u8) void {
+    m9RunGitIn(allocator, dir, &.{ "init", "-b", "master" });
+    m9RunGitIn(allocator, dir, &.{ "config", "user.email", "test@planar.local" });
+    m9RunGitIn(allocator, dir, &.{ "config", "user.name", "Planar Test" });
+    m9RunGitIn(allocator, dir, &.{ "commit", "--allow-empty", "-m", "initial" });
+}
+
+/// m9MasterHead returns master's HEAD sha (heap-owned; caller frees), panicking
+/// on failure. The no-auto-merge invariant (3201) asserts this is UNCHANGED
+/// across a fan-in.
+fn m9MasterHead(allocator: std.mem.Allocator, repo: []const u8) []u8 {
+    const r = std.process.run(allocator, std.testing.io, .{
+        .argv = &.{ "git", "-C", repo, "rev-parse", "master" },
+    }) catch @panic("m9MasterHead: spawn failed");
+    defer allocator.free(r.stderr);
+    if (!(r.term == .exited and r.term.exited == 0)) {
+        allocator.free(r.stdout);
+        @panic("m9MasterHead: non-zero exit");
+    }
+    const trimmed = std.mem.trim(u8, r.stdout, " \t\r\n");
+    const owned = allocator.dupe(u8, trimmed) catch @panic("OOM");
+    allocator.free(r.stdout);
+    return owned;
+}
+
+fn m9DirExists(io: std.Io, path: []const u8) bool {
+    var d = std.Io.Dir.cwd().openDir(io, path, .{}) catch return false;
+    d.close(io);
+    return true;
+}
+
+fn m9IsAncestor(allocator: std.mem.Allocator, repo: []const u8, anc: []const u8, desc: []const u8) bool {
+    const r = std.process.run(allocator, std.testing.io, .{
+        .argv = &.{ "git", "-C", repo, "merge-base", "--is-ancestor", anc, desc },
+    }) catch return false;
+    defer allocator.free(r.stdout);
+    defer allocator.free(r.stderr);
+    return r.term == .exited and r.term.exited == 0;
+}
+
+/// m9WriteFile writes `data` to `<dir>/<name>` via the test Io.
+fn m9WriteFile(allocator: std.mem.Allocator, io: std.Io, dir: []const u8, name: []const u8, data: []const u8) void {
+    const wf = std.fs.path.join(allocator, &.{ dir, name }) catch @panic("OOM");
+    defer allocator.free(wf);
+    std.Io.Dir.cwd().writeFile(io, .{ .sub_path = wf, .data = data }) catch @panic("m9WriteFile failed");
+}
+
+/// RecordingQuestionCtx records every fan-in question open so the conflict test
+/// can assert the title/body/plan WITHOUT a live `planar question add` + DB.
+const RecordingQuestionCtx = struct {
+    allocator: std.mem.Allocator,
+    next_id: u64 = 7000,
+    calls: std.ArrayList(QCall) = .empty,
+
+    const QCall = struct {
+        plan_id: u64,
+        title: []u8,
+        body: []u8,
+        returned_id: u64,
+    };
+
+    fn deinit(self: *RecordingQuestionCtx) void {
+        for (self.calls.items) |c2| {
+            self.allocator.free(c2.title);
+            self.allocator.free(c2.body);
+        }
+        self.calls.deinit(self.allocator);
+    }
+};
+
+/// recordingQuestionRunner is an injected `QuestionRunnerFn`: it records the
+/// open and returns a monotonically increasing id (never 0).
+fn recordingQuestionRunner(
+    ctx: ?*anyopaque,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    plan_id: u64,
+    title: []const u8,
+    body: []const u8,
+) u64 {
+    _ = io;
+    const rc: *RecordingQuestionCtx = @ptrCast(@alignCast(ctx.?));
+    const id = rc.next_id;
+    rc.next_id += 1;
+    const tdup = rc.allocator.dupe(u8, title) catch @panic("OOM");
+    const bdup = rc.allocator.dupe(u8, body) catch @panic("OOM");
+    rc.calls.append(rc.allocator, .{ .plan_id = plan_id, .title = tdup, .body = bdup, .returned_id = id }) catch @panic("OOM");
+    _ = allocator;
+    return id;
+}
+
+/// m9MakeAcs builds a minimal AgentCallState that `runFanIn` reads: the driver,
+/// allocator, and task_slug. The other fields are zeroed/empty — `runFanIn`
+/// never calls `acs.destroy()` and never touches the cross-yield fields.
+fn m9MakeAcs(alloc: std.mem.Allocator, driver: *AgentDriver, task_slug: []u8) AgentCallState {
+    return .{
+        .allocator = alloc,
+        .driver = driver,
+        .worktree_path = &.{},
+        .claim_token = &.{},
+        .task_slug = task_slug,
+        .task_id = 0,
+        .model = "",
+        .role_name = "",
+        .prompt_hash = &.{},
+        .branch = null,
+        .spawn_mono_ns = 0,
+        .head_before = null,
+        .worker_env_built = null,
+        .slot_index = 0,
+    };
+}
+
+/// m9ReadMergeField returns the `merge` string field of the result table at the
+/// top of the Lua stack (heap-owned dupe; caller frees), or null if absent.
+fn m9ReadMergeField(alloc: std.mem.Allocator, L: ?*c.lua_State) !?[]u8 {
+    const t = c.lua_getfield(L, -1, "merge");
+    defer c.lua_pop(L, 1);
+    if (t != c.LUA_TSTRING) return null;
+    var len: usize = 0;
+    const raw = c.lua_tolstring(L, -1, &len);
+    if (raw == null) return null;
+    return try alloc.dupe(u8, raw[0..len]);
+}
+
+/// m9ReadQuestionId returns the `question_id` integer field of the result table
+/// at the top of the Lua stack, or 0 if absent.
+fn m9ReadQuestionId(L: ?*c.lua_State) u64 {
+    const t = c.lua_getfield(L, -1, "question_id");
+    defer c.lua_pop(L, 1);
+    if (t != c.LUA_TNUMBER) return 0;
+    const n = c.lua_tointegerx(L, -1, null);
+    if (n < 0) return 0;
+    return @intCast(n);
+}
+
+/// m9SetupCycleWithCommit creates the epic + cycle worktrees and commits a file
+/// on the cycle branch (the "completed worker" produced a commit to fan in).
+/// Configures identity inside both worktrees so the later merge commit succeeds.
+fn m9SetupCycleWithCommit(
+    a: std.mem.Allocator,
+    repo: []const u8,
+    plan_slug: []const u8,
+    task_slug: []const u8,
+    file_name: []const u8,
+    file_data: []const u8,
+) void {
+    var epic = worktree.ensureEpic(a, std.testing.io, repo, plan_slug) catch @panic("ensureEpic");
+    defer epic.deinit(a);
+    var cyc = worktree.createCycle(a, std.testing.io, repo, plan_slug, task_slug, "run-m9", 1) catch @panic("createCycle");
+    defer cyc.deinit(a);
+
+    m9RunGitIn(a, epic.path, &.{ "config", "user.email", "test@planar.local" });
+    m9RunGitIn(a, epic.path, &.{ "config", "user.name", "Planar Test" });
+    m9RunGitIn(a, cyc.path, &.{ "config", "user.email", "test@planar.local" });
+    m9RunGitIn(a, cyc.path, &.{ "config", "user.name", "Planar Test" });
+
+    m9WriteFile(a, std.testing.io, cyc.path, file_name, file_data);
+    m9RunGitIn(a, cyc.path, &.{ "add", file_name });
+    m9RunGitIn(a, cyc.path, &.{ "commit", "-m", "worker commit" });
+}
+
+test "M9 fan-in: clean merge → merge=clean, cycle in epic history, cycle torn down, epic persists, master untouched (3199/3201)" {
+    const a = testing_alloc;
+    if (!m9GitAvailable(a)) return error.SkipZigTest;
+
+    const repo = m9MkTmpRepoDir(a);
+    defer a.free(repo);
+    defer m9RmTree(a, repo);
+    m9InitRepo(a, repo);
+
+    const plan_slug = "planm9";
+    const task_slug = "clean-task";
+    m9SetupCycleWithCommit(a, repo, plan_slug, task_slug, "feature.txt", "from-cycle\n");
+
+    const master_before = m9MasterHead(a, repo);
+    defer a.free(master_before);
+
+    // Capture the cycle tip SHA BEFORE the fan-in — teardown force-deletes the
+    // cycle branch after a clean merge, so the ancestry check must use the SHA.
+    const cycle_tip = (try worktree.branchHead(a, std.testing.io, repo, "cycle/planm9/clean-task")).?;
+    defer a.free(cycle_tip);
+
+    var driver = AgentDriver{
+        .spawner = undefined,
+        .io = std.testing.io,
+        .repo_root = repo,
+        .plan_slug = plan_slug,
+        .plan_id = 502,
+        .skip_terminal_subprocess = true,
+    };
+
+    const ts = try a.dupe(u8, task_slug);
+    defer a.free(ts);
+    var acs = m9MakeAcs(a, &driver, ts);
+
+    // Build a fresh Lua state + base result table (mimics pushAgentResult).
+    const L = c.luaL_newstate() orelse return error.SkipZigTest;
+    defer c.lua_close(L);
+    c.lua_createtable(L, 0, 5);
+
+    runFanIn(L, &acs, true);
+
+    // merge=clean stamped on the table.
+    const merge = try m9ReadMergeField(a, L);
+    defer if (merge) |m| a.free(m);
+    try std.testing.expect(merge != null);
+    try std.testing.expectEqualStrings("clean", merge.?);
+
+    // The cycle's commit is in the epic history (by SHA — the branch ref was
+    // force-deleted by the post-merge teardown).
+    try std.testing.expect(m9IsAncestor(a, repo, cycle_tip, "epic/planm9"));
+
+    // The cycle worktree was torn down; the epic worktree persists.
+    const cyc_path = try worktree.cyclePath(a, repo, plan_slug, task_slug);
+    defer a.free(cyc_path);
+    try std.testing.expect(!m9DirExists(std.testing.io, cyc_path));
+    const epic_path = try worktree.epicPath(a, repo, plan_slug);
+    defer a.free(epic_path);
+    try std.testing.expect(m9DirExists(std.testing.io, epic_path));
+
+    // master HEAD is UNCHANGED (the merge landed on the epic branch only).
+    const master_after = m9MasterHead(a, repo);
+    defer a.free(master_after);
+    try std.testing.expectEqualStrings(master_before, master_after);
+}
+
+test "M9 fan-in: conflict → merge=conflict + question, cycle worktree LEFT, epic restored, master untouched, returns normally (3199/3200/3201)" {
+    const a = testing_alloc;
+    if (!m9GitAvailable(a)) return error.SkipZigTest;
+
+    const repo = m9MkTmpRepoDir(a);
+    defer a.free(repo);
+    defer m9RmTree(a, repo);
+    m9InitRepo(a, repo);
+
+    const plan_slug = "confm9";
+    const task_slug = "conf-task";
+
+    // Cycle side writes README.md.
+    m9SetupCycleWithCommit(a, repo, plan_slug, task_slug, "README.md", "from-cycle\n");
+    // Epic side writes a DIFFERENT README.md → conflict on merge.
+    const epic_path = try worktree.epicPath(a, repo, plan_slug);
+    defer a.free(epic_path);
+    m9WriteFile(a, std.testing.io, epic_path, "README.md", "from-epic\n");
+    m9RunGitIn(a, epic_path, &.{ "add", "README.md" });
+    m9RunGitIn(a, epic_path, &.{ "commit", "-m", "epic writes readme" });
+
+    const master_before = m9MasterHead(a, repo);
+    defer a.free(master_before);
+
+    var qctx = RecordingQuestionCtx{ .allocator = a };
+    defer qctx.deinit();
+
+    var driver = AgentDriver{
+        .spawner = undefined,
+        .io = std.testing.io,
+        .repo_root = repo,
+        .plan_slug = plan_slug,
+        .plan_id = 502,
+        .skip_terminal_subprocess = true,
+        .question_runner = recordingQuestionRunner,
+        .question_runner_ctx = &qctx,
+    };
+
+    const ts = try a.dupe(u8, task_slug);
+    defer a.free(ts);
+    var acs = m9MakeAcs(a, &driver, ts);
+
+    const L = c.luaL_newstate() orelse return error.SkipZigTest;
+    defer c.lua_close(L);
+    c.lua_createtable(L, 0, 5);
+
+    // runFanIn must RETURN NORMALLY on conflict (no halt / no error — 3200).
+    runFanIn(L, &acs, true);
+
+    const merge = try m9ReadMergeField(a, L);
+    defer if (merge) |m| a.free(m);
+    try std.testing.expect(merge != null);
+    try std.testing.expectEqualStrings("conflict", merge.?);
+
+    // A question was opened, and its id is surfaced on the result table.
+    try std.testing.expectEqual(@as(usize, 1), qctx.calls.items.len);
+    const opened = qctx.calls.items[0];
+    try std.testing.expectEqual(@as(u64, 502), opened.plan_id);
+    try std.testing.expectEqual(opened.returned_id, m9ReadQuestionId(L));
+    // Title names the plan slug + task slug; body names the conflicting file.
+    try std.testing.expect(std.mem.indexOf(u8, opened.title, "confm9 fan-in conflict") != null);
+    try std.testing.expect(std.mem.indexOf(u8, opened.title, "conf-task") != null);
+    try std.testing.expect(std.mem.indexOf(u8, opened.body, "README.md") != null);
+
+    // The cycle worktree was LEFT for the operator to resolve.
+    const cyc_path = try worktree.cyclePath(a, repo, plan_slug, task_slug);
+    defer a.free(cyc_path);
+    try std.testing.expect(m9DirExists(std.testing.io, cyc_path));
+
+    // The epic worktree is restored (no merge in progress — no MERGE_HEAD).
+    {
+        const r = std.process.run(a, std.testing.io, .{
+            .argv = &.{ "git", "-C", epic_path, "rev-parse", "--verify", "-q", "MERGE_HEAD" },
+        }) catch unreachable;
+        defer a.free(r.stdout);
+        defer a.free(r.stderr);
+        // exit non-zero ⇒ no MERGE_HEAD ⇒ aborted/restored.
+        try std.testing.expect(!(r.term == .exited and r.term.exited == 0));
+    }
+
+    // master HEAD is UNCHANGED.
+    const master_after = m9MasterHead(a, repo);
+    defer a.free(master_after);
+    try std.testing.expectEqualStrings(master_before, master_after);
+}
+
+test "M9 fan-in: conflict isolation — one conflict + one clean both return, run completes, master untouched (3200/3201)" {
+    const a = testing_alloc;
+    if (!m9GitAvailable(a)) return error.SkipZigTest;
+
+    const repo = m9MkTmpRepoDir(a);
+    defer a.free(repo);
+    defer m9RmTree(a, repo);
+    m9InitRepo(a, repo);
+
+    const plan_slug = "isom9";
+
+    // Set up the epic ONCE, then two cycles under it. The conflicting child
+    // writes README.md (and the epic also writes README.md to force a conflict);
+    // the clean child writes a disjoint file.
+    {
+        var epic = try worktree.ensureEpic(a, std.testing.io, repo, plan_slug);
+        defer epic.deinit(a);
+        m9RunGitIn(a, epic.path, &.{ "config", "user.email", "test@planar.local" });
+        m9RunGitIn(a, epic.path, &.{ "config", "user.name", "Planar Test" });
+    }
+
+    // Conflicting child cycle (writes README.md).
+    {
+        var cyc = try worktree.createCycle(a, std.testing.io, repo, plan_slug, "conf-child", "run-m9", 1);
+        defer cyc.deinit(a);
+        m9RunGitIn(a, cyc.path, &.{ "config", "user.email", "test@planar.local" });
+        m9RunGitIn(a, cyc.path, &.{ "config", "user.name", "Planar Test" });
+        m9WriteFile(a, std.testing.io, cyc.path, "README.md", "child-cycle\n");
+        m9RunGitIn(a, cyc.path, &.{ "add", "README.md" });
+        m9RunGitIn(a, cyc.path, &.{ "commit", "-m", "conf child" });
+    }
+    // Clean child cycle (writes a disjoint file).
+    {
+        var cyc = try worktree.createCycle(a, std.testing.io, repo, plan_slug, "clean-child", "run-m9", 2);
+        defer cyc.deinit(a);
+        m9RunGitIn(a, cyc.path, &.{ "config", "user.email", "test@planar.local" });
+        m9RunGitIn(a, cyc.path, &.{ "config", "user.name", "Planar Test" });
+        m9WriteFile(a, std.testing.io, cyc.path, "clean.txt", "clean-content\n");
+        m9RunGitIn(a, cyc.path, &.{ "add", "clean.txt" });
+        m9RunGitIn(a, cyc.path, &.{ "commit", "-m", "clean child" });
+    }
+    // Epic writes README.md → conflicts ONLY with conf-child.
+    {
+        const epic_path = try worktree.epicPath(a, repo, plan_slug);
+        defer a.free(epic_path);
+        m9WriteFile(a, std.testing.io, epic_path, "README.md", "from-epic\n");
+        m9RunGitIn(a, epic_path, &.{ "add", "README.md" });
+        m9RunGitIn(a, epic_path, &.{ "commit", "-m", "epic readme" });
+    }
+
+    const master_before = m9MasterHead(a, repo);
+    defer a.free(master_before);
+
+    // Capture the clean child's tip SHA before its (post-merge) teardown.
+    const clean_tip = (try worktree.branchHead(a, std.testing.io, repo, "cycle/isom9/clean-child")).?;
+    defer a.free(clean_tip);
+    const conf_tip = (try worktree.branchHead(a, std.testing.io, repo, "cycle/isom9/conf-child")).?;
+    defer a.free(conf_tip);
+
+    var qctx = RecordingQuestionCtx{ .allocator = a };
+    defer qctx.deinit();
+    var driver = AgentDriver{
+        .spawner = undefined,
+        .io = std.testing.io,
+        .repo_root = repo,
+        .plan_slug = plan_slug,
+        .plan_id = 502,
+        .skip_terminal_subprocess = true,
+        .question_runner = recordingQuestionRunner,
+        .question_runner_ctx = &qctx,
+    };
+
+    // Child 1: the CONFLICTING fan-in. Must return normally with merge=conflict.
+    {
+        const ts = try a.dupe(u8, "conf-child");
+        defer a.free(ts);
+        var acs = m9MakeAcs(a, &driver, ts);
+        const L = c.luaL_newstate() orelse return error.SkipZigTest;
+        defer c.lua_close(L);
+        c.lua_createtable(L, 0, 5);
+        runFanIn(L, &acs, true);
+        const merge = try m9ReadMergeField(a, L);
+        defer if (merge) |m| a.free(m);
+        try std.testing.expectEqualStrings("conflict", merge.?);
+    }
+
+    // Child 2: the CLEAN fan-in proceeds INDEPENDENTLY (the sibling conflict did
+    // NOT halt it). Must return normally with merge=clean.
+    {
+        const ts = try a.dupe(u8, "clean-child");
+        defer a.free(ts);
+        var acs = m9MakeAcs(a, &driver, ts);
+        const L = c.luaL_newstate() orelse return error.SkipZigTest;
+        defer c.lua_close(L);
+        c.lua_createtable(L, 0, 5);
+        runFanIn(L, &acs, true);
+        const merge = try m9ReadMergeField(a, L);
+        defer if (merge) |m| a.free(m);
+        try std.testing.expectEqualStrings("clean", merge.?);
+    }
+
+    // Exactly one question (for the conflicting child); the clean child opened none.
+    try std.testing.expectEqual(@as(usize, 1), qctx.calls.items.len);
+
+    // The clean child landed in the epic; the conflicting child did NOT
+    // (checked by SHA — the clean child's branch ref was torn down).
+    try std.testing.expect(m9IsAncestor(a, repo, clean_tip, "epic/isom9"));
+    try std.testing.expect(!m9IsAncestor(a, repo, conf_tip, "epic/isom9"));
+
+    // The conflicting child's worktree is LEFT; the clean child's is torn down.
+    const conf_path = try worktree.cyclePath(a, repo, plan_slug, "conf-child");
+    defer a.free(conf_path);
+    try std.testing.expect(m9DirExists(std.testing.io, conf_path));
+    const clean_path = try worktree.cyclePath(a, repo, plan_slug, "clean-child");
+    defer a.free(clean_path);
+    try std.testing.expect(!m9DirExists(std.testing.io, clean_path));
+
+    // master untouched throughout (no epic→master op — 3201).
+    const master_after = m9MasterHead(a, repo);
+    defer a.free(master_after);
+    try std.testing.expectEqualStrings(master_before, master_after);
+}
+
+test "M9 fan-in: topology absent → merge=skipped, no question, returns normally (backward compat)" {
+    const a = testing_alloc;
+    if (!m9GitAvailable(a)) return error.SkipZigTest;
+
+    const repo = m9MkTmpRepoDir(a);
+    defer a.free(repo);
+    defer m9RmTree(a, repo);
+    m9InitRepo(a, repo);
+
+    // NO epic worktree created → topology absent.
+    const master_before = m9MasterHead(a, repo);
+    defer a.free(master_before);
+
+    var qctx = RecordingQuestionCtx{ .allocator = a };
+    defer qctx.deinit();
+    var driver = AgentDriver{
+        .spawner = undefined,
+        .io = std.testing.io,
+        .repo_root = repo,
+        .plan_slug = "notopo",
+        .plan_id = 502,
+        .skip_terminal_subprocess = true,
+        .question_runner = recordingQuestionRunner,
+        .question_runner_ctx = &qctx,
+    };
+
+    const ts = try a.dupe(u8, "ghost-task");
+    defer a.free(ts);
+    var acs = m9MakeAcs(a, &driver, ts);
+    const L = c.luaL_newstate() orelse return error.SkipZigTest;
+    defer c.lua_close(L);
+    c.lua_createtable(L, 0, 5);
+
+    runFanIn(L, &acs, true);
+
+    const merge = try m9ReadMergeField(a, L);
+    defer if (merge) |m| a.free(m);
+    try std.testing.expect(merge != null);
+    try std.testing.expectEqualStrings("skipped", merge.?);
+    try std.testing.expectEqual(@as(usize, 0), qctx.calls.items.len);
+
+    const master_after = m9MasterHead(a, repo);
+    defer a.free(master_after);
+    try std.testing.expectEqualStrings(master_before, master_after);
+}
+
+test "M9 fan-in: no commit-present → merge=skipped (nothing to merge)" {
+    const a = testing_alloc;
+    if (!m9GitAvailable(a)) return error.SkipZigTest;
+
+    const repo = m9MkTmpRepoDir(a);
+    defer a.free(repo);
+    defer m9RmTree(a, repo);
+    m9InitRepo(a, repo);
+
+    // Full topology present, but commit_present=false ⇒ skip (no commit to fan in).
+    m9SetupCycleWithCommit(a, repo, "nocommit", "nc-task", "f.txt", "x\n");
+
+    var driver = AgentDriver{
+        .spawner = undefined,
+        .io = std.testing.io,
+        .repo_root = repo,
+        .plan_slug = "nocommit",
+        .plan_id = 502,
+        .skip_terminal_subprocess = true,
+    };
+    const ts = try a.dupe(u8, "nc-task");
+    defer a.free(ts);
+    var acs = m9MakeAcs(a, &driver, ts);
+    const L = c.luaL_newstate() orelse return error.SkipZigTest;
+    defer c.lua_close(L);
+    c.lua_createtable(L, 0, 5);
+
+    runFanIn(L, &acs, false); // commit_present=false
+
+    const merge = try m9ReadMergeField(a, L);
+    defer if (merge) |m| a.free(m);
+    try std.testing.expectEqualStrings("skipped", merge.?);
+
+    // The cycle worktree is left intact (skip never tears down).
+    const cyc_path = try worktree.cyclePath(a, repo, "nocommit", "nc-task");
+    defer a.free(cyc_path);
+    try std.testing.expect(m9DirExists(std.testing.io, cyc_path));
 }

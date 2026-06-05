@@ -653,6 +653,146 @@ pub fn mergeCycleIntoEpic(
     return .conflict;
 }
 
+/// The result of `mergeCycleIntoEpicCapture` — the merge `outcome` plus, on
+/// conflict, the list of conflicting file paths captured BEFORE the merge was
+/// aborted.
+///
+/// `conflict_files` is heap-owned (caller frees each element AND the slice via
+/// `deinit`). It is empty on a clean merge, and on a conflict it carries the
+/// `git diff --name-only --diff-filter=U` file list (may be empty if the
+/// capture itself failed — the caller falls back to a generic body in that
+/// case). The slice is sampled in the conflicted-but-not-yet-aborted window so
+/// the operator's question can name the exact files.
+pub const MergeCapture = struct {
+    outcome: MergeResult,
+    conflict_files: []const []const u8,
+
+    /// Frees every captured file path and the backing slice.
+    pub fn deinit(self: *MergeCapture, allocator: std.mem.Allocator) void {
+        for (self.conflict_files) |f| allocator.free(f);
+        allocator.free(self.conflict_files);
+        self.conflict_files = &.{};
+    }
+};
+
+/// mergeCycleIntoEpicCapture is the M9 fan-in variant of `mergeCycleIntoEpic`:
+/// identical merge behavior, but on conflict it CAPTURES the conflicting file
+/// list (via `git -C <epic_wt> diff --name-only --diff-filter=U`) in the window
+/// AFTER git reports the conflict and BEFORE `git merge --abort` discards it.
+/// The operator's fan-in `planar question` then names the exact files.
+///
+/// On a clean merge the returned `MergeCapture.conflict_files` is empty. On a
+/// conflict it carries the (possibly empty — capture is best-effort) file list,
+/// and the merge has been aborted so the epic worktree is restored, exactly as
+/// `mergeCycleIntoEpic` does. The cycle worktree is NOT torn down on conflict.
+///
+/// The caller owns the returned `MergeCapture` and MUST call `.deinit()`.
+pub fn mergeCycleIntoEpicCapture(
+    allocator: std.mem.Allocator,
+    io: Io,
+    repo_root: []const u8,
+    plan_slug: []const u8,
+    task_slug: []const u8,
+    commit_msg: []const u8,
+) WorktreeError!MergeCapture {
+    const epic_wt = try epicPath(allocator, repo_root, plan_slug);
+    defer allocator.free(epic_wt);
+
+    const cycle_ref = try cycleBranch(allocator, plan_slug, task_slug);
+    defer allocator.free(cycle_ref);
+
+    const merged = gitOk(allocator, io, &.{
+        "-C", epic_wt,    "merge",   "--no-ff",
+        "-m", commit_msg, cycle_ref,
+    }) catch |err| return err;
+
+    const empty: []const []const u8 = &.{};
+    if (merged) return .{ .outcome = .clean, .conflict_files = empty };
+
+    // Conflict: capture the unmerged file list BEFORE aborting. Best-effort —
+    // a capture failure leaves `conflict_files` empty and the caller falls back
+    // to a generic question body. `--diff-filter=U` selects unmerged paths.
+    const files: []const []const u8 = captureConflictFiles(allocator, io, epic_wt) catch empty;
+
+    // Abort so the epic worktree is restored (same as mergeCycleIntoEpic).
+    _ = gitOk(allocator, io, &.{ "-C", epic_wt, "merge", "--abort" }) catch {};
+    return .{ .outcome = .conflict, .conflict_files = files };
+}
+
+/// captureConflictFiles runs `git -C <epic_wt> diff --name-only --diff-filter=U`
+/// and parses the newline-separated output into an owned slice of owned file
+/// paths. Used by `mergeCycleIntoEpicCapture` in the conflicted-not-yet-aborted
+/// window. Returns an empty slice when there is no output.
+fn captureConflictFiles(
+    allocator: std.mem.Allocator,
+    io: Io,
+    epic_wt: []const u8,
+) WorktreeError![]const []const u8 {
+    const out = try runGit(allocator, io, &.{ "-C", epic_wt, "diff", "--name-only", "--diff-filter=U" });
+    defer allocator.free(out);
+
+    var list = std.ArrayList([]u8).empty;
+    errdefer {
+        for (list.items) |f| allocator.free(f);
+        list.deinit(allocator);
+    }
+
+    var lines = std.mem.splitScalar(u8, out, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r\n");
+        if (line.len == 0) continue;
+        const owned = allocator.dupe(u8, line) catch return WorktreeError.OutOfMemory;
+        list.append(allocator, owned) catch {
+            allocator.free(owned);
+            return WorktreeError.OutOfMemory;
+        };
+    }
+    return list.toOwnedSlice(allocator) catch return WorktreeError.OutOfMemory;
+}
+
+/// epicWorktreePresent reports whether the M9 fan-in topology is present for
+/// `plan_slug` in `repo_root`: BOTH the epic branch (`epic/<plan_slug>`) exists
+/// AND its worktree directory (`<repo_root>/.worktrees/epic/<plan_slug>`) is a
+/// real directory. Returns false (skip fan-in) when either is absent — e.g. a
+/// classic in-pwd run or a caller that did not prepare the worktree topology.
+///
+/// Best-effort: any probe error degrades to false (skip the merge) rather than
+/// surfacing — a fan-in MUST NOT fail the run because the topology check could
+/// not complete.
+pub fn epicWorktreePresent(
+    allocator: std.mem.Allocator,
+    io: Io,
+    repo_root: []const u8,
+    plan_slug: []const u8,
+) bool {
+    const branch = epicBranch(allocator, plan_slug) catch return false;
+    defer allocator.free(branch);
+    const exists = branchExists(allocator, io, repo_root, branch) catch return false;
+    if (!exists) return false;
+
+    const path = epicPath(allocator, repo_root, plan_slug) catch return false;
+    defer allocator.free(path);
+    var d = std.Io.Dir.cwd().openDir(io, path, .{}) catch return false;
+    d.close(io);
+    return true;
+}
+
+/// cycleBranchPresent reports whether the cycle branch
+/// (`cycle/<plan_slug>/<task_slug>`) exists in `repo_root`. The fan-in topology
+/// guard requires BOTH the epic worktree AND the cycle branch (a completed
+/// worker committed onto it). Best-effort: a probe error degrades to false.
+pub fn cycleBranchPresent(
+    allocator: std.mem.Allocator,
+    io: Io,
+    repo_root: []const u8,
+    plan_slug: []const u8,
+    task_slug: []const u8,
+) bool {
+    const branch = cycleBranch(allocator, plan_slug, task_slug) catch return false;
+    defer allocator.free(branch);
+    return branchExists(allocator, io, repo_root, branch) catch false;
+}
+
 // ---------------------------------------------------------------------------
 // Pre/post commit sampling — task 3180 supporting helper.
 // ---------------------------------------------------------------------------

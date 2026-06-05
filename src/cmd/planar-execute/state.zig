@@ -386,6 +386,54 @@ pub fn taskShow(
     }) catch return StateError.ParseFailed;
 }
 
+/// Minimal view of `planar question add ... --json`.
+///
+/// Real shape (captured 2026-06-05):
+///   {"id":521,"scope_kind":"association","scope_id":1,"title":"...",
+///    "body":"...","status":"open","answer_body":null,"answered_at":null,
+///    "created_at":"...","updated_at":"..."}
+///
+/// Only `id` is consumed (the M9 fan-in surfaces the opened question id to the
+/// Lua workflow on a conflict).
+pub const QuestionAdd = struct {
+    id: u64,
+};
+
+/// questionAdd shells `planar question add --plan <id> --json --body <body>
+/// <title>` and returns the opened question's id.
+///
+/// This is the M9 fan-in conflict path (plan 492 tasks 3199/3200): when a
+/// cycle→epic merge conflicts, the harness opens an operator-triage question
+/// naming the conflicting files, leaves the cycle worktree for resolution, and
+/// surfaces the question id to the Lua workflow. The merge is already aborted
+/// (epic restored) by the time this runs.
+///
+/// Returns `SubprocessNonZero`/`ParseFailed` on failure; the caller
+/// (`defaultQuestionRunner`) maps any error to a question id of 0 so a failed
+/// open NEVER halts the run.
+pub fn questionAdd(
+    allocator: std.mem.Allocator,
+    io: Io,
+    plan_id: u64,
+    title: []const u8,
+    body: []const u8,
+) StateError!u64 {
+    var id_buf: [32]u8 = undefined;
+    const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{plan_id}) catch return StateError.SubprocessFailed;
+
+    const stdout = try spawnPlanar(allocator, io, &.{
+        "question", "add", "--plan", id_str, "--json", "--body", body, title,
+    }, 256 * 1024);
+    defer allocator.free(stdout);
+
+    var parsed = std.json.parseFromSlice(QuestionAdd, allocator, stdout, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    }) catch return StateError.ParseFailed;
+    defer parsed.deinit();
+    return parsed.value.id;
+}
+
 /// planNext shells `planar plan next <plan_id> --json` and returns a
 /// `std.json.Parsed(PlanNext)`.
 ///
