@@ -48,6 +48,7 @@
 //!   - named built-in workflow registry: m10-quality-spine (no entries yet)
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 
 const cli = @import("cli");
@@ -134,6 +135,15 @@ pub const heartbeat = @import("heartbeat.zig");
 /// its `test` blocks run under the execute_exe_tests target (memory:
 /// planar_execute_gate_lazy_eval — a pub-const alias forces analysis).
 pub const interrupt = @import("interrupt.zig");
+
+/// journal — append-only run journal (M8 task 3196). One NDJSON record per
+/// worker spawn (prompt hash, worktree, branch, claim token, model, exit code,
+/// terminal verb, wall-clock) at `<repo_root>/.worktrees/.planar-execute/
+/// journal-<plan_id>.ndjson`. Written best-effort at the tail of `agentContinue`;
+/// the durability substrate M8 resume (3197) + budgets (3198) read back. Aliased
+/// here so its `test` blocks run under the execute_exe_tests target (memory:
+/// planar_execute_gate_lazy_eval — a pub-const alias forces analysis).
+pub const journal = @import("journal.zig");
 
 /// runlock — single-instance-per-plan run-lock (M6 task 3191). An O_EXCL lock
 /// keyed by plan-id carrying run-id + PID: refuse start on a LIVE lock,
@@ -829,6 +839,26 @@ const AgentCallState = struct {
     /// The numeric task id (copy of opts.task_id; a scalar — no dupe needed).
     /// Backs the M7 block-detection read in `agentContinue`. Zero → skip.
     task_id: u64,
+    /// The model tier the worker was spawned with (role → tier). Borrows a
+    /// COMPTIME constant from `role_model` (no dupe/free needed — it outlives the
+    /// process). Stamped at spawn, read into the journal record at terminal.
+    model: []const u8,
+    /// The role name the worker ran as. Borrows a COMPTIME constant from
+    /// `role_model.Role.name()` (no dupe/free needed). Journal field.
+    role_name: []const u8,
+    /// A content fingerprint of the brief/prompt the worker ran with (lowercase
+    /// hex Wyhash). Owned (heap) — the brief is a Lua-stack borrow that does NOT
+    /// survive the yield, so we hash + dupe it at spawn. Journal field.
+    prompt_hash: []u8,
+    /// The cycle branch the worker committed onto, derived at spawn. Owned; may
+    /// be null when the harness could not derive it (degraded paths). Journal
+    /// field (distinct from `head_before`, which is a commit SHA, not a branch).
+    branch: ?[]u8,
+    /// The monotonic spawn timestamp (nanoseconds, from the scheduler's
+    /// injectable clock). At terminal the journal computes
+    /// `wall_clock_ms = (clockNow - spawn_mono_ns) / 1e6`. A real clock in prod;
+    /// a FakeClock in tests gives an exact value.
+    spawn_mono_ns: i128,
     /// Pre-spawn cycle-branch HEAD (commit-presence proxy). Owned; may be null.
     head_before: ?[]u8,
     /// The constrained worker env kept alive across the spawn. The in-flight
@@ -843,6 +873,8 @@ const AgentCallState = struct {
         const a = self.allocator;
         if (self.worker_env_built) |*we| we.deinit(a, self.driver.io);
         if (self.head_before) |h| a.free(h);
+        if (self.branch) |b| a.free(b);
+        a.free(self.prompt_hash);
         a.free(self.worktree_path);
         a.free(self.claim_token);
         a.free(self.task_slug);
@@ -911,6 +943,12 @@ fn driveAgentCallPreYield(
         .claim_token = &.{},
         .task_slug = &.{},
         .task_id = opts.task_id,
+        // model/role_name borrow comptime constants from role_model — no dupe.
+        .model = role_model.modelForRole(role),
+        .role_name = role.name(),
+        .prompt_hash = &.{},
+        .branch = null,
+        .spawn_mono_ns = 0,
         .head_before = null,
         .worker_env_built = null,
         .slot_index = 0,
@@ -928,16 +966,28 @@ fn driveAgentCallPreYield(
         _ = c.luaL_error(L, "agent: out of memory");
         return 0;
     };
+    // Fingerprint the brief NOW (the prompt is a Lua-stack borrow that does NOT
+    // survive the yield). Owned hex; freed in destroy. Journal field.
+    acs.prompt_hash = journal.hashPrompt(alloc, prompt) catch {
+        acs.destroy();
+        _ = c.luaL_error(L, "agent: out of memory");
+        return 0;
+    };
+    // Stamp the spawn-time monotonic reading for the journal wall-clock. Use the
+    // scheduler's injectable clock so a test FakeClock drives an exact value;
+    // production reads the real monotonic clock.
+    acs.spawn_mono_ns = sched.clockNow();
 
-    // 1) Sample the pre-spawn cycle branch HEAD (commit-presence proxy).
+    // 1) Sample the pre-spawn cycle branch HEAD (commit-presence proxy) and stash
+    //    the cycle branch name for the journal record.
     if (driver.repo_root.len > 0 and driver.plan_slug.len > 0 and acs.task_slug.len > 0) {
         const branch = worktree.cycleBranch(alloc, driver.plan_slug, acs.task_slug) catch {
             acs.destroy();
             _ = c.luaL_error(L, "agent: out of memory");
             return 0;
         };
-        defer alloc.free(branch);
         acs.head_before = worktree.branchHead(alloc, io, driver.repo_root, branch) catch null;
+        acs.branch = branch; // owned; freed in destroy.
     }
 
     // 2) Build the constrained worker env when a builder is installed. The real
@@ -1042,6 +1092,12 @@ fn agentContinue(L: ?*c.lua_State, status: c_int, ctx: c.lua_KContext) callconv(
     slot.outcome = null;
     defer outcome.deinit(alloc);
 
+    // Stamp the terminal-time monotonic reading ONCE here (same injectable clock
+    // the spawn-time was read from) → the journal `wall_clock_ms` = terminal −
+    // spawn. Read before any subprocess so the elapsed reflects the worker's run,
+    // not the harness's terminal-verb bookkeeping (task 3196 journal).
+    const terminal_mono_ns: i128 = sched.clockNow();
+
     // Did the wall-clock timeout fire on this worker (task 3188)? Read it from
     // the slot BEFORE the deferred releaseSlot clears it. A timed-out worker was
     // already killed by the scheduler; the continuation now runs the reclaim
@@ -1120,6 +1176,9 @@ fn agentContinue(L: ?*c.lua_State, status: c_int, ctx: c.lua_KContext) callconv(
             };
         }
 
+        // Journal the spawn (best-effort, skipped when no repo/plan). One record
+        // per spawn — this is the timed-out worker's record.
+        writeJournalRecord(acs, "timed-out", outcome.exit_code, terminal_mono_ns);
         pushAgentResult(L, "timed-out", outcome.exit_code, commit_present, .fail);
         return 1;
     }
@@ -1165,6 +1224,7 @@ fn agentContinue(L: ?*c.lua_State, status: c_int, ctx: c.lua_KContext) callconv(
         // in-memory summary entry (the operator still sees the blocked task via
         // `planar plan next`); never abort the run for it.
         hs.recordBlocked(acs.task_slug, "", "") catch {};
+        writeJournalRecord(acs, "blocked", outcome.exit_code, terminal_mono_ns);
         pushAgentResult(L, "blocked", outcome.exit_code, commit_present, .none);
         return 1;
     }
@@ -1176,8 +1236,84 @@ fn agentContinue(L: ?*c.lua_State, status: c_int, ctx: c.lua_KContext) callconv(
         .release => "released",
         .fail => "failed",
     };
+    writeJournalRecord(acs, status_str, outcome.exit_code, terminal_mono_ns);
     pushAgentResult(L, status_str, outcome.exit_code, commit_present, verb);
     return 1;
+}
+
+/// writeJournalRecord appends ONE append-only run-journal record for a finished
+/// worker spawn (plan 492 M8 task 3196). It is called from every terminal return
+/// path in `agentContinue` (normal, timed-out, blocked) with the FINAL status
+/// string the harness recorded, so the journal carries one record per spawn.
+///
+/// SKIP guard: when `driver.repo_root` is empty OR `driver.plan_id` is 0 (the
+/// degraded / pure-Lua / no-real-spawn test paths) there is no journal location,
+/// so we write nothing. This mirrors the branch-head / worktree-teardown guards.
+///
+/// BEST-EFFORT: the journal is durability metadata, not the control path. A
+/// path-derivation or write failure is logged and swallowed — it must NEVER
+/// crash the run or fail the `agent()` call (the terminal verb is already
+/// applied by the time we get here).
+fn writeJournalRecord(
+    acs: *AgentCallState,
+    final_status: []const u8,
+    exit_code: u32,
+    terminal_mono_ns: i128,
+) void {
+    const driver = acs.driver;
+    const alloc = acs.allocator;
+    const io = driver.io;
+
+    // Skip when there is no journal location (degraded / pure-Lua / unit-test
+    // paths). A pure-Lua run never spawns a real worker, so it has no record.
+    if (driver.repo_root.len == 0 or driver.plan_id == 0) return;
+
+    const path = journal.journalPath(alloc, driver.repo_root, driver.plan_id) catch |err| {
+        std.log.scoped(.planar_execute).warn(
+            "journal: could not derive path (plan {d}): {s}",
+            .{ driver.plan_id, @errorName(err) },
+        );
+        return;
+    };
+    defer alloc.free(path);
+
+    // Wall-clock = terminal-now − spawn-time, both from the scheduler's clock
+    // (real monotonic in prod; a deterministic FakeClock in tests). Clamp to >= 0
+    // to be defensive against a non-monotonic clock injection.
+    const elapsed_ns: i128 = terminal_mono_ns - acs.spawn_mono_ns;
+    const wall_ms: i64 = if (elapsed_ns <= 0) 0 else @intCast(@divTrunc(elapsed_ns, std.time.ns_per_ms));
+
+    const record = journal.JournalRecord{
+        .prompt_hash = acs.prompt_hash,
+        .worktree = acs.worktree_path,
+        .branch = if (acs.branch) |b| b else "",
+        .claim_token = acs.claim_token,
+        .model = acs.model,
+        .role = acs.role_name,
+        .task_slug = acs.task_slug,
+        .exit_code = @intCast(exit_code),
+        .terminal_verb = final_status,
+        .wall_clock_ms = wall_ms,
+        .timestamp = nowUnixSeconds(),
+    };
+
+    journal.append(alloc, io, path, record) catch |err| {
+        std.log.scoped(.planar_execute).warn(
+            "journal: append failed (plan {d}, task {s}): {s}",
+            .{ driver.plan_id, acs.task_slug, @errorName(err) },
+        );
+    };
+}
+
+/// nowUnixSeconds reads a wall-clock Unix-seconds timestamp for the journal
+/// `timestamp` field via the C `clock_gettime(REALTIME)` (mirrors runlock.zig's
+/// `nowNanos`; there is no `std.time.timestamp` in this Zig). Informational
+/// only — the journal orders by record sequence, not this value.
+fn nowUnixSeconds() i64 {
+    if (builtin.os.tag == .windows) return 0;
+    var ts: std.c.timespec = undefined;
+    if (std.c.clock_gettime(.REALTIME, &ts) != 0) return 0;
+    return @intCast(ts.sec);
 }
 
 /// readTaskStatusBlocked returns true iff the `agent()` call's task is now in
@@ -4659,6 +4795,297 @@ test "M7 summary: printBlockedSummary lists items; quiet when zero (task 3195)" 
         // Partial record reads cleanly (no trailing "blocked by"/reason clause).
         try std.testing.expect(std.mem.indexOf(u8, out, "  - task m5-bar\n") != null);
     }
+}
+
+// ---------------------------------------------------------------------------
+// M8 journal wiring (task 3196) — one run-journal record per worker spawn.
+//
+// These tests drive a full agent()/parallel() pipeline through runModule with a
+// FakeSpawner + a temp repo_root + a non-zero plan_id, then read the journal
+// file back and assert ONE record per spawn with the right fields. The temp
+// repo_root keeps the journal OUT of this checkout's real `.worktrees/`. A fixed
+// FakeClock makes the wall-clock deterministic (spawn-time == terminal-time read
+// ⇒ wall_clock_ms == 0 exactly).
+// ---------------------------------------------------------------------------
+
+/// JournalTestClock is a settable fake monotonic clock for the journal wiring
+/// tests: it returns the SAME value at the spawn-time and terminal-time reads,
+/// so `wall_clock_ms` is exactly 0 (deterministic, no real elapsed time).
+const JournalTestClock = struct {
+    now_ns: i128 = 5_000_000_000,
+    fn clockFn(ctx: ?*anyopaque, io: std.Io) i128 {
+        _ = io;
+        const self: *JournalTestClock = @ptrCast(@alignCast(ctx.?));
+        return self.now_ns;
+    }
+};
+
+/// jMkTmpDir / jRmTree mirror the runlock/journal test helpers: a fresh system
+/// temp dir NOT nested under this checkout's `.worktrees/`, so the journal write
+/// never pollutes the real tree.
+fn jMkTmpDir(allocator: std.mem.Allocator) []const u8 {
+    const r = std.process.run(allocator, std.testing.io, .{
+        .argv = &.{ "mktemp", "-d", "-t", "planar-journal-wire.XXXXXX" },
+    }) catch @panic("jMkTmpDir: mktemp spawn failed");
+    defer allocator.free(r.stderr);
+    if (!(r.term == .exited and r.term.exited == 0)) {
+        allocator.free(r.stdout);
+        @panic("jMkTmpDir: mktemp non-zero exit");
+    }
+    const trimmed = std.mem.trim(u8, r.stdout, " \t\r\n");
+    const owned = allocator.dupe(u8, trimmed) catch @panic("OOM");
+    allocator.free(r.stdout);
+    return owned;
+}
+
+fn jRmTree(allocator: std.mem.Allocator, path: []const u8) void {
+    const r = std.process.run(allocator, std.testing.io, .{ .argv = &.{ "rm", "-rf", path } }) catch return;
+    allocator.free(r.stdout);
+    allocator.free(r.stderr);
+}
+
+/// activeClaimReader reports the claim as `.active` so the terminal-verb
+/// decision falls back to the exit_code + commit_present matrix. The journal
+/// wiring tests set a non-zero `plan_id` (so the journal write fires) but do NOT
+/// have a live `planar-watch ps`; without this injected reader the default
+/// reader would shell out and skew the decided verb.
+fn activeClaimReader(
+    ctx: ?*anyopaque,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    plan_id: u64,
+    claim_token: []const u8,
+) terminal.ClaimStatus {
+    _ = ctx;
+    _ = allocator;
+    _ = io;
+    _ = plan_id;
+    _ = claim_token;
+    return .active;
+}
+
+test "M8 journal: a single agent() spawn appends ONE record with the right fields (task 3196)" {
+    const a = testing_alloc;
+    const io = std.testing.io;
+
+    const repo_root = jMkTmpDir(a);
+    defer a.free(repo_root);
+    defer jRmTree(a, repo_root);
+
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = io,
+        .repo_root = repo_root, // → journal location is derivable
+        .plan_slug = "p492", // → branch derives as cycle/p492/<task>
+        .plan_id = 492, // → journal write fires (non-zero)
+        .skip_terminal_subprocess = true,
+        .claim_status_reader = activeClaimReader, // no live planar-watch in test
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+
+    var clock = JournalTestClock{};
+    host.timeout_clock_fn = JournalTestClock.clockFn;
+    host.timeout_clock_ctx = &clock;
+
+    const src =
+        \\return {
+        \\  meta = { name = "m8-journal", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    ctx.agent("the brief here", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/abs/wt",
+        \\      claim_token = "tok-journal",
+        \\      task_slug = "ts-jour",
+        \\    })
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    runModule(src, "test:m8-journal", &.{}, &host, &err_buf) catch |e| {
+        std.debug.print("m8 journal failed: {s}\n", .{std.mem.span(@as([*:0]const u8, @ptrCast(&err_buf)))});
+        return e;
+    };
+
+    // Read the journal back: exactly ONE record for the single spawn.
+    const path = try journal.journalPath(a, repo_root, 492);
+    defer a.free(path);
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const recs = try journal.read(a, arena.allocator(), io, path);
+    try std.testing.expectEqual(@as(usize, 1), recs.len);
+
+    const rec = recs[0];
+    try std.testing.expect(rec.prompt_hash.len != 0); // brief was fingerprinted
+    try std.testing.expectEqualStrings("tok-journal", rec.claim_token);
+    try std.testing.expectEqualStrings(role_model.OPUS_TIER, rec.model); // coder → opus
+    try std.testing.expectEqualStrings("coder", rec.role);
+    try std.testing.expectEqualStrings("ts-jour", rec.task_slug);
+    try std.testing.expectEqualStrings("/tmp/abs/wt", rec.worktree);
+    try std.testing.expectEqualStrings("cycle/p492/ts-jour", rec.branch);
+    try std.testing.expectEqual(@as(i32, 0), rec.exit_code);
+    // exit==0, no commit (branchHead fails in a non-git tmp dir) → released.
+    try std.testing.expectEqualStrings("released", rec.terminal_verb);
+    // Fixed clock: spawn-time == terminal-time read → exactly 0 ms.
+    try std.testing.expectEqual(@as(i64, 0), rec.wall_clock_ms);
+
+    // The prompt_hash matches the deterministic Wyhash of the brief.
+    const expect_hash = try journal.hashPrompt(a, "the brief here");
+    defer a.free(expect_hash);
+    try std.testing.expectEqualStrings(expect_hash, rec.prompt_hash);
+}
+
+test "M8 journal: a failing (exit!=0) spawn journals terminal_verb=failed + exit_code (task 3196)" {
+    const a = testing_alloc;
+    const io = std.testing.io;
+
+    const repo_root = jMkTmpDir(a);
+    defer a.free(repo_root);
+    defer jRmTree(a, repo_root);
+
+    var fake = spawn.FakeSpawnerState.init(a, 7, "", "boom");
+    defer fake.deinit();
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = io,
+        .repo_root = repo_root,
+        .plan_slug = "p1",
+        .plan_id = 1,
+        .skip_terminal_subprocess = true,
+        .claim_status_reader = activeClaimReader,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+
+    const src =
+        \\return {
+        \\  meta = { name = "m8-fail", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    ctx.agent("brief", { role = "reviewer", worktree_path = "/tmp/wt", claim_token = "tk", task_slug = "tf" })
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:m8-fail", &.{}, &host, &err_buf);
+
+    const path = try journal.journalPath(a, repo_root, 1);
+    defer a.free(path);
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const recs = try journal.read(a, arena.allocator(), io, path);
+    try std.testing.expectEqual(@as(usize, 1), recs.len);
+    try std.testing.expectEqual(@as(i32, 7), recs[0].exit_code);
+    try std.testing.expectEqualStrings("failed", recs[0].terminal_verb);
+    try std.testing.expectEqualStrings(role_model.OPUS_TIER, recs[0].model); // reviewer → opus
+    try std.testing.expectEqualStrings("reviewer", recs[0].role);
+}
+
+test "M8 journal: a parallel set of N spawns appends N records (one per spawn) (task 3196)" {
+    const a = testing_alloc;
+    const io = std.testing.io;
+
+    const repo_root = jMkTmpDir(a);
+    defer a.free(repo_root);
+    defer jRmTree(a, repo_root);
+
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = io,
+        .repo_root = repo_root,
+        .plan_slug = "pN",
+        .plan_id = 77,
+        .skip_terminal_subprocess = true,
+        .claim_status_reader = activeClaimReader,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+
+    const src =
+        \\return {
+        \\  meta = { name = "m8-parN", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local function mk(tag)
+        \\      return function()
+        \\        ctx.agent("brief-" .. tag, { role = "coder", worktree_path = "/tmp/" .. tag, claim_token = "t-" .. tag, task_slug = tag })
+        \\        return tag
+        \\      end
+        \\    end
+        \\    local r = ctx.parallel({ mk("a"), mk("b"), mk("c") })
+        \\    assert(#r == 3, "len: " .. tostring(#r))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    runModule(src, "test:m8-parN", &.{}, &host, &err_buf) catch |e| {
+        std.debug.print("m8 parN failed: {s}\n", .{std.mem.span(@as([*:0]const u8, @ptrCast(&err_buf)))});
+        return e;
+    };
+
+    // Three spawns → three journal records, one per worker.
+    try std.testing.expectEqual(@as(u32, 3), fake.start_count);
+    const path = try journal.journalPath(a, repo_root, 77);
+    defer a.free(path);
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const recs = try journal.read(a, arena.allocator(), io, path);
+    try std.testing.expectEqual(@as(usize, 3), recs.len);
+    // Each record's task_slug is one of the three thunk tags (set membership).
+    var seen_a = false;
+    var seen_b = false;
+    var seen_c = false;
+    for (recs) |rec| {
+        if (std.mem.eql(u8, rec.task_slug, "a")) seen_a = true;
+        if (std.mem.eql(u8, rec.task_slug, "b")) seen_b = true;
+        if (std.mem.eql(u8, rec.task_slug, "c")) seen_c = true;
+        try std.testing.expect(rec.prompt_hash.len != 0);
+        try std.testing.expectEqualStrings("claude-opus-4-8", rec.model);
+    }
+    try std.testing.expect(seen_a and seen_b and seen_c);
+}
+
+test "M8 journal: with no repo_root/plan_id the journal write is skipped (no file) (task 3196)" {
+    const a = testing_alloc;
+    const io = std.testing.io;
+
+    // Driver with EMPTY repo_root + plan_id 0 → the skip guard fires; no journal.
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = io,
+        .skip_terminal_subprocess = true,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+
+    const src =
+        \\return {
+        \\  meta = { name = "m8-skip", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    ctx.agent("brief", { role = "coder", worktree_path = "/tmp/wt", claim_token = "tk", task_slug = "ts" })
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:m8-skip", &.{}, &host, &err_buf);
+
+    // The (degenerate "." -rooted) journal path must NOT have been created. We
+    // assert via read on the "."-derived path returning empty (no file written).
+    const path = try journal.journalPath(a, "", 0);
+    defer a.free(path);
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const recs = try journal.read(a, arena.allocator(), io, path);
+    try std.testing.expectEqual(@as(usize, 0), recs.len);
+    try std.testing.expectEqual(@as(u32, 1), fake.start_count); // worker DID run
 }
 
 // ---------------------------------------------------------------------------

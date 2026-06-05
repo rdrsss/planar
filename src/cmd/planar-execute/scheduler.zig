@@ -165,8 +165,13 @@ pub const Scheduler = struct {
 
     /// clockNow returns the current monotonic nanosecond reading via the
     /// injected clock. Used to stamp deadlines at registration and to test them
-    /// each poll round.
-    fn clockNow(self: *Scheduler) i128 {
+    /// each poll round. Public so the `agent()` lifecycle halves (main.zig) can
+    /// stamp the spawn-time and compute the journal `wall_clock_ms` against the
+    /// SAME injectable clock — a test FakeClock then drives an exact-value
+    /// assertion (task 3196 journal). Requires a wired Io (a slot is only ever
+    /// registered with a spawner+io pair, so the caller has one when a worker is
+    /// in flight).
+    pub fn clockNow(self: *Scheduler) i128 {
         return self.clock_fn(self.clock_ctx, self.unwrapIo());
     }
 
