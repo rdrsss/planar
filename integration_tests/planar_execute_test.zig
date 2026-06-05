@@ -43,14 +43,36 @@ const RunResult = struct {
     }
 };
 
+/// buildEnvWithoutGate builds an explicit subprocess environment that strips
+/// PLANAR_EXECUTE_LIVE_AGENT from the host environ. This makes the non-gated
+/// tests immune to the operator running `PLANAR_EXECUTE_LIVE_AGENT=1 make
+/// test-integration` — the gate must be injected explicitly via runExecuteWithGate.
+fn buildEnvWithoutGate(gpa: std.mem.Allocator) !std.process.Environ.Map {
+    const raw: [*:null]?[*:0]u8 = std.c.environ;
+    var env_count: usize = 0;
+    while (raw[env_count]) |_| : (env_count += 1) {}
+    const env_slice: [:null]const ?[*:0]const u8 = @ptrCast(raw[0..env_count :null]);
+    const posix_block: std.process.Environ.PosixBlock = .{ .slice = env_slice };
+    const host_environ: std.process.Environ = .{ .block = posix_block };
+    var env_map = try host_environ.createMap(gpa);
+    _ = env_map.swapRemove("PLANAR_EXECUTE_LIVE_AGENT");
+    return env_map;
+}
+
 fn runExecute(gpa: std.mem.Allocator, args: []const []const u8) !RunResult {
     var argv = std.ArrayList([]const u8).empty;
     defer argv.deinit(gpa);
     try argv.append(gpa, resolveExecuteBin());
     for (args) |a| try argv.append(gpa, a);
 
+    // Strip PLANAR_EXECUTE_LIVE_AGENT so non-gated tests are immune to the
+    // operator running `PLANAR_EXECUTE_LIVE_AGENT=1 make test-integration`.
+    var env_map = try buildEnvWithoutGate(gpa);
+    defer env_map.deinit();
+
     const result = try std.process.run(gpa, std.testing.io, .{
         .argv = argv.items,
+        .environ_map = &env_map,
     });
     return .{
         .term = result.term,
@@ -592,4 +614,70 @@ test "planar-execute --dry-run: host-fn workflow still never enters run (task 31
     defer live.deinit();
     try std.testing.expect(live.exitCode() != 0);
     try std.testing.expect(std.mem.indexOf(u8, live.stderr, "must not execute under --dry-run") != null);
+}
+
+// ---------------------------------------------------------------------------
+// task 3264 — agent-free workflows must not require --plan under the live gate
+// ---------------------------------------------------------------------------
+
+/// runExecuteWithGate runs the planar-execute binary with PLANAR_EXECUTE_LIVE_AGENT=1
+/// injected into the subprocess environment. Used to exercise the gated
+/// driver-attachment path without spawning a real claude worker.
+fn runExecuteWithGate(gpa: std.mem.Allocator, args: []const []const u8) !RunResult {
+    // Build the subprocess env from the host environ + inject the gate var.
+    var env_map = try buildEnvWithoutGate(gpa);
+    defer env_map.deinit();
+    env_map.put("PLANAR_EXECUTE_LIVE_AGENT", "1") catch @panic("OOM injecting gate var");
+
+    var argv = std.ArrayList([]const u8).empty;
+    defer argv.deinit(gpa);
+    try argv.append(gpa, resolveExecuteBin());
+    for (args) |a| try argv.append(gpa, a);
+
+    const result = try std.process.run(gpa, std.testing.io, .{
+        .argv = argv.items,
+        .environ_map = &env_map,
+    });
+    return .{
+        .term = result.term,
+        .stdout = result.stdout,
+        .stderr = result.stderr,
+        .gpa = gpa,
+    };
+}
+
+test "planar-execute: agent-free workflow runs cleanly under PLANAR_EXECUTE_LIVE_AGENT=1 without --plan (task 3264)" {
+    // Regression guard for task 3264: a pure-Lua workflow that never calls
+    // agent() must exit 0 when PLANAR_EXECUTE_LIVE_AGENT=1 is set, even
+    // without --plan. Before the fix, the gate block eagerly required --plan
+    // and the process exited 1 before the workflow ran.
+    //
+    // This test injects PLANAR_EXECUTE_LIVE_AGENT=1 for this one invocation
+    // only (via runExecuteWithGate) so it runs in CI without a real claude spawn.
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_abs = try tmpAbsPath(&tmp, gpa);
+    defer gpa.free(tmp_abs);
+
+    const wf_src =
+        \\return {
+        \\  meta = { name = "agent-free-gated", description = "pure Lua, no agent() call", phases = {} },
+        \\  run = function(ctx)
+        \\    -- No agent() call. Must exit 0 even under PLANAR_EXECUTE_LIVE_AGENT=1.
+        \\    local x = 1 + 1
+        \\    assert(x == 2, "basic Lua must work")
+        \\  end,
+        \\}
+    ;
+    try writeWorkflow(&tmp, "agent_free_gated.lua", wf_src);
+    const wf_path = try workflowPath(tmp_abs, "agent_free_gated.lua", gpa);
+    defer gpa.free(wf_path);
+
+    const res = try runExecuteWithGate(gpa, &.{wf_path});
+    defer res.deinit();
+
+    // Must exit 0 — no agent() call, so binary resolution and --plan absence
+    // are irrelevant. The driver is attached in degraded mode but never used.
+    try std.testing.expectEqual(@as(u32, 0), res.exitCode());
 }

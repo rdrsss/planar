@@ -473,6 +473,13 @@ pub const AgentDriver = struct {
     /// production reader (it reads `driver.plan_id` directly); tests stash a
     /// pointer to their canned `terminal.ClaimStatus` here.
     claim_status_ctx: ?*anyopaque = null,
+    /// True when the host binaries (planar-agent, git) were successfully
+    /// resolved at driver-attach time. False means the gate was set but one
+    /// or both binaries were not found on PATH — the driver is attached in a
+    /// degraded state and `agent()` will raise a clean Lua error if called.
+    /// Tests always leave this at the default (true); the degraded live case
+    /// (binary resolution failed at gate attachment) sets it to false.
+    live_binaries_resolved: bool = true,
 };
 
 /// ClaimStatusFn reads the live claim status for one `agent()` call. Injectable
@@ -1044,6 +1051,16 @@ fn hostAgent(L: ?*c.lua_State) callconv(.c) c_int {
         c.lua_setfield(L, -2, "status");
         return 1;
     };
+
+    // Live gate is active but binary resolution failed at driver-attach time
+    // (planar-agent or git not found on PATH). Raise a clean Lua error so the
+    // operator sees a useful message rather than a downstream panic. Agent-free
+    // workflows never reach this branch; a workflow that calls agent() with a
+    // degraded driver gets a clear diagnostic. (task 3264)
+    if (!driver.live_binaries_resolved) {
+        _ = c.luaL_error(L, "agent: planar-agent or git not resolvable on PATH (PLANAR_EXECUTE_LIVE_AGENT=1 is set but required binaries are missing)");
+        return 0; // unreachable — luaL_error longjmps
+    }
 
     // M4/M5 mode — drive the spawn pipeline through the injected driver. M5
     // (task 3182) splits this into a pre-yield half (spawn non-blocking +
@@ -2447,7 +2464,7 @@ const run_verb: cli.Cmd = .{
     ,
     .flags = &.{
         .{ .long = "--dry-run", .kind = .bool, .default = .{ .bool = false }, .desc = "Load and validate the workflow, print meta and phases, exit without running." },
-        .{ .long = "--plan", .kind = .int, .default = .{ .int = 0 }, .desc = "Plan id the live agent run is scoped to. Required only when PLANAR_EXECUTE_LIVE_AGENT=1 (the gated live-spawn path); ignored otherwise." },
+        .{ .long = "--plan", .kind = .int, .default = .{ .int = 0 }, .desc = "Plan id the live agent run is scoped to. When PLANAR_EXECUTE_LIVE_AGENT=1, providing --plan enables live claim-status reads and commit-presence sampling; omitting it degrades those features but does not prevent agent-free workflows from running." },
     },
     .positionals = &.{
         .{ .name = "workflow", .kind = .string, .required = true },
@@ -2726,82 +2743,80 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
     defer if (live_plan_slug) |*p| p.deinit();
 
     if (ctx.environ.getPosix("PLANAR_EXECUTE_LIVE_AGENT") != null) {
-        const plan: u64 = blk: {
-            if (args.plan <= 0) {
-                try ctx.stderr.print(
-                    "planar-execute: --plan <id> is required for live agent runs (PLANAR_EXECUTE_LIVE_AGENT=1)\n",
-                    .{},
-                );
-                try flushCtx();
-                std.process.exit(1);
-            }
-            break :blk @intCast(args.plan);
-        };
+        // --- task 3264: best-effort attachment --------------------------------
+        //
+        // Driver attachment is now BEST-EFFORT. None of the following
+        // resolutions exit the process; each degrades to a safe default so
+        // that agent-free (pure-Lua) workflows run cleanly under the gate
+        // without requiring --plan. A workflow that actually calls agent()
+        // gets a clean Lua error at call time if required inputs are missing.
+        //
+        // Degradation contract (task 3264):
+        //   plan_id == 0 → skip live claim-status read (defaultClaimStatusReader
+        //                  returns .active, the pre-3242 degradation).
+        //   plan_slug == "" → skip commit-presence branch sampling.
+        //   repo_root == "" → skip commit-presence repo sampling.
+        //   live_binaries_resolved == false → agent() raises a Lua error.
 
-        // repo_root = the cwd's git top-level. The cycle worktree lives under
-        // this repo, and branchHead samples are rooted here.
-        live_repo_root = worktree.gitTopLevel(allocator, ctx.io) catch {
+        // plan: 0 when --plan is absent; skip planShow in that case.
+        const plan: u64 = if (args.plan > 0) @intCast(args.plan) else 0;
+
+        // repo_root = the cwd's git top-level. Degrade to "" on failure.
+        live_repo_root = worktree.gitTopLevel(allocator, ctx.io) catch blk: {
             try ctx.stderr.print(
-                "planar-execute: could not resolve git top-level of cwd (required for live agent runs)\n",
+                "planar-execute: NOTE: could not resolve git top-level of cwd; commit-presence sampling disabled\n",
                 .{},
             );
-            try flushCtx();
-            std.process.exit(1);
+            break :blk null;
         };
 
-        // plan_slug = the plan's slug (the reader requires the plan to exist).
-        live_plan_slug = state.planShow(allocator, ctx.io, plan) catch {
-            try ctx.stderr.print(
-                "planar-execute: plan show {d} failed (required for live agent runs)\n",
-                .{plan},
-            );
-            try flushCtx();
-            std.process.exit(1);
-        };
-        const slug: []const u8 = live_plan_slug.?.value.slug orelse {
-            try ctx.stderr.print(
-                "planar-execute: plan {d} has no slug (required to derive the cycle branch name)\n",
-                .{plan},
-            );
-            try flushCtx();
-            std.process.exit(1);
-        };
+        // plan_slug: only attempt planShow when plan > 0; degrade to "" on failure.
+        const slug: []const u8 = if (plan > 0) slug_blk: {
+            const parsed = state.planShow(allocator, ctx.io, plan) catch {
+                try ctx.stderr.print(
+                    "planar-execute: NOTE: plan show {d} failed; plan_slug and commit-presence sampling disabled\n",
+                    .{plan},
+                );
+                break :slug_blk "";
+            };
+            live_plan_slug = parsed;
+            break :slug_blk live_plan_slug.?.value.slug orelse no_slug_blk: {
+                try ctx.stderr.print(
+                    "planar-execute: NOTE: plan {d} has no slug; commit-presence sampling disabled\n",
+                    .{plan},
+                );
+                break :no_slug_blk "";
+            };
+        } else "";
 
         // Resolve the REAL planar-agent + git on the HOST PATH so the worker's
         // shim can symlink them in (decision 358: worker PATH = planar-agent +
-        // git, not planar).
-        live_planar_agent_path = resolveHostBinary(allocator, ctx.io, "planar-agent") catch {
-            try ctx.stderr.print(
-                "planar-execute: could not resolve 'planar-agent' on PATH (required for live agent runs)\n",
-                .{},
-            );
-            try flushCtx();
-            std.process.exit(1);
-        };
-        live_git_path = resolveHostBinary(allocator, ctx.io, "git") catch {
-            try ctx.stderr.print(
-                "planar-execute: could not resolve 'git' on PATH (required for live agent runs)\n",
-                .{},
-            );
-            try flushCtx();
-            std.process.exit(1);
-        };
+        // git, not planar). Degrade on failure; agent() will raise a Lua error
+        // if called without these binaries. (task 3264)
+        live_planar_agent_path = resolveHostBinary(allocator, ctx.io, "planar-agent") catch null;
+        live_git_path = resolveHostBinary(allocator, ctx.io, "git") catch null;
 
-        live_env_ctx = .{
-            .planar_agent_path = live_planar_agent_path.?,
-            .git_path = live_git_path.?,
-            .host_environ = ctx.environ,
-        };
+        const binaries_ok = live_planar_agent_path != null and live_git_path != null;
+
+        if (binaries_ok) {
+            live_env_ctx = .{
+                .planar_agent_path = live_planar_agent_path.?,
+                .git_path = live_git_path.?,
+                .host_environ = ctx.environ,
+            };
+        }
+
         live_driver = .{
             .spawner = spawn.realSpawner(),
             .io = ctx.io,
-            .repo_root = live_repo_root.?,
+            .repo_root = if (live_repo_root) |r| r else "",
             .plan_slug = slug,
             .plan_id = plan,
-            .env_builder = defaultEnvBuilder,
-            .env_builder_ctx = &live_env_ctx,
+            .env_builder = if (binaries_ok) defaultEnvBuilder else null,
+            .env_builder_ctx = if (binaries_ok) &live_env_ctx else null,
             .claim_status_reader = null, // → defaultClaimStatusReader against plan_id
             .skip_terminal_subprocess = false, // production runs the real terminal verb
+            .live_binaries_resolved = binaries_ok,
         };
         host.agent_driver = &live_driver;
     }
