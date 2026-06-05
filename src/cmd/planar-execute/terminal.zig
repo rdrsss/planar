@@ -163,6 +163,33 @@ pub fn decideTerminalVerb(inputs: TerminalInputs) TerminalVerb {
 pub const HARNESS_FAIL_REASON: []const u8 = "planar-execute: worker exited non-zero without calling planar-agent fail";
 pub const HARNESS_RELEASE_REASON: []const u8 = "planar-execute: worker exited 0 with no commit (no-op detected)";
 pub const HARNESS_COMPLETE_SUMMARY: []const u8 = "planar-execute: worker exited 0 with a commit on the cycle branch";
+/// The reason recorded when the per-worker wall-clock timeout (plan 492 M6 task
+/// 3188) kills a hung worker and fails its claim. Distinct + greppable so the
+/// operator can tell a timeout-fail from an exit-code-fail.
+pub const HARNESS_TIMEOUT_FAIL_REASON: []const u8 = "planar-execute: worker exceeded the per-worker wall-clock timeout (hung) — killed and failed";
+
+/// runTimeoutFail fails a hung worker's claim with the dedicated timeout reason
+/// (task 3188). Equivalent to `runTerminalVerb(.fail, ...)` but with
+/// `HARNESS_TIMEOUT_FAIL_REASON` so a timeout-fail is distinguishable from an
+/// ordinary exit-code fail in the `agent_actions` audit trail.
+pub fn runTimeoutFail(
+    allocator: std.mem.Allocator,
+    io: Io,
+    claim_token: []const u8,
+) TerminalError!void {
+    const argv = [_][]const u8{
+        "planar-agent", "fail", "--claim", claim_token, "--reason", HARNESS_TIMEOUT_FAIL_REASON,
+    };
+    const result = std.process.run(allocator, io, .{
+        .argv = &argv,
+        .stdout_limit = Io.Limit.limited(64 * 1024),
+        .stderr_limit = Io.Limit.limited(8192),
+    }) catch return TerminalError.SubprocessFailed;
+    allocator.free(result.stdout);
+    allocator.free(result.stderr);
+    const ok = result.term == .exited and result.term.exited == 0;
+    if (!ok) return TerminalError.SubprocessNonZero;
+}
 
 /// Apply the chosen terminal verb to the claim. No-op when `verb == .none`.
 ///

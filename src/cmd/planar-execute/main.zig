@@ -360,6 +360,18 @@ pub const HostState = struct {
     // It touches NO Lua state — the cardinal cross-thread rule.
     heartbeat_reg: ?*heartbeat.HeartbeatRegistry = null,
 
+    // M6 per-worker wall-clock timeout overrides (task 3188).
+    //
+    // OPTIONAL test injection: when set, `runModule` points the scheduler's
+    // clock + budget at these instead of the production defaults
+    // (`realMonotonicNow` + `DEFAULT_MAX_WALL_CLOCK_NS`). A workflow-level test
+    // can thus drive a hung worker past its deadline DETERMINISTICALLY (a
+    // settable fake clock + a tiny budget) with no real sleep. Production leaves
+    // both null and the scheduler uses the real monotonic clock + 30-min budget.
+    timeout_clock_fn: ?scheduler.ClockFn = null,
+    timeout_clock_ctx: ?*anyopaque = null,
+    timeout_max_wall_clock_ns: ?i128 = null,
+
     pub fn init(allocator: std.mem.Allocator, now: i64, seed: i64, budget_total: i64, budget_spent: i64) HostState {
         return .{
             .allocator = allocator,
@@ -909,6 +921,13 @@ fn agentContinue(L: ?*c.lua_State, status: c_int, ctx: c.lua_KContext) callconv(
     var outcome = slot.outcome.?;
     slot.outcome = null;
     defer outcome.deinit(alloc);
+
+    // Did the wall-clock timeout fire on this worker (task 3188)? Read it from
+    // the slot BEFORE the deferred releaseSlot clears it. A timed-out worker was
+    // already killed by the scheduler; the continuation now runs the reclaim
+    // path (force `fail` + worktree teardown + `status = "timed-out"`) instead
+    // of the normal terminal-verb decision matrix.
+    const timed_out = slot.timed_out;
     // Free the call state + release the slot when we leave (the result table is
     // already on the Lua stack by then; nothing below borrows acs after this).
     // First unregister the claim from the heartbeat thread (task 3187): the
@@ -943,6 +962,47 @@ fn agentContinue(L: ?*c.lua_State, status: c_int, ctx: c.lua_KContext) callconv(
         }
         break :blk false;
     };
+
+    // ---- Timeout reclaim path (task 3188) ----
+    //
+    // A hung worker was already KILLED by the scheduler. The harness now: (a)
+    // stops the heartbeat thread from refreshing this dead lease, (b) forces
+    // `planar-agent fail` (the worker produced no usable result inside its
+    // wall-clock budget — fail, not release, so it does not silently retry-loop
+    // a wedged task; the operator triages a failed claim), and (c) tears down
+    // the worktree (the killed child's checkout). Ordering is load-bearing:
+    //   1. UNREGISTER first — so the heartbeat thread cannot refresh the lease
+    //      we are about to fail (a refresh racing the fail would resurrect it).
+    //   2. FAIL the claim (kill already happened in the scheduler, before this).
+    //   3. TEAR DOWN the worktree (child is dead; safe to remove its checkout).
+    // The trailing `defer` also calls `unregister`, but that is now an
+    // idempotent no-op (the token is already gone) — so the early unregister is
+    // the authoritative one and the defer stays correct for the normal path.
+    if (timed_out) {
+        if (hs.heartbeat_reg) |hb| hb.unregister(acs.claim_token);
+
+        if (!driver.skip_terminal_subprocess and acs.claim_token.len > 0) {
+            terminal.runTimeoutFail(alloc, io, acs.claim_token) catch {
+                // Best-effort: operator recovers via reconcile. The returned
+                // Lua table still reports the timeout so the workflow sees it.
+            };
+        }
+
+        // Tear down the hung worker's cycle worktree. Requires repo_root +
+        // plan_slug (on the driver) + task_slug (on acs). Skipped when any is
+        // empty (FakeSpawner unit-test paths that did not seed a real worktree).
+        if (!driver.skip_terminal_subprocess and
+            driver.repo_root.len > 0 and driver.plan_slug.len > 0 and acs.task_slug.len > 0)
+        {
+            worktree.teardownCycle(alloc, io, driver.repo_root, driver.plan_slug, acs.task_slug) catch {
+                // Teardown is best-effort: a run-id-scoped worktree-prune on the
+                // next startup is the backstop (tech-spec § Run isolation).
+            };
+        }
+
+        pushAgentResult(L, "timed-out", outcome.exit_code, commit_present, .fail);
+        return 1;
+    }
 
     // 4) Read the LIVE claim status (task 3242) → terminal-verb decision.
     const claim_status: terminal.ClaimStatus =
@@ -2370,6 +2430,13 @@ pub fn runModule(
         const drive_io: ?std.Io = if (hs.agent_driver) |d| d.io else null;
         sched_storage = scheduler.Scheduler.init(hs.allocator, drive_io);
         if (hs.agent_driver) |d| sched_storage.spawner = d.spawner;
+        // Per-worker wall-clock timeout (task 3188): production uses the
+        // scheduler defaults (real monotonic clock + 30-min budget). Tests may
+        // inject a fake clock + tiny budget via HostState to drive a hung worker
+        // deterministically.
+        if (hs.timeout_clock_fn) |cf| sched_storage.clock_fn = cf;
+        if (hs.timeout_clock_ctx) |cc| sched_storage.clock_ctx = cc;
+        if (hs.timeout_max_wall_clock_ns) |mx| sched_storage.max_wall_clock_ns = mx;
         hs.sched = &sched_storage;
     }
     defer if (host) |hs| {
@@ -4100,10 +4167,11 @@ test "M5 scheduler: pure-Lua workflow (no agent) finishes on the first resume (L
 
 test "M5 scheduler: single agent() yields, scheduler drives the worker, continuation resumes (async machinery)" {
     // The load-bearing yield/resume assertion: a single agent() call spawns the
-    // worker via start() (NON-BLOCKING), yields, the scheduler drives it via
-    // wait(), and ONLY THEN does the continuation run. We prove the ordering via
-    // the FakeSpawner's counters: start_count==1, wait_count==1, and
-    // reached_terminal==true at the point the result table is observable.
+    // worker via start() (NON-BLOCKING), yields, the scheduler drives it via the
+    // deadline-aware poll loop (task 3188), and ONLY THEN does the continuation
+    // run. We prove the ordering via the FakeSpawner's counters: start_count==1,
+    // poll_count==1, and reached_terminal==true at the point the result table is
+    // observable.
     const a = testing_alloc;
     var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
     defer fake.deinit();
@@ -4137,12 +4205,16 @@ test "M5 scheduler: single agent() yields, scheduler drives the worker, continua
     var err_buf: [256]u8 = @splat(0);
     try runModule(src, "test:m5-yield", &.{}, &host, &err_buf);
 
-    // The worker was started non-blocking and driven via wait — proving the
-    // coroutine yielded and the scheduler resumed it only after terminal.
+    // The worker was started non-blocking and driven via the deadline-aware
+    // POLL loop (task 3188 changed driveInflight from a bare blocking wait to a
+    // poll loop so a hung worker can be timed out). poll_until_done=0 ⇒ the
+    // first poll returns terminal, so poll_count == start_count and the
+    // coroutine resumed only after terminal.
     try std.testing.expectEqual(@as(u32, 1), fake.start_count);
-    try std.testing.expectEqual(@as(u32, 1), fake.wait_count);
+    try std.testing.expectEqual(@as(u32, 1), fake.poll_count);
+    try std.testing.expectEqual(@as(u32, 0), fake.wait_count);
     try std.testing.expect(fake.reached_terminal);
-    // The blocking run() path was NOT used (the scheduler uses start/wait).
+    // The blocking run() path was NOT used (the scheduler uses start/poll).
     try std.testing.expectEqual(@as(usize, 1), fake.invocations.items.len);
 }
 
@@ -4217,7 +4289,10 @@ test "M5 scheduler: two sequential agent() calls each yield + resume cleanly (sl
     try runModule(src, "test:m5-seq", &.{}, &host, &err_buf);
 
     try std.testing.expectEqual(@as(u32, 2), fake.start_count);
-    try std.testing.expectEqual(@as(u32, 2), fake.wait_count);
+    // Each call driven via the poll loop (task 3188): 2 immediate-terminal
+    // polls, no blocking waits.
+    try std.testing.expectEqual(@as(u32, 2), fake.poll_count);
+    try std.testing.expectEqual(@as(u32, 0), fake.wait_count);
     try std.testing.expectEqual(@as(usize, 2), fake.invocations.items.len);
     try std.testing.expectEqualStrings("brief one", fake.invocations.items[0].brief);
     try std.testing.expectEqualStrings("brief two", fake.invocations.items[1].brief);
@@ -4254,9 +4329,11 @@ test "M5 scheduler: Lua error AFTER an agent() call still propagates (continuati
     try std.testing.expectError(LuaError.LuaRuntimeError, err);
     const msg = std.mem.span(@as([*:0]const u8, @ptrCast(&err_buf)));
     try std.testing.expect(std.mem.indexOf(u8, msg, "boom after agent") != null);
-    // The agent() call DID complete before the error (worker started + waited).
+    // The agent() call DID complete before the error (worker started + polled
+    // to terminal via the deadline-aware drive loop — task 3188).
     try std.testing.expectEqual(@as(u32, 1), fake.start_count);
-    try std.testing.expectEqual(@as(u32, 1), fake.wait_count);
+    try std.testing.expectEqual(@as(u32, 1), fake.poll_count);
+    try std.testing.expectEqual(@as(u32, 0), fake.wait_count);
 }
 
 test "M5 scheduler: Lua error BEFORE any agent() call propagates (pure-coroutine error path)" {
@@ -4536,6 +4613,81 @@ test "M5 parallel: a thunk may call agent() MULTIPLE times (re-yield), still ret
     };
     // Three total agent() spawns: twice(2) + once(1).
     try std.testing.expectEqual(@as(u32, 3), fake.start_count);
+}
+
+/// TimeoutTestClock is a settable fake monotonic clock for the workflow-level
+/// timeout test (task 3188): the test pins it past the deadline so a hung
+/// worker times out deterministically with no real sleep.
+const TimeoutTestClock = struct {
+    now_ns: i128,
+    fn clockFn(ctx: ?*anyopaque, io: std.Io) i128 {
+        _ = io;
+        const self: *TimeoutTestClock = @ptrCast(@alignCast(ctx.?));
+        return self.now_ns;
+    }
+};
+
+test "M6 timeout: in a parallel set a hung worker times out (kill + status=timed-out) while the sibling completes, original order preserved (task 3188)" {
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "OK", "");
+    defer fake.deinit();
+    // Worker 0 (first started) HANGS; worker 1 completes normally. start order
+    // == thunk order in driveChildren, so slot0 is the hung "h" thunk.
+    const hung_seq = [_]bool{ true, false };
+    fake.hung_starts_seq = &hung_seq;
+
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true, // no real planar-agent / teardown.
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+
+    // Fake clock + ZERO budget: the deadline equals the register-time clock
+    // reading (deadline = now + 0 = now), so EVERY in-flight worker is already
+    // at its deadline. A hung worker (poll always null) is therefore reclaimed
+    // the instant driveChildren polls it — no real elapsed time, no real sleep.
+    // A naturally-completing worker still wins pass 1 of pollReadyOnce (the
+    // deadline pass only runs when NONE completed this round), so the sibling
+    // completes normally and is NOT killed. The fixed clock guarantees the
+    // deadline pass fires immediately rather than spinning in the poll loop.
+    var clock = TimeoutTestClock{ .now_ns = 1_000_000_000 };
+    host.timeout_clock_fn = TimeoutTestClock.clockFn;
+    host.timeout_clock_ctx = &clock;
+    host.timeout_max_wall_clock_ns = 0; // deadline == register-time → already due.
+
+    const src =
+        \\return {
+        \\  meta = { name = "m6-timeout", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local hung = function()
+        \\      return ctx.agent("h", { role = "coder", worktree_path = "/tmp/h", claim_token = "th", task_slug = "sh" })
+        \\    end
+        \\    local ok = function()
+        \\      return ctx.agent("o", { role = "coder", worktree_path = "/tmp/o", claim_token = "to", task_slug = "so" })
+        \\    end
+        \\    local r = ctx.parallel({ hung, ok })
+        \\    assert(type(r[1]) == "table", "r1 type: " .. type(r[1]))
+        \\    assert(r[1].status == "timed-out", "r1 status: " .. tostring(r[1].status))
+        \\    assert(r[1].terminal_verb == "fail", "r1 verb: " .. tostring(r[1].terminal_verb))
+        \\    assert(type(r[2]) == "table", "r2 type: " .. type(r[2]))
+        \\    assert(r[2].status == "released" or r[2].status == "completed", "r2 status: " .. tostring(r[2].status))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    runModule(src, "test:m6-timeout", &.{}, &host, &err_buf) catch |e| {
+        std.debug.print("m6 timeout failed: {s}\n", .{std.mem.span(@as([*:0]const u8, @ptrCast(&err_buf)))});
+        return e;
+    };
+
+    // Exactly the hung worker was killed; the sibling was not.
+    try std.testing.expectEqual(@as(u32, 2), fake.start_count);
+    try std.testing.expectEqual(@as(u32, 1), fake.kill_count);
+    try std.testing.expect(fake.killedWorker(0)); // slot0 = the "hung" thunk.
+    try std.testing.expect(!fake.killedWorker(1));
 }
 
 // ---------------------------------------------------------------------------

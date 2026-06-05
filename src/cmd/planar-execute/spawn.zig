@@ -309,6 +309,19 @@ pub const Spawner = struct {
         handle: *Handle,
     ) SpawnError!SpawnOutcome,
 
+    /// Hard-kill an in-flight worker (plan 492 M6 task 3188 — per-worker
+    /// wall-clock timeout). Used ONLY when the scheduler's deadline fires on a
+    /// hung worker (poll keeps returning "still running" past its deadline).
+    /// SIGTERMs + reaps the child and closes its pipes; the handle is consumed
+    /// and MUST NOT be polled/waited afterward. Infallible: kill of an
+    /// already-exited child is a no-op (the real `Child.kill` short-circuits
+    /// when `id == null`), so a kill that races a natural exit is benign.
+    killFn: *const fn (
+        ctx: ?*anyopaque,
+        io: Io,
+        handle: *Handle,
+    ) void,
+
     /// Drives the spawn (BLOCKING). Thin wrapper that just dispatches through
     /// `runFn`.
     pub fn run(
@@ -348,6 +361,12 @@ pub const Spawner = struct {
         handle: *Handle,
     ) SpawnError!SpawnOutcome {
         return self.waitFn(self.ctx, allocator, io, handle);
+    }
+
+    /// Hard-kill an in-flight worker (the wall-clock-timeout path). Infallible;
+    /// consumes the handle.
+    pub fn kill(self: Spawner, io: Io, handle: *Handle) void {
+        return self.killFn(self.ctx, io, handle);
     }
 };
 
@@ -389,6 +408,12 @@ pub const FakeHandle = struct {
     /// Used to remove this worker from the live-worker overlap registry at
     /// terminal (poll/wait), so the registry tracks exactly the in-flight set.
     id: u32 = 0,
+    /// When true this worker is HUNG (plan 492 M6 task 3188): every `poll`
+    /// returns "still running" (null) FOREVER — it never reaches terminal on
+    /// its own. The ONLY way it leaves flight is the scheduler's wall-clock
+    /// timeout calling `kill`. This is what lets a unit test model a hang
+    /// deterministically without a real long-running subprocess.
+    hung: bool = false,
 };
 
 // ---------------------------------------------------------------------------
@@ -658,6 +683,20 @@ fn drainPipe(
     };
 }
 
+/// realKillFn hard-kills an in-flight real worker on the wall-clock-timeout
+/// path (task 3188). `std.process.Child.kill` SIGTERMs the pid, reaps it
+/// (wait4), and closes the child's pipes, nulling `child.id`. It is a no-op
+/// when `child.id` is already null — which is exactly the state a child reaped
+/// by a prior `realPollFn` WNOHANG is in — so a kill that races a natural exit
+/// is benign (no double-reap). The hung-worker case this exists for has
+/// `child.id` STILL set (poll kept returning null), so the SIGTERM lands.
+fn realKillFn(ctx: ?*anyopaque, io: Io, handle: *Handle) void {
+    _ = ctx;
+    // `Child.kill` is cross-platform (SIGTERM+reap on POSIX, TerminateProcess
+    // on Windows) and a no-op when `child.id` is already null.
+    handle.real.child.kill(io);
+}
+
 /// Returns a Spawner backed by the real `claude --print ...` subprocess. Use
 /// for actual end-to-end runs (the LIVE-COST path). Tests should use
 /// `fakeSpawner` instead.
@@ -668,6 +707,7 @@ pub fn realSpawner() Spawner {
         .startFn = realStartFn,
         .pollFn = realPollFn,
         .waitFn = realWaitFn,
+        .killFn = realKillFn,
     };
 }
 
@@ -785,12 +825,27 @@ pub const FakeSpawnerState = struct {
     /// original-order-results contract can be asserted. Borrowed slice; not
     /// owned by the state. `start`s beyond its length fall back to the scalar.
     poll_until_done_seq: []const u32 = &.{},
+    /// Per-start "is this worker hung?" flags, consumed in `start` order (plan
+    /// 492 M6 task 3188). When the i-th `start` finds `hung_starts_seq[i] ==
+    /// true`, its handle is HUNG — `poll` returns null forever, so only the
+    /// scheduler's wall-clock timeout (via `kill`) can reclaim it. Borrowed
+    /// slice; `start`s beyond its length default to NOT hung. Lets a test mix a
+    /// hung worker with normal ones in a `parallel` set.
+    hung_starts_seq: []const bool = &.{},
     /// Number of times `start` was called.
     start_count: u32 = 0,
     /// Number of times `poll` was called.
     poll_count: u32 = 0,
     /// Number of times `wait` was called.
     wait_count: u32 = 0,
+    /// Number of times `kill` was called (the wall-clock-timeout path, task
+    /// 3188). A test asserts a hung worker that times out had `kill` invoked,
+    /// and a normally-completing worker did NOT.
+    kill_count: u32 = 0,
+    /// The ids of the workers `kill` was called on (task 3188). Lets a test
+    /// assert WHICH worker was killed when several are in flight. Fixed-capacity
+    /// (bounded by MAX_SLOTS in practice); growth past it is a test bug.
+    killed_ids: std.ArrayList(u32) = .empty,
     /// Set true the first time a handle reported its terminal outcome (via
     /// poll or wait). A continuation that runs before this is set would mean
     /// the scheduler resumed the coroutine BEFORE the worker reached terminal —
@@ -849,6 +904,7 @@ pub const FakeSpawnerState = struct {
             self.allocator.free(o.concurrent);
         }
         self.overlap_obs.deinit(self.allocator);
+        self.killed_ids.deinit(self.allocator);
     }
 
     /// overlapObsFor returns the overlap observation recorded when the worker
@@ -870,7 +926,16 @@ pub const FakeSpawnerState = struct {
             .startFn = fakeStartFn,
             .pollFn = fakePollFn,
             .waitFn = fakeWaitFn,
+            .killFn = fakeKillFn,
         };
+    }
+
+    /// killedWorker reports whether `kill` was called on the worker with `id`.
+    pub fn killedWorker(self: *FakeSpawnerState, id: u32) bool {
+        for (self.killed_ids.items) |k| {
+            if (k == id) return true;
+        }
+        return false;
     }
 };
 
@@ -991,7 +1056,20 @@ fn fakeStartFn(
     // surfaces as OutOfMemory (the test would catch it loudly).
     recordOverlapStart(state, start_index, inputs.brief) catch return SpawnError.OutOfMemory;
 
-    return .{ .fake = .{ .state = state, .poll_remaining = poll_remaining, .id = start_index } };
+    // Hung-worker modeling (task 3188): if this start is marked hung, the handle
+    // never reaches terminal on its own — only the scheduler's wall-clock
+    // timeout (via kill) reclaims it.
+    const is_hung: bool = if (start_index < state.hung_starts_seq.len)
+        state.hung_starts_seq[start_index]
+    else
+        false;
+
+    return .{ .fake = .{
+        .state = state,
+        .poll_remaining = poll_remaining,
+        .id = start_index,
+        .hung = is_hung,
+    } };
 }
 
 /// recordOverlapStart snapshots the set of currently-live worker briefs into a
@@ -1052,6 +1130,10 @@ fn fakePollFn(
     _ = io;
     const state: *FakeSpawnerState = @ptrCast(@alignCast(ctx.?));
     state.poll_count += 1;
+    // A HUNG worker reports "still running" forever (task 3188): it never
+    // reaches terminal on its own, so the scheduler's wall-clock timeout is the
+    // ONLY thing that can reclaim it.
+    if (handle.fake.hung) return null;
     if (handle.fake.poll_remaining > 0) {
         handle.fake.poll_remaining -= 1;
         return null;
@@ -1077,6 +1159,22 @@ fn fakeWaitFn(
     if (state.live_inflight > 0) state.live_inflight -= 1;
     removeLiveWorker(state, handle.fake.id);
     return try cannedOutcome(state, allocator);
+}
+
+/// fakeKillFn records the kill (id + count) and drops the worker from the
+/// live/overlap registry, mirroring what `realKillFn` does to a real child
+/// (SIGTERM + reap + cleanup). Infallible — a kill of an already-terminal fake
+/// handle is a benign no-op decrement guard. Task 3188.
+fn fakeKillFn(ctx: ?*anyopaque, io: Io, handle: *Handle) void {
+    _ = io;
+    const state: *FakeSpawnerState = @ptrCast(@alignCast(ctx.?));
+    state.kill_count += 1;
+    // Best-effort record of WHICH worker was killed. An OOM here would only
+    // weaken a test assertion, never corrupt production (this is a test double),
+    // so we swallow it.
+    state.killed_ids.append(state.allocator, handle.fake.id) catch {};
+    if (state.live_inflight > 0) state.live_inflight -= 1;
+    removeLiveWorker(state, handle.fake.id);
 }
 
 /// fakeRunFn is the runFn for FakeSpawner. It builds the argv via
@@ -1269,6 +1367,7 @@ test "spawn: realSpawner is constructible and exposes the right surface" {
     try testing.expect(@intFromPtr(s.startFn) != 0);
     try testing.expect(@intFromPtr(s.pollFn) != 0);
     try testing.expect(@intFromPtr(s.waitFn) != 0);
+    try testing.expect(@intFromPtr(s.killFn) != 0);
 }
 
 test "spawn: FakeSpawner async surface — start records, wait returns canned outcome (task 3182)" {
