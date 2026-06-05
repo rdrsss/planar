@@ -164,8 +164,9 @@ pub const SpawnInputs = struct {
     role_spec: []const u8,
     /// The constrained environment map the worker is spawned with. Built by
     /// `worker_env.buildWorkerEnv` ahead of the spawn (per-cycle shim PATH
-    /// exposing only `planar-agent` + `git`, planar-internal env vars stripped
-    /// per decisions 358 + 365). When non-null the real spawner passes it to
+    /// first then system bin dirs, exposing `planar-agent` + `git` via the
+    /// shim while keeping `planar` unreachable; planar-internal env vars
+    /// stripped per decisions 371 + 365). When non-null the real spawner passes it to
     /// `std.process.spawn` as `environ_map`; when null the real spawner
     /// PANICS at the call site rather than silently inheriting the parent's
     /// env (that is the iter-1 regression Item J closes). FakeSpawner records
@@ -433,14 +434,16 @@ fn realStartFn(
     const argv = try buildSpawnArgv(allocator, inputs);
     defer freeSpawnArgv(allocator, argv);
 
-    // Decisions 358 + 365 (worker invocation contract): the real spawn path
-    // MUST use a constrained env map (shim PATH + stripped planar-internal
-    // env vars). Inheriting the parent's env structurally bypasses the
-    // worker_env contract — `planar` would be reachable on PATH and
-    // PLANAR_DB / PLANAR_CONFIG_PATH would leak through. The caller
-    // (driveAgentCall in main.zig) builds the env via worker_env.buildWorkerEnv
-    // and threads it via inputs.env_map. A null here is a wiring bug: panic
-    // loudly so a future regression is impossible to ship silently.
+    // Decisions 371 + 365 (worker invocation contract): the real spawn path
+    // MUST use a constrained env map (shim-first PATH + system bin dirs +
+    // stripped planar-internal env vars). Decision 371 (supersedes 358) locks
+    // the invariant: `planar` is NOT reachable on the worker PATH even with
+    // system dirs appended. Inheriting the parent's env structurally bypasses
+    // this contract — `planar` would be reachable and PLANAR_DB /
+    // PLANAR_CONFIG_PATH would leak through. The caller (driveAgentCall in
+    // main.zig) builds the env via worker_env.buildWorkerEnv and threads it
+    // via inputs.env_map. A null here is a wiring bug: panic loudly so a
+    // future regression is impossible to ship silently.
     const env_map = inputs.env_map orelse @panic(
         "spawn.realStartFn: inputs.env_map is null — the constrained worker env was not built. Decisions 358 + 365 require the worker to be spawned with worker_env.buildWorkerEnv. See AgentDriver.env_builder in main.zig.",
     );
@@ -448,10 +451,11 @@ fn realStartFn(
     // Spawn the child with stdin piped (so we can stream the brief), stdout/
     // stderr piped (so we can capture them). cwd is the cycle worktree so any
     // unqualified file ops inside the worker land inside it. environ_map is the
-    // constrained worker env (shim PATH = planar-agent + git only). The env
-    // policy is an ALLOW-LIST, not a deny-list: ALL PLANAR_* vars are stripped
-    // except those in worker_env.ALLOWED_PLANAR_VARS (currently just
-    // PLANAR_WORKBENCH_ROOT), and PATH is overwritten with the shim dir.
+    // constrained worker env (PATH = shim dir first, then system bin dirs —
+    // decision 371; `planar` is NOT reachable). The env policy is an
+    // ALLOW-LIST, not a deny-list: ALL PLANAR_* vars are stripped except those
+    // in worker_env.ALLOWED_PLANAR_VARS (currently just PLANAR_WORKBENCH_ROOT),
+    // and PATH is overwritten with the shim-first + system-dirs value.
     var child = std.process.spawn(io, .{
         .argv = argv,
         .cwd = .{ .path = inputs.worktree_path },

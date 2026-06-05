@@ -10,7 +10,7 @@
 //! ritual that the entire harness design rests on.
 //!
 //! Tech-spec § "Worker invocation contract" (~L312–321) is the authoritative
-//! source. Decision 358 (accepted) locks the binary policy.
+//! source. Decision 371 (accepted, supersedes 358) locks the binary policy.
 //!
 //! ## Capability boundary
 //!
@@ -77,10 +77,30 @@
 //!     <shim>/planar-agent  ->  /abs/path/to/planar-agent
 //!     <shim>/git           ->  /abs/path/to/git
 //!
-//! PATH is then set to JUST the shim directory. Bare `which planar` from the
-//! worker returns nothing because the shim directory contains no `planar`
-//! entry. Bare `which planar-agent` returns the shim's symlink. The OS resolves
-//! the symlink at exec time; the binary itself runs normally.
+//! PATH is then set to the **shim directory FIRST**, followed by the standard
+//! system bin dirs (`/usr/bin:/bin:/usr/sbin:/sbin`). Bare `which planar-agent`
+//! returns the shim's symlink; bare `which planar` returns nothing because the
+//! shim contains no `planar` entry AND `planar` installs to `~/.planar/bin`
+//! (not a system dir). The OS resolves shim symlinks at exec time; the real
+//! binary runs normally.
+//!
+//! The system bin dirs are present so a spawned `claude -p` worker can reach
+//! its toolchain — notably `/usr/bin/security` (macOS Keychain credential
+//! helper that `claude` needs for auth). Without them, `claude` reports "Not
+//! logged in" and no-ops (discovered during task 3241 live-spawn). See
+//! decision 371 (supersedes 358) for the full rationale and the security
+//! framing. `/usr/local/bin` is deliberately NOT appended (it is where many
+//! operator-installed tools land, including some `planar` builds).
+//!
+//! The load-bearing containment invariant (decision 371) is:
+//!   **`planar` (the operator binary) is NOT reachable on the worker PATH.**
+//! This is what prevents a worker from bypassing the claim ritual with a bare
+//! `planar task done` / `planar plan update`. It holds because `planar`
+//! installs to `~/.planar/bin` or `~/.local/bin`, neither of which is a system
+//! dir, and `/usr/local/bin` is not appended. The invariant is pinned by a
+//! negative test that proves `planar` stays unreachable even with system dirs
+//! on PATH (see test "negative: bare `planar` is unreachable on the constrained
+//! PATH" — the worker env built there uses the FULL shim+system PATH).
 //!
 //! This design is robust to the install-layout question: it works whether the
 //! two binaries are co-located or in different directories, and it is opt-in
@@ -94,7 +114,7 @@
 //! like a normal `claude -p` invocation). The env-builder does three things:
 //!
 //! 1. **Copies the host env** as the baseline.
-//! 2. **Overrides `PATH`** to the shim directory (the constrained PATH).
+//! 2. **Overrides `PATH`** to the shim-first + system-dirs value (decision 371).
 //! 3. **Strips ALL `PLANAR_*` env vars by default**, allowing only the small
 //!    explicitly-justified set in `ALLOWED_PLANAR_VARS`.
 //!
@@ -237,10 +257,10 @@ pub const WorkerEnv = struct {
     /// Absolute path to the shim directory on disk. Owned (heap-allocated
     /// by `allocator`).
     shim_dir: []const u8,
-    /// The PATH value as set inside `env_map` (a single entry: the shim dir).
-    /// Owned (heap-allocated by `allocator`); freed in `deinit`. Kept as a
-    /// separate field so callers / tests can assert on it without walking
-    /// the env map.
+    /// The PATH value as set inside `env_map`: the shim dir FIRST, then the
+    /// standard system bin dirs (per decision 371). Owned (heap-allocated by
+    /// `allocator`); freed in `deinit`. Kept as a separate field so callers /
+    /// tests can assert on it without walking the env map.
     path: []const u8,
     /// The full env map the worker is spawned with. Allocator is captured
     /// internally by `std.process.Environ.Map`.
@@ -283,18 +303,15 @@ fn validateBinaryPath(path: []const u8) WorkerEnvError!void {
 /// worker PATH. These hold the OS toolchain a real `claude -p` worker depends
 /// on at runtime — notably the macOS Keychain credential helper
 /// (`/usr/bin/security`) that `claude` shells out to for auth, plus `/bin/sh`,
-/// `node` shims, coreutils, etc. Decision 358's stated intent is "expose
-/// planar-agent + git but NOT planar so the worker cannot bypass the claim
-/// ritual"; it is about keeping the `planar` OPERATOR binary off PATH, not
-/// about denying the OS toolchain. `planar` installs to `~/.planar/bin`, never
-/// to a system dir, so appending these keeps `planar` unreachable (the shim
-/// carries only `planar-agent` + `git`) while letting `claude` authenticate.
+/// `node` shims, coreutils, etc. Decision 371 (supersedes 358) re-scoped the
+/// containment invariant from "only the shim is on PATH" to "the `planar`
+/// operator binary is NOT reachable on the worker PATH". The invariant holds
+/// because `planar` installs to `~/.planar/bin` / `~/.local/bin`, neither of
+/// which is a system dir, and `/usr/local/bin` is deliberately NOT listed here.
 ///
 /// Verified empirically (task 3241 live-spawn): with PATH = shim-only, `claude`
 /// on macOS reports "Not logged in" and does nothing; with the system dirs
-/// appended it authenticates and commits. The broader worker permission/PATH
-/// surface is tracked as task 3244 (decision 358 explicitly defers it to "after
-/// the A3 probe").
+/// appended it authenticates and commits. Decision 371 formalizes this policy.
 const SYSTEM_BIN_DIRS = [_][]const u8{ "/usr/bin", "/bin", "/usr/sbin", "/sbin" };
 
 /// Returns the PATH value the worker should see: the per-worker shim directory
@@ -305,10 +322,11 @@ const SYSTEM_BIN_DIRS = [_][]const u8{ "/usr/bin", "/bin", "/usr/sbin", "/sbin" 
 ///
 /// `planar` is NOT reachable on this PATH: it lives in `~/.planar/bin`, which
 /// is not among the appended system dirs, and the shim dir holds no `planar`
-/// entry. The decision-358 containment (worker cannot invoke the operator
-/// binary to bypass the claim ritual) is therefore preserved; the worker-scoped
-/// negative tests still hold (they fabricate `planar` in a tmp bin dir, never a
-/// system dir).
+/// entry. Decision 371's containment invariant (worker cannot invoke the
+/// operator binary to bypass the claim ritual) is therefore preserved; the
+/// worker-scoped negative tests still hold (they fabricate `planar` in a tmp
+/// bin dir, never a system dir, and use the full shim+system PATH from
+/// `buildWorkerEnv` to prove the invariant is not a tautology — task 3244).
 ///
 /// Validates that `shim_dir` is absolute.
 pub fn buildWorkerPath(
@@ -406,7 +424,7 @@ pub fn buildWorkerEnv(
     try materializeShimDir(allocator, io, shim_dir, planar_agent_path, git_path);
     errdefer std.Io.Dir.cwd().deleteTree(io, shim_dir) catch {};
 
-    // 3) Build the PATH value (just the shim dir).
+    // 3) Build the PATH value (shim dir first, then system bin dirs — decision 371).
     const path_value = try buildWorkerPath(allocator, shim_dir);
     errdefer allocator.free(path_value);
 
@@ -904,7 +922,19 @@ test "constrainEnvMap: strips PLANAR_DB so worker planar-agent calls cannot reac
 // module is NOT" for the explicit scoping note.
 // ---------------------------------------------------------------------------
 
-test "negative: bare `planar` is unreachable on the constrained PATH" {
+test "negative: bare `planar` is unreachable on the constrained PATH (task 3244, decision 371)" {
+    // Decision 371 (supersedes 358): the load-bearing invariant is
+    // "`planar` (the operator binary) is NOT reachable on the worker PATH",
+    // even though the worker PATH now includes system bin dirs
+    // (/usr/bin:/bin:/usr/sbin:/sbin) after the shim.
+    //
+    // This test proves the invariant is NOT a tautology: `planar` is
+    // fabricated in a NON-system tmp dir (so it WOULD be reachable on a
+    // permissive PATH — the control assertion below proves this). The constrained
+    // PATH built by `buildWorkerEnv` includes the shim + system dirs but NOT
+    // that tmp dir, so `planar` stays unreachable. The shim symlinks DO work
+    // (`planar-agent` resolves) — proving the constrained PATH itself is not
+    // broken, only `planar` is absent.
     const a = std.testing.allocator;
     if (!shellAvailable(a)) return error.SkipZigTest;
 
@@ -933,8 +963,17 @@ test "negative: bare `planar` is unreachable on the constrained PATH" {
     const shim = try std.fmt.allocPrint(a, "{s}/shim", .{root});
     defer a.free(shim);
 
+    // `buildWorkerEnv` builds the FULL worker PATH: shim FIRST, then the
+    // system bin dirs (/usr/bin:/bin:/usr/sbin:/sbin). `bin_dir` (where the
+    // fake `planar` lives) is NOT in the system dirs and NOT in the shim,
+    // so `planar` stays unreachable even though system dirs are on PATH.
     var env = try buildWorkerEnv(a, std.testing.io, std.testing.environ, shim, stub_agent, stub_git);
     defer env.deinit(a, std.testing.io);
+
+    // Verify the PATH includes system dirs (so we are testing the real policy,
+    // not a shim-only PATH that would trivially exclude planar too).
+    try std.testing.expect(std.mem.indexOf(u8, env.path, "/usr/bin") != null);
+    try std.testing.expect(std.mem.indexOf(u8, env.path, "/bin") != null);
 
     // Probe under the CONSTRAINED env: `command -v planar` must return
     // empty / non-zero.
@@ -952,9 +991,22 @@ test "negative: bare `planar` is unreachable on the constrained PATH" {
     const trimmed_stdout = std.mem.trim(u8, probe_constrained.stdout, " \t\r\n");
     try std.testing.expectEqualStrings("", trimmed_stdout);
 
+    // Also assert that `planar-agent` IS reachable via the shim — this proves
+    // the constrained PATH is not simply broken, only `planar` is absent.
+    // (Decision 371: shim comes first so `planar-agent` + `git` always resolve.)
+    const probe_agent = try std.process.run(a, std.testing.io, .{
+        .argv = &.{ "/bin/sh", "-c", "command -v planar-agent" },
+        .environ_map = &env.env_map,
+    });
+    defer a.free(probe_agent.stdout);
+    defer a.free(probe_agent.stderr);
+    try std.testing.expect(probe_agent.term == .exited and probe_agent.term.exited == 0);
+    try std.testing.expect(std.mem.indexOf(u8, probe_agent.stdout, "planar-agent") != null);
+
     // Control: under a PERMISSIVE PATH that includes `bin_dir`, `planar`
     // resolves. This proves the probe is meaningful — the constrained
-    // refusal above is not a tautology.
+    // refusal above is not a tautology (the binary exists and works; it just
+    // cannot be found on the constrained PATH).
     const cmd_control = try std.fmt.allocPrint(a, "PATH={s} command -v planar", .{bin_dir});
     defer a.free(cmd_control);
     const probe_control = try std.process.run(a, std.testing.io, .{
