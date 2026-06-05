@@ -83,6 +83,19 @@
 const std = @import("std");
 const Io = std.Io;
 
+const runlock = @import("runlock.zig");
+
+/// Re-export of the run-lock's PID-liveness probe type so the prune predicate
+/// can be driven by an injected fake in tests (and the real `kill(pid, 0)`
+/// probe in production). The whole point of M6 run isolation is a SHARED
+/// liveness primitive between the lock and the prune.
+pub const PidAliveFn = runlock.PidAliveFn;
+
+/// posixPidAlive is the production liveness probe (the run-lock's `kill(pid,0)`
+/// check). Re-exported so callers wire the same conservative semantics:
+/// SUCCESS / EPERM ⇒ alive, ESRCH ⇒ dead, unknown ⇒ conservatively alive.
+pub const posixPidAlive = runlock.posixPidAlive;
+
 // ---------------------------------------------------------------------------
 // Error set
 // ---------------------------------------------------------------------------
@@ -123,6 +136,152 @@ pub const Worktree = struct {
         allocator.free(self.branch);
     }
 };
+
+// ---------------------------------------------------------------------------
+// Owner marker — run-id + PID ownership tag (plan 492 M6 task 3192 part 2).
+//
+// Each cycle worktree carries an OWNER MARKER written by the run that created
+// it: `<cycle-worktree>/.planar-execute/owner`, a one-line
+// `<run_id> <pid> <unix_nanos>` payload (the same shape the run-lock writes).
+// The marker is the authoritative ownership tag the prune predicate reads — it
+// REPLACES the imprecise "no active claim" signal. The `.planar-execute/`
+// subdir keeps the marker out of the worker's tracked tree (it lives under the
+// worktree dir, which is already `.git/info/exclude`-ignored at the repo root).
+//
+// The prune predicate is CONSERVATIVE (load-bearing — a false positive destroys
+// in-flight work): a cycle worktree is prunable ONLY IF its marker names a
+// DIFFERENT run (`owner_run_id != current_run_id`) AND that run is DEAD
+// (`!pid_alive(owner_pid)`). The CURRENT run's own worktree, a LIVE foreign
+// run's worktree, and an UNKNOWN (missing / unreadable) marker are NEVER
+// pruned.
+// ---------------------------------------------------------------------------
+
+/// Relative path (under a cycle worktree) of the run-local metadata subdir.
+pub const owner_marker_subdir = ".planar-execute";
+
+/// Relative path (under a cycle worktree) of the owner marker file itself.
+pub const owner_marker_rel = owner_marker_subdir ++ std.fs.path.sep_str ++ "owner";
+
+/// A cycle worktree's parsed ownership tag: the creating run's id (heap-owned)
+/// and PID. Free `run_id` via `Owner.deinit` when `run_id.len != 0`.
+pub const Owner = struct {
+    run_id: []const u8,
+    pid: i32,
+
+    pub fn deinit(self: *const Owner, allocator: std.mem.Allocator) void {
+        if (self.run_id.len != 0) allocator.free(self.run_id);
+    }
+};
+
+/// writeOwnerMarker creates `<worktree_path>/.planar-execute/owner` with the
+/// `<run_id> <pid> <unix_nanos>` payload. Idempotent on the directory create
+/// (PathAlreadyExists is tolerated); the file is overwritten if it exists.
+///
+/// Called by `createCycle` immediately after the worktree is checked out so the
+/// ownership tag is present before any worker touches the tree.
+pub fn writeOwnerMarker(
+    allocator: std.mem.Allocator,
+    io: Io,
+    worktree_path: []const u8,
+    run_id: []const u8,
+    pid: i32,
+) WorktreeError!void {
+    const dir = std.fs.path.join(allocator, &.{ worktree_path, owner_marker_subdir }) catch
+        return WorktreeError.OutOfMemory;
+    defer allocator.free(dir);
+    std.Io.Dir.cwd().createDirPath(io, dir) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => return WorktreeError.FsError,
+    };
+
+    const file = std.fs.path.join(allocator, &.{ worktree_path, owner_marker_rel }) catch
+        return WorktreeError.OutOfMemory;
+    defer allocator.free(file);
+
+    const payload = std.fmt.allocPrint(allocator, "{s} {d} {d}\n", .{ run_id, pid, nowNanos() }) catch
+        return WorktreeError.OutOfMemory;
+    defer allocator.free(payload);
+
+    std.Io.Dir.cwd().writeFile(io, .{ .sub_path = file, .data = payload }) catch
+        return WorktreeError.FsError;
+}
+
+/// readOwnerMarker reads + parses `<worktree_path>/.planar-execute/owner`.
+///
+/// Returns `null` when the marker is MISSING or UNREADABLE — UNKNOWN ownership,
+/// which the prune predicate treats conservatively (never prune). A malformed
+/// payload (no pid token) yields a marker with `pid = -1` (probed as dead),
+/// which is still gated by the run-id-mismatch half of the predicate.
+///
+/// On success the returned `Owner.run_id` is heap-owned; free via `Owner.deinit`.
+pub fn readOwnerMarker(
+    allocator: std.mem.Allocator,
+    io: Io,
+    worktree_path: []const u8,
+) WorktreeError!?Owner {
+    const file = std.fs.path.join(allocator, &.{ worktree_path, owner_marker_rel }) catch
+        return WorktreeError.OutOfMemory;
+    defer allocator.free(file);
+
+    const data = std.Io.Dir.cwd().readFileAlloc(io, file, allocator, .limited(4096)) catch |err| switch (err) {
+        error.FileNotFound => return null, // missing → UNKNOWN ownership.
+        error.OutOfMemory => return WorktreeError.OutOfMemory,
+        else => return null, // unreadable → UNKNOWN ownership (conservative).
+    };
+    defer allocator.free(data);
+
+    const trimmed = std.mem.trim(u8, data, " \t\r\n");
+    var it = std.mem.tokenizeScalar(u8, trimmed, ' ');
+    const run_id_tok = it.next() orelse return null; // empty payload → UNKNOWN.
+    const run_id = allocator.dupe(u8, run_id_tok) catch return WorktreeError.OutOfMemory;
+    errdefer allocator.free(run_id);
+    const pid_tok = it.next() orelse return .{ .run_id = run_id, .pid = -1 };
+    const pid = std.fmt.parseInt(i32, pid_tok, 10) catch -1;
+    return .{ .run_id = run_id, .pid = pid };
+}
+
+/// nowNanos reads a nanosecond wall clock for the owner-marker timestamp.
+/// Informational only (the run-id + pid carry the identity); mirrors
+/// runlock.zig's reading via `clock_gettime(REALTIME)`.
+fn nowNanos() i128 {
+    const builtin = @import("builtin");
+    if (builtin.os.tag == .windows) return 0;
+    var ts: std.c.timespec = undefined;
+    if (std.c.clock_gettime(.REALTIME, &ts) != 0) return 0;
+    return @as(i128, @intCast(ts.sec)) * std.time.ns_per_s + @as(i128, @intCast(ts.nsec));
+}
+
+/// prunableByOwnership is the PURE core of the M6 prune decision.
+///
+/// Given a cycle worktree's parsed `owner` marker (null ⇒ missing/unreadable),
+/// the CURRENT run's id, and a PID-liveness probe, it returns whether the cycle
+/// worktree is prunable. The rule (CONSERVATIVE — err toward NOT pruning):
+///
+///   prune IFF  owner != null
+///         AND  owner.run_id != current_run_id   (a FOREIGN run owns it)
+///         AND  !pid_alive(owner.pid)            (that foreign run is DEAD)
+///
+/// NEVER prune when:
+///   - owner == null            (UNKNOWN ownership — pre-feature / foreign tool)
+///   - owner.run_id == current  (the current run's OWN live worktree)
+///   - pid_alive(owner.pid)     (a LIVE run — foreign or not; concurrent work)
+///
+/// PURE — no git, no DB, no filesystem. Unit-tested with hand-built `Owner`s and
+/// the injectable `pid_alive_fn` fakes so the four cases are deterministic.
+pub fn prunableByOwnership(
+    owner: ?Owner,
+    current_run_id: []const u8,
+    pid_alive_fn: PidAliveFn,
+) bool {
+    const o = owner orelse return false; // UNKNOWN ownership → never prune.
+    // The current run owns it → never prune (run-id match short-circuits, even
+    // if the marker's pid happens to read dead).
+    if (std.mem.eql(u8, o.run_id, current_run_id)) return false;
+    // A live owner (foreign or not) → never prune (concurrent run owns it).
+    if (pid_alive_fn(o.pid)) return false;
+    // Foreign AND dead → prunable.
+    return true;
+}
 
 // ---------------------------------------------------------------------------
 // Internal subprocess helper
@@ -356,11 +515,19 @@ pub fn ensureEpic(
     return .{ .path = path, .branch = branch };
 }
 
-/// createCycle creates a per-task cycle worktree cut from the epic branch.
+/// createCycle creates a per-task cycle worktree cut from the epic branch and
+/// TAGS it with the creating run's ownership marker (run-id + PID).
 ///
 /// Runs `git -C <repo_root> worktree add -b cycle/<plan_slug>/<task_slug>
 /// <repo_root>/.worktrees/cycle/<plan_slug>/<task_slug> epic/<plan_slug>` — the
-/// cycle branch is cut from `epic/<plan_slug>`, NOT master.
+/// cycle branch is cut from `epic/<plan_slug>`, NOT master — then writes
+/// `<cycle-worktree>/.planar-execute/owner` containing `<run_id> <pid> <nanos>`.
+/// The marker is the ownership tag the M6 prune predicate reads
+/// (`prunableByOwnership`): only a DIFFERENT, DEAD run's worktree is prunable.
+///
+/// `run_id` + `pid` come from the run's `RunLock` (task 3191): the caller
+/// threads `run_lock.run_id` + `run_lock.pid` here. (No production front-half
+/// call site exists yet — that is M5; this signature carries the tag for it.)
 ///
 /// The caller is expected to have created the epic via `ensureEpic` first.
 /// Returns the created `Worktree`; the caller MUST call
@@ -371,6 +538,8 @@ pub fn createCycle(
     repo_root: []const u8,
     plan_slug: []const u8,
     task_slug: []const u8,
+    run_id: []const u8,
+    pid: i32,
 ) WorktreeError!Worktree {
     const branch = try cycleBranch(allocator, plan_slug, task_slug);
     errdefer allocator.free(branch);
@@ -382,6 +551,12 @@ pub fn createCycle(
 
     const out = try runGit(allocator, io, &.{ "-C", repo_root, "worktree", "add", "-b", branch, path, epic_ref });
     allocator.free(out);
+
+    // Tag the freshly-created worktree with the owning run's run-id + PID so the
+    // M6 prune predicate can distinguish "this run's live worktree" from "a
+    // foreign dead run's stranded worktree". Best-effort would silently strip
+    // the ownership signal, so a marker write failure is propagated.
+    try writeOwnerMarker(allocator, io, path, run_id, pid);
 
     return .{ .path = path, .branch = branch };
 }
@@ -742,29 +917,40 @@ fn classifyManaged(
     return null;
 }
 
-/// staleCycleWorktrees is the pure core of the prune decision.
+/// staleCycleWorktrees is the M6 ownership-scoped prune decision (task 3192
+/// part 2). It REPLACES the M3 claim-based predicate ("no active claim").
 ///
-/// Given the parsed on-disk worktree list, the current `plan_slug`, and the set
-/// of task-slugs that STILL have an active claim, it returns the cycle
-/// worktrees that are stale and must be pruned.
+/// For each MANAGED cycle worktree of `plan_slug`, it reads the worktree's owner
+/// marker (`.planar-execute/owner`) and applies the CONSERVATIVE ownership rule
+/// via the pure `prunableByOwnership`:
 ///
-/// PURE — no git, no DB. Inject `active_task_slugs` (derived at runtime by
-/// correlating `planar-watch ps` active claims with the task id↔slug mapping)
-/// and unit-test the decision directly.
+///   prune IFF  marker present
+///         AND  owner.run_id != current_run_id   (a FOREIGN run)
+///         AND  !pid_alive(owner.pid)            (that run is DEAD)
 ///
 /// Invariants (each pinned by a unit test):
 ///   - The epic worktree is NEVER returned (it persists until epic→master merge).
-///   - A cycle whose task-slug IS in `active_task_slugs` is NEVER returned
-///     (a live run owns it).
-///   - Foreign-plan worktrees are NEVER returned (classifyManaged excludes them).
+///   - The CURRENT run's own cycle worktree is NEVER returned (run-id match).
+///   - A LIVE foreign run's cycle worktree is NEVER returned (pid_alive true) —
+///     this is the catastrophic false-positive the predicate must avoid.
+///   - A worktree with a MISSING / unreadable marker is NEVER returned
+///     (UNKNOWN ownership → conservative; leave it for the operator).
+///   - Foreign-PLAN worktrees are NEVER returned (classifyManaged excludes them).
+///
+/// `current_run_id` is the run's `RunLock.run_id`. `pid_alive_fn` is the
+/// liveness probe (production `posixPidAlive`; tests inject a fake). `io` is
+/// needed to read each marker — the file read is a thin shell around the PURE
+/// `prunableByOwnership`, which carries the load-bearing decision.
 ///
 /// The caller owns the returned slice and MUST free it via `freeStaleList`.
 pub fn staleCycleWorktrees(
     allocator: std.mem.Allocator,
+    io: Io,
     all_worktrees: []const WorktreeEntry,
     repo_root: []const u8,
     plan_slug: []const u8,
-    active_task_slugs: []const []const u8,
+    current_run_id: []const u8,
+    pid_alive_fn: PidAliveFn,
 ) WorktreeError![]StaleCycle {
     var stale = std.ArrayList(StaleCycle).empty;
     errdefer {
@@ -776,15 +962,13 @@ pub fn staleCycleWorktrees(
         const managed = classifyManaged(entry, repo_root, plan_slug) orelse continue;
         if (managed.role == .epic) continue; // epic persists, never prune
 
-        // Cycle: stale iff its task-slug is NOT in the active set.
-        var is_active = false;
-        for (active_task_slugs) |slug| {
-            if (std.mem.eql(u8, slug, managed.task_slug)) {
-                is_active = true;
-                break;
-            }
-        }
-        if (is_active) continue;
+        // Read the ownership marker for this cycle worktree and apply the pure
+        // ownership predicate. A read failure other than missing/unreadable
+        // (which readOwnerMarker maps to null) propagates as a hard error.
+        const owner = try readOwnerMarker(allocator, io, entry.path);
+        defer if (owner) |o| o.deinit(allocator);
+
+        if (!prunableByOwnership(owner, current_run_id, pid_alive_fn)) continue;
 
         const owned_slug = allocator.dupe(u8, managed.task_slug) catch return WorktreeError.OutOfMemory;
         errdefer allocator.free(owned_slug);
@@ -832,173 +1016,112 @@ fn runBin(
 }
 
 // ---------------------------------------------------------------------------
-// Runtime correlation: active task-slugs for a plan
-// ---------------------------------------------------------------------------
-
-/// Minimal view of an active-claim row from `planar-watch ps --plan <id> --json`.
-/// Only `entity_kind` / `entity_id` are consumed (we want active task claims).
-const PsClaim = struct {
-    entity_kind: []const u8,
-    entity_id: u64,
-};
-
-/// Minimal view of `planar-watch ps --plan <id> --json`.
-/// Shape: {"generated_at":"...","active":[<claim>...],"stale":[<claim>...]}.
-const PsResult = struct {
-    active: []PsClaim,
-};
-
-/// Minimal view of a task row from `planar task list --plan <id> --json`.
-const TaskListRow = struct {
-    id: u64,
-    slug: ?[]const u8 = null,
-};
-
-/// activeTaskSlugs returns the set of task-slugs that currently hold an ACTIVE
-/// claim on `plan_id`, by correlating `planar-watch ps --plan <id> --json`'s
-/// `active` array (entity task ids) with `planar task list --plan <id> --json`
-/// (task id↔slug). Only `entity_kind == "task"` claims with a non-null slug are
-/// included.
-///
-/// The correlation lives here (subprocess side); the resulting slug set is then
-/// injected into the PURE `staleCycleWorktrees` so the decision stays testable.
-///
-/// The caller owns the returned slice and each slug within; free via
-/// `freeActiveSlugs`.
-fn activeTaskSlugs(
-    allocator: std.mem.Allocator,
-    io: Io,
-    plan_id: u64,
-) WorktreeError![][]const u8 {
-    var id_buf: [32]u8 = undefined;
-    const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{plan_id}) catch return WorktreeError.SubprocessFailed;
-
-    // 1) Active claims for the plan.
-    const ps_out = try runBin(allocator, io, "planar-watch", &.{ "ps", "--plan", id_str, "--json" }, 4 * 1024 * 1024);
-    defer allocator.free(ps_out);
-    const ps = std.json.parseFromSlice(PsResult, allocator, ps_out, .{ .ignore_unknown_fields = true }) catch
-        return WorktreeError.ParseFailed;
-    defer ps.deinit();
-
-    // 2) Task id↔slug mapping for the plan.
-    const tl_out = try runBin(allocator, io, "planar", &.{ "task", "list", "--plan", id_str, "--json" }, 4 * 1024 * 1024);
-    defer allocator.free(tl_out);
-    const tasks = std.json.parseFromSlice([]TaskListRow, allocator, tl_out, .{ .ignore_unknown_fields = true }) catch
-        return WorktreeError.ParseFailed;
-    defer tasks.deinit();
-
-    var slugs = std.ArrayList([]const u8).empty;
-    errdefer {
-        for (slugs.items) |s| allocator.free(s);
-        slugs.deinit(allocator);
-    }
-
-    for (ps.value.active) |claim| {
-        if (!std.mem.eql(u8, claim.entity_kind, "task")) continue;
-        // Find the slug for this entity_id.
-        for (tasks.value) |t| {
-            if (t.id != claim.entity_id) continue;
-            const slug = t.slug orelse break;
-            const owned = allocator.dupe(u8, slug) catch return WorktreeError.OutOfMemory;
-            errdefer allocator.free(owned);
-            try slugs.append(allocator, owned);
-            break;
-        }
-    }
-
-    return slugs.toOwnedSlice(allocator) catch return WorktreeError.OutOfMemory;
-}
-
-/// freeActiveSlugs frees the slice (and each slug) returned by `activeTaskSlugs`.
-fn freeActiveSlugs(allocator: std.mem.Allocator, slugs: [][]const u8) void {
-    for (slugs) |s| allocator.free(s);
-    allocator.free(slugs);
-}
-
-// ---------------------------------------------------------------------------
 // Top-level orchestrator: reconcileAndPrune
 // ---------------------------------------------------------------------------
 
 /// Outcome of a `reconcileAndPrune` pass.
 ///
-/// `stale` is the number of cycle worktrees the classifier flagged as stale
-/// (i.e. their owning task no longer holds an active claim). `pruned` is the
-/// number actually torn down. In a normal (non-dry-run) pass `pruned == stale`
-/// once teardown succeeds for every flagged cycle. Under a dry run NO teardown
-/// is performed, so `pruned == 0` while `stale` still reports what *would* be
-/// pruned — this is what the read-only `doctor` probe reports as `stale_cycles`.
+/// `stale` is the number of cycle worktrees the ownership predicate flagged as
+/// prunable (owned by a DIFFERENT, DEAD run). `pruned` is the number actually
+/// torn down. In a normal (non-dry-run) pass `pruned == stale` once teardown
+/// succeeds for every flagged cycle. Under a dry run NO teardown is performed,
+/// so `pruned == 0` while `stale` still reports what *would* be pruned — this is
+/// what the read-only `doctor` probe reports as `stale_cycles`.
 pub const ReconcileResult = struct {
-    /// Cycle worktrees classified as stale (would-be / actual prune targets).
+    /// Cycle worktrees classified as prunable (would-be / actual prune targets).
     stale: usize,
     /// Cycle worktrees actually torn down this pass (0 under dry run).
     pruned: usize,
 };
 
-/// reconcileAndPrune is the startup reconcile pass (task 3174), with a
-/// non-destructive dry-run mode (task 3236).
+/// reconcileAndPrune is the startup reconcile pass (task 3174), hardened for M6
+/// run isolation (task 3192 part 2) with a non-destructive dry-run mode (3236).
 ///
 /// It orchestrates (its pure constituents are unit-tested; the live subprocess
 /// half is covered end-to-end by `integration_tests/planar_execute_doctor_test.zig`
 /// via the `doctor` verb's dry-run probe — task 3236):
-///   1. Shell `planar-agent reconcile [--dry-run]` — mark expired claims stale,
+///   1. Shell `planar-agent reconcile [--dry-run]` — mark EXPIRED claims stale,
 ///      close orphaned actions (under `--dry-run` it only reports candidates).
-///      Run first so a crashed cycle's claim is staled BEFORE we read active
-///      claims, otherwise an about-to-expire claim could wrongly look active.
-///   2. Read the now-current active task-slugs for `plan_id` (`activeTaskSlugs`).
-///   3. Enumerate worktrees (`git worktree list --porcelain`) → parse.
-///   4. `staleCycleWorktrees` (PURE) → the cycle worktrees to prune.
-///   5. `teardownCycle` each stale one (plan-scoped, epic excluded, foreign
-///      worktrees never returned by the classifier). SKIPPED under dry run.
-///   6. `git worktree prune` — clear admin entries for cycle dirs already
+///   2. Enumerate worktrees (`git worktree list --porcelain`) → parse.
+///   3. `staleCycleWorktrees` — for each managed cycle worktree, read its owner
+///      marker and apply the PURE ownership predicate (`prunableByOwnership`):
+///      prune IFF owner-run-id ≠ current AND owner-pid DEAD.
+///   4. `teardownCycle` each prunable one (plan-scoped, epic excluded, foreign
+///      PLANs excluded). SKIPPED under dry run.
+///   5. `git worktree prune` — clear admin entries for cycle dirs already
 ///      manually deleted (dir gone, git metadata lingering). SKIPPED under dry run.
 ///
-/// When `dry_run == true` the function performs steps 1–4 (reads only — step 1
-/// passes `--dry-run` to `planar-agent reconcile` so it does not write) and
-/// returns the computed stale count WITHOUT mutating anything: no `teardownCycle`,
-/// no `git worktree prune`. The non-dry path is bit-identical to the task-3174
-/// approved behavior.
+/// `current_run_id` is the live run's `RunLock.run_id` (task 3191); a worktree
+/// tagged with this id is the current run's OWN and is NEVER pruned. `pid_alive_fn`
+/// is the liveness probe — production passes `posixPidAlive`; tests inject a fake.
 ///
-/// Errors from steps 1–4 propagate (a failed reconcile/read is a hard startup
-/// problem). A `teardownCycle` failure on one stale cycle is NOT
+/// ## Reconcile scoping — why the claim sweep stays GLOBAL (engine F2 deferred)
+///
+/// Part 1 of this task added `planar-agent reconcile --session <id>` (engine F2)
+/// for per-session-scoped claim sweeps. This STARTUP reconcile keeps the GLOBAL
+/// sweep — deliberately, because there is no clean session_id to scope by HERE
+/// and global is provably safe at this point:
+///
+///   - The startup pass cleans up a PRIOR run's stranded state. The NEW run does
+///     not know the crashed prior run's session id, so there is no honest
+///     session_id to pass — fabricating one would scope the sweep to the WRONG
+///     session and leave the actual stranded claims un-staled.
+///   - The single-instance run-lock (task 3191) already prevents two
+///     `planar-execute` runs on the SAME plan, so there is no concurrent
+///     same-plan run whose claims the global sweep could wrongly touch.
+///   - `reconcileStale` (engine) only marks `status='active' AND lease_expired`
+///     claims stale. A LIVE run's claims are kept fresh by its heartbeat thread
+///     (task 3187), so they are NEVER expired — therefore the global sweep
+///     CANNOT stale a live foreign run's claims even if one existed.
+///
+/// F2 (`--session`) remains available for a future caller that DOES carry a
+/// clean session id (e.g. a same-process re-reconcile that knows its own
+/// session). The worktree-side ownership predicate (run-id + PID), not the claim
+/// sweep, is what provides the run-isolation guarantee on the worktree side.
+///
+/// When `dry_run == true` the function performs steps 1–3 (reads only — step 1
+/// passes `--dry-run` to `planar-agent reconcile` so it does not write) and
+/// returns the computed prune count WITHOUT mutating anything.
+///
+/// Errors from steps 1–3 propagate (a failed reconcile/read is a hard startup
+/// problem). A `teardownCycle` failure on one prunable cycle is NOT
 /// logged-and-skipped — we let it propagate so the operator sees the first
-/// failure rather than silently leaving half-pruned state; the caller decides
-/// whether a partial prune is fatal. (M6 will refine this under the run-lock.)
+/// failure rather than silently leaving half-pruned state.
 pub fn reconcileAndPrune(
     allocator: std.mem.Allocator,
     io: Io,
     repo_root: []const u8,
     plan_slug: []const u8,
-    plan_id: u64,
+    current_run_id: []const u8,
+    pid_alive_fn: PidAliveFn,
     dry_run: bool,
 ) WorktreeError!ReconcileResult {
-    // 1) Claim side: global reconcile (mark expired claims stale). Under a dry
-    //    run pass `--dry-run` so the verb only reports candidates (no write).
+    // 1) Claim side: GLOBAL reconcile (mark expired claims stale). Safe as global
+    //    per the scoping rationale in the doc-comment above (run-lock + the
+    //    expired-only sweep + heartbeat-fresh live claims). Under a dry run pass
+    //    `--dry-run` so the verb only reports candidates (no write).
     const rec_out = if (dry_run)
         try runBin(allocator, io, "planar-agent", &.{ "reconcile", "--dry-run", "--json" }, 256 * 1024)
     else
         try runBin(allocator, io, "planar-agent", &.{ "reconcile", "--json" }, 256 * 1024);
     allocator.free(rec_out);
 
-    // 2) Read the current active task-slug set for the plan.
-    const active = try activeTaskSlugs(allocator, io, plan_id);
-    defer freeActiveSlugs(allocator, active);
-
-    // 3) Enumerate + parse worktrees.
+    // 2) Enumerate + parse worktrees.
     const porcelain = try runGit(allocator, io, &.{ "-C", repo_root, "worktree", "list", "--porcelain" });
     defer allocator.free(porcelain);
     const worktrees = try parseWorktreeList(allocator, porcelain);
     defer freeWorktreeList(allocator, worktrees);
 
-    // 4) Classify (PURE). Compare against the CANONICAL repo root: `git worktree
-    // list --porcelain` emits symlink-resolved absolute paths, so the path-guard
-    // in the classifier must use the same canonical form (a non-canonical
-    // `repo_root` — e.g. a `/var/...` mktemp path on macOS that git reports as
-    // `/private/var/...` — would otherwise exclude every managed worktree). The
-    // FIRST porcelain record is always the main checkout, whose path git has
-    // already canonicalized; use it as the canonical root (falling back to the
-    // passed `repo_root` if the list is somehow empty).
+    // 3) Ownership prune predicate. Compare against the CANONICAL repo root: `git
+    // worktree list --porcelain` emits symlink-resolved absolute paths, so the
+    // path-guard in the classifier must use the same canonical form (a
+    // non-canonical `repo_root` — e.g. a `/var/...` mktemp path on macOS that git
+    // reports as `/private/var/...` — would otherwise exclude every managed
+    // worktree). The FIRST porcelain record is always the main checkout, whose
+    // path git has already canonicalized; use it as the canonical root (falling
+    // back to the passed `repo_root` if the list is somehow empty).
     const canon_root = if (worktrees.len > 0) worktrees[0].path else repo_root;
-    const stale = try staleCycleWorktrees(allocator, worktrees, canon_root, plan_slug, active);
+    const stale = try staleCycleWorktrees(allocator, io, worktrees, canon_root, plan_slug, current_run_id, pid_alive_fn);
     defer freeStaleList(allocator, stale);
 
     // Dry run: report the computed stale count, mutate nothing.
@@ -1037,6 +1160,20 @@ fn gitAvailable(allocator: std.mem.Allocator) bool {
     defer allocator.free(r.stderr);
     return r.term == .exited and r.term.exited == 0;
 }
+
+/// Injectable PID-liveness fakes for the ownership-prune tests. `aliveFake`
+/// reports every PID as ALIVE; `deadFake` reports every PID as DEAD. They make
+/// the foreign-live / foreign-dead prune cases deterministic — no real reaped
+/// process, no PID guessing in the load-bearing predicate tests.
+fn aliveFake(_: i32) bool {
+    return true;
+}
+fn deadFake(_: i32) bool {
+    return false;
+}
+
+/// A test run-id used by createCycle calls that do not exercise the prune.
+const test_run_id = "run-test-1";
 
 /// mkTmpRepoDir creates a fresh system temp directory via `mktemp -d` and
 /// returns its absolute path (heap-owned; caller frees). Using `mktemp` mirrors
@@ -1180,7 +1317,7 @@ test "createCycle creates the cycle worktree on a branch cut from epic" {
     var epic = try ensureEpic(a, std.testing.io, repo, "planx");
     defer epic.deinit(a);
 
-    var cyc = try createCycle(a, std.testing.io, repo, "planx", "task-one");
+    var cyc = try createCycle(a, std.testing.io, repo, "planx", "task-one", test_run_id, 4242);
     defer cyc.deinit(a);
 
     try std.testing.expectEqualStrings("cycle/planx/task-one", cyc.branch);
@@ -1200,7 +1337,7 @@ test "teardownCycle removes the worktree dir and force-deletes the branch" {
     var epic = try ensureEpic(a, std.testing.io, repo, "planx");
     defer epic.deinit(a);
 
-    var cyc = try createCycle(a, std.testing.io, repo, "planx", "task-one");
+    var cyc = try createCycle(a, std.testing.io, repo, "planx", "task-one", test_run_id, 4242);
     defer cyc.deinit(a);
     try std.testing.expect(dirExists(std.testing.io, cyc.path));
     try std.testing.expect(branchListed(a, repo, "cycle/planx/task-one"));
@@ -1224,7 +1361,7 @@ test "teardownCycle works on the abort path (no merge ever happened)" {
     var epic = try ensureEpic(a, std.testing.io, repo, "planx");
     defer epic.deinit(a);
 
-    var cyc = try createCycle(a, std.testing.io, repo, "planx", "aborted-task");
+    var cyc = try createCycle(a, std.testing.io, repo, "planx", "aborted-task", test_run_id, 4242);
     defer cyc.deinit(a);
 
     // Make a commit on the cycle branch so it diverges from epic — this is the
@@ -1373,90 +1510,42 @@ test "parseWorktreeList: empty input yields empty list" {
     try std.testing.expectEqual(@as(usize, 0), list.len);
 }
 
-test "staleCycleWorktrees: epic persists, foreign excluded, active cycle kept, stale cycle pruned" {
-    const a = std.testing.allocator;
-    const sep = std.fs.path.sep_str;
-    const repo = try std.fmt.allocPrint(a, "{0s}{1s}repo", .{ sep, sep });
-    defer a.free(repo);
+// ---------------------------------------------------------------------------
+// M6 ownership-prune tests (task 3192 part 2) — the LOAD-BEARING correctness.
+//
+// The pure decision `prunableByOwnership` is exhaustively driven for the four
+// cases via the injectable liveness fakes (no real PID, no git). The disk-side
+// `staleCycleWorktrees` is driven against a real git repo with createCycle-
+// written markers, hand-edited to simulate foreign / dead / live / missing.
+// ---------------------------------------------------------------------------
 
-    // Build the on-disk worktree set for plan slug "p492":
-    //   - epic/p492            → must NEVER be stale
-    //   - cycle/p492/active-t  → has an active claim → NOT pruned
-    //   - cycle/p492/stale-t   → no active claim → PRUNED
-    //   - epic/p493 (FOREIGN)  → never returned
-    //   - cycle/p493/x (FOREIGN) → never returned
-    //   - master               → never returned (not managed)
-    const epic_p492_path = try std.fmt.allocPrint(a, "{0s}{1s}.worktrees{1s}epic{1s}p492", .{ repo, sep });
-    defer a.free(epic_p492_path);
-    const cyc_active_path = try std.fmt.allocPrint(a, "{0s}{1s}.worktrees{1s}cycle{1s}p492{1s}active-t", .{ repo, sep });
-    defer a.free(cyc_active_path);
-    const cyc_stale_path = try std.fmt.allocPrint(a, "{0s}{1s}.worktrees{1s}cycle{1s}p492{1s}stale-t", .{ repo, sep });
-    defer a.free(cyc_stale_path);
-    const epic_p493_path = try std.fmt.allocPrint(a, "{0s}{1s}.worktrees{1s}epic{1s}p493", .{ repo, sep });
-    defer a.free(epic_p493_path);
-    const cyc_p493_path = try std.fmt.allocPrint(a, "{0s}{1s}.worktrees{1s}cycle{1s}p493{1s}x", .{ repo, sep });
-    defer a.free(cyc_p493_path);
-
-    const worktrees = [_]WorktreeEntry{
-        .{ .path = repo, .branch = "master" },
-        .{ .path = epic_p492_path, .branch = "epic/p492" },
-        .{ .path = cyc_active_path, .branch = "cycle/p492/active-t" },
-        .{ .path = cyc_stale_path, .branch = "cycle/p492/stale-t" },
-        .{ .path = epic_p493_path, .branch = "epic/p493" },
-        .{ .path = cyc_p493_path, .branch = "cycle/p493/x" },
-    };
-
-    const active = [_][]const u8{"active-t"};
-
-    const stale = try staleCycleWorktrees(a, &worktrees, repo, "p492", &active);
-    defer freeStaleList(a, stale);
-
-    // Exactly one stale cycle: stale-t. Epic excluded; active-t kept; foreign
-    // plan p493 worktrees never returned.
-    try std.testing.expectEqual(@as(usize, 1), stale.len);
-    try std.testing.expectEqualStrings("stale-t", stale[0].task_slug);
+test "prunableByOwnership: missing marker (UNKNOWN ownership) → NEVER pruned" {
+    // The catastrophic false-positive guard: no marker ⇒ never prune (a
+    // pre-feature worktree or a foreign tool's; the operator decides).
+    try std.testing.expect(!prunableByOwnership(null, "run-current", aliveFake));
+    try std.testing.expect(!prunableByOwnership(null, "run-current", deadFake));
 }
 
-test "staleCycleWorktrees: all cycles active → nothing pruned; epic still excluded" {
-    const a = std.testing.allocator;
-    const sep = std.fs.path.sep_str;
-    const repo = try std.fmt.allocPrint(a, "{0s}{1s}repo", .{ sep, sep });
-    defer a.free(repo);
-    const epic_path = try std.fmt.allocPrint(a, "{0s}{1s}.worktrees{1s}epic{1s}p492", .{ repo, sep });
-    defer a.free(epic_path);
-    const cyc_path = try std.fmt.allocPrint(a, "{0s}{1s}.worktrees{1s}cycle{1s}p492{1s}t1", .{ repo, sep });
-    defer a.free(cyc_path);
-
-    const worktrees = [_]WorktreeEntry{
-        .{ .path = epic_path, .branch = "epic/p492" },
-        .{ .path = cyc_path, .branch = "cycle/p492/t1" },
-    };
-    const active = [_][]const u8{"t1"};
-
-    const stale = try staleCycleWorktrees(a, &worktrees, repo, "p492", &active);
-    defer freeStaleList(a, stale);
-    try std.testing.expectEqual(@as(usize, 0), stale.len);
+test "prunableByOwnership: current-run-owned → NEVER pruned (even with a dead pid)" {
+    // run-id match short-circuits before the liveness probe even runs.
+    const owner = Owner{ .run_id = "run-current", .pid = 999999 };
+    try std.testing.expect(!prunableByOwnership(owner, "run-current", deadFake));
+    try std.testing.expect(!prunableByOwnership(owner, "run-current", aliveFake));
 }
 
-test "staleCycleWorktrees: a cycle branch-name shape OUTSIDE .worktrees/ is not managed" {
-    const a = std.testing.allocator;
-    const sep = std.fs.path.sep_str;
-    const repo = try std.fmt.allocPrint(a, "{0s}{1s}repo", .{ sep, sep });
-    defer a.free(repo);
-    // A worktree whose branch matches the cycle shape but whose PATH is not under
-    // <repo>/.worktrees/ — the path-guard must exclude it (defense in depth).
-    const foreign_path = try std.fmt.allocPrint(a, "{0s}{1s}repo{1s}somewhere-else{1s}t1", .{ sep, sep });
-    defer a.free(foreign_path);
-    const worktrees = [_]WorktreeEntry{
-        .{ .path = foreign_path, .branch = "cycle/p492/t1" },
-    };
-    const active = [_][]const u8{};
-    const stale = try staleCycleWorktrees(a, &worktrees, repo, "p492", &active);
-    defer freeStaleList(a, stale);
-    try std.testing.expectEqual(@as(usize, 0), stale.len);
+test "prunableByOwnership: foreign + DEAD → PRUNED" {
+    const owner = Owner{ .run_id = "run-foreign", .pid = 12345 };
+    try std.testing.expect(prunableByOwnership(owner, "run-current", deadFake));
 }
 
-test "prune action: stale cycle removed, active cycle + epic remain (real git repo)" {
+test "prunableByOwnership: foreign + LIVE → NEVER pruned (concurrent run owns it)" {
+    // The other catastrophic case: a live foreign run (e.g. a concurrent run on
+    // another plan) must never have its in-flight worktree pruned.
+    const owner = Owner{ .run_id = "run-foreign", .pid = 12345 };
+    try std.testing.expect(!prunableByOwnership(owner, "run-current", aliveFake));
+}
+
+test "owner marker round-trip: createCycle writes it, readOwnerMarker parses run_id + pid" {
     const a = std.testing.allocator;
     if (!gitAvailable(a)) return error.SkipZigTest;
 
@@ -1467,24 +1556,137 @@ test "prune action: stale cycle removed, active cycle + epic remain (real git re
 
     var epic = try ensureEpic(a, std.testing.io, repo, "planx");
     defer epic.deinit(a);
-    var c1 = try createCycle(a, std.testing.io, repo, "planx", "keep-task");
+    var cyc = try createCycle(a, std.testing.io, repo, "planx", "rt-task", "run-rt-77", 4242);
+    defer cyc.deinit(a);
+
+    const owner = (try readOwnerMarker(a, std.testing.io, cyc.path)) orelse return error.TestUnexpectedResult;
+    defer owner.deinit(a);
+    try std.testing.expectEqualStrings("run-rt-77", owner.run_id);
+    try std.testing.expectEqual(@as(i32, 4242), owner.pid);
+}
+
+test "readOwnerMarker: missing marker yields null (UNKNOWN ownership)" {
+    const a = std.testing.allocator;
+    const dir = mkTmpRepoDir(a);
+    defer a.free(dir);
+    defer rmTree(a, dir);
+    // No .planar-execute/owner under `dir` → null.
+    const owner = try readOwnerMarker(a, std.testing.io, dir);
+    try std.testing.expect(owner == null);
+}
+
+test "staleCycleWorktrees: current-owned kept, foreign-dead pruned, foreign-live + missing kept (real repo)" {
+    const a = std.testing.allocator;
+    if (!gitAvailable(a)) return error.SkipZigTest;
+
+    const repo = mkTmpRepoDir(a);
+    defer a.free(repo);
+    defer rmTree(a, repo);
+    initRepo(a, repo);
+
+    var epic = try ensureEpic(a, std.testing.io, repo, "planx");
+    defer epic.deinit(a);
+
+    // Four cycle worktrees, each tagged differently:
+    //   mine        → marker run_id == current  → NEVER pruned
+    //   foreign-dead→ marker run_id != current, pid DEAD → PRUNED
+    //   foreign-live→ marker run_id != current, pid LIVE → NEVER pruned
+    //   no-marker   → marker removed (UNKNOWN ownership)  → NEVER pruned
+    const current = "run-current-1";
+    var mine = try createCycle(a, std.testing.io, repo, "planx", "mine", current, 4242);
+    defer mine.deinit(a);
+    var fdead = try createCycle(a, std.testing.io, repo, "planx", "foreign-dead", "run-foreign-1", 111);
+    defer fdead.deinit(a);
+    var flive = try createCycle(a, std.testing.io, repo, "planx", "foreign-live", "run-foreign-2", 222);
+    defer flive.deinit(a);
+    var nomark = try createCycle(a, std.testing.io, repo, "planx", "no-marker", "run-foreign-3", 333);
+    defer nomark.deinit(a);
+
+    // Remove the no-marker cycle's owner file to simulate UNKNOWN ownership.
+    {
+        const mpath = try std.fs.path.join(a, &.{ nomark.path, owner_marker_rel });
+        defer a.free(mpath);
+        try std.Io.Dir.cwd().deleteFile(std.testing.io, mpath);
+    }
+
+    const porcelain = try runGit(a, std.testing.io, &.{ "-C", repo, "worktree", "list", "--porcelain" });
+    defer a.free(porcelain);
+    const worktrees = try parseWorktreeList(a, porcelain);
+    defer freeWorktreeList(a, worktrees);
+    try std.testing.expect(worktrees.len > 0);
+    const canon = worktrees[0].path;
+
+    // pid_alive: foreign-live's pid (222) reports ALIVE; everything else DEAD.
+    const liveOnly222 = struct {
+        fn f(pid: i32) bool {
+            return pid == 222;
+        }
+    }.f;
+
+    const stale = try staleCycleWorktrees(a, std.testing.io, worktrees, canon, "planx", current, liveOnly222);
+    defer freeStaleList(a, stale);
+
+    // EXACTLY one prunable cycle: foreign-dead. mine (current), foreign-live
+    // (alive), no-marker (unknown) are all kept.
+    try std.testing.expectEqual(@as(usize, 1), stale.len);
+    try std.testing.expectEqualStrings("foreign-dead", stale[0].task_slug);
+}
+
+test "staleCycleWorktrees: epic worktree is NEVER pruned (real repo, owner marker present)" {
+    const a = std.testing.allocator;
+    if (!gitAvailable(a)) return error.SkipZigTest;
+
+    const repo = mkTmpRepoDir(a);
+    defer a.free(repo);
+    defer rmTree(a, repo);
+    initRepo(a, repo);
+
+    var epic = try ensureEpic(a, std.testing.io, repo, "planx");
+    defer epic.deinit(a);
+    // Even if the epic carried a foreign-dead-looking marker, it is a .epic role
+    // and excluded before the ownership read. Write one to prove it is ignored.
+    try writeOwnerMarker(a, std.testing.io, epic.path, "run-foreign-X", 111);
+
+    const porcelain = try runGit(a, std.testing.io, &.{ "-C", repo, "worktree", "list", "--porcelain" });
+    defer a.free(porcelain);
+    const worktrees = try parseWorktreeList(a, porcelain);
+    defer freeWorktreeList(a, worktrees);
+    const canon = worktrees[0].path;
+
+    // deadFake reports everything dead; the epic still must not be returned.
+    const stale = try staleCycleWorktrees(a, std.testing.io, worktrees, canon, "planx", "run-current-1", deadFake);
+    defer freeStaleList(a, stale);
+    try std.testing.expectEqual(@as(usize, 0), stale.len);
+}
+
+test "prune action: foreign-dead cycle removed, current + foreign-live + epic remain (real git repo)" {
+    const a = std.testing.allocator;
+    if (!gitAvailable(a)) return error.SkipZigTest;
+
+    const repo = mkTmpRepoDir(a);
+    defer a.free(repo);
+    defer rmTree(a, repo);
+    initRepo(a, repo);
+
+    const current = "run-current-1";
+    var epic = try ensureEpic(a, std.testing.io, repo, "planx");
+    defer epic.deinit(a);
+    // c1 = the current run's own worktree (kept); c2 = foreign DEAD (pruned).
+    var c1 = try createCycle(a, std.testing.io, repo, "planx", "keep-task", current, 4242);
     defer c1.deinit(a);
-    var c2 = try createCycle(a, std.testing.io, repo, "planx", "drop-task");
+    var c2 = try createCycle(a, std.testing.io, repo, "planx", "drop-task", "run-foreign-1", 111);
     defer c2.deinit(a);
 
-    // Enumerate via the real porcelain, parse it, classify with keep-task active.
     const porcelain = try runGit(a, std.testing.io, &.{ "-C", repo, "worktree", "list", "--porcelain" });
     defer a.free(porcelain);
     const worktrees = try parseWorktreeList(a, porcelain);
     defer freeWorktreeList(a, worktrees);
 
-    // Compare against the canonical repo root — the first porcelain record is
-    // the main checkout, whose path git has canonicalized (matching production's
-    // reconcileAndPrune, which also derives canon_root from worktrees[0]).
     try std.testing.expect(worktrees.len > 0);
     const canon = worktrees[0].path;
-    const active = [_][]const u8{"keep-task"};
-    const stale = try staleCycleWorktrees(a, worktrees, canon, "planx", &active);
+    // deadFake ⇒ the foreign owner is dead ⇒ drop-task is the lone prune target;
+    // keep-task is the current run's own (run-id match) and is never returned.
+    const stale = try staleCycleWorktrees(a, std.testing.io, worktrees, canon, "planx", current, deadFake);
     defer freeStaleList(a, stale);
 
     try std.testing.expectEqual(@as(usize, 1), stale.len);
@@ -1513,7 +1715,7 @@ test "git worktree prune: already-deleted cycle dir → no error, metadata clean
 
     var epic = try ensureEpic(a, std.testing.io, repo, "planx");
     defer epic.deinit(a);
-    var cyc = try createCycle(a, std.testing.io, repo, "planx", "ghost-task");
+    var cyc = try createCycle(a, std.testing.io, repo, "planx", "ghost-task", test_run_id, 4242);
     defer cyc.deinit(a);
 
     // Delete the cycle worktree dir out from under git (dir gone, git metadata
@@ -1549,7 +1751,7 @@ test "mergeCycleIntoEpic: clean merge of a cycle with one commit lands on epic" 
 
     var epic = try ensureEpic(a, std.testing.io, repo, "planx");
     defer epic.deinit(a);
-    var cyc = try createCycle(a, std.testing.io, repo, "planx", "happy-task");
+    var cyc = try createCycle(a, std.testing.io, repo, "planx", "happy-task", test_run_id, 4242);
     defer cyc.deinit(a);
 
     // Commit something on the cycle branch (inside the cycle worktree).
@@ -1593,7 +1795,7 @@ test "mergeCycleIntoEpic: conflict path returns .conflict and aborts (epic workt
 
     var epic = try ensureEpic(a, std.testing.io, repo, "conf");
     defer epic.deinit(a);
-    var cyc = try createCycle(a, std.testing.io, repo, "conf", "ct1");
+    var cyc = try createCycle(a, std.testing.io, repo, "conf", "ct1", test_run_id, 4242);
     defer cyc.deinit(a);
 
     // Identity inside both worktrees.
@@ -1676,7 +1878,7 @@ test "branchHead: detects a new commit on the cycle branch (commit-presence prox
 
     var epic = try ensureEpic(a, std.testing.io, repo, "cp");
     defer epic.deinit(a);
-    var cyc = try createCycle(a, std.testing.io, repo, "cp", "ct");
+    var cyc = try createCycle(a, std.testing.io, repo, "cp", "ct", test_run_id, 4242);
     defer cyc.deinit(a);
 
     const before = try branchHead(a, std.testing.io, repo, "cycle/cp/ct");

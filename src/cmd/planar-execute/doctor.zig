@@ -183,10 +183,17 @@ fn runPlanProbes(arena: std.mem.Allocator, io: Io, plan: u64) PlanProbes {
 /// unavailable (plan_show failed) or the cwd is not a git repo, the probe
 /// records ok=false with a clear reason — defensively, never panicking.
 fn reconcileProbe(allocator: std.mem.Allocator, io: Io, plan: u64, plan_slug: ?[]const u8) ReconcileProbe {
+    _ = plan; // M6: prune is run-id/PID-ownership-scoped, not plan-id-scoped.
     const slug = plan_slug orelse {
         return .{ .ok = false, .@"error" = "plan slug unavailable (plan show probe failed or plan has no slug)" };
     };
-    const result = worktree.reconcileAndPrune(allocator, io, ".", slug, plan, true) catch |e| {
+    // doctor is a READ-ONLY probe, not a run: it holds no RunLock and has no
+    // current run-id. Pass an empty current-run-id sentinel so the ownership
+    // predicate reports every FOREIGN, DEAD cycle worktree as a would-be prune
+    // target (an empty id never matches a real marker's run-id, and there is no
+    // current run whose own worktree must be protected). `posixPidAlive` is the
+    // real liveness probe. The dry-run flag still guarantees nothing is mutated.
+    const result = worktree.reconcileAndPrune(allocator, io, ".", slug, "", worktree.posixPidAlive, true) catch |e| {
         return .{ .ok = false, .@"error" = @errorName(e) };
     };
     return .{ .ok = true, .stale_cycles = result.stale };
