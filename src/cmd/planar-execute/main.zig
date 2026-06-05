@@ -116,6 +116,17 @@ const c = lua.c;
 /// (memory: planar_execute_gate_lazy_eval — a pub-const alias forces analysis).
 pub const scheduler = @import("scheduler.zig");
 
+/// heartbeat — the single preemptive heartbeat thread (M6 task 3187). A
+/// mutex-guarded registry of LIVE claim tokens (registry-owned duped copies)
+/// plus a Zig OS thread that refreshes every live lease at TTL/2 via
+/// `planar-agent heartbeat`. Kept STRICTLY separate from the cooperative Lua
+/// scheduler: it touches NO Lua state, only claim-token strings. `runModule`
+/// owns its lifecycle (start when a driver is attached, stop at run end);
+/// `agent()`/`agentContinue` register/unregister the claim at spawn/terminal.
+/// Aliased here so its `test` blocks run under the execute_exe_tests target
+/// (memory: planar_execute_gate_lazy_eval — a pub-const alias forces analysis).
+pub const heartbeat = @import("heartbeat.zig");
+
 // ---------------------------------------------------------------------------
 // Process-global I/O context (no runtime module — planar-execute has no DB).
 // ---------------------------------------------------------------------------
@@ -334,6 +345,20 @@ pub const HostState = struct {
     // for pure-Lua run paths that never call `agent()` (e.g. callRun tests),
     // in which case `hostAgent` is never reached with a driver installed.
     sched: ?*scheduler.Scheduler = null,
+
+    // M6 heartbeat thread (task 3187).
+    //
+    // The mutex-guarded registry of LIVE claim tokens + the preemptive Zig OS
+    // thread that refreshes every live lease at TTL/2. `runModule` constructs +
+    // starts it ONLY when a spawn driver is attached (no driver → no workers →
+    // nothing to heartbeat) and stops+joins it at run end. `driveAgentCallPreYield`
+    // calls `register(claim_token)` when a worker's claim goes live;
+    // `agentContinue` calls `unregister(claim_token)` when the worker reaches
+    // terminal / its slot is released. The registry owns its OWN duped token
+    // copies, so the heartbeat thread NEVER borrows the main thread's
+    // `AgentCallState.claim_token` (which the main thread frees on slot release).
+    // It touches NO Lua state — the cardinal cross-thread rule.
+    heartbeat_reg: ?*heartbeat.HeartbeatRegistry = null,
 
     pub fn init(allocator: std.mem.Allocator, now: i64, seed: i64, budget_total: i64, budget_spent: i64) HostState {
         return .{
@@ -831,6 +856,20 @@ fn driveAgentCallPreYield(
     };
     acs.slot_index = slot_index;
 
+    // 4b) Register the worker's claim token with the heartbeat thread (task
+    // 3187) so its lease is refreshed at TTL/2 while the worker runs. The
+    // registry DUPES the token (it never borrows acs.claim_token, which we free
+    // on slot release). `agentContinue` unregisters it at terminal. No-op when
+    // no registry is installed (FakeSpawner unit-test paths) or the token is
+    // empty. Touches NO Lua state.
+    if (hs.heartbeat_reg) |hb| {
+        hb.register(acs.claim_token) catch {
+            // OOM duping the token into the registry — non-fatal. The worker
+            // still runs; its lease just isn't auto-refreshed (F1 reclaim is the
+            // fallback). Do NOT abort the spawn for this.
+        };
+    }
+
     // 5) Yield across the C boundary. The continuation `agentContinue` resumes
     // once the scheduler has driven the worker to terminal. `lua_yieldk` does
     // NOT return (it longjmps); the `return 0` below is unreachable.
@@ -872,7 +911,13 @@ fn agentContinue(L: ?*c.lua_State, status: c_int, ctx: c.lua_KContext) callconv(
     defer outcome.deinit(alloc);
     // Free the call state + release the slot when we leave (the result table is
     // already on the Lua stack by then; nothing below borrows acs after this).
+    // First unregister the claim from the heartbeat thread (task 3187): the
+    // worker has reached terminal, so its lease must NOT be refreshed further —
+    // and the unregister MUST precede `acs.destroy()`, which frees the token the
+    // registry duped from. The registry frees its OWN copy, so this is a clean
+    // hand-back with no cross-thread aliasing.
     defer {
+        if (hs.heartbeat_reg) |hb| hb.unregister(acs.claim_token);
         acs.destroy();
         sched.releaseSlot(slot_index);
     }
@@ -2329,6 +2374,45 @@ pub fn runModule(
     }
     defer if (host) |hs| {
         hs.sched = null;
+    };
+
+    // ---- M6 heartbeat thread (task 3187) ----
+    //
+    // Start the single preemptive heartbeat thread ONLY when a spawn driver is
+    // attached: with no driver there are no workers and no live leases to
+    // refresh. The registry refreshes every live claim token at TTL/2 via
+    // `planar-agent heartbeat` (production) — `driveAgentCallPreYield` registers
+    // each worker's claim when it goes live and `agentContinue` unregisters it at
+    // terminal. The thread touches NO Lua state. We `stop()` (set the flag +
+    // join) at run end so the thread is gone before this frame unwinds — the
+    // same clean-stop primitive task 3193 will call on SIGINT before releasing
+    // claims.
+    var hb_storage: heartbeat.HeartbeatRegistry = undefined;
+    var hb_started = false;
+    if (host) |hs| {
+        if (hs.agent_driver) |d| {
+            hb_storage = heartbeat.HeartbeatRegistry.init(
+                hs.allocator,
+                d.io,
+                heartbeat.realHeartbeatFn,
+                null,
+            );
+            hb_storage.start() catch {
+                // Thread spawn failed (resource exhaustion). The run can still
+                // proceed without lease refresh — long-running workers risk
+                // reclamation, but that is the F1 fallback, not a hard failure.
+                hb_storage.deinit();
+            };
+            if (hb_storage.thread != null) {
+                hb_started = true;
+                hs.heartbeat_reg = &hb_storage;
+            }
+        }
+    }
+    defer if (hb_started) {
+        hb_storage.stop();
+        hb_storage.deinit();
+        if (host) |hs| hs.heartbeat_reg = null;
     };
 
     // Drive co to completion. lua_resume returns LUA_OK (finished), LUA_YIELD
