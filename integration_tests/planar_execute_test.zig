@@ -681,3 +681,198 @@ test "planar-execute: agent-free workflow runs cleanly under PLANAR_EXECUTE_LIVE
     // are irrelevant. The driver is attached in degraded mode but never used.
     try std.testing.expectEqual(@as(u32, 0), res.exitCode());
 }
+
+// ---------------------------------------------------------------------------
+// task 3202 — `--mock-worker` mode: exercise workflow control flow without
+// spawning a real `claude -p`. The mode wires an in-process FakeSpawner-backed
+// AgentDriver into `handleRun`, so the FULL agent() pipeline (claim → brief →
+// spawn → wait → terminal decision → result table → fan-in) runs end-to-end
+// against canned outcomes (exit_code=0, stdout="ok", stderr=""). Mutually
+// exclusive with --dry-run and PLANAR_EXECUTE_LIVE_AGENT=1.
+// ---------------------------------------------------------------------------
+
+test "planar-execute --mock-worker: flag advertised in `run --help` (task 3202)" {
+    // Discoverability is part of the contract: a workflow author looking at
+    // `planar-execute run --help` must see --mock-worker described.
+    const gpa = std.testing.allocator;
+    const res = try runExecute(gpa, &.{ "run", "--help" });
+    defer res.deinit();
+
+    try std.testing.expectEqual(@as(u32, 0), res.exitCode());
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "--mock-worker") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "FakeSpawner") != null);
+}
+
+test "planar-execute --mock-worker conflict: --dry-run AND --mock-worker exits non-zero (task 3202)" {
+    // The two modes are mutually exclusive. Combining them is a wiring error
+    // and must surface a clear, distinct message — operator picks one.
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_abs = try tmpAbsPath(&tmp, gpa);
+    defer gpa.free(tmp_abs);
+
+    const wf_src =
+        \\return { meta = { name = "x", description = "x", phases = {} }, run = function(ctx) end }
+    ;
+    try writeWorkflow(&tmp, "x.lua", wf_src);
+    const wf_path = try workflowPath(tmp_abs, "x.lua", gpa);
+    defer gpa.free(wf_path);
+
+    const res = try runExecute(gpa, &.{ "run", "--mock-worker", "--dry-run", wf_path });
+    defer res.deinit();
+    try std.testing.expect(res.exitCode() != 0);
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "--mock-worker") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "--dry-run") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "mutually exclusive") != null);
+}
+
+test "planar-execute --mock-worker conflict: PLANAR_EXECUTE_LIVE_AGENT + --mock-worker exits non-zero (task 3202)" {
+    // The live gate spawns real `claude -p`; the mock attaches a FakeSpawner.
+    // Combining them is incoherent — must reject loudly with both names in
+    // the message so the operator knows what to unset/drop.
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_abs = try tmpAbsPath(&tmp, gpa);
+    defer gpa.free(tmp_abs);
+
+    const wf_src =
+        \\return { meta = { name = "x", description = "x", phases = {} }, run = function(ctx) end }
+    ;
+    try writeWorkflow(&tmp, "x.lua", wf_src);
+    const wf_path = try workflowPath(tmp_abs, "x.lua", gpa);
+    defer gpa.free(wf_path);
+
+    const res = try runExecuteWithGate(gpa, &.{ "run", "--mock-worker", wf_path });
+    defer res.deinit();
+    try std.testing.expect(res.exitCode() != 0);
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "--mock-worker") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "PLANAR_EXECUTE_LIVE_AGENT") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "mutually exclusive") != null);
+}
+
+test "planar-execute --mock-worker: single agent() call drives the full pipeline against the FakeSpawner (task 3202)" {
+    // The deliverable. A workflow that calls ctx.agent(...) once under
+    // --mock-worker must:
+    //   1. exit 0,
+    //   2. see a non-stub result (status is the natural decision-matrix
+    //      outcome — "released" with no repo/commit) and exit_code=0,
+    //   3. see the MOCK MODE notice on stderr,
+    //   4. NOT spawn a real `claude -p` (proven by: the test does not put
+    //      claude on PATH, and a real spawn would fail loudly; exit 0 + a
+    //      sane status string proves the FakeSpawner served the call).
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_abs = try tmpAbsPath(&tmp, gpa);
+    defer gpa.free(tmp_abs);
+
+    const wf_src =
+        \\return {
+        \\  meta = { name = "mock-single", description = "one agent call under mock", phases = {} },
+        \\  run = function(ctx)
+        \\    local r = ctx.agent("the brief", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/abs/mock-wt",
+        \\      claim_token = "tok-mock",
+        \\      role_spec = "you are a coder",
+        \\      task_slug = "ts-mock-1",
+        \\    })
+        \\    assert(r.status ~= "stub", "agent must NOT return stub under --mock-worker, got " .. tostring(r.status))
+        \\    assert(r.status == "released", "expected released, got " .. tostring(r.status))
+        \\    assert(r.exit_code == 0, "exit_code: " .. tostring(r.exit_code))
+        \\    assert(r.commit_present == false, "commit_present should be false in mock (no repo)")
+        \\  end,
+        \\}
+    ;
+    try writeWorkflow(&tmp, "mock_single.lua", wf_src);
+    const wf_path = try workflowPath(tmp_abs, "mock_single.lua", gpa);
+    defer gpa.free(wf_path);
+
+    const res = try runExecute(gpa, &.{ "run", "--mock-worker", wf_path });
+    defer res.deinit();
+
+    try std.testing.expectEqual(@as(u32, 0), res.exitCode());
+    // MOCK MODE notice was printed.
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "MOCK MODE") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "no real `claude -p` spawned") != null);
+}
+
+test "planar-execute --mock-worker: parallel agent calls drive the full scheduler against mocks (task 3202)" {
+    // Proves the FULL pipeline (scheduler + parallel + results table) runs
+    // against the mock — not just a one-shot agent(). The workflow drives
+    // ctx.parallel({thunk1, thunk2}) each calling agent(); under --mock-worker
+    // both thunks complete via the FakeSpawner, original-order results are
+    // returned, and the run exits 0.
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_abs = try tmpAbsPath(&tmp, gpa);
+    defer gpa.free(tmp_abs);
+
+    const wf_src =
+        \\return {
+        \\  meta = { name = "mock-parallel", description = "parallel agent() under mock", phases = {} },
+        \\  run = function(ctx)
+        \\    local function mk(tag)
+        \\      return function()
+        \\        local r = ctx.agent("brief-" .. tag, {
+        \\          role = "coder",
+        \\          worktree_path = "/tmp/abs/mock-wt-" .. tag,
+        \\          claim_token = "tok-" .. tag,
+        \\          task_slug = "ts-" .. tag,
+        \\        })
+        \\        return r.status
+        \\      end
+        \\    end
+        \\    local results = ctx.parallel({ mk("alpha"), mk("beta"), mk("gamma") })
+        \\    assert(#results == 3, "expected 3 results, got " .. tostring(#results))
+        \\    -- Original-order preserved.
+        \\    assert(results[1] == "released", "results[1] = " .. tostring(results[1]))
+        \\    assert(results[2] == "released", "results[2] = " .. tostring(results[2]))
+        \\    assert(results[3] == "released", "results[3] = " .. tostring(results[3]))
+        \\  end,
+        \\}
+    ;
+    try writeWorkflow(&tmp, "mock_parallel.lua", wf_src);
+    const wf_path = try workflowPath(tmp_abs, "mock_parallel.lua", gpa);
+    defer gpa.free(wf_path);
+
+    const res = try runExecute(gpa, &.{ "run", "--mock-worker", wf_path });
+    defer res.deinit();
+
+    try std.testing.expectEqual(@as(u32, 0), res.exitCode());
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "MOCK MODE") != null);
+}
+
+test "planar-execute --mock-worker: ungated/no-driver path is unchanged when --mock-worker is NOT set (task 3202)" {
+    // Regression guard: dropping --mock-worker must keep the default M2 stub
+    // behavior. agent() returns { status = "stub" } when the gate is off AND
+    // --mock-worker is off. The MOCK MODE notice must NOT appear.
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_abs = try tmpAbsPath(&tmp, gpa);
+    defer gpa.free(tmp_abs);
+
+    const wf_src =
+        \\return {
+        \\  meta = { name = "no-mock", description = "default stub", phases = {} },
+        \\  run = function(ctx)
+        \\    local r = ctx.agent("b", { role = "coder" })
+        \\    assert(r.status == "stub", "expected stub when --mock-worker is off, got " .. tostring(r.status))
+        \\  end,
+        \\}
+    ;
+    try writeWorkflow(&tmp, "no_mock.lua", wf_src);
+    const wf_path = try workflowPath(tmp_abs, "no_mock.lua", gpa);
+    defer gpa.free(wf_path);
+
+    const res = try runExecute(gpa, &.{wf_path});
+    defer res.deinit();
+
+    try std.testing.expectEqual(@as(u32, 0), res.exitCode());
+    // The MOCK MODE notice must NOT leak into a non-mock run.
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "MOCK MODE") == null);
+}

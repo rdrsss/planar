@@ -3842,6 +3842,7 @@ const run_verb: cli.Cmd = .{
     .flags = &.{
         .{ .long = "--dry-run", .kind = .bool, .default = .{ .bool = false }, .desc = "Load and validate the workflow, print meta and phases, exit without running." },
         .{ .long = "--plan", .kind = .int, .default = .{ .int = 0 }, .desc = "Plan id the live agent run is scoped to. When PLANAR_EXECUTE_LIVE_AGENT=1, providing --plan enables live claim-status reads and commit-presence sampling; omitting it degrades those features but does not prevent agent-free workflows from running." },
+        .{ .long = "--mock-worker", .kind = .bool, .default = .{ .bool = false }, .desc = "Workflow-script testing harness (plan 492 M10 task 3202). Enter run() with the FULL agent() pipeline wired against an in-process FakeSpawner so the workflow's control flow (parallel, pipeline, error handling, blocked-summary, result propagation) runs deterministically WITHOUT spawning any real `claude -p` worker (no API cost, no fs writes from the worker). Canned spawn outcome: exit_code=0, stdout=\"ok\", stderr=\"\" — agent() returns the natural decision-matrix result (typically status=\"released\" when no repo/commit is present). Mutually exclusive with --dry-run and PLANAR_EXECUTE_LIVE_AGENT=1; --plan is optional (degrades like task 3264)." },
     },
     .positionals = &.{
         .{ .name = "workflow", .kind = .string, .required = true },
@@ -4018,6 +4019,34 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
     const workflow_path = args.workflow;
     const rest_args: []const []const u8 = args.rest_args;
     const dry_run: bool = args.dry_run;
+    const mock_worker: bool = args.mock_worker;
+
+    // ---- task 3202 mode-conflict gates ---------------------------------------
+    //
+    // `--mock-worker` is a THIRD mode parallel to the M2 stub (default) and the
+    // gated live-agent run. It is mutually exclusive with both `--dry-run` (a
+    // strictly read-only validation pass that exits BEFORE entering run) and
+    // PLANAR_EXECUTE_LIVE_AGENT=1 (the real-cost path). Mixing them is a wiring
+    // error, not a meaningful combined mode: reject loudly with a clear
+    // message so the operator picks one and reruns.
+    if (mock_worker and dry_run) {
+        try ctx.stderr.print(
+            "planar-execute: --mock-worker and --dry-run are mutually exclusive. " ++
+                "--dry-run skips run() entirely; --mock-worker enters run() with a fake spawner. Pick one.\n",
+            .{},
+        );
+        try flushCtx();
+        std.process.exit(1);
+    }
+    if (mock_worker and ctx.environ.getPosix("PLANAR_EXECUTE_LIVE_AGENT") != null) {
+        try ctx.stderr.print(
+            "planar-execute: --mock-worker and PLANAR_EXECUTE_LIVE_AGENT=1 are mutually exclusive. " ++
+                "--mock-worker uses an in-process FakeSpawner (no real `claude -p`); the live gate spawns real workers. Unset PLANAR_EXECUTE_LIVE_AGENT or drop --mock-worker.\n",
+            .{},
+        );
+        try flushCtx();
+        std.process.exit(1);
+    }
 
     // Read the workflow source from disk.
     // Use the arena allocator from the process context. All allocations
@@ -4140,7 +4169,75 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
         l.deinit();
     };
 
-    if (ctx.environ.getPosix("PLANAR_EXECUTE_LIVE_AGENT") != null) {
+    // ---- task 3202: --mock-worker driver attach ------------------------------
+    //
+    // When --mock-worker is set, attach an AgentDriver whose Spawner is the
+    // in-process FakeSpawner promoted from the spawn.zig test surface (not
+    // duplicated — same canonical fake the M5–M9 unit tests use, so the
+    // contract surface stays single-sourced). The fake records every
+    // would-be argv and returns a canned outcome (exit=0, stdout="ok",
+    // stderr=""). No `claude -p` process is started.
+    //
+    // The mock driver is wired in degraded mode (task 3264 style):
+    //   - repo_root = "" → commit-presence sampling skipped (commit_present=false).
+    //   - plan_slug = "" → branch sample skipped.
+    //   - plan_id = args.plan when --plan is given, else 0 (skip live claim read;
+    //     defaultClaimStatusReader returns `.active`).
+    //   - skip_terminal_subprocess = true → harness does NOT shell `planar-agent
+    //     <verb>` on the mock decision.
+    //   - skip_block_subprocess = true   → the M8 max-attempt block path does
+    //     NOT shell `planar-agent block` either.
+    //   - env_builder = null            → FakeSpawner accepts a null env_map
+    //     (records an empty snapshot); the real-spawner panic guard is
+    //     irrelevant because the mock never uses the real spawner.
+    //   - live_binaries_resolved = true → agent() does NOT raise a Lua error
+    //     (no real binaries required in this mode).
+    //
+    // The natural agent() result under the default canned outcome (active claim
+    // + exit 0 + no commit) is `status="released"` — the workflow author writes
+    // their control-flow asserts against that. Per-call scripted outcomes
+    // (`--mock-outcomes <file>`) are deferred (see task 3267, filed below).
+    //
+    // The rest of the M5+ pipeline (scheduler, heartbeat thread, journal,
+    // fan-in) runs UNCHANGED — the FakeSpawner is the only injected difference.
+    // Heartbeats fire against the workflow-supplied claim_token via
+    // realHeartbeatFn (which ignores non-zero exit, so an absent planar-agent
+    // is benign); the journal write is guarded by repo_root+plan_id and
+    // self-skips when --plan is absent.
+    var mock_fake: spawn.FakeSpawnerState = undefined;
+    var mock_fake_init = false;
+    defer if (mock_fake_init) mock_fake.deinit();
+    var mock_driver: AgentDriver = undefined;
+
+    if (mock_worker) {
+        const mock_plan: u64 = if (args.plan > 0) @intCast(args.plan) else 0;
+        mock_fake = spawn.FakeSpawnerState.init(allocator, 0, "ok", "");
+        mock_fake_init = true;
+        mock_driver = .{
+            .spawner = mock_fake.spawner(),
+            .io = ctx.io,
+            .repo_root = "",
+            .plan_slug = "",
+            .plan_id = mock_plan,
+            .env_builder = null,
+            .env_builder_ctx = null,
+            .claim_status_reader = null, // → defaultClaimStatusReader; plan_id==0 → .active
+            .skip_terminal_subprocess = true,
+            .skip_block_subprocess = true,
+            .live_binaries_resolved = true,
+        };
+        host.agent_driver = &mock_driver;
+
+        // MOCK MODE notice on stderr — the operator should never mistake a
+        // mock run for a real one. Distinct, greppable prefix.
+        try ctx.stderr.print(
+            "planar-execute: MOCK MODE — running in --mock-worker mode (no real `claude -p` spawned; agent() calls return canned outcomes from an in-process FakeSpawner)\n",
+            .{},
+        );
+        try flushCtx();
+    }
+
+    if (!mock_worker and ctx.environ.getPosix("PLANAR_EXECUTE_LIVE_AGENT") != null) {
         // --- task 3264: best-effort attachment --------------------------------
         //
         // Driver attachment is now BEST-EFFORT. None of the following
