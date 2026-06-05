@@ -361,6 +361,133 @@ fn revParse(gpa: std.mem.Allocator, arena: std.mem.Allocator, repo: []const u8, 
     return arena.dupe(u8, trimmed) catch @panic("OOM");
 }
 
+// ---------------------------------------------------------------------------
+// M8 resume — idempotent agent() skips an already-done task (plan 492 task 3197).
+//
+// GATED on PLANAR_EXECUTE_LIVE_AGENT (the agent driver is only ATTACHED under
+// the gate — without it `agent()` is the M2 recording stub, which never reaches
+// the resume pre-spawn check). It does NOT spawn claude, though: the resume
+// skip-when-done path short-circuits in `driveAgentCallPreYield` BEFORE the
+// claude spawn. When the workflow's agent() names an already-`done` task, the
+// production driver reads the live task status via `planar task show <id> --json`
+// (the same `state.taskShow` reader M7 block-detection uses), sees `done`, and
+// returns `status="skipped"` WITHOUT claiming, building a worktree, or spawning
+// a worker. So this drives the real binary end-to-end with NO claude credit
+// burned — but it still needs the gate to attach the driver.
+//
+// The todo→spawn half necessarily needs a real worker, so it stays covered by
+// the FakeSpawner unit tests in main.zig + the gated live tests above; this
+// test pins the resume skip-when-done contract through the shipped binary.
+// ---------------------------------------------------------------------------
+test "planar-execute agent() resume — already-done task is SKIPPED, no spawn (gated, task 3197)" {
+    // Gate: the agent driver is only attached when PLANAR_EXECUTE_LIVE_AGENT is
+    // set. The resume skip fires BEFORE any claude spawn, so this burns no
+    // credit, but it still needs the driver attached to reach the check.
+    if (envValue("PLANAR_EXECUTE_LIVE_AGENT") == null) return error.SkipZigTest;
+
+    const gpa = std.testing.allocator;
+
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    // ---- 1. Seed a fixture plan + one task, then mark the task `done`.
+    _ = suite.registerProject("m8resume");
+    suite.addAssoc("m8resume", "project");
+
+    const plan = suite.mustRunJSON(PlanJSON, arena, &.{
+        "plan",      "create",    "--json",                         "--slug",
+        "m8-resume", "--summary", "Plan 492 M8 resume skip target", "M8 resume plan",
+    });
+    const plan_id_str = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch unreachable;
+
+    const task = suite.mustRunJSON(TaskJSON, arena, &.{
+        "task",   "add",          "--json", "--plan",                          plan_id_str,
+        "--slug", "m8-done",      "--body", "already complete in a prior run", "--next-action",
+        "n/a",    "M8 done task",
+    });
+    const task_id_str = std.fmt.allocPrint(arena, "{d}", .{task.id}) catch unreachable;
+
+    // Drive it to `done` via the real CLI (the "prior run completed this" state).
+    {
+        const d = runCmd(gpa, null, &.{
+            envValue("PLANAR_BIN").?, "task", "done", task_id_str,
+        }, &.{
+            .{ .key = "PLANAR_DB", .value = suite.absDbPath() },
+        });
+        defer d.deinit();
+        if (!d.ok()) std.debug.panic("task done failed ({d}): {s}", .{ d.code(), d.stderr });
+    }
+
+    // ---- 2. A workflow whose single agent() call names the done task. The
+    //         driver's pre-spawn status read (`planar task show`) sees `done` and
+    //         short-circuits to skipped — no claude, no claim, no worktree.
+    const resume_lua =
+        \\return {
+        \\  meta = { name = "m8-resume", description = "resume skip", phases = {} },
+        \\  run = function(ctx)
+        \\    local r = ctx.agent("brief that must never reach a worker", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/m8-resume-wt",
+        \\      task_slug = "m8-done",
+        \\      task_id = tonumber(ctx.args[1]),
+        \\    })
+        \\    assert(r.status == "skipped", "expected skipped, got " .. tostring(r.status))
+        \\    assert(r.skip_reason == "already-done", "expected already-done, got " .. tostring(r.skip_reason))
+        \\    ctx.log("resume: agent() skipped done task — status=" .. tostring(r.status) ..
+        \\      " reason=" .. tostring(r.skip_reason))
+        \\  end,
+        \\}
+    ;
+    const repo = suite.freshSystemTmpDir();
+    const resume_path = std.fmt.allocPrint(arena, "{s}/resume.lua", .{repo}) catch unreachable;
+    std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = resume_path, .data = resume_lua }) catch
+        @panic("write resume.lua failed");
+
+    // ---- 3. Run. PLANAR_EXECUTE_LIVE_AGENT=1 attaches the driver; the resume
+    //         skip then fires BEFORE the spawn pipeline (no claude). PATH is
+    //         prepended with the built bin dir so the driver's `planar task show`
+    //         read (and the env-builder's planar-agent/git resolution) resolve to
+    //         the freshly-built binaries against the fixture DB.
+    const old_path = envValue("PATH") orelse "";
+    const new_path = std.fmt.allocPrint(arena, "{s}:{s}", .{ binDir(), old_path }) catch unreachable;
+
+    const run = runCmd(gpa, repo, &.{
+        resolveExecuteBin(), "run", "--plan", plan_id_str, "resume.lua", task_id_str,
+    }, &.{
+        .{ .key = "PLANAR_DB", .value = suite.absDbPath() },
+        .{ .key = "PATH", .value = new_path },
+        .{ .key = "PLANAR_EXECUTE_LIVE_AGENT", .value = "1" },
+    });
+    defer run.deinit();
+
+    if (run.code() != 0) {
+        std.debug.print(
+            "\nm8-resume run exit={d}\n--- stdout ---\n{s}\n--- stderr ---\n{s}\n",
+            .{ run.code(), run.stdout, run.stderr },
+        );
+    }
+    // The workflow's asserts (status==skipped, skip_reason==already-done) ran
+    // inside the binary; a non-zero exit would mean the skip did not fire.
+    try std.testing.expectEqual(@as(u32, 0), run.code());
+
+    // The done task is still `done` (resume did not touch it) and the claim was
+    // never acquired (nothing to release).
+    {
+        const ts = runCmd(gpa, null, &.{
+            envValue("PLANAR_BIN").?, "task", "show", task_id_str, "--json",
+        }, &.{
+            .{ .key = "PLANAR_DB", .value = suite.absDbPath() },
+        });
+        defer ts.deinit();
+        try std.testing.expect(ts.ok());
+        try std.testing.expect(std.mem.indexOf(u8, ts.stdout, "\"status\":\"done\"") != null);
+    }
+}
+
 test "planar-execute parallel() LIVE spawn — 2 concurrent claude workers exercise real waitpid wait-for-any (gated)" {
     // CI / make test-integration: skip silently. PLANAR_EXECUTE_LIVE_AGENT is
     // the opt-in gate; without it this test returns SkipZigTest immediately

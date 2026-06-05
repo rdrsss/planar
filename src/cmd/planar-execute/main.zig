@@ -608,6 +608,17 @@ pub const AgentDriver = struct {
     /// production reader (it reads the task_id arg directly); tests stash a
     /// pointer to their canned status string here.
     task_status_ctx: ?*anyopaque = null,
+
+    /// Reads the PRE-SPAWN live task status for the M8 resume skip (task 3197).
+    /// When null, `readTaskLiveStatus` calls the production reader
+    /// (`defaultTaskLiveStatusReader`, which shells `planar task show <id>
+    /// --json` via `state.taskShow`). Tests inject a fake reader so they can
+    /// simulate "task already done" / "blocked" / "todo" WITHOUT a live
+    /// `planar task show` — mirroring `task_status_reader` above.
+    task_live_status_reader: ?TaskLiveStatusFn = null,
+    /// Opaque context pointer passed to `task_live_status_reader`. Unused by the
+    /// production reader; tests stash a pointer to their canned status here.
+    task_live_status_ctx: ?*anyopaque = null,
 };
 
 /// ClaimStatusFn reads the live claim status for one `agent()` call. Injectable
@@ -634,6 +645,30 @@ pub const TaskStatusFn = *const fn (
     io: std.Io,
     task_id: u64,
 ) bool;
+
+/// TaskLiveStatus classifies the PRE-SPAWN live task status for the M8 resume
+/// path (plan 492 task 3197). Only three buckets matter for the skip decision:
+/// `done` (the task already completed in a prior run → skip the spawn), `blocked`
+/// (set aside by M7 awaiting operator triage → skip, the blocker likely has not
+/// cleared), and `other` (todo / doing / anything else → spawn normally).
+pub const TaskLiveStatus = enum { done, blocked, other };
+
+/// TaskLiveStatusFn reads the PRE-SPAWN live task status for the M8 resume skip
+/// (plan 492 task 3197). Injectable on `AgentDriver` so unit tests can drive the
+/// skip-when-done / skip-when-blocked / spawn-when-todo paths WITHOUT shelling
+/// `planar task show`. The production wiring leaves it null and
+/// `readTaskLiveStatus` falls back to `defaultTaskLiveStatusReader`.
+///
+/// Distinct from `TaskStatusFn` (which is the POST-spawn boolean "is the task
+/// blocked NOW?" used by M7's block detection): this one runs BEFORE the spawn
+/// and must distinguish `done` from `blocked` from everything else so the resume
+/// summary can report done-vs-blocked skips apart.
+pub const TaskLiveStatusFn = *const fn (
+    ctx: ?*anyopaque,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    task_id: u64,
+) TaskLiveStatus;
 
 /// Context for `defaultEnvBuilder` — the production env-builder. Carries the
 /// pre-resolved absolute paths to `planar-agent` and `git`, plus the host
@@ -815,6 +850,31 @@ fn pushAgentResult(
     c.lua_setfield(L, -2, "terminal_verb");
 }
 
+/// pushSkippedResult builds the Lua return table for one `agent()` call that the
+/// M8 resume path SKIPPED without spawning (task 3197):
+///   { status = "skipped", skip_reason = "already-done"|"blocked",
+///     exit_code = 0, commit_present = false, terminal_verb = "none" }
+/// The shape mirrors `pushAgentResult` (so a workflow that inspects `.status` /
+/// `.terminal_verb` reads a skipped call uniformly) but `status` is the DISTINCT
+/// string "skipped" and `skip_reason` distinguishes a done-skip from a
+/// blocked-skip. No claim was acquired, no worktree built, no worker spawned, so
+/// `exit_code`/`commit_present`/`terminal_verb` carry their no-op values.
+fn pushSkippedResult(L: ?*c.lua_State, skip_reason: []const u8) void {
+    c.lua_createtable(L, 0, 5);
+    const status = "skipped";
+    _ = c.lua_pushlstring(L, status.ptr, status.len);
+    c.lua_setfield(L, -2, "status");
+    _ = c.lua_pushlstring(L, skip_reason.ptr, skip_reason.len);
+    c.lua_setfield(L, -2, "skip_reason");
+    c.lua_pushinteger(L, 0);
+    c.lua_setfield(L, -2, "exit_code");
+    c.lua_pushboolean(L, 0);
+    c.lua_setfield(L, -2, "commit_present");
+    const verb_name = "none";
+    _ = c.lua_pushlstring(L, verb_name.ptr, verb_name.len);
+    c.lua_setfield(L, -2, "terminal_verb");
+}
+
 /// AgentCallState is the per-`agent()`-call state threaded ACROSS the coroutine
 /// yield (plan 492 M5 task 3182). The pre-yield half (`driveAgentCallPreYield`)
 /// allocates it, fills the fields the continuation needs, and stashes a pointer
@@ -896,6 +956,18 @@ const AgentCallState = struct {
 ///
 /// The second half (post-spawn HEAD sample, commit-presence, claim read,
 /// terminal-verb decision + run, result table) lives in `agentContinue`.
+///
+/// M8 RESUME (task 3197): before any of that, `agent()` is IDEMPOTENT. On a
+/// re-run (a second `planar-execute run --plan <id>` after an interrupted first
+/// run) each call reads the task's PRE-SPAWN live status (keyed on the threaded
+/// `opts.task_id`). When the task is already `done` (completed in the prior run)
+/// or `blocked` (set aside by M7 awaiting triage), the call SHORT-CIRCUITS to a
+/// synchronous "skipped" result table: NO claim, NO worktree, NO env build, NO
+/// spawn, NO scheduler slot, NO heartbeat/journal entry, NO yield. The workflow's
+/// own control flow then moves on to the next task, so a re-run resumes the
+/// remainder. Resume requires task_id-bearing `agent()` calls — when task_id is
+/// 0 (absent) the status cannot be read and the call falls through to spawning
+/// (today's backward-compatible behavior).
 fn driveAgentCallPreYield(
     L: ?*c.lua_State,
     hs: *HostState,
@@ -903,6 +975,29 @@ fn driveAgentCallPreYield(
     prompt: []const u8,
     opts: AgentCallOpts,
 ) c_int {
+    // M8 RESUME pre-spawn skip (task 3197). Read the live task status FIRST,
+    // before allocating, claiming, building a worktree, or spawning. A `done`
+    // task already completed in a prior run; a `blocked` task was set aside by
+    // M7 (its blocker likely has not cleared — re-driving would just re-block,
+    // wasting a spawn). Either case returns a synchronous "skipped" result with
+    // a DISTINCT reason so the run summary can tell done-skips from
+    // blocked-skips apart. This is a clean synchronous return: nothing was
+    // acquired, so there is nothing to release / tear down / yield on, and no
+    // scheduler slot is consumed.
+    if (opts.task_id != 0) {
+        switch (readTaskLiveStatus(driver, hs.allocator, driver.io, opts.task_id)) {
+            .done => {
+                pushSkippedResult(L, "already-done");
+                return 1;
+            },
+            .blocked => {
+                pushSkippedResult(L, "blocked");
+                return 1;
+            },
+            .other => {}, // todo / doing / etc. → spawn normally (fall through).
+        }
+    }
+
     // Resolve role; unknown roles raise a Lua error (the script author's bug).
     const role = role_model.Role.fromString(opts.role) catch {
         _ = c.luaL_error(L, "agent: unknown role '%s'", opts.role.ptr);
@@ -1358,6 +1453,53 @@ fn defaultTaskStatusReader(
     var parsed = state.taskShow(allocator, io, task_id) catch return false;
     defer parsed.deinit();
     return std.mem.eql(u8, parsed.value.status, "blocked");
+}
+
+/// readTaskLiveStatus returns the PRE-SPAWN live task status for the M8 resume
+/// skip (task 3197). It dispatches to the injected `driver.task_live_status_reader`
+/// (tests) or to `defaultTaskLiveStatusReader` (production, which shells
+/// `planar task show`).
+///
+/// Returns `.other` when `task_id` is 0 (the caller did not thread a task id):
+/// resume is then simply skipped and the normal spawn path applies — resume
+/// REQUIRES task_id-bearing `agent()` calls. Also returns `.other` (spawn) when
+/// the reader is null AND the harness skips the terminal subprocess (the
+/// FakeSpawner unit-test paths that did not opt into a live read): a unit test
+/// that wants the resume skip injects a reader.
+fn readTaskLiveStatus(
+    driver: *AgentDriver,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    task_id: u64,
+) TaskLiveStatus {
+    if (task_id == 0) return .other;
+    if (driver.task_live_status_reader) |read| {
+        return read(driver.task_live_status_ctx, allocator, io, task_id);
+    }
+    // Mirror readTaskStatusBlocked: a unit test that leaves the reader null AND
+    // skips the terminal subprocess never wants a live `planar task show`.
+    if (driver.skip_terminal_subprocess) return .other;
+    return defaultTaskLiveStatusReader(null, allocator, io, task_id);
+}
+
+/// defaultTaskLiveStatusReader is the production `TaskLiveStatusFn`. It shells
+/// `planar task show <task_id> --json` via `state.taskShow` and classifies the
+/// `status` field into `.done` / `.blocked` / `.other`. On any read/parse
+/// failure it returns `.other` — a failed read must NOT spuriously skip a task
+/// (that would silently drop work from the resume run); the conservative default
+/// is "spawn it" and the worker's own claim/terminal ritual is the backstop.
+fn defaultTaskLiveStatusReader(
+    ctx: ?*anyopaque,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    task_id: u64,
+) TaskLiveStatus {
+    _ = ctx;
+    var parsed = state.taskShow(allocator, io, task_id) catch return .other;
+    defer parsed.deinit();
+    if (std.mem.eql(u8, parsed.value.status, "done")) return .done;
+    if (std.mem.eql(u8, parsed.value.status, "blocked")) return .blocked;
+    return .other;
 }
 
 /// readClaimStatusOrActive returns the claim's LIVE status for the terminal-verb
@@ -4795,6 +4937,263 @@ test "M7 summary: printBlockedSummary lists items; quiet when zero (task 3195)" 
         // Partial record reads cleanly (no trailing "blocked by"/reason clause).
         try std.testing.expect(std.mem.indexOf(u8, out, "  - task m5-bar\n") != null);
     }
+}
+
+// ---------------------------------------------------------------------------
+// M8 resume — idempotent agent() pre-spawn skip (task 3197).
+//
+// On a re-run, agent() reads the PRE-SPAWN live task status (keyed on the
+// threaded task_id) and SHORT-CIRCUITS to a "skipped" result when the task is
+// already `done` (or `blocked` — set aside by M7). The skip path acquires no
+// claim, builds no worktree, spawns NO worker, and consumes NO scheduler slot.
+// These tests inject a fake TaskLiveStatusFn so the read is deterministic (no
+// live `planar task show`) and assert the FakeSpawner's start_count to prove
+// the spawn was (or was not) attempted.
+// ---------------------------------------------------------------------------
+
+/// LiveStatusReaderCtx maps a task_id to a canned PRE-SPAWN live status for the
+/// resume tests. `done_ids` / `blocked_ids` enumerate the ids that should report
+/// `.done` / `.blocked`; anything else reports `.other` (→ spawn).
+const LiveStatusReaderCtx = struct {
+    done_ids: []const u64 = &.{},
+    blocked_ids: []const u64 = &.{},
+};
+
+/// fakeTaskLiveStatusReader is an injected TaskLiveStatusFn: it classifies the
+/// queried task_id against the ctx's done/blocked id lists. No subprocess, no
+/// allocation.
+fn fakeTaskLiveStatusReader(
+    ctx: ?*anyopaque,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    task_id: u64,
+) TaskLiveStatus {
+    _ = allocator;
+    _ = io;
+    const rc: *LiveStatusReaderCtx = @ptrCast(@alignCast(ctx.?));
+    for (rc.done_ids) |id| if (id == task_id) return .done;
+    for (rc.blocked_ids) |id| if (id == task_id) return .blocked;
+    return .other;
+}
+
+test "M8 resume: task already done → status=skipped, NO spawn, no slot consumed (task 3197)" {
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    var live_ctx = LiveStatusReaderCtx{ .done_ids = &.{3300} };
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+        .task_live_status_reader = fakeTaskLiveStatusReader,
+        .task_live_status_ctx = &live_ctx,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+
+    const src =
+        \\return {
+        \\  meta = { name = "m8-skip-done", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local r = ctx.agent("the brief", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/abs/wt",
+        \\      claim_token = "tok",
+        \\      task_slug = "m8-done",
+        \\      task_id = 3300,
+        \\    })
+        \\    assert(r.status == "skipped", "expected status=skipped, got " .. tostring(r.status))
+        \\    assert(r.skip_reason == "already-done", "expected skip_reason=already-done, got " .. tostring(r.skip_reason))
+        \\    assert(r.terminal_verb == "none", "skipped call runs no terminal verb, got " .. tostring(r.terminal_verb))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:m8-skip-done", &.{}, &host, &err_buf);
+
+    // No spawn happened: no invocation recorded, start_count stayed 0, and no
+    // worker is left in flight (no slot consumed).
+    try std.testing.expectEqual(@as(usize, 0), fake.invocations.items.len);
+    try std.testing.expectEqual(@as(u32, 0), fake.start_count);
+    try std.testing.expectEqual(@as(u32, 0), fake.live_inflight);
+    // A skipped done-task is NOT a blocked-triage item.
+    try std.testing.expectEqual(@as(usize, 0), host.blocked_items.items.len);
+}
+
+test "M8 resume: task is todo → spawns normally (start_count==1) (task 3197)" {
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    // Empty id lists → every read classifies as .other → spawn.
+    var live_ctx = LiveStatusReaderCtx{};
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+        .task_live_status_reader = fakeTaskLiveStatusReader,
+        .task_live_status_ctx = &live_ctx,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+
+    const src =
+        \\return {
+        \\  meta = { name = "m8-spawn-todo", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local r = ctx.agent("the brief", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/abs/wt",
+        \\      claim_token = "tok",
+        \\      task_slug = "m8-todo",
+        \\      task_id = 3301,
+        \\    })
+        \\    assert(r.status ~= "skipped", "todo task must spawn, got " .. tostring(r.status))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:m8-spawn-todo", &.{}, &host, &err_buf);
+
+    try std.testing.expectEqual(@as(u32, 1), fake.start_count);
+    try std.testing.expectEqual(@as(usize, 1), fake.invocations.items.len);
+}
+
+test "M8 resume: mixed run — only not-done tasks spawn; done ones skip (task 3197)" {
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    // 3310 + 3312 already done; 3311 + 3313 still todo → exactly two spawns.
+    var live_ctx = LiveStatusReaderCtx{ .done_ids = &.{ 3310, 3312 } };
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+        .task_live_status_reader = fakeTaskLiveStatusReader,
+        .task_live_status_ctx = &live_ctx,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+
+    const src =
+        \\return {
+        \\  meta = { name = "m8-mix", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local function mk(tag, id)
+        \\      return function()
+        \\        local r = ctx.agent("b-" .. tag, { role = "coder", worktree_path = "/tmp/" .. tag, claim_token = "t-" .. tag, task_slug = tag, task_id = id })
+        \\        return r.status
+        \\      end
+        \\    end
+        \\    local results = ctx.parallel({ mk("a", 3310), mk("b", 3311), mk("c", 3312), mk("d", 3313) })
+        \\    assert(#results == 4, "len: " .. tostring(#results))
+        \\    assert(results[1] == "skipped", "a done→skipped: " .. tostring(results[1]))
+        \\    assert(results[2] ~= "skipped", "b todo→spawn: " .. tostring(results[2]))
+        \\    assert(results[3] == "skipped", "c done→skipped: " .. tostring(results[3]))
+        \\    assert(results[4] ~= "skipped", "d todo→spawn: " .. tostring(results[4]))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    runModule(src, "test:m8-mix", &.{}, &host, &err_buf) catch |e| {
+        std.debug.print("m8 mix failed: {s}\n", .{std.mem.span(@as([*:0]const u8, @ptrCast(&err_buf)))});
+        return e;
+    };
+
+    // Exactly the two not-done tasks spawned; the two done ones skipped.
+    try std.testing.expectEqual(@as(u32, 2), fake.start_count);
+    try std.testing.expectEqual(@as(usize, 2), fake.invocations.items.len);
+    try std.testing.expectEqual(@as(u32, 0), fake.live_inflight);
+}
+
+test "M8 resume: no task_id → falls through to spawn (backward-compat) (task 3197)" {
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    // A reader that would classify task_id 0 as done IF consulted — but the
+    // task_id==0 guard returns .other BEFORE the reader is called, so the call
+    // spawns. (We never put 0 in done_ids anyway; this asserts the guard.)
+    var live_ctx = LiveStatusReaderCtx{ .done_ids = &.{0} };
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+        .task_live_status_reader = fakeTaskLiveStatusReader,
+        .task_live_status_ctx = &live_ctx,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+
+    const src =
+        \\return {
+        \\  meta = { name = "m8-no-id", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    -- No task_id field → opts.task_id defaults to 0 → resume skip is
+        \\    -- bypassed and the call spawns (today's behavior).
+        \\    local r = ctx.agent("the brief", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/abs/wt",
+        \\      claim_token = "tok",
+        \\      task_slug = "m8-noid",
+        \\    })
+        \\    assert(r.status ~= "skipped", "no task_id must spawn, got " .. tostring(r.status))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:m8-no-id", &.{}, &host, &err_buf);
+
+    try std.testing.expectEqual(@as(u32, 1), fake.start_count);
+}
+
+test "M8 resume: blocked task is SKIPPED with distinct reason, NO spawn (task 3197)" {
+    // Blocked decision: a `blocked` task was set aside by M7 awaiting operator
+    // triage. Its blocker likely has not cleared, so re-driving it on resume
+    // would just re-block — wasting a spawn. We SKIP it (status="skipped") with
+    // skip_reason="blocked" so the operator/summary can tell it apart from a
+    // done-skip. (Safe alternative: re-drive blocked; we chose skip-blocked to
+    // keep resume from churning on awaiting-triage items.)
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    var live_ctx = LiveStatusReaderCtx{ .blocked_ids = &.{3320} };
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+        .task_live_status_reader = fakeTaskLiveStatusReader,
+        .task_live_status_ctx = &live_ctx,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+
+    const src =
+        \\return {
+        \\  meta = { name = "m8-skip-blocked", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local r = ctx.agent("the brief", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/abs/wt",
+        \\      claim_token = "tok",
+        \\      task_slug = "m8-blocked",
+        \\      task_id = 3320,
+        \\    })
+        \\    assert(r.status == "skipped", "blocked task skipped, got " .. tostring(r.status))
+        \\    assert(r.skip_reason == "blocked", "expected skip_reason=blocked, got " .. tostring(r.skip_reason))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:m8-skip-blocked", &.{}, &host, &err_buf);
+
+    // No spawn for a skipped blocked task; and the PRE-spawn skip does NOT add a
+    // blocked-triage item (that is M7's POST-spawn detection, not resume).
+    try std.testing.expectEqual(@as(u32, 0), fake.start_count);
+    try std.testing.expectEqual(@as(usize, 0), host.blocked_items.items.len);
 }
 
 // ---------------------------------------------------------------------------
