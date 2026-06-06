@@ -2,7 +2,7 @@
 //!
 //! Fifth binary in the Planar family. Unlike the other binaries, this one
 //! does NOT open SQLite and does NOT link the runtime / engine / db modules.
-//! Its sole dependency beyond the standard library is liblua54 (vendored
+//! Its sole dependency beyond the standard library is liblua55 (vendored
 //! under vendor/lua/) and the cli module (etc-cli, for argument parsing).
 //!
 //! M1 scope:
@@ -108,7 +108,7 @@ pub const spawn = @import("spawn.zig");
 /// Imported here so its `test` blocks run under the `execute_exe_tests` target.
 pub const terminal = @import("terminal.zig");
 
-/// lua — the single shared `@cImport` of the vendored Lua 5.4 C API. Both this
+/// lua — the single shared `@cImport` of the vendored Lua 5.5 C API. Both this
 /// module and `scheduler.zig` use it so `*c.lua_State` is the SAME type across
 /// the coroutine-drive boundary (a fresh `@cImport` per module would make them
 /// distinct). See lua.zig.
