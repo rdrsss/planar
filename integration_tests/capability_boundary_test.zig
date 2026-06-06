@@ -1,6 +1,6 @@
 //! integration_tests/capability_boundary_test.zig — plan 85 M7 closeout.
 //!
-//! Locks the capability invariants of the three-binary architecture as
+//! Locks the capability invariants of the five-binary architecture as
 //! integration tests. The capability boundary is the binary's verb set,
 //! not runtime ACLs; future changes that add a write verb to
 //! planar-watch or a planning-entity verb to planar-agent will fail
@@ -29,6 +29,18 @@
 //!     the SQLite-driver-level rejection of write SQL through the
 //!     read-only handle (M8 invariant); this integration-level check
 //!     covers the binary-as-a-whole.
+//!
+//!   - planar-execute verb-set audit (t#3204 / m10-capability-registration).
+//!     Asserts EXACTLY the 3 verbs: run, version, doctor.
+//!     AND contains NONE of the planning-entity verbs (plan, task,
+//!     decision, question, scenario, artifact, etc.) — planar-execute
+//!     is a pure CLI driver that holds no DB handle.
+//!
+//! Known follow-up: planar-doc capability lock is NOT yet in this file.
+//! planar-doc (build/verify/diff/cover/nodoc/lint/schema) has been a
+//! family binary since plan 85 but its verb-set has not been formally
+//! locked here. File a follow-up task to add a planar-doc verb-set
+//! audit test that mirrors the planar-execute pattern below.
 //!
 //! These tests are the SECURITY contract — a vendor hook configured
 //! with only planar-agent on PATH cannot touch planning state; a
@@ -68,6 +80,21 @@ fn resolveWatchBin() []const u8 {
     }
     @panic(
         \\PLANAR_WATCH_BIN is not set.
+        \\Run integration tests via: make test-integration (which sets it).
+    );
+}
+
+fn resolveExecuteBin() []const u8 {
+    const raw: [*:null]?[*:0]u8 = std.c.environ;
+    var i: usize = 0;
+    while (raw[i]) |entry| : (i += 1) {
+        const s: []const u8 = std.mem.span(entry);
+        if (std.mem.startsWith(u8, s, "PLANAR_EXECUTE_BIN=")) {
+            return s["PLANAR_EXECUTE_BIN=".len..];
+        }
+    }
+    @panic(
+        \\PLANAR_EXECUTE_BIN is not set.
         \\Run integration tests via: make test-integration (which sets it).
     );
 }
@@ -433,6 +460,55 @@ test "planar-watch verbs do not mutate any DB row (binary-level read-only)" {
         );
         return error.TasksTableMutated;
     }
+}
+
+// =========================================================================
+// t#3204 — planar-execute capability boundary (plan 492 M10).
+// =========================================================================
+//
+// planar-execute is a pure CLI driver (Lua-driven workflow harness). It
+// holds NO DB handle and MUST NOT expose any planning-entity verbs.
+//
+// Expected verb set: EXACTLY {run, version, doctor}.
+//
+// Forbidden set: every planning-entity verb that `planar` owns, and every
+// agent-coordination verb that `planar-agent` owns. If a future change
+// accidentally registers a planning or agent verb on planar-execute,
+// this test fails immediately.
+
+test "planar-execute verb set is EXACTLY {run, version, doctor}" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const res = runBin(&suite, resolveExecuteBin(), &.{"--help"});
+    defer res.deinit(gpa);
+    try std.testing.expect(res.term == .exited);
+    try std.testing.expectEqual(@as(u32, 0), res.term.exited);
+
+    var verbs = parseHelpVerbs(gpa, res.stdout);
+    defer freeVerbSet(gpa, &verbs);
+
+    try assertExactSet(&verbs, &.{
+        "run",
+        "version",
+        "doctor",
+    }, "planar-execute");
+
+    // Forbidden: planning-entity verbs.
+    try assertContainsNone(&verbs, &.{
+        "plan",     "task",      "decision",  "question",  "scenario",
+        "artifact", "annotate",  "init",      "workbench", "doc",
+        "spec",     "templates", "ext",       "sync",      "promote",
+        "demote",   "capture",   "dashboard", "tree",      "health",
+    }, "planar-execute");
+
+    // Forbidden: agent-coordination verbs.
+    try assertContainsNone(&verbs, &.{
+        "pull",      "peek",    "claim", "heartbeat", "complete",
+        "fail",      "release", "block", "action",    "ingest",
+        "reconcile", "abort",
+    }, "planar-execute");
 }
 
 // =========================================================================
