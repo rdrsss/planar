@@ -27,6 +27,11 @@
 //!      cleanly (in-flight workers released, recoverable on the next resume) —
 //!      it is NOT a crash.
 //!
+//! The per-worker USD cost cap remains intentionally DEFERRED / optional: it
+//! requires parsing `total_cost_usd` from the worker's stream-json telemetry,
+//! while the current 3190 plumbing treats stdout as liveness-only and keeps
+//! task outcomes DB-sourced.
+//!
 //! ## Resume respects prior attempts — load-bearing
 //!
 //! The per-task fail-count comes from the PERSISTENT journal file, NOT an

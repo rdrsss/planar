@@ -189,6 +189,9 @@ pub const SpawnInputs = struct {
 /// claude
 ///   --print
 ///   --permission-mode bypassPermissions   (decision 365)
+///   --output-format stream-json           (task 3190 — liveness telemetry)
+///   --verbose                             (required by claude for stream-json
+///                                          in --print mode)
 ///   --model <tier>                         (per-role, from role_model)
 ///   --add-dir <worktree_path>              (allow edits inside the worktree)
 ///   --append-system-prompt <role_spec>     (role injection; only when non-empty)
@@ -199,6 +202,17 @@ pub const SpawnInputs = struct {
 /// ~10 KB which fits comfortably in ARG_MAX). When `role_spec` is empty, the
 /// `--append-system-prompt` flag is OMITTED rather than passed with an empty
 /// value, to avoid a no-op system-prompt extension.
+///
+/// ### `--output-format stream-json` (task 3190 — stall detection foundation)
+///
+/// The worker emits its activity as a newline-delimited JSON event stream on
+/// stdout. The harness reads this stream PURELY as a LIVENESS SIGNAL: the gap
+/// between successive events is what the optional stall detector
+/// (`PLANAR_EXECUTE_STALL_SECS`) measures. The DB remains the SOLE source of
+/// truth for OUTCOMES (claim/task status); stdout is NEVER parsed to derive
+/// complete/fail/block. `claude --print` requires `--verbose` to be set when
+/// `--output-format stream-json` is requested, so both flags are emitted
+/// together as an inseparable pair.
 pub fn buildSpawnArgv(
     allocator: std.mem.Allocator,
     inputs: SpawnInputs,
@@ -209,10 +223,11 @@ pub fn buildSpawnArgv(
 
     const tier = role_model.modelForRole(inputs.role);
 
-    // Compute the argv length. The base shape is 8 elements; the
-    // `--append-system-prompt <spec>` pair (2 elements) is added when
-    // role_spec is non-empty.
-    const base: usize = 8;
+    // Compute the argv length. The base shape is 11 elements (the 8-element
+    // pre-3190 shape + the `--output-format stream-json --verbose` 3-element
+    // liveness-telemetry block); the `--append-system-prompt <spec>` pair (2
+    // elements) is added when role_spec is non-empty.
+    const base: usize = 11;
     const extra: usize = if (inputs.role_spec.len > 0) 2 else 0;
 
     var argv = allocator.alloc([]const u8, base + extra) catch return SpawnError.OutOfMemory;
@@ -226,6 +241,14 @@ pub fn buildSpawnArgv(
     argv[i] = "--permission-mode";
     i += 1;
     argv[i] = "bypassPermissions";
+    i += 1;
+    // Liveness-telemetry block (task 3190): the stream-json event gap is the
+    // stall signal. `--verbose` is mandatory alongside stream-json in --print.
+    argv[i] = "--output-format";
+    i += 1;
+    argv[i] = "stream-json";
+    i += 1;
+    argv[i] = "--verbose";
     i += 1;
     argv[i] = "--model";
     i += 1;
@@ -322,6 +345,25 @@ pub const Spawner = struct {
         handle: *Handle,
     ) void,
 
+    /// Non-blocking incremental stdout-event drain (plan 499 task 3190 — stall
+    /// detection). Reads whatever bytes are CURRENTLY AVAILABLE on the in-flight
+    /// worker's stdout WITHOUT blocking, and returns the number of NEWLY-COMPLETED
+    /// newline-delimited events (`--output-format stream-json` lines) observed
+    /// since the last drain. A partial trailing line is BUFFERED on the handle and
+    /// NOT counted until its terminating newline arrives, so a half-written event
+    /// never registers as liveness. Returns 0 when no complete event arrived (the
+    /// stall case the detector watches for). This is LIVENESS TELEMETRY ONLY: the
+    /// drained bytes are discarded after counting; outcomes still come from the DB.
+    /// Infallible at the contract boundary — a read error (e.g. EOF as the child
+    /// exits) is treated as "no new events this round" (0); the poll path detects
+    /// the actual exit. A no-op (returns 0) when the handle has no live stdout
+    /// pipe (FakeHandle drives its own scripted event sequence instead).
+    drainEventsFn: *const fn (
+        ctx: ?*anyopaque,
+        io: Io,
+        handle: *Handle,
+    ) u32,
+
     /// Drives the spawn (BLOCKING). Thin wrapper that just dispatches through
     /// `runFn`.
     pub fn run(
@@ -368,6 +410,13 @@ pub const Spawner = struct {
     pub fn kill(self: Spawner, io: Io, handle: *Handle) void {
         return self.killFn(self.ctx, io, handle);
     }
+
+    /// Non-blocking incremental stdout-event drain (task 3190). Returns the count
+    /// of newly-completed newline-delimited events on the worker's stdout. See
+    /// `drainEventsFn`.
+    pub fn drainEvents(self: Spawner, io: Io, handle: *Handle) u32 {
+        return self.drainEventsFn(self.ctx, io, handle);
+    }
 };
 
 /// Handle is an in-flight worker — the result of `Spawner.start`. It carries the
@@ -389,9 +438,33 @@ pub const Handle = union(enum) {
 /// RealHandle is the live-child state for an in-flight RealSpawner worker.
 pub const RealHandle = struct {
     /// The spawned child process. stdin has already been written + closed at
-    /// start() time; stdout/stderr are drained at poll/wait time.
+    /// start() time; stderr is drained at poll/wait time, and stdout is drained
+    /// INCREMENTALLY (non-blocking) during flight for stall detection (task
+    /// 3190) AND finally at poll/wait time.
     child: std.process.Child,
+    /// Whether `drainEvents` has switched the stdout pipe fd to non-blocking
+    /// mode (`O_NONBLOCK`). Done lazily on the first drain so `start` stays
+    /// allocation-free and POSIX-only concerns are confined to the drain path.
+    /// Once set, incremental reads return immediately when no data is available.
+    stdout_nonblock: bool = false,
+    /// Count of bytes currently held in `partial_line` (a stdout tail with no
+    /// terminating newline yet). A partial line is NOT counted as an event until
+    /// its newline arrives, so a half-written stream-json line never registers as
+    /// spurious liveness. Bounded by `PARTIAL_LINE_CAP`; on overflow the buffer is
+    /// reset (a single pathological line cannot grow memory unboundedly — and a
+    /// genuinely-emitting worker is still alive regardless).
+    partial_len: usize = 0,
+    /// The carried-over partial stdout line (no trailing newline). Fixed-capacity
+    /// inline storage so `drainEvents` needs no allocator on the hot path.
+    partial_line: [PARTIAL_LINE_CAP]u8 = undefined,
 };
+
+/// PARTIAL_LINE_CAP bounds the carried-over partial-line buffer in `drainEvents`.
+/// A stream-json event line that exceeds this is truncated for COUNTING purposes
+/// only (we still register the newline that eventually terminates it as an
+/// event); the worker's actual stdout is fully captured at terminal via
+/// `drainPipe`. 64 KiB comfortably holds a single JSON event line.
+pub const PARTIAL_LINE_CAP: usize = 64 * 1024;
 
 /// FakeHandle is the in-flight state for a FakeSpawner worker. It models an
 /// async transition: `poll_remaining` non-blocking probes report "still
@@ -414,6 +487,16 @@ pub const FakeHandle = struct {
     /// timeout calling `kill`. This is what lets a unit test model a hang
     /// deterministically without a real long-running subprocess.
     hung: bool = false,
+    /// Scripted per-`drainEvents`-call event counts (plan 499 task 3190 — stall
+    /// detection). Consumed front-to-back: the i-th `drainEvents` call returns
+    /// `event_script[i]` (events observed that round), then advances the cursor.
+    /// Past the end it returns 0 (the worker has gone SILENT — exactly the stall
+    /// case the detector watches for). Borrowed slice; empty ⇒ the worker never
+    /// emits an event (immediate silence). Lets a unit test model "emits for a
+    /// while then goes silent" deterministically against the injectable clock.
+    event_script: []const u32 = &.{},
+    /// Cursor into `event_script` (which round of `drainEvents` we are on).
+    event_cursor: usize = 0,
 };
 
 // ---------------------------------------------------------------------------
@@ -697,6 +780,98 @@ fn realKillFn(ctx: ?*anyopaque, io: Io, handle: *Handle) void {
     handle.real.child.kill(io);
 }
 
+/// realDrainEventsFn is the non-blocking incremental stdout-event drain for a
+/// live worker (plan 499 task 3190). It reads whatever bytes are CURRENTLY
+/// available on the child's stdout pipe WITHOUT blocking and returns the number
+/// of newly-completed newline-delimited events (stream-json lines) observed.
+///
+/// Mechanism (POSIX): on the first call it flips the stdout pipe fd to
+/// `O_NONBLOCK` so subsequent `read`s return `EAGAIN` (treated as "nothing
+/// available right now" → 0 new events) instead of blocking the cooperative
+/// scheduler. Each call drains in a loop until the fd would block, counting
+/// `\n` bytes. A trailing partial line (no newline) is carried in the handle's
+/// `partial_line` buffer and only counted when its newline arrives on a later
+/// drain, so a half-written event never registers as spurious liveness.
+///
+/// LIVENESS TELEMETRY ONLY: the bytes are discarded after counting — outcomes
+/// come from the DB. On Windows (no non-blocking peek wired) this returns 0
+/// every round; the wall-clock timeout remains the always-on bound there.
+fn realDrainEventsFn(ctx: ?*anyopaque, io: Io, handle: *Handle) u32 {
+    _ = ctx;
+    _ = io;
+    if (builtin.os.tag == .windows) return 0;
+
+    const rh = &handle.real;
+    const file = rh.child.stdout orelse return 0;
+    const fd = file.handle;
+
+    // Lazily switch the fd to non-blocking on first drain.
+    if (!rh.stdout_nonblock) {
+        const flags_rc = posix.system.fcntl(fd, posix.F.GETFL, @as(usize, 0));
+        const flags: usize = switch (posix.errno(flags_rc)) {
+            .SUCCESS => @intCast(flags_rc),
+            else => return 0,
+        };
+        // O_NONBLOCK is a status flag; OR it in.
+        const nonblock_bit: usize = @as(usize, 1) << @bitOffsetOf(posix.O, "NONBLOCK");
+        switch (posix.errno(posix.system.fcntl(fd, posix.F.SETFL, flags | nonblock_bit))) {
+            .SUCCESS => {},
+            else => return 0,
+        }
+        rh.stdout_nonblock = true;
+    }
+
+    var events: u32 = 0;
+    var read_buf: [4096]u8 = undefined;
+    while (true) {
+        const n = posix.read(fd, &read_buf) catch |err| switch (err) {
+            // No data available right now — the worker is between events (or
+            // silent). Stop draining this round.
+            error.WouldBlock => break,
+            // Any other read error (incl. EOF-adjacent conditions as the child
+            // exits) → treat as no-new-events; the poll path detects the exit.
+            else => break,
+        };
+        if (n == 0) break; // EOF: child closed stdout (exiting). poll() reaps it.
+        events += countEventsAndBufferTail(rh, read_buf[0..n]);
+    }
+    return events;
+}
+
+/// countEventsAndBufferTail counts complete newline-delimited events in `chunk`,
+/// accounting for the partial line carried over from a prior drain. A leading
+/// run that completes the carried partial (the first `\n` in `chunk`) counts the
+/// carried line as one event. The final unterminated tail of `chunk` is stashed
+/// back into `rh.partial_line` for the next drain. Returns the number of complete
+/// events observed in this chunk.
+fn countEventsAndBufferTail(rh: *RealHandle, chunk: []const u8) u32 {
+    var events: u32 = 0;
+    var rest = chunk;
+    while (std.mem.indexOfScalar(u8, rest, '\n')) |nl| {
+        // A newline completes a line: either the carried partial (if any) plus
+        // this segment, or a self-contained segment. Either way it is ONE event.
+        events += 1;
+        rh.partial_len = 0; // the completed line is consumed; reset the tail.
+        rest = rest[nl + 1 ..];
+    }
+    // Whatever remains after the last newline is a new partial tail. Buffer up to
+    // the cap; on overflow drop the excess (it still terminates as an event when
+    // its newline eventually arrives — counting is approximate by design).
+    if (rest.len > 0) {
+        const room = PARTIAL_LINE_CAP - rh.partial_len;
+        const take = @min(room, rest.len);
+        if (take > 0) {
+            @memcpy(rh.partial_line[rh.partial_len .. rh.partial_len + take], rest[0..take]);
+            rh.partial_len += take;
+        } else {
+            // Buffer full with no newline: reset to bound memory; the eventual
+            // newline still registers the (over-long) line as an event.
+            rh.partial_len = 0;
+        }
+    }
+    return events;
+}
+
 /// Returns a Spawner backed by the real `claude --print ...` subprocess. Use
 /// for actual end-to-end runs (the LIVE-COST path). Tests should use
 /// `fakeSpawner` instead.
@@ -708,6 +883,7 @@ pub fn realSpawner() Spawner {
         .pollFn = realPollFn,
         .waitFn = realWaitFn,
         .killFn = realKillFn,
+        .drainEventsFn = realDrainEventsFn,
     };
 }
 
@@ -842,6 +1018,17 @@ pub const FakeSpawnerState = struct {
     /// 3188). A test asserts a hung worker that times out had `kill` invoked,
     /// and a normally-completing worker did NOT.
     kill_count: u32 = 0,
+    /// Number of times `drainEvents` was called (plan 499 task 3190). Lets a
+    /// stall test assert the scheduler actually drained the worker's stdout each
+    /// poll round.
+    drain_count: u32 = 0,
+    /// Per-start scripted stdout-event sequences (plan 499 task 3190). When the
+    /// i-th `start` finds `event_scripts[i]` present, its handle drains those
+    /// counts in order (round j returns `event_scripts[i][j]` events) before
+    /// going silent (0). Borrowed slice-of-slices; a start beyond its length (or
+    /// an empty inner slice) models a worker that is silent from the outset. Lets
+    /// a test model "emits steadily" vs "emits then goes silent" deterministically.
+    event_scripts: []const []const u32 = &.{},
     /// The ids of the workers `kill` was called on (task 3188). Lets a test
     /// assert WHICH worker was killed when several are in flight. Fixed-capacity
     /// (bounded by MAX_SLOTS in practice); growth past it is a test bug.
@@ -927,6 +1114,7 @@ pub const FakeSpawnerState = struct {
             .pollFn = fakePollFn,
             .waitFn = fakeWaitFn,
             .killFn = fakeKillFn,
+            .drainEventsFn = fakeDrainEventsFn,
         };
     }
 
@@ -1064,11 +1252,20 @@ fn fakeStartFn(
     else
         false;
 
+    // Per-start stdout-event script (task 3190): the i-th start drains this
+    // sequence of per-round event counts before going silent. Absent ⇒ empty
+    // (silent from the outset).
+    const ev_script: []const u32 = if (start_index < state.event_scripts.len)
+        state.event_scripts[start_index]
+    else
+        &.{};
+
     return .{ .fake = .{
         .state = state,
         .poll_remaining = poll_remaining,
         .id = start_index,
         .hung = is_hung,
+        .event_script = ev_script,
     } };
 }
 
@@ -1177,6 +1374,24 @@ fn fakeKillFn(ctx: ?*anyopaque, io: Io, handle: *Handle) void {
     removeLiveWorker(state, handle.fake.id);
 }
 
+/// fakeDrainEventsFn is the FakeSpawner stdout-event drain (plan 499 task 3190).
+/// It returns the next scripted per-round event count from the handle's
+/// `event_script`, advancing the cursor; past the script's end it returns 0 (the
+/// worker has gone SILENT — the stall case). A hung worker with no script is
+/// silent from the first drain. Records the drain count for test assertions.
+fn fakeDrainEventsFn(ctx: ?*anyopaque, io: Io, handle: *Handle) u32 {
+    _ = io;
+    const state: *FakeSpawnerState = @ptrCast(@alignCast(ctx.?));
+    state.drain_count += 1;
+    const fh = &handle.fake;
+    if (fh.event_cursor < fh.event_script.len) {
+        const n = fh.event_script[fh.event_cursor];
+        fh.event_cursor += 1;
+        return n;
+    }
+    return 0; // silent past the script.
+}
+
 /// fakeRunFn is the runFn for FakeSpawner. It builds the argv via
 /// `buildSpawnArgv`, dupes it onto the state's allocator, records the
 /// invocation, and returns a duped copy of the canned outcome.
@@ -1213,18 +1428,23 @@ test "spawn: buildSpawnArgv emits exact shape for coder role (task 3176)" {
     const argv = try buildSpawnArgv(alloc, inputs);
     defer freeSpawnArgv(alloc, argv);
 
-    // Exact shape: 10 elements, in this precise order.
-    try testing.expectEqual(@as(usize, 10), argv.len);
+    // Exact shape: 13 elements, in this precise order (11-element base shape +
+    // the --append-system-prompt pair). The 3-element stream-json liveness block
+    // sits between bypassPermissions and --model (task 3190).
+    try testing.expectEqual(@as(usize, 13), argv.len);
     try testing.expectEqualStrings("claude", argv[0]);
     try testing.expectEqualStrings("--print", argv[1]);
     try testing.expectEqualStrings("--permission-mode", argv[2]);
     try testing.expectEqualStrings("bypassPermissions", argv[3]); // decision 365
-    try testing.expectEqualStrings("--model", argv[4]);
-    try testing.expectEqualStrings(role_model.OPUS_TIER, argv[5]); // coder → opus
-    try testing.expectEqualStrings("--add-dir", argv[6]);
-    try testing.expectEqualStrings("/tmp/wt/cycle/plan-x/task-y", argv[7]);
-    try testing.expectEqualStrings("--append-system-prompt", argv[8]);
-    try testing.expectEqualStrings("you are a coder", argv[9]);
+    try testing.expectEqualStrings("--output-format", argv[4]); // task 3190
+    try testing.expectEqualStrings("stream-json", argv[5]);
+    try testing.expectEqualStrings("--verbose", argv[6]);
+    try testing.expectEqualStrings("--model", argv[7]);
+    try testing.expectEqualStrings(role_model.OPUS_TIER, argv[8]); // coder → opus
+    try testing.expectEqualStrings("--add-dir", argv[9]);
+    try testing.expectEqualStrings("/tmp/wt/cycle/plan-x/task-y", argv[10]);
+    try testing.expectEqualStrings("--append-system-prompt", argv[11]);
+    try testing.expectEqualStrings("you are a coder", argv[12]);
 }
 
 test "spawn: buildSpawnArgv uses sonnet tier for documenter/test-coder (task 3176)" {
@@ -1238,7 +1458,7 @@ test "spawn: buildSpawnArgv uses sonnet tier for documenter/test-coder (task 317
             .env_map = null,
         });
         defer freeSpawnArgv(alloc, argv);
-        try testing.expectEqualStrings(role_model.SONNET_TIER, argv[5]);
+        try testing.expectEqualStrings(role_model.SONNET_TIER, argv[8]);
     }
 }
 
@@ -1253,10 +1473,12 @@ test "spawn: buildSpawnArgv omits --append-system-prompt when role_spec is empty
     });
     defer freeSpawnArgv(alloc, argv);
 
-    try testing.expectEqual(@as(usize, 8), argv.len);
-    // Last pair is --add-dir <wt>; no --append-system-prompt trailing.
-    try testing.expectEqualStrings("--add-dir", argv[6]);
-    try testing.expectEqualStrings("/tmp/wt", argv[7]);
+    try testing.expectEqual(@as(usize, 11), argv.len);
+    // Last pair is --add-dir <wt>; no --append-system-prompt trailing. The
+    // stream-json liveness block (task 3190) sits earlier in the argv.
+    try testing.expectEqualStrings("stream-json", argv[5]);
+    try testing.expectEqualStrings("--add-dir", argv[9]);
+    try testing.expectEqualStrings("/tmp/wt", argv[10]);
 }
 
 test "spawn: buildSpawnArgv rejects empty / relative / NUL paths" {
@@ -1311,10 +1533,10 @@ test "spawn: FakeSpawner records argv + brief and returns canned outcome" {
     try testing.expectEqual(role_model.Role.coder, inv.role);
     try testing.expectEqualStrings("/tmp/wt/cycle/plan-1/task-2", inv.worktree_path);
     try testing.expectEqualStrings("BRIEF BODY", inv.brief);
-    try testing.expectEqual(@as(usize, 10), inv.argv.len);
+    try testing.expectEqual(@as(usize, 13), inv.argv.len);
     try testing.expectEqualStrings("claude", inv.argv[0]);
     try testing.expectEqualStrings("bypassPermissions", inv.argv[3]);
-    try testing.expectEqualStrings("ROLE SPEC", inv.argv[9]);
+    try testing.expectEqualStrings("ROLE SPEC", inv.argv[12]);
 }
 
 test "spawn: FakeSpawner records multiple invocations in order" {
@@ -1368,6 +1590,7 @@ test "spawn: realSpawner is constructible and exposes the right surface" {
     try testing.expect(@intFromPtr(s.pollFn) != 0);
     try testing.expect(@intFromPtr(s.waitFn) != 0);
     try testing.expect(@intFromPtr(s.killFn) != 0);
+    try testing.expect(@intFromPtr(s.drainEventsFn) != 0);
 }
 
 test "spawn: FakeSpawner async surface — start records, wait returns canned outcome (task 3182)" {
@@ -1401,7 +1624,7 @@ test "spawn: FakeSpawner async surface — start records, wait returns canned ou
     // The recorded invocation matches the blocking path's shape.
     const inv = fake.invocations.items[0];
     try testing.expectEqualStrings("ASYNC BRIEF", inv.brief);
-    try testing.expectEqualStrings("ROLE SPEC", inv.argv[9]);
+    try testing.expectEqualStrings("ROLE SPEC", inv.argv[12]);
 }
 
 test "spawn: FakeSpawner poll reports still-running then terminal (task 3182)" {
@@ -1552,4 +1775,54 @@ test "spawn: SpawnInputs.env_map = null + FakeSpawner records an empty env snaps
 
     try testing.expectEqual(@as(usize, 1), fake.invocations.items.len);
     try testing.expectEqual(@as(usize, 0), fake.invocations.items[0].env_pairs.len);
+}
+
+// ---------------------------------------------------------------------------
+// Stall-detection drain unit tests (plan 499 task 3190).
+// ---------------------------------------------------------------------------
+
+test "spawn: countEventsAndBufferTail counts whole lines and buffers a partial tail (task 3190)" {
+    var rh = RealHandle{ .child = undefined };
+
+    // Two complete lines + a partial tail in one chunk.
+    try testing.expectEqual(@as(u32, 2), countEventsAndBufferTail(&rh, "ev1\nev2\npart"));
+    try testing.expectEqual(@as(usize, 4), rh.partial_len); // "part" buffered, uncounted.
+
+    // The partial completes on the next chunk → exactly one more event.
+    try testing.expectEqual(@as(u32, 1), countEventsAndBufferTail(&rh, "ial\n"));
+    try testing.expectEqual(@as(usize, 0), rh.partial_len);
+
+    // A chunk with NO newline registers zero events (still a partial).
+    try testing.expectEqual(@as(u32, 0), countEventsAndBufferTail(&rh, "no-newline-yet"));
+    try testing.expectEqual(@as(u32, 0), countEventsAndBufferTail(&rh, "-more"));
+    // ...until its newline arrives.
+    try testing.expectEqual(@as(u32, 1), countEventsAndBufferTail(&rh, "\n"));
+}
+
+test "spawn: FakeSpawner drainEvents replays the scripted sequence then goes silent (task 3190)" {
+    const alloc = testing.allocator;
+    var fake = FakeSpawnerState.init(alloc, 0, "", "");
+    defer fake.deinit();
+    // One worker that emits 2 then 1 events, then is silent forever.
+    const script = [_][]const u32{&[_]u32{ 2, 1 }};
+    fake.event_scripts = &script;
+    const spawner = fake.spawner();
+
+    var handle = try spawner.start(alloc, std.testing.io, .{
+        .role = .coder,
+        .worktree_path = "/tmp/wt",
+        .brief = "B",
+        .role_spec = "",
+        .env_map = null,
+    });
+    // Replay: 2, 1, then 0 (silent) on every subsequent drain.
+    try testing.expectEqual(@as(u32, 2), spawner.drainEvents(std.testing.io, &handle));
+    try testing.expectEqual(@as(u32, 1), spawner.drainEvents(std.testing.io, &handle));
+    try testing.expectEqual(@as(u32, 0), spawner.drainEvents(std.testing.io, &handle));
+    try testing.expectEqual(@as(u32, 0), spawner.drainEvents(std.testing.io, &handle));
+    try testing.expectEqual(@as(u32, 4), fake.drain_count);
+
+    // Drain the handle so nothing leaks.
+    var out = try spawner.wait(alloc, std.testing.io, &handle);
+    out.deinit(alloc);
 }

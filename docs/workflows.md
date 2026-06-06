@@ -2387,6 +2387,8 @@ Set `PLANAR_EXECUTE_LIVE_AGENT=1` and provide `--plan`. The harness spawns real 
 PLANAR_EXECUTE_LIVE_AGENT=1 planar-execute run --plan 42 my-workflow.lua 42
 ```
 
+To reclaim workers that are alive but no longer producing `stream-json` events, also set `PLANAR_EXECUTE_STALL_SECS=<seconds>`; the hard per-worker wall-clock timeout still applies when the stall detector is unset.
+
 **Prerequisites for a live run:**
 
 1. `claude` is on `$PATH` (or the vendor binary your harness targets).

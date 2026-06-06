@@ -450,6 +450,11 @@ pub const HostState = struct {
     timeout_clock_fn: ?scheduler.ClockFn = null,
     timeout_clock_ctx: ?*anyopaque = null,
     timeout_max_wall_clock_ns: ?i128 = null,
+    /// Optional stream-json event-gap stall detector (task 3190). Production
+    /// reads this from PLANAR_EXECUTE_STALL_SECS in handleRun; tests may inject
+    /// it directly. Null/zero means disabled, preserving hard-timeout-only
+    /// behavior.
+    timeout_stall_ns: ?i128 = null,
 
     // M8 budgets + ceilings — the hard kill-switch (task 3198).
     //
@@ -1497,12 +1502,14 @@ fn agentContinue(L: ?*c.lua_State, status: c_int, ctx: c.lua_KContext) callconv(
     // not the harness's terminal-verb bookkeeping (task 3196 journal).
     const terminal_mono_ns: i128 = sched.clockNow();
 
-    // Did the wall-clock timeout fire on this worker (task 3188)? Read it from
-    // the slot BEFORE the deferred releaseSlot clears it. A timed-out worker was
-    // already killed by the scheduler; the continuation now runs the reclaim
-    // path (force `fail` + worktree teardown + `status = "timed-out"`) instead
-    // of the normal terminal-verb decision matrix.
+    // Did a liveness timeout fire on this worker (task 3188 wall-clock or task
+    // 3190 stall)? Read it from the slot BEFORE the deferred releaseSlot clears
+    // it. A timed-out worker was already killed by the scheduler; the
+    // continuation now runs the reclaim path (force `fail` + worktree teardown +
+    // `status = "timed-out"`) instead of the normal terminal-verb decision
+    // matrix.
     const timed_out = slot.timed_out;
+    const timed_out_reason = slot.timed_out_reason;
     // Free the call state + release the slot when we leave (the result table is
     // already on the Lua stack by then; nothing below borrows acs after this).
     // First unregister the claim from the heartbeat thread (task 3187): the
@@ -1579,6 +1586,9 @@ fn agentContinue(L: ?*c.lua_State, status: c_int, ctx: c.lua_KContext) callconv(
         // per spawn — this is the timed-out worker's record.
         writeJournalRecord(acs, "timed-out", outcome.exit_code, terminal_mono_ns);
         pushAgentResult(L, "timed-out", outcome.exit_code, commit_present, .fail, false);
+        const reason = timed_out_reason.name();
+        _ = c.lua_pushlstring(L, reason.ptr, reason.len);
+        c.lua_setfield(L, -2, "timed_out_reason");
         return 1;
     }
 
@@ -3698,6 +3708,7 @@ pub fn runModule(
         if (hs.timeout_clock_fn) |cf| sched_storage.clock_fn = cf;
         if (hs.timeout_clock_ctx) |cc| sched_storage.clock_ctx = cc;
         if (hs.timeout_max_wall_clock_ns) |mx| sched_storage.max_wall_clock_ns = mx;
+        if (hs.timeout_stall_ns) |stall_ns| sched_storage.stall_ns = stall_ns;
         hs.sched = &sched_storage;
         // TEST-ONLY seam: pre-fill scheduler slots to force the next
         // registerInflight into the RegistryFull branch (task 3541 / finding 6).
@@ -4468,6 +4479,7 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
     // on every spawn. Reading the env here (not gated on the live driver) keeps
     // the config wiring uniform and lets a dry/stub run still report the knobs.
     host.budgets = budget.Budgets.fromEnv(ctx.environ);
+    host.timeout_stall_ns = scheduler.stallNsFromEnv(ctx.environ);
 
     // ---- Gated production agent() driver wiring (plan 492 M4 task 3241) ----
     //
@@ -5634,11 +5646,12 @@ test "M4 agent: with FakeSpawner + driver, returns completed when exit==0 + comm
     try std.testing.expectEqual(role_model.Role.coder, inv.role);
     try std.testing.expectEqualStrings("/tmp/abs/wt", inv.worktree_path);
     try std.testing.expectEqualStrings("the brief", inv.brief);
-    // argv: --model claude-opus-4-8 (coder → opus), bypassPermissions, etc.
+    // argv includes the stream-json liveness block before --model (task 3190).
     try std.testing.expectEqualStrings("bypassPermissions", inv.argv[3]);
-    try std.testing.expectEqualStrings(role_model.OPUS_TIER, inv.argv[5]);
-    try std.testing.expectEqualStrings("/tmp/abs/wt", inv.argv[7]);
-    try std.testing.expectEqualStrings("you are a coder", inv.argv[9]);
+    try std.testing.expectEqualStrings("stream-json", inv.argv[5]);
+    try std.testing.expectEqualStrings(role_model.OPUS_TIER, inv.argv[8]);
+    try std.testing.expectEqualStrings("/tmp/abs/wt", inv.argv[10]);
+    try std.testing.expectEqualStrings("you are a coder", inv.argv[12]);
 }
 
 test "M4 agent: exit non-zero drives status=failed + terminal_verb=fail" {
@@ -7711,6 +7724,7 @@ test "M6 timeout: in a parallel set a hung worker times out (kill + status=timed
         \\    local r = ctx.parallel({ hung, ok })
         \\    assert(type(r[1]) == "table", "r1 type: " .. type(r[1]))
         \\    assert(r[1].status == "timed-out", "r1 status: " .. tostring(r[1].status))
+        \\    assert(r[1].timed_out_reason == "wallclock", "r1 timed_out_reason: " .. tostring(r[1].timed_out_reason))
         \\    assert(r[1].terminal_verb == "fail", "r1 verb: " .. tostring(r[1].terminal_verb))
         \\    assert(type(r[2]) == "table", "r2 type: " .. type(r[2]))
         \\    assert(r[2].status == "released" or r[2].status == "completed", "r2 status: " .. tostring(r[2].status))
@@ -7728,6 +7742,61 @@ test "M6 timeout: in a parallel set a hung worker times out (kill + status=timed
     try std.testing.expectEqual(@as(u32, 1), fake.kill_count);
     try std.testing.expect(fake.killedWorker(0)); // slot0 = the "hung" thunk.
     try std.testing.expect(!fake.killedWorker(1));
+}
+
+test "M6 timeout: optional stream-json stall detector returns timed_out_reason=stall (task 3190)" {
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "OK", "");
+    defer fake.deinit();
+    const hung_seq = [_]bool{true};
+    fake.hung_starts_seq = &hung_seq;
+    // No event_scripts: the worker is silent from spawn, so the stall detector
+    // should reclaim it before the huge wall-clock ceiling.
+
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+
+    const AdvancingClock = struct {
+        now_ns: i128 = 0,
+        fn clockFn(ctx: ?*anyopaque, io: std.Io) i128 {
+            _ = io;
+            const self: *@This() = @ptrCast(@alignCast(ctx.?));
+            self.now_ns += 100;
+            return self.now_ns;
+        }
+    };
+    var clock = AdvancingClock{};
+    host.timeout_clock_fn = AdvancingClock.clockFn;
+    host.timeout_clock_ctx = &clock;
+    host.timeout_max_wall_clock_ns = 1_000_000_000;
+    host.timeout_stall_ns = 50;
+
+    const src =
+        \\return {
+        \\  meta = { name = "m6-stall", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local r = ctx.agent("silent", { role = "coder", worktree_path = "/tmp/s", claim_token = "ts", task_slug = "ss" })
+        \\    assert(r.status == "timed-out", "status: " .. tostring(r.status))
+        \\    assert(r.timed_out_reason == "stall", "timed_out_reason: " .. tostring(r.timed_out_reason))
+        \\    assert(r.terminal_verb == "fail", "verb: " .. tostring(r.terminal_verb))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    runModule(src, "test:m6-stall", &.{}, &host, &err_buf) catch |e| {
+        std.debug.print("m6 stall failed: {s}\n", .{std.mem.span(@as([*:0]const u8, @ptrCast(&err_buf)))});
+        return e;
+    };
+
+    try std.testing.expectEqual(@as(u32, 1), fake.start_count);
+    try std.testing.expectEqual(@as(u32, 1), fake.kill_count);
+    try std.testing.expect(fake.killedWorker(0));
 }
 
 // ---------------------------------------------------------------------------

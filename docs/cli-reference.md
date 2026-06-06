@@ -5465,6 +5465,16 @@ Load and execute a Lua workflow module. The module must export a table with a `m
 | `--mock-worker` | Run with `FakeSpawner` — full pipeline, no real workers. Mutually exclusive with `--dry-run` and `PLANAR_EXECUTE_LIVE_AGENT=1`. |
 | `--bypass-reviewer-guard` | Operator-explicit override for the bright-line refusal guard (see below). Loud stderr warning when used. |
 
+**Environment knobs:**
+
+| Variable | Description |
+|----------|-------------|
+| `PLANAR_EXECUTE_LIVE_AGENT=1` | Enables the live driver that spawns real `claude -p` workers. |
+| `PLANAR_EXECUTE_STALL_SECS=<seconds>` | Optional per-worker stall detector. When set to a positive integer, workers are killed and returned as `status="timed-out", timed_out_reason="stall"` if their `--output-format stream-json` stdout event gap exceeds this value. Unset, empty, malformed, or `0` disables the detector; the hard wall-clock timeout remains active. |
+| `PLANAR_EXECUTE_MAX_ATTEMPTS=<n>` | Per-task failed-attempt ceiling read by the budget layer. |
+| `PLANAR_EXECUTE_MAX_TOTAL_SPAWNS=<n>` | Whole-run worker-spawn ceiling read by the budget layer. |
+| `PLANAR_EXECUTE_MAX_WALL_CLOCK_SECS=<seconds>` | Whole-run wall-clock ceiling read by the budget layer. |
+
 **Positional arguments:**
 
 | Argument | Description |
