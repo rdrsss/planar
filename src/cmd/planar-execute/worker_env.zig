@@ -153,9 +153,22 @@
 //!
 //! Everything else in the `PLANAR_*` namespace is stripped, including the
 //! historically-catastrophic cases the old deny-list named explicitly —
-//! e.g. `PLANAR_DB` (would direct the worker's `planar-agent` writes to the
-//! operator's real DB instead of the cycle-scoped one) and `PLANAR_BIN`
-//! (alt-binary pointer that bypasses the shim PATH).
+//! e.g. `PLANAR_DB` and `PLANAR_BIN`.
+//!
+//! A note on `PLANAR_DB` specifically: stripping it prevents an INHERITED
+//! env var from REDIRECTING the worker to a different database (e.g. the
+//! integration test suite's test-fixture DB injected via `PLANAR_BIN`, or
+//! a malicious env injection from outside the harness). It does NOT isolate
+//! the worker from the operator's real DB — by design, the worker uses the
+//! same DB via the HOME-resolved default path (`$HOME/.planar/planar.db`,
+//! see `runtime.resolveDbPath` at `src/engine/runtime/runtime.zig`) so that
+//! its `planar-agent` claim/action writes land on the live system the
+//! operator is supervising. The threat model is "no foreign env redirection,"
+//! not "DB sandbox isolation."
+//!
+//! `PLANAR_BIN` is stripped because it is an alt-binary pointer that
+//! bypasses the shim PATH (it would let the worker reach `planar` via a
+//! back-door env var rather than the shim containment layer).
 //!
 //! `PATH` is overwritten, not "stripped + re-added", so any host-PATH surface
 //! that happened to expose `planar` is replaced wholesale. `PATH` is not a

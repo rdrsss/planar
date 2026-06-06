@@ -482,6 +482,20 @@ pub const HostState = struct {
     /// the MAX_SLOTS boundary. Production wiring leaves this 0.
     test_pre_fill_slots: usize = 0,
 
+    /// TEST-ONLY seam (PR #17 cycle C finding 8): when true,
+    /// `driveAgentCallPreYield` simulates an OOM failure from the heartbeat
+    /// registry `register()` call, exercising the WARNING + summary-list path
+    /// without a real failing allocator. Production wiring leaves this false.
+    test_heartbeat_reg_fail: bool = false,
+
+    /// Run-scoped list of claim tokens whose heartbeat registration failed
+    /// (PR #17 cycle C finding 8). Populated by `driveAgentCallPreYield` when
+    /// `hb.register()` returns OOM; printed by `handleRun` at run end so the
+    /// operator sees the gap even if they missed the live stderr WARNING.
+    /// Owns heap-duped copies of the token prefix strings (first 8 bytes or
+    /// full token when shorter). Quiet when empty — a clean run prints nothing.
+    heartbeat_register_failures: std.ArrayList([]const u8) = .empty,
+
     pub fn init(allocator: std.mem.Allocator, now: i64, seed: i64, budget_total: i64, budget_spent: i64) HostState {
         return .{
             .allocator = allocator,
@@ -507,6 +521,10 @@ pub const HostState = struct {
             self.allocator.free(bi.reason);
         }
         self.blocked_items.deinit(self.allocator);
+        for (self.heartbeat_register_failures.items) |tok| {
+            self.allocator.free(tok);
+        }
+        self.heartbeat_register_failures.deinit(self.allocator);
     }
 
     /// record appends a HostCall, taking ownership of heap-duped copies of the
@@ -535,6 +553,20 @@ pub const HostState = struct {
         const r = try self.allocator.dupe(u8, reason);
         errdefer self.allocator.free(r);
         try self.blocked_items.append(self.allocator, .{ .task_slug = s, .task_blocker = b, .reason = r });
+    }
+
+    /// recordHeartbeatRegisterFailure appends the first 8 bytes (or the full
+    /// token when shorter) of `token` to the `heartbeat_register_failures` list
+    /// (PR #17 cycle C finding 8). Best-effort: on OOM the record is silently
+    /// dropped (the stderr WARNING was already printed by the caller; losing the
+    /// summary entry is non-fatal compared to aborting the spawn for an OOM on
+    /// an 8-byte prefix dup).
+    fn recordHeartbeatRegisterFailure(self: *HostState, token: []const u8) void {
+        const prefix_len = @min(token.len, 8);
+        const prefix = self.allocator.dupe(u8, token[0..prefix_len]) catch return;
+        self.heartbeat_register_failures.append(self.allocator, prefix) catch {
+            self.allocator.free(prefix);
+        };
     }
 };
 
@@ -1389,12 +1421,34 @@ fn driveAgentCallPreYield(
     // on slot release). `agentContinue` unregisters it at terminal. No-op when
     // no registry is installed (FakeSpawner unit-test paths) or the token is
     // empty. Touches NO Lua state.
-    if (hs.heartbeat_reg) |hb| {
-        hb.register(acs.claim_token) catch {
-            // OOM duping the token into the registry — non-fatal. The worker
-            // still runs; its lease just isn't auto-refreshed (F1 reclaim is the
-            // fallback). Do NOT abort the spawn for this.
-        };
+    //
+    // OOM on register: non-fatal. The worker still runs; its lease is NOT
+    // auto-refreshed (F1 fallback: the lease expires after TTL, the task is
+    // reclaimed, and a subsequent `planar-execute` invocation may re-run it).
+    // We log a loud stderr WARNING AND record the failure in the HostState
+    // summary list so the operator sees it post-run even if they missed stderr.
+    // We do NOT hard-fail (escalating an OOM into a refused agent() call is
+    // worse than the silent reclaim — the operator can recover from a mid-run
+    // reclaim; a hard refuse prevents ALL work). See PR #17 cycle C finding 8.
+    const hb_register_failed = blk: {
+        if (hs.test_heartbeat_reg_fail) break :blk true; // test seam
+        if (hs.heartbeat_reg) |hb| {
+            hb.register(acs.claim_token) catch break :blk true;
+        }
+        break :blk false;
+    };
+    if (hb_register_failed) {
+        const tok = acs.claim_token;
+        const prefix = tok[0..@min(tok.len, 8)];
+        std.debug.print(
+            "planar-execute: WARNING — heartbeat register failed for claim '{s}...' (OOM).\n" ++
+                "Worker's lease will NOT be refreshed automatically; expect mid-run reclaim\n" ++
+                "after the TTL (default 600s). The agent() call proceeds; on next " ++
+                "planar-execute invocation the task may be respawned. Set ulimit -v or " ++
+                "check available memory to avoid this.\n",
+            .{prefix},
+        );
+        hs.recordHeartbeatRegisterFailure(tok);
     }
 
     // 5) Yield across the C boundary. The continuation `agentContinue` resumes
@@ -3674,6 +3728,29 @@ pub fn runModule(
         hs.sched = null;
     };
 
+    // ---- M6 SIGINT handler (tasks 3193 + 3189) ----
+    //
+    // Arm the async-signal-safe handler around the run ONLY when a spawn driver
+    // is attached (only then are there workers/claims/worktrees to clean up; a
+    // pure-Lua run has nothing to reclaim and Ctrl-C can fall through to the
+    // default disposition). The handler sets ONLY `interrupt.interrupt_requested`;
+    // the resume loop below OBSERVES it at safe points (between resumes) and runs
+    // the off-signal shutdown sequence on the MAIN thread. Restored on exit so a
+    // second Ctrl-C hard-kills and the disposition is not left installed.
+    //
+    // DEFER ORDERING INVARIANT: interrupt.restore() MUST unwind AFTER the
+    // heartbeat thread has been fully joined (stop()+deinit()). In defer-LIFO
+    // terms: the interrupt.restore defer MUST be declared BEFORE the
+    // heartbeat-stop defer so that interrupt.restore() fires LAST (outermost).
+    // If interrupt.restore() fired while the heartbeat thread was still live, a
+    // second Ctrl-C in that window would reinstall SIG.DFL and terminate the
+    // process with the heartbeat thread mid-snapshot. See PR #17 cycle C finding 7.
+    const interrupt_armed = if (host) |hs| (hs.agent_driver != null) else false;
+    if (interrupt_armed) interrupt.install();
+    // INVARIANT (see above): this defer is declared FIRST so it unwinds LAST —
+    // after the heartbeat-stop defer below has already joined the thread.
+    defer if (interrupt_armed) interrupt.restore();
+
     // ---- M6 heartbeat thread (task 3187) ----
     //
     // Start the single preemptive heartbeat thread ONLY when a spawn driver is
@@ -3707,24 +3784,15 @@ pub fn runModule(
             }
         }
     }
+    // INVARIANT (see above): this defer is declared AFTER the interrupt.restore
+    // defer, so it unwinds FIRST — joining the heartbeat thread before SIG.DFL
+    // is reinstalled. A second Ctrl-C after restore() but before join would
+    // terminate the process with the heartbeat thread mid-snapshot.
     defer if (hb_started) {
         hb_storage.stop();
         hb_storage.deinit();
         if (host) |hs| hs.heartbeat_reg = null;
     };
-
-    // ---- M6 SIGINT handler (tasks 3193 + 3189) ----
-    //
-    // Arm the async-signal-safe handler around the run ONLY when a spawn driver
-    // is attached (only then are there workers/claims/worktrees to clean up; a
-    // pure-Lua run has nothing to reclaim and Ctrl-C can fall through to the
-    // default disposition). The handler sets ONLY `interrupt.interrupt_requested`;
-    // the resume loop below OBSERVES it at safe points (between resumes) and runs
-    // the off-signal shutdown sequence on the MAIN thread. Restored on exit so a
-    // second Ctrl-C hard-kills and the disposition is not left installed.
-    const interrupt_armed = if (host) |hs| (hs.agent_driver != null) else false;
-    if (interrupt_armed) interrupt.install();
-    defer if (interrupt_armed) interrupt.restore();
 
     // Drive co to completion. lua_resume returns LUA_OK (finished), LUA_YIELD
     // (a worker is in flight — drive it, then resume), or an error code.
@@ -4661,6 +4729,10 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
     // the slot reclaimed; this summary is the triage mechanism, not a prompt.
     // Quiet when zero blocked: a clean run prints nothing here.
     try printBlockedSummary(host.blocked_items.items, ctx.stdout);
+    // Heartbeat register failures (PR #17 cycle C finding 8): any claim whose
+    // heartbeat registration failed (OOM) is listed so the operator notices
+    // post-run even if the live stderr WARNING was missed.
+    try printHeartbeatRegisterFailureSummary(host.heartbeat_register_failures.items, ctx.stdout);
     try flushCtx();
 }
 
@@ -4680,6 +4752,24 @@ fn printBlockedSummary(items: []const BlockedItem, w: *Io.Writer) !void {
         if (bi.task_blocker.len > 0) try w.print(" blocked by {s}", .{bi.task_blocker});
         if (bi.reason.len > 0) try w.print(" — \"{s}\"", .{bi.reason});
         try w.print("\n", .{});
+    }
+}
+
+/// printHeartbeatRegisterFailureSummary writes the post-run notice for claims
+/// whose heartbeat registration failed with OOM (PR #17 cycle C finding 8).
+/// The live stderr WARNING is printed at spawn time; this summary surfaces the
+/// same information for operators who review the stdout log post-run. Emits
+/// NOTHING when `token_prefixes` is empty (a clean run is quiet).
+fn printHeartbeatRegisterFailureSummary(token_prefixes: []const []const u8, w: *Io.Writer) !void {
+    if (token_prefixes.len == 0) return;
+    try w.print(
+        "WARNING: {d} claim(s) failed heartbeat registration (OOM). " ++
+            "Those leases were NOT auto-refreshed; the task(s) may have been " ++
+            "reclaimed mid-run. Check memory pressure and re-run if needed.\n",
+        .{token_prefixes.len},
+    );
+    for (token_prefixes) |prefix| {
+        try w.print("  - claim prefix: {s}...\n", .{prefix});
     }
 }
 
@@ -5971,6 +6061,86 @@ test "M7 summary: printBlockedSummary lists items; quiet when zero (task 3195)" 
         // Partial record reads cleanly (no trailing "blocked by"/reason clause).
         try std.testing.expect(std.mem.indexOf(u8, out, "  - task m5-bar\n") != null);
     }
+}
+
+// ---------------------------------------------------------------------------
+// PR #17 cycle C finding 8 — heartbeat register OOM: WARNING + summary list.
+//
+// When `hb.register()` fails with OOM, the worker must still run (no hard fail),
+// the failure must be recorded in `HostState.heartbeat_register_failures`, and
+// `printHeartbeatRegisterFailureSummary` must surface it in the stdout log.
+// The test uses the `test_heartbeat_reg_fail` seam to simulate the OOM without
+// a real failing allocator.
+// ---------------------------------------------------------------------------
+
+test "PR #17 finding 8: printHeartbeatRegisterFailureSummary lists items; quiet when zero" {
+    const a = testing_alloc;
+
+    // Zero items → no output.
+    {
+        var buf: std.Io.Writer.Allocating = .init(a);
+        defer buf.deinit();
+        try printHeartbeatRegisterFailureSummary(&.{}, &buf.writer);
+        try std.testing.expectEqual(@as(usize, 0), buf.written().len);
+    }
+
+    // One item → header + one claim-prefix line.
+    {
+        const prefixes = [_][]const u8{"abcdef12"};
+        var buf: std.Io.Writer.Allocating = .init(a);
+        defer buf.deinit();
+        try printHeartbeatRegisterFailureSummary(&prefixes, &buf.writer);
+        const out = buf.written();
+        try std.testing.expect(std.mem.indexOf(u8, out, "1 claim(s) failed heartbeat registration") != null);
+        try std.testing.expect(std.mem.indexOf(u8, out, "claim prefix: abcdef12...") != null);
+    }
+}
+
+test "PR #17 finding 8: heartbeat register OOM — WARNING printed + summary list populated + agent() completes" {
+    // Simulate OOM on heartbeat register via the test seam. The agent() call
+    // MUST still complete (no hard fail); `heartbeat_register_failures` MUST
+    // have exactly one entry (the claim token's prefix); the worker ran.
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+        .repo_root = "",
+        .plan_slug = "",
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+    host.test_heartbeat_reg_fail = true; // simulate OOM
+
+    const src =
+        \\return {
+        \\  meta = { name = "f8-hb-oom", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local r = ctx.agent("brief", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/abs/wt",
+        \\      claim_token = "tok-hb-oom-test",
+        \\      task_slug = "f8ts",
+        \\    })
+        \\    -- agent() must return a result (not error) even on heartbeat OOM.
+        \\    assert(r ~= nil, "agent() must return a result table")
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    // runModule must succeed (agent() does not hard-fail on heartbeat OOM).
+    try runModule(src, "test:f8-hb-oom", &.{}, &host, &err_buf);
+
+    // Worker ran: one spawn, no kill, no error.
+    try std.testing.expectEqual(@as(u32, 1), fake.start_count);
+
+    // Failure was recorded: exactly one entry in heartbeat_register_failures.
+    try std.testing.expectEqual(@as(usize, 1), host.heartbeat_register_failures.items.len);
+    // The recorded prefix is the first 8 bytes of "tok-hb-oom-test".
+    try std.testing.expectEqualStrings("tok-hb-o", host.heartbeat_register_failures.items[0]);
 }
 
 // ---------------------------------------------------------------------------

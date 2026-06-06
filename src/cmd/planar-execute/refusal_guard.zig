@@ -132,12 +132,27 @@ pub fn isTopLevelVerb(path: []const u8) bool {
 ///
 /// Mirrors `singleton_files` in `src/engine/planning/strategy.zig` (the
 /// parallelizability rule-4 list) — those two lists must stay in sync.
+///
+/// Doctrine-critical gates (PR #17 cycle C finding 9): two files that were
+/// previously not matched by the `validate`/`invariant` substring checks have
+/// been added explicitly:
+///   - `integration_tests/capability_boundary_test.zig` — the binary-capability-
+///     boundary lock (ensures planar/planar-agent/planar-watch cannot gain each
+///     other's verbs). Editing it without a reviewer would bypass the lock.
+///   - `tools/cli_usage_lint.zig` — the CLI-surface hygiene gate (catches authored
+///     prose referencing nonexistent flags). Editing it without a reviewer would
+///     silence drift that the linter is designed to surface.
+/// Both are narrow, specific matches (not a heuristic) to avoid false-positives
+/// on ordinary integration tests or other tools.
 const invariant_singleton_files = [_][]const u8{
     "agents/methodology.md",
     "CLAUDE.md",
     "AGENTS.md",
     "docs/cli-reference.md",
     "docs/architecture.md",
+    // Doctrine-critical gates (finding 9): capability boundary lock + CLI lint.
+    "integration_tests/capability_boundary_test.zig",
+    "tools/cli_usage_lint.zig",
 };
 
 /// isInvariantCode returns true when `path` is either:
@@ -145,27 +160,23 @@ const invariant_singleton_files = [_][]const u8{
 ///   - A canonical methodology / invariant singleton file
 ///     (`agents/methodology.md`, `CLAUDE.md`, `AGENTS.md`,
 ///     `docs/cli-reference.md`, `docs/architecture.md`).
+///   - A doctrine-critical gate file
+///     (`integration_tests/capability_boundary_test.zig`,
+///     `tools/cli_usage_lint.zig`) — see PR #17 cycle C finding 9.
 ///   - A path containing the substring `validate` or `invariant`
 ///     (validators, invariant locks, lint gates).
 ///
 /// MATCHES:
-///   - "agents/methodology.md"            (singleton)
-///   - "CLAUDE.md" / "AGENTS.md"          (singleton)
-///   - "src/cli/validate.zig"             (substring "validate")
-///   - "tools/cli_usage_lint.zig"         — does NOT match by substring;
-///     edits to the linter itself should be flagged separately if needed
-///     (it touches no "validate"/"invariant" substring). Operator can
-///     declare a path-touch on `tools/cli_usage_lint.zig` and the reviewer
-///     will be the gate.
-///   - "integration_tests/capability_boundary_test.zig" — substring
-///     "boundary" is not matched; this is intentional: we keep the
-///     substring list narrow ("validate", "invariant") to limit false
-///     positives. A capability-boundary test edit is reviewer-worthy but
-///     not bright-line-refusal-worthy.
+///   - "agents/methodology.md"                              (singleton)
+///   - "CLAUDE.md" / "AGENTS.md"                           (singleton)
+///   - "integration_tests/capability_boundary_test.zig"    (doctrine-critical gate)
+///   - "tools/cli_usage_lint.zig"                          (doctrine-critical gate)
+///   - "src/cli/validate.zig"                              (substring "validate")
 ///
 /// DOES NOT MATCH:
-///   - "src/engine/planning/strategy.zig" (substring not present)
-///   - "src/cmd/planar/main.zig"          (isTopLevelVerb catches this)
+///   - "src/engine/planning/strategy.zig"       (substring not present)
+///   - "src/cmd/planar/main.zig"                (isTopLevelVerb catches this)
+///   - "integration_tests/plan_test.zig"        (ordinary test, no substring match)
 ///
 /// **False-positive note:** any file with "validate" in the path name will
 /// match (e.g. a hypothetical `src/cmd/foo/validate_helper.zig`). That's
@@ -429,6 +440,11 @@ test "isInvariantCode: matches singletons + validate/invariant substrings" {
     try testing.expect(isInvariantCode("AGENTS.md"));
     try testing.expect(isInvariantCode("docs/cli-reference.md"));
     try testing.expect(isInvariantCode("docs/architecture.md"));
+    // Doctrine-critical gates (PR #17 cycle C finding 9): these were previously
+    // not matched (the gap was flagged in the old comment). Both are now in
+    // invariant_singleton_files and MUST return true.
+    try testing.expect(isInvariantCode("integration_tests/capability_boundary_test.zig"));
+    try testing.expect(isInvariantCode("tools/cli_usage_lint.zig"));
     // Substring matches.
     try testing.expect(isInvariantCode("src/cli/validate.zig"));
     try testing.expect(isInvariantCode("integration_tests/some_validate_test.zig"));
@@ -441,11 +457,9 @@ test "isInvariantCode: rejects unrelated paths" {
     try testing.expect(!isInvariantCode("src/cmd/planar/main.zig"));
     try testing.expect(!isInvariantCode("README.md"));
     try testing.expect(!isInvariantCode(""));
-    // capability_boundary_test is reviewer-worthy but intentionally NOT
-    // bright-line-refusal-worthy (narrow substring list).
-    try testing.expect(!isInvariantCode("integration_tests/capability_boundary_test.zig"));
-    // tools/cli_usage_lint.zig — no "validate"/"invariant" substring.
-    try testing.expect(!isInvariantCode("tools/cli_usage_lint.zig"));
+    // An ordinary integration test (not a doctrine-critical gate) must NOT match
+    // — no false-positive for the broad integration_tests/ directory.
+    try testing.expect(!isInvariantCode("integration_tests/plan_recommend_strategy_test.zig"));
 }
 
 test "classifyPath: returns first matching predicate or null" {
