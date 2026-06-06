@@ -83,6 +83,15 @@ pub fn check(comptime root: cli.Cmd, argv: []const []const u8) void {
         }
     }
 
+    // Help is a pure read — `<verb> --help` renders a static usage tree
+    // with no DB access — so it must never be refused, regardless of the
+    // verb's planning classification. The module header documents this
+    // exemption; without an explicit check the gate fires first and
+    // refuses `plan --help` (exit 8), which also breaks introspection
+    // tooling (coverage-check.sh loops `planar <verb> --help`) run from a
+    // worktree checkout.
+    if (argvRequestsHelp(argv)) return;
+
     // Resolve verb path from argv. We do this without invoking the
     // full parser because the parser is comptime-specialized per leaf;
     // we only need the path tokens.
@@ -192,6 +201,17 @@ fn resolveVerbPath(
         if (!matched) break; // First non-subcommand token ends the path.
     }
     return path_buf[0..path_len];
+}
+
+/// True when argv contains a help request (`--help` or `-h`) before a
+/// `--` terminator. Help short-circuits to a static usage render, so the
+/// worktree gate exempts it for every verb.
+fn argvRequestsHelp(argv: []const []const u8) bool {
+    for (argv) |tok| {
+        if (std.mem.eql(u8, tok, "--")) return false;
+        if (std.mem.eql(u8, tok, "--help") or std.mem.eql(u8, tok, "-h")) return true;
+    }
+    return false;
 }
 
 fn commandMatches(c: cli.Cmd, tok: []const u8) bool {

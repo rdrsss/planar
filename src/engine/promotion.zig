@@ -63,6 +63,13 @@ pub const PromoteArgs = struct {
     to_scope: []const u8,
 };
 
+/// A promotable entity's current scope. `scope_kind` is heap-allocated;
+/// the caller must free it.
+pub const ScopeInfo = struct {
+    scope_kind: []const u8,
+    scope_id: ?i64,
+};
+
 // =========================================================================
 // Public API
 // =========================================================================
@@ -227,6 +234,36 @@ fn demoteEntity(
         .entity = .{ .kind = kind, .id = id },
         .summary = summary,
     }) catch {};
+}
+
+/// Read `(scope_kind, scope_id)` for a promotable entity from its table.
+/// `result.scope_kind` is heap-allocated; the caller must free it.
+/// Returns `InvalidScope` for an unknown kind, `NotFound` when the id is
+/// absent. The shared reader for the promote/demote handlers — keep the
+/// table-name resolution and scope-row shape in this one place.
+pub fn readEntityScope(d: *db.sqlite.Db, allocator: std.mem.Allocator, kind: []const u8, id: i64) Error!ScopeInfo {
+    const table = tableFor(kind) orelse return Error.InvalidScope;
+
+    const sql_raw = try std.fmt.allocPrint(
+        allocator,
+        "select scope_kind, scope_id from {s} where id = ?",
+        .{table},
+    );
+    defer allocator.free(sql_raw);
+    const sql = try allocator.dupeZ(u8, sql_raw);
+    defer allocator.free(sql);
+
+    var stmt = d.prepare(sql) catch return Error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .int = id }}) catch return Error.QueryFailed;
+
+    return switch (stmt.step() catch return Error.QueryFailed) {
+        .done => Error.NotFound,
+        .row => .{
+            .scope_kind = try stmt.columnTextAlloc(0, allocator),
+            .scope_id = stmt.columnIntOpt(1),
+        },
+    };
 }
 
 /// Map entity kind string to the corresponding table name.

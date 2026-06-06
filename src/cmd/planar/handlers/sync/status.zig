@@ -1,7 +1,9 @@
-//! handlers/sync/status — `planar sync status [--scope <kind:id>] [--system <slug>] [--json]`
+//! handlers/sync/status — `planar sync status [--entity <kind:id>] [--system <slug>] [--json]`
 //!
 //! Report sync status for one or more external links, optionally filtered by
-//! local entity (`--scope`) and/or external system slug (`--system`).
+//! local entity (`--entity`, e.g. `task:42`) and/or external system slug
+//! (`--system`). The filter is an entity reference, NOT a scope slug — hence
+//! `--entity`, not `--scope` (which means a scope slug on every other verb).
 
 const std = @import("std");
 const cli = @import("cli");
@@ -10,6 +12,7 @@ const main = @import("../../main.zig");
 const runtime = @import("runtime");
 const exit = @import("../../exit.zig");
 const output = @import("../../output.zig");
+const sync_common = @import("common.zig");
 
 pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     const args = cli.castArgs(main.root, &.{ "sync", "status" }, args_ptr);
@@ -19,9 +22,9 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     var filter: engine.external.link.ListFilter = .{
         .system_slug = args.system,
     };
-    if (args.scope) |scope_ref| {
-        const ref = parseKindIDRef(scope_ref) catch
-            exit.die(ctx, error.InvalidInput, "invalid --scope value '{s}'; expected <kind>:<integer-id>", .{scope_ref});
+    if (args.entity) |entity_ref| {
+        const ref = sync_common.parseKindIDRef(entity_ref) catch
+            exit.die(ctx, error.InvalidInput, "invalid --entity value '{s}'; expected <kind>:<integer-id>", .{entity_ref});
         filter.entity_kind = ref.kind;
         filter.entity_id = ref.id;
     }
@@ -59,24 +62,4 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         const system_u: u64 = @intCast(row.system_id);
         try ctx.stdout.print("{d:<6}  {s}:{d:<11}  {s:<18}  {d:<8}  {s:<24}  {s}\n", .{ link_u, @tagName(row.entity_kind), entity_u, row.external_id, system_u, last, row.last_sync_status.toText() });
     }
-}
-
-const KindID = struct {
-    kind: engine.external.link.ExternalEntityKind,
-    id: i64,
-};
-
-fn parseKindIDRef(s: []const u8) !KindID {
-    var i: usize = s.len;
-    while (i > 0) : (i -= 1) {
-        if (s[i - 1] == ':') {
-            const kind_text = s[0 .. i - 1];
-            const id_text = s[i..];
-            if (kind_text.len == 0 or id_text.len == 0) break;
-            const kind = engine.external.link.ExternalEntityKind.fromText(kind_text) orelse break;
-            const id = std.fmt.parseInt(i64, id_text, 10) catch break;
-            return .{ .kind = kind, .id = id };
-        }
-    }
-    return error.InvalidInput;
 }

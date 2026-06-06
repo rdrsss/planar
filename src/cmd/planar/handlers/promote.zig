@@ -86,10 +86,7 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
 
 // ---- helpers ----------------------------------------------------------------
 
-const ScopeInfo = struct {
-    scope_kind: []const u8, // heap-allocated; caller must free
-    scope_id: ?i64,
-};
+const ScopeInfo = engine.promotion.ScopeInfo;
 
 fn emitScopeChangeJSON(
     ctx: *const runtime.Ctx,
@@ -120,39 +117,9 @@ fn emitScopeChangeJSON(
     try ctx.stdout.print("}}\n", .{});
 }
 
-/// Read (scope_kind, scope_id) from the entity's table.
-/// scope_kind is heap-allocated and must be freed by the caller.
+/// Read the entity's current scope. Delegates to the shared
+/// `engine.promotion.readEntityScope` so the table-name resolution lives
+/// in one place. `result.scope_kind` is heap-allocated; caller frees.
 fn readEntityScope(d: *db.sqlite.Db, allocator: std.mem.Allocator, kind: []const u8, id: i64) !ScopeInfo {
-    const table = tableFor(kind) orelse return error.InvalidInput;
-
-    const sql_raw = try std.fmt.allocPrint(
-        allocator,
-        "select scope_kind, scope_id from {s} where id = ?",
-        .{table},
-    );
-    defer allocator.free(sql_raw);
-    const sql = try allocator.dupeZ(u8, sql_raw);
-    defer allocator.free(sql);
-
-    var stmt = d.prepare(sql) catch return error.QueryFailed;
-    defer stmt.finalize();
-    stmt.bind(&.{.{ .int = id }}) catch return error.QueryFailed;
-
-    return switch (stmt.step() catch return error.QueryFailed) {
-        .done => error.NotFound,
-        .row => .{
-            .scope_kind = try stmt.columnTextAlloc(0, allocator),
-            .scope_id = stmt.columnIntOpt(1),
-        },
-    };
-}
-
-fn tableFor(kind: []const u8) ?[]const u8 {
-    if (std.mem.eql(u8, kind, "plan")) return "plans";
-    if (std.mem.eql(u8, kind, "task")) return "tasks";
-    if (std.mem.eql(u8, kind, "question")) return "questions";
-    if (std.mem.eql(u8, kind, "test_scenario")) return "test_scenarios";
-    if (std.mem.eql(u8, kind, "artifact")) return "artifacts";
-    if (std.mem.eql(u8, kind, "decision")) return "decisions";
-    return null;
+    return engine.promotion.readEntityScope(d, allocator, kind, id);
 }

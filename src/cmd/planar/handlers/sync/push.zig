@@ -17,7 +17,6 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     const args = cli.castArgs(main.root, &.{ "sync", "push" }, args_ptr);
     const ctx = runtime.current();
     const d = try runtime.ensureDb();
-    _ = args.scope;
 
     if (!args.all and args.ref == null) {
         exit.die(ctx, error.InvalidInput, "sync push requires <link-id>, <kind:id>, or --all", .{});
@@ -107,26 +106,6 @@ fn emitResultJSON(
     try w.print("}}\n", .{});
 }
 
-const KindID = struct {
-    kind: engine.external.link.ExternalEntityKind,
-    id: i64,
-};
-
-fn parseKindIDRef(s: []const u8) !KindID {
-    var i: usize = s.len;
-    while (i > 0) : (i -= 1) {
-        if (s[i - 1] == ':') {
-            const kind_text = s[0 .. i - 1];
-            const id_text = s[i..];
-            if (kind_text.len == 0 or id_text.len == 0) break;
-            const kind = engine.external.link.ExternalEntityKind.fromText(kind_text) orelse break;
-            const id = std.fmt.parseInt(i64, id_text, 10) catch break;
-            return .{ .kind = kind, .id = id };
-        }
-    }
-    return error.InvalidInput;
-}
-
 fn resolveTargetLinks(
     d: anytype,
     allocator: std.mem.Allocator,
@@ -143,7 +122,7 @@ fn resolveTargetLinks(
         out[0] = one;
         return out;
     } else |_| {
-        const kid = try parseKindIDRef(ref);
+        const kid = try sync_common.parseKindIDRef(ref);
         return engine.external.link.linksForEntity(d, allocator, kid.kind, kid.id);
     }
 }

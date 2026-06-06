@@ -166,10 +166,16 @@ pub fn create(d: *db.sqlite.Db, allocator: std.mem.Allocator, args: CreateArgs) 
         .summary = summary,
     });
 
-    // --plan currently has no schema column to land on; warn-and-ignore
-    // is the handler's job. Document intent here for the future
-    // entity_links wiring.
-    _ = args.plan_id;
+    // Link to the anchor plan via entity_links, exactly like
+    // artifact/question create. The resolver (editflow.resolveAnchorPlan)
+    // queries from_kind='test_scenario', so the edge MUST use that kind —
+    // this is what makes `scenario view`/`diff`/`review` resolvable.
+    if (args.plan_id) |pid| {
+        _ = d.execParams(
+            \\insert into entity_links (from_kind, from_id, to_kind, to_id, relationship)
+            \\values ('test_scenario', ?, 'plan', ?, 'derives-from')
+        , &.{ .{ .int = id }, .{ .int = pid } }) catch return Error.QueryFailed;
+    }
 
     return try show(d, allocator, id);
 }

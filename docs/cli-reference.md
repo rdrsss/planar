@@ -2,7 +2,7 @@
 
 Reference for every `planar` subcommand. Authoritative current surface for the installed binary. For machine-readable help, use `planar <subcommand> --help`.
 
-**Source of truth:** schema across `migrations/00001_foundation.up.sql` through `migrations/00015_agent_activity.up.sql`. Every "schema effects" section below cites real columns from those migrations. See [docs/architecture.md § Application tables](architecture.md#application-tables) for the migration-by-migration table inventory.
+**Source of truth:** schema across `migrations/00001_foundation.up.sql` through `migrations/00018_fix_schema_migration_descriptions.up.sql`. Every "schema effects" section below cites real columns from those migrations. See [docs/architecture.md § Application tables](architecture.md#application-tables) for the migration-by-migration table inventory.
 
 ---
 
@@ -154,9 +154,9 @@ Verbs that perform an explicit cross-scope check on every invocation. The "guard
 | `task done <task-id>` | `task` | |
 | `task reopen <task-id>` | `task` | |
 | `task block <task-id> --on <task-id>` | `task` (both blocked and blocking) | Guard fires on both endpoints. |
-| `question update <question-id>` | `question` | |
-| `scenario update <scenario-id>` | `scenario` | |
-| `decision update <decision-id>` | `decision` | |
+| `question edit <question-id>` | `question` | |
+| `scenario edit <scenario-id>` | `scenario` | |
+| `decision edit <decision-id>` | `decision` | |
 | `decision supersede <old> --by <new>` | `decision` (both old and new) | Guard fires on both endpoints. |
 | `artifact update <artifact-id>` | `artifact` | |
 | `audit publish-decision <decision-id>` | `decision` | Posts to every external link reachable from the decision. |
@@ -1451,7 +1451,6 @@ planar question list [--scope <scope>] [--status <status>] [--touches <repo-slug
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--scope <scope>` | Filter by scope. | Active scope. |
-| `--open` | Shorthand for `--status open`. | off |
 | `--status <status>` | Filter: `open`, `answered`, `wontfix`. Repeatable. | `open` |
 | `--touches <repo-slug>` | Return questions scoped to this repo plus questions with `entity_links(relationship='touches', to_kind='repo')` for this repo. | off |
 
@@ -1951,6 +1950,90 @@ planar artifact link <artifact-id> <to-kind:to-id> --relationship <kind>
 **Schema effects:** Inserts into `entity_links(from_kind='artifact', from_id, to_kind, to_id, relationship)`.
 
 **Capture:** Appends `session_entries` row with `prefix='action'`.
+
+---
+
+## Domain: `annotate`
+
+Annotations are anchored review notes — a short note attached to a file path and optional line range, captured during a code review or agent pass. Each annotation can carry a `commit_sha` and `text_hash` so its anchor can later be **verified** against the current workspace state (the anchored lines may have moved or changed). Annotations have a lifecycle (`open` → `resolved` / `dismissed` / `archived`), free-form tags, and bulk operations over a filter. They are scope-aware like every other planning entity.
+
+---
+
+### `planar annotate add`
+
+**Synopsis:**
+```
+planar annotate add --text <note> [--anchor-path <path>] [--line-start <n>] [--line-end <n>] [--commit-sha <sha>] [--text-hash <hash>] [--title <t>] [--slug <s>] [--body <text>] [--vendor <v>] [--plan <id>] [--task <id>] [--tags <csv>] [--scope <scope>] [--json]
+```
+
+**Description:** Create a new annotation. `--anchor-path` (+ optional `--line-start`/`--line-end`) locates the note in the tree; `--commit-sha` and `--text-hash` record what the anchored content looked like at capture time so `annotate verify` can detect drift. `--plan` / `--task` associate the note with a planning entity; `--tags` is a comma-separated list.
+
+**Options:** `--text` is the note body (the load-bearing field). `--anchor-path`, `--line-start`, `--line-end`, `--commit-sha`, `--text-hash` form the anchor. `--title`, `--slug`, `--body`, `--vendor`, `--plan`, `--task`, `--tags`, `--scope` are optional metadata.
+
+**Schema effects:** Inserts into `annotations(...)` (and `annotation_tags` for each tag).
+
+---
+
+### `planar annotate show <annotation-id>` / `planar annotate remove <annotation-id>`
+
+`show` prints one annotation (add `--json`). `remove` hard-deletes it (and its `annotation_tags`).
+
+---
+
+### `planar annotate list`
+
+**Synopsis:**
+```
+planar annotate list [--anchor-path <path>] [--status <status>] [--plan <id>] [--task <id>] [--vendor <v>] [--tag <tag>] [--scope <scope>] [--json]
+```
+
+**Description:** List annotations in scope, filtered by any combination of anchor path, `--status` (`open`/`resolved`/`dismissed`/`archived`), associated `--plan`/`--task`, `--vendor`, or a single `--tag`.
+
+---
+
+### `planar annotate update <annotation-id>`
+
+**Synopsis:**
+```
+planar annotate update <annotation-id> [--title <t>] [--slug <s>] [--body <text>] [--status <status>] [--plan <id>] [--task <id>] [--scope <scope>] [--json]
+```
+
+**Description:** Rewrite an annotation's fields. Only the flags you pass are changed.
+
+---
+
+### `planar annotate tag <annotation-id> <tag> [--remove]`
+
+Add a tag to an annotation, or remove it with `--remove`. Writes/deletes an `annotation_tags` row.
+
+---
+
+### `planar annotate resolve|dismiss|archive <annotation-id>`
+
+Lifecycle transitions on a single annotation: `resolve` marks it handled, `dismiss` marks it won't-fix, `archive` retires it. Each takes the annotation id and an optional `--json`.
+
+---
+
+### `planar annotate bulk-resolve|bulk-dismiss|bulk-archive`
+
+**Synopsis:**
+```
+planar annotate bulk-resolve [--anchor-path <path>] [--plan <id>] [--task <id>] [--vendor <v>] [--tag <tag>] [--scope <scope>] [--json]
+```
+
+**Description:** Apply the lifecycle transition to **every** annotation matching the filter. `bulk-resolve` and `bulk-dismiss` act on active annotations; `bulk-archive` includes already-terminal ones. The filter flags mirror `annotate list`. Use these to clear a whole review pass at once.
+
+---
+
+### `planar annotate verify [--anchor-path <path>] [--scope <scope>] [--json]`
+
+**Description:** Verify annotation anchors against current workspace state — re-reads each anchored path/line range and compares against the stored `text_hash` / `commit_sha`, reporting which annotations are still anchored cleanly and which have drifted (the underlying content moved or changed). Restrict to one path with `--anchor-path`.
+
+---
+
+### `planar annotate sweep [--since-days <n>] [--scope <scope>] [--json]`
+
+**Description:** Sweep stale annotations — archive `resolved` / `dismissed` annotations older than `--since-days`. Housekeeping for a scope whose review notes have accumulated.
 
 ---
 
@@ -3041,7 +3124,7 @@ Sync commands pull and push data between the local plane and registered external
 
 **Synopsis:**
 ```
-planar sync pull <link-id | kind:id | --all> [--system <slug>] [--scope <slug>]
+planar sync pull <link-id | kind:id | --all> [--system <slug>]
 ```
 
 **Description:** Pull remote state for one or more links. Updates `external_links.last_synced_at` and mirrors selected fields onto the local entity if `sync_direction` permits. Records a `sync_events` row per link touched.
@@ -3114,7 +3197,7 @@ planar sync push <link-id | kind:id | --all> [--system <slug>]
 
 **Synopsis:**
 ```
-planar sync status [--scope <scope>] [--system <slug>]
+planar sync status [--entity <kind:id>] [--system <slug>]
 ```
 
 **Description:** Show the sync status of all links in scope. Highlights conflicts and errors.
@@ -3216,8 +3299,7 @@ The resume packet contains:
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--budget <tokens>` | Token budget for the packet (recent activity is trimmed to fit). | `8000` |
-| `--no-pull` | Skip the operational plane pull. Use with caution — packet may be stale. | off |
+| `--json` | Emit the resume packet as a single JSON object instead of structured text. | off |
 
 **Output:** The resume packet, formatted as structured text (human mode) or a single JSON object (`--json`). The JSON shape is:
 
@@ -3242,7 +3324,7 @@ The resume packet contains:
 **Exit codes:**
 - `0` — packet produced.
 - `1` — task not found; or no active task in scope (when called without an id).
-- `1` — task fails `resume validate` with `--no-pull` not set and a capture failure is detected.
+- `1` — `resume validate` fails (e.g. a capture failure is detected).
 - `3` — conflicts detected on operational pull; conflicts are included in the packet but exit code signals the condition.
 
 ---
@@ -3336,27 +3418,27 @@ handoff captured for task:42
 
 ---
 
-### `planar handoff validate <snapshot-id>`
+### `planar handoff validate <handoff-id>`
 
 **Synopsis:**
 ```
-planar handoff validate <snapshot-id>
+planar handoff validate <handoff-id> [--json]
 ```
 
-**Description:** Validate that the handoff anchored at the given snapshot is resume-ready. Checks the same criteria as `resume validate` plus snapshot presence and handoff status. On success, writes the `validated` state to the handoff row, making it eligible for `handoff consume`.
+**Description:** Transition the `pending` handoff with the given id to `validated`, making it eligible for `handoff consume`. Checks the same readiness criteria as `resume validate` plus snapshot presence and handoff status. On success, writes the `validated` state to the handoff row.
 
-**Output:** Same structure as `resume validate` output.
+**Output:** Same structure as `resume validate` output (add `--json` for a single JSON object).
 
 **Schema effects:**
 - Reads `context_snapshots`, `handoffs`, `tasks`.
-- On success: updates `handoffs(status='validated', validated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'))` for the latest `pending` handoff anchored at `<snapshot-id>`.
+- On success: updates `handoffs(status='validated', validated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'))` for the handoff with the given `<handoff-id>`.
 
 **Capture:** None.
 
 **Exit codes:**
 - `0` — handoff is resume-ready; status updated to `validated`.
-- `1` — validation failures found; status not changed.
-- `1` — snapshot not found.
+- `1` — `<handoff-id>` not found.
+- `1` — handoff cannot transition to `validated` (not `pending`).
 - `1` — no pending handoff found for this snapshot.
 
 ---
@@ -3386,6 +3468,31 @@ id  snapshot  task  from-vendor  to-vendor  status   created-at
 **Schema effects:** Reads `handoffs`, `context_snapshots`, `tasks`.
 
 **Capture:** None.
+
+---
+
+### `planar handoff create <snapshot-id> [--vendor <v>] [--note <text>] [--json]`
+
+**Description:** Create a `pending` handoff anchored to an existing context snapshot (see `planar capture snapshot`). `--note` attaches a free-form handoff message; `--vendor` records the originating vendor. The handoff must then pass `handoff validate` before it is eligible for `handoff consume`.
+
+**Schema effects:** Inserts a `handoffs` row with `status='pending'`.
+
+---
+
+### `planar handoff show <handoff-id> [--json]`
+
+**Description:** Show one handoff's details — its status, anchoring snapshot, note, and timestamps.
+
+---
+
+### `planar handoff abandon <handoff-id> [--reason <text>] [--vendor <v>] [--note <text>] [--json]`
+
+**Description:** Abandon a non-terminal handoff (`pending` or `validated`), recording an optional `--reason`. Terminal handoffs (already `consumed`/`abandoned`) cannot be abandoned again.
+
+**Schema effects:** Updates the `handoffs` row to `status='abandoned'`.
+
+**Exit codes:**
+- `1` — handoff not found, or already terminal.
 
 ---
 
@@ -3621,6 +3728,20 @@ session 101  vendor: claude  task: 42  2026-05-10T09:00Z → 2026-05-10T11:30Z
 
 **Exit codes:**
 - `1` — session not found.
+
+---
+
+### `planar audit publish-decision <decision-id> [--json]`
+
+**Description:** Post a decision's body to every operational-plane target reachable from that decision's external links — the bridge that pushes a recorded local decision out to the linked Jira issue / GitHub issue as a comment. Subject to the cross-scope guard (the decision's scope must agree with the operator's, or pass `--scope`).
+
+**Schema effects:** Reads `decisions`, `external_links`, `external_systems`; inserts `sync_events`. Performs outbound HTTP to each linked system.
+
+---
+
+### `planar audit handoff-readiness [--threshold <n>] [--json]`
+
+**Description:** Check resume-readiness across all in-flight tasks at once — the fleet-wide companion to `resume validate`. Reports which tasks would resume cleanly and which are missing a next action or capture context. `--threshold` tunes the staleness cutoff.
 
 ---
 
@@ -3861,7 +3982,18 @@ entity link 22 removed
 
 ---
 
+### `planar links trail <link-id> [--json]`
+
+**Description:** Show the audit trail for an `entity_links` row — the sequence of `sync_events` and related activity recorded against that link over its lifetime. The read-side companion to the link-mutation verbs.
+
+---
+
 ### `planar links update <link-id>`
+
+> **Not yet implemented.** This verb is deferred to the M11 external-plane
+> work. Invoking it prints `links update is deferred to M11` and makes no
+> change; use `links remove` + `links add` as a workaround. The behavior
+> described below is the intended contract, not the current one.
 
 **Synopsis:**
 ```
@@ -4082,8 +4214,9 @@ See also: `spec ingest` (decompose workbench planning docs), `ext propagate` (pu
 ```
 planar import <repo-root> [--from-github] [--dry-run] [--strict]
                             [--threshold <float>] [--roadmap <path>]
-                            [--apply] [--refresh-status] [--scope <slug>]
-                            [--no-status-inference] [--trust-status-inference]
+                            [--apply] [--apply-removals] [--scope <slug>]
+                            [--no-status-inference] [--interpret] [--no-interpret]
+                            [--accept-spec] [--no-forward-specs]
 ```
 
 **Description:** Walk the repository at `<repo-root>`, parse planning artefacts from the filesystem and git history, infer task completion status, build an ImportPlan, and (optionally) commit it to the database.
@@ -4110,26 +4243,22 @@ Idempotency: items already present in the database (matched by title and source-
 | `--threshold <float>` | `0.7` | Confidence threshold for git-log correlation (0.0–1.0). Items whose best git-log match scores below this value are considered ambiguous. |
 | `--roadmap <path>` | auto | Explicit path to the roadmap file. Overrides auto-discovery. Useful when the roadmap has a non-standard name or location. |
 | `--apply` | off | Commit the import to the database. Without this flag, preview only. |
-| `--refresh-status` | off | Re-run inference on already-imported tasks and update their status if the inferred status now differs (e.g. new commits match a previously-todo task). Status is the only field updated; title, body, and all other fields are left intact. No-op when status is already current. Has no effect without `--apply` unless combined with `--dry-run` to preview what would change. |
+| `--apply-removals` | off | When applying, also remove entities that are gone from the source. |
 | `--scope <slug>` | cwd-derived | Scope for all created entities. Overrides cwd derivation for this invocation. |
 | `--no-status-inference` | off | Default every imported task to `status=todo`, `signal=no-inference`, `confidence=0`. Skips layers 2-3 (branch + git-log correlation) of `adopter.Infer`; the checkbox layer still runs because checkbox state is operator-explicit. Use for greenfield, docs-only, or fresh-fork repos where status correlation is unreliable by construction. |
-| `--trust-status-inference` | off | Explicit bypass for the >25% auto-done refusal (see below). Pass when you have a clean repo with a high genuinely-done count and have manually verified the inferred done marks. Mutually exclusive with `--no-status-inference`. |
+| `--interpret` | off | Run the optional LLM interpretation pass after the deterministic classifier (see the `pl-import` skill). |
+| `--no-interpret` | off | Force the deterministic-only path, skipping the LLM interpretation pass. |
+| `--accept-spec` / `--no-forward-specs` | off | Spec-forwarding controls for imported planning specs. |
 
-**>25% auto-done refusal:** When `--threshold 0.0` disables the [confidence floor](#confidence-floor) and more than 25% of inferred tasks would land as `status=done` via git-log correlation, `import` refuses the import. The refusal text is:
-
-```
-warning: --threshold 0.0 would auto-mark <N>/<TOTAL> tasks (<P>%) as `status=done`
-         based on git-log correlation. In docs-only or fresh repos this is
-         almost always wrong. Refusing the import.
-
-Options:
-  --no-status-inference         skip inference entirely; default every task
-                                to status=todo
-  --trust-status-inference      explicit bypass; commit the done-marks (only
-                                when you've verified them)
-```
-
-Operators who passed `--threshold 0.0` to bypass the confidence floor but ended up with the >25% refusal should reach for `--no-status-inference` first. Run `task reopen <id>` to recover any individually wrongly-marked tasks from an earlier import.
+**>25% auto-done refusal (not yet in the Zig port):** The Go implementation
+refused an import when `--threshold 0.0` disabled the [confidence
+floor](#confidence-floor) and more than 25% of inferred tasks would land as
+`status=done`, offering `--trust-status-inference` as the explicit bypass.
+Neither the refusal nor the `--trust-status-inference` flag is wired into
+the current Zig binary. For an unreliable correlation today, reach for
+`--no-status-inference` (which IS implemented) to default every task to
+`status=todo`, and `task reopen <id>` to recover any individually
+wrongly-marked tasks from an earlier import.
 
 **Output (human, preview mode):**
 
@@ -4182,24 +4311,6 @@ github links created: 5
 
 The `github links created` line appears only when `--from-github` is set and issues were linked.
 
-The `tasks refreshed` line appears only when `--refresh-status` is set and at least one task status was updated.
-
-**Output (`--apply --refresh-status`, when refreshes occur):**
-
-```
-applied: 1 plans, 0 tasks, 0 artifacts, 0 decisions, 5 skipped
-anchor plan id: 87
-tasks refreshed: 1
-```
-
-**Preview output with `--refresh-status` (before `--apply`):**
-
-```
-~   task     Implement login form    [todo → done, refreshed]
-```
-
-The `~` marker indicates a status-only update on an already-imported task.
-
 **Schema effects:**
 
 Reads:
@@ -4248,7 +4359,6 @@ Use `import` instead when docs are clean and structured. See [Transcription vs S
 **Synopsis:**
 ```
 planar synthesize <repo-root> [--apply] [--apply-removals] [--scope <slug>]
-                                 [--no-status-inference] [--trust-status-inference]
                                  [--threshold <float>] [--code-layout <name>]
                                  [--treat-as-greenfield] [--treat-as-nongreenfield]
                                  [--accept-spec <slug>] [--no-forward-specs]
@@ -4274,8 +4384,6 @@ The LLM never runs in Go. The Go side writes a `synthesis.Request` to `$PLANAR_H
 | `--apply` | off | Commit additions and updates. |
 | `--apply-removals` | off | Commit removals (soft-cancel). Requires `--apply`. |
 | `--scope <slug>` | cwd-derived | Override scope resolution. |
-| `--no-status-inference` | off | Default every task to `status=todo`. Skips status inference entirely. |
-| `--trust-status-inference` | off | Bypass the >25% auto-done refusal. Mutually exclusive with `--no-status-inference`. |
 | `--threshold <0..1>` | `0.7` | Confidence floor for ambiguous items. |
 | `--code-layout <name>` | auto | Override layout detection. One of `swift`, `go`, `node`, `python`, `mixed`. |
 | `--treat-as-greenfield` | off | Force greenfield mode even when code is detected. Forces every task to land `status=todo`. |
@@ -4283,7 +4391,6 @@ The LLM never runs in Go. The Go side writes a `synthesis.Request` to `$PLANAR_H
 | `--accept-spec <slug>` | interactive | Non-interactive forward-spec selection; `all` accepts every proposed forward spec. |
 | `--no-forward-specs` | off | Skip the forward-spec phase entirely. |
 | `--literal` | off | Delegate to `import` (transcription). Useful when you started with `synthesize` but realize the repo is clean enough for transcription. |
-| `--greenfield` | off | Deprecated alias for `--treat-as-greenfield`. |
 | `--dry-run` | off | Emit the ImportPlan as JSON without writing, regardless of `--apply`. |
 | `--json` | off | Machine-readable output. |
 
@@ -4995,7 +5102,7 @@ Schema-version handshake: `planar-agent` is a **consumer** of the schema, not it
 ```text
 # Atomic operations — each wraps (claim lifecycle + action lifecycle +
 # task status transition) in a single BEGIN IMMEDIATE transaction.
-planar-agent pull       <plan-id> [--vendor-session <vendor:id>] [--role coder] [--ttl <duration>] [--purpose <text>] [--base-ref <git-ref>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--json]
+planar-agent pull       <plan-id> [--vendor <v>] [--vendor-session <vendor:id>] [--role coder] [--ttl <duration>] [--purpose <text>] [--base-ref <git-ref>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--metadata <json>] [--parent-action <action-id>] [--json]
 planar-agent peek       <plan-id> [--json]
 planar-agent complete   --claim <token> [--summary <text>] [--json]
 planar-agent fail       --claim <token> --reason <text> [--json]
@@ -5004,12 +5111,12 @@ planar-agent block      --claim <token> --blocker <task-id> [--reason <text>] [-
 
 # Claim primitives — for orchestrator-dispatch (caller already knows the
 # target entity by id). claim does NOT auto-transition task status.
-planar-agent claim      --entity task:<id>|plan:<id>|plan_step:<id> [--vendor-session <vendor:id>] [--role <r>] [--ttl <duration>] [--purpose <text>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--force] [--json]
+planar-agent claim      --entity task:<id>|plan:<id>|plan_step:<id> [--vendor <v>] [--vendor-session <vendor:id>] [--role <r>] [--ttl <duration>] [--purpose <text>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--force] [--json]
 planar-agent heartbeat  --claim <token> [--ttl <duration>] [--status <text>] [--json]
 
 # Nested action lifecycle — for sub-tool-calls or sub-phases inside a
 # claim. Optional; lightweight claims skip these.
-planar-agent action start  --claim <token> --kind <kind> [--entity <kind>:<id>] [--vendor-role <s>] [--repo-root <path>] [--no-locality-probe] [--json]
+planar-agent action start  --claim <token> --kind <kind> [--entity <kind>:<id>] [--vendor-role <s>] [--repo-root <path>] [--no-locality-probe] [--metadata <json>] [--json]
 planar-agent action end    --action <id> [--outcome ok|error|aborted|timeout] [--summary <s>] [--json]
 
 # Vendor hook ingestion — translates hook events into the primitives.
@@ -5483,6 +5590,16 @@ The catalog is built at comptime from the command tree, so the verb is a pure wr
 
 ---
 
+## Domain: `search`
+
+### `planar search <query> [--kind <kind>] [--status <status>] [--scope <scope>] [--plan <id>] [--limit <n>] [--json]`
+
+**Description:** Full-text search across plans, tasks, questions, scenarios, decisions, and artifacts (backed by the FTS5 index from migration `00011_slug_refs_fts`). The positional `<query>` is the search string. Narrow results with `--kind` (restrict to a single entity kind), `--status`, `--scope`, or `--plan` (entities under a given plan); cap with `--limit`. `--json` emits the structured result list.
+
+**Schema effects:** Reads the FTS index and the underlying entity tables. No writes.
+
+---
+
 ## Command Index
 
 For quick reference, all documented commands grouped by domain:
@@ -5502,6 +5619,7 @@ For quick reference, all documented commands grouped by domain:
 | `scenario` | `scenario add`, `scenario verify`, `scenario list`, `scenario show`, `scenario edit`, `scenario view`, `scenario diff`, `scenario retire` |
 | `decision` | `decision add`, `decision accept`, `decision supersede`, `decision withdraw`, `decision list`, `decision show`, `decision edit`, `decision view`, `decision diff` |
 | `artifact` | `artifact add`, `artifact show`, `artifact list`, `artifact update`, `artifact edit`, `artifact view`, `artifact diff`, `artifact link` |
+| `annotate` | `annotate add`, `annotate show`, `annotate list`, `annotate update`, `annotate remove`, `annotate tag`, `annotate resolve`, `annotate dismiss`, `annotate archive`, `annotate bulk-resolve`, `annotate bulk-dismiss`, `annotate bulk-archive`, `annotate verify`, `annotate sweep` |
 | `promote` | `promote`, `demote` |
 | `workbench` | `workbench push`, `workbench pull`, `workbench status`, `workbench resolve`, `workbench sync`, `workbench archive`, `workbench restore`, `workbench list`, `workbench publish`, `workbench edit` |
 | `workspace` | `workspace init`, `workspace doctor`, `workspace routing build`, `workspace routing show`, `workspace regenerate` |
@@ -5509,11 +5627,12 @@ For quick reference, all documented commands grouped by domain:
 | `link` | `link`, `unlink` |
 | `sync` | `sync pull`, `sync push`, `sync status`, `sync resolve` |
 | `resume` | `resume`, `resume validate` |
-| `handoff` | `handoff`, `handoff validate`, `handoff list`, `handoff consume` |
+| `handoff` | `handoff`, `handoff create`, `handoff validate`, `handoff list`, `handoff show`, `handoff consume`, `handoff abandon` |
 | `capture` | `capture session`, `capture end`, `capture note`, `capture command`, `capture file`, `capture snapshot` |
-| `audit` | `audit trail`, `audit session` |
+| `audit` | `audit trail`, `audit session`, `audit publish-decision`, `audit handoff-readiness` |
 | `health` | `health` |
-| `links` | `links list`, `links remove` |
+| `links` | `links add`, `links list`, `links remove`, `links trail`, `links update` (deferred to M11) |
+| `search` | `search <query>` |
 | `spec` | `spec ingest` |
 | `test-spec` | `test-spec status` |
 | `import` | `import <repo-root>` |

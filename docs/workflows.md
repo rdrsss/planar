@@ -862,7 +862,7 @@ planar decision add "Adopt strict resolver for writes" \
   --kind design
 ```
 
-`decision add` is a create verb, so the guard does not fire — the new decision's scope is whatever `--scope` resolves to. The guard fires on subsequent `decision update`, `decision supersede`, and `audit publish-decision` calls.
+`decision add` is a create verb, so the guard does not fire — the new decision's scope is whatever `--scope` resolves to. The guard fires on subsequent `decision edit`, `decision supersede`, and `audit publish-decision` calls.
 
 ### Debugging stale stack state
 
@@ -1039,7 +1039,7 @@ Use this when your daily working tree is a workspace directory (`~/work/`, `~/pr
 
 **What happens:** `planar workspace init` builds the org + project rows in one transaction, creates the state directory under `~/.planar/workspaces/<org_id>/`, scans the member repos to produce a structured routing table, regenerates `AGENTS.md` from that table, and installs symlinks at the workspace root (`AGENTS.md`, `CLAUDE.md`) that point at the canonical content. Subsequent shape changes (new repo, new plans, dependencies shifting) are absorbed by re-running the routing build and regenerate verbs; the symlinks stay valid.
 
-**Scope discipline in a workspace.** The [cross-scope guard](concepts.md#cross-scope-guard) fires on every mutating verb that takes an existing entity id, not only on `spec ingest` (the original lectio incident). When you are working from the workspace root (`~/work/`), cwd resolves to `org:work`; a `planar task update 142` against a task that belongs to `project:repo-a` is refused unless you `cd ~/work/repo-a` first or pass `--scope project:repo-a` explicitly. The same rule applies to `plan update`, `decision update`, `decision supersede`, `audit publish-decision`, `artifact update`, single-target `sync push`/`sync pull`/`sync resolve`, `ext create --from`, `ext propagate`, `link`/`unlink`, and `links update`. Create verbs (`task add`, `decision add`, etc.) and entity-link verbs (`task link`, `links add`, `task touches add`) are not guarded — they are designed to cross scopes.
+**Scope discipline in a workspace.** The [cross-scope guard](concepts.md#cross-scope-guard) fires on every mutating verb that takes an existing entity id, not only on `spec ingest` (the original lectio incident). When you are working from the workspace root (`~/work/`), cwd resolves to `org:work`; a `planar task update 142` against a task that belongs to `project:repo-a` is refused unless you `cd ~/work/repo-a` first or pass `--scope project:repo-a` explicitly. The same rule applies to `plan update`, `decision edit`, `decision supersede`, `audit publish-decision`, `artifact update`, single-target `sync push`/`sync pull`/`sync resolve`, `ext create --from`, `ext propagate`, `link`/`unlink`, and `links update`. Create verbs (`task add`, `decision add`, etc.) and entity-link verbs (`task link`, `links add`, `task touches add`) are not guarded — they are designed to cross scopes.
 
 ### Step 1 — Initialize the workspace
 

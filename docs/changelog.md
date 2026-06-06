@@ -26,6 +26,13 @@ when sources have drifted; hand-edit policy with `--force` /
 kind with zero backlinks), and `planar doc coverage` (done plans
 with no published doc).
 
+> **Port status.** These `planar doc promote/regenerate/backlinks/orphans/coverage`
+> CLI verbs are from the Go implementation and are **not yet wired into the
+> Zig port**. The current `planar-doc` binary exposes the manifest surface
+> only — `build`, `verify`, `diff`, `cover`, `nodoc`, `lint`, `schema`. The
+> synthesis engine modules exist under `src/engine/docs/` but have no CLI
+> entry point yet.
+
 ### Plan 135: workspace AGENTS.md generation
 
 Plan 135 shipped the workspace AGENTS.md generation pipeline. A
@@ -35,8 +42,8 @@ canonical `AGENTS.md`, the routing-table JSON, and per-workspace
 config. The repo workspace root holds symlinks back to those
 canonical files (with a degraded copy-mode fallback).
 `planar workspace init` scaffolds the org association and writes
-the first routing table; `planar workspace scan` refreshes static
-signals; `planar workspace regenerate` re-renders AGENTS.md;
+the first routing table; `planar workspace routing build` refreshes
+static signals; `planar workspace regenerate` re-renders AGENTS.md;
 `planar workspace doctor` inspects symlink lifecycle health.
 
 ### Plan 88: strict scope resolution shipped

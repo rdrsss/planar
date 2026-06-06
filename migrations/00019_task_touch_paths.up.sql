@@ -32,4 +32,4 @@ create index ix_task_touch_paths_repo on task_touch_paths(repo_id);
 -- ============================================================
 
 insert into schema_migrations (version, description)
-values (18, 'task_touch_paths: path-level task-touch declarations for the parallelizability rules');
+values (19, 'task_touch_paths: path-level task-touch declarations for the parallelizability rules');

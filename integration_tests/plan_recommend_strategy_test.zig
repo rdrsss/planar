@@ -4,7 +4,7 @@
 //! Black-box coverage for the parallelizability-rules engine verb
 //! (decision 370, M5 task 3186). Walks a realistic operator workflow:
 //! seed a plan with several open tasks, declare path-level touches (via
-//! `task touches add <task> <repo> --path <p>`, migration 00018), link an
+//! `task touches add <task> <repo> --path <p>`, migration 00019), link an
 //! open question and a proposed decision, and set up a blocked_by edge,
 //! then assert the eligibility partition + per-rule exclusion reasons.
 //!

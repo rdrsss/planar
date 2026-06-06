@@ -3,8 +3,8 @@
 //! Locks the capability invariants of the five-binary architecture as
 //! integration tests. The capability boundary is the binary's verb set,
 //! not runtime ACLs; future changes that add a write verb to
-//! planar-watch or a planning-entity verb to planar-agent will fail
-//! these tests immediately.
+//! planar-watch / planar-doc or a planning-entity verb to planar-agent
+//! will fail these tests immediately.
 //!
 //! Verifies:
 //!
@@ -22,6 +22,10 @@
 //!     read verbs + version + completion, AND no write verbs from
 //!     either planar-agent or planar.
 //!
+//!   - planar-doc verb-set audit. Asserts EXACTLY the 7 doc verbs
+//!     (build, verify, diff, cover, nodoc, lint, schema), AND no write
+//!     verbs from planar-agent and no planning-entity verbs from planar.
+//!
 //!   - planar-watch DB stays read-only at the binary level: invoking
 //!     planar-watch verbs against a populated DB does NOT mutate the
 //!     schema_migrations baseline row or any agent_* table contents.
@@ -35,12 +39,6 @@
 //!     AND contains NONE of the planning-entity verbs (plan, task,
 //!     decision, question, scenario, artifact, etc.) — planar-execute
 //!     is a pure CLI driver that holds no DB handle.
-//!
-//! Known follow-up: planar-doc capability lock is NOT yet in this file.
-//! planar-doc (build/verify/diff/cover/nodoc/lint/schema) has been a
-//! family binary since plan 85 but its verb-set has not been formally
-//! locked here. File a follow-up task to add a planar-doc verb-set
-//! audit test that mirrors the planar-execute pattern below.
 //!
 //! These tests are the SECURITY contract — a vendor hook configured
 //! with only planar-agent on PATH cannot touch planning state; a
@@ -80,6 +78,21 @@ fn resolveWatchBin() []const u8 {
     }
     @panic(
         \\PLANAR_WATCH_BIN is not set.
+        \\Run integration tests via: make test-integration (which sets it).
+    );
+}
+
+fn resolveDocBin() []const u8 {
+    const raw: [*:null]?[*:0]u8 = std.c.environ;
+    var i: usize = 0;
+    while (raw[i]) |entry| : (i += 1) {
+        const s: []const u8 = std.mem.span(entry);
+        if (std.mem.startsWith(u8, s, "PLANAR_DOC_BIN=")) {
+            return s["PLANAR_DOC_BIN=".len..];
+        }
+    }
+    @panic(
+        \\PLANAR_DOC_BIN is not set.
         \\Run integration tests via: make test-integration (which sets it).
     );
 }
@@ -374,6 +387,49 @@ test "planar-watch verb set is EXACTLY the read verbs + version + completion" {
         "spec",     "templates", "ext",      "sync",      "promote",
         "demote",   "capture",
     }, "planar-watch");
+}
+
+// =========================================================================
+// planar-doc capability boundary — the fourth binary.
+// =========================================================================
+//
+// planar-doc is the doc-system manifest tool. It touches the working tree
+// and the .manifest-docs index, NOT SQLite — so it must expose only its
+// seven doc verbs and NONE of planar-agent's write verbs or planar's
+// planning-entity verbs. assertExactSet pins the count, so any verb added
+// to planar-doc (regardless of origin) fails this test immediately.
+
+test "planar-doc verb set is EXACTLY the 7 doc verbs" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const res = runBin(&suite, resolveDocBin(), &.{"--help"});
+    defer res.deinit(gpa);
+    try std.testing.expect(res.term == .exited);
+    try std.testing.expectEqual(@as(u32, 0), res.term.exited);
+
+    var verbs = parseHelpVerbs(gpa, res.stdout);
+    defer freeVerbSet(gpa, &verbs);
+
+    try assertExactSet(&verbs, &.{
+        "build", "verify", "diff", "cover", "nodoc", "lint", "schema",
+    }, "planar-doc");
+
+    // Forbidden: every planar-agent write verb.
+    try assertContainsNone(&verbs, &.{
+        "pull",    "claim", "heartbeat", "complete", "fail",
+        "release", "block", "action",    "ingest",   "reconcile",
+        "abort",   "peek",
+    }, "planar-doc");
+
+    // Forbidden: every planar planning-entity verb.
+    try assertContainsNone(&verbs, &.{
+        "plan",      "task",      "decision", "question",  "scenario",
+        "artifact",  "annotate",  "init",     "workbench", "spec",
+        "templates", "ext",       "sync",     "promote",   "demote",
+        "capture",   "dashboard", "tree",     "health",
+    }, "planar-doc");
 }
 
 // planar-watch is read-only at two levels:

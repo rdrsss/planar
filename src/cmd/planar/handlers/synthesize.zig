@@ -19,7 +19,7 @@ pub const verb: cli.Cmd = .{
         .{ .long = "--code-layout", .kind = .string },
         .{ .long = "--treat-as-greenfield", .kind = .bool, .default = .{ .bool = false } },
         .{ .long = "--treat-as-nongreenfield", .kind = .bool, .default = .{ .bool = false } },
-        .{ .long = "--threshold", .kind = .string, .desc = "Similarity threshold (float as string for now)" },
+        .{ .long = "--threshold", .kind = .string, .desc = "Similarity threshold, e.g. 0.7" },
         .{ .long = "--literal", .kind = .bool, .default = .{ .bool = false } },
         .{ .long = "--accept-spec", .kind = .string, .desc = "Non-interactive forward-spec selection — slug, comma-separated slugs, or 'all'" },
         .{ .long = "--no-forward-specs", .kind = .bool, .default = .{ .bool = false }, .desc = "Skip forward-spec processing entirely" },

@@ -221,7 +221,13 @@ fn fetchAnchor(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan_id: i
             errdefer allocator.free(slug);
             const assoc_slug = try stmt.columnTextAlloc(1, allocator);
             errdefer allocator.free(assoc_slug);
-            const plan_key = try std.fmt.allocPrint(allocator, "p{d}", .{anchor_plan_id});
+            // Mirror sync.zig: the feature-dir key is the plan's
+            // external_id when it has an external link, falling back to
+            // `p{d}` only when unlinked. Hardcoding `p{d}` here made GC
+            // compute the wrong feature_dir for externally-linked plans
+            // and silently skip their trees.
+            const plan_key = try resolvePlanKey(d, allocator, anchor_plan_id);
+            errdefer allocator.free(plan_key);
             break :blk .{
                 .id = anchor_plan_id,
                 .slug = slug,
@@ -236,6 +242,19 @@ fn freeAnchor(allocator: std.mem.Allocator, a: Anchor) void {
     allocator.free(a.slug);
     allocator.free(a.assoc_slug);
     allocator.free(a.plan_key);
+}
+
+/// Resolve a plan's feature-dir key: its `external_links.external_id`
+/// when linked, else the `p{d}` fallback. Mirrors
+/// `sync.zig:resolvePlanKey` so gc and sync agree on the feature path.
+fn resolvePlanKey(d: *db.sqlite.Db, allocator: std.mem.Allocator, plan_id: i64) ![]const u8 {
+    var stmt = d.prepare("select external_id from external_links where entity_kind='plan' and entity_id=? limit 1") catch return std.fmt.allocPrint(allocator, "p{d}", .{plan_id});
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .int = plan_id }}) catch return std.fmt.allocPrint(allocator, "p{d}", .{plan_id});
+    switch (stmt.step() catch .done) {
+        .done => return std.fmt.allocPrint(allocator, "p{d}", .{plan_id}),
+        .row => return stmt.columnTextAlloc(0, allocator),
+    }
 }
 
 fn fetchStatus(d: *db.sqlite.Db, allocator: std.mem.Allocator, kind: []const u8, id: i64) ![]const u8 {

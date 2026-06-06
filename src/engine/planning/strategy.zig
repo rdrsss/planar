@@ -51,7 +51,7 @@
 //!     whole-repo touch `{ repo_id, path = null }`.
 //!   - path touches: task_touch_paths rows joined on task_touch_paths.task_id
 //!     — seeded by `planar task touches add <task> <repo> --path <path>`
-//!     (migration 00018). These produce `{ repo_id, path }` and carry the
+//!     (migration 00019). These produce `{ repo_id, path }` and carry the
 //!     file-path precision rules 2/3/4 need.
 //! Because BOTH granularities carry repo identity, a whole-repo touch
 //! conflicts with ANY same-repo touch (coarse or path) — two whole-repo
@@ -510,7 +510,7 @@ fn loadOpenTasks(
 /// touch correctly conflicts with a same-repo path-touch:
 ///
 ///   - For a repo a task touches at the file level (task_touch_paths rows,
-///     migration 00018), each declared FILE PATH becomes a touch
+///     migration 00019), each declared FILE PATH becomes a touch
 ///     `{ repo_id, path }`. Two tasks editing different files in the SAME
 ///     repo are therefore disjoint (parallel-eligible), which is the whole
 ///     point of path-level precision.
@@ -546,7 +546,7 @@ fn loadTouches(
     var refined = std.AutoHashMap(i64, void).init(allocator);
     defer refined.deinit();
 
-    // Declared file paths via task_touch_paths (migration 00018).
+    // Declared file paths via task_touch_paths (migration 00019).
     {
         var stmt = d.prepare(
             "select repo_id, path from task_touch_paths where task_id = ?",
