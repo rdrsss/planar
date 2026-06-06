@@ -12,6 +12,8 @@ comptime {
     _ = @import("planar_execute_doctor_test.zig");
     _ = @import("planar_execute_agent_live_test.zig");
     _ = @import("planar_execute_eligible_test.zig");
+    _ = @import("planar_execute_refusal_guard_test.zig");
+    _ = @import("planar_execute_quality_spine_test.zig");
     _ = @import("workbench_terminal_filter_test.zig");
     _ = @import("workbench_gc_test.zig");
     _ = @import("config_test.zig");
