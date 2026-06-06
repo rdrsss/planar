@@ -90,7 +90,7 @@ The `agent_actions.metadata` JSON column (migration 00016) is the durable home f
 
 ### Four-binary architecture
 
-Planar ships FOUR binaries that share one schema, one engine module, and one runtime library. The split is real: separate `src/cmd/` source trees (`src/cmd/planar/`, `src/cmd/planar-agent/`, `src/cmd/planar-watch/`, `src/cmd/planar-doc/`), separate `addExecutable` entries in `build.zig`, separate `--help` surfaces, separate `bin/` artifacts under `~/.planar/bin/`.
+Planar ships FOUR planning-state binaries (plus the `planar-execute` orchestration driver — see [`planar-execute` — fifth binary, no DB handle](#planar-execute--fifth-binary-no-db-handle)) that share one schema, one engine module, and one runtime library. The split is real: separate `src/cmd/` source trees (`src/cmd/planar/`, `src/cmd/planar-agent/`, `src/cmd/planar-watch/`, `src/cmd/planar-doc/`), separate `addExecutable` entries in `build.zig`, separate `--help` surfaces, separate `bin/` artifacts under `~/.planar/bin/`.
 
 | Binary | Audience | Write surface | DB open mode |
 |---|---|---|---|
@@ -122,6 +122,14 @@ are `agent_*` table writers. The capability boundary tracks tables,
 not audience.
 
 The shared engine module lives at `src/engine/runtime/agentactivity/`; per-binary handlers live under `src/cmd/<binary>/handlers/`. `planar-agent` carries the full 13-verb coordination surface; `planar-watch` carries the read-only viewer surface (`feed`, `ps`, `claims`, `actions`, `plans`, `log`, `version`, `completion`) with a Tier-2 event-driven `--follow` loop.
+
+### `planar-execute` — fifth binary, no DB handle
+
+`planar-execute` (plan 492) is the embedded-Lua orchestration driver. It sits **outside** the four-binary SQLite boundary: it holds no DB handle and never opens SQLite at all. Its source tree lives under `src/cmd/planar-execute/` (separate `addExecutable` entry in `build.zig`); it links the Lua 5.4 C library (vendored) but does not link `src/db/` or `vendor/sqlite/`.
+
+All state reads that a workflow script needs go through `planar` / `planar-agent` subprocesses (`planar-execute` shells them and parses JSON stdout). All writes happen through `planar-agent` verbs called by the `claude -p` workers `planar-execute` spawns. The workers run with a constrained PATH (`planar-agent` + `git` + system dirs; `planar` absent) — so no worker can call planning-entity mutations or open the DB read-write.
+
+This makes `planar-execute` a **pure CLI driver**: its blast radius is bounded by the verb sets of the binaries it shells, not by its own access. See [docs/concepts.md § Embedded-Lua control plane](concepts.md#embedded-lua-control-plane) for the conceptual model and [docs/cli-reference.md § Binary: planar-execute](cli-reference.md#binary-planar-execute) for the full flag reference.
 
 ### Live tail wake abstraction
 
@@ -578,3 +586,4 @@ The integration suite also follows two stylistic conventions documented in [`CLA
 - **Skills call the binaries.** Agent skills do not write the database directly. They invoke `planar` / `planar-agent` verbs and read stdout. `planar-watch` is read-only and opens the database via `file:?mode=ro`.
 - **Schema is the contract.** Read-side tools must check `schema_migrations.version` before operating against the database. `planar-agent` and `planar-watch` enforce this at startup (exit 7 on mismatch).
 - **The four-binary capability split is verb-level.** A binary can only do what its registered verb set lets it do; `integration_tests/capability_boundary_test.zig` fails CI if a write verb is registered on `planar-watch`, a planning-entity verb on `planar-agent`, or any SQLite-touching verb on `planar-doc`.
+- **`planar-execute` holds no DB handle.** The fifth binary (plan 492) is a pure CLI driver: it shells `planar`/`planar-agent`/`git` for all state access and never opens SQLite directly. Its blast radius is bounded by the verb sets of the binaries it shells.

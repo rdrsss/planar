@@ -2315,3 +2315,104 @@ The task is now back in the pickable pool. You can either dispatch a fresh coder
 The persisted `worktree_path` on the (now stale or aborted) claim is the recovery key. Without it you'd be left scanning `/repo/.worktrees/` and guessing which directory belonged to which dead coder. With it, every operator-side recovery verb (`planar-watch claims`, `planar-agent reconcile`, `planar-agent abort`) surfaces or operates against the path deterministically, and a fresh `planar-agent claim --worktree <path>` reuses the on-disk checkout instead of creating a new one.
 
 For the persistence-on-claim contract see [`docs/concepts.md §Worktree`](concepts.md#worktree); for the canonical claim ritual see [`agents/methodology.md §Coordination claims`](../agents/methodology.md#coordination-claims).
+
+---
+
+## Recipe 24 — Author and run a `planar-execute` workflow
+
+`planar-execute` is a thin Lua 5.4 runtime that drives `claude -p` agent workers through a `ctx` host-function surface. This recipe walks from authoring a minimal workflow through mock testing to a live run.
+
+### What you need
+
+- `planar-execute` installed at `~/.planar/bin/planar-execute` (via `install.sh`).
+- A plan with at least one open task (`planar task list --plan <id>`).
+- For live runs: `claude` on `$PATH` and `PLANAR_EXECUTE_LIVE_AGENT=1` in the environment.
+
+### Step 1 — Write a minimal workflow
+
+A workflow is a Lua file that returns a table with `meta` and `run`:
+
+```lua
+-- my-workflow.lua
+return {
+  meta = {
+    name        = "my-workflow",
+    description = "Single-task coder dispatch, no reviewer.",
+    phases      = { "Dispatch" },
+    -- Omit meta.reviewer = true only if the plan has no risky tasks.
+    -- For plans touching migrations or new CLI verbs, add: reviewer = true,
+  },
+  run = function(ctx)
+    local plan_id = tonumber(ctx.args[1])
+    ctx.phase("Dispatch")
+    ctx.log("dispatching coder for plan " .. plan_id)
+    local result = ctx.agent("Brief text here", {
+      role     = "coder",
+      task_id  = 0,   -- replace with real task id
+    })
+    ctx.log("agent returned status=" .. tostring(result.status))
+  end,
+}
+```
+
+For canonical examples see [`workflows/quality-spine.lua`](../workflows/quality-spine.lua) (coder + reviewer cadence) and [`workflows/parallel-fanout.lua`](../workflows/parallel-fanout.lua) (N-way parallel dispatch). See [`workflows/README.md`](../workflows/README.md) for template documentation and the operator extension checklist.
+
+### Step 2 — Validate meta with `--dry-run`
+
+Load and print `meta` without entering `run()`:
+
+```sh
+planar-execute run --dry-run my-workflow.lua
+```
+
+A clean exit (0) confirms the module loads, exports the required `meta` table, and lists the phases. Fix any load errors before proceeding.
+
+### Step 3 — Exercise control flow with `--mock-worker`
+
+Run the full workflow pipeline — including `ctx.parallel`, `ctx.pipeline`, `ctx.eligible`, and the journal — against a real plan but with a `FakeSpawner` instead of a real `claude -p` worker. No API cost, no filesystem writes from any worker:
+
+```sh
+planar-execute run --mock-worker --plan 42 my-workflow.lua 42
+```
+
+Stderr prints a `MOCK MODE` notice and per-agent canned outcomes (`status=released`). Inspect the output to confirm your `ctx.phase` / `ctx.log` calls and result-routing logic are correct.
+
+`--plan` is optional in mock mode (plan-state reads degrade gracefully when absent) but providing it exercises `ctx.eligible` against real plan state, which surfaces routing logic errors early.
+
+### Step 4 — Run live
+
+Set `PLANAR_EXECUTE_LIVE_AGENT=1` and provide `--plan`. The harness spawns real `claude -p` workers with a constrained PATH (`planar-agent` + `git` + system dirs; `planar` is intentionally absent — workers operate through `planar-agent` only):
+
+```sh
+PLANAR_EXECUTE_LIVE_AGENT=1 planar-execute run --plan 42 my-workflow.lua 42
+```
+
+**Prerequisites for a live run:**
+
+1. `claude` is on `$PATH` (or the vendor binary your harness targets).
+2. The plan has open tasks (`todo` or `in_progress` status).
+3. If any open task touches `migrations/*.sql`, a new top-level CLI verb, or invariant/methodology code: the workflow MUST declare `meta.reviewer = true`. Without it, the bright-line refusal guard trips with exit code 2 and a loud stderr message. Either add the declaration (and wire a reviewer `ctx.agent()` call for each task) or pass `--bypass-reviewer-guard` (with a loud warning and conscious acceptance of the doctrine risk).
+
+### Step 5 — Diagnose with `doctor`
+
+If something looks wrong with the read paths (schema mismatch, plan not found, reconcile probe failure), run the read-only diagnostic:
+
+```sh
+planar-execute doctor --plan 42
+planar-execute doctor --plan 42 --json   # machine-readable
+```
+
+`doctor` exercises all state-read helpers in order, collects every probe outcome, and exits non-zero if any probe failed. It never writes anything.
+
+### Observing a running workflow
+
+While a workflow is running, use `planar-watch` to observe the claim activity it generates:
+
+```sh
+planar-watch feed --follow   # cross-cutting activity feed
+planar-watch claims --plan 42 --json --follow
+```
+
+Workers spawned under `PLANAR_EXECUTE_LIVE_AGENT=1` appear as active claims; the harness heartbeats each claim automatically. Press Ctrl-C to stop the watcher (exit 0).
+
+For reference documentation on all flags see [`docs/cli-reference.md § Binary: planar-execute`](./cli-reference.md#binary-planar-execute). For the conceptual model of the Lua control plane and the no-DB-handle stance see [`docs/concepts.md § Embedded-Lua control plane`](./concepts.md#embedded-lua-control-plane).

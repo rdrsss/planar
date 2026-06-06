@@ -5316,15 +5316,167 @@ planar-doc lint        [--path <dir>] [--json]
 
 ---
 
+## Binary: `planar-execute`
+
+`planar-execute` is the **embedded-Lua orchestration driver**. Fifth binary in the architecture (plan 492). It hosts a Lua 5.4 runtime that drives `claude -p` workers via a `ctx` host-function surface, reading plan state through `planar` / `planar-agent` subprocesses. It holds **no DB handle** and never opens SQLite — it is a pure CLI driver that shells `planar`/`planar-agent`/`git` and parses their output.
+
+See [docs/concepts.md § Embedded-Lua control plane](./concepts.md#embedded-lua-control-plane) for the conceptual model, [docs/workflows.md § Recipe 24](./workflows.md#recipe-24--author-and-run-a-planar-execute-workflow) for the end-to-end authoring walkthrough, and [`workflows/README.md`](../workflows/README.md) for the bundled workflow templates.
+
+### Capability invariant
+
+A process invoked as `planar-execute` has **no DB handle** and registers no write verbs against any database. Its capability set is limited to what the binaries it shells (`planar`, `planar-agent`, `git`) expose through their own verb sets. A workflow script running under `planar-execute` cannot write planning entities directly — it must go through those CLI surfaces.
+
+The constrained worker PATH available to the `claude -p` subprocesses it spawns is restricted to `planar-agent`, `git`, and system bin directories. `planar` (the operator binary) is intentionally absent — this preserves the no-bare-operator-binary invariant inside the spawned workers (see [docs/concepts.md § Embedded-Lua control plane](./concepts.md#embedded-lua-control-plane)).
+
+### Verbs
+
+```
+planar-execute run   [--plan <id>] [--dry-run | --mock-worker] [--bypass-reviewer-guard] <workflow.lua> [args...]
+planar-execute version
+planar-execute doctor  --plan <id> [--json]
+```
+
+The bare form `planar-execute <workflow.lua> [args...]` (no explicit `run`) is also accepted — the binary injects `run` when the first positional is not a known subcommand. This is the operator-friendly invocation.
+
+### `planar-execute run`
+
+Load and execute a Lua workflow module. The module must export a table with a `meta` field and a `run(ctx)` function. Three mutually exclusive execution modes:
+
+| Mode | How to select | What happens |
+|------|--------------|--------------|
+| **Default (ungated)** | No flag, no env | `ctx.agent()` is a recording stub that returns `{status="stub"}`. Pure-Lua logic (eligible, parallel, pipeline, phase, log) runs normally. No workers spawned. |
+| **`--dry-run`** | `--dry-run` flag | Load and validate `meta`, print `meta` and `phases`, exit 0 **without** calling `run()`. Use this to validate workflow metadata before running. |
+| **`--mock-worker`** | `--mock-worker` flag | Attach a `FakeSpawner` driver: `run()` IS entered, the full scheduler/parallel/pipeline/heartbeat/journal pipeline runs, but `ctx.agent()` returns canned outcomes (`status="released"`, exit_code=0) without spawning any real `claude -p` worker. Stderr prints a MOCK MODE notice. Use this to exercise control flow at zero API cost. |
+| **Live** | `PLANAR_EXECUTE_LIVE_AGENT=1` env | Attach the real driver that spawns `claude -p` workers. Requires human review of the safety guards below. |
+
+**Flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--plan <id>` | Plan id for the run. Required when `PLANAR_EXECUTE_LIVE_AGENT=1`; optional in mock/stub modes (degrades claim-status reads and commit-presence sampling when absent). |
+| `--dry-run` | Load + validate `meta`, print and exit. Mutually exclusive with `--mock-worker` and `PLANAR_EXECUTE_LIVE_AGENT=1`. |
+| `--mock-worker` | Run with `FakeSpawner` — full pipeline, no real workers. Mutually exclusive with `--dry-run` and `PLANAR_EXECUTE_LIVE_AGENT=1`. |
+| `--bypass-reviewer-guard` | Operator-explicit override for the bright-line refusal guard (see below). Loud stderr warning when used. |
+
+**Positional arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<workflow>` | Path to the `.lua` workflow file. |
+| `[args...]` | Extra positionals passed to the workflow as `ctx.args[1]`, `ctx.args[2]`, … (1-indexed). |
+
+**The bright-line refusal guard** (`--bypass-reviewer-guard`): `planar-execute` refuses to run a workflow against a plan whose open tasks touch `migrations/*.sql`, a new top-level CLI verb, or invariant/methodology code, unless the workflow declares `meta.reviewer = true`. This guard enforces the reviewer-cadence doctrine for risky work. When the guard trips, exit code **2** is returned with a loud stderr message naming the refused plan. Pass `--bypass-reviewer-guard` to proceed anyway (prints a loud warning); use only when you have consciously accepted the doctrine risk.
+
+**Example:**
+
+```sh
+# Validate meta without running.
+planar-execute run --dry-run workflows/quality-spine.lua
+
+# Exercise control flow at zero cost against plan 42.
+planar-execute run --mock-worker --plan 42 workflows/quality-spine.lua 42
+
+# Live run (requires PLANAR_EXECUTE_LIVE_AGENT=1).
+PLANAR_EXECUTE_LIVE_AGENT=1 planar-execute run --plan 42 workflows/quality-spine.lua 42
+
+# Bypass the reviewer guard for a one-off recovery workflow (use with care).
+PLANAR_EXECUTE_LIVE_AGENT=1 planar-execute run --plan 42 --bypass-reviewer-guard workflows/recovery.lua 42
+```
+
+### `planar-execute version`
+
+Print the binary version and embedded Lua version, then exit 0.
+
+```sh
+planar-execute version
+# → planar-execute 0.1.0 (lua 5.4)
+```
+
+### `planar-execute doctor`
+
+Read-only diagnostic that exercises all state-read helpers (schema reads, plan reads, reconcile dry-run) against the live binaries and emits a health report. Never claims, completes, or writes anything.
+
+**Flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--plan <id>` | Required. Plan id to drive the plan-state read probes against. |
+| `--json` | Emit the report as JSON (machine form). Without this flag, one line per probe. |
+
+Probes run in order (collects all outcomes, never bails on first failure):
+
+1. `planar` schema ingestion
+2. `planar-agent` schema ingestion
+3. `plan show <id>`
+4. `plan next <id>`
+5. `test-spec status <id>`
+6. Reconcile dry-run (computes stale-cycle set, performs no teardown)
+
+**Exit codes:**
+
+| Code | Meaning |
+|------|---------|
+| `0` | All probes passed (`all_ok: true`). |
+| `1` | At least one probe failed (`all_ok: false`). |
+| `2` | Guard refusal — see `--bypass-reviewer-guard` above. |
+
+### Workflow module shape
+
+A workflow consumed by `planar-execute` is a Lua file that returns a table:
+
+```lua
+return {
+  meta = {
+    name        = "my-workflow",
+    description = "What this workflow does.",
+    phases      = { "Phase 1 name", "Phase 2 name" },  -- optional, informational
+    reviewer    = true,  -- declare reviewer cadence; required for risky plans
+  },
+  run = function(ctx)
+    -- ctx host-function surface available here
+  end,
+}
+```
+
+### `ctx` host-function surface
+
+The `ctx` object is injected by the host into every `run(ctx)` call. Available functions:
+
+| Function | Description |
+|----------|-------------|
+| `ctx.agent(brief, opts)` | Spawn a worker. `brief` is the text brief. `opts` table: `role` (string), `worktree_path` (string), `task_id` (int), `task_slug` (string), `claim_token` (string), `role_spec` (string). Returns a result table with `status` and related fields. Under `--mock-worker`, returns canned `{status="released"}` instantly. Under the live gate, spawns `claude -p`. |
+| `ctx.parallel(thunks)` | N-way barrier. `thunks` is a table of zero-arg functions. Runs all concurrently; returns a table of results in the same order. |
+| `ctx.pipeline(items, ...stages)` | Per-item stage pipeline. `items` is a list; each `stage` is a function `(ctx, item) -> result`. Chains stages sequentially per item. |
+| `ctx.eligible(plan_id)` | Read `planar plan recommend-strategy` for `plan_id`. Returns `{eligible: bool, fan_out_available: bool, serialized: bool}`. |
+| `ctx.phase(title)` | Mark the start of a named phase (recorded in the journal). |
+| `ctx.log(msg)` | Append a log line to the workflow journal. |
+| `ctx.workflow(name)` | Record the workflow name in the journal (stub; full recording in a later milestone). |
+| `ctx.now` | Host-injected timestamp (deterministic; do not call `os.time()` — `os` is stripped). |
+| `ctx.seed` | Host-injected random seed (deterministic; `math.random` is stripped). |
+| `ctx.args[N]` | Positional CLI arguments passed after `<workflow.lua>`, 1-indexed. |
+
+**Sandbox constraints:** the Lua environment strips `os`, `io`, and `math.random` / `os.time`. Use `ctx.now` and `ctx.seed` for time and randomness. `os.exit` is also stripped; the host controls the process lifecycle.
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Success. |
+| `1` | Workflow or runtime failure (load error, `run()` error, read failure). |
+| `2` | Bright-line refusal guard tripped (plan touches risky surfaces; workflow lacks `meta.reviewer = true`; see `--bypass-reviewer-guard`). |
+
+---
+
 ## Introspection: `schema` (all binaries)
 
-Every Planar binary — `planar`, `planar-agent`, `planar-watch`, `planar-doc` — exposes a `schema` verb that prints a deterministic flat JSON catalog of its entire command tree: each command's full path, subcommands, aliases, positionals, and flags (with inherited flags merged in). Output is always JSON.
+Every Planar binary — `planar`, `planar-agent`, `planar-watch`, `planar-doc`, `planar-execute` — exposes a `schema` verb that prints a deterministic flat JSON catalog of its entire command tree: each command's full path, subcommands, aliases, positionals, and flags (with inherited flags merged in). Output is always JSON.
 
 ```sh
 planar schema
 planar-agent schema
 planar-watch schema
 planar-doc schema
+planar-execute schema
 ```
 
 The catalog is built at comptime from the command tree, so the verb is a pure write with no DB access. It is intended for structured consumers — LLM tool routers, editor integrations, and the CLI-usage linter (`make cli-usage-check`) that validates authored agent/skill/doc surfaces never reference a flag a binary does not expose (implemented in `tools/cli_usage_lint.zig`).
@@ -5368,4 +5520,5 @@ For quick reference, all documented commands grouped by domain:
 | `synthesize` | `synthesize <repo-root>` |
 | `local` | `local list`, `local link`, `local unlink`, `local import`, `local migrate` |
 | `help` | `help` |
-| `schema` | `schema` (also on `planar-agent`, `planar-watch`, `planar-doc`) |
+| `schema` | `schema` (also on `planar-agent`, `planar-watch`, `planar-doc`, `planar-execute`) |
+| **`planar-execute`** | `run [--plan] [--dry-run\|--mock-worker] [--bypass-reviewer-guard] <workflow.lua>`, `version`, `doctor --plan <id> [--json]` |
