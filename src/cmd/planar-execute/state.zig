@@ -386,6 +386,59 @@ pub fn taskShow(
     }) catch return StateError.ParseFailed;
 }
 
+/// One path-level touch row inside `planar task touches list <task> --json`.
+///
+/// Real shape (captured 2026-06-05):
+///   { "task_id": 3206, "repos": ["..."], "paths": [{"repo":"...","path":"..."}] }
+///
+/// The harness's M10 refusal guard (task 3206) consumes only the `paths`
+/// array: a task that touches `migrations/*.sql`, a new top-level verb under
+/// `src/cmd/<bin>/handlers/`, or invariant/methodology code is risky enough
+/// to refuse running it under a workflow that omits a reviewer.
+pub const TaskTouchPath = struct {
+    repo: []const u8,
+    path: []const u8,
+};
+
+/// Result of `taskTouchesList`. `paths` is owned by the returned
+/// `std.json.Parsed` wrapper; call `.deinit()` to free.
+pub const TaskTouchesList = struct {
+    task_id: i64,
+    paths: []TaskTouchPath = &.{},
+};
+
+/// taskTouchesList shells `planar task touches list <task_id> --json` and
+/// returns a `std.json.Parsed(TaskTouchesList)`.
+///
+/// The caller owns the memory and MUST call `.deinit()` on the returned value.
+/// The `paths` slice and the strings inside it are owned by the `Parsed`
+/// wrapper (allocate = .alloc_always — same dangling-pointer fix as planShow).
+///
+/// This is the M10 bright-line refusal guard's read path (task 3206): the
+/// guard walks the plan's open tasks (planNext) and reads each one's
+/// declared file-level touches via this verb to classify whether any task
+/// trips the migration / new-verb / invariant predicates.
+pub fn taskTouchesList(
+    allocator: std.mem.Allocator,
+    io: Io,
+    task_id: u64,
+) StateError!std.json.Parsed(TaskTouchesList) {
+    var id_buf: [32]u8 = undefined;
+    const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{task_id}) catch return StateError.SubprocessFailed;
+
+    const stdout = try spawnPlanar(allocator, io, &.{ "task", "touches", "list", id_str, "--json" }, 256 * 1024);
+    defer allocator.free(stdout);
+
+    // `.allocate = .alloc_always` — see planShow for the rationale (escape-free
+    // string fields would otherwise borrow into the `stdout` buffer freed on
+    // return).  `ignore_unknown_fields` lets us elide `repos` even though the
+    // verb emits it.
+    return std.json.parseFromSlice(TaskTouchesList, allocator, stdout, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    }) catch return StateError.ParseFailed;
+}
+
 /// Minimal view of `planar question add ... --json`.
 ///
 /// Real shape (captured 2026-06-05):

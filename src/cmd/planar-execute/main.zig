@@ -57,6 +57,12 @@ const cli = @import("cli");
 /// Imported here so its `test` blocks run under the `execute_exe_tests` target.
 pub const state = @import("state.zig");
 
+/// Bright-line refusal guard — refuses to run a plan/task touching
+/// migrations/new-verb/invariant code under a workflow that omits a reviewer
+/// (plan 492 M10 task 3206, tech-spec 267 §1). Imported here so its `test`
+/// blocks run under the `execute_exe_tests` target.
+pub const refusal_guard = @import("refusal_guard.zig");
+
 /// Schema ingestion — `<bin> schema` subprocess + parse layer (task 3172 m2-schema-into-brief).
 /// Imported here so its `test` blocks run under the `execute_exe_tests` target.
 pub const schema = @import("schema.zig");
@@ -251,6 +257,14 @@ pub const WorkflowMeta = struct {
     description: []const u8,
     /// Owned slice of phase entries; each string inside is also allocator-owned.
     phases: []PhaseMeta,
+    /// Trust-based reviewer-cadence assertion (plan 492 M10 task 3206). When
+    /// true, the bright-line refusal guard PASSES — the author declares that
+    /// the workflow dispatches a reviewer for every cycle. False or absent
+    /// means the guard inspects the plan's open tasks for risky touches and
+    /// refuses to run when any are present. Defaults to `false` (conservative:
+    /// an ad-hoc workflow that does not declare the field cannot ship risky
+    /// changes unless the operator passes `--bypass-reviewer-guard`).
+    reviewer: bool = false,
 };
 
 /// A fully-loaded and validated workflow module.
@@ -3274,6 +3288,21 @@ fn extractMeta(
     }
     luaPop(L, 1); // pop phases value (table or nil/other)
 
+    // Extract meta.reviewer (optional bool). Absent or non-boolean ⇒ false.
+    // Trust-based reviewer-cadence assertion for the bright-line refusal
+    // guard (plan 492 M10 task 3206). The Lua script is dynamic — we cannot
+    // statically prove a reviewer dispatches every cycle, so the author
+    // takes the contract on by setting this field. The 3205 quality-spine
+    // built-ins will set `reviewer = true`; ad-hoc workflows that omit it
+    // refuse to run plans that touch risky surfaces unless the operator
+    // explicitly passes `--bypass-reviewer-guard`.
+    var reviewer: bool = false;
+    const reviewer_type = c.lua_getfield(L, meta_idx, "reviewer");
+    if (reviewer_type == c.LUA_TBOOLEAN) {
+        reviewer = c.lua_toboolean(L, -1) != 0;
+    }
+    luaPop(L, 1); // pop reviewer (boolean, nil, or other — always pop)
+
     // Pop meta table.
     luaPop(L, 1);
 
@@ -3281,6 +3310,7 @@ fn extractMeta(
         .name = meta_name,
         .description = meta_desc,
         .phases = try phases.toOwnedSlice(allocator),
+        .reviewer = reviewer,
     };
 }
 
@@ -3843,6 +3873,7 @@ const run_verb: cli.Cmd = .{
         .{ .long = "--dry-run", .kind = .bool, .default = .{ .bool = false }, .desc = "Load and validate the workflow, print meta and phases, exit without running." },
         .{ .long = "--plan", .kind = .int, .default = .{ .int = 0 }, .desc = "Plan id the live agent run is scoped to. When PLANAR_EXECUTE_LIVE_AGENT=1, providing --plan enables live claim-status reads and commit-presence sampling; omitting it degrades those features but does not prevent agent-free workflows from running." },
         .{ .long = "--mock-worker", .kind = .bool, .default = .{ .bool = false }, .desc = "Workflow-script testing harness (plan 492 M10 task 3202). Enter run() with the FULL agent() pipeline wired against an in-process FakeSpawner so the workflow's control flow (parallel, pipeline, error handling, blocked-summary, result propagation) runs deterministically WITHOUT spawning any real `claude -p` worker (no API cost, no fs writes from the worker). Canned spawn outcome: exit_code=0, stdout=\"ok\", stderr=\"\" — agent() returns the natural decision-matrix result (typically status=\"released\" when no repo/commit is present). Mutually exclusive with --dry-run and PLANAR_EXECUTE_LIVE_AGENT=1; --plan is optional (degrades like task 3264)." },
+        .{ .long = "--bypass-reviewer-guard", .kind = .bool, .default = .{ .bool = false }, .desc = "Operator-explicit override for the bright-line refusal guard (plan 492 M10 task 3206). The guard refuses to run a plan whose open tasks touch migrations/*.sql, a new top-level CLI verb, or invariant/methodology code under a workflow that does NOT declare meta.reviewer = true. Pass --bypass-reviewer-guard to proceed anyway; the harness prints a loud stderr warning naming the override. Use this only when you have consciously accepted the doctrine risk (e.g. running a one-off recovery workflow). Hostile-looking name by design: hard-to-bypass-by-accident but possible when truly needed." },
     },
     .positionals = &.{
         .{ .name = "workflow", .kind = .string, .required = true },
@@ -4105,6 +4136,83 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
         try printDryRun(mod, ctx.stdout);
         try flushCtx();
         return; // exit 0 — no runModule
+    }
+
+    // ---- M10 task 3206: bright-line refusal guard ---------------------------
+    //
+    // Refuse to run a plan whose open tasks touch one of three risky surfaces
+    // (migrations/*.sql, new top-level CLI verbs, validate/invariant code)
+    // under a workflow that does NOT declare `meta.reviewer = true`. The Lua
+    // script is dynamic — we cannot statically prove a reviewer dispatches
+    // for every cycle — so the author takes the doctrine contract on with
+    // `meta.reviewer = true`. Workflows that omit the field default to false
+    // and the guard becomes load-bearing.
+    //
+    // Scope fences (see refusal_guard.zig):
+    //   - `--dry-run` already exited above; the guard never runs for dry-run.
+    //   - Both `--mock-worker` AND the live gate hit the guard: a doctrine
+    //     contract that's wrong in mock would ship to the live path on the
+    //     next operator's `unset` of the mock flag.
+    //   - `--plan` absent ⇒ no plan ⇒ no tasks ⇒ guard passes (no-op).
+    //   - `--bypass-reviewer-guard` ⇒ explicit operator override, loud
+    //     stderr warning, proceed.
+    //
+    // Exit code 2 is reused from the "invalid module" mapping above because
+    // both are "the input is structurally unfit to run". The diagnostic text
+    // disambiguates ("bright-line refusal: …").
+    {
+        const plan_for_guard: u64 = if (args.plan > 0) @intCast(args.plan) else 0;
+        var guard = refusal_guard.checkRefusal(allocator, ctx.io, .{
+            .reviewer_declared = mod.meta.reviewer,
+            .plan_id = plan_for_guard,
+            .bypass = args.bypass_reviewer_guard,
+        }) catch |e| switch (e) {
+            error.OutOfMemory => {
+                try ctx.stderr.print("planar-execute: out of memory while running the reviewer-guard\n", .{});
+                try flushCtx();
+                std.process.exit(1);
+            },
+        };
+        defer guard.deinit(allocator);
+
+        switch (guard) {
+            .pass => {},
+            .bypassed => {
+                try ctx.stderr.print(
+                    "planar-execute: WARNING — bright-line refusal guard BYPASSED via --bypass-reviewer-guard. " ++
+                        "The workflow does NOT declare meta.reviewer = true and the plan may touch risky surfaces " ++
+                        "(migrations/*.sql, new top-level CLI verbs, or invariant/methodology code). " ++
+                        "Doctrine compliance is now the operator's responsibility for this run.\n",
+                    .{},
+                );
+                try flushCtx();
+            },
+            .refused => |r| {
+                try ctx.stderr.print(
+                    "planar-execute: REFUSING TO RUN — bright-line refusal guard tripped (plan 492 M10 task 3206).\n" ++
+                        "  workflow '{s}' does NOT declare meta.reviewer = true\n" ++
+                        "  plan {d} has a task touching a risky surface:\n" ++
+                        "    task:{d} (slug: {s})\n" ++
+                        "    touches: {s}:{s}\n" ++
+                        "    predicate: {s}\n" ++
+                        "  Fix one of:\n" ++
+                        "    - set `meta.reviewer = true` in the workflow's meta block (the author asserts the workflow dispatches a reviewer for every cycle);\n" ++
+                        "    - remove the risky-touch task(s) from this plan;\n" ++
+                        "    - pass --bypass-reviewer-guard to override (operator accepts the doctrine risk; loud warning will be printed).\n",
+                    .{
+                        mod.meta.name,
+                        plan_for_guard,
+                        r.task_id,
+                        if (r.task_slug.len == 0) "(unset)" else r.task_slug,
+                        r.repo,
+                        r.path,
+                        r.predicate.name(),
+                    },
+                );
+                try flushCtx();
+                std.process.exit(2);
+            },
+        }
     }
 
     // Build the HostState that backs the host-function surface (task 3168) and
