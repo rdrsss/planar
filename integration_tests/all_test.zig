@@ -8,6 +8,12 @@ comptime {
     _ = @import("agents_render_test.zig");
     _ = @import("capability_boundary_test.zig");
     _ = @import("planar_doc_test.zig");
+    _ = @import("planar_execute_test.zig");
+    _ = @import("planar_execute_doctor_test.zig");
+    _ = @import("planar_execute_agent_live_test.zig");
+    _ = @import("planar_execute_eligible_test.zig");
+    _ = @import("planar_execute_refusal_guard_test.zig");
+    _ = @import("planar_execute_quality_spine_test.zig");
     _ = @import("workbench_terminal_filter_test.zig");
     _ = @import("workbench_gc_test.zig");
     _ = @import("config_test.zig");
@@ -36,6 +42,7 @@ comptime {
     _ = @import("parity_tree_cwd_derive_test.zig");
     _ = @import("parity_tree_render_test.zig");
     _ = @import("plan_next_buckets_test.zig");
+    _ = @import("plan_recommend_strategy_test.zig");
     _ = @import("plan_update_test.zig");
     _ = @import("schema_test.zig");
     _ = @import("task_transitions_test.zig");

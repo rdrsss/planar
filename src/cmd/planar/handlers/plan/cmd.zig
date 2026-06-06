@@ -13,6 +13,7 @@ const diff = @import("diff.zig");
 const review = @import("review.zig");
 const link = @import("link.zig");
 const next = @import("next.zig");
+const recommend_strategy = @import("recommend_strategy.zig");
 const recompute_status = @import("recompute_status.zig");
 const step = @import("step/cmd.zig");
 
@@ -127,6 +128,16 @@ pub const verb: cli.Cmd = .{
             },
             .positionals = &.{.{ .name = "plan-id", .kind = .string, .required = true }},
             .run = cli.handler(next.handle),
+        },
+        .{
+            .name = "recommend-strategy",
+            .desc = "Recommend an execution strategy: compute the parallel-eligible subset of a plan's open tasks via the six parallelizability rules.",
+            .long_desc = "Recommend an execution strategy for a plan's open (todo) tasks.\n\n  Applies the six parallel-eligibility rules (decision 370) and\n  reports the parallel-eligible subset plus the serialized remainder\n  with per-task exclusion reasons:\n    1. no blocked_by chain to a not-done task\n    2. disjoint task_touches (empty touches = touches-everything)\n    3. no schema migration touched\n    4. no singleton authoritative file touched\n    5. no open question linked\n    6. no proposed decision linked\n\n  READ-ONLY: computes and reports; writes nothing. fan_out_available\n  is true when >= 2 tasks are eligible.",
+            .flags = &.{
+                .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
+            },
+            .positionals = &.{.{ .name = "plan-id", .kind = .string, .required = true }},
+            .run = cli.handler(recommend_strategy.handle),
         },
         .{
             .name = "recompute-status",

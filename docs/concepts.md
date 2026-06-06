@@ -6,7 +6,7 @@ This document explains the core concepts in Planar. Read it after `planar init` 
 
 ## Binaries
 
-Planar ships as four executables, each with a disjoint capability boundary enforced **by the verb set the binary registers** (not by runtime ACLs). The boundary is a compile-time and install-time property: the binary on PATH literally has no verb for the work it is not allowed to do. This makes vendor-hook blast radius bounded — a hook configured with only `planar-agent` on its PATH cannot mutate planning state regardless of how it is invoked.
+Planar ships as four planning-state executables plus one orchestration driver, each with a disjoint capability boundary enforced **by the verb set the binary registers** (not by runtime ACLs). The boundary is a compile-time and install-time property: the binary on PATH literally has no verb for the work it is not allowed to do. This makes vendor-hook blast radius bounded — a hook configured with only `planar-agent` on its PATH cannot mutate planning state regardless of how it is invoked.
 
 | Binary | Audience | Writes to |
 |---|---|---|
@@ -14,6 +14,7 @@ Planar ships as four executables, each with a disjoint capability boundary enfor
 | `planar-agent` | Agent (vendor hook, orchestrator dispatch) + operator recovery | `agent_actions`, `agent_work_claims`, and `tasks.status` (the last only as part of atomic coordinated operations: `pull`, `complete`, `fail`, `release`, `block`). **Never** to plan / decision / question / scenario / artifact / annotation. |
 | `planar-watch` | Operator (live view) + scripts (`--json`) | **Nothing.** Opens SQLite via `file:?mode=ro` so the driver itself rejects every write SQL string. |
 | `planar-doc` | Operator + documenter agent | **`.planar-manifest` only** — the repo-state merkle index at the repo root. Never opens SQLite at all. |
+| `planar-execute` | Operator + orchestrator | **Nothing directly.** Holds no DB handle; all writes go through `planar-agent` verbs called by the workers it spawns. See [§ Embedded-Lua control plane](#embedded-lua-control-plane). |
 
 **Capability invariant — `planar-agent`:** a process invoked as `planar-agent` has no verbs that mutate any planning entity. The verb set is exactly `pull`, `peek`, `claim`, `heartbeat`, `complete`, `fail`, `release`, `block`, `action start`/`action end`, `ingest`, `reconcile`, `abort`, `version`, `schema`.
 
@@ -24,6 +25,39 @@ Planar ships as four executables, each with a disjoint capability boundary enfor
 All three invariants are locked by `integration_tests/capability_boundary_test.zig` — a future change that registers a write verb on `planar-watch`, a planning-entity verb on `planar-agent`, or any SQLite-touching verb on `planar-doc` fails CI immediately. The `planar agent <verb>` subcommand namespace deliberately does not exist; agent observability lives on `planar-watch`, agent-table writes live on `planar-agent`.
 
 The ritual every code-writing agent dispatch follows is `planar-agent pull → heartbeat → complete|fail|release|block` (atomic across all three tables). See [agents/methodology.md § Coordination claims](../agents/methodology.md#coordination-claims) and the tech spec § "Agent methodology contract" for the full sequence.
+
+---
+
+## Embedded-Lua control plane
+
+`planar-execute` is a fifth binary (plan 492) that hosts a Lua 5.5 runtime and drives `claude -p` agent workers through a `ctx` host-function surface. It is architecturally distinct from the four planning-state binaries: it holds **no DB handle** and never opens SQLite. All state reads go through `planar` / `planar-agent` subprocesses; the workflow script cannot write directly to any database or planning entity.
+
+### No-DB-handle stance
+
+`planar-execute` is a **pure CLI driver**. Every read operation shells `planar` or `planar-agent`, parses their JSON stdout, and returns the result to the Lua layer. Every write operation is similarly mediated: the workflow script calls `ctx.agent(brief, opts)`, which shells `claude -p` inside a constrained environment; the worker calls `planar-agent` verbs (claim, heartbeat, complete/fail/release/block) — never `planar` directly.
+
+This makes the capability boundary physical, not just policy: the `planar-execute` process cannot edit files, write DB rows, or call planning-entity mutations. Only the binaries it shells can, and only along the verbs those binaries expose. The Lua sandbox additionally strips `os`, `io`, and dangerous `math` functions so that workflow scripts cannot perform filesystem or network I/O from Lua itself.
+
+### Constrained worker PATH
+
+The `claude -p` workers spawned by `planar-execute` run with a PATH restricted to:
+
+- `planar-agent` — agent-table writes and coordination.
+- `git` — source-tree reads and commits.
+- System bin directories (for standard POSIX tools).
+
+`planar` (the operator binary) is intentionally absent from the worker PATH. This preserves the no-bare-operator-binary invariant: a worker cannot call planning-entity mutations, trigger scope resolution, or open the DB read-write. The worker's only write surface is `planar-agent`'s bounded verb set.
+
+### Lua control-plane internals
+
+Inside `planar-execute`:
+
+- A single `lua_State` is created per invocation and reused for the workflow's lifetime.
+- A cooperative scheduler drives `ctx.parallel` (N-way barrier) and `ctx.pipeline` (per-item stage chains).
+- A preemptive heartbeat thread fires at TTL/2 cadence independently of the Lua scheduler to keep active claims alive during long-running workflows.
+- The journal (`ctx.phase`, `ctx.log`) records the execution arc as a sequence of timestamped entries; the journal is printed to stdout as the workflow progresses.
+
+For the full flag reference and modes (stub / dry-run / mock-worker / live) see [`docs/cli-reference.md § Binary: planar-execute`](./cli-reference.md#binary-planar-execute). For an end-to-end authoring walkthrough see [`docs/workflows.md § Recipe 24`](./workflows.md#recipe-24--author-and-run-a-planar-execute-workflow).
 
 ---
 

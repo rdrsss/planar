@@ -1,7 +1,16 @@
-//! handlers/task/touches/add — `planar task touches add <task-id> <repo-slug>`
+//! handlers/task/touches/add — `planar task touches add <task-id> <repo-slug> [--path <p>]`
 //!
-//! Inserts entity_links(relationship='touches', from_kind='task', to_kind='repo')
-//! where to_id is resolved from the projects table via the repo-slug.
+//! Without --path: inserts entity_links(relationship='touches',
+//! from_kind='task', to_kind='repo') where to_id is resolved from the
+//! projects table via the repo-slug (unchanged legacy behavior).
+//!
+//! With --path <p>: ALSO writes a path-level task_touch_paths row
+//! (task_id, repo_id, path) via engine.planning.task.addTouchPath. A path-touch
+//! implies the repo-touch, so the repo-level entity_links edge is written
+//! too (idempotently — a pre-existing edge is not an error in this mode),
+//! keeping the coarse repo signal consistent with the fine path signal.
+//! The parallelizability rules (`plan recommend-strategy`) read the
+//! path-level rows for rules 2/3/4.
 //!
 //! Link verbs are documented UNGUARDED (CLAUDE.md §Cross-scope guard). No
 //! scope_guard.check call is made here. --scope is accepted for CLI parity.
@@ -9,10 +18,11 @@
 //! Repo-slug -> repo-id resolution is done with a direct DB query because
 //! engine.entitylink.resolveRef does not support the 'repo' kind for slug
 //! lookup (projects uses the 'slug' column but is not in the engine's slug
-//! resolution table; D-no-engine-edits prohibits extending the engine here).
+//! resolution table).
 //!
-//! JSON shape (mirrors Go's task touches add anonymous struct):
-//!   { "ok": true, "task_id": <n>, "repo_id": <n>, "repo_slug": "..." }
+//! JSON shape:
+//!   repo-level: { "ok": true, "task_id": <n>, "repo_id": <n>, "repo_slug": "..." }
+//!   path-level: { "ok": true, "task_id": <n>, "repo_id": <n>, "repo_slug": "...", "path": "..." }
 
 const std = @import("std");
 const cli = @import("cli");
@@ -26,6 +36,7 @@ const TouchesAddResult = struct {
     task_id: i64,
     repo_id: i64,
     repo_slug: []const u8,
+    path: ?[]const u8 = null,
 };
 
 pub fn handle(args_ptr: *const anyopaque) anyerror!void {
@@ -46,18 +57,56 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         else => exit.die(ctx, e, "repo lookup: {s}", .{@errorName(e)}),
     };
 
-    const link = engine.entitylink.add(d, ctx.allocator, .{
+    // PR #17 cycle B finding 5: when --path is supplied the handler performs
+    // TWO writes (entity_links repo edge + task_touch_paths row). They must
+    // commit atomically — a partial commit (repo edge present, path row
+    // missing) makes recommend-strategy's loadTouches fall back to the
+    // coarse whole-repo signal, serializing a task that should be eligible.
+    // We wrap both writes in a savepoint and rollback on any error after
+    // the first write succeeded. The non-path mode does a single write and
+    // needs no transaction.
+    const sp_name = "touches_add";
+    const path_mode = args.path != null;
+    if (path_mode) {
+        d.savepoint(ctx.allocator, sp_name) catch |e|
+            exit.die(ctx, e, "task touches add: savepoint: {s}", .{@errorName(e)});
+    }
+    var sp_released = false;
+    defer if (path_mode and !sp_released) {
+        d.rollbackToSavepoint(ctx.allocator, sp_name) catch {};
+        d.releaseSavepoint(ctx.allocator, sp_name) catch {};
+    };
+
+    // Write the repo-level touches edge. When a path is being declared, a
+    // pre-existing repo edge is fine (the path-touch implies it) — we treat
+    // LinkExists as a no-op in that mode rather than an error.
+    if (engine.entitylink.add(d, ctx.allocator, .{
         .from_kind = .task,
         .from_id = task_id,
         .to_kind = .repo,
         .to_id = repo_id,
         .relationship = .touches,
-    }) catch |e| switch (e) {
-        error.LinkExists => exit.die(ctx, e, "touches link task:{d} -> repo:{s} already exists", .{ task_id, args.repo_slug }),
+    })) |link| {
+        engine.entitylink.deinit(link, ctx.allocator);
+    } else |e| switch (e) {
+        error.LinkExists => if (args.path == null) {
+            exit.die(ctx, e, "touches link task:{d} -> repo:{s} already exists", .{ task_id, args.repo_slug });
+        },
         error.UnsupportedScope => exit.die(ctx, e, "scoped entity links not yet supported (M3)", .{}),
         else => exit.die(ctx, e, "task touches add: {s}", .{@errorName(e)}),
-    };
-    defer engine.entitylink.deinit(link, ctx.allocator);
+    }
+
+    // Path-level declaration: write the task_touch_paths row.
+    if (args.path) |path| {
+        engine.planning.task.addTouchPath(d, task_id, repo_id, path) catch |e|
+            exit.die(ctx, e, "task touches add --path: {s}", .{@errorName(e)});
+    }
+
+    if (path_mode) {
+        d.releaseSavepoint(ctx.allocator, sp_name) catch |e|
+            exit.die(ctx, e, "task touches add: release savepoint: {s}", .{@errorName(e)});
+        sp_released = true;
+    }
 
     if (args.json) {
         const result = TouchesAddResult{
@@ -65,9 +114,12 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
             .task_id = task_id,
             .repo_id = repo_id,
             .repo_slug = args.repo_slug,
+            .path = args.path,
         };
         try std.json.Stringify.value(result, .{}, ctx.stdout);
         try ctx.stdout.print("\n", .{});
+    } else if (args.path) |path| {
+        try ctx.stdout.print("path-touch added: task:{d} -> repo:{s} path:{s}\n", .{ task_id, args.repo_slug, path });
     } else {
         try ctx.stdout.print("touches link added: task:{d} -> repo:{s}\n", .{ task_id, args.repo_slug });
     }

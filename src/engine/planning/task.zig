@@ -425,6 +425,71 @@ pub fn touchedRepoIDs(d: *db.sqlite.Db, allocator: std.mem.Allocator, task_id: i
     return try out.toOwnedSlice(allocator);
 }
 
+/// One path-level touch declaration for a task: the repo it belongs to
+/// (projects.id) and the repo-relative file path. `path` is heap-owned by
+/// the caller-supplied allocator and must be freed via `deinitTouchPaths`.
+pub const TouchPath = struct {
+    repo_id: i64,
+    path: []const u8,
+};
+
+/// Free a slice of TouchPath rows returned by `touchedPaths`.
+pub fn deinitTouchPaths(paths: []TouchPath, allocator: std.mem.Allocator) void {
+    for (paths) |p| allocator.free(p.path);
+    allocator.free(paths);
+}
+
+/// addTouchPath records a path-level touch for a task in `task_touch_paths`.
+/// `repo_id` is a projects.id; `path` is a repo-relative file path. Idempotent
+/// against the `unique(task_id, repo_id, path)` constraint — a duplicate
+/// declaration is a no-op (insert or ignore), so callers can re-declare freely.
+pub fn addTouchPath(
+    d: *db.sqlite.Db,
+    task_id: i64,
+    repo_id: i64,
+    path: []const u8,
+) Error!void {
+    _ = d.execParams(
+        \\insert or ignore into task_touch_paths (task_id, repo_id, path)
+        \\values (?, ?, ?)
+    , &.{
+        .{ .int = task_id },
+        .{ .int = repo_id },
+        .{ .text = path },
+    }) catch return Error.QueryFailed;
+}
+
+/// touchedPaths returns the path-level touch declarations for a task
+/// (rows in `task_touch_paths`), ordered by repo then path. Caller owns the
+/// returned slice and must free it via `deinitTouchPaths`.
+pub fn touchedPaths(d: *db.sqlite.Db, allocator: std.mem.Allocator, task_id: i64) Error![]TouchPath {
+    var stmt = d.prepare(
+        \\select repo_id, path
+        \\from task_touch_paths
+        \\where task_id = ?
+        \\order by repo_id, path
+    ) catch return Error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .int = task_id }}) catch return Error.QueryFailed;
+
+    var out: std.ArrayList(TouchPath) = .empty;
+    errdefer {
+        for (out.items) |p| allocator.free(p.path);
+        out.deinit(allocator);
+    }
+    while (true) {
+        switch (stmt.step() catch return Error.QueryFailed) {
+            .done => break,
+            .row => {
+                const repo_id = stmt.columnInt(0);
+                const path = stmt.columnTextAlloc(1, allocator) catch return Error.QueryFailed;
+                try out.append(allocator, .{ .repo_id = repo_id, .path = path });
+            },
+        }
+    }
+    return try out.toOwnedSlice(allocator);
+}
+
 /// listTouching returns tasks scoped to repo_id OR linked via touches to repo_id.
 pub fn listTouching(
     d: *db.sqlite.Db,
@@ -1181,4 +1246,76 @@ test "show returns NotFound for missing id" {
     var d = try setupTestDb(a);
     defer d.close();
     try std.testing.expectError(Error.NotFound, show(&d, a, 9999));
+}
+
+test "addTouchPath + touchedPaths round-trip path-level touches" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const t = try create(&d, a, .{ .title = "toucher" });
+    defer deinit(t, a);
+    const repo_id = try d.execParams(
+        "insert into projects (slug, name, root_path) values ('r1', 'r1', '/r1')",
+        &.{},
+    );
+
+    try addTouchPath(&d, t.id, repo_id, "src/a.zig");
+    try addTouchPath(&d, t.id, repo_id, "migrations/00099_x.sql");
+
+    const paths = try touchedPaths(&d, a, t.id);
+    defer deinitTouchPaths(paths, a);
+    try std.testing.expectEqual(@as(usize, 2), paths.len);
+    // Ordered by repo_id, path -> "migrations/..." sorts before "src/...".
+    try std.testing.expectEqualStrings("migrations/00099_x.sql", paths[0].path);
+    try std.testing.expectEqualStrings("src/a.zig", paths[1].path);
+    try std.testing.expectEqual(repo_id, paths[0].repo_id);
+}
+
+test "addTouchPath is idempotent on the unique(task,repo,path) constraint" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const t = try create(&d, a, .{ .title = "toucher" });
+    defer deinit(t, a);
+    const repo_id = try d.execParams(
+        "insert into projects (slug, name, root_path) values ('r1', 'r1', '/r1')",
+        &.{},
+    );
+
+    try addTouchPath(&d, t.id, repo_id, "src/a.zig");
+    try addTouchPath(&d, t.id, repo_id, "src/a.zig"); // duplicate is a no-op
+
+    const paths = try touchedPaths(&d, a, t.id);
+    defer deinitTouchPaths(paths, a);
+    try std.testing.expectEqual(@as(usize, 1), paths.len);
+}
+
+test "touchedPaths returns empty slice for a task with no declared paths" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const t = try create(&d, a, .{ .title = "no-touches" });
+    defer deinit(t, a);
+
+    const paths = try touchedPaths(&d, a, t.id);
+    defer deinitTouchPaths(paths, a);
+    try std.testing.expectEqual(@as(usize, 0), paths.len);
+}
+
+test "task_touch_paths cascade-deletes when the task is removed" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const t = try create(&d, a, .{ .title = "toucher" });
+    const task_id = t.id;
+    deinit(t, a);
+    const repo_id = try d.execParams(
+        "insert into projects (slug, name, root_path) values ('r1', 'r1', '/r1')",
+        &.{},
+    );
+    try addTouchPath(&d, task_id, repo_id, "src/a.zig");
+    _ = try d.execParams("delete from tasks where id = ?", &.{.{ .int = task_id }});
+
+    const remaining = try d.intQuery("select count(*) from task_touch_paths");
+    try std.testing.expectEqual(@as(i64, 0), remaining);
 }

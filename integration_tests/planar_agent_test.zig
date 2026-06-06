@@ -601,6 +601,79 @@ test "planar-agent reconcile --dry-run reports candidates without writing" {
     try std.testing.expect(std.mem.indexOf(u8, real_out, "\"claims_marked_stale\":1") != null);
 }
 
+test "planar-agent reconcile --session scopes sweep; other session's claim untouched" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    // Seed two plans, each with one todo task, so each pull lands in a
+    // distinct session (different vendor-session id → different session row).
+    const pid_a = seedPlanWithTask(&suite, "ag-recon-sess-a", "sess-a-task");
+    defer gpa.free(pid_a);
+    const pid_b = seedPlanWithTask(&suite, "ag-recon-sess-b", "sess-b-task");
+    defer gpa.free(pid_b);
+
+    // Session A: pull with TTL=1s so the lease expires.
+    const pull_a = mustRunAgent(&suite, &.{
+        "pull",                pid_a,
+        "--vendor",            "sess-test",
+        "--vendor-session",    "sess-a:1",
+        "--no-locality-probe", "--ttl",
+        "1",                   "--json",
+    });
+    defer gpa.free(pull_a);
+    const session_a = extractIntField(pull_a, "\"session_id\":") orelse @panic("no session_id in pull_a");
+    const token_a = extractStringField(gpa, pull_a, "\"claim_token\":\"") catch @panic("no token_a");
+    defer gpa.free(token_a);
+
+    // Session B: pull with TTL=1s so the lease expires.
+    const pull_b = mustRunAgent(&suite, &.{
+        "pull",                pid_b,
+        "--vendor",            "sess-test",
+        "--vendor-session",    "sess-b:1",
+        "--no-locality-probe", "--ttl",
+        "1",                   "--json",
+    });
+    defer gpa.free(pull_b);
+    const token_b = extractStringField(gpa, pull_b, "\"claim_token\":\"") catch @panic("no token_b");
+    defer gpa.free(token_b);
+
+    // Wait 2s for both leases to expire.
+    try std.testing.io.sleep(std.Io.Duration.fromSeconds(2), std.Io.Clock.awake);
+
+    // Reconcile scoped to session A only.
+    const sess_a_arg = std.fmt.allocPrint(gpa, "{d}", .{session_a}) catch @panic("OOM");
+    defer gpa.free(sess_a_arg);
+    const recon_a = mustRunAgent(&suite, &.{
+        "reconcile", "--session", sess_a_arg, "--stale-after", "0", "--json",
+    });
+    defer gpa.free(recon_a);
+    // Exactly one claim marked stale (session A's).
+    try std.testing.expect(std.mem.indexOf(u8, recon_a, "\"claims_marked_stale\":1") != null);
+
+    // Session A's claim is now stale; session B's claim is still active.
+    // Confirm via a session-A-scoped dry-run: no candidates remain in A.
+    const dry_a = mustRunAgent(&suite, &.{
+        "reconcile", "--session", sess_a_arg, "--dry-run", "--stale-after", "0", "--json",
+    });
+    defer gpa.free(dry_a);
+    try std.testing.expect(std.mem.indexOf(u8, dry_a, "\"candidates\":[]") != null);
+
+    // Session B's claim must still appear in a global dry-run.
+    const dry_global = mustRunAgent(&suite, &.{
+        "reconcile", "--dry-run", "--stale-after", "0", "--json",
+    });
+    defer gpa.free(dry_global);
+    try std.testing.expect(std.mem.indexOf(u8, dry_global, token_b) != null);
+
+    // Global reconcile picks up session B's expired claim.
+    const recon_global = mustRunAgent(&suite, &.{
+        "reconcile", "--stale-after", "0", "--json",
+    });
+    defer gpa.free(recon_global);
+    try std.testing.expect(std.mem.indexOf(u8, recon_global, "\"claims_marked_stale\":1") != null);
+}
+
 test "planar-agent abort releases a stuck claim from a different session and records audit row" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);

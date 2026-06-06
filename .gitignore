@@ -5,6 +5,10 @@
 # `zig build` install prefix (binary lands at zig-out/bin/planar).
 zig-out/
 
+# zig fetch extraction side-effect: zig extracts the content-addressed
+# archive into a `zig-pkg/<hash>/` directory in the build root.
+zig-pkg/
+
 # Incremental compile cache (current name + legacy name; both can appear
 # depending on the zig version operators run).
 .zig-cache/
