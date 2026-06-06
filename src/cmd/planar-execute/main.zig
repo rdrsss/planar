@@ -472,6 +472,16 @@ pub const HostState = struct {
     run_counters: budget.RunCounters = .{},
     ceiling_tripped: ?budget.Ceiling = null,
 
+    /// TEST-ONLY seam (plan 492 task 3541 / PR #17 cycle B finding 6): when
+    /// non-zero, `runModule` pre-fills the first N scheduler slots with a
+    /// dummy `in_use=true` marker right after constructing the Scheduler,
+    /// so the next `registerInflight` call observes the registry as full
+    /// (or near-full). This is how the registerInflight-fail recovery path
+    /// (kill orphaned child + decrement spawn_count + propagate error) is
+    /// exercised under unit tests without driving real concurrency past
+    /// the MAX_SLOTS boundary. Production wiring leaves this 0.
+    test_pre_fill_slots: usize = 0,
+
     pub fn init(allocator: std.mem.Allocator, now: i64, seed: i64, budget_total: i64, budget_spent: i64) HostState {
         return .{
             .allocator = allocator,
@@ -1341,15 +1351,32 @@ fn driveAgentCallPreYield(
 
     // 4) Register the in-flight worker + this call state with the scheduler.
     const slot_index = sched.registerInflight(L.?, handle, acs) catch {
-        // Registry full — N>MAX_SLOTS concurrent workers. Impossible at N=1.
-        // Drain the handle so the child is not orphaned, then error.
+        // Registry full — N>MAX_SLOTS concurrent workers (impossible at N=1;
+        // a real race only at the MAX_SLOTS boundary).
+        //
+        // PR #17 cycle B finding 6: the spawned child is LIVE here but was
+        // never registered. Three things must happen before we surface the
+        // error:
+        //   a) HARD-KILL the orphaned child (`Spawner.kill` is infallible:
+        //      SIGTERM+reap on POSIX, no-op when the child already exited).
+        //      The prior implementation used `Spawner.wait`, which can ITSELF
+        //      error — leaving a live process running with no reaper, no
+        //      lease tracking (the heartbeat register below is not reached on
+        //      this path), and a ceiling counter permanently incremented.
+        //   b) DECREMENT `spawn_count` (bumped at line ~1340 BEFORE the
+        //      registry check) so this no-op spawn does not consume a budget
+        //      unit. The ceiling counter must reflect spawns that actually
+        //      enter the scheduler; a spawn refused at registerInflight did
+        //      not.
+        //   c) NEVER reach the heartbeat-register below — the registry never
+        //      held a slot for this worker, so refreshing a lease against it
+        //      would be a write against a dead claim. (The current code
+        //      orders the register call AFTER the registerInflight catch, so
+        //      a catch-and-return preserves this invariant — no change is
+        //      needed in the heartbeat block itself.)
         var h = handle;
-        var drained = driver.spawner.wait(alloc, io, &h) catch {
-            acs.destroy();
-            _ = c.luaL_error(L, "agent: scheduler registry full");
-            return 0;
-        };
-        drained.deinit(alloc);
+        driver.spawner.kill(io, &h);
+        if (hs.run_counters.spawn_count > 0) hs.run_counters.spawn_count -= 1;
         acs.destroy();
         _ = c.luaL_error(L, "agent: scheduler registry full");
         return 0;
@@ -3618,6 +3645,15 @@ pub fn runModule(
         if (hs.timeout_clock_ctx) |cc| sched_storage.clock_ctx = cc;
         if (hs.timeout_max_wall_clock_ns) |mx| sched_storage.max_wall_clock_ns = mx;
         hs.sched = &sched_storage;
+        // TEST-ONLY seam: pre-fill scheduler slots to force the next
+        // registerInflight into the RegistryFull branch (task 3541 / finding 6).
+        if (hs.test_pre_fill_slots > 0) {
+            const cap = @min(hs.test_pre_fill_slots, sched_storage.slots.len);
+            var fi: usize = 0;
+            while (fi < cap) : (fi += 1) {
+                sched_storage.slots[fi].in_use = true;
+            }
+        }
         // M8 whole-run ceiling (task 3198): stamp the run start time ONCE, from
         // the scheduler's injectable clock, so the per-spawn wall-clock-ceiling
         // check is deterministic under an injected fake clock. The spawn counter
@@ -5602,6 +5638,76 @@ test "M4 agent: missing worktree_path raises a Lua error" {
     var err_buf: [256]u8 = @splat(0);
     const err = runModule(src, "test:m4-nowt", &.{}, &host, &err_buf);
     try std.testing.expectError(LuaError.LuaRuntimeError, err);
+}
+
+test "M4 agent: registerInflight RegistryFull → child killed + spawn_count decremented (PR #17 finding 6)" {
+    // PR #17 cycle B finding 6 regression pin. When the scheduler registry
+    // is full at the moment hostAgent attempts registerInflight, the LIVE
+    // spawned child must be hard-killed (NOT abandoned via a fallible
+    // `wait`), the `spawn_count` ceiling counter must be decremented (the
+    // bump at line ~1340 is undone because this spawn produced no useful
+    // work), and the worker's claim must NEVER reach the heartbeat
+    // registry (that register happens AFTER the successful registerInflight,
+    // so the catch path simply does not reach it).
+    //
+    // Drive: pre-fill ALL MAX_SLOTS scheduler slots via the test seam
+    // (HostState.test_pre_fill_slots). Then the single `ctx.agent(...)` call
+    // attempts registerInflight, hits RegistryFull, and the fix-path runs.
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .repo_root = "",
+        .plan_slug = "",
+        .skip_terminal_subprocess = true,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+    host.test_pre_fill_slots = scheduler.MAX_SLOTS;
+
+    const src =
+        \\return {
+        \\  meta = { name = "m4-regfull", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    ctx.agent("brief", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/abs/wt",
+        \\      claim_token = "tok",
+        \\      task_slug = "ts",
+        \\    })
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    const err = runModule(src, "test:m4-regfull", &.{}, &host, &err_buf);
+    try std.testing.expectError(LuaError.LuaRuntimeError, err);
+
+    // The Lua error carries the registry-full message.
+    const msg = std.mem.span(@as([*:0]const u8, @ptrCast(&err_buf)));
+    try std.testing.expect(std.mem.indexOf(u8, msg, "scheduler registry full") != null);
+
+    // FakeSpawner saw exactly one start (the live child) AND one kill
+    // (the recovery path's `Spawner.kill`). No `wait` was called — the
+    // fix replaces the fallible `wait` with infallible `kill`.
+    try std.testing.expectEqual(@as(u32, 1), fake.start_count);
+    try std.testing.expectEqual(@as(u32, 1), fake.kill_count);
+    try std.testing.expectEqual(@as(u32, 0), fake.wait_count);
+    // The killed worker is the one that was just spawned (FakeSpawner
+    // assigns sequential ids starting at 0).
+    try std.testing.expect(fake.killedWorker(0));
+
+    // spawn_count was incremented BEFORE the registry check then
+    // decremented in the recovery path: net effect on the ceiling is 0,
+    // matching "this spawn produced no useful work".
+    try std.testing.expectEqual(@as(u32, 0), host.run_counters.spawn_count);
+
+    // The killed worker is no longer "live" in the FakeSpawner registry
+    // (fakeKillFn decrements live_inflight). This is the proxy for "no
+    // orphan child running with no reaper".
+    try std.testing.expectEqual(@as(u32, 0), fake.live_inflight);
 }
 
 // ---------------------------------------------------------------------------

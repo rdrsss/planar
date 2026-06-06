@@ -305,17 +305,26 @@ pub fn recommend(
     }
 
     // ---- Rule 2 (overlap branch): drop-both-on-tie -------------------
-    // Pairwise: if two tasks share any touch, BOTH drop. We compute the
-    // overlapping pairs across ALL open tasks (not only currently
-    // surviving ones) so that the exclusion reason is complete — but a
-    // task already dropped by rules 1/3/4/5/6 still gets the rule-2
-    // overlap reason added if it genuinely overlaps another task. That
-    // matches "list all rules that apply".
+    // Pairwise: if two tasks share any touch, BOTH drop. The pairwise
+    // overlap is evaluated ONLY over tasks that survived the unilateral
+    // rules (1, 3, 4, 5, 6, and the rule-2 empty-touches branch). A task
+    // already dropped by a unilateral rule is removed from the eligible
+    // set BEFORE this pass, so it does NOT cascade rule-2 overlap onto a
+    // peer whose ONLY conflict was with the already-dropped task. The
+    // drop-both-on-tie semantics is preserved within the survivor set.
+    //
+    // Pre-fix (PR #17 finding 4): the loop ran across ALL open tasks
+    // including the unilateral drops; a task B whose only overlap was
+    // with a migration-touching peer A (rule 3) got wrongly serialized
+    // by rule 2 even though A was already removed from the eligible set.
+    // Safe direction (over-serialization, never false-eligible) but real.
     const n = tasks.items.len;
     var i: usize = 0;
     while (i < n) : (i += 1) {
+        if (tasks.items[i].dropped) continue;
         var j: usize = i + 1;
         while (j < n) : (j += 1) {
+            if (tasks.items[j].dropped) continue;
             const overlap = sharedTouch(tasks.items[i], tasks.items[j]);
             if (overlap) |shared| {
                 const desc = try describeTouch(allocator, shared);
@@ -1041,6 +1050,77 @@ test "rule 6: a task linked to a proposed decision is dropped" {
         has_rule6 = true;
     };
     try testing.expect(has_rule6);
+}
+
+test "rule 2 does NOT cascade through a rule-3-dropped (migration) peer" {
+    // PR #17 cycle B finding 4 regression pin: task A touches a migration
+    // (rule 3 → unilateral drop). Task B's ONLY rule-2 overlap is with A
+    // (both touch the same repo coarsely). Pre-fix, B was wrongly
+    // serialized by rule 2 against the already-dropped A. Under the fix
+    // the pairwise rule 2 only runs over survivors, so B is eligible.
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const plan_id = try seedPlan(&d);
+    const t_a = try seedTask(&d, plan_id, "migrator");
+    const t_b = try seedTask(&d, plan_id, "B");
+    const r = try seedRepo(&d, "r");
+    // A: path touch on migration (forces rule 3) + coarse repo edge.
+    try linkTouchesRepo(&d, t_a, r);
+    try touchPath(&d, t_a, r, "migrations/00099_x.sql");
+    // B: coarse whole-repo touch on the SAME repo. Without the fix this
+    // overlaps A's whole-repo claim (rule 2 drop-both-on-tie) and B is
+    // serialized. With the fix A is rule-3-dropped FIRST, then rule 2
+    // only iterates survivors → B is eligible.
+    try linkTouchesRepo(&d, t_b, r);
+
+    const rec = try recommend(&d, a, plan_id);
+    defer rec.deinit(a);
+
+    try testing.expectEqual(@as(usize, 1), rec.parallel_eligible.len);
+    try testing.expectEqual(t_b, rec.parallel_eligible[0].id);
+    try testing.expectEqual(@as(usize, 1), rec.serialized.len);
+    try testing.expectEqual(t_a, rec.serialized[0].id);
+
+    // A carries rule 3 (the unilateral migration drop). It must NOT also
+    // carry a rule-2 cascade onto B — the pairwise pass skipped this pair.
+    var a_has_rule3 = false;
+    var a_has_rule2 = false;
+    for (rec.serialized[0].excluded_by) |e| {
+        if (e.rule == 3) a_has_rule3 = true;
+        if (e.rule == 2) a_has_rule2 = true;
+    }
+    try testing.expect(a_has_rule3);
+    try testing.expect(!a_has_rule2);
+}
+
+test "rule 2 does NOT cascade through a rule-4-dropped (singleton) peer" {
+    // Same shape as the rule-3 cascade test, but with a singleton-file
+    // unilateral drop. Pins the same invariant for rule 4.
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const plan_id = try seedPlan(&d);
+    const t_a = try seedTask(&d, plan_id, "doc-toucher");
+    const t_b = try seedTask(&d, plan_id, "B");
+    const r = try seedRepo(&d, "r");
+    try linkTouchesRepo(&d, t_a, r);
+    try touchPath(&d, t_a, r, "CLAUDE.md");
+    try linkTouchesRepo(&d, t_b, r);
+
+    const rec = try recommend(&d, a, plan_id);
+    defer rec.deinit(a);
+
+    try testing.expectEqual(@as(usize, 1), rec.parallel_eligible.len);
+    try testing.expectEqual(t_b, rec.parallel_eligible[0].id);
+    var a_has_rule4 = false;
+    var a_has_rule2 = false;
+    for (rec.serialized[0].excluded_by) |e| {
+        if (e.rule == 4) a_has_rule4 = true;
+        if (e.rule == 2) a_has_rule2 = true;
+    }
+    try testing.expect(a_has_rule4);
+    try testing.expect(!a_has_rule2);
 }
 
 test "recommend returns NotFound for a missing plan" {

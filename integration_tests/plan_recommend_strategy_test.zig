@@ -329,6 +329,100 @@ test "recommend-strategy: a whole-repo touch conflicts with a same-repo path tou
     try std.testing.expect(!rec.summary.fan_out_available);
 }
 
+test "task touches add --path: roundtrips both surfaces (transactional invariant)" {
+    // PR #17 cycle B finding 5 regression pin. `task touches add --path`
+    // performs TWO writes (the repo edge in entity_links + the
+    // task_touch_paths row); they must commit together. After a single
+    // call BOTH the repo and the path must show up in `task touches list`
+    // — proving the two-write contract is intact. (A non-transactional
+    // implementation where the second write silently no-opped would
+    // surface as the path row missing here.)
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const repo = registerRepoSlug(&suite, arena);
+    const plan = suite.mustRunJSON(PlanJSON, arena, &.{
+        "plan", "create", "--slug", "tx-touches", "--json", "TX_TOUCHES",
+    });
+    const pid = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch unreachable;
+    const t = addTask(&suite, arena, pid, "T");
+    touchPath(&suite, repo, t, "src/lib/foo.zig");
+
+    // Roundtrip: list surfaces BOTH the repo and the path.
+    const TouchesList = struct {
+        task_id: i64,
+        repos: []const []const u8,
+        paths: []const struct { repo: []const u8, path: []const u8 },
+    };
+    const tid = std.fmt.allocPrint(arena, "{d}", .{t}) catch unreachable;
+    const list = suite.mustRunJSON(TouchesList, arena, &.{
+        "task", "touches", "list", tid, "--json",
+    });
+    try std.testing.expectEqual(t, list.task_id);
+
+    // Repo edge present (the savepoint's first write committed).
+    var has_repo = false;
+    for (list.repos) |s| if (std.mem.eql(u8, s, repo)) {
+        has_repo = true;
+    };
+    try std.testing.expect(has_repo);
+
+    // Path row present (the savepoint's second write committed under the
+    // same transaction → both visible).
+    var has_path = false;
+    for (list.paths) |row| {
+        if (std.mem.eql(u8, row.repo, repo) and std.mem.eql(u8, row.path, "src/lib/foo.zig")) {
+            has_path = true;
+        }
+    }
+    try std.testing.expect(has_path);
+}
+
+test "recommend-strategy: rule-2 does NOT cascade through a migration-dropped peer (finding 4)" {
+    // PR #17 cycle B finding 4 regression pin (CLI-level). Two tasks both
+    // touch repo R coarsely. A also touches a migration → rule 3 drops A
+    // unilaterally. Pre-fix the rule-2 pairwise overlap would cascade
+    // through the dropped A and also serialize B (over-serialization,
+    // safe direction but real lost parallelism). With the fix B is
+    // eligible; A is serialized with rule 3 ONLY (no rule-2 cascade).
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const repo = registerRepoSlug(&suite, arena);
+    const plan = suite.mustRunJSON(PlanJSON, arena, &.{
+        "plan", "create", "--slug", "rs-f4", "--json", "RS_F4",
+    });
+    const pid = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch unreachable;
+
+    // A: coarse repo touch + migration path touch → rule 3 unilateral drop.
+    const t_a = addTask(&suite, arena, pid, "migrator");
+    touchRepo(&suite, repo, t_a);
+    touchPath(&suite, repo, t_a, "migrations/00099_x.sql");
+    // B: just a coarse repo touch; its ONLY rule-2 conflict is with A.
+    const t_b = addTask(&suite, arena, pid, "B");
+    touchRepo(&suite, repo, t_b);
+
+    const rec = suite.mustRunJSON(RecommendJSON, arena, &.{
+        "plan", "recommend-strategy", pid, "--json",
+    });
+
+    // B is eligible (the cascade through the dropped A no longer fires).
+    try std.testing.expect(isEligible(rec, t_b));
+    try std.testing.expectEqual(@as(usize, 1), rec.parallel_eligible.len);
+    // A is serialized with rule 3, NOT rule 2.
+    const a_serialized = serializedById(rec, t_a);
+    try std.testing.expect(hasRule(a_serialized, 3));
+    try std.testing.expect(!hasRule(a_serialized, 2));
+}
+
 test "recommend-strategy on a missing plan exits non-zero" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);

@@ -57,6 +57,26 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         else => exit.die(ctx, e, "repo lookup: {s}", .{@errorName(e)}),
     };
 
+    // PR #17 cycle B finding 5: when --path is supplied the handler performs
+    // TWO writes (entity_links repo edge + task_touch_paths row). They must
+    // commit atomically — a partial commit (repo edge present, path row
+    // missing) makes recommend-strategy's loadTouches fall back to the
+    // coarse whole-repo signal, serializing a task that should be eligible.
+    // We wrap both writes in a savepoint and rollback on any error after
+    // the first write succeeded. The non-path mode does a single write and
+    // needs no transaction.
+    const sp_name = "touches_add";
+    const path_mode = args.path != null;
+    if (path_mode) {
+        d.savepoint(ctx.allocator, sp_name) catch |e|
+            exit.die(ctx, e, "task touches add: savepoint: {s}", .{@errorName(e)});
+    }
+    var sp_released = false;
+    defer if (path_mode and !sp_released) {
+        d.rollbackToSavepoint(ctx.allocator, sp_name) catch {};
+        d.releaseSavepoint(ctx.allocator, sp_name) catch {};
+    };
+
     // Write the repo-level touches edge. When a path is being declared, a
     // pre-existing repo edge is fine (the path-touch implies it) — we treat
     // LinkExists as a no-op in that mode rather than an error.
@@ -80,6 +100,12 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     if (args.path) |path| {
         engine.planning.task.addTouchPath(d, task_id, repo_id, path) catch |e|
             exit.die(ctx, e, "task touches add --path: {s}", .{@errorName(e)});
+    }
+
+    if (path_mode) {
+        d.releaseSavepoint(ctx.allocator, sp_name) catch |e|
+            exit.die(ctx, e, "task touches add: release savepoint: {s}", .{@errorName(e)});
+        sp_released = true;
     }
 
     if (args.json) {
