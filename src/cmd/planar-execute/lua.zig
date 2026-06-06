@@ -1,4 +1,4 @@
-//! lua.zig — the single `@cImport` of the vendored Lua 5.4 C API for the
+//! lua.zig — the single `@cImport` of the vendored Lua 5.5 C API for the
 //! planar-execute binary.
 //!
 //! Both `main.zig` (the host-function surface + the run/load paths) and

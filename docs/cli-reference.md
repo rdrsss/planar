@@ -5318,7 +5318,7 @@ planar-doc lint        [--path <dir>] [--json]
 
 ## Binary: `planar-execute`
 
-`planar-execute` is the **embedded-Lua orchestration driver**. Fifth binary in the architecture (plan 492). It hosts a Lua 5.4 runtime that drives `claude -p` workers via a `ctx` host-function surface, reading plan state through `planar` / `planar-agent` subprocesses. It holds **no DB handle** and never opens SQLite — it is a pure CLI driver that shells `planar`/`planar-agent`/`git` and parses their output.
+`planar-execute` is the **embedded-Lua orchestration driver**. Fifth binary in the architecture (plan 492). It hosts a Lua 5.5 runtime that drives `claude -p` workers via a `ctx` host-function surface, reading plan state through `planar` / `planar-agent` subprocesses. It holds **no DB handle** and never opens SQLite — it is a pure CLI driver that shells `planar`/`planar-agent`/`git` and parses their output.
 
 See [docs/concepts.md § Embedded-Lua control plane](./concepts.md#embedded-lua-control-plane) for the conceptual model, [docs/workflows.md § Recipe 24](./workflows.md#recipe-24--author-and-run-a-planar-execute-workflow) for the end-to-end authoring walkthrough, and [`workflows/README.md`](../workflows/README.md) for the bundled workflow templates.
 
@@ -5389,7 +5389,7 @@ Print the binary version and embedded Lua version, then exit 0.
 
 ```sh
 planar-execute version
-# → planar-execute 0.1.0 (lua 5.4)
+# → planar-execute 0.1.0 (lua 5.5)
 ```
 
 ### `planar-execute doctor`

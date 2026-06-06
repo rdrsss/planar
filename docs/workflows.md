@@ -2320,7 +2320,7 @@ For the persistence-on-claim contract see [`docs/concepts.md §Worktree`](concep
 
 ## Recipe 24 — Author and run a `planar-execute` workflow
 
-`planar-execute` is a thin Lua 5.4 runtime that drives `claude -p` agent workers through a `ctx` host-function surface. This recipe walks from authoring a minimal workflow through mock testing to a live run.
+`planar-execute` is a thin Lua 5.5 runtime that drives `claude -p` agent workers through a `ctx` host-function surface. This recipe walks from authoring a minimal workflow through mock testing to a live run.
 
 ### What you need
 

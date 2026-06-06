@@ -64,7 +64,7 @@ pub fn build(b: *std.Build) void {
     });
 
     // -----------------------------------------------------------------
-    // Lua 5.4 — compile the vendored multi-file library as a static lib.
+    // Lua 5.5 — compile the vendored multi-file library as a static lib.
     // lua.c and luac.c (standalone interpreter/compiler mains) are excluded
     // from the source list; only the library sources are compiled.
     //
@@ -128,7 +128,7 @@ pub fn build(b: *std.Build) void {
     }
     lua_mod.addIncludePath(b.path(lua_src_dir));
     const lua_lib = b.addLibrary(.{
-        .name = "lua54",
+        .name = "lua55",
         .linkage = .static,
         .root_module = lua_mod,
     });

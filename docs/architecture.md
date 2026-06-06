@@ -125,7 +125,7 @@ The shared engine module lives at `src/engine/runtime/agentactivity/`; per-binar
 
 ### `planar-execute` — fifth binary, no DB handle
 
-`planar-execute` (plan 492) is the embedded-Lua orchestration driver. It sits **outside** the four-binary SQLite boundary: it holds no DB handle and never opens SQLite at all. Its source tree lives under `src/cmd/planar-execute/` (separate `addExecutable` entry in `build.zig`); it links the Lua 5.4 C library (vendored) but does not link `src/db/` or `vendor/sqlite/`.
+`planar-execute` (plan 492) is the embedded-Lua orchestration driver. It sits **outside** the four-binary SQLite boundary: it holds no DB handle and never opens SQLite at all. Its source tree lives under `src/cmd/planar-execute/` (separate `addExecutable` entry in `build.zig`); it links the Lua 5.5 C library (vendored) but does not link `src/db/` or `vendor/sqlite/`.
 
 All state reads that a workflow script needs go through `planar` / `planar-agent` subprocesses (`planar-execute` shells them and parses JSON stdout). All writes happen through `planar-agent` verbs called by the `claude -p` workers `planar-execute` spawns. The workers run with a constrained PATH (`planar-agent` + `git` + system dirs; `planar` absent) — so no worker can call planning-entity mutations or open the DB read-write.
 

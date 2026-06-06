@@ -30,7 +30,7 @@ The ritual every code-writing agent dispatch follows is `planar-agent pull → h
 
 ## Embedded-Lua control plane
 
-`planar-execute` is a fifth binary (plan 492) that hosts a Lua 5.4 runtime and drives `claude -p` agent workers through a `ctx` host-function surface. It is architecturally distinct from the four planning-state binaries: it holds **no DB handle** and never opens SQLite. All state reads go through `planar` / `planar-agent` subprocesses; the workflow script cannot write directly to any database or planning entity.
+`planar-execute` is a fifth binary (plan 492) that hosts a Lua 5.5 runtime and drives `claude -p` agent workers through a `ctx` host-function surface. It is architecturally distinct from the four planning-state binaries: it holds **no DB handle** and never opens SQLite. All state reads go through `planar` / `planar-agent` subprocesses; the workflow script cannot write directly to any database or planning entity.
 
 ### No-DB-handle stance
 

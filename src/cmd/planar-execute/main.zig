@@ -1,4 +1,4 @@
-//! planar-execute — Lua 5.4 script execution harness (plan 492).
+//! planar-execute — Lua 5.5 script execution harness (plan 492).
 //!
 //! Fifth binary in the Planar family. Unlike the other binaries, this one
 //! does NOT open SQLite and does NOT link the runtime / engine / db modules.
@@ -2505,12 +2505,12 @@ fn findChildByCo(children: []DriveChild, co: *c.lua_State) ?usize {
 ///   - A stage that ERRORS drops the item to `nil` and SKIPS its remaining
 ///     stages (the Workflow-tool contract — `pipeline` never propagates the
 ///     error). The runner returns nil for that item.
-///   - Lua 5.4's `pcall` is YIELDABLE: when a stage calls `agent()` (which
-///     `lua_yield`s across the C boundary), the yield propagates out THROUGH the
-///     pcall to the scheduler, and the scheduler's resume re-enters the pcall on
-///     continuation. This is why a stage may spawn a worker even though it runs
-///     under pcall — the runner-with-pcall shape is correct precisely because
-///     5.4 made pcall continuation-aware.
+///   - Lua's `pcall` is YIELDABLE (since 5.4, unchanged in 5.5): when a stage
+///     calls `agent()` (which `lua_yield`s across the C boundary), the yield
+///     propagates out THROUGH the pcall to the scheduler, and the scheduler's
+///     resume re-enters the pcall on continuation. This is why a stage may spawn
+///     a worker even though it runs under pcall — the runner-with-pcall shape is
+///     correct precisely because pcall is continuation-aware.
 const PIPELINE_RUNNER_SRC =
     \\return function(stages, item, index)
     \\  local r = item
@@ -3431,7 +3431,7 @@ pub fn runModule(
     // run(ctx) executes inside a Lua COROUTINE thread, driven by lua_resume —
     // NOT a blocking lua_pcallk. This is the load-bearing change: yielding from
     // a C function (hostAgent → agentContinue) across a lua_pcallk boundary is
-    // forbidden in Lua 5.4 ("attempt to yield across a C-call boundary"), but a
+    // forbidden in Lua ("attempt to yield across a C-call boundary"), but a
     // C function called from a lua_resume'd coroutine CAN yield via lua_yieldk.
     // For N=1 the observable result is identical to the M4 lua_pcallk path; the
     // mechanism is now yield/resume so task 3183 can run N coroutines.
@@ -3804,11 +3804,17 @@ pub fn callRun(
 // ---------------------------------------------------------------------------
 
 /// Version string for planar-execute. Embeds the Lua version constant.
-/// The Lua version string is defined as a comptime constant in lua.h:
-///   #define LUA_VERSION "Lua 5.4"
-/// We pair it with the binary name for consistency with the other binaries'
-/// `<binary> <version-info>` format.
-const planar_execute_version = "planar-execute 0.1.0 (lua " ++ c.LUA_VERSION_MAJOR ++ "." ++ c.LUA_VERSION_MINOR ++ ")";
+/// The Lua version is derived from the vendored header's numeric major/minor
+/// macros (`LUA_VERSION_MAJOR_N` / `LUA_VERSION_MINOR_N`, e.g. 5 and 5 for
+/// 5.5). Lua 5.5 redefined the textual `LUA_VERSION_MAJOR` / `LUA_VERSION`
+/// macros in terms of the C `#`-stringizing operator (`LUAI_TOSTR`), which
+/// Zig's `@cImport` cannot translate, so we format the integer macros at
+/// comptime instead. We pair it with the binary name for consistency with the
+/// other binaries' `<binary> <version-info>` format.
+const planar_execute_version = std.fmt.comptimePrint(
+    "planar-execute 0.1.0 (lua {d}.{d})",
+    .{ c.LUA_VERSION_MAJOR_N, c.LUA_VERSION_MINOR_N },
+);
 
 /// The `run` subcommand: execute a workflow file.
 ///
@@ -3835,7 +3841,7 @@ const run_verb: cli.Cmd = .{
     .name = "run",
     .desc = "Execute a workflow Lua file.",
     .long_desc =
-    \\Execute a Lua 5.4 workflow script.
+    \\Execute a Lua 5.5 workflow script.
     \\
     \\  Usage:
     \\    planar-execute run <workflow.lua> [args...]
@@ -3891,7 +3897,7 @@ pub const root: cli.Cmd = .{
     .name = "planar-execute",
     .desc = "Execute a Lua workflow script.",
     .long_desc =
-    \\planar-execute — Lua 5.4 workflow execution harness (plan 492).
+    \\planar-execute — Lua 5.5 workflow execution harness (plan 492).
     \\
     \\  Usage:
     \\    planar-execute <workflow.lua> [args...]   Run a workflow file (default).
