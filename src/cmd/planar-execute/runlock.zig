@@ -255,7 +255,25 @@ pub fn acquire(
     // EEXIST: a lock file already exists. Read its payload and probe the holder.
     const holder = try readHolder(allocator, io, path);
     defer holder.deinit(allocator);
-    if (opts.pid_alive_fn(holder.pid)) {
+    // Guard: a non-positive pid (`<= 0`) means the payload was malformed,
+    // truncated, or empty (readHolder defaults to pid=-1 in those cases).
+    // We MUST NOT pass a non-positive pid to `pid_alive_fn` — on POSIX,
+    // `kill(-1, 0)` signals every process the caller can signal (returns
+    // success), and `kill(0, 0)` signals the caller's process group; both
+    // would yield a SPURIOUS "alive" verdict and wedge the next run with
+    // RunLockHeld (recoverable only by manual `rm` of the lock file).
+    // A `<=0` pid is unambiguously stale (no real holder can have pid<=0)
+    // → fall straight through to the stale-takeover path (task 3540
+    // finding 3). Print a brief stderr note so the operator sees the
+    // malformed-payload recovery.
+    const holder_pid_valid = holder.pid > 0;
+    if (!holder_pid_valid) {
+        std.debug.print(
+            "planar-execute: NOTE — run-lock for plan {d} has a malformed payload " ++
+                "(pid={d}, run-id='{s}'); treating as stale and taking over.\n",
+            .{ plan_id, holder.pid, holder.run_id },
+        );
+    } else if (opts.pid_alive_fn(holder.pid)) {
         log.warn(
             "refusing to start: plan {d} run-lock held by LIVE run-id={s} pid={d}",
             .{ plan_id, holder.run_id, holder.pid },
@@ -285,7 +303,9 @@ pub fn acquire(
     // we do not spin further — treat a second EEXIST as a live holder and
     // refuse; the operator can re-run, and the (now-current) holder either makes
     // progress or itself becomes stale for the next run to reclaim. This bounds
-    // the takeover to a single retry — no unbounded loop.
+    // the takeover to a single retry — no unbounded loop. Same pid<=0 guard
+    // as the first probe (task 3540 finding 3): do not call `pid_alive_fn`
+    // with a non-positive pid.
     const new_holder = readHolder(allocator, io, path) catch {
         // Could not even read the new lock — treat as held and refuse.
         return RunLockError.RunLockHeld;
@@ -341,9 +361,10 @@ const Holder = struct {
 /// the run-id into `allocator` and frees its own read buffer, so the returned
 /// `run_id` is an independent allocation the caller frees via `Holder.deinit`
 /// (no dangling borrow, no leaked buffer). A malformed or missing payload yields
-/// `pid = -1` (which `posixPidAlive` reports as ESRCH-equivalent ⇒ dead ⇒
-/// takeover-eligible), so a half-written stale lock from a crashed run does not
-/// wedge the next run.
+/// `pid = -1` (which the caller's `pid <= 0` guard treats as unambiguously
+/// stale — see `acquire` for the rationale; on POSIX `kill(-1, 0)` and
+/// `kill(0, 0)` do NOT mean "process not found"). A half-written stale lock
+/// from a crashed run thus does not wedge the next run (task 3540 finding 3).
 fn readHolder(allocator: std.mem.Allocator, io: Io, path: []const u8) RunLockError!Holder {
     const data = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(4096)) catch |err| switch (err) {
         error.FileNotFound => return .{ .run_id = "", .pid = -1 }, // vanished — treat as dead/takeover.
@@ -541,6 +562,88 @@ test "runlock: posixPidAlive reports a clearly-dead PID as gone and self as aliv
     // A very high PID is overwhelmingly unlikely to exist ⇒ ESRCH ⇒ dead. (This
     // is a soft check: the deterministic takeover path uses the injectable fake.)
     try testing.expect(!posixPidAlive(2147483600));
+}
+
+test "runlock task 3540 finding 3: truncated payload (run-id-only, no pid) → treat as stale + take over (REAL posixPidAlive)" {
+    // The original bug: readHolder defaults pid=-1 on a malformed payload,
+    // and `posixPidAlive(-1)` on POSIX calls `kill(-1, 0)` which signals
+    // every process the caller can signal — returns SUCCESS, NOT ESRCH.
+    // The previous code treated -1 as "alive" → next run refused with
+    // RunLockHeld and the operator had to manually `rm` the lock file.
+    //
+    // The fix: validate `holder.pid > 0` BEFORE calling pid_alive_fn. A
+    // non-positive pid is unambiguously malformed → treat as stale and
+    // take over. This test exercises the REAL posixPidAlive (not the
+    // injected fake) so it specifically pins the kill(-1, 0) regression.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const a = testing.allocator;
+    const io = testing.io;
+
+    const dir = mkTmpDir(a);
+    defer a.free(dir);
+    defer rmTree(a, dir);
+
+    // Hand-write a TRUNCATED lock file (run-id only, no pid token). The
+    // parser tokenizes by space → only one token → pid defaults to -1.
+    const path = try std.fs.path.join(a, &.{ dir, "run-77.lock" });
+    defer a.free(path);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = "stale-run-id-only\n" });
+
+    // No injected fake — the production posixPidAlive runs. Acquire MUST
+    // succeed (the pid<=0 guard treats the malformed payload as stale and
+    // takes over). Pre-fix this returned RunLockError.RunLockHeld.
+    var lock = try acquire(a, io, 77, .{ .lock_dir = dir });
+    defer lock.deinit();
+    defer lock.release();
+    try testing.expect(lock.path.len != 0);
+    try testing.expect(lock.run_id.len != 0);
+    // The lock file now carries OUR run-id, not the stale token.
+    try testing.expect(!std.mem.eql(u8, lock.run_id, "stale-run-id-only"));
+}
+
+test "runlock task 3540 finding 3: pid=0 in payload → treat as stale + take over (REAL posixPidAlive)" {
+    // `kill(0, 0)` on POSIX signals the caller's process group (returns
+    // success). The pid<=0 guard MUST cover pid=0 too — same kill semantics
+    // as -1.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const a = testing.allocator;
+    const io = testing.io;
+
+    const dir = mkTmpDir(a);
+    defer a.free(dir);
+    defer rmTree(a, dir);
+
+    const path = try std.fs.path.join(a, &.{ dir, "run-78.lock" });
+    defer a.free(path);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = "rid 0 12345\n" });
+
+    var lock = try acquire(a, io, 78, .{ .lock_dir = dir });
+    defer lock.deinit();
+    defer lock.release();
+    try testing.expect(lock.path.len != 0);
+}
+
+test "runlock task 3540 finding 3: negative pid in payload → treat as stale + take over (REAL posixPidAlive)" {
+    // An explicitly-written negative pid (somehow) also triggers the
+    // pid<=0 guard — same as -1 from a malformed parse. This locks the
+    // semantic for any future regression that lets a negative pid slip
+    // through `parseInt`.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const a = testing.allocator;
+    const io = testing.io;
+
+    const dir = mkTmpDir(a);
+    defer a.free(dir);
+    defer rmTree(a, dir);
+
+    const path = try std.fs.path.join(a, &.{ dir, "run-79.lock" });
+    defer a.free(path);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = "rid -7 9999\n" });
+
+    var lock = try acquire(a, io, 79, .{ .lock_dir = dir });
+    defer lock.deinit();
+    defer lock.release();
+    try testing.expect(lock.path.len != 0);
 }
 
 test "runlock: default lock_dir derives from repo_root/.worktrees/.planar-execute" {

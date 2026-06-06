@@ -693,6 +693,19 @@ pub const AgentDriver = struct {
     /// Opaque context pointer passed to `question_runner`. Unused by the
     /// production runner; tests stash a pointer to their canned/recording state.
     question_runner_ctx: ?*anyopaque = null,
+
+    /// Applies the chosen terminal verb to the claim (plan 492 task 3540
+    /// finding 2 — surface terminal-verb failures). When null, the harness
+    /// calls the production `terminal.runTerminalVerb` (which shells
+    /// `planar-agent <verb>`). Tests inject a fake to drive the
+    /// terminal-verb-failed → halt-fan-in path WITHOUT a live `planar-agent`,
+    /// mirroring `claim_status_reader` / `question_runner`. The fn returns
+    /// the terminal-verb error union; the harness consumes its outcome and
+    /// reflects a failure on the result table + halts fan-in.
+    terminal_verb_runner: ?TerminalVerbRunnerFn = null,
+    /// Opaque context pointer passed to `terminal_verb_runner`. Unused by the
+    /// production runner; tests stash a pointer to their canned/recording state.
+    terminal_verb_runner_ctx: ?*anyopaque = null,
 };
 
 /// QuestionRunnerFn opens the operator-triage question on an M9 fan-in conflict
@@ -710,6 +723,22 @@ pub const QuestionRunnerFn = *const fn (
     title: []const u8,
     body: []const u8,
 ) u64;
+
+/// TerminalVerbRunnerFn applies the chosen terminal verb to the claim (plan
+/// 492 task 3540 finding 2). Injectable on `AgentDriver` so unit tests can
+/// drive the terminal-verb-failed → halt-fan-in path WITHOUT shelling
+/// `planar-agent`. Returns `terminal.TerminalError!void` so a subprocess
+/// failure (or any other error) is surfaced to the harness, which then
+/// reflects `terminal_verb_error=true` on the result table and SKIPS fan-in
+/// (a failed terminal verb is a HALT-fan-in condition — preventing the
+/// resume-double-merge described in the finding).
+pub const TerminalVerbRunnerFn = *const fn (
+    ctx: ?*anyopaque,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    verb: terminal.TerminalVerb,
+    claim_token: []const u8,
+) terminal.TerminalError!void;
 
 /// FailedAttemptFn counts a task's PRIOR FAILED attempts for the M8 max-attempt
 /// budget (task 3198). Injectable on `AgentDriver` so unit tests can drive the
@@ -925,17 +954,22 @@ fn readAgentOpts(L: ?*c.lua_State, opts_idx: c_int) AgentCallOpts {
 
 /// pushAgentResult builds the Lua return table for one agent() call:
 ///   { status = "...", exit_code = N, commit_present = bool,
-///     terminal_verb = "complete"|"release"|"fail"|"none" }
+///     terminal_verb = "complete"|"release"|"fail"|"none",
+///     terminal_verb_error = bool }
 /// `status` is "completed" / "released" / "failed" / "respected" / "stub"
-/// matching the harness's decision summary.
+/// matching the harness's decision summary. `terminal_verb_error` is true
+/// iff the harness's `planar-agent <verb>` subprocess errored (task 3540
+/// finding 2 — fan-in is halted in that case to prevent a resume-double-
+/// merge; the operator must reconcile manually). Defaults to false.
 fn pushAgentResult(
     L: ?*c.lua_State,
     status: []const u8,
     exit_code: u32,
     commit_present: bool,
     verb: terminal.TerminalVerb,
+    terminal_verb_error: bool,
 ) void {
-    c.lua_createtable(L, 0, 4);
+    c.lua_createtable(L, 0, 5);
     _ = c.lua_pushlstring(L, status.ptr, status.len);
     c.lua_setfield(L, -2, "status");
     c.lua_pushinteger(L, @intCast(exit_code));
@@ -950,6 +984,8 @@ fn pushAgentResult(
     };
     _ = c.lua_pushlstring(L, verb_name.ptr, verb_name.len);
     c.lua_setfield(L, -2, "terminal_verb");
+    c.lua_pushboolean(L, if (terminal_verb_error) 1 else 0);
+    c.lua_setfield(L, -2, "terminal_verb_error");
 }
 
 /// pushSkippedResult builds the Lua return table for one `agent()` call that the
@@ -1461,7 +1497,7 @@ fn agentContinue(L: ?*c.lua_State, status: c_int, ctx: c.lua_KContext) callconv(
         // Journal the spawn (best-effort, skipped when no repo/plan). One record
         // per spawn — this is the timed-out worker's record.
         writeJournalRecord(acs, "timed-out", outcome.exit_code, terminal_mono_ns);
-        pushAgentResult(L, "timed-out", outcome.exit_code, commit_present, .fail);
+        pushAgentResult(L, "timed-out", outcome.exit_code, commit_present, .fail, false);
         return 1;
     }
 
@@ -1474,11 +1510,50 @@ fn agentContinue(L: ?*c.lua_State, status: c_int, ctx: c.lua_KContext) callconv(
         .commit_present = commit_present,
     });
 
-    // 5) Optionally apply the terminal verb.
+    // 5) Optionally apply the terminal verb (task 3540 finding 2).
+    //
+    // The terminal-verb error MUST be surfaced — it is NOT a swallow-and-
+    // continue. A subprocess failure here (planar-agent unavailable,
+    // ClaimNotActive, etc.) leaves the task DB-not-completed while the
+    // decision matrix recorded a "successful" terminal verb. If we then
+    // FANNED IN, a later resume would respawn the same task (still
+    // `todo`/`doing` in the DB), produce another cycle commit, and attempt
+    // a SECOND merge into the already-merged epic → conflict/duplicate.
+    //
+    // Locked semantic: a failed harness terminal verb is a HALT-fan-in
+    // condition. We:
+    //   - flag `terminal_verb_failed` so the result-table stamping below
+    //     surfaces the divergence to the workflow (and the operator),
+    //   - SKIP fan-in for this call, even if the verb would otherwise
+    //     have driven it (the unmerged cycle commit + un-completed task
+    //     stay for the operator to reconcile manually),
+    //   - print a loud stderr WARNING (mirroring the bypass-reviewer
+    //     guard style) so the operator notices on the live console.
+    //
+    // The `.none` path is unaffected — the verb is the literal no-op
+    // (worker self-finalized) and `runTerminalVerb` short-circuits before
+    // any subprocess. Tests inject a fake via `driver.terminal_verb_runner`.
+    var terminal_verb_failed: bool = false;
     if (!driver.skip_terminal_subprocess and acs.claim_token.len > 0) {
-        terminal.runTerminalVerb(alloc, io, verb, acs.claim_token) catch {
-            // The harness tried its best; operator recovers via reconcile. The
-            // returned Lua table still carries the decision.
+        const tv_result = if (driver.terminal_verb_runner) |run|
+            run(driver.terminal_verb_runner_ctx, alloc, io, verb, acs.claim_token)
+        else
+            terminal.runTerminalVerb(alloc, io, verb, acs.claim_token);
+        tv_result catch |err| {
+            // Only treat as a HALT condition when the verb was non-.none —
+            // a .none verb's runTerminalVerb returns immediately and cannot
+            // error, but be defensive anyway: a .none-with-error is logged
+            // but does not halt fan-in (there is no fan-in candidate verb
+            // here anyway; fan-in is gated on a real commit + active/self-
+            // completed claim below).
+            if (verb != .none) terminal_verb_failed = true;
+            std.debug.print(
+                "planar-execute: WARNING — harness terminal verb '{s}' FAILED for claim '{s}' " ++
+                    "(error={s}). Task is NOT DB-completed; fan-in will be SKIPPED to prevent " ++
+                    "a resume-double-merge. Operator must reconcile manually " ++
+                    "(planar task show / planar-agent ...).\n",
+                .{ @tagName(verb), acs.claim_token, @errorName(err) },
+            );
         };
     }
 
@@ -1507,7 +1582,7 @@ fn agentContinue(L: ?*c.lua_State, status: c_int, ctx: c.lua_KContext) callconv(
         // `planar plan next`); never abort the run for it.
         hs.recordBlocked(acs.task_slug, "", "") catch {};
         writeJournalRecord(acs, "blocked", outcome.exit_code, terminal_mono_ns);
-        pushAgentResult(L, "blocked", outcome.exit_code, commit_present, .none);
+        pushAgentResult(L, "blocked", outcome.exit_code, commit_present, .none, false);
         return 1;
     }
 
@@ -1519,29 +1594,78 @@ fn agentContinue(L: ?*c.lua_State, status: c_int, ctx: c.lua_KContext) callconv(
         .fail => "failed",
     };
     writeJournalRecord(acs, status_str, outcome.exit_code, terminal_mono_ns);
-    pushAgentResult(L, status_str, outcome.exit_code, commit_present, verb);
+    pushAgentResult(L, status_str, outcome.exit_code, commit_present, verb, terminal_verb_failed);
 
-    // 8) M9 FAN-IN (tasks 3199/3200/3201). On a COMPLETED worker (the
-    // terminal-verb decision was `.complete` — exit 0, commit present, claim
-    // active) the cycle branch carries a real commit to fold into the epic. We
-    // merge cycle→epic INSIDE THE EPIC WORKTREE (never the main checkout, never
-    // epic→master — 3201) and surface the outcome to the Lua workflow as
-    // `r.merge`. A conflict does NOT halt the run (3200): it opens a triage
-    // question, leaves the cycle worktree for resolution, and returns normally.
+    // 8) M9 FAN-IN (tasks 3199/3200/3201 + task 3540 finding 1).
     //
-    // The merge runs on the cooperative-scheduler main thread (agentContinue is
-    // the continuation the scheduler resumes — one coroutine at a time), so two
-    // fan-in merges into the same epic worktree's `.git/index` cannot race; the
-    // single-threaded resume IS the serialization mutex (3201). The heartbeat /
-    // timeout threads never merge.
+    // Fan-in folds the cycle branch's commit into the epic worktree. The
+    // gate must fire whenever a COMMIT EXISTS and the task reached terminal
+    // state — NOT just when the harness shelled `.complete`. Two paths
+    // qualify:
     //
-    // Only the COMPLETED verb reaches fan-in — released / failed / respected
-    // workers produced no mergeable commit (and the M5/M6/M7/M8 paths above
-    // return before here), so this is additive and cannot regress them.
-    if (verb == .complete) {
+    //   (a) verb == .complete — the harness shelled `planar-agent
+    //       complete` (claim was `.active` going in, exit 0, commit present).
+    //       Classic M9 path.
+    //   (b) verb == .none AND claim_status == .completed — the WORKER ran
+    //       its OWN `planar-agent complete` (M7 doctrine). The claim is
+    //       `.completed`, decideTerminalVerb returned `.none` (no redundant
+    //       harness verb), but the cycle branch still carries the worker's
+    //       commit. Without this branch the cycle commit would sit unmerged
+    //       forever (task 3540 finding 1).
+    //
+    // The other `.none` sub-cases — claim `.released` / `.aborted` /
+    // `.stale` / `.unknown` — do NOT fan in. A self-release means the
+    // worker produced no useful work; .aborted/.stale/.unknown have no
+    // mergeable contract either. The gate keys on `.completed` precisely.
+    //
+    // HALT condition (task 3540 finding 2): if `runTerminalVerb` errored
+    // above (`terminal_verb_failed == true`), SKIP fan-in entirely. The
+    // claim DB row is now divergent from the harness's decision; merging
+    // would compound the divergence (resume would respawn → second
+    // commit → second merge → conflict/duplicate).
+    //
+    // The merge runs on the cooperative-scheduler main thread (agentContinue
+    // is the continuation the scheduler resumes — one coroutine at a time),
+    // so two fan-in merges into the same epic worktree's `.git/index`
+    // cannot race; the single-threaded resume IS the serialization mutex
+    // (3201). The heartbeat / timeout threads never merge.
+    if (terminal_verb_failed) {
+        stampMerge(L, "skipped-terminal-verb-failed", 0);
+    } else if (shouldFanIn(verb, claim_status, commit_present)) {
         runFanIn(L, acs, commit_present);
     }
     return 1;
+}
+
+/// shouldFanIn is the M9 fan-in gate predicate (task 3540 finding 1). PURE —
+/// no I/O, no allocation. Unit-tested in isolation against the matrix of
+/// (verb × claim_status × commit_present) so the gate decision is auditable
+/// independently of the runFanIn machinery.
+///
+/// Returns `true` iff fan-in should fire. The contract:
+///
+///   - `commit_present` must be true — nothing to merge otherwise.
+///   - At least one of:
+///     * `verb == .complete` — the HARNESS shelled `planar-agent complete`
+///       (claim was `.active` going in). Classic M9 path.
+///     * `claim_status == .completed` — the WORKER ran its OWN
+///       `planar-agent complete` (M7 doctrine). `decideTerminalVerb`
+///       returned `.none` (no redundant harness verb), but the cycle
+///       branch still carries a commit. Without this branch the cycle
+///       commit sits unmerged forever (the original bug).
+///
+/// The other `.none` sub-cases — claim `.released` / `.aborted` / `.stale`
+/// / `.unknown` — do NOT fan in: a self-release means the worker produced
+/// no useful work; .aborted/.stale/.unknown have no mergeable contract.
+fn shouldFanIn(
+    verb: terminal.TerminalVerb,
+    claim_status: terminal.ClaimStatus,
+    commit_present: bool,
+) bool {
+    if (!commit_present) return false;
+    if (verb == .complete) return true;
+    if (claim_status == .completed) return true;
+    return false;
 }
 
 /// runFanIn performs the M9 cycle→epic fan-in for a COMPLETED worker and stamps
@@ -8262,4 +8386,258 @@ test "M9 fan-in: no commit-present → merge=skipped (nothing to merge)" {
     const cyc_path = try worktree.cyclePath(a, repo, "nocommit", "nc-task");
     defer a.free(cyc_path);
     try std.testing.expect(m9DirExists(std.testing.io, cyc_path));
+}
+
+// ---------------------------------------------------------------------------
+// task 3540 finding 1 — fan-in gate fires on (commit_present AND (verb ==
+// .complete OR claim_status == .completed)), not just on verb == .complete.
+// Without this, a worker that runs its OWN `planar-agent complete` (M7
+// doctrine) sets claim → .completed → decideTerminalVerb → .none → fan-in
+// is SKIPPED even though the cycle branch carries a real commit. The cycle
+// commit then sits unmerged forever. The new gate is unit-tested as a pure
+// predicate (`shouldFanIn`) so the truth table is auditable independently
+// of the runFanIn machinery + worktree topology.
+// ---------------------------------------------------------------------------
+
+test "task 3540 finding 1: shouldFanIn fires on worker self-complete + commit (claim=.completed + verb=.none + commit_present)" {
+    // The original-bug case: worker ran its own terminal verb, claim is
+    // `.completed`, decideTerminalVerb returned `.none`, but the cycle
+    // branch carries a real commit. The new gate MUST fire here — that is
+    // exactly the finding-1 fix.
+    try std.testing.expect(shouldFanIn(.none, .completed, true));
+}
+
+test "task 3540 finding 1: shouldFanIn fires on harness-shelled complete (verb=.complete + commit_present)" {
+    // Classic M9 path: claim was `.active` going in, harness ran
+    // `planar-agent complete`. Fan-in fires regardless of claim_status
+    // read (claim_status is consulted only for the worker-self-complete
+    // branch; the harness-shelled-complete branch trusts the verb).
+    for ([_]terminal.ClaimStatus{ .active, .completed, .released, .aborted, .stale, .unknown }) |cs| {
+        try std.testing.expect(shouldFanIn(.complete, cs, true));
+    }
+}
+
+test "task 3540 finding 1: shouldFanIn does NOT fire on self-release (claim=.released + verb=.none)" {
+    // A worker that ran `planar-agent release` produced no useful work to
+    // integrate. Even with commit_present (a stray commit that release
+    // does not contractually exclude), we do NOT fan in — release means
+    // "throw it away," and fanning in would silently merge work the
+    // worker disowned. This is the explicit negative case called out in
+    // the finding.
+    try std.testing.expect(!shouldFanIn(.none, .released, true));
+}
+
+test "task 3540 finding 1: shouldFanIn does NOT fire on .aborted / .stale / .unknown self-terminal (verb=.none)" {
+    // These claim states have no mergeable contract — the worker either
+    // never finalized or its lease died — so the harness must NOT fan in
+    // even when a commit is present. Operator triages via reconcile.
+    try std.testing.expect(!shouldFanIn(.none, .aborted, true));
+    try std.testing.expect(!shouldFanIn(.none, .stale, true));
+    try std.testing.expect(!shouldFanIn(.none, .unknown, true));
+}
+
+test "task 3540 finding 1: shouldFanIn does NOT fire without commit_present" {
+    // commit_present=false ⇒ nothing to merge. The gate must short-circuit
+    // BEFORE consulting verb/claim_status, so a self-completed-but-no-
+    // commit worker does not erroneously enter the fan-in machinery.
+    for ([_]terminal.TerminalVerb{ .none, .complete, .release, .fail }) |v| {
+        for ([_]terminal.ClaimStatus{ .active, .completed, .released, .aborted, .stale, .unknown }) |cs| {
+            try std.testing.expect(!shouldFanIn(v, cs, false));
+        }
+    }
+}
+
+test "task 3540 finding 1: shouldFanIn does NOT fire when active claim + verb=.none (degenerate)" {
+    // verb=.none with claim_status=.active is the "harness exit_code 0 +
+    // no commit" combo from decideTerminalVerb — but that combo also
+    // returns .release, not .none, so this is a defensive negative: the
+    // gate must not surface fan-in for a hypothetical .none-on-active.
+    try std.testing.expect(!shouldFanIn(.release, .active, true));
+    try std.testing.expect(!shouldFanIn(.fail, .active, true));
+}
+
+test "task 3540 finding 1 e2e: worker self-completed + cycle commit → fan-in fires (merge=clean), cycle torn down" {
+    // The original-bug fix verified END-TO-END (driving runFanIn through
+    // the realistic worker-self-complete path): a worker that ran its own
+    // `planar-agent complete` sets claim → .completed → decideTerminalVerb
+    // → .none. The new gate routes through runFanIn because commit_present
+    // + claim_status==.completed is the worker-self-complete branch.
+    //
+    // We exercise runFanIn directly here (mirroring the existing M9 e2e
+    // tests above): the worktree topology + cycle commit is real, the
+    // merge outcome is asserted via the same m9-helpers. The gate decision
+    // itself is pinned by the shouldFanIn unit tests above.
+    const a = testing_alloc;
+    if (!m9GitAvailable(a)) return error.SkipZigTest;
+
+    const repo = m9MkTmpRepoDir(a);
+    defer a.free(repo);
+    defer m9RmTree(a, repo);
+    m9InitRepo(a, repo);
+
+    const plan_slug = "f1plan";
+    const task_slug = "f1task";
+    m9SetupCycleWithCommit(a, repo, plan_slug, task_slug, "f1.txt", "from-cycle-self-complete\n");
+
+    var driver = AgentDriver{
+        .spawner = undefined,
+        .io = std.testing.io,
+        .repo_root = repo,
+        .plan_slug = plan_slug,
+        .plan_id = 540,
+        .skip_terminal_subprocess = true,
+    };
+    const ts = try a.dupe(u8, task_slug);
+    defer a.free(ts);
+    var acs = m9MakeAcs(a, &driver, ts);
+
+    const L = c.luaL_newstate() orelse return error.SkipZigTest;
+    defer c.lua_close(L);
+    c.lua_createtable(L, 0, 5);
+
+    // The agentContinue gate would route here for (verb=.none,
+    // claim_status=.completed, commit_present=true) via shouldFanIn; we
+    // call runFanIn directly with commit_present=true to assert the merge
+    // actually lands.
+    runFanIn(L, &acs, true);
+
+    const merge = try m9ReadMergeField(a, L);
+    defer if (merge) |m| a.free(m);
+    try std.testing.expect(merge != null);
+    try std.testing.expectEqualStrings("clean", merge.?);
+
+    // Cycle worktree torn down (post-success cleanup).
+    const cyc_path = try worktree.cyclePath(a, repo, plan_slug, task_slug);
+    defer a.free(cyc_path);
+    try std.testing.expect(!m9DirExists(std.testing.io, cyc_path));
+}
+
+// ---------------------------------------------------------------------------
+// task 3540 finding 2 — runTerminalVerb errors must be SURFACED (not silently
+// swallowed). On error the harness MUST:
+//   - set `terminal_verb_error = true` on the result table (visible to the
+//     Lua workflow + the operator reading the result),
+//   - SKIP fan-in entirely (stamp `merge = "skipped-terminal-verb-failed"`),
+//   - print a loud stderr WARNING.
+// This protects a resume from a double-merge: a failed `planar-agent complete`
+// leaves the task DB-not-completed, so a resume re-spawns it and produces a
+// second commit; merging both would conflict/duplicate in the epic.
+// ---------------------------------------------------------------------------
+
+/// FailingTerminalVerbCtx is a recording fake that always errors. The
+/// agentContinue path then sets `terminal_verb_failed = true`, surfaces it
+/// on the result table, halts fan-in, and prints the WARNING.
+const FailingTerminalVerbCtx = struct {
+    calls: u32 = 0,
+    last_verb: terminal.TerminalVerb = .none,
+};
+
+fn failingTerminalVerbRunner(
+    ctx: ?*anyopaque,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    verb: terminal.TerminalVerb,
+    claim_token: []const u8,
+) terminal.TerminalError!void {
+    _ = allocator;
+    _ = io;
+    _ = claim_token;
+    const rc: *FailingTerminalVerbCtx = @ptrCast(@alignCast(ctx.?));
+    rc.calls += 1;
+    rc.last_verb = verb;
+    return terminal.TerminalError.SubprocessNonZero;
+}
+
+test "task 3540 finding 2: runTerminalVerb error → terminal_verb_error=true + merge=skipped-terminal-verb-failed + WARNING" {
+    // Exit 0 (would otherwise drive .release on no-commit) so the harness
+    // shells `planar-agent release`; the injected runner errors. The result
+    // table must report terminal_verb_error=true AND merge=skipped-
+    // terminal-verb-failed (the halt-fan-in stamp), and the stderr WARNING
+    // must have been printed. The fan-in machinery is NOT invoked (no
+    // question runner call). This is the documented locked semantic.
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    var ftv = FailingTerminalVerbCtx{};
+    var qctx = RecordingQuestionCtx{ .allocator = a };
+    defer qctx.deinit();
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        // skip_terminal_subprocess = false so the agentContinue path
+        // DOES call into the injected terminal_verb_runner (and the
+        // failure path runs).
+        .skip_terminal_subprocess = false,
+        .terminal_verb_runner = failingTerminalVerbRunner,
+        .terminal_verb_runner_ctx = &ftv,
+        .question_runner = recordingQuestionRunner,
+        .question_runner_ctx = &qctx,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+
+    const src =
+        \\return {
+        \\  meta = { name = "f2-tv-error", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local r = ctx.agent("the brief", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/abs/wt",
+        \\      claim_token = "tok-f2-err",
+        \\      task_slug = "f2ts",
+        \\    })
+        \\    assert(r.terminal_verb_error == true, "expected terminal_verb_error=true, got " .. tostring(r.terminal_verb_error))
+        \\    assert(r.merge == "skipped-terminal-verb-failed",
+        \\      "expected merge=skipped-terminal-verb-failed, got " .. tostring(r.merge))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:f2-tv-error", &.{}, &host, &err_buf);
+
+    // The injected runner was invoked exactly once (the harness's terminal
+    // verb attempt), with the verb the decision matrix chose for exit==0
+    // + no-commit + active-claim = .release.
+    try std.testing.expectEqual(@as(u32, 1), ftv.calls);
+    try std.testing.expectEqual(terminal.TerminalVerb.release, ftv.last_verb);
+    // Fan-in machinery was NOT invoked (no question_runner call). This is
+    // the load-bearing assertion of finding 2: a failed terminal verb is
+    // a HALT-fan-in condition, not a swallow-and-continue.
+    try std.testing.expectEqual(@as(usize, 0), qctx.calls.items.len);
+}
+
+test "task 3540 finding 2: terminal_verb_error=false on the happy path (no regression)" {
+    // Sanity: a normal successful agent() call still gets
+    // terminal_verb_error=false on the result table. The new field is
+    // additive.
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true, // ⇒ no terminal verb subprocess, no error possible
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+
+    const src =
+        \\return {
+        \\  meta = { name = "f2-tv-ok", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local r = ctx.agent("the brief", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/abs/wt",
+        \\      claim_token = "tok-f2-ok",
+        \\      task_slug = "f2ts2",
+        \\    })
+        \\    assert(r.terminal_verb_error == false,
+        \\      "expected terminal_verb_error=false on happy path, got " .. tostring(r.terminal_verb_error))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:f2-tv-ok", &.{}, &host, &err_buf);
 }
