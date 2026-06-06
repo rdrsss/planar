@@ -876,3 +876,296 @@ test "planar-execute --mock-worker: ungated/no-driver path is unchanged when --m
     // The MOCK MODE notice must NOT leak into a non-mock run.
     try std.testing.expect(std.mem.indexOf(u8, res.stderr, "MOCK MODE") == null);
 }
+
+// ---------------------------------------------------------------------------
+// task 3491 — `--mock-outcomes <file>` per-call scripted FakeSpawner outcomes
+// ---------------------------------------------------------------------------
+//
+// Contract being pinned:
+//   1. `--mock-outcomes` implies `--mock-worker` (no need to pass both).
+//   2. The Nth agent() call returns the Nth scripted outcome in order.
+//   3. Extra agent() calls beyond the script fall back to the default canned
+//      outcome (exit_code=0, stdout="ok", stderr="").
+//   4. A malformed NDJSON file produces a startup error (non-zero exit, clear
+//      message) before any Lua runs.
+//   5. `--mock-outcomes` is mutually exclusive with `--dry-run` and
+//      `PLANAR_EXECUTE_LIVE_AGENT=1`.
+//   6. `--mock-outcomes` is advertised in `run --help`.
+
+test "planar-execute --mock-outcomes: flag advertised in `run --help` (task 3491)" {
+    const gpa = std.testing.allocator;
+    const res = try runExecute(gpa, &.{ "run", "--help" });
+    defer res.deinit();
+
+    try std.testing.expectEqual(@as(u32, 0), res.exitCode());
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "--mock-outcomes") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "NDJSON") != null);
+}
+
+test "planar-execute --mock-outcomes: 3-call scripted outcomes observed in order (task 3491)" {
+    // The primary delivery: three scripted outcomes consumed in order.
+    // The workflow calls agent() three times and asserts the per-call result.
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_abs = try tmpAbsPath(&tmp, gpa);
+    defer gpa.free(tmp_abs);
+
+    // Write the NDJSON outcomes file.
+    const outcomes_src =
+        \\{"exit_code":0,"stdout":"call-1-out","stderr":""}
+        \\{"exit_code":1,"stdout":"","stderr":"call-2-err"}
+        \\{"exit_code":0,"stdout":"call-3-out","stderr":""}
+        \\
+    ;
+    try writeWorkflow(&tmp, "outcomes.ndjson", outcomes_src);
+    const outcomes_path = try workflowPath(tmp_abs, "outcomes.ndjson", gpa);
+    defer gpa.free(outcomes_path);
+
+    // Write a workflow that makes 3 agent() calls and checks each call's
+    // exit_code. Status "released" (exit 0 + no commit) or "failed" (exit ≠ 0)
+    // both come from the FakeSpawner decision matrix; what matters is the
+    // exit_code the outcome carried.
+    //
+    // We assert on r.exit_code directly: the scripted outcome is what the
+    // FakeSpawner returns as the spawn result, and the terminal verb result
+    // table always carries exit_code from the spawn outcome.
+    const wf_src =
+        \\return {
+        \\  meta = { name = "outcomes-3", description = "3-call scripted outcomes", phases = {} },
+        \\  run = function(ctx)
+        \\    local r1 = ctx.agent("brief-1", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/abs/mo-wt-1",
+        \\      claim_token = "tok-mo-1",
+        \\      task_slug = "ts-mo-1",
+        \\    })
+        \\    assert(r1.exit_code == 0, "call 1 exit_code: " .. tostring(r1.exit_code))
+        \\
+        \\    local r2 = ctx.agent("brief-2", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/abs/mo-wt-2",
+        \\      claim_token = "tok-mo-2",
+        \\      task_slug = "ts-mo-2",
+        \\    })
+        \\    assert(r2.exit_code == 1, "call 2 exit_code: " .. tostring(r2.exit_code))
+        \\
+        \\    local r3 = ctx.agent("brief-3", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/abs/mo-wt-3",
+        \\      claim_token = "tok-mo-3",
+        \\      task_slug = "ts-mo-3",
+        \\    })
+        \\    assert(r3.exit_code == 0, "call 3 exit_code: " .. tostring(r3.exit_code))
+        \\  end,
+        \\}
+    ;
+    try writeWorkflow(&tmp, "outcomes_3.lua", wf_src);
+    const wf_path = try workflowPath(tmp_abs, "outcomes_3.lua", gpa);
+    defer gpa.free(wf_path);
+
+    const res = try runExecute(gpa, &.{ "run", "--mock-outcomes", outcomes_path, wf_path });
+    defer res.deinit();
+
+    try std.testing.expectEqual(@as(u32, 0), res.exitCode());
+    // MOCK MODE notice must name the outcomes file.
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "MOCK MODE") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "scripted outcomes") != null);
+}
+
+test "planar-execute --mock-outcomes: exhaustion fallback — more calls than outcomes (task 3491)" {
+    // When there are MORE agent() calls than scripted outcomes, extra calls
+    // fall back to the global canned default (exit_code=0). The workflow makes
+    // 2 calls against a 1-line outcomes file and asserts both succeed.
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_abs = try tmpAbsPath(&tmp, gpa);
+    defer gpa.free(tmp_abs);
+
+    // One scripted outcome, but we make two calls.
+    try writeWorkflow(&tmp, "one.ndjson",
+        \\{"exit_code":0,"stdout":"scripted","stderr":""}
+        \\
+    );
+    const outcomes_path = try workflowPath(tmp_abs, "one.ndjson", gpa);
+    defer gpa.free(outcomes_path);
+
+    const wf_src =
+        \\return {
+        \\  meta = { name = "fallback", description = "exhaustion fallback", phases = {} },
+        \\  run = function(ctx)
+        \\    local r1 = ctx.agent("brief-1", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/abs/fb-wt-1",
+        \\      claim_token = "tok-fb-1",
+        \\      task_slug = "ts-fb-1",
+        \\    })
+        \\    -- First call: scripted outcome (exit 0).
+        \\    assert(r1.exit_code == 0, "call 1 exit_code: " .. tostring(r1.exit_code))
+        \\
+        \\    -- Second call: fallback to canned default (exit 0, stdout="ok").
+        \\    local r2 = ctx.agent("brief-2", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/abs/fb-wt-2",
+        \\      claim_token = "tok-fb-2",
+        \\      task_slug = "ts-fb-2",
+        \\    })
+        \\    assert(r2.exit_code == 0, "call 2 fallback exit_code: " .. tostring(r2.exit_code))
+        \\  end,
+        \\}
+    ;
+    try writeWorkflow(&tmp, "fallback.lua", wf_src);
+    const wf_path = try workflowPath(tmp_abs, "fallback.lua", gpa);
+    defer gpa.free(wf_path);
+
+    const res = try runExecute(gpa, &.{ "run", "--mock-outcomes", outcomes_path, wf_path });
+    defer res.deinit();
+
+    try std.testing.expectEqual(@as(u32, 0), res.exitCode());
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "MOCK MODE") != null);
+}
+
+test "planar-execute --mock-outcomes: malformed NDJSON file → startup error (task 3491)" {
+    // A file with a non-JSON line must fail at startup (non-zero exit, clear
+    // message) BEFORE any Lua code runs. Workflow correctness is irrelevant.
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_abs = try tmpAbsPath(&tmp, gpa);
+    defer gpa.free(tmp_abs);
+
+    try writeWorkflow(&tmp, "bad.ndjson", "this is not json\n");
+    const outcomes_path = try workflowPath(tmp_abs, "bad.ndjson", gpa);
+    defer gpa.free(outcomes_path);
+
+    try writeWorkflow(&tmp, "any.lua",
+        \\return { meta = { name = "x", description = "x", phases = {} }, run = function(ctx) end }
+    );
+    const wf_path = try workflowPath(tmp_abs, "any.lua", gpa);
+    defer gpa.free(wf_path);
+
+    const res = try runExecute(gpa, &.{ "run", "--mock-outcomes", outcomes_path, wf_path });
+    defer res.deinit();
+
+    try std.testing.expect(res.exitCode() != 0);
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "mock-outcomes") != null);
+}
+
+test "planar-execute --mock-outcomes: missing file → startup error (task 3491)" {
+    // A path that does not exist must fail at startup with a clear message.
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_abs = try tmpAbsPath(&tmp, gpa);
+    defer gpa.free(tmp_abs);
+
+    try writeWorkflow(&tmp, "any.lua",
+        \\return { meta = { name = "x", description = "x", phases = {} }, run = function(ctx) end }
+    );
+    const wf_path = try workflowPath(tmp_abs, "any.lua", gpa);
+    defer gpa.free(wf_path);
+
+    const res = try runExecute(gpa, &.{ "run", "--mock-outcomes", "/no/such/outcomes.ndjson", wf_path });
+    defer res.deinit();
+
+    try std.testing.expect(res.exitCode() != 0);
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "mock-outcomes") != null);
+}
+
+test "planar-execute --mock-outcomes: implies --mock-worker (no need to pass both) (task 3491)" {
+    // Passing only --mock-outcomes (without --mock-worker) must enter MOCK MODE.
+    // This is the "implies" contract: less friction for workflow authors.
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_abs = try tmpAbsPath(&tmp, gpa);
+    defer gpa.free(tmp_abs);
+
+    try writeWorkflow(&tmp, "one.ndjson",
+        \\{"exit_code":0,"stdout":"implied","stderr":""}
+        \\
+    );
+    const outcomes_path = try workflowPath(tmp_abs, "one.ndjson", gpa);
+    defer gpa.free(outcomes_path);
+
+    const wf_src =
+        \\return {
+        \\  meta = { name = "implies", description = "implies mock-worker", phases = {} },
+        \\  run = function(ctx)
+        \\    local r = ctx.agent("b", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/abs/impl-wt",
+        \\      claim_token = "tok-impl",
+        \\      task_slug = "ts-impl",
+        \\    })
+        \\    assert(r.status ~= "stub", "must not be stub under --mock-outcomes (implied mock mode)")
+        \\    assert(r.exit_code == 0, "exit_code: " .. tostring(r.exit_code))
+        \\  end,
+        \\}
+    ;
+    try writeWorkflow(&tmp, "implies.lua", wf_src);
+    const wf_path = try workflowPath(tmp_abs, "implies.lua", gpa);
+    defer gpa.free(wf_path);
+
+    // Pass ONLY --mock-outcomes, NOT --mock-worker.
+    const res = try runExecute(gpa, &.{ "run", "--mock-outcomes", outcomes_path, wf_path });
+    defer res.deinit();
+
+    try std.testing.expectEqual(@as(u32, 0), res.exitCode());
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "MOCK MODE") != null);
+}
+
+test "planar-execute --mock-outcomes conflict: --dry-run exits non-zero (task 3491)" {
+    // --mock-outcomes is mutually exclusive with --dry-run.
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_abs = try tmpAbsPath(&tmp, gpa);
+    defer gpa.free(tmp_abs);
+
+    try writeWorkflow(&tmp, "x.ndjson", "{}\n");
+    const outcomes_path = try workflowPath(tmp_abs, "x.ndjson", gpa);
+    defer gpa.free(outcomes_path);
+
+    try writeWorkflow(&tmp, "x.lua",
+        \\return { meta = { name = "x", description = "x", phases = {} }, run = function(ctx) end }
+    );
+    const wf_path = try workflowPath(tmp_abs, "x.lua", gpa);
+    defer gpa.free(wf_path);
+
+    const res = try runExecute(gpa, &.{ "run", "--mock-outcomes", outcomes_path, "--dry-run", wf_path });
+    defer res.deinit();
+
+    try std.testing.expect(res.exitCode() != 0);
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "mock-outcomes") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "--dry-run") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "mutually exclusive") != null);
+}
+
+test "planar-execute --mock-outcomes conflict: PLANAR_EXECUTE_LIVE_AGENT exits non-zero (task 3491)" {
+    // --mock-outcomes is mutually exclusive with the live gate.
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_abs = try tmpAbsPath(&tmp, gpa);
+    defer gpa.free(tmp_abs);
+
+    try writeWorkflow(&tmp, "x.ndjson", "{}\n");
+    const outcomes_path = try workflowPath(tmp_abs, "x.ndjson", gpa);
+    defer gpa.free(outcomes_path);
+
+    try writeWorkflow(&tmp, "x.lua",
+        \\return { meta = { name = "x", description = "x", phases = {} }, run = function(ctx) end }
+    );
+    const wf_path = try workflowPath(tmp_abs, "x.lua", gpa);
+    defer gpa.free(wf_path);
+
+    const res = try runExecuteWithGate(gpa, &.{ "run", "--mock-outcomes", outcomes_path, wf_path });
+    defer res.deinit();
+
+    try std.testing.expect(res.exitCode() != 0);
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "mock-outcomes") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "PLANAR_EXECUTE_LIVE_AGENT") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "mutually exclusive") != null);
+}

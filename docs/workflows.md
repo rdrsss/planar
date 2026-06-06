@@ -2379,6 +2379,19 @@ Stderr prints a `MOCK MODE` notice and per-agent canned outcomes (`status=releas
 
 `--plan` is optional in mock mode (plan-state reads degrade gracefully when absent) but providing it exercises `ctx.eligible` against real plan state, which surfaces routing logic errors early.
 
+To test **branchy control flow** (e.g. "the 2nd `agent()` call fails, the 3rd succeeds"), use `--mock-outcomes <file>` with a small NDJSON file specifying per-call outcomes:
+
+```sh
+# outcomes.ndjson:
+# {"exit_code":0,"stdout":"","stderr":""}
+# {"exit_code":1,"stdout":"","stderr":"worker-failed"}
+# {"exit_code":0,"stdout":"","stderr":""}
+
+planar-execute run --mock-outcomes outcomes.ndjson --plan 42 my-workflow.lua 42
+```
+
+`--mock-outcomes` implies `--mock-worker` — no need to pass both. Extra `agent()` calls beyond the script fall back to the default canned outcome (exit_code=0). Parse errors exit 1 at startup with a clear message.
+
 ### Step 4 — Run live
 
 Set `PLANAR_EXECUTE_LIVE_AGENT=1` and provide `--plan`. The harness spawns real `claude -p` workers with a constrained PATH (`planar-agent` + `git` + system dirs; `planar` is intentionally absent — workers operate through `planar-agent` only):

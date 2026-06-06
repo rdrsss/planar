@@ -4197,7 +4197,8 @@ const run_verb: cli.Cmd = .{
     .flags = &.{
         .{ .long = "--dry-run", .kind = .bool, .default = .{ .bool = false }, .desc = "Load and validate the workflow, print meta and phases, exit without running." },
         .{ .long = "--plan", .kind = .int, .default = .{ .int = 0 }, .desc = "Plan id the live agent run is scoped to. When PLANAR_EXECUTE_LIVE_AGENT=1, providing --plan enables live claim-status reads and commit-presence sampling; omitting it degrades those features but does not prevent agent-free workflows from running." },
-        .{ .long = "--mock-worker", .kind = .bool, .default = .{ .bool = false }, .desc = "Workflow-script testing harness (plan 492 M10 task 3202). Enter run() with the FULL agent() pipeline wired against an in-process FakeSpawner so the workflow's control flow (parallel, pipeline, error handling, blocked-summary, result propagation) runs deterministically WITHOUT spawning any real `claude -p` worker (no API cost, no fs writes from the worker). Canned spawn outcome: exit_code=0, stdout=\"ok\", stderr=\"\" — agent() returns the natural decision-matrix result (typically status=\"released\" when no repo/commit is present). Mutually exclusive with --dry-run and PLANAR_EXECUTE_LIVE_AGENT=1; --plan is optional (degrades like task 3264)." },
+        .{ .long = "--mock-worker", .kind = .bool, .default = .{ .bool = false }, .desc = "Workflow-script testing harness (plan 492 M10 task 3202). Enter run() with the FULL agent() pipeline wired against an in-process FakeSpawner so the workflow's control flow (parallel, pipeline, error handling, blocked-summary, result propagation) runs deterministically WITHOUT spawning any real `claude -p` worker (no API cost, no fs writes from the worker). Canned spawn outcome: exit_code=0, stdout=\"ok\", stderr=\"\" — agent() returns the natural decision-matrix result (typically status=\"released\" when no repo/commit is present). Mutually exclusive with --dry-run and PLANAR_EXECUTE_LIVE_AGENT=1; --plan is optional (degrades like task 3264). See also --mock-outcomes for per-call scripted outcomes." },
+        .{ .long = "--mock-outcomes", .kind = .string, .default = .{ .string = "" }, .desc = "Per-call scripted FakeSpawner outcomes for deterministic workflow control-flow testing (plan 503 task 3491). Points at a small NDJSON file: one JSON object per line, each with optional fields exit_code (int, default 0), stdout (string, default \"\"), stderr (string, default \"\"). The FakeSpawner consumes outcomes in order: the Nth agent() call returns the Nth outcome. When MORE agent() calls are made than scripted outcomes, extra calls fall back to the default canned outcome (exit_code=0, stdout=\"ok\", stderr=\"\"). Parse errors (bad JSON, unreadable file) exit 1 with a clear message. Implies --mock-worker when --mock-worker is not explicitly set; mutually exclusive with --dry-run and PLANAR_EXECUTE_LIVE_AGENT=1." },
         .{ .long = "--bypass-reviewer-guard", .kind = .bool, .default = .{ .bool = false }, .desc = "Operator-explicit override for the bright-line refusal guard (plan 492 M10 task 3206). The guard refuses to run a plan whose open tasks touch migrations/*.sql, a new top-level CLI verb, or invariant/methodology code under a workflow that does NOT declare meta.reviewer = true. Pass --bypass-reviewer-guard to proceed anyway; the harness prints a loud stderr warning naming the override. Use this only when you have consciously accepted the doctrine risk (e.g. running a one-off recovery workflow). Hostile-looking name by design: hard-to-bypass-by-accident but possible when truly needed." },
     },
     .positionals = &.{
@@ -4375,31 +4376,53 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
     const workflow_path = args.workflow;
     const rest_args: []const []const u8 = args.rest_args;
     const dry_run: bool = args.dry_run;
-    const mock_worker: bool = args.mock_worker;
+    const mock_outcomes_path: []const u8 = args.mock_outcomes;
+    const has_outcomes_file = mock_outcomes_path.len > 0;
+    // --mock-outcomes implies --mock-worker (less friction: a workflow author
+    // using --mock-outcomes should not also be required to pass --mock-worker).
+    // We record the effective mock_worker flag here so all subsequent gates
+    // see the right value even when --mock-worker was not explicitly provided.
+    const mock_worker: bool = args.mock_worker or has_outcomes_file;
 
-    // ---- task 3202 mode-conflict gates ---------------------------------------
+    // ---- task 3202 / task 3491 mode-conflict gates ---------------------------
     //
-    // `--mock-worker` is a THIRD mode parallel to the M2 stub (default) and the
-    // gated live-agent run. It is mutually exclusive with both `--dry-run` (a
-    // strictly read-only validation pass that exits BEFORE entering run) and
-    // PLANAR_EXECUTE_LIVE_AGENT=1 (the real-cost path). Mixing them is a wiring
-    // error, not a meaningful combined mode: reject loudly with a clear
-    // message so the operator picks one and reruns.
+    // `--mock-worker` (and by implication `--mock-outcomes`) is a THIRD mode
+    // parallel to the M2 stub (default) and the gated live-agent run. It is
+    // mutually exclusive with both `--dry-run` (a strictly read-only validation
+    // pass that exits BEFORE entering run) and PLANAR_EXECUTE_LIVE_AGENT=1
+    // (the real-cost path). Mixing them is a wiring error, not a meaningful
+    // combined mode: reject loudly with a clear message.
     if (mock_worker and dry_run) {
-        try ctx.stderr.print(
-            "planar-execute: --mock-worker and --dry-run are mutually exclusive. " ++
-                "--dry-run skips run() entirely; --mock-worker enters run() with a fake spawner. Pick one.\n",
-            .{},
-        );
+        if (has_outcomes_file) {
+            try ctx.stderr.print(
+                "planar-execute: --mock-outcomes and --dry-run are mutually exclusive. " ++
+                    "--dry-run skips run() entirely; --mock-outcomes enters run() with a fake spawner. Pick one.\n",
+                .{},
+            );
+        } else {
+            try ctx.stderr.print(
+                "planar-execute: --mock-worker and --dry-run are mutually exclusive. " ++
+                    "--dry-run skips run() entirely; --mock-worker enters run() with a fake spawner. Pick one.\n",
+                .{},
+            );
+        }
         try flushCtx();
         std.process.exit(1);
     }
     if (mock_worker and ctx.environ.getPosix("PLANAR_EXECUTE_LIVE_AGENT") != null) {
-        try ctx.stderr.print(
-            "planar-execute: --mock-worker and PLANAR_EXECUTE_LIVE_AGENT=1 are mutually exclusive. " ++
-                "--mock-worker uses an in-process FakeSpawner (no real `claude -p`); the live gate spawns real workers. Unset PLANAR_EXECUTE_LIVE_AGENT or drop --mock-worker.\n",
-            .{},
-        );
+        if (has_outcomes_file) {
+            try ctx.stderr.print(
+                "planar-execute: --mock-outcomes and PLANAR_EXECUTE_LIVE_AGENT=1 are mutually exclusive. " ++
+                    "--mock-outcomes uses an in-process FakeSpawner (no real `claude -p`); the live gate spawns real workers. Unset PLANAR_EXECUTE_LIVE_AGENT or drop --mock-outcomes.\n",
+                .{},
+            );
+        } else {
+            try ctx.stderr.print(
+                "planar-execute: --mock-worker and PLANAR_EXECUTE_LIVE_AGENT=1 are mutually exclusive. " ++
+                    "--mock-worker uses an in-process FakeSpawner (no real `claude -p`); the live gate spawns real workers. Unset PLANAR_EXECUTE_LIVE_AGENT or drop --mock-worker.\n",
+                .{},
+            );
+        }
         try flushCtx();
         std.process.exit(1);
     }
@@ -4629,8 +4652,9 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
     //
     // The natural agent() result under the default canned outcome (active claim
     // + exit 0 + no commit) is `status="released"` — the workflow author writes
-    // their control-flow asserts against that. Per-call scripted outcomes
-    // (`--mock-outcomes <file>`) are deferred (see task 3267, filed below).
+    // their control-flow asserts against that. Per-call scripted outcomes are
+    // loaded from the `--mock-outcomes <file>` NDJSON file (task 3491) and
+    // installed into the FakeSpawnerState below when the flag is set.
     //
     // The rest of the M5+ pipeline (scheduler, heartbeat thread, journal,
     // fan-in) runs UNCHANGED — the FakeSpawner is the only injected difference.
@@ -4647,6 +4671,45 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
         const mock_plan: u64 = if (args.plan > 0) @intCast(args.plan) else 0;
         mock_fake = spawn.FakeSpawnerState.init(allocator, 0, "ok", "");
         mock_fake_init = true;
+
+        // ---- task 3491: --mock-outcomes per-call scripted outcomes -----------
+        //
+        // When --mock-outcomes <file> is given, parse the NDJSON outcome script
+        // and install it into the FakeSpawnerState BEFORE building the Spawner.
+        // The arena is owned by the FakeSpawnerState (via owned_outcome_arena)
+        // so it is freed by mock_fake.deinit() at the end of this scope.
+        //
+        // Parse errors (unreadable file, bad JSON) are fatal at startup — the
+        // operator gets a clear message and a non-zero exit before any Lua
+        // code runs. This is the right failure mode: a silently-wrong outcomes
+        // file would produce a confusing run with unexpected canned defaults.
+        if (has_outcomes_file) {
+            var outcomes_arena = std.heap.ArenaAllocator.init(allocator);
+            // Ownership transferred to mock_fake.owned_outcome_arena below on
+            // success. On failure we still need to deinit it — use errdefer.
+            var outcomes_arena_owned = false;
+            errdefer if (!outcomes_arena_owned) outcomes_arena.deinit();
+
+            const loaded = spawn.loadOutcomeScript(
+                outcomes_arena.allocator(),
+                ctx.io,
+                mock_outcomes_path,
+            ) catch |err| {
+                const msg = switch (err) {
+                    spawn.OutcomeScriptError.FileReadFailed => "planar-execute: --mock-outcomes: cannot read outcomes file",
+                    spawn.OutcomeScriptError.MalformedLine => "planar-execute: --mock-outcomes: file contains a line that is not valid JSON",
+                    spawn.OutcomeScriptError.OutOfMemory => "planar-execute: --mock-outcomes: out of memory while parsing outcomes file",
+                };
+                try ctx.stderr.print("{s}: {s}\n", .{ msg, mock_outcomes_path });
+                try flushCtx();
+                outcomes_arena.deinit();
+                std.process.exit(1);
+            };
+            mock_fake.outcome_scripts = loaded;
+            mock_fake.owned_outcome_arena = outcomes_arena;
+            outcomes_arena_owned = true;
+        }
+
         mock_driver = .{
             .spawner = mock_fake.spawner(),
             .io = ctx.io,
@@ -4664,10 +4727,17 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
 
         // MOCK MODE notice on stderr — the operator should never mistake a
         // mock run for a real one. Distinct, greppable prefix.
-        try ctx.stderr.print(
-            "planar-execute: MOCK MODE — running in --mock-worker mode (no real `claude -p` spawned; agent() calls return canned outcomes from an in-process FakeSpawner)\n",
-            .{},
-        );
+        if (has_outcomes_file) {
+            try ctx.stderr.print(
+                "planar-execute: MOCK MODE — running in --mock-worker mode with scripted outcomes from '{s}' (no real `claude -p` spawned; agent() calls return per-call outcomes from the NDJSON file, falling back to canned defaults past the end of the script)\n",
+                .{mock_outcomes_path},
+            );
+        } else {
+            try ctx.stderr.print(
+                "planar-execute: MOCK MODE — running in --mock-worker mode (no real `claude -p` spawned; agent() calls return canned outcomes from an in-process FakeSpawner)\n",
+                .{},
+            );
+        }
         try flushCtx();
     }
 

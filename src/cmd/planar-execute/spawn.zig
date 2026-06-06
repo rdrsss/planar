@@ -535,6 +535,25 @@ pub const FakeHandle = struct {
     /// `RealHandle.cost_usd`). Updated by `fakeDrainEventsFn` from `cost_script`
     /// each drain round. Read by the scheduler via `Spawner.costSoFar`.
     cost_usd: f64 = 0,
+    /// Per-call scripted outcome from `--mock-outcomes` (task 3491). When
+    /// non-null, `wait`/`poll` return this outcome instead of the global canned
+    /// defaults. The exit_code, stdout, and stderr are borrowed slices that
+    /// point into the state's `owned_outcome_scripts` arena — they live as long
+    /// as the FakeSpawnerState is live. Null ⇒ fall back to
+    /// canned_exit_code/canned_stdout/canned_stderr (exhaustion-fallback path).
+    scripted_outcome: ?ScriptedOutcome = null,
+};
+
+/// ScriptedOutcome is one entry in a `--mock-outcomes` NDJSON file: the
+/// per-call exit code, stdout, and stderr to return from a specific agent()
+/// invocation (task 3491). All fields are optional in the file (exit_code
+/// defaults to 0, stdout/stderr to ""). When loaded into
+/// `FakeSpawnerState.owned_outcome_scripts`, strings are heap-owned by the
+/// arena passed to `loadOutcomeScript`.
+pub const ScriptedOutcome = struct {
+    exit_code: u32 = 0,
+    stdout: []const u8 = "",
+    stderr: []const u8 = "",
 };
 
 // ---------------------------------------------------------------------------
@@ -1147,6 +1166,21 @@ pub const FakeSpawnerState = struct {
     /// models a worker that reports no cost (cost_usd stays 0). Lets a test
     /// drive "above cap" vs "below cap" vs "cap disabled" cost paths.
     cost_scripts: []const []const f64 = &.{},
+    /// Per-call scripted outcomes from `--mock-outcomes <file>` (task 3491).
+    /// Consumed in `start` order: the i-th `start` installs `outcome_scripts[i]`
+    /// as `handle.scripted_outcome`. When i is past the end, the handle falls
+    /// back to the global canned defaults (canned_exit_code / canned_stdout /
+    /// canned_stderr) — the friendlier "partial script" behavior. Borrowed
+    /// slice; set by the caller (handleRun) after `loadOutcomeScript`. When
+    /// empty (the no-file case) every call uses the global canned defaults.
+    outcome_scripts: []const ScriptedOutcome = &.{},
+    /// Heap-owned scripted outcomes loaded from the `--mock-outcomes` NDJSON
+    /// file (task 3491). When non-null, `deinit` frees the arena. When the
+    /// caller uses `outcome_scripts` borrowed from a separate allocation, this
+    /// field stays null and the caller is responsible for lifetime. Tests that
+    /// set `outcome_scripts` directly (not via loadOutcomeScript) leave this
+    /// null.
+    owned_outcome_arena: ?std.heap.ArenaAllocator = null,
     /// The ids of the workers `kill` was called on (task 3188). Lets a test
     /// assert WHICH worker was killed when several are in flight. Fixed-capacity
     /// (bounded by MAX_SLOTS in practice); growth past it is a test bug.
@@ -1210,6 +1244,8 @@ pub const FakeSpawnerState = struct {
         }
         self.overlap_obs.deinit(self.allocator);
         self.killed_ids.deinit(self.allocator);
+        // Free the scripted-outcome arena if we own it (task 3491).
+        if (self.owned_outcome_arena) |*arena| arena.deinit();
     }
 
     /// overlapObsFor returns the overlap observation recorded when the worker
@@ -1332,6 +1368,25 @@ fn cannedOutcome(state: *FakeSpawnerState, allocator: std.mem.Allocator) SpawnEr
     };
 }
 
+/// outcomeForHandle returns a caller-owned copy of the outcome for this handle.
+/// When the handle carries a `scripted_outcome` (from `--mock-outcomes`, task
+/// 3491), that outcome takes precedence. Otherwise falls back to the global
+/// canned defaults. This is the single read-point for both `fakeWaitFn` and
+/// `fakePollFn` so the scripted-outcome contract is enforced uniformly.
+fn outcomeForHandle(handle: *const Handle, state: *FakeSpawnerState, allocator: std.mem.Allocator) SpawnError!SpawnOutcome {
+    if (handle.fake.scripted_outcome) |so| {
+        const stdout = allocator.dupe(u8, so.stdout) catch return SpawnError.OutOfMemory;
+        errdefer allocator.free(stdout);
+        const stderr = allocator.dupe(u8, so.stderr) catch return SpawnError.OutOfMemory;
+        return .{
+            .exit_code = so.exit_code,
+            .stdout = stdout,
+            .stderr = stderr,
+        };
+    }
+    return cannedOutcome(state, allocator);
+}
+
 /// fakeStartFn records the invocation and returns an in-flight FakeHandle. The
 /// handle reports "still running" for `poll_until_done` poll probes before
 /// reporting the canned outcome (so a test can assert the scheduler polled).
@@ -1386,6 +1441,16 @@ fn fakeStartFn(
     else
         &.{};
 
+    // Per-call scripted outcome (task 3491 — --mock-outcomes). If the i-th
+    // start is within the outcome_scripts slice, install it on the handle.
+    // Past the end ⇒ null (exhaustion fallback: the handle returns the global
+    // canned defaults instead). The ScriptedOutcome is a borrowed view into
+    // state's owned_outcome_arena; it lives for the duration of the state.
+    const scripted_outcome: ?ScriptedOutcome = if (start_index < state.outcome_scripts.len)
+        state.outcome_scripts[start_index]
+    else
+        null;
+
     return .{ .fake = .{
         .state = state,
         .poll_remaining = poll_remaining,
@@ -1393,6 +1458,7 @@ fn fakeStartFn(
         .hung = is_hung,
         .event_script = ev_script,
         .cost_script = cost_script,
+        .scripted_outcome = scripted_outcome,
     } };
 }
 
@@ -1444,7 +1510,8 @@ fn removeLiveWorker(state: *FakeSpawnerState, id: u32) void {
 
 /// fakePollFn is the non-blocking probe. Returns null (still running) while
 /// `poll_remaining > 0`, decrementing it each call; once it reaches zero the
-/// next poll returns the canned outcome and marks the handle terminal.
+/// next poll returns the outcome (scripted or canned fallback) and marks the
+/// handle terminal.
 fn fakePollFn(
     ctx: ?*anyopaque,
     allocator: std.mem.Allocator,
@@ -1465,11 +1532,11 @@ fn fakePollFn(
     state.reached_terminal = true;
     if (state.live_inflight > 0) state.live_inflight -= 1;
     removeLiveWorker(state, handle.fake.id);
-    return try cannedOutcome(state, allocator);
+    return try outcomeForHandle(handle, state, allocator);
 }
 
-/// fakeWaitFn blocks (trivially, for the fake) and returns the canned outcome.
-/// Marks the handle terminal.
+/// fakeWaitFn blocks (trivially, for the fake) and returns the outcome
+/// (scripted or canned fallback). Marks the handle terminal.
 fn fakeWaitFn(
     ctx: ?*anyopaque,
     allocator: std.mem.Allocator,
@@ -1482,7 +1549,7 @@ fn fakeWaitFn(
     state.reached_terminal = true;
     if (state.live_inflight > 0) state.live_inflight -= 1;
     removeLiveWorker(state, handle.fake.id);
-    return try cannedOutcome(state, allocator);
+    return try outcomeForHandle(handle, state, allocator);
 }
 
 /// fakeKillFn records the kill (id + count) and drops the worker from the
@@ -1541,7 +1608,9 @@ fn fakeCostSoFarFn(handle: *const Handle) f64 {
 
 /// fakeRunFn is the runFn for FakeSpawner. It builds the argv via
 /// `buildSpawnArgv`, dupes it onto the state's allocator, records the
-/// invocation, and returns a duped copy of the canned outcome.
+/// invocation, and returns a duped copy of the outcome (scripted or canned
+/// fallback). Scripted outcomes (task 3491) are keyed by invocation index:
+/// the i-th blocking `run` call uses `outcome_scripts[i]` when in range.
 fn fakeRunFn(
     ctx: ?*anyopaque,
     allocator: std.mem.Allocator,
@@ -1552,8 +1621,94 @@ fn fakeRunFn(
     const state: *FakeSpawnerState = @ptrCast(@alignCast(ctx.?));
 
     if (state.forced_error) |e| return e;
+    // Capture the invocation index BEFORE appending (the current length is the
+    // 0-based index of this call). Used below to select the scripted outcome.
+    const call_idx = state.invocations.items.len;
     try recordFakeInvocation(state, inputs);
+
+    // Scripted outcome (task 3491): if outcome_scripts covers this call, use
+    // it; else fall back to the global canned defaults.
+    if (call_idx < state.outcome_scripts.len) {
+        const so = state.outcome_scripts[call_idx];
+        const stdout = allocator.dupe(u8, so.stdout) catch return SpawnError.OutOfMemory;
+        errdefer allocator.free(stdout);
+        const stderr = allocator.dupe(u8, so.stderr) catch return SpawnError.OutOfMemory;
+        return .{ .exit_code = so.exit_code, .stdout = stdout, .stderr = stderr };
+    }
     return cannedOutcome(state, allocator);
+}
+
+// ---------------------------------------------------------------------------
+// loadOutcomeScript — parse a --mock-outcomes NDJSON file (task 3491).
+// ---------------------------------------------------------------------------
+
+/// Errors that `loadOutcomeScript` can surface. Distinct from `SpawnError` so
+/// `handleRun` can emit a clean startup message and exit 1 rather than panic.
+pub const OutcomeScriptError = error{
+    /// The file could not be read (not found, permission denied, etc.).
+    FileReadFailed,
+    /// A line in the NDJSON file is not valid JSON or not a JSON object.
+    MalformedLine,
+    /// Allocator returned OOM while building the outcome slice.
+    OutOfMemory,
+};
+
+/// loadOutcomeScript parses a `--mock-outcomes` NDJSON file and returns a
+/// heap-owned slice of `ScriptedOutcome`s allocated from `arena`. Each non-empty
+/// line must be a JSON object with optional fields `exit_code` (integer, default
+/// 0), `stdout` (string, default ""), `stderr` (string, default ""). Lines that
+/// consist only of whitespace are skipped. Parse errors on any non-empty line
+/// surface as `OutcomeScriptError.MalformedLine` — the function fails fast on
+/// the first bad line so the operator sees a clear message. On success the
+/// returned slice (and all string values within it) are owned by `arena`; call
+/// `arena.deinit()` to free everything in one shot.
+///
+/// This function is INFALLIBLE with respect to missing optional fields: an
+/// empty JSON object `{}` is valid and yields the defaults (exit_code=0,
+/// stdout="", stderr=""). Unrecognized keys in the object are silently ignored
+/// (std.json parses into the struct with `ignore_unknown_fields = true`).
+pub fn loadOutcomeScript(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    file_path: []const u8,
+) OutcomeScriptError![]ScriptedOutcome {
+    // Read the whole file. 4 MiB limit is generous for an outcomes script.
+    const content = std.Io.Dir.cwd().readFileAlloc(io, file_path, arena, .limited(4 * 1024 * 1024)) catch
+        return OutcomeScriptError.FileReadFailed;
+    // We do not free `content` — it is arena-owned and freed with the arena.
+
+    var outcomes = std.ArrayList(ScriptedOutcome).empty;
+    // outcomes is also arena-allocated; no separate deinit needed.
+
+    // One pass over the content, splitting on newlines.
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, &[_]u8{ ' ', '\t', '\r' });
+        if (line.len == 0) continue; // blank / trailing newline — skip.
+
+        // Parse the JSON object into a transient value so we can extract
+        // fields with defaults. We parse with alloc_always so string values
+        // are owned by the arena (not pointers into the content slice, which
+        // may alias). We ignore unknown fields so future extension of the
+        // format is backward-compatible.
+        const Parsed = struct {
+            exit_code: u32 = 0,
+            stdout: []const u8 = "",
+            stderr: []const u8 = "",
+        };
+        const parsed = std.json.parseFromSliceLeaky(Parsed, arena, line, .{
+            .ignore_unknown_fields = true,
+            .allocate = .alloc_always,
+        }) catch return OutcomeScriptError.MalformedLine;
+
+        outcomes.append(arena, .{
+            .exit_code = parsed.exit_code,
+            .stdout = parsed.stdout,
+            .stderr = parsed.stderr,
+        }) catch return OutcomeScriptError.OutOfMemory;
+    }
+
+    return outcomes.toOwnedSlice(arena) catch return OutcomeScriptError.OutOfMemory;
 }
 
 // ---------------------------------------------------------------------------
@@ -2065,4 +2220,210 @@ test "spawn: countEventsAndBufferTail updates cost_usd from total_cost_usd in li
     const line3 = "not json at all\n";
     _ = countEventsAndBufferTail(&rh, line3);
     try testing.expect(@abs(rh.cost_usd - 2.5) < 0.001);
+}
+
+// ---------------------------------------------------------------------------
+// task 3491 — loadOutcomeScript + scripted-outcome FakeSpawner unit tests
+// ---------------------------------------------------------------------------
+
+test "spawn: loadOutcomeScript parses a 3-line NDJSON outcomes file (task 3491)" {
+    // Exercises the primary contract: three lines, each overriding a different
+    // field. The function parses all three and returns them in order.
+    const alloc = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+
+    // Write a temp NDJSON file.
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var f = try tmp.dir.createFile(std.testing.io, "outcomes.ndjson", .{});
+    try f.writeStreamingAll(std.testing.io,
+        \\{"exit_code":0,"stdout":"alpha-out","stderr":""}
+        \\{"exit_code":1,"stdout":"","stderr":"beta-err"}
+        \\{"exit_code":2,"stdout":"gamma-out","stderr":"gamma-err"}
+        \\
+    );
+    f.close(std.testing.io);
+
+    // Resolve the absolute path.
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPath(std.testing.io, &buf);
+    const dir_path = buf[0..dir_path_len];
+    const file_path = try std.fs.path.join(arena.allocator(), &.{ dir_path, "outcomes.ndjson" });
+
+    const outcomes = try loadOutcomeScript(arena.allocator(), std.testing.io, file_path);
+
+    try testing.expectEqual(@as(usize, 3), outcomes.len);
+    try testing.expectEqual(@as(u32, 0), outcomes[0].exit_code);
+    try testing.expectEqualStrings("alpha-out", outcomes[0].stdout);
+    try testing.expectEqualStrings("", outcomes[0].stderr);
+    try testing.expectEqual(@as(u32, 1), outcomes[1].exit_code);
+    try testing.expectEqualStrings("", outcomes[1].stdout);
+    try testing.expectEqualStrings("beta-err", outcomes[1].stderr);
+    try testing.expectEqual(@as(u32, 2), outcomes[2].exit_code);
+    try testing.expectEqualStrings("gamma-out", outcomes[2].stdout);
+    try testing.expectEqualStrings("gamma-err", outcomes[2].stderr);
+}
+
+test "spawn: loadOutcomeScript accepts optional fields (defaults apply) (task 3491)" {
+    // An empty JSON object is valid — all defaults kick in.
+    const alloc = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var f = try tmp.dir.createFile(std.testing.io, "defaults.ndjson", .{});
+    try f.writeStreamingAll(std.testing.io,
+        \\{}
+        \\{"exit_code":42}
+        \\{"stdout":"only-stdout"}
+        \\
+    );
+    f.close(std.testing.io);
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPath(std.testing.io, &buf);
+    const dir_path = buf[0..dir_path_len];
+    const file_path = try std.fs.path.join(arena.allocator(), &.{ dir_path, "defaults.ndjson" });
+
+    const outcomes = try loadOutcomeScript(arena.allocator(), std.testing.io, file_path);
+
+    try testing.expectEqual(@as(usize, 3), outcomes.len);
+    // Empty object → all defaults.
+    try testing.expectEqual(@as(u32, 0), outcomes[0].exit_code);
+    try testing.expectEqualStrings("", outcomes[0].stdout);
+    try testing.expectEqualStrings("", outcomes[0].stderr);
+    // Only exit_code set.
+    try testing.expectEqual(@as(u32, 42), outcomes[1].exit_code);
+    try testing.expectEqualStrings("", outcomes[1].stdout);
+    // Only stdout set.
+    try testing.expectEqual(@as(u32, 0), outcomes[2].exit_code);
+    try testing.expectEqualStrings("only-stdout", outcomes[2].stdout);
+}
+
+test "spawn: loadOutcomeScript returns MalformedLine for invalid JSON (task 3491)" {
+    const alloc = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var f = try tmp.dir.createFile(std.testing.io, "bad.ndjson", .{});
+    try f.writeStreamingAll(std.testing.io, "not valid json at all\n");
+    f.close(std.testing.io);
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPath(std.testing.io, &buf);
+    const dir_path = buf[0..dir_path_len];
+    const file_path = try std.fs.path.join(arena.allocator(), &.{ dir_path, "bad.ndjson" });
+
+    try testing.expectError(
+        OutcomeScriptError.MalformedLine,
+        loadOutcomeScript(arena.allocator(), std.testing.io, file_path),
+    );
+}
+
+test "spawn: loadOutcomeScript returns FileReadFailed for missing file (task 3491)" {
+    const alloc = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+
+    try testing.expectError(
+        OutcomeScriptError.FileReadFailed,
+        loadOutcomeScript(arena.allocator(), std.testing.io, "/no/such/outcomes/file.ndjson"),
+    );
+}
+
+test "spawn: FakeSpawner outcome_scripts — 3-call scripted outcomes served in order (task 3491)" {
+    // The three-call scripted sequence: call 1 → exit 0, call 2 → exit 1,
+    // call 3 → exit 2. Beyond that → fallback to canned defaults.
+    const alloc = testing.allocator;
+    var fake = FakeSpawnerState.init(alloc, 0, "canned", "");
+    defer fake.deinit();
+
+    const scripts = [_]ScriptedOutcome{
+        .{ .exit_code = 0, .stdout = "out-0", .stderr = "" },
+        .{ .exit_code = 1, .stdout = "", .stderr = "err-1" },
+        .{ .exit_code = 2, .stdout = "out-2", .stderr = "" },
+    };
+    fake.outcome_scripts = &scripts;
+    const spawner = fake.spawner();
+
+    const base_inputs = SpawnInputs{
+        .role = .coder,
+        .worktree_path = "/tmp/wt",
+        .brief = "B",
+        .role_spec = "",
+        .env_map = null,
+    };
+
+    // Call 1 → scripted outcome[0].
+    var out0 = try spawner.run(alloc, std.testing.io, base_inputs);
+    defer out0.deinit(alloc);
+    try testing.expectEqual(@as(u32, 0), out0.exit_code);
+    try testing.expectEqualStrings("out-0", out0.stdout);
+
+    // Call 2 → scripted outcome[1].
+    var out1 = try spawner.run(alloc, std.testing.io, base_inputs);
+    defer out1.deinit(alloc);
+    try testing.expectEqual(@as(u32, 1), out1.exit_code);
+    try testing.expectEqualStrings("err-1", out1.stderr);
+
+    // Call 3 → scripted outcome[2].
+    var out2 = try spawner.run(alloc, std.testing.io, base_inputs);
+    defer out2.deinit(alloc);
+    try testing.expectEqual(@as(u32, 2), out2.exit_code);
+    try testing.expectEqualStrings("out-2", out2.stdout);
+
+    // Call 4 → exhaustion fallback: canned defaults (exit 0, stdout="canned").
+    var out3 = try spawner.run(alloc, std.testing.io, base_inputs);
+    defer out3.deinit(alloc);
+    try testing.expectEqual(@as(u32, 0), out3.exit_code);
+    try testing.expectEqualStrings("canned", out3.stdout);
+}
+
+test "spawn: FakeSpawner outcome_scripts via start/wait (async surface) (task 3491)" {
+    // The per-call scripted outcome must also work through the async
+    // start → wait path (the scheduler surface), not just the blocking run path.
+    const alloc = testing.allocator;
+    var fake = FakeSpawnerState.init(alloc, 0, "fallback", "");
+    defer fake.deinit();
+
+    const scripts = [_]ScriptedOutcome{
+        .{ .exit_code = 0, .stdout = "async-out", .stderr = "async-err" },
+        .{ .exit_code = 7, .stdout = "", .stderr = "seven" },
+    };
+    fake.outcome_scripts = &scripts;
+    const spawner = fake.spawner();
+
+    const base_inputs = SpawnInputs{
+        .role = .coder,
+        .worktree_path = "/tmp/wt",
+        .brief = "B",
+        .role_spec = "",
+        .env_map = null,
+    };
+
+    // First start → handle 0 → scripted outcome[0].
+    var h0 = try spawner.start(alloc, std.testing.io, base_inputs);
+    var o0 = try spawner.wait(alloc, std.testing.io, &h0);
+    defer o0.deinit(alloc);
+    try testing.expectEqual(@as(u32, 0), o0.exit_code);
+    try testing.expectEqualStrings("async-out", o0.stdout);
+    try testing.expectEqualStrings("async-err", o0.stderr);
+
+    // Second start → handle 1 → scripted outcome[1].
+    var h1 = try spawner.start(alloc, std.testing.io, base_inputs);
+    var o1 = try spawner.wait(alloc, std.testing.io, &h1);
+    defer o1.deinit(alloc);
+    try testing.expectEqual(@as(u32, 7), o1.exit_code);
+    try testing.expectEqualStrings("seven", o1.stderr);
+
+    // Third start → handle 2 → exhaustion fallback.
+    var h2 = try spawner.start(alloc, std.testing.io, base_inputs);
+    var o2 = try spawner.wait(alloc, std.testing.io, &h2);
+    defer o2.deinit(alloc);
+    try testing.expectEqual(@as(u32, 0), o2.exit_code);
+    try testing.expectEqualStrings("fallback", o2.stdout);
 }
