@@ -108,6 +108,14 @@ pub const Slot = struct {
     /// `clockNow() - last_event_at_ns` against the stall budget. Only meaningful
     /// when stall detection is enabled (`stall_ns > 0`).
     last_event_at_ns: i128 = 0,
+    /// The latest `total_cost_usd` observed from this worker's stream-json
+    /// telemetry (task 3445). Updated by `observeLivenessAndStall` each poll
+    /// round after `drainEvents` returns (the drain sets `handle.*.cost_usd` as a
+    /// side effect). Default 0 (no cost observed yet). The continuation reads this
+    /// from the slot at terminal to stamp `cost_usd` on the agent() result table
+    /// and evaluate the per-worker cost cap. SUPPLEMENTARY TELEMETRY: never a
+    /// pre-emptive kill.
+    last_cost_usd: f64 = 0,
 };
 
 /// TimeoutReason names WHICH liveness bound reclaimed a worker (task 3190).
@@ -278,6 +286,9 @@ pub const Scheduler = struct {
                 // an event is measured from registration, so a from-birth-silent
                 // worker stalls after the stall budget (task 3190).
                 .last_event_at_ns = now,
+                // Cost starts at 0; updated by observeLivenessAndStall via
+                // drainEvents side-effects (task 3445).
+                .last_cost_usd = 0,
             };
             return idx;
         }
@@ -339,6 +350,11 @@ pub const Scheduler = struct {
         const s = &self.slots[idx];
         const sp = self.spawner.?;
         const new_events = sp.drainEvents(self.unwrapIo(), &s.handle);
+        // Read cost-so-far after every drain (task 3445): `drainEvents` updates
+        // `handle.*.cost_usd` as a side effect when a `total_cost_usd` field is
+        // parsed from a complete stream-json line. We propagate it to the slot so
+        // the continuation can read it at terminal via `slot.last_cost_usd`.
+        s.last_cost_usd = sp.costSoFar(&s.handle);
         if (new_events > 0) {
             s.last_event_at_ns = now;
             return false; // freshly alive — never stalled this round.

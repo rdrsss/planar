@@ -360,6 +360,20 @@ pub const BlockedItem = struct {
     reason: []const u8,
 };
 
+/// CostExceededItem records ONE worker whose final observed cost exceeded the
+/// per-worker cost cap (task 3445). Cost is a POST-HOC flag — the worker is
+/// NOT killed mid-flight; this item accumulates in `HostState.cost_exceeded_items`
+/// for the run-end operator-triage summary. Both strings are HEAP-OWNED copies
+/// (duped by `HostState.recordCostExceeded`) so they survive the per-call
+/// `AgentCallState` teardown.
+pub const CostExceededItem = struct {
+    /// The task's slug (e.g. "m5-foo"). May be empty if unknown.
+    task_slug: []const u8,
+    /// The observed final cost in USD, as a formatted string (e.g. "1.2345").
+    /// Stored as a string so the summary print is allocation-free.
+    cost_usd_str: []const u8,
+};
+
 /// HostState is the Zig-side record of everything the workflow's host functions
 /// did during a run. It is allocated by the caller (runModule), pointed-to by
 /// every host C closure via a light-userdata upvalue, and inspected by the host
@@ -382,6 +396,13 @@ pub const HostState = struct {
     /// Owns heap-duped copies of every string (mirrors `calls`). Quiet when
     /// empty — no summary is printed when zero workers blocked.
     blocked_items: std.ArrayList(BlockedItem) = .empty,
+
+    /// Run-scoped accumulator of workers whose final cost exceeded the per-worker
+    /// cost cap (task 3445). `agentContinue` appends one entry per worker whose
+    /// final observed `total_cost_usd` exceeds `budgets.max_worker_cost_usd`;
+    /// `handleRun` prints them at run end. Quiet when the cap is disabled or no
+    /// worker exceeded it. Owns heap-duped copies of the strings.
+    cost_exceeded_items: std.ArrayList(CostExceededItem) = .empty,
 
     /// Host-injected timestamp (e.g. a Unix epoch second). Exposed as ctx.now.
     now: i64,
@@ -526,6 +547,11 @@ pub const HostState = struct {
             self.allocator.free(bi.reason);
         }
         self.blocked_items.deinit(self.allocator);
+        for (self.cost_exceeded_items.items) |ci| {
+            self.allocator.free(ci.task_slug);
+            self.allocator.free(ci.cost_usd_str);
+        }
+        self.cost_exceeded_items.deinit(self.allocator);
         for (self.heartbeat_register_failures.items) |tok| {
             self.allocator.free(tok);
         }
@@ -558,6 +584,27 @@ pub const HostState = struct {
         const r = try self.allocator.dupe(u8, reason);
         errdefer self.allocator.free(r);
         try self.blocked_items.append(self.allocator, .{ .task_slug = s, .task_blocker = b, .reason = r });
+    }
+
+    /// recordCostExceeded appends a CostExceededItem (task 3445), taking
+    /// ownership of heap-duped copies of `task_slug` and the formatted
+    /// `cost_usd` string. On OOM it returns silently (the cap was already
+    /// stamped on the result table; losing only the in-memory summary entry
+    /// is non-fatal — same best-effort stance as `recordBlocked`).
+    fn recordCostExceeded(self: *HostState, task_slug: []const u8, cost_usd: f64) void {
+        const s = self.allocator.dupe(u8, task_slug) catch return;
+        errdefer self.allocator.free(s);
+        // Format cost as a decimal string (up to 6 sig figs, no trailing zeros).
+        var buf: [32]u8 = undefined;
+        const cost_str_raw = std.fmt.bufPrint(&buf, "{d:.6}", .{cost_usd}) catch "?";
+        const cost_str = self.allocator.dupe(u8, cost_str_raw) catch {
+            self.allocator.free(s);
+            return;
+        };
+        self.cost_exceeded_items.append(self.allocator, .{ .task_slug = s, .cost_usd_str = cost_str }) catch {
+            self.allocator.free(s);
+            self.allocator.free(cost_str);
+        };
     }
 
     /// recordHeartbeatRegisterFailure appends the first 8 bytes (or the full
@@ -1035,6 +1082,22 @@ fn pushAgentResult(
     c.lua_setfield(L, -2, "terminal_verb_error");
 }
 
+/// stampCostFields adds `cost_usd` and `cost_exceeded` fields to the agent()
+/// result table that is on top of the Lua stack (task 3445). Called immediately
+/// after `pushAgentResult` (or after `pushAgentResult` + any other field stamps)
+/// so the table is already on the stack and we just set two more fields.
+/// `cost_usd` is the latest observed total_cost_usd from the worker's stream-json
+/// telemetry (0 when no cost event was parsed). `cost_exceeded` is true iff the
+/// cap is enabled AND the observed cost exceeds it. Both fields are always
+/// present on the result table regardless of whether the cap is enabled, so the
+/// workflow can always inspect `.cost_usd` for telemetry.
+fn stampCostFields(L: ?*c.lua_State, cost_usd: f64, cost_exceeded: bool) void {
+    c.lua_pushnumber(L, cost_usd);
+    c.lua_setfield(L, -2, "cost_usd");
+    c.lua_pushboolean(L, if (cost_exceeded) 1 else 0);
+    c.lua_setfield(L, -2, "cost_exceeded");
+}
+
 /// pushSkippedResult builds the Lua return table for one `agent()` call that the
 /// M8 resume path SKIPPED without spawning (task 3197):
 ///   { status = "skipped", skip_reason = "already-done"|"blocked",
@@ -1510,6 +1573,12 @@ fn agentContinue(L: ?*c.lua_State, status: c_int, ctx: c.lua_KContext) callconv(
     // matrix.
     const timed_out = slot.timed_out;
     const timed_out_reason = slot.timed_out_reason;
+    // Read the final observed cost from the slot (task 3445). The scheduler's
+    // observeLivenessAndStall propagated it from the drain side-effect. Read
+    // BEFORE the deferred releaseSlot clears the slot.
+    const observed_cost_usd: f64 = slot.last_cost_usd;
+    const cap = hs.budgets.max_worker_cost_usd;
+    const cost_exceeded: bool = (cap > 0) and (observed_cost_usd > cap);
     // Free the call state + release the slot when we leave (the result table is
     // already on the Lua stack by then; nothing below borrows acs after this).
     // First unregister the claim from the heartbeat thread (task 3187): the
@@ -1589,6 +1658,11 @@ fn agentContinue(L: ?*c.lua_State, status: c_int, ctx: c.lua_KContext) callconv(
         const reason = timed_out_reason.name();
         _ = c.lua_pushlstring(L, reason.ptr, reason.len);
         c.lua_setfield(L, -2, "timed_out_reason");
+        // Stamp cost fields on the timed-out result (task 3445). Cost-exceeded
+        // on a timed-out worker is still flagged (the worker DID exceed the cap,
+        // even though the timed-out path is the primary disposition).
+        stampCostFields(L, observed_cost_usd, cost_exceeded);
+        if (cost_exceeded) hs.recordCostExceeded(acs.task_slug, observed_cost_usd);
         return 1;
     }
 
@@ -1674,6 +1748,8 @@ fn agentContinue(L: ?*c.lua_State, status: c_int, ctx: c.lua_KContext) callconv(
         hs.recordBlocked(acs.task_slug, "", "") catch {};
         writeJournalRecord(acs, "blocked", outcome.exit_code, terminal_mono_ns);
         pushAgentResult(L, "blocked", outcome.exit_code, commit_present, .none, false);
+        stampCostFields(L, observed_cost_usd, cost_exceeded);
+        if (cost_exceeded) hs.recordCostExceeded(acs.task_slug, observed_cost_usd);
         return 1;
     }
 
@@ -1686,6 +1762,10 @@ fn agentContinue(L: ?*c.lua_State, status: c_int, ctx: c.lua_KContext) callconv(
     };
     writeJournalRecord(acs, status_str, outcome.exit_code, terminal_mono_ns);
     pushAgentResult(L, status_str, outcome.exit_code, commit_present, verb, terminal_verb_failed);
+    // Stamp cost fields on the result (task 3445). Done AFTER pushAgentResult
+    // so the result table is on the stack and we can set fields on it.
+    stampCostFields(L, observed_cost_usd, cost_exceeded);
+    if (cost_exceeded) hs.recordCostExceeded(acs.task_slug, observed_cost_usd);
 
     // 8) M9 FAN-IN (tasks 3199/3200/3201 + task 3540 finding 1).
     //
@@ -4741,6 +4821,10 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
     // the slot reclaimed; this summary is the triage mechanism, not a prompt.
     // Quiet when zero blocked: a clean run prints nothing here.
     try printBlockedSummary(host.blocked_items.items, ctx.stdout);
+    // Per-worker cost cap exceeded (task 3445): list flagged workers when the cap
+    // is enabled and any worker exceeded it. Quiet when the cap is disabled or no
+    // worker exceeded it — a clean run prints nothing here.
+    try printCostExceededSummary(host.cost_exceeded_items.items, host.budgets.max_worker_cost_usd, ctx.stdout);
     // Heartbeat register failures (PR #17 cycle C finding 8): any claim whose
     // heartbeat registration failed (OOM) is listed so the operator notices
     // post-run even if the live stderr WARNING was missed.
@@ -4764,6 +4848,24 @@ fn printBlockedSummary(items: []const BlockedItem, w: *Io.Writer) !void {
         if (bi.task_blocker.len > 0) try w.print(" blocked by {s}", .{bi.task_blocker});
         if (bi.reason.len > 0) try w.print(" — \"{s}\"", .{bi.reason});
         try w.print("\n", .{});
+    }
+}
+
+/// printCostExceededSummary writes the end-of-run notice for workers whose final
+/// observed cost exceeded the per-worker cost cap (task 3445). Emits NOTHING when
+/// `items` is empty or the cap is disabled (`max_worker_cost_usd == 0`). The cap
+/// flag is a POST-HOC signal: the workers completed normally; this is operator
+/// information, not an error. Mirrors `printBlockedSummary`'s quiet-on-empty style.
+fn printCostExceededSummary(items: []const CostExceededItem, max_worker_cost_usd: f64, w: *Io.Writer) !void {
+    if (items.len == 0 or max_worker_cost_usd <= 0) return;
+    try w.print(
+        "Run complete. {d} worker(s) exceeded the per-worker cost cap (${d:.6} USD):\n",
+        .{ items.len, max_worker_cost_usd },
+    );
+    for (items) |ci| {
+        try w.print("  - task", .{});
+        if (ci.task_slug.len > 0) try w.print(" {s}", .{ci.task_slug});
+        try w.print(" cost ${s} USD (cap ${d:.6} USD)\n", .{ ci.cost_usd_str, max_worker_cost_usd });
     }
 }
 
@@ -7172,6 +7274,194 @@ test "task 3241: resolveHostBinary errors when the binary is not on PATH" {
     // A name no real binary will ever carry → command -v exits non-zero.
     const r = resolveHostBinary(a, std.testing.io, "planar-nonexistent-binary-zzz-3241");
     try std.testing.expectError(error.BinaryNotResolvable, r);
+}
+
+// ---------------------------------------------------------------------------
+// task 3445 — per-worker cost cap (post-hoc flag; default-off).
+//
+// The cost is observed via the stream-json drain side-effect and propagated
+// to the agent() result table as `cost_usd` + `cost_exceeded`. The cap is
+// disabled when `max_worker_cost_usd == 0` (default). The flag is POST-HOC:
+// the worker is NOT killed; the cap is purely a count/flag for triage.
+// ---------------------------------------------------------------------------
+
+test "task 3445 (cost cap): above cap → cost_exceeded=true + counted in summary" {
+    // A worker whose drain script reports a cost of 1.5 USD, with a cap of 1.0
+    // USD → cost_exceeded=true stamped on result; recordCostExceeded called.
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    // poll_until_done=1 → drive loop runs ONE poll round before terminal.
+    // That poll round calls drainEvents, which consumes cost_scripts[0][0]=1.5
+    // and updates handle.fake.cost_usd → slot.last_cost_usd = 1.5.
+    fake.poll_until_done = 1;
+    const cost_vals = [_]f64{1.5};
+    const cost_scripts = [_][]const f64{&cost_vals};
+    fake.cost_scripts = &cost_scripts;
+
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+    host.budgets = .{ .max_worker_cost_usd = 1.0 }; // cap = $1.00 USD
+
+    const src =
+        \\return {
+        \\  meta = { name = "t3445-above", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local r = ctx.agent("brief", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/abs/wt",
+        \\      claim_token = "tok-cost-above",
+        \\      task_slug = "cost-task-a",
+        \\    })
+        \\    assert(r.cost_usd ~= nil, "cost_usd must be present")
+        \\    assert(r.cost_usd > 0, "cost_usd must be positive")
+        \\    assert(r.cost_exceeded == true,
+        \\      "expected cost_exceeded=true, got " .. tostring(r.cost_exceeded))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:t3445-above", &.{}, &host, &err_buf);
+
+    try std.testing.expectEqual(@as(u32, 1), fake.start_count);
+    // cost_exceeded_items accumulates the flagged worker.
+    try std.testing.expectEqual(@as(usize, 1), host.cost_exceeded_items.items.len);
+    try std.testing.expectEqualStrings("cost-task-a", host.cost_exceeded_items.items[0].task_slug);
+}
+
+test "task 3445 (cost cap): below cap → cost_exceeded=false + not counted" {
+    // A worker reporting cost 0.5 USD with a cap of 1.0 USD → not flagged.
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    fake.poll_until_done = 1;
+    const cost_vals = [_]f64{0.5};
+    const cost_scripts = [_][]const f64{&cost_vals};
+    fake.cost_scripts = &cost_scripts;
+
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+    host.budgets = .{ .max_worker_cost_usd = 1.0 };
+
+    const src =
+        \\return {
+        \\  meta = { name = "t3445-below", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local r = ctx.agent("brief", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/abs/wt",
+        \\      claim_token = "tok-cost-below",
+        \\      task_slug = "cost-task-b",
+        \\    })
+        \\    assert(r.cost_exceeded == false,
+        \\      "expected cost_exceeded=false, got " .. tostring(r.cost_exceeded))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:t3445-below", &.{}, &host, &err_buf);
+
+    try std.testing.expectEqual(@as(u32, 1), fake.start_count);
+    try std.testing.expectEqual(@as(usize, 0), host.cost_exceeded_items.items.len);
+}
+
+test "task 3445 (cost cap): cap disabled (0) → never flagged regardless of cost" {
+    // With max_worker_cost_usd = 0 (the default), cost_exceeded is always false
+    // even when the worker reports a high cost. Byte-identical behavior to pre-3445.
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    fake.poll_until_done = 1;
+    const cost_vals = [_]f64{999.0}; // very high cost
+    const cost_scripts = [_][]const f64{&cost_vals};
+    fake.cost_scripts = &cost_scripts;
+
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+    // Leave max_worker_cost_usd at default 0 (cap disabled).
+
+    const src =
+        \\return {
+        \\  meta = { name = "t3445-disabled", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local r = ctx.agent("brief", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/abs/wt",
+        \\      claim_token = "tok-cost-dis",
+        \\      task_slug = "cost-task-c",
+        \\    })
+        \\    assert(r.cost_exceeded == false,
+        \\      "cap disabled: expected cost_exceeded=false, got " .. tostring(r.cost_exceeded))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:t3445-disabled", &.{}, &host, &err_buf);
+
+    try std.testing.expectEqual(@as(usize, 0), host.cost_exceeded_items.items.len);
+}
+
+test "task 3445 (cost cap): malformed cost line → skipped, no crash; cap unset default" {
+    // A worker with no cost_scripts (no cost reported at all) → cost_usd=0,
+    // cost_exceeded=false. This covers the "no cost event in stream" path
+    // (analogous to "malformed cost line skipped"). The run proceeds normally.
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    fake.poll_until_done = 1;
+    // No cost_scripts → cost_usd stays 0.
+
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+    host.budgets = .{ .max_worker_cost_usd = 0.001 }; // cap set but no cost reported
+
+    const src =
+        \\return {
+        \\  meta = { name = "t3445-nocost", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local r = ctx.agent("brief", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/abs/wt",
+        \\      claim_token = "tok-cost-nc",
+        \\      task_slug = "cost-task-d",
+        \\    })
+        \\    -- cost_usd field always present, value is 0 when not reported
+        \\    assert(r.cost_usd ~= nil, "cost_usd must be present")
+        \\    assert(r.cost_usd == 0, "cost_usd should be 0 when no cost reported")
+        \\    assert(r.cost_exceeded == false,
+        \\      "cost_exceeded=false when cost=0 even if cap is set")
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:t3445-nocost", &.{}, &host, &err_buf);
+
+    try std.testing.expectEqual(@as(u32, 1), fake.start_count);
+    try std.testing.expectEqual(@as(usize, 0), host.cost_exceeded_items.items.len);
 }
 
 // ---------------------------------------------------------------------------

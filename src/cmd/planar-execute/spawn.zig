@@ -352,17 +352,28 @@ pub const Spawner = struct {
     /// since the last drain. A partial trailing line is BUFFERED on the handle and
     /// NOT counted until its terminating newline arrives, so a half-written event
     /// never registers as liveness. Returns 0 when no complete event arrived (the
-    /// stall case the detector watches for). This is LIVENESS TELEMETRY ONLY: the
-    /// drained bytes are discarded after counting; outcomes still come from the DB.
-    /// Infallible at the contract boundary — a read error (e.g. EOF as the child
-    /// exits) is treated as "no new events this round" (0); the poll path detects
-    /// the actual exit. A no-op (returns 0) when the handle has no live stdout
-    /// pipe (FakeHandle drives its own scripted event sequence instead).
+    /// stall case the detector watches for). This is LIVENESS TELEMETRY ONLY:
+    /// the drained bytes are discarded after counting; outcomes still come from the
+    /// DB. As a side effect the drain also parses `total_cost_usd` from complete
+    /// JSON lines (task 3445) and updates `handle.*.cost_usd` when the field is
+    /// present. Infallible at the contract boundary — a read error (e.g. EOF as
+    /// the child exits) is treated as "no new events this round" (0); the poll
+    /// path detects the actual exit. A no-op (returns 0) when the handle has no
+    /// live stdout pipe (FakeHandle drives its own scripted event sequence instead).
     drainEventsFn: *const fn (
         ctx: ?*anyopaque,
         io: Io,
         handle: *Handle,
     ) u32,
+
+    /// Read the latest observed cumulative cost-so-far for an in-flight worker
+    /// (task 3445). Returns the `cost_usd` field that `drainEvents` populated from
+    /// the worker's stream-json `total_cost_usd` events. Returns 0 when no cost
+    /// event has been observed yet (either the drain has not fired yet, or the
+    /// worker's terminal result event has not arrived, or the cap is disabled). For
+    /// RealHandle this is `handle.real.cost_usd`; for FakeHandle it is
+    /// `handle.fake.cost_usd`.
+    costSoFarFn: *const fn (handle: *const Handle) f64,
 
     /// Drives the spawn (BLOCKING). Thin wrapper that just dispatches through
     /// `runFn`.
@@ -417,6 +428,13 @@ pub const Spawner = struct {
     pub fn drainEvents(self: Spawner, io: Io, handle: *Handle) u32 {
         return self.drainEventsFn(self.ctx, io, handle);
     }
+
+    /// Read the latest observed cumulative cost (USD) for an in-flight worker
+    /// (task 3445). Populated by `drainEvents` as a side effect; see
+    /// `costSoFarFn`.
+    pub fn costSoFar(self: Spawner, handle: *const Handle) f64 {
+        return self.costSoFarFn(handle);
+    }
 };
 
 /// Handle is an in-flight worker — the result of `Spawner.start`. It carries the
@@ -457,6 +475,14 @@ pub const RealHandle = struct {
     /// The carried-over partial stdout line (no trailing newline). Fixed-capacity
     /// inline storage so `drainEvents` needs no allocator on the hot path.
     partial_line: [PARTIAL_LINE_CAP]u8 = undefined,
+    /// Latest `total_cost_usd` value observed from the worker's stream-json
+    /// telemetry (task 3445). Updated by `realDrainEventsFn` each time a
+    /// complete line containing the field is parsed. Default 0 (no cost observed
+    /// yet). The terminal `{"type":"result", ..., "total_cost_usd": <f>}` event
+    /// produced by `claude --output-format stream-json` is what sets this. The
+    /// scheduler reads it post-drain and propagates it to the slot. SUPPLEMENTARY
+    /// TELEMETRY: never a pre-emptive kill; outcomes still come from the DB.
+    cost_usd: f64 = 0,
 };
 
 /// PARTIAL_LINE_CAP bounds the carried-over partial-line buffer in `drainEvents`.
@@ -497,6 +523,18 @@ pub const FakeHandle = struct {
     event_script: []const u32 = &.{},
     /// Cursor into `event_script` (which round of `drainEvents` we are on).
     event_cursor: usize = 0,
+    /// Scripted per-`drainEvents`-call cost values (task 3445 — cost cap). The
+    /// i-th `drainEvents` call populates `cost_usd` with `cost_script[i]` when
+    /// the cursor is in range (mimicking a worker that reports cumulative cost
+    /// on successive drain rounds). Past the end, `cost_usd` is unchanged (the
+    /// last recorded value persists — mimicking the real behavior where the
+    /// terminal result event carries the final cost). Borrowed slice; empty ⇒
+    /// cost_usd stays 0 (the "cap disabled / no cost reported" test path).
+    cost_script: []const f64 = &.{},
+    /// The latest observed cost-so-far for this fake worker (mirrors
+    /// `RealHandle.cost_usd`). Updated by `fakeDrainEventsFn` from `cost_script`
+    /// each drain round. Read by the scheduler via `Spawner.costSoFar`.
+    cost_usd: f64 = 0,
 };
 
 // ---------------------------------------------------------------------------
@@ -766,6 +804,14 @@ fn drainPipe(
     };
 }
 
+/// realCostSoFarFn reads the latest observed cost-so-far from the real handle's
+/// `cost_usd` field (populated by `realDrainEventsFn` as a side effect of
+/// parsing `total_cost_usd` from stream-json events). Returns 0 when no cost
+/// event has been observed yet. Infallible.
+fn realCostSoFarFn(handle: *const Handle) f64 {
+    return handle.real.cost_usd;
+}
+
 /// realKillFn hard-kills an in-flight real worker on the wall-clock-timeout
 /// path (task 3188). `std.process.Child.kill` SIGTERMs the pid, reaps it
 /// (wait4), and closes the child's pipes, nulling `child.id`. It is a no-op
@@ -778,6 +824,34 @@ fn realKillFn(ctx: ?*anyopaque, io: Io, handle: *Handle) void {
     // `Child.kill` is cross-platform (SIGTERM+reap on POSIX, TerminateProcess
     // on Windows) and a no-op when `child.id` is already null.
     handle.real.child.kill(io);
+}
+
+/// parseCostFromLine attempts to extract the `total_cost_usd` float from a
+/// complete stream-json event line. The approach is best-effort string scan:
+/// look for the substring `"total_cost_usd":` and parse the immediately
+/// following token (leading whitespace allowed) as a float. Returns null when
+/// the field is absent, the line is malformed, or the value is non-positive.
+/// A non-positive value is treated as absent (a defensive no-op: a real API
+/// event always has a non-negative cost, and 0 is indistinguishable from
+/// "not yet observed"). This function is INFALLIBLE and never panics: a parse
+/// failure is always null.
+fn parseCostFromLine(line: []const u8) ?f64 {
+    const needle = "\"total_cost_usd\":";
+    const pos = std.mem.indexOf(u8, line, needle) orelse return null;
+    const after = std.mem.trimStart(u8, line[pos + needle.len ..], &[_]u8{ ' ', '\t' });
+    // Find the end of the number token: the first byte that is neither a digit,
+    // '.', '+', '-', 'e', nor 'E'. Stops at ',', '}', '"', etc.
+    var end: usize = 0;
+    while (end < after.len) : (end += 1) {
+        const ch = after[end];
+        if (ch >= '0' and ch <= '9') continue;
+        if (ch == '.' or ch == '-' or ch == '+' or ch == 'e' or ch == 'E') continue;
+        break;
+    }
+    if (end == 0) return null;
+    const v = std.fmt.parseFloat(f64, after[0..end]) catch return null;
+    if (v <= 0) return null;
+    return v;
 }
 
 /// realDrainEventsFn is the non-blocking incremental stdout-event drain for a
@@ -794,8 +868,11 @@ fn realKillFn(ctx: ?*anyopaque, io: Io, handle: *Handle) void {
 /// drain, so a half-written event never registers as spurious liveness.
 ///
 /// LIVENESS TELEMETRY ONLY: the bytes are discarded after counting — outcomes
-/// come from the DB. On Windows (no non-blocking peek wired) this returns 0
-/// every round; the wall-clock timeout remains the always-on bound there.
+/// come from the DB. As a side effect, complete lines are scanned for
+/// `total_cost_usd` (task 3445) and `rh.cost_usd` is updated when the field is
+/// found (best-effort: a malformed line is skipped; the last recorded value
+/// persists). On Windows (no non-blocking peek wired) this returns 0 every
+/// round; the wall-clock timeout remains the always-on bound there.
 fn realDrainEventsFn(ctx: ?*anyopaque, io: Io, handle: *Handle) u32 {
     _ = ctx;
     _ = io;
@@ -844,6 +921,13 @@ fn realDrainEventsFn(ctx: ?*anyopaque, io: Io, handle: *Handle) u32 {
 /// carried line as one event. The final unterminated tail of `chunk` is stashed
 /// back into `rh.partial_line` for the next drain. Returns the number of complete
 /// events observed in this chunk.
+///
+/// As a side effect (task 3445): when a complete line is assembled, it is
+/// scanned for `total_cost_usd`. When the field is found AND the value is
+/// positive, `rh.cost_usd` is updated. A line where the field is absent or
+/// malformed is silently skipped (best-effort; the last recorded cost persists).
+/// This is the only place where the event content is briefly assembled and
+/// inspectable; the caller (`realDrainEventsFn`) discards bytes after this call.
 fn countEventsAndBufferTail(rh: *RealHandle, chunk: []const u8) u32 {
     var events: u32 = 0;
     var rest = chunk;
@@ -851,6 +935,31 @@ fn countEventsAndBufferTail(rh: *RealHandle, chunk: []const u8) u32 {
         // A newline completes a line: either the carried partial (if any) plus
         // this segment, or a self-contained segment. Either way it is ONE event.
         events += 1;
+
+        // Cost parsing (task 3445): try to extract total_cost_usd from the
+        // completed line. The complete line is partial_line[0..partial_len] +
+        // rest[0..nl]. We scan both halves for the needle — the field could
+        // straddle a chunk boundary, but in practice `total_cost_usd` appears
+        // in the terminal result event which is a self-contained chunk in the
+        // OS pipe delivery. We check the segment first (common fast path) and
+        // fall back to checking the partial prefix (the carried-over part).
+        // Malformed / absent → skip. Infallible.
+        const segment = rest[0..nl];
+        if (parseCostFromLine(segment)) |c| {
+            rh.cost_usd = c;
+        } else if (rh.partial_len > 0) {
+            // The field might be split across the partial and the segment.
+            // Build a quick combined view on the stack (bounded by PARTIAL_LINE_CAP).
+            // We only bother when the segment is also small enough to fit.
+            const seg_take = @min(segment.len, PARTIAL_LINE_CAP - rh.partial_len);
+            var combined: [PARTIAL_LINE_CAP]u8 = undefined;
+            @memcpy(combined[0..rh.partial_len], rh.partial_line[0..rh.partial_len]);
+            if (seg_take > 0) @memcpy(combined[rh.partial_len .. rh.partial_len + seg_take], segment[0..seg_take]);
+            if (parseCostFromLine(combined[0 .. rh.partial_len + seg_take])) |c| {
+                rh.cost_usd = c;
+            }
+        }
+
         rh.partial_len = 0; // the completed line is consumed; reset the tail.
         rest = rest[nl + 1 ..];
     }
@@ -884,6 +993,7 @@ pub fn realSpawner() Spawner {
         .waitFn = realWaitFn,
         .killFn = realKillFn,
         .drainEventsFn = realDrainEventsFn,
+        .costSoFarFn = realCostSoFarFn,
     };
 }
 
@@ -1029,6 +1139,14 @@ pub const FakeSpawnerState = struct {
     /// an empty inner slice) models a worker that is silent from the outset. Lets
     /// a test model "emits steadily" vs "emits then goes silent" deterministically.
     event_scripts: []const []const u32 = &.{},
+    /// Per-start scripted cost sequences (task 3445). When the i-th `start`
+    /// finds `cost_scripts[i]` present, the j-th `drainEvents` call on that
+    /// worker's handle sets `handle.fake.cost_usd = cost_scripts[i][j]` (when
+    /// j is in range; past the end the last recorded cost persists). Borrowed
+    /// slice-of-slices; a start beyond its length (or an empty inner slice)
+    /// models a worker that reports no cost (cost_usd stays 0). Lets a test
+    /// drive "above cap" vs "below cap" vs "cap disabled" cost paths.
+    cost_scripts: []const []const f64 = &.{},
     /// The ids of the workers `kill` was called on (task 3188). Lets a test
     /// assert WHICH worker was killed when several are in flight. Fixed-capacity
     /// (bounded by MAX_SLOTS in practice); growth past it is a test bug.
@@ -1115,6 +1233,7 @@ pub const FakeSpawnerState = struct {
             .waitFn = fakeWaitFn,
             .killFn = fakeKillFn,
             .drainEventsFn = fakeDrainEventsFn,
+            .costSoFarFn = fakeCostSoFarFn,
         };
     }
 
@@ -1260,12 +1379,20 @@ fn fakeStartFn(
     else
         &.{};
 
+    // Per-start cost script (task 3445): the i-th start gets this cost sequence.
+    // Absent ⇒ empty (cost_usd stays 0 — "no cost reported").
+    const cost_script: []const f64 = if (start_index < state.cost_scripts.len)
+        state.cost_scripts[start_index]
+    else
+        &.{};
+
     return .{ .fake = .{
         .state = state,
         .poll_remaining = poll_remaining,
         .id = start_index,
         .hung = is_hung,
         .event_script = ev_script,
+        .cost_script = cost_script,
     } };
 }
 
@@ -1378,18 +1505,38 @@ fn fakeKillFn(ctx: ?*anyopaque, io: Io, handle: *Handle) void {
 /// It returns the next scripted per-round event count from the handle's
 /// `event_script`, advancing the cursor; past the script's end it returns 0 (the
 /// worker has gone SILENT — the stall case). A hung worker with no script is
-/// silent from the first drain. Records the drain count for test assertions.
+/// silent from the first drain. Also consumes `cost_script[cursor]` when
+/// available (task 3445): updates `handle.fake.cost_usd` to simulate a worker
+/// that reports its cumulative cost on successive drain rounds. Records the drain
+/// count for test assertions.
 fn fakeDrainEventsFn(ctx: ?*anyopaque, io: Io, handle: *Handle) u32 {
     _ = io;
     const state: *FakeSpawnerState = @ptrCast(@alignCast(ctx.?));
     state.drain_count += 1;
     const fh = &handle.fake;
+    // Update cost_usd from cost_script at this drain position (task 3445).
+    // The cursor into cost_script mirrors the event_cursor; we use drain_count - 1
+    // (the 0-based index of this call) as the position. When cost_script is
+    // shorter than the current round, the last recorded cost persists (same
+    // semantics as the real drain where the terminal result event's cost is the
+    // final value). The cost is updated REGARDLESS of whether events fired this
+    // round, mirroring the real drain's behavior (it scans every complete line,
+    // not only "active" rounds).
+    const drain_idx = state.drain_count - 1;
+    if (drain_idx < fh.cost_script.len) {
+        fh.cost_usd = fh.cost_script[drain_idx];
+    }
     if (fh.event_cursor < fh.event_script.len) {
         const n = fh.event_script[fh.event_cursor];
         fh.event_cursor += 1;
         return n;
     }
     return 0; // silent past the script.
+}
+
+/// fakeCostSoFarFn reads the latest scripted cost from the fake handle (task 3445).
+fn fakeCostSoFarFn(handle: *const Handle) f64 {
+    return handle.fake.cost_usd;
 }
 
 /// fakeRunFn is the runFn for FakeSpawner. It builds the argv via
@@ -1825,4 +1972,97 @@ test "spawn: FakeSpawner drainEvents replays the scripted sequence then goes sil
     // Drain the handle so nothing leaks.
     var out = try spawner.wait(alloc, std.testing.io, &handle);
     out.deinit(alloc);
+}
+
+// ---------------------------------------------------------------------------
+// task 3445 — per-worker cost cap unit tests
+// ---------------------------------------------------------------------------
+
+test "spawn: parseCostFromLine — extracts total_cost_usd from a result event line" {
+    // Typical claude stream-json terminal result event.
+    const line1 = "{\"type\":\"result\",\"subtype\":\"success\",\"total_cost_usd\":1.2345,\"session_id\":\"s\"}";
+    const got1 = parseCostFromLine(line1);
+    try testing.expect(got1 != null);
+    try testing.expect(@abs(got1.? - 1.2345) < 0.0001);
+
+    // With leading whitespace after the colon.
+    const line2 = "{\"type\":\"result\",\"total_cost_usd\":  0.5}";
+    const got2 = parseCostFromLine(line2);
+    try testing.expect(got2 != null);
+    try testing.expect(@abs(got2.? - 0.5) < 0.0001);
+}
+
+test "spawn: parseCostFromLine — field absent → null" {
+    // A non-result event line (e.g. an assistant/tool event).
+    const line = "{\"type\":\"assistant\",\"content\":\"hello\"}";
+    try testing.expectEqual(@as(?f64, null), parseCostFromLine(line));
+}
+
+test "spawn: parseCostFromLine — malformed / non-positive → null" {
+    // Non-numeric value → null.
+    const line1 = "{\"total_cost_usd\":\"notanumber\"}";
+    try testing.expectEqual(@as(?f64, null), parseCostFromLine(line1));
+
+    // Zero value → null (treated as "disabled/not reported").
+    const line2 = "{\"total_cost_usd\":0}";
+    try testing.expectEqual(@as(?f64, null), parseCostFromLine(line2));
+
+    // Negative value → null.
+    const line3 = "{\"total_cost_usd\":-0.5}";
+    try testing.expectEqual(@as(?f64, null), parseCostFromLine(line3));
+
+    // Empty line → null (no crash).
+    try testing.expectEqual(@as(?f64, null), parseCostFromLine(""));
+}
+
+test "spawn: FakeSpawner cost_scripts → handle.fake.cost_usd updated per drain round" {
+    const alloc = testing.allocator;
+    var fake = FakeSpawnerState.init(alloc, 0, "", "");
+    defer fake.deinit();
+    // cost_script: drain 0 = $0.5, drain 1 = $1.2, drain 2 onwards = last ($1.2).
+    const cost_vals = [_]f64{ 0.5, 1.2 };
+    const cost_scripts = [_][]const f64{&cost_vals};
+    fake.cost_scripts = &cost_scripts;
+    const sp = fake.spawner();
+
+    var handle = try sp.start(alloc, std.testing.io, .{
+        .role = .coder,
+        .worktree_path = "/tmp/wt",
+        .brief = "B",
+        .role_spec = "",
+        .env_map = null,
+    });
+
+    // drain 0 → cost_usd = 0.5.
+    _ = sp.drainEvents(std.testing.io, &handle);
+    try testing.expect(@abs(sp.costSoFar(&handle) - 0.5) < 0.001);
+
+    // drain 1 → cost_usd = 1.2.
+    _ = sp.drainEvents(std.testing.io, &handle);
+    try testing.expect(@abs(sp.costSoFar(&handle) - 1.2) < 0.001);
+
+    // drain 2 → past cost_script end; cost_usd stays 1.2 (last value).
+    _ = sp.drainEvents(std.testing.io, &handle);
+    try testing.expect(@abs(sp.costSoFar(&handle) - 1.2) < 0.001);
+
+    var out = try sp.wait(alloc, std.testing.io, &handle);
+    out.deinit(alloc);
+}
+
+test "spawn: countEventsAndBufferTail updates cost_usd from total_cost_usd in line" {
+    var rh = RealHandle{ .child = undefined };
+    // A complete line containing total_cost_usd.
+    const line = "{\"type\":\"result\",\"total_cost_usd\":2.5,\"subtype\":\"success\"}\n";
+    _ = countEventsAndBufferTail(&rh, line);
+    try testing.expect(@abs(rh.cost_usd - 2.5) < 0.001);
+
+    // A line without the field → cost unchanged.
+    const line2 = "{\"type\":\"assistant\",\"content\":\"x\"}\n";
+    _ = countEventsAndBufferTail(&rh, line2);
+    try testing.expect(@abs(rh.cost_usd - 2.5) < 0.001); // still 2.5
+
+    // Malformed non-JSON line → cost unchanged, no crash.
+    const line3 = "not json at all\n";
+    _ = countEventsAndBufferTail(&rh, line3);
+    try testing.expect(@abs(rh.cost_usd - 2.5) < 0.001);
 }
