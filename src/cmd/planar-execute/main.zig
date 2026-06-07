@@ -360,6 +360,20 @@ pub const BlockedItem = struct {
     reason: []const u8,
 };
 
+/// CostExceededItem records ONE worker whose final observed cost exceeded the
+/// per-worker cost cap (task 3445). Cost is a POST-HOC flag — the worker is
+/// NOT killed mid-flight; this item accumulates in `HostState.cost_exceeded_items`
+/// for the run-end operator-triage summary. Both strings are HEAP-OWNED copies
+/// (duped by `HostState.recordCostExceeded`) so they survive the per-call
+/// `AgentCallState` teardown.
+pub const CostExceededItem = struct {
+    /// The task's slug (e.g. "m5-foo"). May be empty if unknown.
+    task_slug: []const u8,
+    /// The observed final cost in USD, as a formatted string (e.g. "1.2345").
+    /// Stored as a string so the summary print is allocation-free.
+    cost_usd_str: []const u8,
+};
+
 /// HostState is the Zig-side record of everything the workflow's host functions
 /// did during a run. It is allocated by the caller (runModule), pointed-to by
 /// every host C closure via a light-userdata upvalue, and inspected by the host
@@ -382,6 +396,13 @@ pub const HostState = struct {
     /// Owns heap-duped copies of every string (mirrors `calls`). Quiet when
     /// empty — no summary is printed when zero workers blocked.
     blocked_items: std.ArrayList(BlockedItem) = .empty,
+
+    /// Run-scoped accumulator of workers whose final cost exceeded the per-worker
+    /// cost cap (task 3445). `agentContinue` appends one entry per worker whose
+    /// final observed `total_cost_usd` exceeds `budgets.max_worker_cost_usd`;
+    /// `handleRun` prints them at run end. Quiet when the cap is disabled or no
+    /// worker exceeded it. Owns heap-duped copies of the strings.
+    cost_exceeded_items: std.ArrayList(CostExceededItem) = .empty,
 
     /// Host-injected timestamp (e.g. a Unix epoch second). Exposed as ctx.now.
     now: i64,
@@ -450,6 +471,11 @@ pub const HostState = struct {
     timeout_clock_fn: ?scheduler.ClockFn = null,
     timeout_clock_ctx: ?*anyopaque = null,
     timeout_max_wall_clock_ns: ?i128 = null,
+    /// Optional stream-json event-gap stall detector (task 3190). Production
+    /// reads this from PLANAR_EXECUTE_STALL_SECS in handleRun; tests may inject
+    /// it directly. Null/zero means disabled, preserving hard-timeout-only
+    /// behavior.
+    timeout_stall_ns: ?i128 = null,
 
     // M8 budgets + ceilings — the hard kill-switch (task 3198).
     //
@@ -521,6 +547,11 @@ pub const HostState = struct {
             self.allocator.free(bi.reason);
         }
         self.blocked_items.deinit(self.allocator);
+        for (self.cost_exceeded_items.items) |ci| {
+            self.allocator.free(ci.task_slug);
+            self.allocator.free(ci.cost_usd_str);
+        }
+        self.cost_exceeded_items.deinit(self.allocator);
         for (self.heartbeat_register_failures.items) |tok| {
             self.allocator.free(tok);
         }
@@ -553,6 +584,27 @@ pub const HostState = struct {
         const r = try self.allocator.dupe(u8, reason);
         errdefer self.allocator.free(r);
         try self.blocked_items.append(self.allocator, .{ .task_slug = s, .task_blocker = b, .reason = r });
+    }
+
+    /// recordCostExceeded appends a CostExceededItem (task 3445), taking
+    /// ownership of heap-duped copies of `task_slug` and the formatted
+    /// `cost_usd` string. On OOM it returns silently (the cap was already
+    /// stamped on the result table; losing only the in-memory summary entry
+    /// is non-fatal — same best-effort stance as `recordBlocked`).
+    fn recordCostExceeded(self: *HostState, task_slug: []const u8, cost_usd: f64) void {
+        const s = self.allocator.dupe(u8, task_slug) catch return;
+        errdefer self.allocator.free(s);
+        // Format cost as a decimal string (up to 6 sig figs, no trailing zeros).
+        var buf: [32]u8 = undefined;
+        const cost_str_raw = std.fmt.bufPrint(&buf, "{d:.6}", .{cost_usd}) catch "?";
+        const cost_str = self.allocator.dupe(u8, cost_str_raw) catch {
+            self.allocator.free(s);
+            return;
+        };
+        self.cost_exceeded_items.append(self.allocator, .{ .task_slug = s, .cost_usd_str = cost_str }) catch {
+            self.allocator.free(s);
+            self.allocator.free(cost_str);
+        };
     }
 
     /// recordHeartbeatRegisterFailure appends the first 8 bytes (or the full
@@ -1030,6 +1082,22 @@ fn pushAgentResult(
     c.lua_setfield(L, -2, "terminal_verb_error");
 }
 
+/// stampCostFields adds `cost_usd` and `cost_exceeded` fields to the agent()
+/// result table that is on top of the Lua stack (task 3445). Called immediately
+/// after `pushAgentResult` (or after `pushAgentResult` + any other field stamps)
+/// so the table is already on the stack and we just set two more fields.
+/// `cost_usd` is the latest observed total_cost_usd from the worker's stream-json
+/// telemetry (0 when no cost event was parsed). `cost_exceeded` is true iff the
+/// cap is enabled AND the observed cost exceeds it. Both fields are always
+/// present on the result table regardless of whether the cap is enabled, so the
+/// workflow can always inspect `.cost_usd` for telemetry.
+fn stampCostFields(L: ?*c.lua_State, cost_usd: f64, cost_exceeded: bool) void {
+    c.lua_pushnumber(L, cost_usd);
+    c.lua_setfield(L, -2, "cost_usd");
+    c.lua_pushboolean(L, if (cost_exceeded) 1 else 0);
+    c.lua_setfield(L, -2, "cost_exceeded");
+}
+
 /// pushSkippedResult builds the Lua return table for one `agent()` call that the
 /// M8 resume path SKIPPED without spawning (task 3197):
 ///   { status = "skipped", skip_reason = "already-done"|"blocked",
@@ -1497,12 +1565,20 @@ fn agentContinue(L: ?*c.lua_State, status: c_int, ctx: c.lua_KContext) callconv(
     // not the harness's terminal-verb bookkeeping (task 3196 journal).
     const terminal_mono_ns: i128 = sched.clockNow();
 
-    // Did the wall-clock timeout fire on this worker (task 3188)? Read it from
-    // the slot BEFORE the deferred releaseSlot clears it. A timed-out worker was
-    // already killed by the scheduler; the continuation now runs the reclaim
-    // path (force `fail` + worktree teardown + `status = "timed-out"`) instead
-    // of the normal terminal-verb decision matrix.
+    // Did a liveness timeout fire on this worker (task 3188 wall-clock or task
+    // 3190 stall)? Read it from the slot BEFORE the deferred releaseSlot clears
+    // it. A timed-out worker was already killed by the scheduler; the
+    // continuation now runs the reclaim path (force `fail` + worktree teardown +
+    // `status = "timed-out"`) instead of the normal terminal-verb decision
+    // matrix.
     const timed_out = slot.timed_out;
+    const timed_out_reason = slot.timed_out_reason;
+    // Read the final observed cost from the slot (task 3445). The scheduler's
+    // observeLivenessAndStall propagated it from the drain side-effect. Read
+    // BEFORE the deferred releaseSlot clears the slot.
+    const observed_cost_usd: f64 = slot.last_cost_usd;
+    const cap = hs.budgets.max_worker_cost_usd;
+    const cost_exceeded: bool = (cap > 0) and (observed_cost_usd > cap);
     // Free the call state + release the slot when we leave (the result table is
     // already on the Lua stack by then; nothing below borrows acs after this).
     // First unregister the claim from the heartbeat thread (task 3187): the
@@ -1579,6 +1655,14 @@ fn agentContinue(L: ?*c.lua_State, status: c_int, ctx: c.lua_KContext) callconv(
         // per spawn — this is the timed-out worker's record.
         writeJournalRecord(acs, "timed-out", outcome.exit_code, terminal_mono_ns);
         pushAgentResult(L, "timed-out", outcome.exit_code, commit_present, .fail, false);
+        const reason = timed_out_reason.name();
+        _ = c.lua_pushlstring(L, reason.ptr, reason.len);
+        c.lua_setfield(L, -2, "timed_out_reason");
+        // Stamp cost fields on the timed-out result (task 3445). Cost-exceeded
+        // on a timed-out worker is still flagged (the worker DID exceed the cap,
+        // even though the timed-out path is the primary disposition).
+        stampCostFields(L, observed_cost_usd, cost_exceeded);
+        if (cost_exceeded) hs.recordCostExceeded(acs.task_slug, observed_cost_usd);
         return 1;
     }
 
@@ -1664,6 +1748,8 @@ fn agentContinue(L: ?*c.lua_State, status: c_int, ctx: c.lua_KContext) callconv(
         hs.recordBlocked(acs.task_slug, "", "") catch {};
         writeJournalRecord(acs, "blocked", outcome.exit_code, terminal_mono_ns);
         pushAgentResult(L, "blocked", outcome.exit_code, commit_present, .none, false);
+        stampCostFields(L, observed_cost_usd, cost_exceeded);
+        if (cost_exceeded) hs.recordCostExceeded(acs.task_slug, observed_cost_usd);
         return 1;
     }
 
@@ -1676,6 +1762,10 @@ fn agentContinue(L: ?*c.lua_State, status: c_int, ctx: c.lua_KContext) callconv(
     };
     writeJournalRecord(acs, status_str, outcome.exit_code, terminal_mono_ns);
     pushAgentResult(L, status_str, outcome.exit_code, commit_present, verb, terminal_verb_failed);
+    // Stamp cost fields on the result (task 3445). Done AFTER pushAgentResult
+    // so the result table is on the stack and we can set fields on it.
+    stampCostFields(L, observed_cost_usd, cost_exceeded);
+    if (cost_exceeded) hs.recordCostExceeded(acs.task_slug, observed_cost_usd);
 
     // 8) M9 FAN-IN (tasks 3199/3200/3201 + task 3540 finding 1).
     //
@@ -3698,6 +3788,7 @@ pub fn runModule(
         if (hs.timeout_clock_fn) |cf| sched_storage.clock_fn = cf;
         if (hs.timeout_clock_ctx) |cc| sched_storage.clock_ctx = cc;
         if (hs.timeout_max_wall_clock_ns) |mx| sched_storage.max_wall_clock_ns = mx;
+        if (hs.timeout_stall_ns) |stall_ns| sched_storage.stall_ns = stall_ns;
         hs.sched = &sched_storage;
         // TEST-ONLY seam: pre-fill scheduler slots to force the next
         // registerInflight into the RegistryFull branch (task 3541 / finding 6).
@@ -4106,7 +4197,8 @@ const run_verb: cli.Cmd = .{
     .flags = &.{
         .{ .long = "--dry-run", .kind = .bool, .default = .{ .bool = false }, .desc = "Load and validate the workflow, print meta and phases, exit without running." },
         .{ .long = "--plan", .kind = .int, .default = .{ .int = 0 }, .desc = "Plan id the live agent run is scoped to. When PLANAR_EXECUTE_LIVE_AGENT=1, providing --plan enables live claim-status reads and commit-presence sampling; omitting it degrades those features but does not prevent agent-free workflows from running." },
-        .{ .long = "--mock-worker", .kind = .bool, .default = .{ .bool = false }, .desc = "Workflow-script testing harness (plan 492 M10 task 3202). Enter run() with the FULL agent() pipeline wired against an in-process FakeSpawner so the workflow's control flow (parallel, pipeline, error handling, blocked-summary, result propagation) runs deterministically WITHOUT spawning any real `claude -p` worker (no API cost, no fs writes from the worker). Canned spawn outcome: exit_code=0, stdout=\"ok\", stderr=\"\" — agent() returns the natural decision-matrix result (typically status=\"released\" when no repo/commit is present). Mutually exclusive with --dry-run and PLANAR_EXECUTE_LIVE_AGENT=1; --plan is optional (degrades like task 3264)." },
+        .{ .long = "--mock-worker", .kind = .bool, .default = .{ .bool = false }, .desc = "Workflow-script testing harness (plan 492 M10 task 3202). Enter run() with the FULL agent() pipeline wired against an in-process FakeSpawner so the workflow's control flow (parallel, pipeline, error handling, blocked-summary, result propagation) runs deterministically WITHOUT spawning any real `claude -p` worker (no API cost, no fs writes from the worker). Canned spawn outcome: exit_code=0, stdout=\"ok\", stderr=\"\" — agent() returns the natural decision-matrix result (typically status=\"released\" when no repo/commit is present). Mutually exclusive with --dry-run and PLANAR_EXECUTE_LIVE_AGENT=1; --plan is optional (degrades like task 3264). See also --mock-outcomes for per-call scripted outcomes." },
+        .{ .long = "--mock-outcomes", .kind = .string, .default = .{ .string = "" }, .desc = "Per-call scripted FakeSpawner outcomes for deterministic workflow control-flow testing (plan 503 task 3491). Points at a small NDJSON file: one JSON object per line, each with optional fields exit_code (int, default 0), stdout (string, default \"\"), stderr (string, default \"\"). The FakeSpawner consumes outcomes in order: the Nth agent() call returns the Nth outcome. When MORE agent() calls are made than scripted outcomes, extra calls fall back to the default canned outcome (exit_code=0, stdout=\"ok\", stderr=\"\"). Parse errors (bad JSON, unreadable file) exit 1 with a clear message. Implies --mock-worker when --mock-worker is not explicitly set; mutually exclusive with --dry-run and PLANAR_EXECUTE_LIVE_AGENT=1." },
         .{ .long = "--bypass-reviewer-guard", .kind = .bool, .default = .{ .bool = false }, .desc = "Operator-explicit override for the bright-line refusal guard (plan 492 M10 task 3206). The guard refuses to run a plan whose open tasks touch migrations/*.sql, a new top-level CLI verb, or invariant/methodology code under a workflow that does NOT declare meta.reviewer = true. Pass --bypass-reviewer-guard to proceed anyway; the harness prints a loud stderr warning naming the override. Use this only when you have consciously accepted the doctrine risk (e.g. running a one-off recovery workflow). Hostile-looking name by design: hard-to-bypass-by-accident but possible when truly needed." },
     },
     .positionals = &.{
@@ -4115,6 +4207,28 @@ const run_verb: cli.Cmd = .{
     .rest_field = "rest_args",
     .run = cli.handler(handleRun),
 };
+
+/// `planar-execute schema` — emit the command tree as a flat JSON catalog.
+///
+/// Read-only introspection verb. Does NOT open the DB, does NOT take a claim,
+/// does NOT mutate anything. Uses the comptime `cli.schema.json` builder to
+/// produce the same flat-JSON catalog shape that `planar`, `planar-agent`,
+/// `planar-watch`, and `planar-doc` emit — so the single cli-usage linter
+/// (`tools/cli_usage_lint.zig`) can consume all five binaries identically.
+const schema_verb: cli.Cmd = .{
+    .name = "schema",
+    .desc = "Print the full command tree as a JSON catalog (flags, aliases, positionals).",
+    .run = cli.handler(handleSchema),
+};
+
+const execute_schema_catalog = cli.schema.json(root, .{});
+
+fn handleSchema(args_ptr: *const anyopaque) anyerror!void {
+    _ = args_ptr;
+    const ctx = currentCtx();
+    try ctx.stdout.writeAll(execute_schema_catalog);
+    try ctx.stdout.writeAll("\n");
+}
 
 /// Root CLI command tree for `planar-execute`.
 ///
@@ -4131,6 +4245,7 @@ pub const root: cli.Cmd = .{
     \\    planar-execute <workflow.lua> [args...]   Run a workflow file (default).
     \\    planar-execute run <workflow.lua> [args…] Explicit run subcommand.
     \\    planar-execute version                   Print version.
+    \\    planar-execute schema                    Print command schema as JSON.
     \\    planar-execute --help                    Show this help.
     \\
     \\  The workflow file must return a Lua table:
@@ -4142,6 +4257,7 @@ pub const root: cli.Cmd = .{
         run_verb,
         doctor_verb,
         version_verb,
+        schema_verb,
     },
 };
 
@@ -4284,31 +4400,53 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
     const workflow_path = args.workflow;
     const rest_args: []const []const u8 = args.rest_args;
     const dry_run: bool = args.dry_run;
-    const mock_worker: bool = args.mock_worker;
+    const mock_outcomes_path: []const u8 = args.mock_outcomes;
+    const has_outcomes_file = mock_outcomes_path.len > 0;
+    // --mock-outcomes implies --mock-worker (less friction: a workflow author
+    // using --mock-outcomes should not also be required to pass --mock-worker).
+    // We record the effective mock_worker flag here so all subsequent gates
+    // see the right value even when --mock-worker was not explicitly provided.
+    const mock_worker: bool = args.mock_worker or has_outcomes_file;
 
-    // ---- task 3202 mode-conflict gates ---------------------------------------
+    // ---- task 3202 / task 3491 mode-conflict gates ---------------------------
     //
-    // `--mock-worker` is a THIRD mode parallel to the M2 stub (default) and the
-    // gated live-agent run. It is mutually exclusive with both `--dry-run` (a
-    // strictly read-only validation pass that exits BEFORE entering run) and
-    // PLANAR_EXECUTE_LIVE_AGENT=1 (the real-cost path). Mixing them is a wiring
-    // error, not a meaningful combined mode: reject loudly with a clear
-    // message so the operator picks one and reruns.
+    // `--mock-worker` (and by implication `--mock-outcomes`) is a THIRD mode
+    // parallel to the M2 stub (default) and the gated live-agent run. It is
+    // mutually exclusive with both `--dry-run` (a strictly read-only validation
+    // pass that exits BEFORE entering run) and PLANAR_EXECUTE_LIVE_AGENT=1
+    // (the real-cost path). Mixing them is a wiring error, not a meaningful
+    // combined mode: reject loudly with a clear message.
     if (mock_worker and dry_run) {
-        try ctx.stderr.print(
-            "planar-execute: --mock-worker and --dry-run are mutually exclusive. " ++
-                "--dry-run skips run() entirely; --mock-worker enters run() with a fake spawner. Pick one.\n",
-            .{},
-        );
+        if (has_outcomes_file) {
+            try ctx.stderr.print(
+                "planar-execute: --mock-outcomes and --dry-run are mutually exclusive. " ++
+                    "--dry-run skips run() entirely; --mock-outcomes enters run() with a fake spawner. Pick one.\n",
+                .{},
+            );
+        } else {
+            try ctx.stderr.print(
+                "planar-execute: --mock-worker and --dry-run are mutually exclusive. " ++
+                    "--dry-run skips run() entirely; --mock-worker enters run() with a fake spawner. Pick one.\n",
+                .{},
+            );
+        }
         try flushCtx();
         std.process.exit(1);
     }
     if (mock_worker and ctx.environ.getPosix("PLANAR_EXECUTE_LIVE_AGENT") != null) {
-        try ctx.stderr.print(
-            "planar-execute: --mock-worker and PLANAR_EXECUTE_LIVE_AGENT=1 are mutually exclusive. " ++
-                "--mock-worker uses an in-process FakeSpawner (no real `claude -p`); the live gate spawns real workers. Unset PLANAR_EXECUTE_LIVE_AGENT or drop --mock-worker.\n",
-            .{},
-        );
+        if (has_outcomes_file) {
+            try ctx.stderr.print(
+                "planar-execute: --mock-outcomes and PLANAR_EXECUTE_LIVE_AGENT=1 are mutually exclusive. " ++
+                    "--mock-outcomes uses an in-process FakeSpawner (no real `claude -p`); the live gate spawns real workers. Unset PLANAR_EXECUTE_LIVE_AGENT or drop --mock-outcomes.\n",
+                .{},
+            );
+        } else {
+            try ctx.stderr.print(
+                "planar-execute: --mock-worker and PLANAR_EXECUTE_LIVE_AGENT=1 are mutually exclusive. " ++
+                    "--mock-worker uses an in-process FakeSpawner (no real `claude -p`); the live gate spawns real workers. Unset PLANAR_EXECUTE_LIVE_AGENT or drop --mock-worker.\n",
+                .{},
+            );
+        }
         try flushCtx();
         std.process.exit(1);
     }
@@ -4468,6 +4606,7 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
     // on every spawn. Reading the env here (not gated on the live driver) keeps
     // the config wiring uniform and lets a dry/stub run still report the knobs.
     host.budgets = budget.Budgets.fromEnv(ctx.environ);
+    host.timeout_stall_ns = scheduler.stallNsFromEnv(ctx.environ);
 
     // ---- Gated production agent() driver wiring (plan 492 M4 task 3241) ----
     //
@@ -4537,8 +4676,9 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
     //
     // The natural agent() result under the default canned outcome (active claim
     // + exit 0 + no commit) is `status="released"` — the workflow author writes
-    // their control-flow asserts against that. Per-call scripted outcomes
-    // (`--mock-outcomes <file>`) are deferred (see task 3267, filed below).
+    // their control-flow asserts against that. Per-call scripted outcomes are
+    // loaded from the `--mock-outcomes <file>` NDJSON file (task 3491) and
+    // installed into the FakeSpawnerState below when the flag is set.
     //
     // The rest of the M5+ pipeline (scheduler, heartbeat thread, journal,
     // fan-in) runs UNCHANGED — the FakeSpawner is the only injected difference.
@@ -4555,6 +4695,45 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
         const mock_plan: u64 = if (args.plan > 0) @intCast(args.plan) else 0;
         mock_fake = spawn.FakeSpawnerState.init(allocator, 0, "ok", "");
         mock_fake_init = true;
+
+        // ---- task 3491: --mock-outcomes per-call scripted outcomes -----------
+        //
+        // When --mock-outcomes <file> is given, parse the NDJSON outcome script
+        // and install it into the FakeSpawnerState BEFORE building the Spawner.
+        // The arena is owned by the FakeSpawnerState (via owned_outcome_arena)
+        // so it is freed by mock_fake.deinit() at the end of this scope.
+        //
+        // Parse errors (unreadable file, bad JSON) are fatal at startup — the
+        // operator gets a clear message and a non-zero exit before any Lua
+        // code runs. This is the right failure mode: a silently-wrong outcomes
+        // file would produce a confusing run with unexpected canned defaults.
+        if (has_outcomes_file) {
+            var outcomes_arena = std.heap.ArenaAllocator.init(allocator);
+            // Ownership transferred to mock_fake.owned_outcome_arena below on
+            // success. On failure we still need to deinit it — use errdefer.
+            var outcomes_arena_owned = false;
+            errdefer if (!outcomes_arena_owned) outcomes_arena.deinit();
+
+            const loaded = spawn.loadOutcomeScript(
+                outcomes_arena.allocator(),
+                ctx.io,
+                mock_outcomes_path,
+            ) catch |err| {
+                const msg = switch (err) {
+                    spawn.OutcomeScriptError.FileReadFailed => "planar-execute: --mock-outcomes: cannot read outcomes file",
+                    spawn.OutcomeScriptError.MalformedLine => "planar-execute: --mock-outcomes: file contains a line that is not valid JSON",
+                    spawn.OutcomeScriptError.OutOfMemory => "planar-execute: --mock-outcomes: out of memory while parsing outcomes file",
+                };
+                try ctx.stderr.print("{s}: {s}\n", .{ msg, mock_outcomes_path });
+                try flushCtx();
+                outcomes_arena.deinit();
+                std.process.exit(1);
+            };
+            mock_fake.outcome_scripts = loaded;
+            mock_fake.owned_outcome_arena = outcomes_arena;
+            outcomes_arena_owned = true;
+        }
+
         mock_driver = .{
             .spawner = mock_fake.spawner(),
             .io = ctx.io,
@@ -4572,10 +4751,17 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
 
         // MOCK MODE notice on stderr — the operator should never mistake a
         // mock run for a real one. Distinct, greppable prefix.
-        try ctx.stderr.print(
-            "planar-execute: MOCK MODE — running in --mock-worker mode (no real `claude -p` spawned; agent() calls return canned outcomes from an in-process FakeSpawner)\n",
-            .{},
-        );
+        if (has_outcomes_file) {
+            try ctx.stderr.print(
+                "planar-execute: MOCK MODE — running in --mock-worker mode with scripted outcomes from '{s}' (no real `claude -p` spawned; agent() calls return per-call outcomes from the NDJSON file, falling back to canned defaults past the end of the script)\n",
+                .{mock_outcomes_path},
+            );
+        } else {
+            try ctx.stderr.print(
+                "planar-execute: MOCK MODE — running in --mock-worker mode (no real `claude -p` spawned; agent() calls return canned outcomes from an in-process FakeSpawner)\n",
+                .{},
+            );
+        }
         try flushCtx();
     }
 
@@ -4729,6 +4915,10 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
     // the slot reclaimed; this summary is the triage mechanism, not a prompt.
     // Quiet when zero blocked: a clean run prints nothing here.
     try printBlockedSummary(host.blocked_items.items, ctx.stdout);
+    // Per-worker cost cap exceeded (task 3445): list flagged workers when the cap
+    // is enabled and any worker exceeded it. Quiet when the cap is disabled or no
+    // worker exceeded it — a clean run prints nothing here.
+    try printCostExceededSummary(host.cost_exceeded_items.items, host.budgets.max_worker_cost_usd, ctx.stdout);
     // Heartbeat register failures (PR #17 cycle C finding 8): any claim whose
     // heartbeat registration failed (OOM) is listed so the operator notices
     // post-run even if the live stderr WARNING was missed.
@@ -4752,6 +4942,24 @@ fn printBlockedSummary(items: []const BlockedItem, w: *Io.Writer) !void {
         if (bi.task_blocker.len > 0) try w.print(" blocked by {s}", .{bi.task_blocker});
         if (bi.reason.len > 0) try w.print(" — \"{s}\"", .{bi.reason});
         try w.print("\n", .{});
+    }
+}
+
+/// printCostExceededSummary writes the end-of-run notice for workers whose final
+/// observed cost exceeded the per-worker cost cap (task 3445). Emits NOTHING when
+/// `items` is empty or the cap is disabled (`max_worker_cost_usd == 0`). The cap
+/// flag is a POST-HOC signal: the workers completed normally; this is operator
+/// information, not an error. Mirrors `printBlockedSummary`'s quiet-on-empty style.
+fn printCostExceededSummary(items: []const CostExceededItem, max_worker_cost_usd: f64, w: *Io.Writer) !void {
+    if (items.len == 0 or max_worker_cost_usd <= 0) return;
+    try w.print(
+        "Run complete. {d} worker(s) exceeded the per-worker cost cap (${d:.6} USD):\n",
+        .{ items.len, max_worker_cost_usd },
+    );
+    for (items) |ci| {
+        try w.print("  - task", .{});
+        if (ci.task_slug.len > 0) try w.print(" {s}", .{ci.task_slug});
+        try w.print(" cost ${s} USD (cap ${d:.6} USD)\n", .{ ci.cost_usd_str, max_worker_cost_usd });
     }
 }
 
@@ -4800,7 +5008,7 @@ fn maybeInjectRun(arena: std.mem.Allocator, raw_args: []const []const u8) []cons
     const first = raw_args[1];
 
     // Known subcommand names and global flags — leave argv alone.
-    inline for ([_][]const u8{ "run", "doctor", "version", "--help", "-h" }) |v| {
+    inline for ([_][]const u8{ "run", "doctor", "version", "schema", "--help", "-h" }) |v| {
         if (std.mem.eql(u8, first, v)) return raw_args;
     }
 
@@ -5634,11 +5842,12 @@ test "M4 agent: with FakeSpawner + driver, returns completed when exit==0 + comm
     try std.testing.expectEqual(role_model.Role.coder, inv.role);
     try std.testing.expectEqualStrings("/tmp/abs/wt", inv.worktree_path);
     try std.testing.expectEqualStrings("the brief", inv.brief);
-    // argv: --model claude-opus-4-8 (coder → opus), bypassPermissions, etc.
+    // argv includes the stream-json liveness block before --model (task 3190).
     try std.testing.expectEqualStrings("bypassPermissions", inv.argv[3]);
-    try std.testing.expectEqualStrings(role_model.OPUS_TIER, inv.argv[5]);
-    try std.testing.expectEqualStrings("/tmp/abs/wt", inv.argv[7]);
-    try std.testing.expectEqualStrings("you are a coder", inv.argv[9]);
+    try std.testing.expectEqualStrings("stream-json", inv.argv[5]);
+    try std.testing.expectEqualStrings(role_model.OPUS_TIER, inv.argv[8]);
+    try std.testing.expectEqualStrings("/tmp/abs/wt", inv.argv[10]);
+    try std.testing.expectEqualStrings("you are a coder", inv.argv[12]);
 }
 
 test "M4 agent: exit non-zero drives status=failed + terminal_verb=fail" {
@@ -7162,6 +7371,194 @@ test "task 3241: resolveHostBinary errors when the binary is not on PATH" {
 }
 
 // ---------------------------------------------------------------------------
+// task 3445 — per-worker cost cap (post-hoc flag; default-off).
+//
+// The cost is observed via the stream-json drain side-effect and propagated
+// to the agent() result table as `cost_usd` + `cost_exceeded`. The cap is
+// disabled when `max_worker_cost_usd == 0` (default). The flag is POST-HOC:
+// the worker is NOT killed; the cap is purely a count/flag for triage.
+// ---------------------------------------------------------------------------
+
+test "task 3445 (cost cap): above cap → cost_exceeded=true + counted in summary" {
+    // A worker whose drain script reports a cost of 1.5 USD, with a cap of 1.0
+    // USD → cost_exceeded=true stamped on result; recordCostExceeded called.
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    // poll_until_done=1 → drive loop runs ONE poll round before terminal.
+    // That poll round calls drainEvents, which consumes cost_scripts[0][0]=1.5
+    // and updates handle.fake.cost_usd → slot.last_cost_usd = 1.5.
+    fake.poll_until_done = 1;
+    const cost_vals = [_]f64{1.5};
+    const cost_scripts = [_][]const f64{&cost_vals};
+    fake.cost_scripts = &cost_scripts;
+
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+    host.budgets = .{ .max_worker_cost_usd = 1.0 }; // cap = $1.00 USD
+
+    const src =
+        \\return {
+        \\  meta = { name = "t3445-above", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local r = ctx.agent("brief", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/abs/wt",
+        \\      claim_token = "tok-cost-above",
+        \\      task_slug = "cost-task-a",
+        \\    })
+        \\    assert(r.cost_usd ~= nil, "cost_usd must be present")
+        \\    assert(r.cost_usd > 0, "cost_usd must be positive")
+        \\    assert(r.cost_exceeded == true,
+        \\      "expected cost_exceeded=true, got " .. tostring(r.cost_exceeded))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:t3445-above", &.{}, &host, &err_buf);
+
+    try std.testing.expectEqual(@as(u32, 1), fake.start_count);
+    // cost_exceeded_items accumulates the flagged worker.
+    try std.testing.expectEqual(@as(usize, 1), host.cost_exceeded_items.items.len);
+    try std.testing.expectEqualStrings("cost-task-a", host.cost_exceeded_items.items[0].task_slug);
+}
+
+test "task 3445 (cost cap): below cap → cost_exceeded=false + not counted" {
+    // A worker reporting cost 0.5 USD with a cap of 1.0 USD → not flagged.
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    fake.poll_until_done = 1;
+    const cost_vals = [_]f64{0.5};
+    const cost_scripts = [_][]const f64{&cost_vals};
+    fake.cost_scripts = &cost_scripts;
+
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+    host.budgets = .{ .max_worker_cost_usd = 1.0 };
+
+    const src =
+        \\return {
+        \\  meta = { name = "t3445-below", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local r = ctx.agent("brief", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/abs/wt",
+        \\      claim_token = "tok-cost-below",
+        \\      task_slug = "cost-task-b",
+        \\    })
+        \\    assert(r.cost_exceeded == false,
+        \\      "expected cost_exceeded=false, got " .. tostring(r.cost_exceeded))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:t3445-below", &.{}, &host, &err_buf);
+
+    try std.testing.expectEqual(@as(u32, 1), fake.start_count);
+    try std.testing.expectEqual(@as(usize, 0), host.cost_exceeded_items.items.len);
+}
+
+test "task 3445 (cost cap): cap disabled (0) → never flagged regardless of cost" {
+    // With max_worker_cost_usd = 0 (the default), cost_exceeded is always false
+    // even when the worker reports a high cost. Byte-identical behavior to pre-3445.
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    fake.poll_until_done = 1;
+    const cost_vals = [_]f64{999.0}; // very high cost
+    const cost_scripts = [_][]const f64{&cost_vals};
+    fake.cost_scripts = &cost_scripts;
+
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+    // Leave max_worker_cost_usd at default 0 (cap disabled).
+
+    const src =
+        \\return {
+        \\  meta = { name = "t3445-disabled", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local r = ctx.agent("brief", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/abs/wt",
+        \\      claim_token = "tok-cost-dis",
+        \\      task_slug = "cost-task-c",
+        \\    })
+        \\    assert(r.cost_exceeded == false,
+        \\      "cap disabled: expected cost_exceeded=false, got " .. tostring(r.cost_exceeded))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:t3445-disabled", &.{}, &host, &err_buf);
+
+    try std.testing.expectEqual(@as(usize, 0), host.cost_exceeded_items.items.len);
+}
+
+test "task 3445 (cost cap): malformed cost line → skipped, no crash; cap unset default" {
+    // A worker with no cost_scripts (no cost reported at all) → cost_usd=0,
+    // cost_exceeded=false. This covers the "no cost event in stream" path
+    // (analogous to "malformed cost line skipped"). The run proceeds normally.
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    fake.poll_until_done = 1;
+    // No cost_scripts → cost_usd stays 0.
+
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+    host.budgets = .{ .max_worker_cost_usd = 0.001 }; // cap set but no cost reported
+
+    const src =
+        \\return {
+        \\  meta = { name = "t3445-nocost", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local r = ctx.agent("brief", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/abs/wt",
+        \\      claim_token = "tok-cost-nc",
+        \\      task_slug = "cost-task-d",
+        \\    })
+        \\    -- cost_usd field always present, value is 0 when not reported
+        \\    assert(r.cost_usd ~= nil, "cost_usd must be present")
+        \\    assert(r.cost_usd == 0, "cost_usd should be 0 when no cost reported")
+        \\    assert(r.cost_exceeded == false,
+        \\      "cost_exceeded=false when cost=0 even if cap is set")
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:t3445-nocost", &.{}, &host, &err_buf);
+
+    try std.testing.expectEqual(@as(u32, 1), fake.start_count);
+    try std.testing.expectEqual(@as(usize, 0), host.cost_exceeded_items.items.len);
+}
+
+// ---------------------------------------------------------------------------
 // task 3182 — M5 coroutine scheduler tests.
 //
 // These pin the NEW internal mechanism (run(ctx) on a coroutine, agent()
@@ -7711,6 +8108,7 @@ test "M6 timeout: in a parallel set a hung worker times out (kill + status=timed
         \\    local r = ctx.parallel({ hung, ok })
         \\    assert(type(r[1]) == "table", "r1 type: " .. type(r[1]))
         \\    assert(r[1].status == "timed-out", "r1 status: " .. tostring(r[1].status))
+        \\    assert(r[1].timed_out_reason == "wallclock", "r1 timed_out_reason: " .. tostring(r[1].timed_out_reason))
         \\    assert(r[1].terminal_verb == "fail", "r1 verb: " .. tostring(r[1].terminal_verb))
         \\    assert(type(r[2]) == "table", "r2 type: " .. type(r[2]))
         \\    assert(r[2].status == "released" or r[2].status == "completed", "r2 status: " .. tostring(r[2].status))
@@ -7728,6 +8126,61 @@ test "M6 timeout: in a parallel set a hung worker times out (kill + status=timed
     try std.testing.expectEqual(@as(u32, 1), fake.kill_count);
     try std.testing.expect(fake.killedWorker(0)); // slot0 = the "hung" thunk.
     try std.testing.expect(!fake.killedWorker(1));
+}
+
+test "M6 timeout: optional stream-json stall detector returns timed_out_reason=stall (task 3190)" {
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "OK", "");
+    defer fake.deinit();
+    const hung_seq = [_]bool{true};
+    fake.hung_starts_seq = &hung_seq;
+    // No event_scripts: the worker is silent from spawn, so the stall detector
+    // should reclaim it before the huge wall-clock ceiling.
+
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+
+    const AdvancingClock = struct {
+        now_ns: i128 = 0,
+        fn clockFn(ctx: ?*anyopaque, io: std.Io) i128 {
+            _ = io;
+            const self: *@This() = @ptrCast(@alignCast(ctx.?));
+            self.now_ns += 100;
+            return self.now_ns;
+        }
+    };
+    var clock = AdvancingClock{};
+    host.timeout_clock_fn = AdvancingClock.clockFn;
+    host.timeout_clock_ctx = &clock;
+    host.timeout_max_wall_clock_ns = 1_000_000_000;
+    host.timeout_stall_ns = 50;
+
+    const src =
+        \\return {
+        \\  meta = { name = "m6-stall", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local r = ctx.agent("silent", { role = "coder", worktree_path = "/tmp/s", claim_token = "ts", task_slug = "ss" })
+        \\    assert(r.status == "timed-out", "status: " .. tostring(r.status))
+        \\    assert(r.timed_out_reason == "stall", "timed_out_reason: " .. tostring(r.timed_out_reason))
+        \\    assert(r.terminal_verb == "fail", "verb: " .. tostring(r.terminal_verb))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    runModule(src, "test:m6-stall", &.{}, &host, &err_buf) catch |e| {
+        std.debug.print("m6 stall failed: {s}\n", .{std.mem.span(@as([*:0]const u8, @ptrCast(&err_buf)))});
+        return e;
+    };
+
+    try std.testing.expectEqual(@as(u32, 1), fake.start_count);
+    try std.testing.expectEqual(@as(u32, 1), fake.kill_count);
+    try std.testing.expect(fake.killedWorker(0));
 }
 
 // ---------------------------------------------------------------------------

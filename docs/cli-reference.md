@@ -5438,7 +5438,7 @@ The constrained worker PATH available to the `claude -p` subprocesses it spawns 
 ### Verbs
 
 ```
-planar-execute run   [--plan <id>] [--dry-run | --mock-worker] [--bypass-reviewer-guard] <workflow.lua> [args...]
+planar-execute run   [--plan <id>] [--dry-run | --mock-worker] [--mock-outcomes <file>] [--bypass-reviewer-guard] <workflow.lua> [args...]
 planar-execute version
 planar-execute doctor  --plan <id> [--json]
 ```
@@ -5453,7 +5453,7 @@ Load and execute a Lua workflow module. The module must export a table with a `m
 |------|--------------|--------------|
 | **Default (ungated)** | No flag, no env | `ctx.agent()` is a recording stub that returns `{status="stub"}`. Pure-Lua logic (eligible, parallel, pipeline, phase, log) runs normally. No workers spawned. |
 | **`--dry-run`** | `--dry-run` flag | Load and validate `meta`, print `meta` and `phases`, exit 0 **without** calling `run()`. Use this to validate workflow metadata before running. |
-| **`--mock-worker`** | `--mock-worker` flag | Attach a `FakeSpawner` driver: `run()` IS entered, the full scheduler/parallel/pipeline/heartbeat/journal pipeline runs, but `ctx.agent()` returns canned outcomes (`status="released"`, exit_code=0) without spawning any real `claude -p` worker. Stderr prints a MOCK MODE notice. Use this to exercise control flow at zero API cost. |
+| **`--mock-worker`** | `--mock-worker` flag | Attach a `FakeSpawner` driver: `run()` IS entered, the full scheduler/parallel/pipeline/heartbeat/journal pipeline runs, but `ctx.agent()` returns canned outcomes (`status="released"`, exit_code=0) without spawning any real `claude -p` worker. Stderr prints a MOCK MODE notice. Use this to exercise control flow at zero API cost. See `--mock-outcomes` for per-call scripted outcomes. |
 | **Live** | `PLANAR_EXECUTE_LIVE_AGENT=1` env | Attach the real driver that spawns `claude -p` workers. Requires human review of the safety guards below. |
 
 **Flags:**
@@ -5461,9 +5461,20 @@ Load and execute a Lua workflow module. The module must export a table with a `m
 | Flag | Description |
 |------|-------------|
 | `--plan <id>` | Plan id for the run. Required when `PLANAR_EXECUTE_LIVE_AGENT=1`; optional in mock/stub modes (degrades claim-status reads and commit-presence sampling when absent). |
-| `--dry-run` | Load + validate `meta`, print and exit. Mutually exclusive with `--mock-worker` and `PLANAR_EXECUTE_LIVE_AGENT=1`. |
-| `--mock-worker` | Run with `FakeSpawner` — full pipeline, no real workers. Mutually exclusive with `--dry-run` and `PLANAR_EXECUTE_LIVE_AGENT=1`. |
+| `--dry-run` | Load + validate `meta`, print and exit. Mutually exclusive with `--mock-worker`, `--mock-outcomes`, and `PLANAR_EXECUTE_LIVE_AGENT=1`. |
+| `--mock-worker` | Run with `FakeSpawner` — full pipeline, no real workers. Mutually exclusive with `--dry-run` and `PLANAR_EXECUTE_LIVE_AGENT=1`. See also `--mock-outcomes`. |
+| `--mock-outcomes <file>` | Per-call scripted FakeSpawner outcomes (NDJSON file; one JSON object per line with optional `exit_code`, `stdout`, `stderr` fields). The Nth `agent()` call returns the Nth scripted outcome; extra calls beyond the script fall back to the canned default (exit_code=0). Implies `--mock-worker` — no need to pass both. Mutually exclusive with `--dry-run` and `PLANAR_EXECUTE_LIVE_AGENT=1`. Parse errors (bad JSON, unreadable file) exit 1 at startup with a clear message. |
 | `--bypass-reviewer-guard` | Operator-explicit override for the bright-line refusal guard (see below). Loud stderr warning when used. |
+
+**Environment knobs:**
+
+| Variable | Description |
+|----------|-------------|
+| `PLANAR_EXECUTE_LIVE_AGENT=1` | Enables the live driver that spawns real `claude -p` workers. |
+| `PLANAR_EXECUTE_STALL_SECS=<seconds>` | Optional per-worker stall detector. When set to a positive integer, workers are killed and returned as `status="timed-out", timed_out_reason="stall"` if their `--output-format stream-json` stdout event gap exceeds this value. Unset, empty, malformed, or `0` disables the detector; the hard wall-clock timeout remains active. |
+| `PLANAR_EXECUTE_MAX_ATTEMPTS=<n>` | Per-task failed-attempt ceiling read by the budget layer. |
+| `PLANAR_EXECUTE_MAX_TOTAL_SPAWNS=<n>` | Whole-run worker-spawn ceiling read by the budget layer. |
+| `PLANAR_EXECUTE_MAX_WALL_CLOCK_SECS=<seconds>` | Whole-run wall-clock ceiling read by the budget layer. |
 
 **Positional arguments:**
 
@@ -5482,6 +5493,9 @@ planar-execute run --dry-run workflows/quality-spine.lua
 
 # Exercise control flow at zero cost against plan 42.
 planar-execute run --mock-worker --plan 42 workflows/quality-spine.lua 42
+
+# Scripted per-call outcomes (implies --mock-worker; no need to pass both).
+planar-execute run --mock-outcomes outcomes.ndjson --plan 42 workflows/quality-spine.lua 42
 
 # Live run (requires PLANAR_EXECUTE_LIVE_AGENT=1).
 PLANAR_EXECUTE_LIVE_AGENT=1 planar-execute run --plan 42 workflows/quality-spine.lua 42
@@ -5551,7 +5565,7 @@ The `ctx` object is injected by the host into every `run(ctx)` call. Available f
 
 | Function | Description |
 |----------|-------------|
-| `ctx.agent(brief, opts)` | Spawn a worker. `brief` is the text brief. `opts` table: `role` (string), `worktree_path` (string), `task_id` (int), `task_slug` (string), `claim_token` (string), `role_spec` (string). Returns a result table with `status` and related fields. Under `--mock-worker`, returns canned `{status="released"}` instantly. Under the live gate, spawns `claude -p`. |
+| `ctx.agent(brief, opts)` | Spawn a worker. `brief` is the text brief. `opts` table: `role` (string), `worktree_path` (string), `task_id` (int), `task_slug` (string), `claim_token` (string), `role_spec` (string). Returns a result table with `status` and related fields. Under `--mock-worker`, returns canned `{status="released"}` instantly. Under `--mock-outcomes`, returns the Nth scripted outcome for the Nth call (falls back to the canned default when exhausted). Under the live gate, spawns `claude -p`. |
 | `ctx.parallel(thunks)` | N-way barrier. `thunks` is a table of zero-arg functions. Runs all concurrently; returns a table of results in the same order. |
 | `ctx.pipeline(items, ...stages)` | Per-item stage pipeline. `items` is a list; each `stage` is a function `(ctx, item) -> result`. Chains stages sequentially per item. |
 | `ctx.eligible(plan_id)` | Read `planar plan recommend-strategy` for `plan_id`. Returns `{eligible: bool, fan_out_available: bool, serialized: bool}`. |
@@ -5640,4 +5654,4 @@ For quick reference, all documented commands grouped by domain:
 | `local` | `local list`, `local link`, `local unlink`, `local import`, `local migrate` |
 | `help` | `help` |
 | `schema` | `schema` (also on `planar-agent`, `planar-watch`, `planar-doc`, `planar-execute`) |
-| **`planar-execute`** | `run [--plan] [--dry-run\|--mock-worker] [--bypass-reviewer-guard] <workflow.lua>`, `version`, `doctor --plan <id> [--json]` |
+| **`planar-execute`** | `run [--plan] [--dry-run\|--mock-worker] [--mock-outcomes <file>] [--bypass-reviewer-guard] <workflow.lua>`, `version`, `doctor --plan <id> [--json]` |

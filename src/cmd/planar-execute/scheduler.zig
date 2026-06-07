@@ -87,13 +87,54 @@ pub const Slot = struct {
     /// actual elapsed wall-clock so a genuinely-hung child is killed even when
     /// the workflow's injected `now` is frozen. Task 3188.
     deadline_ns: i128 = 0,
-    /// Set true when the wall-clock timeout fired on this slot (task 3188): the
-    /// worker was hung, the scheduler killed the child, and `outcome` carries
-    /// the synthetic timed-out result. The continuation (agentContinue) branches
-    /// on this to force `planar-agent fail`, tear down the worktree, and return
-    /// a `status = "timed-out"` result instead of running the normal
-    /// terminal-verb decision matrix.
+    /// Set true when EITHER bound fired on this slot (task 3188 wall-clock, or
+    /// task 3190 stall): the worker was killed and `outcome` carries the synthetic
+    /// timed-out result. The continuation (agentContinue) branches on this to
+    /// force `planar-agent fail`, tear down the worktree, and return a
+    /// `status = "timed-out"` result instead of running the normal terminal-verb
+    /// decision matrix. `timed_out_reason` distinguishes WHICH bound fired.
     timed_out: bool = false,
+    /// Which bound fired when `timed_out` is set (task 3190). `wallclock` = the
+    /// hard per-worker wall-clock ceiling (task 3188, always-on). `stall` = the
+    /// optional stream-json event-gap detector (`PLANAR_EXECUTE_STALL_SECS`).
+    /// Surfaced distinctly in the agent() result so the operator can tell which
+    /// bound reclaimed the worker.
+    timed_out_reason: TimeoutReason = .wallclock,
+    /// The monotonic timestamp (nanoseconds, scheduler clock domain) of the LAST
+    /// observed stream-json event on this worker's stdout (task 3190). Stamped to
+    /// the register-time `clockNow()` at registration (so a worker that never
+    /// emits is measured from spawn), then bumped each poll round in which
+    /// `drainEvents` reports ≥1 new event. The stall detector compares
+    /// `clockNow() - last_event_at_ns` against the stall budget. Only meaningful
+    /// when stall detection is enabled (`stall_ns > 0`).
+    last_event_at_ns: i128 = 0,
+    /// The latest `total_cost_usd` observed from this worker's stream-json
+    /// telemetry (task 3445). Updated by `observeLivenessAndStall` each poll
+    /// round after `drainEvents` returns (the drain sets `handle.*.cost_usd` as a
+    /// side effect). Default 0 (no cost observed yet). The continuation reads this
+    /// from the slot at terminal to stamp `cost_usd` on the agent() result table
+    /// and evaluate the per-worker cost cap. SUPPLEMENTARY TELEMETRY: never a
+    /// pre-emptive kill.
+    last_cost_usd: f64 = 0,
+};
+
+/// TimeoutReason names WHICH liveness bound reclaimed a worker (task 3190).
+/// Greppable, stable names that surface in the agent() result.
+pub const TimeoutReason = enum {
+    /// The hard per-worker wall-clock ceiling (task 3188) — always on.
+    wallclock,
+    /// The optional stream-json event-gap stall detector (task 3190) — only
+    /// active when `PLANAR_EXECUTE_STALL_SECS > 0`.
+    stall,
+
+    /// A short, stable string for the agent() result table's
+    /// `timed_out_reason` field.
+    pub fn name(self: TimeoutReason) []const u8 {
+        return switch (self) {
+            .wallclock => "wallclock",
+            .stall => "stall",
+        };
+    }
 };
 
 /// ClockFn returns a monotonic timestamp in nanoseconds. Injected on the
@@ -125,6 +166,25 @@ pub fn realMonotonicNow(ctx: ?*anyopaque, io: std.Io) i128 {
 /// than a healthy coder/reviewer cycle yet bounds a wedged child. Injectable
 /// (small) for deterministic tests via `Scheduler.max_wall_clock_ns`.
 pub const DEFAULT_MAX_WALL_CLOCK_NS: i128 = @as(i128, 1800) * std.time.ns_per_s;
+
+/// ENV_STALL_SECS is the opt-in stall detector knob. Unset, empty, malformed,
+/// or zero values all mean disabled (`stall_ns = 0`).
+pub const ENV_STALL_SECS = "PLANAR_EXECUTE_STALL_SECS";
+
+/// stallNsFromEnv reads the optional stream-json event-gap stall budget from
+/// the process environment. The value is in seconds for operator ergonomics and
+/// converted to nanoseconds for the scheduler.
+pub fn stallNsFromEnv(environ: std.process.Environ) i128 {
+    const raw = environ.getPosix(ENV_STALL_SECS) orelse return 0;
+    return stallNsFromRaw(raw);
+}
+
+fn stallNsFromRaw(raw: []const u8) i128 {
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    if (trimmed.len == 0) return 0;
+    const secs = std.fmt.parseInt(u32, trimmed, 10) catch return 0;
+    return @as(i128, secs) * std.time.ns_per_s;
+}
 
 /// Scheduler is the cooperative event loop + the in-flight-worker registry. One
 /// instance backs one `runModule` invocation. Reachable from the `agent()` host
@@ -158,6 +218,15 @@ pub const Scheduler = struct {
     /// monotonic nanoseconds after it registered is HUNG → killed + reclaimed.
     /// Defaults to `DEFAULT_MAX_WALL_CLOCK_NS` (30 min); tests set a tiny value.
     max_wall_clock_ns: i128 = DEFAULT_MAX_WALL_CLOCK_NS,
+
+    /// OPTIONAL stall budget (plan 499 task 3190): the maximum gap, in monotonic
+    /// nanoseconds, between successive stream-json events on a worker's stdout
+    /// before it is treated as STALLED (killed + reclaimed, reason `stall`). This
+    /// is a SUPPLEMENT to the always-on `max_wall_clock_ns` hard ceiling, NOT a
+    /// replacement. DEFAULT 0 = DISABLED: when zero the stall detector never fires
+    /// and behavior is byte-identical to the pre-3190 hard-timeout-only path.
+    /// Operator opts in via `PLANAR_EXECUTE_STALL_SECS`; tests inject a tiny value.
+    stall_ns: i128 = 0,
 
     pub fn init(allocator: std.mem.Allocator, io: ?std.Io) Scheduler {
         return .{ .allocator = allocator, .io = io };
@@ -200,7 +269,8 @@ pub const Scheduler = struct {
         // Stamp the wall-clock deadline at registration: spawn-time + budget.
         // Read the monotonic clock ONCE here (registration always happens with a
         // wired spawner+io, so clockNow's unwrapIo is safe).
-        const deadline = self.clockNow() + self.max_wall_clock_ns;
+        const now = self.clockNow();
+        const deadline = now + self.max_wall_clock_ns;
         for (&self.slots, 0..) |*s, idx| {
             if (s.in_use) continue;
             s.* = .{
@@ -211,6 +281,14 @@ pub const Scheduler = struct {
                 .payload = payload,
                 .deadline_ns = deadline,
                 .timed_out = false,
+                .timed_out_reason = .wallclock,
+                // Seed the stall clock at spawn time: a worker that never emits
+                // an event is measured from registration, so a from-birth-silent
+                // worker stalls after the stall budget (task 3190).
+                .last_event_at_ns = now,
+                // Cost starts at 0; updated by observeLivenessAndStall via
+                // drainEvents side-effects (task 3445).
+                .last_cost_usd = 0,
             };
             return idx;
         }
@@ -242,7 +320,7 @@ pub const Scheduler = struct {
     /// is not left running in a worktree the continuation is about to tear
     /// down), then publish the terminal outcome. The continuation then does
     /// unregister → fail → teardown.
-    fn timeoutWorker(self: *Scheduler, idx: usize) spawn.SpawnError!void {
+    fn timeoutWorker(self: *Scheduler, idx: usize, reason: TimeoutReason) spawn.SpawnError!void {
         const s = &self.slots[idx];
         const sp = self.spawner.?; // caller already unwrapped a spawner.
         sp.kill(self.unwrapIo(), &s.handle);
@@ -252,6 +330,41 @@ pub const Scheduler = struct {
         const empty_err = self.allocator.alloc(u8, 0) catch return spawn.SpawnError.OutOfMemory;
         s.outcome = .{ .exit_code = TIMED_OUT_EXIT_CODE, .stdout = empty_out, .stderr = empty_err };
         s.timed_out = true;
+        s.timed_out_reason = reason;
+    }
+
+    /// observeLivenessAndStall drains the slot's worker stdout (non-blocking) and
+    /// applies the OPTIONAL stall detector (task 3190). Called once per poll round
+    /// on a worker that is STILL running (poll returned null) BEFORE the hard
+    /// wall-clock check. It:
+    ///   1. Drains newly-available stream-json events (non-blocking). If ≥1 event
+    ///      arrived, bumps `last_event_at_ns` to now — the worker is alive.
+    ///   2. When stall detection is enabled (`stall_ns > 0`) and the gap since the
+    ///      last event exceeds the stall budget, times the worker out with reason
+    ///      `.stall` (reusing the SAME kill path as the wall-clock timeout) and
+    ///      returns true.
+    /// Returns true iff it timed the worker out (so the caller stops polling it).
+    /// A no-op returning false when stall detection is disabled — but it STILL
+    /// drains stdout so the OS pipe buffer cannot fill and wedge a chatty worker.
+    fn observeLivenessAndStall(self: *Scheduler, idx: usize, now: i128) spawn.SpawnError!bool {
+        const s = &self.slots[idx];
+        const sp = self.spawner.?;
+        const new_events = sp.drainEvents(self.unwrapIo(), &s.handle);
+        // Read cost-so-far after every drain (task 3445): `drainEvents` updates
+        // `handle.*.cost_usd` as a side effect when a `total_cost_usd` field is
+        // parsed from a complete stream-json line. We propagate it to the slot so
+        // the continuation can read it at terminal via `slot.last_cost_usd`.
+        s.last_cost_usd = sp.costSoFar(&s.handle);
+        if (new_events > 0) {
+            s.last_event_at_ns = now;
+            return false; // freshly alive — never stalled this round.
+        }
+        // No new events: apply the stall budget when enabled.
+        if (self.stall_ns > 0 and (now - s.last_event_at_ns) > self.stall_ns) {
+            try self.timeoutWorker(idx, .stall);
+            return true;
+        }
+        return false;
     }
 
     /// driveInflight drives the slot's in-flight worker to terminal and stores
@@ -283,9 +396,16 @@ pub const Scheduler = struct {
                 s.outcome = outcome;
                 return;
             }
-            // Still running — wall-clock-deadline check.
-            if (self.clockNow() >= s.deadline_ns) {
-                try self.timeoutWorker(idx);
+            // Still running. Drain stdout + apply the OPTIONAL stall detector
+            // (task 3190) BEFORE the hard wall-clock check: a stalled worker is
+            // reclaimed sooner (and with the distinct `stall` reason) than its
+            // 30-min wall-clock ceiling would. The drain also keeps the pipe
+            // buffer from filling regardless of whether stall detection is on.
+            const now = self.clockNow();
+            if (try self.observeLivenessAndStall(idx, now)) return;
+            // Always-on hard wall-clock-deadline check (task 3188).
+            if (now >= s.deadline_ns) {
+                try self.timeoutWorker(idx, .wallclock);
                 return;
             }
             io.sleep(POLL_SLEEP, .awake) catch {};
@@ -328,18 +448,24 @@ pub const Scheduler = struct {
                 return idx;
             }
         }
-        // Pass 2: NONE completed this round — check each still-running worker
-        // against its wall-clock deadline (task 3188). A worker past its
-        // deadline is HUNG (the heartbeat thread keeps its lease fresh, so the
-        // lease can never reclaim it) → kill + synthesize a timed-out outcome
-        // and return it as the terminal slot. Only ONE per round (we return the
-        // first); a sibling past its deadline is caught on the next round.
+        // Pass 2: NONE completed this round — observe liveness + apply the two
+        // liveness bounds on each still-running worker. For each in-flight slot:
+        //   (a) drain stdout + the OPTIONAL stall detector (task 3190): a worker
+        //       whose stream-json event gap exceeds the stall budget is killed
+        //       with reason `stall` and returned as the terminal slot.
+        //   (b) the always-on hard wall-clock deadline (task 3188): a worker past
+        //       its deadline is HUNG (the heartbeat thread keeps its lease fresh,
+        //       so the lease can never reclaim it) → kill (reason `wallclock`) +
+        //       synthesize a timed-out outcome and return it.
+        // Only ONE reclaim per round (we return the first); a sibling past either
+        // bound is caught on the next round.
         const now = self.clockNow();
         for (&self.slots, 0..) |*s, idx| {
             if (!s.in_use) continue;
             if (s.outcome != null) continue;
+            if (try self.observeLivenessAndStall(idx, now)) return idx;
             if (now >= s.deadline_ns) {
-                try self.timeoutWorker(idx);
+                try self.timeoutWorker(idx, .wallclock);
                 return idx;
             }
         }
@@ -782,4 +908,265 @@ test "scheduler: in a 2-worker set one hangs + times out while the other complet
     sched.releaseSlot(second);
 
     try testing.expectEqual(@as(usize, 0), sched.inflightCount());
+}
+
+// ---------------------------------------------------------------------------
+// Stall-detection tests (plan 499 task 3190) — the optional stream-json
+// event-gap detector, a SUPPLEMENT to the always-on wall-clock timeout. Uses
+// the FakeSpawner's per-start event_scripts + a settable FakeClock.
+// ---------------------------------------------------------------------------
+
+test "scheduler: stall disabled (stall_ns=0) → a silent worker is bounded ONLY by the hard wall-clock (task 3190)" {
+    const a = testing.allocator;
+    // A worker that never emits an event AND never completes on its own (hung).
+    var fake = spawn.FakeSpawnerState.init(a, 0, "", "");
+    defer fake.deinit();
+    const hung_seq = [_]bool{true};
+    fake.hung_starts_seq = &hung_seq;
+    // No event_scripts → drainEvents returns 0 every round (silent).
+
+    var clock = FakeClock{ .now_ns = 0 };
+    var sched = Scheduler.init(a, std.testing.io);
+    sched.spawner = fake.spawner();
+    sched.clock_fn = FakeClock.clockFn;
+    sched.clock_ctx = &clock;
+    sched.max_wall_clock_ns = 1000;
+    sched.stall_ns = 0; // DISABLED — the default; behavior identical to pre-3190.
+
+    const fake_co: *c.lua_State = @ptrFromInt(0x1000);
+    const handle = try sched.spawner.?.start(a, std.testing.io, .{
+        .role = .coder,
+        .worktree_path = "/tmp/wt",
+        .brief = "B",
+        .role_spec = "",
+        .env_map = null,
+    });
+    const idx = try sched.registerInflight(fake_co, handle, null);
+
+    // Even far past where a stall WOULD have fired, with stall disabled the only
+    // bound is the wall-clock deadline (1000). Before it: nothing terminal.
+    clock.now_ns = 900;
+    try testing.expect((try sched.pollReadyOnce()) == null);
+    try testing.expectEqual(@as(u32, 0), fake.kill_count);
+
+    // Past the wall-clock deadline: it times out with reason WALLCLOCK (not stall).
+    clock.now_ns = 1100;
+    const ready = try sched.pollReadyOnce();
+    try testing.expectEqual(@as(?usize, idx), ready);
+    try testing.expectEqual(@as(u32, 1), fake.kill_count);
+    try testing.expect(sched.slot(idx).timed_out);
+    try testing.expectEqual(TimeoutReason.wallclock, sched.slot(idx).timed_out_reason);
+
+    sched.slot(idx).outcome.?.deinit(a);
+    sched.releaseSlot(idx);
+}
+
+test "scheduler: PLANAR_EXECUTE_STALL_SECS parser defaults to disabled unless set to a positive integer (task 3190)" {
+    try testing.expectEqual(@as(i128, 0), stallNsFromRaw(""));
+    try testing.expectEqual(@as(i128, 0), stallNsFromRaw("not-a-number"));
+    try testing.expectEqual(@as(i128, 0), stallNsFromRaw("0"));
+    try testing.expectEqual(@as(i128, 45) * std.time.ns_per_s, stallNsFromRaw(" 45\n"));
+}
+
+test "scheduler: a worker that emits events then goes silent stalls after stall_ns (reason=stall) (task 3190)" {
+    const a = testing.allocator;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "", "");
+    defer fake.deinit();
+    const hung_seq = [_]bool{true}; // never completes on its own.
+    fake.hung_starts_seq = &hung_seq;
+    // Emits 1 event on the first drain, then silent.
+    const script = [_][]const u32{&[_]u32{1}};
+    fake.event_scripts = &script;
+
+    var clock = FakeClock{ .now_ns = 100 };
+    var sched = Scheduler.init(a, std.testing.io);
+    sched.spawner = fake.spawner();
+    sched.clock_fn = FakeClock.clockFn;
+    sched.clock_ctx = &clock;
+    sched.max_wall_clock_ns = 1_000_000; // huge — the stall must fire FIRST.
+    sched.stall_ns = 50; // tiny stall budget.
+
+    const fake_co: *c.lua_State = @ptrFromInt(0x1000);
+    const handle = try sched.spawner.?.start(a, std.testing.io, .{
+        .role = .coder,
+        .worktree_path = "/tmp/wt",
+        .brief = "B",
+        .role_spec = "",
+        .env_map = null,
+    });
+    const idx = try sched.registerInflight(fake_co, handle, null);
+    // last_event_at seeded at register time (now=100).
+    try testing.expectEqual(@as(i128, 100), sched.slot(idx).last_event_at_ns);
+
+    // Round 1: an event arrives (drain returns 1) → last_event bumps to now=120,
+    // no stall.
+    clock.now_ns = 120;
+    try testing.expect((try sched.pollReadyOnce()) == null);
+    try testing.expectEqual(@as(i128, 120), sched.slot(idx).last_event_at_ns);
+    try testing.expectEqual(@as(u32, 0), fake.kill_count);
+
+    // Round 2: silent (drain 0) but gap (160-120=40) <= 50 → no stall yet.
+    clock.now_ns = 160;
+    try testing.expect((try sched.pollReadyOnce()) == null);
+    try testing.expectEqual(@as(u32, 0), fake.kill_count);
+
+    // Round 3: gap (180-120=60) > 50 → STALL fires, reason=stall, kill invoked.
+    clock.now_ns = 180;
+    const ready = try sched.pollReadyOnce();
+    try testing.expectEqual(@as(?usize, idx), ready);
+    try testing.expectEqual(@as(u32, 1), fake.kill_count);
+    try testing.expect(fake.killedWorker(0));
+    try testing.expect(sched.slot(idx).timed_out);
+    try testing.expectEqual(TimeoutReason.stall, sched.slot(idx).timed_out_reason);
+    try testing.expectEqual(Scheduler.TIMED_OUT_EXIT_CODE, sched.slot(idx).outcome.?.exit_code);
+
+    sched.slot(idx).outcome.?.deinit(a);
+    sched.releaseSlot(idx);
+}
+
+test "scheduler: a steadily-emitting worker NEVER stalls (task 3190)" {
+    const a = testing.allocator;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "", "");
+    defer fake.deinit();
+    const hung_seq = [_]bool{true};
+    fake.hung_starts_seq = &hung_seq;
+    // Emits an event on EVERY one of the drains we make below.
+    const script = [_][]const u32{&[_]u32{ 1, 1, 1, 1, 1 }};
+    fake.event_scripts = &script;
+
+    var clock = FakeClock{ .now_ns = 0 };
+    var sched = Scheduler.init(a, std.testing.io);
+    sched.spawner = fake.spawner();
+    sched.clock_fn = FakeClock.clockFn;
+    sched.clock_ctx = &clock;
+    sched.max_wall_clock_ns = 1_000_000;
+    sched.stall_ns = 10; // tiny — but a steady emitter keeps resetting the gap.
+
+    const fake_co: *c.lua_State = @ptrFromInt(0x1000);
+    const handle = try sched.spawner.?.start(a, std.testing.io, .{
+        .role = .coder,
+        .worktree_path = "/tmp/wt",
+        .brief = "B",
+        .role_spec = "",
+        .env_map = null,
+    });
+    const idx = try sched.registerInflight(fake_co, handle, null);
+
+    // Advance the clock well past stall_ns each round, but an event arrives each
+    // round so last_event keeps catching up → never stalls.
+    var t: i128 = 100;
+    var round: usize = 0;
+    while (round < 5) : (round += 1) {
+        clock.now_ns = t;
+        try testing.expect((try sched.pollReadyOnce()) == null);
+        try testing.expectEqual(@as(i128, t), sched.slot(idx).last_event_at_ns);
+        try testing.expectEqual(@as(u32, 0), fake.kill_count);
+        t += 100;
+    }
+
+    // Cleanup: disable the optional stall detector and force a wall-clock
+    // timeout to reclaim the still-hung worker.
+    sched.stall_ns = 0;
+    clock.now_ns = 2_000_000;
+    const ready = try sched.pollReadyOnce();
+    try testing.expectEqual(@as(?usize, idx), ready);
+    try testing.expectEqual(TimeoutReason.wallclock, sched.slot(idx).timed_out_reason);
+    sched.slot(idx).outcome.?.deinit(a);
+    sched.releaseSlot(idx);
+}
+
+test "scheduler: a from-birth-silent worker stalls measured from spawn time (task 3190)" {
+    const a = testing.allocator;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "", "");
+    defer fake.deinit();
+    const hung_seq = [_]bool{true};
+    fake.hung_starts_seq = &hung_seq;
+    // No event_scripts → silent from the first drain.
+
+    var clock = FakeClock{ .now_ns = 1000 };
+    var sched = Scheduler.init(a, std.testing.io);
+    sched.spawner = fake.spawner();
+    sched.clock_fn = FakeClock.clockFn;
+    sched.clock_ctx = &clock;
+    sched.max_wall_clock_ns = 1_000_000;
+    sched.stall_ns = 200;
+
+    const fake_co: *c.lua_State = @ptrFromInt(0x1000);
+    const handle = try sched.spawner.?.start(a, std.testing.io, .{
+        .role = .coder,
+        .worktree_path = "/tmp/wt",
+        .brief = "B",
+        .role_spec = "",
+        .env_map = null,
+    });
+    const idx = try sched.registerInflight(fake_co, handle, null);
+    // last_event seeded at register time (1000) so the gap is measured from spawn.
+    try testing.expectEqual(@as(i128, 1000), sched.slot(idx).last_event_at_ns);
+
+    // gap 150 <= 200 → not yet.
+    clock.now_ns = 1150;
+    try testing.expect((try sched.pollReadyOnce()) == null);
+    try testing.expectEqual(@as(u32, 0), fake.kill_count);
+
+    // gap 250 > 200 → stall fires (the worker never emitted a single event).
+    clock.now_ns = 1250;
+    const ready = try sched.pollReadyOnce();
+    try testing.expectEqual(@as(?usize, idx), ready);
+    try testing.expectEqual(TimeoutReason.stall, sched.slot(idx).timed_out_reason);
+
+    sched.slot(idx).outcome.?.deinit(a);
+    sched.releaseSlot(idx);
+}
+
+test "scheduler: driveInflight (N=1) stalls a silent worker via the deadline poll loop (task 3190)" {
+    const a = testing.allocator;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "", "");
+    defer fake.deinit();
+    const hung_seq = [_]bool{true};
+    fake.hung_starts_seq = &hung_seq;
+    // silent (no event_scripts).
+
+    // Clock advances on each read so the poll loop crosses the stall budget
+    // without any real sleep.
+    const Advancing = struct {
+        now_ns: i128 = 0,
+        fn clockFn(ctx: ?*anyopaque, io: std.Io) i128 {
+            _ = io;
+            const self: *@This() = @ptrCast(@alignCast(ctx.?));
+            const v = self.now_ns;
+            self.now_ns += 1_000_000; // +1ms per read.
+            return v;
+        }
+    };
+    var clk = Advancing{};
+
+    var sched = Scheduler.init(a, std.testing.io);
+    sched.spawner = fake.spawner();
+    sched.clock_fn = Advancing.clockFn;
+    sched.clock_ctx = &clk;
+    sched.max_wall_clock_ns = 1_000_000_000; // huge → stall fires first.
+    sched.stall_ns = 3_000_000; // 3ms → the advancing clock crosses it quickly.
+
+    const fake_co: *c.lua_State = @ptrFromInt(0x1000);
+    const handle = try sched.spawner.?.start(a, std.testing.io, .{
+        .role = .coder,
+        .worktree_path = "/tmp/wt",
+        .brief = "B",
+        .role_spec = "",
+        .env_map = null,
+    });
+    const idx = try sched.registerInflight(fake_co, handle, null);
+
+    try sched.driveInflight(idx);
+    try testing.expect(sched.slot(idx).timed_out);
+    try testing.expectEqual(TimeoutReason.stall, sched.slot(idx).timed_out_reason);
+    try testing.expectEqual(@as(u32, 1), fake.kill_count);
+
+    sched.slot(idx).outcome.?.deinit(a);
+    sched.releaseSlot(idx);
+}
+
+test "scheduler: TimeoutReason.name is stable + greppable (task 3190)" {
+    try testing.expectEqualStrings("wallclock", TimeoutReason.wallclock.name());
+    try testing.expectEqualStrings("stall", TimeoutReason.stall.name());
 }

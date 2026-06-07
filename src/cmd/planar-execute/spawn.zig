@@ -189,6 +189,9 @@ pub const SpawnInputs = struct {
 /// claude
 ///   --print
 ///   --permission-mode bypassPermissions   (decision 365)
+///   --output-format stream-json           (task 3190 — liveness telemetry)
+///   --verbose                             (required by claude for stream-json
+///                                          in --print mode)
 ///   --model <tier>                         (per-role, from role_model)
 ///   --add-dir <worktree_path>              (allow edits inside the worktree)
 ///   --append-system-prompt <role_spec>     (role injection; only when non-empty)
@@ -199,6 +202,17 @@ pub const SpawnInputs = struct {
 /// ~10 KB which fits comfortably in ARG_MAX). When `role_spec` is empty, the
 /// `--append-system-prompt` flag is OMITTED rather than passed with an empty
 /// value, to avoid a no-op system-prompt extension.
+///
+/// ### `--output-format stream-json` (task 3190 — stall detection foundation)
+///
+/// The worker emits its activity as a newline-delimited JSON event stream on
+/// stdout. The harness reads this stream PURELY as a LIVENESS SIGNAL: the gap
+/// between successive events is what the optional stall detector
+/// (`PLANAR_EXECUTE_STALL_SECS`) measures. The DB remains the SOLE source of
+/// truth for OUTCOMES (claim/task status); stdout is NEVER parsed to derive
+/// complete/fail/block. `claude --print` requires `--verbose` to be set when
+/// `--output-format stream-json` is requested, so both flags are emitted
+/// together as an inseparable pair.
 pub fn buildSpawnArgv(
     allocator: std.mem.Allocator,
     inputs: SpawnInputs,
@@ -209,10 +223,11 @@ pub fn buildSpawnArgv(
 
     const tier = role_model.modelForRole(inputs.role);
 
-    // Compute the argv length. The base shape is 8 elements; the
-    // `--append-system-prompt <spec>` pair (2 elements) is added when
-    // role_spec is non-empty.
-    const base: usize = 8;
+    // Compute the argv length. The base shape is 11 elements (the 8-element
+    // pre-3190 shape + the `--output-format stream-json --verbose` 3-element
+    // liveness-telemetry block); the `--append-system-prompt <spec>` pair (2
+    // elements) is added when role_spec is non-empty.
+    const base: usize = 11;
     const extra: usize = if (inputs.role_spec.len > 0) 2 else 0;
 
     var argv = allocator.alloc([]const u8, base + extra) catch return SpawnError.OutOfMemory;
@@ -226,6 +241,14 @@ pub fn buildSpawnArgv(
     argv[i] = "--permission-mode";
     i += 1;
     argv[i] = "bypassPermissions";
+    i += 1;
+    // Liveness-telemetry block (task 3190): the stream-json event gap is the
+    // stall signal. `--verbose` is mandatory alongside stream-json in --print.
+    argv[i] = "--output-format";
+    i += 1;
+    argv[i] = "stream-json";
+    i += 1;
+    argv[i] = "--verbose";
     i += 1;
     argv[i] = "--model";
     i += 1;
@@ -322,6 +345,36 @@ pub const Spawner = struct {
         handle: *Handle,
     ) void,
 
+    /// Non-blocking incremental stdout-event drain (plan 499 task 3190 — stall
+    /// detection). Reads whatever bytes are CURRENTLY AVAILABLE on the in-flight
+    /// worker's stdout WITHOUT blocking, and returns the number of NEWLY-COMPLETED
+    /// newline-delimited events (`--output-format stream-json` lines) observed
+    /// since the last drain. A partial trailing line is BUFFERED on the handle and
+    /// NOT counted until its terminating newline arrives, so a half-written event
+    /// never registers as liveness. Returns 0 when no complete event arrived (the
+    /// stall case the detector watches for). This is LIVENESS TELEMETRY ONLY:
+    /// the drained bytes are discarded after counting; outcomes still come from the
+    /// DB. As a side effect the drain also parses `total_cost_usd` from complete
+    /// JSON lines (task 3445) and updates `handle.*.cost_usd` when the field is
+    /// present. Infallible at the contract boundary — a read error (e.g. EOF as
+    /// the child exits) is treated as "no new events this round" (0); the poll
+    /// path detects the actual exit. A no-op (returns 0) when the handle has no
+    /// live stdout pipe (FakeHandle drives its own scripted event sequence instead).
+    drainEventsFn: *const fn (
+        ctx: ?*anyopaque,
+        io: Io,
+        handle: *Handle,
+    ) u32,
+
+    /// Read the latest observed cumulative cost-so-far for an in-flight worker
+    /// (task 3445). Returns the `cost_usd` field that `drainEvents` populated from
+    /// the worker's stream-json `total_cost_usd` events. Returns 0 when no cost
+    /// event has been observed yet (either the drain has not fired yet, or the
+    /// worker's terminal result event has not arrived, or the cap is disabled). For
+    /// RealHandle this is `handle.real.cost_usd`; for FakeHandle it is
+    /// `handle.fake.cost_usd`.
+    costSoFarFn: *const fn (handle: *const Handle) f64,
+
     /// Drives the spawn (BLOCKING). Thin wrapper that just dispatches through
     /// `runFn`.
     pub fn run(
@@ -368,6 +421,20 @@ pub const Spawner = struct {
     pub fn kill(self: Spawner, io: Io, handle: *Handle) void {
         return self.killFn(self.ctx, io, handle);
     }
+
+    /// Non-blocking incremental stdout-event drain (task 3190). Returns the count
+    /// of newly-completed newline-delimited events on the worker's stdout. See
+    /// `drainEventsFn`.
+    pub fn drainEvents(self: Spawner, io: Io, handle: *Handle) u32 {
+        return self.drainEventsFn(self.ctx, io, handle);
+    }
+
+    /// Read the latest observed cumulative cost (USD) for an in-flight worker
+    /// (task 3445). Populated by `drainEvents` as a side effect; see
+    /// `costSoFarFn`.
+    pub fn costSoFar(self: Spawner, handle: *const Handle) f64 {
+        return self.costSoFarFn(handle);
+    }
 };
 
 /// Handle is an in-flight worker — the result of `Spawner.start`. It carries the
@@ -389,9 +456,41 @@ pub const Handle = union(enum) {
 /// RealHandle is the live-child state for an in-flight RealSpawner worker.
 pub const RealHandle = struct {
     /// The spawned child process. stdin has already been written + closed at
-    /// start() time; stdout/stderr are drained at poll/wait time.
+    /// start() time; stderr is drained at poll/wait time, and stdout is drained
+    /// INCREMENTALLY (non-blocking) during flight for stall detection (task
+    /// 3190) AND finally at poll/wait time.
     child: std.process.Child,
+    /// Whether `drainEvents` has switched the stdout pipe fd to non-blocking
+    /// mode (`O_NONBLOCK`). Done lazily on the first drain so `start` stays
+    /// allocation-free and POSIX-only concerns are confined to the drain path.
+    /// Once set, incremental reads return immediately when no data is available.
+    stdout_nonblock: bool = false,
+    /// Count of bytes currently held in `partial_line` (a stdout tail with no
+    /// terminating newline yet). A partial line is NOT counted as an event until
+    /// its newline arrives, so a half-written stream-json line never registers as
+    /// spurious liveness. Bounded by `PARTIAL_LINE_CAP`; on overflow the buffer is
+    /// reset (a single pathological line cannot grow memory unboundedly — and a
+    /// genuinely-emitting worker is still alive regardless).
+    partial_len: usize = 0,
+    /// The carried-over partial stdout line (no trailing newline). Fixed-capacity
+    /// inline storage so `drainEvents` needs no allocator on the hot path.
+    partial_line: [PARTIAL_LINE_CAP]u8 = undefined,
+    /// Latest `total_cost_usd` value observed from the worker's stream-json
+    /// telemetry (task 3445). Updated by `realDrainEventsFn` each time a
+    /// complete line containing the field is parsed. Default 0 (no cost observed
+    /// yet). The terminal `{"type":"result", ..., "total_cost_usd": <f>}` event
+    /// produced by `claude --output-format stream-json` is what sets this. The
+    /// scheduler reads it post-drain and propagates it to the slot. SUPPLEMENTARY
+    /// TELEMETRY: never a pre-emptive kill; outcomes still come from the DB.
+    cost_usd: f64 = 0,
 };
+
+/// PARTIAL_LINE_CAP bounds the carried-over partial-line buffer in `drainEvents`.
+/// A stream-json event line that exceeds this is truncated for COUNTING purposes
+/// only (we still register the newline that eventually terminates it as an
+/// event); the worker's actual stdout is fully captured at terminal via
+/// `drainPipe`. 64 KiB comfortably holds a single JSON event line.
+pub const PARTIAL_LINE_CAP: usize = 64 * 1024;
 
 /// FakeHandle is the in-flight state for a FakeSpawner worker. It models an
 /// async transition: `poll_remaining` non-blocking probes report "still
@@ -414,6 +513,47 @@ pub const FakeHandle = struct {
     /// timeout calling `kill`. This is what lets a unit test model a hang
     /// deterministically without a real long-running subprocess.
     hung: bool = false,
+    /// Scripted per-`drainEvents`-call event counts (plan 499 task 3190 — stall
+    /// detection). Consumed front-to-back: the i-th `drainEvents` call returns
+    /// `event_script[i]` (events observed that round), then advances the cursor.
+    /// Past the end it returns 0 (the worker has gone SILENT — exactly the stall
+    /// case the detector watches for). Borrowed slice; empty ⇒ the worker never
+    /// emits an event (immediate silence). Lets a unit test model "emits for a
+    /// while then goes silent" deterministically against the injectable clock.
+    event_script: []const u32 = &.{},
+    /// Cursor into `event_script` (which round of `drainEvents` we are on).
+    event_cursor: usize = 0,
+    /// Scripted per-`drainEvents`-call cost values (task 3445 — cost cap). The
+    /// i-th `drainEvents` call populates `cost_usd` with `cost_script[i]` when
+    /// the cursor is in range (mimicking a worker that reports cumulative cost
+    /// on successive drain rounds). Past the end, `cost_usd` is unchanged (the
+    /// last recorded value persists — mimicking the real behavior where the
+    /// terminal result event carries the final cost). Borrowed slice; empty ⇒
+    /// cost_usd stays 0 (the "cap disabled / no cost reported" test path).
+    cost_script: []const f64 = &.{},
+    /// The latest observed cost-so-far for this fake worker (mirrors
+    /// `RealHandle.cost_usd`). Updated by `fakeDrainEventsFn` from `cost_script`
+    /// each drain round. Read by the scheduler via `Spawner.costSoFar`.
+    cost_usd: f64 = 0,
+    /// Per-call scripted outcome from `--mock-outcomes` (task 3491). When
+    /// non-null, `wait`/`poll` return this outcome instead of the global canned
+    /// defaults. The exit_code, stdout, and stderr are borrowed slices that
+    /// point into the state's `owned_outcome_scripts` arena — they live as long
+    /// as the FakeSpawnerState is live. Null ⇒ fall back to
+    /// canned_exit_code/canned_stdout/canned_stderr (exhaustion-fallback path).
+    scripted_outcome: ?ScriptedOutcome = null,
+};
+
+/// ScriptedOutcome is one entry in a `--mock-outcomes` NDJSON file: the
+/// per-call exit code, stdout, and stderr to return from a specific agent()
+/// invocation (task 3491). All fields are optional in the file (exit_code
+/// defaults to 0, stdout/stderr to ""). When loaded into
+/// `FakeSpawnerState.owned_outcome_scripts`, strings are heap-owned by the
+/// arena passed to `loadOutcomeScript`.
+pub const ScriptedOutcome = struct {
+    exit_code: u32 = 0,
+    stdout: []const u8 = "",
+    stderr: []const u8 = "",
 };
 
 // ---------------------------------------------------------------------------
@@ -683,6 +823,14 @@ fn drainPipe(
     };
 }
 
+/// realCostSoFarFn reads the latest observed cost-so-far from the real handle's
+/// `cost_usd` field (populated by `realDrainEventsFn` as a side effect of
+/// parsing `total_cost_usd` from stream-json events). Returns 0 when no cost
+/// event has been observed yet. Infallible.
+fn realCostSoFarFn(handle: *const Handle) f64 {
+    return handle.real.cost_usd;
+}
+
 /// realKillFn hard-kills an in-flight real worker on the wall-clock-timeout
 /// path (task 3188). `std.process.Child.kill` SIGTERMs the pid, reaps it
 /// (wait4), and closes the child's pipes, nulling `child.id`. It is a no-op
@@ -697,6 +845,161 @@ fn realKillFn(ctx: ?*anyopaque, io: Io, handle: *Handle) void {
     handle.real.child.kill(io);
 }
 
+/// parseCostFromLine attempts to extract the `total_cost_usd` float from a
+/// complete stream-json event line. The approach is best-effort string scan:
+/// look for the substring `"total_cost_usd":` and parse the immediately
+/// following token (leading whitespace allowed) as a float. Returns null when
+/// the field is absent, the line is malformed, or the value is non-positive.
+/// A non-positive value is treated as absent (a defensive no-op: a real API
+/// event always has a non-negative cost, and 0 is indistinguishable from
+/// "not yet observed"). This function is INFALLIBLE and never panics: a parse
+/// failure is always null.
+fn parseCostFromLine(line: []const u8) ?f64 {
+    const needle = "\"total_cost_usd\":";
+    const pos = std.mem.indexOf(u8, line, needle) orelse return null;
+    const after = std.mem.trimStart(u8, line[pos + needle.len ..], &[_]u8{ ' ', '\t' });
+    // Find the end of the number token: the first byte that is neither a digit,
+    // '.', '+', '-', 'e', nor 'E'. Stops at ',', '}', '"', etc.
+    var end: usize = 0;
+    while (end < after.len) : (end += 1) {
+        const ch = after[end];
+        if (ch >= '0' and ch <= '9') continue;
+        if (ch == '.' or ch == '-' or ch == '+' or ch == 'e' or ch == 'E') continue;
+        break;
+    }
+    if (end == 0) return null;
+    const v = std.fmt.parseFloat(f64, after[0..end]) catch return null;
+    if (v <= 0) return null;
+    return v;
+}
+
+/// realDrainEventsFn is the non-blocking incremental stdout-event drain for a
+/// live worker (plan 499 task 3190). It reads whatever bytes are CURRENTLY
+/// available on the child's stdout pipe WITHOUT blocking and returns the number
+/// of newly-completed newline-delimited events (stream-json lines) observed.
+///
+/// Mechanism (POSIX): on the first call it flips the stdout pipe fd to
+/// `O_NONBLOCK` so subsequent `read`s return `EAGAIN` (treated as "nothing
+/// available right now" → 0 new events) instead of blocking the cooperative
+/// scheduler. Each call drains in a loop until the fd would block, counting
+/// `\n` bytes. A trailing partial line (no newline) is carried in the handle's
+/// `partial_line` buffer and only counted when its newline arrives on a later
+/// drain, so a half-written event never registers as spurious liveness.
+///
+/// LIVENESS TELEMETRY ONLY: the bytes are discarded after counting — outcomes
+/// come from the DB. As a side effect, complete lines are scanned for
+/// `total_cost_usd` (task 3445) and `rh.cost_usd` is updated when the field is
+/// found (best-effort: a malformed line is skipped; the last recorded value
+/// persists). On Windows (no non-blocking peek wired) this returns 0 every
+/// round; the wall-clock timeout remains the always-on bound there.
+fn realDrainEventsFn(ctx: ?*anyopaque, io: Io, handle: *Handle) u32 {
+    _ = ctx;
+    _ = io;
+    if (builtin.os.tag == .windows) return 0;
+
+    const rh = &handle.real;
+    const file = rh.child.stdout orelse return 0;
+    const fd = file.handle;
+
+    // Lazily switch the fd to non-blocking on first drain.
+    if (!rh.stdout_nonblock) {
+        const flags_rc = posix.system.fcntl(fd, posix.F.GETFL, @as(usize, 0));
+        const flags: usize = switch (posix.errno(flags_rc)) {
+            .SUCCESS => @intCast(flags_rc),
+            else => return 0,
+        };
+        // O_NONBLOCK is a status flag; OR it in.
+        const nonblock_bit: usize = @as(usize, 1) << @bitOffsetOf(posix.O, "NONBLOCK");
+        switch (posix.errno(posix.system.fcntl(fd, posix.F.SETFL, flags | nonblock_bit))) {
+            .SUCCESS => {},
+            else => return 0,
+        }
+        rh.stdout_nonblock = true;
+    }
+
+    var events: u32 = 0;
+    var read_buf: [4096]u8 = undefined;
+    while (true) {
+        const n = posix.read(fd, &read_buf) catch |err| switch (err) {
+            // No data available right now — the worker is between events (or
+            // silent). Stop draining this round.
+            error.WouldBlock => break,
+            // Any other read error (incl. EOF-adjacent conditions as the child
+            // exits) → treat as no-new-events; the poll path detects the exit.
+            else => break,
+        };
+        if (n == 0) break; // EOF: child closed stdout (exiting). poll() reaps it.
+        events += countEventsAndBufferTail(rh, read_buf[0..n]);
+    }
+    return events;
+}
+
+/// countEventsAndBufferTail counts complete newline-delimited events in `chunk`,
+/// accounting for the partial line carried over from a prior drain. A leading
+/// run that completes the carried partial (the first `\n` in `chunk`) counts the
+/// carried line as one event. The final unterminated tail of `chunk` is stashed
+/// back into `rh.partial_line` for the next drain. Returns the number of complete
+/// events observed in this chunk.
+///
+/// As a side effect (task 3445): when a complete line is assembled, it is
+/// scanned for `total_cost_usd`. When the field is found AND the value is
+/// positive, `rh.cost_usd` is updated. A line where the field is absent or
+/// malformed is silently skipped (best-effort; the last recorded cost persists).
+/// This is the only place where the event content is briefly assembled and
+/// inspectable; the caller (`realDrainEventsFn`) discards bytes after this call.
+fn countEventsAndBufferTail(rh: *RealHandle, chunk: []const u8) u32 {
+    var events: u32 = 0;
+    var rest = chunk;
+    while (std.mem.indexOfScalar(u8, rest, '\n')) |nl| {
+        // A newline completes a line: either the carried partial (if any) plus
+        // this segment, or a self-contained segment. Either way it is ONE event.
+        events += 1;
+
+        // Cost parsing (task 3445): try to extract total_cost_usd from the
+        // completed line. The complete line is partial_line[0..partial_len] +
+        // rest[0..nl]. We scan both halves for the needle — the field could
+        // straddle a chunk boundary, but in practice `total_cost_usd` appears
+        // in the terminal result event which is a self-contained chunk in the
+        // OS pipe delivery. We check the segment first (common fast path) and
+        // fall back to checking the partial prefix (the carried-over part).
+        // Malformed / absent → skip. Infallible.
+        const segment = rest[0..nl];
+        if (parseCostFromLine(segment)) |c| {
+            rh.cost_usd = c;
+        } else if (rh.partial_len > 0) {
+            // The field might be split across the partial and the segment.
+            // Build a quick combined view on the stack (bounded by PARTIAL_LINE_CAP).
+            // We only bother when the segment is also small enough to fit.
+            const seg_take = @min(segment.len, PARTIAL_LINE_CAP - rh.partial_len);
+            var combined: [PARTIAL_LINE_CAP]u8 = undefined;
+            @memcpy(combined[0..rh.partial_len], rh.partial_line[0..rh.partial_len]);
+            if (seg_take > 0) @memcpy(combined[rh.partial_len .. rh.partial_len + seg_take], segment[0..seg_take]);
+            if (parseCostFromLine(combined[0 .. rh.partial_len + seg_take])) |c| {
+                rh.cost_usd = c;
+            }
+        }
+
+        rh.partial_len = 0; // the completed line is consumed; reset the tail.
+        rest = rest[nl + 1 ..];
+    }
+    // Whatever remains after the last newline is a new partial tail. Buffer up to
+    // the cap; on overflow drop the excess (it still terminates as an event when
+    // its newline eventually arrives — counting is approximate by design).
+    if (rest.len > 0) {
+        const room = PARTIAL_LINE_CAP - rh.partial_len;
+        const take = @min(room, rest.len);
+        if (take > 0) {
+            @memcpy(rh.partial_line[rh.partial_len .. rh.partial_len + take], rest[0..take]);
+            rh.partial_len += take;
+        } else {
+            // Buffer full with no newline: reset to bound memory; the eventual
+            // newline still registers the (over-long) line as an event.
+            rh.partial_len = 0;
+        }
+    }
+    return events;
+}
+
 /// Returns a Spawner backed by the real `claude --print ...` subprocess. Use
 /// for actual end-to-end runs (the LIVE-COST path). Tests should use
 /// `fakeSpawner` instead.
@@ -708,6 +1011,8 @@ pub fn realSpawner() Spawner {
         .pollFn = realPollFn,
         .waitFn = realWaitFn,
         .killFn = realKillFn,
+        .drainEventsFn = realDrainEventsFn,
+        .costSoFarFn = realCostSoFarFn,
     };
 }
 
@@ -842,6 +1147,40 @@ pub const FakeSpawnerState = struct {
     /// 3188). A test asserts a hung worker that times out had `kill` invoked,
     /// and a normally-completing worker did NOT.
     kill_count: u32 = 0,
+    /// Number of times `drainEvents` was called (plan 499 task 3190). Lets a
+    /// stall test assert the scheduler actually drained the worker's stdout each
+    /// poll round.
+    drain_count: u32 = 0,
+    /// Per-start scripted stdout-event sequences (plan 499 task 3190). When the
+    /// i-th `start` finds `event_scripts[i]` present, its handle drains those
+    /// counts in order (round j returns `event_scripts[i][j]` events) before
+    /// going silent (0). Borrowed slice-of-slices; a start beyond its length (or
+    /// an empty inner slice) models a worker that is silent from the outset. Lets
+    /// a test model "emits steadily" vs "emits then goes silent" deterministically.
+    event_scripts: []const []const u32 = &.{},
+    /// Per-start scripted cost sequences (task 3445). When the i-th `start`
+    /// finds `cost_scripts[i]` present, the j-th `drainEvents` call on that
+    /// worker's handle sets `handle.fake.cost_usd = cost_scripts[i][j]` (when
+    /// j is in range; past the end the last recorded cost persists). Borrowed
+    /// slice-of-slices; a start beyond its length (or an empty inner slice)
+    /// models a worker that reports no cost (cost_usd stays 0). Lets a test
+    /// drive "above cap" vs "below cap" vs "cap disabled" cost paths.
+    cost_scripts: []const []const f64 = &.{},
+    /// Per-call scripted outcomes from `--mock-outcomes <file>` (task 3491).
+    /// Consumed in `start` order: the i-th `start` installs `outcome_scripts[i]`
+    /// as `handle.scripted_outcome`. When i is past the end, the handle falls
+    /// back to the global canned defaults (canned_exit_code / canned_stdout /
+    /// canned_stderr) — the friendlier "partial script" behavior. Borrowed
+    /// slice; set by the caller (handleRun) after `loadOutcomeScript`. When
+    /// empty (the no-file case) every call uses the global canned defaults.
+    outcome_scripts: []const ScriptedOutcome = &.{},
+    /// Heap-owned scripted outcomes loaded from the `--mock-outcomes` NDJSON
+    /// file (task 3491). When non-null, `deinit` frees the arena. When the
+    /// caller uses `outcome_scripts` borrowed from a separate allocation, this
+    /// field stays null and the caller is responsible for lifetime. Tests that
+    /// set `outcome_scripts` directly (not via loadOutcomeScript) leave this
+    /// null.
+    owned_outcome_arena: ?std.heap.ArenaAllocator = null,
     /// The ids of the workers `kill` was called on (task 3188). Lets a test
     /// assert WHICH worker was killed when several are in flight. Fixed-capacity
     /// (bounded by MAX_SLOTS in practice); growth past it is a test bug.
@@ -905,6 +1244,8 @@ pub const FakeSpawnerState = struct {
         }
         self.overlap_obs.deinit(self.allocator);
         self.killed_ids.deinit(self.allocator);
+        // Free the scripted-outcome arena if we own it (task 3491).
+        if (self.owned_outcome_arena) |*arena| arena.deinit();
     }
 
     /// overlapObsFor returns the overlap observation recorded when the worker
@@ -927,6 +1268,8 @@ pub const FakeSpawnerState = struct {
             .pollFn = fakePollFn,
             .waitFn = fakeWaitFn,
             .killFn = fakeKillFn,
+            .drainEventsFn = fakeDrainEventsFn,
+            .costSoFarFn = fakeCostSoFarFn,
         };
     }
 
@@ -1025,6 +1368,25 @@ fn cannedOutcome(state: *FakeSpawnerState, allocator: std.mem.Allocator) SpawnEr
     };
 }
 
+/// outcomeForHandle returns a caller-owned copy of the outcome for this handle.
+/// When the handle carries a `scripted_outcome` (from `--mock-outcomes`, task
+/// 3491), that outcome takes precedence. Otherwise falls back to the global
+/// canned defaults. This is the single read-point for both `fakeWaitFn` and
+/// `fakePollFn` so the scripted-outcome contract is enforced uniformly.
+fn outcomeForHandle(handle: *const Handle, state: *FakeSpawnerState, allocator: std.mem.Allocator) SpawnError!SpawnOutcome {
+    if (handle.fake.scripted_outcome) |so| {
+        const stdout = allocator.dupe(u8, so.stdout) catch return SpawnError.OutOfMemory;
+        errdefer allocator.free(stdout);
+        const stderr = allocator.dupe(u8, so.stderr) catch return SpawnError.OutOfMemory;
+        return .{
+            .exit_code = so.exit_code,
+            .stdout = stdout,
+            .stderr = stderr,
+        };
+    }
+    return cannedOutcome(state, allocator);
+}
+
 /// fakeStartFn records the invocation and returns an in-flight FakeHandle. The
 /// handle reports "still running" for `poll_until_done` poll probes before
 /// reporting the canned outcome (so a test can assert the scheduler polled).
@@ -1064,11 +1426,39 @@ fn fakeStartFn(
     else
         false;
 
+    // Per-start stdout-event script (task 3190): the i-th start drains this
+    // sequence of per-round event counts before going silent. Absent ⇒ empty
+    // (silent from the outset).
+    const ev_script: []const u32 = if (start_index < state.event_scripts.len)
+        state.event_scripts[start_index]
+    else
+        &.{};
+
+    // Per-start cost script (task 3445): the i-th start gets this cost sequence.
+    // Absent ⇒ empty (cost_usd stays 0 — "no cost reported").
+    const cost_script: []const f64 = if (start_index < state.cost_scripts.len)
+        state.cost_scripts[start_index]
+    else
+        &.{};
+
+    // Per-call scripted outcome (task 3491 — --mock-outcomes). If the i-th
+    // start is within the outcome_scripts slice, install it on the handle.
+    // Past the end ⇒ null (exhaustion fallback: the handle returns the global
+    // canned defaults instead). The ScriptedOutcome is a borrowed view into
+    // state's owned_outcome_arena; it lives for the duration of the state.
+    const scripted_outcome: ?ScriptedOutcome = if (start_index < state.outcome_scripts.len)
+        state.outcome_scripts[start_index]
+    else
+        null;
+
     return .{ .fake = .{
         .state = state,
         .poll_remaining = poll_remaining,
         .id = start_index,
         .hung = is_hung,
+        .event_script = ev_script,
+        .cost_script = cost_script,
+        .scripted_outcome = scripted_outcome,
     } };
 }
 
@@ -1120,7 +1510,8 @@ fn removeLiveWorker(state: *FakeSpawnerState, id: u32) void {
 
 /// fakePollFn is the non-blocking probe. Returns null (still running) while
 /// `poll_remaining > 0`, decrementing it each call; once it reaches zero the
-/// next poll returns the canned outcome and marks the handle terminal.
+/// next poll returns the outcome (scripted or canned fallback) and marks the
+/// handle terminal.
 fn fakePollFn(
     ctx: ?*anyopaque,
     allocator: std.mem.Allocator,
@@ -1141,11 +1532,11 @@ fn fakePollFn(
     state.reached_terminal = true;
     if (state.live_inflight > 0) state.live_inflight -= 1;
     removeLiveWorker(state, handle.fake.id);
-    return try cannedOutcome(state, allocator);
+    return try outcomeForHandle(handle, state, allocator);
 }
 
-/// fakeWaitFn blocks (trivially, for the fake) and returns the canned outcome.
-/// Marks the handle terminal.
+/// fakeWaitFn blocks (trivially, for the fake) and returns the outcome
+/// (scripted or canned fallback). Marks the handle terminal.
 fn fakeWaitFn(
     ctx: ?*anyopaque,
     allocator: std.mem.Allocator,
@@ -1158,7 +1549,7 @@ fn fakeWaitFn(
     state.reached_terminal = true;
     if (state.live_inflight > 0) state.live_inflight -= 1;
     removeLiveWorker(state, handle.fake.id);
-    return try cannedOutcome(state, allocator);
+    return try outcomeForHandle(handle, state, allocator);
 }
 
 /// fakeKillFn records the kill (id + count) and drops the worker from the
@@ -1177,9 +1568,49 @@ fn fakeKillFn(ctx: ?*anyopaque, io: Io, handle: *Handle) void {
     removeLiveWorker(state, handle.fake.id);
 }
 
+/// fakeDrainEventsFn is the FakeSpawner stdout-event drain (plan 499 task 3190).
+/// It returns the next scripted per-round event count from the handle's
+/// `event_script`, advancing the cursor; past the script's end it returns 0 (the
+/// worker has gone SILENT — the stall case). A hung worker with no script is
+/// silent from the first drain. Also consumes `cost_script[cursor]` when
+/// available (task 3445): updates `handle.fake.cost_usd` to simulate a worker
+/// that reports its cumulative cost on successive drain rounds. Records the drain
+/// count for test assertions.
+fn fakeDrainEventsFn(ctx: ?*anyopaque, io: Io, handle: *Handle) u32 {
+    _ = io;
+    const state: *FakeSpawnerState = @ptrCast(@alignCast(ctx.?));
+    state.drain_count += 1;
+    const fh = &handle.fake;
+    // Update cost_usd from cost_script at this drain position (task 3445).
+    // The cursor into cost_script mirrors the event_cursor; we use drain_count - 1
+    // (the 0-based index of this call) as the position. When cost_script is
+    // shorter than the current round, the last recorded cost persists (same
+    // semantics as the real drain where the terminal result event's cost is the
+    // final value). The cost is updated REGARDLESS of whether events fired this
+    // round, mirroring the real drain's behavior (it scans every complete line,
+    // not only "active" rounds).
+    const drain_idx = state.drain_count - 1;
+    if (drain_idx < fh.cost_script.len) {
+        fh.cost_usd = fh.cost_script[drain_idx];
+    }
+    if (fh.event_cursor < fh.event_script.len) {
+        const n = fh.event_script[fh.event_cursor];
+        fh.event_cursor += 1;
+        return n;
+    }
+    return 0; // silent past the script.
+}
+
+/// fakeCostSoFarFn reads the latest scripted cost from the fake handle (task 3445).
+fn fakeCostSoFarFn(handle: *const Handle) f64 {
+    return handle.fake.cost_usd;
+}
+
 /// fakeRunFn is the runFn for FakeSpawner. It builds the argv via
 /// `buildSpawnArgv`, dupes it onto the state's allocator, records the
-/// invocation, and returns a duped copy of the canned outcome.
+/// invocation, and returns a duped copy of the outcome (scripted or canned
+/// fallback). Scripted outcomes (task 3491) are keyed by invocation index:
+/// the i-th blocking `run` call uses `outcome_scripts[i]` when in range.
 fn fakeRunFn(
     ctx: ?*anyopaque,
     allocator: std.mem.Allocator,
@@ -1190,8 +1621,94 @@ fn fakeRunFn(
     const state: *FakeSpawnerState = @ptrCast(@alignCast(ctx.?));
 
     if (state.forced_error) |e| return e;
+    // Capture the invocation index BEFORE appending (the current length is the
+    // 0-based index of this call). Used below to select the scripted outcome.
+    const call_idx = state.invocations.items.len;
     try recordFakeInvocation(state, inputs);
+
+    // Scripted outcome (task 3491): if outcome_scripts covers this call, use
+    // it; else fall back to the global canned defaults.
+    if (call_idx < state.outcome_scripts.len) {
+        const so = state.outcome_scripts[call_idx];
+        const stdout = allocator.dupe(u8, so.stdout) catch return SpawnError.OutOfMemory;
+        errdefer allocator.free(stdout);
+        const stderr = allocator.dupe(u8, so.stderr) catch return SpawnError.OutOfMemory;
+        return .{ .exit_code = so.exit_code, .stdout = stdout, .stderr = stderr };
+    }
     return cannedOutcome(state, allocator);
+}
+
+// ---------------------------------------------------------------------------
+// loadOutcomeScript — parse a --mock-outcomes NDJSON file (task 3491).
+// ---------------------------------------------------------------------------
+
+/// Errors that `loadOutcomeScript` can surface. Distinct from `SpawnError` so
+/// `handleRun` can emit a clean startup message and exit 1 rather than panic.
+pub const OutcomeScriptError = error{
+    /// The file could not be read (not found, permission denied, etc.).
+    FileReadFailed,
+    /// A line in the NDJSON file is not valid JSON or not a JSON object.
+    MalformedLine,
+    /// Allocator returned OOM while building the outcome slice.
+    OutOfMemory,
+};
+
+/// loadOutcomeScript parses a `--mock-outcomes` NDJSON file and returns a
+/// heap-owned slice of `ScriptedOutcome`s allocated from `arena`. Each non-empty
+/// line must be a JSON object with optional fields `exit_code` (integer, default
+/// 0), `stdout` (string, default ""), `stderr` (string, default ""). Lines that
+/// consist only of whitespace are skipped. Parse errors on any non-empty line
+/// surface as `OutcomeScriptError.MalformedLine` — the function fails fast on
+/// the first bad line so the operator sees a clear message. On success the
+/// returned slice (and all string values within it) are owned by `arena`; call
+/// `arena.deinit()` to free everything in one shot.
+///
+/// This function is INFALLIBLE with respect to missing optional fields: an
+/// empty JSON object `{}` is valid and yields the defaults (exit_code=0,
+/// stdout="", stderr=""). Unrecognized keys in the object are silently ignored
+/// (std.json parses into the struct with `ignore_unknown_fields = true`).
+pub fn loadOutcomeScript(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    file_path: []const u8,
+) OutcomeScriptError![]ScriptedOutcome {
+    // Read the whole file. 4 MiB limit is generous for an outcomes script.
+    const content = std.Io.Dir.cwd().readFileAlloc(io, file_path, arena, .limited(4 * 1024 * 1024)) catch
+        return OutcomeScriptError.FileReadFailed;
+    // We do not free `content` — it is arena-owned and freed with the arena.
+
+    var outcomes = std.ArrayList(ScriptedOutcome).empty;
+    // outcomes is also arena-allocated; no separate deinit needed.
+
+    // One pass over the content, splitting on newlines.
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, &[_]u8{ ' ', '\t', '\r' });
+        if (line.len == 0) continue; // blank / trailing newline — skip.
+
+        // Parse the JSON object into a transient value so we can extract
+        // fields with defaults. We parse with alloc_always so string values
+        // are owned by the arena (not pointers into the content slice, which
+        // may alias). We ignore unknown fields so future extension of the
+        // format is backward-compatible.
+        const Parsed = struct {
+            exit_code: u32 = 0,
+            stdout: []const u8 = "",
+            stderr: []const u8 = "",
+        };
+        const parsed = std.json.parseFromSliceLeaky(Parsed, arena, line, .{
+            .ignore_unknown_fields = true,
+            .allocate = .alloc_always,
+        }) catch return OutcomeScriptError.MalformedLine;
+
+        outcomes.append(arena, .{
+            .exit_code = parsed.exit_code,
+            .stdout = parsed.stdout,
+            .stderr = parsed.stderr,
+        }) catch return OutcomeScriptError.OutOfMemory;
+    }
+
+    return outcomes.toOwnedSlice(arena) catch return OutcomeScriptError.OutOfMemory;
 }
 
 // ---------------------------------------------------------------------------
@@ -1213,18 +1730,23 @@ test "spawn: buildSpawnArgv emits exact shape for coder role (task 3176)" {
     const argv = try buildSpawnArgv(alloc, inputs);
     defer freeSpawnArgv(alloc, argv);
 
-    // Exact shape: 10 elements, in this precise order.
-    try testing.expectEqual(@as(usize, 10), argv.len);
+    // Exact shape: 13 elements, in this precise order (11-element base shape +
+    // the --append-system-prompt pair). The 3-element stream-json liveness block
+    // sits between bypassPermissions and --model (task 3190).
+    try testing.expectEqual(@as(usize, 13), argv.len);
     try testing.expectEqualStrings("claude", argv[0]);
     try testing.expectEqualStrings("--print", argv[1]);
     try testing.expectEqualStrings("--permission-mode", argv[2]);
     try testing.expectEqualStrings("bypassPermissions", argv[3]); // decision 365
-    try testing.expectEqualStrings("--model", argv[4]);
-    try testing.expectEqualStrings(role_model.OPUS_TIER, argv[5]); // coder → opus
-    try testing.expectEqualStrings("--add-dir", argv[6]);
-    try testing.expectEqualStrings("/tmp/wt/cycle/plan-x/task-y", argv[7]);
-    try testing.expectEqualStrings("--append-system-prompt", argv[8]);
-    try testing.expectEqualStrings("you are a coder", argv[9]);
+    try testing.expectEqualStrings("--output-format", argv[4]); // task 3190
+    try testing.expectEqualStrings("stream-json", argv[5]);
+    try testing.expectEqualStrings("--verbose", argv[6]);
+    try testing.expectEqualStrings("--model", argv[7]);
+    try testing.expectEqualStrings(role_model.OPUS_TIER, argv[8]); // coder → opus
+    try testing.expectEqualStrings("--add-dir", argv[9]);
+    try testing.expectEqualStrings("/tmp/wt/cycle/plan-x/task-y", argv[10]);
+    try testing.expectEqualStrings("--append-system-prompt", argv[11]);
+    try testing.expectEqualStrings("you are a coder", argv[12]);
 }
 
 test "spawn: buildSpawnArgv uses sonnet tier for documenter/test-coder (task 3176)" {
@@ -1238,7 +1760,7 @@ test "spawn: buildSpawnArgv uses sonnet tier for documenter/test-coder (task 317
             .env_map = null,
         });
         defer freeSpawnArgv(alloc, argv);
-        try testing.expectEqualStrings(role_model.SONNET_TIER, argv[5]);
+        try testing.expectEqualStrings(role_model.SONNET_TIER, argv[8]);
     }
 }
 
@@ -1253,10 +1775,12 @@ test "spawn: buildSpawnArgv omits --append-system-prompt when role_spec is empty
     });
     defer freeSpawnArgv(alloc, argv);
 
-    try testing.expectEqual(@as(usize, 8), argv.len);
-    // Last pair is --add-dir <wt>; no --append-system-prompt trailing.
-    try testing.expectEqualStrings("--add-dir", argv[6]);
-    try testing.expectEqualStrings("/tmp/wt", argv[7]);
+    try testing.expectEqual(@as(usize, 11), argv.len);
+    // Last pair is --add-dir <wt>; no --append-system-prompt trailing. The
+    // stream-json liveness block (task 3190) sits earlier in the argv.
+    try testing.expectEqualStrings("stream-json", argv[5]);
+    try testing.expectEqualStrings("--add-dir", argv[9]);
+    try testing.expectEqualStrings("/tmp/wt", argv[10]);
 }
 
 test "spawn: buildSpawnArgv rejects empty / relative / NUL paths" {
@@ -1311,10 +1835,10 @@ test "spawn: FakeSpawner records argv + brief and returns canned outcome" {
     try testing.expectEqual(role_model.Role.coder, inv.role);
     try testing.expectEqualStrings("/tmp/wt/cycle/plan-1/task-2", inv.worktree_path);
     try testing.expectEqualStrings("BRIEF BODY", inv.brief);
-    try testing.expectEqual(@as(usize, 10), inv.argv.len);
+    try testing.expectEqual(@as(usize, 13), inv.argv.len);
     try testing.expectEqualStrings("claude", inv.argv[0]);
     try testing.expectEqualStrings("bypassPermissions", inv.argv[3]);
-    try testing.expectEqualStrings("ROLE SPEC", inv.argv[9]);
+    try testing.expectEqualStrings("ROLE SPEC", inv.argv[12]);
 }
 
 test "spawn: FakeSpawner records multiple invocations in order" {
@@ -1368,6 +1892,7 @@ test "spawn: realSpawner is constructible and exposes the right surface" {
     try testing.expect(@intFromPtr(s.pollFn) != 0);
     try testing.expect(@intFromPtr(s.waitFn) != 0);
     try testing.expect(@intFromPtr(s.killFn) != 0);
+    try testing.expect(@intFromPtr(s.drainEventsFn) != 0);
 }
 
 test "spawn: FakeSpawner async surface — start records, wait returns canned outcome (task 3182)" {
@@ -1401,7 +1926,7 @@ test "spawn: FakeSpawner async surface — start records, wait returns canned ou
     // The recorded invocation matches the blocking path's shape.
     const inv = fake.invocations.items[0];
     try testing.expectEqualStrings("ASYNC BRIEF", inv.brief);
-    try testing.expectEqualStrings("ROLE SPEC", inv.argv[9]);
+    try testing.expectEqualStrings("ROLE SPEC", inv.argv[12]);
 }
 
 test "spawn: FakeSpawner poll reports still-running then terminal (task 3182)" {
@@ -1552,4 +2077,353 @@ test "spawn: SpawnInputs.env_map = null + FakeSpawner records an empty env snaps
 
     try testing.expectEqual(@as(usize, 1), fake.invocations.items.len);
     try testing.expectEqual(@as(usize, 0), fake.invocations.items[0].env_pairs.len);
+}
+
+// ---------------------------------------------------------------------------
+// Stall-detection drain unit tests (plan 499 task 3190).
+// ---------------------------------------------------------------------------
+
+test "spawn: countEventsAndBufferTail counts whole lines and buffers a partial tail (task 3190)" {
+    var rh = RealHandle{ .child = undefined };
+
+    // Two complete lines + a partial tail in one chunk.
+    try testing.expectEqual(@as(u32, 2), countEventsAndBufferTail(&rh, "ev1\nev2\npart"));
+    try testing.expectEqual(@as(usize, 4), rh.partial_len); // "part" buffered, uncounted.
+
+    // The partial completes on the next chunk → exactly one more event.
+    try testing.expectEqual(@as(u32, 1), countEventsAndBufferTail(&rh, "ial\n"));
+    try testing.expectEqual(@as(usize, 0), rh.partial_len);
+
+    // A chunk with NO newline registers zero events (still a partial).
+    try testing.expectEqual(@as(u32, 0), countEventsAndBufferTail(&rh, "no-newline-yet"));
+    try testing.expectEqual(@as(u32, 0), countEventsAndBufferTail(&rh, "-more"));
+    // ...until its newline arrives.
+    try testing.expectEqual(@as(u32, 1), countEventsAndBufferTail(&rh, "\n"));
+}
+
+test "spawn: FakeSpawner drainEvents replays the scripted sequence then goes silent (task 3190)" {
+    const alloc = testing.allocator;
+    var fake = FakeSpawnerState.init(alloc, 0, "", "");
+    defer fake.deinit();
+    // One worker that emits 2 then 1 events, then is silent forever.
+    const script = [_][]const u32{&[_]u32{ 2, 1 }};
+    fake.event_scripts = &script;
+    const spawner = fake.spawner();
+
+    var handle = try spawner.start(alloc, std.testing.io, .{
+        .role = .coder,
+        .worktree_path = "/tmp/wt",
+        .brief = "B",
+        .role_spec = "",
+        .env_map = null,
+    });
+    // Replay: 2, 1, then 0 (silent) on every subsequent drain.
+    try testing.expectEqual(@as(u32, 2), spawner.drainEvents(std.testing.io, &handle));
+    try testing.expectEqual(@as(u32, 1), spawner.drainEvents(std.testing.io, &handle));
+    try testing.expectEqual(@as(u32, 0), spawner.drainEvents(std.testing.io, &handle));
+    try testing.expectEqual(@as(u32, 0), spawner.drainEvents(std.testing.io, &handle));
+    try testing.expectEqual(@as(u32, 4), fake.drain_count);
+
+    // Drain the handle so nothing leaks.
+    var out = try spawner.wait(alloc, std.testing.io, &handle);
+    out.deinit(alloc);
+}
+
+// ---------------------------------------------------------------------------
+// task 3445 — per-worker cost cap unit tests
+// ---------------------------------------------------------------------------
+
+test "spawn: parseCostFromLine — extracts total_cost_usd from a result event line" {
+    // Typical claude stream-json terminal result event.
+    const line1 = "{\"type\":\"result\",\"subtype\":\"success\",\"total_cost_usd\":1.2345,\"session_id\":\"s\"}";
+    const got1 = parseCostFromLine(line1);
+    try testing.expect(got1 != null);
+    try testing.expect(@abs(got1.? - 1.2345) < 0.0001);
+
+    // With leading whitespace after the colon.
+    const line2 = "{\"type\":\"result\",\"total_cost_usd\":  0.5}";
+    const got2 = parseCostFromLine(line2);
+    try testing.expect(got2 != null);
+    try testing.expect(@abs(got2.? - 0.5) < 0.0001);
+}
+
+test "spawn: parseCostFromLine — field absent → null" {
+    // A non-result event line (e.g. an assistant/tool event).
+    const line = "{\"type\":\"assistant\",\"content\":\"hello\"}";
+    try testing.expectEqual(@as(?f64, null), parseCostFromLine(line));
+}
+
+test "spawn: parseCostFromLine — malformed / non-positive → null" {
+    // Non-numeric value → null.
+    const line1 = "{\"total_cost_usd\":\"notanumber\"}";
+    try testing.expectEqual(@as(?f64, null), parseCostFromLine(line1));
+
+    // Zero value → null (treated as "disabled/not reported").
+    const line2 = "{\"total_cost_usd\":0}";
+    try testing.expectEqual(@as(?f64, null), parseCostFromLine(line2));
+
+    // Negative value → null.
+    const line3 = "{\"total_cost_usd\":-0.5}";
+    try testing.expectEqual(@as(?f64, null), parseCostFromLine(line3));
+
+    // Empty line → null (no crash).
+    try testing.expectEqual(@as(?f64, null), parseCostFromLine(""));
+}
+
+test "spawn: FakeSpawner cost_scripts → handle.fake.cost_usd updated per drain round" {
+    const alloc = testing.allocator;
+    var fake = FakeSpawnerState.init(alloc, 0, "", "");
+    defer fake.deinit();
+    // cost_script: drain 0 = $0.5, drain 1 = $1.2, drain 2 onwards = last ($1.2).
+    const cost_vals = [_]f64{ 0.5, 1.2 };
+    const cost_scripts = [_][]const f64{&cost_vals};
+    fake.cost_scripts = &cost_scripts;
+    const sp = fake.spawner();
+
+    var handle = try sp.start(alloc, std.testing.io, .{
+        .role = .coder,
+        .worktree_path = "/tmp/wt",
+        .brief = "B",
+        .role_spec = "",
+        .env_map = null,
+    });
+
+    // drain 0 → cost_usd = 0.5.
+    _ = sp.drainEvents(std.testing.io, &handle);
+    try testing.expect(@abs(sp.costSoFar(&handle) - 0.5) < 0.001);
+
+    // drain 1 → cost_usd = 1.2.
+    _ = sp.drainEvents(std.testing.io, &handle);
+    try testing.expect(@abs(sp.costSoFar(&handle) - 1.2) < 0.001);
+
+    // drain 2 → past cost_script end; cost_usd stays 1.2 (last value).
+    _ = sp.drainEvents(std.testing.io, &handle);
+    try testing.expect(@abs(sp.costSoFar(&handle) - 1.2) < 0.001);
+
+    var out = try sp.wait(alloc, std.testing.io, &handle);
+    out.deinit(alloc);
+}
+
+test "spawn: countEventsAndBufferTail updates cost_usd from total_cost_usd in line" {
+    var rh = RealHandle{ .child = undefined };
+    // A complete line containing total_cost_usd.
+    const line = "{\"type\":\"result\",\"total_cost_usd\":2.5,\"subtype\":\"success\"}\n";
+    _ = countEventsAndBufferTail(&rh, line);
+    try testing.expect(@abs(rh.cost_usd - 2.5) < 0.001);
+
+    // A line without the field → cost unchanged.
+    const line2 = "{\"type\":\"assistant\",\"content\":\"x\"}\n";
+    _ = countEventsAndBufferTail(&rh, line2);
+    try testing.expect(@abs(rh.cost_usd - 2.5) < 0.001); // still 2.5
+
+    // Malformed non-JSON line → cost unchanged, no crash.
+    const line3 = "not json at all\n";
+    _ = countEventsAndBufferTail(&rh, line3);
+    try testing.expect(@abs(rh.cost_usd - 2.5) < 0.001);
+}
+
+// ---------------------------------------------------------------------------
+// task 3491 — loadOutcomeScript + scripted-outcome FakeSpawner unit tests
+// ---------------------------------------------------------------------------
+
+test "spawn: loadOutcomeScript parses a 3-line NDJSON outcomes file (task 3491)" {
+    // Exercises the primary contract: three lines, each overriding a different
+    // field. The function parses all three and returns them in order.
+    const alloc = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+
+    // Write a temp NDJSON file.
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var f = try tmp.dir.createFile(std.testing.io, "outcomes.ndjson", .{});
+    try f.writeStreamingAll(std.testing.io,
+        \\{"exit_code":0,"stdout":"alpha-out","stderr":""}
+        \\{"exit_code":1,"stdout":"","stderr":"beta-err"}
+        \\{"exit_code":2,"stdout":"gamma-out","stderr":"gamma-err"}
+        \\
+    );
+    f.close(std.testing.io);
+
+    // Resolve the absolute path.
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPath(std.testing.io, &buf);
+    const dir_path = buf[0..dir_path_len];
+    const file_path = try std.fs.path.join(arena.allocator(), &.{ dir_path, "outcomes.ndjson" });
+
+    const outcomes = try loadOutcomeScript(arena.allocator(), std.testing.io, file_path);
+
+    try testing.expectEqual(@as(usize, 3), outcomes.len);
+    try testing.expectEqual(@as(u32, 0), outcomes[0].exit_code);
+    try testing.expectEqualStrings("alpha-out", outcomes[0].stdout);
+    try testing.expectEqualStrings("", outcomes[0].stderr);
+    try testing.expectEqual(@as(u32, 1), outcomes[1].exit_code);
+    try testing.expectEqualStrings("", outcomes[1].stdout);
+    try testing.expectEqualStrings("beta-err", outcomes[1].stderr);
+    try testing.expectEqual(@as(u32, 2), outcomes[2].exit_code);
+    try testing.expectEqualStrings("gamma-out", outcomes[2].stdout);
+    try testing.expectEqualStrings("gamma-err", outcomes[2].stderr);
+}
+
+test "spawn: loadOutcomeScript accepts optional fields (defaults apply) (task 3491)" {
+    // An empty JSON object is valid — all defaults kick in.
+    const alloc = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var f = try tmp.dir.createFile(std.testing.io, "defaults.ndjson", .{});
+    try f.writeStreamingAll(std.testing.io,
+        \\{}
+        \\{"exit_code":42}
+        \\{"stdout":"only-stdout"}
+        \\
+    );
+    f.close(std.testing.io);
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPath(std.testing.io, &buf);
+    const dir_path = buf[0..dir_path_len];
+    const file_path = try std.fs.path.join(arena.allocator(), &.{ dir_path, "defaults.ndjson" });
+
+    const outcomes = try loadOutcomeScript(arena.allocator(), std.testing.io, file_path);
+
+    try testing.expectEqual(@as(usize, 3), outcomes.len);
+    // Empty object → all defaults.
+    try testing.expectEqual(@as(u32, 0), outcomes[0].exit_code);
+    try testing.expectEqualStrings("", outcomes[0].stdout);
+    try testing.expectEqualStrings("", outcomes[0].stderr);
+    // Only exit_code set.
+    try testing.expectEqual(@as(u32, 42), outcomes[1].exit_code);
+    try testing.expectEqualStrings("", outcomes[1].stdout);
+    // Only stdout set.
+    try testing.expectEqual(@as(u32, 0), outcomes[2].exit_code);
+    try testing.expectEqualStrings("only-stdout", outcomes[2].stdout);
+}
+
+test "spawn: loadOutcomeScript returns MalformedLine for invalid JSON (task 3491)" {
+    const alloc = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var f = try tmp.dir.createFile(std.testing.io, "bad.ndjson", .{});
+    try f.writeStreamingAll(std.testing.io, "not valid json at all\n");
+    f.close(std.testing.io);
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPath(std.testing.io, &buf);
+    const dir_path = buf[0..dir_path_len];
+    const file_path = try std.fs.path.join(arena.allocator(), &.{ dir_path, "bad.ndjson" });
+
+    try testing.expectError(
+        OutcomeScriptError.MalformedLine,
+        loadOutcomeScript(arena.allocator(), std.testing.io, file_path),
+    );
+}
+
+test "spawn: loadOutcomeScript returns FileReadFailed for missing file (task 3491)" {
+    const alloc = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+
+    try testing.expectError(
+        OutcomeScriptError.FileReadFailed,
+        loadOutcomeScript(arena.allocator(), std.testing.io, "/no/such/outcomes/file.ndjson"),
+    );
+}
+
+test "spawn: FakeSpawner outcome_scripts — 3-call scripted outcomes served in order (task 3491)" {
+    // The three-call scripted sequence: call 1 → exit 0, call 2 → exit 1,
+    // call 3 → exit 2. Beyond that → fallback to canned defaults.
+    const alloc = testing.allocator;
+    var fake = FakeSpawnerState.init(alloc, 0, "canned", "");
+    defer fake.deinit();
+
+    const scripts = [_]ScriptedOutcome{
+        .{ .exit_code = 0, .stdout = "out-0", .stderr = "" },
+        .{ .exit_code = 1, .stdout = "", .stderr = "err-1" },
+        .{ .exit_code = 2, .stdout = "out-2", .stderr = "" },
+    };
+    fake.outcome_scripts = &scripts;
+    const spawner = fake.spawner();
+
+    const base_inputs = SpawnInputs{
+        .role = .coder,
+        .worktree_path = "/tmp/wt",
+        .brief = "B",
+        .role_spec = "",
+        .env_map = null,
+    };
+
+    // Call 1 → scripted outcome[0].
+    var out0 = try spawner.run(alloc, std.testing.io, base_inputs);
+    defer out0.deinit(alloc);
+    try testing.expectEqual(@as(u32, 0), out0.exit_code);
+    try testing.expectEqualStrings("out-0", out0.stdout);
+
+    // Call 2 → scripted outcome[1].
+    var out1 = try spawner.run(alloc, std.testing.io, base_inputs);
+    defer out1.deinit(alloc);
+    try testing.expectEqual(@as(u32, 1), out1.exit_code);
+    try testing.expectEqualStrings("err-1", out1.stderr);
+
+    // Call 3 → scripted outcome[2].
+    var out2 = try spawner.run(alloc, std.testing.io, base_inputs);
+    defer out2.deinit(alloc);
+    try testing.expectEqual(@as(u32, 2), out2.exit_code);
+    try testing.expectEqualStrings("out-2", out2.stdout);
+
+    // Call 4 → exhaustion fallback: canned defaults (exit 0, stdout="canned").
+    var out3 = try spawner.run(alloc, std.testing.io, base_inputs);
+    defer out3.deinit(alloc);
+    try testing.expectEqual(@as(u32, 0), out3.exit_code);
+    try testing.expectEqualStrings("canned", out3.stdout);
+}
+
+test "spawn: FakeSpawner outcome_scripts via start/wait (async surface) (task 3491)" {
+    // The per-call scripted outcome must also work through the async
+    // start → wait path (the scheduler surface), not just the blocking run path.
+    const alloc = testing.allocator;
+    var fake = FakeSpawnerState.init(alloc, 0, "fallback", "");
+    defer fake.deinit();
+
+    const scripts = [_]ScriptedOutcome{
+        .{ .exit_code = 0, .stdout = "async-out", .stderr = "async-err" },
+        .{ .exit_code = 7, .stdout = "", .stderr = "seven" },
+    };
+    fake.outcome_scripts = &scripts;
+    const spawner = fake.spawner();
+
+    const base_inputs = SpawnInputs{
+        .role = .coder,
+        .worktree_path = "/tmp/wt",
+        .brief = "B",
+        .role_spec = "",
+        .env_map = null,
+    };
+
+    // First start → handle 0 → scripted outcome[0].
+    var h0 = try spawner.start(alloc, std.testing.io, base_inputs);
+    var o0 = try spawner.wait(alloc, std.testing.io, &h0);
+    defer o0.deinit(alloc);
+    try testing.expectEqual(@as(u32, 0), o0.exit_code);
+    try testing.expectEqualStrings("async-out", o0.stdout);
+    try testing.expectEqualStrings("async-err", o0.stderr);
+
+    // Second start → handle 1 → scripted outcome[1].
+    var h1 = try spawner.start(alloc, std.testing.io, base_inputs);
+    var o1 = try spawner.wait(alloc, std.testing.io, &h1);
+    defer o1.deinit(alloc);
+    try testing.expectEqual(@as(u32, 7), o1.exit_code);
+    try testing.expectEqualStrings("seven", o1.stderr);
+
+    // Third start → handle 2 → exhaustion fallback.
+    var h2 = try spawner.start(alloc, std.testing.io, base_inputs);
+    var o2 = try spawner.wait(alloc, std.testing.io, &h2);
+    defer o2.deinit(alloc);
+    try testing.expectEqual(@as(u32, 0), o2.exit_code);
+    try testing.expectEqualStrings("fallback", o2.stdout);
 }
