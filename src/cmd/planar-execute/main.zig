@@ -4208,6 +4208,28 @@ const run_verb: cli.Cmd = .{
     .run = cli.handler(handleRun),
 };
 
+/// `planar-execute schema` — emit the command tree as a flat JSON catalog.
+///
+/// Read-only introspection verb. Does NOT open the DB, does NOT take a claim,
+/// does NOT mutate anything. Uses the comptime `cli.schema.json` builder to
+/// produce the same flat-JSON catalog shape that `planar`, `planar-agent`,
+/// `planar-watch`, and `planar-doc` emit — so the single cli-usage linter
+/// (`tools/cli_usage_lint.zig`) can consume all five binaries identically.
+const schema_verb: cli.Cmd = .{
+    .name = "schema",
+    .desc = "Print the full command tree as a JSON catalog (flags, aliases, positionals).",
+    .run = cli.handler(handleSchema),
+};
+
+const execute_schema_catalog = cli.schema.json(root, .{});
+
+fn handleSchema(args_ptr: *const anyopaque) anyerror!void {
+    _ = args_ptr;
+    const ctx = currentCtx();
+    try ctx.stdout.writeAll(execute_schema_catalog);
+    try ctx.stdout.writeAll("\n");
+}
+
 /// Root CLI command tree for `planar-execute`.
 ///
 /// The default run-path is activated when the first non-flag, non-subcommand
@@ -4223,6 +4245,7 @@ pub const root: cli.Cmd = .{
     \\    planar-execute <workflow.lua> [args...]   Run a workflow file (default).
     \\    planar-execute run <workflow.lua> [args…] Explicit run subcommand.
     \\    planar-execute version                   Print version.
+    \\    planar-execute schema                    Print command schema as JSON.
     \\    planar-execute --help                    Show this help.
     \\
     \\  The workflow file must return a Lua table:
@@ -4234,6 +4257,7 @@ pub const root: cli.Cmd = .{
         run_verb,
         doctor_verb,
         version_verb,
+        schema_verb,
     },
 };
 
@@ -4984,7 +5008,7 @@ fn maybeInjectRun(arena: std.mem.Allocator, raw_args: []const []const u8) []cons
     const first = raw_args[1];
 
     // Known subcommand names and global flags — leave argv alone.
-    inline for ([_][]const u8{ "run", "doctor", "version", "--help", "-h" }) |v| {
+    inline for ([_][]const u8{ "run", "doctor", "version", "schema", "--help", "-h" }) |v| {
         if (std.mem.eql(u8, first, v)) return raw_args;
     }
 

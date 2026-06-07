@@ -444,6 +444,7 @@ pub fn build(b: *std.Build) void {
     cli_usage_check_run.addArg(b.getInstallPath(.bin, "planar-agent"));
     cli_usage_check_run.addArg(b.getInstallPath(.bin, "planar-watch"));
     cli_usage_check_run.addArg(b.getInstallPath(.bin, "planar-doc"));
+    cli_usage_check_run.addArg(b.getInstallPath(.bin, "planar-execute"));
     cli_usage_check_step.dependOn(&cli_usage_check_run.step);
 
     const run_step = b.step("run", "Run the app");

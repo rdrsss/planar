@@ -525,14 +525,14 @@ test "planar-watch verbs do not mutate any DB row (binary-level read-only)" {
 // planar-execute is a pure CLI driver (Lua-driven workflow harness). It
 // holds NO DB handle and MUST NOT expose any planning-entity verbs.
 //
-// Expected verb set: EXACTLY {run, version, doctor}.
+// Expected verb set: EXACTLY {run, version, doctor, schema}.
 //
 // Forbidden set: every planning-entity verb that `planar` owns, and every
 // agent-coordination verb that `planar-agent` owns. If a future change
 // accidentally registers a planning or agent verb on planar-execute,
 // this test fails immediately.
 
-test "planar-execute verb set is EXACTLY {run, version, doctor}" {
+test "planar-execute verb set is EXACTLY {run, version, doctor, schema}" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
@@ -549,6 +549,7 @@ test "planar-execute verb set is EXACTLY {run, version, doctor}" {
         "run",
         "version",
         "doctor",
+        "schema",
     }, "planar-execute");
 
     // Forbidden: planning-entity verbs.
