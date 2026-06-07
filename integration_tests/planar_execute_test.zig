@@ -11,6 +11,15 @@
 //! - A workflow whose run() calls error() exits non-zero with the message.
 //! - A syntactically invalid workflow exits non-zero (compile error path).
 //! - A workflow that returns a non-table exits with code 2 (invalid module shape).
+//!
+//! ## Database isolation (plan 499 task 3265)
+//!
+//! Every spawn in this suite goes through `Iso`, which injects a TmpDir-scoped
+//! `PLANAR_DB` (plus an isolated `PLANAR_HOME` / config / templates / workbench
+//! root) into the child's environment. See the `Iso` doc comment for the
+//! root-cause writeup — without this, every `planar-execute` (and, under the
+//! live gate, every `planar-agent` it shells) ran against the operator's REAL
+//! `~/.planar/planar.db`.
 
 const std = @import("std");
 
@@ -43,32 +52,144 @@ const RunResult = struct {
     }
 };
 
-/// buildEnvWithoutGate builds an explicit subprocess environment that strips
-/// PLANAR_EXECUTE_LIVE_AGENT from the host environ. This makes the non-gated
-/// tests immune to the operator running `PLANAR_EXECUTE_LIVE_AGENT=1 make
-/// test-integration` — the gate must be injected explicitly via runExecuteWithGate.
-fn buildEnvWithoutGate(gpa: std.mem.Allocator) !std.process.Environ.Map {
-    const raw: [*:null]?[*:0]u8 = std.c.environ;
-    var env_count: usize = 0;
-    while (raw[env_count]) |_| : (env_count += 1) {}
-    const env_slice: [:null]const ?[*:0]const u8 = @ptrCast(raw[0..env_count :null]);
-    const posix_block: std.process.Environ.PosixBlock = .{ .slice = env_slice };
-    const host_environ: std.process.Environ = .{ .block = posix_block };
-    var env_map = try host_environ.createMap(gpa);
-    _ = env_map.swapRemove("PLANAR_EXECUTE_LIVE_AGENT");
-    return env_map;
-}
+/// Isolation harness for the planar-execute integration suite.
+///
+/// ## Why this exists (plan 499 task 3265)
+///
+/// `planar-execute` holds NO DB handle by design — it shells the real
+/// `planar` / `planar-agent` binaries, which resolve the ambient database
+/// from `PLANAR_DB` (falling back to `$HOME/.planar/planar.db`). The earlier
+/// `buildEnvWithoutGate` helper copied the host environ and stripped ONLY
+/// `PLANAR_EXECUTE_LIVE_AGENT` — it never set `PLANAR_DB`. So every spawned
+/// `planar-execute` (and, under the live gate, every `planar-agent` it shells)
+/// ran against the OPERATOR'S REAL `~/.planar/planar.db`. Under the live gate
+/// that silently completed real todo tasks on real dev plans, and the stray
+/// run-locks / cycle worktrees under the real `~/.planar` produced the
+/// nondeterministic `--listen` parallel hard-abort.
+///
+/// The fix mirrors what every SIBLING execute test file already does
+/// (`planar_execute_doctor_test.zig`, `_eligible_`, `_quality_spine_`,
+/// `_refusal_guard_`, `_agent_live_`): inject a TmpDir-scoped `PLANAR_DB` —
+/// and, defensively, an isolated `PLANAR_HOME` plus the config / templates /
+/// workbench roots — into every child's environment. Those siblings route
+/// through `harness.Suite` (which already injects `PLANAR_DB`); this file's
+/// tests are pure CLI-contract checks that never need seeded plan data
+/// (no `--plan`; mock / dry-run / arg-threading / sandbox only), so a
+/// self-contained `Iso` carrying its own per-test TmpDir is the lighter fit.
+///
+/// `PLANAR_DB` is the primary isolation knob (`resolveDbPath` honors it
+/// directly). `PLANAR_HOME` + the other roots are belt-and-suspenders so any
+/// config / templates / workbench read the shelled `planar` performs also
+/// lands inside the TmpDir, never the operator's home.
+const Iso = struct {
+    tmp: std.testing.TmpDir,
+    abs: []u8,
+    db_path: []u8,
+    home_path: []u8,
+    config_path: []u8,
+    gpa: std.mem.Allocator,
 
-fn runExecute(gpa: std.mem.Allocator, args: []const []const u8) !RunResult {
+    fn init(gpa: std.mem.Allocator) !Iso {
+        var tmp = std.testing.tmpDir(.{});
+        errdefer tmp.cleanup();
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        const len = try tmp.dir.realPath(std.testing.io, &buf);
+        const abs = try gpa.dupe(u8, buf[0..len]);
+        errdefer gpa.free(abs);
+        const db_path = try std.fs.path.join(gpa, &.{ abs, "planar.db" });
+        errdefer gpa.free(db_path);
+        // An isolated home subdir so any shelled `planar` config/templates/
+        // workbench read lands here, never `$HOME/.planar`.
+        try tmp.dir.createDirPath(std.testing.io, "home");
+        const home_path = try std.fs.path.join(gpa, &.{ abs, "home" });
+        errdefer gpa.free(home_path);
+        // A config path INSIDE the TmpDir that does not exist — the config
+        // loader treats a missing file as "use defaults", so this guarantees
+        // the operator's real ~/.planar/config.toml is never read.
+        const config_path = try std.fs.path.join(gpa, &.{ abs, "home", "config.toml" });
+        return .{
+            .tmp = tmp,
+            .abs = abs,
+            .db_path = db_path,
+            .home_path = home_path,
+            .config_path = config_path,
+            .gpa = gpa,
+        };
+    }
+
+    fn deinit(self: *Iso) void {
+        self.gpa.free(self.config_path);
+        self.gpa.free(self.home_path);
+        self.gpa.free(self.db_path);
+        self.gpa.free(self.abs);
+        self.tmp.cleanup();
+    }
+
+    /// Build an explicit subprocess env from the host environ that:
+    ///   - strips PLANAR_EXECUTE_LIVE_AGENT (so non-gated tests are immune to
+    ///     the operator running `PLANAR_EXECUTE_LIVE_AGENT=1 make
+    ///     test-integration`); callers that WANT the gate re-add it,
+    ///   - pins PLANAR_DB to this Iso's TmpDir db file (the load-bearing
+    ///     isolation — without it the child resolved the operator's real DB),
+    ///   - pins PLANAR_HOME + config / templates / workbench roots into the
+    ///     TmpDir so no shelled `planar` read escapes to the real home.
+    /// Caller owns the returned map and must call `.deinit()`.
+    fn buildEnv(self: *const Iso, gpa: std.mem.Allocator) !std.process.Environ.Map {
+        const raw: [*:null]?[*:0]u8 = std.c.environ;
+        var env_count: usize = 0;
+        while (raw[env_count]) |_| : (env_count += 1) {}
+        const env_slice: [:null]const ?[*:0]const u8 = @ptrCast(raw[0..env_count :null]);
+        const posix_block: std.process.Environ.PosixBlock = .{ .slice = env_slice };
+        const host_environ: std.process.Environ = .{ .block = posix_block };
+        var env_map = try host_environ.createMap(gpa);
+        errdefer env_map.deinit();
+        _ = env_map.swapRemove("PLANAR_EXECUTE_LIVE_AGENT");
+        // Load-bearing: pin the ambient DB into the TmpDir.
+        try env_map.put("PLANAR_DB", self.db_path);
+        // Defense-in-depth: redirect every home-derived read into the TmpDir.
+        try env_map.put("PLANAR_HOME", self.home_path);
+        try env_map.put("PLANAR_CONFIG_PATH", self.config_path); // missing file under tmp ⇒ defaults; never the real config
+        try env_map.put("PLANAR_TEMPLATES_DIR", self.home_path);
+        try env_map.put("PLANAR_WORKBENCH_ROOT", self.home_path);
+        return env_map;
+    }
+
+    fn run(self: *const Iso, args: []const []const u8) !RunResult {
+        return runWithEnv(self, self.gpa, args, false);
+    }
+
+    fn runGated(self: *const Iso, args: []const []const u8) !RunResult {
+        return runWithEnv(self, self.gpa, args, true);
+    }
+
+    fn workflowPath(self: *const Iso, name: []const u8) ![]u8 {
+        return std.fs.path.join(self.gpa, &.{ self.abs, name });
+    }
+
+    fn writeWorkflow(self: *const Iso, name: []const u8, content: []const u8) !void {
+        var f = try self.tmp.dir.createFile(std.testing.io, name, .{});
+        defer f.close(std.testing.io);
+        try f.writeStreamingAll(std.testing.io, content);
+    }
+
+    /// The PLANAR_DB this Iso injects — used by the isolation guard test to
+    /// assert the child sees a TmpDir-scoped DB, never the operator's home.
+    fn dbPath(self: *const Iso) []const u8 {
+        return self.db_path;
+    }
+};
+
+/// Shared spawn path for `Iso.run` / `Iso.runGated`. Builds the isolated env,
+/// optionally re-adds the live gate, and execs the binary.
+fn runWithEnv(iso: *const Iso, gpa: std.mem.Allocator, args: []const []const u8, gated: bool) !RunResult {
     var argv = std.ArrayList([]const u8).empty;
     defer argv.deinit(gpa);
     try argv.append(gpa, resolveExecuteBin());
     for (args) |a| try argv.append(gpa, a);
 
-    // Strip PLANAR_EXECUTE_LIVE_AGENT so non-gated tests are immune to the
-    // operator running `PLANAR_EXECUTE_LIVE_AGENT=1 make test-integration`.
-    var env_map = try buildEnvWithoutGate(gpa);
+    var env_map = try iso.buildEnv(gpa);
     defer env_map.deinit();
+    if (gated) env_map.put("PLANAR_EXECUTE_LIVE_AGENT", "1") catch @panic("OOM injecting gate var");
 
     const result = try std.process.run(gpa, std.testing.io, .{
         .argv = argv.items,
@@ -82,20 +203,75 @@ fn runExecute(gpa: std.mem.Allocator, args: []const []const u8) !RunResult {
     };
 }
 
-fn tmpAbsPath(tmp: *std.testing.TmpDir, gpa: std.mem.Allocator) ![]u8 {
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const len = try tmp.dir.realPath(std.testing.io, &buf);
-    return gpa.dupe(u8, buf[0..len]);
-}
+// ---------------------------------------------------------------------------
+// Isolation regression guard (plan 499 task 3265)
+// ---------------------------------------------------------------------------
 
-fn writeWorkflow(tmp: *std.testing.TmpDir, name: []const u8, content: []const u8) !void {
-    var f = try tmp.dir.createFile(std.testing.io, name, .{});
-    defer f.close(std.testing.io);
-    try f.writeStreamingAll(std.testing.io, content);
-}
+test "planar-execute isolation: the test env pins PLANAR_DB inside the TmpDir, never the operator's real DB (task 3265)" {
+    // Regression guard for the real-DB-mutation root cause. We assert TWO things:
+    //
+    //   1. The env this suite builds for EVERY child carries a PLANAR_DB that
+    //      lives inside the per-test TmpDir (`abs`) and is NOT the operator's
+    //      `~/.planar/planar.db`. This is verified directly on the env map so
+    //      the assertion holds even for spawn shapes that never touch the DB.
+    //
+    //   2. A workflow that drives the FULL agent() claim ritual under
+    //      --mock-worker runs cleanly AND, because the FakeSpawner pipeline
+    //      shells nothing against the real DB, leaves the operator's home
+    //      untouched. The TmpDir DB is what any shelled `planar`/`planar-agent`
+    //      would resolve — proven by assertion (1).
+    //
+    // The point is that a future maintainer who reintroduces a host-environ
+    // copy without PLANAR_DB (the original bug) gets a red test here.
+    const gpa = std.testing.allocator;
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
 
-fn workflowPath(tmp_abs: []const u8, name: []const u8, gpa: std.mem.Allocator) ![]u8 {
-    return std.fs.path.join(gpa, &.{ tmp_abs, name });
+    // (1) The injected PLANAR_DB must be inside the TmpDir and must not be the
+    //     real home DB.
+    var env_map = try iso.buildEnv(gpa);
+    defer env_map.deinit();
+    const injected_db = env_map.get("PLANAR_DB") orelse {
+        std.debug.print("\nPLANAR_DB was not injected into the test env\n", .{});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(std.mem.startsWith(u8, injected_db, iso.abs));
+    try std.testing.expect(std.mem.indexOf(u8, injected_db, "/.planar/planar.db") == null);
+    // PLANAR_HOME must also point inside the TmpDir.
+    const injected_home = env_map.get("PLANAR_HOME") orelse {
+        std.debug.print("\nPLANAR_HOME was not injected into the test env\n", .{});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(std.mem.startsWith(u8, injected_home, iso.abs));
+
+    // (2) Drive a full agent() ritual under --mock-worker and confirm it runs
+    //     cleanly against the isolated env.
+    const wf_src =
+        \\return {
+        \\  meta = { name = "iso-guard", description = "claim ritual under mock", phases = {} },
+        \\  run = function(ctx)
+        \\    local r = ctx.agent("the brief", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/abs/iso-wt",
+        \\      claim_token = "tok-iso",
+        \\      task_slug = "ts-iso",
+        \\    })
+        \\    assert(r.status ~= "stub", "agent must run the real pipeline under --mock-worker")
+        \\  end,
+        \\}
+    ;
+    try iso.writeWorkflow("iso_guard.lua", wf_src);
+    const wf_path = try iso.workflowPath("iso_guard.lua");
+    defer gpa.free(wf_path);
+
+    const res = try iso.run(&.{ "run", "--mock-worker", wf_path });
+    defer res.deinit();
+    try std.testing.expectEqual(@as(u32, 0), res.exitCode());
+
+    // The TmpDir DB may or may not have been created (mock mode shells
+    // nothing), but the operator's real DB must be irrelevant: assertion (1)
+    // already proved the child could only ever resolve `injected_db`.
+    _ = iso.dbPath();
 }
 
 // ---------------------------------------------------------------------------
@@ -104,8 +280,10 @@ fn workflowPath(tmp_abs: []const u8, name: []const u8, gpa: std.mem.Allocator) !
 
 test "planar-execute version prints a version line and exits 0" {
     const gpa = std.testing.allocator;
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
 
-    const res = try runExecute(gpa, &.{"version"});
+    const res = try iso.run(&.{"version"});
     defer res.deinit();
 
     try std.testing.expectEqual(@as(u32, 0), res.exitCode());
@@ -119,10 +297,8 @@ test "planar-execute: trivial workflow exits 0" {
     // A well-formed workflow whose run() does only pure Lua (no host fns)
     // must succeed. This is the M1 end-to-end smoke test.
     const gpa = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const tmp_abs = try tmpAbsPath(&tmp, gpa);
-    defer gpa.free(tmp_abs);
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
 
     const wf_src =
         \\return {
@@ -134,11 +310,11 @@ test "planar-execute: trivial workflow exits 0" {
         \\  end,
         \\}
     ;
-    try writeWorkflow(&tmp, "trivial.lua", wf_src);
-    const wf_path = try workflowPath(tmp_abs, "trivial.lua", gpa);
+    try iso.writeWorkflow("trivial.lua", wf_src);
+    const wf_path = try iso.workflowPath("trivial.lua");
     defer gpa.free(wf_path);
 
-    const res = try runExecute(gpa, &.{wf_path});
+    const res = try iso.run(&.{wf_path});
     defer res.deinit();
 
     try std.testing.expectEqual(@as(u32, 0), res.exitCode());
@@ -148,10 +324,8 @@ test "planar-execute: trailing args reach ctx.args as 1-based sequence" {
     // Verify the CLI arg-threading contract: [args…] after the workflow path
     // are threaded into run(ctx) as ctx.args[1], ctx.args[2], ...
     const gpa = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const tmp_abs = try tmpAbsPath(&tmp, gpa);
-    defer gpa.free(tmp_abs);
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
 
     const wf_src =
         \\return {
@@ -163,11 +337,11 @@ test "planar-execute: trailing args reach ctx.args as 1-based sequence" {
         \\  end,
         \\}
     ;
-    try writeWorkflow(&tmp, "args_check.lua", wf_src);
-    const wf_path = try workflowPath(tmp_abs, "args_check.lua", gpa);
+    try iso.writeWorkflow("args_check.lua", wf_src);
+    const wf_path = try iso.workflowPath("args_check.lua");
     defer gpa.free(wf_path);
 
-    const res = try runExecute(gpa, &.{ wf_path, "alpha", "beta" });
+    const res = try iso.run(&.{ wf_path, "alpha", "beta" });
     defer res.deinit();
 
     try std.testing.expectEqual(@as(u32, 0), res.exitCode());
@@ -177,8 +351,10 @@ test "planar-execute: missing file exits non-zero with message" {
     // A file path that does not exist must produce a non-zero exit and a
     // human-readable message on stderr.
     const gpa = std.testing.allocator;
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
 
-    const res = try runExecute(gpa, &.{"/no/such/planar-execute-test-file.lua"});
+    const res = try iso.run(&.{"/no/such/planar-execute-test-file.lua"});
     defer res.deinit();
 
     try std.testing.expect(res.exitCode() != 0);
@@ -194,10 +370,8 @@ test "planar-execute: runtime error in run() exits non-zero with message" {
     // A workflow whose run() calls error() must exit non-zero and put
     // the Lua error message on stderr.
     const gpa = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const tmp_abs = try tmpAbsPath(&tmp, gpa);
-    defer gpa.free(tmp_abs);
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
 
     const wf_src =
         \\return {
@@ -207,11 +381,11 @@ test "planar-execute: runtime error in run() exits non-zero with message" {
         \\  end,
         \\}
     ;
-    try writeWorkflow(&tmp, "boom.lua", wf_src);
-    const wf_path = try workflowPath(tmp_abs, "boom.lua", gpa);
+    try iso.writeWorkflow("boom.lua", wf_src);
+    const wf_path = try iso.workflowPath("boom.lua");
     defer gpa.free(wf_path);
 
-    const res = try runExecute(gpa, &.{wf_path});
+    const res = try iso.run(&.{wf_path});
     defer res.deinit();
 
     try std.testing.expect(res.exitCode() != 0);
@@ -221,16 +395,14 @@ test "planar-execute: runtime error in run() exits non-zero with message" {
 test "planar-execute: compile error exits 3 with message" {
     // A syntactically invalid workflow must exit with code 3 (compile error).
     const gpa = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const tmp_abs = try tmpAbsPath(&tmp, gpa);
-    defer gpa.free(tmp_abs);
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
 
-    try writeWorkflow(&tmp, "bad_syntax.lua", "this is not valid lua @@@@\n");
-    const wf_path = try workflowPath(tmp_abs, "bad_syntax.lua", gpa);
+    try iso.writeWorkflow("bad_syntax.lua", "this is not valid lua @@@@\n");
+    const wf_path = try iso.workflowPath("bad_syntax.lua");
     defer gpa.free(wf_path);
 
-    const res = try runExecute(gpa, &.{wf_path});
+    const res = try iso.run(&.{wf_path});
     defer res.deinit();
 
     try std.testing.expectEqual(@as(u32, 3), res.exitCode());
@@ -241,16 +413,14 @@ test "planar-execute: non-table return exits 2 (invalid module shape)" {
     // A workflow that returns a number instead of a table must exit with
     // code 2 (invalid module structure).
     const gpa = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const tmp_abs = try tmpAbsPath(&tmp, gpa);
-    defer gpa.free(tmp_abs);
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
 
-    try writeWorkflow(&tmp, "not_table.lua", "return 42\n");
-    const wf_path = try workflowPath(tmp_abs, "not_table.lua", gpa);
+    try iso.writeWorkflow("not_table.lua", "return 42\n");
+    const wf_path = try iso.workflowPath("not_table.lua");
     defer gpa.free(wf_path);
 
-    const res = try runExecute(gpa, &.{wf_path});
+    const res = try iso.run(&.{wf_path});
     defer res.deinit();
 
     try std.testing.expectEqual(@as(u32, 2), res.exitCode());
@@ -259,8 +429,10 @@ test "planar-execute: non-table return exits 2 (invalid module shape)" {
 test "planar-execute: help flag exits 0" {
     // `planar-execute --help` must exit 0 and produce help text.
     const gpa = std.testing.allocator;
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
 
-    const res = try runExecute(gpa, &.{"--help"});
+    const res = try iso.run(&.{"--help"});
     defer res.deinit();
 
     try std.testing.expectEqual(@as(u32, 0), res.exitCode());
@@ -278,10 +450,8 @@ test "planar-execute --dry-run: well-formed workflow prints meta and phases, exi
     // workflow name, description, and each phase title, then exit 0.
     // run(ctx) must NOT be called (the run body errors; that error must be silent).
     const gpa = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const tmp_abs = try tmpAbsPath(&tmp, gpa);
-    defer gpa.free(tmp_abs);
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
 
     const wf_src =
         \\return {
@@ -299,11 +469,11 @@ test "planar-execute --dry-run: well-formed workflow prints meta and phases, exi
         \\  end,
         \\}
     ;
-    try writeWorkflow(&tmp, "preview.lua", wf_src);
-    const wf_path = try workflowPath(tmp_abs, "preview.lua", gpa);
+    try iso.writeWorkflow("preview.lua", wf_src);
+    const wf_path = try iso.workflowPath("preview.lua");
     defer gpa.free(wf_path);
 
-    const res = try runExecute(gpa, &.{ "run", "--dry-run", wf_path });
+    const res = try iso.run(&.{ "run", "--dry-run", wf_path });
     defer res.deinit();
 
     // Must exit 0 — run() was never called despite its error body.
@@ -324,10 +494,8 @@ test "planar-execute --dry-run: run body that would error still exits 0 (run not
     // exit 0 under --dry-run. Without --dry-run the same workflow exits non-zero.
     // Both arms are asserted to pin the flag's effect.
     const gpa = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const tmp_abs = try tmpAbsPath(&tmp, gpa);
-    defer gpa.free(tmp_abs);
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
 
     const wf_src =
         \\return {
@@ -343,18 +511,18 @@ test "planar-execute --dry-run: run body that would error still exits 0 (run not
         \\  end,
         \\}
     ;
-    try writeWorkflow(&tmp, "error_run.lua", wf_src);
-    const wf_path = try workflowPath(tmp_abs, "error_run.lua", gpa);
+    try iso.writeWorkflow("error_run.lua", wf_src);
+    const wf_path = try iso.workflowPath("error_run.lua");
     defer gpa.free(wf_path);
 
     // ARM 1: --dry-run → exit 0, run never entered.
-    const dry = try runExecute(gpa, &.{ "run", "--dry-run", wf_path });
+    const dry = try iso.run(&.{ "run", "--dry-run", wf_path });
     defer dry.deinit();
     try std.testing.expectEqual(@as(u32, 0), dry.exitCode());
     try std.testing.expect(std.mem.indexOf(u8, dry.stdout, "error-in-run") != null);
 
     // ARM 2: no --dry-run → exit non-zero, error message on stderr.
-    const live = try runExecute(gpa, &.{wf_path});
+    const live = try iso.run(&.{wf_path});
     defer live.deinit();
     try std.testing.expect(live.exitCode() != 0);
     try std.testing.expect(std.mem.indexOf(u8, live.stderr, "must not run under dry-run") != null);
@@ -364,16 +532,14 @@ test "planar-execute --dry-run: malformed module still exits non-zero (load/vali
     // --dry-run does NOT bypass load+validate. A workflow that returns a
     // non-table must still exit with code 2 under --dry-run.
     const gpa = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const tmp_abs = try tmpAbsPath(&tmp, gpa);
-    defer gpa.free(tmp_abs);
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
 
-    try writeWorkflow(&tmp, "not_table_dr.lua", "return 42\n");
-    const wf_path = try workflowPath(tmp_abs, "not_table_dr.lua", gpa);
+    try iso.writeWorkflow("not_table_dr.lua", "return 42\n");
+    const wf_path = try iso.workflowPath("not_table_dr.lua");
     defer gpa.free(wf_path);
 
-    const res = try runExecute(gpa, &.{ "run", "--dry-run", wf_path });
+    const res = try iso.run(&.{ "run", "--dry-run", wf_path });
     defer res.deinit();
 
     try std.testing.expectEqual(@as(u32, 2), res.exitCode());
@@ -383,16 +549,14 @@ test "planar-execute --dry-run: compile error still exits 3 (load/validate share
     // A syntactically invalid workflow must exit 3 under --dry-run, same as
     // without the flag — the load+validate path is shared.
     const gpa = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const tmp_abs = try tmpAbsPath(&tmp, gpa);
-    defer gpa.free(tmp_abs);
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
 
-    try writeWorkflow(&tmp, "bad_syntax_dr.lua", "this is not valid lua @@@@\n");
-    const wf_path = try workflowPath(tmp_abs, "bad_syntax_dr.lua", gpa);
+    try iso.writeWorkflow("bad_syntax_dr.lua", "this is not valid lua @@@@\n");
+    const wf_path = try iso.workflowPath("bad_syntax_dr.lua");
     defer gpa.free(wf_path);
 
-    const res = try runExecute(gpa, &.{ "run", "--dry-run", wf_path });
+    const res = try iso.run(&.{ "run", "--dry-run", wf_path });
     defer res.deinit();
 
     try std.testing.expectEqual(@as(u32, 3), res.exitCode());
@@ -412,10 +576,8 @@ test "planar-execute: workflow calling ctx host fns runs successfully (task 3168
     // A workflow whose run(ctx) drives phase/log/agent/parallel/pipeline/
     // workflow/budget must exit 0 — the stubs record and return, never erroring.
     const gpa = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const tmp_abs = try tmpAbsPath(&tmp, gpa);
-    defer gpa.free(tmp_abs);
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
 
     const wf_src =
         \\return {
@@ -433,11 +595,11 @@ test "planar-execute: workflow calling ctx host fns runs successfully (task 3168
         \\  end,
         \\}
     ;
-    try writeWorkflow(&tmp, "host_fns.lua", wf_src);
-    const wf_path = try workflowPath(tmp_abs, "host_fns.lua", gpa);
+    try iso.writeWorkflow("host_fns.lua", wf_src);
+    const wf_path = try iso.workflowPath("host_fns.lua");
     defer gpa.free(wf_path);
 
-    const res = try runExecute(gpa, &.{wf_path});
+    const res = try iso.run(&.{wf_path});
     defer res.deinit();
 
     try std.testing.expectEqual(@as(u32, 0), res.exitCode());
@@ -447,10 +609,8 @@ test "planar-execute sandbox: os.execute call fails (absent) (task 3169)" {
     // os is never opened → os is nil → os.execute is an index-on-nil runtime
     // error. The workflow must exit non-zero.
     const gpa = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const tmp_abs = try tmpAbsPath(&tmp, gpa);
-    defer gpa.free(tmp_abs);
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
 
     const wf_src =
         \\return {
@@ -458,11 +618,11 @@ test "planar-execute sandbox: os.execute call fails (absent) (task 3169)" {
         \\  run = function(ctx) os.execute("echo pwned") end,
         \\}
     ;
-    try writeWorkflow(&tmp, "os_exec.lua", wf_src);
-    const wf_path = try workflowPath(tmp_abs, "os_exec.lua", gpa);
+    try iso.writeWorkflow("os_exec.lua", wf_src);
+    const wf_path = try iso.workflowPath("os_exec.lua");
     defer gpa.free(wf_path);
 
-    const res = try runExecute(gpa, &.{wf_path});
+    const res = try iso.run(&.{wf_path});
     defer res.deinit();
 
     try std.testing.expect(res.exitCode() != 0);
@@ -475,10 +635,8 @@ test "planar-execute sandbox: io / os.time / math.random absent, ctx.now/seed pr
     // host-injected ctx.now / ctx.seed are present. Exit 0 proves every assert
     // held.
     const gpa = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const tmp_abs = try tmpAbsPath(&tmp, gpa);
-    defer gpa.free(tmp_abs);
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
 
     const wf_src =
         \\return {
@@ -496,11 +654,11 @@ test "planar-execute sandbox: io / os.time / math.random absent, ctx.now/seed pr
         \\  end,
         \\}
     ;
-    try writeWorkflow(&tmp, "sandbox.lua", wf_src);
-    const wf_path = try workflowPath(tmp_abs, "sandbox.lua", gpa);
+    try iso.writeWorkflow("sandbox.lua", wf_src);
+    const wf_path = try iso.workflowPath("sandbox.lua");
     defer gpa.free(wf_path);
 
-    const res = try runExecute(gpa, &.{wf_path});
+    const res = try iso.run(&.{wf_path});
     defer res.deinit();
 
     try std.testing.expectEqual(@as(u32, 0), res.exitCode());
@@ -514,10 +672,8 @@ test "planar-execute sandbox: debug and package globals are absent (task 3232)" 
     // adding luaopen_debug "for diagnostics" must get a red test here.
     // (extended task 3232)
     const gpa = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const tmp_abs = try tmpAbsPath(&tmp, gpa);
-    defer gpa.free(tmp_abs);
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
 
     const wf_src =
         \\return {
@@ -528,11 +684,11 @@ test "planar-execute sandbox: debug and package globals are absent (task 3232)" 
         \\  end,
         \\}
     ;
-    try writeWorkflow(&tmp, "no_debug_pkg.lua", wf_src);
-    const wf_path = try workflowPath(tmp_abs, "no_debug_pkg.lua", gpa);
+    try iso.writeWorkflow("no_debug_pkg.lua", wf_src);
+    const wf_path = try iso.workflowPath("no_debug_pkg.lua");
     defer gpa.free(wf_path);
 
-    const res = try runExecute(gpa, &.{wf_path});
+    const res = try iso.run(&.{wf_path});
     defer res.deinit();
 
     try std.testing.expectEqual(@as(u32, 0), res.exitCode());
@@ -545,10 +701,8 @@ test "planar-execute sandbox: string.dump present, load nil — bytecode out, no
     // bytecode serialization works, bytecode re-execution is impossible.
     // A future maintainer re-opening load must get a red test here. (task 3233)
     const gpa = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const tmp_abs = try tmpAbsPath(&tmp, gpa);
-    defer gpa.free(tmp_abs);
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
 
     const wf_src =
         \\return {
@@ -566,11 +720,11 @@ test "planar-execute sandbox: string.dump present, load nil — bytecode out, no
         \\  end,
         \\}
     ;
-    try writeWorkflow(&tmp, "dump_no_load.lua", wf_src);
-    const wf_path = try workflowPath(tmp_abs, "dump_no_load.lua", gpa);
+    try iso.writeWorkflow("dump_no_load.lua", wf_src);
+    const wf_path = try iso.workflowPath("dump_no_load.lua");
     defer gpa.free(wf_path);
 
-    const res = try runExecute(gpa, &.{wf_path});
+    const res = try iso.run(&.{wf_path});
     defer res.deinit();
 
     try std.testing.expectEqual(@as(u32, 0), res.exitCode());
@@ -581,10 +735,8 @@ test "planar-execute --dry-run: host-fn workflow still never enters run (task 31
     // run body would error must still exit 0 under --dry-run (run not entered),
     // and exit non-zero without it (run entered, error raised).
     const gpa = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const tmp_abs = try tmpAbsPath(&tmp, gpa);
-    defer gpa.free(tmp_abs);
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
 
     const wf_src =
         \\return {
@@ -599,18 +751,18 @@ test "planar-execute --dry-run: host-fn workflow still never enters run (task 31
         \\  end,
         \\}
     ;
-    try writeWorkflow(&tmp, "dry_host.lua", wf_src);
-    const wf_path = try workflowPath(tmp_abs, "dry_host.lua", gpa);
+    try iso.writeWorkflow("dry_host.lua", wf_src);
+    const wf_path = try iso.workflowPath("dry_host.lua");
     defer gpa.free(wf_path);
 
     // ARM 1: --dry-run → exit 0, run never entered.
-    const dry = try runExecute(gpa, &.{ "run", "--dry-run", wf_path });
+    const dry = try iso.run(&.{ "run", "--dry-run", wf_path });
     defer dry.deinit();
     try std.testing.expectEqual(@as(u32, 0), dry.exitCode());
     try std.testing.expect(std.mem.indexOf(u8, dry.stdout, "dry-host") != null);
 
     // ARM 2: live run → exit non-zero, error surfaced.
-    const live = try runExecute(gpa, &.{wf_path});
+    const live = try iso.run(&.{wf_path});
     defer live.deinit();
     try std.testing.expect(live.exitCode() != 0);
     try std.testing.expect(std.mem.indexOf(u8, live.stderr, "must not execute under --dry-run") != null);
@@ -620,32 +772,6 @@ test "planar-execute --dry-run: host-fn workflow still never enters run (task 31
 // task 3264 — agent-free workflows must not require --plan under the live gate
 // ---------------------------------------------------------------------------
 
-/// runExecuteWithGate runs the planar-execute binary with PLANAR_EXECUTE_LIVE_AGENT=1
-/// injected into the subprocess environment. Used to exercise the gated
-/// driver-attachment path without spawning a real claude worker.
-fn runExecuteWithGate(gpa: std.mem.Allocator, args: []const []const u8) !RunResult {
-    // Build the subprocess env from the host environ + inject the gate var.
-    var env_map = try buildEnvWithoutGate(gpa);
-    defer env_map.deinit();
-    env_map.put("PLANAR_EXECUTE_LIVE_AGENT", "1") catch @panic("OOM injecting gate var");
-
-    var argv = std.ArrayList([]const u8).empty;
-    defer argv.deinit(gpa);
-    try argv.append(gpa, resolveExecuteBin());
-    for (args) |a| try argv.append(gpa, a);
-
-    const result = try std.process.run(gpa, std.testing.io, .{
-        .argv = argv.items,
-        .environ_map = &env_map,
-    });
-    return .{
-        .term = result.term,
-        .stdout = result.stdout,
-        .stderr = result.stderr,
-        .gpa = gpa,
-    };
-}
-
 test "planar-execute: agent-free workflow runs cleanly under PLANAR_EXECUTE_LIVE_AGENT=1 without --plan (task 3264)" {
     // Regression guard for task 3264: a pure-Lua workflow that never calls
     // agent() must exit 0 when PLANAR_EXECUTE_LIVE_AGENT=1 is set, even
@@ -653,12 +779,12 @@ test "planar-execute: agent-free workflow runs cleanly under PLANAR_EXECUTE_LIVE
     // and the process exited 1 before the workflow ran.
     //
     // This test injects PLANAR_EXECUTE_LIVE_AGENT=1 for this one invocation
-    // only (via runExecuteWithGate) so it runs in CI without a real claude spawn.
+    // only (via iso.runGated) so it runs in CI without a real claude spawn.
+    // The DB it would resolve is the TmpDir-scoped PLANAR_DB (task 3265), so
+    // even though the gate attaches a live driver, nothing touches the real DB.
     const gpa = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const tmp_abs = try tmpAbsPath(&tmp, gpa);
-    defer gpa.free(tmp_abs);
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
 
     const wf_src =
         \\return {
@@ -670,11 +796,11 @@ test "planar-execute: agent-free workflow runs cleanly under PLANAR_EXECUTE_LIVE
         \\  end,
         \\}
     ;
-    try writeWorkflow(&tmp, "agent_free_gated.lua", wf_src);
-    const wf_path = try workflowPath(tmp_abs, "agent_free_gated.lua", gpa);
+    try iso.writeWorkflow("agent_free_gated.lua", wf_src);
+    const wf_path = try iso.workflowPath("agent_free_gated.lua");
     defer gpa.free(wf_path);
 
-    const res = try runExecuteWithGate(gpa, &.{wf_path});
+    const res = try iso.runGated(&.{wf_path});
     defer res.deinit();
 
     // Must exit 0 — no agent() call, so binary resolution and --plan absence
@@ -695,7 +821,9 @@ test "planar-execute --mock-worker: flag advertised in `run --help` (task 3202)"
     // Discoverability is part of the contract: a workflow author looking at
     // `planar-execute run --help` must see --mock-worker described.
     const gpa = std.testing.allocator;
-    const res = try runExecute(gpa, &.{ "run", "--help" });
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
+    const res = try iso.run(&.{ "run", "--help" });
     defer res.deinit();
 
     try std.testing.expectEqual(@as(u32, 0), res.exitCode());
@@ -707,19 +835,17 @@ test "planar-execute --mock-worker conflict: --dry-run AND --mock-worker exits n
     // The two modes are mutually exclusive. Combining them is a wiring error
     // and must surface a clear, distinct message — operator picks one.
     const gpa = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const tmp_abs = try tmpAbsPath(&tmp, gpa);
-    defer gpa.free(tmp_abs);
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
 
     const wf_src =
         \\return { meta = { name = "x", description = "x", phases = {} }, run = function(ctx) end }
     ;
-    try writeWorkflow(&tmp, "x.lua", wf_src);
-    const wf_path = try workflowPath(tmp_abs, "x.lua", gpa);
+    try iso.writeWorkflow("x.lua", wf_src);
+    const wf_path = try iso.workflowPath("x.lua");
     defer gpa.free(wf_path);
 
-    const res = try runExecute(gpa, &.{ "run", "--mock-worker", "--dry-run", wf_path });
+    const res = try iso.run(&.{ "run", "--mock-worker", "--dry-run", wf_path });
     defer res.deinit();
     try std.testing.expect(res.exitCode() != 0);
     try std.testing.expect(std.mem.indexOf(u8, res.stderr, "--mock-worker") != null);
@@ -732,19 +858,17 @@ test "planar-execute --mock-worker conflict: PLANAR_EXECUTE_LIVE_AGENT + --mock-
     // Combining them is incoherent — must reject loudly with both names in
     // the message so the operator knows what to unset/drop.
     const gpa = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const tmp_abs = try tmpAbsPath(&tmp, gpa);
-    defer gpa.free(tmp_abs);
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
 
     const wf_src =
         \\return { meta = { name = "x", description = "x", phases = {} }, run = function(ctx) end }
     ;
-    try writeWorkflow(&tmp, "x.lua", wf_src);
-    const wf_path = try workflowPath(tmp_abs, "x.lua", gpa);
+    try iso.writeWorkflow("x.lua", wf_src);
+    const wf_path = try iso.workflowPath("x.lua");
     defer gpa.free(wf_path);
 
-    const res = try runExecuteWithGate(gpa, &.{ "run", "--mock-worker", wf_path });
+    const res = try iso.runGated(&.{ "run", "--mock-worker", wf_path });
     defer res.deinit();
     try std.testing.expect(res.exitCode() != 0);
     try std.testing.expect(std.mem.indexOf(u8, res.stderr, "--mock-worker") != null);
@@ -763,10 +887,8 @@ test "planar-execute --mock-worker: single agent() call drives the full pipeline
     //      claude on PATH, and a real spawn would fail loudly; exit 0 + a
     //      sane status string proves the FakeSpawner served the call).
     const gpa = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const tmp_abs = try tmpAbsPath(&tmp, gpa);
-    defer gpa.free(tmp_abs);
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
 
     const wf_src =
         \\return {
@@ -786,11 +908,11 @@ test "planar-execute --mock-worker: single agent() call drives the full pipeline
         \\  end,
         \\}
     ;
-    try writeWorkflow(&tmp, "mock_single.lua", wf_src);
-    const wf_path = try workflowPath(tmp_abs, "mock_single.lua", gpa);
+    try iso.writeWorkflow("mock_single.lua", wf_src);
+    const wf_path = try iso.workflowPath("mock_single.lua");
     defer gpa.free(wf_path);
 
-    const res = try runExecute(gpa, &.{ "run", "--mock-worker", wf_path });
+    const res = try iso.run(&.{ "run", "--mock-worker", wf_path });
     defer res.deinit();
 
     try std.testing.expectEqual(@as(u32, 0), res.exitCode());
@@ -806,10 +928,8 @@ test "planar-execute --mock-worker: parallel agent calls drive the full schedule
     // both thunks complete via the FakeSpawner, original-order results are
     // returned, and the run exits 0.
     const gpa = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const tmp_abs = try tmpAbsPath(&tmp, gpa);
-    defer gpa.free(tmp_abs);
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
 
     const wf_src =
         \\return {
@@ -835,11 +955,11 @@ test "planar-execute --mock-worker: parallel agent calls drive the full schedule
         \\  end,
         \\}
     ;
-    try writeWorkflow(&tmp, "mock_parallel.lua", wf_src);
-    const wf_path = try workflowPath(tmp_abs, "mock_parallel.lua", gpa);
+    try iso.writeWorkflow("mock_parallel.lua", wf_src);
+    const wf_path = try iso.workflowPath("mock_parallel.lua");
     defer gpa.free(wf_path);
 
-    const res = try runExecute(gpa, &.{ "run", "--mock-worker", wf_path });
+    const res = try iso.run(&.{ "run", "--mock-worker", wf_path });
     defer res.deinit();
 
     try std.testing.expectEqual(@as(u32, 0), res.exitCode());
@@ -851,10 +971,8 @@ test "planar-execute --mock-worker: ungated/no-driver path is unchanged when --m
     // behavior. agent() returns { status = "stub" } when the gate is off AND
     // --mock-worker is off. The MOCK MODE notice must NOT appear.
     const gpa = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const tmp_abs = try tmpAbsPath(&tmp, gpa);
-    defer gpa.free(tmp_abs);
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
 
     const wf_src =
         \\return {
@@ -865,11 +983,11 @@ test "planar-execute --mock-worker: ungated/no-driver path is unchanged when --m
         \\  end,
         \\}
     ;
-    try writeWorkflow(&tmp, "no_mock.lua", wf_src);
-    const wf_path = try workflowPath(tmp_abs, "no_mock.lua", gpa);
+    try iso.writeWorkflow("no_mock.lua", wf_src);
+    const wf_path = try iso.workflowPath("no_mock.lua");
     defer gpa.free(wf_path);
 
-    const res = try runExecute(gpa, &.{wf_path});
+    const res = try iso.run(&.{wf_path});
     defer res.deinit();
 
     try std.testing.expectEqual(@as(u32, 0), res.exitCode());
@@ -894,7 +1012,9 @@ test "planar-execute --mock-worker: ungated/no-driver path is unchanged when --m
 
 test "planar-execute --mock-outcomes: flag advertised in `run --help` (task 3491)" {
     const gpa = std.testing.allocator;
-    const res = try runExecute(gpa, &.{ "run", "--help" });
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
+    const res = try iso.run(&.{ "run", "--help" });
     defer res.deinit();
 
     try std.testing.expectEqual(@as(u32, 0), res.exitCode());
@@ -906,10 +1026,8 @@ test "planar-execute --mock-outcomes: 3-call scripted outcomes observed in order
     // The primary delivery: three scripted outcomes consumed in order.
     // The workflow calls agent() three times and asserts the per-call result.
     const gpa = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const tmp_abs = try tmpAbsPath(&tmp, gpa);
-    defer gpa.free(tmp_abs);
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
 
     // Write the NDJSON outcomes file.
     const outcomes_src =
@@ -918,8 +1036,8 @@ test "planar-execute --mock-outcomes: 3-call scripted outcomes observed in order
         \\{"exit_code":0,"stdout":"call-3-out","stderr":""}
         \\
     ;
-    try writeWorkflow(&tmp, "outcomes.ndjson", outcomes_src);
-    const outcomes_path = try workflowPath(tmp_abs, "outcomes.ndjson", gpa);
+    try iso.writeWorkflow("outcomes.ndjson", outcomes_src);
+    const outcomes_path = try iso.workflowPath("outcomes.ndjson");
     defer gpa.free(outcomes_path);
 
     // Write a workflow that makes 3 agent() calls and checks each call's
@@ -960,11 +1078,11 @@ test "planar-execute --mock-outcomes: 3-call scripted outcomes observed in order
         \\  end,
         \\}
     ;
-    try writeWorkflow(&tmp, "outcomes_3.lua", wf_src);
-    const wf_path = try workflowPath(tmp_abs, "outcomes_3.lua", gpa);
+    try iso.writeWorkflow("outcomes_3.lua", wf_src);
+    const wf_path = try iso.workflowPath("outcomes_3.lua");
     defer gpa.free(wf_path);
 
-    const res = try runExecute(gpa, &.{ "run", "--mock-outcomes", outcomes_path, wf_path });
+    const res = try iso.run(&.{ "run", "--mock-outcomes", outcomes_path, wf_path });
     defer res.deinit();
 
     try std.testing.expectEqual(@as(u32, 0), res.exitCode());
@@ -978,17 +1096,15 @@ test "planar-execute --mock-outcomes: exhaustion fallback — more calls than ou
     // fall back to the global canned default (exit_code=0). The workflow makes
     // 2 calls against a 1-line outcomes file and asserts both succeed.
     const gpa = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const tmp_abs = try tmpAbsPath(&tmp, gpa);
-    defer gpa.free(tmp_abs);
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
 
     // One scripted outcome, but we make two calls.
-    try writeWorkflow(&tmp, "one.ndjson",
+    try iso.writeWorkflow("one.ndjson",
         \\{"exit_code":0,"stdout":"scripted","stderr":""}
         \\
     );
-    const outcomes_path = try workflowPath(tmp_abs, "one.ndjson", gpa);
+    const outcomes_path = try iso.workflowPath("one.ndjson");
     defer gpa.free(outcomes_path);
 
     const wf_src =
@@ -1015,11 +1131,11 @@ test "planar-execute --mock-outcomes: exhaustion fallback — more calls than ou
         \\  end,
         \\}
     ;
-    try writeWorkflow(&tmp, "fallback.lua", wf_src);
-    const wf_path = try workflowPath(tmp_abs, "fallback.lua", gpa);
+    try iso.writeWorkflow("fallback.lua", wf_src);
+    const wf_path = try iso.workflowPath("fallback.lua");
     defer gpa.free(wf_path);
 
-    const res = try runExecute(gpa, &.{ "run", "--mock-outcomes", outcomes_path, wf_path });
+    const res = try iso.run(&.{ "run", "--mock-outcomes", outcomes_path, wf_path });
     defer res.deinit();
 
     try std.testing.expectEqual(@as(u32, 0), res.exitCode());
@@ -1030,22 +1146,20 @@ test "planar-execute --mock-outcomes: malformed NDJSON file → startup error (t
     // A file with a non-JSON line must fail at startup (non-zero exit, clear
     // message) BEFORE any Lua code runs. Workflow correctness is irrelevant.
     const gpa = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const tmp_abs = try tmpAbsPath(&tmp, gpa);
-    defer gpa.free(tmp_abs);
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
 
-    try writeWorkflow(&tmp, "bad.ndjson", "this is not json\n");
-    const outcomes_path = try workflowPath(tmp_abs, "bad.ndjson", gpa);
+    try iso.writeWorkflow("bad.ndjson", "this is not json\n");
+    const outcomes_path = try iso.workflowPath("bad.ndjson");
     defer gpa.free(outcomes_path);
 
-    try writeWorkflow(&tmp, "any.lua",
+    try iso.writeWorkflow("any.lua",
         \\return { meta = { name = "x", description = "x", phases = {} }, run = function(ctx) end }
     );
-    const wf_path = try workflowPath(tmp_abs, "any.lua", gpa);
+    const wf_path = try iso.workflowPath("any.lua");
     defer gpa.free(wf_path);
 
-    const res = try runExecute(gpa, &.{ "run", "--mock-outcomes", outcomes_path, wf_path });
+    const res = try iso.run(&.{ "run", "--mock-outcomes", outcomes_path, wf_path });
     defer res.deinit();
 
     try std.testing.expect(res.exitCode() != 0);
@@ -1055,18 +1169,16 @@ test "planar-execute --mock-outcomes: malformed NDJSON file → startup error (t
 test "planar-execute --mock-outcomes: missing file → startup error (task 3491)" {
     // A path that does not exist must fail at startup with a clear message.
     const gpa = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const tmp_abs = try tmpAbsPath(&tmp, gpa);
-    defer gpa.free(tmp_abs);
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
 
-    try writeWorkflow(&tmp, "any.lua",
+    try iso.writeWorkflow("any.lua",
         \\return { meta = { name = "x", description = "x", phases = {} }, run = function(ctx) end }
     );
-    const wf_path = try workflowPath(tmp_abs, "any.lua", gpa);
+    const wf_path = try iso.workflowPath("any.lua");
     defer gpa.free(wf_path);
 
-    const res = try runExecute(gpa, &.{ "run", "--mock-outcomes", "/no/such/outcomes.ndjson", wf_path });
+    const res = try iso.run(&.{ "run", "--mock-outcomes", "/no/such/outcomes.ndjson", wf_path });
     defer res.deinit();
 
     try std.testing.expect(res.exitCode() != 0);
@@ -1077,16 +1189,14 @@ test "planar-execute --mock-outcomes: implies --mock-worker (no need to pass bot
     // Passing only --mock-outcomes (without --mock-worker) must enter MOCK MODE.
     // This is the "implies" contract: less friction for workflow authors.
     const gpa = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const tmp_abs = try tmpAbsPath(&tmp, gpa);
-    defer gpa.free(tmp_abs);
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
 
-    try writeWorkflow(&tmp, "one.ndjson",
+    try iso.writeWorkflow("one.ndjson",
         \\{"exit_code":0,"stdout":"implied","stderr":""}
         \\
     );
-    const outcomes_path = try workflowPath(tmp_abs, "one.ndjson", gpa);
+    const outcomes_path = try iso.workflowPath("one.ndjson");
     defer gpa.free(outcomes_path);
 
     const wf_src =
@@ -1104,12 +1214,12 @@ test "planar-execute --mock-outcomes: implies --mock-worker (no need to pass bot
         \\  end,
         \\}
     ;
-    try writeWorkflow(&tmp, "implies.lua", wf_src);
-    const wf_path = try workflowPath(tmp_abs, "implies.lua", gpa);
+    try iso.writeWorkflow("implies.lua", wf_src);
+    const wf_path = try iso.workflowPath("implies.lua");
     defer gpa.free(wf_path);
 
     // Pass ONLY --mock-outcomes, NOT --mock-worker.
-    const res = try runExecute(gpa, &.{ "run", "--mock-outcomes", outcomes_path, wf_path });
+    const res = try iso.run(&.{ "run", "--mock-outcomes", outcomes_path, wf_path });
     defer res.deinit();
 
     try std.testing.expectEqual(@as(u32, 0), res.exitCode());
@@ -1119,22 +1229,20 @@ test "planar-execute --mock-outcomes: implies --mock-worker (no need to pass bot
 test "planar-execute --mock-outcomes conflict: --dry-run exits non-zero (task 3491)" {
     // --mock-outcomes is mutually exclusive with --dry-run.
     const gpa = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const tmp_abs = try tmpAbsPath(&tmp, gpa);
-    defer gpa.free(tmp_abs);
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
 
-    try writeWorkflow(&tmp, "x.ndjson", "{}\n");
-    const outcomes_path = try workflowPath(tmp_abs, "x.ndjson", gpa);
+    try iso.writeWorkflow("x.ndjson", "{}\n");
+    const outcomes_path = try iso.workflowPath("x.ndjson");
     defer gpa.free(outcomes_path);
 
-    try writeWorkflow(&tmp, "x.lua",
+    try iso.writeWorkflow("x.lua",
         \\return { meta = { name = "x", description = "x", phases = {} }, run = function(ctx) end }
     );
-    const wf_path = try workflowPath(tmp_abs, "x.lua", gpa);
+    const wf_path = try iso.workflowPath("x.lua");
     defer gpa.free(wf_path);
 
-    const res = try runExecute(gpa, &.{ "run", "--mock-outcomes", outcomes_path, "--dry-run", wf_path });
+    const res = try iso.run(&.{ "run", "--mock-outcomes", outcomes_path, "--dry-run", wf_path });
     defer res.deinit();
 
     try std.testing.expect(res.exitCode() != 0);
@@ -1146,22 +1254,20 @@ test "planar-execute --mock-outcomes conflict: --dry-run exits non-zero (task 34
 test "planar-execute --mock-outcomes conflict: PLANAR_EXECUTE_LIVE_AGENT exits non-zero (task 3491)" {
     // --mock-outcomes is mutually exclusive with the live gate.
     const gpa = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const tmp_abs = try tmpAbsPath(&tmp, gpa);
-    defer gpa.free(tmp_abs);
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
 
-    try writeWorkflow(&tmp, "x.ndjson", "{}\n");
-    const outcomes_path = try workflowPath(tmp_abs, "x.ndjson", gpa);
+    try iso.writeWorkflow("x.ndjson", "{}\n");
+    const outcomes_path = try iso.workflowPath("x.ndjson");
     defer gpa.free(outcomes_path);
 
-    try writeWorkflow(&tmp, "x.lua",
+    try iso.writeWorkflow("x.lua",
         \\return { meta = { name = "x", description = "x", phases = {} }, run = function(ctx) end }
     );
-    const wf_path = try workflowPath(tmp_abs, "x.lua", gpa);
+    const wf_path = try iso.workflowPath("x.lua");
     defer gpa.free(wf_path);
 
-    const res = try runExecuteWithGate(gpa, &.{ "run", "--mock-outcomes", outcomes_path, wf_path });
+    const res = try iso.runGated(&.{ "run", "--mock-outcomes", outcomes_path, wf_path });
     defer res.deinit();
 
     try std.testing.expect(res.exitCode() != 0);
