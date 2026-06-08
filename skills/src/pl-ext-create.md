@@ -6,8 +6,8 @@ vendor:
   claude:
     argument_hint: "<system-slug> --from <kind:id> [--type <issue-type>]"
     invocation_examples: |
-      /pl-ext-create acme-jira --from plan:7 --type Epic
-      /pl-ext-create side-gh --from task:42
+      /pl-ext-create acme-jira --from plan:<plan-id> --type Epic
+      /pl-ext-create side-gh --from task:<task-id>
 shared_notes:
   - "Active scope and entity state come from the CLI; the skill must not read or write workspace context outside it."
 ---

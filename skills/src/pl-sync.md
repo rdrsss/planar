@@ -6,10 +6,10 @@ vendor:
   claude:
     argument_hint: "<pull|push|status|resolve> <target> [args]"
     invocation_examples: |
-      /pl-sync pull task:42
-      /pl-sync push task:42
+      /pl-sync pull task:<task-id>
+      /pl-sync push task:<task-id>
       /pl-sync status
-      /pl-sync resolve 15 --keep local
+      /pl-sync resolve <event-id> --keep local
 shared_notes:
   - "Active scope and sync state come from the CLI; the skill must not read or write workspace context outside it."
 ---

@@ -6,7 +6,7 @@ vendor:
   claude:
     argument_hint: "<plan> [--prefer fs|db]"
     invocation_examples: |
-      /pl-workbench-sync plan:42
+      /pl-workbench-sync plan:<plan-id>
       /pl-workbench-sync checkout-rewrite
 shared_notes:
   - "Active scope and plan state come from the CLI; the skill must not read or write workspace context outside it."

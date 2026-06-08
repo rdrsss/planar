@@ -6,9 +6,9 @@ vendor:
   claude:
     argument_hint: "<kind:id> --to <association-slug> | demote <kind:id> [--from <association-slug>]"
     invocation_examples: |
-      /pl-promote task:42 --to org:acme
-      /pl-promote plan:7 --to project:billing
-      /pl-promote demote task:42
+      /pl-promote task:<task-id> --to org:acme
+      /pl-promote plan:<plan-id> --to project:billing
+      /pl-promote demote task:<task-id>
 shared_notes:
   - "Active scope and entity state come from the CLI; the skill must not read or write workspace context outside it."
 ---

@@ -6,8 +6,8 @@ vendor:
   claude:
     argument_hint: "<archive|restore> <plan>"
     invocation_examples: |
-      /pl-workbench-archive archive plan:42
-      /pl-workbench-archive restore plan:42
+      /pl-workbench-archive archive plan:<plan-id>
+      /pl-workbench-archive restore plan:<plan-id>
       /pl-workbench-archive list
 shared_notes:
   - "Archive and restore run through the CLI workbench lifecycle; the skill does not delete workbench trees directly."

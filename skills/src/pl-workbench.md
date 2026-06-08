@@ -6,16 +6,16 @@ vendor:
   claude:
     argument_hint: "<pull|push|status|resolve|sync|archive|restore|list|publish> [<plan>] [args]"
     invocation_examples: |
-      /pl-workbench pull plan:42
-      /pl-workbench push plan:42
+      /pl-workbench pull plan:<plan-id>
+      /pl-workbench push plan:<plan-id>
       /pl-workbench status
-      /pl-workbench status plan:42
-      /pl-workbench resolve 17 --prefer fs
-      /pl-workbench sync plan:42
-      /pl-workbench archive plan:42
-      /pl-workbench restore plan:42
+      /pl-workbench status plan:<plan-id>
+      /pl-workbench resolve <conflict-id> --prefer fs
+      /pl-workbench sync plan:<plan-id>
+      /pl-workbench archive plan:<plan-id>
+      /pl-workbench restore plan:<plan-id>
       /pl-workbench list
-      /pl-workbench publish plan:42 --system github
+      /pl-workbench publish plan:<plan-id> --system github
 shared_notes:
   - "Workbench reads and writes route through the CLI; the skill must not edit SQLite rows or generated workbench metadata directly."
 ---

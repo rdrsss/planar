@@ -21,6 +21,7 @@ Agent specs in `agents/` reference abstract tiers (`medium`, `large`). The sourc
 |--------------------|--------|
 | `orchestrator`     | large  |
 | `workflow-planner` | large |
+| `spec-reviewer`    | large  |
 | `coder`            | medium |
 | `test-coder`       | large  |
 | `reviewer`         | large  |

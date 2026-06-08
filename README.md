@@ -297,6 +297,7 @@ The repo root IS the Zig package root: `build.zig` and `build.zig.zon` sit at th
 - **[docs/skill-reference.md](docs/skill-reference.md)** — skill and agent role overview; when to use each surface.
 - **[docs/concepts.md](docs/concepts.md)** — mental model: scope, association, plan, task, handoff, and the three operational context planes.
 - **[docs/workflows.md](docs/workflows.md)** — end-to-end recipes (feature planning, sync, handoff, propagation).
+- **[examples/](examples/)** — copy-paste oriented examples for drafting specs, reviewing them, ingesting them, launching the orchestrator, authoring workflows, and propagating to external systems.
 - **[agents/methodology.md](agents/methodology.md)** — how the orchestrator / coder / reviewer agents collaborate; the 5-phase orchestrator flow.
 - **[CLAUDE.md](CLAUDE.md)** — agent guide for working in this repo (symlinked to `AGENTS.md`).
 

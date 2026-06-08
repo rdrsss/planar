@@ -7,9 +7,9 @@ vendor:
     argument_hint: "<create|show|list|step|link> [args]"
     invocation_examples: |
       /pl-plan create "Implement billing module"
-      /pl-plan show 7
-      /pl-plan step add 7 "Design the data model"
-      /pl-plan link 7 artifact:3 --relationship cites
+      /pl-plan show <plan-id>
+      /pl-plan step add <plan-id> "Design the data model"
+      /pl-plan link <plan-id> artifact:<artifact-id> --relationship cites
 shared_notes:
   - "Resolved scope and plan state come from the CLI; the skill must not read or write workspace context outside it."
 ---

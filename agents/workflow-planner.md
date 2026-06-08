@@ -80,8 +80,8 @@ Each `workers[]` entry describes one planned `ctx.agent()` call or one repeated 
   "vendor": "claude",
   "tier": "large",
   "model_intent": "claude-opus-4-8",
-  "task_id": 3205,
-  "task_slug": "m10-quality-spine-template",
+  "task_id": "<task-id>",
+  "task_slug": "<task-slug>",
   "claim_source": "planar-agent pull <plan> --role coder --json",
   "worktree_source": "claim.worktree_path",
   "context_capsule": {
@@ -92,8 +92,8 @@ Each `workers[]` entry describes one planned `ctx.agent()` call or one repeated 
       "workbench/path/to/tech-spec.md#Workflow-Design"
     ],
     "planar_reads": [
-      "planar task show 3205 --json",
-      "planar test-spec status 492 --json"
+      "planar task show <task-id> --json",
+      "planar test-spec status <plan-id> --json"
     ],
     "locked_decisions": [
       "Workers operate through planar-agent and git only inside the constrained PATH."

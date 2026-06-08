@@ -53,17 +53,17 @@ planar question list --status open
 Scope: assoc:project:my-app
 
 Plans in flight
-  [42] Add billing export (active)
-    [45] CSV serialiser sub-plan (active)
+  [<plan-id>] Add billing export (active)
+    [<child-plan-id>] CSV serialiser sub-plan (active)
 
 Open tasks
-  plan:42
-    [todo]    37  Implement CSV serialiser
-    [doing]   38  Wire export endpoint
-    [blocked] 39  Add rate-limit headers  ← blocked by: task:41
+  plan:<plan-id>
+    [todo]    <task-id>  Implement CSV serialiser
+    [doing]   <task-id>  Wire export endpoint
+    [blocked] <task-id>  Add rate-limit headers  <- blocked by: task:<task-id>
 
 Open questions
-  [5]  Which date format for export timestamps?  (task:37)
+  [<question-id>]  Which date format for export timestamps?  (task:<task-id>)
 
 Summary: 2 plans · 3 tasks (1 blocked) · 1 open question
 ```

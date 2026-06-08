@@ -10,7 +10,7 @@ vendor:
       /pl-templates
       /pl-templates list --system jira
       /pl-templates show default jira epic
-      /pl-templates render default github-issues issue --entity task:1
+      /pl-templates render default github-issues issue --entity task:<task-id>
       /pl-templates validate
       /pl-templates validate ~/.planar/templates/acme-internal/github-issues/issue.json
       /pl-templates init
@@ -68,9 +68,9 @@ overridden per-association via `[associations."<slug>"] default_template_set`.
 ```
 planar templates list [--system <system>] [--set <name>]
 planar templates show <set> <system> <kind>
-planar templates render <set> <system> <kind> --entity task:42
-planar templates render <set> <system> <kind> --entity plan:7
-planar templates render <set> <system> <kind> --entity scenario:3
+planar templates render <set> <system> <kind> --entity task:<task-id>
+planar templates render <set> <system> <kind> --entity plan:<plan-id>
+planar templates render <set> <system> <kind> --entity scenario:<scenario-id>
 planar templates validate
 planar templates validate /path/to/custom/issue.json
 planar templates init
@@ -97,7 +97,7 @@ planar templates path default github-issues issue
    default_template_set = "acme-internal"
    ```
 5. Run `planar templates validate` to confirm there are no errors.
-6. Run `planar templates render acme-internal github-issues issue --entity task:42`
+6. Run `planar templates render acme-internal github-issues issue --entity task:<task-id>`
    to preview the output before propagation.
 
 ## Vendor Notes

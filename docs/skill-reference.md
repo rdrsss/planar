@@ -123,7 +123,8 @@ Source: `commands/claude/pl-test-coder.md` · `skills/codex/pl-test-coder.md` ·
 | You want LLM curation grounded in code-evidence | `/pl-synthesize` |
 | Stale-WIP branch (code is misleading) | `/pl-synthesize --treat-as-greenfield` |
 
-Both verbs land in the same `/pl-spec-ingest` pipeline downstream.
+Both verbs land in the same `/pl-spec-review` -> `/pl-spec-ingest` pipeline
+downstream.
 
 See [`concepts.md#transcription-vs-synthesis`](concepts.md#transcription-vs-synthesis) for the conceptual split and concrete fixture examples.
 
@@ -165,7 +166,7 @@ Source: `commands/claude/pl-synthesize.md` · `skills/codex/pl-synthesize.md` ·
 
 ## Planning Pipeline
 
-These three skills cover the planning cycle from goal statement to operational-plane propagation.
+These skills cover the planning cycle from goal statement to operational-plane propagation.
 
 ### `/pl-spec-draft`
 
@@ -177,6 +178,24 @@ Draft planning documents (product spec, tech spec, roadmap, test spec) for a new
 ```
 
 Source: `commands/claude/pl-spec-draft.md` · `skills/codex/pl-spec-draft.md` · `agents/planner.md`
+
+---
+
+### `/pl-spec-review`
+
+Adversarially review draft planning specs before ingestion. Reconstructs what
+the feature is supposed to be, checks whether it matches the user's intent,
+classifies open questions, runs feature-gap and consistency analysis, and
+checks roadmap/test-scenario readiness. Default mode is read-only; `--write`
+only applies operator-approved artifact and question updates.
+
+**Example:**
+```
+/pl-spec-review <plan-id>
+/pl-spec-review <plan-id> --write
+```
+
+Source: `commands/claude/pl-spec-review.md` · `skills/codex/pl-spec-review.md` · `agents/spec-reviewer.md`
 
 ---
 
@@ -371,8 +390,8 @@ Surface personal entities that have matured and promote or demote them between s
 
 **Example:**
 ```
-/pl-promote task:42 to assoc:project:my-app
-/pl-promote demote task:42
+/pl-promote task:<task-id> --to assoc:project:my-app
+/pl-promote demote task:<task-id>
 ```
 
 Source: `commands/claude/pl-promote.md` · `skills/codex/pl-promote.md`
@@ -386,7 +405,7 @@ Pull from and push to the operational plane, surface and resolve conflicts.
 **Example:**
 ```
 /pl-sync pull --system my-jira
-/pl-sync push task:37 --system my-jira
+/pl-sync push task:<task-id> --system my-jira
 ```
 
 Source: `commands/claude/pl-sync.md` · `skills/codex/pl-sync.md`
@@ -399,7 +418,7 @@ Create a Jira or GitHub Issues counterpart from a local entity and record the ex
 
 **Example:**
 ```
-/pl-ext-create task:37 --system my-gh
+/pl-ext-create my-gh --from task:<task-id>
 ```
 
 Source: `commands/claude/pl-ext-create.md` · `skills/codex/pl-ext-create.md`
@@ -480,7 +499,7 @@ Inspect, validate, and render Planar JSON templates for external-system propagat
 ```
 /pl-templates list
 /pl-templates validate
-/pl-templates render task:37 --system my-jira
+/pl-templates render task:<task-id> --system my-jira
 ```
 
 Source: `commands/claude/pl-templates.md` · `skills/codex/pl-templates.md`
@@ -496,6 +515,7 @@ The vendor-neutral role specs live under `agents/`. Vendor skill files defer to 
 | `agents/methodology.md` | Shared orchestration methodology: iteration loop, reviewer decisions, escalation, concurrency rules, state capture |
 | `agents/orchestrator.md` | Orchestrator role: phase descriptions, dispatch-shape gate, per-phase triggers |
 | `agents/workflow-planner.md` | Workflow planner role: planar-execute topology, worker model routing intent, context capsules, validation matrix |
+| `agents/spec-reviewer.md` | Spec reviewer role: adversarial planning review, open-question reconciliation, feature/test gap analysis |
 | `agents/planner.md` | Planner role: input/output contract, document shape, workbench seeding |
 | `agents/ingestor.md` | Ingestor role: parsing contract, idempotency invariant, preview-first rule |
 | `agents/extsync.md` | Ext-sync role: strategy-selection contract, propagation walk, idempotency |
