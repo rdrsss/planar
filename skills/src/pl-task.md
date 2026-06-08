@@ -6,7 +6,7 @@ vendor:
   claude:
     argument_hint: "<add|list|show|done|block|update> [args]"
     invocation_examples: |
-      /pl-task add "Implement payment gateway API" --plan 7 --priority 50
+      /pl-task add "Implement payment gateway API" --plan <plan-id> --priority 50
       /pl-task list
       /pl-task done 42
       /pl-task block 43 --on 42
@@ -26,7 +26,7 @@ Creates, lists, updates, completes, and blocks tasks. Supports priority ordering
 
 Wraps [`task`](../../docs/cli-reference.md#domain-task):
 
-> **Scope.** Reads use the cwd-derived scope; writes refuse on cross-scope mismatch (see [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard)). Pass `--scope <slug>` explicitly when working from outside the target repo's cwd. The active scope stack was removed in plan 153 M5; there is no `scope use` to push.
+> **Scope.** Reads use the cwd-derived scope; writes refuse on cross-scope mismatch (see [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard)). Pass `--scope <slug>` explicitly when working from outside the target repo's cwd. There is no active scope stack and no `scope use` to push.
 
 > **Cross-scope guard.** This verb refuses with exit 1 when the
 > operator's resolved write scope disagrees with the target entity's

@@ -1,5 +1,5 @@
 --[[
-  quality-spine.lua — doctrine-compliant cycle driver (plan 492 M10 task 3205).
+  quality-spine.lua — doctrine-compliant cycle driver.
 
   TEMPLATE: This workflow demonstrates the per-cycle coder → reviewer cadence
   mandated by agents/methodology.md. It is NOT auto-installed; operators copy
@@ -10,18 +10,17 @@
     planar-execute run --mock-worker --plan <plan_id> workflows/quality-spine.lua <plan_id>
     planar-execute run --plan <plan_id> workflows/quality-spine.lua <plan_id>   # live
 
-  meta.reviewer = true (line below) is the bright-line refusal guard assertion
-  (plan 492 M10 task 3206): it declares that this workflow dispatches a reviewer
-  for every coder cycle. Without it, the guard would refuse to run a plan that
-  touches migrations/*.sql, new top-level CLI verbs, or invariant/methodology
-  code.
+  meta.reviewer = true (line below) is the bright-line refusal guard assertion:
+  it declares that this workflow dispatches a reviewer for every coder cycle.
+  Without it, the guard would refuse to run a plan that touches migrations/*.sql,
+  new top-level CLI verbs, or invariant/methodology code.
 
   DEFERRED HOST FUNCTIONS:
     Phase 3.5 (test-coder gated on spec ingest coverage) and Phase 6 (documenter)
     require host functions the harness does not yet expose:
       - ctx.test_spec_status(plan_id)  -- would shell `planar test-spec status`
                                        -- NOT available: `planar` is not on the
-                                       -- constrained worker PATH (decision 358).
+                                       -- constrained worker PATH.
       - ctx.documenter()               -- would shell `planar-doc diff`
                                        -- NOT available: same PATH constraint.
     When those host functions land, extend this workflow to call them after the
@@ -32,8 +31,7 @@
        (call a helper, read a file, compose from ctx.args, etc.).
     2. Replace "Reviewer brief for coder result …" similarly.
     3. Provide worktree_path and claim_token via ctx.args or pre-prepare them
-       before the workflow runs (the M5 front-half pre-preparation is the
-       recommended pattern; pass them as extra ctx.args after the plan_id).
+       before the workflow runs; pass them as extra ctx.args after the plan_id.
     4. Optionally call ctx.eligible(plan_id) to read the recommend-strategy
        output and decide which tasks to dispatch (this workflow does so already).
 ]]
@@ -44,10 +42,10 @@ return {
     description = "Doctrine-compliant cycle driver: per-task coder → reviewer cadence. " ..
                   "TEMPLATE — extend with real brief-composition logic before running live.",
     -- Trust-based reviewer-cadence assertion for the bright-line refusal guard
-    -- (plan 492 M10 task 3206). Setting this to `true` asserts that every task
-    -- cycle in this workflow dispatches a reviewer after the coder. Do NOT set
-    -- this to `true` in a copy of the template until you have wired the reviewer
-    -- agent() call (see the "Cycle" phase below).
+    -- Setting this to `true` asserts that every task cycle in this workflow
+    -- dispatches a reviewer after the coder. Do NOT set this to `true` in a
+    -- copy of the template until you have wired the reviewer agent() call
+    -- (see the "Cycle" phase below).
     reviewer = true,
     phases = {
       { title = "Plan",  detail = "Read plan eligibility via ctx.eligible(plan_id)" },
@@ -191,9 +189,9 @@ return {
     --   ctx.phase("Phase-3.5: test-coder")
     --   local coverage = ctx.test_spec_status(plan_id)
     --   -- ctx.test_spec_status(plan_id) would shell `planar test-spec status`
-    --   -- but `planar` is NOT on the constrained worker PATH (decision 358 /
-    --   -- task 3179). When the host function lands, wire it here to gate a
-    --   -- test-coder dispatch on the ingestor coverage report.
+    --   -- but `planar` is NOT on the constrained worker PATH. When the host
+    --   -- function lands, wire it here to gate a test-coder dispatch on the
+    --   -- ingestor coverage report.
     --   if coverage.uncovered_count > 0 then
     --     ctx.agent("test-coder brief: ...", { role = "test-coder" })
     --   end
@@ -202,7 +200,7 @@ return {
     --   -- ctx.documenter() would shell `planar-doc diff` — same PATH constraint.
     --   -- ctx.agent("documenter brief: ...", { role = "documenter" })
     --
-    -- File a task on plan 503 when you add the missing host functions.
+    -- File project-local follow-up work when you add the missing host functions.
     -- -----------------------------------------------------------------------
 
     print("quality-spine cycle complete")

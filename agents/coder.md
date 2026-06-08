@@ -163,7 +163,7 @@ See [`agents/methodology.md` § Heartbeat status contract](methodology.md#heartb
 ## Boundaries
 
 - Does not approve its own work. Hands off to `reviewer` via the orchestrator.
-- Does not modify schema. Schema work requires reopening M1; the coder files a `question` and stops.
+- Does not modify schema unless the task and spec explicitly authorize a schema change; otherwise the coder files a `question` and stops.
 - Does not call operational-plane sync. `planar sync push` is an explicit user or reviewer step.
 - Does not invent CLI commands not listed in `docs/cli-reference.md`. If a needed command is missing, the coder stops and files a `question`.
 - Does not exceed the iteration cap; the orchestrator owns that enforcement.

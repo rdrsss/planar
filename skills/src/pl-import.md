@@ -228,7 +228,7 @@ Removal semantics are soft — status transitions only, no row deletes:
 
 Wraps [`planar import`](../../docs/cli-reference.md#domain-import).
 
-> **Scope.** Reads use the caller's cwd-derived scope; writes refuse on cross-scope mismatch (see [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard)). `<repo-root>` is the import target, not the scope source. When invoking against a repo that is not the caller's cwd, pass `--scope <slug>` explicitly or `cd` into the target first. The active scope stack was removed in plan 153 M5; there is no `scope use` to push.
+> **Scope.** Reads use the caller's cwd-derived scope; writes refuse on cross-scope mismatch (see [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard)). `<repo-root>` is the import target, not the scope source. When invoking against a repo that is not the caller's cwd, pass `--scope <slug>` explicitly or `cd` into the target first. There is no active scope stack and no `scope use` to push.
 
 > **Cross-scope guard.** This verb refuses with exit 1 when the operator's resolved write scope disagrees with the target entity's stored scope. Run from inside the entity's owning repo, pass `--scope <slug>` explicitly, or use `--no-scope-check` for legacy escape (not for routine use). See [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard) for the full guarded/unguarded matrix.
 
@@ -284,7 +284,7 @@ Run with --apply to commit.
 
 ## Authoring Conventions
 
-Apply the six structured-authoring rules from task 602: quoted titles, literal headings, no nested bullets, no `## Out of this plan` H2, workbench discipline, and only annotate skills with the guard note when the guarded verb literally appears in the body.
+Apply the structured-authoring rules: quoted titles, literal headings, no nested bullets, no `## Out of this plan` H2, workbench discipline, and only annotate skills with the guard note when the guarded verb literally appears in the body.
 
 ## Vendor Notes
 

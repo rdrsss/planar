@@ -15,7 +15,7 @@ shared_notes:
 
 # Planar Scope ({{.VendorTitle}})
 
-Inspects the scope Planar derives from the current working directory and shows how to override it on a per-verb basis. There is no scope stack to manage — plan 153 M5 removed it.
+Inspects the scope Planar derives from the current working directory and shows how to override it on a per-verb basis. There is no scope stack to manage.
 
 ## What It Does
 
@@ -46,7 +46,7 @@ The cross-scope guard (see [`docs/concepts.md#cross-scope-guard`](../../docs/con
 
 ## What Was Removed
 
-`planar scope use`, `planar scope pop`, and `planar scope clear` were removed in plan 153 M5 alongside the `active_scope` table. The active stack had become a footgun: it persisted across sessions and silently re-routed writes to whatever was last pushed, even from unrelated cwds. The post-M5 model is "your cwd is your scope; `--scope` is the explicit override." The deleted verbs now exit 1 with a redirect message pointing at `scope show`.
+`planar scope use`, `planar scope pop`, and `planar scope clear` were removed alongside the `active_scope` table. The active stack had become a footgun: it persisted across sessions and silently re-routed writes to whatever was last pushed, even from unrelated cwds. The current model is "your cwd is your scope; `--scope` is the explicit override." The deleted verbs now exit 1 with a redirect message pointing at `scope show`.
 
 ## When To Invoke
 

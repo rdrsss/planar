@@ -95,7 +95,7 @@ These three rules together preserve the `planar-doc` capability invariant: the o
       "path": "src/engine/foo/",
       "action": "create-doc",
       "verb": "<operator authors docs/features/foo.md, then `planar-doc cover docs/features/foo.md src/engine/foo/`>",
-      "reason": "Net-new engine bucket added by plan 460. No existing doc covers it; the closest ancestor (docs/architecture.md) describes the engine at a higher level."
+      "reason": "Net-new engine bucket added. No existing doc covers it; the closest ancestor (docs/architecture.md) describes the engine at a higher level."
     },
     {
       "signal": "new-authoring",

@@ -17,12 +17,13 @@ Agent specs in `agents/` reference abstract tiers (`medium`, `large`). The sourc
 | large | claude-opus-4-7 | gpt-5 | claude-opus-4 |
 ## Agent Assignments
 
-| Agent          | Tier   |
-|----------------|--------|
-| `orchestrator` | large  |
-| `coder`        | medium |
-| `test-coder`   | large  |
-| `reviewer`     | large  |
+| Agent              | Tier   |
+|--------------------|--------|
+| `orchestrator`     | large  |
+| `workflow-planner` | large |
+| `coder`            | medium |
+| `test-coder`       | large  |
+| `reviewer`         | large  |
 
 ## Conventions
 

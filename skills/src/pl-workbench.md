@@ -87,11 +87,11 @@ For a higher-level "sync this feature now" action without choosing between verbs
   the filesystem. `workbench pull` writes FROM the filesystem TO the
   database. Confusing the direction causes silent data loss. Always confirm
   which direction you want before running.
-- **tech_spec collision on push:** Prior to plan 46 (commit d49d0d2),
-  multiple `tech_spec` artifacts on the same plan collided on filename
-  `tech-spec.md` during workbench push. The fix uses `<id>-<slug>.md`
-  uniformly. Workbenches materialized before plan 46 may have stale
-  bare-named files; delete and re-push to clean up.
+- **tech_spec collision on push:** Older workbenches could materialize
+  multiple `tech_spec` artifacts on the same plan as the same filename
+  (`tech-spec.md`) during workbench push. The current format uses
+  `<id>-<slug>.md` uniformly. Workbenches materialized by older versions may
+  have stale bare-named files; delete and re-push to clean up.
 
 ## Vendor Notes
 

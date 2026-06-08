@@ -26,7 +26,7 @@ Refreshes a workspace's static routing table and regenerates the canonical `AGEN
 
 Wraps [`workspace`](../../docs/cli-reference.md#domain-workspace):
 
-> **Scope.** `workspace routing build` and `workspace regenerate` are write verbs. The resolver order is: `--workspace <slug>` flag on the skill (translated to the positional `<workspace>` argument on the CLI), then the current working directory's org association. Run this skill from inside the workspace root or pass `--workspace <slug>` explicitly. The skill refuses if no workspace can be resolved. The active scope stack was removed in plan 153 M5; there is no `scope use` to push.
+> **Scope.** `workspace routing build` and `workspace regenerate` are write verbs. The resolver order is: `--workspace <slug>` flag on the skill (translated to the positional `<workspace>` argument on the CLI), then the current working directory's org association. Run this skill from inside the workspace root or pass `--workspace <slug>` explicitly. The skill refuses if no workspace can be resolved. There is no active scope stack and no `scope use` to push.
 
 ```
 planar workspace routing build [<workspace>] [--enrich]
@@ -112,8 +112,7 @@ When `--dry-run` is set, the prefix is `would scan:` and no files are written.
 
 ## Authoring Conventions
 
-This skill body adheres to the six rules established by task 602 (see
-the M6 audit notes for context):
+This skill body adheres to the structured-authoring rules:
 
 1. Quoted titles ("Title") not bare. The frontmatter `description` value is a double-quoted string.
 2. Literal headings (`## What It Does`, `## When To Invoke`, `## How the Skill Composes`, `## LLM Enrichment Contract (when --enrich)`, `## Output`, `## Vendor Notes`, `## Invocation`).

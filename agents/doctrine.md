@@ -65,7 +65,7 @@ A reviewer receiving a report missing any section MUST return `request-changes` 
 
 ## When to skip agents
 
-Aggregated from [`agents/coder.md`](coder.md) and [`agents/reviewer.md`](reviewer.md) per the A2 skip-condition rules (see tech-spec plan 48 §A2):
+Aggregated from [`agents/coder.md`](coder.md) and [`agents/reviewer.md`](reviewer.md) per the reviewer skip-condition rules:
 
 | Agent | Skip when |
 |---|---|

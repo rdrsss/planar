@@ -45,7 +45,7 @@ Implements the per-cycle coder → reviewer cadence from
 `agents/methodology.md`. For each parallel-eligible task returned by
 `ctx.eligible(plan_id)`, it dispatches a coder agent and, on success,
 a reviewer agent. Sets `meta.reviewer = true` to satisfy the bright-line
-refusal guard (task 3206).
+refusal guard.
 
 **Use this as the base for any plan that touches migrations, new CLI verbs,
 or invariant/methodology code.**
@@ -83,12 +83,12 @@ functions the harness does not yet expose:
 
 | Phase | Host function | Blocks on |
 |-------|---------------|-----------|
-| 3.5 — test-coder | `ctx.test_spec_status(plan_id)` | `planar test-spec status` not on constrained worker PATH (decision 358 / task 3179) |
+| 3.5 — test-coder | `ctx.test_spec_status(plan_id)` | `planar test-spec status` not on constrained worker PATH |
 | 6 — documenter   | `ctx.documenter()`             | `planar-doc diff` not on constrained worker PATH (same constraint) |
 
 The `quality-spine.lua` template has commented-out stubs for both phases.
-When the missing host functions land (a future M10+ task on plan 503), extend
-the template by uncommenting those stubs.
+When the missing host functions land, extend the template by uncommenting
+those stubs.
 
 ## Operator extension checklist
 
@@ -96,9 +96,8 @@ When copying a template for a real plan:
 
 1. Replace every `<OPERATOR-FILLS-IN>` placeholder with actual brief-composition
    logic (read task body via pre-composed args, spec citations, etc.).
-2. Supply `worktree_path` and `claim_token` per-task (M5 front-half
-   pre-preparation; pass them via `ctx.args` after the plan_id or hard-code
-   them in your copy).
+2. Supply `worktree_path` and `claim_token` per-task (pass them via `ctx.args`
+   after the plan_id or hard-code them in your copy).
 3. Keep `meta.reviewer = true` if ANY task in the plan touches a risky surface.
 4. Test under `--mock-worker` before running live.
 5. Keep the extended copy out of the repo unless it is a canonical workflow

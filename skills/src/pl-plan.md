@@ -26,7 +26,7 @@ Creates plans from a goal statement, decomposes them into ordered steps, tracks 
 
 Wraps [`plan`](../../docs/cli-reference.md#domain-plan):
 
-> **Scope.** Reads use the cwd-derived scope; writes refuse on cross-scope mismatch (see [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard)). Pass `--scope <slug>` explicitly when working from outside the target repo's cwd. The active scope stack was removed in plan 153 M5; there is no `scope use` to push.
+> **Scope.** Reads use the cwd-derived scope; writes refuse on cross-scope mismatch (see [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard)). Pass `--scope <slug>` explicitly when working from outside the target repo's cwd. There is no active scope stack and no `scope use` to push.
 
 > **Cross-scope guard.** This verb refuses with exit 1 when the
 > operator's resolved write scope disagrees with the target entity's

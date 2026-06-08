@@ -34,11 +34,11 @@ Use this skill to:
 - Validate a template file for JSON syntax and `text/template` expression errors
   before deploying a custom set.
 - Render a template against a real DB entity in dry-run mode to preview the
-  payload that the ext-sync agent (M7.5c) will send to the external system.
+  payload that the ext-sync agent will send to the external system.
 - Initialise the default template set on disk from the embedded baseline.
 
 Do **not** use this skill to push changes to Jira or GitHub Issues. That is
-handled by `pl-ext-propagate` (M7.5c).
+handled by `pl-ext-propagate`.
 
 ## Resolution chain
 

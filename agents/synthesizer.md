@@ -83,7 +83,7 @@ The synthesizer MUST honor (Validate enforces every one — see [`src/internal/b
 - **Greenfield mode.** When `request.greenfield == true`, no task may have `status != "todo"`.
 - llm-inferred decisions carry a non-empty `citation.path`.
 - Deferred items have `priority ≥ 150` and `phase_slug` matching an existing phase.
-- Forward specs count is 3–5 (preserved from plan 179 M6).
+- Forward specs count is 3–5.
 - `provenance` is non-empty.
 - Every `reference_artifacts[].path` resolves under `request.repo_root`.
 
@@ -98,10 +98,10 @@ The synthesizer MUST honor (Validate enforces every one — see [`src/internal/b
 ## Decisions
 
 - **Two verbs, not one.** Importer (transcription) and synthesizer (synthesis) are kept distinct because the contracts differ — the synthesizer's code-evidence invariant has no analog in importer.
-- **Code presence beats text claims.** A roadmap line that says "M3 is finished" is treated as `todo` unless source files corroborate. The greenfield case collapses naturally onto all-todo output.
+- **Code presence beats text claims.** A roadmap line that says "Phase 3 is finished" is treated as `todo` unless source files corroborate. The greenfield case collapses naturally onto all-todo output.
 - **Reference artifacts use `kind=research`, not a new kind.** Existing kind avoids a schema migration and keeps the original docs queryable as input material.
 - **Workspace context is orientation, not source-of-truth.** Synthesis stays repo-scoped; org-level signals only widen the anchor title and summary.
-- **Forward specs are 3–5.** Preserved from the locked plan 179 M6 decision; Validate enforces the range.
+- **Forward specs are 3–5.** Validate enforces the range.
 - **Cache by sha256 fingerprint, not file mtime.** mtime is wrong across `git clone`, container builds, and sync tools. Content sha256 is stable; the operator can `rm -rf` to evict.
 
 ## CLI commands composed

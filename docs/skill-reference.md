@@ -18,13 +18,15 @@ Vendor profile data and model-tier resolution are embedded directly into the `pl
 
 ---
 
-## Three-binary architecture
+## Binary architecture
 
-Planar ships three executables, each with a disjoint capability boundary enforced by its verb set (not by runtime ACLs). Skills and agents reach for the binary that matches the work — and only that binary. The capability boundary is locked by integration tests (`integration_tests/capability_boundary_test.zig`); see [tech spec § Binary boundaries](../../.planar/workbench/project_planar/p85-agent-activity/58-agent-activity-tracking-tech-spec.md#binary-boundaries) for the canonical table and the per-binary capability invariants.
+Planar ships five executables, each with a disjoint capability boundary enforced by its verb set (not by runtime ACLs). Skills and agents reach for the binary that matches the work - and only that binary. The capability boundary is locked by integration tests (`integration_tests/capability_boundary_test.zig`).
 
 - `planar` — operator binary. Read-write to the full schema; owns every planning-entity verb (`plan`, `task`, `decision`, `question`, `scenario`, `artifact`, `workbench`, `doc`, `spec`, `templates`, `ext`, `sync`, `init`, `dashboard`, `tree`, `audit`, `health`, …). Has **no** `agent` subcommand namespace; agent-table writes live on `planar-agent` and agent-table reads live on `planar-watch`.
 - `planar-agent` — agent-callable coordination binary. Read-write **only** to `agent_actions`, `agent_work_claims`, and `tasks.status` (the last only as part of atomic coordinated operations). Verbs: `pull`, `peek`, `claim`, `heartbeat`, `complete`, `fail`, `release`, `block`, `action start`/`action end`, `ingest`, `reconcile`, `abort`, `version`. **Capability invariant:** a vendor hook configured with only `planar-agent` on its PATH cannot touch any plan / decision / question / scenario / artifact / annotation row.
 - `planar-watch` — human-facing read-only viewer. Opens SQLite via `file:?mode=ro` so the driver itself refuses any write SQL. Verbs: `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `version`, `completion`. **Capability invariant:** a watcher process holding the binary on PATH cannot corrupt operator state even under hostile verb invocation — enforced both by the zero-write verb set and the read-only DB handle.
+- `planar-doc` — doc-state binary. Owns manifest-driven documentation verbs (`build`, `verify`, `diff`, `cover`, `nodoc`, `lint`, `schema`) and never opens SQLite.
+- `planar-execute` — Lua workflow harness. Owns `run`, `doctor`, `version`, and `schema`; holds no DB handle and shells the other binaries plus headless workers through the documented `ctx` host-function surface.
 
 Every skill in this document routes its writes through the binary that owns them. Skills that schedule agent work (`/orchestrator`, `/pl-coder`) drive the `planar-agent pull → heartbeat → complete|fail|release|block` ritual; skills that surface live operator views (status, dashboard, audit trail) read through `planar` and `planar-watch`.
 
@@ -41,17 +43,31 @@ Run the orchestrator over a goal, anchor plan, or task list. Manages all five ph
 **Example:**
 ```
 /orchestrator "add billing export to CSV"
-/orchestrator 42                              # resume from plan 42's current status
-/orchestrator 17 18 19 --strict               # execute specific tasks, one cycle per task
-/orchestrator 42 --barrel-grouped             # one cycle per milestone; reviewer per group
-/orchestrator 42 --barrel-deferred            # coder cycles back-to-back; reviewer at milestone boundary
-/orchestrator 42 --barrel-bypass              # no reviewer; gates are the entire signal
-/orchestrator 42 --propagate --archive        # execute, then propagate and archive
+/orchestrator <plan-id>                       # resume from the plan's current status
+/orchestrator <task-id> <task-id> --strict    # execute specific tasks, one cycle per task
+/orchestrator <plan-id> --barrel-grouped      # one cycle per milestone; reviewer per group
+/orchestrator <plan-id> --barrel-deferred     # coder cycles back-to-back; reviewer at milestone boundary
+/orchestrator <plan-id> --barrel-bypass       # no reviewer; gates are the entire signal
+/orchestrator <plan-id> --propagate --archive # execute, then propagate and archive
 ```
 
 The Phase 3 dispatch gate offers six shapes (`strict`, `grouped`, `single`, `barrel-grouped`, `barrel-deferred`, `barrel-bypass`); see [`docs/concepts.md` §Dispatch shapes](concepts.md#dispatch-shapes) for the trade-off matrix. Phase 3.5 (test-coder dispatch) fires across all shapes when uncovered slugs intersect the cycle.
 
 Source: `commands/claude/pl-orchestrator.md` · `skills/codex/pl-orchestrator.md` · `agents/orchestrator.md`
+
+---
+
+### `/pl-execute-workflow`
+
+Plan, author, and validate a `planar-execute` Lua workflow for an active plan. The workflow planner chooses topology, worker roles, model-tier intent, context capsules, mock cases, budgets, and safety posture; the skill materializes the plan into Lua and validates it before any live run.
+
+**Example:**
+```
+/pl-execute-workflow <plan-id> --write ~/.planar/local/workflows/<workflow-name>.lua
+/pl-execute-workflow <plan-id> --canonical
+```
+
+Source: `commands/claude/pl-execute-workflow.md` · `skills/codex/pl-execute-workflow.md` · `agents/workflow-planner.md`
 
 ---
 
@@ -61,7 +77,7 @@ Implement a scoped coding task end-to-end. Called by the orchestrator in Phase 3
 
 **Example:**
 ```
-/coder 37
+/coder <task-id>
 ```
 
 Source: `commands/claude/pl-coder.md` · `skills/codex/pl-coder.md` · `agents/coder.md`
@@ -74,7 +90,7 @@ Review a coder change set. Returns one of `approve`, `request-changes`, `open-qu
 
 **Example:**
 ```
-/reviewer 37 3          # review task 37, iteration 3
+/reviewer <task-id> <iteration>
 ```
 
 Source: `commands/claude/pl-reviewer.md` · `skills/codex/pl-reviewer.md` · `agents/reviewer.md`
@@ -85,8 +101,8 @@ Adversarial test-author dispatched between the coder and the reviewer (Phase 3.5
 
 **Example:**
 ```
-/pl-test-coder 1925              # run against one task's cited scenarios
-/pl-test-coder 278 --plan        # run against every cited scenario in the plan
+/pl-test-coder <task-id>         # run against one task's cited scenarios
+/pl-test-coder <plan-id> --plan  # run against every cited scenario in the plan
 ```
 
 Source: `commands/claude/pl-test-coder.md` · `skills/codex/pl-test-coder.md` · `skills/copilot/pl-test-coder.md` · `agents/test-coder.md`
@@ -170,8 +186,8 @@ Decompose workbench planning documents (`tech-spec.md`, `roadmap.md`) into a str
 
 **Example:**
 ```
-/pl-spec-ingest 42              # preview the decomposition for plan 42
-/pl-spec-ingest 42 --apply      # commit additions and updates
+/pl-spec-ingest <plan-id>       # preview the decomposition
+/pl-spec-ingest <plan-id> --apply
 ```
 
 Source: `commands/claude/pl-spec-ingest.md` · `skills/codex/pl-spec-ingest.md` · `agents/ingestor.md`
@@ -184,9 +200,9 @@ Propagate a feature tree (anchor plan + descendants) to a registered external op
 
 **Example:**
 ```
-/pl-ext-propagate 42                          # propagate to first registered system
-/pl-ext-propagate 42 --system my-jira
-/pl-ext-propagate 42 --dry-run                # preview without contacting the remote
+/pl-ext-propagate <plan-id>                   # propagate to first registered system
+/pl-ext-propagate <plan-id> --system my-jira
+/pl-ext-propagate <plan-id> --dry-run         # preview without contacting the remote
 ```
 
 Source: `commands/claude/pl-ext-propagate.md` · `skills/codex/pl-ext-propagate.md` · `agents/extsync.md`
@@ -203,11 +219,11 @@ Full workbench management: pull, push, sync, status, resolve, archive, restore, 
 
 **Example:**
 ```
-/pl-workbench pull 42           # FS → DB for plan 42
-/pl-workbench push 42           # DB → FS for plan 42
+/pl-workbench pull <plan-id>    # FS -> DB
+/pl-workbench push <plan-id>    # DB -> FS
 /pl-workbench status            # show all plans with FS/DB divergence
-/pl-workbench resolve 17 --prefer fs
-/pl-workbench publish 42 --system github
+/pl-workbench resolve <conflict-id> --prefer fs
+/pl-workbench publish <plan-id> --system github
 ```
 
 Source: `commands/claude/pl-workbench.md` · `skills/codex/pl-workbench.md`
@@ -220,7 +236,7 @@ High-level bidirectional sync: reconciles FS and DB in one pass, surfaces confli
 
 **Example:**
 ```
-/pl-workbench-sync 42
+/pl-workbench-sync <plan-id>
 ```
 
 Source: `commands/claude/pl-workbench-sync.md` · `skills/codex/pl-workbench-sync.md`
@@ -283,7 +299,7 @@ Source: `commands/claude/pl-init.md` · `skills/codex/pl-init.md`
 
 ### `/pl-scope`
 
-Inspect the cwd-derived scope and propose associations from git remote and path. The active scope stack was removed in plan 153 M5; cd into the target repo or pass `--scope <slug>` on individual verbs to override.
+Inspect the cwd-derived scope and propose associations from git remote and path. Scope is derived from cwd; cd into the target repo or pass `--scope <slug>` on individual verbs to override.
 
 **Example:**
 ```
@@ -312,9 +328,9 @@ Add, list, prioritize, block, and complete tasks within active scope.
 
 **Example:**
 ```
-/pl-task add "implement CSV serialiser" --plan 42
+/pl-task add "implement CSV serialiser" --plan <plan-id>
 /pl-task list
-/pl-task done 17
+/pl-task done <task-id>
 ```
 
 Source: `commands/claude/pl-task.md` · `skills/codex/pl-task.md`
@@ -327,8 +343,8 @@ Capture open questions during a session, answer them, and link to tasks and spec
 
 **Example:**
 ```
-/pl-question add "Which date format for export timestamps?" --task 37
-/pl-question answer 5 "ISO 8601 UTC, no timezone offset"
+/pl-question add "Which date format for export timestamps?" --task <task-id>
+/pl-question answer <question-id> "ISO 8601 UTC, no timezone offset"
 ```
 
 Source: `commands/claude/pl-question.md` · `skills/codex/pl-question.md`
@@ -341,8 +357,8 @@ Author test scenarios from a spec or task, verify them, and record outcomes.
 
 **Example:**
 ```
-/pl-scenario add --task 37 "Export with 10k rows completes in under 5s"
-/pl-scenario pass 3
+/pl-scenario add --task <task-id> "Export with 10k rows completes in under 5s"
+/pl-scenario pass <scenario-id>
 ```
 
 Source: `commands/claude/pl-scenario.md` · `skills/codex/pl-scenario.md`
@@ -409,7 +425,7 @@ Resume an in-flight task from zero conversational context. Validates resume read
 
 **Example:**
 ```
-/pl-resume 37
+/pl-resume <task-id>
 ```
 
 Source: `commands/claude/pl-resume.md` · `skills/codex/pl-resume.md`
@@ -479,6 +495,7 @@ The vendor-neutral role specs live under `agents/`. Vendor skill files defer to 
 |------|------|
 | `agents/methodology.md` | Shared orchestration methodology: iteration loop, reviewer decisions, escalation, concurrency rules, state capture |
 | `agents/orchestrator.md` | Orchestrator role: phase descriptions, dispatch-shape gate, per-phase triggers |
+| `agents/workflow-planner.md` | Workflow planner role: planar-execute topology, worker model routing intent, context capsules, validation matrix |
 | `agents/planner.md` | Planner role: input/output contract, document shape, workbench seeding |
 | `agents/ingestor.md` | Ingestor role: parsing contract, idempotency invariant, preview-first rule |
 | `agents/extsync.md` | Ext-sync role: strategy-selection contract, propagation walk, idempotency |

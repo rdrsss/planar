@@ -119,7 +119,7 @@ The greenfield contract for the LLM (synthesizer role):
 
 ## Workspace Context (orientation, not authority)
 
-When the target repo is a member of an org workspace (per `planar workspace init` / plan 135), the synthesis Request includes a `workspace_context` field carrying:
+When the target repo is a member of an org workspace, the synthesis Request includes a `workspace_context` field carrying:
 
 - `org_slug` and `org_title` — the parent workspace
 - `member_projects[]` (legacy slug list) and `member_project_infos[]` — sibling member projects (slugs + titles), self excluded
@@ -198,7 +198,7 @@ The canonical Go types live in [`src/internal/bootstrap/synthesis/result.go`](..
   "reference_artifacts": [
     {"path": "docs/old_product_spec.md", "kind": "research", "title": "Original Product Spec (pre-synthesis)"}
   ],
-  "code_evidence_summary": "Repository has Sources/Core (12 files, 8 tests, SignalStrength=1.0; M1 foundation complete), Sources/Reader (4 files, 1 test, SignalStrength=0.5; M2 in flight), no Sources/Polyglot yet (M3 not started).",
+  "code_evidence_summary": "Repository has Sources/Core (12 files, 8 tests, SignalStrength=1.0; foundation complete), Sources/Reader (4 files, 1 test, SignalStrength=0.5; reader work in flight), no Sources/Polyglot yet.",
   "provenance": "claude-opus-4-7 temperature=0",
   "generated_at": "<RFC3339 UTC>"
 }
@@ -218,7 +218,7 @@ The canonical Go types live in [`src/internal/bootstrap/synthesis/result.go`](..
 - **Greenfield mode.** When `request.greenfield == true`, NO task may have `status != "todo"`. Validate rejects done claims outright when no source code was detected.
 - Each decision with `source: "llm-inferred"` carries a non-empty `citation.path`.
 - Each deferred item has `priority >= 150` (the locked floor for deferred work) and `phase_slug` matching an existing phase in `phases[]`.
-- Forward specs count is 3-5 (the locked plan 179 M6 decision; preserved in synthesis). Validate rejects 2 or 6.
+- Forward specs count is 3-5. Validate rejects 2 or 6.
 - `provenance` is non-empty (operators see what produced this entry).
 - Each `reference_artifacts[].path` resolves under `request.repo_root`.
 
@@ -230,7 +230,7 @@ The default 0.7 confidence floor still applies in synthesis mode. LLM-only tasks
 
 Wraps `planar synthesize`. See [`docs/cli-reference.md`](../../docs/cli-reference.md) for the full flag table.
 
-> **Cross-scope guard.** This verb refuses to write across scope mismatches (plan 144). Run from inside the target repo's cwd or pass `--scope <slug>` explicitly. See [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard).
+> **Cross-scope guard.** This verb refuses to write across scope mismatches. Run from inside the target repo's cwd or pass `--scope <slug>` explicitly. See [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard).
 
 ```
 planar synthesize <repo-root>                          # preview
@@ -249,7 +249,7 @@ planar synthesize <repo-root> --scope <slug>           # override cwd-derived sc
 
 ## Authoring Conventions
 
-Apply the six structured-authoring rules from task 602: quoted titles, literal headings, no nested bullets, no `## Out of this plan` H2, workbench discipline, and only annotate skills with the guard note when the guarded verb literally appears in the body.
+Apply the structured-authoring rules: quoted titles, literal headings, no nested bullets, no `## Out of this plan` H2, workbench discipline, and only annotate skills with the guard note when the guarded verb literally appears in the body.
 
 ## Vendor Notes
 

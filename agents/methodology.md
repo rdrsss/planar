@@ -36,10 +36,11 @@ The orchestrator manages up to five phases per feature. Phases 1–2 apply only 
 - The orchestrator never picks dispatch granularity silently. Phase 3 begins with a strict/grouped/single proposal that the user must confirm (unless an explicit `--strict`/`--grouped`/`--batch` flag was supplied at invocation).
 - For an `active` or `paused` anchor plan, the orchestrator skips Phases 1 and 2 and enters Phase 3 directly.
 - Phase 3 work selection is claim-aware. Active, unexpired agent claims make a task or child milestone unavailable to new dispatch unless the operator explicitly forces stale-claim recovery.
+- Agent-authored files must be self-contained within the target project. Do not write Planar's own internal plan IDs, task IDs, milestone labels, workbench paths, or historical shorthand into project comments, docs, specs, commit messages, or generated workflows unless the operator explicitly asks for that cross-project provenance. Use project-local names, local artifact links, or generic placeholders instead.
 
 ## Plan-status invariant
 
-Plan status is a function of task status, enforced at task-write time. This is the plan-status auto-promotion invariant (plan 304); the orchestrator does NOT need to explicitly walk child plans through `draft → active → done` after a barrel cycle.
+Plan status is a function of task status, enforced at task-write time. This is the plan-status auto-promotion invariant; the orchestrator does NOT need to explicitly walk child plans through `draft → active → done` after a barrel cycle.
 
 The rule fires inside the transaction of every `task.Add`, `task.Update`, `task.Done`, `task.Reopen`, `task.Cancel`, and `task.Block`:
 
@@ -56,9 +57,9 @@ The rule fires inside the transaction of every `task.Add`, `task.Update`, `task.
 
 **Direct tasks only.** A plan's status depends only on its own tasks, not on its child plans' tasks. An anchor whose child plans are all done but whose own tasks are still mixed (or absent) does NOT auto-promote — that's a deliberate non-goal (release-gate stays operator-driven).
 
-**Opt-out.** Each task verb accepts `--no-auto-promote` to skip the recompute for that single operation. Used by migrations and scripted bulk edits that don't intend the plan-level transition. Plan 304's adopter fix is the reference use-case: `--apply-removals` cancels tasks then explicitly abandons the parent plan, and the cancellation must NOT auto-promote (cancel→done would forbid the subsequent abandon).
+**Opt-out.** Each task verb accepts `--no-auto-promote` to skip the recompute for that single operation. Used by migrations and scripted bulk edits that don't intend the plan-level transition. For example, `--apply-removals` may cancel tasks and then explicitly abandon the parent plan; the cancellation must NOT auto-promote (cancel→done would forbid the subsequent abandon).
 
-**Audit trail.** Every transition emits a `session_entries` row with `prefix='note'` and a structured body that begins with the sentinel line `plan_status: <id>`. The `session_entries.prefix` CHECK constraint does not include a dedicated `status` prefix, so the sentinel-body convention is the grep-recoverable alternative. The same sentinel-body pattern applies to plan 298's `dispatch:` audit trail.
+**Audit trail.** Every transition emits a `session_entries` row with `prefix='note'` and a structured body that begins with the sentinel line `plan_status: <id>`. The `session_entries.prefix` CHECK constraint does not include a dedicated `status` prefix, so the sentinel-body convention is the grep-recoverable alternative. The same sentinel-body pattern applies to dispatch audit entries.
 
 Recover the per-transition record with:
 
@@ -112,7 +113,7 @@ The claim ritual is expressed entirely in `planar-agent` verbs (the dedicated ag
 
    If the process dies without invoking any of these, `planar-agent reconcile` (operator-side, separate binary) later marks the lease stale. The task stays in `doing` until the operator revives it or another agent's `pull` finds it available again (a stale claim no longer blocks pull's exclusivity).
 6. **Operator recovery.** Stuck claims and the human cleanup path live on `planar-agent`, not `planar`: `planar-agent reconcile [--dry-run] [--stale-after <secs>]` for batch stale-claim sweeps, and `planar-agent abort --claim <token> --reason <text>` to force-release a specific claim regardless of the owning session.
-7. **Live observability.** The read-only `planar-watch` binary (plan 85 M8) carries `ps`, `feed --follow`, `log`, `claims`, `actions`, and `plans` for streaming human observation. For non-streaming reads through the `planar` binary, use `planar dashboard --agents`, `planar plan next`, `planar tree`, `planar audit trail`, and `planar health`.
+7. **Live observability.** The read-only `planar-watch` binary carries `ps`, `feed --follow`, `log`, `claims`, `actions`, and `plans` for streaming human observation. For non-streaming reads through the `planar` binary, use `planar dashboard --agents`, `planar plan next`, `planar tree`, `planar audit trail`, and `planar health`.
 
 The default claim scope is exclusive for tasks and child milestones. Shared claims are reserved for read-only observation or plan-level coordination where multiple agents are intentionally watching the same entity. Overlapping exclusive live claims are a conflict, not a scheduling hint.
 
@@ -151,7 +152,7 @@ Three named strategies run in the **model-driven orchestrator** — all in-pwd. 
 - **`barrel-deferred`** — Coder cycles run back-to-back in pwd; reviewer dispatched once at a milestone or plan boundary on the union diff. No isolation. Recommended for: long sequential plans where per-cycle reviewer overhead exceeds the value.
 - **`barrel-bypass`** — No reviewer at all; quality gates (`make fmt-check`, `make build`, `make test`, `make test-integration` twice, `planar skills render --check` against an out-of-tree staging dir, and any remaining relevant validators) are the entire signal. Sequential, in-pwd. Recommended for: mechanical sweeps, docs-polish, single-verb additions where the contract is fully gated.
 
-Two further strategies — **`isolated-sequential`** (coder in a dedicated worktree on an epic-child branch; sequential) and **`parallel-fanout`** (N coders fanned out across parallel-eligible tasks, each in its own worktree, consolidated at fan-in) — require deterministic worktree and branch management and are therefore **owned by the `planar-orchestrate` harness** (plan 492), not the model-driven orchestrator. The model orchestrator never creates worktrees, cuts epic branches, or fans out; for that work it hands the plan to the harness. Their axis bundles, the six parallel-eligibility rules, and the fan-in conflict protocol live in the plan-492 tech spec.
+Two further strategies — **`isolated-sequential`** (coder in a dedicated worktree on an epic-child branch; sequential) and **`parallel-fanout`** (N coders fanned out across parallel-eligible tasks, each in its own worktree, consolidated at fan-in) — require deterministic worktree and branch management and are therefore **owned by the `planar-orchestrate` harness**, not the model-driven orchestrator. The model orchestrator never creates worktrees, cuts epic branches, or fans out; for that work it hands the plan to the harness. Their axis bundles, the six parallel-eligibility rules, and the fan-in conflict protocol live in the harness design documentation.
 
 ### Continuity guarantee: `classic`
 
@@ -159,7 +160,7 @@ Two further strategies — **`isolated-sequential`** (coder in a dedicated workt
 
 ### Axes
 
-The five axes underlying every strategy. The model-driven orchestrator only reaches the in-pwd subset of axis values; the `worktree` / `epic-child` / `fan-out` / `per-fanin` values are reachable only through the `planar-orchestrate` harness (plan 492). A custom strategy (`--strategy custom` with per-axis flags) is the escape hatch for advanced operators outside the named menu.
+The five axes underlying every strategy. The model-driven orchestrator only reaches the in-pwd subset of axis values; the `worktree` / `epic-child` / `fan-out` / `per-fanin` values are reachable only through the `planar-orchestrate` harness. A custom strategy (`--strategy custom` with per-axis flags) is the escape hatch for advanced operators outside the named menu.
 
 | Axis | Values | `classic` default |
 |------|--------|-------------------|
@@ -179,7 +180,7 @@ Each strategy locks in one value per axis:
 | `barrel-deferred`     | in-pwd   | current-branch | sequential | at-boundary  | at-boundary  |
 | `barrel-bypass`       | in-pwd   | current-branch | sequential | gates-only   | none         |
 
-The two worktree bundles (`isolated-sequential`, `parallel-fanout`) are documented in the plan-492 tech spec; the model orchestrator does not run them.
+The two worktree bundles (`isolated-sequential`, `parallel-fanout`) are documented in the harness design documentation; the model orchestrator does not run them.
 
 ### Invalid combinations
 
@@ -230,17 +231,17 @@ The "last-used strategy for this plan" lookup that drives rule 6 of the recommen
 
 The dispatch-shape gate's six shapes (`strict`, `grouped`, `single`, `barrel-grouped`, `barrel-deferred`, `barrel-bypass`) map onto the strategy axes as follows:
 
-- `strict`, `grouped`, `single` — apply within any in-pwd strategy. They describe per-cycle batching, not overall methodology. Under `classic` the operator picks freely; under the barrel strategies they are subsumed. (Under the harness-owned worktree strategies they describe how each lane is batched — see the plan-492 tech spec.)
+- `strict`, `grouped`, `single` — apply within any in-pwd strategy. They describe per-cycle batching, not overall methodology. Under `classic` the operator picks freely; under the barrel strategies they are subsumed. Under the harness-owned worktree strategies they describe how each lane is batched.
 - `barrel-grouped`, `barrel-deferred`, `barrel-bypass` — these conflate "dispatch shape" with "reviewer cadence." Under the strategy model, the latter two are subsumed by the `barrel-deferred` and `barrel-bypass` named strategies. Whether the standalone flags get deprecated, kept for backward compatibility, or treated as aliases is an open question deferred until operators have used both paths for a cycle or two.
 
 ## Worktrees
 
 Worktree lifecycle — the `epic/` integration branch and per-task `cycle/`
 working branches, their creation, fan-in merge, and cleanup — is **owned by the
-`planar-orchestrate` harness** (plan 492), not by the model-driven orchestrator.
+`planar-orchestrate` harness**, not by the model-driven orchestrator.
 The model orchestrator runs `classic` (in-pwd) only and creates no worktrees.
 The branch/path naming scheme, the six parallel-eligibility rules, and the
-fan-in conflict protocol live in the plan-492 tech spec.
+fan-in conflict protocol live in the harness design documentation.
 
 `classic` and the barrel strategies never use worktrees. The runtime invariant
 below still governs scope whenever a process (such as a harness-spawned coder)
@@ -261,7 +262,7 @@ Two invariants govern scope behavior when cwd is inside a worktree:
 
 **`--scope <slug>` does NOT override the refusal.** The rule is about *where the verb runs*, not which scope it targets. To plan against a member repo from elsewhere, cd to the parent repo (or workspace root with `--scope <member>`); do not try to plan from inside a worktree.
 
-The engine-side enforcement of this rule shipped in plan 297 M3: the runtime entry point classifies the verb (`src/cmd/planar/verb_classification.zig`) and refuses planning verbs from inside a worktree (`src/cmd/planar/worktree_gate.zig`, exit code 8). Worktree detection (`engine.identity.scope.detectWorktree`) resolves the parent repo two ways — a `.worktrees/<segment>/` fast path, and a `git rev-parse --show-toplevel --git-common-dir` fallback — so the parent-dictates-scope rule holds whether or not the worktree lives physically under the repo. Scope resolution is cwd-first: the literal cwd's registered project wins if one exists; otherwise it falls back to the git-derived parent repo's scope.
+The runtime entry point classifies the verb (`src/cmd/planar/verb_classification.zig`) and refuses planning verbs from inside a worktree (`src/cmd/planar/worktree_gate.zig`, exit code 8). Worktree detection (`engine.identity.scope.detectWorktree`) resolves the parent repo two ways — a `.worktrees/<segment>/` fast path, and a `git rev-parse --show-toplevel --git-common-dir` fallback — so the parent-dictates-scope rule holds whether or not the worktree lives physically under the repo. Scope resolution is cwd-first: the literal cwd's registered project wins if one exists; otherwise it falls back to the git-derived parent repo's scope.
 
 ## Dispatch mode selection
 
@@ -429,11 +430,11 @@ claim_tokens: [<token>, <token>, ...]
 
 The `reviewer_disposition` field captures the precedence rule: `barrel-bypass` mode overrides the per-cycle reviewer-skip profile and records `bypassed` (not `skipped-by-profile`). This distinguishes "operator chose to bypass" from "this cycle shape had no review signal anyway."
 
-`planar audit trail <plan>` exposes the prefix and body for forensic recovery. No schema change; `session_entries.prefix` is CHECK-constrained to a fixed set (`action / observation / decision / question / file / command / note / error / read`), so the dispatch convention reuses `prefix='note'` with the sentinel body line as the grep-recoverable alternative — the same convention used by plan 304's `plan_status:` audit trail.
+`planar audit trail <plan>` exposes the prefix and body for forensic recovery. No schema change; `session_entries.prefix` is CHECK-constrained to a fixed set (`action / observation / decision / question / file / command / note / error / read`), so the dispatch convention reuses `prefix='note'` with the sentinel body line as the grep-recoverable alternative.
 
 ### Phase 3.5 — Test-coder dispatch
 
-Between the coder's report-done and the reviewer's dispatch, the orchestrator may dispatch a [`test-coder`](test-coder.md) cycle. The gating decision is delegated to `planar test-spec status <plan> --json` (plan 286 M4) — the orchestrator does NOT re-implement coverage calculation.
+Between the coder's report-done and the reviewer's dispatch, the orchestrator may dispatch a [`test-coder`](test-coder.md) cycle. The gating decision is delegated to `planar test-spec status <plan> --json` — the orchestrator does NOT re-implement coverage calculation.
 
 **Gating condition.** Dispatch test-coder when:
 - The cycle's dispatched tasks carry `[slug: …]` annotations, AND
@@ -460,14 +461,14 @@ says the reviewer cannot add signal.
 
 | Cycle shape | Reviewer disposition | Why |
 |-------------|----------------------|-----|
-| Architectural / handoff cycles (e.g. plan 215 M5, plan 179 M3 patterns) | Load-bearing — always dispatch | Cross-cutting choices need a fresh, independent read against the spec. |
+| Architectural / handoff cycles | Load-bearing — always dispatch | Cross-cutting choices need a fresh, independent read against the spec. |
 | Schema migrations | Load-bearing — always dispatch | Forward + back safety, FK implications, index correctness all require a second pair of eyes. |
 | New CLI surfaces | Load-bearing — always dispatch | Flag semantics, error messages, `--json` shape, exit codes harden against an independent read. |
 | Validate / invariant changes | Load-bearing — always dispatch | Each rule must be covered by a test and the reject paths must return useful errors. |
 | Refactor sweeps with semantic implications | Load-bearing — always dispatch | Not pure mechanical — behavior may shift under the rename. |
 | Single-feature additions (the middle ground) | Default reviewer-on; flip to skip only if the diff is small and non-architectural | Treat the table edges as the bright lines; the middle defaults to on. |
 | Decision-only cycles (recording `planar decision add` rows) | Skip — reviewer adds no signal | Reviewer cannot verify decision content beyond what the operator already approved. |
-| Pure mechanical sweeps (mass `sed`-style refactors, e.g. plan 162 M7 pl-adopt → pl-import across 73 files) | Skip — reviewer adds no signal | The diff IS the verification; grep-verified completeness suffices. |
+| Pure mechanical sweeps (mass `sed`-style refactors) | Skip — reviewer adds no signal | The diff IS the verification; grep-verified completeness suffices. |
 | Docs-polish without behavior change | Skip — reviewer adds no signal | Voice review is a different job; render-check + link checks cover the load-bearing parts. |
 
 When the reviewer IS dispatched, see the role spec at
@@ -504,9 +505,9 @@ Every coder brief MUST:
   becomes the coder's source of truth in place of the spec. The brief
   is a pointer.
 - **List task IDs explicitly.** The cycle's scope is the enumerated task
-  list. "Implement M3" is not a scope; "tasks 1247, 1248, 1249 under
-  plan 227 M3" is. Task IDs are the contract the reviewer compares the
-  diff against.
+  list. "Implement the parser milestone" is not a scope; "tasks 1247, 1248, 1249 under
+  the parser milestone" is. Task IDs are the contract the reviewer compares
+  the diff against.
 - **List claim tokens explicitly.** The cycle's synchronization scope is
   the claim token set. The reviewer uses it to verify the diff stayed
   inside leased work, and an interrupted session uses it to resume or
@@ -533,7 +534,7 @@ Every coder brief MUST:
   coder into a transcriber and removes the signal that the design step
   produces.
 - **Cite the test-spec section paths when the dispatched tasks have
-  `verifies` edges to test-spec scenarios (plan 277).** The test-spec
+  `verifies` edges to test-spec scenarios.** The test-spec
   is a planning artifact at the same level as the product- and
   tech-spec; when scenarios are cited against the task IDs in the
   cycle, the brief must point the coder at the relevant test-spec
@@ -564,8 +565,8 @@ and the reviewer cannot recover the loss after the fact.
 
 ## Concurrency
 
-- Parallel coder dispatch is owned by the `planar-orchestrate` harness (plan 492), not the model-driven orchestrator. The codified eligibility test (six parallelizability rules) and the `parallel-fanout` frame that uses them live in the plan-492 tech spec. The model orchestrator runs `classic` (one coder, in pwd) only.
-- The substrate that lets parallel coders run without clobbering each other — per-task worktrees on epic-child branches with fan-in merge — is owned by the harness (plan 492). See [Worktrees](#worktrees) for the ownership boundary.
+- Parallel coder dispatch is owned by the `planar-orchestrate` harness, not the model-driven orchestrator. The codified eligibility test (six parallelizability rules) and the `parallel-fanout` frame that uses them live in the harness design documentation. The model orchestrator runs `classic` (one coder, in pwd) only.
+- The substrate that lets parallel coders run without clobbering each other — per-task worktrees on epic-child branches with fan-in merge — is owned by the harness. See [Worktrees](#worktrees) for the ownership boundary.
 - Reviewers may run in parallel against independent coder outputs. Under `parallel-fanout` a single reviewer cycle runs against the integrated diff on the epic, not per child.
 - A single task is always coder→reviewer sequential — never two coders on the same task simultaneously.
 - Stale claims are not ignored silently. The operator or orchestrator must reconcile or force-takeover them before treating the work as available.
@@ -582,7 +583,7 @@ Agents communicate their current activity to the read surface (`planar-watch ps`
 planar-agent heartbeat --claim <token> --status "editing src/engine/planning/question.zig"
 ```
 
-When `--status` is omitted, the heartbeat refreshes the lease without changing the displayed activity. Status strings are **free-form text** (Decision D1, plan 467 tech-spec § Concepts → Status string vs structured state) — there is no state machine enum. Agents choose strings that describe what they are doing in human-readable terms.
+When `--status` is omitted, the heartbeat refreshes the lease without changing the displayed activity. Status strings are **free-form text** — there is no state machine enum. Agents choose strings that describe what they are doing in human-readable terms.
 
 ### The `awaiting:` prefix convention
 
@@ -612,13 +613,13 @@ For long operations (> 30 s), heartbeat at least once per TTL/2 even if the stat
 
 ### Do not manually duplicate entity-create events
 
-The engine hooks added in plan 467 M1 automatically write an `agent_actions` row when `question.create`, `decision.create`, or `artifact.create` fires under an active claim. Agents MUST NOT also call a separate `planar-agent heartbeat --status "created question X"` for the same event — that produces a duplicate action row and clutters the feed.
+The engine hooks automatically write an `agent_actions` row when `question.create`, `decision.create`, or `artifact.create` fires under an active claim. Agents MUST NOT also call a separate `planar-agent heartbeat --status "created question X"` for the same event — that produces a duplicate action row and clutters the feed.
 
 Status strings describe the **agent's own state** (what it is doing), not a mirror of entity-create events. Entity creates surface automatically; status strings are the agent's judgment about its current phase.
 
 ### 256-byte cap on `--status` payload
 
-`planar-agent heartbeat --status` enforces a 256-byte upper bound on the status string (plan 467 M1, task 3038). Strings longer than 256 bytes are rejected with `error.InvalidInput`. Keep status strings concise: a short phrase is enough for the feed to be readable.
+`planar-agent heartbeat --status` enforces a 256-byte upper bound on the status string. Strings longer than 256 bytes are rejected with `error.InvalidInput`. Keep status strings concise: a short phrase is enough for the feed to be readable.
 
 ### Cross-references
 
@@ -630,6 +631,6 @@ Status strings describe the **agent's own state** (what it is doing), not a mirr
 
 - **Iteration cap of 5.** Hard-coded today. Revisit once empirical data on real workloads exists — the right number may be 3, 5, or 8 depending on task shape. Move to the `config` table or methodology frontmatter if it needs to flex per project.
 - **Per-tier reviewer.** Currently all reviewers are `large`-tier. Some review work may not need that; a cheaper review tier could be useful for routine tasks.
-- **Parallelism heuristics.** The six parallel-eligibility rules — deliberately conservative (empty `task_touches` is "touches everything," singleton authoritative files block fan-out, schema migrations serialize) — are owned by the `planar-orchestrate` harness and specified in the plan-492 tech spec. The list of singleton files may grow as new coordination points emerge; revisit once enough fan-out cycles have shipped to identify whether the conservatism has the right shape.
-- **Cross-vendor pairings.** A reviewer may be a different vendor than the coder (Claude reviewing Codex output, etc.). The methodology assumes this works; verify once cross-vendor handoff is exercised in M6.
+- **Parallelism heuristics.** The six parallel-eligibility rules — deliberately conservative (empty `task_touches` is "touches everything," singleton authoritative files block fan-out, schema migrations serialize) — are owned by the `planar-orchestrate` harness and specified in the harness design documentation. The list of singleton files may grow as new coordination points emerge; revisit once enough fan-out cycles have shipped to identify whether the conservatism has the right shape.
+- **Cross-vendor pairings.** A reviewer may be a different vendor than the coder (Claude reviewing Codex output, etc.). The methodology assumes this works; verify once cross-vendor handoff is exercised in real cycles.
 - **Reviewer feedback format.** "Concrete remediation" is loose today. As patterns emerge, codify the structure (e.g. file:line + proposed change, or a structured issue list).

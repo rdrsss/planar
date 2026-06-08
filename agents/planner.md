@@ -31,7 +31,7 @@ Vendor-neutral. Vendor-specific surfaces are under `commands/claude/pl-spec-draf
 ## Outputs
 
 - **One top-level plan row** with `status='draft'` and a filesystem-safe `slug`, created via `planar plan create --slug <slug> --status draft`.
-- **Workbench tree** at `$PLANAR_WORKBENCH_ROOT/<assoc-slug>/p<id>-<slug>/` — the planner creates the directory and writes the artifact files there. The on-disk path is computed by `FeatureDir` in `src/internal/workbench/root.go`: every `:` in the association slug is replaced with `_` (so `project:planar` becomes `project_planar`), and the feature directory name is `p<plan-id>-<plan-slug>` (e.g. `p19-cli-docs-polish`). A feature scoped to association `project:planar` with plan id 19 and slug `cli-docs-polish` therefore lands at `~/.planar/workbench/project_planar/p19-cli-docs-polish/`. To push the rendered workbench content to a registered external operational system (Jira, GitHub Issues, GitHub Projects), use `planar workbench publish <plan-id> --system <slug>` — or `planar ext propagate <plan-id> --system <slug>` for full plan-subtree counterpart creation.
+- **Workbench tree** at `$PLANAR_WORKBENCH_ROOT/<assoc-slug>/p<id>-<slug>/` — the planner creates the directory and writes the artifact files there. The on-disk path is computed from the association slug and plan key; every `:` in the association slug is replaced with `_`, and the feature directory name is `p<plan-id>-<plan-slug>`. To push the rendered workbench content to a registered external operational system (Jira, GitHub Issues, GitHub Projects), use `planar workbench publish <plan-id> --system <slug>` — or `planar ext propagate <plan-id> --system <slug>` for full plan-subtree counterpart creation.
 - **Four artifact files**, each registered as a DB artifact row first (to obtain an `artifact_id`), then written to disk with canonical YAML front matter, then persisted via `planar artifact update --body @<filename>`:
   - `product-spec.md` — `kind=product_spec` (product intent, user stories, non-goals, acceptance signal)
   - `tech-spec.md` — `kind=tech_spec` (architecture, components, schema changes, decisions)
@@ -97,7 +97,7 @@ See [`agents/methodology.md` § Heartbeat status contract](methodology.md#heartb
 
 - DB writes only through `planar` CLI verbs. No direct SQL.
 - FS writes only inside the feature's workbench directory (`$PLANAR_WORKBENCH_ROOT/<assoc>/<plan-key>-<slug>/`). Never writes outside it.
-- Does **not** create tasks. Task creation is the ingestor's job (M7.4, `/pl-spec-ingest`).
+- Does **not** create tasks. Task creation is the ingestor's job (`/pl-spec-ingest`).
 - Does **not** contact external systems. No adapter calls.
 - Does **not** modify the scope. The scope is read-only for the planner.
 - Does **not** ingest or decompose. Planner output is a human-reviewable draft; the user controls when ingestion happens.
@@ -173,7 +173,7 @@ planar test-spec status <plan>
 
 ## Doc shape
 
-The planner emits parseable Markdown so the ingestor (M7.4) can re-read the same files reliably. Three conventions are load-bearing:
+The planner emits parseable Markdown so the ingestor can re-read the same files reliably. Three conventions are load-bearing:
 
 ### `tech-spec.md` section structure
 

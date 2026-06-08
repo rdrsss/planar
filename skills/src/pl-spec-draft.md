@@ -33,7 +33,7 @@ Phase 4 has a self-check before final emission (see [`agents/planner.md` §Phase
 
 Invoke at the very start of a new feature, before any tasks exist. The user states a goal; this skill produces **four** reviewable planning documents and registers them as artifacts in the database. The documents are deliberately drafts — the user reads and edits them before invoking `pl-spec-ingest` to decompose them into tasks.
 
-Do **not** invoke this skill to create tasks. Task creation belongs to `pl-spec-ingest` (M7.4).
+Do **not** invoke this skill to create tasks. Task creation belongs to `pl-spec-ingest`.
 
 ## What it produces
 
@@ -56,7 +56,7 @@ Do **not** invoke this skill to create tasks. Task creation belongs to `pl-spec-
 
 The skill composes these commands in this order. The artifact rows are created with an empty body first so the returned `<artifact-id>` is known before the file is written, which lets the file carry correct YAML front matter from the start.
 
-> **Scope.** Reads use the cwd-derived scope; writes refuse on cross-scope mismatch (see [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard)). Pass `--scope <slug>` explicitly when working from outside the target repo's cwd. The active scope stack was removed in plan 153 M5; there is no `scope use` to push.
+> **Scope.** Reads use the cwd-derived scope; writes refuse on cross-scope mismatch (see [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard)). Pass `--scope <slug>` explicitly when working from outside the target repo's cwd. There is no active scope stack and no `scope use` to push.
 
 > **Cross-scope guard.** This verb refuses with exit 1 when the
 > operator's resolved write scope disagrees with the target entity's
@@ -159,8 +159,9 @@ The structured convention is what this skill produces for new drafts. The
 bulleted fallback exists so that `pl-spec-ingest` can reconcile pre-fix specs
 without requiring a manual rewrite.
 
-For the full rationale see the plan 97 tech spec at
-`~/.planar/workbench/project_planar/p97-spec-draft-questions/tech-spec.md`.
+For the rationale, keep the spec self-contained in this project: open questions
+must be represented in the workbench artifact body and reconciled into first-
+class question entities rather than depending on external notes.
 
 ## Status reporting
 

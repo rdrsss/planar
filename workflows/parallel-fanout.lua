@@ -1,5 +1,5 @@
 --[[
-  parallel-fanout.lua — parallel N-way fanout driver (plan 492 M10 task 3205).
+  parallel-fanout.lua — parallel N-way fanout driver.
 
   TEMPLATE: Demonstrates `ctx.parallel({thunks})` to fan out coders across all
   parallel-eligible tasks simultaneously. Uses ctx.eligible(plan_id) to read
@@ -7,12 +7,12 @@
   out. Serialized (overlapping-touch) tasks are logged as skipped.
 
   meta.reviewer = true: each thunk in the parallel block dispatches its own
-  reviewer after the coder, satisfying the bright-line refusal guard (task 3206)
-  for every branch of the fan-out.
+  reviewer after the coder, satisfying the bright-line refusal guard for every
+  branch of the fan-out.
 
   OPERATOR EXTENSION POINTS:
     1. Replace brief placeholder strings with real brief-generation logic.
-    2. Provide worktree_path and claim_token per-task (M5 pre-preparation).
+    2. Provide worktree_path and claim_token per-task.
     3. Decide how to handle the serialized bucket: either ignore them (let the
        next run pick them up) or add a sequential loop after the parallel block.
 ]]
@@ -116,7 +116,7 @@ return {
     end
 
     -- ctx.parallel runs all thunks concurrently and returns a results table in
-    -- the same order as the input thunks (original-order guarantee from M5).
+    -- the same order as the input thunks.
     local results = ctx.parallel(thunks)
 
     -- Print the per-branch outcomes to stdout.
