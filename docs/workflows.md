@@ -1912,13 +1912,17 @@ See [CLI reference: planar-watch tree](cli-reference.md#planar-watch-tree--m4-ad
 
 The verb set is enforced by `src/cmd/planar-watch/handlers/cmd.zig`: there is no `pull`, `claim`, `complete`, `fail`, `release`, `block`, `heartbeat`, `action`, `ingest`, `reconcile`, or `abort` in the tree. The strict-read-only DB handle (`runtime.ensureDbStrictReadOnly` → `sqlite3_open_v2(..., SQLITE_OPEN_READONLY, ...)`) refuses any write SQL with `SQLITE_READONLY` at the driver layer — verified by the `openReadOnly: write SQL is rejected at the driver layer` unit test in `src/db/sqlite.zig`. Both defenses must be in place; either failing alone is treated as a regression by `integration_tests/planar_watch_test.zig`.
 
-## Recipe 20 — Clean up cancelled-task workbench files after a SlugConflict-retry cycle
+## Recipe 20 — Clean up terminal-status workbench files from historical or manual recovery
 
-`planar spec ingest --apply` is not atomic across the whole anchor (plan 440 is the work
-item that fixes this); a SlugConflict mid-apply leaves the earlier inserts committed and
-rolls back the rest. Each retry produces a new abandoned plan + cancelled tasks. The
-workbench filesystem accumulates `.md` files for every cancelled entity from every retry.
-This recipe cleans them up.
+Current `planar spec ingest --apply` runs atomically per anchor plan: a SlugConflict or
+other apply failure rolls back that anchor's derived rows, successful action audit, and
+anchor status flip together. A failed apply should not create child plan, task, decision,
+or scenario files that need manual cleanup.
+
+Use this recipe only for terminal-status files already on disk, such as leftovers from
+older Planar versions, manually cancelled or abandoned entities, or recovery from a
+separate workflow that intentionally preserved partial work. It removes workbench files
+for entities that are already terminal in the database.
 
 ```sh
 # 1. Find out what's stranded. status with terminal-filter on tells you what

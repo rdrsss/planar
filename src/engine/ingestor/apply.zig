@@ -12,10 +12,9 @@
 //! is a user error and is rejected by the handler before reaching this
 //! module.
 //!
-//! Per-statement DB ops; no mega-transaction. A failure mid-apply leaves
-//! the DB in a partially-applied state that is resumable by re-running
-//! the ingestor (the Diff is recomputed against the new DB state and only
-//! the still-missing entities are inserted).
+//! Apply mode is atomic per anchor plan. All derived graph writes for one
+//! anchor run inside a SQLite savepoint; a failed write rolls back the whole
+//! apply while preserving the original failure when cleanup succeeds.
 
 const std = @import("std");
 const db = @import("db");
@@ -89,7 +88,8 @@ pub const Error =
 /// On real apply, child plans + tasks land first (so verifies-link
 /// resolution against task slugs works), then decisions, then scenarios,
 /// then question status flips, and finally — when the anchor was in
-/// `draft` — the anchor plan is flipped to `active`.
+/// `draft` — the anchor plan is flipped to `active`. That write sequence is
+/// wrapped in one savepoint so a failed apply leaves no derived rows behind.
 pub fn apply(
     d: *db.sqlite.Db,
     allocator: std.mem.Allocator,
@@ -105,6 +105,27 @@ pub fn apply(
         appendReadEntry(d, allocator, diff.anchor_plan_id) catch {};
         return res;
     }
+
+    const savepoint_name = "spec_ingest_apply";
+    d.savepoint(allocator, savepoint_name) catch return Error.QueryFailed;
+
+    res = applyWithinSavepoint(d, allocator, diff, opts) catch |apply_err| {
+        d.rollbackToSavepoint(allocator, savepoint_name) catch return Error.QueryFailed;
+        d.releaseSavepoint(allocator, savepoint_name) catch return Error.QueryFailed;
+        return apply_err;
+    };
+
+    d.releaseSavepoint(allocator, savepoint_name) catch return Error.QueryFailed;
+    return res;
+}
+
+fn applyWithinSavepoint(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    diff: diff_mod.Diff,
+    opts: Options,
+) Error!Result {
+    var res: Result = .{};
 
     // Anchor scope. Threaded from the handler via opts.scope so child
     // plans, tasks, decisions, and scenarios land in the operator's

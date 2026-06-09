@@ -4074,7 +4074,9 @@ planar spec ingest <plan> [--apply] [--apply-removals] [--format text|json] [--s
 
 **Description:** Read `tech-spec.md`, `roadmap.md`, and (when present) `test-spec.md` from the anchor plan's workbench directory, compute the proposed diff against the current database state, and (optionally) commit additions and updates.
 
-Default mode is **preview**: prints a tree-shaped diff and exits 0 without writing anything. `--apply` is required to commit changes.
+Default mode is **preview**: prints a tree-shaped diff and exits 0 without applying graph changes. `--apply` is required to commit changes.
+
+Apply mode is atomic per anchor plan. All derived rows for one anchor plan run inside one SQLite savepoint: child plans, tasks, decisions, test scenarios, links, optional removals, the anchor `draft` -> `active` flip, and the successful action audit either all commit or all roll back. A failed apply leaves no partial derived graph for that anchor and should not require workbench cleanup. When multiple `<plan>` arguments are supplied, each anchor has its own atomic boundary; one plan may apply successfully while another rolls back, and the command exits non-zero if any plan fails.
 
 A `coverage:` line follows the totals on every run. It reports how many tasks carry a `[slug:]`, how many slug-bearing tasks are verified by at least one test-spec scenario, and any orphan scenarios whose `**Verifies:**` line failed to parse. `--strict` promotes uncovered tasks and orphan scenarios from a printed warning into a non-zero exit.
 
@@ -4135,7 +4137,7 @@ Reads:
 - `decisions` — existing decisions linked via `entity_links(relationship='derives-from')`.
 - `entity_links` — existing link rows for reconciliation.
 
-Writes (only with `--apply`):
+Writes (only with `--apply`, atomically per anchor plan):
 - `plans` — inserts child plans; updates anchor plan status (`draft` → `active` on first apply).
 - `tasks` — inserts or updates tasks; cancels orphan tasks (only with `--apply-removals`).
 - `decisions` — inserts or updates decisions.
@@ -4144,7 +4146,7 @@ Writes (only with `--apply`):
 
 **Capture:**
 - Preview mode: one `session_entries` row with `prefix='read'` appended.
-- Apply mode: one `session_entries` row with `prefix='action'` appended.
+- Apply mode: one `session_entries` row with `prefix='action'` appended inside the same savepoint as the derived graph writes, so failed applies do not emit a success audit row.
 
 **Exit codes:**
 - `0` — success (preview or apply).

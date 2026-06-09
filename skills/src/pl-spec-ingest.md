@@ -23,7 +23,7 @@ shared_notes:
 
 Invoke after the planner has drafted `tech-spec.md` and `roadmap.md` and the user has reviewed and edited them. The ingestor reads those files from the workbench and decomposes them into child plans, tasks, decisions, and test scenarios in the database.
 
-Do **not** invoke this skill before the user has reviewed the planning documents. Task decomposition is irreversible without `--apply-removals`; review first.
+Do **not** invoke this skill before the user has reviewed the planning documents. A successful `--apply` persists the decomposition; later source edits reconcile through another ingest run, and removals require `--apply --apply-removals`.
 
 ## Preview-first contract
 
@@ -45,6 +45,13 @@ This prints a tree-shaped diff of proposed additions, updates, and removals and 
 | `pl-spec-ingest <plan> --format json` | Preview as JSON (for orchestrator consumption). |
 
 `--apply-removals` without `--apply` is rejected as a user error (exit 1).
+
+Apply mode is atomic per anchor plan. One anchor plan's derived graph writes,
+optional removals, anchor status flip, and successful action audit commit or
+roll back together. If apply fails, fix the source issue and rerun; do not
+clean up partial child plans, tasks, decisions, scenarios, or workbench files
+for that failed anchor. When a command ingests multiple plans, each plan keeps
+its own atomic boundary and the command exits non-zero if any one fails.
 
 ## Question reconciliation
 
@@ -150,6 +157,7 @@ reconciled product-spec.md: 4 questions (2 new, 2 unchanged, 0 stale)
 - Does **not** contact external systems (Jira, GitHub). Use `pl-ext-propagate` for that.
 - Does **not** modify the workbench filesystem. Entities are written to the DB; use `planar workbench push <plan>` afterward to refresh the FS tree.
 - Does **not** delete tasks without `--apply-removals`.
+- Does **not** leave partial derived rows behind for a failed `--apply`; the apply boundary rolls back per anchor plan.
 
 ## Underlying CLI verb
 

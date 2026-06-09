@@ -53,6 +53,14 @@ To commit additions and updates:
 planar spec ingest <plan> --apply
 ```
 
+Apply mode is atomic per anchor plan. All derived graph writes for one anchor plan
+run inside one SQLite savepoint: additions, updates, optional removals, links,
+auto scenarios, question reconciliation, the anchor `draft` -> `active` flip, and
+the successful action audit either commit together or roll back together. If an
+apply fails, rerun after fixing the source issue; no partial derived graph or
+workbench cleanup is expected for that anchor. Multi-plan invocations keep one
+independent atomic boundary per plan.
+
 To also commit proposed removals (cancel tasks whose source bullet was removed from the roadmap):
 
 ```
@@ -80,6 +88,7 @@ Re-running the ingestor on an unchanged workbench tree is a no-op: preview repor
 ## Boundaries
 
 - DB writes only through `planar` CLI verbs, and only when `--apply` is set.
+- Apply writes are atomic per anchor plan; a failed apply rolls back the derived graph and success audit for that anchor.
 - FS writes through `planar workbench push` only (after decomposition, the new entities can be pushed to the workbench tree for user inspection).
 - Does **not** contact external systems. No adapter calls.
 - Does **not** modify the scope, associations, or project registrations.
@@ -94,7 +103,7 @@ Re-running the ingestor on an unchanged workbench tree is a no-op: preview repor
 5. Parse `roadmap.md` for milestones (H2 headings) and work items (bullets), extracting `[touches: ...]` annotations.
 6. Compute the diff: additions, updates, proposed removals.
 7. Render the diff (tree text or JSON).
-8. If `--apply`: commit additions and updates. If also `--apply-removals`: commit proposed removals (cancel tasks, abandon orphan plans).
+8. If `--apply`: commit additions and updates inside the anchor plan's savepoint. If also `--apply-removals`: commit proposed removals (cancel tasks, abandon orphan plans) inside the same savepoint.
 9. Flip the anchor plan from `draft` → `active` on first successful apply.
 
 ## Non-trivial task heuristic (I-5)
