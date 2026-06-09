@@ -15,6 +15,7 @@ const engine = @import("engine");
 const main = @import("../main.zig");
 const runtime = @import("runtime");
 const exit = @import("../exit.zig");
+const scope_mod = @import("../scope.zig");
 
 pub const verb: cli.Cmd = .{
     .name = "init",
@@ -48,14 +49,12 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
 
     // Step 2: resolve cwd and register the project.
     //
-    // Match Go's os.Getwd() behavior (operator decision Q235 / task
-    // 2375): prefer the shell-provided PWD when set, falling back to
-    // realPath only when PWD is absent. realPath canonicalizes through
-    // macOS's /var → /private/var symlink, which then diverges from
-    // the literal path `assoc add` stores — creating a phantom second
-    // project row and breaking cwd-derive. Storing the literal cwd
-    // keeps init and assoc-add on the same key.
-    const cwd = resolveOperatorCwd(ctx.allocator, ctx.io) catch |e|
+    // Match cwd-derived scope resolution: preserve the shell-provided
+    // PWD spelling only when it resolves to the actual process cwd.
+    // This keeps /var-style symlink spelling stable without letting
+    // stale parent PWD values leak into child processes spawned with
+    // an explicit cwd.
+    const cwd = scope_mod.operatorCwd(ctx.allocator, ctx.io) catch |e|
         exit.die(ctx, e, "getting working directory: {s}", .{@errorName(e)});
     defer ctx.allocator.free(cwd);
 
@@ -163,45 +162,4 @@ fn gitRemoteOrigin(ctx: *const runtime.Ctx, cwd: []const u8) ?[]u8 {
         return null;
     }
     return result.stdout;
-}
-
-/// resolveOperatorCwd returns the operator's working directory as the shell
-/// presented it — preferring the PWD env var when set, falling back to
-/// realPath only when PWD is absent.
-///
-/// Matches Go's os.Getwd() behavior. The PWD-first preference matters on
-/// macOS where `/var/folders/...` symlinks to `/private/var/folders/...`:
-/// realPath would canonicalize through the symlink and store
-/// `/private/var/...`, but `assoc add <slug> <path>` stores the literal
-/// `<path>` argument. The two paths then diverge in the projects table,
-/// triggering a phantom second project row and breaking cwd-derive scope
-/// resolution. See plan 351 task 2375 for the root-cause analysis.
-///
-/// Caller owns the returned slice.
-fn resolveOperatorCwd(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
-    if (getPosixEnv("PWD")) |pwd| {
-        return try allocator.dupe(u8, pwd);
-    }
-    return try std.Io.Dir.realPathFileAlloc(.cwd(), io, ".", allocator);
-}
-
-/// getPosixEnv reads a single environment variable from std.c.environ.
-/// Returns null when the variable is not set or empty. The returned slice
-/// points into the process's environ block; caller must NOT free it.
-///
-/// (Duplicated from src/cmd/planar/editor.zig:188 to avoid a cross-handler
-/// import; consolidate if a third caller appears.)
-fn getPosixEnv(key: []const u8) ?[]const u8 {
-    const raw: [*:null]?[*:0]u8 = std.c.environ;
-    var i: usize = 0;
-    while (raw[i]) |entry| : (i += 1) {
-        const s: []const u8 = std.mem.span(entry);
-        if (s.len <= key.len + 1) continue;
-        if (s[key.len] != '=') continue;
-        if (!std.mem.eql(u8, s[0..key.len], key)) continue;
-        const val = s[key.len + 1 ..];
-        if (val.len == 0) return null;
-        return val;
-    }
-    return null;
 }

@@ -8,6 +8,7 @@ const harness = @import("harness");
 
 const InitJSON = struct {
     project_slug: []const u8,
+    root_path: []const u8 = "",
 };
 
 const PlanJSON = struct {
@@ -38,6 +39,43 @@ const SearchHitJSON = struct {
 const WorkspaceInitJSON = struct {
     projects: []const struct { slug: []const u8 },
 };
+
+test "child process cwd wins over stale parent PWD for worktree gate and init" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const child_cwd = suite.freshSystemTmpDir();
+    const stale_pwd = try std.fs.path.join(arena, &.{
+        suite.tmpAbsPath(),
+        ".worktrees",
+        "stale-pwd-plan",
+        "stale-pwd-task",
+    });
+    try mkdirp(stale_pwd);
+
+    const env = [_]harness.Suite.ExtraEnvEntry{
+        .{ .key = "PLANAR_DB", .value = suite.absDbPath() },
+        .{ .key = "PLANAR_DISABLE_WORKTREE_GATE", .value = "0" },
+        .{ .key = "PWD", .value = stale_pwd },
+    };
+
+    const init = mustRunJSONWithEnvInDir(&suite, InitJSON, arena, child_cwd, &.{
+        "init", "--allow-no-repo", "--json", "--name", "pwd-regression",
+    }, &env);
+    const real_child_cwd = try std.Io.Dir.realPathFileAlloc(.cwd(), std.testing.io, child_cwd, std.testing.allocator);
+    defer std.testing.allocator.free(real_child_cwd);
+    try std.testing.expectEqualStrings(real_child_cwd, init.root_path);
+
+    const plan = mustRunJSONWithEnvInDir(&suite, PlanJSON, arena, child_cwd, &.{
+        "plan", "create", "--json", "--scope", "global", "stale PWD regression plan",
+    }, &env);
+    try std.testing.expectEqualStrings("global", plan.scope_kind);
+}
 
 test "repo scope create list update guard and tree surfaces" {
     const gpa = std.testing.allocator;
