@@ -612,11 +612,19 @@ test "create with unknown scope slug returns SlugNotFound" {
     try std.testing.expectError(Error.SlugNotFound, create(&d, a, .{ .title = "x", .scope = "no-such-slug" }));
 }
 
-test "create with repo: scope returns UnsupportedScope" {
+test "create with repo: scope writes scope_kind='repo'" {
     const a = std.testing.allocator;
     var d = try setupTestDb(a);
     defer d.close();
-    try std.testing.expectError(Error.UnsupportedScope, create(&d, a, .{ .title = "x", .scope = "repo:foo" }));
+    _ = try d.execParams(
+        "insert into projects (slug, name, root_path) values ('foo', 'Foo', '/work/foo')",
+        &.{},
+    );
+    const repo_id = try d.intQuery("select id from projects where slug = 'foo'");
+    const s = try create(&d, a, .{ .title = "repo scenario", .scope = "repo:foo" });
+    defer deinit(s, a);
+    try std.testing.expectEqual(ScopeKind.repo, s.scope_kind);
+    try std.testing.expectEqual(repo_id, s.scope_id.?);
 }
 
 test "verify sets status + outcome + last_run_at" {

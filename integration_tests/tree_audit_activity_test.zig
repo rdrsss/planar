@@ -111,7 +111,7 @@ test "tree --json on a plan with NO agent activity: no activity_summary keys" {
         "task", "add", "--plan", pid, "--json", "no-act-task",
     });
 
-    const raw = suite.mustRun(&.{ "tree", "--depth", "3", "--json" });
+    const raw = suite.mustRun(&.{ "tree", "--depth", "3", "--json", "--scope", "global" });
     defer gpa.free(raw);
     // No activity has been recorded — the `activity_summary` JSON key
     // MUST NOT appear (silent degrade). This pins the
@@ -137,7 +137,7 @@ test "tree text on a plan with NO agent activity: no 'activity:' sub-line" {
         "task", "add", "--plan", pid, "--json", "no-act-task-text",
     });
 
-    const raw = suite.mustRun(&.{ "tree", "--depth", "3" });
+    const raw = suite.mustRun(&.{ "tree", "--depth", "3", "--scope", "global" });
     defer gpa.free(raw);
     // No "activity:" sub-line: the text renderer degrades silently when
     // the entity has no agent_actions / agent_work_claims rows.
@@ -170,7 +170,7 @@ test "tree --json on a plan with active claim: activity_summary present on task 
     // agent_actions row AND an agent_work_claims row.
     gpa.free(mustRunAgent(&suite, &.{ "pull", pid, "--no-locality-probe", "--role", "coder", "--json" }));
 
-    const raw = suite.mustRun(&.{ "tree", "--depth", "3", "--json" });
+    const raw = suite.mustRun(&.{ "tree", "--depth", "3", "--json", "--scope", "global" });
     defer gpa.free(raw);
     // The key MUST appear at least once now (on the claimed task row).
     try std.testing.expect(std.mem.indexOf(u8, raw, "\"activity_summary\"") != null);
@@ -199,7 +199,7 @@ test "tree text on a plan with active claim: 'activity:' sub-line present" {
     });
     gpa.free(mustRunAgent(&suite, &.{ "pull", pid, "--no-locality-probe", "--role", "coder", "--json" }));
 
-    const raw = suite.mustRun(&.{ "tree", "--depth", "3" });
+    const raw = suite.mustRun(&.{ "tree", "--depth", "3", "--scope", "global" });
     defer gpa.free(raw);
     try std.testing.expect(std.mem.indexOf(u8, raw, "activity: coder") != null);
     try std.testing.expect(std.mem.indexOf(u8, raw, "[claims:1]") != null);

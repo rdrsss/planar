@@ -506,9 +506,9 @@ test "three planar-agent workers drain a shared queue with exactly-once + a watc
     // once with no status filter to confirm zero leftovers in any
     // open state.
     // -----------------------------------------------------------------
-    const done_json = suite.mustRun(&.{ "task", "list", "--plan", pid_arg, "--status", "done", "--json" });
+    const done_json = suite.mustRun(&.{ "task", "list", "--scope", "global", "--plan", pid_arg, "--status", "done", "--json" });
     defer gpa.free(done_json);
-    const open_json = suite.mustRun(&.{ "task", "list", "--plan", pid_arg, "--json" });
+    const open_json = suite.mustRun(&.{ "task", "list", "--scope", "global", "--plan", pid_arg, "--json" });
     defer gpa.free(open_json);
 
     var done_count: usize = 0;

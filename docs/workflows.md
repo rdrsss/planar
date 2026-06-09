@@ -481,7 +481,7 @@ Run once per machine. Creates `~/.planar/planar.db` and applies all migrations.
 
 ### Step 2 — Set scope (optional)
 
-By default `import` resolves scope from cwd: run it from inside the repo you want to adopt and the resolved scope is `project:<that-repo>`. To import under a different association, pass `--scope` on the `/pl-import` invocation:
+By default `import` resolves scope from cwd: run it from inside the repo you want to adopt and Planar uses the cwd-derived project association. To import directly under the repository's own scope, pass `--scope repo:<that-repo>`. To import under a different association, pass `--scope` on the `/pl-import` invocation:
 
 ```
 /pl-import . --scope assoc:project:my-app
@@ -845,6 +845,15 @@ No `--scope` flag is needed. The resolver sees that `cwd` is inside the register
 
 This is the dominant pattern. Every coder, ingestor, and planner skill that runs against a known repo cwd works without scope plumbing.
 
+For work that is intentionally stored on the repository itself rather than on its project association, pass the repo scope explicitly:
+
+```bash
+planar task add "Fix the repo-local build script" --scope repo:repo-a
+planar task update 142 --next-action "rerun make test" --scope repo:repo-a
+```
+
+That keeps repo-owned work distinct from association-owned cross-repo coordination. The guard treats `repo:repo-a` and `assoc:project-repo-a` as different scopes.
+
 ### Orchestrator pattern: pass `--scope` explicitly
 
 The orchestrator's own cwd is wherever it was invoked from — usually a workspace root or an unrelated directory. When it writes to entities in a target repo's association (e.g. updating a task in `project:repo-b` while dispatching), it must pass `--scope` explicitly:
@@ -1039,7 +1048,7 @@ Use this when your daily working tree is a workspace directory (`~/work/`, `~/pr
 
 **What happens:** `planar workspace init` builds the org + project rows in one transaction, creates the state directory under `~/.planar/workspaces/<org_id>/`, scans the member repos to produce a structured routing table, regenerates `AGENTS.md` from that table, and installs symlinks at the workspace root (`AGENTS.md`, `CLAUDE.md`) that point at the canonical content. Subsequent shape changes (new repo, new plans, dependencies shifting) are absorbed by re-running the routing build and regenerate verbs; the symlinks stay valid.
 
-**Scope discipline in a workspace.** The [cross-scope guard](concepts.md#cross-scope-guard) fires on every mutating verb that takes an existing entity id, not only on `spec ingest` (the original lectio incident). When you are working from the workspace root (`~/work/`), cwd resolves to `org:work`; a `planar task update 142` against a task that belongs to `project:repo-a` is refused unless you `cd ~/work/repo-a` first or pass `--scope project:repo-a` explicitly. The same rule applies to `plan update`, `decision edit`, `decision supersede`, `audit publish-decision`, `artifact update`, single-target `sync push`/`sync pull`/`sync resolve`, `ext create --from`, `ext propagate`, `link`/`unlink`, and `links update`. Create verbs (`task add`, `decision add`, etc.) and entity-link verbs (`task link`, `links add`, `task touches add`) are not guarded — they are designed to cross scopes.
+**Scope discipline in a workspace.** The [cross-scope guard](concepts.md#cross-scope-guard) fires on every mutating verb that takes an existing entity id, not only on `spec ingest` (the original lectio incident). When you are working from the workspace root (`~/work/`), cwd resolves to `org:work`; a `planar task update 142` against a task that belongs to repo A's project association is refused unless you `cd ~/work/repo-a` first or pass that association explicitly, for example `--scope assoc:repo-a`. A task stored directly on the repository scope instead needs `--scope repo:repo-a`. The same rule applies to `plan update`, `decision edit`, `decision supersede`, `audit publish-decision`, `artifact update`, single-target `sync push`/`sync pull`/`sync resolve`, `ext create --from`, `ext propagate`, `link`/`unlink`, and `links update`. Create verbs (`task add`, `decision add`, etc.) and entity-link verbs (`task link`, `links add`, `task touches add`) are not guarded — they are designed to cross scopes.
 
 ### Step 1 — Initialize the workspace
 
@@ -1074,6 +1083,34 @@ ls ~/.planar/workspaces/1/
 # AGENTS.md  routing-table.json  .manifest-docs
 ```
 
+### Meta repo variant
+
+Use this when the workspace container is itself a git repository and it contains nested repos or submodules:
+
+```
+cd ~/work/meta
+planar workspace init --meta-repo --scan 2
+```
+
+Meta mode registers both the root repo and nested repos as projects under the workspace org. The org scope is for cross-repo coordination:
+
+```
+planar task add --scope assoc:meta "Coordinate root and submodule release"
+```
+
+Repository-owned work uses repo scopes:
+
+```
+planar task add --scope repo:meta "Update root build scripts"
+planar task add --scope repo:submodule-a "Update submodule API"
+```
+
+Below the exact meta root, cwd-derived writes use the longest matching repo path, so a command from `~/work/meta/modules/submodule-a` lands in `repo:submodule-a`, while a command from `~/work/meta/src` lands in `repo:meta`. The exact meta root is ambiguous and refuses writes without `--scope`, showing both remediation choices.
+
+Unlike the sibling workspace shape, meta mode does not install root `AGENTS.md` / `CLAUDE.md` links. Existing files in the root repo remain authoritative, and missing files stay missing. The canonical generated workspace content still lives under `~/.planar/workspaces/<org_id>/` and is used by `workspace routing show`, `workspace regenerate`, and `workspace doctor`.
+
+Re-running the same command from the same meta root is idempotent. Reusing the same org slug from a different root is refused so an existing workspace cannot be silently repointed; choose a new `--slug` or run from the recorded root.
+
 ### Step 2 — Refresh as work progresses
 
 When new plans land, new tasks are filed, repos are added to the org, or READMEs change, refresh the routing table and the AGENTS.md surface:
@@ -1084,6 +1121,16 @@ planar workspace regenerate
 ```
 
 `routing build` is deterministic and cheap (in-process, no LLM); run it whenever a shape change should be reflected in the table. `regenerate` re-renders `AGENTS.md` from the latest routing table plus live DB queries (open task counts, open question lists). The symlinks at the workspace root point at the canonical target and never need rewriting.
+
+If the post-init pipeline fails after registration, the org, projects, and memberships remain committed. Fix the reported filesystem or template problem, then run:
+
+```
+planar workspace doctor
+planar workspace routing build
+planar workspace regenerate
+```
+
+For meta workspaces, this recovery path still leaves root `AGENTS.md` / `CLAUDE.md` untouched.
 
 ### Step 3 — Optional LLM enrichment
 
@@ -1107,6 +1154,8 @@ planar workspace routing show
 planar workspace routing show --json | jq '.projects[] | {slug, capabilities}'
 # Machine-readable dump for scripting.
 ```
+
+From a workspace root, read queries such as `planar plan list`, `planar task list`, `planar question list`, `planar scenario list`, `planar decision list`, `planar artifact list`, `planar search`, and `planar tree` default to the workspace org plus every member repo. From inside a member repo, they default to the most specific registered repo; pass `--scope assoc:<workspace>` when you explicitly want cross-repo workspace work.
 
 `doctor` walks every `kind=org` association, verifies the state directory exists, and reconciles the workspace-root symlinks. It is idempotent and safe to run on every shell startup.
 
@@ -1209,13 +1258,14 @@ planar task list
 planar plan list
 ```
 
-### Switch association context
+### Switch repo or association context
 
 ```
-cd ~/work/my-app           # cwd derivation picks project:my-app
+cd ~/work/my-app           # cwd derivation picks the registered project association
 planar task list           # reads scoped from cwd
 # or, from anywhere:
-planar task list --scope project:my-app
+planar task list --scope repo:my-app
+planar task list --scope assoc:project:my-app
 ```
 
 ### Review the audit trail for an external ticket
@@ -1550,7 +1600,7 @@ planar decision list --plan 85         # accepted/proposed decisions
 planar question list --plan 85         # open questions
 ```
 
-`plan show` returns the plan's own row plus its `plan_steps` and child plans — the structural counterpart to `plan next`. The per-kind `list --plan <id>` filters drill into entities linked to the plan via `entity_links` (relationship `derives-from`). `planar tree` (no `--scope` flag) renders the cwd-derived scope's full tree; pass `--scope <association-slug>` to root at a different scope. `tree` is scope-rooted, not plan-rooted — use `plan show` + the filtered list verbs when the question is "what does this one feature look like".
+`plan show` returns the plan's own row plus its `plan_steps` and child plans — the structural counterpart to `plan next`. The per-kind `list --plan <id>` filters drill into entities linked to the plan via `entity_links` (relationship `derives-from`). `planar tree` (no `--scope` flag) renders the cwd-derived read set; at a workspace root that means the workspace org plus member repos, while inside a member repo it means that repo only. Pass `--scope <association-slug>` to root at a different scope. `tree` is scope-rooted, not plan-rooted — use `plan show` + the filtered list verbs when the question is "what does this one feature look like".
 
 ### Step 4 — Inspect the audit trail for one entity
 

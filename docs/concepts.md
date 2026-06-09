@@ -69,33 +69,37 @@ There are three scope kinds:
 
 | Kind | Meaning |
 |------|---------|
-| `repo` | Scoped to the current project (resolved from `cwd` against `projects.root_path`). |
+| `repo:<slug>` | Scoped to a registered project row in `projects`. Use this for work that belongs to one repository. |
 | `assoc:<slug>` | Scoped to a named association — typically a `kind=org` workspace, a `client`, an `ad-hoc` grouping, or a `personal` bucket. |
 | `global` | No project or association filter — personal, cross-cutting entities. |
+
+The `repo:` prefix is required for project rows. A bare `--scope <slug>` is
+parsed as an association slug for compatibility with existing workspace flows.
 
 Scope is a pure function of `(--scope flag, cwd, db schema)`. There is no ambient stack and no per-process session state to forget about: every invocation resolves from the same two inputs.
 
 ### Cwd-derivation: the primary signal
 
-Both the read and write resolvers begin by walking from the current working directory up the filesystem. `DeriveFromCwd` collects every association whose registered root path is a prefix of cwd. Two kinds of root path are matched:
+Both the read and write resolvers begin by walking from the current working directory up the filesystem. `DeriveFromCwd` collects every registered scope whose root path is a prefix of cwd. Two kinds of root path are matched:
 
-- A member `projects.root_path`. The cwd is inside a registered repo; the association inherits its `kind` (`project`, `host`, `path`, `lang`, etc.) and ranks accordingly.
+- A `projects.root_path`. The cwd is inside a registered repo; the resulting candidate can be the concrete `repo:<slug>` scope, and any association memberships for that project can also contribute association candidates.
 - An `associations.config_json.root_path` for `kind in ('org', 'client', 'personal', 'ad-hoc')`. The cwd is at (or inside) a workspace root registered via `planar workspace init` or the equivalent assoc creation flow.
 
-Each match becomes a `Candidate` carrying the association id, kind, and the root path that fired.
+Each match becomes a `Candidate` carrying the association id, kind, and the root path that fired. When two project roots both match cwd, the longer `projects.root_path` wins: a cwd under `~/work/root/modules/nested/` resolves to the nested project instead of the containing root project, while a cwd under `~/work/root/src/` resolves to the root project.
 
 ### Specificity ranking
 
 ```
 narrowest first:
-  1. project
+  1. project association
   2. ad-hoc, personal
   3. client
-  4. org
-  5. host, path, lang  (auto-detected technical)
+  4. repo
+  5. org
+  6. host, path, lang  (auto-detected technical / fallback association kinds)
 ```
 
-A `project` always outranks an `org` whose membership contains that project, so a cwd inside `~/work/repo-a/` resolves to `project:repo-a` even when `org:work` also matches. At the workspace root (`~/work/`, no project root_path contains it) only `org:work` matches, so the org wins — but at the workspace root writes refuse rather than land in the org by default (see below).
+A repo scope outranks an `org` whose membership contains that project, so a cwd inside `~/work/repo-a/` resolves to `repo:repo-a` even when `org:work` also matches. Association candidates of kind `project` rank above raw repo candidates for compatibility with older project-association flows. At the workspace root (`~/work/`, no project root_path contains it) only `org:work` matches, so the org wins — but at the workspace root writes refuse rather than land in the org by default (see below).
 
 ### Write resolution
 
@@ -115,9 +119,9 @@ When cwd lands at a registered workspace root (org `config_json.root_path`) and 
 error: you are in a workspace root with 3 member projects, but no
        specific project scope was passed. Choose one with --scope:
 
-         --scope project:repo-a
-         --scope project:repo-b
-         --scope project:repo-c
+         --scope repo:repo-a
+         --scope repo:repo-b
+         --scope repo:repo-c
 
        Or cd into a specific member project. Pass --scope
        assoc:work to write at the org level (cross-repo work).
@@ -133,10 +137,10 @@ Reads use `scopearg.ResolveForRead`. The contract:
 - If `--scope` is set, parse and return that single resolved scope.
 - Otherwise run `DeriveFromCwd` and apply the same specificity ranking as the write path. Reads return a `[]Resolved` set, not a single scope:
   - At a workspace root, the set is the org plus every member project (the operator's expectation of "show me everything under this workspace").
-  - At a member project root, the set is the project plus any cross-repo entities the project participates in via `touches` links (the polyrepo coordination story from plan 88).
+  - At a member project root or subdirectory, the set is the most specific registered repo. Longer `projects.root_path` matches beat shorter parent roots, so nested repos do not leak parent-repo work.
 - If cwd matches zero registered scopes and no flag is passed, refuse with a clear message instructing the operator to `cd` into a registered scope or pass `--scope global` for the global slice. There is no silent fallback.
 
-This composes naturally with `task list`, `plan list`, `tree`, `audit-trail`, and `health` — every read verb sees the same cwd-derived set.
+This composes naturally with `plan list`, `task list`, `question list`, `scenario list`, `decision list`, `artifact list`, `search`, and `tree` — these query verbs see the same cwd-derived set.
 
 ### Cross-scope guard
 
@@ -220,13 +224,15 @@ A project is a registered local working directory — what you'd call a "repo." 
 
 Projects are read-only after `init` — the project record is not meant to be updated or deleted. Associations are the mechanism for grouping projects.
 
+Use `--scope repo:<slug>` when a plan, task, question, scenario, decision, or artifact belongs to the repository itself. Use `--scope assoc:<workspace>` for cross-repo coordination work that intentionally sits above any one repository. A root repo and a nested repo can both be registered projects; cwd matching picks the longest root path so nested work does not collapse into the containing repo.
+
 **SQLite table:** `projects`. **Primary verbs:** `planar init`, `planar project list`, `planar project show`.
 
 ---
 
 ## Workspace
 
-A workspace is a polyrepo grouping treated as a first-class operational surface. Mechanically it is an `associations` row of `kind=org` together with its `project_associations` members — no new table, no new schema. What makes it a distinct concept is the operational shape: a directory on disk (`~/work/`, `~/projects/`, etc.) that contains several sibling git repos, and a canonical AGENTS.md surface that coordinates work across them.
+A workspace is a polyrepo grouping treated as a first-class operational surface. Mechanically it is an `associations` row of `kind=org` together with its `project_associations` members — no new table, no new schema. The default shape is a directory on disk (`~/work/`, `~/projects/`, etc.) that contains several sibling git repos. A git-backed meta repo can opt in with `planar workspace init --meta-repo`; that registers the root repo plus nested repos/submodules as member projects and records `workspace_shape = "meta-repo"` in the org config. Both shapes use the same canonical AGENTS.md content under the workspace state directory, but only sibling workspaces install root-level `AGENTS.md` / `CLAUDE.md` links.
 
 ### Why the concept exists
 
@@ -242,7 +248,11 @@ The canonical content for a workspace lives at `~/.planar/workspaces/<org_id>/`:
 - `routing-table-overrides.json` — optional; operator overrides merged on every routing build.
 - `.manifest-docs` — drift manifest (plan 96) tracking the generated files.
 
-Two symlinks at the workspace root (`<workspace-root>/AGENTS.md`, `<workspace-root>/CLAUDE.md`) point at the same canonical `AGENTS.md` target so Codex / Copilot (which read `AGENTS.md`) and Claude Code (which reads `CLAUDE.md`) see identical content. On filesystems that reject symlinks the installer falls back to a regular-file copy and records the degraded mode so regeneration rewrites the copy.
+For sibling workspaces, two symlinks at the workspace root (`<workspace-root>/AGENTS.md`, `<workspace-root>/CLAUDE.md`) point at the same canonical `AGENTS.md` target so Codex / Copilot (which read `AGENTS.md`) and Claude Code (which reads `CLAUDE.md`) see identical content. On filesystems that reject symlinks the installer falls back to a regular-file copy and records the degraded mode so regeneration rewrites the copy.
+
+For meta workspaces, the root is itself a versioned repository. Planar still writes canonical generated content under `~/.planar/workspaces/<org_id>/`, but it does not create, symlink, copy, overwrite, or repair root-level `AGENTS.md` / `CLAUDE.md`. Existing files at the meta root remain repo-owned; missing files remain missing.
+
+`workspace doctor` is fail-closed around this policy. It repairs root guidance links only after it has read a valid non-meta workspace config. Missing, malformed, or unknown `config_json` shape is reported as an issue and root guidance repair is skipped, so an uncertain meta workspace is not accidentally rewritten as if it were a sibling workspace.
 
 ### Two-pass routing
 
@@ -250,7 +260,7 @@ The routing table is built in two passes. The static pass is always-on and deter
 
 ### Bare-init guardrail
 
-`planar init` refuses when cwd has no `.git` but contains child repos — without the guardrail, a bare init in `~/work/` would register a semantically-wrong project row for the workspace directory itself. The refusal points at `planar workspace init`; `--allow-no-repo` is the escape hatch for the rare standalone non-repo case.
+`planar init` refuses when cwd has no `.git` but contains child repos — without the guardrail, a bare init in `~/work/` would register a semantically-wrong project row for the workspace directory itself. The refusal points at `planar workspace init`; `--allow-no-repo` is the escape hatch for the rare standalone non-repo case. Conversely, bare `planar workspace init` refuses from a git root so ordinary single repos still use `planar init`; meta repos must pass `--meta-repo` explicitly. In meta mode, reusing an existing org slug is allowed only when that org's recorded root matches cwd; a different recorded root is refused and the existing org config is not rewritten.
 
 See [docs/architecture.md § Workspace State Directory Model](architecture.md#workspace-state-directory-model) for the full layout and [docs/workflows.md § Recipe 12](workflows.md#recipe-12--working-in-a-polyrepo-workspace) for the end-to-end recipe.
 

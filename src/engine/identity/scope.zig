@@ -1,8 +1,8 @@
 //! engine/identity/scope — cwd-derived scope resolution.
 //!
-//! "Scope" in Planar is the association slug that an entity belongs to.
-//! Most write verbs target a single scope; reads default to "global"
-//! (no scope filter) unless one is requested.
+//! "Scope" in Planar is the association or repo identity that an entity
+//! belongs to. Most write verbs target a single scope; reads default to
+//! "global" (no scope filter) unless one is requested.
 //!
 //! The cwd-derive algorithm:
 //!   1. Find the project whose `root_path` is the longest prefix of cwd.
@@ -82,7 +82,6 @@ pub fn deinitWorktreeDetection(allocator: std.mem.Allocator, d: WorktreeDetectio
 pub const ScopeKind = enum {
     global,
     association,
-    /// repo: form is reserved for future use; M3 returns UnsupportedScope.
     repo,
 };
 
@@ -446,10 +445,9 @@ fn parentOfDotWorktrees(wt_root: []const u8) []const u8 {
 ///   "global"         → {kind: .global,      id: null}
 ///   "<slug>"         → {kind: .association, id: <assoc_id>}
 ///   "assoc:<slug>"   → {kind: .association, id: <assoc_id>}
-///   "repo:<slug>"    → error.UnsupportedScope (Cycle B)
+///   "repo:<slug>"    → {kind: .repo,        id: <project_id>}
 ///
-/// Returns error.SlugNotFound when the association slug does not exist.
-/// Returns error.UnsupportedScope for the repo: prefix form.
+/// Returns error.SlugNotFound when the association or repo slug does not exist.
 pub fn resolveSlug(
     d: *db.sqlite.Db,
     allocator: std.mem.Allocator,
@@ -462,9 +460,10 @@ pub fn resolveSlug(
         return .{ .kind = .global, .id = null };
     }
 
-    // "repo:<slug>" → unsupported in M3.
     if (std.mem.startsWith(u8, slug, "repo:")) {
-        return Error.UnsupportedScope;
+        const bare_repo = slug["repo:".len..];
+        if (bare_repo.len == 0) return Error.SlugNotFound;
+        return .{ .kind = .repo, .id = try projectIdBySlug(d, bare_repo) };
     }
 
     // Strip optional "assoc:" prefix.
@@ -475,15 +474,7 @@ pub fn resolveSlug(
 
     if (bare.len == 0) return Error.SlugNotFound;
 
-    // Look up associations.id by slug.
-    var stmt = d.prepare("select id from associations where slug = ?") catch return Error.QueryFailed;
-    defer stmt.finalize();
-    stmt.bind(&.{.{ .text = bare }}) catch return Error.QueryFailed;
-
-    return switch (stmt.step() catch return Error.QueryFailed) {
-        .done => Error.SlugNotFound,
-        .row => .{ .kind = .association, .id = stmt.columnInt(0) },
-    };
+    return .{ .kind = .association, .id = try associationIdBySlug(d, bare) };
 }
 
 /// Reverse of `resolveSlug`: given a stored scope_kind + scope_id,
@@ -522,9 +513,33 @@ fn slugFromProjectId(d: *db.sqlite.Db, allocator: std.mem.Allocator, id: i64) Er
     var stmt = d.prepare("select slug from projects where id = ?") catch return Error.QueryFailed;
     defer stmt.finalize();
     stmt.bind(&.{.{ .int = id }}) catch return Error.QueryFailed;
+    const slug = switch (stmt.step() catch return Error.QueryFailed) {
+        .done => return Error.SlugNotFound,
+        .row => try stmt.columnTextAlloc(0, allocator),
+    };
+    defer allocator.free(slug);
+    return try std.fmt.allocPrint(allocator, "repo:{s}", .{slug});
+}
+
+fn associationIdBySlug(d: *db.sqlite.Db, slug: []const u8) Error!i64 {
+    var stmt = d.prepare("select id from associations where slug = ?") catch return Error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .text = slug }}) catch return Error.QueryFailed;
+
     return switch (stmt.step() catch return Error.QueryFailed) {
         .done => Error.SlugNotFound,
-        .row => try stmt.columnTextAlloc(0, allocator),
+        .row => stmt.columnInt(0),
+    };
+}
+
+fn projectIdBySlug(d: *db.sqlite.Db, slug: []const u8) Error!i64 {
+    var stmt = d.prepare("select id from projects where slug = ?") catch return Error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .text = slug }}) catch return Error.QueryFailed;
+
+    return switch (stmt.step() catch return Error.QueryFailed) {
+        .done => Error.SlugNotFound,
+        .row => stmt.columnInt(0),
     };
 }
 
@@ -867,12 +882,36 @@ test "resolveSlug: unknown slug → error.SlugNotFound" {
     try std.testing.expectError(Error.SlugNotFound, resolveSlug(&d, a, "no-such-slug"));
 }
 
-test "resolveSlug: 'repo:<slug>' prefix form → error.UnsupportedScope" {
+test "resolveSlug: 'repo:<slug>' prefix form → kind=.repo, id=<project_id>" {
     const a = std.testing.allocator;
     var d = try setupTestDb(a);
     defer d.close();
 
-    try std.testing.expectError(Error.UnsupportedScope, resolveSlug(&d, a, "repo:myrepo"));
+    _ = try d.execParams(
+        "insert into projects (slug, name, root_path) values ('myrepo', 'My Repo', '/work/myrepo')",
+        &.{},
+    );
+    const project_id = try d.intQuery("select id from projects where slug = 'myrepo'");
+
+    const ref = try resolveSlug(&d, a, "repo:myrepo");
+    try std.testing.expectEqual(ScopeKind.repo, ref.kind);
+    try std.testing.expectEqual(project_id, ref.id.?);
+}
+
+test "slugFromRef returns prefixed repo scope labels" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    _ = try d.execParams(
+        "insert into projects (slug, name, root_path) values ('myrepo', 'My Repo', '/work/myrepo')",
+        &.{},
+    );
+    const project_id = try d.intQuery("select id from projects where slug = 'myrepo'");
+
+    const slug = (try slugFromRef(&d, a, .repo, project_id)).?;
+    defer a.free(slug);
+    try std.testing.expectEqualStrings("repo:myrepo", slug);
 }
 
 test "suggest: empty on unregistered cwd" {

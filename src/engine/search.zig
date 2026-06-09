@@ -15,7 +15,7 @@
 //!   - null scope  → cross-scope search (no WHERE clause)
 //!   - "global"    → scope_kind = 'global'
 //!   - "<slug>"    → scope_kind = 'association' AND scope_id = <id>
-//!   - "repo:…"    → error.UnsupportedScope
+//!   - "repo:…"    → scope_kind = 'repo' AND scope_id = <id>
 //!   - unknown     → error.SlugNotFound
 //!
 //! No audit logging — search is a read-only verb.
@@ -259,9 +259,8 @@ pub fn query(
                     try params.append(allocator, .{ .int = ref.id.? });
                 },
                 .repo => {
-                    // resolveSlug already rejects "repo:..." with UnsupportedScope.
-                    // Handled above; this branch is unreachable.
-                    return Error.UnsupportedScope;
+                    try sql_buf.appendSlice(allocator, " AND b.scope_kind = 'repo' AND b.scope_id = ?");
+                    try params.append(allocator, .{ .int = ref.id.? });
                 },
             }
         }
@@ -697,13 +696,35 @@ test "unknown kind in filter returns error.UnknownKind" {
     try std.testing.expectError(Error.UnknownKind, result);
 }
 
-test "UnsupportedScope for repo: prefix" {
+test "scope filter supports repo prefix" {
     const a = std.testing.allocator;
     var d = try setupTestDb(a);
     defer d.close();
 
-    const result = query(&d, a, "anything", .{ .scope = "repo:myrepo" });
-    try std.testing.expectError(Error.UnsupportedScope, result);
+    _ = try d.execParams(
+        "insert into projects (slug, name, root_path) values ('myrepo', 'My Repo', '/work/myrepo')",
+        &.{},
+    );
+    const project_id = try d.intQuery("select id from projects where slug = 'myrepo'");
+    _ = try d.execParams(
+        "insert into tasks (scope_kind, scope_id, title, body, status, priority) values ('repo', ?, 'xyzzy_repo_search Repo Task', 'body', 'todo', 100)",
+        &.{.{ .int = project_id }},
+    );
+    _ = try d.execParams(
+        "insert into tasks (scope_kind, title, body, status, priority) values ('global', 'xyzzy_repo_search Global Task', 'body', 'todo', 100)",
+        &.{},
+    );
+
+    const kinds_filter = [_][]const u8{"task"};
+    const hits = try query(&d, a, "xyzzy_repo_search", .{
+        .kinds = &kinds_filter,
+        .scope = "repo:myrepo",
+    });
+    defer deinitHits(hits, a);
+
+    try std.testing.expectEqual(@as(usize, 1), hits.len);
+    try std.testing.expectEqualStrings("repo", hits[0].scope_kind);
+    try std.testing.expectEqual(project_id, hits[0].scope_id.?);
 }
 
 test "renderListText: empty hit slice prints (no results)" {

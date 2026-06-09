@@ -19,6 +19,7 @@ pub const verb: cli.Cmd = .{
                 .{ .long = "--name", .kind = .string },
                 .{ .long = "--slug", .kind = .string },
                 .{ .long = "--scan", .kind = .int, .default = .{ .int = 1 } },
+                .{ .long = "--meta-repo", .kind = .bool, .default = .{ .bool = false } },
                 .{ .long = "--no-scan", .kind = .bool, .default = .{ .bool = false } },
                 .{ .long = "--enrich", .kind = .bool, .default = .{ .bool = false } },
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },

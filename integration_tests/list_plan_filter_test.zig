@@ -99,19 +99,19 @@ test "list verbs: --plan <id> filters artifact/decision/question by entity-links
 
     // --- artifact list --plan ---
     const arts_p1 = suite.mustRunJSON([]ArtifactJSON, arena, &.{
-        "artifact", "list", "--plan", p1_id, "--json",
+        "artifact", "list", "--scope", "global", "--plan", p1_id, "--json",
     });
     try expectExactlyOneId(ArtifactJSON, arts_p1, a1.id, a2.id);
 
     // --- decision list --plan ---
     const decs_p1 = suite.mustRunJSON([]DecisionJSON, arena, &.{
-        "decision", "list", "--plan", p1_id, "--json",
+        "decision", "list", "--scope", "global", "--plan", p1_id, "--json",
     });
     try expectExactlyOneId(DecisionJSON, decs_p1, d1.id, d2.id);
 
     // --- question list --plan ---
     const qs_p1 = suite.mustRunJSON([]QuestionJSON, arena, &.{
-        "question", "list", "--plan", p1_id, "--json",
+        "question", "list", "--scope", "global", "--plan", p1_id, "--json",
     });
     try expectExactlyOneId(QuestionJSON, qs_p1, q1.id, q2.id);
 
@@ -122,15 +122,15 @@ test "list verbs: --plan <id> filters artifact/decision/question by entity-links
     });
     const p3_id = std.fmt.allocPrint(arena, "{d}", .{p3.id}) catch unreachable;
     const empty_arts = suite.mustRunJSON([]ArtifactJSON, arena, &.{
-        "artifact", "list", "--plan", p3_id, "--json",
+        "artifact", "list", "--scope", "global", "--plan", p3_id, "--json",
     });
     try std.testing.expectEqual(@as(usize, 0), empty_arts.len);
     const empty_decs = suite.mustRunJSON([]DecisionJSON, arena, &.{
-        "decision", "list", "--plan", p3_id, "--json",
+        "decision", "list", "--scope", "global", "--plan", p3_id, "--json",
     });
     try std.testing.expectEqual(@as(usize, 0), empty_decs.len);
     const empty_qs = suite.mustRunJSON([]QuestionJSON, arena, &.{
-        "question", "list", "--plan", p3_id, "--json",
+        "question", "list", "--scope", "global", "--plan", p3_id, "--json",
     });
     try std.testing.expectEqual(@as(usize, 0), empty_qs.len);
 }

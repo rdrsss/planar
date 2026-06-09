@@ -117,39 +117,56 @@ fn diagnoseOrg(ctx: *const runtime.Ctx, org: engine.identity.workspace.Workspace
         });
     }
 
-    if (org.root_path == null or org.root_path.?.len == 0) {
+    const shape_check = workspaceShape(ctx, org.id) catch |e| blk: {
         try issues.append(ctx.allocator, .{
-            .kind = try ctx.allocator.dupe(u8, "warn"),
-            .detail = try std.fmt.allocPrint(ctx.allocator, "org:{s} has no root_path in config_json; skipping symlink repair", .{org.slug}),
+            .kind = try ctx.allocator.dupe(u8, "error"),
+            .detail = try std.fmt.allocPrint(ctx.allocator, "reading workspace config for org:{s}: {s}; skipping root guidance repair", .{ org.slug, @errorName(e) }),
         });
-    } else {
-        const dirty = try dirtyLinks(ctx.allocator, org.root_path.?, layout.agents_md);
-        defer freeStrings(dirty, ctx.allocator);
-        if (dirty.len > 0) {
-            const strategy = engine.identity.workspace.installSymlinks(ctx.allocator, ctx.io, org.root_path.?, layout) catch |e| {
-                try issues.append(ctx.allocator, .{
-                    .kind = try ctx.allocator.dupe(u8, "error"),
-                    .detail = try std.fmt.allocPrint(ctx.allocator, "installing symlinks at {s}: {s}", .{ org.root_path.?, @errorName(e) }),
-                });
-                return .{
-                    .slug = try ctx.allocator.dupe(u8, org.slug),
-                    .org_id = org.id,
-                    .issues_found = @intCast(issues.items.len),
-                    .issues_repaired = try issues.toOwnedSlice(ctx.allocator),
+        break :blk WorkspaceShapeCheck{ .uncertain = try ctx.allocator.dupe(u8, "") };
+    };
+    defer deinitWorkspaceShapeCheck(shape_check, ctx.allocator);
+
+    switch (shape_check) {
+        .meta_repo => {
+            // Meta repos keep root-level instruction files under repo ownership.
+            // Doctor still verifies/creates the canonical state dir above, but it
+            // must not create, overwrite, or repair root AGENTS.md / CLAUDE.md.
+        },
+        .non_meta => {
+            const dirty = try dirtyLinks(ctx.allocator, org.root_path.?, layout.agents_md);
+            defer freeStrings(dirty, ctx.allocator);
+            if (dirty.len > 0) {
+                const strategy = engine.identity.workspace.installSymlinks(ctx.allocator, ctx.io, org.root_path.?, layout) catch |e| {
+                    try issues.append(ctx.allocator, .{
+                        .kind = try ctx.allocator.dupe(u8, "error"),
+                        .detail = try std.fmt.allocPrint(ctx.allocator, "installing symlinks at {s}: {s}", .{ org.root_path.?, @errorName(e) }),
+                    });
+                    return .{
+                        .slug = try ctx.allocator.dupe(u8, org.slug),
+                        .org_id = org.id,
+                        .issues_found = @intCast(issues.items.len),
+                        .issues_repaired = try issues.toOwnedSlice(ctx.allocator),
+                    };
                 };
-            };
-            for (dirty) |name| {
-                try issues.append(ctx.allocator, .{
-                    .kind = try ctx.allocator.dupe(u8, "fix"),
-                    .detail = try std.fmt.allocPrint(ctx.allocator, "reinstalled {s} {s}/{s} → {s}", .{
-                        strategy,
-                        org.root_path.?,
-                        name,
-                        layout.agents_md,
-                    }),
-                });
+                for (dirty) |name| {
+                    try issues.append(ctx.allocator, .{
+                        .kind = try ctx.allocator.dupe(u8, "fix"),
+                        .detail = try std.fmt.allocPrint(ctx.allocator, "reinstalled {s} {s}/{s} → {s}", .{
+                            strategy,
+                            org.root_path.?,
+                            name,
+                            layout.agents_md,
+                        }),
+                    });
+                }
             }
-        }
+        },
+        .uncertain => |detail| if (detail.len > 0) {
+            try issues.append(ctx.allocator, .{
+                .kind = try ctx.allocator.dupe(u8, "error"),
+                .detail = try ctx.allocator.dupe(u8, detail),
+            });
+        },
     }
 
     return .{
@@ -157,6 +174,60 @@ fn diagnoseOrg(ctx: *const runtime.Ctx, org: engine.identity.workspace.Workspace
         .org_id = org.id,
         .issues_found = @intCast(issues.items.len),
         .issues_repaired = try issues.toOwnedSlice(ctx.allocator),
+    };
+}
+
+const WorkspaceShapeCheck = union(enum) {
+    meta_repo,
+    non_meta,
+    uncertain: []const u8,
+};
+
+fn deinitWorkspaceShapeCheck(check: WorkspaceShapeCheck, allocator: std.mem.Allocator) void {
+    switch (check) {
+        .uncertain => |detail| allocator.free(detail),
+        else => {},
+    }
+}
+
+fn workspaceShape(ctx: *const runtime.Ctx, org_id: i64) !WorkspaceShapeCheck {
+    const d = try runtime.ensureDb();
+    var stmt = try d.prepare(
+        \\select config_json
+        \\from associations
+        \\where id = ?
+    );
+    defer stmt.finalize();
+    try stmt.bind(&.{.{ .int = org_id }});
+    return switch (try stmt.step()) {
+        .done => .{ .uncertain = try ctx.allocator.dupe(u8, "workspace config row missing; skipping root guidance repair") },
+        .row => blk: {
+            const config_json = try stmt.columnTextOpt(0, ctx.allocator);
+            defer if (config_json) |cfg| ctx.allocator.free(cfg);
+            const cfg = config_json orelse
+                break :blk .{ .uncertain = try ctx.allocator.dupe(u8, "workspace config_json is missing; skipping root guidance repair") };
+            if (cfg.len == 0) {
+                break :blk .{ .uncertain = try ctx.allocator.dupe(u8, "workspace config_json is missing; skipping root guidance repair") };
+            }
+            var parsed = std.json.parseFromSlice(std.json.Value, ctx.allocator, cfg, .{}) catch
+                break :blk .{ .uncertain = try ctx.allocator.dupe(u8, "workspace config_json is malformed; skipping root guidance repair") };
+            defer parsed.deinit();
+            if (parsed.value != .object) {
+                break :blk .{ .uncertain = try ctx.allocator.dupe(u8, "workspace config_json is not an object; skipping root guidance repair") };
+            }
+            const root_path = parsed.value.object.get("root_path") orelse
+                break :blk .{ .uncertain = try ctx.allocator.dupe(u8, "workspace config_json has no root_path; skipping root guidance repair") };
+            if (root_path != .string or root_path.string.len == 0) {
+                break :blk .{ .uncertain = try ctx.allocator.dupe(u8, "workspace config_json has invalid root_path; skipping root guidance repair") };
+            }
+            const shape = parsed.value.object.get("workspace_shape") orelse break :blk .non_meta;
+            if (shape != .string) {
+                break :blk .{ .uncertain = try ctx.allocator.dupe(u8, "workspace config_json has invalid workspace_shape; skipping root guidance repair") };
+            }
+            if (std.mem.eql(u8, shape.string, "meta-repo")) break :blk .meta_repo;
+            if (std.mem.eql(u8, shape.string, "sibling")) break :blk .non_meta;
+            break :blk .{ .uncertain = try ctx.allocator.dupe(u8, "workspace config_json has unknown workspace_shape; skipping root guidance repair") };
+        },
     };
 }
 

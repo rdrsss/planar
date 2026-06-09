@@ -787,7 +787,7 @@ test "spec ingest orphan removals stay pending without flag and cancel/abandon w
         status: []const u8 = "",
     };
     const child_plans_json = suite.mustRunWith(&.{
-        "plan", "list", "--json", "--parent", plan_id,
+        "plan", "list", "--json", "--scope", "global", "--parent", plan_id,
     }, env);
     defer gpa.free(child_plans_json);
     const child_plans = parseJSON([]const PlanRow, arena, child_plans_json);
@@ -809,7 +809,7 @@ test "spec ingest orphan removals stay pending without flag and cancel/abandon w
         status: []const u8 = "",
     };
     const removed_tasks_json = suite.mustRunWith(&.{
-        "task", "list", "--json", "--plan", removed_plan_id_s,
+        "task", "list", "--json", "--scope", "global", "--plan", removed_plan_id_s,
     }, env);
     defer gpa.free(removed_tasks_json);
     const removed_tasks = parseJSON([]const TaskRow, arena, removed_tasks_json);
@@ -958,7 +958,7 @@ test "spec ingest apply-removals frees stale plan and task slugs before replacem
     };
 
     const child_plans_json = suite.mustRunWith(&.{
-        "plan", "list", "--json", "--parent", plan_id,
+        "plan", "list", "--json", "--scope", "global", "--parent", plan_id,
     }, env);
     defer gpa.free(child_plans_json);
     const child_plans = parseJSON([]const PlanRow, arena, child_plans_json);
@@ -974,7 +974,7 @@ test "spec ingest apply-removals frees stale plan and task slugs before replacem
     const old_plan_id_s = std.fmt.allocPrint(arena, "{d}", .{old_plan_id}) catch @panic("OOM");
 
     const old_tasks_json = suite.mustRunWith(&.{
-        "task", "list", "--json", "--plan", old_plan_id_s,
+        "task", "list", "--json", "--scope", "global", "--plan", old_plan_id_s,
     }, env);
     defer gpa.free(old_tasks_json);
     const old_tasks = parseJSON([]const TaskRow, arena, old_tasks_json);
@@ -1028,7 +1028,7 @@ test "spec ingest apply-removals frees stale plan and task slugs before replacem
     try std.testing.expect(old_task.slug == null);
 
     const refreshed_plans_json = suite.mustRunWith(&.{
-        "plan", "list", "--json", "--parent", plan_id,
+        "plan", "list", "--json", "--scope", "global", "--parent", plan_id,
     }, env);
     defer gpa.free(refreshed_plans_json);
     const refreshed_plans = parseJSON([]const PlanRow, arena, refreshed_plans_json);
@@ -1044,7 +1044,7 @@ test "spec ingest apply-removals frees stale plan and task slugs before replacem
     const new_plan_id_s = std.fmt.allocPrint(arena, "{d}", .{new_plan_id}) catch @panic("OOM");
 
     const new_tasks_json = suite.mustRunWith(&.{
-        "task", "list", "--json", "--plan", new_plan_id_s,
+        "task", "list", "--json", "--scope", "global", "--plan", new_plan_id_s,
     }, env);
     defer gpa.free(new_tasks_json);
     const new_tasks = parseJSON([]const TaskRow, arena, new_tasks_json);

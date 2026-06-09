@@ -335,7 +335,7 @@ test "planar-agent claim primitive does NOT auto-transition task status" {
     const pid_arg = seedPlanWithTask(&suite, "ag-claim", "direct-target");
     defer gpa.free(pid_arg);
     // Find the task id via task list.
-    const list_json = suite.mustRun(&.{ "task", "list", "--plan", pid_arg, "--json" });
+    const list_json = suite.mustRun(&.{ "task", "list", "--scope", "global", "--plan", pid_arg, "--json" });
     defer gpa.free(list_json);
     const task_id = extractIntField(list_json, "\"id\"") orelse @panic("no task id");
     const ref = std.fmt.allocPrint(gpa, "task:{d}", .{task_id}) catch @panic("OOM");

@@ -96,7 +96,7 @@ test "scenario: test-spec authoring — add, link to task, verify (passing)" {
     const scen_id_str = std.fmt.allocPrint(arena, "{d}", .{scen.id}) catch unreachable;
 
     // ---- 3. Scenario list returns the draft row.
-    const list_raw = suite.mustRun(&.{ "scenario", "list", "--json" });
+    const list_raw = suite.mustRun(&.{ "scenario", "list", "--scope", "global", "--json" });
     defer gpa.free(list_raw);
     try std.testing.expect(std.mem.containsAtLeast(u8, list_raw, 1, "Reports endpoint happy path"));
 

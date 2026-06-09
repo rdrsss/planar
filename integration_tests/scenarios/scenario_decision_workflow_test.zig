@@ -214,7 +214,7 @@ test "scenario: decision workflow — decision list surfaces all decisions on a 
     // We assert our three titles all appear; the exact filter
     // shape (e.g. --plan, --status) varies per implementation
     // and isn't load-bearing for this composition assertion.
-    const list_raw = suite.mustRun(&.{ "decision", "list", "--json" });
+    const list_raw = suite.mustRun(&.{ "decision", "list", "--scope", "global", "--json" });
     defer gpa.free(list_raw);
     try std.testing.expect(std.mem.containsAtLeast(u8, list_raw, 1, "Decision A"));
     try std.testing.expect(std.mem.containsAtLeast(u8, list_raw, 1, "Decision B"));

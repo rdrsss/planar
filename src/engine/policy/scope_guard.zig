@@ -16,7 +16,9 @@
 
 const std = @import("std");
 
-/// Scope = nullable association slug. `null` means global / no scope.
+/// Scope = nullable canonical scope label. `null` means global / no scope.
+/// Association scopes may arrive as either `assoc:<slug>` or bare `<slug>`
+/// for legacy compatibility. Repo scopes keep their required `repo:` prefix.
 /// Redeclared locally rather than imported from identity/scope.zig so
 /// policy stays a leaf module with no engine-internal deps.
 pub const Scope = ?[]const u8;
@@ -26,7 +28,14 @@ pub const Error = error{ScopeMismatch};
 pub fn check(entity_scope: Scope, write_scope: Scope) Error!void {
     if (entity_scope == null) return;
     if (write_scope == null) return error.ScopeMismatch;
-    if (!std.mem.eql(u8, entity_scope.?, write_scope.?)) return error.ScopeMismatch;
+    if (!std.mem.eql(u8, normalizeAssoc(entity_scope.?), normalizeAssoc(write_scope.?))) {
+        return error.ScopeMismatch;
+    }
+}
+
+fn normalizeAssoc(scope: []const u8) []const u8 {
+    if (std.mem.startsWith(u8, scope, "assoc:")) return scope["assoc:".len..];
+    return scope;
 }
 
 // ---- tests ----
@@ -46,4 +55,15 @@ test "refuses cross-scope writes" {
 
 test "allows matching scope" {
     try check("acme", "acme");
+}
+
+test "allows assoc prefix compatibility" {
+    try check("acme", "assoc:acme");
+    try check("assoc:acme", "acme");
+}
+
+test "allows matching repo scope and keeps repo distinct from association" {
+    try check("repo:acme", "repo:acme");
+    try std.testing.expectError(error.ScopeMismatch, check("repo:acme", "acme"));
+    try std.testing.expectError(error.ScopeMismatch, check("acme", "repo:acme"));
 }

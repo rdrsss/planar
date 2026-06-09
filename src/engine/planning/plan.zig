@@ -2,10 +2,9 @@
 //!
 //! Scope handling: when `scope` is provided in CreateArgs/ListFilter/UpdateArgs,
 //! it is resolved via engine.identity.scope.resolveSlug to a (kind, id) pair
-//! and stored/filtered in scope_kind/scope_id columns. The "global" literal
-//! and bare association slugs ("acme", "assoc:acme") are fully supported;
-//! "repo:<slug>" returns UnsupportedScope (M3 cut). Unknown slugs return
-//! SlugNotFound.
+//! and stored/filtered in scope_kind/scope_id columns. The "global" literal,
+//! bare association slugs ("acme", "assoc:acme"), and repo slugs
+//! ("repo:acme") are supported. Unknown slugs return SlugNotFound.
 
 const std = @import("std");
 const db = @import("db");
@@ -69,7 +68,7 @@ pub const CreateArgs = struct {
     summary: ?[]const u8 = null,
     status: Status = .draft,
     parent_plan_id: ?i64 = null,
-    /// Scope slug. Currently MUST be null until association lookup lands.
+    /// Scope slug accepted by identity.scope.resolveSlug.
     scope: ?[]const u8 = null,
 };
 
@@ -80,7 +79,7 @@ pub const UpdateArgs = struct {
     status: ?Status = null,
     parent_plan_id: ?i64 = null,
     clear_parent: bool = false,
-    /// Scope slug. Currently MUST be null until association lookup lands.
+    /// Scope slug accepted by identity.scope.resolveSlug.
     scope: ?[]const u8 = null,
 };
 
@@ -967,14 +966,19 @@ test "create with unknown scope slug returns SlugNotFound" {
     );
 }
 
-test "create with repo: scope returns UnsupportedScope" {
+test "create with repo: scope writes scope_kind='repo'" {
     const a = std.testing.allocator;
     var d = try setupTestDb(a);
     defer d.close();
-    try std.testing.expectError(
-        Error.UnsupportedScope,
-        create(&d, a, .{ .title = "x", .scope = "repo:foo" }),
+    _ = try d.execParams(
+        "insert into projects (slug, name, root_path) values ('foo', 'Foo', '/work/foo')",
+        &.{},
     );
+    const repo_id = try d.intQuery("select id from projects where slug = 'foo'");
+    const p = try create(&d, a, .{ .title = "repo plan", .scope = "repo:foo" });
+    defer deinit(p, a);
+    try std.testing.expectEqual(ScopeKind.repo, p.scope_kind);
+    try std.testing.expectEqual(repo_id, p.scope_id.?);
 }
 
 test "create returns SlugConflict on duplicate slug" {

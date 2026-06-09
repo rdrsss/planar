@@ -20,6 +20,7 @@ const engine = @import("engine");
 const main = @import("../main.zig");
 const runtime = @import("runtime");
 const exit = @import("../exit.zig");
+const scope_mod = @import("../scope.zig");
 
 pub const verb: cli.Cmd = .{
     .name = "search",
@@ -83,26 +84,52 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
         statuses_slice = statuses_buf[0..1];
     }
 
-    // --scope: null means cross-scope search.
-    const scope_opt: ?[]const u8 = if (args.scope) |s| (if (s.len > 0) s else null) else null;
+    var read_scope_slugs: []const []const u8 = &.{};
+    defer if (read_scope_slugs.len > 0) scope_mod.deinitReadScopeFilterSlugs(ctx.allocator, read_scope_slugs);
+    if (args.scope == null) {
+        const cwd = try scope_mod.operatorCwd(ctx.allocator, ctx.io);
+        defer ctx.allocator.free(cwd);
+        const read_scopes = try scope_mod.resolveForReadSet(ctx, cwd, null);
+        defer ctx.allocator.free(read_scopes);
+        if (read_scopes.len == 0) {
+            exit.die(
+                ctx,
+                error.NoReadScope,
+                "cwd is not inside any registered Planar scope; cd into a registered scope or pass --scope global",
+                .{},
+            );
+        }
+        read_scope_slugs = try scope_mod.readScopeFilterSlugs(ctx, read_scopes);
+    }
 
     // --plan: 0 means "not provided" (cli delivers default int as 0).
     const plan_id_opt: ?i64 = if (args.plan != 0) args.plan else null;
 
     const limit: i64 = args.limit;
 
-    const hits = engine.search.query(d, ctx.allocator, args.query, .{
-        .kinds = kinds_slice,
-        .statuses = statuses_slice,
-        .scope = scope_opt,
-        .plan_id = plan_id_opt,
-        .limit = limit,
-    }) catch |e| switch (e) {
-        error.UnsupportedScope => exit.die(ctx, error.InvalidInput, "unsupported scope form", .{}),
-        error.SlugNotFound => exit.die(ctx, error.NotFound, "scope slug not found", .{}),
-        error.UnknownKind => exit.die(ctx, error.InvalidInput, "unknown kind", .{}),
-        error.InvalidQuery => exit.die(ctx, error.InvalidInput, "invalid FTS5 query syntax", .{}),
-        else => exit.die(ctx, e, "search failed: {s}", .{@errorName(e)}),
+    const hits = if (args.scope) |s| blk: {
+        const scope_opt: ?[]const u8 = if (s.len > 0) s else null;
+        break :blk engine.search.query(d, ctx.allocator, args.query, .{
+            .kinds = kinds_slice,
+            .statuses = statuses_slice,
+            .scope = scope_opt,
+            .plan_id = plan_id_opt,
+            .limit = limit,
+        }) catch |e| switch (e) {
+            error.UnsupportedScope => exit.die(ctx, error.InvalidInput, "unsupported scope form", .{}),
+            error.SlugNotFound => exit.die(ctx, error.NotFound, "scope slug not found", .{}),
+            error.UnknownKind => exit.die(ctx, error.InvalidInput, "unknown kind", .{}),
+            error.InvalidQuery => exit.die(ctx, error.InvalidInput, "invalid FTS5 query syntax", .{}),
+            else => exit.die(ctx, e, "search failed: {s}", .{@errorName(e)}),
+        };
+    } else blk: {
+        break :blk searchReadScopes(ctx, d, args.query, kinds_slice, statuses_slice, plan_id_opt, limit, read_scope_slugs) catch |e| switch (e) {
+            error.UnsupportedScope => exit.die(ctx, error.InvalidInput, "unsupported scope form", .{}),
+            error.SlugNotFound => exit.die(ctx, error.NotFound, "scope slug not found", .{}),
+            error.UnknownKind => exit.die(ctx, error.InvalidInput, "unknown kind", .{}),
+            error.InvalidQuery => exit.die(ctx, error.InvalidInput, "invalid FTS5 query syntax", .{}),
+            else => exit.die(ctx, e, "search failed: {s}", .{@errorName(e)}),
+        };
     };
     defer engine.search.deinitHits(hits, ctx.allocator);
 
@@ -130,4 +157,50 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
 
     // Text output.
     try engine.search.renderListText(hits, ctx.stdout);
+}
+
+fn searchReadScopes(
+    ctx: *const runtime.Ctx,
+    d: anytype,
+    query: []const u8,
+    kinds: []const []const u8,
+    statuses: []const []const u8,
+    plan_id: ?i64,
+    limit: i64,
+    scopes: []const []const u8,
+) ![]engine.search.Hit {
+    var all: std.ArrayList(engine.search.Hit) = .empty;
+    errdefer {
+        for (all.items) |hit| engine.search.deinitHit(hit, ctx.allocator);
+        all.deinit(ctx.allocator);
+    }
+
+    for (scopes) |scope| {
+        const hits = try engine.search.query(d, ctx.allocator, query, .{
+            .kinds = kinds,
+            .statuses = statuses,
+            .scope = scope,
+            .plan_id = plan_id,
+            .limit = limit,
+        });
+        defer ctx.allocator.free(hits);
+        try all.appendSlice(ctx.allocator, hits);
+    }
+
+    const merged = try all.toOwnedSlice(ctx.allocator);
+    std.mem.sort(engine.search.Hit, merged, {}, hitLessThan);
+    const max: usize = if (limit > 0) @intCast(limit) else @intCast(engine.search.default_limit);
+    const visible_len = @min(merged.len, max);
+    const visible = try ctx.allocator.alloc(engine.search.Hit, visible_len);
+    @memcpy(visible, merged[0..visible_len]);
+    for (merged[visible_len..]) |hit| engine.search.deinitHit(hit, ctx.allocator);
+    ctx.allocator.free(merged);
+    return visible;
+}
+
+fn hitLessThan(_: void, a: engine.search.Hit, b: engine.search.Hit) bool {
+    if (a.rank != b.rank) return a.rank > b.rank;
+    const kind_order = std.mem.order(u8, a.kind, b.kind);
+    if (kind_order != .eq) return kind_order == .lt;
+    return a.id < b.id;
 }

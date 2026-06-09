@@ -43,8 +43,10 @@ pub const Class = enum {
 ///
 ///  - `init`                                 → planning
 ///  - `plan {create, update, done, ...}`     → planning
-///  - `plan {show, list, next, view, diff}`  → execution_or_read
-///  - `task {add, update, done, touches, ...}` → planning
+///  - `plan {show, list, next, recommend-strategy, view, diff}`
+///                                            → execution_or_read
+///  - `task {add, update, done, touches add/remove, ...}` → planning
+///  - `task touches list`                  → execution_or_read
 ///  - `task {show, list, view, diff}`        → execution_or_read
 ///  - `question {add, answer, wontfix, link}`→ planning
 ///  - `question {show, list}`                → execution_or_read
@@ -129,6 +131,10 @@ pub fn classify(path: []const []const u8) Class {
     // The classifier checks the subverb against an allowlist of read-
     // shape leaves. Any subverb NOT on the allowlist (write / mutation)
     // is planning.
+    if (eq(top, "task") and path.len >= 3 and eq(path[1], "touches") and eq(path[2], "list")) {
+        return .execution_or_read;
+    }
+
     if (eq(top, "plan") or eq(top, "task") or
         eq(top, "question") or eq(top, "scenario") or
         eq(top, "decision") or eq(top, "artifact") or
@@ -172,6 +178,7 @@ fn isReadLeaf(sub: []const u8) bool {
         eq(sub, "view") or
         eq(sub, "diff") or
         eq(sub, "next") or
+        eq(sub, "recommend-strategy") or
         eq(sub, "tree") or
         eq(sub, "review") or
         eq(sub, "status") or
@@ -223,6 +230,7 @@ test "classify: plan reads are execution_or_read" {
     try std.testing.expectEqual(Class.execution_or_read, classify(&.{ "plan", "show" }));
     try std.testing.expectEqual(Class.execution_or_read, classify(&.{ "plan", "list" }));
     try std.testing.expectEqual(Class.execution_or_read, classify(&.{ "plan", "next" }));
+    try std.testing.expectEqual(Class.execution_or_read, classify(&.{ "plan", "recommend-strategy" }));
 }
 
 test "classify: task done is planning (coders use planar-agent complete)" {
@@ -232,6 +240,10 @@ test "classify: task done is planning (coders use planar-agent complete)" {
 test "classify: task touches add/remove is planning" {
     try std.testing.expectEqual(Class.planning, classify(&.{ "task", "touches", "add" }));
     try std.testing.expectEqual(Class.planning, classify(&.{ "task", "touches", "remove" }));
+}
+
+test "classify: task touches list is execution_or_read" {
+    try std.testing.expectEqual(Class.execution_or_read, classify(&.{ "task", "touches", "list" }));
 }
 
 test "classify: workbench reads + sync are execution_or_read" {

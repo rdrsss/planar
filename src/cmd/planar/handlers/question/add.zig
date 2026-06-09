@@ -19,7 +19,7 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     }
 
     // cwd-derive fallback (plan 352 task 2450).
-    const resolution = scope_mod.resolve(ctx, args.scope) catch |e|
+    const resolution = scope_mod.resolveForWrite(ctx, args.scope) catch |e|
         exit.die(ctx, e, "question add: resolving scope failed: {s}", .{@errorName(e)});
     const effective_scope: ?[]const u8 = if (resolution.scope) |s| s else null;
 

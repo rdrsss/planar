@@ -25,20 +25,24 @@ Reference for every `planar` subcommand. Authoritative current surface for the i
 
 ### Scope Shorthand
 
-`--scope` accepts three forms wherever it appears:
+`--scope` accepts these forms wherever it appears:
 
 | Form | Meaning |
 |------|---------|
-| `--scope repo` | Scope to the current repo (resolved from `cwd` against `projects.root_path`). |
 | `--scope repo:<slug>` | Scope to the named project slug. |
 | `--scope assoc:<slug>` | Scope to the named association slug. |
+| `--scope <slug>` | Backward-compatible shorthand for an association slug. |
 | `--scope global` | Global / personal scope (no repo or association filter). |
+
+Use the `repo:` prefix for project rows. A bare slug is always parsed as an
+association for compatibility with existing workspace and project-association
+flows.
 
 **Mutating commands** (`task add`, `plan create`, `question add`, `scenario add`, `decision add`, `artifact add`, `link`, `unlink`, `ext create`, `ext propagate`) resolve scope through the strict `ResolveForWrite` algorithm: explicit flag → cwd derivation with most-specific-wins → refuse with an `AmbiguousScopeError` listing candidate `--scope` values. Cwd is the only default; there is no ambient stack. The resolver never silently picks a default when multiple candidates tie at the best rank, nor when cwd lands at a workspace root with member projects (see the workspace-root refusal in [Scope in `docs/concepts.md`](./concepts.md#scope)). See that section for the full algorithm, the membership-aware cross-scope guard, and the specificity ranking.
 
 Source annotations on success: `[from flag]`, `[from cwd]`. The resolved scope and source are printed on success (human output) and included as `scope_kind`, `scope_id`, and `scope_source` fields in `--json` output. To opt out of strict resolution entirely, see `--no-scope-check` in [Global Flags](#global-flags).
 
-**Query commands** (`task list`, `plan list`, etc.) use `ResolveForRead`, which derives the in-scope set from cwd: at a workspace root the org plus every member project; at a member project root the project plus any cross-repo entities reachable via `touches` links. Outside any registered scope, reads refuse unless `--scope global` is passed explicitly. `--scope` on a query is a filter, not a strict pick.
+**Query commands** (`plan list`, `task list`, `question list`, `scenario list`, `decision list`, `artifact list`, `search`, `tree`) use `ResolveForRead`, which derives the in-scope set from cwd: at a workspace root the org plus every member project; at a member project root the most specific registered repo wins, with longer `projects.root_path` matches beating shorter parent roots. Outside any registered scope, reads refuse unless `--scope global` is passed explicitly. `--scope` on a query is a filter, not a strict pick.
 
 ### Exit Codes
 
@@ -560,7 +564,7 @@ Plans are the top-level structured intent for a body of work. They may be hierar
 planar plan create <title> [--scope <scope>] [--parent <plan-id>] [--summary <text>]
 ```
 
-**Description:** Create a new plan with the given title under the active (or specified) scope.
+**Description:** Create a new plan with the given title under the cwd-derived write scope, or the explicitly specified scope.
 
 **Arguments:**
 
@@ -572,18 +576,18 @@ planar plan create <title> [--scope <scope>] [--parent <plan-id>] [--summary <te
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--scope <scope>` | Override scope for this entity. See [scope shorthand](#scope-shorthand). | Active scope. |
+| `--scope <scope>` | Override scope for this entity. See [scope shorthand](#scope-shorthand). | cwd-derived write scope |
 | `--parent <plan-id>` | Parent plan id for hierarchical plans. | none |
 | `--summary <text>` | One-paragraph summary. May be a file path prefixed with `@`. | none |
 
 **Output (human):**
 ```
-plan 7: "Implement billing module"  [draft]  slug:implement-billing-module  (scope: association:3 [from active])
+plan 7: "Implement billing module"  [draft]  slug:implement-billing-module  (scope: association:3 [from cwd])
 ```
 
 **Output (`--json`):**
 ```json
-{"ok":true,"id":7,"title":"Implement billing module","slug":"implement-billing-module","status":"draft","scope_kind":"association","scope_id":3,"scope_source":"active"}
+{"ok":true,"id":7,"title":"Implement billing module","slug":"implement-billing-module","status":"draft","scope_kind":"association","scope_id":3,"scope_source":"cwd"}
 ```
 
 **Schema effects:** Inserts into `plans(scope_kind, scope_id, title, summary, status='draft', parent_plan_id)`.
@@ -646,7 +650,7 @@ planar plan list [--scope <scope>] [--status <status>] [--parent <plan-id>] [--t
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--scope <scope>` | Filter by scope. See [scope shorthand](#scope-shorthand). | Active scope. |
+| `--scope <scope>` | Filter by scope. See [scope shorthand](#scope-shorthand). | cwd-derived read set |
 | `--status <status>` | Filter by status: `draft`, `active`, `paused`, `done`, `abandoned`. Repeatable. | `draft,active,paused` |
 | `--parent <plan-id>` | Only show children of this plan. | all plans |
 | `--touches <repo-slug>` | Return plans scoped to this repo plus plans with `entity_links(relationship='touches', to_kind='repo')` for this repo. | off |
@@ -998,7 +1002,7 @@ planar task add <title> [--plan <plan-id>] [--parent <task-id>] [--scope <scope>
 |------|-------------|---------|
 | `--plan <plan-id>` | Associate with a plan. | none |
 | `--parent <task-id>` | Make a sub-task of another task. | none |
-| `--scope <scope>` | Override scope. See [scope shorthand](#scope-shorthand). | Active scope. |
+| `--scope <scope>` | Override scope. See [scope shorthand](#scope-shorthand). | cwd-derived write scope |
 | `--priority <n>` | Integer priority (lower is higher). | `100` |
 | `--body <text>` | Task body / description. May be `@<file>`. | none |
 | `--due <date>` | Due date in ISO 8601 format (e.g. `2026-05-15`). | none |
@@ -1007,12 +1011,12 @@ planar task add <title> [--plan <plan-id>] [--parent <task-id>] [--scope <scope>
 
 **Output (human):**
 ```
-task 42: "Implement payment gateway API"  [todo]  (priority: 50, plan: 7, scope: association:3 [from active])
+task 42: "Implement payment gateway API"  [todo]  (priority: 50, plan: 7, scope: association:3 [from cwd])
 ```
 
 **Output (`--json`):**
 ```json
-{"ok":true,"id":42,"title":"Implement payment gateway API","status":"todo","plan_id":7,"priority":50,"scope_kind":"association","scope_id":3,"scope_source":"active"}
+{"ok":true,"id":42,"title":"Implement payment gateway API","status":"todo","plan_id":7,"priority":50,"scope_kind":"association","scope_id":3,"scope_source":"cwd"}
 ```
 
 **Schema effects:** Inserts into `tasks(scope_kind, scope_id, plan_id, parent_task_id, title, body, status='todo', priority, next_action, due_at)`.
@@ -1079,7 +1083,7 @@ planar task list [--scope <scope>] [--status <status>] [--plan <plan-id>] [--pri
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--scope <scope>` | Filter by scope. | Active scope. |
+| `--scope <scope>` | Filter by scope. | cwd-derived read set |
 | `--status <status>` | Filter: `todo`, `doing`, `blocked`, `done`, `cancelled`. Repeatable. | `todo,doing,blocked` |
 | `--plan <plan-id>` | Filter to a specific plan. | all |
 | `--priority-max <n>` | Only show tasks with priority ≤ n. | none |
@@ -1372,16 +1376,16 @@ planar question add <title> [--body <text>] [--scope <scope>]
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--body <text>` | Expanded question body. May be `@<file>`. | none |
-| `--scope <scope>` | Override scope. | Active scope. |
+| `--scope <scope>` | Override scope. | cwd-derived write scope |
 
 **Output (human):**
 ```
-question 3: "What is the Stripe API rate limit?"  [open]  (scope: association:3 [from active])
+question 3: "What is the Stripe API rate limit?"  [open]  (scope: association:3 [from cwd])
 ```
 
 **Output (`--json`):**
 ```json
-{"ok":true,"id":3,"title":"What is the Stripe API rate limit?","status":"open","scope_kind":"association","scope_id":3,"scope_source":"active"}
+{"ok":true,"id":3,"title":"What is the Stripe API rate limit?","status":"open","scope_kind":"association","scope_id":3,"scope_source":"cwd"}
 ```
 
 **Schema effects:** Inserts into `questions(scope_kind, scope_id, title, body, status='open')`.
@@ -1444,13 +1448,13 @@ planar question wontfix <question-id>
 planar question list [--scope <scope>] [--status <status>] [--touches <repo-slug>] [--plan <id>]
 ```
 
-**Description:** List questions matching the given filters.
+**Description:** List questions matching the given filters. Without `--scope`, uses the cwd-derived read set and refuses outside registered scope unless `--scope global` is explicit.
 
 **Options:**
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--scope <scope>` | Filter by scope. | Active scope. |
+| `--scope <scope>` | Filter by scope. | cwd-derived read set |
 | `--status <status>` | Filter: `open`, `answered`, `wontfix`. Repeatable. | `open` |
 | `--touches <repo-slug>` | Return questions scoped to this repo plus questions with `entity_links(relationship='touches', to_kind='repo')` for this repo. | off |
 
@@ -1531,16 +1535,16 @@ planar scenario add <title> [--body <text>] [--related <artifact-id>] [--scope <
 |------|-------------|---------|
 | `--body <text>` | Full scenario description. May be `@<file>`. | none |
 | `--related <artifact-id>` | Associate with a specific artifact (spec or ADR). Sets `test_scenarios.related_artifact_id`. | none |
-| `--scope <scope>` | Override scope. | Active scope. |
+| `--scope <scope>` | Override scope. | cwd-derived write scope |
 
 **Output (human):**
 ```
-scenario 9: "Stripe webhook idempotency"  [draft]  (scope: association:3 [from active])
+scenario 9: "Stripe webhook idempotency"  [draft]  (scope: association:3 [from cwd])
 ```
 
 **Output (`--json`):**
 ```json
-{"ok":true,"id":9,"title":"Stripe webhook idempotency","status":"draft","scope_kind":"association","scope_id":3,"scope_source":"active"}
+{"ok":true,"id":9,"title":"Stripe webhook idempotency","status":"draft","scope_kind":"association","scope_id":3,"scope_source":"cwd"}
 ```
 
 **Schema effects:** Inserts into `test_scenarios(scope_kind, scope_id, title, body, status='draft', related_artifact_id)`.
@@ -1593,13 +1597,13 @@ planar scenario verify <scenario-id> --outcome <outcome> [--summary <text>]
 planar scenario list [--scope <scope>] [--status <status>] [--related <artifact-id>] [--touches <repo-slug>]
 ```
 
-**Description:** List test scenarios.
+**Description:** List test scenarios. Without `--scope`, uses the cwd-derived read set and refuses outside registered scope unless `--scope global` is explicit.
 
 **Options:**
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--scope <scope>` | Filter by scope. | Active scope. |
+| `--scope <scope>` | Filter by scope. | cwd-derived read set |
 | `--status <status>` | Filter: `draft`, `ready`, `verified`, `failing`, `retired`. Repeatable. | all |
 | `--related <artifact-id>` | Filter to scenarios related to a specific artifact. | all |
 | `--touches <repo-slug>` | Return scenarios scoped to this repo plus scenarios with `entity_links(relationship='touches', to_kind='repo')` for this repo. | off |
@@ -1684,16 +1688,16 @@ planar decision add <title> --body <text> [--rationale <text>] [--scope <scope>]
 |------|-------------|---------|
 | `--body <text>` | Decision statement. May be `@<file>`. Required. | — |
 | `--rationale <text>` | Rationale text. May be `@<file>`. | none |
-| `--scope <scope>` | Override scope. | Active scope. |
+| `--scope <scope>` | Override scope. | cwd-derived write scope |
 
 **Output (human):**
 ```
-decision 5: "Use Stripe as payment processor"  [proposed]  (scope: association:3 [from active])
+decision 5: "Use Stripe as payment processor"  [proposed]  (scope: association:3 [from cwd])
 ```
 
 **Output (`--json`):**
 ```json
-{"ok":true,"id":5,"title":"Use Stripe as payment processor","status":"proposed","scope_kind":"association","scope_id":3,"scope_source":"active"}
+{"ok":true,"id":5,"title":"Use Stripe as payment processor","status":"proposed","scope_kind":"association","scope_id":3,"scope_source":"cwd"}
 ```
 
 **Schema effects:** Inserts into `decisions(scope_kind, scope_id, title, body, rationale, status='proposed', session_id=<current session id>)`. If no active session exists when this command runs, one is auto-created per the [Capture Behavior](#capture-behavior) rule before insertion, so `decisions.session_id` is always non-null on entries created via the CLI.
@@ -1770,13 +1774,13 @@ planar decision withdraw <decision-id>
 planar decision list [--scope <scope>] [--status <status>]
 ```
 
-**Description:** List decisions.
+**Description:** List decisions. Without `--scope`, uses the cwd-derived read set and refuses outside registered scope unless `--scope global` is explicit.
 
 **Options:**
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--scope <scope>` | Filter by scope. | Active scope. |
+| `--scope <scope>` | Filter by scope. | cwd-derived read set |
 | `--status <status>` | Filter: `proposed`, `accepted`, `superseded`, `withdrawn`. Repeatable. | `proposed,accepted` |
 
 **Output (human):**
@@ -1843,18 +1847,18 @@ planar artifact add <title> --kind <kind> [--body <text>] [--from-file <path>] [
 | `--body <text>` | Body text. May be `@<file>`. Mutually exclusive with `--from-file`. | none |
 | `--from-file <path>` | Read artifact body from this file; also sets `--source-path` to the same path unless `--source-path` is specified explicitly. Mutually exclusive with `--body`. | none |
 | `--source-path <path>` | Path to the source file (e.g. `docs/architecture.md`). | none |
-| `--scope <scope>` | Override scope. | Active scope. |
+| `--scope <scope>` | Override scope. | cwd-derived write scope |
 | `--status <status>` | Initial status: `draft`, `active`. | `draft` |
 | `--plan <plan-id>` | Attach the artifact to this plan via a `derives-from` entity link. Applied atomically in the same transaction as the artifact insert. | none |
 
 **Output (human):**
 ```
-artifact 3: "Billing Tech Spec"  [tech_spec, draft]  (scope: association:3 [from active])
+artifact 3: "Billing Tech Spec"  [tech_spec, draft]  (scope: association:3 [from cwd])
 ```
 
 **Output (`--json`):**
 ```json
-{"ok":true,"id":3,"title":"Billing Tech Spec","kind":"tech_spec","status":"draft","scope_kind":"association","scope_id":3,"scope_source":"active"}
+{"ok":true,"id":3,"title":"Billing Tech Spec","kind":"tech_spec","status":"draft","scope_kind":"association","scope_id":3,"scope_source":"cwd"}
 ```
 
 **Schema effects:** Inserts into `artifacts(scope_kind, scope_id, kind, title, body, source_path, status)`. When `--plan` is set, also inserts into `entity_links(from_kind='artifact', from_id=<new>, to_kind='plan', to_id=<plan-id>, relationship='derives-from')`.
@@ -1891,13 +1895,13 @@ planar artifact show <artifact-id>
 planar artifact list [--scope <scope>] [--kind <kind>] [--status <status>]
 ```
 
-**Description:** List artifacts.
+**Description:** List artifacts. Without `--scope`, uses the cwd-derived read set and refuses outside registered scope unless `--scope global` is explicit.
 
 **Options:**
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--scope <scope>` | Filter by scope. | Active scope. |
+| `--scope <scope>` | Filter by scope. | cwd-derived read set |
 | `--kind <kind>` | Filter by kind. Repeatable. | all |
 | `--status <status>` | Filter: `draft`, `active`, `superseded`, `retired`. Repeatable. | `draft,active` |
 
@@ -2627,12 +2631,12 @@ Manages workspace state directories — the per-org canonical AGENTS.md surface,
 
 **Synopsis:**
 ```
-planar workspace init [--name <text>] [--slug <text>] [--scan <N>] [--no-scan] [--enrich]
+planar workspace init [--name <text>] [--slug <text>] [--scan <N>] [--meta-repo] [--no-scan] [--enrich]
 ```
 
-**Description:** Create an org association for the current working directory and register every immediate child directory containing a `.git` as a project member of that org. Refuses if cwd has its own `.git` (use `planar init` instead) or if cwd contains zero `.git` children (a workspace must contain repos). Idempotent on re-run: an existing org with the same slug is reused; existing projects keep their state; missing memberships are added.
+**Description:** Create an org association for the current working directory and register every immediate child directory containing a `.git` as a project member of that org. Refuses if cwd has its own `.git` unless `--meta-repo` is passed (use `planar init` instead for ordinary single repos) or if cwd contains zero `.git` children (a workspace must contain repos). In meta-repo mode, cwd must be a git repository; the root repo itself is registered as a project member, nested `.git` directories and submodule-style `.git` files are scanned, and the org config records `"workspace_shape":"meta-repo"`. Idempotent on re-run from the same root: an existing org with the same slug and root is reused; existing projects keep their state; missing memberships are added. In meta-repo mode, an existing org slug whose recorded `root_path` points at a different directory is refused and its `config_json` is left unchanged.
 
-After the org + projects are committed, init runs a pipeline pass that (1) builds the static routing table, (2) regenerates AGENTS.md from the template, and (3) installs `AGENTS.md` / `CLAUDE.md` symlinks at the workspace root (copy fallback on filesystems that reject symlinks). Pipeline failures do not roll back the DB writes; they surface as a stderr warning with a hint to re-run `planar workspace routing build && planar workspace regenerate`.
+After the org + projects are committed, init runs a pipeline pass that (1) builds the static routing table, (2) regenerates AGENTS.md from the template, and (3) installs `AGENTS.md` / `CLAUDE.md` symlinks at the workspace root for sibling workspaces (copy fallback on filesystems that reject symlinks). In meta-repo mode, step 3 is skipped: root-level instruction files are repo-owned and are not created, copied, symlinked, overwritten, or repaired. Pipeline failures do not roll back the DB writes; they surface as a stderr warning with a hint to run `planar workspace doctor`, `planar workspace routing build`, and `planar workspace regenerate`.
 
 **Options:**
 
@@ -2641,6 +2645,7 @@ After the org + projects are committed, init runs a pipeline pass that (1) build
 | `--name <text>` | Human-readable org name. | cwd basename |
 | `--slug <text>` | Org slug. | Derived from cwd basename. |
 | `--scan <N>` | Walk N levels deep when scanning for child repos. | `1` (immediate children only) |
+| `--meta-repo` | Treat the cwd git repository as a workspace container and member project, scanning nested repos/submodules. | off |
 | `--no-scan` | Skip the post-init pipeline (routing build + regenerate + symlinks). | off |
 | `--enrich` | Merge cached LLM enrichment results into the routing table (equivalent to `routing build --enrich`). Cannot combine with `--no-scan`. | off |
 
@@ -2672,11 +2677,11 @@ Run `planar assoc tree` to view the hierarchy.
 }
 ```
 
-**Schema effects:** Inserts/preserves `associations(kind='org')`, `projects`, `project_associations`. Writes `~/.planar/workspaces/<org_id>/AGENTS.md` and `routing-table.json`. Installs symlinks (or copies) at the workspace root.
+**Schema effects:** Inserts/preserves `associations(kind='org')`, `projects`, `project_associations`. The association `config_json` stores `root_path`, plus `workspace_shape: "meta-repo"` when `--meta-repo` is used. Writes `~/.planar/workspaces/<org_id>/AGENTS.md` and `routing-table.json`. Sibling workspaces install symlinks (or copies) at the workspace root; meta workspaces leave root `AGENTS.md` / `CLAUDE.md` untouched.
 
 **Exit codes:**
 - `0` — success.
-- `1` — cwd has its own `.git`; or cwd contains zero `.git` children; or `--no-scan` was combined with `--enrich`.
+- `1` — cwd has its own `.git` without `--meta-repo`; or `--meta-repo` was used outside a git repo; or cwd contains zero `.git` children; or `--no-scan` was combined with `--enrich`; or `--meta-repo` reused an existing org slug whose recorded root points elsewhere.
 - `2` — migration, DB, or pipeline I/O failure.
 
 ---
@@ -2688,7 +2693,7 @@ Run `planar assoc tree` to view the hierarchy.
 planar workspace doctor
 ```
 
-**Description:** Walk every `associations` row with `kind=org` and reconcile its on-disk state. For each org, doctor verifies the state directory exists (creating it if missing) and that the `AGENTS.md` / `CLAUDE.md` symlinks at the workspace root point at the canonical target (reinstalling them if not). Missing `AGENTS.md` or `routing-table.json` are reported as `missing` with a hint to run `planar workspace regenerate` — doctor does not regenerate content itself. Idempotent: a second invocation against the same fleet produces an `ok` summary per org. Orgs whose `config_json` has no `root_path` skip symlink repair with a warning rather than guessing from cwd.
+**Description:** Walk every `associations` row with `kind=org` and reconcile its on-disk state. For each org, doctor verifies the state directory exists (creating it if missing) and, for sibling workspaces, verifies that the `AGENTS.md` / `CLAUDE.md` symlinks at the workspace root point at the canonical target (reinstalling them if not). Doctor only repairs root guidance files when `config_json` is valid and positively describes a non-meta workspace. For meta workspaces (`config_json.workspace_shape == "meta-repo"`), root instruction files are skipped entirely because they are repo-owned. If the workspace config is missing, malformed, or has an unknown shape, doctor reports a deterministic `error` issue and skips root guidance repair rather than guessing. Missing canonical `AGENTS.md` or `routing-table.json` under the state directory are reported as `missing` with a hint to run `planar workspace regenerate` — doctor does not regenerate content itself. Idempotent: a second invocation against the same fleet produces an `ok` summary per org whose state is complete.
 
 **Output (human):**
 ```
@@ -5083,13 +5088,13 @@ planar tree [--scope <scope> | --all-scopes]
             [-J | --json]
 ```
 
-**Description:** Render a hierarchical view of the cwd-derived scope (default) or another scope, walking plans → tasks → derived artifacts/decisions/scenarios/questions.
+**Description:** Render a hierarchical view of the cwd-derived read set (default) or another scope, walking plans → tasks → derived artifacts/decisions/scenarios/questions. At a workspace root, the default output contains one scope root for the workspace org and one for each member project; inside a member repo, the most specific repo root is used.
 
 **Options:**
 
 | Flag | tree(1) equiv. | Default | Description |
 |------|----------------|---------|-------------|
-| `--scope <X>` | (Planar) | cwd-derived | Render this scope only. Accepts `global`, `repo`, `repo:<slug>`, `assoc:<slug>`. |
+| `--scope <X>` | (Planar) | cwd-derived | Render this scope only. Accepts `global`, `repo:<slug>`, `assoc:<slug>`, or a bare association slug. |
 | `--all-scopes` | (Planar) | off | Render every scope as a separate section. Always renders the `global` section even when empty. Mutually exclusive with `--scope`. |
 | `-L`, `--depth <N>` | `-L` | unbounded | Maximum recursion depth. Top-level plan is depth 0; child plan is depth 1; task under a top-level plan is depth 1; subtask is depth 2. |
 | `-I`, `--ignore <pattern>` | `-I` | none | Glob pattern excluding entities whose title or slug matches. Repeatable. |
@@ -5728,7 +5733,7 @@ The catalog is built at comptime from the command tree, so the verb is a pure wr
 
 ### `planar search <query> [--kind <kind>] [--status <status>] [--scope <scope>] [--plan <id>] [--limit <n>] [--json]`
 
-**Description:** Full-text search across plans, tasks, questions, scenarios, decisions, and artifacts (backed by the FTS5 index from migration `00011_slug_refs_fts`). The positional `<query>` is the search string. Narrow results with `--kind` (restrict to a single entity kind), `--status`, `--scope`, or `--plan` (entities under a given plan); cap with `--limit`. `--json` emits the structured result list.
+**Description:** Full-text search across plans, tasks, questions, scenarios, decisions, and artifacts (backed by the FTS5 index from migration `00011_slug_refs_fts`). Without `--scope`, search uses the cwd-derived read set: workspace roots search the org plus member projects, and member repo cwd searches the most specific repo. Narrow results with `--kind` (restrict to a single entity kind), `--status`, `--scope`, or `--plan` (entities under a given plan); cap with `--limit`. `--json` emits the structured result list.
 
 **Schema effects:** Reads the FTS index and the underlying entity tables. No writes.
 
