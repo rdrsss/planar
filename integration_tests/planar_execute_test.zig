@@ -172,6 +172,15 @@ const Iso = struct {
         try f.writeStreamingAll(std.testing.io, content);
     }
 
+    /// Write an `execute-config.toml` into this Iso's PLANAR_HOME (`home/`),
+    /// so the binary's role→model resolver picks it up the same way an operator's
+    /// `~/.planar/execute-config.toml` would. The `home/` dir is created in init().
+    fn writeExecuteConfig(self: *const Iso, content: []const u8) !void {
+        var f = try self.tmp.dir.createFile(std.testing.io, "home/execute-config.toml", .{});
+        defer f.close(std.testing.io);
+        try f.writeStreamingAll(std.testing.io, content);
+    }
+
     /// The PLANAR_DB this Iso injects — used by the isolation guard test to
     /// assert the child sees a TmpDir-scoped DB, never the operator's home.
     fn dbPath(self: *const Iso) []const u8 {
@@ -1274,4 +1283,105 @@ test "planar-execute --mock-outcomes conflict: PLANAR_EXECUTE_LIVE_AGENT exits n
     try std.testing.expect(std.mem.indexOf(u8, res.stderr, "mock-outcomes") != null);
     try std.testing.expect(std.mem.indexOf(u8, res.stderr, "PLANAR_EXECUTE_LIVE_AGENT") != null);
     try std.testing.expect(std.mem.indexOf(u8, res.stderr, "mutually exclusive") != null);
+}
+
+// ---------------------------------------------------------------------------
+// plan 492 tasks 3708 (dry-run model-table visibility) + 3709 (sonnet-coder
+// default + execute-config.toml override)
+// ---------------------------------------------------------------------------
+
+/// Extract the model paired with `role` from a `--dry-run` "dispatch model
+/// table" block. Each row renders as `  <role><pad>→ <model>`. Returns the
+/// trimmed model string, or null if no row's leading token equals `role`
+/// exactly (so "coder" never matches the "test-coder" row).
+fn rowModel(stdout: []const u8, role: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, stdout, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        const arrow = std.mem.indexOf(u8, line, "→") orelse continue;
+        const lhs = std.mem.trim(u8, line[0..arrow], " \t");
+        if (!std.mem.eql(u8, lhs, role)) continue;
+        const rhs = std.mem.trim(u8, line[arrow + "→".len ..], " \t");
+        return rhs;
+    }
+    return null;
+}
+
+test "planar-execute --dry-run: prints the dispatch model table for all four roles (task 3708)" {
+    const gpa = std.testing.allocator;
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
+
+    try iso.writeWorkflow("tbl.lua",
+        \\return {
+        \\  meta = { name = "tbl-wf", description = "model table preview", phases = {} },
+        \\  run = function(ctx) error("must not run under --dry-run") end,
+        \\}
+    );
+    const wf_path = try iso.workflowPath("tbl.lua");
+    defer gpa.free(wf_path);
+
+    const res = try iso.run(&.{ "run", "--dry-run", wf_path });
+    defer res.deinit();
+
+    try std.testing.expectEqual(@as(u32, 0), res.exitCode());
+    // A labelled dispatch table must be present, with one row per known role.
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "dispatch model table") != null);
+    for ([_][]const u8{ "coder", "reviewer", "test-coder", "documenter" }) |role| {
+        if (rowModel(res.stdout, role) == null) {
+            std.debug.print("\ndry-run table missing a row for role '{s}'\nstdout:\n{s}\n", .{ role, res.stdout });
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
+test "planar-execute --dry-run: default routing is sonnet-coder / opus-reviewer (task 3709)" {
+    const gpa = std.testing.allocator;
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
+
+    try iso.writeWorkflow("def.lua",
+        \\return { meta = { name = "def-wf", description = "defaults", phases = {} }, run = function(ctx) end }
+    );
+    const wf_path = try iso.workflowPath("def.lua");
+    defer gpa.free(wf_path);
+
+    const res = try iso.run(&.{ "run", "--dry-run", wf_path });
+    defer res.deinit();
+
+    try std.testing.expectEqual(@as(u32, 0), res.exitCode());
+    try std.testing.expectEqualStrings("claude-sonnet-4-6", rowModel(res.stdout, "coder") orelse "<none>");
+    try std.testing.expectEqualStrings("claude-opus-4-8", rowModel(res.stdout, "reviewer") orelse "<none>");
+    try std.testing.expectEqualStrings("claude-sonnet-4-6", rowModel(res.stdout, "test-coder") orelse "<none>");
+    try std.testing.expectEqualStrings("claude-sonnet-4-6", rowModel(res.stdout, "documenter") orelse "<none>");
+}
+
+test "planar-execute --dry-run: execute-config.toml overrides a role's model (task 3709)" {
+    const gpa = std.testing.allocator;
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
+
+    // Operator opts the coder back up to opus and bumps the documenter; the
+    // reviewer is left unset and must fall through to its default.
+    try iso.writeExecuteConfig(
+        \\# operator override
+        \\[models]
+        \\coder = "claude-opus-4-8"
+        \\documenter = "claude-opus-4-8"
+    );
+    try iso.writeWorkflow("ovr.lua",
+        \\return { meta = { name = "ovr-wf", description = "override", phases = {} }, run = function(ctx) end }
+    );
+    const wf_path = try iso.workflowPath("ovr.lua");
+    defer gpa.free(wf_path);
+
+    const res = try iso.run(&.{ "run", "--dry-run", wf_path });
+    defer res.deinit();
+
+    try std.testing.expectEqual(@as(u32, 0), res.exitCode());
+    // Overridden roles reflect the config; unset roles keep their defaults.
+    try std.testing.expectEqualStrings("claude-opus-4-8", rowModel(res.stdout, "coder") orelse "<none>");
+    try std.testing.expectEqualStrings("claude-opus-4-8", rowModel(res.stdout, "documenter") orelse "<none>");
+    try std.testing.expectEqualStrings("claude-opus-4-8", rowModel(res.stdout, "reviewer") orelse "<none>");
+    try std.testing.expectEqualStrings("claude-sonnet-4-6", rowModel(res.stdout, "test-coder") orelse "<none>");
 }
