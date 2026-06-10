@@ -5,9 +5,9 @@ description: Tier-to-model mapping for every supported vendor.
 
 # Models And Vendors
 
-Agent specs in `agents/` reference abstract tiers (`medium`, `large`). The source of truth for concrete vendor model IDs is `src/configs/vendors.yaml`; this document is the published view.
+Agent specs in `agents/` reference abstract tiers (`small`, `medium`, `large`). The source of truth for concrete vendor model IDs is the Planar config (`[models.<vendor>]` tier maps in `~/.planar/config.toml`, with embedded defaults in `src/engine/config/defaults.toml`), resolved through the shared model resolver (plan 540). This document is the published view.
 
-`planar skills render` regenerates the `## Tier Table` section from `src/configs/vendors.yaml` while keeping the surrounding prose human-authored.
+`planar skills render` regenerates the `## Tier Table` section by resolving each vendor's tier→model through that resolver (config defaults), keeping the surrounding prose human-authored. Run `planar config show --effective` to see the live values + provenance, or `planar models` to see installed providers.
 
 ## Tier Table
 
@@ -15,7 +15,7 @@ Agent specs in `agents/` reference abstract tiers (`medium`, `large`). The sourc
 | ------ | ------ | ----- | ------- |
 | small | claude-haiku-4-5 | gpt-5.4-mini | gpt-5-mini |
 | medium | claude-sonnet-4-6 | gpt-5.4 | gpt-5 |
-| large | claude-opus-4-7 | gpt-5.5 | claude-opus-4 |
+| large | claude-opus-4-8 | gpt-5.5 | claude-opus-4 |
 ## Agent Assignments
 
 | Agent              | Tier   |
@@ -39,6 +39,6 @@ The coder defaults to `medium` (sonnet). The orchestrator may escalate the spawn
 
 ## Notes On Identifiers
 
-- `claude-sonnet-4-6` and `claude-opus-4-7` are the current Anthropic identifiers as of 2026-05.
+- `claude-sonnet-4-6` and `claude-opus-4-8` are the current Anthropic identifiers as of 2026-06.
 - Codex and Copilot identifiers must be verified against each vendor's current model list periodically. Treat the values above as defaults, not guarantees.
 - Vendors that expose Anthropic models (e.g. Copilot routing to `claude-opus-4`) should resolve to the closest available identifier on that vendor, not the Anthropic-native one.

@@ -7,6 +7,8 @@
 //! - tree render + drift check (`content` / `missing` / `orphan`)
 
 const std = @import("std");
+const config = @import("config.zig");
+const model_engine = @import("models.zig");
 
 pub const AgentsModelsPath = "agents/models.md";
 
@@ -25,10 +27,6 @@ const embedded_vendors_yaml =
     \\    install_bullets:
     \\      - "Installed to `~/.claude/commands/<slug>.md`."
     \\      - "Invoked as `/<slug> <subcommand> [args]`."
-    \\    models:
-    \\      small: claude-haiku-4-5
-    \\      medium: claude-sonnet-4-6
-    \\      large: claude-opus-4-7
     \\  codex:
     \\    title: Codex
     \\    output_dir: skills/codex
@@ -41,10 +39,6 @@ const embedded_vendors_yaml =
     \\    agent_frontmatter_fields: [name, description, developer_instructions, model, model_reasoning_effort, sandbox_mode]
     \\    install_bullets:
     \\      - "Installed into `~/.codex/skills/<slug>` from `~/.planar/codex-skills/<slug>`."
-    \\    models:
-    \\      small: gpt-5.4-mini
-    \\      medium: gpt-5.4
-    \\      large: gpt-5.5
     \\  copilot:
     \\    title: Copilot
     \\    output_dir: skills/copilot
@@ -58,10 +52,6 @@ const embedded_vendors_yaml =
     \\    install_bullets:
     \\      - "Installed to `~/.copilot/skills/<slug>.md`."
     \\      - "Companion instruction and prompt files (when needed) live under `copilot/`."
-    \\    models:
-    \\      small: gpt-5-mini
-    \\      medium: gpt-5
-    \\      large: claude-opus-4
 ;
 
 pub const VendorModel = struct {
@@ -315,7 +305,49 @@ pub const RenderError = error{
 };
 
 pub fn loadVendors(allocator: std.mem.Allocator) !VendorProfiles {
-    return parseVendorsBytes(allocator, embedded_vendors_yaml);
+    var profiles = try parseVendorsBytes(allocator, embedded_vendors_yaml);
+    errdefer profiles.deinit(allocator);
+    try populateModelsFromResolver(allocator, &profiles);
+    return profiles;
+}
+
+/// Fill each vendor profile's tier→model table from the shared model resolver
+/// (plan 540 phase 2, tasks 3622/3627) using config DEFAULTS — so the embedded
+/// vendor YAML no longer carries a model table and `agents/models.md` + every
+/// rendered skill/agent `model:` field flow from the single config source.
+/// Replaces whatever `models` the YAML parse produced (now none).
+fn populateModelsFromResolver(allocator: std.mem.Allocator, profiles: *VendorProfiles) !void {
+    var resolved = config.resolve(allocator, null, std.process.Environ.empty, null) catch
+        return RenderError.ParseFailure;
+    defer resolved.deinit(allocator);
+
+    const tiers = [_][]const u8{ "small", "medium", "large" };
+    for (profiles.items) |*p| {
+        // Discard any YAML-parsed models (none, post-retirement) and rebuild.
+        for (p.models) |m| {
+            allocator.free(m.tier);
+            allocator.free(m.model);
+        }
+        allocator.free(p.models);
+        p.models = &.{};
+
+        var list: std.ArrayList(VendorModel) = .empty;
+        errdefer {
+            for (list.items) |m| {
+                allocator.free(m.tier);
+                allocator.free(m.model);
+            }
+            list.deinit(allocator);
+        }
+        for (tiers) |tier| {
+            const r = model_engine.resolveTier(&resolved.effective, p.name, tier) catch continue;
+            try list.append(allocator, .{
+                .tier = try allocator.dupe(u8, tier),
+                .model = try allocator.dupe(u8, r.model),
+            });
+        }
+        p.models = try list.toOwnedSlice(allocator);
+    }
 }
 
 pub fn parseVendorsBytes(allocator: std.mem.Allocator, raw: []const u8) !VendorProfiles {
@@ -2561,7 +2593,7 @@ test "orchestrator renders with NO Edit/Write; coder renders WITH them at sonnet
     try std.testing.expect(std.mem.indexOf(u8, orch_out, "tools: [Bash, Agent, Read, Grep, Glob]") != null);
     try std.testing.expect(std.mem.indexOf(u8, orch_out, "Edit") == null);
     try std.testing.expect(std.mem.indexOf(u8, orch_out, "Write") == null);
-    try std.testing.expect(std.mem.indexOf(u8, orch_out, "model: claude-opus-4-7") != null);
+    try std.testing.expect(std.mem.indexOf(u8, orch_out, "model: claude-opus-4-8") != null);
 
     var coder = try parseAgentSourceBytes(gpa, "agents/coder.md", agent_coder_fixture);
     defer coder.deinit(gpa);
