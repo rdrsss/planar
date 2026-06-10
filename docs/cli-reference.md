@@ -5508,6 +5508,11 @@ reviewer = "claude-opus-4-8"
 
 Only the four known role keys are honored; unknown keys, malformed lines, and a missing file are ignored — a config typo falls through to the default, it never aborts a run. Unset roles keep their default. `--dry-run` prints the **effective** table (defaults overlaid with this config), so the table you see is exactly what a live run would dispatch. There is no per-`agent()` model override in Lua; record per-task model *intent* in the execution manifest (see the `workflow-planner` agent) when finer auditing is needed.
 
+The same effective mapping is reachable from a running workflow and from a live run's stderr:
+
+- **`ctx.dispatch_table()`** (Lua host fn) returns the role→model mapping as a table (`{ coder = "…", reviewer = "…", ["test-coder"] = "…", documenter = "…" }`), so a workflow can log its own routing in its narrative. Available in all modes (it reads the resolved table, not a spawn).
+- **Per-spawn dispatch banner:** every real (and `--mock-worker`) `agent()` spawn prints a one-line banner to stderr — `[dispatch] task:<id> role=<role> model=<model>` — so an operator tailing a live run sees per-call routing without grepping the binary.
+
 **Example:**
 
 ```sh

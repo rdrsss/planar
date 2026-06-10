@@ -1385,3 +1385,104 @@ test "planar-execute --dry-run: execute-config.toml overrides a role's model (ta
     try std.testing.expectEqualStrings("claude-opus-4-8", rowModel(res.stdout, "reviewer") orelse "<none>");
     try std.testing.expectEqualStrings("claude-sonnet-4-6", rowModel(res.stdout, "test-coder") orelse "<none>");
 }
+
+// ---------------------------------------------------------------------------
+// plan 492 task 3708 — ctx.dispatch_table() host fn + per-spawn dispatch banner
+// ---------------------------------------------------------------------------
+
+test "planar-execute ctx.dispatch_table(): returns the effective role→model mapping (task 3708)" {
+    const gpa = std.testing.allocator;
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
+
+    // Asserts run inside the workflow; a mismatch errors run() → non-zero exit.
+    // Default (ungated) mode: agent() is a stub, but dispatch_table() reflects
+    // the resolved table on the host.
+    try iso.writeWorkflow("dt.lua",
+        \\return {
+        \\  meta = { name = "dt", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local t = ctx.dispatch_table()
+        \\    assert(t.coder == "claude-sonnet-4-6", "coder=" .. tostring(t.coder))
+        \\    assert(t.reviewer == "claude-opus-4-8", "reviewer=" .. tostring(t.reviewer))
+        \\    assert(t["test-coder"] == "claude-sonnet-4-6", "test-coder=" .. tostring(t["test-coder"]))
+        \\    assert(t.documenter == "claude-sonnet-4-6", "documenter=" .. tostring(t.documenter))
+        \\  end,
+        \\}
+    );
+    const wf_path = try iso.workflowPath("dt.lua");
+    defer gpa.free(wf_path);
+
+    const res = try iso.run(&.{ "run", wf_path });
+    defer res.deinit();
+    if (res.exitCode() != 0) {
+        std.debug.print("\ndispatch_table workflow failed:\nstderr:\n{s}\n", .{res.stderr});
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "planar-execute ctx.dispatch_table(): reflects an execute-config.toml override (task 3708)" {
+    const gpa = std.testing.allocator;
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
+
+    try iso.writeExecuteConfig(
+        \\[models]
+        \\coder = "claude-opus-4-8"
+    );
+    try iso.writeWorkflow("dto.lua",
+        \\return {
+        \\  meta = { name = "dto", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local t = ctx.dispatch_table()
+        \\    assert(t.coder == "claude-opus-4-8", "coder=" .. tostring(t.coder))
+        \\    assert(t.reviewer == "claude-opus-4-8", "reviewer=" .. tostring(t.reviewer))
+        \\  end,
+        \\}
+    );
+    const wf_path = try iso.workflowPath("dto.lua");
+    defer gpa.free(wf_path);
+
+    const res = try iso.run(&.{ "run", wf_path });
+    defer res.deinit();
+    if (res.exitCode() != 0) {
+        std.debug.print("\ndispatch_table override workflow failed:\nstderr:\n{s}\n", .{res.stderr});
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "planar-execute: per-spawn dispatch banner names role + model on stderr (task 3708)" {
+    const gpa = std.testing.allocator;
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
+
+    // --mock-worker drives the FULL agent() pipeline (no real claude -p), so the
+    // banner emitted at spawn time is observable on stderr.
+    try iso.writeWorkflow("ban.lua",
+        \\return {
+        \\  meta = { name = "ban", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    ctx.agent("the brief", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/ban-wt",
+        \\      claim_token = "tk",
+        \\      task_slug = "ts",
+        \\    })
+        \\  end,
+        \\}
+    );
+    const wf_path = try iso.workflowPath("ban.lua");
+    defer gpa.free(wf_path);
+
+    const res = try iso.run(&.{ "run", "--mock-worker", wf_path });
+    defer res.deinit();
+
+    try std.testing.expectEqual(@as(u32, 0), res.exitCode());
+    if (std.mem.indexOf(u8, res.stderr, "[dispatch]") == null or
+        std.mem.indexOf(u8, res.stderr, "role=coder") == null or
+        std.mem.indexOf(u8, res.stderr, "model=claude-sonnet-4-6") == null)
+    {
+        std.debug.print("\ndispatch banner missing/incomplete on stderr:\n{s}\n", .{res.stderr});
+        return error.TestUnexpectedResult;
+    }
+}

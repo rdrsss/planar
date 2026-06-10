@@ -319,6 +319,7 @@ pub const HostCallKind = enum {
     budget_spent,
     budget_remaining,
     eligible,
+    dispatch_table,
 };
 
 /// A single recorded host-function invocation. All fields are heap-owned copies
@@ -1454,6 +1455,14 @@ fn driveAgentCallPreYield(
         // the default tier and silently ignore the operator's override (3709).
         .model = acs.model,
     };
+    // task 3708: a one-line dispatch banner on stderr so an operator tailing a
+    // run sees per-call routing without grepping the binary. Fires for every
+    // real (and mock) spawn — the stub path returns before reaching here.
+    std.debug.print(
+        "[dispatch] task:{d} role={s} model={s}\n",
+        .{ opts.task_id, role.name(), acs.model },
+    );
+
     const handle = driver.spawner.start(alloc, io, spawn_inputs) catch |err| {
         acs.destroy();
         _ = c.luaL_error(L, "agent: spawn failed: %s", @errorName(err).ptr);
@@ -3178,6 +3187,34 @@ fn hostBudgetRemaining(L: ?*c.lua_State) callconv(.c) c_int {
     return 1;
 }
 
+/// hostDispatchTable — `ctx.dispatch_table()` (plan 492 task 3708). Returns a
+/// Lua table mapping each role to the model it will spawn this run — the same
+/// effective mapping `--dry-run` prints, sourced from `hs.model_table` (defaults
+/// overlaid with `execute-config.toml`). Lets a workflow log its own routing in
+/// its narrative. Pure read; takes no arguments.
+///
+///   { coder = "claude-sonnet-4-6", reviewer = "claude-opus-4-8",
+///     ["test-coder"] = "claude-sonnet-4-6", documenter = "claude-sonnet-4-6" }
+fn hostDispatchTable(L: ?*c.lua_State) callconv(.c) c_int {
+    const hs = hostStateUpvalue(L);
+    recordOrError(L, hs, .dispatch_table, "", "");
+    c.lua_createtable(L, 0, 4);
+    const idx: c_int = c.lua_absindex(L, -1);
+    inline for ([_]role_model.Role{ .coder, .reviewer, .@"test-coder", .documenter }) |role| {
+        const model = hs.model_table.forRole(role);
+        _ = c.lua_pushlstring(L, model.ptr, model.len);
+        // role is comptime in the inline for, so this key is a comptime sentinel.
+        const key: [*:0]const u8 = switch (role) {
+            .coder => "coder",
+            .reviewer => "reviewer",
+            .@"test-coder" => "test-coder",
+            .documenter => "documenter",
+        };
+        c.lua_setfield(L, idx, key);
+    }
+    return 1;
+}
+
 /// pushHostClosure pushes a C closure for `fn_ptr` that carries `hs` as its
 /// single light-userdata upvalue, then assigns it as field `name` on the table
 /// at `tbl_idx`. The light-userdata upvalue is how the closure recovers the
@@ -3216,6 +3253,9 @@ fn installHostFns(L: ?*c.lua_State, ctx_idx: c_int, hs: *HostState) void {
     // `planar plan recommend-strategy` and returns the parallel-eligible subset.
     // Works ungated (read-only, no PLANAR_EXECUTE_LIVE_AGENT required).
     pushHostClosure(L, ctx_idx, "eligible", hostEligible, hs);
+    // task 3708: ctx.dispatch_table() returns the effective role→model mapping
+    // for this run so a workflow can log its own routing.
+    pushHostClosure(L, ctx_idx, "dispatch_table", hostDispatchTable, hs);
 
     // Determinism injection (task 3169): ctx.now and ctx.seed are the only
     // time/random source available to the sandboxed script.

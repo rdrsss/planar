@@ -32,7 +32,7 @@ Do not use this skill for normal in-pwd `classic` orchestration; use `pl-orchest
 
 ## Current host constraints
 
-`planar-execute` is the Lua harness. Its documented `ctx.agent(brief, opts)` shape accepts `role`, `worktree_path`, `task_id`, `task_slug`, `claim_token`, and `role_spec`. The live host path selects Claude models **by role** from `src/cmd/planar-execute/role_model.zig` (default: sonnet coder, opus reviewer); it does not expose per-call `vendor`, `tier`, or `model` options in Lua. Per-role models are operator-overridable in `${PLANAR_HOME:-~/.planar}/execute-config.toml` under a `[models]` table — but that is config, not a per-`agent()` argument. Run `planar-execute run --dry-run <workflow.lua>` to print the effective role→model table for the run.
+`planar-execute` is the Lua harness. Its documented `ctx.agent(brief, opts)` shape accepts `role`, `worktree_path`, `task_id`, `task_slug`, `claim_token`, and `role_spec`. The live host path selects Claude models **by role** from `src/cmd/planar-execute/role_model.zig` (default: sonnet coder, opus reviewer); it does not expose per-call `vendor`, `tier`, or `model` options in Lua. Per-role models are operator-overridable in `${PLANAR_HOME:-~/.planar}/execute-config.toml` under a `[models]` table — but that is config, not a per-`agent()` argument. To see the effective routing: run `planar-execute run --dry-run <workflow.lua>` (prints the role→model table), call `ctx.dispatch_table()` from inside the workflow to log it in your narrative, or read the per-spawn `[dispatch] task:N role=… model=…` stderr banner on a live run.
 
 Therefore:
 
