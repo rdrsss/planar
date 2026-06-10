@@ -26,6 +26,67 @@
 //! No DB handle is required; discovery is filesystem/PATH + subprocess only.
 
 const std = @import("std");
+const config = @import("config.zig");
+
+// ---------------------------------------------------------------------------
+// Shared model resolver (plan 540 phase 2) — the single authority that maps
+// (vendor, role|tier) to a concrete model, reading the effective config
+// (models.<vendor>.<tier> tier maps + roles.<role> role→tier) produced by
+// engine.config.resolve(). Consumers (planar-execute, skills render,
+// `planar models`) resolve through this instead of carrying their own tables.
+// ---------------------------------------------------------------------------
+
+/// Failure modes of the resolver.
+pub const ResolveError = error{
+    /// No `models.<vendor>.*` keys exist for the requested vendor.
+    UnknownVendor,
+    /// The vendor is known but has no model at the requested tier.
+    UnknownTier,
+    /// No `roles.<role>` mapping exists for the requested role.
+    UnknownRole,
+    /// The tier key exists but its model id is empty.
+    MissingModel,
+};
+
+/// A resolved (vendor, tier) → model with provenance. `tier`/`model` borrow
+/// from the effective map and live as long as it does.
+pub const Resolution = struct {
+    vendor: []const u8,
+    tier: []const u8,
+    model: []const u8,
+    source: config.Provenance,
+};
+
+/// True when the effective map carries a `models.<vendor>.medium` key — the
+/// canonical presence probe for a known vendor.
+fn vendorKnown(eff: *const config.EffectiveMap, vendor: []const u8) bool {
+    var buf: [160]u8 = undefined;
+    const key = std.fmt.bufPrint(&buf, "models.{s}.medium", .{vendor}) catch return false;
+    return eff.get(key) != null;
+}
+
+/// Resolve `(vendor, tier)` to a concrete model from the effective config.
+pub fn resolveTier(eff: *const config.EffectiveMap, vendor: []const u8, tier: []const u8) ResolveError!Resolution {
+    var buf: [160]u8 = undefined;
+    const key = std.fmt.bufPrint(&buf, "models.{s}.{s}", .{ vendor, tier }) catch return ResolveError.UnknownTier;
+    if (eff.get(key)) |vws| {
+        if (vws.value.len == 0) return ResolveError.MissingModel;
+        return .{ .vendor = vendor, .tier = tier, .model = vws.value, .source = vws.source };
+    }
+    if (!vendorKnown(eff, vendor)) return ResolveError.UnknownVendor;
+    return ResolveError.UnknownTier;
+}
+
+/// Resolve `(vendor, role)` to a concrete model: `roles.<role>` gives the tier,
+/// then `(vendor, tier)` gives the model. The returned `tier` is the resolved
+/// tier; `source` reflects the model entry's provenance.
+pub fn resolveRole(eff: *const config.EffectiveMap, vendor: []const u8, role: []const u8) ResolveError!Resolution {
+    var buf: [160]u8 = undefined;
+    const rkey = std.fmt.bufPrint(&buf, "roles.{s}", .{role}) catch return ResolveError.UnknownRole;
+    const tier_vws = eff.get(rkey) orelse return ResolveError.UnknownRole;
+    if (tier_vws.value.len == 0) return ResolveError.UnknownRole;
+    return resolveTier(eff, vendor, tier_vws.value);
+}
 
 /// Canonical capability tiers (plan 541). `small` = cheap/fast, `large` =
 /// heavy reasoning.
@@ -334,4 +395,69 @@ test "models: renderText lists providers + default routing" {
     try testing.expect(std.mem.indexOf(u8, out, "gpt-5.3-codex-spark") != null);
     try testing.expect(std.mem.indexOf(u8, out, "coder") != null);
     try testing.expect(std.mem.indexOf(u8, out, "claude-opus-4-8") != null);
+}
+
+// ---------------------------------------------------------------------------
+// Resolver unit tests (plan 540 phase 2 / task 3621)
+// ---------------------------------------------------------------------------
+
+test "resolver: default resolution — role→tier→model from embedded defaults" {
+    const a = testing.allocator;
+    var res = try config.resolve(a, null, std.process.Environ.empty, null);
+    defer res.deinit(a);
+
+    const coder = try resolveRole(&res.effective, "claude", "coder");
+    try testing.expectEqualStrings("medium", coder.tier);
+    try testing.expectEqualStrings("claude-sonnet-4-6", coder.model);
+    try testing.expectEqual(config.Provenance.embedded_default, coder.source);
+
+    const reviewer = try resolveRole(&res.effective, "claude", "reviewer");
+    try testing.expectEqualStrings("large", reviewer.tier);
+    try testing.expectEqualStrings("claude-opus-4-8", reviewer.model);
+
+    const codex_coder = try resolveRole(&res.effective, "codex", "coder");
+    try testing.expectEqualStrings("gpt-5.4", codex_coder.model);
+}
+
+test "resolver: config override resolution carries config-file provenance" {
+    const a = testing.allocator;
+    const file =
+        \\[models.codex]
+        \\medium = "gpt-5.5"
+    ;
+    var res = try config.resolve(a, file, std.process.Environ.empty, null);
+    defer res.deinit(a);
+
+    const r = try resolveTier(&res.effective, "codex", "medium");
+    try testing.expectEqualStrings("gpt-5.5", r.model);
+    try testing.expectEqual(config.Provenance.config_file, r.source);
+
+    // role path picks up the override too (coder=medium).
+    const codex_coder = try resolveRole(&res.effective, "codex", "coder");
+    try testing.expectEqualStrings("gpt-5.5", codex_coder.model);
+    try testing.expectEqual(config.Provenance.config_file, codex_coder.source);
+}
+
+test "resolver: unknown vendor / unknown tier / unknown role errors" {
+    const a = testing.allocator;
+    var res = try config.resolve(a, null, std.process.Environ.empty, null);
+    defer res.deinit(a);
+
+    try testing.expectError(ResolveError.UnknownVendor, resolveTier(&res.effective, "gemini", "medium"));
+    try testing.expectError(ResolveError.UnknownTier, resolveTier(&res.effective, "claude", "xl"));
+    try testing.expectError(ResolveError.UnknownRole, resolveRole(&res.effective, "claude", "planner"));
+}
+
+test "resolver: missing model (empty value) surfaces MissingModel" {
+    const a = testing.allocator;
+    // Hand-build an effective map with an empty model id — not reachable via
+    // real config (empty file values fall through to defaults), so construct
+    // it directly to pin the MissingModel branch.
+    var eff: config.EffectiveMap = .{};
+    defer eff.deinit(a);
+    const key = try a.dupe(u8, "models.claude.medium");
+    try eff.put(a, key, .{ .value = "", .source = .config_file, .env_var_name = "" });
+    defer a.free(key);
+
+    try testing.expectError(ResolveError.MissingModel, resolveTier(&eff, "claude", "medium"));
 }
