@@ -4533,12 +4533,15 @@ documenter = "medium"
 ```
 
 Override any tier to re-route every role at that tier for that vendor, or any
-role to move it to a different tier. `planar config show --effective` shows each
-resolved `models.<vendor>.<tier>` / `roles.<role>` key with its provenance, and
-`planar models` reports which provider CLIs are installed. (This is the shared,
-authoritative routing source; `planar-execute`'s `execute-config.toml` and the
-skill-render Tier Table are being migrated to resolve through it — plan 540
-phases 2/4.)
+role to move it to a different tier. A `[role_vendors]` section (role→vendor,
+override-only) routes individual roles to a different vendor; unset roles use
+`[defaults].vendor`. `planar config show --effective` shows each resolved
+`models.<vendor>.<tier>` / `roles.<role>` / `role_vendors.<role>` key with its
+provenance; `planar models routing` prints the resolved role→vendor/model
+table; `planar models` reports which provider CLIs are installed. This is the
+**single authoritative routing source** — the skill-render Tier Table
+(`agents/models.md`) and `planar-execute` both resolve through it (plan 540);
+there is no separate `execute-config.toml`.
 
 ---
 
@@ -5583,17 +5586,19 @@ Load and execute a Lua workflow module. The module must export a table with a `m
 
 The default is **sonnet coder, opus reviewer**: the coder authors a diff against a brief, and the opus reviewer is the load-bearing adversarial quality net behind it — opus on both doubled spend without doubling the signal.
 
-An operator can override any role in `${PLANAR_HOME:-~/.planar}/execute-config.toml` under a `[models]` table. A bare string keeps the default `claude` vendor; an inline table routes the role to another vendor:
+Routing resolves through the **shared model resolver** (plan 540): execute shells `planar models routing --json`, which reads the main Planar config — `[models.<vendor>]` tier maps, `[roles]` role→tier, `[role_vendors]` role→vendor, and `[defaults].vendor` (see the `config` domain's "Model routing" section). There is **no separate `execute-config.toml`**. To re-route a role, edit `~/.planar/config.toml`:
 
 ```toml
-[models]
-coder    = { vendor = "codex", model = "gpt-5-codex" }  # spawn `codex exec`
-reviewer = "claude-opus-4-8"                            # bare string ⇒ vendor = claude
+[role_vendors]
+coder = "codex"        # route the coder to the codex exec worker
+
+[models.codex]
+medium = "gpt-5.4"     # …and (optionally) which codex model its tier maps to
 ```
 
-Supported vendors: `claude` (spawns `claude --print …`) and `codex` (spawns `codex exec …`, reading the brief on stdin). Only the four known role keys are honored; unknown keys, **unknown vendors**, malformed lines, an inline table missing its `model`, and a missing file are all ignored — a config typo falls through to the default, it never aborts a run. Unset roles keep their default. `--dry-run` prints the **effective** table (defaults overlaid with this config) as `<role> → <vendor> <model>`, so the table you see is exactly what a live run would dispatch. There is no per-`agent()` model override in Lua; record per-task model *intent* in the execution manifest (see the `workflow-planner` agent) when finer auditing is needed.
+Supported vendors: `claude` (spawns `claude --print …`) and `codex` (spawns `codex exec …`, reading the brief on stdin). When `planar` is unreachable (e.g. not on PATH), execute falls back to compiled defaults that mirror the config defaults. `--dry-run` and `planar models routing` print the **effective** table as `<role> → <vendor> <model>`, so the table you see is exactly what a live run would dispatch. There is no per-`agent()` model override in Lua; record per-task model *intent* in the execution manifest (see the `workflow-planner` agent) when finer auditing is needed.
 
-> **Codex status:** the `codex exec` argv/stdin path is built to the documented headless contract and unit-tested for argv shape, but has not been live-validated end-to-end. Smoke a real codex worker before relying on it in production runs. Full provider capability discovery (auto-populating models per installed CLI) is plan 540 / 543 and not yet implemented.
+> **Codex status:** the `codex exec` argv/stdin path is built to the documented headless contract and unit-tested for argv shape, but has not been live-validated end-to-end. Smoke a real codex worker before relying on it in production runs.
 
 The same effective mapping is reachable from a running workflow and from a live run's stderr:
 

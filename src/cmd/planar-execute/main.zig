@@ -4472,20 +4472,70 @@ pub fn printDryRun(mod: WorkflowModule, table: role_model.ModelTable, writer: *I
 /// cannot be resolved all fall through to the defaults (a config problem must
 /// never block a run). Only a genuine OOM is surfaced. Caller owns the result
 /// and must `deinit()` it (a no-op when no override applied).
+/// One row of `planar models routing --json`. Extra fields (tier, source) are
+/// ignored — execute only needs the role→(vendor, model) mapping.
+const RoutingRowJson = struct {
+    role: []const u8,
+    vendor: []const u8,
+    model: []const u8,
+};
+
+/// Resolve the effective role→model table for this run (plan 540 phase 4) by
+/// shelling the shared resolver: `planar models routing --json`. That single
+/// source reflects the operator's `~/.planar/config.toml` ([models] tier maps,
+/// [roles] role→tier, [role_vendors] role→vendor, [defaults].vendor).
+///
+/// On ANY failure — `planar` not on PATH, non-zero exit (e.g. an older planar
+/// without the verb), or unparseable output — fall back to the compiled-in
+/// defaults (`ModelTable{}`, which mirror the config defaults). execute thus
+/// always runs even when the resolver is unreachable, mirroring how it already
+/// tolerates a missing sibling binary. Returns only OOM; caller `deinit()`s.
 fn loadModelTable(ctx: *const ExecCtx) std.mem.Allocator.Error!role_model.ResolvedTable {
     const gpa = ctx.allocator;
-    const home = ctx.environ.getPosix("PLANAR_HOME") orelse
-        (ctx.environ.getPosix("HOME") orelse return .{});
-    const path = std.fs.path.join(gpa, &.{ home, "execute-config.toml" }) catch |e| switch (e) {
-        error.OutOfMemory => return error.OutOfMemory,
+    const result = std.process.run(gpa, ctx.io, .{
+        .argv = &.{ "planar", "models", "routing", "--json" },
+    }) catch return .{}; // spawn failed (planar not resolvable) → defaults
+    defer gpa.free(result.stdout);
+    defer gpa.free(result.stderr);
+
+    const ok = switch (result.term) {
+        .exited => |code| code == 0,
+        else => false,
     };
-    defer gpa.free(path);
+    if (!ok) return .{};
 
-    const bytes = std.Io.Dir.cwd().readFileAlloc(ctx.io, path, gpa, .limited(64 * 1024)) catch
-        return .{}; // missing / unreadable / too large → defaults
-    defer gpa.free(bytes);
+    return parseRoutingJson(gpa, result.stdout);
+}
 
-    return role_model.parseConfig(gpa, bytes);
+/// Build a ModelTable from `planar models routing --json` output. Unknown roles
+/// / vendors and empty models are skipped (those roles keep their default).
+/// Returns defaults on a JSON parse failure. Override model strings are duped
+/// into the result's arena.
+fn parseRoutingJson(gpa: std.mem.Allocator, json_bytes: []const u8) std.mem.Allocator.Error!role_model.ResolvedTable {
+    const parsed = std.json.parseFromSlice([]RoutingRowJson, gpa, json_bytes, .{
+        .ignore_unknown_fields = true,
+    }) catch return .{};
+    defer parsed.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    errdefer arena.deinit();
+    var table = role_model.ModelTable{};
+    var applied = false;
+    for (parsed.value) |row| {
+        const role = role_model.Role.fromString(row.role) catch continue;
+        const vendor = role_model.Vendor.fromString(row.vendor) orelse continue;
+        if (row.model.len == 0) continue;
+        table.set(role, .{ .vendor = vendor, .model = try arena.allocator().dupe(u8, row.model) });
+        applied = true;
+    }
+
+    return .{
+        .table = table,
+        .arena = if (applied) arena else blk: {
+            arena.deinit();
+            break :blk null;
+        },
+    };
 }
 
 /// handleRun is the default handler: resolve the first positional as a
