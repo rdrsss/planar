@@ -1294,7 +1294,12 @@ test "planar-execute --mock-outcomes conflict: PLANAR_EXECUTE_LIVE_AGENT exits n
 /// table" block. Each row renders as `  <role><pad>→ <model>`. Returns the
 /// trimmed model string, or null if no row's leading token equals `role`
 /// exactly (so "coder" never matches the "test-coder" row).
-fn rowModel(stdout: []const u8, role: []const u8) ?[]const u8 {
+const Cell = struct { vendor: []const u8, model: []const u8 };
+
+/// Parse the `<vendor> <model>` cell for `role` from the dispatch table. Each
+/// row renders as `  <role><pad> → <vendor> <model>`. Returns null if no row's
+/// leading token equals `role` exactly (so "coder" never matches "test-coder").
+fn rowCell(stdout: []const u8, role: []const u8) ?Cell {
     var lines = std.mem.splitScalar(u8, stdout, '\n');
     while (lines.next()) |raw| {
         const line = std.mem.trim(u8, raw, " \t\r");
@@ -1302,9 +1307,18 @@ fn rowModel(stdout: []const u8, role: []const u8) ?[]const u8 {
         const lhs = std.mem.trim(u8, line[0..arrow], " \t");
         if (!std.mem.eql(u8, lhs, role)) continue;
         const rhs = std.mem.trim(u8, line[arrow + "→".len ..], " \t");
-        return rhs;
+        const sp = std.mem.indexOfScalar(u8, rhs, ' ') orelse return Cell{ .vendor = rhs, .model = "" };
+        return Cell{
+            .vendor = std.mem.trim(u8, rhs[0..sp], " \t"),
+            .model = std.mem.trim(u8, rhs[sp + 1 ..], " \t"),
+        };
     }
     return null;
+}
+
+/// Convenience: the model for `role`, or "<none>" when the row is absent.
+fn rowModel(stdout: []const u8, role: []const u8) []const u8 {
+    return (rowCell(stdout, role) orelse return "<none>").model;
 }
 
 test "planar-execute --dry-run: prints the dispatch model table for all four roles (task 3708)" {
@@ -1328,7 +1342,7 @@ test "planar-execute --dry-run: prints the dispatch model table for all four rol
     // A labelled dispatch table must be present, with one row per known role.
     try std.testing.expect(std.mem.indexOf(u8, res.stdout, "dispatch model table") != null);
     for ([_][]const u8{ "coder", "reviewer", "test-coder", "documenter" }) |role| {
-        if (rowModel(res.stdout, role) == null) {
+        if (rowCell(res.stdout, role) == null) {
             std.debug.print("\ndry-run table missing a row for role '{s}'\nstdout:\n{s}\n", .{ role, res.stdout });
             return error.TestUnexpectedResult;
         }
@@ -1350,10 +1364,14 @@ test "planar-execute --dry-run: default routing is sonnet-coder / opus-reviewer 
     defer res.deinit();
 
     try std.testing.expectEqual(@as(u32, 0), res.exitCode());
-    try std.testing.expectEqualStrings("claude-sonnet-4-6", rowModel(res.stdout, "coder") orelse "<none>");
-    try std.testing.expectEqualStrings("claude-opus-4-8", rowModel(res.stdout, "reviewer") orelse "<none>");
-    try std.testing.expectEqualStrings("claude-sonnet-4-6", rowModel(res.stdout, "test-coder") orelse "<none>");
-    try std.testing.expectEqualStrings("claude-sonnet-4-6", rowModel(res.stdout, "documenter") orelse "<none>");
+    try std.testing.expectEqualStrings("claude-sonnet-4-6", rowModel(res.stdout, "coder"));
+    try std.testing.expectEqualStrings("claude-opus-4-8", rowModel(res.stdout, "reviewer"));
+    try std.testing.expectEqualStrings("claude-sonnet-4-6", rowModel(res.stdout, "test-coder"));
+    try std.testing.expectEqualStrings("claude-sonnet-4-6", rowModel(res.stdout, "documenter"));
+    // Default vendor is claude for every role.
+    for ([_][]const u8{ "coder", "reviewer", "test-coder", "documenter" }) |role| {
+        try std.testing.expectEqualStrings("claude", (rowCell(res.stdout, role) orelse unreachable).vendor);
+    }
 }
 
 test "planar-execute --dry-run: execute-config.toml overrides a role's model (task 3709)" {
@@ -1380,10 +1398,38 @@ test "planar-execute --dry-run: execute-config.toml overrides a role's model (ta
 
     try std.testing.expectEqual(@as(u32, 0), res.exitCode());
     // Overridden roles reflect the config; unset roles keep their defaults.
-    try std.testing.expectEqualStrings("claude-opus-4-8", rowModel(res.stdout, "coder") orelse "<none>");
-    try std.testing.expectEqualStrings("claude-opus-4-8", rowModel(res.stdout, "documenter") orelse "<none>");
-    try std.testing.expectEqualStrings("claude-opus-4-8", rowModel(res.stdout, "reviewer") orelse "<none>");
-    try std.testing.expectEqualStrings("claude-sonnet-4-6", rowModel(res.stdout, "test-coder") orelse "<none>");
+    try std.testing.expectEqualStrings("claude-opus-4-8", rowModel(res.stdout, "coder"));
+    try std.testing.expectEqualStrings("claude-opus-4-8", rowModel(res.stdout, "documenter"));
+    try std.testing.expectEqualStrings("claude-opus-4-8", rowModel(res.stdout, "reviewer"));
+    try std.testing.expectEqualStrings("claude-sonnet-4-6", rowModel(res.stdout, "test-coder"));
+}
+
+test "planar-execute --dry-run: execute-config.toml routes a role to the codex vendor (plan 540)" {
+    const gpa = std.testing.allocator;
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
+
+    try iso.writeExecuteConfig(
+        \\[models]
+        \\coder = { vendor = "codex", model = "gpt-5-codex" }
+    );
+    try iso.writeWorkflow("cdx.lua",
+        \\return { meta = { name = "cdx", description = "codex route", phases = {} }, run = function(ctx) end }
+    );
+    const wf_path = try iso.workflowPath("cdx.lua");
+    defer gpa.free(wf_path);
+
+    const res = try iso.run(&.{ "run", "--dry-run", wf_path });
+    defer res.deinit();
+
+    try std.testing.expectEqual(@as(u32, 0), res.exitCode());
+    const coder = rowCell(res.stdout, "coder") orelse unreachable;
+    try std.testing.expectEqualStrings("codex", coder.vendor);
+    try std.testing.expectEqualStrings("gpt-5-codex", coder.model);
+    // A role left unset stays on the claude default.
+    const reviewer = rowCell(res.stdout, "reviewer") orelse unreachable;
+    try std.testing.expectEqualStrings("claude", reviewer.vendor);
+    try std.testing.expectEqualStrings("claude-opus-4-8", reviewer.model);
 }
 
 // ---------------------------------------------------------------------------
@@ -1403,10 +1449,12 @@ test "planar-execute ctx.dispatch_table(): returns the effective role→model ma
         \\  meta = { name = "dt", description = "d", phases = {} },
         \\  run = function(ctx)
         \\    local t = ctx.dispatch_table()
-        \\    assert(t.coder == "claude-sonnet-4-6", "coder=" .. tostring(t.coder))
-        \\    assert(t.reviewer == "claude-opus-4-8", "reviewer=" .. tostring(t.reviewer))
-        \\    assert(t["test-coder"] == "claude-sonnet-4-6", "test-coder=" .. tostring(t["test-coder"]))
-        \\    assert(t.documenter == "claude-sonnet-4-6", "documenter=" .. tostring(t.documenter))
+        \\    assert(t.coder.vendor == "claude", "coder.vendor=" .. tostring(t.coder.vendor))
+        \\    assert(t.coder.model == "claude-sonnet-4-6", "coder.model=" .. tostring(t.coder.model))
+        \\    assert(t.reviewer.vendor == "claude", "reviewer.vendor=" .. tostring(t.reviewer.vendor))
+        \\    assert(t.reviewer.model == "claude-opus-4-8", "reviewer.model=" .. tostring(t.reviewer.model))
+        \\    assert(t["test-coder"].model == "claude-sonnet-4-6", "tc=" .. tostring(t["test-coder"].model))
+        \\    assert(t.documenter.model == "claude-sonnet-4-6", "doc=" .. tostring(t.documenter.model))
         \\  end,
         \\}
     );
@@ -1428,15 +1476,17 @@ test "planar-execute ctx.dispatch_table(): reflects an execute-config.toml overr
 
     try iso.writeExecuteConfig(
         \\[models]
-        \\coder = "claude-opus-4-8"
+        \\coder = { vendor = "codex", model = "gpt-5-codex" }
     );
     try iso.writeWorkflow("dto.lua",
         \\return {
         \\  meta = { name = "dto", description = "d", phases = {} },
         \\  run = function(ctx)
         \\    local t = ctx.dispatch_table()
-        \\    assert(t.coder == "claude-opus-4-8", "coder=" .. tostring(t.coder))
-        \\    assert(t.reviewer == "claude-opus-4-8", "reviewer=" .. tostring(t.reviewer))
+        \\    assert(t.coder.vendor == "codex", "coder.vendor=" .. tostring(t.coder.vendor))
+        \\    assert(t.coder.model == "gpt-5-codex", "coder.model=" .. tostring(t.coder.model))
+        \\    assert(t.reviewer.vendor == "claude", "reviewer.vendor=" .. tostring(t.reviewer.vendor))
+        \\    assert(t.reviewer.model == "claude-opus-4-8", "reviewer.model=" .. tostring(t.reviewer.model))
         \\  end,
         \\}
     );
@@ -1479,6 +1529,7 @@ test "planar-execute: per-spawn dispatch banner names role + model on stderr (ta
 
     try std.testing.expectEqual(@as(u32, 0), res.exitCode());
     if (std.mem.indexOf(u8, res.stderr, "[dispatch]") == null or
+        std.mem.indexOf(u8, res.stderr, "vendor=claude") == null or
         std.mem.indexOf(u8, res.stderr, "role=coder") == null or
         std.mem.indexOf(u8, res.stderr, "model=claude-sonnet-4-6") == null)
     {

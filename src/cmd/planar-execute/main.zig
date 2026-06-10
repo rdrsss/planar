@@ -1444,8 +1444,12 @@ fn driveAgentCallPreYield(
     // methodology brief). env_map (the constrained worker env) is threaded into
     // SpawnInputs; the real spawner passes it as `environ_map` on
     // std.process.spawn so the child does NOT inherit the parent's full env.
+    // The vendor for this role (defaults + execute-config.toml overlay). Selects
+    // the worker CLI (claude vs codex) in buildSpawnArgv.
+    const vendor = hs.model_table.vendorForRole(role);
     const spawn_inputs = spawn.SpawnInputs{
         .role = role,
+        .vendor = vendor,
         .worktree_path = acs.worktree_path,
         .brief = prompt,
         .role_spec = opts.role_spec,
@@ -1455,12 +1459,13 @@ fn driveAgentCallPreYield(
         // the default tier and silently ignore the operator's override (3709).
         .model = acs.model,
     };
-    // task 3708: a one-line dispatch banner on stderr so an operator tailing a
-    // run sees per-call routing without grepping the binary. Fires for every
-    // real (and mock) spawn — the stub path returns before reaching here.
+    // task 3708 / plan 540: a one-line dispatch banner on stderr so an operator
+    // tailing a run sees per-call routing (vendor + model) without grepping the
+    // binary. Fires for every real (and mock) spawn — the stub path returns
+    // before reaching here.
     std.debug.print(
-        "[dispatch] task:{d} role={s} model={s}\n",
-        .{ opts.task_id, role.name(), acs.model },
+        "[dispatch] task:{d} vendor={s} role={s} model={s}\n",
+        .{ opts.task_id, vendor.name(), role.name(), acs.model },
     );
 
     const handle = driver.spawner.start(alloc, io, spawn_inputs) catch |err| {
@@ -3187,22 +3192,31 @@ fn hostBudgetRemaining(L: ?*c.lua_State) callconv(.c) c_int {
     return 1;
 }
 
-/// hostDispatchTable — `ctx.dispatch_table()` (plan 492 task 3708). Returns a
-/// Lua table mapping each role to the model it will spawn this run — the same
-/// effective mapping `--dry-run` prints, sourced from `hs.model_table` (defaults
-/// overlaid with `execute-config.toml`). Lets a workflow log its own routing in
-/// its narrative. Pure read; takes no arguments.
+/// hostDispatchTable — `ctx.dispatch_table()` (plan 492 task 3708, plan 540
+/// vendor-aware). Returns a Lua table mapping each role to the vendor + model it
+/// will spawn this run — the same effective mapping `--dry-run` prints, sourced
+/// from `hs.model_table` (defaults overlaid with `execute-config.toml`). Lets a
+/// workflow log its own routing in its narrative. Pure read; takes no arguments.
 ///
-///   { coder = "claude-sonnet-4-6", reviewer = "claude-opus-4-8",
-///     ["test-coder"] = "claude-sonnet-4-6", documenter = "claude-sonnet-4-6" }
+///   { coder = { vendor = "claude", model = "claude-sonnet-4-6" },
+///     reviewer = { vendor = "claude", model = "claude-opus-4-8" },
+///     ["test-coder"] = { vendor = "claude", model = "claude-sonnet-4-6" },
+///     documenter = { vendor = "claude", model = "claude-sonnet-4-6" } }
 fn hostDispatchTable(L: ?*c.lua_State) callconv(.c) c_int {
     const hs = hostStateUpvalue(L);
     recordOrError(L, hs, .dispatch_table, "", "");
     c.lua_createtable(L, 0, 4);
     const idx: c_int = c.lua_absindex(L, -1);
     inline for ([_]role_model.Role{ .coder, .reviewer, .@"test-coder", .documenter }) |role| {
-        const model = hs.model_table.forRole(role);
-        _ = c.lua_pushlstring(L, model.ptr, model.len);
+        const d = hs.model_table.dispatchForRole(role);
+        // Per-role nested table { vendor = "...", model = "..." }.
+        c.lua_createtable(L, 0, 2);
+        const sub: c_int = c.lua_absindex(L, -1);
+        const vendor = d.vendor.name();
+        _ = c.lua_pushlstring(L, vendor.ptr, vendor.len);
+        c.lua_setfield(L, sub, "vendor");
+        _ = c.lua_pushlstring(L, d.model.ptr, d.model.len);
+        c.lua_setfield(L, sub, "model");
         // role is comptime in the inline for, so this key is a comptime sentinel.
         const key: [*:0]const u8 = switch (role) {
             .coder => "coder",
@@ -3210,7 +3224,7 @@ fn hostDispatchTable(L: ?*c.lua_State) callconv(.c) c_int {
             .@"test-coder" => "test-coder",
             .documenter => "documenter",
         };
-        c.lua_setfield(L, idx, key);
+        c.lua_setfield(L, idx, key); // pops the per-role sub-table
     }
     return 1;
 }
@@ -4415,10 +4429,10 @@ fn handleVersion(args_ptr: *const anyopaque) anyerror!void {
 ///   workflow: <name>
 ///   description: <description>
 ///   dispatch model table (this run):
-///     coder      → <model>
-///     reviewer   → <model>
-///     test-coder → <model>
-///     documenter → <model>
+///     coder      → <vendor> <model>
+///     reviewer   → <vendor> <model>
+///     test-coder → <vendor> <model>
+///     documenter → <vendor> <model>
 ///   phases: <N>
 ///     1. <title>[ — <detail>]
 ///     2. ...
@@ -4434,9 +4448,11 @@ pub fn printDryRun(mod: WorkflowModule, table: role_model.ModelTable, writer: *I
     try writer.print("workflow: {s}\n", .{mod.meta.name});
     try writer.print("description: {s}\n", .{mod.meta.description});
     try writer.print("dispatch model table (this run):\n", .{});
-    // Padded to the longest role name ("documenter" = 10) so the arrows align.
+    // Padded to the longest role name ("documenter" = 10) and longest vendor
+    // ("claude" = 6) so the columns align: `  <role> → <vendor> <model>`.
     inline for ([_]role_model.Role{ .coder, .reviewer, .@"test-coder", .documenter }) |role| {
-        try writer.print("  {s: <10} → {s}\n", .{ role.name(), table.forRole(role) });
+        const d = table.dispatchForRole(role);
+        try writer.print("  {s: <10} → {s: <6} {s}\n", .{ role.name(), d.vendor.name(), d.model });
     }
     try writer.print("phases: {d}\n", .{mod.meta.phases.len});
     for (mod.meta.phases, 0..) |phase, i| {
@@ -5528,10 +5544,11 @@ test "printDryRun: output contains name, description, and phase titles" {
     // Phase 2 has empty detail — must NOT include " — ".
     try std.testing.expect(std.mem.indexOf(u8, output, "2. Execute\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "3. Teardown") != null);
-    // task 3708: the dispatch model table is present with the default routing.
+    // task 3708 / plan 540: the dispatch table is present with default routing
+    // and the vendor column.
     try std.testing.expect(std.mem.indexOf(u8, output, "dispatch model table (this run):") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "coder      → claude-sonnet-4-6") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "reviewer   → claude-opus-4-8") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "coder      → claude claude-sonnet-4-6") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "reviewer   → claude claude-opus-4-8") != null);
 }
 
 // ---------------------------------------------------------------------------

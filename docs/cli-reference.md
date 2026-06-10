@@ -5487,31 +5487,33 @@ Load and execute a Lua workflow module. The module must export a table with a `m
 
 **The bright-line refusal guard** (`--bypass-reviewer-guard`): `planar-execute` refuses to run a workflow against a plan whose open tasks touch `migrations/*.sql`, a new top-level CLI verb, or invariant/methodology code, unless the workflow declares `meta.reviewer = true`. This guard enforces the reviewer-cadence doctrine for risky work. When the guard trips, exit code **2** is returned with a loud stderr message naming the refused plan. Pass `--bypass-reviewer-guard` to proceed anyway (prints a loud warning); use only when you have consciously accepted the doctrine risk.
 
-**Model routing** (per-role, no per-call override): the `claude -p` worker `agent()` spawns is selected by the worker's **role**, not by a per-call Lua option. The default mapping (`src/cmd/planar-execute/role_model.zig`) is:
+**Model routing** (per-role, no per-call override): the worker `agent()` spawns is selected by the worker's **role**, not by a per-call Lua option. Each role resolves to a **(vendor, model)** pair. The default mapping (`src/cmd/planar-execute/role_model.zig`) is:
 
-| Role | Default model |
-|------|---------------|
-| `coder` | `claude-sonnet-4-6` |
-| `reviewer` | `claude-opus-4-8` |
-| `test-coder` | `claude-sonnet-4-6` |
-| `documenter` | `claude-sonnet-4-6` |
+| Role | Default vendor | Default model |
+|------|----------------|---------------|
+| `coder` | `claude` | `claude-sonnet-4-6` |
+| `reviewer` | `claude` | `claude-opus-4-8` |
+| `test-coder` | `claude` | `claude-sonnet-4-6` |
+| `documenter` | `claude` | `claude-sonnet-4-6` |
 
 The default is **sonnet coder, opus reviewer**: the coder authors a diff against a brief, and the opus reviewer is the load-bearing adversarial quality net behind it — opus on both doubled spend without doubling the signal.
 
-An operator can override any role in `${PLANAR_HOME:-~/.planar}/execute-config.toml` under a `[models]` table:
+An operator can override any role in `${PLANAR_HOME:-~/.planar}/execute-config.toml` under a `[models]` table. A bare string keeps the default `claude` vendor; an inline table routes the role to another vendor:
 
 ```toml
 [models]
-coder    = "claude-opus-4-8"   # opt the coder back up to opus
-reviewer = "claude-opus-4-8"
+coder    = { vendor = "codex", model = "gpt-5-codex" }  # spawn `codex exec`
+reviewer = "claude-opus-4-8"                            # bare string ⇒ vendor = claude
 ```
 
-Only the four known role keys are honored; unknown keys, malformed lines, and a missing file are ignored — a config typo falls through to the default, it never aborts a run. Unset roles keep their default. `--dry-run` prints the **effective** table (defaults overlaid with this config), so the table you see is exactly what a live run would dispatch. There is no per-`agent()` model override in Lua; record per-task model *intent* in the execution manifest (see the `workflow-planner` agent) when finer auditing is needed.
+Supported vendors: `claude` (spawns `claude --print …`) and `codex` (spawns `codex exec …`, reading the brief on stdin). Only the four known role keys are honored; unknown keys, **unknown vendors**, malformed lines, an inline table missing its `model`, and a missing file are all ignored — a config typo falls through to the default, it never aborts a run. Unset roles keep their default. `--dry-run` prints the **effective** table (defaults overlaid with this config) as `<role> → <vendor> <model>`, so the table you see is exactly what a live run would dispatch. There is no per-`agent()` model override in Lua; record per-task model *intent* in the execution manifest (see the `workflow-planner` agent) when finer auditing is needed.
+
+> **Codex status:** the `codex exec` argv/stdin path is built to the documented headless contract and unit-tested for argv shape, but has not been live-validated end-to-end. Smoke a real codex worker before relying on it in production runs. Full provider capability discovery (auto-populating models per installed CLI) is plan 540 / 543 and not yet implemented.
 
 The same effective mapping is reachable from a running workflow and from a live run's stderr:
 
-- **`ctx.dispatch_table()`** (Lua host fn) returns the role→model mapping as a table (`{ coder = "…", reviewer = "…", ["test-coder"] = "…", documenter = "…" }`), so a workflow can log its own routing in its narrative. Available in all modes (it reads the resolved table, not a spawn).
-- **Per-spawn dispatch banner:** every real (and `--mock-worker`) `agent()` spawn prints a one-line banner to stderr — `[dispatch] task:<id> role=<role> model=<model>` — so an operator tailing a live run sees per-call routing without grepping the binary.
+- **`ctx.dispatch_table()`** (Lua host fn) returns the role→dispatch mapping as a nested table — `{ coder = { vendor = "…", model = "…" }, reviewer = {…}, ["test-coder"] = {…}, documenter = {…} }` — so a workflow can log its own routing in its narrative. Available in all modes (it reads the resolved table, not a spawn).
+- **Per-spawn dispatch banner:** every real (and `--mock-worker`) `agent()` spawn prints a one-line banner to stderr — `[dispatch] task:<id> vendor=<vendor> role=<role> model=<model>` — so an operator tailing a live run sees per-call routing without grepping the binary.
 
 **Example:**
 

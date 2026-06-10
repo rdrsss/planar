@@ -109,21 +109,51 @@ pub fn modelForRoleString(s: []const u8) RoleError![]const u8 {
 }
 
 // ---------------------------------------------------------------------------
-// ModelTable — the effective role→model mapping for a run (defaults + overlay)
+// Vendor + ModelTable — effective role→(vendor, model) mapping for a run
 // ---------------------------------------------------------------------------
 
-/// The effective per-role model mapping. Field defaults encode the task-3709
-/// routing (sonnet coder, opus reviewer). A field may point at either a comptime
-/// tier constant (the default) or an arena-owned override string produced by
-/// `parseConfig`; either way it outlives the spawn that borrows it.
-pub const ModelTable = struct {
-    coder: []const u8 = SONNET_TIER,
-    reviewer: []const u8 = OPUS_TIER,
-    @"test-coder": []const u8 = SONNET_TIER,
-    documenter: []const u8 = SONNET_TIER,
+/// The worker CLI a role dispatches to. `claude` is the historical default
+/// (`claude --print …`); `codex` spawns the `codex exec` headless CLI
+/// (vendor-aware routing — plan 540). The vendor selects the argv shape and the
+/// binary name in `spawn.zig`.
+pub const Vendor = enum {
+    claude,
+    codex,
 
-    /// The model string for `role`.
-    pub fn forRole(self: ModelTable, role: Role) []const u8 {
+    /// Parse a vendor from its wire string; null for anything unrecognized.
+    pub fn fromString(s: []const u8) ?Vendor {
+        if (std.mem.eql(u8, s, "claude")) return .claude;
+        if (std.mem.eql(u8, s, "codex")) return .codex;
+        return null;
+    }
+
+    /// The wire form (inverse of `fromString`). Also the spawn binary name.
+    pub fn name(self: Vendor) []const u8 {
+        return switch (self) {
+            .claude => "claude",
+            .codex => "codex",
+        };
+    }
+};
+
+/// A single role's effective dispatch target: which vendor CLI and which model.
+/// `model` may be a comptime tier constant (the default) or an arena-owned
+/// override string from `parseConfig`; either outlives the spawn that borrows it.
+pub const Dispatch = struct {
+    vendor: Vendor = .claude,
+    model: []const u8,
+};
+
+/// The effective per-role dispatch mapping. Field defaults encode the task-3709
+/// routing (sonnet coder, opus reviewer), all on the claude vendor.
+pub const ModelTable = struct {
+    coder: Dispatch = .{ .vendor = .claude, .model = SONNET_TIER },
+    reviewer: Dispatch = .{ .vendor = .claude, .model = OPUS_TIER },
+    @"test-coder": Dispatch = .{ .vendor = .claude, .model = SONNET_TIER },
+    documenter: Dispatch = .{ .vendor = .claude, .model = SONNET_TIER },
+
+    /// The full dispatch (vendor + model) for `role`.
+    pub fn dispatchForRole(self: ModelTable, role: Role) Dispatch {
         return switch (role) {
             .coder => self.coder,
             .reviewer => self.reviewer,
@@ -132,13 +162,23 @@ pub const ModelTable = struct {
         };
     }
 
-    /// Assign `model` to the field matching `role`.
-    fn set(self: *ModelTable, role: Role, model: []const u8) void {
+    /// The model string for `role` (convenience over `dispatchForRole`).
+    pub fn forRole(self: ModelTable, role: Role) []const u8 {
+        return self.dispatchForRole(role).model;
+    }
+
+    /// The vendor for `role` (convenience over `dispatchForRole`).
+    pub fn vendorForRole(self: ModelTable, role: Role) Vendor {
+        return self.dispatchForRole(role).vendor;
+    }
+
+    /// Assign a dispatch to the field matching `role`.
+    fn set(self: *ModelTable, role: Role, d: Dispatch) void {
         switch (role) {
-            .coder => self.coder = model,
-            .reviewer => self.reviewer = model,
-            .@"test-coder" => self.@"test-coder" = model,
-            .documenter => self.documenter = model,
+            .coder => self.coder = d,
+            .reviewer => self.reviewer = d,
+            .@"test-coder" => self.@"test-coder" = d,
+            .documenter => self.documenter = d,
         }
     }
 };
@@ -160,13 +200,18 @@ pub const ResolvedTable = struct {
 ///
 /// `bytes` is the raw `execute-config.toml` content. The parser is deliberately
 /// minimal and lenient: it walks lines, tracks the current `[section]`, and
-/// while inside `[models]` reads `key = "value"` (or `key = value`) pairs whose
-/// key is one of the four known roles. Comments (`#`), blank lines, unknown
-/// keys, unknown sections, and malformed lines are skipped — a typo in the
-/// config never aborts a run, it just falls through to the default.
+/// while inside `[models]` reads `key = <value>` pairs whose key is one of the
+/// four known roles. Two value forms are accepted:
 ///
-/// Override values are duped into a returned arena so they outlive `bytes`.
-/// Returns only `error.OutOfMemory`. Caller owns the result and must
+///   coder    = "claude-sonnet-4-6"                       (bare string → claude)
+///   coder    = { vendor = "codex", model = "gpt-5-codex" } (inline table)
+///
+/// Comments (`#`), blank lines, unknown keys, unknown sections, unknown vendors,
+/// malformed lines, and an inline table missing its `model` are all skipped — a
+/// typo never aborts a run, the role just keeps its default.
+///
+/// Override model strings are duped into a returned arena so they outlive
+/// `bytes`. Returns only `error.OutOfMemory`. Caller owns the result and must
 /// `deinit()` it.
 pub fn parseConfig(gpa: std.mem.Allocator, bytes: []const u8) std.mem.Allocator.Error!ResolvedTable {
     var arena = std.heap.ArenaAllocator.init(gpa);
@@ -199,10 +244,9 @@ pub fn parseConfig(gpa: std.mem.Allocator, bytes: []const u8) std.mem.Allocator.
         const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
         const key = std.mem.trim(u8, line[0..eq], " \t");
         const role = Role.fromString(key) catch continue; // unknown key → skip
-        const val = parseValue(std.mem.trim(u8, line[eq + 1 ..], " \t")) orelse continue;
-        if (val.len == 0) continue;
-        const owned = try arena.allocator().dupe(u8, val);
-        table.set(role, owned);
+        const val_raw = std.mem.trim(u8, line[eq + 1 ..], " \t");
+        const dispatch = (try parseDispatch(arena.allocator(), val_raw)) orelse continue;
+        table.set(role, dispatch);
         applied = true;
     }
 
@@ -213,6 +257,40 @@ pub fn parseConfig(gpa: std.mem.Allocator, bytes: []const u8) std.mem.Allocator.
             break :blk null;
         },
     };
+}
+
+/// Parse a single `[models]` value into a `Dispatch`. Bare string → claude
+/// vendor + that model; inline table → its `vendor` (default claude) + required
+/// `model`. Returns null (the caller keeps the role default) for an empty value,
+/// an unknown vendor, or an inline table with no model. The model is duped into
+/// `arena`.
+fn parseDispatch(arena: std.mem.Allocator, val_raw: []const u8) std.mem.Allocator.Error!?Dispatch {
+    if (val_raw.len == 0) return null;
+
+    if (val_raw[0] == '{') {
+        const close = std.mem.lastIndexOfScalar(u8, val_raw, '}') orelse return null;
+        if (close == 0) return null;
+        const inner = val_raw[1..close];
+        var vendor: Vendor = .claude;
+        var model: ?[]const u8 = null;
+        var parts = std.mem.splitScalar(u8, inner, ',');
+        while (parts.next()) |part| {
+            const peq = std.mem.indexOfScalar(u8, part, '=') orelse continue;
+            const k = std.mem.trim(u8, part[0..peq], " \t");
+            const v = parseValue(std.mem.trim(u8, part[peq + 1 ..], " \t")) orelse continue;
+            if (std.mem.eql(u8, k, "vendor")) {
+                vendor = Vendor.fromString(v) orelse return null; // unknown vendor → skip entry
+            } else if (std.mem.eql(u8, k, "model") and v.len > 0) {
+                model = v;
+            }
+        }
+        const m = model orelse return null;
+        return Dispatch{ .vendor = vendor, .model = try arena.dupe(u8, m) };
+    }
+
+    const v = parseValue(val_raw) orelse return null;
+    if (v.len == 0) return null;
+    return Dispatch{ .vendor = .claude, .model = try arena.dupe(u8, v) };
 }
 
 /// Drop an unquoted trailing `#…` comment from a TOML line. A `#` inside a
@@ -297,8 +375,9 @@ test "parseConfig: empty / no [models] section yields defaults, no arena" {
         var r = try parseConfig(a, src);
         defer r.deinit();
         try std.testing.expect(r.arena == null);
-        try std.testing.expectEqualStrings(SONNET_TIER, r.table.coder);
-        try std.testing.expectEqualStrings(OPUS_TIER, r.table.reviewer);
+        try std.testing.expectEqualStrings(SONNET_TIER, r.table.coder.model);
+        try std.testing.expectEqual(Vendor.claude, r.table.coder.vendor);
+        try std.testing.expectEqualStrings(OPUS_TIER, r.table.reviewer.model);
     }
 }
 
@@ -311,11 +390,54 @@ test "parseConfig: overrides only the listed roles; unset roles keep defaults" {
     );
     defer r.deinit();
     try std.testing.expect(r.arena != null);
-    try std.testing.expectEqualStrings("claude-opus-4-8", r.table.coder);
-    try std.testing.expectEqualStrings("custom-model-x", r.table.documenter);
+    try std.testing.expectEqualStrings("claude-opus-4-8", r.table.coder.model);
+    try std.testing.expectEqual(Vendor.claude, r.table.coder.vendor); // bare string → claude
+    try std.testing.expectEqualStrings("custom-model-x", r.table.documenter.model);
     // Unset roles fall through to defaults.
-    try std.testing.expectEqualStrings(OPUS_TIER, r.table.reviewer);
-    try std.testing.expectEqualStrings(SONNET_TIER, r.table.@"test-coder");
+    try std.testing.expectEqualStrings(OPUS_TIER, r.table.reviewer.model);
+    try std.testing.expectEqualStrings(SONNET_TIER, r.table.@"test-coder".model);
+}
+
+test "parseConfig: inline table sets vendor + model (codex)" {
+    const a = std.testing.allocator;
+    var r = try parseConfig(a,
+        \\[models]
+        \\coder = { vendor = "codex", model = "gpt-5-codex" }
+        \\reviewer = "claude-opus-4-8"
+    );
+    defer r.deinit();
+    try std.testing.expectEqual(Vendor.codex, r.table.coder.vendor);
+    try std.testing.expectEqualStrings("gpt-5-codex", r.table.coder.model);
+    // Bare-string sibling stays on claude.
+    try std.testing.expectEqual(Vendor.claude, r.table.reviewer.vendor);
+    try std.testing.expectEqualStrings("claude-opus-4-8", r.table.reviewer.model);
+}
+
+test "parseConfig: inline table without vendor defaults to claude" {
+    const a = std.testing.allocator;
+    var r = try parseConfig(a,
+        \\[models]
+        \\coder = { model = "some-claude-model" }
+    );
+    defer r.deinit();
+    try std.testing.expectEqual(Vendor.claude, r.table.coder.vendor);
+    try std.testing.expectEqualStrings("some-claude-model", r.table.coder.model);
+}
+
+test "parseConfig: lenient — unknown vendor and model-less inline table fall through" {
+    const a = std.testing.allocator;
+    var r = try parseConfig(a,
+        \\[models]
+        \\coder = { vendor = "gemini", model = "g-pro" }
+        \\reviewer = { vendor = "codex" }
+    );
+    defer r.deinit();
+    // Unknown vendor → entry skipped → coder keeps its claude/sonnet default.
+    try std.testing.expectEqual(Vendor.claude, r.table.coder.vendor);
+    try std.testing.expectEqualStrings(SONNET_TIER, r.table.coder.model);
+    // Inline table with no model → skipped → reviewer keeps its default.
+    try std.testing.expectEqual(Vendor.claude, r.table.reviewer.vendor);
+    try std.testing.expectEqualStrings(OPUS_TIER, r.table.reviewer.model);
 }
 
 test "parseConfig: lenient — comments, blanks, unknown keys, bare values, whitespace" {
@@ -330,10 +452,10 @@ test "parseConfig: lenient — comments, blanks, unknown keys, bare values, whit
         \\garbage line with no equals
     );
     defer r.deinit();
-    try std.testing.expectEqualStrings("claude-opus-4-8", r.table.reviewer);
-    try std.testing.expectEqualStrings("bare-token-value", r.table.@"test-coder");
+    try std.testing.expectEqualStrings("claude-opus-4-8", r.table.reviewer.model);
+    try std.testing.expectEqualStrings("bare-token-value", r.table.@"test-coder".model);
     // Unknown key did not leak into any field; coder stays default.
-    try std.testing.expectEqualStrings(SONNET_TIER, r.table.coder);
+    try std.testing.expectEqualStrings(SONNET_TIER, r.table.coder.model);
 }
 
 test "parseConfig: section scoping — keys outside [models] are ignored" {
@@ -345,8 +467,8 @@ test "parseConfig: section scoping — keys outside [models] are ignored" {
         \\reviewer = "should-be-ignored-not-a-model"
     );
     defer r.deinit();
-    try std.testing.expectEqualStrings("in-models", r.table.coder);
-    try std.testing.expectEqualStrings(OPUS_TIER, r.table.reviewer);
+    try std.testing.expectEqualStrings("in-models", r.table.coder.model);
+    try std.testing.expectEqualStrings(OPUS_TIER, r.table.reviewer.model);
 }
 
 test "parseConfig: '#' inside a quoted value is preserved" {
@@ -356,5 +478,5 @@ test "parseConfig: '#' inside a quoted value is preserved" {
         \\coder = "model#with#hash"
     );
     defer r.deinit();
-    try std.testing.expectEqualStrings("model#with#hash", r.table.coder);
+    try std.testing.expectEqualStrings("model#with#hash", r.table.coder.model);
 }
