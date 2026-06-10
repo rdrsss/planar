@@ -25,6 +25,7 @@
 //!   └── …                   ─┘
 
 pub const health = @import("health.zig");
+pub const models = @import("models.zig");
 pub const identity = @import("identity.zig");
 pub const policy = @import("policy.zig");
 pub const planning = @import("planning.zig");

@@ -3800,6 +3800,60 @@ overall: DEGRADED  (2 tasks not resumable)
 
 ---
 
+## Domain: `models`
+
+Provider + model capability discovery (plan 540/543). Reports which supported provider CLIs are installed on the local machine and the curated model catalog each exposes, classified into the canonical `small`/`medium`/`large` tiers, plus the default role→tier→model routing. **No database handle** is used — discovery is PATH + subprocess + a curated in-repo catalog.
+
+> The provider CLIs (`claude`, `codex`) do **not** expose a machine-readable "list models" command, so the per-vendor model list is curated in-repo (`src/engine/models.zig`); discovery confirms which CLIs are *callable* by invoking `<bin> --version` (instant, auth-free). This is the interim discovery surface; the plan-540 shared resolver and main-config tier maps (phases 1–2/4) supersede it, and the role→tier defaults here are kept in sync with planar-execute's `role_model.zig`.
+
+---
+
+### `planar models list`
+
+**Synopsis:**
+```
+planar models list [--json]
+```
+
+**Description:** Probe each provider CLI (installed-state + `--version`) and print its curated model catalog plus the default role→tier→model routing. Read-only.
+
+**Output (human):**
+```
+providers:
+  claude   [installed] 2.1.170 (Claude Code)
+      large    claude-opus-4-8
+      medium   claude-sonnet-4-6
+      small    claude-haiku-4-5
+  codex    [installed] codex-cli 0.137.0
+      large    gpt-5-codex
+      medium   gpt-5
+      small    o4-mini
+default routing (role → tier → vendor model):
+  coder      → medium claude claude-sonnet-4-6
+  reviewer   → large  claude claude-opus-4-8
+  test-coder → medium claude claude-sonnet-4-6
+  documenter → medium claude claude-sonnet-4-6
+```
+
+**Output (`--json`):** `{ "providers": [ { "vendor", "bin", "installed", "version", "models": [ { "id", "tier" } ] } ], "default_routing": [ { "role", "tier", "vendor", "model" } ] }`.
+
+**Exit codes:** `0` on success.
+
+---
+
+### `planar models refresh`
+
+**Synopsis:**
+```
+planar models refresh [--json]
+```
+
+**Description:** Same probe as `list`, and additionally write the result to `${PLANAR_HOME:-~/.planar}/models/catalog.json` as a deterministic cache (creating `models/`). Prints a `wrote model cache: <path>` provenance line to stderr so `--json` stdout stays clean for scripts.
+
+**Exit codes:** `0` on success.
+
+---
+
 ## Domain: `dashboard`
 
 ### `planar dashboard`
