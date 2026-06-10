@@ -72,7 +72,7 @@ test "tree happy path text: plan → task → linked question appear in output" 
     gpa.free(link_out);
 
     // Run `planar tree --depth 3` (text mode).
-    const stdout = suite.mustRun(&.{ "tree", "--depth", "3" });
+    const stdout = suite.mustRun(&.{ "tree", "--depth", "3", "--scope", "global" });
     defer gpa.free(stdout);
 
     // All four entities must appear in the output.
@@ -96,7 +96,7 @@ test "tree JSON: --json output is valid JSON object with kind=scope and plan chi
     });
 
     // Run `planar tree --depth 3 --json`.
-    const stdout = suite.mustRun(&.{ "tree", "--depth", "3", "--json" });
+    const stdout = suite.mustRun(&.{ "tree", "--depth", "3", "--json", "--scope", "global" });
     defer gpa.free(stdout);
 
     // Parse as a JSON object — single scope root.

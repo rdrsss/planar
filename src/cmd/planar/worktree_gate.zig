@@ -107,7 +107,7 @@ pub fn check(comptime root: cli.Cmd, argv: []const []const u8) void {
     // detector directly (no DB needed) so that the gate fires even
     // before any handler has called scope.resolve.
     const ctx = runtime.current();
-    const cwd = ctx.allocator.dupe(u8, currentWorkingDir(ctx) orelse return) catch return;
+    const cwd = scope_mod.operatorCwd(ctx.allocator, ctx.io) catch return;
     defer ctx.allocator.free(cwd);
 
     const det = engine.identity.scope.detectWorktree(ctx.io, ctx.allocator, cwd) catch return;
@@ -247,14 +247,6 @@ fn flagAcceptsValue(c: cli.Cmd, tok: []const u8) bool {
     // Unknown flag at this scope — be conservative and assume it has
     // a value. The parser will reject it later if not.
     return true;
-}
-
-/// PWD-first cwd resolution, identical posture to `scope.zig`. Returns
-/// a slice borrowed from process environ (do not free) or null on
-/// unavailable PWD — caller falls back to a libc getcwd.
-fn currentWorkingDir(ctx: *const runtime.Ctx) ?[]const u8 {
-    _ = ctx;
-    return getPosixEnv("PWD");
 }
 
 fn getPosixEnv(key: []const u8) ?[]const u8 {

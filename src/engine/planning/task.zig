@@ -106,7 +106,7 @@ pub const CreateArgs = struct {
     slug: ?[]const u8 = null,
     /// Skip plan-status auto-promotion recompute for this operation.
     no_auto_promote: bool = false,
-    /// Scope slug. MUST be null until associations land.
+    /// Scope slug accepted by identity.scope.resolveSlug.
     scope: ?[]const u8 = null,
 };
 
@@ -127,7 +127,7 @@ pub const UpdateArgs = struct {
     clear_plan: bool = false,
     /// Skip plan-status auto-promotion recompute for this operation.
     no_auto_promote: bool = false,
-    /// Scope slug. MUST be null until associations land.
+    /// Scope slug accepted by identity.scope.resolveSlug.
     scope: ?[]const u8 = null,
 };
 
@@ -136,8 +136,10 @@ pub const ListFilter = struct {
     plan_id: ?i64 = null,
     /// Inclusive upper bound on priority value (lower = more urgent).
     priority_max: ?i64 = null,
-    /// Scope slug. MUST be null until associations land.
+    /// Legacy single-scope filter retained for handler compatibility.
     scope: ?[]const u8 = null,
+    /// Multi-scope filter. Values are scope slugs accepted by resolveSlug().
+    scopes: []const []const u8 = &.{},
 };
 
 pub const Error =
@@ -335,14 +337,22 @@ pub fn show(d: *db.sqlite.Db, allocator: std.mem.Allocator, id: i64) Error!Task 
 }
 
 pub fn list(d: *db.sqlite.Db, allocator: std.mem.Allocator, filter: ListFilter) Error![]Task {
-    const scope_ref: ?identity.scope.ScopeRef = if (filter.scope) |s|
-        identity.scope.resolveSlug(d, allocator, s) catch |e| switch (e) {
+    var scope_refs: std.ArrayList(identity.scope.ScopeRef) = .empty;
+    defer scope_refs.deinit(allocator);
+    if (filter.scope) |s| {
+        try scope_refs.append(allocator, identity.scope.resolveSlug(d, allocator, s) catch |e| switch (e) {
             error.UnsupportedScope => return Error.UnsupportedScope,
             error.SlugNotFound => return Error.SlugNotFound,
             else => return Error.QueryFailed,
-        }
-    else
-        null;
+        });
+    }
+    for (filter.scopes) |s| {
+        try scope_refs.append(allocator, identity.scope.resolveSlug(d, allocator, s) catch |e| switch (e) {
+            error.UnsupportedScope => return Error.UnsupportedScope,
+            error.SlugNotFound => return Error.SlugNotFound,
+            else => return Error.QueryFailed,
+        });
+    }
 
     var sql_buf: std.ArrayList(u8) = .empty;
     defer sql_buf.deinit(allocator);
@@ -365,18 +375,23 @@ pub fn list(d: *db.sqlite.Db, allocator: std.mem.Allocator, filter: ListFilter) 
         try sql_buf.appendSlice(allocator, " and priority <= ?");
         try params.append(allocator, .{ .int = p });
     }
-    if (scope_ref) |ref| {
-        switch (ref.kind) {
-            .global => try sql_buf.appendSlice(allocator, " and scope_kind = 'global'"),
-            .association => {
-                try sql_buf.appendSlice(allocator, " and scope_kind = 'association' and scope_id = ?");
-                try params.append(allocator, .{ .int = ref.id.? });
-            },
-            .repo => {
-                try sql_buf.appendSlice(allocator, " and scope_kind = 'repo' and scope_id = ?");
-                try params.append(allocator, .{ .int = ref.id.? });
-            },
+    if (scope_refs.items.len > 0) {
+        try sql_buf.appendSlice(allocator, " and (");
+        for (scope_refs.items, 0..) |ref, i| {
+            if (i > 0) try sql_buf.appendSlice(allocator, " or ");
+            switch (ref.kind) {
+                .global => try sql_buf.appendSlice(allocator, "scope_kind = 'global'"),
+                .association => {
+                    try sql_buf.appendSlice(allocator, "(scope_kind = 'association' and scope_id = ?)");
+                    try params.append(allocator, .{ .int = ref.id.? });
+                },
+                .repo => {
+                    try sql_buf.appendSlice(allocator, "(scope_kind = 'repo' and scope_id = ?)");
+                    try params.append(allocator, .{ .int = ref.id.? });
+                },
+            }
         }
+        try sql_buf.appendSlice(allocator, ")");
     }
     // Default order: open tasks by priority ascending, then by updated_at desc,
     // then by id. Matches the ix_tasks_open_priority partial index.
@@ -497,20 +512,31 @@ pub fn listTouching(
     repo_id: i64,
     filter: ListFilter,
 ) Error![]Task {
-    const scope_ref: ?identity.scope.ScopeRef = if (filter.scope) |s|
-        identity.scope.resolveSlug(d, allocator, s) catch |e| switch (e) {
+    var scope_refs: std.ArrayList(identity.scope.ScopeRef) = .empty;
+    defer scope_refs.deinit(allocator);
+    if (filter.scope) |s| {
+        try scope_refs.append(allocator, identity.scope.resolveSlug(d, allocator, s) catch |e| switch (e) {
             error.UnsupportedScope => return Error.UnsupportedScope,
             error.SlugNotFound => return Error.SlugNotFound,
             else => return Error.QueryFailed,
-        }
-    else
-        null;
+        });
+    }
+    for (filter.scopes) |s| {
+        try scope_refs.append(allocator, identity.scope.resolveSlug(d, allocator, s) catch |e| switch (e) {
+            error.UnsupportedScope => return Error.UnsupportedScope,
+            error.SlugNotFound => return Error.SlugNotFound,
+            else => return Error.QueryFailed,
+        });
+    }
 
     var branch1_active = true;
-    if (scope_ref) |ref| {
+    if (scope_refs.items.len > 0) {
         branch1_active = false;
-        if (ref.kind == .repo and (ref.id == null or ref.id.? == repo_id)) {
-            branch1_active = true;
+        for (scope_refs.items) |ref| {
+            if (ref.kind == .repo and (ref.id == null or ref.id.? == repo_id)) {
+                branch1_active = true;
+                break;
+            }
         }
     }
 
@@ -533,12 +559,17 @@ pub fn listTouching(
     try sql.appendSlice(allocator, select_all_prefix);
     try sql.appendSlice(allocator, " and id in (select from_id from entity_links where from_kind='task' and to_kind='repo' and to_id=? and relationship='touches')");
     if (filter.status) |_| try sql.appendSlice(allocator, " and status=?") else try sql.appendSlice(allocator, " and status in ('todo','doing','blocked')");
-    if (scope_ref) |ref| {
-        switch (ref.kind) {
-            .global => try sql.appendSlice(allocator, " and scope_kind='global'"),
-            .association => try sql.appendSlice(allocator, " and scope_kind='association' and scope_id=?"),
-            .repo => try sql.appendSlice(allocator, " and scope_kind='repo' and scope_id=?"),
+    if (scope_refs.items.len > 0) {
+        try sql.appendSlice(allocator, " and (");
+        for (scope_refs.items, 0..) |ref, i| {
+            if (i > 0) try sql.appendSlice(allocator, " or ");
+            switch (ref.kind) {
+                .global => try sql.appendSlice(allocator, "scope_kind='global'"),
+                .association => try sql.appendSlice(allocator, "(scope_kind='association' and scope_id=?)"),
+                .repo => try sql.appendSlice(allocator, "(scope_kind='repo' and scope_id=?)"),
+            }
         }
+        try sql.appendSlice(allocator, ")");
     }
     if (filter.plan_id) |_| try sql.appendSlice(allocator, " and plan_id=?");
     if (filter.priority_max) |_| try sql.appendSlice(allocator, " and priority<=?");
@@ -554,7 +585,7 @@ pub fn listTouching(
     }
     try params.append(allocator, .{ .int = repo_id });
     if (filter.status) |s| try params.append(allocator, .{ .text = @tagName(s) });
-    if (scope_ref) |ref| switch (ref.kind) {
+    for (scope_refs.items) |ref| switch (ref.kind) {
         .global => {},
         .association, .repo => try params.append(allocator, .{ .int = ref.id.? }),
     };
@@ -1016,14 +1047,19 @@ test "create with unknown scope slug returns SlugNotFound" {
     );
 }
 
-test "create with repo: scope returns UnsupportedScope" {
+test "create with repo: scope writes scope_kind='repo'" {
     const a = std.testing.allocator;
     var d = try setupTestDb(a);
     defer d.close();
-    try std.testing.expectError(
-        Error.UnsupportedScope,
-        create(&d, a, .{ .title = "x", .scope = "repo:foo" }),
+    _ = try d.execParams(
+        "insert into projects (slug, name, root_path) values ('foo', 'Foo', '/work/foo')",
+        &.{},
     );
+    const repo_id = try d.intQuery("select id from projects where slug = 'foo'");
+    const t = try create(&d, a, .{ .title = "repo task", .scope = "repo:foo" });
+    defer deinit(t, a);
+    try std.testing.expectEqual(ScopeKind.repo, t.scope_kind);
+    try std.testing.expectEqual(repo_id, t.scope_id.?);
 }
 
 test "parseDueAt rejects impossible dates/times" {

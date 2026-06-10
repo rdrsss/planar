@@ -94,7 +94,7 @@ test "scenario: question lifecycle — add, list-by-status, answer, wontfix" {
     });
 
     // ---- 3. `question list --status open` returns all three.
-    const open_list_raw = suite.mustRun(&.{ "question", "list", "--status", "open", "--json" });
+    const open_list_raw = suite.mustRun(&.{ "question", "list", "--scope", "global", "--status", "open", "--json" });
     defer gpa.free(open_list_raw);
     try std.testing.expect(std.mem.containsAtLeast(u8, open_list_raw, 1, "Legacy cookie disposition"));
     try std.testing.expect(std.mem.containsAtLeast(u8, open_list_raw, 1, "Cutover window"));
@@ -145,18 +145,18 @@ test "scenario: question lifecycle — add, list-by-status, answer, wontfix" {
     // `question list --status open` should now return just the
     // first question; `--status answered` returns the second;
     // `--status wontfix` returns the third.
-    const open_after_raw = suite.mustRun(&.{ "question", "list", "--status", "open", "--json" });
+    const open_after_raw = suite.mustRun(&.{ "question", "list", "--scope", "global", "--status", "open", "--json" });
     defer gpa.free(open_after_raw);
     try std.testing.expect(std.mem.containsAtLeast(u8, open_after_raw, 1, "Legacy cookie disposition"));
     try std.testing.expect(!std.mem.containsAtLeast(u8, open_after_raw, 1, "Cutover window"));
     try std.testing.expect(!std.mem.containsAtLeast(u8, open_after_raw, 1, "Audit pre-migration tokens"));
 
-    const answered_raw = suite.mustRun(&.{ "question", "list", "--status", "answered", "--json" });
+    const answered_raw = suite.mustRun(&.{ "question", "list", "--scope", "global", "--status", "answered", "--json" });
     defer gpa.free(answered_raw);
     try std.testing.expect(std.mem.containsAtLeast(u8, answered_raw, 1, "Cutover window"));
     try std.testing.expect(!std.mem.containsAtLeast(u8, answered_raw, 1, "Legacy cookie disposition"));
 
-    const wontfix_raw = suite.mustRun(&.{ "question", "list", "--status", "wontfix", "--json" });
+    const wontfix_raw = suite.mustRun(&.{ "question", "list", "--scope", "global", "--status", "wontfix", "--json" });
     defer gpa.free(wontfix_raw);
     try std.testing.expect(std.mem.containsAtLeast(u8, wontfix_raw, 1, "Audit pre-migration tokens"));
 }

@@ -23,7 +23,7 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     // back, plan create silently lands plans in `global` even when
     // the operator is sitting inside a project bound to an
     // association — plan 352 task 2450.
-    const resolution = scope_mod.resolve(ctx, args.scope) catch |e|
+    const resolution = scope_mod.resolveForWrite(ctx, args.scope) catch |e|
         exit.die(ctx, e, "plan create: resolving scope failed: {s}", .{@errorName(e)});
     const effective_scope: ?[]const u8 = if (resolution.scope) |s| s else null;
 

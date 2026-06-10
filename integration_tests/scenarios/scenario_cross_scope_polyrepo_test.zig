@@ -150,11 +150,17 @@ test "scenario: cross-scope polyrepo — two projects under one assoc surface in
     // Today `task show --json` doesn't carry the touches overlay
     // (verified via probe 2026-05-26), but `task list --touches
     // <slug> --json` does — that's what we assert here.
-    const task = suite.mustRunJSON(TaskJSON, arena, &.{
+    const task_raw = suite.mustRunInDir(proj_a, &.{
         "task",                       "add",                        "--json",
         "--plan",                     plan_id_str,                  "--next-action",
         "spike cross-repo signature", "Spike cross-repo signature",
     });
+    defer gpa.free(task_raw);
+    const task_parsed = std.json.parseFromSlice(TaskJSON, arena, task_raw, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    }) catch unreachable;
+    const task = task_parsed.value;
     try std.testing.expectEqualStrings("todo", task.status);
 
     const task_id_str = std.fmt.allocPrint(arena, "{d}", .{task.id}) catch unreachable;
@@ -168,7 +174,7 @@ test "scenario: cross-scope polyrepo — two projects under one assoc surface in
     // task via the touches edge. The query is the operator's
     // canonical "what touches repo X" lookup.
     const touches_list_raw = suite.mustRun(&.{
-        "task", "list", "--touches", proj_b_slug, "--json",
+        "task", "list", "--scope", assoc_slug, "--touches", proj_b_slug, "--json",
     });
     defer gpa.free(touches_list_raw);
 

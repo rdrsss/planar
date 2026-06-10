@@ -5,6 +5,7 @@ const engine = @import("engine");
 const main = @import("../../main.zig");
 const runtime = @import("runtime");
 const exit = @import("../../exit.zig");
+const scope_mod = @import("../../scope.zig");
 
 pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     const args = cli.castArgs(main.root, &.{ "workspace", "init" }, args_ptr);
@@ -15,13 +16,17 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         exit.die(ctx, error.InvalidInput, "cannot combine --no-scan and --enrich", .{});
     }
 
-    const cwd = std.Io.Dir.realPathFileAlloc(.cwd(), ctx.io, ".", ctx.allocator) catch |e|
+    const cwd = scope_mod.operatorCwd(ctx.allocator, ctx.io) catch |e|
         exit.die(ctx, e, "getting working directory failed: {s}", .{@errorName(e)});
     defer ctx.allocator.free(cwd);
     const own_git = try std.fs.path.join(ctx.allocator, &.{ cwd, ".git" });
     defer ctx.allocator.free(own_git);
-    if (pathExists(own_git)) {
+    const cwd_is_git_repo = gitMarkerExists(own_git);
+    if (cwd_is_git_repo and !args.meta_repo) {
         exit.die(ctx, error.InvalidInput, "current directory {s} is a git repository; use `planar init` for single repos", .{cwd});
+    }
+    if (!cwd_is_git_repo and args.meta_repo) {
+        exit.die(ctx, error.InvalidInput, "`--meta-repo` requires current directory {s} to be a git repository", .{cwd});
     }
 
     const scan_depth = if (args.scan > 0) @as(usize, @intCast(args.scan)) else @as(usize, 1);
@@ -29,6 +34,9 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         exit.die(ctx, e, "scanning child repositories failed: {s}", .{@errorName(e)});
     defer freeStrings(children, ctx.allocator);
     if (children.len == 0) {
+        if (args.meta_repo) {
+            exit.die(ctx, error.InvalidInput, "no nested directories with .git found under {s}; nothing to initialize as a meta workspace", .{cwd});
+        }
         exit.die(ctx, error.InvalidInput, "no child directories with .git found under {s}; nothing to initialize", .{cwd});
     }
 
@@ -49,8 +57,22 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         projects.deinit(ctx.allocator);
     }
 
-    const org_state = registerWorkspace(d, ctx.allocator, cwd, org_slug, org_name, children, &projects) catch |e|
-        exit.die(ctx, e, "registering workspace failed: {s}", .{@errorName(e)});
+    const shape: WorkspaceShape = if (args.meta_repo) .meta_repo else .sibling;
+    const org_state = registerWorkspace(d, ctx.allocator, cwd, org_slug, org_name, shape, children, &projects) catch |e| switch (e) {
+        error.ExistingOrgRootMismatch => exit.die(
+            ctx,
+            error.InvalidInput,
+            "org:{s} already exists with a different workspace root; choose a different --slug or run from the recorded root",
+            .{org_slug},
+        ),
+        error.InvalidWorkspaceConfig => exit.die(
+            ctx,
+            error.InvalidInput,
+            "org:{s} has invalid workspace config; repair or choose a different --slug before running `workspace init --meta-repo`",
+            .{org_slug},
+        ),
+        else => exit.die(ctx, e, "registering workspace failed: {s}", .{@errorName(e)}),
+    };
 
     const layout = engine.identity.workspace.ensureLayout(ctx.allocator, ctx.io, ctx.environ, org_state.id) catch null;
     defer if (layout) |l| engine.identity.workspace.deinitLayout(l, ctx.allocator);
@@ -59,7 +81,7 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     if (args.no_scan) {
         pipeline.skipped = true;
     } else if (layout) |l| {
-        pipeline = runPipeline(ctx, d, org_state.id, cwd, l, args.enrich) catch |e| blk: {
+        pipeline = runPipeline(ctx, d, org_state.id, cwd, l, shape, args.enrich) catch |e| blk: {
             const msg = std.fmt.allocPrint(ctx.allocator, "{s}", .{@errorName(e)}) catch "";
             pipeline.@"error" = msg;
             break :blk pipeline;
@@ -69,7 +91,11 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
             try ctx.stderr.print("hint: re-run `planar workspace routing build` && `planar workspace regenerate`\n", .{});
         }
     } else {
-        pipeline.@"error" = "layout-create-failed";
+        pipeline.@"error" = try ctx.allocator.dupe(u8, "layout-create-failed");
+        if (!args.json) {
+            try ctx.stderr.print("warning: pipeline pass failed: {s}\n", .{pipeline.@"error"});
+            try ctx.stderr.print("hint: re-run `planar workspace doctor` then `planar workspace routing build` && `planar workspace regenerate`\n", .{});
+        }
     }
     defer if (pipeline.@"error".len > 0) ctx.allocator.free(pipeline.@"error");
 
@@ -115,7 +141,11 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
             pipeline.routing.cross_repo_deps,
         });
         try ctx.stdout.print("AGENTS.md regenerated ({d} bytes).\n", .{pipeline.regenerate.bytes});
-        try ctx.stdout.print("Symlinks installed: AGENTS.md, CLAUDE.md (strategy: {s}).\n", .{pipeline.symlinks.strategy});
+        if (pipeline.symlinks.installed.len == 0 and std.mem.eql(u8, pipeline.symlinks.strategy, "skipped-meta-repo")) {
+            try ctx.stdout.print("Root instruction files left unchanged (meta workspace).\n", .{});
+        } else {
+            try ctx.stdout.print("Symlinks installed: AGENTS.md, CLAUDE.md (strategy: {s}).\n", .{pipeline.symlinks.strategy});
+        }
     }
     try ctx.stdout.print("Run `planar assoc tree` to view the hierarchy.\n", .{});
 }
@@ -130,6 +160,29 @@ const ProjectResult = struct {
     path: []const u8,
     created: bool,
     membership_created: bool,
+};
+
+const ProjectUpsertResult = struct {
+    id: i64,
+    slug: []const u8,
+    created: bool,
+};
+
+const WorkspaceShape = enum {
+    sibling,
+    meta_repo,
+
+    fn configValue(self: WorkspaceShape) ?[]const u8 {
+        return switch (self) {
+            .sibling => null,
+            .meta_repo => "meta-repo",
+        };
+    }
+};
+
+const ExistingConfig = struct {
+    root_path: []const u8,
+    workspace_shape: ?[]const u8 = null,
 };
 
 const PipelineResult = struct {
@@ -157,6 +210,7 @@ fn runPipeline(
     org_id: i64,
     workspace_root: []const u8,
     layout: engine.identity.workspace.Layout,
+    shape: WorkspaceShape,
     enrich: bool,
 ) !PipelineResult {
     var out = PipelineResult{};
@@ -195,11 +249,18 @@ fn runPipeline(
         .bytes = regen.bytes_written,
     };
 
-    const strategy = try engine.identity.workspace.installSymlinks(ctx.allocator, ctx.io, workspace_root, layout);
-    out.symlinks = .{
-        .strategy = strategy,
-        .installed = &.{ "AGENTS.md", "CLAUDE.md" },
-    };
+    if (shape == .meta_repo) {
+        out.symlinks = .{
+            .strategy = "skipped-meta-repo",
+            .installed = &.{},
+        };
+    } else {
+        const strategy = try engine.identity.workspace.installSymlinks(ctx.allocator, ctx.io, workspace_root, layout);
+        out.symlinks = .{
+            .strategy = strategy,
+            .installed = &.{ "AGENTS.md", "CLAUDE.md" },
+        };
+    }
     return out;
 }
 
@@ -218,6 +279,7 @@ fn registerWorkspace(
     cwd: []const u8,
     org_slug: []const u8,
     org_name: []const u8,
+    shape: WorkspaceShape,
     git_children: []const []const u8,
     projects: *std.ArrayList(ProjectResult),
 ) !OrgResult {
@@ -230,7 +292,22 @@ fn registerWorkspace(
         }
     }
 
-    const org = try upsertOrg(d, allocator, org_slug, org_name, cwd);
+    const org = try upsertOrg(d, allocator, org_slug, org_name, cwd, shape);
+
+    if (shape == .meta_repo) {
+        const base = std.fs.path.basename(cwd);
+        const slug = try engine.init.deriveSlug(allocator, base);
+        defer allocator.free(slug);
+        const project = try upsertProject(d, allocator, slug, base, cwd);
+        defer allocator.free(project.slug);
+        const member_created = try upsertMembership(d, project.id, org.id);
+        try projects.append(allocator, .{
+            .slug = try allocator.dupe(u8, project.slug),
+            .path = try allocator.dupe(u8, cwd),
+            .created = project.created,
+            .membership_created = member_created,
+        });
+    }
 
     for (git_children) |child_rel| {
         const repo_path = try std.fs.path.join(allocator, &.{ cwd, child_rel });
@@ -239,9 +316,10 @@ fn registerWorkspace(
         const slug = try engine.init.deriveSlug(allocator, base);
         defer allocator.free(slug);
         const project = try upsertProject(d, allocator, slug, base, repo_path);
+        defer allocator.free(project.slug);
         const member_created = try upsertMembership(d, project.id, org.id);
         try projects.append(allocator, .{
-            .slug = try allocator.dupe(u8, slug),
+            .slug = try allocator.dupe(u8, project.slug),
             .path = try allocator.dupe(u8, repo_path),
             .created = project.created,
             .membership_created = member_created,
@@ -259,8 +337,9 @@ fn upsertOrg(
     slug: []const u8,
     name: []const u8,
     root_path: []const u8,
+    shape: WorkspaceShape,
 ) !OrgResult {
-    var stmt = d.prepare("select id, kind, coalesce(config_json, '') from associations where slug = ?") catch return error.QueryFailed;
+    var stmt = d.prepare("select id, kind, config_json from associations where slug = ?") catch return error.QueryFailed;
     defer stmt.finalize();
     stmt.bind(&.{.{ .text = slug }}) catch return error.QueryFailed;
     switch (stmt.step() catch return error.QueryFailed) {
@@ -269,12 +348,20 @@ fn upsertOrg(
             const kind = try stmt.columnTextAlloc(1, allocator);
             defer allocator.free(kind);
             if (!std.mem.eql(u8, kind, "org")) return error.InvalidInput;
+            if (shape == .meta_repo) {
+                const config_json = try stmt.columnTextOpt(2, allocator);
+                defer if (config_json) |cfg| allocator.free(cfg);
+                const existing = try parseExistingConfig(allocator, config_json orelse return error.InvalidWorkspaceConfig);
+                defer deinitExistingConfig(existing, allocator);
+                if (!std.mem.eql(u8, existing.root_path, root_path)) return error.ExistingOrgRootMismatch;
+                try updateOrgConfig(d, allocator, id, root_path, shape);
+            }
             return .{ .id = id, .created = false };
         },
         .done => {},
     }
 
-    const config_json = try rootPathJSON(allocator, root_path);
+    const config_json = try workspaceConfigJSON(allocator, root_path, shape);
     defer allocator.free(config_json);
     // Route the write through the identity engine so the org creation is
     // audited like every other association create (auto_detected falls to
@@ -289,20 +376,77 @@ fn upsertOrg(
     return .{ .id = assoc.id, .created = true };
 }
 
+fn parseExistingConfig(allocator: std.mem.Allocator, config_json: []const u8) !ExistingConfig {
+    if (config_json.len == 0) return error.InvalidWorkspaceConfig;
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, config_json, .{}) catch
+        return error.InvalidWorkspaceConfig;
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidWorkspaceConfig;
+    const root_value = parsed.value.object.get("root_path") orelse return error.InvalidWorkspaceConfig;
+    if (root_value != .string or root_value.string.len == 0) return error.InvalidWorkspaceConfig;
+    var out = ExistingConfig{
+        .root_path = try allocator.dupe(u8, root_value.string),
+    };
+    errdefer deinitExistingConfig(out, allocator);
+    if (parsed.value.object.get("workspace_shape")) |shape| {
+        if (shape != .string or shape.string.len == 0) return error.InvalidWorkspaceConfig;
+        out.workspace_shape = try allocator.dupe(u8, shape.string);
+    }
+    return out;
+}
+
+fn deinitExistingConfig(config: ExistingConfig, allocator: std.mem.Allocator) void {
+    allocator.free(config.root_path);
+    if (config.workspace_shape) |shape| allocator.free(shape);
+}
+
 fn upsertProject(
     d: *db.sqlite.Db,
     allocator: std.mem.Allocator,
     slug: []const u8,
     name: []const u8,
     root_path: []const u8,
-) !struct { id: i64, created: bool } {
-    var stmt = d.prepare("select id from projects where slug = ?") catch return error.QueryFailed;
-    defer stmt.finalize();
-    stmt.bind(&.{.{ .text = slug }}) catch return error.QueryFailed;
-    switch (stmt.step() catch return error.QueryFailed) {
-        .row => return .{ .id = stmt.columnInt(0), .created = false },
-        .done => {},
+) !ProjectUpsertResult {
+    if (findProjectByPath(d, allocator, root_path)) |existing| {
+        return .{ .id = existing.id, .slug = existing.slug, .created = false };
+    } else |e| {
+        if (e != error.NotFound) return e;
     }
+
+    return createProjectWithSlug(d, allocator, slug, name, root_path, 0);
+}
+
+fn findProjectByPath(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    root_path: []const u8,
+) !struct { id: i64, slug: []const u8 } {
+    var stmt = d.prepare("select id, slug from projects where root_path = ?") catch return error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .text = root_path }}) catch return error.QueryFailed;
+    switch (stmt.step() catch return error.QueryFailed) {
+        .row => return .{
+            .id = stmt.columnInt(0),
+            .slug = try stmt.columnTextAlloc(1, allocator),
+        },
+        .done => return error.NotFound,
+    }
+}
+
+fn createProjectWithSlug(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    slug: []const u8,
+    name: []const u8,
+    root_path: []const u8,
+    suffix: u32,
+) !ProjectUpsertResult {
+    if (suffix >= 10000) return error.QueryFailed;
+    const effective_slug = if (suffix == 0)
+        try allocator.dupe(u8, slug)
+    else
+        try std.fmt.allocPrint(allocator, "{s}-{d}", .{ slug, suffix });
+    errdefer allocator.free(effective_slug);
 
     const remote = gitRemoteOrigin(allocator, root_path) catch null;
     defer if (remote) |value| allocator.free(value);
@@ -310,13 +454,22 @@ fn upsertProject(
     // audited; project.add takes the same (slug, name, root_path,
     // git_remote) shape as the prior raw insert.
     const project = engine.identity.project.add(d, allocator, .{
-        .slug = slug,
+        .slug = effective_slug,
         .name = name,
         .root_path = root_path,
         .git_remote = remote,
-    }) catch return error.QueryFailed;
+    }) catch |e| {
+        allocator.free(effective_slug);
+        switch (e) {
+            error.SlugExists => {
+                const next_suffix = if (suffix == 0) @as(u32, 2) else suffix + 1;
+                return try createProjectWithSlug(d, allocator, slug, name, root_path, next_suffix);
+            },
+            else => return error.QueryFailed,
+        }
+    };
     defer engine.identity.project.deinit(project, allocator);
-    return .{ .id = project.id, .created = true };
+    return .{ .id = project.id, .slug = effective_slug, .created = true };
 }
 
 // NOTE: this stays a direct write because the identity engine has no
@@ -387,7 +540,7 @@ fn walk(
         defer allocator.free(child_rel);
         const git_path = try std.fs.path.join(allocator, &.{ cwd, child_rel, ".git" });
         defer allocator.free(git_path);
-        if (pathExists(git_path)) {
+        if (gitMarkerExists(git_path)) {
             try out.append(allocator, try allocator.dupe(u8, child_rel));
             continue;
         }
@@ -401,11 +554,30 @@ fn shouldSkipChild(name: []const u8) bool {
     return std.mem.eql(u8, name, "node_modules");
 }
 
-fn rootPathJSON(allocator: std.mem.Allocator, root_path: []const u8) ![]u8 {
+fn updateOrgConfig(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    org_id: i64,
+    root_path: []const u8,
+    shape: WorkspaceShape,
+) !void {
+    const config_json = try workspaceConfigJSON(allocator, root_path, shape);
+    defer allocator.free(config_json);
+    _ = d.execParams(
+        "update associations set config_json = ? where id = ?",
+        &.{ .{ .text = config_json }, .{ .int = org_id } },
+    ) catch return error.QueryFailed;
+}
+
+fn workspaceConfigJSON(allocator: std.mem.Allocator, root_path: []const u8, shape: WorkspaceShape) ![]u8 {
     var writer: std.Io.Writer.Allocating = .init(allocator);
     defer writer.deinit();
     try writer.writer.print("{{\"root_path\":", .{});
     try std.json.Stringify.encodeJsonString(root_path, .{}, &writer.writer);
+    if (shape.configValue()) |value| {
+        try writer.writer.print(",\"workspace_shape\":", .{});
+        try std.json.Stringify.encodeJsonString(value, .{}, &writer.writer);
+    }
     try writer.writer.print("}}", .{});
     try writer.writer.flush();
     return try allocator.dupe(u8, writer.written());
@@ -428,7 +600,7 @@ fn gitRemoteOrigin(allocator: std.mem.Allocator, cwd: []const u8) !?[]u8 {
     return result.stdout;
 }
 
-fn pathExists(path: []const u8) bool {
+fn gitMarkerExists(path: []const u8) bool {
     std.Io.Dir.cwd().access(ctxIo(), path, .{}) catch return false;
     return true;
 }

@@ -124,6 +124,7 @@ pub const ListFilter = struct {
     /// {proposed, accepted} (open lifecycle states).
     status: ?Status = null,
     scope: ?[]const u8 = null,
+    scopes: []const []const u8 = &.{},
     /// Restrict to decisions linked to this plan via the
     /// entity_links (decision → plan, relationship='derives-from')
     /// edge. Mirrors the artifact + question `--plan` filter.
@@ -240,14 +241,22 @@ pub fn show(d: *db.sqlite.Db, allocator: std.mem.Allocator, id: i64) Error!Decis
 }
 
 pub fn list(d: *db.sqlite.Db, allocator: std.mem.Allocator, filter: ListFilter) Error![]Decision {
-    const scope_ref: ?identity.scope.ScopeRef = if (filter.scope) |s|
-        identity.scope.resolveSlug(d, allocator, s) catch |e| switch (e) {
+    var scope_refs: std.ArrayList(identity.scope.ScopeRef) = .empty;
+    defer scope_refs.deinit(allocator);
+    if (filter.scope) |s| {
+        try scope_refs.append(allocator, identity.scope.resolveSlug(d, allocator, s) catch |e| switch (e) {
             error.UnsupportedScope => return Error.UnsupportedScope,
             error.SlugNotFound => return Error.SlugNotFound,
             else => return Error.QueryFailed,
-        }
-    else
-        null;
+        });
+    }
+    for (filter.scopes) |s| {
+        try scope_refs.append(allocator, identity.scope.resolveSlug(d, allocator, s) catch |e| switch (e) {
+            error.UnsupportedScope => return Error.UnsupportedScope,
+            error.SlugNotFound => return Error.SlugNotFound,
+            else => return Error.QueryFailed,
+        });
+    }
 
     var sql_buf: std.ArrayList(u8) = .empty;
     defer sql_buf.deinit(allocator);
@@ -262,18 +271,23 @@ pub fn list(d: *db.sqlite.Db, allocator: std.mem.Allocator, filter: ListFilter) 
         // Mirror Go default: open lifecycle states only.
         try sql_buf.appendSlice(allocator, " and status in ('proposed','accepted')");
     }
-    if (scope_ref) |ref| {
-        switch (ref.kind) {
-            .global => try sql_buf.appendSlice(allocator, " and scope_kind = 'global'"),
-            .association => {
-                try sql_buf.appendSlice(allocator, " and scope_kind = 'association' and scope_id = ?");
-                try params.append(allocator, .{ .int = ref.id.? });
-            },
-            .repo => {
-                try sql_buf.appendSlice(allocator, " and scope_kind = 'repo' and scope_id = ?");
-                try params.append(allocator, .{ .int = ref.id.? });
-            },
+    if (scope_refs.items.len > 0) {
+        try sql_buf.appendSlice(allocator, " and (");
+        for (scope_refs.items, 0..) |ref, i| {
+            if (i > 0) try sql_buf.appendSlice(allocator, " or ");
+            switch (ref.kind) {
+                .global => try sql_buf.appendSlice(allocator, "scope_kind = 'global'"),
+                .association => {
+                    try sql_buf.appendSlice(allocator, "(scope_kind = 'association' and scope_id = ?)");
+                    try params.append(allocator, .{ .int = ref.id.? });
+                },
+                .repo => {
+                    try sql_buf.appendSlice(allocator, "(scope_kind = 'repo' and scope_id = ?)");
+                    try params.append(allocator, .{ .int = ref.id.? });
+                },
+            }
         }
+        try sql_buf.appendSlice(allocator, ")");
     }
     if (filter.plan_id) |pid| {
         try sql_buf.appendSlice(allocator, " and id in (select from_id from entity_links where from_kind='decision' and to_kind='plan' and relationship='derives-from' and to_id=?)");
@@ -583,14 +597,19 @@ test "create with unknown scope slug returns SlugNotFound" {
     );
 }
 
-test "create with repo: scope returns UnsupportedScope" {
+test "create with repo: scope writes scope_kind='repo'" {
     const a = std.testing.allocator;
     var dn = try setupTestDb(a);
     defer dn.close();
-    try std.testing.expectError(
-        Error.UnsupportedScope,
-        create(&dn, a, .{ .title = "x", .body = "y", .scope = "repo:foo" }),
+    _ = try dn.execParams(
+        "insert into projects (slug, name, root_path) values ('foo', 'Foo', '/work/foo')",
+        &.{},
     );
+    const repo_id = try dn.intQuery("select id from projects where slug = 'foo'");
+    const dec = try create(&dn, a, .{ .title = "repo decision", .body = "body", .scope = "repo:foo" });
+    defer deinit(dec, a);
+    try std.testing.expectEqual(ScopeKind.repo, dec.scope_kind);
+    try std.testing.expectEqual(repo_id, dec.scope_id.?);
 }
 
 test "accept sets status='accepted' and stamps decided_at" {

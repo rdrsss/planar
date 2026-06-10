@@ -58,7 +58,7 @@ test "search happy path: plan and task with distinctive token appear in text out
     });
 
     // Run `planar search <token>` (text mode).
-    const stdout = suite.mustRun(&.{ "search", token });
+    const stdout = suite.mustRun(&.{ "search", "--scope", "global", token });
     defer gpa.free(stdout);
 
     // Both titles must appear in the text output.
@@ -85,7 +85,7 @@ test "search JSON happy path: results array contains both kinds" {
     });
 
     // --json emits a JSON array.
-    const stdout = suite.mustRun(&.{ "search", "--json", token });
+    const stdout = suite.mustRun(&.{ "search", "--json", "--scope", "global", token });
     defer gpa.free(stdout);
 
     // Parse as a JSON array of hits.
@@ -114,7 +114,7 @@ test "search no-match JSON: exits 0 and stdout is exactly []" {
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
 
-    const res = suite.exec(&.{ "search", "--json", "DEFINITELYNOTPRESENT_XYZZY_99999" });
+    const res = suite.exec(&.{ "search", "--json", "--scope", "global", "DEFINITELYNOTPRESENT_XYZZY_99999" });
     defer gpa.free(res.stdout);
     defer gpa.free(res.stderr);
 
@@ -137,7 +137,7 @@ test "search no-match text: exits 0 and stdout is exactly (no results)" {
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
 
-    const res = suite.exec(&.{ "search", "DEFINITELYNOTPRESENT_XYZZY_88888" });
+    const res = suite.exec(&.{ "search", "--scope", "global", "DEFINITELYNOTPRESENT_XYZZY_88888" });
     defer gpa.free(res.stdout);
     defer gpa.free(res.stderr);
 

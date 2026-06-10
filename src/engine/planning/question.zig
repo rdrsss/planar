@@ -596,11 +596,19 @@ test "create with unknown scope slug returns SlugNotFound" {
     try std.testing.expectError(Error.SlugNotFound, create(&d, a, .{ .title = "x", .scope = "no-such-slug" }));
 }
 
-test "create with repo: scope returns UnsupportedScope" {
+test "create with repo: scope writes scope_kind='repo'" {
     const a = std.testing.allocator;
     var d = try setupTestDb(a);
     defer d.close();
-    try std.testing.expectError(Error.UnsupportedScope, create(&d, a, .{ .title = "x", .scope = "repo:foo" }));
+    _ = try d.execParams(
+        "insert into projects (slug, name, root_path) values ('foo', 'Foo', '/work/foo')",
+        &.{},
+    );
+    const repo_id = try d.intQuery("select id from projects where slug = 'foo'");
+    const q = try create(&d, a, .{ .title = "repo question", .scope = "repo:foo" });
+    defer deinit(q, a);
+    try std.testing.expectEqual(ScopeKind.repo, q.scope_kind);
+    try std.testing.expectEqual(repo_id, q.scope_id.?);
 }
 
 test "answer sets status + answer_body + answered_at atomically" {

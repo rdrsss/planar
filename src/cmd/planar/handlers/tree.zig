@@ -73,21 +73,10 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
         statuses_slice = statuses_buf[0..1];
     }
 
-    // Scope: --scope wins; otherwise derive from cwd (matches the Go binary's
-    // cli.ResolveReadScope invariant from plan 153 M4 — read verbs honor cwd
-    // when --scope isn't given). --all-scopes bypasses resolution entirely.
-    var scope_opt: ?[]const u8 = null;
-    if (!args.all_scopes) {
-        const resolution = scope_mod.resolve(ctx, args.scope) catch |e|
-            exit.die(ctx, e, "resolving scope: {s}", .{@errorName(e)});
-        scope_opt = resolution.scope;
-    }
-
     // --depth default = -1 (unbounded).
     const max_depth: i64 = args.depth;
 
-    const filter = engine.tree.Filter{
-        .scope = scope_opt,
+    const base_filter = engine.tree.Filter{
         .all_scopes = args.all_scopes,
         .max_depth = max_depth,
         .kinds = kinds_slice,
@@ -95,10 +84,11 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
         .sort = if (args.sort) |s| (if (s.len > 0) s else null) else null,
     };
 
-    const roots = engine.tree.build(d, ctx.allocator, filter) catch |e| switch (e) {
+    const roots = buildRoots(ctx, d, args.scope, args.all_scopes, base_filter) catch |e| switch (e) {
         error.UnsupportedScope => exit.die(ctx, error.InvalidInput, "unsupported scope form", .{}),
         error.SlugNotFound => exit.die(ctx, error.NotFound, "scope slug not found", .{}),
         error.UnknownKind => exit.die(ctx, error.InvalidInput, "unknown kind", .{}),
+        error.NoReadScope => exit.die(ctx, e, "cwd is not inside any registered Planar scope; cd into a registered scope or pass --scope global", .{}),
         else => exit.die(ctx, e, "tree walk failed: {s}", .{@errorName(e)}),
     };
     defer engine.tree.deinitNodes(roots, ctx.allocator);
@@ -118,4 +108,41 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
 
     // Text mode.
     try engine.tree.renderText(roots, ctx.stdout);
+}
+
+fn buildRoots(
+    ctx: *const runtime.Ctx,
+    d: anytype,
+    scope_arg: ?[]const u8,
+    all_scopes: bool,
+    base_filter: engine.tree.Filter,
+) ![]engine.tree.Node {
+    if (all_scopes) return try engine.tree.build(d, ctx.allocator, base_filter);
+    if (scope_arg) |scope| {
+        var filter = base_filter;
+        filter.scope = if (scope.len > 0) scope else null;
+        return try engine.tree.build(d, ctx.allocator, filter);
+    }
+
+    const cwd = try scope_mod.operatorCwd(ctx.allocator, ctx.io);
+    defer ctx.allocator.free(cwd);
+    const read_scopes = try scope_mod.resolveForReadSet(ctx, cwd, null);
+    defer ctx.allocator.free(read_scopes);
+    if (read_scopes.len == 0) return error.NoReadScope;
+    const scope_slugs = try scope_mod.readScopeFilterSlugs(ctx, read_scopes);
+    defer scope_mod.deinitReadScopeFilterSlugs(ctx.allocator, scope_slugs);
+
+    var roots: std.ArrayList(engine.tree.Node) = .empty;
+    errdefer {
+        for (roots.items) |root| engine.tree.deinitNode(root, ctx.allocator);
+        roots.deinit(ctx.allocator);
+    }
+    for (scope_slugs) |scope| {
+        var filter = base_filter;
+        filter.scope = scope;
+        const scope_roots = try engine.tree.build(d, ctx.allocator, filter);
+        defer ctx.allocator.free(scope_roots);
+        try roots.appendSlice(ctx.allocator, scope_roots);
+    }
+    return try roots.toOwnedSlice(ctx.allocator);
 }

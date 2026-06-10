@@ -50,7 +50,7 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         ) catch |e| exit.die(ctx, e, "task update: looking up entity scope: {s}", .{@errorName(e)});
         defer if (entity_scope) |s| ctx.allocator.free(s);
 
-        const resolution = scope_mod.resolve(ctx, args.scope) catch |e|
+        const resolution = scope_mod.resolveForWrite(ctx, args.scope) catch |e|
             exit.die(ctx, e, "task update: resolving write scope: {s}", .{@errorName(e)});
 
         scope_mod.guard(entity_scope, resolution.scope) catch

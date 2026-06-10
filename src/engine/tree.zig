@@ -226,7 +226,10 @@ pub fn build(
                 scope_kind = "association";
                 scope_id = ref.id;
             },
-            .repo => return Error.UnsupportedScope,
+            .repo => {
+                scope_kind = "repo";
+                scope_id = ref.id;
+            },
         }
     }
 

@@ -788,17 +788,22 @@ test "create with unknown scope slug returns SlugNotFound" {
     );
 }
 
-test "create with repo: scope returns UnsupportedScope" {
+test "create with repo: scope writes scope_kind='repo'" {
     const a = std.testing.allocator;
     var d = try setupTestDb(a);
     defer d.close();
-    try std.testing.expectError(
-        Error.UnsupportedScope,
-        create(&d, a, .{
-            .anchor = .{ .path = "src/foo.zig" },
-            .scope = "repo:anything",
-        }),
+    _ = try d.execParams(
+        "insert into projects (slug, name, root_path) values ('foo', 'Foo', '/work/foo')",
+        &.{},
     );
+    const repo_id = try d.intQuery("select id from projects where slug = 'foo'");
+    const ann = try create(&d, a, .{
+        .anchor = .{ .path = "src/foo.zig" },
+        .scope = "repo:foo",
+    });
+    defer deinit(ann, a);
+    try std.testing.expectEqual(ScopeKind.repo, ann.scope_kind);
+    try std.testing.expectEqual(repo_id, ann.scope_id.?);
 }
 
 test "list with scope filter returns only matching rows" {
