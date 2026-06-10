@@ -343,7 +343,7 @@ test "skills render real sources keep model tiers notes and invocation blocks" {
     try std.testing.expect(std.mem.indexOf(u8, codex_coder, "model: gpt-5.4") != null);
     try std.testing.expect(std.mem.indexOf(u8, claude_coder, "## Invocation") != null);
     try std.testing.expect(std.mem.indexOf(u8, codex_coder, "## Invocation") == null);
-    try std.testing.expect(std.mem.indexOf(u8, claude_orch, "model: claude-opus-4-7") != null);
+    try std.testing.expect(std.mem.indexOf(u8, claude_orch, "model: claude-opus-4-8") != null);
     try std.testing.expect(std.mem.indexOf(u8, codex_orch, "model: gpt-5") != null);
     try std.testing.expect(std.mem.indexOf(u8, claude_orch, "## Vendor Notes") != null);
     try std.testing.expect(std.mem.indexOf(u8, claude_spec_draft, "argument-hint: \"<goal>\"") != null);

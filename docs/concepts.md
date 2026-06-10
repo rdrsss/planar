@@ -678,6 +678,22 @@ Each template is a Markdown file with a YAML frontmatter block plus a short body
 
 **SQLite tables:** none — templates are pure filesystem assets. **Primary entry points:** `src/engine/templates/loader.zig` (resolve + load), `src/engine/templates/render.zig` (render), `src/engine/templates/validate.zig` (lint). Engine-internal, not a CLI surface.
 
+## Model routing
+
+Which model an agent role spawns is **config-driven and unified** (plan 540). The Planar config (`~/.planar/config.toml`, embedded defaults in `src/engine/config/defaults.toml`) carries:
+
+- `[models.<vendor>]` — per-vendor **tier maps**: the canonical `small` / `medium` / `large` tiers → concrete model ids (e.g. `[models.claude] medium = "claude-sonnet-4-6"`).
+- `[roles]` — **role → tier** (e.g. `coder = "medium"`, `reviewer = "large"` — the "sonnet coder, opus reviewer" default).
+- `[role_vendors]` — optional **role → vendor** override; unset roles use `[defaults].vendor`.
+
+A single **shared resolver** (`src/engine/models.zig`: `resolveTier`, `resolveRoleAuto`) composes these into a concrete `(vendor, model)` per role, with provenance. Every consumer resolves through it — there are no parallel per-tool model tables:
+
+- **`planar models`** — `list` (discover installed provider CLIs + curated catalog), `routing` (effective role→vendor/model with provenance; `--json` is what `planar-execute` shells), `refresh` (write the `~/.planar/models/catalog.json` cache), `apply` (scaffold the config block).
+- **`agents/models.md`** Tier Table + rendered skill/agent `model:` fields — generated from the resolver at `planar skills render`.
+- **`planar-execute`** — shells `planar models routing --json` to build its per-role dispatch table (it holds no engine handle), falling back to compiled defaults when `planar` is unreachable.
+
+The provider CLIs (`claude`, `codex`) do not expose a machine-readable model list, so the per-vendor catalog is curated in the binary; discovery confirms which CLIs are installed by invoking `<bin> --version`. See `docs/cli-reference.md` § Domain `config` (Model routing) and § Domain `models`, and the `pl-models-config` skill.
+
 ## Color output
 
 `planar tree`, the per-entity `list` verbs (`plan list`, `task list`, `question list`, `decision list`, `artifact list`, `scenario list`), and the child-plan summary section of `plan show` colorize the status column based on the entity kind that owns the status. Status is the only field colorized; titles, IDs, dates, and relationship arrows stay plain.

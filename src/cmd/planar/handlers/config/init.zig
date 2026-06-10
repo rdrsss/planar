@@ -51,6 +51,14 @@ const starter_config =
     \\# user_env  = "JIRA_USER"
     \\# token_env = "JIRA_TOKEN"
     \\#
+    \\# # Per-vendor model tier maps + role→tier routing (plan 540). Override a
+    \\# # tier to re-route every role at that tier; see `planar models`.
+    \\# [models.codex]
+    \\# medium = "gpt-5.4"
+    \\#
+    \\# [roles]
+    \\# coder = "large"
+    \\#
     \\# [associations."org:acme"]
     \\# github_lead_repo = "acme/platform"
     \\#

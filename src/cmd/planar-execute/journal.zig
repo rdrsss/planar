@@ -82,9 +82,13 @@ pub const JournalRecord = struct {
     branch: []const u8,
     /// The claim token the worker held for this spawn.
     claim_token: []const u8,
-    /// The model tier the worker was spawned with (role → tier, e.g.
+    /// The model the worker was spawned with (resolved role → model, e.g.
     /// "claude-opus-4-8").
     model: []const u8,
+    /// The vendor whose CLI spawned the worker ("claude"/"codex"). Provenance
+    /// for the resolved routing (plan 540 task 3629). Defaulted for back-compat
+    /// with journals written before the field existed.
+    vendor: []const u8 = "claude",
     /// The role the worker ran as ("coder"/"reviewer"/"test-coder"/"documenter").
     role: []const u8,
     /// The task slug the spawn was dispatched against.
@@ -334,9 +338,9 @@ test "journal: appended record JSON carries all fields" {
     defer a.free(data);
 
     inline for ([_][]const u8{
-        "prompt_hash",   "worktree",      "branch",    "claim_token",
-        "model",         "role",          "task_slug", "exit_code",
-        "terminal_verb", "wall_clock_ms", "timestamp",
+        "prompt_hash", "worktree",      "branch",        "claim_token",
+        "model",       "vendor",        "role",          "task_slug",
+        "exit_code",   "terminal_verb", "wall_clock_ms", "timestamp",
     }) |field| {
         try testing.expect(std.mem.indexOf(u8, data, field) != null);
     }

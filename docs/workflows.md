@@ -2435,3 +2435,63 @@ planar-watch claims --plan 42 --json --follow
 Workers spawned under `PLANAR_EXECUTE_LIVE_AGENT=1` appear as active claims; the harness heartbeats each claim automatically. Press Ctrl-C to stop the watcher (exit 0).
 
 For reference documentation on all flags see [`docs/cli-reference.md § Binary: planar-execute`](./cli-reference.md#binary-planar-execute). For the conceptual model of the Lua control plane and the no-DB-handle stance see [`docs/concepts.md § Embedded-Lua control plane`](./concepts.md#embedded-lua-control-plane).
+
+## Recipe 25 — Review and configure per-role model routing
+
+Inspect which models your agent roles will spawn, and re-route them — across Claude and Codex — through the unified config (plan 540). All model routing (skills render, `agents/models.md`, and `planar-execute`) resolves from one source via the shared resolver.
+
+**1. Discover installed providers + their catalogs.**
+
+```bash
+planar models list
+# providers:
+#   claude   [installed] 2.1.170 (Claude Code)
+#       large    claude-opus-4-8
+#       medium   claude-sonnet-4-6
+#       small    claude-haiku-4-5
+#   codex    [installed] codex-cli 0.137.0
+#       large    gpt-5.5                 GPT-5.5 (current) — frontier coding/research
+#       medium   gpt-5.4                 GPT-5.4 — strong everyday coding
+#       small    gpt-5.4-mini            GPT-5.4-mini — fast, cost-efficient
+```
+
+**2. See the effective role routing (with provenance).**
+
+```bash
+planar models routing
+#   coder      → claude claude-sonnet-4-6      (medium) [embedded default]
+#   reviewer   → claude claude-opus-4-8        (large)  [embedded default]
+```
+
+`planar models routing --json` is the machine form `planar-execute` shells to pick its worker model per role.
+
+**3. Override routing in `~/.planar/config.toml`.** Optionally scaffold an editable block first:
+
+```bash
+planar models apply        # writes [models.*] + [roles] into the config (idempotent)
+```
+
+Then edit:
+
+```toml
+# Route the coder to Codex's frontier model:
+[role_vendors]
+coder = "codex"
+
+# …and (optionally) which codex model the medium tier resolves to:
+[models.codex]
+medium = "gpt-5.4"
+
+# Or just bump a role to a different tier:
+[roles]
+reviewer = "large"
+```
+
+**4. Confirm the change took** — provenance flips to `[config file]`:
+
+```bash
+planar models routing
+#   coder      → codex  gpt-5.4                (medium) [config file]
+```
+
+A `planar-execute run --dry-run <workflow.lua>` shows the same table for a specific run; each live spawn logs a `[dispatch] task:N vendor=… role=… model=…` banner. See [`docs/concepts.md § Model routing`](./concepts.md#model-routing) and the `pl-models-config` skill.

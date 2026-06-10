@@ -26,6 +26,123 @@
 //! No DB handle is required; discovery is filesystem/PATH + subprocess only.
 
 const std = @import("std");
+const config = @import("config.zig");
+
+// ---------------------------------------------------------------------------
+// Shared model resolver (plan 540 phase 2) — the single authority that maps
+// (vendor, role|tier) to a concrete model, reading the effective config
+// (models.<vendor>.<tier> tier maps + roles.<role> role→tier) produced by
+// engine.config.resolve(). Consumers (planar-execute, skills render,
+// `planar models`) resolve through this instead of carrying their own tables.
+// ---------------------------------------------------------------------------
+
+/// Failure modes of the resolver.
+pub const ResolveError = error{
+    /// No `models.<vendor>.*` keys exist for the requested vendor.
+    UnknownVendor,
+    /// The vendor is known but has no model at the requested tier.
+    UnknownTier,
+    /// No `roles.<role>` mapping exists for the requested role.
+    UnknownRole,
+    /// The tier key exists but its model id is empty.
+    MissingModel,
+};
+
+/// A resolved (vendor, tier) → model with provenance. `tier`/`model` borrow
+/// from the effective map and live as long as it does.
+pub const Resolution = struct {
+    vendor: []const u8,
+    tier: []const u8,
+    model: []const u8,
+    source: config.Provenance,
+};
+
+/// True when the effective map carries a `models.<vendor>.medium` key — the
+/// canonical presence probe for a known vendor.
+fn vendorKnown(eff: *const config.EffectiveMap, vendor: []const u8) bool {
+    var buf: [160]u8 = undefined;
+    const key = std.fmt.bufPrint(&buf, "models.{s}.medium", .{vendor}) catch return false;
+    return eff.get(key) != null;
+}
+
+/// Resolve `(vendor, tier)` to a concrete model from the effective config.
+pub fn resolveTier(eff: *const config.EffectiveMap, vendor: []const u8, tier: []const u8) ResolveError!Resolution {
+    var buf: [160]u8 = undefined;
+    const key = std.fmt.bufPrint(&buf, "models.{s}.{s}", .{ vendor, tier }) catch return ResolveError.UnknownTier;
+    if (eff.get(key)) |vws| {
+        if (vws.value.len == 0) return ResolveError.MissingModel;
+        return .{ .vendor = vendor, .tier = tier, .model = vws.value, .source = vws.source };
+    }
+    if (!vendorKnown(eff, vendor)) return ResolveError.UnknownVendor;
+    return ResolveError.UnknownTier;
+}
+
+/// Resolve `(vendor, role)` to a concrete model: `roles.<role>` gives the tier,
+/// then `(vendor, tier)` gives the model. The returned `tier` is the resolved
+/// tier; `source` reflects the model entry's provenance.
+pub fn resolveRole(eff: *const config.EffectiveMap, vendor: []const u8, role: []const u8) ResolveError!Resolution {
+    var buf: [160]u8 = undefined;
+    const rkey = std.fmt.bufPrint(&buf, "roles.{s}", .{role}) catch return ResolveError.UnknownRole;
+    const tier_vws = eff.get(rkey) orelse return ResolveError.UnknownRole;
+    if (tier_vws.value.len == 0) return ResolveError.UnknownRole;
+    return resolveTier(eff, vendor, tier_vws.value);
+}
+
+/// The vendor a role routes to: `role_vendors.<role>` if set, else the global
+/// `[defaults].vendor`, else the compiled-in `default_vendor`. Borrows from the
+/// effective map (or a comptime constant).
+pub fn vendorForRole(eff: *const config.EffectiveMap, role: []const u8) []const u8 {
+    var buf: [160]u8 = undefined;
+    if (std.fmt.bufPrint(&buf, "role_vendors.{s}", .{role})) |rvkey| {
+        if (eff.get(rvkey)) |v| {
+            if (v.value.len > 0) return v.value;
+        }
+    } else |_| {}
+    if (eff.get("defaults.vendor")) |dv| {
+        if (dv.value.len > 0) return dv.value;
+    }
+    return default_vendor;
+}
+
+/// Resolve a role to a concrete model deriving the vendor from config
+/// (`role_vendors.<role>` → `[defaults].vendor`). This is what `planar models
+/// routing` and planar-execute consume — the full role→(vendor, tier, model)
+/// path with no caller-supplied vendor.
+pub fn resolveRoleAuto(eff: *const config.EffectiveMap, role: []const u8) ResolveError!Resolution {
+    return resolveRole(eff, vendorForRole(eff, role), role);
+}
+
+/// One row of the effective role routing table.
+pub const RoutingRow = struct {
+    role: []const u8,
+    vendor: []const u8,
+    tier: []const u8,
+    model: []const u8,
+    source: config.Provenance,
+};
+
+/// The canonical roles whose routing `planar models routing` reports.
+pub const routing_roles = [_][]const u8{ "coder", "reviewer", "test-coder", "documenter" };
+
+/// Build the effective routing table (role → vendor/tier/model + provenance)
+/// for the canonical roles. Rows borrow from `eff`; the returned slice is owned
+/// by `allocator`. A role that fails to resolve is skipped (should not happen
+/// with embedded defaults present).
+pub fn buildRouting(allocator: std.mem.Allocator, eff: *const config.EffectiveMap) std.mem.Allocator.Error![]RoutingRow {
+    var list = try std.ArrayList(RoutingRow).initCapacity(allocator, routing_roles.len);
+    errdefer list.deinit(allocator);
+    for (routing_roles) |role| {
+        const r = resolveRoleAuto(eff, role) catch continue;
+        list.appendAssumeCapacity(.{
+            .role = role,
+            .vendor = r.vendor,
+            .tier = r.tier,
+            .model = r.model,
+            .source = r.source,
+        });
+    }
+    return list.toOwnedSlice(allocator);
+}
 
 /// Canonical capability tiers (plan 541). `small` = cheap/fast, `large` =
 /// heavy reasoning.
@@ -43,10 +160,14 @@ pub const Tier = enum {
     }
 };
 
-/// One curated model id and the tier it belongs to.
+/// One curated model and the tier it belongs to. `id` is the spawn-safe model
+/// identifier passed to the provider CLI's `--model`; `label` is a human display
+/// name (plan 540 task 3633 — display labels are kept separate from spawn ids).
+/// `label` defaults to empty, in which case consumers display `id`.
 pub const CatalogModel = struct {
     id: []const u8,
     tier: Tier,
+    label: []const u8 = "",
 };
 
 /// A provider's binary name plus its curated model catalog.
@@ -74,15 +195,10 @@ pub const catalog: []const VendorCatalog = &.{
         .vendor = "codex",
         .bin = "codex",
         .models = &.{
-            // gpt-5.5 (current): frontier model for complex coding, research,
-            // and real-world work.
-            .{ .id = "gpt-5.5", .tier = .large },
-            // gpt-5.4: strong model for everyday coding.
-            .{ .id = "gpt-5.4", .tier = .medium },
-            // gpt-5.4-mini: small, fast, cost-efficient for simpler coding.
-            .{ .id = "gpt-5.4-mini", .tier = .small },
-            // gpt-5.3-codex-spark: ultra-fast coding model.
-            .{ .id = "gpt-5.3-codex-spark", .tier = .small },
+            .{ .id = "gpt-5.5", .tier = .large, .label = "GPT-5.5 (current) — frontier coding/research" },
+            .{ .id = "gpt-5.4", .tier = .medium, .label = "GPT-5.4 — strong everyday coding" },
+            .{ .id = "gpt-5.4-mini", .tier = .small, .label = "GPT-5.4-mini — fast, cost-efficient" },
+            .{ .id = "gpt-5.3-codex-spark", .tier = .small, .label = "GPT-5.3-codex-spark — ultra-fast" },
         },
     },
 };
@@ -142,6 +258,46 @@ pub fn modelForTier(vendor: []const u8, tier: Tier) []const u8 {
         }
     }
     return "";
+}
+
+/// Render the `[models.<vendor>]` tier maps + `[roles]` role→tier block as TOML
+/// text from the curated catalog + default role tiers — the scaffold
+/// `planar models apply` writes into a config file (plan 540 task 3740). The
+/// values equal the embedded config defaults; materializing them gives an
+/// operator an editable starting point. Caller owns the returned bytes.
+pub fn renderConfigBlock(allocator: std.mem.Allocator) std.mem.Allocator.Error![]u8 {
+    var ab: std.Io.Writer.Allocating = .init(allocator);
+    defer ab.deinit();
+    const w = &ab.writer;
+    const tiers = [_]Tier{ .small, .medium, .large };
+    w.print("# Model tier maps + role routing (plan 540). Generated by `planar models apply`.\n", .{}) catch return error.OutOfMemory;
+    for (catalog) |vc| {
+        w.print("[models.{s}]\n", .{vc.vendor}) catch return error.OutOfMemory;
+        for (tiers) |t| {
+            const id = modelForTier(vc.vendor, t);
+            if (id.len > 0) w.print("{s} = \"{s}\"\n", .{ t.name(), id }) catch return error.OutOfMemory;
+        }
+        w.print("\n", .{}) catch return error.OutOfMemory;
+    }
+    w.print("[roles]\n", .{}) catch return error.OutOfMemory;
+    for (default_role_tiers) |rt| {
+        w.print("{s} = \"{s}\"\n", .{ rt.role, rt.tier.name() }) catch return error.OutOfMemory;
+    }
+    w.print("\n# Optional per-role vendor override (defaults to [defaults].vendor):\n# [role_vendors]\n# coder = \"codex\"\n", .{}) catch return error.OutOfMemory;
+    return allocator.dupe(u8, ab.writer.buffered());
+}
+
+/// Whether `model_id` is a known (curated) model for `vendor`. A resolved model
+/// that is NOT known is an operator-custom id — consumers mark it "unverified"
+/// rather than treating it as a typo (plan 540 task 3633).
+pub fn isKnownModel(vendor: []const u8, model_id: []const u8) bool {
+    for (catalog) |vc| {
+        if (!std.mem.eql(u8, vc.vendor, vendor)) continue;
+        for (vc.models) |m| {
+            if (std.mem.eql(u8, m.id, model_id)) return true;
+        }
+    }
+    return false;
 }
 
 /// Build the report from per-vendor probe results, given in `catalog` order.
@@ -251,7 +407,9 @@ pub fn renderText(report: Report, writer: *std.Io.Writer) std.Io.Writer.Error!vo
         if (p.version) |v| try writer.print(" {s}", .{v});
         try writer.print("\n", .{});
         for (p.models) |m| {
-            try writer.print("      {s: <8} {s}\n", .{ m.tier.name(), m.id });
+            try writer.print("      {s: <8} {s: <22}", .{ m.tier.name(), m.id });
+            if (m.label.len > 0) try writer.print("  {s}", .{m.label});
+            try writer.print("\n", .{});
         }
     }
     try writer.print("default routing (role → tier → vendor model):\n", .{});
@@ -334,4 +492,137 @@ test "models: renderText lists providers + default routing" {
     try testing.expect(std.mem.indexOf(u8, out, "gpt-5.3-codex-spark") != null);
     try testing.expect(std.mem.indexOf(u8, out, "coder") != null);
     try testing.expect(std.mem.indexOf(u8, out, "claude-opus-4-8") != null);
+}
+
+// ---------------------------------------------------------------------------
+// Resolver unit tests (plan 540 phase 2 / task 3621)
+// ---------------------------------------------------------------------------
+
+test "resolver: default resolution — role→tier→model from embedded defaults" {
+    const a = testing.allocator;
+    var res = try config.resolve(a, null, std.process.Environ.empty, null);
+    defer res.deinit(a);
+
+    const coder = try resolveRole(&res.effective, "claude", "coder");
+    try testing.expectEqualStrings("medium", coder.tier);
+    try testing.expectEqualStrings("claude-sonnet-4-6", coder.model);
+    try testing.expectEqual(config.Provenance.embedded_default, coder.source);
+
+    const reviewer = try resolveRole(&res.effective, "claude", "reviewer");
+    try testing.expectEqualStrings("large", reviewer.tier);
+    try testing.expectEqualStrings("claude-opus-4-8", reviewer.model);
+
+    const codex_coder = try resolveRole(&res.effective, "codex", "coder");
+    try testing.expectEqualStrings("gpt-5.4", codex_coder.model);
+}
+
+test "resolver: config override resolution carries config-file provenance" {
+    const a = testing.allocator;
+    const file =
+        \\[models.codex]
+        \\medium = "gpt-5.5"
+    ;
+    var res = try config.resolve(a, file, std.process.Environ.empty, null);
+    defer res.deinit(a);
+
+    const r = try resolveTier(&res.effective, "codex", "medium");
+    try testing.expectEqualStrings("gpt-5.5", r.model);
+    try testing.expectEqual(config.Provenance.config_file, r.source);
+
+    // role path picks up the override too (coder=medium).
+    const codex_coder = try resolveRole(&res.effective, "codex", "coder");
+    try testing.expectEqualStrings("gpt-5.5", codex_coder.model);
+    try testing.expectEqual(config.Provenance.config_file, codex_coder.source);
+}
+
+test "resolver: unknown vendor / unknown tier / unknown role errors" {
+    const a = testing.allocator;
+    var res = try config.resolve(a, null, std.process.Environ.empty, null);
+    defer res.deinit(a);
+
+    try testing.expectError(ResolveError.UnknownVendor, resolveTier(&res.effective, "gemini", "medium"));
+    try testing.expectError(ResolveError.UnknownTier, resolveTier(&res.effective, "claude", "xl"));
+    try testing.expectError(ResolveError.UnknownRole, resolveRole(&res.effective, "claude", "planner"));
+}
+
+test "resolver: missing model (empty value) surfaces MissingModel" {
+    const a = testing.allocator;
+    // Hand-build an effective map with an empty model id — not reachable via
+    // real config (empty file values fall through to defaults), so construct
+    // it directly to pin the MissingModel branch.
+    var eff: config.EffectiveMap = .{};
+    defer eff.deinit(a);
+    const key = try a.dupe(u8, "models.claude.medium");
+    try eff.put(a, key, .{ .value = "", .source = .config_file, .env_var_name = "" });
+    defer a.free(key);
+
+    try testing.expectError(ResolveError.MissingModel, resolveTier(&eff, "claude", "medium"));
+}
+
+test "resolver: resolveRoleAuto derives vendor (default → role_vendors override)" {
+    const a = testing.allocator;
+    var res = try config.resolve(a, null, std.process.Environ.empty, null);
+    defer res.deinit(a);
+    const coder = try resolveRoleAuto(&res.effective, "coder");
+    try testing.expectEqualStrings("claude", coder.vendor);
+    try testing.expectEqualStrings("claude-sonnet-4-6", coder.model);
+
+    const file =
+        \\[role_vendors]
+        \\coder = "codex"
+    ;
+    var res2 = try config.resolve(a, file, std.process.Environ.empty, null);
+    defer res2.deinit(a);
+    const coder2 = try resolveRoleAuto(&res2.effective, "coder");
+    try testing.expectEqualStrings("codex", coder2.vendor);
+    try testing.expectEqualStrings("gpt-5.4", coder2.model);
+    // A role without a per-role vendor stays on the default vendor.
+    const reviewer2 = try resolveRoleAuto(&res2.effective, "reviewer");
+    try testing.expectEqualStrings("claude", reviewer2.vendor);
+}
+
+test "resolver: vendorForRole falls back to [defaults].vendor" {
+    const a = testing.allocator;
+    const file =
+        \\[defaults]
+        \\vendor = "codex"
+    ;
+    var res = try config.resolve(a, file, std.process.Environ.empty, null);
+    defer res.deinit(a);
+    // No role_vendors → every role uses the global default vendor (codex).
+    try testing.expectEqualStrings("codex", vendorForRole(&res.effective, "coder"));
+    const coder = try resolveRoleAuto(&res.effective, "coder");
+    try testing.expectEqualStrings("gpt-5.4", coder.model);
+}
+
+test "resolver: buildRouting returns a row per canonical role" {
+    const a = testing.allocator;
+    var res = try config.resolve(a, null, std.process.Environ.empty, null);
+    defer res.deinit(a);
+    const rows = try buildRouting(a, &res.effective);
+    defer a.free(rows);
+    try testing.expectEqual(routing_roles.len, rows.len);
+    try testing.expectEqualStrings("coder", rows[0].role);
+    try testing.expectEqualStrings("claude", rows[0].vendor);
+    try testing.expectEqualStrings("claude-sonnet-4-6", rows[0].model);
+}
+
+test "models: isKnownModel recognizes curated ids, rejects custom" {
+    try testing.expect(isKnownModel("claude", "claude-sonnet-4-6"));
+    try testing.expect(isKnownModel("codex", "gpt-5.5"));
+    try testing.expect(!isKnownModel("codex", "gpt-9-imaginary"));
+    try testing.expect(!isKnownModel("nope", "claude-sonnet-4-6"));
+}
+
+test "models: renderConfigBlock emits the tier maps + roles scaffold" {
+    const a = testing.allocator;
+    const block = try renderConfigBlock(a);
+    defer a.free(block);
+    for ([_][]const u8{
+        "[models.claude]",      "[models.codex]", "claude-sonnet-4-6",
+        "gpt-5.5",              "[roles]",        "coder = \"medium\"",
+        "reviewer = \"large\"",
+    }) |needle| {
+        try testing.expect(std.mem.indexOf(u8, block, needle) != null);
+    }
 }

@@ -171,16 +171,6 @@ const Iso = struct {
         defer f.close(std.testing.io);
         try f.writeStreamingAll(std.testing.io, content);
     }
-
-    /// Write an `execute-config.toml` into this Iso's PLANAR_HOME (`home/`),
-    /// so the binary's role→model resolver picks it up the same way an operator's
-    /// `~/.planar/execute-config.toml` would. The `home/` dir is created in init().
-    fn writeExecuteConfig(self: *const Iso, content: []const u8) !void {
-        var f = try self.tmp.dir.createFile(std.testing.io, "home/execute-config.toml", .{});
-        defer f.close(std.testing.io);
-        try f.writeStreamingAll(std.testing.io, content);
-    }
-
     /// The PLANAR_DB this Iso injects — used by the isolation guard test to
     /// assert the child sees a TmpDir-scoped DB, never the operator's home.
     fn dbPath(self: *const Iso) []const u8 {
@@ -1287,7 +1277,9 @@ test "planar-execute --mock-outcomes conflict: PLANAR_EXECUTE_LIVE_AGENT exits n
 
 // ---------------------------------------------------------------------------
 // plan 492 tasks 3708 (dry-run model-table visibility) + 3709 (sonnet-coder
-// default + execute-config.toml override)
+// default). Routing now resolves via `planar models routing` (plan 540); when
+// `planar` is unreachable here, execute falls back to the compiled defaults,
+// which these default-case assertions pin.
 // ---------------------------------------------------------------------------
 
 /// Extract the model paired with `role` from a `--dry-run` "dispatch model
@@ -1373,65 +1365,6 @@ test "planar-execute --dry-run: default routing is sonnet-coder / opus-reviewer 
         try std.testing.expectEqualStrings("claude", (rowCell(res.stdout, role) orelse unreachable).vendor);
     }
 }
-
-test "planar-execute --dry-run: execute-config.toml overrides a role's model (task 3709)" {
-    const gpa = std.testing.allocator;
-    var iso = try Iso.init(gpa);
-    defer iso.deinit();
-
-    // Operator opts the coder back up to opus and bumps the documenter; the
-    // reviewer is left unset and must fall through to its default.
-    try iso.writeExecuteConfig(
-        \\# operator override
-        \\[models]
-        \\coder = "claude-opus-4-8"
-        \\documenter = "claude-opus-4-8"
-    );
-    try iso.writeWorkflow("ovr.lua",
-        \\return { meta = { name = "ovr-wf", description = "override", phases = {} }, run = function(ctx) end }
-    );
-    const wf_path = try iso.workflowPath("ovr.lua");
-    defer gpa.free(wf_path);
-
-    const res = try iso.run(&.{ "run", "--dry-run", wf_path });
-    defer res.deinit();
-
-    try std.testing.expectEqual(@as(u32, 0), res.exitCode());
-    // Overridden roles reflect the config; unset roles keep their defaults.
-    try std.testing.expectEqualStrings("claude-opus-4-8", rowModel(res.stdout, "coder"));
-    try std.testing.expectEqualStrings("claude-opus-4-8", rowModel(res.stdout, "documenter"));
-    try std.testing.expectEqualStrings("claude-opus-4-8", rowModel(res.stdout, "reviewer"));
-    try std.testing.expectEqualStrings("claude-sonnet-4-6", rowModel(res.stdout, "test-coder"));
-}
-
-test "planar-execute --dry-run: execute-config.toml routes a role to the codex vendor (plan 540)" {
-    const gpa = std.testing.allocator;
-    var iso = try Iso.init(gpa);
-    defer iso.deinit();
-
-    try iso.writeExecuteConfig(
-        \\[models]
-        \\coder = { vendor = "codex", model = "gpt-5-codex" }
-    );
-    try iso.writeWorkflow("cdx.lua",
-        \\return { meta = { name = "cdx", description = "codex route", phases = {} }, run = function(ctx) end }
-    );
-    const wf_path = try iso.workflowPath("cdx.lua");
-    defer gpa.free(wf_path);
-
-    const res = try iso.run(&.{ "run", "--dry-run", wf_path });
-    defer res.deinit();
-
-    try std.testing.expectEqual(@as(u32, 0), res.exitCode());
-    const coder = rowCell(res.stdout, "coder") orelse unreachable;
-    try std.testing.expectEqualStrings("codex", coder.vendor);
-    try std.testing.expectEqualStrings("gpt-5-codex", coder.model);
-    // A role left unset stays on the claude default.
-    const reviewer = rowCell(res.stdout, "reviewer") orelse unreachable;
-    try std.testing.expectEqualStrings("claude", reviewer.vendor);
-    try std.testing.expectEqualStrings("claude-opus-4-8", reviewer.model);
-}
-
 // ---------------------------------------------------------------------------
 // plan 492 task 3708 — ctx.dispatch_table() host fn + per-spawn dispatch banner
 // ---------------------------------------------------------------------------
@@ -1468,39 +1401,6 @@ test "planar-execute ctx.dispatch_table(): returns the effective role→model ma
         return error.TestUnexpectedResult;
     }
 }
-
-test "planar-execute ctx.dispatch_table(): reflects an execute-config.toml override (task 3708)" {
-    const gpa = std.testing.allocator;
-    var iso = try Iso.init(gpa);
-    defer iso.deinit();
-
-    try iso.writeExecuteConfig(
-        \\[models]
-        \\coder = { vendor = "codex", model = "gpt-5-codex" }
-    );
-    try iso.writeWorkflow("dto.lua",
-        \\return {
-        \\  meta = { name = "dto", description = "d", phases = {} },
-        \\  run = function(ctx)
-        \\    local t = ctx.dispatch_table()
-        \\    assert(t.coder.vendor == "codex", "coder.vendor=" .. tostring(t.coder.vendor))
-        \\    assert(t.coder.model == "gpt-5-codex", "coder.model=" .. tostring(t.coder.model))
-        \\    assert(t.reviewer.vendor == "claude", "reviewer.vendor=" .. tostring(t.reviewer.vendor))
-        \\    assert(t.reviewer.model == "claude-opus-4-8", "reviewer.model=" .. tostring(t.reviewer.model))
-        \\  end,
-        \\}
-    );
-    const wf_path = try iso.workflowPath("dto.lua");
-    defer gpa.free(wf_path);
-
-    const res = try iso.run(&.{ "run", wf_path });
-    defer res.deinit();
-    if (res.exitCode() != 0) {
-        std.debug.print("\ndispatch_table override workflow failed:\nstderr:\n{s}\n", .{res.stderr});
-        return error.TestUnexpectedResult;
-    }
-}
-
 test "planar-execute: per-spawn dispatch banner names role + model on stderr (task 3708)" {
     const gpa = std.testing.allocator;
     var iso = try Iso.init(gpa);
@@ -1536,4 +1436,78 @@ test "planar-execute: per-spawn dispatch banner names role + model on stderr (ta
         std.debug.print("\ndispatch banner missing/incomplete on stderr:\n{s}\n", .{res.stderr});
         return error.TestUnexpectedResult;
     }
+}
+
+// ---------------------------------------------------------------------------
+// plan 540 task 3630 — cross-binary: execute consumes `planar models routing`
+// ---------------------------------------------------------------------------
+
+/// Resolve the `planar` binary path from PLANAR_BIN (set by make test-integration).
+fn resolvePlanarBin() []const u8 {
+    const raw: [*:null]?[*:0]u8 = std.c.environ;
+    var i: usize = 0;
+    while (raw[i]) |entry| : (i += 1) {
+        const s: []const u8 = std.mem.span(entry);
+        if (std.mem.startsWith(u8, s, "PLANAR_BIN=")) return s["PLANAR_BIN=".len..];
+    }
+    @panic("PLANAR_BIN not set — run via: make test-integration");
+}
+
+test "planar-execute consumes `planar models routing`: [role_vendors] coder=codex → codex dispatch (plan 540 task 3630)" {
+    const gpa = std.testing.allocator;
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
+
+    // Write a real config (at the path Iso injects as PLANAR_CONFIG_PATH) that
+    // routes the coder to codex. execute will shell `planar models routing`,
+    // which reads this config via the shared resolver.
+    {
+        var f = try iso.tmp.dir.createFile(std.testing.io, "home/config.toml", .{});
+        defer f.close(std.testing.io);
+        try f.writeStreamingAll(std.testing.io,
+            \\[role_vendors]
+            \\coder = "codex"
+        );
+    }
+    try iso.writeWorkflow("x540.lua",
+        \\return { meta = { name = "x540", description = "d", phases = {} }, run = function(ctx) end }
+    );
+    const wf_path = try iso.workflowPath("x540.lua");
+    defer gpa.free(wf_path);
+
+    // Build the isolated env, then put `planar` on PATH so execute can shell
+    // `planar models routing`.
+    var env_map = try iso.buildEnv(gpa);
+    defer env_map.deinit();
+    const planar_dir = std.fs.path.dirname(resolvePlanarBin()) orelse ".";
+    const old_path = env_map.get("PATH") orelse "/usr/bin:/bin";
+    const new_path = try std.fmt.allocPrint(gpa, "{s}:{s}", .{ planar_dir, old_path });
+    defer gpa.free(new_path);
+    try env_map.put("PATH", new_path);
+
+    var argv: std.ArrayList([]const u8) = .empty;
+    defer argv.deinit(gpa);
+    try argv.append(gpa, resolveExecuteBin());
+    for ([_][]const u8{ "run", "--dry-run", wf_path }) |a| try argv.append(gpa, a);
+
+    const res = try std.process.run(gpa, std.testing.io, .{ .argv = argv.items, .environ_map = &env_map });
+    defer gpa.free(res.stdout);
+    defer gpa.free(res.stderr);
+
+    const exit_code: u32 = switch (res.term) {
+        .exited => |c| c,
+        else => 255,
+    };
+    try std.testing.expectEqual(@as(u32, 0), exit_code);
+
+    // End-to-end: the coder row must route to codex / gpt-5.4 (config →
+    // planar models routing → execute dispatch table). reviewer stays claude.
+    const coder = rowCell(res.stdout, "coder") orelse {
+        std.debug.print("\nno coder row in dispatch table:\n{s}\n", .{res.stdout});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expectEqualStrings("codex", coder.vendor);
+    try std.testing.expectEqualStrings("gpt-5.4", coder.model);
+    const reviewer = rowCell(res.stdout, "reviewer") orelse unreachable;
+    try std.testing.expectEqualStrings("claude", reviewer.vendor);
 }
