@@ -288,6 +288,7 @@ test "planar-agent verb set is EXACTLY the 13 documented agent verbs" {
         "artifact", "annotate",  "init",      "workbench", "doc",
         "spec",     "templates", "ext",       "sync",      "promote",
         "demote",   "capture",   "dashboard", "tree",      "health",
+        "models",
     }, "planar-agent");
 }
 
@@ -428,7 +429,7 @@ test "planar-doc verb set is EXACTLY the 7 doc verbs" {
         "plan",      "task",      "decision", "question",  "scenario",
         "artifact",  "annotate",  "init",     "workbench", "spec",
         "templates", "ext",       "sync",     "promote",   "demote",
-        "capture",   "dashboard", "tree",     "health",
+        "capture",   "dashboard", "tree",     "health",    "models",
     }, "planar-doc");
 }
 
@@ -558,6 +559,7 @@ test "planar-execute verb set is EXACTLY {run, version, doctor, schema}" {
         "artifact", "annotate",  "init",      "workbench", "doc",
         "spec",     "templates", "ext",       "sync",      "promote",
         "demote",   "capture",   "dashboard", "tree",      "health",
+        "models",
     }, "planar-execute");
 
     // Forbidden: agent-coordination verbs.

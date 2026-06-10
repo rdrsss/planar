@@ -340,7 +340,7 @@ test "skills render real sources keep model tiers notes and invocation blocks" {
     defer gpa.free(claude_spec_draft);
 
     try std.testing.expect(std.mem.indexOf(u8, claude_coder, "model: claude-sonnet-4-6") != null);
-    try std.testing.expect(std.mem.indexOf(u8, codex_coder, "model: gpt-5-codex") != null);
+    try std.testing.expect(std.mem.indexOf(u8, codex_coder, "model: gpt-5.4") != null);
     try std.testing.expect(std.mem.indexOf(u8, claude_coder, "## Invocation") != null);
     try std.testing.expect(std.mem.indexOf(u8, codex_coder, "## Invocation") == null);
     try std.testing.expect(std.mem.indexOf(u8, claude_orch, "model: claude-opus-4-7") != null);

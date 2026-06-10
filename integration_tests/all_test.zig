@@ -7,6 +7,7 @@
 comptime {
     _ = @import("agents_render_test.zig");
     _ = @import("capability_boundary_test.zig");
+    _ = @import("models_test.zig");
     _ = @import("planar_doc_test.zig");
     _ = @import("planar_execute_test.zig");
     _ = @import("planar_execute_doctor_test.zig");

@@ -150,9 +150,20 @@ pub const SpawnOutcome = struct {
 /// these from the Lua opts table, the harness's resolved binary paths, and the
 /// resolved cycle worktree.
 pub const SpawnInputs = struct {
-    /// The role (from `opts.role`). Determines the model tier and which agent
-    /// spec is appended as the system prompt.
+    /// The role (from `opts.role`). Determines which agent spec is appended as
+    /// the system prompt, and — when `model` is null — the default model tier.
     role: role_model.Role,
+    /// The worker CLI to spawn (vendor-aware routing — plan 540). Selects the
+    /// argv shape and binary name in `buildSpawnArgv`: `claude` (the default,
+    /// `claude --print …`) or `codex` (`codex exec …`). Defaults to claude so
+    /// existing callers/tests are unaffected.
+    vendor: role_model.Vendor = .claude,
+    /// The exact `--model` string for this spawn (plan 492 task 3709). When
+    /// non-null this is the effective model after the `execute-config.toml`
+    /// overlay (`hs.model_table.forRole(role)`) and is used verbatim. When null
+    /// (unit-test callers that don't exercise the override) `buildSpawnArgv`
+    /// falls back to the compiled-in default `role_model.modelForRole(role)`.
+    model: ?[]const u8 = null,
     /// Absolute path to the cycle worktree the worker should run inside. Passed
     /// as `--add-dir <worktree>` AND as the child's `cwd`.
     worktree_path: []const u8,
@@ -221,12 +232,21 @@ pub fn buildSpawnArgv(
     if (!std.fs.path.isAbsolute(inputs.worktree_path)) return SpawnError.InvalidPath;
     if (std.mem.indexOfScalar(u8, inputs.worktree_path, 0) != null) return SpawnError.InvalidPath;
 
-    const tier = role_model.modelForRole(inputs.role);
+    // Use the caller-resolved model (defaults + execute-config.toml overlay)
+    // when provided; otherwise fall back to the compiled-in default tier.
+    const tier = inputs.model orelse role_model.modelForRole(inputs.role);
 
-    // Compute the argv length. The base shape is 11 elements (the 8-element
-    // pre-3190 shape + the `--output-format stream-json --verbose` 3-element
-    // liveness-telemetry block); the `--append-system-prompt <spec>` pair (2
-    // elements) is added when role_spec is non-empty.
+    return switch (inputs.vendor) {
+        .claude => buildClaudeArgv(allocator, inputs, tier),
+        .codex => buildCodexArgv(allocator, inputs, tier),
+    };
+}
+
+/// The `claude --print …` argv. Base shape is 11 elements (the 8-element
+/// pre-3190 shape + the `--output-format stream-json --verbose` liveness block);
+/// the `--append-system-prompt <spec>` pair is added when role_spec is non-empty.
+/// The brief is fed on stdin by the spawner, not on argv.
+fn buildClaudeArgv(allocator: std.mem.Allocator, inputs: SpawnInputs, tier: []const u8) SpawnError![][]const u8 {
     const base: usize = 11;
     const extra: usize = if (inputs.role_spec.len > 0) 2 else 0;
 
@@ -267,6 +287,37 @@ pub fn buildSpawnArgv(
     }
 
     std.debug.assert(i == argv.len);
+    return argv;
+}
+
+/// The `codex exec …` headless argv (vendor-aware routing — plan 540). Fixed
+/// 8-element shape:
+///
+///   codex exec --dangerously-bypass-approvals-and-sandbox --json
+///              --model <tier> --cd <worktree>
+///
+/// - `exec` is codex's non-interactive mode; with no PROMPT positional it reads
+///   its instructions from stdin (the same channel the spawner uses for claude).
+/// - `--dangerously-bypass-approvals-and-sandbox` mirrors claude's
+///   `bypassPermissions`: we already run inside an isolated per-cycle worktree.
+/// - `--json` emits JSONL events to stdout — read purely as a liveness signal
+///   by the stall detector, exactly like claude's stream-json (outcomes still
+///   come from git/DB, never stdout).
+/// - `--cd <worktree>` makes the cycle worktree the working root.
+///
+/// codex has no `--append-system-prompt` equivalent, so role_spec is NOT on
+/// argv — the spawner prepends it to the stdin brief instead.
+fn buildCodexArgv(allocator: std.mem.Allocator, inputs: SpawnInputs, tier: []const u8) SpawnError![][]const u8 {
+    var argv = allocator.alloc([]const u8, 8) catch return SpawnError.OutOfMemory;
+    errdefer allocator.free(argv);
+    argv[0] = "codex";
+    argv[1] = "exec";
+    argv[2] = "--dangerously-bypass-approvals-and-sandbox";
+    argv[3] = "--json";
+    argv[4] = "--model";
+    argv[5] = tier;
+    argv[6] = "--cd";
+    argv[7] = inputs.worktree_path;
     return argv;
 }
 
@@ -638,7 +689,20 @@ fn realStartFn(
     // OS pipe buffer holds it while the worker runs.
     if (child.stdin) |stdin_file| {
         var write_failed = false;
-        stdin_file.writeStreamingAll(io, inputs.brief) catch {
+        // codex has no --append-system-prompt flag, so for the codex vendor the
+        // role spec is delivered by prepending it to the stdin brief (sequential
+        // writes — no allocation). claude carries role_spec on argv instead, so
+        // its stdin is the bare brief. The model reads the combined text as its
+        // initial instructions either way.
+        if (inputs.vendor == .codex and inputs.role_spec.len > 0) {
+            stdin_file.writeStreamingAll(io, inputs.role_spec) catch {
+                write_failed = true;
+            };
+            if (!write_failed) stdin_file.writeStreamingAll(io, "\n\n") catch {
+                write_failed = true;
+            };
+        }
+        if (!write_failed) stdin_file.writeStreamingAll(io, inputs.brief) catch {
             write_failed = true;
         };
         stdin_file.close(io);
@@ -1742,11 +1806,54 @@ test "spawn: buildSpawnArgv emits exact shape for coder role (task 3176)" {
     try testing.expectEqualStrings("stream-json", argv[5]);
     try testing.expectEqualStrings("--verbose", argv[6]);
     try testing.expectEqualStrings("--model", argv[7]);
-    try testing.expectEqualStrings(role_model.OPUS_TIER, argv[8]); // coder → opus
+    try testing.expectEqualStrings(role_model.SONNET_TIER, argv[8]); // coder → sonnet default (task 3709)
     try testing.expectEqualStrings("--add-dir", argv[9]);
     try testing.expectEqualStrings("/tmp/wt/cycle/plan-x/task-y", argv[10]);
     try testing.expectEqualStrings("--append-system-prompt", argv[11]);
     try testing.expectEqualStrings("you are a coder", argv[12]);
+}
+
+test "spawn: buildSpawnArgv uses the inputs.model override verbatim when set (task 3709)" {
+    const alloc = testing.allocator;
+    // An operator override (e.g. coder bumped back to opus via execute-config.toml)
+    // must appear on argv verbatim, overriding the role's default tier.
+    const argv = try buildSpawnArgv(alloc, .{
+        .role = .coder,
+        .worktree_path = "/tmp/wt",
+        .brief = "",
+        .role_spec = "",
+        .env_map = null,
+        .model = "claude-opus-4-8",
+    });
+    defer freeSpawnArgv(alloc, argv);
+    try testing.expectEqualStrings("--model", argv[7]);
+    try testing.expectEqualStrings("claude-opus-4-8", argv[8]);
+}
+
+test "spawn: buildSpawnArgv emits the codex exec shape for the codex vendor (plan 540)" {
+    const alloc = testing.allocator;
+    const argv = try buildSpawnArgv(alloc, .{
+        .role = .coder,
+        .vendor = .codex,
+        .worktree_path = "/tmp/wt/cycle/plan-x/task-y",
+        .brief = "ignored on argv",
+        .role_spec = "you are a coder", // codex carries this on stdin, NOT argv
+        .env_map = null,
+        .model = "gpt-5-codex",
+    });
+    defer freeSpawnArgv(alloc, argv);
+
+    try testing.expectEqual(@as(usize, 8), argv.len);
+    try testing.expectEqualStrings("codex", argv[0]);
+    try testing.expectEqualStrings("exec", argv[1]);
+    try testing.expectEqualStrings("--dangerously-bypass-approvals-and-sandbox", argv[2]);
+    try testing.expectEqualStrings("--json", argv[3]);
+    try testing.expectEqualStrings("--model", argv[4]);
+    try testing.expectEqualStrings("gpt-5-codex", argv[5]);
+    try testing.expectEqualStrings("--cd", argv[6]);
+    try testing.expectEqualStrings("/tmp/wt/cycle/plan-x/task-y", argv[7]);
+    // role_spec must NOT appear on the codex argv (it is prepended to stdin).
+    for (argv) |a| try testing.expect(!std.mem.eql(u8, a, "you are a coder"));
 }
 
 test "spawn: buildSpawnArgv uses sonnet tier for documenter/test-coder (task 3176)" {

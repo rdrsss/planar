@@ -3800,6 +3800,61 @@ overall: DEGRADED  (2 tasks not resumable)
 
 ---
 
+## Domain: `models`
+
+Provider + model capability discovery (plan 540/543). Reports which supported provider CLIs are installed on the local machine and the curated model catalog each exposes, classified into the canonical `small`/`medium`/`large` tiers, plus the default role→tier→model routing. **No database handle** is used — discovery is PATH + subprocess + a curated in-repo catalog.
+
+> The provider CLIs (`claude`, `codex`) do **not** expose a machine-readable "list models" command, so the per-vendor model list is curated in-repo (`src/engine/models.zig`); discovery confirms which CLIs are *callable* by invoking `<bin> --version` (instant, auth-free). This is the interim discovery surface; the plan-540 shared resolver and main-config tier maps (phases 1–2/4) supersede it, and the role→tier defaults here are kept in sync with planar-execute's `role_model.zig`.
+
+---
+
+### `planar models list`
+
+**Synopsis:**
+```
+planar models list [--json]
+```
+
+**Description:** Probe each provider CLI (installed-state + `--version`) and print its curated model catalog plus the default role→tier→model routing. Read-only.
+
+**Output (human):**
+```
+providers:
+  claude   [installed] 2.1.170 (Claude Code)
+      large    claude-opus-4-8
+      medium   claude-sonnet-4-6
+      small    claude-haiku-4-5
+  codex    [installed] codex-cli 0.137.0
+      large    gpt-5.5
+      medium   gpt-5.4
+      small    gpt-5.4-mini
+      small    gpt-5.3-codex-spark
+default routing (role → tier → vendor model):
+  coder      → medium claude claude-sonnet-4-6
+  reviewer   → large  claude claude-opus-4-8
+  test-coder → medium claude claude-sonnet-4-6
+  documenter → medium claude claude-sonnet-4-6
+```
+
+**Output (`--json`):** `{ "providers": [ { "vendor", "bin", "installed", "version", "models": [ { "id", "tier" } ] } ], "default_routing": [ { "role", "tier", "vendor", "model" } ] }`.
+
+**Exit codes:** `0` on success.
+
+---
+
+### `planar models refresh`
+
+**Synopsis:**
+```
+planar models refresh [--json]
+```
+
+**Description:** Same probe as `list`, and additionally write the result to `${PLANAR_HOME:-~/.planar}/models/catalog.json` as a deterministic cache (creating `models/`). Prints a `wrote model cache: <path>` provenance line to stderr so `--json` stdout stays clean for scripts.
+
+**Exit codes:** `0` on success.
+
+---
+
 ## Domain: `dashboard`
 
 ### `planar dashboard`
@@ -5454,7 +5509,7 @@ Load and execute a Lua workflow module. The module must export a table with a `m
 | Mode | How to select | What happens |
 |------|--------------|--------------|
 | **Default (ungated)** | No flag, no env | `ctx.agent()` is a recording stub that returns `{status="stub"}`. Pure-Lua logic (eligible, parallel, pipeline, phase, log) runs normally. No workers spawned. |
-| **`--dry-run`** | `--dry-run` flag | Load and validate `meta`, print `meta` and `phases`, exit 0 **without** calling `run()`. Use this to validate workflow metadata before running. |
+| **`--dry-run`** | `--dry-run` flag | Load and validate `meta`, print `meta`, the **dispatch model table** (the effective role→model mapping for the run — see Model routing below), and `phases`, then exit 0 **without** calling `run()`. Use this to validate workflow metadata and confirm which model each role will spawn before running. |
 | **`--mock-worker`** | `--mock-worker` flag | Attach a `FakeSpawner` driver: `run()` IS entered, the full scheduler/parallel/pipeline/heartbeat/journal pipeline runs, but `ctx.agent()` returns canned outcomes (`status="released"`, exit_code=0) without spawning any real `claude -p` worker. Stderr prints a MOCK MODE notice. Use this to exercise control flow at zero API cost. See `--mock-outcomes` for per-call scripted outcomes. |
 | **Live** | `PLANAR_EXECUTE_LIVE_AGENT=1` env | Attach the real driver that spawns `claude -p` workers. Requires human review of the safety guards below. |
 
@@ -5463,7 +5518,7 @@ Load and execute a Lua workflow module. The module must export a table with a `m
 | Flag | Description |
 |------|-------------|
 | `--plan <id>` | Plan id for the run. Required when `PLANAR_EXECUTE_LIVE_AGENT=1`; optional in mock/stub modes (degrades claim-status reads and commit-presence sampling when absent). |
-| `--dry-run` | Load + validate `meta`, print and exit. Mutually exclusive with `--mock-worker`, `--mock-outcomes`, and `PLANAR_EXECUTE_LIVE_AGENT=1`. |
+| `--dry-run` | Load + validate `meta`, print `meta` + the dispatch model table + `phases`, and exit 0 without entering `run()`. Mutually exclusive with `--mock-worker`, `--mock-outcomes`, and `PLANAR_EXECUTE_LIVE_AGENT=1`. |
 | `--mock-worker` | Run with `FakeSpawner` — full pipeline, no real workers. Mutually exclusive with `--dry-run` and `PLANAR_EXECUTE_LIVE_AGENT=1`. See also `--mock-outcomes`. |
 | `--mock-outcomes <file>` | Per-call scripted FakeSpawner outcomes (NDJSON file; one JSON object per line with optional `exit_code`, `stdout`, `stderr` fields). The Nth `agent()` call returns the Nth scripted outcome; extra calls beyond the script fall back to the canned default (exit_code=0). Implies `--mock-worker` — no need to pass both. Mutually exclusive with `--dry-run` and `PLANAR_EXECUTE_LIVE_AGENT=1`. Parse errors (bad JSON, unreadable file) exit 1 at startup with a clear message. |
 | `--bypass-reviewer-guard` | Operator-explicit override for the bright-line refusal guard (see below). Loud stderr warning when used. |
@@ -5486,6 +5541,34 @@ Load and execute a Lua workflow module. The module must export a table with a `m
 | `[args...]` | Extra positionals passed to the workflow as `ctx.args[1]`, `ctx.args[2]`, … (1-indexed). |
 
 **The bright-line refusal guard** (`--bypass-reviewer-guard`): `planar-execute` refuses to run a workflow against a plan whose open tasks touch `migrations/*.sql`, a new top-level CLI verb, or invariant/methodology code, unless the workflow declares `meta.reviewer = true`. This guard enforces the reviewer-cadence doctrine for risky work. When the guard trips, exit code **2** is returned with a loud stderr message naming the refused plan. Pass `--bypass-reviewer-guard` to proceed anyway (prints a loud warning); use only when you have consciously accepted the doctrine risk.
+
+**Model routing** (per-role, no per-call override): the worker `agent()` spawns is selected by the worker's **role**, not by a per-call Lua option. Each role resolves to a **(vendor, model)** pair. The default mapping (`src/cmd/planar-execute/role_model.zig`) is:
+
+| Role | Default vendor | Default model |
+|------|----------------|---------------|
+| `coder` | `claude` | `claude-sonnet-4-6` |
+| `reviewer` | `claude` | `claude-opus-4-8` |
+| `test-coder` | `claude` | `claude-sonnet-4-6` |
+| `documenter` | `claude` | `claude-sonnet-4-6` |
+
+The default is **sonnet coder, opus reviewer**: the coder authors a diff against a brief, and the opus reviewer is the load-bearing adversarial quality net behind it — opus on both doubled spend without doubling the signal.
+
+An operator can override any role in `${PLANAR_HOME:-~/.planar}/execute-config.toml` under a `[models]` table. A bare string keeps the default `claude` vendor; an inline table routes the role to another vendor:
+
+```toml
+[models]
+coder    = { vendor = "codex", model = "gpt-5-codex" }  # spawn `codex exec`
+reviewer = "claude-opus-4-8"                            # bare string ⇒ vendor = claude
+```
+
+Supported vendors: `claude` (spawns `claude --print …`) and `codex` (spawns `codex exec …`, reading the brief on stdin). Only the four known role keys are honored; unknown keys, **unknown vendors**, malformed lines, an inline table missing its `model`, and a missing file are all ignored — a config typo falls through to the default, it never aborts a run. Unset roles keep their default. `--dry-run` prints the **effective** table (defaults overlaid with this config) as `<role> → <vendor> <model>`, so the table you see is exactly what a live run would dispatch. There is no per-`agent()` model override in Lua; record per-task model *intent* in the execution manifest (see the `workflow-planner` agent) when finer auditing is needed.
+
+> **Codex status:** the `codex exec` argv/stdin path is built to the documented headless contract and unit-tested for argv shape, but has not been live-validated end-to-end. Smoke a real codex worker before relying on it in production runs. Full provider capability discovery (auto-populating models per installed CLI) is plan 540 / 543 and not yet implemented.
+
+The same effective mapping is reachable from a running workflow and from a live run's stderr:
+
+- **`ctx.dispatch_table()`** (Lua host fn) returns the role→dispatch mapping as a nested table — `{ coder = { vendor = "…", model = "…" }, reviewer = {…}, ["test-coder"] = {…}, documenter = {…} }` — so a workflow can log its own routing in its narrative. Available in all modes (it reads the resolved table, not a spawn).
+- **Per-spawn dispatch banner:** every real (and `--mock-worker`) `agent()` spawn prints a one-line banner to stderr — `[dispatch] task:<id> vendor=<vendor> role=<role> model=<model>` — so an operator tailing a live run sees per-call routing without grepping the binary.
 
 **Example:**
 

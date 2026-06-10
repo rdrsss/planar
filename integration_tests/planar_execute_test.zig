@@ -172,6 +172,15 @@ const Iso = struct {
         try f.writeStreamingAll(std.testing.io, content);
     }
 
+    /// Write an `execute-config.toml` into this Iso's PLANAR_HOME (`home/`),
+    /// so the binary's role→model resolver picks it up the same way an operator's
+    /// `~/.planar/execute-config.toml` would. The `home/` dir is created in init().
+    fn writeExecuteConfig(self: *const Iso, content: []const u8) !void {
+        var f = try self.tmp.dir.createFile(std.testing.io, "home/execute-config.toml", .{});
+        defer f.close(std.testing.io);
+        try f.writeStreamingAll(std.testing.io, content);
+    }
+
     /// The PLANAR_DB this Iso injects — used by the isolation guard test to
     /// assert the child sees a TmpDir-scoped DB, never the operator's home.
     fn dbPath(self: *const Iso) []const u8 {
@@ -1274,4 +1283,257 @@ test "planar-execute --mock-outcomes conflict: PLANAR_EXECUTE_LIVE_AGENT exits n
     try std.testing.expect(std.mem.indexOf(u8, res.stderr, "mock-outcomes") != null);
     try std.testing.expect(std.mem.indexOf(u8, res.stderr, "PLANAR_EXECUTE_LIVE_AGENT") != null);
     try std.testing.expect(std.mem.indexOf(u8, res.stderr, "mutually exclusive") != null);
+}
+
+// ---------------------------------------------------------------------------
+// plan 492 tasks 3708 (dry-run model-table visibility) + 3709 (sonnet-coder
+// default + execute-config.toml override)
+// ---------------------------------------------------------------------------
+
+/// Extract the model paired with `role` from a `--dry-run` "dispatch model
+/// table" block. Each row renders as `  <role><pad>→ <model>`. Returns the
+/// trimmed model string, or null if no row's leading token equals `role`
+/// exactly (so "coder" never matches the "test-coder" row).
+const Cell = struct { vendor: []const u8, model: []const u8 };
+
+/// Parse the `<vendor> <model>` cell for `role` from the dispatch table. Each
+/// row renders as `  <role><pad> → <vendor> <model>`. Returns null if no row's
+/// leading token equals `role` exactly (so "coder" never matches "test-coder").
+fn rowCell(stdout: []const u8, role: []const u8) ?Cell {
+    var lines = std.mem.splitScalar(u8, stdout, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        const arrow = std.mem.indexOf(u8, line, "→") orelse continue;
+        const lhs = std.mem.trim(u8, line[0..arrow], " \t");
+        if (!std.mem.eql(u8, lhs, role)) continue;
+        const rhs = std.mem.trim(u8, line[arrow + "→".len ..], " \t");
+        const sp = std.mem.indexOfScalar(u8, rhs, ' ') orelse return Cell{ .vendor = rhs, .model = "" };
+        return Cell{
+            .vendor = std.mem.trim(u8, rhs[0..sp], " \t"),
+            .model = std.mem.trim(u8, rhs[sp + 1 ..], " \t"),
+        };
+    }
+    return null;
+}
+
+/// Convenience: the model for `role`, or "<none>" when the row is absent.
+fn rowModel(stdout: []const u8, role: []const u8) []const u8 {
+    return (rowCell(stdout, role) orelse return "<none>").model;
+}
+
+test "planar-execute --dry-run: prints the dispatch model table for all four roles (task 3708)" {
+    const gpa = std.testing.allocator;
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
+
+    try iso.writeWorkflow("tbl.lua",
+        \\return {
+        \\  meta = { name = "tbl-wf", description = "model table preview", phases = {} },
+        \\  run = function(ctx) error("must not run under --dry-run") end,
+        \\}
+    );
+    const wf_path = try iso.workflowPath("tbl.lua");
+    defer gpa.free(wf_path);
+
+    const res = try iso.run(&.{ "run", "--dry-run", wf_path });
+    defer res.deinit();
+
+    try std.testing.expectEqual(@as(u32, 0), res.exitCode());
+    // A labelled dispatch table must be present, with one row per known role.
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "dispatch model table") != null);
+    for ([_][]const u8{ "coder", "reviewer", "test-coder", "documenter" }) |role| {
+        if (rowCell(res.stdout, role) == null) {
+            std.debug.print("\ndry-run table missing a row for role '{s}'\nstdout:\n{s}\n", .{ role, res.stdout });
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
+test "planar-execute --dry-run: default routing is sonnet-coder / opus-reviewer (task 3709)" {
+    const gpa = std.testing.allocator;
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
+
+    try iso.writeWorkflow("def.lua",
+        \\return { meta = { name = "def-wf", description = "defaults", phases = {} }, run = function(ctx) end }
+    );
+    const wf_path = try iso.workflowPath("def.lua");
+    defer gpa.free(wf_path);
+
+    const res = try iso.run(&.{ "run", "--dry-run", wf_path });
+    defer res.deinit();
+
+    try std.testing.expectEqual(@as(u32, 0), res.exitCode());
+    try std.testing.expectEqualStrings("claude-sonnet-4-6", rowModel(res.stdout, "coder"));
+    try std.testing.expectEqualStrings("claude-opus-4-8", rowModel(res.stdout, "reviewer"));
+    try std.testing.expectEqualStrings("claude-sonnet-4-6", rowModel(res.stdout, "test-coder"));
+    try std.testing.expectEqualStrings("claude-sonnet-4-6", rowModel(res.stdout, "documenter"));
+    // Default vendor is claude for every role.
+    for ([_][]const u8{ "coder", "reviewer", "test-coder", "documenter" }) |role| {
+        try std.testing.expectEqualStrings("claude", (rowCell(res.stdout, role) orelse unreachable).vendor);
+    }
+}
+
+test "planar-execute --dry-run: execute-config.toml overrides a role's model (task 3709)" {
+    const gpa = std.testing.allocator;
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
+
+    // Operator opts the coder back up to opus and bumps the documenter; the
+    // reviewer is left unset and must fall through to its default.
+    try iso.writeExecuteConfig(
+        \\# operator override
+        \\[models]
+        \\coder = "claude-opus-4-8"
+        \\documenter = "claude-opus-4-8"
+    );
+    try iso.writeWorkflow("ovr.lua",
+        \\return { meta = { name = "ovr-wf", description = "override", phases = {} }, run = function(ctx) end }
+    );
+    const wf_path = try iso.workflowPath("ovr.lua");
+    defer gpa.free(wf_path);
+
+    const res = try iso.run(&.{ "run", "--dry-run", wf_path });
+    defer res.deinit();
+
+    try std.testing.expectEqual(@as(u32, 0), res.exitCode());
+    // Overridden roles reflect the config; unset roles keep their defaults.
+    try std.testing.expectEqualStrings("claude-opus-4-8", rowModel(res.stdout, "coder"));
+    try std.testing.expectEqualStrings("claude-opus-4-8", rowModel(res.stdout, "documenter"));
+    try std.testing.expectEqualStrings("claude-opus-4-8", rowModel(res.stdout, "reviewer"));
+    try std.testing.expectEqualStrings("claude-sonnet-4-6", rowModel(res.stdout, "test-coder"));
+}
+
+test "planar-execute --dry-run: execute-config.toml routes a role to the codex vendor (plan 540)" {
+    const gpa = std.testing.allocator;
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
+
+    try iso.writeExecuteConfig(
+        \\[models]
+        \\coder = { vendor = "codex", model = "gpt-5-codex" }
+    );
+    try iso.writeWorkflow("cdx.lua",
+        \\return { meta = { name = "cdx", description = "codex route", phases = {} }, run = function(ctx) end }
+    );
+    const wf_path = try iso.workflowPath("cdx.lua");
+    defer gpa.free(wf_path);
+
+    const res = try iso.run(&.{ "run", "--dry-run", wf_path });
+    defer res.deinit();
+
+    try std.testing.expectEqual(@as(u32, 0), res.exitCode());
+    const coder = rowCell(res.stdout, "coder") orelse unreachable;
+    try std.testing.expectEqualStrings("codex", coder.vendor);
+    try std.testing.expectEqualStrings("gpt-5-codex", coder.model);
+    // A role left unset stays on the claude default.
+    const reviewer = rowCell(res.stdout, "reviewer") orelse unreachable;
+    try std.testing.expectEqualStrings("claude", reviewer.vendor);
+    try std.testing.expectEqualStrings("claude-opus-4-8", reviewer.model);
+}
+
+// ---------------------------------------------------------------------------
+// plan 492 task 3708 — ctx.dispatch_table() host fn + per-spawn dispatch banner
+// ---------------------------------------------------------------------------
+
+test "planar-execute ctx.dispatch_table(): returns the effective role→model mapping (task 3708)" {
+    const gpa = std.testing.allocator;
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
+
+    // Asserts run inside the workflow; a mismatch errors run() → non-zero exit.
+    // Default (ungated) mode: agent() is a stub, but dispatch_table() reflects
+    // the resolved table on the host.
+    try iso.writeWorkflow("dt.lua",
+        \\return {
+        \\  meta = { name = "dt", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local t = ctx.dispatch_table()
+        \\    assert(t.coder.vendor == "claude", "coder.vendor=" .. tostring(t.coder.vendor))
+        \\    assert(t.coder.model == "claude-sonnet-4-6", "coder.model=" .. tostring(t.coder.model))
+        \\    assert(t.reviewer.vendor == "claude", "reviewer.vendor=" .. tostring(t.reviewer.vendor))
+        \\    assert(t.reviewer.model == "claude-opus-4-8", "reviewer.model=" .. tostring(t.reviewer.model))
+        \\    assert(t["test-coder"].model == "claude-sonnet-4-6", "tc=" .. tostring(t["test-coder"].model))
+        \\    assert(t.documenter.model == "claude-sonnet-4-6", "doc=" .. tostring(t.documenter.model))
+        \\  end,
+        \\}
+    );
+    const wf_path = try iso.workflowPath("dt.lua");
+    defer gpa.free(wf_path);
+
+    const res = try iso.run(&.{ "run", wf_path });
+    defer res.deinit();
+    if (res.exitCode() != 0) {
+        std.debug.print("\ndispatch_table workflow failed:\nstderr:\n{s}\n", .{res.stderr});
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "planar-execute ctx.dispatch_table(): reflects an execute-config.toml override (task 3708)" {
+    const gpa = std.testing.allocator;
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
+
+    try iso.writeExecuteConfig(
+        \\[models]
+        \\coder = { vendor = "codex", model = "gpt-5-codex" }
+    );
+    try iso.writeWorkflow("dto.lua",
+        \\return {
+        \\  meta = { name = "dto", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local t = ctx.dispatch_table()
+        \\    assert(t.coder.vendor == "codex", "coder.vendor=" .. tostring(t.coder.vendor))
+        \\    assert(t.coder.model == "gpt-5-codex", "coder.model=" .. tostring(t.coder.model))
+        \\    assert(t.reviewer.vendor == "claude", "reviewer.vendor=" .. tostring(t.reviewer.vendor))
+        \\    assert(t.reviewer.model == "claude-opus-4-8", "reviewer.model=" .. tostring(t.reviewer.model))
+        \\  end,
+        \\}
+    );
+    const wf_path = try iso.workflowPath("dto.lua");
+    defer gpa.free(wf_path);
+
+    const res = try iso.run(&.{ "run", wf_path });
+    defer res.deinit();
+    if (res.exitCode() != 0) {
+        std.debug.print("\ndispatch_table override workflow failed:\nstderr:\n{s}\n", .{res.stderr});
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "planar-execute: per-spawn dispatch banner names role + model on stderr (task 3708)" {
+    const gpa = std.testing.allocator;
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
+
+    // --mock-worker drives the FULL agent() pipeline (no real claude -p), so the
+    // banner emitted at spawn time is observable on stderr.
+    try iso.writeWorkflow("ban.lua",
+        \\return {
+        \\  meta = { name = "ban", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    ctx.agent("the brief", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/ban-wt",
+        \\      claim_token = "tk",
+        \\      task_slug = "ts",
+        \\    })
+        \\  end,
+        \\}
+    );
+    const wf_path = try iso.workflowPath("ban.lua");
+    defer gpa.free(wf_path);
+
+    const res = try iso.run(&.{ "run", "--mock-worker", wf_path });
+    defer res.deinit();
+
+    try std.testing.expectEqual(@as(u32, 0), res.exitCode());
+    if (std.mem.indexOf(u8, res.stderr, "[dispatch]") == null or
+        std.mem.indexOf(u8, res.stderr, "vendor=claude") == null or
+        std.mem.indexOf(u8, res.stderr, "role=coder") == null or
+        std.mem.indexOf(u8, res.stderr, "model=claude-sonnet-4-6") == null)
+    {
+        std.debug.print("\ndispatch banner missing/incomplete on stderr:\n{s}\n", .{res.stderr});
+        return error.TestUnexpectedResult;
+    }
 }

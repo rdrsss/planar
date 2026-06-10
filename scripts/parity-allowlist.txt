@@ -196,3 +196,10 @@ workspace/json
 workspace/no-args
 workspace/real-cwd
 workspace/real-cwd-json
+# models — zig-only verb (plan 540/543 provider+model discovery). No Go
+# counterpart; sanctioned Bucket-3 divergence like `annotate`.
+models/help
+models/json
+models/no-args
+models/real-cwd
+models/real-cwd-json

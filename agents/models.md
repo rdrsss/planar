@@ -13,8 +13,9 @@ Agent specs in `agents/` reference abstract tiers (`medium`, `large`). The sourc
 
 | Tier | Claude | Codex | Copilot |
 | ------ | ------ | ----- | ------- |
-| medium | claude-sonnet-4-6 | gpt-5-codex | gpt-5 |
-| large | claude-opus-4-7 | gpt-5 | claude-opus-4 |
+| small | claude-haiku-4-5 | gpt-5.4-mini | gpt-5-mini |
+| medium | claude-sonnet-4-6 | gpt-5.4 | gpt-5 |
+| large | claude-opus-4-7 | gpt-5.5 | claude-opus-4 |
 ## Agent Assignments
 
 | Agent              | Tier   |

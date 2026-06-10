@@ -35,6 +35,7 @@ const handoff_h = @import("handlers/handoff/cmd.zig");
 const capture_h = @import("handlers/capture/cmd.zig");
 const audit_h = @import("handlers/audit/cmd.zig");
 const health_h = @import("handlers/health.zig");
+const models_h = @import("handlers/models.zig");
 const dashboard_h = @import("handlers/dashboard.zig");
 const spec_h = @import("handlers/spec/cmd.zig");
 const test_spec_h = @import("handlers/test_spec/cmd.zig");
@@ -85,6 +86,7 @@ pub const root: cli.Cmd = .{
         capture_h.verb,
         audit_h.verb,
         health_h.verb,
+        models_h.verb,
         dashboard_h.verb,
         spec_h.verb,
         test_spec_h.verb,
