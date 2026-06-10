@@ -60,7 +60,7 @@ pub const Class = enum {
 ///  - `resume | dashboard | handoff *`       → execution_or_read
 ///  - `capture * | audit * | health`         → execution_or_read
 ///  - `workbench {pull, push, status, sync, resolve}` → execution_or_read
-///  - `workspace * | config * | templates *` → execution_or_read
+///  - `workspace * | config * | models * | templates *` → execution_or_read
 ///  - `tree | search | scope * | version | completion | schema | doc *`
 ///                                            → execution_or_read
 ///  - `local * | skills *`                   → execution_or_read
@@ -101,6 +101,7 @@ pub fn classify(path: []const []const u8) Class {
         eq(top, "audit") or
         eq(top, "workspace") or
         eq(top, "config") or
+        eq(top, "models") or
         eq(top, "templates") or
         eq(top, "scope") or
         eq(top, "doc") or
