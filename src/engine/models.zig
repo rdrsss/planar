@@ -88,6 +88,62 @@ pub fn resolveRole(eff: *const config.EffectiveMap, vendor: []const u8, role: []
     return resolveTier(eff, vendor, tier_vws.value);
 }
 
+/// The vendor a role routes to: `role_vendors.<role>` if set, else the global
+/// `[defaults].vendor`, else the compiled-in `default_vendor`. Borrows from the
+/// effective map (or a comptime constant).
+pub fn vendorForRole(eff: *const config.EffectiveMap, role: []const u8) []const u8 {
+    var buf: [160]u8 = undefined;
+    if (std.fmt.bufPrint(&buf, "role_vendors.{s}", .{role})) |rvkey| {
+        if (eff.get(rvkey)) |v| {
+            if (v.value.len > 0) return v.value;
+        }
+    } else |_| {}
+    if (eff.get("defaults.vendor")) |dv| {
+        if (dv.value.len > 0) return dv.value;
+    }
+    return default_vendor;
+}
+
+/// Resolve a role to a concrete model deriving the vendor from config
+/// (`role_vendors.<role>` → `[defaults].vendor`). This is what `planar models
+/// routing` and planar-execute consume — the full role→(vendor, tier, model)
+/// path with no caller-supplied vendor.
+pub fn resolveRoleAuto(eff: *const config.EffectiveMap, role: []const u8) ResolveError!Resolution {
+    return resolveRole(eff, vendorForRole(eff, role), role);
+}
+
+/// One row of the effective role routing table.
+pub const RoutingRow = struct {
+    role: []const u8,
+    vendor: []const u8,
+    tier: []const u8,
+    model: []const u8,
+    source: config.Provenance,
+};
+
+/// The canonical roles whose routing `planar models routing` reports.
+pub const routing_roles = [_][]const u8{ "coder", "reviewer", "test-coder", "documenter" };
+
+/// Build the effective routing table (role → vendor/tier/model + provenance)
+/// for the canonical roles. Rows borrow from `eff`; the returned slice is owned
+/// by `allocator`. A role that fails to resolve is skipped (should not happen
+/// with embedded defaults present).
+pub fn buildRouting(allocator: std.mem.Allocator, eff: *const config.EffectiveMap) std.mem.Allocator.Error![]RoutingRow {
+    var list = try std.ArrayList(RoutingRow).initCapacity(allocator, routing_roles.len);
+    errdefer list.deinit(allocator);
+    for (routing_roles) |role| {
+        const r = resolveRoleAuto(eff, role) catch continue;
+        list.appendAssumeCapacity(.{
+            .role = role,
+            .vendor = r.vendor,
+            .tier = r.tier,
+            .model = r.model,
+            .source = r.source,
+        });
+    }
+    return list.toOwnedSlice(allocator);
+}
+
 /// Canonical capability tiers (plan 541). `small` = cheap/fast, `large` =
 /// heavy reasoning.
 pub const Tier = enum {
@@ -460,4 +516,52 @@ test "resolver: missing model (empty value) surfaces MissingModel" {
     defer a.free(key);
 
     try testing.expectError(ResolveError.MissingModel, resolveTier(&eff, "claude", "medium"));
+}
+
+test "resolver: resolveRoleAuto derives vendor (default → role_vendors override)" {
+    const a = testing.allocator;
+    var res = try config.resolve(a, null, std.process.Environ.empty, null);
+    defer res.deinit(a);
+    const coder = try resolveRoleAuto(&res.effective, "coder");
+    try testing.expectEqualStrings("claude", coder.vendor);
+    try testing.expectEqualStrings("claude-sonnet-4-6", coder.model);
+
+    const file =
+        \\[role_vendors]
+        \\coder = "codex"
+    ;
+    var res2 = try config.resolve(a, file, std.process.Environ.empty, null);
+    defer res2.deinit(a);
+    const coder2 = try resolveRoleAuto(&res2.effective, "coder");
+    try testing.expectEqualStrings("codex", coder2.vendor);
+    try testing.expectEqualStrings("gpt-5.4", coder2.model);
+    // A role without a per-role vendor stays on the default vendor.
+    const reviewer2 = try resolveRoleAuto(&res2.effective, "reviewer");
+    try testing.expectEqualStrings("claude", reviewer2.vendor);
+}
+
+test "resolver: vendorForRole falls back to [defaults].vendor" {
+    const a = testing.allocator;
+    const file =
+        \\[defaults]
+        \\vendor = "codex"
+    ;
+    var res = try config.resolve(a, file, std.process.Environ.empty, null);
+    defer res.deinit(a);
+    // No role_vendors → every role uses the global default vendor (codex).
+    try testing.expectEqualStrings("codex", vendorForRole(&res.effective, "coder"));
+    const coder = try resolveRoleAuto(&res.effective, "coder");
+    try testing.expectEqualStrings("gpt-5.4", coder.model);
+}
+
+test "resolver: buildRouting returns a row per canonical role" {
+    const a = testing.allocator;
+    var res = try config.resolve(a, null, std.process.Environ.empty, null);
+    defer res.deinit(a);
+    const rows = try buildRouting(a, &res.effective);
+    defer a.free(rows);
+    try testing.expectEqual(routing_roles.len, rows.len);
+    try testing.expectEqualStrings("coder", rows[0].role);
+    try testing.expectEqualStrings("claude", rows[0].vendor);
+    try testing.expectEqualStrings("claude-sonnet-4-6", rows[0].model);
 }

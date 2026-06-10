@@ -369,11 +369,15 @@ pub fn resolve(
     // returned value is owned by the effective map; we only call for the side
     // effect of recording it.
     const model_keys = [_][]const u8{
-        "models.claude.small",  "models.claude.medium",  "models.claude.large",
-        "models.codex.small",   "models.codex.medium",   "models.codex.large",
-        "models.copilot.small", "models.copilot.medium", "models.copilot.large",
-        "roles.coder",          "roles.reviewer",        "roles.test-coder",
+        "models.claude.small",     "models.claude.medium",    "models.claude.large",
+        "models.codex.small",      "models.codex.medium",     "models.codex.large",
+        "models.copilot.small",    "models.copilot.medium",   "models.copilot.large",
+        "roles.coder",             "roles.reviewer",          "roles.test-coder",
         "roles.documenter",
+        // role_vendors.* are override-only (no embedded default → resolver falls
+        // back to [defaults].vendor); picked so an operator-set value resolves.
+               "role_vendors.coder",      "role_vendors.reviewer",
+        "role_vendors.test-coder", "role_vendors.documenter",
     };
     for (model_keys) |mk| {
         _ = try pickStr(allocator, environ, &file_map, &def_map, &eff, .{

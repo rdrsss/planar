@@ -125,3 +125,74 @@ test "planar models refresh: writes a parseable catalog cache under PLANAR_HOME/
     try std.testing.expect(parsed.value == .object);
     try std.testing.expectEqual(@as(usize, 2), parsed.value.object.get("providers").?.array.items.len);
 }
+
+test "planar models routing: default role→vendor/model + --json shape" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    // Non-existent config → embedded defaults (coder=claude/sonnet, reviewer=claude/opus).
+    const cfg = std.fs.path.join(gpa, &.{ std.fs.path.dirname(suite.db_path).?, "none.toml" }) catch @panic("OOM");
+    defer gpa.free(cfg);
+    const extra: []const harness.Suite.ExtraEnvEntry = &.{.{ .key = "PLANAR_CONFIG_PATH", .value = cfg }};
+
+    const stdout = suite.mustRunWith(&.{ "models", "routing", "--json" }, extra);
+    defer gpa.free(stdout);
+
+    const parsed = std.json.parseFromSlice(std.json.Value, arena, std.mem.trim(u8, stdout, " \n"), .{
+        .allocate = .alloc_always,
+    }) catch |e| {
+        std.debug.print("\nrouting --json parse failed: {s}\n{s}\n", .{ @errorName(e), stdout });
+        return error.TestUnexpectedResult;
+    };
+    const rows = parsed.value.array;
+    try std.testing.expectEqual(@as(usize, 4), rows.items.len);
+    var saw_coder = false;
+    for (rows.items) |row| {
+        const o = row.object;
+        if (std.mem.eql(u8, o.get("role").?.string, "coder")) {
+            saw_coder = true;
+            try std.testing.expectEqualStrings("claude", o.get("vendor").?.string);
+            try std.testing.expectEqualStrings("claude-sonnet-4-6", o.get("model").?.string);
+            try std.testing.expectEqualStrings("medium", o.get("tier").?.string);
+        }
+    }
+    try std.testing.expect(saw_coder);
+}
+
+test "planar models routing: [role_vendors] override routes coder to codex" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const cfg = std.fs.path.join(gpa, &.{ std.fs.path.dirname(suite.db_path).?, "config.toml" }) catch @panic("OOM");
+    defer gpa.free(cfg);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{
+        .sub_path = cfg,
+        .data =
+        \\[role_vendors]
+        \\coder = "codex"
+        ,
+    });
+    const extra: []const harness.Suite.ExtraEnvEntry = &.{.{ .key = "PLANAR_CONFIG_PATH", .value = cfg }};
+
+    const stdout = suite.mustRunWith(&.{ "models", "routing" }, extra);
+    defer gpa.free(stdout);
+
+    // coder row routes to codex / gpt-5.4; reviewer stays claude.
+    var coder_ok = false;
+    var lines = std.mem.splitScalar(u8, stdout, '\n');
+    while (lines.next()) |line| {
+        const l = std.mem.trim(u8, line, " \t\r");
+        if (!std.mem.startsWith(u8, l, "coder")) continue;
+        if (std.mem.indexOf(u8, l, "codex") != null and std.mem.indexOf(u8, l, "gpt-5.4") != null) coder_ok = true;
+    }
+    if (!coder_ok) {
+        std.debug.print("\ncoder not routed to codex:\n{s}\n", .{stdout});
+        return error.TestUnexpectedResult;
+    }
+}
