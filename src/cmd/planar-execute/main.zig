@@ -1189,6 +1189,10 @@ const AgentCallState = struct {
     /// COMPTIME constant from `role_model` (no dupe/free needed — it outlives the
     /// process). Stamped at spawn, read into the journal record at terminal.
     model: []const u8,
+    /// The vendor whose CLI spawned the worker ("claude"/"codex"). Borrows a
+    /// COMPTIME constant from `role_model.Vendor.name()`. Journal field (plan
+    /// 540 task 3629 — routing provenance).
+    vendor: []const u8 = "claude",
     /// The role name the worker ran as. Borrows a COMPTIME constant from
     /// `role_model.Role.name()` (no dupe/free needed). Journal field.
     role_name: []const u8,
@@ -1381,6 +1385,7 @@ fn driveAgentCallPreYield(
         // process-lifetime arena-owned override); role_name borrows a comptime
         // constant from role_model. Neither needs a dupe.
         .model = hs.model_table.forRole(role),
+        .vendor = hs.model_table.vendorForRole(role).name(),
         .role_name = role.name(),
         .prompt_hash = &.{},
         .branch = null,
@@ -2122,6 +2127,7 @@ fn writeJournalRecord(
         .branch = if (acs.branch) |b| b else "",
         .claim_token = acs.claim_token,
         .model = acs.model,
+        .vendor = acs.vendor,
         .role = acs.role_name,
         .task_slug = acs.task_slug,
         .exit_code = @intCast(exit_code),

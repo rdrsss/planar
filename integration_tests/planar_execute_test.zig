@@ -1437,3 +1437,77 @@ test "planar-execute: per-spawn dispatch banner names role + model on stderr (ta
         return error.TestUnexpectedResult;
     }
 }
+
+// ---------------------------------------------------------------------------
+// plan 540 task 3630 — cross-binary: execute consumes `planar models routing`
+// ---------------------------------------------------------------------------
+
+/// Resolve the `planar` binary path from PLANAR_BIN (set by make test-integration).
+fn resolvePlanarBin() []const u8 {
+    const raw: [*:null]?[*:0]u8 = std.c.environ;
+    var i: usize = 0;
+    while (raw[i]) |entry| : (i += 1) {
+        const s: []const u8 = std.mem.span(entry);
+        if (std.mem.startsWith(u8, s, "PLANAR_BIN=")) return s["PLANAR_BIN=".len..];
+    }
+    @panic("PLANAR_BIN not set — run via: make test-integration");
+}
+
+test "planar-execute consumes `planar models routing`: [role_vendors] coder=codex → codex dispatch (plan 540 task 3630)" {
+    const gpa = std.testing.allocator;
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
+
+    // Write a real config (at the path Iso injects as PLANAR_CONFIG_PATH) that
+    // routes the coder to codex. execute will shell `planar models routing`,
+    // which reads this config via the shared resolver.
+    {
+        var f = try iso.tmp.dir.createFile(std.testing.io, "home/config.toml", .{});
+        defer f.close(std.testing.io);
+        try f.writeStreamingAll(std.testing.io,
+            \\[role_vendors]
+            \\coder = "codex"
+        );
+    }
+    try iso.writeWorkflow("x540.lua",
+        \\return { meta = { name = "x540", description = "d", phases = {} }, run = function(ctx) end }
+    );
+    const wf_path = try iso.workflowPath("x540.lua");
+    defer gpa.free(wf_path);
+
+    // Build the isolated env, then put `planar` on PATH so execute can shell
+    // `planar models routing`.
+    var env_map = try iso.buildEnv(gpa);
+    defer env_map.deinit();
+    const planar_dir = std.fs.path.dirname(resolvePlanarBin()) orelse ".";
+    const old_path = env_map.get("PATH") orelse "/usr/bin:/bin";
+    const new_path = try std.fmt.allocPrint(gpa, "{s}:{s}", .{ planar_dir, old_path });
+    defer gpa.free(new_path);
+    try env_map.put("PATH", new_path);
+
+    var argv: std.ArrayList([]const u8) = .empty;
+    defer argv.deinit(gpa);
+    try argv.append(gpa, resolveExecuteBin());
+    for ([_][]const u8{ "run", "--dry-run", wf_path }) |a| try argv.append(gpa, a);
+
+    const res = try std.process.run(gpa, std.testing.io, .{ .argv = argv.items, .environ_map = &env_map });
+    defer gpa.free(res.stdout);
+    defer gpa.free(res.stderr);
+
+    const exit_code: u32 = switch (res.term) {
+        .exited => |c| c,
+        else => 255,
+    };
+    try std.testing.expectEqual(@as(u32, 0), exit_code);
+
+    // End-to-end: the coder row must route to codex / gpt-5.4 (config →
+    // planar models routing → execute dispatch table). reviewer stays claude.
+    const coder = rowCell(res.stdout, "coder") orelse {
+        std.debug.print("\nno coder row in dispatch table:\n{s}\n", .{res.stdout});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expectEqualStrings("codex", coder.vendor);
+    try std.testing.expectEqualStrings("gpt-5.4", coder.model);
+    const reviewer = rowCell(res.stdout, "reviewer") orelse unreachable;
+    try std.testing.expectEqualStrings("claude", reviewer.vendor);
+}

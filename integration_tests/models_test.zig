@@ -196,3 +196,37 @@ test "planar models routing: [role_vendors] override routes coder to codex" {
         return error.TestUnexpectedResult;
     }
 }
+
+test "planar models list: codex entries carry human display labels (task 3633)" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    const stdout = suite.mustRun(&.{ "models", "list" });
+    defer gpa.free(stdout);
+    try std.testing.expect(std.mem.indexOf(u8, stdout, "gpt-5.5") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout, "frontier") != null); // label text
+}
+
+test "planar models apply: writes the config block, idempotent without --force (task 3740)" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const cfg = std.fs.path.join(gpa, &.{ std.fs.path.dirname(suite.db_path).?, "config.toml" }) catch @panic("OOM");
+    defer gpa.free(cfg);
+    const extra: []const harness.Suite.ExtraEnvEntry = &.{.{ .key = "PLANAR_CONFIG_PATH", .value = cfg }};
+
+    const s1 = suite.mustRunWith(&.{ "models", "apply" }, extra);
+    defer gpa.free(s1);
+    try std.testing.expect(std.mem.indexOf(u8, s1, "wrote model routing config") != null);
+
+    const written = std.Io.Dir.cwd().readFileAlloc(std.testing.io, cfg, gpa, .limited(64 * 1024)) catch @panic("read");
+    defer gpa.free(written);
+    try std.testing.expect(std.mem.indexOf(u8, written, "[models.claude]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "[roles]") != null);
+
+    // Second run is a no-op (models section already present) without --force.
+    const s2 = suite.mustRunWith(&.{ "models", "apply" }, extra);
+    defer gpa.free(s2);
+    try std.testing.expect(std.mem.indexOf(u8, s2, "already present") != null);
+}
