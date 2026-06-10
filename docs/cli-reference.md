@@ -3825,9 +3825,10 @@ providers:
       medium   claude-sonnet-4-6
       small    claude-haiku-4-5
   codex    [installed] codex-cli 0.137.0
-      large    gpt-5-codex
-      medium   gpt-5
-      small    o4-mini
+      large    gpt-5.5
+      medium   gpt-5.4
+      small    gpt-5.4-mini
+      small    gpt-5.3-codex-spark
 default routing (role → tier → vendor model):
   coder      → medium claude claude-sonnet-4-6
   reviewer   → large  claude claude-opus-4-8

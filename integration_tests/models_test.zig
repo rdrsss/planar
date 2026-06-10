@@ -25,7 +25,9 @@ test "planar models list: text output lists both vendors, catalogs, and default 
         "claude",
         "codex",
         "claude-opus-4-8", // curated claude catalog
-        "gpt-5-codex", // curated codex catalog
+        "claude-haiku-4-5", // claude small tier
+        "gpt-5.5", // curated codex catalog (current frontier)
+        "gpt-5.3-codex-spark", // codex small/ultra-fast
         "default routing",
         "coder",
         "reviewer",

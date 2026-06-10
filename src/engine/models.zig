@@ -74,9 +74,15 @@ pub const catalog: []const VendorCatalog = &.{
         .vendor = "codex",
         .bin = "codex",
         .models = &.{
-            .{ .id = "gpt-5-codex", .tier = .large },
-            .{ .id = "gpt-5", .tier = .medium },
-            .{ .id = "o4-mini", .tier = .small },
+            // gpt-5.5 (current): frontier model for complex coding, research,
+            // and real-world work.
+            .{ .id = "gpt-5.5", .tier = .large },
+            // gpt-5.4: strong model for everyday coding.
+            .{ .id = "gpt-5.4", .tier = .medium },
+            // gpt-5.4-mini: small, fast, cost-efficient for simpler coding.
+            .{ .id = "gpt-5.4-mini", .tier = .small },
+            // gpt-5.3-codex-spark: ultra-fast coding model.
+            .{ .id = "gpt-5.3-codex-spark", .tier = .small },
         },
     },
 };
@@ -324,7 +330,8 @@ test "models: renderText lists providers + default routing" {
     const out = buf.writer.buffered();
     try testing.expect(std.mem.indexOf(u8, out, "claude") != null);
     try testing.expect(std.mem.indexOf(u8, out, "codex") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "gpt-5-codex") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "gpt-5.5") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "gpt-5.3-codex-spark") != null);
     try testing.expect(std.mem.indexOf(u8, out, "coder") != null);
     try testing.expect(std.mem.indexOf(u8, out, "claude-opus-4-8") != null);
 }
