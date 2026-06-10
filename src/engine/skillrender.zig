@@ -26,6 +26,7 @@ const embedded_vendors_yaml =
     \\      - "Installed to `~/.claude/commands/<slug>.md`."
     \\      - "Invoked as `/<slug> <subcommand> [args]`."
     \\    models:
+    \\      small: claude-haiku-4-5
     \\      medium: claude-sonnet-4-6
     \\      large: claude-opus-4-7
     \\  codex:
@@ -41,8 +42,9 @@ const embedded_vendors_yaml =
     \\    install_bullets:
     \\      - "Installed into `~/.codex/skills/<slug>` from `~/.planar/codex-skills/<slug>`."
     \\    models:
-    \\      medium: gpt-5-codex
-    \\      large: gpt-5
+    \\      small: gpt-5.4-mini
+    \\      medium: gpt-5.4
+    \\      large: gpt-5.5
     \\  copilot:
     \\    title: Copilot
     \\    output_dir: skills/copilot
@@ -57,6 +59,7 @@ const embedded_vendors_yaml =
     \\      - "Installed to `~/.copilot/skills/<slug>.md`."
     \\      - "Companion instruction and prompt files (when needed) live under `copilot/`."
     \\    models:
+    \\      small: gpt-5-mini
     \\      medium: gpt-5
     \\      large: claude-opus-4
 ;
@@ -2474,7 +2477,7 @@ test "renderAgent emits Codex TOML with sandbox_mode and developer_instructions"
     defer gpa.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "name = \"coder\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "sandbox_mode = \"workspace-write\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "model = \"gpt-5-codex\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "model = \"gpt-5.4\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "model_reasoning_effort = \"medium\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "developer_instructions = \"\"\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "# Coder") != null);
