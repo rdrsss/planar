@@ -404,6 +404,16 @@ pub const HostState = struct {
     /// worker exceeded it. Owns heap-duped copies of the strings.
     cost_exceeded_items: std.ArrayList(CostExceededItem) = .empty,
 
+    /// Effective role→model mapping for this run (plan 492 tasks 3708/3709):
+    /// the compiled-in defaults (`ModelTable{}`) overlaid with any
+    /// `execute-config.toml` overrides. `hostAgent` reads `forRole(role)` to
+    /// pick the worker's `--model`. Defaulted so the ~60 unit-test
+    /// `HostState.init` callers need no change; `handleRun` sets the resolved
+    /// table on the production host. Borrowed strings live for the process
+    /// (comptime constants or `handleRun`'s arena-owned overrides), so the
+    /// AgentCallState borrow at spawn time is always valid.
+    model_table: role_model.ModelTable = .{},
+
     /// Host-injected timestamp (e.g. a Unix epoch second). Exposed as ctx.now.
     now: i64,
     /// Host-injected PRNG seed. Exposed as ctx.seed.
@@ -1366,8 +1376,10 @@ fn driveAgentCallPreYield(
         .claim_token = &.{},
         .task_slug = &.{},
         .task_id = opts.task_id,
-        // model/role_name borrow comptime constants from role_model — no dupe.
-        .model = role_model.modelForRole(role),
+        // model borrows from hs.model_table (a comptime default constant or a
+        // process-lifetime arena-owned override); role_name borrows a comptime
+        // constant from role_model. Neither needs a dupe.
+        .model = hs.model_table.forRole(role),
         .role_name = role.name(),
         .prompt_hash = &.{},
         .branch = null,
@@ -1437,6 +1449,10 @@ fn driveAgentCallPreYield(
         .brief = prompt,
         .role_spec = opts.role_spec,
         .env_map = env_map_ptr,
+        // The effective model (defaults + execute-config.toml overlay), resolved
+        // once into hs.model_table. Without this the spawn argv would recompute
+        // the default tier and silently ignore the operator's override (3709).
+        .model = acs.model,
     };
     const handle = driver.spawner.start(alloc, io, spawn_inputs) catch |err| {
         acs.destroy();
@@ -4358,15 +4374,30 @@ fn handleVersion(args_ptr: *const anyopaque) anyerror!void {
 /// printDryRun writes the dry-run preview to `writer`:
 ///   workflow: <name>
 ///   description: <description>
+///   dispatch model table (this run):
+///     coder      → <model>
+///     reviewer   → <model>
+///     test-coder → <model>
+///     documenter → <model>
 ///   phases: <N>
 ///     1. <title>[ — <detail>]
 ///     2. ...
 ///
+/// The dispatch table (plan 492 task 3708) reflects `table` — the effective
+/// role→model mapping for this run, defaults overlaid with any
+/// `execute-config.toml` override — so an operator no longer has to grep the
+/// binary to learn which model will spawn for each role.
+///
 /// Lines are newline-terminated. Detail is omitted when the phase's detail
 /// string is empty. This is the stable output format pinned by integration tests.
-pub fn printDryRun(mod: WorkflowModule, writer: *Io.Writer) !void {
+pub fn printDryRun(mod: WorkflowModule, table: role_model.ModelTable, writer: *Io.Writer) !void {
     try writer.print("workflow: {s}\n", .{mod.meta.name});
     try writer.print("description: {s}\n", .{mod.meta.description});
+    try writer.print("dispatch model table (this run):\n", .{});
+    // Padded to the longest role name ("documenter" = 10) so the arrows align.
+    inline for ([_]role_model.Role{ .coder, .reviewer, .@"test-coder", .documenter }) |role| {
+        try writer.print("  {s: <10} → {s}\n", .{ role.name(), table.forRole(role) });
+    }
     try writer.print("phases: {d}\n", .{mod.meta.phases.len});
     for (mod.meta.phases, 0..) |phase, i| {
         if (phase.detail.len > 0) {
@@ -4375,6 +4406,30 @@ pub fn printDryRun(mod: WorkflowModule, writer: *Io.Writer) !void {
             try writer.print("  {d}. {s}\n", .{ i + 1, phase.title });
         }
     }
+}
+
+/// Resolve the effective role→model table for this run (plan 492 task 3709):
+/// the compiled-in defaults overlaid with any `[models]` overrides from
+/// `${PLANAR_HOME:-$HOME/.planar}/execute-config.toml`.
+///
+/// Deliberately lenient — a missing file, an unreadable file, or a HOME that
+/// cannot be resolved all fall through to the defaults (a config problem must
+/// never block a run). Only a genuine OOM is surfaced. Caller owns the result
+/// and must `deinit()` it (a no-op when no override applied).
+fn loadModelTable(ctx: *const ExecCtx) std.mem.Allocator.Error!role_model.ResolvedTable {
+    const gpa = ctx.allocator;
+    const home = ctx.environ.getPosix("PLANAR_HOME") orelse
+        (ctx.environ.getPosix("HOME") orelse return .{});
+    const path = std.fs.path.join(gpa, &.{ home, "execute-config.toml" }) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    defer gpa.free(path);
+
+    const bytes = std.Io.Dir.cwd().readFileAlloc(ctx.io, path, gpa, .limited(64 * 1024)) catch
+        return .{}; // missing / unreadable / too large → defaults
+    defer gpa.free(bytes);
+
+    return role_model.parseConfig(gpa, bytes);
 }
 
 /// handleRun is the default handler: resolve the first positional as a
@@ -4502,10 +4557,17 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
     };
     defer mod.deinit(allocator);
 
-    // --dry-run: print meta + phases and exit 0 WITHOUT calling runModule.
-    // This is the load-bearing guarantee: run is never entered under --dry-run.
+    // Resolve the effective role→model table once (defaults + execute-config.toml
+    // overlay). Shared by the dry-run preview and the live HostState below so a
+    // dry-run shows exactly what a live run would dispatch (plan 492 3708/3709).
+    var resolved = try loadModelTable(ctx);
+    defer resolved.deinit();
+
+    // --dry-run: print meta + model table + phases and exit 0 WITHOUT calling
+    // runModule. This is the load-bearing guarantee: run is never entered under
+    // --dry-run.
     if (dry_run) {
-        try printDryRun(mod, ctx.stdout);
+        try printDryRun(mod, resolved.table, ctx.stdout);
         try flushCtx();
         return; // exit 0 — no runModule
     }
@@ -4598,6 +4660,9 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
     // recommend-strategy` (task 3185). This is a read-only control-plane verb —
     // no PLANAR_EXECUTE_LIVE_AGENT gate required.
     host.io = ctx.io;
+    // The effective role→model table for every agent() dispatch this run. Borrows
+    // from `resolved`, whose arena outlives `host` (declared above it).
+    host.model_table = resolved.table;
 
     // M8 budgets + ceilings — the hard kill-switch (task 3198). Read the knobs
     // from the host environment (generous defaults; see budget.Budgets). The
@@ -5413,7 +5478,7 @@ test "printDryRun: output contains name, description, and phase titles" {
         },
     };
 
-    try printDryRun(mod, w);
+    try printDryRun(mod, .{}, w);
 
     const output = buf.writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "workflow: my-workflow") != null);
@@ -5423,6 +5488,10 @@ test "printDryRun: output contains name, description, and phase titles" {
     // Phase 2 has empty detail — must NOT include " — ".
     try std.testing.expect(std.mem.indexOf(u8, output, "2. Execute\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "3. Teardown") != null);
+    // task 3708: the dispatch model table is present with the default routing.
+    try std.testing.expect(std.mem.indexOf(u8, output, "dispatch model table (this run):") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "coder      → claude-sonnet-4-6") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "reviewer   → claude-opus-4-8") != null);
 }
 
 // ---------------------------------------------------------------------------
@@ -5845,7 +5914,7 @@ test "M4 agent: with FakeSpawner + driver, returns completed when exit==0 + comm
     // argv includes the stream-json liveness block before --model (task 3190).
     try std.testing.expectEqualStrings("bypassPermissions", inv.argv[3]);
     try std.testing.expectEqualStrings("stream-json", inv.argv[5]);
-    try std.testing.expectEqualStrings(role_model.OPUS_TIER, inv.argv[8]);
+    try std.testing.expectEqualStrings(role_model.SONNET_TIER, inv.argv[8]); // coder → sonnet (task 3709)
     try std.testing.expectEqualStrings("/tmp/abs/wt", inv.argv[10]);
     try std.testing.expectEqualStrings("you are a coder", inv.argv[12]);
 }
@@ -6733,7 +6802,7 @@ test "M8 journal: a single agent() spawn appends ONE record with the right field
     const rec = recs[0];
     try std.testing.expect(rec.prompt_hash.len != 0); // brief was fingerprinted
     try std.testing.expectEqualStrings("tok-journal", rec.claim_token);
-    try std.testing.expectEqualStrings(role_model.OPUS_TIER, rec.model); // coder → opus
+    try std.testing.expectEqualStrings(role_model.SONNET_TIER, rec.model); // coder → sonnet (task 3709)
     try std.testing.expectEqualStrings("coder", rec.role);
     try std.testing.expectEqualStrings("ts-jour", rec.task_slug);
     try std.testing.expectEqualStrings("/tmp/abs/wt", rec.worktree);
@@ -6857,7 +6926,7 @@ test "M8 journal: a parallel set of N spawns appends N records (one per spawn) (
         if (std.mem.eql(u8, rec.task_slug, "b")) seen_b = true;
         if (std.mem.eql(u8, rec.task_slug, "c")) seen_c = true;
         try std.testing.expect(rec.prompt_hash.len != 0);
-        try std.testing.expectEqualStrings("claude-opus-4-8", rec.model);
+        try std.testing.expectEqualStrings("claude-sonnet-4-6", rec.model); // coder → sonnet (task 3709)
     }
     try std.testing.expect(seen_a and seen_b and seen_c);
 }

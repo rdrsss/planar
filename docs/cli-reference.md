@@ -5454,7 +5454,7 @@ Load and execute a Lua workflow module. The module must export a table with a `m
 | Mode | How to select | What happens |
 |------|--------------|--------------|
 | **Default (ungated)** | No flag, no env | `ctx.agent()` is a recording stub that returns `{status="stub"}`. Pure-Lua logic (eligible, parallel, pipeline, phase, log) runs normally. No workers spawned. |
-| **`--dry-run`** | `--dry-run` flag | Load and validate `meta`, print `meta` and `phases`, exit 0 **without** calling `run()`. Use this to validate workflow metadata before running. |
+| **`--dry-run`** | `--dry-run` flag | Load and validate `meta`, print `meta`, the **dispatch model table** (the effective role→model mapping for the run — see Model routing below), and `phases`, then exit 0 **without** calling `run()`. Use this to validate workflow metadata and confirm which model each role will spawn before running. |
 | **`--mock-worker`** | `--mock-worker` flag | Attach a `FakeSpawner` driver: `run()` IS entered, the full scheduler/parallel/pipeline/heartbeat/journal pipeline runs, but `ctx.agent()` returns canned outcomes (`status="released"`, exit_code=0) without spawning any real `claude -p` worker. Stderr prints a MOCK MODE notice. Use this to exercise control flow at zero API cost. See `--mock-outcomes` for per-call scripted outcomes. |
 | **Live** | `PLANAR_EXECUTE_LIVE_AGENT=1` env | Attach the real driver that spawns `claude -p` workers. Requires human review of the safety guards below. |
 
@@ -5463,7 +5463,7 @@ Load and execute a Lua workflow module. The module must export a table with a `m
 | Flag | Description |
 |------|-------------|
 | `--plan <id>` | Plan id for the run. Required when `PLANAR_EXECUTE_LIVE_AGENT=1`; optional in mock/stub modes (degrades claim-status reads and commit-presence sampling when absent). |
-| `--dry-run` | Load + validate `meta`, print and exit. Mutually exclusive with `--mock-worker`, `--mock-outcomes`, and `PLANAR_EXECUTE_LIVE_AGENT=1`. |
+| `--dry-run` | Load + validate `meta`, print `meta` + the dispatch model table + `phases`, and exit 0 without entering `run()`. Mutually exclusive with `--mock-worker`, `--mock-outcomes`, and `PLANAR_EXECUTE_LIVE_AGENT=1`. |
 | `--mock-worker` | Run with `FakeSpawner` — full pipeline, no real workers. Mutually exclusive with `--dry-run` and `PLANAR_EXECUTE_LIVE_AGENT=1`. See also `--mock-outcomes`. |
 | `--mock-outcomes <file>` | Per-call scripted FakeSpawner outcomes (NDJSON file; one JSON object per line with optional `exit_code`, `stdout`, `stderr` fields). The Nth `agent()` call returns the Nth scripted outcome; extra calls beyond the script fall back to the canned default (exit_code=0). Implies `--mock-worker` — no need to pass both. Mutually exclusive with `--dry-run` and `PLANAR_EXECUTE_LIVE_AGENT=1`. Parse errors (bad JSON, unreadable file) exit 1 at startup with a clear message. |
 | `--bypass-reviewer-guard` | Operator-explicit override for the bright-line refusal guard (see below). Loud stderr warning when used. |
@@ -5486,6 +5486,27 @@ Load and execute a Lua workflow module. The module must export a table with a `m
 | `[args...]` | Extra positionals passed to the workflow as `ctx.args[1]`, `ctx.args[2]`, … (1-indexed). |
 
 **The bright-line refusal guard** (`--bypass-reviewer-guard`): `planar-execute` refuses to run a workflow against a plan whose open tasks touch `migrations/*.sql`, a new top-level CLI verb, or invariant/methodology code, unless the workflow declares `meta.reviewer = true`. This guard enforces the reviewer-cadence doctrine for risky work. When the guard trips, exit code **2** is returned with a loud stderr message naming the refused plan. Pass `--bypass-reviewer-guard` to proceed anyway (prints a loud warning); use only when you have consciously accepted the doctrine risk.
+
+**Model routing** (per-role, no per-call override): the `claude -p` worker `agent()` spawns is selected by the worker's **role**, not by a per-call Lua option. The default mapping (`src/cmd/planar-execute/role_model.zig`) is:
+
+| Role | Default model |
+|------|---------------|
+| `coder` | `claude-sonnet-4-6` |
+| `reviewer` | `claude-opus-4-8` |
+| `test-coder` | `claude-sonnet-4-6` |
+| `documenter` | `claude-sonnet-4-6` |
+
+The default is **sonnet coder, opus reviewer**: the coder authors a diff against a brief, and the opus reviewer is the load-bearing adversarial quality net behind it — opus on both doubled spend without doubling the signal.
+
+An operator can override any role in `${PLANAR_HOME:-~/.planar}/execute-config.toml` under a `[models]` table:
+
+```toml
+[models]
+coder    = "claude-opus-4-8"   # opt the coder back up to opus
+reviewer = "claude-opus-4-8"
+```
+
+Only the four known role keys are honored; unknown keys, malformed lines, and a missing file are ignored — a config typo falls through to the default, it never aborts a run. Unset roles keep their default. `--dry-run` prints the **effective** table (defaults overlaid with this config), so the table you see is exactly what a live run would dispatch. There is no per-`agent()` model override in Lua; record per-task model *intent* in the execution manifest (see the `workflow-planner` agent) when finer auditing is needed.
 
 **Example:**
 

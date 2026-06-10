@@ -150,9 +150,15 @@ pub const SpawnOutcome = struct {
 /// these from the Lua opts table, the harness's resolved binary paths, and the
 /// resolved cycle worktree.
 pub const SpawnInputs = struct {
-    /// The role (from `opts.role`). Determines the model tier and which agent
-    /// spec is appended as the system prompt.
+    /// The role (from `opts.role`). Determines which agent spec is appended as
+    /// the system prompt, and — when `model` is null — the default model tier.
     role: role_model.Role,
+    /// The exact `--model` string for this spawn (plan 492 task 3709). When
+    /// non-null this is the effective model after the `execute-config.toml`
+    /// overlay (`hs.model_table.forRole(role)`) and is used verbatim. When null
+    /// (unit-test callers that don't exercise the override) `buildSpawnArgv`
+    /// falls back to the compiled-in default `role_model.modelForRole(role)`.
+    model: ?[]const u8 = null,
     /// Absolute path to the cycle worktree the worker should run inside. Passed
     /// as `--add-dir <worktree>` AND as the child's `cwd`.
     worktree_path: []const u8,
@@ -221,7 +227,9 @@ pub fn buildSpawnArgv(
     if (!std.fs.path.isAbsolute(inputs.worktree_path)) return SpawnError.InvalidPath;
     if (std.mem.indexOfScalar(u8, inputs.worktree_path, 0) != null) return SpawnError.InvalidPath;
 
-    const tier = role_model.modelForRole(inputs.role);
+    // Use the caller-resolved model (defaults + execute-config.toml overlay)
+    // when provided; otherwise fall back to the compiled-in default tier.
+    const tier = inputs.model orelse role_model.modelForRole(inputs.role);
 
     // Compute the argv length. The base shape is 11 elements (the 8-element
     // pre-3190 shape + the `--output-format stream-json --verbose` 3-element
@@ -1742,11 +1750,28 @@ test "spawn: buildSpawnArgv emits exact shape for coder role (task 3176)" {
     try testing.expectEqualStrings("stream-json", argv[5]);
     try testing.expectEqualStrings("--verbose", argv[6]);
     try testing.expectEqualStrings("--model", argv[7]);
-    try testing.expectEqualStrings(role_model.OPUS_TIER, argv[8]); // coder → opus
+    try testing.expectEqualStrings(role_model.SONNET_TIER, argv[8]); // coder → sonnet default (task 3709)
     try testing.expectEqualStrings("--add-dir", argv[9]);
     try testing.expectEqualStrings("/tmp/wt/cycle/plan-x/task-y", argv[10]);
     try testing.expectEqualStrings("--append-system-prompt", argv[11]);
     try testing.expectEqualStrings("you are a coder", argv[12]);
+}
+
+test "spawn: buildSpawnArgv uses the inputs.model override verbatim when set (task 3709)" {
+    const alloc = testing.allocator;
+    // An operator override (e.g. coder bumped back to opus via execute-config.toml)
+    // must appear on argv verbatim, overriding the role's default tier.
+    const argv = try buildSpawnArgv(alloc, .{
+        .role = .coder,
+        .worktree_path = "/tmp/wt",
+        .brief = "",
+        .role_spec = "",
+        .env_map = null,
+        .model = "claude-opus-4-8",
+    });
+    defer freeSpawnArgv(alloc, argv);
+    try testing.expectEqualStrings("--model", argv[7]);
+    try testing.expectEqualStrings("claude-opus-4-8", argv[8]);
 }
 
 test "spawn: buildSpawnArgv uses sonnet tier for documenter/test-coder (task 3176)" {

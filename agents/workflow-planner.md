@@ -124,7 +124,7 @@ Use these defaults unless the operator gives a stronger constraint:
 | Test-coder | `large` unless the task is purely mechanical |
 | Documenter | `medium` for doc polish, `large` for provenance or manifest policy changes |
 
-The repo-level tier-to-model map lives in [`agents/models.md`](models.md). `planar-execute` also has a current role-based Claude model table in `src/cmd/planar-execute/role_model.zig`. As of this agent spec, the public Lua `ctx.agent()` API does not accept per-call `vendor`, `tier`, or `model` overrides. The manifest still records model intent because headless dispatch must be auditable; until the host API grows explicit vendor/model options, the Lua workflow must carry this intent in the brief and respect the role-based model selected by the harness.
+The repo-level tier-to-model map lives in [`agents/models.md`](models.md). `planar-execute` selects each worker's model by **role** from `src/cmd/planar-execute/role_model.zig`; the default routing is **sonnet coder, opus reviewer** (`coder`/`test-coder`/`documenter` → `claude-sonnet-4-6`, `reviewer` → `claude-opus-4-8`). An operator can override any role in `${PLANAR_HOME:-~/.planar}/execute-config.toml` under a `[models]` table; `planar-execute run --dry-run` prints the effective role→model table for the run. The public Lua `ctx.agent()` API does **not** accept per-call `vendor`, `tier`, or `model` overrides — routing is per-role and config-driven, not per-call. The manifest still records model intent because headless dispatch must be auditable; the Lua workflow carries that intent in the brief and respects the role-based (config-overridable) model the harness selects.
 
 ## Context Capsule Policy
 

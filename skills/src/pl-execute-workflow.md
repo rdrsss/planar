@@ -32,12 +32,13 @@ Do not use this skill for normal in-pwd `classic` orchestration; use `pl-orchest
 
 ## Current host constraints
 
-`planar-execute` is the Lua harness. Its documented `ctx.agent(brief, opts)` shape accepts `role`, `worktree_path`, `task_id`, `task_slug`, `claim_token`, and `role_spec`. The current live host path selects Claude models from `src/cmd/planar-execute/role_model.zig` by role; it does not yet expose per-call `vendor`, `tier`, or `model` options in Lua.
+`planar-execute` is the Lua harness. Its documented `ctx.agent(brief, opts)` shape accepts `role`, `worktree_path`, `task_id`, `task_slug`, `claim_token`, and `role_spec`. The live host path selects Claude models **by role** from `src/cmd/planar-execute/role_model.zig` (default: sonnet coder, opus reviewer); it does not expose per-call `vendor`, `tier`, or `model` options in Lua. Per-role models are operator-overridable in `${PLANAR_HOME:-~/.planar}/execute-config.toml` under a `[models]` table — but that is config, not a per-`agent()` argument. Run `planar-execute run --dry-run <workflow.lua>` to print the effective role→model table for the run.
 
 Therefore:
 
 - Record `vendor`, `tier`, and `model_intent` in the execution manifest.
 - Put model intent in comments or brief text when useful for audit.
+- To actually change which model a role spawns, edit `execute-config.toml` `[models]` (operator-machine config) — do not invent a per-call Lua override.
 - Do not emit unsupported Lua options such as `model = "..."` unless the binary has been extended and the CLI reference confirms it.
 - If the operator requires actual Codex worker spawning from Lua today, stop and identify that as a host API gap rather than pretending the workflow can enforce it.
 
