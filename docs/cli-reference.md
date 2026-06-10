@@ -4510,6 +4510,36 @@ Resolution order (highest to lowest priority):
 carry literal values in the config file. Use the `*_env` convention to name the
 environment variable instead.
 
+**Model routing (plan 540).** The config carries per-vendor model **tier maps**
+and a vendor-independent **role→tier** map. The canonical tiers are `small`,
+`medium`, and `large`:
+
+```toml
+[models.claude]
+small  = "claude-haiku-4-5"
+medium = "claude-sonnet-4-6"
+large  = "claude-opus-4-8"
+
+[models.codex]
+small  = "gpt-5.4-mini"
+medium = "gpt-5.4"
+large  = "gpt-5.5"
+
+[roles]
+coder      = "medium"   # coder resolves to the active vendor's `medium` model
+reviewer   = "large"
+test-coder = "medium"
+documenter = "medium"
+```
+
+Override any tier to re-route every role at that tier for that vendor, or any
+role to move it to a different tier. `planar config show --effective` shows each
+resolved `models.<vendor>.<tier>` / `roles.<role>` key with its provenance, and
+`planar models` reports which provider CLIs are installed. (This is the shared,
+authoritative routing source; `planar-execute`'s `execute-config.toml` and the
+skill-render Tier Table are being migrated to resolve through it — plan 540
+phases 2/4.)
+
 ---
 
 ### `planar config show`

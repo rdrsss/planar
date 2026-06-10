@@ -202,3 +202,74 @@ test "config validate: exits non-zero when a sensitive key carries a literal" {
     try std.testing.expect(std.mem.indexOf(u8, stderr, "api_token") != null);
     try std.testing.expect(std.mem.indexOf(u8, stderr, "line") != null);
 }
+
+test "config show --effective: includes plan-540 model tier maps + role tiers (defaults)" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    // Non-existent config path → pure embedded defaults. The effective view
+    // renders dotted keys (models.<vendor>.<tier>, roles.<role>); --defaults
+    // would instead dump defaults.toml verbatim ([models.claude] form).
+    const cfg_path = configPathInTmp(&suite);
+    defer gpa.free(cfg_path);
+    const extra: []const harness.Suite.ExtraEnvEntry = &.{
+        .{ .key = "PLANAR_CONFIG_PATH", .value = cfg_path },
+    };
+
+    const stdout = suite.mustRunWith(&.{ "config", "show", "--effective" }, extra);
+    defer gpa.free(stdout);
+
+    for ([_][]const u8{
+        "models.claude.medium", "claude-sonnet-4-6",
+        "models.codex.large",   "gpt-5.5",
+        "roles.coder",          "roles.reviewer",
+    }) |needle| {
+        if (std.mem.indexOf(u8, stdout, needle) == null) {
+            std.debug.print("\nconfig show --effective missing '{s}'\n{s}\n", .{ needle, stdout });
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
+test "config show --effective: a config-file [models] override wins with config-file provenance" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const cfg_path = configPathInTmp(&suite);
+    defer gpa.free(cfg_path);
+
+    // Write a config file that re-routes codex medium.
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{
+        .sub_path = cfg_path,
+        .data =
+        \\[models.codex]
+        \\medium = "gpt-5.5"
+        ,
+    });
+
+    const extra: []const harness.Suite.ExtraEnvEntry = &.{
+        .{ .key = "PLANAR_CONFIG_PATH", .value = cfg_path },
+    };
+    const stdout = suite.mustRunWith(&.{ "config", "show", "--effective" }, extra);
+    defer gpa.free(stdout);
+
+    // The overridden line should carry the new value and a config-file source.
+    var found = false;
+    var lines = std.mem.splitScalar(u8, stdout, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.indexOf(u8, line, "models.codex.medium") == null) continue;
+        if (std.mem.indexOf(u8, line, "gpt-5.5") == null) {
+            std.debug.print("\nmodels.codex.medium not overridden: {s}\n", .{line});
+            return error.TestUnexpectedResult;
+        }
+        // provenance label is bracketed, e.g. "[config file]".
+        if (std.mem.indexOf(u8, line, "config file") == null) {
+            std.debug.print("\nmodels.codex.medium override missing config-file provenance: {s}\n", .{line});
+            return error.TestUnexpectedResult;
+        }
+        found = true;
+    }
+    try std.testing.expect(found);
+}

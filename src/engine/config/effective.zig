@@ -362,6 +362,29 @@ pub fn resolve(
         .def_key = null,
     });
 
+    // Model tier maps + role→tier (plan 540). Each key resolves file-over-default
+    // and lands in the effective map (so `config show` surfaces it with
+    // provenance, and the shared model resolver can read it by dotted key).
+    // No env override and no per-association override for these in v1. The
+    // returned value is owned by the effective map; we only call for the side
+    // effect of recording it.
+    const model_keys = [_][]const u8{
+        "models.claude.small",  "models.claude.medium",  "models.claude.large",
+        "models.codex.small",   "models.codex.medium",   "models.codex.large",
+        "models.copilot.small", "models.copilot.medium", "models.copilot.large",
+        "roles.coder",          "roles.reviewer",        "roles.test-coder",
+        "roles.documenter",
+    };
+    for (model_keys) |mk| {
+        _ = try pickStr(allocator, environ, &file_map, &def_map, &eff, .{
+            .key = mk,
+            .env_name = null,
+            .assoc_val = null,
+            .file_key = null,
+            .def_key = null,
+        });
+    }
+
     // external.jira.base_url — env var is JIRA_BASE_URL (Go resolve.go L262).
     const jira_base_url = try pickStr(allocator, environ, &file_map, &def_map, &eff, .{
         .key = "external.jira.base_url",
@@ -789,6 +812,59 @@ test "effective: defaults-only (no file, no env) — all keys come from embedded
         return error.TestFailed;
     try std.testing.expectEqual(Provenance.embedded_default, vendor_prov.source);
     try std.testing.expectEqualStrings("", vendor_prov.env_var_name);
+}
+
+test "effective: model tier maps + role tiers resolve from embedded defaults (plan 540)" {
+    const a = std.testing.allocator;
+    const environ = std.process.Environ.empty;
+
+    var res = try resolve(a, null, environ, null);
+    defer res.deinit(a);
+
+    const cases = [_]struct { key: []const u8, want: []const u8 }{
+        .{ .key = "models.claude.small", .want = "claude-haiku-4-5" },
+        .{ .key = "models.claude.medium", .want = "claude-sonnet-4-6" },
+        .{ .key = "models.claude.large", .want = "claude-opus-4-8" },
+        .{ .key = "models.codex.small", .want = "gpt-5.4-mini" },
+        .{ .key = "models.codex.medium", .want = "gpt-5.4" },
+        .{ .key = "models.codex.large", .want = "gpt-5.5" },
+        .{ .key = "roles.coder", .want = "medium" },
+        .{ .key = "roles.reviewer", .want = "large" },
+        .{ .key = "roles.documenter", .want = "medium" },
+    };
+    for (cases) |c| {
+        const prov = res.effective.get(c.key) orelse return error.TestFailed;
+        try std.testing.expectEqualStrings(c.want, prov.value);
+        try std.testing.expectEqual(Provenance.embedded_default, prov.source);
+    }
+}
+
+test "effective: config file overrides a model tier + a role tier (plan 540)" {
+    const a = std.testing.allocator;
+    const environ = std.process.Environ.empty;
+
+    const file_content =
+        \\[models.codex]
+        \\medium = "gpt-5.5"
+        \\[roles]
+        \\coder = "large"
+    ;
+
+    var res = try resolve(a, file_content, environ, null);
+    defer res.deinit(a);
+
+    const codex_med = res.effective.get("models.codex.medium") orelse return error.TestFailed;
+    try std.testing.expectEqualStrings("gpt-5.5", codex_med.value);
+    try std.testing.expectEqual(Provenance.config_file, codex_med.source);
+
+    const coder = res.effective.get("roles.coder") orelse return error.TestFailed;
+    try std.testing.expectEqualStrings("large", coder.value);
+    try std.testing.expectEqual(Provenance.config_file, coder.source);
+
+    // An untouched key keeps its embedded default.
+    const codex_large = res.effective.get("models.codex.large") orelse return error.TestFailed;
+    try std.testing.expectEqualStrings("gpt-5.5", codex_large.value);
+    try std.testing.expectEqual(Provenance.embedded_default, codex_large.source);
 }
 
 test "effective: file overrides default vendor" {

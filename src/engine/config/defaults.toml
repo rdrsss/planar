@@ -27,6 +27,35 @@ dir = "~/.planar/templates"
 # Default template set selected when an association has no override.
 default_set = "default"
 
+# Per-vendor model tier maps (plan 540). The canonical tiers are `small`,
+# `medium`, and `large`; each maps to a concrete model id for that vendor.
+# `planar models` discovers which provider CLIs are installed; these tables are
+# the source of truth for which model each tier resolves to. Override any value
+# to re-route a tier (e.g. point `medium` at a different model).
+[models.claude]
+small  = "claude-haiku-4-5"
+medium = "claude-sonnet-4-6"
+large  = "claude-opus-4-8"
+
+[models.codex]
+small  = "gpt-5.4-mini"
+medium = "gpt-5.4"
+large  = "gpt-5.5"
+
+[models.copilot]
+small  = "gpt-5-mini"
+medium = "gpt-5"
+large  = "claude-opus-4"
+
+# Role → tier mapping (vendor-independent). The shared resolver composes this
+# with [models.<vendor>] to pick a concrete model for a role: e.g. the coder
+# resolves to the `medium` model of the active vendor, the reviewer to `large`.
+[roles]
+coder      = "medium"
+reviewer   = "large"
+test-coder = "medium"
+documenter = "medium"
+
 [external.jira]
 # Base URL of the Jira instance. Required for ext-sync against Jira.
 # base_url = "https://your-org.atlassian.net"
