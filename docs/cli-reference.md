@@ -1110,7 +1110,7 @@ The `scope` column shows where the task lives: `global`, `repo:<slug>`, or `asso
 
 **Synopsis:**
 ```
-planar task update <task-id> [--title <text>] [--body <text>] [--status <status>] [--priority <n>] [--next-action <text>] [--due <date>] [--plan <plan-id>] [--force] [--reason <text>]
+planar task update <task-id> [--title <text>] [--body <text>] [--status <status>] [--priority <n>] [--next-action <text>] [--due <date>] [--plan <plan-id>] [--force] [--reason <text>] [--editor]
 ```
 
 **Description:** Update mutable fields on a task.
@@ -1131,6 +1131,7 @@ planar task update <task-id> [--title <text>] [--body <text>] [--status <status>
 | `--force` | Bypass the terminal-status guard. Required to move a `done` / `cancelled` task back to a non-terminal status; the transition is recorded in `task_reopens` with `source='task-update-force'`. Prefer `task reopen <id>` for the documented recovery path. | off |
 | `--reason <text>` | Operator-supplied rationale recorded on the `task_reopens` audit row when `--force` triggers a terminal → non-terminal transition. | empty |
 | `--no-auto-promote` | Skip the [plan-status auto-promotion invariant](concepts.md#plan) (plan 304) for this operation. Escape hatch for scripted migrations that don't intend the plan-level transition. | off |
+| `--editor` | Accepted as a no-op. The editor-driven path is `task edit`; this flag exists so scripts that pass `--editor=false` alongside other flags (e.g. copied from `task add` invocations) are not rejected with `UnknownFlag`. | off |
 
 **Schema effects:** Updates `tasks(title, body, status, priority, next_action, due_at, plan_id, updated_at)`. When `--force` triggers a terminal → non-terminal transition, also inserts into `task_reopens(task_id, from_status, to_status, source='task-update-force', reason)`.
 

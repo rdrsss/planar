@@ -78,6 +78,10 @@ pub const verb: cli.Cmd = .{
                 .{ .long = "--force", .kind = .bool, .default = .{ .bool = false } },
                 .{ .long = "--reason", .kind = .string },
                 .{ .long = "--no-auto-promote", .kind = .bool, .default = .{ .bool = false } },
+                // --editor is a no-op on `task update` (the editor-driven path is `task edit`).
+                // Accepted here so scripts that pass `--editor=false` alongside other flags
+                // do not get UnknownFlag. The value is intentionally unused by update.handle.
+                .{ .long = "--editor", .kind = .bool, .default = .{ .bool = false } },
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },
             .positionals = &.{.{ .name = "task-id", .kind = .string, .required = true }},

@@ -51,6 +51,13 @@ pub const Suite = struct {
     /// Absolute path to the ephemeral database file (does not exist until the
     /// binary creates it on first use).
     db_path: []const u8,
+    /// Absolute path to the ephemeral config file injected via PLANAR_CONFIG_PATH.
+    /// The file does not exist by default, so the binary resolves config to its
+    /// defaults (cli_log = false). Tests that need a specific config write the
+    /// file and pass PLANAR_CONFIG_PATH via extra_env; that per-call value
+    /// overrides this harness default because execWith applies extra_env after
+    /// buildEnvMap.
+    config_path: []const u8,
     tmp_dir: std.testing.TmpDir,
     /// Lazily-resolved absolute path to `tmp_dir`. Owned by the suite; null
     /// until first access via `tmpAbsPath`.
@@ -77,10 +84,20 @@ pub const Suite = struct {
             &tmp.sub_path,
             "planar.db",
         }) catch @panic("OOM building db_path");
+        // Build the isolated config path: .zig-cache/tmp/<random>/config.toml
+        // This file is intentionally NOT created here — the binary falls back to
+        // built-in defaults (cli_log = false) when the path does not exist.
+        // This prevents any test from reading the operator's real ~/.planar/config.toml.
+        const config_path = std.fs.path.join(allocator, &.{
+            ".zig-cache/tmp",
+            &tmp.sub_path,
+            "config.toml",
+        }) catch @panic("OOM building config_path");
         return .{
             .allocator = allocator,
             .bin = bin,
             .db_path = db_path,
+            .config_path = config_path,
             .tmp_dir = tmp,
         };
     }
@@ -90,6 +107,7 @@ pub const Suite = struct {
     pub fn deinit(self: *Suite) void {
         if (self.tmp_abs_cache) |p| self.allocator.free(p);
         if (self.abs_db_cache) |p| self.allocator.free(p);
+        self.allocator.free(self.config_path);
         self.allocator.free(self.db_path);
         self.tmp_dir.cleanup();
         // Clean up any literal-path tmp dirs created via freshSystemTmpDir.
@@ -200,6 +218,14 @@ pub const Suite = struct {
 
         var env_map = environ.createMap(gpa) catch @panic("OOM creating env map");
         env_map.put("PLANAR_DB", self.db_path) catch @panic("OOM injecting PLANAR_DB");
+        // Isolate config: point every child process at a per-suite path that
+        // does not exist by default. The binary resolves config to built-in
+        // defaults (cli_log = false) when the file is absent, so no test
+        // accidentally reads the operator's real ~/.planar/config.toml.
+        // Tests that need a specific config write the file themselves and
+        // pass PLANAR_CONFIG_PATH via extra_env; execWith applies extra_env
+        // after buildEnvMap, so the per-call value wins.
+        env_map.put("PLANAR_CONFIG_PATH", self.config_path) catch @panic("OOM injecting PLANAR_CONFIG_PATH");
         // Plan 297 M3 / t#2937: disable the worktree planning-verb gate
         // for the harness. The harness's tmp dirs may inherit a path
         // containing `.worktrees/` when Planar itself is being developed
