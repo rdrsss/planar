@@ -85,6 +85,17 @@ done  = "closed"
 # relationship in a Projects v2 board. First match wins.
 parent_field_names = ["Parent", "Initiative", "Tracking"]
 
+[introspection]
+# Opt-in local CLI usage log. When true, one row per top-level `planar`
+# invocation is written to cli_invocations. Default off — recording the
+# operator's behavior without consent violates least surprise.
+cli_log = false
+
+# How many days of cli_invocations rows to retain. Rows older than this
+# are pruned statelessly on the capture write path. No last-prune
+# bookkeeping is stored anywhere.
+retention_days = 90
+
 # Per-association overrides. Keys here shadow the top-level sections when
 # the named association is in active scope. Slug is the association.slug.
 #
