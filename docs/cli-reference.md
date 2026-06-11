@@ -5760,7 +5760,8 @@ When `[introspection].cli_log` is off (the default), the invocation and failure 
 | `actions` | array | Agent-action outcome aggregates (always-on). |
 | `sync` | array | Sync-event outcome aggregates (always-on). |
 | `claims` | object | `{stale_claims, never_consumed}` (always-on). |
-| `handoffs` | object | `{stale_handoffs, never_consumed}` (always-on). |
+| `handoffs` | object | `{stale_handoffs, never_consumed}` (always-on). `never_consumed` counts handoffs created in the window that were never transitioned to `consumed` status (distinct from `stale_handoffs`, which counts only `pending`/`validated` handoffs older than 24 h). |
+| `reopens` | integer | Count of `task_reopens` rows created in the window (always-on). |
 
 Empty windows emit empty arrays, never nulls or missing fields.
 

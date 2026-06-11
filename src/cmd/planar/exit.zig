@@ -32,6 +32,19 @@ pub fn codeFor(err: anyerror) u8 {
     return switch (err) {
         error.NotImplemented => 64,
         error.InvalidEntityRef, error.InvalidInput => 2,
+        // CLI parse errors (cli.Parse.*) are user-input failures → exit 2.
+        // These are returned by cli.dispatch and caught in main.zig before
+        // reaching any handler, so no handler can observe them directly.
+        error.InvalidValue,
+        error.UnknownFlag,
+        error.MissingValue,
+        error.MissingRequired,
+        error.MissingRequiredPositional,
+        error.TooManyPositionals,
+        error.UnknownSubcommand,
+        error.UnexpectedArgument,
+        error.DuplicateFlag,
+        => 2,
         error.Conflict => 3,
         error.ScopeMismatch => 5,
         error.SlugConflict, error.AlreadyExists => 6,

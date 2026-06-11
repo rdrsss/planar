@@ -12,9 +12,9 @@
 //!   cli_invocations   — verb-path + outcome aggregates; failure tail rows.
 //!   agent_actions     — agent-action outcome aggregates.
 //!   sync_events       — sync-event outcome aggregates.
-//!   task_reopens      — reopen count aggregate.
+//!   task_reopens      — reopen count aggregate (Bundle.reopens field).
 //!   agent_work_claims — stale-claim count.
-//!   handoffs          — never-consumed-handoff count.
+//!   handoffs          — stale-handoff count and never-consumed-handoff count.
 //!
 //! Tables never read (redaction invariant):
 //!   tasks, questions, scenarios, decisions, artifacts, plans,
@@ -106,6 +106,8 @@ pub const Bundle = struct {
     claims: ClaimCounts,
     /// Handoff aggregate counts (always-on).
     handoffs: HandoffCounts,
+    /// Count of task reopen events in the window (always-on).
+    reopens: i64,
     /// Most-recent failed invocations tail (empty when logging disabled).
     failure_tail: []FailureTailRow,
 
@@ -225,6 +227,7 @@ pub fn build(
 
     const claims = queryClaimCounts(d, window_days);
     const handoffs = queryHandoffCounts(d, window_days);
+    const reopens = queryReopenCount(d, window_days);
 
     return .{
         .version = version,
@@ -238,6 +241,7 @@ pub fn build(
         .sync = sync_outcomes,
         .claims = claims,
         .handoffs = handoffs,
+        .reopens = reopens,
         .failure_tail = failure_tail,
     };
 }
@@ -498,7 +502,7 @@ fn querySyncOutcomes(
         &buf,
         "select coalesce(outcome,'unknown'), count(*)" ++
             " from sync_events" ++
-            " where synced_at >= datetime('now', '-{d} days')" ++
+            " where at >= datetime('now', '-{d} days')" ++
             " group by outcome" ++
             " order by count(*) desc",
         .{window_days},
@@ -592,8 +596,48 @@ fn queryHandoffCounts(d: *db.sqlite.Db, window_days: i64) HandoffCounts {
 
     const stale = d.intQuery(stale_sql) catch 0;
 
-    // Never consumed: still pending beyond 24 h (rough approximation).
-    return .{ .stale_handoffs = stale, .never_consumed = stale };
+    // Never consumed: handoffs that were created but never consumed,
+    // regardless of staleness (distinct from stale_handoffs which requires
+    // age > 24 h). "Never consumed" = status is not 'consumed' — includes
+    // pending, validated, and abandoned handoffs in the window.
+    var nc_buf: [512]u8 = undefined;
+    const nc_str = std.fmt.bufPrint(
+        &nc_buf,
+        "select count(*) from handoffs" ++
+            " where status != 'consumed'" ++
+            "   and created_at >= datetime('now', '-{d} days')",
+        .{window_days},
+    ) catch return .{ .stale_handoffs = stale, .never_consumed = 0 };
+
+    var nc_z: [512 + 1]u8 = undefined;
+    if (nc_str.len >= nc_z.len) return .{ .stale_handoffs = stale, .never_consumed = 0 };
+    @memcpy(nc_z[0..nc_str.len], nc_str);
+    nc_z[nc_str.len] = 0;
+    const nc_sql: [:0]const u8 = nc_z[0..nc_str.len :0];
+
+    const never_consumed = d.intQuery(nc_sql) catch 0;
+
+    return .{ .stale_handoffs = stale, .never_consumed = never_consumed };
+}
+
+/// Count task reopen events within the window from `task_reopens`.
+/// Privacy: selects only a count. No entity text.
+fn queryReopenCount(d: *db.sqlite.Db, window_days: i64) i64 {
+    var buf: [256]u8 = undefined;
+    const sql_str = std.fmt.bufPrint(
+        &buf,
+        "select count(*) from task_reopens" ++
+            " where created_at >= datetime('now', '-{d} days')",
+        .{window_days},
+    ) catch return 0;
+
+    var z: [256 + 1]u8 = undefined;
+    if (sql_str.len >= z.len) return 0;
+    @memcpy(z[0..sql_str.len], sql_str);
+    z[sql_str.len] = 0;
+    const sql: [:0]const u8 = z[0..sql_str.len :0];
+
+    return d.intQuery(sql) catch 0;
 }
 
 // =========================================================================
@@ -667,10 +711,13 @@ pub fn renderText(bundle: Bundle, writer: *std.Io.Writer) !void {
     });
 
     // Handoffs section (always-on).
-    try writer.print("[handoffs]      stale={d} never_consumed={d}\n\n", .{
+    try writer.print("[handoffs]      stale={d} never_consumed={d}\n", .{
         bundle.handoffs.stale_handoffs,
         bundle.handoffs.never_consumed,
     });
+
+    // Reopens section (always-on).
+    try writer.print("[reopens]       {d}\n\n", .{bundle.reopens});
 
     // Failure tail.
     if (!bundle.logging_enabled) {
@@ -758,6 +805,9 @@ pub fn renderJson(bundle: Bundle, writer: *std.Io.Writer) !void {
         bundle.handoffs.stale_handoffs,
         bundle.handoffs.never_consumed,
     });
+
+    // reopens count (always-on)
+    try writer.print(",\"reopens\":{d}", .{bundle.reopens});
 
     try writer.print("}}\n", .{});
 }
@@ -931,6 +981,109 @@ test "build: redaction — seeded sentinel titles never appear in text or JSON o
     var json_w: std.Io.Writer = .fixed(&json_buf);
     try renderJson(bundle, &json_w);
     try std.testing.expect(std.mem.indexOf(u8, json_w.buffered(), sentinel) == null);
+}
+
+test "build: handoffs never_consumed is distinct from stale_handoffs" {
+    // A consumed handoff created > 24 h ago: stale_handoffs = 0 (already consumed),
+    // never_consumed = 0 (was consumed).
+    // An unconsumed (pending) handoff created recently: stale_handoffs = 0 (not old),
+    // never_consumed = 1.
+    // This proves the two fields can differ when data is mixed.
+    var d = try db.sqlite.Db.openMemory();
+    defer d.close();
+    try db.migrate.applyAll(&d, std.testing.allocator);
+
+    // Need a session + context_snapshot to satisfy the FKs on handoffs.
+    _ = try d.execParams(
+        "insert into sessions (vendor, started_at) values ('test', datetime('now'))",
+        &.{},
+    );
+    const session_id = d.intQuery("select last_insert_rowid()") catch 0;
+
+    var id_buf: [256]u8 = undefined;
+    _ = try d.execParams(
+        try std.fmt.bufPrintZ(&id_buf, "insert into context_snapshots (session_id, vendor, created_at)" ++
+            " values ({d}, 'test', datetime('now'))", .{session_id}),
+        &.{},
+    );
+    const snap_id = d.intQuery("select last_insert_rowid()") catch 0;
+
+    // Handoff 1: consumed, created 2 days ago (inside 30-day window, old enough to
+    // be stale if not consumed — but it IS consumed, so stale_handoffs won't count it).
+    _ = try d.execParams(
+        try std.fmt.bufPrintZ(&id_buf, "insert into handoffs (from_snapshot_id, from_vendor, status, created_at, consumed_at)" ++
+            " values ({d}, 'v1', 'consumed', datetime('now', '-2 days'), datetime('now', '-1 days'))", .{snap_id}),
+        &.{},
+    );
+
+    // Handoff 2: pending, created just now (not stale, but never consumed).
+    _ = try d.execParams(
+        try std.fmt.bufPrintZ(&id_buf, "insert into handoffs (from_snapshot_id, from_vendor, status, created_at)" ++
+            " values ({d}, 'v1', 'pending', datetime('now'))", .{snap_id}),
+        &.{},
+    );
+
+    var bundle = try build(&d, std.testing.allocator, 30, 20, true, "/tmp/test.db");
+    defer bundle.deinit(std.testing.allocator);
+
+    // stale_handoffs: only pending/validated handoffs older than 24h — neither qualifies.
+    try std.testing.expectEqual(@as(i64, 0), bundle.handoffs.stale_handoffs);
+    // never_consumed: the pending handoff (handoff 2) is not consumed.
+    try std.testing.expectEqual(@as(i64, 1), bundle.handoffs.never_consumed);
+    // The two values differ — proving distinctness.
+    try std.testing.expect(bundle.handoffs.stale_handoffs != bundle.handoffs.never_consumed);
+}
+
+test "build: reopens count reflects seeded task_reopens rows" {
+    var d = try db.sqlite.Db.openMemory();
+    defer d.close();
+    try db.migrate.applyAll(&d, std.testing.allocator);
+
+    // Zero reopens baseline.
+    {
+        var bundle = try build(&d, std.testing.allocator, 30, 20, true, "/tmp/test.db");
+        defer bundle.deinit(std.testing.allocator);
+        try std.testing.expectEqual(@as(i64, 0), bundle.reopens);
+    }
+
+    // Seed a task and two reopen rows directly (the unit-test layer
+    // may use direct SQL; integration tests go through the CLI).
+    _ = try d.execParams(
+        "insert into tasks (scope_kind, title, status, priority) values ('global', 'T', 'done', 100)",
+        &.{},
+    );
+    const task_id = d.intQuery("select last_insert_rowid()") catch 0;
+
+    {
+        const sql1 = try std.fmt.allocPrint(
+            std.testing.allocator,
+            "insert into task_reopens (task_id, from_status, to_status, source)" ++
+                " values ({d}, 'done', 'todo', 'task-reopen')",
+            .{task_id},
+        );
+        defer std.testing.allocator.free(sql1);
+        try d.execSlice(std.testing.allocator, sql1);
+    }
+    {
+        const sql2 = try std.fmt.allocPrint(
+            std.testing.allocator,
+            "insert into task_reopens (task_id, from_status, to_status, source)" ++
+                " values ({d}, 'done', 'doing', 'task-update-force')",
+            .{task_id},
+        );
+        defer std.testing.allocator.free(sql2);
+        try d.execSlice(std.testing.allocator, sql2);
+    }
+
+    var bundle2 = try build(&d, std.testing.allocator, 30, 20, true, "/tmp/test.db");
+    defer bundle2.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i64, 2), bundle2.reopens);
+
+    // A 1-day window should exclude rows older than 1 day; all rows are
+    // datetime('now') so they should still be counted (within 1 day).
+    var bundle3 = try build(&d, std.testing.allocator, 1, 20, true, "/tmp/test.db");
+    defer bundle3.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i64, 2), bundle3.reopens);
 }
 
 test "build: schema_version matches embedded_max after applyAll" {

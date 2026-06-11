@@ -27,7 +27,7 @@ const exit_mod = @import("exit.zig");
 // Module-scoped start timestamp
 // =========================================================================
 
-/// Monotonic nanosecond timestamp captured at process start.
+/// Wall-clock (best-effort) nanosecond timestamp captured at process start.
 /// Set once by `setStartNs` (called from main.zig immediately after
 /// runtime.init). Both the success path (main.zig) and the death path
 /// (exit.die) read this to compute duration_ms. Zero means "not yet set
@@ -182,6 +182,18 @@ pub fn parseArgs(allocator: std.mem.Allocator, argv: []const []const u8) std.mem
                     continue;
                 }
             }
+            // For short flags, canonicalize to the leading `-X` only.
+            // A short-flag attached value takes two forms:
+            //   -pVALUE  (tok.len > 2, tok[1] != '-', value starts at tok[2])
+            //   -p=VALUE (tok.len > 2, tok[2] == '=', value starts at tok[3])
+            // In both cases we record only tok[0..2] (the `-X` pair) and
+            // discard the rest. No planar flag currently defines .short, but
+            // this closure is structural — not conditional on active usage.
+            if (is_short_flag and tok.len > 2) {
+                try shape_parts.append(allocator, tok[0..2]);
+                // Value is embedded in the token; no following token consumed.
+                continue;
+            }
             try shape_parts.append(allocator, tok);
             // Consume the next token as the flag value if it doesn't look
             // like a flag itself.  Value-free invariant: the value is
@@ -236,7 +248,7 @@ pub fn parseArgs(allocator: std.mem.Allocator, argv: []const []const u8) std.mem
 ///
 /// `exit_code`: the exit code the process will use (0 = success).
 /// `err`: the domain error that caused the failure, null on success.
-/// `start_ns`: monotonic nanosecond timestamp at process start,
+/// `start_ns`: wall-clock (best-effort) nanosecond timestamp at process start,
 ///   used to compute duration_ms. Pass 0 to omit duration.
 pub fn record(exit_code: u8, err: ?anyerror, start_ns: i128) void {
     recordInner(exit_code, err, start_ns) catch {};
@@ -351,7 +363,7 @@ fn pruneIfNeeded(
     try db.execSlice(allocator, prune_str);
 }
 
-/// Read a wall-clock nanosecond timestamp.
+/// Read a wall-clock (best-effort) nanosecond timestamp.
 /// Uses clock_gettime(REALTIME) via the C layer (there is no
 /// std.time.nanoTimestamp in this Zig version). Returns 0 on failure.
 /// Private form used inside this module for the end-of-invocation read.
@@ -362,6 +374,7 @@ fn nowNanos() i128 {
 /// Public form so main.zig can capture the start timestamp at startup.
 /// Identical implementation to nowNanos; kept separate so callers can
 /// import it without pulling in the full capture machinery.
+/// Uses clock_gettime(REALTIME) — wall-clock (best-effort), not monotonic.
 pub fn nowNanosPublic() i128 {
     var ts: std.c.timespec = undefined;
     if (std.c.clock_gettime(.REALTIME, &ts) != 0) return 0;
@@ -465,6 +478,39 @@ test "parseArgs: inline flag value (--flag=value) never leaks value into shape" 
     try std.testing.expect(std.mem.indexOf(u8, parsed.args_shape, sentinel) == null);
     // Flag name must appear.
     try std.testing.expect(std.mem.indexOf(u8, parsed.args_shape, "--plan") != null);
+}
+
+test "parseArgs: short-flag attached value (-pVALUE and -p=VALUE) do not leak value" {
+    // No planar flag currently uses .short, but the structural closure is
+    // load-bearing for the privacy invariant: even if a short flag with an
+    // attached value arrives, the value must never appear in args_shape.
+    const a = std.testing.allocator;
+    const sentinel = "SENTINEL_MUST_NOT_LEAK";
+
+    // -pSENTINEL_MUST_NOT_LEAK form (attached without =)
+    {
+        const tok = "-p" ++ sentinel;
+        const argv = [_][]const u8{ "task", "add", tok };
+        const parsed = try parseArgs(a, &argv);
+        defer a.free(parsed.verb_path);
+        defer a.free(parsed.args_shape);
+
+        try std.testing.expect(std.mem.indexOf(u8, parsed.args_shape, sentinel) == null);
+        // The short flag name itself ("-p") IS recorded.
+        try std.testing.expect(std.mem.indexOf(u8, parsed.args_shape, "-p") != null);
+    }
+
+    // -p=SENTINEL_MUST_NOT_LEAK form (attached with =)
+    {
+        const tok = "-p=" ++ sentinel;
+        const argv2 = [_][]const u8{ "task", "add", tok };
+        const parsed2 = try parseArgs(a, &argv2);
+        defer a.free(parsed2.verb_path);
+        defer a.free(parsed2.args_shape);
+
+        try std.testing.expect(std.mem.indexOf(u8, parsed2.args_shape, sentinel) == null);
+        try std.testing.expect(std.mem.indexOf(u8, parsed2.args_shape, "-p") != null);
+    }
 }
 
 test "parseArgs: positional count zero, one, many" {

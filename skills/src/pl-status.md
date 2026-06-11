@@ -21,12 +21,19 @@ At the start of a session, or whenever you want a quick orientation on what's in
 
 ## What It Does
 
-Runs four read-only CLI commands against the cwd-derived scope and formats the results as a concise tree-shaped summary:
+Runs read-only CLI commands against the cwd-derived scope and formats the results as a concise tree-shaped summary:
 
 1. `planar scope show` — identifies the cwd-derived scope (one line).
-2. `planar plan list --status active --status paused` — lists plans currently in flight.
-3. `planar task list --status todo --status doing --status blocked` — lists open tasks grouped by plan.
+2. Two `planar plan list` calls (one per status) — lists plans currently in flight:
+   - `planar plan list --status active`
+   - `planar plan list --status paused`
+3. Three `planar task list` calls (one per status) — lists open tasks grouped by plan:
+   - `planar task list --status todo`
+   - `planar task list --status doing`
+   - `planar task list --status blocked`
 4. `planar question list --status open` — lists unresolved questions.
+
+(`--status` is single-valued; union the results of the separate calls in steps 2 and 3.)
 
 Presents the output as a single summary under approximately 40 lines. Blocked tasks are surfaced first within their plan group.
 
@@ -42,10 +49,15 @@ Composes (from [`scope`](../../docs/cli-reference.md#domain-scope), [`plan`](../
 
 ```
 planar scope show
-planar plan list --status active --status paused
-planar task list --status todo --status doing --status blocked
+planar plan list --status active
+planar plan list --status paused
+planar task list --status todo
+planar task list --status doing
+planar task list --status blocked
 planar question list --status open
 ```
+
+(`--status` is single-valued per call; union results across calls.)
 
 ## Output Shape
 
