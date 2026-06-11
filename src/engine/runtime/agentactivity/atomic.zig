@@ -1,16 +1,24 @@
 //! agentactivity/atomic — multi-table atomic operation wrappers.
 //!
 //! These wrap one `BEGIN IMMEDIATE` transaction around (claim lifecycle
-//! + action lifecycle + tasks.status update) so the agent's "pull →
-//! work → complete/fail/release/block" ritual stays atomic. Each
-//! wrapper calls the single-table primitives from `store.zig` rather
-//! than duplicating the SQL.
+//! + action lifecycle + tasks.status update + plan recompute) so the
+//! agent's "pull → work → complete/fail/release/block" ritual stays
+//! atomic. Each wrapper calls the single-table primitives from
+//! `store.zig` rather than duplicating the SQL.
 //!
 //! The status-transition guard (`policy.status.check`) MUST be
 //! consulted before each `UPDATE tasks SET status`. On
 //! `IllegalTransition` the entire transaction rolls back and the claim
 //! keeps its previous state — this prevents `complete` on an already-
 //! done task from creating a half-released claim.
+//!
+//! Plan roll-up recompute: after every task-status flip in the four
+//! terminal verbs (complete/fail/release/block), the affected plan's
+//! roll-up status is recomputed via `plan.recomputeStatus` — inside
+//! the same transaction — to match the behavior of operator task verbs
+//! (`task done`, `task cancel`, `task block`, `task reopen`). This
+//! closes the parity gap where `planar-agent complete` on the last task
+//! of a plan left the plan's status stale.
 //!
 //! Why `BEGIN IMMEDIATE`: the "check no active claim, then insert new
 //! claim" pair (in store.acquireClaim) is only safe with the writer
@@ -25,8 +33,9 @@ const db = @import("db");
 const types = @import("types.zig");
 const store = @import("store.zig");
 const policy = @import("../../policy.zig");
+const plan = @import("../../planning/plan.zig");
 
-pub const Error = store.Error || policy.status.Error || error{
+pub const Error = store.Error || policy.status.Error || plan.Error || error{
     NoEligibleTask,
     TaskNotFound,
     /// `complete`/`fail`/etc. called against a claim that isn't on a
@@ -267,6 +276,9 @@ pub fn blockWork(
         return e;
     };
 
+    // Capture plan_id before we deinit the claim.
+    const maybe_plan_id = taskPlanId(d, claim.entity_id);
+
     // entity_links blocker edge.
     _ = d.execParams(
         "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', ?, 'task', ?, 'blocks')",
@@ -285,6 +297,13 @@ pub fn blockWork(
     var released = store.releaseClaim(d, allocator, claim_token, .released, reason) catch |e| return e;
     errdefer released.deinit(allocator);
 
+    // Recompute plan roll-up status inside the same transaction — parity
+    // with the operator `task block` path.
+    if (maybe_plan_id) |pid| {
+        const recompute = try plan.recomputeStatus(d, allocator, pid);
+        recompute.deinit(allocator);
+    }
+
     try commit(d);
     committed = true;
 
@@ -296,6 +315,19 @@ pub fn blockWork(
 // =========================================================================
 // Internals
 // =========================================================================
+
+/// Look up the `plan_id` for a task. Returns null when the task has no
+/// plan or when the query fails. Called within an open transaction so no
+/// separate transaction management is needed.
+fn taskPlanId(d: *db.sqlite.Db, task_id: i64) ?i64 {
+    var stmt = d.prepare("select plan_id from tasks where id = ?") catch return null;
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .int = task_id }}) catch return null;
+    switch (stmt.step() catch return null) {
+        .done => return null,
+        .row => return stmt.columnIntOpt(0),
+    }
+}
 
 const TerminalArgs = struct {
     claim_token: []const u8,
@@ -338,6 +370,9 @@ fn terminalTransition(
         return e;
     };
 
+    // Capture plan_id before we deinit the claim.
+    const maybe_plan_id = taskPlanId(d, claim.entity_id);
+
     _ = d.execParams(
         "update tasks set status = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') where id = ?",
         &.{ .{ .text = targs.task_to }, .{ .int = claim.entity_id } },
@@ -347,6 +382,14 @@ fn terminalTransition(
 
     var released = store.releaseClaim(d, allocator, targs.claim_token, targs.claim_to, targs.reason) catch |e| return e;
     errdefer released.deinit(allocator);
+
+    // Recompute the plan's roll-up status inside the same transaction —
+    // parity with operator task verbs (task.zig markDone/markCancelled/
+    // reopen/transition all call plan.recomputeStatus before their commit).
+    if (maybe_plan_id) |pid| {
+        const recompute = try plan.recomputeStatus(d, allocator, pid);
+        recompute.deinit(allocator);
+    }
 
     try commit(d);
     committed = true;
