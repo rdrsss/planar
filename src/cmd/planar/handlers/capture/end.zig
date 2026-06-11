@@ -38,7 +38,7 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         }
     }
 
-    engine.runtime.capture.closeSession(d, ctx.allocator, .{
+    engine.runtime.capture.closeSession(d, ctx.allocator, ctx.io, .{
         .session_id = sid,
         .summary = args.summary,
     }) catch |e| switch (e) {

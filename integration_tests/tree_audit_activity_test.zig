@@ -89,6 +89,145 @@ fn mustRunAgent(suite: *const harness.Suite, args: []const []const u8) []u8 {
     return res.stdout;
 }
 
+fn mustRunAgentInDir(
+    suite: *harness.Suite,
+    cwd: []const u8,
+    args: []const []const u8,
+) []u8 {
+    const gpa = suite.allocator;
+    const agent_bin = resolveAgentBin();
+
+    var argv_list: std.ArrayList([]const u8) = .empty;
+    defer argv_list.deinit(gpa);
+    argv_list.append(gpa, agent_bin) catch @panic("OOM");
+    for (args) |arg| argv_list.append(gpa, arg) catch @panic("OOM");
+
+    const raw: [*:null]?[*:0]u8 = std.c.environ;
+    var env_count: usize = 0;
+    while (raw[env_count] != null) : (env_count += 1) {}
+    const env_slice: [:null]const ?[*:0]const u8 = @ptrCast(raw[0..env_count :null]);
+    const posix_block: std.process.Environ.PosixBlock = .{ .slice = env_slice };
+    const environ: std.process.Environ = .{ .block = posix_block };
+    var env_map = environ.createMap(gpa) catch @panic("OOM creating env map");
+    defer env_map.deinit();
+    env_map.put("PLANAR_DB", suite.absDbPath()) catch @panic("OOM PLANAR_DB");
+    env_map.put("PWD", cwd) catch @panic("OOM PWD");
+
+    const result = std.process.run(gpa, std.testing.io, .{
+        .argv = argv_list.items,
+        .cwd = .{ .path = cwd },
+        .environ_map = &env_map,
+    }) catch |e| std.debug.panic("mustRunAgentInDir spawn failed: {s}", .{@errorName(e)});
+    defer gpa.free(result.stderr);
+    if (result.term != .exited or result.term.exited != 0) {
+        std.debug.print(
+            "planar-agent failed in '{s}' (term={any}): {s}\nstderr: {s}\n",
+            .{ cwd, result.term, result.stdout, result.stderr },
+        );
+        @panic("planar-agent in-dir must-run failed");
+    }
+    return result.stdout;
+}
+
+fn makeFixtureRepo(
+    gpa: std.mem.Allocator,
+    suite: *harness.Suite,
+    name: []const u8,
+) ![]u8 {
+    const repo_root = try std.fs.path.join(gpa, &.{ suite.tmpAbsPath(), name });
+    errdefer gpa.free(repo_root);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, repo_root);
+
+    try runCommandDiscard(&.{ "git", "init", repo_root });
+    try runCommandInDirDiscard(repo_root, &.{ "git", "config", "user.email", "planar-test@example.com" });
+    try runCommandInDirDiscard(repo_root, &.{ "git", "config", "user.name", "Planar Test" });
+
+    try writeRepoFile(repo_root, "README.md", "seed\n");
+    try runCommandInDirDiscard(repo_root, &.{ "git", "add", "README.md" });
+    try runCommandInDirDiscard(repo_root, &.{ "git", "commit", "-m", "seed" });
+    return repo_root;
+}
+
+fn runCommand(argv: []const []const u8) ![]u8 {
+    const gpa = std.testing.allocator;
+    const result = try std.process.run(gpa, std.testing.io, .{ .argv = argv });
+    defer gpa.free(result.stderr);
+    if (result.term != .exited or result.term.exited != 0) {
+        std.debug.print("command failed: {s}\nstderr: {s}\n", .{ argv[0], result.stderr });
+        gpa.free(result.stdout);
+        return error.CommandFailed;
+    }
+    return result.stdout;
+}
+
+fn runCommandDiscard(argv: []const []const u8) !void {
+    const stdout = try runCommand(argv);
+    std.testing.allocator.free(stdout);
+}
+
+fn runCommandInDir(cwd: []const u8, argv: []const []const u8) ![]u8 {
+    const gpa = std.testing.allocator;
+    const result = try std.process.run(gpa, std.testing.io, .{
+        .argv = argv,
+        .cwd = .{ .path = cwd },
+    });
+    defer gpa.free(result.stderr);
+    if (result.term != .exited or result.term.exited != 0) {
+        std.debug.print("command failed in '{s}': {s}\nstderr: {s}\n", .{ cwd, argv[0], result.stderr });
+        gpa.free(result.stdout);
+        return error.CommandFailed;
+    }
+    return result.stdout;
+}
+
+fn runCommandInDirDiscard(cwd: []const u8, argv: []const []const u8) !void {
+    const stdout = try runCommandInDir(cwd, argv);
+    std.testing.allocator.free(stdout);
+}
+
+fn writeRepoFile(repo_root: []const u8, rel_path: []const u8, contents: []const u8) !void {
+    const gpa = std.testing.allocator;
+    const path = try std.fs.path.join(gpa, &.{ repo_root, rel_path });
+    defer gpa.free(path);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = path, .data = contents });
+}
+
+fn createCommit(
+    repo_root: []const u8,
+    rel_path: []const u8,
+    contents: []const u8,
+    subject: []const u8,
+) ![]u8 {
+    try writeRepoFile(repo_root, rel_path, contents);
+    try runCommandInDirDiscard(repo_root, &.{ "git", "add", rel_path });
+    try runCommandInDirDiscard(repo_root, &.{ "git", "commit", "-m", subject });
+    const raw = try runCommandInDir(repo_root, &.{ "git", "rev-parse", "HEAD" });
+    defer std.testing.allocator.free(raw);
+    return try std.testing.allocator.dupe(u8, std.mem.trim(u8, raw, " \t\r\n"));
+}
+
+fn extractIntField(json: []const u8, key: []const u8) ?i64 {
+    const idx = std.mem.indexOf(u8, json, key) orelse return null;
+    var i = idx + key.len;
+    while (i < json.len and (json[i] == ' ' or json[i] == ':' or json[i] == '\t')) i += 1;
+    var end = i;
+    while (end < json.len and json[end] >= '0' and json[end] <= '9') end += 1;
+    if (end == i) return null;
+    return std.fmt.parseInt(i64, json[i..end], 10) catch null;
+}
+
+fn extractStringField(json: []const u8, key: []const u8) ?[]const u8 {
+    const idx = std.mem.indexOf(u8, json, key) orelse return null;
+    var i = idx + key.len;
+    while (i < json.len and (json[i] == ' ' or json[i] == ':' or json[i] == '\t')) i += 1;
+    if (i >= json.len or json[i] != '"') return null;
+    i += 1;
+    const start = i;
+    while (i < json.len and json[i] != '"') i += 1;
+    if (i >= json.len) return null;
+    return json[start..i];
+}
+
 // =========================================================================
 // tree — empty degrade
 // =========================================================================
@@ -278,6 +417,117 @@ test "audit trail on a task with agent activity: 'Agent activity:' section + age
     // stay resilient to the default-vendor convention.
     try std.testing.expect(std.mem.indexOf(u8, json_raw, "\"claims\":[") != null);
     try std.testing.expect(std.mem.indexOf(u8, json_raw, "\"action_kind\":\"coder\"") != null);
+}
+
+test "audit trail on a task with session commits: emits commits section and commits JSON" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    _ = suite.registerProject("trail-task-commits");
+    const repo_root = try makeFixtureRepo(gpa, &suite, "trail-task-commits-repo");
+    defer gpa.free(repo_root);
+
+    const plan = suite.mustRunJSON(PlanJSON, arena, &.{
+        "plan", "create", "--slug", "trail-task-commits", "--json", "TRAIL_TASK_COMMITS",
+    });
+    const pid = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch unreachable;
+    const task = suite.mustRunJSON(TaskJSON, arena, &.{
+        "task", "add", "--plan", pid, "--json", "trail task commits",
+    });
+    const tid_str = std.fmt.allocPrint(arena, "{d}", .{task.id}) catch unreachable;
+
+    const claim_json = mustRunAgentInDir(&suite, repo_root, &.{ "pull", pid, "--role", "coder", "--json" });
+    defer gpa.free(claim_json);
+    const claim_token = try gpa.dupe(u8, extractStringField(claim_json, "\"claim_token\"") orelse @panic("no claim token"));
+    defer gpa.free(claim_token);
+
+    const sha = try createCommit(repo_root, "trail-task.txt", "trail task\n", "trail task commit");
+    defer gpa.free(sha);
+    gpa.free(mustRunAgentInDir(&suite, repo_root, &.{ "complete", "--claim", claim_token, "--summary", "done", "--json" }));
+
+    const raw = suite.mustRun(&.{ "audit", "trail", "--kind", "task", tid_str });
+    defer gpa.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "\ncommits:\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, raw, sha) != null);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "trail task commit") != null);
+
+    const json_raw = suite.mustRun(&.{ "audit", "trail", "--kind", "task", "--json", tid_str });
+    defer gpa.free(json_raw);
+    try std.testing.expect(std.mem.indexOf(u8, json_raw, "\"commits\":[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json_raw, sha) != null);
+}
+
+test "audit trail link form folds in commits and omits the commits key when empty" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    _ = suite.registerProject("trail-link-commits");
+    gpa.free(suite.mustRun(&.{ "ext", "register", "github", "gh", "--project", "owner/repo" }));
+
+    const repo_root = try makeFixtureRepo(gpa, &suite, "trail-link-commits-repo");
+    defer gpa.free(repo_root);
+
+    const plan = suite.mustRunJSON(PlanJSON, arena, &.{
+        "plan", "create", "--slug", "trail-link-commits", "--json", "TRAIL_LINK_COMMITS",
+    });
+    const pid = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch unreachable;
+    const task_with_commits = suite.mustRunJSON(TaskJSON, arena, &.{
+        "task", "add", "--plan", pid, "--json", "trail link commits task",
+    });
+    const task_without_commits = suite.mustRunJSON(TaskJSON, arena, &.{
+        "task", "add", "--plan", pid, "--json", "trail link empty task",
+    });
+
+    const task_ref = std.fmt.allocPrint(arena, "task:{d}", .{task_with_commits.id}) catch unreachable;
+    const task_no_commits_ref = std.fmt.allocPrint(arena, "task:{d}", .{task_without_commits.id}) catch unreachable;
+
+    const claim_json = mustRunAgentInDir(&suite, repo_root, &.{ "pull", pid, "--role", "coder", "--json" });
+    defer gpa.free(claim_json);
+    const claim_token = try gpa.dupe(u8, extractStringField(claim_json, "\"claim_token\"") orelse @panic("no claim token"));
+    defer gpa.free(claim_token);
+
+    const sha = try createCommit(repo_root, "trail-link.txt", "trail link\n", "trail link commit");
+    defer gpa.free(sha);
+    gpa.free(mustRunAgentInDir(&suite, repo_root, &.{ "complete", "--claim", claim_token, "--summary", "done", "--json" }));
+
+    const linked = suite.mustRun(&.{ "link", task_ref, "--to", "gh:ISSUE-7", "--json" });
+    defer gpa.free(linked);
+    const link_id = extractIntField(linked, "\"link_id\"") orelse @panic("no link id");
+    const link_id_arg = std.fmt.allocPrint(arena, "{d}", .{link_id}) catch unreachable;
+
+    const linked_empty = suite.mustRun(&.{ "link", task_no_commits_ref, "--to", "gh:ISSUE-8", "--json" });
+    defer gpa.free(linked_empty);
+    const empty_link_id = extractIntField(linked_empty, "\"link_id\"") orelse @panic("no empty link id");
+    const empty_link_id_arg = std.fmt.allocPrint(arena, "{d}", .{empty_link_id}) catch unreachable;
+
+    const raw = suite.mustRun(&.{ "audit", "trail", "--link", link_id_arg });
+    defer gpa.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "\ncommits:\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, raw, sha) != null);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "trail link commit") != null);
+
+    const json_raw = suite.mustRun(&.{ "audit", "trail", "--link", link_id_arg, "--json" });
+    defer gpa.free(json_raw);
+    try std.testing.expect(std.mem.indexOf(u8, json_raw, "\"commits\":[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json_raw, sha) != null);
+
+    const empty_raw = suite.mustRun(&.{ "audit", "trail", "--link", empty_link_id_arg });
+    defer gpa.free(empty_raw);
+    try std.testing.expect(std.mem.indexOf(u8, empty_raw, "\ncommits:\n") == null);
+
+    const empty_json = suite.mustRun(&.{ "audit", "trail", "--link", empty_link_id_arg, "--json" });
+    defer gpa.free(empty_json);
+    try std.testing.expect(std.mem.indexOf(u8, empty_json, "\"commits\"") == null);
 }
 
 // =========================================================================

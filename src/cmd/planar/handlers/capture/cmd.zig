@@ -1,8 +1,9 @@
-//! handlers/capture/cmd.zig — `planar capture {session, end, note, command, file, snapshot}`
+//! handlers/capture/cmd.zig — `planar capture {session, commits, end, note, command, file, snapshot}`
 
 const cli = @import("cli");
 
 const session = @import("session.zig");
+const commits = @import("commits.zig");
 const end = @import("end.zig");
 const note = @import("note.zig");
 const command = @import("command.zig");
@@ -25,6 +26,18 @@ pub const verb: cli.Cmd = .{
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },
             .run = cli.handler(session.handle),
+        },
+        .{
+            .name = "commits",
+            .desc = "Record explicit git commits into a session.",
+            .flags = &.{
+                .{ .long = "--session", .kind = .int },
+                .{ .long = "--repo", .kind = .string },
+                .{ .long = "--since", .kind = .string },
+                .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
+            },
+            .rest_field = "shas",
+            .run = cli.handler(commits.handle),
         },
         .{
             .name = "end",

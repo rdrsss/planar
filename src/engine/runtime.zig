@@ -1,6 +1,6 @@
 //! engine/runtime — durable-handoff machinery.
 //!
-//! Five submodules:
+//! Runtime submodules:
 //!
 //!   session      — Sessions table + session_entries timeline.
 //!   snapshot     — Context snapshots: resume packet payload.
@@ -8,6 +8,8 @@
 //!   resume       — 8-section resume packet builder + validate.
 //!   capture      — Operator-facing glue around session+snapshot.
 //!   audit_trail  — Read-side queries against audit_log (+ entity_links).
+//!   agentactivity — Read-side queries for agent activity fold-ins.
+//!   sessioncommits — Git-backed session commit attribution store/walker.
 //!
 //! `policy.audit.record` is the write path for audit_log; modules here
 //! own the lifecycle and read paths.
@@ -19,6 +21,7 @@ pub const @"resume" = @import("runtime/resume.zig");
 pub const capture = @import("runtime/capture.zig");
 pub const audit_trail = @import("runtime/audit_trail.zig");
 pub const agentactivity = @import("runtime/agentactivity.zig");
+pub const sessioncommits = @import("runtime/sessioncommits.zig");
 
 test {
     _ = session;
@@ -28,4 +31,5 @@ test {
     _ = capture;
     _ = audit_trail;
     _ = agentactivity;
+    _ = sessioncommits;
 }

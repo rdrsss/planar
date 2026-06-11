@@ -34,6 +34,8 @@ pub const Session = struct {
     started_at: []const u8,
     ended_at: ?[]const u8,
     summary: ?[]const u8,
+    repo_root: ?[]const u8,
+    head_sha_at_start: ?[]const u8,
 };
 
 pub fn deinit(s: Session, allocator: std.mem.Allocator) void {
@@ -43,6 +45,8 @@ pub fn deinit(s: Session, allocator: std.mem.Allocator) void {
     allocator.free(s.started_at);
     if (s.ended_at) |v| allocator.free(v);
     if (s.summary) |v| allocator.free(v);
+    if (s.repo_root) |v| allocator.free(v);
+    if (s.head_sha_at_start) |v| allocator.free(v);
 }
 
 pub fn deinitMany(items: []const Session, allocator: std.mem.Allocator) void {
@@ -324,6 +328,26 @@ pub fn appendEntry(
     ) catch return Error.QueryFailed;
 }
 
+/// Persist the session-open git context once. Existing non-null values stay
+/// unchanged so reused sessions keep their original start boundary.
+pub fn setStartGitContextIfUnset(
+    d: *db.sqlite.Db,
+    session_id: i64,
+    repo_root: []const u8,
+    head_sha_at_start: []const u8,
+) Error!void {
+    _ = d.execParams(
+        \\update sessions
+        \\set repo_root = case when repo_root is null then ? else repo_root end,
+        \\    head_sha_at_start = case when head_sha_at_start is null then ? else head_sha_at_start end
+        \\where id = ?
+    , &.{
+        .{ .text = repo_root },
+        .{ .text = head_sha_at_start },
+        .{ .int = session_id },
+    }) catch return Error.QueryFailed;
+}
+
 pub fn getById(
     d: *db.sqlite.Db,
     allocator: std.mem.Allocator,
@@ -331,7 +355,7 @@ pub fn getById(
 ) Error!Session {
     const sql: [:0]const u8 =
         \\select id, task_id, project_id, agent_id, vendor, vendor_session_id,
-        \\       model, started_at, ended_at, summary
+        \\       model, started_at, ended_at, summary, repo_root, head_sha_at_start
         \\from sessions where id = ?
     ;
     var stmt = d.prepare(sql) catch return Error.QueryFailed;
@@ -412,7 +436,7 @@ pub fn recentSessionsForTask(
 ) Error![]Session {
     const sql: [:0]const u8 =
         \\select id, task_id, project_id, agent_id, vendor, vendor_session_id,
-        \\       model, started_at, ended_at, summary
+        \\       model, started_at, ended_at, summary, repo_root, head_sha_at_start
         \\from sessions where task_id = ?
         \\order by started_at desc limit ?
     ;
@@ -450,6 +474,8 @@ fn readSessionRow(stmt: *db.sqlite.Stmt, allocator: std.mem.Allocator) Error!Ses
         .started_at = try stmt.columnTextAlloc(7, allocator),
         .ended_at = try stmt.columnTextOpt(8, allocator),
         .summary = try stmt.columnTextOpt(9, allocator),
+        .repo_root = try stmt.columnTextOpt(10, allocator),
+        .head_sha_at_start = try stmt.columnTextOpt(11, allocator),
     };
 }
 
@@ -585,6 +611,23 @@ test "ensureActive reuses or creates as needed" {
     const id1 = try ensureActive(&d, a, "x", null);
     const id2 = try ensureActive(&d, a, "x", null);
     try std.testing.expectEqual(id1, id2);
+}
+
+test "setStartGitContextIfUnset preserves the first non-null values" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const s = try startSession(&d, a, .{ .vendor = "v", .vendor_session_id = "vsid" });
+    defer deinit(s, a);
+
+    try setStartGitContextIfUnset(&d, s.id, "/tmp/repo-a", "sha-a");
+    try setStartGitContextIfUnset(&d, s.id, "/tmp/repo-b", "sha-b");
+
+    const got = try getById(&d, a, s.id);
+    defer deinit(got, a);
+    try std.testing.expectEqualStrings("/tmp/repo-a", got.repo_root.?);
+    try std.testing.expectEqualStrings("sha-a", got.head_sha_at_start.?);
 }
 
 test "recentEntriesForTask returns most recent first" {
