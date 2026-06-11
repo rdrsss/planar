@@ -24,6 +24,7 @@
 
 const std = @import("std");
 const runtime = @import("runtime");
+const cli_log = @import("cli_log.zig");
 
 /// Map a domain error to the exit code the operator's shell should see.
 /// Unknown errors fall through to 1.
@@ -57,6 +58,10 @@ pub fn die(
     args: anytype,
 ) noreturn {
     ctx.stderr.print("error: " ++ fmt ++ "\n", args) catch {};
+    // Capture the failed invocation (fail-open — any error is swallowed).
+    // Use the start timestamp set in main.zig (0 if not yet set, which
+    // means duration will be NULL in the recorded row, but that is safe).
+    cli_log.record(codeFor(err), err, cli_log.startNs());
     runtime.shutdown();
     std.process.exit(codeFor(err));
 }

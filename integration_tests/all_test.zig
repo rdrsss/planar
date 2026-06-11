@@ -70,6 +70,9 @@ comptime {
     _ = @import("workbench_test.zig");
     _ = @import("workspace_test.zig");
 
+    _ = @import("cli_log_test.zig");
+    _ = @import("report_test.zig");
+
     _ = @import("scenarios/scenario_annotations_test.zig");
     _ = @import("scenarios/scenario_audit_trail_test.zig");
     _ = @import("scenarios/scenario_cross_scope_polyrepo_test.zig");
@@ -84,4 +87,5 @@ comptime {
     _ = @import("scenarios/scenario_templates_test.zig");
     _ = @import("scenarios/scenario_test_spec_authoring_test.zig");
     _ = @import("scenarios/scenario_workbench_sync_test.zig");
+    _ = @import("scenarios/scenario_usage_introspection_test.zig");
 }

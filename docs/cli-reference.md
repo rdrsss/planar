@@ -5729,6 +5729,62 @@ The catalog is built at comptime from the command tree, so the verb is a pure wr
 
 ---
 
+## Domain: `report`
+
+### `planar report [--days <n>] [--tail <n>] [--json]`
+
+**Description:** Emit the diagnostic bundle: invocation aggregates, failure tail, and always-on health metrics. Reads `cli_invocations` (when CLI logging is enabled) plus the always-on observability tables (`agent_actions`, `sync_events`, `agent_work_claims`, `handoffs`) and renders a structured diagnostic bundle.
+
+When `[introspection].cli_log` is off (the default), the invocation and failure sections render "logging disabled" instead of counts — the operator is never shown fabricated zeros. The always-on sections (`actions`, `sync`, `claims`, `handoffs`, `health`, schema version) render normally in either case.
+
+**Privacy:** All queries are structurally redacted by construction in `src/engine/introspect.zig`. The bundle selects only counts, categories, verb paths, statuses, and timestamps — never entity `title`, `body`, or `summary` columns, never scope slugs, never path-bearing columns.
+
+**Flags:**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--days <n>` | int | 30 | Window in days. Must be a positive integer. |
+| `--tail <n>` | int | 20 | Number of failure-tail rows to include in the text output. Must be a positive integer. |
+| `--json` | bool | false | Emit stable machine-readable JSON. |
+
+**JSON wire format (`--json`):** Top-level fields are the contract consumed by downstream agents and skills:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `version` | string | Binary version string. |
+| `schema_version` | integer | Max schema_migrations version applied. |
+| `health` | string | `"ok"` or `"degraded"`. |
+| `window` | integer | The `--days` value queried. |
+| `invocations` | array | Per-verb-path aggregate rows; empty array when logging disabled or no data. |
+| `failures` | array | Per-error-category failure counts; empty array when logging disabled or no data. |
+| `actions` | array | Agent-action outcome aggregates (always-on). |
+| `sync` | array | Sync-event outcome aggregates (always-on). |
+| `claims` | object | `{stale_claims, never_consumed}` (always-on). |
+| `handoffs` | object | `{stale_handoffs, never_consumed}` (always-on). |
+
+Empty windows emit empty arrays, never nulls or missing fields.
+
+**Exit codes:**
+
+| Code | Meaning |
+|------|---------|
+| 0 | Bundle rendered successfully (including "logging disabled" path). |
+| 2 | Invalid flag value — `--days` or `--tail` must be a positive integer; no partial bundle is emitted. |
+| 1 | Database error. |
+
+**Example:**
+
+```
+planar report
+planar report --days 7 --tail 5
+planar report --json
+planar report --days 14 --json
+```
+
+**Schema effects:** Read-only. Touches `cli_invocations`, `agent_actions`, `sync_events`, `agent_work_claims`, `handoffs`, `schema_migrations`, `tasks`, `context_snapshots`. No writes.
+
+---
+
 ## Domain: `search`
 
 ### `planar search <query> [--kind <kind>] [--status <status>] [--scope <scope>] [--plan <id>] [--limit <n>] [--json]`
@@ -5771,6 +5827,7 @@ For quick reference, all documented commands grouped by domain:
 | `audit` | `audit trail`, `audit session`, `audit publish-decision`, `audit handoff-readiness` |
 | `health` | `health` |
 | `links` | `links add`, `links list`, `links remove`, `links trail`, `links update` (deferred to M11) |
+| `report` | `report [--days <n>] [--tail <n>] [--json]` |
 | `search` | `search <query>` |
 | `spec` | `spec ingest` |
 | `test-spec` | `test-spec status` |

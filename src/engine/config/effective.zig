@@ -60,6 +60,7 @@ pub const Config = struct {
     workbench: Workbench,
     templates: Templates,
     external: External,
+    introspection: Introspection,
 };
 
 pub const Defaults = struct {
@@ -110,6 +111,16 @@ pub const GitHubIssueStatus = struct {
 
 pub const ExternalGitHubProjects = struct {
     parent_field_names: [][]const u8,
+};
+
+/// [introspection] section — opt-in CLI usage logging.
+pub const Introspection = struct {
+    /// Whether to record a cli_invocations row per top-level planar
+    /// invocation. Default false (opt-in, never on by default).
+    cli_log: bool,
+    /// How many days of cli_invocations rows to retain.
+    /// Rows older than this are pruned statelessly on the capture path.
+    retention_days: i64,
 };
 
 // =========================================================================
@@ -288,6 +299,111 @@ pub fn resolve(
 
             // Nothing found: return empty string (no provenance entry).
             return try alloc.dupe(u8, "");
+        }
+    }.call;
+
+    // pickBool: resolve a bool-typed key. Checks the config file first
+    // (as .bool or "true"/"false" string), then embedded defaults. Records
+    // provenance in eff as a "true"/"false" string for `config show`.
+    const pickBool = struct {
+        fn call(
+            alloc: std.mem.Allocator,
+            fmap: *const std.StringHashMapUnmanaged(parse.Value),
+            dmap: *const std.StringHashMapUnmanaged(parse.Value),
+            effective: *EffectiveMap,
+            key: []const u8,
+            default_val: bool,
+        ) Error!bool {
+            // Layer 3: config file.
+            if (fmap.get(key)) |fv| {
+                const b: bool = switch (fv) {
+                    .bool => |bv| bv,
+                    .string => |sv| std.mem.eql(u8, sv, "true"),
+                    else => default_val,
+                };
+                const v = try alloc.dupe(u8, if (b) "true" else "false");
+                const k = try alloc.dupe(u8, key);
+                const res = try effective.getOrPut(alloc, k);
+                if (res.found_existing) {
+                    alloc.free(res.key_ptr.*);
+                    alloc.free(res.value_ptr.value);
+                    alloc.free(res.value_ptr.env_var_name);
+                }
+                res.key_ptr.* = k;
+                res.value_ptr.* = .{ .value = v, .source = .config_file, .env_var_name = "" };
+                return b;
+            }
+            // Layer 4: embedded defaults.
+            if (dmap.get(key)) |dv| {
+                const b: bool = switch (dv) {
+                    .bool => |bv| bv,
+                    .string => |sv| std.mem.eql(u8, sv, "true"),
+                    else => default_val,
+                };
+                const v = try alloc.dupe(u8, if (b) "true" else "false");
+                const k = try alloc.dupe(u8, key);
+                const res = try effective.getOrPut(alloc, k);
+                if (res.found_existing) {
+                    alloc.free(res.key_ptr.*);
+                    alloc.free(res.value_ptr.value);
+                    alloc.free(res.value_ptr.env_var_name);
+                }
+                res.key_ptr.* = k;
+                res.value_ptr.* = .{ .value = v, .source = .embedded_default, .env_var_name = "" };
+                return b;
+            }
+            return default_val;
+        }
+    }.call;
+
+    // pickInt: resolve an int-typed key. Checks the config file first
+    // (as .int), then embedded defaults. Records provenance in eff.
+    const pickInt = struct {
+        fn call(
+            alloc: std.mem.Allocator,
+            fmap: *const std.StringHashMapUnmanaged(parse.Value),
+            dmap: *const std.StringHashMapUnmanaged(parse.Value),
+            effective: *EffectiveMap,
+            key: []const u8,
+            default_val: i64,
+        ) Error!i64 {
+            // Layer 3: config file.
+            if (fmap.get(key)) |fv| {
+                const n: i64 = switch (fv) {
+                    .int => |iv| iv,
+                    else => default_val,
+                };
+                const v = try std.fmt.allocPrint(alloc, "{d}", .{n});
+                const k = try alloc.dupe(u8, key);
+                const res = try effective.getOrPut(alloc, k);
+                if (res.found_existing) {
+                    alloc.free(res.key_ptr.*);
+                    alloc.free(res.value_ptr.value);
+                    alloc.free(res.value_ptr.env_var_name);
+                }
+                res.key_ptr.* = k;
+                res.value_ptr.* = .{ .value = v, .source = .config_file, .env_var_name = "" };
+                return n;
+            }
+            // Layer 4: embedded defaults.
+            if (dmap.get(key)) |dv| {
+                const n: i64 = switch (dv) {
+                    .int => |iv| iv,
+                    else => default_val,
+                };
+                const v = try std.fmt.allocPrint(alloc, "{d}", .{n});
+                const k = try alloc.dupe(u8, key);
+                const res = try effective.getOrPut(alloc, k);
+                if (res.found_existing) {
+                    alloc.free(res.key_ptr.*);
+                    alloc.free(res.value_ptr.value);
+                    alloc.free(res.value_ptr.env_var_name);
+                }
+                res.key_ptr.* = k;
+                res.value_ptr.* = .{ .value = v, .source = .embedded_default, .env_var_name = "" };
+                return n;
+            }
+            return default_val;
         }
     }.call;
 
@@ -503,6 +619,24 @@ pub fn resolve(
         allocator.free(gh_projects_parent_field_names);
     };
 
+    // [introspection] — opt-in CLI usage log.
+    const introspection_cli_log = try pickBool(
+        allocator,
+        &file_map,
+        &def_map,
+        &eff,
+        "introspection.cli_log",
+        false,
+    );
+    const introspection_retention_days = try pickInt(
+        allocator,
+        &file_map,
+        &def_map,
+        &eff,
+        "introspection.retention_days",
+        90,
+    );
+
     // Build Config with separate dupe allocations from EffectiveMap values.
     // Each pickStr result is owned by EffectiveMap; Config needs its own copy.
     const config = Config{
@@ -546,6 +680,10 @@ pub fn resolve(
                     break :blk cfg_names;
                 },
             },
+        },
+        .introspection = .{
+            .cli_log = introspection_cli_log,
+            .retention_days = introspection_retention_days,
         },
     };
 
@@ -960,4 +1098,72 @@ test "sortedKeys: keys come back in lexicographic order" {
     for (keys[0 .. keys.len - 1], keys[1..]) |a_k, b_k| {
         try std.testing.expect(std.mem.lessThan(u8, a_k, b_k) or std.mem.eql(u8, a_k, b_k));
     }
+}
+
+test "introspection: defaults — cli_log false, retention_days 90" {
+    const a = std.testing.allocator;
+    const environ = std.process.Environ.empty;
+
+    var res = try resolve(a, null, environ, null);
+    defer res.deinit(a);
+
+    // Structured config has the typed defaults.
+    try std.testing.expectEqual(false, res.config.introspection.cli_log);
+    try std.testing.expectEqual(@as(i64, 90), res.config.introspection.retention_days);
+
+    // Effective map records provenance as embedded_default.
+    const cli_log_prov = res.effective.get("introspection.cli_log") orelse
+        return error.TestFailed;
+    try std.testing.expectEqualStrings("false", cli_log_prov.value);
+    try std.testing.expectEqual(Provenance.embedded_default, cli_log_prov.source);
+
+    const days_prov = res.effective.get("introspection.retention_days") orelse
+        return error.TestFailed;
+    try std.testing.expectEqualStrings("90", days_prov.value);
+    try std.testing.expectEqual(Provenance.embedded_default, days_prov.source);
+}
+
+test "introspection: file section overrides defaults — cli_log true, retention_days 30" {
+    const a = std.testing.allocator;
+    const environ = std.process.Environ.empty;
+
+    const file_content =
+        \\[introspection]
+        \\cli_log = true
+        \\retention_days = 30
+    ;
+
+    var res = try resolve(a, file_content, environ, null);
+    defer res.deinit(a);
+
+    try std.testing.expectEqual(true, res.config.introspection.cli_log);
+    try std.testing.expectEqual(@as(i64, 30), res.config.introspection.retention_days);
+
+    const cli_log_prov = res.effective.get("introspection.cli_log") orelse
+        return error.TestFailed;
+    try std.testing.expectEqualStrings("true", cli_log_prov.value);
+    try std.testing.expectEqual(Provenance.config_file, cli_log_prov.source);
+
+    const days_prov = res.effective.get("introspection.retention_days") orelse
+        return error.TestFailed;
+    try std.testing.expectEqualStrings("30", days_prov.value);
+    try std.testing.expectEqual(Provenance.config_file, days_prov.source);
+}
+
+test "introspection: absent section yields defaults (no file content for section)" {
+    const a = std.testing.allocator;
+    const environ = std.process.Environ.empty;
+
+    // A config file that sets other keys but not introspection.
+    const file_content =
+        \\[defaults]
+        \\vendor = "codex"
+    ;
+
+    var res = try resolve(a, file_content, environ, null);
+    defer res.deinit(a);
+
+    // Absent section falls through to embedded defaults.
+    try std.testing.expectEqual(false, res.config.introspection.cli_log);
+    try std.testing.expectEqual(@as(i64, 90), res.config.introspection.retention_days);
 }

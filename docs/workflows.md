@@ -2545,3 +2545,88 @@ planar models routing
 ```
 
 A `planar-execute run --dry-run <workflow.lua>` shows the same table for a specific run; each live spawn logs a `[dispatch] task:N vendor=… role=… model=…` banner. See [`docs/concepts.md § Model routing`](./concepts.md#model-routing) and the `pl-models-config` skill.
+
+## Recipe 26 — Self-report a usage finding to GitHub Issues
+
+Use `pl-introspect` to identify friction patterns, select a finding, review
+the assembled issue body, and post it to `rdrsss/planar` via the operator's
+existing `gh` auth. The created issue is recorded as a record-only external
+link on the finding so `pl-audit-trail` can surface it later.
+
+**Prerequisites:** `gh auth status` shows a valid session; `planar report --json`
+is available (requires `[introspection].cli_log = true` in
+`~/.planar/config.toml`, or the always-on bundle sections suffice).
+
+**1. Run the introspection pass to populate the feedback plan.**
+
+```bash
+/pl-introspect
+# → findings filed on the planar-feedback plan as questions/tasks
+```
+
+**2. Review the findings.**
+
+```bash
+planar question list --scope global --plan <feedback-plan-id> --status open --json
+planar task list --scope global --plan <feedback-plan-id> --status todo --json
+```
+
+Pick the finding id you want to surface upstream (e.g. `question:42`).
+
+**3. Ensure a GitHub system is registered (once per database).**
+
+```bash
+planar ext list
+# If planar-upstream is absent:
+planar ext register github planar-upstream --project rdrsss/planar
+```
+
+This writes a local row only — no network contact, no auth required at
+registration time.
+
+**4. Invoke `pl-report-issue` with the selected finding.**
+
+```bash
+/pl-report-issue --finding question:42
+```
+
+The skill:
+
+- Runs `planar report --json` to obtain the structurally-redacted bundle.
+- Reads `question:42` summary and its `planar audit trail` history.
+- Assembles the full issue body (header, finding section, bundle block,
+  metadata footer).
+- **Renders the complete body to you for review.** This step is mandatory
+  and cannot be skipped.
+
+**5. Confirm or decline at the preview gate.**
+
+Review every line. The bundle is structurally redacted (counts, verb paths,
+categories — no entity text). The finding section may contain entity names;
+you personally approve what goes public at this step.
+
+- **Confirm** — the skill posts via `gh issue create -R rdrsss/planar`.
+- **Decline** — no post, no link, no side effects. Re-run with a different
+  finding or refined problem statement at any time.
+
+**6. On success, the skill records the issue as a record-only external link.**
+
+```bash
+# (Performed by the skill on your behalf after a successful post.)
+planar link question:42 --to planar-upstream:<issue-number> \
+  --role reference --sync read-only --json
+```
+
+No propagation, no sync subscription. The link makes the upstream issue
+visible to `pl-audit-trail`:
+
+```bash
+planar audit trail 42 --kind question
+# → shows the create event and the external link row
+```
+
+**If `gh` fails:** the skill surfaces the error, records no link, and leaves
+local state unchanged. Fix the `gh` auth issue (`gh auth login`) and re-run.
+
+See [`skills/src/pl-report-issue.md`](../skills/src/pl-report-issue.md) for
+the full skill spec, privacy contract, and mandatory-preview-gate rationale.

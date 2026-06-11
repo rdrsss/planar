@@ -5,6 +5,7 @@ const planar = @import("planar");
 const cli = @import("cli");
 const runtime = @import("runtime");
 const exit = @import("exit.zig");
+const cli_log = @import("cli_log.zig");
 const worktree_gate = @import("worktree_gate.zig");
 
 // Verb groups. Leaf verbs (no subverbs) live at `handlers/<verb>.zig`;
@@ -50,6 +51,7 @@ const synthesize_h = @import("handlers/synthesize.zig");
 const version_h = @import("handlers/version.zig");
 const completion_h = @import("handlers/completion.zig");
 const schema_h = @import("handlers/schema.zig");
+const report_h = @import("handlers/report.zig");
 
 /// Root command tree. `pub` because each `handlers/*.zig` imports it to
 /// derive its typed args via `cli.castArgs(main.root, &.{…}, ptr)`.
@@ -101,6 +103,7 @@ pub const root: cli.Cmd = .{
         version_h.verb,
         completion_h.verb,
         schema_h.verb,
+        report_h.verb,
     },
 };
 
@@ -123,6 +126,11 @@ pub fn main(init: std.process.Init) !void {
     const db_path = try runtime.resolveDbPath(arena, init.minimal.environ);
     runtime.init(arena, init.io, &stdout_buffer, &stderr_buffer, db_path, init.minimal.environ, args);
     defer runtime.shutdown();
+
+    // Capture the process start timestamp as early as meaningful (runtime
+    // is live, stderr is available). Both the success path below and the
+    // death path (exit.die) read this via cli_log.startNs().
+    cli_log.setStartNs(cli_log.nowNanosPublic());
 
     // Plan 297 M3: refuse planning verbs invoked from inside a git
     // worktree. Runs AFTER runtime.init so the gate can stderr.print,
@@ -150,6 +158,9 @@ pub fn main(init: std.process.Init) !void {
     };
 
     try runtime.flush();
+
+    // Capture the successful invocation (fail-open — any error is swallowed).
+    cli_log.record(0, null, cli_log.startNs());
 
     // Keep the planar lib import load-bearing for now.
     _ = planar;
