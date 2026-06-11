@@ -76,6 +76,8 @@ comptime {
     _ = @import("report_test.zig");
     _ = @import("ergo_fixes_test.zig");
 
+    _ = @import("closeout_recompute_test.zig");
+
     _ = @import("scenarios/scenario_annotations_test.zig");
     _ = @import("scenarios/scenario_audit_trail_test.zig");
     _ = @import("scenarios/scenario_cross_scope_polyrepo_test.zig");
