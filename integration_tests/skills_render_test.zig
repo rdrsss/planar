@@ -324,6 +324,7 @@ test "skills render real sources keep model tiers notes and invocation blocks" {
             "pl-coder",
             "pl-orchestrator",
             "pl-spec-draft",
+            "pl-introspect",
         });
         defer gpa.free(stdout);
     }
@@ -338,6 +339,8 @@ test "skills render real sources keep model tiers notes and invocation blocks" {
     defer gpa.free(codex_orch);
     const claude_spec_draft = try readPath(gpa, root, "commands/claude/pl-spec-draft.md");
     defer gpa.free(claude_spec_draft);
+    const codex_introspect = try readPath(gpa, root, "skills/codex/pl-introspect.md");
+    defer gpa.free(codex_introspect);
 
     try std.testing.expect(std.mem.indexOf(u8, claude_coder, "model: claude-sonnet-4-6") != null);
     try std.testing.expect(std.mem.indexOf(u8, codex_coder, "model: gpt-5.4") != null);
@@ -348,6 +351,8 @@ test "skills render real sources keep model tiers notes and invocation blocks" {
     try std.testing.expect(std.mem.indexOf(u8, claude_orch, "## Vendor Notes") != null);
     try std.testing.expect(std.mem.indexOf(u8, claude_spec_draft, "argument-hint: \"<goal>\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, claude_spec_draft, "\\\"<goal>\\\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, codex_introspect, "description: 'Run the usage-introspection pass:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, codex_introspect, "association''s feedback plan.'") != null);
 }
 
 test "skills render supports interspersed slugs and flags ordering" {

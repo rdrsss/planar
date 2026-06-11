@@ -929,9 +929,7 @@ fn renderAgentMdYaml(
             defer allocator.free(line);
             try out.appendSlice(allocator, line);
         } else if (std.mem.eql(u8, field, "description")) {
-            const line = try std.fmt.allocPrint(allocator, "description: {s}\n", .{source.description});
-            defer allocator.free(line);
-            try out.appendSlice(allocator, line);
+            try appendYamlSingleQuotedKeyValue(allocator, &out, "description", source.description);
         } else if (std.mem.eql(u8, field, "tools")) {
             const tools = try capabilityTools(source.capability);
             const joined = try joinFlowList(allocator, tools);
@@ -1056,6 +1054,27 @@ fn appendTomlKeyValue(allocator: std.mem.Allocator, out: *std.ArrayList(u8), key
     try out.appendSlice(allocator, " = ");
     try out.appendSlice(allocator, quoted);
     try out.append(allocator, '\n');
+}
+
+/// appendYamlSingleQuotedKeyValue appends `key: 'value'\n`, escaping embedded
+/// single quotes per YAML single-quoted scalar rules. Skill descriptions are
+/// prose and can contain `: `, which is invalid as an unquoted plain scalar.
+fn appendYamlSingleQuotedKeyValue(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    key: []const u8,
+    value: []const u8,
+) !void {
+    try out.appendSlice(allocator, key);
+    try out.appendSlice(allocator, ": '");
+    for (value) |c| {
+        switch (c) {
+            '\'' => try out.appendSlice(allocator, "''"),
+            '\n', '\r' => return RenderError.ParseFailure,
+            else => try out.append(allocator, c),
+        }
+    }
+    try out.appendSlice(allocator, "'\n");
 }
 
 /// tomlString renders a basic single-line TOML string literal with the standard
@@ -1531,9 +1550,7 @@ fn renderFrontmatter(
             continue;
         }
         if (std.mem.eql(u8, field, "description")) {
-            const line = try std.fmt.allocPrint(allocator, "description: {s}\n", .{source.description});
-            defer allocator.free(line);
-            try out.appendSlice(allocator, line);
+            try appendYamlSingleQuotedKeyValue(allocator, &out, "description", source.description);
             continue;
         }
         if (std.mem.eql(u8, field, "source")) {
