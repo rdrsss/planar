@@ -58,6 +58,7 @@ pub const Class = enum {
 ///  - `association {add, update, ...}`       → planning  (alias: `assoc`)
 ///  - `promote | demote`                     → planning
 ///  - `resume | dashboard | handoff *`       → execution_or_read
+///  - `report`                               → execution_or_read
 ///  - `capture * | audit * | health`         → execution_or_read
 ///  - `workbench {pull, push, status, sync, resolve}` → execution_or_read
 ///  - `workspace * | config * | models * | templates *` → execution_or_read
@@ -84,6 +85,7 @@ pub fn classify(path: []const []const u8) Class {
     if (eq(top, "resume") or
         eq(top, "dashboard") or
         eq(top, "health") or
+        eq(top, "report") or
         eq(top, "tree") or
         eq(top, "search") or
         eq(top, "version") or
@@ -210,6 +212,14 @@ test "classify: top-level reads are execution_or_read" {
     for (reads) |p| {
         try std.testing.expectEqual(Class.execution_or_read, classify(p));
     }
+}
+
+test "classify: report is execution_or_read (read-only introspection verb)" {
+    // Regression guard: `report` was not classified and fell through to
+    // `.planning`, causing the worktree gate to refuse it with exit 8.
+    // The M3 introspector agent runs `planar report --json` from worktrees,
+    // so it must be allowed unconditionally.
+    try std.testing.expectEqual(Class.execution_or_read, classify(&.{"report"}));
 }
 
 test "classify: schema is execution_or_read (pure rodata catalog, no DB)" {
