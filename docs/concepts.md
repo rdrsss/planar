@@ -837,6 +837,32 @@ The fourth agent role, dispatched between the coder and the reviewer in [Phase 3
 
 **SQLite tables:** none. **Primary entry points:** [`agents/test-coder.md`](../agents/test-coder.md) (canonical contract), `commands/claude/pl-test-coder.md` + `skills/codex/pl-test-coder.md` + `skills/copilot/pl-test-coder.md` (vendor surfaces), `planar test-spec status` (gating verb), `planar spec ingest --strict` (ingest-time gate).
 
+## Usage Introspection Privacy Model
+
+Planar's usage-introspection loop (capture → report → introspect) applies a two-tier privacy model. The two tiers provide different guarantees and must not be conflated.
+
+### Tier 1: Structurally-redacted diagnostic bundle
+
+`planar report [--json]` is **privacy-safe by query construction**. The aggregate queries in `src/engine/introspect.zig` select only counts, error categories, verb paths, statuses, and timestamps from the observability tables. They never select `title`, `body`, `summary`, scope slugs, file paths, or any column that could carry operator-authored or PII-adjacent text. This guarantee is testable with sentinel fixtures and holds with no human in the loop.
+
+The `cli_invocations` table enforces the same guarantee at the write site: the capture hook serializes flag **names** and positional **arity** only (`args_shape`). There is no code path that writes an argument value into the table. A future query bug cannot leak an argument value from this table because argument values are never there to leak.
+
+### Tier 2: Preview-gated finding text
+
+Findings filed by the introspector (`planar question add` / `planar task add` on the feedback plan) may legitimately reference verb paths and error categories in their body. Their only guarantee is the **mandatory preview gate** in `pl-report-issue` — the operator personally reviews every byte of issue body text before it posts to GitHub. Skills and docs must present the bundle as machine-safe and the finding embed as operator-reviewed, never the reverse.
+
+### Transcript mining: ephemeral by design
+
+Transcript mining (see [`agents/introspector.md`](../agents/introspector.md)) extracts only structured signal — verb path, exit code, retry count — from local Claude JSONL transcript files. **Transcript text (operator messages, assistant responses, tool output prose) is never persisted to any Planar entity, SQLite table, or file.** This is enforced by the mining recipe's design, not by a downstream filter. Violation would push private conversational text into the feedback plan's entity bodies, which the audit machinery and `pl-report-issue` would then surface upstream.
+
+### Opt-in capture
+
+`[introspection].cli_log = false` by default. No `cli_invocations` rows are written until the operator sets `cli_log = true` in `~/.planar/config.toml`. The report verb distinguishes "logging disabled" from "no activity in the window" — the operator is never shown fabricated zeros. The always-on observability tables (`agent_actions`, `sync_events`, `agent_work_claims`, `handoffs`) render normally regardless of the `cli_log` setting.
+
+**SQLite tables:** `cli_invocations` (opt-in; args shape only), `agent_actions`, `sync_events`, `agent_work_claims`, `handoffs` (always-on, read by `report`). **Primary entry points:** `planar report [--json]` (diagnostic bundle), `skills/src/pl-introspect.md` (introspection skill), `agents/introspector.md` (agent role spec).
+
+---
+
 ## Cross-references
 
 Every artifact, task, scenario, decision, and question can carry outgoing edges of three relationship kinds: **`verifies`** (this entity verifies another — used by `test_scenarios` to point at tasks), **`cites`** (this entity references another for context but does not depend on it), and **`derives-from`** (this entity derives from another — a tech-spec derives from a product-spec). All three are stored as rows in the `entity_links` table.
