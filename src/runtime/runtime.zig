@@ -154,7 +154,9 @@ pub fn ensureDb() !*db.sqlite.Db {
         error.SchemaVersionAhead => {
             ctx.stderr.print(
                 "error: schema_version {d} in {s} is newer than this binary's embedded max ({d}); " ++
-                    "upgrade your binary or use one that supports schema_version >= {d}\n",
+                    "the DB was migrated by a newer build — rebuild/reinstall planar from a checkout " ++
+                    "whose migrations include version {d} (e.g. once that migration lands on master), " ++
+                    "then retry\n",
                 .{ db_version, ctx.db_path, emb_max, db_version },
             ) catch {};
             db_storage.?.close();
@@ -253,7 +255,9 @@ pub fn ensureDbConsumer() !*db.sqlite.Db {
     if (db_version > emb_max) {
         ctx.stderr.print(
             "error: schema version {d} in {s} is newer than this binary's embedded max ({d}); " ++
-                "upgrade the binary or use one that supports schema_version >= {d}\n",
+                "the DB was migrated by a newer build — rebuild/reinstall planar from a checkout " ++
+                "whose migrations include version {d} (e.g. once that migration lands on master), " ++
+                "then retry\n",
             .{ db_version, ctx.db_path, emb_max, db_version },
         ) catch {};
         db_storage.?.close();
@@ -332,7 +336,9 @@ pub fn ensureDbStrictReadOnly() !*db.sqlite.Db {
     if (db_version > emb_max) {
         ctx.stderr.print(
             "error: schema version {d} in {s} is newer than this binary's embedded max ({d}); " ++
-                "upgrade the binary or use one that supports schema_version >= {d}\n",
+                "the DB was migrated by a newer build — rebuild/reinstall planar from a checkout " ++
+                "whose migrations include version {d} (e.g. once that migration lands on master), " ++
+                "then retry\n",
             .{ db_version, ctx.db_path, emb_max, db_version },
         ) catch {};
         db_storage.?.close();

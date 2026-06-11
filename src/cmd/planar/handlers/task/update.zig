@@ -56,10 +56,11 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
             exit.die(ctx, e, "task update: resolving write scope: {s}", .{@errorName(e)});
 
         scope_mod.guard(entity_scope, resolution.scope) catch
-            exit.die(ctx, error.ScopeMismatch, "scope mismatch: task {d} is in scope '{s}' but operator write scope is '{s}'", .{
+            exit.die(ctx, error.ScopeMismatch, "scope mismatch: task {d} is in scope '{s}' but operator write scope is '{s}'; pass --scope {s} to write to that scope from here", .{
                 id,
                 if (entity_scope) |s| s else "global",
                 if (resolution.scope) |s| s else "global",
+                if (entity_scope) |s| s else "global",
             });
     }
 
