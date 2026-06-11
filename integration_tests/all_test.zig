@@ -87,4 +87,5 @@ comptime {
     _ = @import("scenarios/scenario_templates_test.zig");
     _ = @import("scenarios/scenario_test_spec_authoring_test.zig");
     _ = @import("scenarios/scenario_workbench_sync_test.zig");
+    _ = @import("scenarios/scenario_usage_introspection_test.zig");
 }

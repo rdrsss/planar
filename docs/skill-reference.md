@@ -506,6 +506,37 @@ Source: `commands/claude/pl-templates.md` · `skills/codex/pl-templates.md`
 
 ---
 
+## Usage Introspection
+
+### `/pl-introspect`
+
+Run a usage-introspection pass: mine `planar report --json` and local Claude
+transcript JSONL files for friction patterns (failure clusters, retry sequences,
+stale claims, gap features) and file each pattern as a structured finding on
+the association's `planar-feedback` plan.
+
+**Arguments:** `[--days <n>] [--scope <scope>]`
+
+- `--days <n>` — report window (default 30).
+- `--scope <scope>` — association scope for the feedback plan (default: cwd-derived).
+
+**Example:**
+```
+/pl-introspect
+/pl-introspect --days 7
+/pl-introspect --scope assoc:my-org
+```
+
+**Finding taxonomy:** `failure-cluster`, `retry-pattern`, `abandoned-workflow`, `gap-feature`.
+
+**Title convention:** `<taxonomy-key>: <signal-key>` (e.g. `retry-pattern: task add`). Titles are deterministic and signal-derived — re-runs over the same signal are idempotent via title-based dedup.
+
+**Privacy:** Transcript text is ephemeral and never persisted. Finding bodies carry only aggregate signal (counts, verb paths, error categories). See [Usage Introspection Privacy Model](concepts.md#usage-introspection-privacy-model).
+
+Source: `skills/src/pl-introspect.md` · `agents/introspector.md`
+
+---
+
 ## Agent Role Specs
 
 The vendor-neutral role specs live under `agents/`. Vendor skill files defer to them for the authoritative behavior description.
@@ -521,6 +552,7 @@ The vendor-neutral role specs live under `agents/`. Vendor skill files defer to 
 | `agents/extsync.md` | Ext-sync role: strategy-selection contract, propagation walk, idempotency |
 | `agents/coder.md` | Coder role: task implementation contract, test requirements, reporting format |
 | `agents/reviewer.md` | Reviewer role: review criteria, decision taxonomy, caveat recording |
+| `agents/introspector.md` | Introspector role: read surface, transcript-mining recipe, finding taxonomy, dedup contract, feedback-plan bootstrap |
 | `agents/models.md` | Tier-to-model resolution: maps `large` / `medium` tiers to concrete model IDs per vendor |
 
 ---
