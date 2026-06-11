@@ -481,6 +481,34 @@ Source: `commands/claude/pl-health.md` · `skills/codex/pl-health.md`
 
 ---
 
+### `/pl-doctor`
+
+Guided diagnose-then-reconcile flow for a degraded Planar installation. Companion to `/pl-health` (which reports; this one acts).
+
+**Flow:**
+
+1. Run `planar health --json`. If `overall == "ok"`, stop.
+2. Stale claims — `planar-agent reconcile --dry-run` to preview, then `planar-agent reconcile` to mark them stale. Only affects expired leases; never touches live claims.
+3. Stale handoffs — list via `planar handoff list`, inspect with `planar handoff show`, then `planar handoff abandon <id>` per handoff (operator-confirmed).
+4. Non-resumable in-flight tasks — surface each with its age, plan, and scope. Classify: cancel tasks in dead plans, reset weeks-stale tasks in active plans to `todo`, **leave recent (< 48h) tasks alone**. Each write is operator-confirmed.
+5. Re-run `planar health` and report the new state.
+
+**Safety contract:** Every destructive write is operator-confirmed before executing. Recent in-flight tasks are never auto-touched. Reconcile only affects expired claims. No `--no-scope-check`.
+
+**Hard-won CLI facts encoded:**
+- `planar health` is global (whole DB); `planar task list` is scope-filtered (cwd-derived); `planar handoff list` is global (no scope filter). `--scope global` on `task list` returns only global-scoped tasks — not all scopes. To enumerate in-flight tasks across all scopes, run `task list --status doing,blocked` per-association (from each project's directory or via `--scope <slug>`).
+- Cross-scope task writes: `task update` (including `--status`) is scope-guarded and requires `--scope <task-assoc-slug>`; `task cancel` is id-based and unguarded (succeeds from any cwd).
+- `task update` does not accept `--editor`; apply `--status` / `--next-action` directly as flags.
+
+**Example:**
+```
+/pl-doctor
+```
+
+Source: `skills/src/pl-doctor.md`
+
+---
+
 ### `/pl-status`
 
 Summarize the current scope's state: active and paused plans, open tasks (todo / doing / blocked) grouped by plan, and open questions. Read-only. Use at the start of a session for quick orientation.
