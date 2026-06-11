@@ -126,6 +126,125 @@ test "spec ingest apply mid-write slug conflict rolls back derived graph" {
     try expectNoDerivedGraph(captureDerivedGraph(&suite, arena, fixture.plan_id, fixture.env));
 }
 
+test "spec ingest apply creates resolved questions in anchor scope and links them to plan" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_backing = std.heap.ArenaAllocator.init(gpa);
+    defer arena_backing.deinit();
+    const arena = arena_backing.allocator();
+
+    _ = suite.registerProject("spec-ingest-question-scope-project");
+    suite.addAssoc("spec-ingest-question-scope", "project");
+    const scope = "assoc:spec-ingest-question-scope";
+    const wb = createWorkbenchEnv(&suite, arena, "workbench-question-scope");
+
+    const IDJSON = struct { id: i64 };
+    const plan = suite.mustRunJSON(IDJSON, arena, &.{
+        "plan", "create", "--json", "--scope", scope, "Resolved Question Ingest Plan",
+    });
+    const plan_id = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch @panic("OOM");
+
+    const tech_body =
+        \\# Resolved Question Tech Spec
+        \\
+        \\## Status
+        \\
+        \\Draft.
+        \\
+        \\## Open Questions
+        \\
+        \\### Should resolved questions stay in the anchor scope?
+        \\
+        \\Resolution: Yes. The question must inherit the anchor association scope.
+        \\
+        \\### Should resolved questions be visible through question list --plan?
+        \\
+        \\Resolution: Yes. The ingestor must create the derives-from plan link.
+        \\
+    ;
+    const roadmap_body =
+        \\# Resolved Question Roadmap
+        \\
+        \\## Question Persistence
+        \\
+        \\- Persist resolved questions through the normal question path [slug: resolved-question-path]
+        \\
+    ;
+
+    const tech_out = suite.mustRun(&.{
+        "artifact",  "add",
+        "--json",    "--scope",
+        scope,       "--kind",
+        "tech_spec", "--plan",
+        plan_id,     "--body",
+        tech_body,   "Resolved Question Tech Spec",
+    });
+    defer gpa.free(tech_out);
+    const roadmap_out = suite.mustRun(&.{
+        "artifact",   "add",
+        "--json",     "--scope",
+        scope,        "--kind",
+        "roadmap",    "--plan",
+        plan_id,      "--body",
+        roadmap_body, "Resolved Question Roadmap",
+    });
+    defer gpa.free(roadmap_out);
+
+    const push_out = suite.mustRunWith(&.{ "workbench", "push", "--json", plan_id }, wb.env);
+    defer gpa.free(push_out);
+
+    const apply = suite.execWith(&.{ "spec", "ingest", plan_id, "--apply", "--scope", scope }, wb.env);
+    defer apply.deinit(gpa);
+    try std.testing.expect(apply.term == .exited and apply.term.exited == 0);
+    try std.testing.expect(std.mem.containsAtLeast(u8, apply.stderr, 1, "2 questions added, 2 questions answered"));
+
+    const QuestionRow = struct {
+        id: i64,
+        title: []const u8,
+        status: []const u8,
+        answer_body: ?[]const u8 = null,
+    };
+    const scoped_questions_json = suite.mustRunWith(&.{
+        "question", "list", "--json", "--scope", scope, "--plan", plan_id, "--status", "answered",
+    }, wb.env);
+    defer gpa.free(scoped_questions_json);
+    const scoped_questions = parseJSON([]const QuestionRow, arena, scoped_questions_json);
+    try std.testing.expectEqual(@as(usize, 2), scoped_questions.len);
+    for (scoped_questions) |q| {
+        try std.testing.expectEqualStrings("answered", q.status);
+        try std.testing.expect(q.answer_body != null);
+        try std.testing.expect(q.answer_body.?.len > 0);
+    }
+
+    const global_questions_json = suite.mustRunWith(&.{
+        "question", "list", "--json", "--scope", "global", "--status", "answered",
+    }, wb.env);
+    defer gpa.free(global_questions_json);
+    const global_questions = parseJSON([]const QuestionRow, arena, global_questions_json);
+    for (global_questions) |q| {
+        try std.testing.expect(!std.mem.eql(u8, q.title, "Should resolved questions stay in the anchor scope?"));
+        try std.testing.expect(!std.mem.eql(u8, q.title, "Should resolved questions be visible through question list --plan?"));
+    }
+
+    const PreviewJSON = struct {
+        summary: struct {
+            additions: i64,
+            updates: i64,
+            removals: i64,
+        },
+    };
+    const preview_json = suite.mustRunWith(&.{
+        "spec", "ingest", plan_id, "--format", "json", "--scope", scope,
+    }, wb.env);
+    defer gpa.free(preview_json);
+    const preview = parseJSON(PreviewJSON, arena, preview_json);
+    try std.testing.expectEqual(@as(i64, 0), preview.summary.additions);
+    try std.testing.expectEqual(@as(i64, 0), preview.summary.updates);
+    try std.testing.expectEqual(@as(i64, 0), preview.summary.removals);
+}
+
 test "spec ingest apply-removals failure rolls back retirements and replacements" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);

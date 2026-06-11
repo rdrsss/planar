@@ -305,29 +305,18 @@ fn applyWithinSavepoint(
 
     // ---- new questions ------------------------------------------------
     for (diff.new_questions) |q| {
+        const created = question_mod.create(d, allocator, .{
+            .title = q.title,
+            .body = if (q.body.len > 0) q.body else null,
+            .scope = scope_slug,
+            .plan_id = diff.anchor_plan_id,
+        }) catch |e| return mapQuestionErr(e);
+        defer question_mod.deinit(created, allocator);
+
         if (q.resolution.len > 0) {
-            // Insert directly as answered: schema CHECK requires both
-            // answer_body and answered_at to be set atomically with
-            // status='answered'.
-            const scope_kind_str: []const u8 = "global";
-            _ = d.execParams(
-                \\insert into questions (scope_kind, scope_id, title, body, status,
-                \\                       answer_body, answered_at)
-                \\values (?, null, ?, ?, 'answered', ?,
-                \\        strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-            , &.{
-                .{ .text = scope_kind_str },
-                .{ .text = q.title },
-                if (q.body.len > 0) .{ .text = q.body } else .{ .null = {} },
-                .{ .text = q.resolution },
-            }) catch return Error.QueryFailed;
-        } else {
-            const created = question_mod.create(d, allocator, .{
-                .title = q.title,
-                .body = if (q.body.len > 0) q.body else null,
-                .scope = scope_slug,
-            }) catch |e| return mapQuestionErr(e);
-            defer question_mod.deinit(created, allocator);
+            const answered = question_mod.answer(d, allocator, created.id, q.resolution) catch |e| return mapQuestionErr(e);
+            defer question_mod.deinit(answered, allocator);
+            res.questions_answered += 1;
         }
         res.questions_added += 1;
     }

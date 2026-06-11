@@ -244,7 +244,7 @@ fn runOnePlan(
 
     if (apply_flag and !json_out) {
         try ctx.stderr.print(
-            "plan {d} ({s}) applied: {d} plans created, {d} tasks created, {d} tasks updated, {d} decisions added",
+            "plan {d} ({s}) applied: {d} plans created, {d} tasks created, {d} tasks updated, {d} decisions added, {d} questions added, {d} questions answered",
             .{
                 anchor.id,
                 anchor.slug,
@@ -252,6 +252,8 @@ fn runOnePlan(
                 result.tasks_created,
                 result.tasks_updated,
                 result.decisions_added,
+                result.questions_added,
+                result.questions_answered,
             },
         );
         if (result.tasks_cancelled > 0) try ctx.stderr.print(", {d} tasks cancelled", .{result.tasks_cancelled});
