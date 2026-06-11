@@ -2,7 +2,7 @@
 
 Reference for every `planar` subcommand. Authoritative current surface for the installed binary. For machine-readable help, use `planar <subcommand> --help`.
 
-**Source of truth:** schema across `migrations/00001_foundation.up.sql` through `migrations/00018_fix_schema_migration_descriptions.up.sql`. Every "schema effects" section below cites real columns from those migrations. See [docs/architecture.md § Application tables](architecture.md#application-tables) for the migration-by-migration table inventory.
+**Source of truth:** schema across `migrations/00001_foundation.up.sql` through `migrations/00021_session_commits.up.sql`. Every "schema effects" section below cites real columns from those migrations. See [docs/architecture.md § Application tables](architecture.md#application-tables) for the migration-by-migration table inventory.
 
 ---
 
@@ -3540,7 +3540,7 @@ The `context-history` term is vestigial from an earlier framing and is dropped. 
 planar capture session [--task <task-id>] [--vendor <vendor>] [--vendor-session-id <id>] [--model <model>]
 ```
 
-**Description:** Explicitly open a new session row and make it the current active session for subsequent commands. Useful when automatic session creation behavior needs to be overridden (e.g. when starting a new agent process mid-task).
+**Description:** Explicitly open a new session row and make it the current active session for subsequent commands. Useful when automatic session creation behavior needs to be overridden (e.g. when starting a new agent process mid-task). When cwd is inside a git repo, the first successful open for that session also records `sessions.repo_root` and `sessions.head_sha_at_start`; reused opens are first-open-wins for those columns.
 
 **Options:**
 
@@ -3556,7 +3556,7 @@ planar capture session [--task <task-id>] [--vendor <vendor>] [--vendor-session-
 session 101 opened (vendor: claude, task: 42)
 ```
 
-**Schema effects:** Inserts into `sessions(task_id, project_id, agent_id, vendor, vendor_session_id, model, started_at)`.
+**Schema effects:** Inserts into `sessions(task_id, project_id, agent_id, vendor, vendor_session_id, model, started_at)`. On git-backed opens, also sets `sessions.repo_root` and `sessions.head_sha_at_start` if those columns are still `NULL`.
 
 **Capture:** Appends `session_entries` row with `prefix='action'` marking session start.
 
@@ -3569,7 +3569,7 @@ session 101 opened (vendor: claude, task: 42)
 planar capture end [<session-id>] [--summary <text>]
 ```
 
-**Description:** Close the current (or specified) session by setting `sessions.ended_at`. Does not capture a snapshot; use `handoff` for end-of-session snapshot capture. If `--summary` is supplied, also writes a human-readable summary of the session to `sessions.summary`.
+**Description:** Close the current (or specified) session by setting `sessions.ended_at`. Before the end timestamp is written, Planar attempts a fail-soft git walk over the operator session window `sessions.head_sha_at_start..HEAD` in `sessions.repo_root` and records any discovered commits into `session_commits`. Does not capture a snapshot; use `handoff` for end-of-session snapshot capture. If `--summary` is supplied, also writes a human-readable summary of the session to `sessions.summary`.
 
 **Options:**
 
@@ -3577,12 +3577,59 @@ planar capture end [<session-id>] [--summary <text>]
 |------|-------------|---------|
 | `--summary <text>` | Human-readable session summary. May be `@<file>`. | none |
 
-**Schema effects:** Updates `sessions(ended_at=now())`. If `--summary` is given, also updates `sessions(summary=<text>)`.
+**Schema effects:** Inserts zero or more rows into `session_commits(session_id, sha, repo_root, branch, subject, author, committed_at, recorded_at)` from the session's git window, then updates `sessions(ended_at=now())`. If `--summary` is given, also updates `sessions(summary=<text>)`.
 
 **Capture:** Appends final `session_entries` row with `prefix='note'` marking session end.
 
 **Exit codes:**
 - `1` — session not found or already ended.
+
+---
+
+### `planar capture commits [<sha>...]`
+
+**Synopsis:**
+```
+planar capture commits [--session <session-id>] [--repo <dir>] [--since <ref>] [<sha>...] [--json]
+```
+
+**Description:** Record explicit git commits into a session. This is the loud-fail operator correction path for anything the automatic claim/session windows miss: post-session attribution, multi-repo sessions, or recovery after a best-effort automatic window recorded nothing. The target session defaults to the active vendor session; `--session` can point at an ended session on purpose.
+
+Exactly one input mode is allowed:
+- `--since <ref>` walks `<ref>..HEAD` in the target repo.
+- Positional SHAs record those exact commits in the order given.
+
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--session <session-id>` | Record into the named session instead of the active vendor session. Ended sessions are allowed. | active vendor session |
+| `--repo <dir>` | Read commits from a repo other than cwd. | `.` |
+| `--since <ref>` | Walk `<ref>..HEAD` and record every commit in that range. Mutually exclusive with positional SHAs. | none |
+| `--json` | Emit a summary object instead of the human confirmation line. | off |
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<sha>` | One or more explicit commit SHAs to attribute. Mutually exclusive with `--since`. |
+
+**Output (human):**
+```
+session 101: processed 3 commits (2 new)
+```
+
+**Output (`--json`):**
+```json
+{"ok":true,"session_id":101,"repo_root":"/path/to/repo","commit_count":3,"inserted_count":2}
+```
+
+**Schema effects:** Reads `sessions`; inserts or ignores into `session_commits(session_id, sha, repo_root, branch, subject, author, committed_at, recorded_at)`. The unique key is `(session_id, sha)`, so rerunning an overlapping window is idempotent within one session.
+
+**Capture:** None.
+
+**Exit codes:**
+- `1` — unknown session id; no active session when `--session` is omitted; non-git cwd/`--repo`; unresolvable `--since` ref; or one or more explicit SHAs could not be resolved.
 
 ---
 
@@ -3661,14 +3708,23 @@ Audit commands produce cross-plane audit trails linking local sessions, decision
 
 ---
 
-### `planar audit trail <link-id>`
+### `planar audit trail --link <link-id>`
 
 **Synopsis:**
 ```
-planar audit trail <link-id>
+planar audit trail --link <link-id> [--json]
 ```
 
-**Description:** Show every local session, decision, and sync event tied to the given external link, with timestamps and vendor identity. This is the inverse view: starting from an external ticket's link id, reconstruct the full history of local work that produced changes to it.
+**Description:** Show every local session, decision, sync event, and attributed commit tied to the given external link, with timestamps and vendor identity. This is the inverse view: starting from an external ticket's link id, reconstruct the full history of local work that produced changes to it. The commits leg is sourced from `session_commits` through the link's local entity sessions and is omitted entirely when no commits were recorded.
+
+The positional form, `planar audit trail [--kind <kind>] <entity-id>`, is entity-scoped; use `--link <link-id>` for the external-link trail shown here.
+
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--link <link-id>` | Switch to the external-link trail form for an `external_links.id`. | required for this form |
+| `--json` | Emit one JSON object instead of human text. | off |
 
 **Output (human):**
 ```
@@ -3684,6 +3740,9 @@ decisions:
 sync events:
   2026-05-10T09:15Z  push  ok  title, status
   2026-05-09T18:00Z  pull  ok  status
+
+commits:
+  2026-05-10T09:12:44Z  5f4dcc3b5aa765d61d8327deb882cf99  Implement payment gateway API
 ```
 
 **Output (`--json`):**
@@ -3694,11 +3753,14 @@ sync events:
   "external_id":"PROJ-1234","system_slug":"acme-jira",
   "sessions":[{"id":101,"vendor":"claude","started_at":"...","summary":"..."},...],
   "decisions":[{"id":5,"title":"...","status":"accepted","decided_at":"..."},...],
+  "commits":[{"session_id":101,"claim_id":44,"sha":"...","repo_root":"/repo","branch":"main","subject":"...","author":"...","committed_at":"...","recorded_at":"..."}],
   "sync_events":[{"id":15,"direction":"push","outcome":"ok","at":"..."},...]
 }
 ```
 
-**Schema effects:** Reads `external_links`, `sync_events`, `sessions`, `session_entries`, `decisions`, `entity_links`.
+`commits` is omitted from the JSON object when the trail has none.
+
+**Schema effects:** Reads `external_links`, `sync_events`, `sessions`, `session_entries`, `decisions`, `entity_links`, `session_commits`.
 
 **Capture:** None.
 
@@ -3733,6 +3795,49 @@ session 101  vendor: claude  task: 42  2026-05-10T09:00Z → 2026-05-10T11:30Z
 
 **Exit codes:**
 - `1` — session not found.
+
+---
+
+### `planar audit commits`
+
+**Synopsis:**
+```
+planar audit commits [--session <session-id>] [--task <task-id>] [--json | --shas]
+```
+
+**Description:** List commits attributed to sessions and claims. Filters are optional and composable: `--session` narrows to one session, `--task` traverses claim ownership to show commits recorded for claims on that task, and no filter lists every recorded commit newest-first. Human output is a fixed table; `--shas` emits bare SHAs for piping.
+
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--session <session-id>` | Restrict results to one session. | all sessions |
+| `--task <task-id>` | Restrict results to commits recorded through claims on one task. | all tasks |
+| `--json` | Emit the canonical row objects. Mutually exclusive with `--shas`. | off |
+| `--shas` | Emit exactly one SHA per line, no header or decoration. Mutually exclusive with `--json`. | off |
+
+**Output (human):**
+```
+SHA                                       session  claim  committed_at               subject
+5f4dcc3b5aa765d61d8327deb882cf99              101     44  2026-05-10T09:12:44Z      Implement payment gateway API
+```
+
+**Output (`--json`):** One JSON array:
+```json
+[{"session_id":101,"claim_id":44,"sha":"...","repo_root":"/repo","branch":"main","subject":"...","author":"...","committed_at":"...","recorded_at":"..."}]
+```
+
+**Output (`--shas`):**
+```
+5f4dcc3b5aa765d61d8327deb882cf99
+```
+
+**Schema effects:** Reads `session_commits`; validates `--session` against `sessions(id)` and `--task` against `tasks(id)` before querying.
+
+**Capture:** None.
+
+**Exit codes:**
+- `1` — session id or task id not found; or `--json` and `--shas` were combined.
 
 ---
 
@@ -5767,8 +5872,8 @@ For quick reference, all documented commands grouped by domain:
 | `sync` | `sync pull`, `sync push`, `sync status`, `sync resolve` |
 | `resume` | `resume`, `resume validate` |
 | `handoff` | `handoff`, `handoff create`, `handoff validate`, `handoff list`, `handoff show`, `handoff consume`, `handoff abandon` |
-| `capture` | `capture session`, `capture end`, `capture note`, `capture command`, `capture file`, `capture snapshot` |
-| `audit` | `audit trail`, `audit session`, `audit publish-decision`, `audit handoff-readiness` |
+| `capture` | `capture session`, `capture end`, `capture commits`, `capture note`, `capture command`, `capture file`, `capture snapshot` |
+| `audit` | `audit trail`, `audit session`, `audit commits`, `audit publish-decision`, `audit handoff-readiness` |
 | `health` | `health` |
 | `links` | `links add`, `links list`, `links remove`, `links trail`, `links update` (deferred to M11) |
 | `search` | `search <query>` |

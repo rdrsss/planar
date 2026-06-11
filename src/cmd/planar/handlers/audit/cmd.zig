@@ -1,4 +1,4 @@
-//! handlers/audit/cmd.zig — `planar audit {trail, session, publish-decision, handoff-readiness}`
+//! handlers/audit/cmd.zig — `planar audit {trail, commits, session, publish-decision, handoff-readiness}`
 //!
 //! M7 introduced `audit trail <entity-id> [--kind] [--grep]` reading from
 //! `audit_log` + entity_links (slug `engine-audit-read`). M8 adds the
@@ -12,6 +12,7 @@
 const cli = @import("cli");
 
 const trail = @import("trail.zig");
+const commits = @import("commits.zig");
 const session = @import("session.zig");
 const publish_decision = @import("publish_decision.zig");
 const handoff_readiness = @import("handoff_readiness.zig");
@@ -19,7 +20,7 @@ const handoff_readiness = @import("handoff_readiness.zig");
 pub const verb: cli.Cmd = .{
     .name = "audit",
     .desc = "Cross-plane audit trail commands.",
-    .long_desc = "Cross-plane audit trail commands.\n\n  Subcommands inspect external-link history, recompute decision\n  publication targets, render session timelines, and walk the full\n  audit trail for any external link.",
+    .long_desc = "Cross-plane audit trail commands.\n\n  Subcommands inspect external-link history, query attributed session\n  commits, recompute decision publication targets, render session\n  timelines, and walk the full audit trail for any external link.",
     .cmds = &.{
         .{
             .name = "trail",
@@ -32,6 +33,17 @@ pub const verb: cli.Cmd = .{
             },
             .positionals = &.{.{ .name = "entity-id", .kind = .string, .required = false }},
             .run = cli.handler(trail.handle),
+        },
+        .{
+            .name = "commits",
+            .desc = "List commits attributed to sessions and claims.",
+            .flags = &.{
+                .{ .long = "--session", .kind = .int },
+                .{ .long = "--task", .kind = .int },
+                .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
+                .{ .long = "--shas", .kind = .bool, .default = .{ .bool = false } },
+            },
+            .run = cli.handler(commits.handle),
         },
         .{
             .name = "session",

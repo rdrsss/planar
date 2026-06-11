@@ -52,6 +52,8 @@ comptime {
     _ = @import("handoff_resume_validate_test.zig");
     _ = @import("link_lifecycle_test.zig");
     _ = @import("assoc_lifecycle_test.zig");
+    _ = @import("audit_commits_test.zig");
+    _ = @import("capture_session_commits_test.zig");
     _ = @import("remaining_coverage_test.zig");
     _ = @import("repo_scope_test.zig");
     _ = @import("entity_create_feed_test.zig");

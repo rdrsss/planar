@@ -85,6 +85,41 @@ fn runAgent(
     return .{ .stdout = result.stdout, .stderr = result.stderr, .term = result.term };
 }
 
+/// Like `runAgent`, but executes with cwd set to `cwd`. Uses an absolute
+/// PLANAR_DB so the child still sees the suite DB outside the test runner cwd.
+fn runAgentInDir(
+    suite: *harness.Suite,
+    cwd: []const u8,
+    args: []const []const u8,
+) harness.Suite.RunResult {
+    const gpa = suite.allocator;
+    const agent_bin = resolveAgentBin();
+
+    var argv_list: std.ArrayList([]const u8) = .empty;
+    defer argv_list.deinit(gpa);
+    argv_list.append(gpa, agent_bin) catch @panic("OOM");
+    for (args) |a| argv_list.append(gpa, a) catch @panic("OOM");
+
+    const raw: [*:null]?[*:0]u8 = std.c.environ;
+    var env_count: usize = 0;
+    while (raw[env_count] != null) : (env_count += 1) {}
+    const env_slice: [:null]const ?[*:0]const u8 = @ptrCast(raw[0..env_count :null]);
+    const posix_block: std.process.Environ.PosixBlock = .{ .slice = env_slice };
+    const environ: std.process.Environ = .{ .block = posix_block };
+    var env_map = environ.createMap(gpa) catch @panic("OOM creating env map");
+    defer env_map.deinit();
+    env_map.put("PLANAR_DB", suite.absDbPath()) catch @panic("OOM injecting PLANAR_DB");
+    env_map.put("PWD", cwd) catch @panic("OOM injecting PWD");
+
+    const result = std.process.run(gpa, std.testing.io, .{
+        .argv = argv_list.items,
+        .environ_map = &env_map,
+        .cwd = .{ .path = cwd },
+    }) catch |e| std.debug.panic("runAgentInDir spawn failed: {s}", .{@errorName(e)});
+
+    return .{ .stdout = result.stdout, .stderr = result.stderr, .term = result.term };
+}
+
 /// Assert exit 0 and return res.stdout (caller owns).
 fn mustRunAgent(
     suite: *const harness.Suite,
@@ -96,6 +131,26 @@ fn mustRunAgent(
     if (res.term != .exited or res.term.exited != 0) {
         std.debug.print("planar-agent failed (term={any}): {s}\nstderr: {s}\n", .{ res.term, res.stdout, res.stderr });
         @panic("planar-agent must-run failed");
+    }
+    return res.stdout;
+}
+
+/// Assert exit 0 and return stdout for a planar-agent invocation rooted at
+/// `cwd`. Caller owns the returned buffer.
+fn mustRunAgentInDir(
+    suite: *harness.Suite,
+    cwd: []const u8,
+    args: []const []const u8,
+) []u8 {
+    const gpa = suite.allocator;
+    const res = runAgentInDir(suite, cwd, args);
+    defer gpa.free(res.stderr);
+    if (res.term != .exited or res.term.exited != 0) {
+        std.debug.print(
+            "planar-agent failed in cwd '{s}' (term={any}): {s}\nstderr: {s}\n",
+            .{ cwd, res.term, res.stdout, res.stderr },
+        );
+        @panic("planar-agent must-run-in-dir failed");
     }
     return res.stdout;
 }
@@ -296,6 +351,131 @@ test "planar-agent release: claim → released (distinct from fail's aborted)" {
     defer gpa.free(release_out);
     try std.testing.expect(std.mem.indexOf(u8, release_out, "\"status\":\"released\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, release_out, "\"status\":\"todo\"") != null);
+}
+
+test "planar-agent terminal verbs collect git commits into session_commits regardless of outcome" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const repo_root = try std.fs.path.join(gpa, &.{ suite.tmpAbsPath(), "agent-session-commits-repo" });
+    defer gpa.free(repo_root);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, repo_root);
+
+    try runCommandDiscard(&.{ "git", "init", repo_root });
+    try runCommandInDirDiscard(repo_root, &.{ "git", "config", "user.email", "planar-test@example.com" });
+    try runCommandInDirDiscard(repo_root, &.{ "git", "config", "user.name", "Planar Test" });
+
+    try writeRepoFile(repo_root, "README.md", "seed\n");
+    try runCommandInDirDiscard(repo_root, &.{ "git", "add", "README.md" });
+    try runCommandInDirDiscard(repo_root, &.{ "git", "commit", "-m", "seed" });
+
+    const branch = try trimOwned(gpa, try runCommandInDir(repo_root, &.{ "git", "branch", "--show-current" }));
+    defer gpa.free(branch);
+    const canonical_repo_root = try trimOwned(gpa, try runCommandInDir(repo_root, &.{ "git", "rev-parse", "--show-toplevel" }));
+    defer gpa.free(canonical_repo_root);
+
+    gpa.free(suite.mustRun(&.{ "init", "--skip-project" }));
+    const complete_plan = suite.mustRun(&.{ "plan", "create", "--slug", "ag-session-commits-complete", "--json", "agent session commits complete" });
+    defer gpa.free(complete_plan);
+    const complete_plan_id = extractIntField(complete_plan, "\"id\"") orelse @panic("no complete plan id");
+    const complete_plan_arg = std.fmt.allocPrint(gpa, "{d}", .{complete_plan_id}) catch @panic("OOM");
+    defer gpa.free(complete_plan_arg);
+    gpa.free(suite.mustRun(&.{ "task", "add", "--plan", complete_plan_arg, "complete task" }));
+
+    const fail_plan = suite.mustRun(&.{ "plan", "create", "--slug", "ag-session-commits-fail", "--json", "agent session commits fail" });
+    defer gpa.free(fail_plan);
+    const fail_plan_id = extractIntField(fail_plan, "\"id\"") orelse @panic("no fail plan id");
+    const fail_plan_arg = std.fmt.allocPrint(gpa, "{d}", .{fail_plan_id}) catch @panic("OOM");
+    defer gpa.free(fail_plan_arg);
+    gpa.free(suite.mustRun(&.{ "task", "add", "--plan", fail_plan_arg, "fail task" }));
+
+    const release_plan = suite.mustRun(&.{ "plan", "create", "--slug", "ag-session-commits-release", "--json", "agent session commits release" });
+    defer gpa.free(release_plan);
+    const release_plan_id = extractIntField(release_plan, "\"id\"") orelse @panic("no release plan id");
+    const release_plan_arg = std.fmt.allocPrint(gpa, "{d}", .{release_plan_id}) catch @panic("OOM");
+    defer gpa.free(release_plan_arg);
+    gpa.free(suite.mustRun(&.{ "task", "add", "--plan", release_plan_arg, "release task" }));
+
+    const initial_count = try sqliteScalar(gpa, suite.db_path, "select count(*) from session_commits;");
+    try std.testing.expectEqual(@as(i64, 0), initial_count);
+
+    const complete_pull = mustRunAgentInDir(&suite, repo_root, &.{ "pull", complete_plan_arg, "--role", "coder", "--json" });
+    defer gpa.free(complete_pull);
+    const complete_token = extractStringField(gpa, complete_pull, "\"claim_token\":\"") catch @panic("no complete token");
+    defer gpa.free(complete_token);
+    const complete_session_id = extractIntField(complete_pull, "\"session_id\":") orelse @panic("no complete session id");
+    const complete_claim_id = extractIntField(complete_pull, "\"claim\":{\"id\"") orelse @panic("no complete claim id");
+
+    const complete_sha_a = try createCommit(repo_root, "complete-a.txt", "complete-a\n", "complete a");
+    defer gpa.free(complete_sha_a);
+    const complete_sha_b = try createCommit(repo_root, "complete-b.txt", "complete-b\n", "complete b");
+    defer gpa.free(complete_sha_b);
+
+    const complete_out = mustRunAgentInDir(&suite, repo_root, &.{ "complete", "--claim", complete_token, "--summary", "shipped", "--json" });
+    defer gpa.free(complete_out);
+    try std.testing.expect(std.mem.indexOf(u8, complete_out, "\"status\":\"completed\"") != null);
+    try assertCommitRows(
+        gpa,
+        suite.db_path,
+        complete_session_id,
+        complete_claim_id,
+        canonical_repo_root,
+        branch,
+        &.{
+            .{ .sha = complete_sha_a, .subject = "complete a" },
+            .{ .sha = complete_sha_b, .subject = "complete b" },
+        },
+    );
+    try std.testing.expectEqual(@as(i64, 2), try sqliteScalar(gpa, suite.db_path, "select count(*) from session_commits;"));
+
+    const fail_pull = mustRunAgentInDir(&suite, repo_root, &.{ "pull", fail_plan_arg, "--role", "coder", "--json" });
+    defer gpa.free(fail_pull);
+    const fail_token = extractStringField(gpa, fail_pull, "\"claim_token\":\"") catch @panic("no fail token");
+    defer gpa.free(fail_token);
+    const fail_session_id = extractIntField(fail_pull, "\"session_id\":") orelse @panic("no fail session id");
+    const fail_claim_id = extractIntField(fail_pull, "\"claim\":{\"id\"") orelse @panic("no fail claim id");
+
+    const fail_sha = try createCommit(repo_root, "fail.txt", "fail\n", "fail commit");
+    defer gpa.free(fail_sha);
+
+    const fail_out = mustRunAgentInDir(&suite, repo_root, &.{ "fail", "--claim", fail_token, "--reason", "broke", "--json" });
+    defer gpa.free(fail_out);
+    try std.testing.expect(std.mem.indexOf(u8, fail_out, "\"status\":\"aborted\"") != null);
+    try assertCommitRows(
+        gpa,
+        suite.db_path,
+        fail_session_id,
+        fail_claim_id,
+        canonical_repo_root,
+        branch,
+        &.{.{ .sha = fail_sha, .subject = "fail commit" }},
+    );
+    try std.testing.expectEqual(@as(i64, 3), try sqliteScalar(gpa, suite.db_path, "select count(*) from session_commits;"));
+
+    const release_pull = mustRunAgentInDir(&suite, repo_root, &.{ "pull", release_plan_arg, "--role", "coder", "--json" });
+    defer gpa.free(release_pull);
+    const release_token = extractStringField(gpa, release_pull, "\"claim_token\":\"") catch @panic("no release token");
+    defer gpa.free(release_token);
+    const release_session_id = extractIntField(release_pull, "\"session_id\":") orelse @panic("no release session id");
+    const release_claim_id = extractIntField(release_pull, "\"claim\":{\"id\"") orelse @panic("no release claim id");
+
+    const release_sha = try createCommit(repo_root, "release.txt", "release\n", "release commit");
+    defer gpa.free(release_sha);
+
+    const release_out = mustRunAgentInDir(&suite, repo_root, &.{ "release", "--claim", release_token, "--reason", "not mine", "--json" });
+    defer gpa.free(release_out);
+    try std.testing.expect(std.mem.indexOf(u8, release_out, "\"status\":\"released\"") != null);
+    try assertCommitRows(
+        gpa,
+        suite.db_path,
+        release_session_id,
+        release_claim_id,
+        canonical_repo_root,
+        branch,
+        &.{.{ .sha = release_sha, .subject = "release commit" }},
+    );
+    try std.testing.expectEqual(@as(i64, 4), try sqliteScalar(gpa, suite.db_path, "select count(*) from session_commits;"));
 }
 
 test "planar-agent block: blocker edge, task → blocked, claim → released" {
@@ -817,6 +997,163 @@ fn drainPipe(gpa: std.mem.Allocator, file: *?std.Io.File) ![]u8 {
         };
     }
     return try gpa.dupe(u8, "");
+}
+
+const ExpectedCommit = struct {
+    sha: []const u8,
+    subject: []const u8,
+};
+
+fn runCommand(argv: []const []const u8) ![]u8 {
+    const gpa = std.testing.allocator;
+    const result = try std.process.run(gpa, std.testing.io, .{
+        .argv = argv,
+    });
+    defer gpa.free(result.stderr);
+    if (result.term != .exited or result.term.exited != 0) {
+        std.debug.print("command failed: {s}\nstderr: {s}\n", .{ argv[0], result.stderr });
+        gpa.free(result.stdout);
+        return error.CommandFailed;
+    }
+    return result.stdout;
+}
+
+fn runCommandDiscard(argv: []const []const u8) !void {
+    const stdout = try runCommand(argv);
+    std.testing.allocator.free(stdout);
+}
+
+fn runCommandInDir(cwd: []const u8, argv: []const []const u8) ![]u8 {
+    const gpa = std.testing.allocator;
+    const result = try std.process.run(gpa, std.testing.io, .{
+        .argv = argv,
+        .cwd = .{ .path = cwd },
+    });
+    defer gpa.free(result.stderr);
+    if (result.term != .exited or result.term.exited != 0) {
+        std.debug.print("command failed in '{s}': {s}\nstderr: {s}\n", .{ cwd, argv[0], result.stderr });
+        gpa.free(result.stdout);
+        return error.CommandFailed;
+    }
+    return result.stdout;
+}
+
+fn runCommandInDirDiscard(cwd: []const u8, argv: []const []const u8) !void {
+    const stdout = try runCommandInDir(cwd, argv);
+    std.testing.allocator.free(stdout);
+}
+
+fn trimOwned(gpa: std.mem.Allocator, raw: []u8) ![]u8 {
+    defer gpa.free(raw);
+    return try gpa.dupe(u8, std.mem.trim(u8, raw, " \t\r\n"));
+}
+
+fn writeRepoFile(repo_root: []const u8, rel_path: []const u8, contents: []const u8) !void {
+    const gpa = std.testing.allocator;
+    const path = try std.fs.path.join(gpa, &.{ repo_root, rel_path });
+    defer gpa.free(path);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = path, .data = contents });
+}
+
+fn createCommit(
+    repo_root: []const u8,
+    rel_path: []const u8,
+    contents: []const u8,
+    subject: []const u8,
+) ![]u8 {
+    try writeRepoFile(repo_root, rel_path, contents);
+    try runCommandInDirDiscard(repo_root, &.{ "git", "add", rel_path });
+    try runCommandInDirDiscard(repo_root, &.{ "git", "commit", "-m", subject });
+    return trimOwned(std.testing.allocator, try runCommandInDir(repo_root, &.{ "git", "rev-parse", "HEAD" }));
+}
+
+fn sqliteQueryLines(
+    gpa: std.mem.Allocator,
+    db_path: []const u8,
+    sql: []const u8,
+) ![]u8 {
+    const result = std.process.run(gpa, std.testing.io, .{
+        .argv = &.{ "sqlite3", "-separator", "|", db_path, sql },
+    }) catch |e| {
+        std.debug.print("sqlite3 spawn failed: {s}\n", .{@errorName(e)});
+        return error.SkipZigTest;
+    };
+    defer gpa.free(result.stderr);
+    if (result.term != .exited or result.term.exited != 0) {
+        std.debug.print("sqlite3 failed: {s}\n", .{result.stderr});
+        gpa.free(result.stdout);
+        return error.SqliteFailed;
+    }
+    return result.stdout;
+}
+
+fn sqliteScalar(
+    gpa: std.mem.Allocator,
+    db_path: []const u8,
+    sql: []const u8,
+) !i64 {
+    const out = try sqliteQueryLines(gpa, db_path, sql);
+    defer gpa.free(out);
+    const trimmed = std.mem.trim(u8, out, " \t\r\n");
+    return std.fmt.parseInt(i64, trimmed, 10) catch |e| {
+        std.debug.print("sqlite3 output not integer ('{s}'): {s}\n", .{ trimmed, @errorName(e) });
+        return error.SqliteParseFailed;
+    };
+}
+
+fn assertCommitRows(
+    gpa: std.mem.Allocator,
+    db_path: []const u8,
+    session_id: i64,
+    claim_id: i64,
+    repo_root: []const u8,
+    branch: []const u8,
+    expected: []const ExpectedCommit,
+) !void {
+    const sql = try std.fmt.allocPrint(gpa,
+        \\select sha, subject, author, committed_at, repo_root, branch
+        \\from session_commits
+        \\where session_id = {d} and claim_id = {d}
+        \\order by sha asc;
+    , .{ session_id, claim_id });
+    defer gpa.free(sql);
+    const out = try sqliteQueryLines(gpa, db_path, sql);
+    defer gpa.free(out);
+
+    var actual_lines = std.ArrayList([]const u8).empty;
+    defer actual_lines.deinit(gpa);
+    var split = std.mem.splitScalar(u8, std.mem.trim(u8, out, "\n"), '\n');
+    while (split.next()) |line| {
+        if (line.len == 0) continue;
+        try actual_lines.append(gpa, line);
+    }
+    try std.testing.expectEqual(expected.len, actual_lines.items.len);
+
+    const expected_sorted = try gpa.alloc(ExpectedCommit, expected.len);
+    defer gpa.free(expected_sorted);
+    @memcpy(expected_sorted, expected);
+    std.mem.sort(ExpectedCommit, expected_sorted, {}, struct {
+        fn lessThan(_: void, a: ExpectedCommit, b: ExpectedCommit) bool {
+            return std.mem.lessThan(u8, a.sha, b.sha);
+        }
+    }.lessThan);
+
+    for (actual_lines.items, expected_sorted) |line, want| {
+        var fields = std.mem.splitScalar(u8, line, '|');
+        const sha = fields.next() orelse return error.MalformedSqliteRow;
+        const subject = fields.next() orelse return error.MalformedSqliteRow;
+        const author = fields.next() orelse return error.MalformedSqliteRow;
+        const committed_at = fields.next() orelse return error.MalformedSqliteRow;
+        const got_repo_root = fields.next() orelse return error.MalformedSqliteRow;
+        const got_branch = fields.next() orelse return error.MalformedSqliteRow;
+
+        try std.testing.expectEqualStrings(want.sha, sha);
+        try std.testing.expectEqualStrings(want.subject, subject);
+        try std.testing.expectEqualStrings("Planar Test", author);
+        try std.testing.expect(committed_at.len > 0);
+        try std.testing.expectEqualStrings(repo_root, got_repo_root);
+        try std.testing.expectEqualStrings(branch, got_branch);
+    }
 }
 
 /// Locate `key` (which must include the surrounding double-quotes,

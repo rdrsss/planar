@@ -15,12 +15,14 @@ const exit = @import("../../exit.zig");
 const output = @import("../../output.zig");
 
 const summary_mod = engine.runtime.agentactivity.summary;
+const session_commits = engine.runtime.sessioncommits;
 
 /// Cap on rows pulled into the "Agent activity" section. 10 is enough to
 /// show the recent cycle history without flooding a busy entity's audit
 /// trail. The fold-in degrades silently when empty (plan 85 M5,
 /// task:activity-summary-empty-degrade).
 const agent_activity_row_cap: i64 = 10;
+const commit_row_cap: i64 = 10;
 
 pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     const args = cli.castArgs(main.root, &.{ "audit", "trail" }, args_ptr);
@@ -58,6 +60,8 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     defer summary_mod.ActionRow.deinitMany(aa_actions, ctx.allocator);
     const aa_claims = summary_mod.claimTransitionsForEntity(d, ctx.allocator, kind, id, agent_activity_row_cap) catch &[_]summary_mod.ClaimTransitionRow{};
     defer summary_mod.ClaimTransitionRow.deinitMany(aa_claims, ctx.allocator);
+    const commit_rows = loadRecentCommitsForEntity(ctx.allocator, d, kind, id, commit_row_cap) catch null;
+    defer if (commit_rows) |rows| session_commits.Row.deinitMany(rows, ctx.allocator);
 
     if (args.json) {
         try ctx.stdout.print("{{\"entity_kind\":", .{});
@@ -86,6 +90,7 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
             try ctx.stdout.print("}}", .{});
         }
         try ctx.stdout.print("]", .{});
+        if (commit_rows) |rows| try writeCommitRowsJson(ctx.stdout, rows);
         try writeAgentActivityJson(ctx.stdout, aa_actions, aa_claims);
         try ctx.stdout.print("}}\n", .{});
         return;
@@ -104,7 +109,34 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
             try ctx.stdout.print("\n", .{});
         }
     }
+    if (commit_rows) |rows| try writeCommitRowsText(ctx.stdout, rows);
     try writeAgentActivityText(ctx.stdout, aa_actions, aa_claims);
+}
+
+fn loadRecentCommitsForEntity(
+    allocator: std.mem.Allocator,
+    d: anytype,
+    entity_kind: []const u8,
+    entity_id: i64,
+    cap: i64,
+) ![]const session_commits.Row {
+    const sessions = loadSessionsForEntity(allocator, d, entity_kind, entity_id) catch return try allocator.alloc(session_commits.Row, 0);
+    defer freeSessions(sessions, allocator);
+    return loadRecentCommitsForSessions(allocator, d, sessions, cap);
+}
+
+fn loadRecentCommitsForSessions(
+    allocator: std.mem.Allocator,
+    d: anytype,
+    sessions: []const SessionRow,
+    cap: i64,
+) ![]const session_commits.Row {
+    if (sessions.len == 0) return try allocator.alloc(session_commits.Row, 0);
+
+    const session_ids = try allocator.alloc(i64, sessions.len);
+    defer allocator.free(session_ids);
+    for (sessions, 0..) |session, index| session_ids[index] = session.id;
+    return session_commits.listForSessions(d, allocator, session_ids, cap);
 }
 
 /// Emit the "agent_activity" JSON sub-object when any actions or claim
@@ -198,6 +230,28 @@ fn writeAgentActivityText(
     }
 }
 
+fn writeCommitRowsJson(
+    w: *std.Io.Writer,
+    rows: []const session_commits.Row,
+) !void {
+    if (rows.len == 0) return;
+    try w.print(",\"commits\":", .{});
+    try session_commits.writeJsonList(w, rows);
+}
+
+fn writeCommitRowsText(
+    w: *std.Io.Writer,
+    rows: []const session_commits.Row,
+) !void {
+    if (rows.len == 0) return;
+    try w.print("\ncommits:\n", .{});
+    for (rows) |row| {
+        const at = row.committed_at orelse row.recorded_at;
+        const subject = row.subject orelse "(no subject)";
+        try w.print("  {s}  {s}  {s}\n", .{ at, row.sha, subject });
+    }
+}
+
 const SessionRow = struct {
     id: i64,
     vendor: []const u8,
@@ -251,11 +305,18 @@ fn loadSessionsForEntity(
 
     if (std.mem.eql(u8, entity_kind, "task")) {
         var stmt = try d.prepare(
-            \\select id, coalesce(vendor,''), coalesce(started_at,''), coalesce(summary,'')
-            \\from sessions where task_id = ? order by started_at desc
+            \\select distinct s.id, coalesce(s.vendor,''), coalesce(s.started_at,''), coalesce(s.summary,'')
+            \\from sessions s
+            \\where s.task_id = ?
+            \\   or s.id in (
+            \\     select awc.session_id
+            \\     from agent_work_claims awc
+            \\     where awc.entity_kind = 'task' and awc.entity_id = ? and awc.session_id is not null
+            \\   )
+            \\order by s.started_at desc
         );
         defer stmt.finalize();
-        try stmt.bind(&.{.{ .int = entity_id }});
+        try stmt.bind(&.{ .{ .int = entity_id }, .{ .int = entity_id } });
         while (true) {
             const step = try stmt.step();
             if (step == .done) break;
@@ -390,6 +451,8 @@ fn runLinkForm(
     defer summary_mod.ActionRow.deinitMany(aa_actions, ctx.allocator);
     const aa_claims = summary_mod.claimTransitionsForEntity(d, ctx.allocator, entity_kind_text, link.entity_id, agent_activity_row_cap) catch &[_]summary_mod.ClaimTransitionRow{};
     defer summary_mod.ClaimTransitionRow.deinitMany(aa_claims, ctx.allocator);
+    const commit_rows = loadRecentCommitsForSessions(ctx.allocator, d, sessions, commit_row_cap) catch null;
+    defer if (commit_rows) |rows| session_commits.Row.deinitMany(rows, ctx.allocator);
 
     if (json) {
         try ctx.stdout.print("{{\"link_id\":{d},\"entity_kind\":", .{link.id});
@@ -452,6 +515,7 @@ fn runLinkForm(
             try ctx.stdout.print("}}", .{});
         }
         try ctx.stdout.print("]", .{});
+        if (commit_rows) |rows| try writeCommitRowsJson(ctx.stdout, rows);
         try writeAgentActivityJson(ctx.stdout, aa_actions, aa_claims);
         try ctx.stdout.print("}}\n", .{});
         return;
@@ -484,6 +548,8 @@ fn runLinkForm(
             try ctx.stdout.print("  {s}  {s:<5}  {s:<10}  {s}\n", .{ e.at, e.direction, e.outcome, fc });
         }
     }
+
+    if (commit_rows) |rows| try writeCommitRowsText(ctx.stdout, rows);
 
     if (sessions.len == 0 and decisions.len == 0 and events.len == 0) {
         try ctx.stdout.print("  (no sessions, decisions, or sync events)\n", .{});

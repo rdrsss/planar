@@ -8,6 +8,7 @@ const engine = @import("engine");
 const runtime = @import("runtime");
 
 const atomic = engine.runtime.agentactivity.atomic;
+const sessioncommits = engine.runtime.sessioncommits;
 const task_mod = engine.planning.task;
 
 const json = @import("json.zig");
@@ -41,4 +42,25 @@ pub fn emit(
             result.claim.status.toText(),
         });
     }
+}
+
+/// Best-effort post-transaction commit attribution for terminal verbs.
+pub fn collectCommits(
+    ctx: *const runtime.Ctx,
+    d: *db.sqlite.Db,
+    result: atomic.CompleteResult,
+    no_locality_probe: bool,
+) void {
+    sessioncommits.recordClaimWindowBestEffort(d, .{
+        .allocator = ctx.allocator,
+        .io = ctx.io,
+        .no_locality_probe = no_locality_probe,
+        .window = .{
+            .claim_id = result.claim.id,
+            .session_id = result.claim.session_id,
+            .worktree_path = result.claim.worktree_path,
+            .repo_root = result.claim.repo_root,
+            .head_sha_at_claim = result.claim.head_sha_at_claim,
+        },
+    });
 }

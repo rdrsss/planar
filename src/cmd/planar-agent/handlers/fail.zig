@@ -19,6 +19,7 @@ pub const verb: cli.Cmd = .{
     .flags = &.{
         .{ .long = "--claim", .kind = .string, .required = true, .desc = "Claim token returned by pull/claim" },
         .{ .long = "--reason", .kind = .string, .required = true, .desc = "Failure reason recorded on the claim and action" },
+        .{ .long = "--no-locality-probe", .kind = .bool, .default = .{ .bool = false }, .desc = "Skip the git locality probe and commit collection" },
         .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
     },
     .run = cli.handler(handle),
@@ -33,5 +34,6 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
         exit.die(ctx, e, "fail: {s}", .{@errorName(e)});
     defer result.deinit(ctx.allocator);
 
+    terminal_common.collectCommits(ctx, d, result, args.no_locality_probe);
     try terminal_common.emit(ctx, d, result, args.json);
 }

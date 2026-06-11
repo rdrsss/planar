@@ -26,7 +26,7 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         }
     }
 
-    const s = engine.runtime.capture.openSession(d, ctx.allocator, .{
+    const s = engine.runtime.capture.openSession(d, ctx.allocator, ctx.io, .{
         .vendor = vendor,
         .vendor_session_id = vsid,
         .task_id = args.task,
