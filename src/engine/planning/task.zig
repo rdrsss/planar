@@ -129,6 +129,12 @@ pub const UpdateArgs = struct {
     no_auto_promote: bool = false,
     /// Scope slug accepted by identity.scope.resolveSlug.
     scope: ?[]const u8 = null,
+    /// When true and the status transition is a reopen (from done/cancelled
+    /// to todo/doing/blocked), records a task_reopens row with
+    /// source='task-update-force'. Paired with `reason` for the audit trail.
+    force: bool = false,
+    /// Optional reason stored in task_reopens when `force` triggers a reopen.
+    reason: ?[]const u8 = null,
 };
 
 pub const ListFilter = struct {
@@ -740,6 +746,28 @@ pub fn update(
         .scope = null,
         .summary = null,
     });
+
+    // Insert a task_reopens row when --force moves a task out of a terminal
+    // status (done/cancelled) into one of the allowed reopen targets
+    // (todo/doing/blocked). This is the 'task-update-force' source path.
+    if (patch.force) {
+        if (patch.status) |new_status| {
+            const from_is_terminal = current.status == .done or current.status == .cancelled;
+            const to_is_reopen = new_status == .todo or new_status == .doing or new_status == .blocked;
+            if (from_is_terminal and to_is_reopen) {
+                _ = d.execParams(
+                    \\insert into task_reopens (task_id, from_status, to_status, source, reason)
+                    \\values (?, ?, ?, 'task-update-force', ?)
+                , &.{
+                    .{ .int = id },
+                    .{ .text = @tagName(current.status) },
+                    .{ .text = @tagName(new_status) },
+                    if (patch.reason) |r| .{ .text = r } else .{ .null = {} },
+                }) catch return Error.QueryFailed;
+            }
+        }
+    }
+
     const updated = try show(d, allocator, id);
     errdefer deinit(updated, allocator);
     if (!patch.no_auto_promote) {
@@ -834,6 +862,10 @@ pub fn markBlocked(
 /// Reopen a done/cancelled task. `reason` is required at the CLI; the
 /// caller has already validated that. Stored in the audit summary so
 /// the trail explains why the task came back to life.
+///
+/// Inserts a `task_reopens` row with source='task-reopen' in the same
+/// savepoint as the status change so the audit table is always consistent
+/// with the tasks row.
 pub fn reopen(
     d: *db.sqlite.Db,
     allocator: std.mem.Allocator,
@@ -847,7 +879,60 @@ pub fn reopen(
         .{ @tagName(new_status), reason },
     );
     defer allocator.free(summary);
-    return try transitionWithSummary(d, allocator, id, new_status, summary);
+
+    const current = try show(d, allocator, id);
+    defer deinit(current, allocator);
+    try policy.scope_guard.check(null, null);
+    try policy.status.check(.task, @tagName(current.status), @tagName(new_status));
+
+    try beginSavepoint(d, allocator, "task_reopen");
+    var savepoint_released = false;
+    defer {
+        if (!savepoint_released) {
+            d.rollbackToSavepoint(allocator, "task_reopen") catch {};
+            d.releaseSavepoint(allocator, "task_reopen") catch {};
+        }
+    }
+
+    _ = d.execParams(
+        "update tasks set status = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') where id = ?",
+        &.{ .{ .text = @tagName(new_status) }, .{ .int = id } },
+    ) catch return Error.QueryFailed;
+
+    try policy.audit.record(d, .{
+        .verb = .status_change,
+        .entity = .{ .kind = "task", .id = id },
+        .scope = null,
+        .summary = summary,
+    });
+
+    // Record the reopen in the task_reopens audit table. Only insert when
+    // moving FROM a terminal status (done/cancelled) — the CHECK constraints
+    // on the table enforce this too, but we guard here to avoid a noisy
+    // error on non-reopen transitions that happen to call this function.
+    const from_is_terminal = current.status == .done or current.status == .cancelled;
+    const to_is_reopen = new_status == .todo or new_status == .doing or new_status == .blocked;
+    if (from_is_terminal and to_is_reopen) {
+        _ = d.execParams(
+            \\insert into task_reopens (task_id, from_status, to_status, source, reason)
+            \\values (?, ?, ?, 'task-reopen', ?)
+        , &.{
+            .{ .int = id },
+            .{ .text = @tagName(current.status) },
+            .{ .text = @tagName(new_status) },
+            .{ .text = reason },
+        }) catch return Error.QueryFailed;
+    }
+
+    const updated = try show(d, allocator, id);
+    errdefer deinit(updated, allocator);
+    if (updated.plan_id) |pid| {
+        const recompute = try plan.recomputeStatus(d, allocator, pid);
+        recompute.deinit(allocator);
+    }
+    try finishSavepoint(d, allocator, "task_reopen");
+    savepoint_released = true;
+    return updated;
 }
 
 fn transition(
@@ -1208,6 +1293,91 @@ test "reopen returns done task to todo with reason in audit" {
                 "and summary like 'reopen to todo: scope changed%'",
         ),
     );
+}
+
+test "reopen from done writes exactly one task_reopens row with source task-reopen" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const t = try create(&d, a, .{ .title = "reopen audit" });
+    defer deinit(t, a);
+    const done_t = try markDone(&d, a, t.id);
+    defer deinit(done_t, a);
+
+    const reopened = try reopen(&d, a, t.id, .todo, "reconsider");
+    defer deinit(reopened, a);
+    try std.testing.expectEqual(Status.todo, reopened.status);
+
+    // Count task_reopens rows for this task with the correct source.
+    const cnt_sql = try std.fmt.allocPrintSentinel(
+        a,
+        "select count(*) from task_reopens where task_id = {d} and source = 'task-reopen'",
+        .{t.id},
+        0,
+    );
+    defer a.free(cnt_sql);
+    try std.testing.expectEqual(@as(i64, 1), try d.intQuery(cnt_sql));
+
+    // No other-source rows should exist.
+    const cnt_other_sql = try std.fmt.allocPrintSentinel(
+        a,
+        "select count(*) from task_reopens where task_id = {d} and source != 'task-reopen'",
+        .{t.id},
+        0,
+    );
+    defer a.free(cnt_other_sql);
+    try std.testing.expectEqual(@as(i64, 0), try d.intQuery(cnt_other_sql));
+}
+
+test "update with force from done writes task_reopens row with source task-update-force" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const t = try create(&d, a, .{ .title = "force reopen" });
+    defer deinit(t, a);
+    const done_t = try markDone(&d, a, t.id);
+    defer deinit(done_t, a);
+
+    const updated = try update(&d, a, t.id, .{
+        .status = .todo,
+        .force = true,
+        .reason = "force path",
+    });
+    defer deinit(updated, a);
+    try std.testing.expectEqual(Status.todo, updated.status);
+
+    const cnt_sql = try std.fmt.allocPrintSentinel(
+        a,
+        "select count(*) from task_reopens where task_id = {d} and source = 'task-update-force'",
+        .{t.id},
+        0,
+    );
+    defer a.free(cnt_sql);
+    try std.testing.expectEqual(@as(i64, 1), try d.intQuery(cnt_sql));
+}
+
+test "normal non-reopen transition does not write task_reopens" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const t = try create(&d, a, .{ .title = "normal transition" });
+    defer deinit(t, a);
+    // todo → done is a normal terminal transition, not a reopen.
+    const done_t = try markDone(&d, a, t.id);
+    defer deinit(done_t, a);
+
+    try std.testing.expectEqual(Status.done, done_t.status);
+    const cnt_sql = try std.fmt.allocPrintSentinel(
+        a,
+        "select count(*) from task_reopens where task_id = {d}",
+        .{t.id},
+        0,
+    );
+    defer a.free(cnt_sql);
+    try std.testing.expectEqual(@as(i64, 0), try d.intQuery(cnt_sql));
 }
 
 test "list with scope filter returns only matching rows" {

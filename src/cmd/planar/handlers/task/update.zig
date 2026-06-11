@@ -17,9 +17,11 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     const id = std.fmt.parseInt(i64, args.task_id, 10) catch
         exit.die(ctx, error.InvalidInput, "task id must be an integer, got '{s}'", .{args.task_id});
 
-    if (args.force) {
-        try ctx.stderr.print("warning: --force not yet implemented; no constraint relaxation in effect\n", .{});
-    }
+    // --force enables reopen from terminal statuses (done/cancelled). When
+    // combined with --status <reopen-target>, the engine will insert a
+    // task_reopens row with source='task-update-force'. --reason is forwarded
+    // to the reopen audit row; the field is optional for this path (unlike
+    // `task reopen` which requires it).
 
     // Cross-scope write guard (plan 352 task 2451).
     //
@@ -70,6 +72,8 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         .slug = args.slug,
         .no_auto_promote = args.no_auto_promote,
         .scope = args.scope,
+        .force = args.force,
+        .reason = args.reason,
     };
     if (args.plan) |pid| {
         if (pid == 0) {

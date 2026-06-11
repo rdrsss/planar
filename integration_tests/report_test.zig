@@ -15,6 +15,9 @@
 const std = @import("std");
 const harness = @import("harness");
 
+// Minimal JSON shapes for CLI-driven task operations used in aggregate tests.
+const TaskJSON = struct { id: i64, title: []const u8, status: []const u8 };
+
 // =========================================================================
 // Helpers
 // =========================================================================
@@ -149,6 +152,13 @@ test "report-json: --json carries the stable top-level field contract" {
     const sv = obj.get("schema_version").?;
     try std.testing.expect(sv == .integer);
     try std.testing.expect(sv.integer > 0);
+
+    // reopens must be present and numeric (3815 field addition).
+    const reopens = obj.get("reopens") orelse {
+        std.debug.print("'reopens' field missing from --json output\n", .{});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(reopens == .integer);
 }
 
 test "report-json: empty window emits empty arrays not nulls" {
@@ -633,7 +643,11 @@ test "report-worktree-gate: --days 0 exits usage-error (2) not gate-error (8)" {
     try std.testing.expectEqual(@as(u8, 2), days_res.term.exited);
 }
 
-test "report-redaction: entity titles, scope slugs, and flag values never appear in output" {
+test "report-redaction: entity title, flag value, and scope slug never appear in output" {
+    // 3816: assert all three sentinel surfaces are redacted from both text and JSON.
+    // (a) entity title in a task/plan
+    // (b) a flag value passed to an invocation
+    // (c) a project scope slug
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
@@ -641,19 +655,44 @@ test "report-redaction: entity titles, scope slugs, and flag values never appear
     const init_out = suite.mustRun(&.{ "init", "--allow-no-repo" });
     defer gpa.free(init_out);
 
-    // Sentinel 1: entity title in a task.
-    const sentinel1 = "REDACT_SENTINEL_TITLE_XYZ123";
     const cfg_path = writeCliLogConfig(&suite, true);
     defer gpa.free(cfg_path);
     const extra = cfgEnv(cfg_path);
 
-    // Create a plan with sentinel title (goes through CLI — title is a positional arg).
-    const plan_out = suite.mustRun(&.{ "plan", "create", sentinel1, "--scope", "global" });
+    // Sentinel (a): entity title — create a plan whose title is the sentinel.
+    // The title is a positional arg; the capture subsystem records only verb_path
+    // and flag NAMES, not positional values.
+    const sentinel_title = "REDACT_TITLE_SENTINEL_ABC999";
+    const plan_out = suite.mustRunWith(
+        &.{ "plan", "create", sentinel_title, "--scope", "global" },
+        &extra,
+    );
     defer gpa.free(plan_out);
 
-    // Sentinel 2: scope slug — create an assoc with sentinel in name.
-    // (scope slugs appear in scope_slug column of cli_invocations, but we
-    // never SELECT that column in the bundle queries).
+    // Sentinel (b): a flag VALUE passed to an invocation. Run health with a
+    // --unknown flag whose VALUE is the sentinel; the invocation is recorded
+    // with args_shape carrying only the flag NAME, never the value.
+    // (health rejects the unknown flag with exit 2, but that's fine — the
+    // invocation row is still written before cli_log checks the exit code.)
+    const sentinel_flag_value = "REDACT_FLAG_VAL_SENTINEL_DEF888";
+    const flag_arg = "--unknown-sentinel=" ++ sentinel_flag_value;
+    const flag_res = suite.execWith(&.{ "health", flag_arg }, &extra);
+    defer gpa.free(flag_res.stdout);
+    defer gpa.free(flag_res.stderr);
+    // exit non-zero is expected (unknown flag), that's fine.
+
+    // Sentinel (c): project slug — create an association whose slug contains
+    // the sentinel; scope_slug is never SELECTed in the bundle queries.
+    const sentinel_slug = "REDACT_SLUG_SENTINEL_GHI777";
+    // Use assoc create — slug becomes part of the scope identifier.
+    const assoc_res = suite.execWith(
+        &.{ "assoc", "create", "--slug", sentinel_slug, "--kind", "repo" },
+        &extra,
+    );
+    defer gpa.free(assoc_res.stdout);
+    defer gpa.free(assoc_res.stderr);
+    // assoc create may fail if slug constraints aren't met; we only care that
+    // even if it writes scope_slug the value never leaks into report output.
 
     // Run report in both modes.
     const text_out = suite.mustRunWith(&.{"report"}, &extra);
@@ -662,9 +701,19 @@ test "report-redaction: entity titles, scope slugs, and flag values never appear
     const json_out = suite.mustRunWith(&.{ "report", "--json" }, &extra);
     defer gpa.free(json_out);
 
-    // sentinel1 MUST NOT appear anywhere in the bundle text or JSON.
-    try std.testing.expect(std.mem.indexOf(u8, text_out, sentinel1) == null);
-    try std.testing.expect(std.mem.indexOf(u8, json_out, sentinel1) == null);
+    // NONE of the three sentinels must appear in either output.
+    if (std.mem.indexOf(u8, text_out, sentinel_title) != null) {
+        std.debug.print("sentinel_title leaked into text output: {s}\n", .{text_out});
+        try std.testing.expect(false);
+    }
+    if (std.mem.indexOf(u8, json_out, sentinel_title) != null) {
+        std.debug.print("sentinel_title leaked into JSON output: {s}\n", .{json_out});
+        try std.testing.expect(false);
+    }
+    try std.testing.expect(std.mem.indexOf(u8, text_out, sentinel_flag_value) == null);
+    try std.testing.expect(std.mem.indexOf(u8, json_out, sentinel_flag_value) == null);
+    try std.testing.expect(std.mem.indexOf(u8, text_out, sentinel_slug) == null);
+    try std.testing.expect(std.mem.indexOf(u8, json_out, sentinel_slug) == null);
 }
 
 test "report-redaction: --json output parses cleanly" {
@@ -686,4 +735,169 @@ test "report-redaction: --json output parses cleanly" {
     defer parsed.deinit();
 
     try std.testing.expect(parsed.value == .object);
+}
+
+// =========================================================================
+// report-verb: --days abc non-integer (3818)
+// =========================================================================
+
+test "report-verb: --days abc exits usage-error (2) with no partial bundle" {
+    // 3818: non-integer --days must be rejected as a usage error (exit 2)
+    // by the CLI parser (InvalidValue), not silently produce a partial bundle.
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const init_out = suite.mustRun(&.{ "init", "--allow-no-repo" });
+    defer gpa.free(init_out);
+
+    const res = suite.exec(&.{ "report", "--days", "abc" });
+    defer gpa.free(res.stdout);
+    defer gpa.free(res.stderr);
+
+    // Must fail as a usage error (exit 2 from InvalidValue parse error).
+    try std.testing.expect(res.term == .exited);
+    try std.testing.expectEqual(@as(u8, 2), res.term.exited);
+    // No partial bundle in stdout.
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "schema_version") == null);
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "[invocations]") == null);
+}
+
+// =========================================================================
+// report-aggregates: non-zero agent_actions, sync_events, task reopen (3817)
+// =========================================================================
+
+/// Seed a session row and return its rowid (needed for agent_actions FK).
+fn seedSession(suite: *harness.Suite) i64 {
+    const sql =
+        "insert into sessions (vendor, started_at) values ('test', datetime('now'));" ++
+        "select last_insert_rowid();";
+    const result = std.process.run(suite.allocator, std.testing.io, .{
+        .argv = &.{ "sqlite3", suite.db_path, sql },
+    }) catch @panic("sqlite3 not found");
+    defer suite.allocator.free(result.stderr);
+    const out = std.mem.trim(u8, result.stdout, " \n\r\t");
+    const id = std.fmt.parseInt(i64, out, 10) catch 0;
+    suite.allocator.free(result.stdout);
+    return id;
+}
+
+/// Seed an agent_action row (completed or errored) using sqlite3.
+fn seedAgentAction(
+    suite: *harness.Suite,
+    session_id: i64,
+    action_kind: []const u8,
+    outcome: []const u8,
+) void {
+    var sql_buf: [512]u8 = undefined;
+    const sql = std.fmt.bufPrint(
+        &sql_buf,
+        "insert into agent_actions (session_id, action_kind, vendor, outcome, started_at, ended_at)" ++
+            " values ({d}, '{s}', 'test', '{s}', datetime('now'), datetime('now'));",
+        .{ session_id, action_kind, outcome },
+    ) catch @panic("sql buf too small");
+    const result = std.process.run(suite.allocator, std.testing.io, .{
+        .argv = &.{ "sqlite3", suite.db_path, sql },
+    }) catch @panic("sqlite3 not found");
+    defer suite.allocator.free(result.stdout);
+    defer suite.allocator.free(result.stderr);
+    if (result.term != .exited or result.term.exited != 0) @panic("seed agent_action failed");
+}
+
+/// Seed a sync_event conflict row using sqlite3.
+fn seedSyncConflict(suite: *harness.Suite) void {
+    const sql =
+        "insert into sync_events (scope, direction, outcome, at)" ++
+        " values ('external', 'pull', 'conflict', datetime('now'));";
+    const result = std.process.run(suite.allocator, std.testing.io, .{
+        .argv = &.{ "sqlite3", suite.db_path, sql },
+    }) catch @panic("sqlite3 not found");
+    defer suite.allocator.free(result.stdout);
+    defer suite.allocator.free(result.stderr);
+    if (result.term != .exited or result.term.exited != 0) @panic("seed sync_event failed");
+}
+
+test "report-aggregates: agent_actions, sync_events, and task reopens produce non-zero counts" {
+    // 3817: seed non-empty data through the CLI where possible. agent_actions
+    // and sync_events have no single CLI surface that creates them in isolation,
+    // so those still use direct SQL seeding. Task reopens now go through the
+    // real CLI (task add → task done → task reopen) since the engine wires the
+    // task_reopens insert (task 3825).
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const init_out = suite.mustRun(&.{ "init", "--allow-no-repo" });
+    defer gpa.free(init_out);
+
+    // Seed agent_actions: one completed coder action and one error action.
+    const session_id = seedSession(&suite);
+    seedAgentAction(&suite, session_id, "coder", "ok");
+    seedAgentAction(&suite, session_id, "coder", "error");
+
+    // Seed sync_events: one conflict.
+    seedSyncConflict(&suite);
+
+    // Drive a task through the reopen lifecycle via the real CLI. This is the
+    // end-to-end path: add → done → reopen. The engine now inserts a
+    // task_reopens row inside reopen(), so the aggregate query returns >= 1.
+    {
+        const task = suite.mustRunJSON(TaskJSON, arena, &.{
+            "task", "add", "--json", "reopen-aggregate-t1",
+        });
+        const task_id_str = std.fmt.allocPrint(arena, "{d}", .{task.id}) catch unreachable;
+
+        gpa.free(suite.mustRun(&.{ "task", "done", task_id_str }));
+        gpa.free(suite.mustRun(&.{
+            "task", "reopen", task_id_str, "--reason", "integration test",
+        }));
+    }
+
+    // Now run report --json and assert non-zero aggregates.
+    const json_out = suite.mustRun(&.{ "report", "--json" });
+    defer gpa.free(json_out);
+
+    var parsed = std.json.parseFromSlice(std.json.Value, gpa, json_out, .{}) catch
+        return error.TestUnexpectedResult;
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+
+    // actions: must have at least one row.
+    const actions = obj.get("actions").?.array;
+    try std.testing.expect(actions.items.len >= 1);
+    // Find the coder/ok and coder/error entries.
+    var found_ok = false;
+    var found_err = false;
+    for (actions.items) |item| {
+        const kind = (item.object.get("action_kind") orelse continue).string;
+        const outcome = (item.object.get("outcome") orelse continue).string;
+        if (std.mem.eql(u8, kind, "coder") and std.mem.eql(u8, outcome, "ok")) found_ok = true;
+        if (std.mem.eql(u8, kind, "coder") and std.mem.eql(u8, outcome, "error")) found_err = true;
+    }
+    try std.testing.expect(found_ok);
+    try std.testing.expect(found_err);
+
+    // sync: must have at least one conflict row.
+    const sync = obj.get("sync").?.array;
+    try std.testing.expect(sync.items.len >= 1);
+    var found_conflict = false;
+    for (sync.items) |item| {
+        const outcome = (item.object.get("outcome") orelse continue).string;
+        if (std.mem.eql(u8, outcome, "conflict")) {
+            found_conflict = true;
+            try std.testing.expect(item.object.get("count").?.integer >= 1);
+        }
+    }
+    try std.testing.expect(found_conflict);
+
+    // reopens: must be >= 1 (task reopen above wrote a task_reopens row via the engine).
+    const reopens = obj.get("reopens") orelse {
+        std.debug.print("'reopens' field missing from --json output\n", .{});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(reopens.integer >= 1);
 }
