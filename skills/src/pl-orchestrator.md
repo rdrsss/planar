@@ -1,16 +1,18 @@
 ---
 slug: pl-orchestrator
-description: "Run the orchestrator over a goal, anchor plan, or task list — manage the full feature lifecycle (planning, ingestion, execution, propagation, archive) with reviewer iteration cap and user gates at each phase boundary."
+description: "Run the orchestrator over a goal, anchor plan, or task list — manage the full feature lifecycle (planning, ingestion, execution, finalization, propagation, archive) with reviewer iteration cap and user gates at each phase boundary."
 source: agents/orchestrator.md
 model_tier: large
 vendor:
   claude:
-    argument_hint: "<goal|plan-id|task-id> [<task-id>...] [--propagate] [--archive] [--strategy <name>] [--no-docs] [--strict | --grouped | --batch <ids>]"
+    argument_hint: "<goal|plan-id|task-id> [<task-id>...] [--finalize] [--propagate] [--archive] [--strategy <name>] [--no-docs] [--strict | --grouped | --batch <ids>]"
     invocation_examples: |
       /orchestrator <goal>                          # start from scratch: plan → wait → ingest → wait → execute
       /orchestrator <anchor-plan-id>                # resume from current anchor plan status
       /orchestrator <task-id> [<task-id>...]        # execute specific tasks (Phase 3 only)
       /orchestrator <goal> --propagate              # plan → ingest → execute → propagate
+      /orchestrator <anchor-plan-id> --finalize     # execute → dispatch janitor → merge + reconcile + closeout
+      /orchestrator <anchor-plan-id> --finalize --archive  # execute → finalize → archive FS tree
       /orchestrator <anchor-plan-id> --archive      # execute → mark done → archive FS tree
       /orchestrator <plan-id> --strategy classic              # explicit continuity — coder in pwd, current branch, sequential
       /orchestrator <plan-id> --strategy barrel-deferred      # back-to-back coder cycles in pwd; reviewer at boundary
@@ -90,6 +92,20 @@ The orchestrator selects phases based on the anchor plan's current `status`:
 
 5. **Archive (Phase 5, optional)** — marks anchor plan `done` and invokes `planar workbench archive <anchor>` when the user requests `--archive` or confirms interactively. Never archives automatically.
 
+5a. **Finalization (Phase 3.7, optional/gated)** — after Phase 3 execution cycles complete with reviewer approval (or barrel gates passed), commits pushed, and a PR open and mergeable, the orchestrator **dispatches the `janitor` agent as a freshly spawned subagent** (same isolation model as coder/reviewer dispatch — Agent/Task tool, subagent type `janitor`, blank context) to run the canonical merge → reconcile → cleanup → `planar plan closeout` flow. See [`agents/janitor.md`](../../agents/janitor.md) for the authoritative six-step sequence.
+
+   **Capability boundary (load-bearing):** The janitor — not the coder, not the orchestrator directly — runs `planar plan closeout`. Coders complete tasks via `planar-agent complete` and **never close plans**. The orchestrator composes the janitor brief and surfaces the result (closed or blocked-with-reasons); it does not call `planar plan closeout` itself. The closeout gate is authoritative: `ready: false` is surfaced to the operator, never forced.
+
+   **Trigger:** explicit operator opt-in (`--finalize` flag at invocation or interactive confirm when the orchestrator offers it after Phase 3). Never triggered automatically by task completion.
+
+   **Brief the orchestrator composes for the janitor:** PR number(s), anchor plan id, worktree/branch details (if any), delivery evidence (reviewer disposition, gate citation), session context (claim token, parent action id for `--parent-action` cross-session hierarchy).
+
+   **Janitor result:**
+   - `closed` → plan is `done`, branches/worktrees clean, claims reconciled. Orchestrator records a session note with the closed plan id and merged PR.
+   - `blocked-with-reasons` → `planar plan closeout --dry-run` returned `ready: false`; orchestrator surfaces the `blocked_by` list verbatim and stops.
+
+   **Relationship to Archive:** Finalization does merge + DB closeout; Archive does workbench FS archival. They are distinct steps; use `--finalize --archive` to chain them in one invocation.
+
 6. **Documenter (Phase 6, default-on)** — at the end of every cycle (unless `--no-docs` was supplied), runs `planar-doc diff --json`, packages the envelope `{ manifest_path, diff_records, covered_docs, cycle_summary }`, dispatches `pl-documenter`, surfaces the returned worklist to the user, and applies each operator-approved row through `planar-doc cover` / `planar-doc nodoc` / a staged doc-body commit, then closes with `planar-doc build`. The documenter only proposes — no `planar-doc` verb fires until the operator approves the row. See [`agents/orchestrator.md` § Phase 6 (Documenter)](../../agents/orchestrator.md#phase-6--documenter-pl-documenter-default-on).
 
 ## User Gates
@@ -100,11 +116,12 @@ The orchestrator selects phases based on the anchor plan's current `status`:
 - Phase 3 **dispatch shape**: user picks one of the dispatch shapes (strict/grouped/single — or the legacy six-shape menu when a standalone barrel-* flag is in play) before any coder runs. Runs nested under the chosen strategy and is constrained by it (`parallel-fanout`/`barrel-deferred`/`barrel-bypass` force the corresponding shape). Skipped when `--strict`/`--grouped`/`--batch`/`--barrel-grouped`/`--barrel-deferred`/`--barrel-bypass` was supplied.
 - Phase 3 claim conflicts: active unexpired claims are not silently bypassed. Stale claims require reconciliation or explicit force-takeover before the work is considered available.
 - Phase 3.5 `failure-surfaced` outcome: when a test the test-coder authored fails on first run, user must resolve (fix the test or fix the code) before the reviewer is dispatched. The orchestrator never decides which side is wrong.
+- Phase 3.7 (Finalization): user must supply `--finalize` or confirm interactively. The orchestrator never finalizes silently on cycle completion. The `planar plan closeout --dry-run` gate must pass before apply; `ready: false` is surfaced to the operator and no closeout runs.
 - Phase 4: user must request propagation.
 - Phase 5: user must request archive.
 - Phase 6 worklist: user must approve each row before `planar-doc cover` / `nodoc` / a staged doc body / `planar-doc build` fires. `--no-docs` opts out of the phase entirely.
 
-These gates exist to prevent silent side effects on spec/task creation, FS cleanup, and the doc-state manifest.
+These gates exist to prevent silent side effects on spec/task creation, FS cleanup, plan-status transitions, and the doc-state manifest.
 
 ## Claim ritual (`planar-agent`)
 
@@ -313,6 +330,9 @@ The orchestrator emits a status string at each meaningful phase boundary using `
 | Waiting for reviewer to return its decision | `"awaiting:reviewer"` |
 | Processing the reviewer's decision (approve / request-changes / abort) | `"handling reviewer result"` |
 | Starting the next coder iteration | `"dispatching coder: cycle <n+1>"` |
+| Dispatching the janitor (Phase 3.7) | `"dispatching janitor: plan <id>"` |
+| Waiting for janitor to return its result | `"awaiting:janitor"` |
+| Surfacing janitor result (closed or blocked) | `"handling janitor result: plan <id>"` |
 
 Wait states use the `awaiting:` prefix so the read surface (`planar-watch ps`) can distinguish "blocked on something external" from "actively working." Plain text (no prefix) means the orchestrator is actively coordinating. The cap on `--status` payload is 256 bytes.
 
