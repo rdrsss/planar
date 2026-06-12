@@ -341,7 +341,7 @@ Each transition emits a `session_entries` row with `prefix='note'` and a body th
 
 ### Closeout gate
 
-`planar plan closeout <plan-id> [--dry-run] [--json]` is the operator delivery-evidence gate for explicitly closing a plan.
+`planar plan closeout <plan-id> [--dry-run] [--check-merge] [--json]` is the operator delivery-evidence gate for explicitly closing a plan.
 
 **DB-evidence (hard gate — all must pass before apply writes anything):**
 
@@ -349,7 +349,13 @@ Each transition emits a `session_entries` row with `prefix='note'` and a body th
 2. All descendant plans (recursively via `parent_plan_id`) are `done` or `abandoned`.
 3. No `active`, non-expired `agent_work_claims` exist on the plan's tasks. Expired/stale claims are advisory warnings.
 
+**Finalization tasks (advisory labeling):** The hard-evidence section reports a `finalization_tasks` count — tasks whose slug begins with `finalize-`, `merge-`, or `reconcile-`. These are tasks the janitor/orchestrator creates to track merge or reconciliation work as part of Phase 3.7 Finalization. The count is informational only; finalization tasks follow the same terminal rules as any other task and do NOT change the gate logic.
+
 **Git-evidence (advisory — reported, never blocks):** Best-effort ancestry checks from `agent_work_claims` locality columns (`repo_root`, `branch`, `head_sha_at_claim`). When no locality data is recorded, the section reports `"no commit attribution — inconclusive (hardens once session-commit capture is wired)"`. Git failures (not a repo, git missing, branch absent) produce descriptive notes but never prevent apply.
+
+**Epic-branch merge check (`--check-merge`, advisory):** When supplied, reports an `epic_merge` roll-up: for each distinct contributing branch from `agent_work_claims`, checks whether it is merged to the detected target branch. The roll-up is `null` when no locality data exists; absent branches (deleted post-merge) are inconclusive and excluded from the count. Never blocks apply.
+
+**Who can call it:** This is an **operator verb** on the `planar` binary, not `planar-agent`. The **janitor** is the authorized agent caller — it runs `planar plan closeout` on behalf of the operator after delivery evidence is verified (Phase 3.7 Finalization). Coders use `planar-agent complete` to close tasks and claims, never plans.
 
 **Apply semantics:** Without `--dry-run`, passing the hard gate marks the plan `done` directly — bypassing the `recompute-status` anchor cap. This is intentional: `plan closeout` is the explicit operator release-gate for anchor plans. `--dry-run` evaluates and reports without writing. Both modes exit non-zero when the hard gate is blocked.
 

@@ -781,6 +781,7 @@ Git-evidence failures never block apply.
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--dry-run` | Evaluate and report only; never writes. Hard-gate failures still produce a non-zero exit. | off |
+| `--check-merge` | Include advisory epic-branch merge roll-up: for each contributing branch from `agent_work_claims`, report how many are merged to the target branch. Never blocks. Absent branches are inconclusive. | off |
 | `--json` | Emit structured JSON. | off |
 
 **JSON shape:**
@@ -793,7 +794,8 @@ Git-evidence failures never block apply.
   "hard_evidence": {
     "tasks":       { "open": 0, "done": 5, "cancelled": 1 },
     "descendants": { "open": 0, "terminal": 2 },
-    "claims":      { "live": 0, "stale": 0 }
+    "claims":      { "live": 0, "stale": 0 },
+    "finalization_tasks": 2
   },
   "blocked_by": [],
   "git_evidence": [
@@ -806,9 +808,20 @@ Git-evidence failures never block apply.
       "note": "base-merged=true (weak signal); branch-merged=true"
     }
   ],
+  "epic_merge": {
+    "target_branch": "main",
+    "total_branches": 3,
+    "merged_count": 2,
+    "note": "2 of 3 contributing branch(es) merged to main (advisory; absent branches inconclusive)"
+  },
   "warnings": []
 }
 ```
+
+**Field notes:**
+- `hard_evidence.finalization_tasks` — count of tasks on the plan (and descendants) whose slug begins with `finalize-`, `merge-`, or `reconcile-`. These are tasks the janitor/orchestrator creates to track merge or reconciliation work. Advisory labeling only; finalization tasks follow the same terminal rules as any task and do NOT affect the hard gate.
+- `epic_merge` — present when `--check-merge` is passed; `null` otherwise. Also `null` when no locality data exists in `agent_work_claims`. The field is advisory and never affects the gate.
+- `epic_merge.merged_count` — branches confirmed merged to the target; branches that no longer exist locally are excluded as inconclusive (not counted as merged or unmerged).
 
 **Semantics:**
 - `applied=true` — the plan was marked `done` in this invocation.

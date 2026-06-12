@@ -2630,3 +2630,99 @@ local state unchanged. Fix the `gh` auth issue (`gh auth login`) and re-run.
 
 See [`skills/src/pl-report-issue.md`](../skills/src/pl-report-issue.md) for
 the full skill spec, privacy contract, and mandatory-preview-gate rationale.
+
+---
+
+## Recipe 27 — Finalize and close out a plan (Phase 3.7)
+
+Use this when coder/reviewer cycles are complete, commits are pushed, and you want to merge the work, reconcile Planar state, clean up branches, and formally close the plan.
+
+**Prerequisites:**
+
+- At least one approved coder cycle has run (`reviewer_disposition: dispatched` in the audit trail).
+- Commits are pushed and a PR is open and mergeable.
+- You (the operator) have explicitly opted in — finalization never runs automatically.
+
+### Step 1 — Verify the PR is ready
+
+```bash
+gh pr view <N> --json state,mergeable,mergeStateStatus
+```
+
+All three fields must be ready: `state=OPEN`, `mergeable=MERGEABLE`, `mergeStateStatus=CLEAN` (or `HAS_HOOKS`).
+
+### Step 2 — Check the closeout gate (dry-run)
+
+Before merging, confirm the Planar DB state will allow the plan to close:
+
+```bash
+planar plan closeout <plan-id> --dry-run --json
+```
+
+Parse `ready` and `blocked_by`:
+
+- `ready: true`, `blocked_by: []` — proceed.
+- `ready: false`, `blocked_by` non-empty — resolve blockers first:
+  - Open tasks (`todo`/`doing`/`blocked`) — finish or cancel them.
+  - Open descendant plans — close child plans first (recursively).
+  - Live claims — wait for the claiming agent to finish, or `planar-agent reconcile` for expired leases.
+
+Optionally, add `--check-merge` to see whether each contributing branch is already merged to the target:
+
+```bash
+planar plan closeout <plan-id> --dry-run --check-merge --json
+```
+
+The `epic_merge` section is advisory and never blocks. Absent branches (deleted post-merge) are reported as inconclusive.
+
+### Step 3 — Dispatch the janitor (or run manually)
+
+**Via the orchestrator (automated):** Pass `--finalize` to `pl-orchestrator` or confirm the finalization prompt when the orchestrator offers it. The orchestrator spawns a janitor subagent that executes the six-step finalization flow.
+
+**Manually (standalone):**
+
+```bash
+# Merge the PR (remote branch deleted automatically via --delete-branch).
+gh pr merge <N> --merge --delete-branch
+
+# Wait for confirmed merge.
+gh pr view <N> --json state,mergedAt
+
+# Reconcile stale Planar claims.
+planar-agent reconcile --dry-run   # preview
+planar-agent reconcile             # apply
+
+# Clean up local branch and update main.
+git fetch --prune origin
+git pull --ff-only origin main
+
+# Apply closeout.
+planar plan closeout <plan-id> --json
+```
+
+### Step 4 — Verify the plan is done
+
+```bash
+planar plan show <plan-id> --json
+# → "status": "done"
+```
+
+### Step 5 — Optional archive
+
+```bash
+planar workbench archive <plan-id>
+```
+
+Removes the workbench FS tree for the plan (`~/.planar/workbench/<assoc>/p<id>-*/`). Archive is a separate, explicit step after closeout; finalization alone does not archive.
+
+### Step 6 — Optional reinstall
+
+If the merged change modified binary behavior (engine code, CLI handlers, migrations):
+
+```bash
+cd /path/to/planar-repo && ./install.sh
+```
+
+**Finalization tasks convention:** The janitor (and orchestrator) create tasks with slug prefixes `finalize-`, `merge-`, or `reconcile-` to track discrete merge/reconciliation work items. `planar plan closeout --json` reports these as `hard_evidence.finalization_tasks` — an advisory count that identifies finalization work in the audit output without changing gate logic.
+
+**Capability boundary reminder:** Coders close tasks via `planar-agent complete`. The janitor is the only agent role that runs `planar plan closeout`. The orchestrator dispatches the janitor; it never calls closeout directly. See `docs/concepts.md § Closeout gate` and `agents/janitor.md` for the full boundary specification.

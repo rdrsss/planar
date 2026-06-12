@@ -98,6 +98,8 @@ Run `--dry-run` first to confirm which expired claims and orphaned actions will 
 planar-agent reconcile
 ```
 
+**Finalization tasks:** If this finalization sequence requires discrete tracked work items (merging a branch, reconciling state, patching a conflict), create task rows with slug prefixes from the convention in `agents/methodology.md § Finalization task slug convention` (`finalize-`, `merge-`, or `reconcile-`). These tasks are distinguishable from feature tasks in the closeout audit output (`hard_evidence.finalization_tasks` in `planar plan closeout --json`) and must reach terminal status before the closeout gate passes. The slug prefix is the convention; no schema change is needed.
+
 `reconcile` marks expired `active` claims as `stale` and closes orphaned `agent_actions` rows (sets `ended_at` + `outcome='aborted'`). It is safe to run at any time — it touches only *expired* leases, never live/heartbeating claims. It does NOT touch `tasks.status`.
 
 If the finalized work held a claim token (e.g., the janitor itself was dispatched via the ritual), invoke the appropriate terminal verb now:
