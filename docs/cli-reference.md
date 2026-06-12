@@ -5391,7 +5391,7 @@ The `children` array is always present, even when empty (the empty-`global` sign
 
 Schema-version handshake: `planar-agent` is a **consumer** of the schema, not its owner. Startup queries `schema_migrations.max(version)` and refuses with exit **7** when the live DB is older than the binary's embedded minimum. The remediation pointer ("run `planar init`") is printed to stderr.
 
-### Verb surface (15 verbs)
+### Verb surface (16 verbs)
 
 ```text
 # Atomic operations — each wraps (claim lifecycle + action lifecycle +
@@ -5430,6 +5430,20 @@ planar-agent abort      --claim <token> [--reason <text>] [--vendor <s>] [--vend
 # writes it.
 planar-agent run start  --plan <plan-id> --workflow <name> --run-id <identifier> --pid <harness-pid> --repo-root <path> [--json]
 planar-agent run end    --run-id <identifier> --status completed|failed|interrupted [--json]
+
+# Run-scoped working-memory (context_records) — plan 585 task 3901.
+# Workers holding a run-associated claim write records via `context add`;
+# anyone can read via `context list`; `context resolve` drives the
+# active → consumed|superseded lifecycle (stage-close compaction calls these
+# primitives). `run_id`, `stage`, `session_id`, and `claim_id` are stamped
+# server-side from the claim row (decision 447) — the caller never sets them.
+# `kind` must be one of: finding | risk | artifact | followup | summary | capsule.
+# For a `capsule` kind, `--compiled-from <id,id,...>` records provenance back
+# to the raw record ids that were distilled (decision 446).
+# Records are append-only — no uniqueness constraint per Q599.
+planar-agent context add     --claim <token> --kind <kind> --body <text> [--compiled-from <id,...>] [--json]
+planar-agent context list    --run <run-id> [--stage <s>] [--status active|consumed|superseded] [--kind <k>] [--json]
+planar-agent context resolve --status consumed|superseded (--id <record-id> | --run <run-id> --stage <s>) [--json]
 ```
 
 **Duration grammar:** `--ttl`, `--stale-after`, and `--interval` accept either a bare integer (interpreted as seconds for the `--ttl` / `--stale-after` surface; `--interval` follows the same default for back-compat with the legacy parser) or a number with an ISO-style suffix: `ns`, `us`, `ms`, `s`, `m`, `h`. Examples: `--ttl 600` (10 minutes), `--ttl 10m` (same), `--ttl 1h`, `--interval 500ms`. The implementation is the shared `cli.duration` helper.

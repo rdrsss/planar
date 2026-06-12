@@ -9,14 +9,14 @@
 //! Verifies:
 //!
 //!   - planar-agent verb-set audit (t#2598 / capability-boundary-test).
-//!     Recursive --help walk asserts EXACTLY the 15 documented verbs
+//!     Recursive --help walk asserts EXACTLY the 16 documented verbs
 //!     (pull, peek, claim, heartbeat, complete, fail, release, block,
-//!     action, ingest, reconcile, abort, version, schema, run) plus
-//!     action's start/end subverbs and run's start/end subverbs, AND contains
-//!     NONE of the planning-entity verbs (plan, task, decision,
-//!     question, scenario, artifact, annotate, init, workbench, doc,
-//!     spec, templates, ext, sync, promote, demote, capture, dashboard,
-//!     tree, health).
+//!     action, ingest, reconcile, abort, version, schema, run, context) plus
+//!     action's start/end subverbs, run's start/end subverbs, and
+//!     context's add/list/resolve subverbs, AND contains NONE of the
+//!     planning-entity verbs (plan, task, decision, question, scenario,
+//!     artifact, annotate, init, workbench, doc, spec, templates, ext,
+//!     sync, promote, demote, capture, dashboard, tree, health).
 //!
 //!   - planar-watch verb-set audit (t#2599 /
 //!     planar-watch-capability-boundary-test). Asserts EXACTLY the 6
@@ -239,19 +239,20 @@ fn assertExactSet(
 // t#2598 — planar-agent capability boundary.
 // =========================================================================
 //
-// The expected verb set is the atomic + recovery + run lifecycle verbs:
+// The expected verb set is the atomic + recovery + run lifecycle + context verbs:
 //
 //     pull, peek, claim, heartbeat, complete, fail, release, block,
-//     action, ingest, reconcile, abort, version, run, schema
+//     action, ingest, reconcile, abort, version, run, schema, context
 //
 // `action` has two subverbs (start, end); `run` has two subverbs
-// (start, end) — both verified by recursing into their --help output.
+// (start, end); `context` has three subverbs (add, list, resolve) —
+// all verified by recursing into their --help output.
 //
 // The forbidden set covers every planning-entity mutation verb that
 // `planar` owns. A future change that mistakenly registers any of
 // these on planar-agent fails this test immediately.
 
-test "planar-agent verb set is EXACTLY the 15 documented agent verbs" {
+test "planar-agent verb set is EXACTLY the 16 documented agent verbs" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
@@ -280,6 +281,7 @@ test "planar-agent verb set is EXACTLY the 15 documented agent verbs" {
         "abort",
         "schema",
         "run",
+        "context",
     }, "planar-agent");
 
     // Forbidden set: planning-entity verbs and operator-only namespaces.
@@ -290,6 +292,22 @@ test "planar-agent verb set is EXACTLY the 15 documented agent verbs" {
         "demote",   "capture",   "dashboard", "tree",      "health",
         "models",
     }, "planar-agent");
+}
+
+test "planar-agent context subverbs are EXACTLY {add, list, resolve}" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const res = runBin(&suite, resolveAgentBin(), &.{ "context", "--help" });
+    defer res.deinit(gpa);
+    try std.testing.expect(res.term == .exited);
+    try std.testing.expectEqual(@as(u32, 0), res.term.exited);
+
+    var verbs = parseHelpVerbs(gpa, res.stdout);
+    defer freeVerbSet(gpa, &verbs);
+
+    try assertExactSet(&verbs, &.{ "add", "list", "resolve" }, "planar-agent context");
 }
 
 test "planar-agent run subverbs are EXACTLY {start, end}" {
@@ -334,11 +352,12 @@ test "planar-agent recursive --help walk: every verb's --help exits 0" {
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
 
-    // Walk the top-level verbs; for `action` and `run`, recurse one level.
+    // Walk the top-level verbs; for `action`, `run`, and `context`, recurse one level.
     const top = [_][]const u8{
         "version", "pull",      "peek",  "complete",  "fail",
         "release", "block",     "claim", "heartbeat", "action",
         "ingest",  "reconcile", "abort", "schema",    "run",
+        "context",
     };
     for (top) |v| {
         const res = runBin(&suite, resolveAgentBin(), &.{ v, "--help" });
@@ -370,6 +389,18 @@ test "planar-agent recursive --help walk: every verb's --help exits 0" {
         if (res.term != .exited or res.term.exited != 0) {
             std.debug.print(
                 "planar-agent run {s} --help exited non-zero (term={any}):\nstdout: {s}\nstderr: {s}\n",
+                .{ sub, res.term, res.stdout, res.stderr },
+            );
+            return error.HelpRendererFailed;
+        }
+    }
+
+    for ([_][]const u8{ "add", "list", "resolve" }) |sub| {
+        const res = runBin(&suite, resolveAgentBin(), &.{ "context", sub, "--help" });
+        defer res.deinit(gpa);
+        if (res.term != .exited or res.term.exited != 0) {
+            std.debug.print(
+                "planar-agent context {s} --help exited non-zero (term={any}):\nstdout: {s}\nstderr: {s}\n",
                 .{ sub, res.term, res.stdout, res.stderr },
             );
             return error.HelpRendererFailed;
