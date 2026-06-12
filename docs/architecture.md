@@ -24,7 +24,7 @@ flowchart TD
         B4["<b>planar-doc</b><br/>repo-state manifest<br/>.planar-manifest only"]
     end
 
-    DB[("SQLite database<br/>~/.planar/planar.db<br/>22 migrations · embedded at build time")]
+    DB[("SQLite database<br/>~/.planar/planar.db<br/>23 migrations · embedded at build time")]
     MF[(".planar-manifest<br/>repo-state merkle index")]
 
     Surface -->|invoke| Binaries
@@ -136,7 +136,9 @@ The operator-recovery verbs `planar-agent reconcile` and
 are `agent_*` table writers. The capability boundary tracks tables,
 not audience.
 
-The shared engine module lives at `src/engine/runtime/agentactivity/`; per-binary handlers live under `src/cmd/<binary>/handlers/`. `planar-agent` carries the full coordination surface; `planar-watch` carries the read-only viewer surface (`feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `version`, `completion`, `schema`) with a Tier-2 event-driven `--follow` loop.
+The `planar-agent run start/end` verbs and the `planar-agent context add/list/resolve` verbs (plan 585) are agent-table writers — they write `workflow_runs` and `context_records` respectively — so they live on `planar-agent`, not `planar`. The observability view (`planar-watch run list/show`) lives on `planar-watch`, consistent with the zero-write boundary.
+
+The shared engine module lives at `src/engine/runtime/agentactivity/`; per-binary handlers live under `src/cmd/<binary>/handlers/`. `planar-agent` carries the full coordination surface; `planar-watch` carries the read-only viewer surface (`feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `run`, `version`, `completion`, `schema`) with a Tier-2 event-driven `--follow` loop.
 
 ### `planar-execute` — fifth binary, no DB handle
 
