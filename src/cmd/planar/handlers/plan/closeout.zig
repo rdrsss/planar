@@ -22,8 +22,9 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
 
     const dry_run = args.dry_run;
     const apply = !dry_run;
+    const check_merge = args.check_merge;
 
-    const result = engine.planning.closeout.evaluate(d, ctx.allocator, plan_id, apply) catch |e| switch (e) {
+    const result = engine.planning.closeout.evaluate(d, ctx.allocator, plan_id, apply, check_merge) catch |e| switch (e) {
         error.NotFound => exit.die(ctx, e, "no plan with id {d}", .{plan_id}),
         else => exit.die(ctx, e, "plan closeout: {s}", .{@errorName(e)}),
     };
@@ -68,8 +69,13 @@ fn emitText(ctx: *const runtime.Ctx, result: engine.planning.closeout.CloseoutRe
     const dc = result.hard_evidence.descendants;
     const cc = result.hard_evidence.claims;
 
+    const ft = result.hard_evidence.finalization_tasks;
+
     try w.print("\nhard gate:\n", .{});
     try w.print("  tasks:       open={d}  done={d}  cancelled={d}\n", .{ tc.open, tc.done, tc.cancelled });
+    if (ft > 0) {
+        try w.print("    (finalization tasks: {d} — merge/reconcile/finalize-prefixed)\n", .{ft});
+    }
     try w.print("  descendants: open={d}  terminal={d}\n", .{ dc.open, dc.terminal });
     try w.print("  claims:      live={d}  stale={d}\n", .{ cc.live, cc.stale });
 
@@ -96,6 +102,12 @@ fn emitText(ctx: *const runtime.Ctx, result: engine.planning.closeout.CloseoutRe
             try w.print("    branch:  {s}  target: {s}\n", .{ branch_str, target_str });
             try w.print("    note:    {s}\n", .{ev.note});
         }
+    }
+
+    if (result.epic_merge) |em| {
+        try w.print("\nepic-branch merge check (advisory):\n", .{});
+        try w.print("  target: {s}\n", .{em.target_branch});
+        try w.print("  note:   {s}\n", .{em.note});
     }
 }
 
@@ -126,6 +138,16 @@ const HardEvidenceJSON = struct {
         live: i64,
         stale: i64,
     },
+    /// Count of tasks with finalization slug prefixes (finalize-/merge-/reconcile-).
+    /// Advisory — same terminal rules apply; this is labeling metadata only.
+    finalization_tasks: i64,
+};
+
+const EpicMergeRollupJSON = struct {
+    target_branch: []const u8,
+    total_branches: i64,
+    merged_count: i64,
+    note: []const u8,
 };
 
 const CloseoutResultJSON = struct {
@@ -135,6 +157,8 @@ const CloseoutResultJSON = struct {
     hard_evidence: HardEvidenceJSON,
     blocked_by: []const []const u8,
     git_evidence: []const GitEvidenceJSON,
+    /// Present when --check-merge was supplied; null otherwise.
+    epic_merge: ?EpicMergeRollupJSON,
     warnings: []const []const u8,
 };
 
@@ -157,6 +181,13 @@ fn emitJSON(ctx: *const runtime.Ctx, result: engine.planning.closeout.CloseoutRe
         };
     }
 
+    const epic_merge_json: ?EpicMergeRollupJSON = if (result.epic_merge) |em| .{
+        .target_branch = em.target_branch,
+        .total_branches = em.total_branches,
+        .merged_count = em.merged_count,
+        .note = em.note,
+    } else null;
+
     const out = CloseoutResultJSON{
         .plan = result.plan_id,
         .ready = result.ready,
@@ -165,9 +196,11 @@ fn emitJSON(ctx: *const runtime.Ctx, result: engine.planning.closeout.CloseoutRe
             .tasks = .{ .open = tc.open, .done = tc.done, .cancelled = tc.cancelled },
             .descendants = .{ .open = dc.open, .terminal = dc.terminal },
             .claims = .{ .live = cc.live, .stale = cc.stale },
+            .finalization_tasks = result.hard_evidence.finalization_tasks,
         },
         .blocked_by = result.blocked_by,
         .git_evidence = evs,
+        .epic_merge = epic_merge_json,
         .warnings = result.warnings,
     };
 

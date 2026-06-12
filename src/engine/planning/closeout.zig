@@ -67,6 +67,15 @@ pub const GitEvidence = struct {
     note: []const u8, // human-readable status string; always set
 };
 
+/// Epic-branch merge roll-up for plans with contributing branches.
+/// Reported when check_merge=true; null when the check was not requested.
+pub const EpicMergeRollup = struct {
+    target_branch: []const u8, // owned
+    total_branches: i64,
+    merged_count: i64,
+    note: []const u8, // human-readable summary; owned
+};
+
 /// The full result of a closeout evaluation.
 pub const CloseoutResult = struct {
     plan_id: i64,
@@ -76,9 +85,15 @@ pub const CloseoutResult = struct {
         tasks: TaskCounts,
         descendants: DescendantCounts,
         claims: ClaimCounts,
+        /// Tasks whose slug begins with a finalization prefix
+        /// (finalize- / merge- / reconcile-). Advisory — same terminal
+        /// rules apply; the count is labeling metadata for the audit.
+        finalization_tasks: i64,
     },
     blocked_by: []const []const u8, // owned slices; freed by deinit
     git_evidence: []const GitEvidence, // owned; freed by deinit
+    /// Present when check_merge=true; null otherwise.
+    epic_merge: ?EpicMergeRollup,
     warnings: []const []const u8, // owned; freed by deinit
 
     pub fn deinit(self: CloseoutResult, allocator: std.mem.Allocator) void {
@@ -91,6 +106,10 @@ pub const CloseoutResult = struct {
             allocator.free(e.note);
         }
         allocator.free(self.git_evidence);
+        if (self.epic_merge) |em| {
+            allocator.free(em.target_branch);
+            allocator.free(em.note);
+        }
         for (self.warnings) |w| allocator.free(w);
         allocator.free(self.warnings);
     }
@@ -111,13 +130,15 @@ pub const Error =
 
 /// Evaluate the closeout gate for `plan_id`. When `apply=true` and the
 /// hard gate passes and the plan is not already terminal, marks the plan
-/// `done`. The caller owns the returned CloseoutResult and must call
-/// `result.deinit(allocator)`.
+/// `done`. When `check_merge=true`, the advisory epic-branch merge roll-up
+/// is computed and included in the result. The caller owns the returned
+/// CloseoutResult and must call `result.deinit(allocator)`.
 pub fn evaluate(
     d: *db.sqlite.Db,
     allocator: std.mem.Allocator,
     plan_id: i64,
     apply: bool,
+    check_merge: bool,
 ) Error!CloseoutResult {
     // Verify the plan exists and grab its current status.
     const current_status = try fetchPlanStatus(d, allocator, plan_id);
@@ -136,9 +157,11 @@ pub fn evaluate(
                 .tasks = .{},
                 .descendants = .{},
                 .claims = .{},
+                .finalization_tasks = 0,
             },
             .blocked_by = try allocator.alloc([]const u8, 0),
             .git_evidence = try allocator.alloc(GitEvidence, 0),
+            .epic_merge = null,
             .warnings = &.{},
         };
     }
@@ -147,6 +170,7 @@ pub fn evaluate(
     const task_counts = try collectTaskCounts(d, plan_id);
     const desc_counts = try collectDescendantCounts(d, plan_id);
     const claim_counts = try collectClaimCounts(d, plan_id);
+    const finalization_task_count = try collectFinalizationTaskCount(d, plan_id);
 
     // Build blocked_by list.
     var reasons: std.ArrayList([]const u8) = .empty;
@@ -205,6 +229,25 @@ pub fn evaluate(
 
     // Collect advisory git evidence.
     const git_evidence = try collectGitEvidence(d, allocator, plan_id);
+    errdefer {
+        for (git_evidence) |e| {
+            allocator.free(e.repo_root);
+            if (e.branch) |b| allocator.free(b);
+            if (e.target_branch) |t| allocator.free(t);
+            allocator.free(e.note);
+        }
+        allocator.free(git_evidence);
+    }
+
+    // Optionally collect epic-branch merge roll-up.
+    const epic_merge: ?EpicMergeRollup = if (check_merge)
+        try collectEpicMergeRollup(d, allocator, plan_id)
+    else
+        null;
+    errdefer if (epic_merge) |em| {
+        allocator.free(em.target_branch);
+        allocator.free(em.note);
+    };
 
     // Apply if requested and gate passes.
     const applied = if (apply and ready) blk: {
@@ -228,9 +271,11 @@ pub fn evaluate(
             .tasks = task_counts,
             .descendants = desc_counts,
             .claims = claim_counts,
+            .finalization_tasks = finalization_task_count,
         },
         .blocked_by = blocked_by,
         .git_evidence = git_evidence,
+        .epic_merge = epic_merge,
         .warnings = warnings,
     };
 }
@@ -361,6 +406,36 @@ fn collectClaimCounts(d: *db.sqlite.Db, plan_id: i64) Error!ClaimCounts {
     return counts;
 }
 
+/// Count tasks on this plan (and descendants) whose slug begins with a
+/// recognized finalization prefix: "finalize-", "merge-", or "reconcile-".
+/// These are tasks the janitor/orchestrator creates to track merge or
+/// reconciliation work; their count is advisory labeling metadata surfaced
+/// in the closeout audit output — they follow the same terminal rules as
+/// any task and do NOT affect the hard gate.
+fn collectFinalizationTaskCount(d: *db.sqlite.Db, plan_id: i64) Error!i64 {
+    var stmt = d.prepare(
+        \\with recursive desc_plans(id) as (
+        \\  select ? as id
+        \\  union all
+        \\  select p.id from plans p join desc_plans d on p.parent_plan_id = d.id
+        \\)
+        \\select count(*)
+        \\from tasks t
+        \\where t.plan_id in (select id from desc_plans)
+        \\  and (
+        \\    t.slug like 'finalize-%'
+        \\    or t.slug like 'merge-%'
+        \\    or t.slug like 'reconcile-%'
+        \\  )
+    ) catch return Error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .int = plan_id }}) catch return Error.QueryFailed;
+    switch (stmt.step() catch return Error.QueryFailed) {
+        .done => return 0,
+        .row => return stmt.columnInt(0),
+    }
+}
+
 // =========================================================================
 // Advisory git-evidence collection
 // =========================================================================
@@ -456,6 +531,117 @@ fn collectGitEvidence(
     }
 
     return evs.toOwnedSlice(allocator);
+}
+
+/// Collect the epic-branch merge roll-up for a plan with contributing
+/// branches. Gathers distinct (repo_root, branch) pairs from
+/// agent_work_claims across the plan and descendants, then for each repo
+/// detects the target branch and counts how many contributing branches are
+/// already merged. Returns null when no locality data is available (same
+/// inconclusive posture as the per-entry git evidence).
+fn collectEpicMergeRollup(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    plan_id: i64,
+) Error!?EpicMergeRollup {
+    const BranchRow = struct {
+        repo_root: ?[]const u8,
+        branch: ?[]const u8,
+    };
+
+    var rows: std.ArrayList(BranchRow) = .empty;
+    defer {
+        for (rows.items) |r| {
+            if (r.repo_root) |p| allocator.free(p);
+            if (r.branch) |b| allocator.free(b);
+        }
+        rows.deinit(allocator);
+    }
+
+    {
+        var stmt = d.prepare(
+            \\with recursive desc_plans(id) as (
+            \\  select ? as id
+            \\  union all
+            \\  select p.id from plans p join desc_plans d on p.parent_plan_id = d.id
+            \\)
+            \\select distinct c.repo_root, c.branch
+            \\from agent_work_claims c
+            \\join tasks t on t.id = c.entity_id
+            \\where c.entity_kind = 'task'
+            \\  and t.plan_id in (select id from desc_plans)
+            \\  and c.repo_root is not null
+            \\  and c.branch is not null
+        ) catch return Error.QueryFailed;
+        defer stmt.finalize();
+        stmt.bind(&.{.{ .int = plan_id }}) catch return Error.QueryFailed;
+
+        while (true) {
+            switch (stmt.step() catch return Error.QueryFailed) {
+                .done => break,
+                .row => {
+                    const row = BranchRow{
+                        .repo_root = stmt.columnTextOpt(0, allocator) catch return Error.QueryFailed,
+                        .branch = stmt.columnTextOpt(1, allocator) catch return Error.QueryFailed,
+                    };
+                    rows.append(allocator, row) catch return error.OutOfMemory;
+                },
+            }
+        }
+    }
+
+    if (rows.items.len == 0) {
+        // No locality data — return null (inconclusive; not an error).
+        return null;
+    }
+
+    // Use the repo_root from the first entry to detect target branch.
+    // In practice all entries share one repo root; we use the first.
+    const first_repo = rows.items[0].repo_root orelse "(unknown)";
+    const target_branch_opt = detectTargetBranch(allocator, first_repo);
+    const target_branch = target_branch_opt orelse {
+        // Git unavailable — report inconclusive roll-up.
+        const tb = try allocator.dupe(u8, "(unknown)");
+        errdefer allocator.free(tb);
+        const note = try allocator.dupe(u8, "git-evidence unavailable — epic-merge check inconclusive");
+        return EpicMergeRollup{
+            .target_branch = tb,
+            .total_branches = @as(i64, @intCast(rows.items.len)),
+            .merged_count = 0,
+            .note = note,
+        };
+    };
+    errdefer allocator.free(target_branch);
+
+    var merged_count: i64 = 0;
+    for (rows.items) |row| {
+        const repo = row.repo_root orelse continue;
+        const branch = row.branch orelse continue;
+        const exists = branchExists(allocator, repo, branch);
+        if (exists) {
+            if (checkBranchMerged(allocator, repo, branch, target_branch)) {
+                merged_count += 1;
+            }
+        } else {
+            // Branch absent post-merge is a common and expected state;
+            // treat it as inconclusive (don't count as merged or unmerged).
+        }
+    }
+
+    const total: i64 = @as(i64, @intCast(rows.items.len));
+    const note = try std.fmt.allocPrint(
+        allocator,
+        "{d} of {d} contributing branch(es) merged to {s} (advisory; absent branches inconclusive)",
+        .{ merged_count, total, target_branch },
+    );
+    errdefer allocator.free(note);
+
+    return EpicMergeRollup{
+        .target_branch = target_branch,
+        .total_branches = total,
+        .merged_count = merged_count,
+        .note = note,
+    };
 }
 
 /// Run best-effort git probes for a single (repo_root, branch, sha) tuple.

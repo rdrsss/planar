@@ -145,6 +145,24 @@ Finalization is the post-approval phase that turns reviewer-approved, committed,
 
 **Capability boundary is hard:** coders never gain plan-mutation power. The orchestrator dispatches the janitor; the janitor is the only agent role that runs `planar plan closeout`.
 
+### Finalization task slug convention
+
+The janitor and orchestrator may need to create discrete task rows to track finalization work (merging, reconciling Planar state, cleaning up). These tasks MUST carry a recognizable slug prefix so they are distinguishable from feature tasks:
+
+| Prefix | When to use |
+|--------|-------------|
+| `finalize-<description>` | Generic finalization steps (e.g. `finalize-migrate-schema`) |
+| `merge-<description>` | Branch / PR merge steps (e.g. `merge-feature-billing-export`) |
+| `reconcile-<description>` | Planar DB reconciliation steps (e.g. `reconcile-stale-claims`) |
+
+Example:
+```bash
+planar task add --plan <anchor-id> --slug merge-feature-billing-export "merge feature/billing-export to main"
+planar task add --plan <anchor-id> --slug reconcile-stale-claims "reconcile stale agent_work_claims after merge"
+```
+
+These tasks follow the same terminal rules as any task — they must reach `done` or `cancelled` before `planar plan closeout` can pass the hard gate. The convention is purely for human-readable labeling and for `planar plan closeout --json`'s `hard_evidence.finalization_tasks` count, which surfaces how many finalization-prefixed tasks exist as an advisory audit field. No schema change is required; the prefix is in the `tasks.slug` column which already exists.
+
 ### Dispatch sequence
 
 1. **Precondition check.** Before dispatching the janitor, the orchestrator confirms: at least one approved coder cycle has run, commits are pushed, and a PR is open and mergeable (`gh pr view <N> --json state,mergeable,mergeStateStatus`).

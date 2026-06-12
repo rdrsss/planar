@@ -156,9 +156,13 @@ pub const verb: cli.Cmd = .{
             .long_desc = "Evaluate the DB-hard gate (all tasks terminal, all descendants terminal, no live claims)\n" ++
                 "  and advisory git-evidence for a plan. In apply mode (no --dry-run), marks the plan\n" ++
                 "  done when the hard gate passes. Cancelled tasks are terminal — they do not block.\n\n" ++
-                "  Hard gate failures produce a non-zero exit in both dry-run and apply modes.",
+                "  Hard gate failures produce a non-zero exit in both dry-run and apply modes.\n\n" ++
+                "  --check-merge adds an advisory epic-branch merge roll-up: for each contributing\n" ++
+                "  branch from agent_work_claims, reports how many are merged to the target branch.\n" ++
+                "  Never blocks; absent branches are inconclusive.",
             .flags = &.{
                 .{ .long = "--dry-run", .kind = .bool, .default = .{ .bool = false }, .desc = "Evaluate and report only; never writes." },
+                .{ .long = "--check-merge", .kind = .bool, .default = .{ .bool = false }, .desc = "Include advisory epic-branch merge roll-up in the output." },
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },
             .positionals = &.{.{ .name = "plan-id", .kind = .string, .required = true }},

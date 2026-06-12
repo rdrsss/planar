@@ -52,10 +52,18 @@ const CloseoutHardEvidenceJSON = struct {
     tasks: CloseoutTasksJSON = .{},
     descendants: CloseoutDescendantsJSON = .{},
     claims: CloseoutClaimsJSON = .{},
+    finalization_tasks: i64 = 0,
 };
 
 const GitEvidenceJSON = struct {
     repo_root: []const u8 = "",
+    note: []const u8 = "",
+};
+
+const EpicMergeRollupJSON = struct {
+    target_branch: []const u8 = "",
+    total_branches: i64 = 0,
+    merged_count: i64 = 0,
     note: []const u8 = "",
 };
 
@@ -66,6 +74,7 @@ const CloseoutResultJSON = struct {
     hard_evidence: CloseoutHardEvidenceJSON = .{},
     blocked_by: []const []const u8 = &.{},
     git_evidence: []const GitEvidenceJSON = &.{},
+    epic_merge: ?EpicMergeRollupJSON = null,
     warnings: []const []const u8 = &.{},
 };
 
@@ -584,4 +593,145 @@ test "closeout-gate: plan not found → exit 1" {
     defer gpa.free(stderr);
     // Error message mentions the plan id.
     try std.testing.expect(std.mem.containsAtLeast(u8, stderr, 1, "99999"));
+}
+
+// =========================================================================
+// Test 12 (task 3884): finalization_tasks count in --json output
+// =========================================================================
+
+test "closeout-gate: finalization_tasks count reflects slug-prefixed tasks in --json" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_backing = std.heap.ArenaAllocator.init(gpa);
+    defer arena_backing.deinit();
+    const arena = arena_backing.allocator();
+
+    gpa.free(suite.mustRun(&.{ "init", "--skip-project" }));
+
+    // Create a plan with a regular task and two finalization-prefixed tasks.
+    const anchor = seedPlan(&suite, arena, "closeout-fintask-anchor", 0, "active", null);
+    const anchor_id = anchor.plan_id;
+
+    // Regular task.
+    const t1_buf = suite.mustRun(&.{ "task", "add", "--json", "--plan", anchor_id, "regular work" });
+    defer gpa.free(t1_buf);
+    const t1 = parseJSON(TaskJSON, arena, t1_buf);
+    const t1_id = std.fmt.allocPrint(arena, "{d}", .{t1.id}) catch @panic("OOM");
+
+    // Finalization task with "merge-" slug prefix.
+    const t2_buf = suite.mustRun(&.{ "task", "add", "--json", "--plan", anchor_id, "--slug", "merge-feature-branch", "merge feature branch" });
+    defer gpa.free(t2_buf);
+    const t2 = parseJSON(TaskJSON, arena, t2_buf);
+    const t2_id = std.fmt.allocPrint(arena, "{d}", .{t2.id}) catch @panic("OOM");
+
+    // Finalization task with "reconcile-" slug prefix.
+    const t3_buf = suite.mustRun(&.{ "task", "add", "--json", "--plan", anchor_id, "--slug", "reconcile-state", "reconcile planar state" });
+    defer gpa.free(t3_buf);
+    const t3 = parseJSON(TaskJSON, arena, t3_buf);
+    const t3_id = std.fmt.allocPrint(arena, "{d}", .{t3.id}) catch @panic("OOM");
+
+    // Mark all tasks done so the hard gate passes.
+    gpa.free(suite.mustRun(&.{ "task", "done", t1_id }));
+    gpa.free(suite.mustRun(&.{ "task", "done", t2_id }));
+    gpa.free(suite.mustRun(&.{ "task", "done", t3_id }));
+
+    // Closeout dry-run with --json.
+    const out_buf = suite.mustRun(&.{ "plan", "closeout", "--dry-run", "--json", anchor_id });
+    defer gpa.free(out_buf);
+    const result = parseJSON(CloseoutResultJSON, arena, out_buf);
+
+    // Gate passes (all tasks done).
+    try std.testing.expect(result.ready);
+
+    // finalization_tasks must be 2 (merge-feature-branch + reconcile-state).
+    try std.testing.expectEqual(@as(i64, 2), result.hard_evidence.finalization_tasks);
+
+    // epic_merge must be null (--check-merge not passed).
+    try std.testing.expect(result.epic_merge == null);
+}
+
+// =========================================================================
+// Test 13 (task 3884): finalization_tasks = 0 when no slug-prefixed tasks
+// =========================================================================
+
+test "closeout-gate: finalization_tasks is 0 when no slug-prefixed tasks exist" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_backing = std.heap.ArenaAllocator.init(gpa);
+    defer arena_backing.deinit();
+    const arena = arena_backing.allocator();
+
+    gpa.free(suite.mustRun(&.{ "init", "--skip-project" }));
+
+    const seeded = seedPlan(&suite, arena, "closeout-no-fintask", 2, "active", null);
+    gpa.free(suite.mustRun(&.{ "task", "done", seeded.task_ids[0] }));
+    gpa.free(suite.mustRun(&.{ "task", "done", seeded.task_ids[1] }));
+
+    const out_buf = suite.mustRun(&.{ "plan", "closeout", "--dry-run", "--json", seeded.plan_id });
+    defer gpa.free(out_buf);
+    const result = parseJSON(CloseoutResultJSON, arena, out_buf);
+
+    try std.testing.expect(result.ready);
+    try std.testing.expectEqual(@as(i64, 0), result.hard_evidence.finalization_tasks);
+}
+
+// =========================================================================
+// Test 14 (task 3887): --check-merge absent → epic_merge is null in JSON
+// =========================================================================
+
+test "closeout-gate: epic_merge is null in JSON when --check-merge not passed" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_backing = std.heap.ArenaAllocator.init(gpa);
+    defer arena_backing.deinit();
+    const arena = arena_backing.allocator();
+
+    gpa.free(suite.mustRun(&.{ "init", "--skip-project" }));
+
+    const seeded = seedPlan(&suite, arena, "closeout-no-checkmerge", 1, "active", null);
+    gpa.free(suite.mustRun(&.{ "task", "done", seeded.task_ids[0] }));
+
+    const out_buf = suite.mustRun(&.{ "plan", "closeout", "--dry-run", "--json", seeded.plan_id });
+    defer gpa.free(out_buf);
+    const result = parseJSON(CloseoutResultJSON, arena, out_buf);
+
+    try std.testing.expect(result.ready);
+    // Without --check-merge, epic_merge must be absent/null.
+    try std.testing.expect(result.epic_merge == null);
+}
+
+// =========================================================================
+// Test 15 (task 3887): --check-merge with no locality data → section present
+// (inconclusive, not an error; epic_merge is null when no locality rows)
+// =========================================================================
+
+test "closeout-gate: --check-merge with no locality data → epic_merge absent (no locality rows)" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_backing = std.heap.ArenaAllocator.init(gpa);
+    defer arena_backing.deinit();
+    const arena = arena_backing.allocator();
+
+    gpa.free(suite.mustRun(&.{ "init", "--skip-project" }));
+
+    const seeded = seedPlan(&suite, arena, "closeout-checkmerge-nodata", 1, "active", null);
+    gpa.free(suite.mustRun(&.{ "task", "done", seeded.task_ids[0] }));
+
+    // --check-merge requested but no claims with locality exist.
+    // The engine returns null when no locality rows are found.
+    const out_buf = suite.mustRun(&.{ "plan", "closeout", "--dry-run", "--json", "--check-merge", seeded.plan_id });
+    defer gpa.free(out_buf);
+    const result = parseJSON(CloseoutResultJSON, arena, out_buf);
+
+    try std.testing.expect(result.ready);
+    // No locality data → null (inconclusive — documented contract).
+    try std.testing.expect(result.epic_merge == null);
 }
