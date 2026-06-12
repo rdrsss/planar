@@ -5926,6 +5926,7 @@ The `ctx` object is injected by the host into every `run(ctx)` call. Available f
 | `ctx.parallel(thunks)` | N-way barrier. `thunks` is a table of zero-arg functions. Runs all concurrently; returns a table of results in the same order. |
 | `ctx.pipeline(items, ...stages)` | Per-item stage pipeline. `items` is a list; each `stage` is a function `(ctx, item) -> result`. Chains stages sequentially per item. |
 | `ctx.eligible(plan_id)` | Read `planar plan recommend-strategy` for `plan_id`. Returns `{eligible: bool, fan_out_available: bool, serialized: bool}`. |
+| `ctx.context([stage])` | Read context records for the current run. Shells `planar-agent context list --run <run_id>`. Optional `stage` string filters records to that stage (e.g. `"plan"`, `"code"`). Returns a 1-based Lua array of tables, each with fields: `id`, `run_id`, `stage`, `session_id`, `claim_id`, `kind`, `body`, `status`, `compiled_from` (string or nil), `created_at`. Returns an empty table when no run row is open, when no records exist, or on subprocess failure (best-effort read). Available in all modes (control-plane read — no `PLANAR_EXECUTE_LIVE_AGENT` gate required). |
 | `ctx.phase(title)` | Mark the start of a named phase (recorded in the journal). |
 | `ctx.log(msg)` | Append a log line to the workflow journal. |
 | `ctx.workflow(name)` | Record the workflow name in the journal (stub; full recording in a later milestone). |

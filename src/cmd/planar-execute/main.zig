@@ -328,6 +328,8 @@ pub const HostCallKind = enum {
     budget_remaining,
     eligible,
     dispatch_table,
+    /// ctx.context(stage) — returns context records for the current run.
+    context,
 };
 
 /// A single recorded host-function invocation. All fields are heap-owned copies
@@ -3211,6 +3213,130 @@ fn pushEmptyEligibleTable(L: ?*c.lua_State) void {
     c.lua_setfield(L, top_idx, "serialized");
 }
 
+/// hostContext — `ctx.context([stage])` (plan 585 task 3903).
+///
+/// Reads context records for the CURRENT run by shelling
+/// `planar-agent context list --run <run_db_id> [--stage <stage>] --json`
+/// and returns a Lua 1-based sequence of record tables.
+///
+/// ## Arguments
+///
+///   ctx.context()           -- returns ALL records for the current run
+///   ctx.context("plan")     -- returns records filtered to stage="plan"
+///   ctx.context("code")     -- etc.
+///
+/// The first argument, if present, must be a string (the stage filter).
+/// Any other type raises a Lua error.
+///
+/// ## Return value
+///
+/// A 1-based Lua array of tables.  Each table carries:
+///   { id, run_id, stage, session_id, claim_id, kind, body, status,
+///     compiled_from (string or nil), created_at }
+///
+/// ## Degradation
+///
+///   - `hs.active_run == null` (no run row opened): returns an empty table.
+///   - `hs.io == null` (unit-test paths that don't wire io): returns empty.
+///   - Subprocess failure or parse error: logs a warning and returns empty
+///     (best-effort read, same stance as journal reads).
+///
+/// ## No-DB-handle invariant
+///
+/// This is a CONTROL-PLANE READ: it shells `planar-agent context list`
+/// and parses the `--json` output. `planar-execute` holds no DB handle
+/// (decision 444).
+fn hostContext(L: ?*c.lua_State) callconv(.c) c_int {
+    const hs = hostStateUpvalue(L);
+
+    // Optional first argument: stage filter string.
+    // Accept: absent, nil, or a string. Any other type is an error.
+    const has_stage_arg = c.lua_gettop(L) >= 1 and c.lua_type(L, 1) != c.LUA_TNIL;
+    if (has_stage_arg and c.lua_type(L, 1) != c.LUA_TSTRING) {
+        _ = c.luaL_error(L, "ctx.context: stage argument must be a string (or omitted)");
+        return 0;
+    }
+    // luaArgString returns "" when the argument is absent or nil/non-string.
+    const raw_stage = if (has_stage_arg) luaArgString(L, 1) else "";
+    const stage_arg: ?[]const u8 = if (raw_stage.len > 0) raw_stage else null;
+
+    // Record the call so HostState observability tests can detect it.
+    recordOrError(L, hs, .context, stage_arg orelse "", "");
+
+    // No run row → return an empty table (silent degradation).
+    const active_run = hs.active_run orelse {
+        c.lua_createtable(L, 0, 0);
+        return 1;
+    };
+    const run_db_id = active_run.run_db_id;
+
+    // io not wired → return an empty table (unit-test paths).
+    const io = hs.io orelse {
+        c.lua_createtable(L, 0, 0);
+        return 1;
+    };
+
+    const alloc = hs.allocator;
+    const parsed = state.contextList(alloc, io, run_db_id, stage_arg) catch |err| {
+        // Best-effort: log + return empty table on any subprocess/parse error.
+        const log_ctx = std.log.scoped(.planar_execute);
+        log_ctx.warn("ctx.context: contextList failed: {s}; returning empty table", .{@errorName(err)});
+        c.lua_createtable(L, 0, 0);
+        return 1;
+    };
+    defer parsed.deinit();
+
+    const records = parsed.value.records;
+
+    // Build the 1-based Lua array of record tables.
+    c.lua_createtable(L, @intCast(records.len), 0);
+    const arr_idx: c_int = c.lua_absindex(L, -1);
+
+    for (records, 0..) |rec, i| {
+        // Each record: 9 string/int fields + 1 nullable string.
+        c.lua_createtable(L, 0, 10);
+        const rec_idx: c_int = c.lua_absindex(L, -1);
+
+        c.lua_pushinteger(L, @intCast(rec.id));
+        c.lua_setfield(L, rec_idx, "id");
+
+        c.lua_pushinteger(L, @intCast(rec.run_id));
+        c.lua_setfield(L, rec_idx, "run_id");
+
+        _ = c.lua_pushlstring(L, rec.stage.ptr, rec.stage.len);
+        c.lua_setfield(L, rec_idx, "stage");
+
+        c.lua_pushinteger(L, @intCast(rec.session_id));
+        c.lua_setfield(L, rec_idx, "session_id");
+
+        c.lua_pushinteger(L, @intCast(rec.claim_id));
+        c.lua_setfield(L, rec_idx, "claim_id");
+
+        _ = c.lua_pushlstring(L, rec.kind.ptr, rec.kind.len);
+        c.lua_setfield(L, rec_idx, "kind");
+
+        _ = c.lua_pushlstring(L, rec.body.ptr, rec.body.len);
+        c.lua_setfield(L, rec_idx, "body");
+
+        _ = c.lua_pushlstring(L, rec.status.ptr, rec.status.len);
+        c.lua_setfield(L, rec_idx, "status");
+
+        if (rec.compiled_from) |cf| {
+            _ = c.lua_pushlstring(L, cf.ptr, cf.len);
+        } else {
+            c.lua_pushnil(L);
+        }
+        c.lua_setfield(L, rec_idx, "compiled_from");
+
+        _ = c.lua_pushlstring(L, rec.created_at.ptr, rec.created_at.len);
+        c.lua_setfield(L, rec_idx, "created_at");
+
+        c.lua_rawseti(L, arr_idx, @intCast(i + 1)); // pops the record table
+    }
+
+    return 1; // return the sequence
+}
+
 /// hostBudgetSpent — `budget:spent()`. Returns the host-injected spent value.
 /// Also records the call so a test can confirm the method form was reached.
 fn hostBudgetSpent(L: ?*c.lua_State) callconv(.c) c_int {
@@ -3307,6 +3433,11 @@ fn installHostFns(L: ?*c.lua_State, ctx_idx: c_int, hs: *HostState) void {
     // task 3708: ctx.dispatch_table() returns the effective role→model mapping
     // for this run so a workflow can log its own routing.
     pushHostClosure(L, ctx_idx, "dispatch_table", hostDispatchTable, hs);
+    // plan 585 task 3903: ctx.context([stage]) returns context_records for the
+    // current run. Shells `planar-agent context list --run <id>`. Control-plane
+    // read — no PLANAR_EXECUTE_LIVE_AGENT gate required; degrades to empty table
+    // when active_run is null or io is not wired.
+    pushHostClosure(L, ctx_idx, "context", hostContext, hs);
 
     // Determinism injection (task 3169): ctx.now and ctx.seed are the only
     // time/random source available to the sandboxed script.

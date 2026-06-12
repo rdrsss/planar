@@ -13,6 +13,7 @@ comptime {
     _ = @import("planar_execute_doctor_test.zig");
     _ = @import("planar_execute_agent_live_test.zig");
     _ = @import("planar_execute_eligible_test.zig");
+    _ = @import("planar_execute_context_test.zig");
     _ = @import("planar_execute_refusal_guard_test.zig");
     _ = @import("planar_execute_quality_spine_test.zig");
     _ = @import("planar_execute_schema_test.zig");
