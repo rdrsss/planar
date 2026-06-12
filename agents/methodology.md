@@ -27,12 +27,14 @@ The orchestrator manages up to five phases per feature. Phases 1–2 apply only 
 | 1 — Planning | `pl-spec-draft` | Goal given; no anchor plan or `draft` with no artifacts | After artifacts are drafted — user reviews before Phase 2 |
 | 2 — Ingestion | `pl-spec-ingest` | Anchor plan `draft` with workbench artifacts present | After preview diff — user confirms before `--apply` |
 | 3 — Execution | coder + (optional test-coder) + reviewer | Anchor plan `active` or `paused` with `todo`/`doing` tasks | Dispatch-shape choice (strict/grouped/single) before kick-off; then per-cycle iteration loop (5-iteration cap). Phase 3.5 (test-coder dispatch) is conditional on `planar test-spec status`. |
+| 3.7 — Finalization | `janitor` (spawned subagent) | Phase 3 cycles complete with reviewer approval, commits pushed, PR mergeable; user requests `--finalize` or confirms interactively | Explicit per invocation (`--finalize` flag or interactive confirm); gate verdict (`planar plan closeout --dry-run`) must pass before apply |
 | 4 — Propagation | `pl-ext-propagate` | User requests `--propagate` | Explicit per invocation |
 | 5 — Archive | `pl-workbench-archive` | Anchor plan `done`, user requests `--archive` | Explicit per invocation |
 
 **Key invariants:**
 - The orchestrator never auto-applies ingestion. The ingestor always runs in preview mode first; `--apply` is gated on explicit user confirmation.
 - The orchestrator never auto-archives. Archive is always an explicit user action.
+- The orchestrator never finalizes silently. Phase 3.7 is gated on explicit operator opt-in (`--finalize` flag or interactive confirm). Coders never close plans; the janitor is the only agent role that runs `planar plan closeout`.
 - The orchestrator never picks dispatch granularity silently. Phase 3 begins with a strict/grouped/single proposal that the user must confirm (unless an explicit `--strict`/`--grouped`/`--batch` flag was supplied at invocation).
 - For an `active` or `paused` anchor plan, the orchestrator skips Phases 1 and 2 and enters Phase 3 directly.
 - Phase 3 work selection is claim-aware. Active, unexpired agent claims make a task or child milestone unavailable to new dispatch unless the operator explicitly forces stale-claim recovery.
@@ -128,6 +130,44 @@ claim_tokens: [<token>, <token>, ...]
 ```
 
 Claims are the synchronization gate. Reviewer dispatch and Phase 3.5 remain the quality and coverage gates.
+
+## Finalization dispatch contract
+
+Finalization is the post-approval phase that turns reviewer-approved, committed, pushed work into a closed plan. It is distinct from task completion (which coders own) and from archive (which removes the workbench FS tree). The orchestrator drives finalization by dispatching the **janitor** as a spawned subagent — the same isolation model as coder/reviewer dispatch.
+
+### Who does what
+
+| Agent | Allowed | Not allowed |
+|-------|---------|-------------|
+| Coder | `planar-agent complete --claim <token>` (closes task + claim) | `planar plan closeout`, `planar task done`, any plan-status transition |
+| Orchestrator | Dispatches janitor as a spawned subagent; surfaces janitor result to operator | `planar plan closeout` directly; finalizing silently |
+| Janitor | `planar plan closeout <plan-id>` (after gate passes); merge, reconcile, cleanup | Bypass the `--dry-run` gate; force-close a `ready: false` plan |
+
+**Capability boundary is hard:** coders never gain plan-mutation power. The orchestrator dispatches the janitor; the janitor is the only agent role that runs `planar plan closeout`.
+
+### Dispatch sequence
+
+1. **Precondition check.** Before dispatching the janitor, the orchestrator confirms: at least one approved coder cycle has run, commits are pushed, and a PR is open and mergeable (`gh pr view <N> --json state,mergeable,mergeStateStatus`).
+2. **Gate: explicit operator opt-in.** Finalization only runs when the operator supplies `--finalize` at invocation or confirms interactively. The orchestrator never triggers it automatically on cycle completion or plan status change.
+3. **Janitor dispatch.** The orchestrator spawns a fresh janitor subagent via the harness Agent/Task tool (subagent type `janitor`) — NOT an inline slash command. The brief contains: PR number(s), anchor plan id, worktree/branch details, delivery evidence (reviewer disposition + gate citations), and the orchestrator's session context (claim token, parent action id for `--parent-action` cross-session hierarchy).
+4. **Janitor executes its six-step flow.** See [`agents/janitor.md`](janitor.md) for the authoritative step definitions: verify delivery evidence → merge → reconcile Planar state → cleanup → `planar plan closeout` gate → optional reinstall.
+5. **Gate verdict surfaces to operator.** The orchestrator reports the janitor's result:
+   - `closed` — plan is `done`, branches/worktrees clean, claims reconciled.
+   - `blocked-with-reasons` — `planar plan closeout --dry-run` returned `ready: false`; the `blocked_by` list is surfaced verbatim and no closeout is applied.
+6. **Heartbeat.** The orchestrator heartbeats its own claim while awaiting the janitor: `planar-agent heartbeat --claim <token> --status "awaiting:janitor"`.
+
+### Relationship to Archive
+
+Finalization (Phase 3.7) does merge + DB closeout: the plan transitions to `done` through the gate. Archive (Phase 5) does workbench FS archival (`planar workbench archive`). They are distinct steps. Finalization typically runs first; Archive can follow in the same invocation via `--finalize --archive`.
+
+### planar-execute finalization hook
+
+`planar-execute` (the Lua-driven autonomous workflow harness) exposes a **finalization hook after a clean workflow run** — the harness-side equivalent of the orchestrator's Phase 3.7. When a `.lua` workflow script completes all its worker tasks without a `failure-surfaced` or `abort` outcome, the harness is expected to invoke the janitor (or run `planar plan closeout` directly as an operator-aligned harness call) to mirror what the model-driven orchestrator does in Phase 3.7. This is an **integration point** (the actual Lua hook wiring is implementation work separate from this contract); its contract here is:
+
+- The hook fires only on a clean workflow run (all workers green, no unresolved test-coder failures, no orphaned claims blocking the gate).
+- The hook is gated identically to the orchestrator's Phase 3.7: `planar plan closeout --dry-run` must pass before apply; `ready: false` surfaces to the operator and halts without force-closing.
+- Coders dispatched by `planar-execute` workers still never call `planar plan closeout`; the finalization hook is the harness-level call, operating at the operator-plane boundary, not the agent-plane boundary.
+- When `PLANAR_EXECUTE_LIVE_AGENT=0` (mock mode) the hook should be a no-op or dry-run-only, consistent with the rest of `planar-execute`'s mock-mode contract.
 
 ## Flow
 

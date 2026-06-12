@@ -209,7 +209,7 @@ The janitor emits a status string at each phase boundary:
 
 ## Forward references
 
-Orchestrator / `planar-execute` integration (when finalization is auto-dispatched as part of Phase 5) is task 3886, `closeout-orchestrator-integration`. That task will wire the janitor into the orchestrator's dispatch loop so finalization runs automatically after a cycle is approved. This spec defines the role behavior; the wiring spec will reference it.
+Orchestrator / `planar-execute` integration was delivered in task 3886 (`closeout-orchestrator-integration`). Finalization is **Phase 3.7** of the orchestrator — a distinct step that runs after cycle approval but is **explicitly gated**: the operator opts in via the `--finalize` flag (or an interactive confirm prompt); it does not run automatically. Phase 5 is the workbench Archive step, which is separate. The orchestrator dispatches the janitor as a spawned subagent when the gate is cleared; this spec defines the janitor's role behavior.
 
 The `planar plan closeout` gate this spec drives was delivered in task 3883 (`closeout-gate`). See `docs/cli-reference.md § planar plan closeout` for the authoritative flag and JSON-shape reference.
 
