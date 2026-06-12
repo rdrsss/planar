@@ -5391,7 +5391,7 @@ The `children` array is always present, even when empty (the empty-`global` sign
 
 Schema-version handshake: `planar-agent` is a **consumer** of the schema, not its owner. Startup queries `schema_migrations.max(version)` and refuses with exit **7** when the live DB is older than the binary's embedded minimum. The remediation pointer ("run `planar init`") is printed to stderr.
 
-### Verb surface (13 verbs)
+### Verb surface (15 verbs)
 
 ```text
 # Atomic operations — each wraps (claim lifecycle + action lifecycle +
@@ -5422,6 +5422,14 @@ planar-agent ingest     --vendor claude --event @<file|-> [--json]
 # hooks never do.
 planar-agent reconcile  [--dry-run] [--stale-after <duration>] [--json]
 planar-agent abort      --claim <token> [--reason <text>] [--vendor <s>] [--vendor-session <vendor:id>] [--json]
+
+# Workflow run lifecycle — used by planar-execute to manage workflow_runs
+# rows while staying DB-handle-free (decision 444). The caller supplies
+# the harness pid (not getpid()) so crash reconciliation probes the right
+# process. `abandoned` status is reserved for `reconcile`; `run end` never
+# writes it.
+planar-agent run start  --plan <plan-id> --workflow <name> --run-id <identifier> --pid <harness-pid> --repo-root <path> [--json]
+planar-agent run end    --run-id <identifier> --status completed|failed|interrupted [--json]
 ```
 
 **Duration grammar:** `--ttl`, `--stale-after`, and `--interval` accept either a bare integer (interpreted as seconds for the `--ttl` / `--stale-after` surface; `--interval` follows the same default for back-compat with the legacy parser) or a number with an ISO-style suffix: `ns`, `us`, `ms`, `s`, `m`, `h`. Examples: `--ttl 600` (10 minutes), `--ttl 10m` (same), `--ttl 1h`, `--interval 500ms`. The implementation is the shared `cli.duration` helper.
@@ -5438,7 +5446,7 @@ planar-agent abort      --claim <token> [--reason <text>] [--vendor <s>] [--vend
 | `release`  | Same as fail with outcome='aborted', claim status='released'. (Distinct semantically from fail — "graceful give-up" vs "I tried and failed".) |
 | `block`    | INSERT `entity_links(from=task, to=blocker, relationship='blocks')` → UPDATE task status='blocked' → UPDATE action ended_at + outcome='aborted' → UPDATE claim status='released'. |
 | `peek`     | Read-only: same SELECT as step 1 of pull; no writes. |
-| `reconcile`| SELECT expired active claims → UPDATE status='stale' → UPDATE orphaned actions ended_at + outcome='aborted'. Does NOT touch tasks.status. `--dry-run` returns candidates without writing. |
+| `reconcile`| (1) Claim sweep: SELECT expired active claims → UPDATE status='stale' → UPDATE orphaned actions ended_at + outcome='aborted'. Does NOT touch tasks.status. (2) Run sweep: SELECT running `workflow_runs` rows → `kill(pid,0)` each → ESRCH ⇒ mark `abandoned` + set `ended_at`. Both sweeps run inside the same `BEGIN IMMEDIATE` transaction. `--dry-run` returns candidates + run_candidates without writing. |
 | `abort`    | UPDATE claim status='aborted' + released_at + release_reason → INSERT audit `agent_actions` row naming the aborting session. Does NOT touch tasks.status. |
 
 All write verbs open `BEGIN IMMEDIATE` so the writer lock blocks any concurrent claim attempt on the same row. The status-transition guard (`policy.status.check`) is consulted before each `UPDATE tasks SET status` — refusal rolls the transaction back and the claim keeps its previous state.
@@ -5455,8 +5463,10 @@ Stable across versions; new keys may be added, existing keys do not change name 
 | `claim` / `heartbeat` | `{ok, claim_token, claim}` |
 | `action start` / `action end` | `{ok, action_id, action}` |
 | `ingest`      | `{ok, sessions_created, claims_created, actions_created, events_processed}` |
-| `reconcile`   | `{ok, claims_marked_stale, actions_closed, candidates?}` (`candidates` present only with `--dry-run`) |
+| `reconcile`   | `{ok, claims_marked_stale, actions_closed, runs_abandoned, candidates?, run_candidates?}` (`candidates` + `run_candidates` present only with `--dry-run`) |
 | `abort`       | `{ok, claim_token, claim, aborting_session}` |
+| `run start`   | `{ok, run_id, run}` where `run` includes `id`, `plan_id`, `workflow_name`, `run_identifier`, `pid`, `repo_root`, `status:"running"` |
+| `run end`     | `{ok, run_id, status}` where `status` is the terminal status written |
 
 `ClaimRow` matches the `agent_work_claims` row shape with snake_case keys (including locality columns `repo_root`, `branch`, `head_sha_at_claim`, `dirty_at_claim` and worktree columns `worktree_id`, `worktree_path`). `Task` matches `planar task show --json`. `ActionRow` matches `agent_actions` (including locality columns `head_sha`, `dirty`).
 
@@ -5485,7 +5495,7 @@ Per-action-kind defaults: planner / coder / reviewer / test_coder probe; heartbe
 
 ### Capability boundary
 
-A process invoked as `planar-agent` writes ONLY to `agent_work_claims`, `agent_actions`, and `tasks.status` (the last only as part of atomic coordinated operations with status guards). It NEVER writes to plan / decision / question / scenario / artifact / annotation. A vendor hook configured with only `planar-agent` on its PATH has bounded blast radius — it cannot touch planning state.
+A process invoked as `planar-agent` writes ONLY to `agent_work_claims`, `agent_actions`, `tasks.status` (the last only as part of atomic coordinated operations with status guards), and `workflow_runs` (via `run start` / `run end` / the `reconcile` run sweep). It NEVER writes to plan / decision / question / scenario / artifact / annotation. A vendor hook configured with only `planar-agent` on its PATH has bounded blast radius — it cannot touch planning state.
 
 ---
 

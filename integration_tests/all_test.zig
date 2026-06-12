@@ -61,6 +61,7 @@ comptime {
     _ = @import("m3_ps_feed_test.zig");
     _ = @import("planar_agent_test.zig");
     _ = @import("planar_agent_ingest_test.zig");
+    _ = @import("planar_agent_run_test.zig");
     _ = @import("planar_watch_test.zig");
     _ = @import("scope_test.zig");
     _ = @import("search_test.zig");

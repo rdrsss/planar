@@ -1,4 +1,4 @@
-//! handlers/cmd — assembles the 13-verb `planar-agent` command surface.
+//! handlers/cmd — assembles the `planar-agent` command surface.
 //!
 //! Imported by `src/cmd/planar-agent/main.zig` as the root tree's
 //! `.cmds` slice. The handlers themselves live one file per verb under
@@ -10,8 +10,11 @@
 //!   2 nested actions: action start, action end
 //!   1 ingest        : ingest (M2 skeleton; full adapter routing in M4)
 //!   2 op recovery   : reconcile, abort
+//!   1 run lifecycle : run (start, end)  — plan 585 workflow context plane
 //!
-//! Total: 13 verbs.
+//! Total: 15 top-level verbs (pull, peek, complete, fail, release, block,
+//!         claim, heartbeat, action, ingest, reconcile, abort, version,
+//!         schema, run).
 
 const cli = @import("cli");
 
@@ -29,6 +32,7 @@ const ingest_h = @import("ingest.zig");
 const reconcile_h = @import("reconcile.zig");
 const abort_h = @import("abort.zig");
 const schema_h = @import("schema.zig");
+const run_cmd = @import("run/cmd.zig");
 
 pub const verbs: []const cli.Cmd = &.{
     version_h.verb,
@@ -45,4 +49,5 @@ pub const verbs: []const cli.Cmd = &.{
     reconcile_h.verb,
     abort_h.verb,
     schema_h.verb,
+    run_cmd.verb,
 };
