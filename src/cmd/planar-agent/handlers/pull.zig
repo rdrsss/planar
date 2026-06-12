@@ -37,6 +37,8 @@ pub const verb: cli.Cmd = .{
         .{ .long = "--no-locality-probe", .kind = .bool, .default = .{ .bool = false }, .desc = "Skip the git locality probe" },
         .{ .long = "--metadata", .kind = .string, .desc = "Opaque text (typically JSON) persisted on the dispatch action row; validated as well-formed JSON when supplied" },
         .{ .long = "--parent-action", .kind = .int, .desc = "Parent action id; wires the new action as a child of this action in `planar-watch tree` (cross-session hierarchy)" },
+        .{ .long = "--run", .kind = .int, .desc = "workflow_runs.id to associate with this claim (populated by planar-execute; omit for interactive claims)" },
+        .{ .long = "--stage", .kind = .string, .desc = "Workflow stage name (e.g. code, review) to record on the claim; requires --run" },
         .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
     },
     .positionals = &.{
@@ -125,6 +127,8 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
         .action_kind = action_kind,
         .metadata = args.metadata,
         .parent_action_id = args.parent_action,
+        .run_id = args.run,
+        .stage = args.stage,
     }) catch |e| exit.die(ctx, e, "pull: {s}", .{@errorName(e)});
     defer result.deinit(ctx.allocator);
 

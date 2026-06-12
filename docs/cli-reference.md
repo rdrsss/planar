@@ -2,7 +2,7 @@
 
 Reference for every `planar` subcommand. Authoritative current surface for the installed binary. For machine-readable help, use `planar <subcommand> --help`.
 
-**Source of truth:** schema across `migrations/00001_foundation.up.sql` through `migrations/00021_session_commits.up.sql`. Every "schema effects" section below cites real columns from those migrations. See [docs/architecture.md § Application tables](architecture.md#application-tables) for the migration-by-migration table inventory.
+**Source of truth:** schema across `migrations/00001_foundation.up.sql` through `migrations/00023_claims_run_stage.up.sql`. Every "schema effects" section below cites real columns from those migrations. See [docs/architecture.md § Application tables](architecture.md#application-tables) for the migration-by-migration table inventory.
 
 ---
 
@@ -5396,7 +5396,7 @@ Schema-version handshake: `planar-agent` is a **consumer** of the schema, not it
 ```text
 # Atomic operations — each wraps (claim lifecycle + action lifecycle +
 # task status transition) in a single BEGIN IMMEDIATE transaction.
-planar-agent pull       <plan-id> [--vendor <v>] [--vendor-session <vendor:id>] [--role coder] [--ttl <duration>] [--purpose <text>] [--base-ref <git-ref>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--metadata <json>] [--parent-action <action-id>] [--json]
+planar-agent pull       <plan-id> [--vendor <v>] [--vendor-session <vendor:id>] [--role coder] [--ttl <duration>] [--purpose <text>] [--base-ref <git-ref>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--metadata <json>] [--parent-action <action-id>] [--run <run-id>] [--stage <stage>] [--json]
 planar-agent peek       <plan-id> [--json]
 planar-agent complete   --claim <token> [--summary <text>] [--json]
 planar-agent fail       --claim <token> --reason <text> [--json]
@@ -5405,7 +5405,7 @@ planar-agent block      --claim <token> --blocker <task-id> [--reason <text>] [-
 
 # Claim primitives — for orchestrator-dispatch (caller already knows the
 # target entity by id). claim does NOT auto-transition task status.
-planar-agent claim      --entity task:<id>|plan:<id>|plan_step:<id> [--vendor <v>] [--vendor-session <vendor:id>] [--role <r>] [--ttl <duration>] [--purpose <text>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--force] [--json]
+planar-agent claim      --entity task:<id>|plan:<id>|plan_step:<id> [--vendor <v>] [--vendor-session <vendor:id>] [--role <r>] [--ttl <duration>] [--purpose <text>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--force] [--run <run-id>] [--stage <stage>] [--json]
 planar-agent heartbeat  --claim <token> [--ttl <duration>] [--status <text>] [--json]
 
 # Nested action lifecycle — for sub-tool-calls or sub-phases inside a
@@ -5468,7 +5468,7 @@ Stable across versions; new keys may be added, existing keys do not change name 
 | `run start`   | `{ok, run_id, run}` where `run` includes `id`, `plan_id`, `workflow_name`, `run_identifier`, `pid`, `repo_root`, `status:"running"` |
 | `run end`     | `{ok, run_id, status}` where `status` is the terminal status written |
 
-`ClaimRow` matches the `agent_work_claims` row shape with snake_case keys (including locality columns `repo_root`, `branch`, `head_sha_at_claim`, `dirty_at_claim` and worktree columns `worktree_id`, `worktree_path`). `Task` matches `planar task show --json`. `ActionRow` matches `agent_actions` (including locality columns `head_sha`, `dirty`).
+`ClaimRow` matches the `agent_work_claims` row shape with snake_case keys (including locality columns `repo_root`, `branch`, `head_sha_at_claim`, `dirty_at_claim`, worktree columns `worktree_id`, `worktree_path`, and workflow run correlation columns `run_id`, `stage`). `Task` matches `planar task show --json`. `ActionRow` matches `agent_actions` (including locality columns `head_sha`, `dirty`).
 
 ### Locality flags
 
@@ -5478,6 +5478,15 @@ Stable across versions; new keys may be added, existing keys do not change name 
 - `--no-locality-probe` — short-circuit; records locality columns as NULL.
 
 Per-action-kind defaults: planner / coder / reviewer / test_coder probe; heartbeat / tool_call skip. The probe runs `git symbolic-ref`, `git rev-parse HEAD`, and `git status --porcelain` against the resolved root; any subprocess failure (non-git directory, missing `git`, error exit) records `unknown` rather than refusing the claim.
+
+### Workflow run correlation flags (`pull` and `claim`)
+
+`pull` and `claim` accept two optional flags for associating a claim with a `planar-execute` workflow run (decision 450):
+
+- `--run <run-id>` — integer id of the `workflow_runs` row to link on the claim. Set by `planar-execute` when dispatching a worker inside a run. Omit for interactive operator claims (leaves `run_id` NULL on the row).
+- `--stage <stage>` — free-text stage name (e.g. `code`, `review`, `plan`) recorded on the claim. Requires `--run`; omitting `--stage` while passing `--run` leaves `stage` NULL. The `context add --claim <token>` verb (task 3901) stamps `run_id` and `stage` server-side from the claim row — the worker passes only `--claim` (decision 447).
+
+Claims acquired without `--run`/`--stage` behave byte-for-byte as before (no behavior change, no default values). The columns are nullable; existing callers and tools that do not pass these flags are unaffected.
 
 ### Entity-ref parser (`claim --entity`)
 

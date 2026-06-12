@@ -38,6 +38,8 @@ pub const verb: cli.Cmd = .{
         .{ .long = "--repo-root", .kind = .string, .desc = "Absolute path of checkout to probe locality against" },
         .{ .long = "--no-locality-probe", .kind = .bool, .default = .{ .bool = false }, .desc = "Skip the git locality probe" },
         .{ .long = "--force", .kind = .bool, .default = .{ .bool = false }, .desc = "Take over an existing live claim (operator recovery)" },
+        .{ .long = "--run", .kind = .int, .desc = "workflow_runs.id to associate with this claim (populated by planar-execute; omit for interactive claims)" },
+        .{ .long = "--stage", .kind = .string, .desc = "Workflow stage name (e.g. code, review) to record on the claim; requires --run" },
         .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
     },
     .run = cli.handler(handle),
@@ -87,6 +89,8 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
         .ttl_secs = ttl_secs,
         .locality = loc,
         .force = args.force,
+        .run_id = args.run,
+        .stage = args.stage,
     }) catch |e| {
         d.exec("ROLLBACK") catch {};
         exit.die(ctx, e, "claim: {s}", .{@errorName(e)});

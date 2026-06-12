@@ -77,6 +77,12 @@ pub const AcquireArgs = struct {
     /// row. Operator-only recovery path; the normal acquireClaim flow
     /// returns ClaimContention instead.
     force: bool = false,
+    /// Optional FK to workflow_runs.id; set by planar-execute via
+    /// --run <id>. NULL for interactive / non-workflow claims.
+    run_id: ?i64 = null,
+    /// Optional stage name from the workflow that dispatched this
+    /// worker (e.g. "code", "review"). NULL when --stage is omitted.
+    stage: ?[]const u8 = null,
 };
 
 /// Acquire a new claim. MUST be called under `BEGIN IMMEDIATE` (the
@@ -119,12 +125,14 @@ pub fn acquireClaim(
             \\  worktree_id, worktree_path,
             \\  repo_root, branch, head_sha_at_claim, dirty_at_claim,
             \\  purpose, base_ref,
+            \\  run_id, stage,
             \\  lease_expires_at
             \\) values (
             \\  lower(hex(randomblob(16))), ?, ?, ?, ?,
             \\  'active', ?, ?, ?, ?,
             \\  ?, ?,
             \\  ?, ?, ?, ?,
+            \\  ?, ?,
             \\  ?, ?,
             \\  strftime('%Y-%m-%dT%H:%M:%fZ','now', '+{d} seconds')
             \\)
@@ -137,12 +145,14 @@ pub fn acquireClaim(
             \\  worktree_id, worktree_path,
             \\  repo_root, branch, head_sha_at_claim, dirty_at_claim,
             \\  purpose, base_ref,
+            \\  run_id, stage,
             \\  lease_expires_at
             \\) values (
             \\  lower(hex(randomblob(16))), ?, ?, ?, ?,
             \\  'active', ?, ?, ?, ?,
             \\  ?, ?,
             \\  ?, ?, ?, ?,
+            \\  ?, ?,
             \\  ?, ?,
             \\  strftime('%Y-%m-%dT%H:%M:%fZ','now', '{d} seconds')
             \\)
@@ -170,6 +180,8 @@ pub fn acquireClaim(
         textOrNull(dirty_text),
         textOrNull(args.purpose),
         textOrNull(args.base_ref),
+        intOrNull(args.run_id),
+        textOrNull(args.stage),
     }) catch return Error.QueryFailed;
 
     return try getClaimById(d, allocator, id);
@@ -589,7 +601,7 @@ pub fn reconcileStale(
     // Select the candidate active+expired claims first; we always need
     // them for the returned candidate list (or to mark stale).
     // When policy.session_id is set, scope all queries to that session.
-    var sel_buf: [640]u8 = undefined;
+    var sel_buf: [768]u8 = undefined;
     const sel_sql = if (policy.session_id) |sid|
         std.fmt.bufPrintZ(&sel_buf,
             \\select id, claim_token, session_id, entity_kind, entity_id, claim_scope,
@@ -598,7 +610,8 @@ pub fn reconcileStale(
             \\       repo_root, branch, head_sha_at_claim, dirty_at_claim,
             \\       purpose, base_ref,
             \\       claimed_at, last_heartbeat_at, lease_expires_at,
-            \\       released_at, release_reason
+            \\       released_at, release_reason,
+            \\       run_id, stage
             \\from agent_work_claims
             \\where status = 'active'
             \\  and lease_expires_at < strftime('%Y-%m-%dT%H:%M:%fZ','now', '-{d} seconds')
@@ -612,7 +625,8 @@ pub fn reconcileStale(
             \\       repo_root, branch, head_sha_at_claim, dirty_at_claim,
             \\       purpose, base_ref,
             \\       claimed_at, last_heartbeat_at, lease_expires_at,
-            \\       released_at, release_reason
+            \\       released_at, release_reason,
+            \\       run_id, stage
             \\from agent_work_claims
             \\where status = 'active'
             \\  and lease_expires_at < strftime('%Y-%m-%dT%H:%M:%fZ','now', '-{d} seconds')
@@ -1083,6 +1097,15 @@ fn intOrNull(v: ?i64) db.sqlite.Param {
 }
 
 // -- SQL constants ------------------------------------------------------
+// Column order for all claim SELECT statements (indices 0-25):
+//   0:id, 1:claim_token, 2:session_id, 3:entity_kind, 4:entity_id, 5:claim_scope,
+//   6:status, 7:vendor, 8:vendor_session_id, 9:role, 10:model,
+//   11:worktree_id, 12:worktree_path,
+//   13:repo_root, 14:branch, 15:head_sha_at_claim, 16:dirty_at_claim,
+//   17:purpose, 18:base_ref,
+//   19:claimed_at, 20:last_heartbeat_at, 21:lease_expires_at,
+//   22:released_at, 23:release_reason,
+//   24:run_id, 25:stage
 
 const claim_columns =
     \\id, claim_token, session_id, entity_kind, entity_id, claim_scope,
@@ -1091,7 +1114,8 @@ const claim_columns =
     \\repo_root, branch, head_sha_at_claim, dirty_at_claim,
     \\purpose, base_ref,
     \\claimed_at, last_heartbeat_at, lease_expires_at,
-    \\released_at, release_reason
+    \\released_at, release_reason,
+    \\run_id, stage
 ;
 
 const claim_select_by_id: [:0]const u8 =
@@ -1101,7 +1125,8 @@ const claim_select_by_id: [:0]const u8 =
     \\       repo_root, branch, head_sha_at_claim, dirty_at_claim,
     \\       purpose, base_ref,
     \\       claimed_at, last_heartbeat_at, lease_expires_at,
-    \\       released_at, release_reason
+    \\       released_at, release_reason,
+    \\       run_id, stage
     \\from agent_work_claims where id = ?
 ;
 
@@ -1112,7 +1137,8 @@ const claim_select_by_token: [:0]const u8 =
     \\       repo_root, branch, head_sha_at_claim, dirty_at_claim,
     \\       purpose, base_ref,
     \\       claimed_at, last_heartbeat_at, lease_expires_at,
-    \\       released_at, release_reason
+    \\       released_at, release_reason,
+    \\       run_id, stage
     \\from agent_work_claims where claim_token = ?
 ;
 
@@ -1123,7 +1149,8 @@ const claim_select_active_all: [:0]const u8 =
     \\       repo_root, branch, head_sha_at_claim, dirty_at_claim,
     \\       purpose, base_ref,
     \\       claimed_at, last_heartbeat_at, lease_expires_at,
-    \\       released_at, release_reason
+    \\       released_at, release_reason,
+    \\       run_id, stage
     \\from agent_work_claims
     \\where status = 'active'
     \\order by claimed_at desc
@@ -1136,7 +1163,8 @@ const claim_select_active_for_session: [:0]const u8 =
     \\       repo_root, branch, head_sha_at_claim, dirty_at_claim,
     \\       purpose, base_ref,
     \\       claimed_at, last_heartbeat_at, lease_expires_at,
-    \\       released_at, release_reason
+    \\       released_at, release_reason,
+    \\       run_id, stage
     \\from agent_work_claims
     \\where status = 'active' and session_id = ?
     \\order by claimed_at desc
@@ -1149,7 +1177,8 @@ const claim_select_stale: [:0]const u8 =
     \\       repo_root, branch, head_sha_at_claim, dirty_at_claim,
     \\       purpose, base_ref,
     \\       claimed_at, last_heartbeat_at, lease_expires_at,
-    \\       released_at, release_reason
+    \\       released_at, release_reason,
+    \\       run_id, stage
     \\from agent_work_claims
     \\where status = 'stale'
     \\   or (status = 'active' and lease_expires_at < strftime('%Y-%m-%dT%H:%M:%fZ','now'))
@@ -1163,7 +1192,8 @@ const claim_select_by_entity: [:0]const u8 =
     \\       repo_root, branch, head_sha_at_claim, dirty_at_claim,
     \\       purpose, base_ref,
     \\       claimed_at, last_heartbeat_at, lease_expires_at,
-    \\       released_at, release_reason
+    \\       released_at, release_reason,
+    \\       run_id, stage
     \\from agent_work_claims
     \\where entity_kind = ? and entity_id = ?
     \\order by claimed_at desc
@@ -1176,7 +1206,8 @@ const claim_select_by_session: [:0]const u8 =
     \\       repo_root, branch, head_sha_at_claim, dirty_at_claim,
     \\       purpose, base_ref,
     \\       claimed_at, last_heartbeat_at, lease_expires_at,
-    \\       released_at, release_reason
+    \\       released_at, release_reason,
+    \\       run_id, stage
     \\from agent_work_claims
     \\where session_id = ?
     \\order by claimed_at desc
@@ -1237,6 +1268,8 @@ fn readClaimRow(stmt: *db.sqlite.Stmt, allocator: std.mem.Allocator) Error!types
         .lease_expires_at = try stmt.columnTextAlloc(21, allocator),
         .released_at = try stmt.columnTextOpt(22, allocator),
         .release_reason = try stmt.columnTextOpt(23, allocator),
+        .run_id = stmt.columnIntOpt(24),
+        .stage = try stmt.columnTextOpt(25, allocator),
     };
 }
 
@@ -1960,4 +1993,96 @@ test "latestActiveClaimForSession returns the most-recent claim id when multiple
     try std.testing.expect(result != null);
     // c3 was acquired last so it has the highest claimed_at and id.
     try std.testing.expectEqual(c3.id, result.?);
+}
+
+test "acquireClaim with run_id and stage populates both columns" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const sid = try insertTestSession(&d);
+    const tid = try insertTestTask(&d);
+
+    // Insert a workflow_runs row to serve as FK target.
+    const plan_id = try d.execParams(
+        "insert into plans (scope_kind, title, slug) values ('global','p','run-stage-plan')",
+        &.{},
+    );
+    const run_id = try d.execParams(
+        \\insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, repo_root)
+        \\values (?, 'test-wf', 'run-stage-test-1', 12345, '/tmp/repo')
+    ,
+        &.{.{ .int = plan_id }},
+    );
+
+    const c = try acquireClaim(&d, a, .{
+        .session_id = sid,
+        .entity_kind = .task,
+        .entity_id = tid,
+        .vendor = "test",
+        .run_id = run_id,
+        .stage = "code",
+    });
+    defer c.deinit(a);
+
+    try std.testing.expectEqual(types.ClaimStatus.active, c.status);
+    try std.testing.expect(c.run_id != null);
+    try std.testing.expectEqual(run_id, c.run_id.?);
+    try std.testing.expect(c.stage != null);
+    try std.testing.expectEqualStrings("code", c.stage.?);
+}
+
+test "acquireClaim without run_id and stage leaves both null" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const sid = try insertTestSession(&d);
+    const tid = try insertTestTask(&d);
+
+    const c = try acquireClaim(&d, a, .{
+        .session_id = sid,
+        .entity_kind = .task,
+        .entity_id = tid,
+        .vendor = "test",
+    });
+    defer c.deinit(a);
+
+    try std.testing.expect(c.run_id == null);
+    try std.testing.expect(c.stage == null);
+}
+
+test "getClaimByToken round-trips run_id and stage" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const sid = try insertTestSession(&d);
+    const tid = try insertTestTask(&d);
+
+    const plan_id = try d.execParams(
+        "insert into plans (scope_kind, title, slug) values ('global','p','rt-plan')",
+        &.{},
+    );
+    const run_id = try d.execParams(
+        \\insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, repo_root)
+        \\values (?, 'wf', 'rt-test-1', 99, '/tmp')
+    ,
+        &.{.{ .int = plan_id }},
+    );
+
+    const c = try acquireClaim(&d, a, .{
+        .session_id = sid,
+        .entity_kind = .task,
+        .entity_id = tid,
+        .vendor = "test",
+        .run_id = run_id,
+        .stage = "review",
+    });
+    defer c.deinit(a);
+
+    // Re-fetch by token to verify the SELECT path also includes the new columns.
+    const reloaded = try getClaimByToken(&d, a, c.claim_token);
+    defer reloaded.deinit(a);
+    try std.testing.expect(reloaded.run_id != null);
+    try std.testing.expectEqual(run_id, reloaded.run_id.?);
+    try std.testing.expect(reloaded.stage != null);
+    try std.testing.expectEqualStrings("review", reloaded.stage.?);
 }
