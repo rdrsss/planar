@@ -5532,7 +5532,7 @@ Schema-version handshake: `planar-watch` is a **consumer** of the schema, not it
 
 A process invoked as `planar-watch` performs **no writes**. Two defenses:
 
-1. The command tree (`src/cmd/planar-watch/handlers/cmd.zig`) registers exactly seven read verbs plus the conventional `version` / `completion` helpers. There is no write verb anywhere in the tree.
+1. The command tree (`src/cmd/planar-watch/handlers/cmd.zig`) registers exactly eight read verbs plus the conventional `version` / `completion` helpers. There is no write verb anywhere in the tree.
 2. The bootstrap calls `runtime.ensureDbStrictReadOnly` which opens the DB via `sqlite3_open_v2(..., SQLITE_OPEN_READONLY, ...)`. The SQLite driver itself returns `SQLITE_READONLY` on any attempted `INSERT` / `UPDATE` / `DELETE` / DDL — verified by the `openReadOnly: write SQL is rejected at the driver layer` unit test in `src/db/sqlite.zig`.
 
 A vendor hook or operator script configured with only `planar-watch` on its PATH cannot modify the database under any circumstances.
@@ -5562,6 +5562,10 @@ planar-watch log      (--task <id> | --plan <id> | --entity <kind:id> | --sessio
 
 # Orchestrator → sub-agent topology forest (M4 addition, plan 467).
 planar-watch tree     [--root-session <id>] [--follow] [--interval <D>]
+
+# Workflow run observability (plan 585 addition).
+planar-watch run list [--plan <id>] [--status running|completed|failed|interrupted|abandoned] [--json]
+planar-watch run show <id> [--json]
 
 # Conventional helpers.
 planar-watch version
@@ -5630,6 +5634,34 @@ Each row shows the same columns as `ps`: `scope`, `vendor`, `activity`, `worktre
 
 **Implementation:** `src/cmd/planar-watch/handlers/tree.zig` (plan 467 M4, tasks 3064–3067).
 
+### `planar-watch run` — workflow run observability (plan 585)
+
+Read-only view of the `workflow_runs` and `context_records` tables (migration 00022).
+
+**`run list [--plan <id>] [--status <s>] [--json]`**
+
+Lists `workflow_runs` rows, newest first. Filters are combined with AND when both are supplied.
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--plan <id>` | Restrict to runs associated with the given plan id. | unset (all plans) |
+| `--status <s>` | Restrict by run status: `running`, `completed`, `failed`, `interrupted`, `abandoned`. | unset (all statuses) |
+| `--json` | Emit a single JSON object `{generated_at, runs:[RunRow]}`. | false (human text) |
+
+**`run show <id> [--json]`**
+
+Shows the full `workflow_runs` row for `<id>` plus all `context_records` for that run,
+grouped by stage (alphabetical ascending) then ordered by `created_at` ascending within each stage.
+Exits non-zero when the run id is not found.
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--json` | Emit `{run: RunRow, context_records: [ContextRecord]}`. | false (human text) |
+
+Human text format for `run show`: prints run metadata (id, plan_id, status, pid, workflow, timestamps, identifier, repo_root), followed by context records indented under `[stage: <name>]` section headers. The `body` field is previewed at up to 80 bytes with `…` when truncated.
+
+**Implementation:** `src/cmd/planar-watch/handlers/run.zig` (plan 585, task 3906).
+
 ### JSON shapes
 
 ```
@@ -5670,6 +5702,22 @@ planar-watch log --json:
           | "claim_aborted" | "claim_stale",
       at: ISO8601,
       claim: ClaimRow }
+
+planar-watch run list --json:
+  { generated_at: ISO8601,
+    runs: [RunRow] }
+  RunRow: { id, plan_id, workflow_name, run_identifier, pid,
+            repo_root, started_at, ended_at: ISO8601|null,
+            status: "running"|"completed"|"failed"|"interrupted"|"abandoned" }
+
+planar-watch run show <id> --json:
+  { run: RunRow,
+    context_records: [ContextRecord] }
+  ContextRecord: { id, run_id, stage, session_id, claim_id,
+                   kind: "finding"|"risk"|"artifact"|"followup"|"summary"|"capsule",
+                   body, status: "active"|"consumed"|"superseded",
+                   compiled_from: string|null, created_at: ISO8601 }
+  Records are grouped by stage (alphabetical asc) then ordered by created_at asc.
 ```
 
 `ClaimRow` matches the canonical shape from `engine.runtime.agentactivity.json.writeClaim` (snake_case keys mirroring the `agent_work_claims` columns, including the locality columns `repo_root`, `branch`, `head_sha_at_claim`, `dirty_at_claim` and the worktree columns). `ActionRow` mirrors `agent_actions`. `Plan` matches `planar plan show --json`.

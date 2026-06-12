@@ -18,6 +18,9 @@
 //!                        atomic coordinated operations.
 //!   - `planar-watch`   : THIS binary; read-only viewer.
 //!
+//! Verb set (plan 585 addition): `run` group (list / show) provides
+//! read-only observability for `workflow_runs` + `context_records`.
+//!
 //! Schema-version handshake: `planar-watch` is a CONSUMER of the
 //! schema, not its owner. Startup queries
 //! `schema_migrations.max(version)` and refuses with exit 7 when the
@@ -44,7 +47,7 @@ const exit = @import("exit.zig");
 /// derive their typed Args via `cli.castArgs(main.root, &.{…}, ptr)`.
 pub const root: cli.Cmd = .{
     .name = "planar-watch",
-    .desc = "Read-only viewer for live agent activity (feed / ps / claims / actions / plans / log / tree).",
+    .desc = "Read-only viewer for live agent activity (feed / ps / claims / actions / plans / log / tree / run).",
     .long_desc = "planar-watch is the human-facing live cockpit for agent activity.\n\n" ++
         "  The default invocation with no args is the activity feed.\n" ++
         "  Subcommands narrow the view; `--follow` turns each one into a\n" ++
@@ -137,9 +140,10 @@ fn maybeInjectDefaultVerb(
 
     // Known verb names — leave argv alone.
     inline for ([_][]const u8{
-        "feed",    "ps",      "claims",
-        "actions", "plans",   "log",
-        "tree",    "version", "completion",
+        "feed",       "ps",    "claims",
+        "actions",    "plans", "log",
+        "tree",       "run",   "version",
+        "completion",
     }) |v| {
         if (std.mem.eql(u8, first, v)) return raw_args;
     }
