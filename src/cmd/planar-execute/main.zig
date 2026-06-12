@@ -330,6 +330,8 @@ pub const HostCallKind = enum {
     dispatch_table,
     /// ctx.context(stage) — returns context records for the current run.
     context,
+    /// ctx.brief({...}) — assembles a methodology-compliant coder brief from inputs.
+    brief_compile,
 };
 
 /// A single recorded host-function invocation. All fields are heap-owned copies
@@ -3337,6 +3339,346 @@ fn hostContext(L: ?*c.lua_State) callconv(.c) c_int {
     return 1; // return the sequence
 }
 
+/// hostBrief — `ctx.brief({...})` (plan 585 task 3904).
+///
+/// Marshals a Lua table of brief inputs into a `brief.BriefInputs` and calls
+/// `brief.compileBrief`, returning the compiled brief STRING to Lua.
+///
+/// ## Lua-table shape accepted
+///
+///   ctx.brief({
+///     problem_statement = "...",            -- string (required; defaults to "")
+///     claim_token       = "...",            -- string (defaults to "<claim_token>")
+///     plan = {                              -- table (optional)
+///       id     = 492,                       -- integer
+///       title  = "...",                     -- string
+///       status = "active",                  -- string
+///       slug   = "...",                     -- string (optional)
+///     },
+///     tasks = {                             -- array (optional)
+///       { id = 3901, title = "...", slug = "..." }, ...
+///     },
+///     gates             = { "make fmt-check", "make test" },  -- array of strings
+///     spec_citations    = { { path = "...", verbatim_slice = "..." }, ... },
+///     locked_decisions  = { { id = "D-1", text = "..." }, ... },
+///   })
+///
+/// ## Context-capsule injection
+///
+/// When `hs.active_run` is non-null the function auto-fetches ALL context
+/// records for the run (via `state.contextList`) and maps them into
+/// `BriefInputs.context_records`.  Any record whose `kind == "capsule"` is
+/// additionally promoted to `BriefInputs.context_capsule` (the first such
+/// record wins).  When `active_run` is null or `io` is not wired the context
+/// section of the brief renders the empty-state placeholder — no crash.
+///
+/// ## Schema injection
+///
+/// `agent_schema` is obtained by calling `schema.loadSchema` on `planar-agent`.
+/// On failure (subprocess unavailable, non-zero exit, bad JSON) a zero-entry
+/// schema is used — the brief still renders (best-effort).
+///
+/// ## Memory
+///
+/// All Zig allocations are freed before returning.  The brief string is pushed
+/// to Lua via `lua_pushlstring` then freed — Lua copies it internally.
+///
+/// ## No-DB-handle invariant
+///
+/// This function holds NO SQLite handle.  State reads are subprocess calls
+/// (schema.loadSchema shells `planar-agent schema`; contextList shells
+/// `planar-agent context list`).
+fn hostBrief(L: ?*c.lua_State) callconv(.c) c_int {
+    const hs = hostStateUpvalue(L);
+
+    // Record the call kind so observability tests can detect ctx.brief was invoked.
+    recordOrError(L, hs, .brief_compile, "", "");
+
+    // Argument: the input table at stack index 1.  A non-table argument is a
+    // script-author bug — treat as empty inputs so the brief still renders.
+    const has_table = c.lua_gettop(L) >= 1 and c.lua_type(L, 1) == c.LUA_TTABLE;
+    const tbl: c_int = if (has_table) 1 else 0; // 0 means "no table"
+
+    const alloc = hs.allocator;
+
+    // -----------------------------------------------------------------------
+    // Marshal scalar fields from the Lua table.
+    // -----------------------------------------------------------------------
+    const problem_statement: []const u8 = if (has_table) luaOptString(L, tbl, "problem_statement", "") else "";
+    const claim_token: []const u8 = if (has_table) luaOptString(L, tbl, "claim_token", "<claim_token>") else "<claim_token>";
+
+    // -----------------------------------------------------------------------
+    // Marshal plan from the Lua table.
+    // plan = { id, title, status, slug? }
+    // -----------------------------------------------------------------------
+    var plan = state.PlanShow{
+        .id = 0,
+        .title = "<plan>",
+        .status = "active",
+        .slug = null,
+        .parent_plan_id = null,
+    };
+    if (has_table) {
+        const plan_type = c.lua_getfield(L, tbl, "plan");
+        defer luaPop(L, 1);
+        if (plan_type == c.LUA_TTABLE) {
+            const plan_idx: c_int = c.lua_absindex(L, -1);
+            plan.id = @intCast(@max(0, luaOptInt(L, plan_idx, "id", 0)));
+            plan.title = luaOptString(L, plan_idx, "title", "<plan>");
+            plan.status = luaOptString(L, plan_idx, "status", "active");
+            const slug_type = c.lua_getfield(L, plan_idx, "slug");
+            defer luaPop(L, 1);
+            if (slug_type == c.LUA_TSTRING) {
+                var slug_len: usize = 0;
+                const slug_raw = c.lua_tolstring(L, -1, &slug_len);
+                if (slug_raw != null and slug_len > 0) {
+                    plan.slug = slug_raw[0..slug_len];
+                }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Marshal tasks array from the Lua table.
+    // tasks = { { id, title, slug? }, ... }
+    // -----------------------------------------------------------------------
+    // We build a heap-owned slice of TaskEntry.  All string slices inside
+    // borrow from Lua memory (valid for the lifetime of this call).
+    // Zig 0.16: ArrayList is unmanaged — allocator is passed at each call site.
+    var tasks_list: std.ArrayList(state.TaskEntry) = .empty;
+    defer tasks_list.deinit(alloc);
+
+    if (has_table) {
+        const tasks_type = c.lua_getfield(L, tbl, "tasks");
+        if (tasks_type == c.LUA_TTABLE) {
+            const tasks_tbl: c_int = c.lua_absindex(L, -1);
+            const n_tasks: usize = @intCast(c.lua_rawlen(L, tasks_tbl));
+            for (0..n_tasks) |i| {
+                _ = c.lua_rawgeti(L, tasks_tbl, @intCast(i + 1));
+                const task_entry_type = c.lua_type(L, -1);
+                if (task_entry_type == c.LUA_TTABLE) {
+                    const entry_idx: c_int = c.lua_absindex(L, -1);
+                    const tid = luaOptInt(L, entry_idx, "id", 0);
+                    const ttitle = luaOptString(L, entry_idx, "title", "<task>");
+                    // slug optional
+                    var tslug: ?[]const u8 = null;
+                    const tslug_type = c.lua_getfield(L, entry_idx, "slug");
+                    if (tslug_type == c.LUA_TSTRING) {
+                        var sl: usize = 0;
+                        const sr = c.lua_tolstring(L, -1, &sl);
+                        if (sr != null and sl > 0) tslug = sr[0..sl];
+                    }
+                    luaPop(L, 1); // pop slug field
+                    tasks_list.append(alloc, .{
+                        .id = tid,
+                        .plan_id = plan.id,
+                        .title = ttitle,
+                        .slug = tslug,
+                        .status = "todo",
+                    }) catch {};
+                }
+                luaPop(L, 1); // pop task entry
+            }
+        }
+        luaPop(L, 1); // pop tasks field
+    }
+
+    // Ensure at least one task entry so compileBrief doesn't panic on empty slice.
+    if (tasks_list.items.len == 0) {
+        tasks_list.append(alloc, .{
+            .id = 0,
+            .plan_id = plan.id,
+            .title = "<task>",
+            .slug = null,
+            .status = "todo",
+        }) catch {};
+    }
+
+    // -----------------------------------------------------------------------
+    // Marshal gates array.
+    // gates = { "make fmt-check", ... }
+    // -----------------------------------------------------------------------
+    var gates_list: std.ArrayList([]const u8) = .empty;
+    defer gates_list.deinit(alloc);
+
+    if (has_table) {
+        const gates_type = c.lua_getfield(L, tbl, "gates");
+        if (gates_type == c.LUA_TTABLE) {
+            const gates_tbl: c_int = c.lua_absindex(L, -1);
+            const n_gates: usize = @intCast(c.lua_rawlen(L, gates_tbl));
+            for (0..n_gates) |i| {
+                _ = c.lua_rawgeti(L, gates_tbl, @intCast(i + 1));
+                if (c.lua_type(L, -1) == c.LUA_TSTRING) {
+                    var gl: usize = 0;
+                    const gr = c.lua_tolstring(L, -1, &gl);
+                    if (gr != null and gl > 0) {
+                        gates_list.append(alloc, gr[0..gl]) catch {};
+                    }
+                }
+                luaPop(L, 1);
+            }
+        }
+        luaPop(L, 1); // pop gates field
+    }
+
+    // -----------------------------------------------------------------------
+    // Marshal spec_citations array.
+    // spec_citations = { { path = "...", verbatim_slice = "..." }, ... }
+    // -----------------------------------------------------------------------
+    var cits_list: std.ArrayList(brief.SpecCitation) = .empty;
+    defer cits_list.deinit(alloc);
+
+    if (has_table) {
+        const cits_type = c.lua_getfield(L, tbl, "spec_citations");
+        if (cits_type == c.LUA_TTABLE) {
+            const cits_tbl: c_int = c.lua_absindex(L, -1);
+            const n_cits: usize = @intCast(c.lua_rawlen(L, cits_tbl));
+            for (0..n_cits) |i| {
+                _ = c.lua_rawgeti(L, cits_tbl, @intCast(i + 1));
+                if (c.lua_type(L, -1) == c.LUA_TTABLE) {
+                    const cit_idx: c_int = c.lua_absindex(L, -1);
+                    const cpath = luaOptString(L, cit_idx, "path", "");
+                    if (cpath.len > 0) {
+                        var cvslice: ?[]const u8 = null;
+                        const cvt = c.lua_getfield(L, cit_idx, "verbatim_slice");
+                        if (cvt == c.LUA_TSTRING) {
+                            var vl: usize = 0;
+                            const vr = c.lua_tolstring(L, -1, &vl);
+                            if (vr != null and vl > 0) cvslice = vr[0..vl];
+                        }
+                        luaPop(L, 1); // pop verbatim_slice field
+                        cits_list.append(alloc, .{ .path = cpath, .verbatim_slice = cvslice }) catch {};
+                    } else {
+                        // no path — nothing to push but skip verbatim_slice field read
+                    }
+                }
+                luaPop(L, 1); // pop citation entry
+            }
+        }
+        luaPop(L, 1); // pop spec_citations field
+    }
+
+    // -----------------------------------------------------------------------
+    // Marshal locked_decisions array.
+    // locked_decisions = { { id = "D-1", text = "..." }, ... }
+    // -----------------------------------------------------------------------
+    var decisions_list: std.ArrayList(brief.LockedDecision) = .empty;
+    defer decisions_list.deinit(alloc);
+
+    if (has_table) {
+        const decs_type = c.lua_getfield(L, tbl, "locked_decisions");
+        if (decs_type == c.LUA_TTABLE) {
+            const decs_tbl: c_int = c.lua_absindex(L, -1);
+            const n_decs: usize = @intCast(c.lua_rawlen(L, decs_tbl));
+            for (0..n_decs) |i| {
+                _ = c.lua_rawgeti(L, decs_tbl, @intCast(i + 1));
+                if (c.lua_type(L, -1) == c.LUA_TTABLE) {
+                    const dec_idx: c_int = c.lua_absindex(L, -1);
+                    const did = luaOptString(L, dec_idx, "id", "");
+                    const dtext = luaOptString(L, dec_idx, "text", "");
+                    if (did.len > 0) {
+                        decisions_list.append(alloc, .{ .id = did, .text = dtext }) catch {};
+                    }
+                }
+                luaPop(L, 1); // pop decision entry
+            }
+        }
+        luaPop(L, 1); // pop locked_decisions field
+    }
+
+    // -----------------------------------------------------------------------
+    // Auto-fetch context records for the current run (context-capsule section).
+    //
+    // When active_run is non-null and io is wired, shell
+    // `planar-agent context list --run <id> --json` and map the results into
+    // ContextRef entries.  Any record with kind="capsule" promotes to
+    // context_capsule (first wins).  All other records go into context_records.
+    // On any failure → empty context (best-effort, silent degradation).
+    // -----------------------------------------------------------------------
+    var ctx_records_list: std.ArrayList(brief.ContextRef) = .empty;
+    defer {
+        for (ctx_records_list.items) |rec| {
+            alloc.free(rec.kind);
+            alloc.free(rec.body);
+        }
+        ctx_records_list.deinit(alloc);
+    }
+    var ctx_capsule: ?[]const u8 = null;
+    defer if (ctx_capsule) |cap| alloc.free(cap);
+
+    fetch_context: {
+        const active_run = hs.active_run orelse break :fetch_context;
+        const io = hs.io orelse break :fetch_context;
+        const parsed = state.contextList(alloc, io, active_run.run_db_id, null) catch break :fetch_context;
+        defer parsed.deinit();
+        for (parsed.value.records) |rec| {
+            if (ctx_capsule == null and std.mem.eql(u8, rec.kind, "capsule")) {
+                // Dupe the body so it outlives the parsed arena.
+                ctx_capsule = alloc.dupe(u8, rec.body) catch break :fetch_context;
+            }
+            // Map every record into a ContextRef — dupe strings to outlive the arena.
+            const kind_dup = alloc.dupe(u8, rec.kind) catch break :fetch_context;
+            const body_dup = alloc.dupe(u8, rec.body) catch {
+                alloc.free(kind_dup);
+                break :fetch_context;
+            };
+            ctx_records_list.append(alloc, .{ .kind = kind_dup, .body = body_dup }) catch {
+                alloc.free(kind_dup);
+                alloc.free(body_dup);
+                break :fetch_context;
+            };
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Load agent_schema (best-effort).
+    // Shell `planar-agent schema`; on failure use an empty schema.
+    // -----------------------------------------------------------------------
+    const io_for_schema = hs.io;
+    var schema_parsed: ?std.json.Parsed(schema.RawSchema) = null;
+    defer if (schema_parsed) |*sp| sp.deinit();
+    var agent_schema = schema.BinSchema.init(.{
+        .schemaVersion = 1,
+        .layout = "flat",
+        .root = "planar-agent",
+        .commands = &.{},
+    });
+    if (io_for_schema) |io| {
+        if (schema.loadSchema(alloc, io, "planar-agent")) |parsed| {
+            schema_parsed = parsed;
+            agent_schema = schema.BinSchema.init(parsed.value);
+        } else |_| {
+            // Best-effort: schema unavailable → keep the empty schema.
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Assemble BriefInputs and call compileBrief.
+    // -----------------------------------------------------------------------
+    const inputs = brief.BriefInputs{
+        .plan = plan,
+        .tasks = tasks_list.items,
+        .claim_token = claim_token,
+        .problem_statement = problem_statement,
+        .spec_citations = cits_list.items,
+        .locked_decisions = decisions_list.items,
+        .agent_schema = agent_schema,
+        .gates = gates_list.items,
+        .context_capsule = ctx_capsule,
+        .context_records = ctx_records_list.items,
+    };
+
+    const compiled = brief.compileBrief(alloc, inputs) catch |err| {
+        _ = c.luaL_error(L, "ctx.brief: compileBrief failed: %s", @errorName(err).ptr);
+        return 0;
+    };
+    defer alloc.free(compiled);
+
+    // Push as a Lua string (Lua copies the bytes).
+    _ = c.lua_pushlstring(L, compiled.ptr, compiled.len);
+    return 1;
+}
+
 /// hostBudgetSpent — `budget:spent()`. Returns the host-injected spent value.
 /// Also records the call so a test can confirm the method form was reached.
 fn hostBudgetSpent(L: ?*c.lua_State) callconv(.c) c_int {
@@ -3438,6 +3780,10 @@ fn installHostFns(L: ?*c.lua_State, ctx_idx: c_int, hs: *HostState) void {
     // read — no PLANAR_EXECUTE_LIVE_AGENT gate required; degrades to empty table
     // when active_run is null or io is not wired.
     pushHostClosure(L, ctx_idx, "context", hostContext, hs);
+    // plan 585 task 3904: ctx.brief({...}) compiles a methodology-compliant
+    // brief string from structured inputs. Auto-fetches context records for the
+    // current run and injects them as the prior-stage context section.
+    pushHostClosure(L, ctx_idx, "brief", hostBrief, hs);
 
     // Determinism injection (task 3169): ctx.now and ctx.seed are the only
     // time/random source available to the sandboxed script.
