@@ -581,6 +581,7 @@ The vendor-neutral role specs live under `agents/`. Vendor skill files defer to 
 | `agents/coder.md` | Coder role: task implementation contract, test requirements, reporting format |
 | `agents/reviewer.md` | Reviewer role: review criteria, decision taxonomy, caveat recording |
 | `agents/introspector.md` | Introspector role: read surface, transcript-mining recipe, finding taxonomy, dedup contract, feedback-plan bootstrap |
+| `agents/janitor.md` | Janitor role: merge verification, Planar state reconciliation, worktree/branch cleanup, plan closeout via the delivery-evidence gate |
 | `agents/models.md` | Tier-to-model resolution: maps `large` / `medium` tiers to concrete model IDs per vendor |
 
 ---
