@@ -144,6 +144,8 @@ The shared engine module lives at `src/engine/runtime/agentactivity/`; per-binar
 
 All state reads that a workflow script needs go through `planar` / `planar-agent` subprocesses (`planar-execute` shells them and parses JSON stdout). All writes happen through `planar-agent` verbs called by the `claude -p` workers `planar-execute` spawns. The workers run with a constrained PATH (`planar-agent` + `git` + system dirs; `planar` absent) — so no worker can call planning-entity mutations or open the DB read-write.
 
+**Run-row bracketing (plan 585 task 3922):** when `--plan <id>` is supplied and the mode is not `--dry-run`, `planar-execute` opens a `workflow_runs` row via `planar-agent run start` immediately before entering the Lua `run()` function, and closes it via `planar-agent run end` after `run()` returns — `completed` on clean exit, `interrupted` on SIGINT or ceiling shutdown. The row carries the runlock-derived `run_identifier` (`run-<pid>-<nanos>`), `pid`, `repo_root`, `workflow_name`, and `plan_id`. This is audit metadata: failures to open or close the row are logged and swallowed without aborting the workflow. `abandoned` status is reconcile-only (`planar-agent reconcile` sweeps `workflow_runs` rows whose PID is dead). Dry-run creates NO run row.
+
 This makes `planar-execute` a **pure CLI driver**: its blast radius is bounded by the verb sets of the binaries it shells, not by its own access. See [docs/concepts.md § Embedded-Lua control plane](concepts.md#embedded-lua-control-plane) for the conceptual model and [docs/cli-reference.md § Binary: planar-execute](cli-reference.md#binary-planar-execute) for the full flag reference.
 
 ### Live tail wake abstraction

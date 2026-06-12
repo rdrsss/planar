@@ -5787,7 +5787,7 @@ Load and execute a Lua workflow module. The module must export a table with a `m
 
 | Flag | Description |
 |------|-------------|
-| `--plan <id>` | Plan id for the run. Required when `PLANAR_EXECUTE_LIVE_AGENT=1`; optional in mock/stub modes (degrades claim-status reads and commit-presence sampling when absent). |
+| `--plan <id>` | Plan id for the run. Required when `PLANAR_EXECUTE_LIVE_AGENT=1`; optional in mock/stub modes (degrades claim-status reads and commit-presence sampling when absent). When `--plan` is supplied (and the mode is not `--dry-run`), `planar-execute` opens a `workflow_runs` row via `planar-agent run start` before entering `run()` and closes it via `planar-agent run end` on exit — `completed` on clean exit, `interrupted` on SIGINT or ceiling shutdown. The row is audit metadata; a failure to open or close it is logged and swallowed without aborting the workflow. `abandoned` status is reserved for crash reconciliation by `planar-agent reconcile`. |
 | `--dry-run` | Load + validate `meta`, print `meta` + the dispatch model table + `phases`, and exit 0 without entering `run()`. Mutually exclusive with `--mock-worker`, `--mock-outcomes`, and `PLANAR_EXECUTE_LIVE_AGENT=1`. |
 | `--mock-worker` | Run with `FakeSpawner` — full pipeline, no real workers. Mutually exclusive with `--dry-run` and `PLANAR_EXECUTE_LIVE_AGENT=1`. See also `--mock-outcomes`. |
 | `--mock-outcomes <file>` | Per-call scripted FakeSpawner outcomes (NDJSON file; one JSON object per line with optional `exit_code`, `stdout`, `stderr` fields). The Nth `agent()` call returns the Nth scripted outcome; extra calls beyond the script fall back to the canned default (exit_code=0). Implies `--mock-worker` — no need to pass both. Mutually exclusive with `--dry-run` and `PLANAR_EXECUTE_LIVE_AGENT=1`. Parse errors (bad JSON, unreadable file) exit 1 at startup with a clear message. |
@@ -5840,7 +5840,7 @@ Supported vendors: `claude` (spawns `claude --print …`) and `codex` (spawns `c
 The same effective mapping is reachable from a running workflow and from a live run's stderr:
 
 - **`ctx.dispatch_table()`** (Lua host fn) returns the role→dispatch mapping as a nested table — `{ coder = { vendor = "…", model = "…" }, reviewer = {…}, ["test-coder"] = {…}, documenter = {…} }` — so a workflow can log its own routing in its narrative. Available in all modes (it reads the resolved table, not a spawn).
-- **Per-spawn dispatch banner:** every real (and `--mock-worker`) `agent()` spawn prints a one-line banner to stderr — `[dispatch] task:<id> vendor=<vendor> role=<role> model=<model>` — so an operator tailing a live run sees per-call routing without grepping the binary.
+- **Per-spawn dispatch banner:** every real (and `--mock-worker`) `agent()` spawn prints a one-line banner to stderr — `[dispatch] task:<id> vendor=<vendor> role=<role> model=<model> run=<run_identifier>` — so an operator tailing a live run sees per-call routing and the active run identifier without grepping the binary. The `run=` field is the runlock-derived identifier (format `run-<pid>-<nanos>`) when a run row was opened for this invocation; empty string when no `--plan` was supplied or when `run start` failed.
 
 **Example:**
 

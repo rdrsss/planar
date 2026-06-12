@@ -159,6 +159,14 @@ pub const journal = @import("journal.zig");
 /// planar_execute_gate_lazy_eval — a pub-const alias forces analysis).
 pub const runlock = @import("runlock.zig");
 
+/// run_lifecycle — `planar-agent run start`/`end` bracketing (plan 585 task
+/// 3922). Shells the lifecycle verbs to open/close a `workflow_runs` row
+/// around each `planar-execute run` invocation. Best-effort: a failure is
+/// logged and swallowed; the run continues. Aliased here so its `test` blocks
+/// run under the execute_exe_tests target (memory:
+/// planar_execute_gate_lazy_eval — a pub-const alias forces analysis).
+pub const run_lifecycle = @import("run_lifecycle.zig");
+
 /// budget — budgets and ceilings, the hard kill-switch (M8 task 3198). Per-task
 /// max-attempt → block (fail-count derived from the journal so resume respects
 /// prior attempts) + whole-run ceiling (max-total-spawns / max-wall-clock →
@@ -533,6 +541,19 @@ pub const HostState = struct {
     /// full token when shorter). Quiet when empty — a clean run prints nothing.
     heartbeat_register_failures: std.ArrayList([]const u8) = .empty,
 
+    // plan 585 task 3922 — run-row bracketing.
+    //
+    // When `handleRun` successfully opens a `workflow_runs` row via
+    // `run_lifecycle.runStart`, it stores the result here so:
+    //   a) `runEnd` (called on clean completion or interrupt) can pass the
+    //      run_identifier back to `planar-agent run end`;
+    //   b) the `[dispatch]` banner and journal records can carry it.
+    //
+    // `null` means no run row was opened (dry-run; plan_id==0; runStart
+    // failed). When null the banner and journal emit empty string for
+    // back-compat.
+    active_run: ?run_lifecycle.RunStartResult = null,
+
     pub fn init(allocator: std.mem.Allocator, now: i64, seed: i64, budget_total: i64, budget_spent: i64) HostState {
         return .{
             .allocator = allocator,
@@ -567,6 +588,7 @@ pub const HostState = struct {
             self.allocator.free(tok);
         }
         self.heartbeat_register_failures.deinit(self.allocator);
+        if (self.active_run) |*ar| ar.deinit();
     }
 
     /// record appends a HostCall, taking ownership of heap-duped copies of the
@@ -1468,9 +1490,13 @@ fn driveAgentCallPreYield(
     // tailing a run sees per-call routing (vendor + model) without grepping the
     // binary. Fires for every real (and mock) spawn — the stub path returns
     // before reaching here.
+    // plan 585 task 3922: include run_id so banners can be correlated to the
+    // enclosing workflow_runs row. Empty string when no run row was opened
+    // (dry-run or plan_id==0).
+    const banner_run_id: []const u8 = if (hs.active_run) |ar| ar.run_identifier else "";
     std.debug.print(
-        "[dispatch] task:{d} vendor={s} role={s} model={s}\n",
-        .{ opts.task_id, vendor.name(), role.name(), acs.model },
+        "[dispatch] task:{d} vendor={s} role={s} model={s} run={s}\n",
+        .{ opts.task_id, vendor.name(), role.name(), acs.model, banner_run_id },
     );
 
     const handle = driver.spawner.start(alloc, io, spawn_inputs) catch |err| {
@@ -1688,7 +1714,8 @@ fn agentContinue(L: ?*c.lua_State, status: c_int, ctx: c.lua_KContext) callconv(
 
         // Journal the spawn (best-effort, skipped when no repo/plan). One record
         // per spawn — this is the timed-out worker's record.
-        writeJournalRecord(acs, "timed-out", outcome.exit_code, terminal_mono_ns);
+        const timed_out_run_id: []const u8 = if (hs.active_run) |ar| ar.run_identifier else "";
+        writeJournalRecord(acs, "timed-out", outcome.exit_code, terminal_mono_ns, timed_out_run_id);
         pushAgentResult(L, "timed-out", outcome.exit_code, commit_present, .fail, false);
         const reason = timed_out_reason.name();
         _ = c.lua_pushlstring(L, reason.ptr, reason.len);
@@ -1781,7 +1808,8 @@ fn agentContinue(L: ?*c.lua_State, status: c_int, ctx: c.lua_KContext) callconv(
         // in-memory summary entry (the operator still sees the blocked task via
         // `planar plan next`); never abort the run for it.
         hs.recordBlocked(acs.task_slug, "", "") catch {};
-        writeJournalRecord(acs, "blocked", outcome.exit_code, terminal_mono_ns);
+        const blocked_run_id: []const u8 = if (hs.active_run) |ar| ar.run_identifier else "";
+        writeJournalRecord(acs, "blocked", outcome.exit_code, terminal_mono_ns, blocked_run_id);
         pushAgentResult(L, "blocked", outcome.exit_code, commit_present, .none, false);
         stampCostFields(L, observed_cost_usd, cost_exceeded);
         if (cost_exceeded) hs.recordCostExceeded(acs.task_slug, observed_cost_usd);
@@ -1795,7 +1823,8 @@ fn agentContinue(L: ?*c.lua_State, status: c_int, ctx: c.lua_KContext) callconv(
         .release => "released",
         .fail => "failed",
     };
-    writeJournalRecord(acs, status_str, outcome.exit_code, terminal_mono_ns);
+    const normal_run_id: []const u8 = if (hs.active_run) |ar| ar.run_identifier else "";
+    writeJournalRecord(acs, status_str, outcome.exit_code, terminal_mono_ns, normal_run_id);
     pushAgentResult(L, status_str, outcome.exit_code, commit_present, verb, terminal_verb_failed);
     // Stamp cost fields on the result (task 3445). Done AFTER pushAgentResult
     // so the result table is on the stack and we can set fields on it.
@@ -2097,6 +2126,7 @@ fn writeJournalRecord(
     final_status: []const u8,
     exit_code: u32,
     terminal_mono_ns: i128,
+    active_run_id: []const u8,
 ) void {
     const driver = acs.driver;
     const alloc = acs.allocator;
@@ -2134,6 +2164,7 @@ fn writeJournalRecord(
         .terminal_verb = final_status,
         .wall_clock_ms = wall_ms,
         .timestamp = nowUnixSeconds(),
+        .run_id = active_run_id,
     };
 
     journal.append(alloc, io, path, record) catch |err| {
@@ -5057,9 +5088,61 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
         }
     }
 
+    // ---- plan 585 task 3922: run-row bracketing --------------------------------
+    //
+    // Open a `workflow_runs` row BEFORE entering runModule so the DB carries a
+    // `running` record for the full duration. This is only done when:
+    //   - a plan_id is present (plan_id>0) AND
+    //   - the run is NOT dry-run (dry-run exited above).
+    //   - both live-agent AND mock-worker modes bracket the run (the lifecycle
+    //     verbs are run-level, distinct from the worker spawn that --mock-worker
+    //     fakes out).
+    //
+    // The `run_identifier` string comes from the run-lock (which already
+    // generated one for its lock payload) when the lock was acquired; otherwise
+    // we reuse `args.plan` + the harness PID to form a fresh identifier.
+    // The run-lock identifier has the form "run-<pid>-<nanos>" (same format
+    // `run start` expects).
+    //
+    // Robustness: runStart is best-effort; a failure logs and returns null.
+    // host.active_run = null means no run row is open — journal/banner emit "".
+    {
+        const run_plan_id: u64 = if (args.plan > 0) @intCast(args.plan) else 0;
+        if (run_plan_id > 0) {
+            // Prefer the run_lock's run_identifier (already generated + unique).
+            // Fall back to a plan+pid-scoped string if the lock was not acquired.
+            const run_id_for_row: []const u8 = if (run_lock) |rl| rl.run_id else blk: {
+                // No lock: the run_lock was not acquired (mock mode, or the
+                // live gate without a full plan). Generate a unique identifier
+                // from the harness PID so distinct runs on the same plan within
+                // the same millisecond still have distinct identifiers.
+                var fallback_buf: [64]u8 = undefined;
+                const fallback_slice = std.fmt.bufPrint(&fallback_buf, "run-{d}-0", .{std.c.getpid()}) catch {
+                    break :blk "run-unknown";
+                };
+                break :blk fallback_slice;
+            };
+
+            const repo_root_for_row: []const u8 = if (live_repo_root) |r| r else "";
+
+            host.active_run = run_lifecycle.runStart(allocator, ctx.io, .{
+                .plan_id = run_plan_id,
+                .workflow_name = mod.meta.name,
+                .run_identifier = run_id_for_row,
+                .pid = std.c.getpid(),
+                .repo_root = if (repo_root_for_row.len > 0) repo_root_for_row else "/",
+            });
+        }
+    }
+
     // Invoke run(ctx) with the trailing args threaded into ctx.args and the
     // host-function surface + determinism installed on ctx.
     runModule(source, chunkname, rest_args, &host, &err_buf) catch |e| {
+        // plan 585 task 3922: close the run row as `interrupted` on any error
+        // exit (ceiling or SIGINT). Best-effort: log+continue on failure.
+        if (host.active_run) |ar| {
+            run_lifecycle.runEnd(allocator, ctx.io, ar.run_identifier, "interrupted");
+        }
         // M8 whole-run ceiling (task 3198): a ceiling-terminated run unwinds
         // through here AFTER the clean interrupt shutdown ran (in-flight workers
         // released + worktrees torn down, journal terminus written). Emit a
@@ -5083,6 +5166,12 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
         try flushCtx();
         std.process.exit(1);
     };
+
+    // plan 585 task 3922: close the run row as `completed` on a clean exit.
+    // This is best-effort — a failure is logged and swallowed.
+    if (host.active_run) |ar| {
+        run_lifecycle.runEnd(allocator, ctx.io, ar.run_identifier, "completed");
+    }
 
     // ---- M7 end-of-run blocked-items summary (task 3195) ----
     //
