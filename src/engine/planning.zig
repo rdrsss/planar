@@ -16,6 +16,7 @@ pub const artifact = @import("planning/artifact.zig");
 pub const annotation = @import("planning/annotation.zig");
 pub const test_spec_status = @import("planning/test_spec_status.zig");
 pub const strategy = @import("planning/strategy.zig");
+pub const closeout = @import("planning/closeout.zig");
 
 test {
     _ = plan;
@@ -28,4 +29,5 @@ test {
     _ = annotation;
     _ = test_spec_status;
     _ = strategy;
+    _ = closeout;
 }

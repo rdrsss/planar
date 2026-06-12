@@ -1,5 +1,5 @@
 //! handlers/plan/cmd.zig — `planar plan {create, show, list, update, link, recompute-status,
-//!   edit, view, step {add, list, done, skip, link}}`
+//!   edit, view, step {add, list, done, skip, link}, closeout}`
 
 const cli = @import("cli");
 
@@ -15,6 +15,7 @@ const link = @import("link.zig");
 const next = @import("next.zig");
 const recommend_strategy = @import("recommend_strategy.zig");
 const recompute_status = @import("recompute_status.zig");
+const closeout = @import("closeout.zig");
 const step = @import("step/cmd.zig");
 
 pub const verb: cli.Cmd = .{
@@ -148,6 +149,20 @@ pub const verb: cli.Cmd = .{
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },
             .run = cli.handler(recompute_status.handle),
+        },
+        .{
+            .name = "closeout",
+            .desc = "Delivery-evidence gate: report whether a plan is ready to close and (without --dry-run) mark it done.",
+            .long_desc = "Evaluate the DB-hard gate (all tasks terminal, all descendants terminal, no live claims)\n" ++
+                "  and advisory git-evidence for a plan. In apply mode (no --dry-run), marks the plan\n" ++
+                "  done when the hard gate passes. Cancelled tasks are terminal — they do not block.\n\n" ++
+                "  Hard gate failures produce a non-zero exit in both dry-run and apply modes.",
+            .flags = &.{
+                .{ .long = "--dry-run", .kind = .bool, .default = .{ .bool = false }, .desc = "Evaluate and report only; never writes." },
+                .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
+            },
+            .positionals = &.{.{ .name = "plan-id", .kind = .string, .required = true }},
+            .run = cli.handler(closeout.handle),
         },
         step.verb,
     },

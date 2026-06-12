@@ -745,6 +745,86 @@ recomputed 15 plans; 8 transitioned
 
 ---
 
+### `planar plan closeout <plan-id>`
+
+**Synopsis:**
+```
+planar plan closeout <plan-id> [--dry-run] [--json]
+```
+
+**Description:** Delivery-evidence gate for plan closeout. Evaluates whether a plan is safe to close (the DB hard gate) and, in apply mode (no `--dry-run`), marks it `done` when the gate passes.
+
+This is an **operator verb** (`planar` binary only — not `planar-agent`). It is the explicit operator action to close an anchor plan that `recompute-status` cannot auto-close, and the safety net for any plan where the operator wants to confirm delivery evidence before closing.
+
+**Hard gate (DB-evidence; all three must pass):**
+
+1. **All tasks terminal** — every task on the plan (and recursively on all descendant plans) is `done` or `cancelled`. Open tasks (`todo`/`doing`/`blocked`) block.
+2. **All descendant plans terminal** — every child plan (recursively via `parent_plan_id`) is `done` or `abandoned`. Open descendants block.
+3. **No live claims** — no `active`, non-expired `agent_work_claims` on the plan's tasks. Expired/stale claims do **not** block — they are reported as warnings.
+
+Cancelled tasks are **terminal history** — counted in the audit output but they do not block closeout. This is the authoritative statement that satisfies the cancelled-terminal contract.
+
+**Advisory git-evidence (reported, never blocks):**
+
+For each distinct `(repo_root, branch, head_sha_at_claim)` tuple from `agent_work_claims` joined to the plan's tasks, the verb performs best-effort git checks:
+- Detects the remote's target branch (`git symbolic-ref --short refs/remotes/origin/HEAD`, fallback to `main`/`master`).
+- `head_sha_at_claim` ancestry: `git merge-base --is-ancestor` — a weak "base is in target" signal, labeled as such.
+- Branch merged check: `git branch --merged <target>`.
+- Branch absent (deleted post-merge or abandoned): reported as `"branch absent — inconclusive"`.
+- No locality data on any claims: `"no commit attribution — inconclusive (hardens once session-commit capture is wired)"`.
+- Git unavailable or not a repo: `"git-evidence unavailable"`.
+
+Git-evidence failures never block apply.
+
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--dry-run` | Evaluate and report only; never writes. Hard-gate failures still produce a non-zero exit. | off |
+| `--json` | Emit structured JSON. | off |
+
+**JSON shape:**
+
+```json
+{
+  "plan": 42,
+  "ready": true,
+  "applied": false,
+  "hard_evidence": {
+    "tasks":       { "open": 0, "done": 5, "cancelled": 1 },
+    "descendants": { "open": 0, "terminal": 2 },
+    "claims":      { "live": 0, "stale": 0 }
+  },
+  "blocked_by": [],
+  "git_evidence": [
+    {
+      "repo_root": "/home/user/myrepo",
+      "branch": "feature/foo",
+      "target_branch": "main",
+      "base_merged": true,
+      "branch_merged": true,
+      "note": "base-merged=true (weak signal); branch-merged=true"
+    }
+  ],
+  "warnings": []
+}
+```
+
+**Semantics:**
+- `applied=true` — the plan was marked `done` in this invocation.
+- `applied=false` — either `--dry-run` was passed, the plan was already terminal, or the hard gate failed.
+- `ready=true` + already terminal → no-op (`applied=false`); exit 0.
+- `ready=false` → non-zero exit in both `--dry-run` and apply modes.
+
+**Schema effects:** On apply, updates `plans(status, updated_at)` and records an `audit_log` row. No new table is created.
+
+**Exit codes:**
+- `0` — gate passed (either applied or already terminal or dry-run ready).
+- `1` — plan not found.
+- `3` — hard gate blocked (blocked_by non-empty); plan unchanged.
+
+---
+
 ### `planar plan next <plan-id>`
 
 **Synopsis:**
