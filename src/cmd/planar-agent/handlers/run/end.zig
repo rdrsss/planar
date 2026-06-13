@@ -1,8 +1,15 @@
 //! handlers/run/end — `planar-agent run end` verb.
 //!
 //! Moves a `workflow_runs` row from `running` to a terminal status.
-//! Valid terminal statuses (Q597): completed | failed | interrupted.
-//! `abandoned` is NEVER set by this verb — it is set only by reconcile.
+//! Valid terminal statuses (Q597): completed | failed | interrupted | abandoned.
+//!
+//! `abandoned` is written by two paths (task 3928):
+//!   1. Lazy reconcile sweep (`planar-agent reconcile`) — detects a
+//!      still-`running` row whose harness PID is dead.
+//!   2. Eager stale-runlock takeover — `planar-execute` detects a dead
+//!      prior run at startup and calls `run end --status abandoned`
+//!      BEFORE opening its own run row.  Best-effort: a failure here
+//!      is logged and the lazy reconcile is the backstop.
 //!
 //! JSON output: { ok, run_id, status }.
 
@@ -25,9 +32,11 @@ pub const verb: cli.Cmd = .{
     .run = cli.handler(handle),
 };
 
-/// The set of statuses `run end` is allowed to write (Q597: `abandoned` is
-/// reserved for reconcile; `running` is the initial status from `run start`).
-const allowed_statuses = [_][]const u8{ "completed", "failed", "interrupted" };
+/// The set of statuses `run end` is allowed to write. `running` is the
+/// initial status set by `run start` and is never a valid terminal. `abandoned`
+/// is written by both the lazy reconcile sweep and the eager stale-runlock
+/// takeover path (task 3928); `running` remains the only forbidden value here.
+const allowed_statuses = [_][]const u8{ "completed", "failed", "interrupted", "abandoned" };
 
 fn isAllowedStatus(s: []const u8) bool {
     for (allowed_statuses) |a| {
@@ -45,7 +54,7 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
         exit.die(
             ctx,
             error.InvalidInput,
-            "invalid --status '{s}': must be one of completed|failed|interrupted (abandoned is set by reconcile only)",
+            "invalid --status '{s}': must be one of completed|failed|interrupted|abandoned",
             .{args.status},
         );
 
@@ -176,12 +185,12 @@ test "run end: transitions running → completed and sets ended_at" {
     try testing.expect(!stmt.columnIsNull(1));
 }
 
-test "run end: isAllowedStatus allows completed|failed|interrupted; rejects abandoned|running" {
+test "run end: isAllowedStatus allows completed|failed|interrupted|abandoned; rejects running" {
     const testing = std.testing;
     try testing.expect(isAllowedStatus("completed"));
     try testing.expect(isAllowedStatus("failed"));
     try testing.expect(isAllowedStatus("interrupted"));
-    try testing.expect(!isAllowedStatus("abandoned"));
+    try testing.expect(isAllowedStatus("abandoned")); // task 3928: eager stale-runlock takeover path
     try testing.expect(!isAllowedStatus("running"));
     try testing.expect(!isAllowedStatus(""));
 }

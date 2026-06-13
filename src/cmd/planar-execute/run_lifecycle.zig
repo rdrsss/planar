@@ -187,8 +187,10 @@ pub fn runStart(
 /// runEnd shells `planar-agent run end --run-id <id> --status <status>`.
 ///
 /// `run_identifier` is the string passed to `run start --run-id`. `status`
-/// must be "completed" or "interrupted" (never "abandoned" — that is
-/// reconcile-only per Q597).
+/// must be "completed", "interrupted", or "abandoned". "abandoned" is used by
+/// the eager stale-runlock takeover path (task 3928 Q597): when `planar-execute`
+/// starts and takes over a stale lock whose prior holder is dead, it calls
+/// runEnd with "abandoned" for the dead run BEFORE opening its own run row.
 ///
 /// Best-effort: any failure is logged and swallowed. This function does NOT
 /// return an error to the caller because a failed `run end` does not affect

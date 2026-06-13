@@ -5539,11 +5539,26 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
         // over. The lock is scoped to gated runs WITH a plan: an agent-free /
         // pure-Lua run (no real workers, no claims, no worktrees) has no
         // contention to guard, and a gated run without --plan has no plan key.
+        //
+        // task 3928 eager-reconcile: when acquire returns with a non-null
+        // `stale_run_id`, the prior run's holder was dead and its runlock was
+        // taken over. Eagerly mark that dead run `abandoned` via
+        // `planar-agent run end --status abandoned` BEFORE opening our own row.
+        // Best-effort: a failure here is logged and does NOT block startup
+        // (the lazy `planar-agent reconcile` sweep is the backstop).
         if (binaries_ok and plan > 0) {
             if (runlock.acquire(allocator, ctx.io, plan, .{
                 .repo_root = if (live_repo_root) |r| r else "",
             })) |lock| {
                 run_lock = lock;
+                // task 3928: eager-reconcile — mark the dead run abandoned.
+                if (run_lock.?.stale_run_id) |stale_id| {
+                    std.log.scoped(.planar_execute).info(
+                        "eager-reconcile: marking stale run '{s}' abandoned before opening new run",
+                        .{stale_id},
+                    );
+                    run_lifecycle.runEnd(allocator, ctx.io, stale_id, "abandoned");
+                }
             } else |e| switch (e) {
                 error.RunLockHeld => {
                     try ctx.stderr.print(

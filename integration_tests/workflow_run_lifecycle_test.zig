@@ -493,3 +493,167 @@ test "scenario C: workflow_runs row run_identifier matches run-<pid>-<nanos> for
     const second_hyphen = std.mem.indexOf(u8, after_prefix, "-") != null;
     try std.testing.expect(second_hyphen);
 }
+
+// ---------------------------------------------------------------------------
+// Scenario D — ceiling-tripped run closes the run row as `interrupted`
+// (plan 585 task 3931)
+// ---------------------------------------------------------------------------
+
+/// Write a workflow that calls ctx.agent() once so the run-ceiling check fires.
+///
+/// With PLANAR_EXECUTE_MAX_TOTAL_SPAWNS=0, the ceiling pre-check inside
+/// ctx.agent() fires on the first call (spawn_count(0) >= max_total_spawns(0)).
+/// This raises a Lua error, which runModule propagates as error.LuaError,
+/// which main.zig catches and closes the run row as "interrupted".
+///
+/// The workflow intentionally ignores the agent() return value — the ceiling
+/// fires before the mock-worker spawn, so the call never returns normally.
+fn writeCeilingWorkflow(
+    gpa: std.mem.Allocator,
+    dir: std.Io.Dir,
+    name: []const u8,
+) void {
+    // The workflow calls ctx.agent() with the required fields for --mock-worker
+    // (worktree_path, claim_token, task_slug). The ceiling fires before
+    // the mock spawner runs, so these field values are not evaluated.
+    const src =
+        \\return {
+        \\  meta = {
+        \\    name = "ceiling-interrupted-d",
+        \\    description = "Ceiling-tripped workflow for plan 585 task 3931.",
+        \\  },
+        \\  run = function(ctx)
+        \\    -- This call triggers the whole-run ceiling check (M8). With
+        \\    -- PLANAR_EXECUTE_MAX_TOTAL_SPAWNS=0 the ceiling fires immediately
+        \\    -- and raises a Lua error that propagates through runModule, causing
+        \\    -- handleRun to close the run row as "interrupted".
+        \\    ctx.agent("ceiling test brief", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/abs/ceiling-wt",
+        \\      claim_token = "tok-ceiling",
+        \\      task_slug = "ceiling-task",
+        \\    })
+        \\  end
+        \\}
+    ;
+    const src_slice: []const u8 = src;
+    _ = gpa;
+    var f = dir.createFile(std.testing.io, name, .{}) catch
+        std.debug.panic("createFile {s} failed", .{name});
+    defer f.close(std.testing.io);
+    f.writeStreamingAll(std.testing.io, src_slice) catch
+        std.debug.panic("write workflow {s} failed", .{name});
+}
+
+test "scenario D: ceiling-tripped (PLANAR_EXECUTE_MAX_TOTAL_SPAWNS=0) run closes workflow_runs row as interrupted (task 3931)" {
+    // This test verifies the `interrupted` close path introduced by task 3922.
+    // The run row must exist (plan_id > 0, not dry-run) and end with status
+    // `interrupted` when the ceiling fires.
+    //
+    // Ceiling mechanism: PLANAR_EXECUTE_MAX_TOTAL_SPAWNS=0 causes the M8
+    // whole-run ceiling check inside ctx.agent() to fire immediately on the
+    // first call (spawn_count(0) >= max_total_spawns(0)). The ceiling trips
+    // interrupt_requested, raises a Lua error, which runModule propagates,
+    // and handleRun's catch branch calls runEnd(..., "interrupted") then
+    // exits 1. The workflow_runs row must carry status = 'interrupted'.
+    //
+    // Proof this test actually runs: temporarily assert `completed` instead of
+    // `interrupted` and observe `make test-integration` FAIL.
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const seed = seedFixture(gpa, &suite, "rl-ceiling-d");
+    defer {
+        gpa.free(seed.plan_id_str);
+        gpa.free(seed.task_id_str);
+        gpa.free(seed.plan_slug);
+    }
+
+    const abs_db = suite.absDbPath();
+
+    var wf_dir = std.testing.tmpDir(.{});
+    defer wf_dir.cleanup();
+    var wf_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const wf_dir_len = wf_dir.dir.realPath(std.testing.io, &wf_dir_buf) catch
+        @panic("realPath wf_dir failed");
+    const wf_dir_abs = wf_dir_buf[0..wf_dir_len];
+
+    writeCeilingWorkflow(gpa, wf_dir.dir, "ceiling.lua");
+    const wf_path = std.fs.path.join(gpa, &.{ wf_dir_abs, "ceiling.lua" }) catch @panic("OOM wf_path");
+    defer gpa.free(wf_path);
+
+    // Prepend bin dir so shelled `planar-agent` resolves to the just-built binary.
+    const old_path = envValue("PATH") orelse "";
+    const new_path = std.fmt.allocPrint(gpa, "{s}:{s}", .{ binDir(), old_path }) catch @panic("OOM path");
+    defer gpa.free(new_path);
+
+    const execute_bin = resolveExecuteBin();
+
+    // PLANAR_EXECUTE_MAX_TOTAL_SPAWNS=0: ceiling fires on the first ctx.agent()
+    // call. The run exits 1 (ceiling exceeded = non-zero exit).
+    const result = runCmd(gpa, wf_dir_abs, &.{
+        execute_bin,      "run",
+        "--mock-worker",  "--plan",
+        seed.plan_id_str, wf_path,
+    }, &.{
+        .{ .key = "PLANAR_DB", .value = abs_db },
+        .{ .key = "PATH", .value = new_path },
+        .{ .key = "PLANAR_EXECUTE_MAX_TOTAL_SPAWNS", .value = "0" },
+    });
+    defer result.deinit();
+
+    // A ceiling-tripped run exits 1.
+    if (result.exitCode() != 1) {
+        std.debug.print(
+            "expected exit 1 (ceiling exceeded), got {d}\nstdout: {s}\nstderr: {s}\n",
+            .{ result.exitCode(), result.stdout, result.stderr },
+        );
+    }
+    try std.testing.expectEqual(@as(u32, 1), result.exitCode());
+
+    // The run ceiling message must appear on stderr.
+    if (!contains(result.stderr, "run ceiling exceeded")) {
+        std.debug.print(
+            "expected 'run ceiling exceeded' in stderr, got:\n{s}\n",
+            .{result.stderr},
+        );
+    }
+    try std.testing.expect(contains(result.stderr, "run ceiling exceeded"));
+
+    // Assert: the workflow_runs row for this plan has status = 'interrupted'.
+    // This is the primary contract for task 3931.
+    const row_sql = std.fmt.allocPrint(
+        gpa,
+        "SELECT count(*) FROM workflow_runs WHERE plan_id = {s} AND status = 'interrupted';",
+        .{seed.plan_id_str},
+    ) catch @panic("OOM sql");
+    defer gpa.free(row_sql);
+    const interrupted_count = sqliteScalar(gpa, abs_db, row_sql);
+    if (interrupted_count != 1) {
+        // Dump the actual row for diagnosis.
+        const dump_sql = std.fmt.allocPrint(
+            gpa,
+            "SELECT status, run_identifier FROM workflow_runs WHERE plan_id = {s};",
+            .{seed.plan_id_str},
+        ) catch @panic("OOM dump sql");
+        defer gpa.free(dump_sql);
+        const dump = sqliteString(gpa, abs_db, dump_sql);
+        defer gpa.free(dump);
+        std.debug.print(
+            "Expected 1 interrupted row, got {d}. Row dump: {s}\n",
+            .{ interrupted_count, dump },
+        );
+    }
+    try std.testing.expectEqual(@as(i64, 1), interrupted_count);
+
+    // Assert: ended_at is non-null on the interrupted row (run end stamps it).
+    const ended_sql = std.fmt.allocPrint(
+        gpa,
+        "SELECT count(*) FROM workflow_runs WHERE plan_id = {s} AND status = 'interrupted' AND ended_at IS NOT NULL;",
+        .{seed.plan_id_str},
+    ) catch @panic("OOM sql");
+    defer gpa.free(ended_sql);
+    const ended_count = sqliteScalar(gpa, abs_db, ended_sql);
+    try std.testing.expectEqual(@as(i64, 1), ended_count);
+}

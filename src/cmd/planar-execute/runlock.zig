@@ -137,6 +137,13 @@ pub const RunLock = struct {
     pid: i32,
     /// Set once `release` has removed the file, so a second `release` is a no-op.
     released: bool = false,
+    /// When a STALE runlock was taken over (the prior holder's PID was dead),
+    /// this carries the dead run's `run_identifier` string (heap-owned; freed
+    /// by `deinit`). The caller uses it to eagerly mark the dead run
+    /// `abandoned` via `planar-agent run end --run-id <stale_run_id>
+    /// --status abandoned` BEFORE opening the new run row (task 3928 Q597
+    /// eager path). Null on a clean first-acquire (no stale lock present).
+    stale_run_id: ?[]u8 = null,
 
     /// release removes the lock file. Idempotent: safe to call twice and safe
     /// when the file is already gone (a crashed prior run, or a manual delete).
@@ -158,8 +165,10 @@ pub const RunLock = struct {
     pub fn deinit(self: *RunLock) void {
         if (self.path.len != 0) self.allocator.free(self.path);
         if (self.run_id.len != 0) self.allocator.free(self.run_id);
+        if (self.stale_run_id) |s| self.allocator.free(s);
         self.path = "";
         self.run_id = "";
+        self.stale_run_id = null;
     }
 };
 
@@ -288,13 +297,22 @@ pub fn acquire(
         "taking over stale run-lock for plan {d} (dead holder run-id={s} pid={d})",
         .{ plan_id, holder.run_id, holder.pid },
     );
+    // Capture the dead run's identifier BEFORE freeing `holder` so the caller
+    // can eagerly mark the old workflow_runs row abandoned (task 3928 Q597).
+    // Dupe into the long-lived `allocator` (holder.deinit frees its own copy).
+    const stale_run_id_captured: ?[]u8 = if (holder.run_id.len > 0)
+        allocator.dupe(u8, holder.run_id) catch null
+    else
+        null;
+    errdefer if (stale_run_id_captured) |s| allocator.free(s);
+
     std.Io.Dir.cwd().deleteFile(io, path) catch |err| switch (err) {
         error.FileNotFound => {}, // someone else already removed it — fine, re-create below.
         else => return RunLockError.FsError,
     };
 
     if (try tryCreate(allocator, io, path, run_id, pid)) {
-        return .{ .allocator = allocator, .io = io, .path = path, .run_id = run_id, .pid = pid };
+        return .{ .allocator = allocator, .io = io, .path = path, .run_id = run_id, .pid = pid, .stale_run_id = stale_run_id_captured };
     }
 
     // We lost the takeover re-create race: another process re-created the lock
@@ -468,6 +486,52 @@ test "runlock: stale lock (DEAD holder PID) is taken over and acquire succeeds" 
     const after = try std.Io.Dir.cwd().readFileAlloc(io, path, a, .limited(4096));
     defer a.free(after);
     try testing.expect(std.mem.indexOf(u8, after, lock.run_id) != null);
+}
+
+test "runlock: stale_run_id is populated with the dead holder's run-id on stale takeover (task 3928)" {
+    // Verifies the eager-reconcile field: when a stale lock is taken over,
+    // `stale_run_id` carries the dead run's run-identifier so the caller can
+    // eagerly shell `planar-agent run end --status abandoned`.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const a = testing.allocator;
+    const io = testing.io;
+
+    const dir = mkTmpDir(a);
+    defer a.free(dir);
+    defer rmTree(a, dir);
+
+    const path = try std.fs.path.join(a, &.{ dir, "run-88.lock" });
+    defer a.free(path);
+    // Stale lock: dead-run's identifier is "run-dead-1234".
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = "run-dead-1234 888888 456\n" });
+
+    var lock = try acquire(a, io, 88, .{ .lock_dir = dir, .pid_alive_fn = alwaysDead });
+    defer lock.deinit();
+    defer lock.release();
+
+    // stale_run_id must be non-null and must match the dead holder's identifier.
+    try testing.expect(lock.stale_run_id != null);
+    try testing.expectEqualStrings("run-dead-1234", lock.stale_run_id.?);
+    // The NEW lock's run_id must differ from the stale one.
+    try testing.expect(!std.mem.eql(u8, lock.run_id, "run-dead-1234"));
+}
+
+test "runlock: stale_run_id is null on a clean first-acquire (no stale lock)" {
+    // Verifies that a fresh lock (no prior stale lock present) sets
+    // stale_run_id = null — no eager-reconcile call will be attempted.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const a = testing.allocator;
+    const io = testing.io;
+
+    const dir = mkTmpDir(a);
+    defer a.free(dir);
+    defer rmTree(a, dir);
+
+    var lock = try acquire(a, io, 89, .{ .lock_dir = dir, .pid_alive_fn = alwaysAlive });
+    defer lock.deinit();
+    defer lock.release();
+
+    try testing.expect(lock.stale_run_id == null);
 }
 
 test "runlock: a LIVE existing lock is NOT taken over even by acquire (refuse)" {

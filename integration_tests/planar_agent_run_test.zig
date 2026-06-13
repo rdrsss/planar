@@ -233,12 +233,17 @@ test "scenario B: run end accepts failed and interrupted statuses" {
     }
 }
 
-test "scenario B: run end rejects abandoned status (reconcile-only)" {
+test "scenario B: run end accepts abandoned status (task 3928 eager stale-runlock takeover path)" {
+    // task 3928 (Q597 eager path): `run end --status abandoned` is now allowed
+    // so `planar-execute` can eagerly mark a dead prior run `abandoned` during
+    // stale-runlock takeover, BEFORE opening its own run row. `abandoned` was
+    // previously reconcile-only; task 3928 extends the allowed set to include it
+    // here as well (lazy reconcile remains the backstop for any failure).
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
 
-    const plan_arg = seedPlan(&suite, "run-reject-abandoned");
+    const plan_arg = seedPlan(&suite, "run-allow-abandoned");
     defer gpa.free(plan_arg);
 
     const self_pid = std.fmt.allocPrint(gpa, "{d}", .{std.c.getpid()}) catch @panic("OOM");
@@ -254,13 +259,13 @@ test "scenario B: run end rejects abandoned status (reconcile-only)" {
     });
     defer gpa.free(start);
 
-    // run end --status abandoned must fail (non-zero exit).
-    const res = runAgent(&suite, &.{
+    // run end --status abandoned must now SUCCEED (exit 0) and return the
+    // expected JSON shape.
+    const end_out = mustRunAgent(&suite, &.{
         "run", "end", "--run-id", run_id, "--status", "abandoned", "--json",
     });
-    defer res.deinit(gpa);
-    try std.testing.expect(res.term == .exited);
-    try std.testing.expect(res.term.exited != 0);
+    defer gpa.free(end_out);
+    try std.testing.expect(std.mem.indexOf(u8, end_out, "\"status\":\"abandoned\"") != null);
 }
 
 // =========================================================================
