@@ -1,5 +1,6 @@
 //! integration_tests/planar_agent_context_test.zig — black-box scenario tests
-//! for `planar-agent context add`, `context list`, and `context resolve`.
+//! for `planar-agent context add`, `context list`, `context resolve`, and
+//! `context capsule`.
 //!
 //! Per CLAUDE.md § integration test methodology: each test walks a realistic
 //! worker workflow through many verbs, asserts post-state via JSON output,
@@ -27,6 +28,12 @@
 //!   - Scenario E (context add on non-run claim errors clearly): acquire a
 //!     claim WITHOUT --run; `context add` must fail with a non-zero exit and
 //!     a message mentioning run_id.
+//!
+//!   - Scenario F (Q603 order: resolve then capsule): add three raw records,
+//!     bulk-resolve the stage to consumed, then write a capsule via
+//!     `context capsule --run … --stage … --body … --compiled-from …`; asserts
+//!     (1) raw records are consumed, (2) capsule is active, (3) compiled_from
+//!     carries provenance ids, (4) claim_id is null on the capsule.
 
 const std = @import("std");
 const harness = @import("harness");
@@ -496,4 +503,120 @@ test "scenario E: context add on a claim without run_id fails with clear error" 
     // The error message must mention run_id.
     const has_run_id_mention = contains(res.stderr, "run_id") or contains(res.stdout, "run_id");
     try std.testing.expect(has_run_id_mention);
+}
+
+// =========================================================================
+// Scenario F — Q603 order: resolve raw records first, then write capsule
+//
+// This is the canonical stage-close compaction flow (plan 585 task 3905):
+//   1. Add raw records via context add.
+//   2. Bulk-resolve the stage to 'consumed' (Q603 ORDER: FIRST).
+//   3. Write the capsule via `context capsule` (Q603 ORDER: AFTER).
+//   4. Assert:
+//      a. All raw records are consumed.
+//      b. The capsule row is active (not swept — it was inserted AFTER resolve).
+//      c. The capsule's compiled_from carries the raw record ids.
+//      d. The capsule's claim_id is null (decision 456: run-keyed).
+// =========================================================================
+
+test "scenario F: context capsule Q603 order — resolve first, capsule after (task 3905)" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const seed = seedPlanWithTask(&suite, "ctx-q603");
+    defer gpa.free(seed.plan_arg);
+
+    const run_info = startRun(&suite, seed.plan_arg, "q603");
+    defer gpa.free(run_info.run_id_str);
+
+    // Acquire a run-associated claim for the 'code' stage.
+    const token = pullWithRun(&suite, seed.plan_arg, run_info.run_id_str, "code");
+    defer gpa.free(token);
+
+    // Add three raw records — finding, risk, followup.
+    const add_f = mustRunAgent(&suite, &.{
+        "context", "add",            "--claim", token, "--kind", "finding",
+        "--body",  "a code finding", "--json",
+    });
+    defer gpa.free(add_f);
+    const id_f = extractIntField(add_f, "\"id\":") orelse @panic("no id in finding add");
+
+    const add_r = mustRunAgent(&suite, &.{
+        "context", "add",         "--claim", token, "--kind", "risk",
+        "--body",  "a code risk", "--json",
+    });
+    defer gpa.free(add_r);
+    const id_r = extractIntField(add_r, "\"id\":") orelse @panic("no id in risk add");
+
+    const add_fo = mustRunAgent(&suite, &.{
+        "context", "add",             "--claim", token, "--kind", "followup",
+        "--body",  "a code followup", "--json",
+    });
+    defer gpa.free(add_fo);
+    const id_fo = extractIntField(add_fo, "\"id\":") orelse @panic("no id in followup add");
+
+    // Pre-assert: all three are active.
+    const pre_list = mustRunAgent(&suite, &.{
+        "context", "list", "--run", run_info.run_id_str, "--stage", "code", "--status", "active", "--json",
+    });
+    defer gpa.free(pre_list);
+    try std.testing.expect(contains(pre_list, "\"status\":\"active\""));
+
+    // Q603 STEP 1: bulk-resolve active records in stage=code to consumed (FIRST).
+    const resolve_out = mustRunAgent(&suite, &.{
+        "context",  "resolve",  "--run",  run_info.run_id_str, "--stage", "code",
+        "--status", "consumed", "--json",
+    });
+    defer gpa.free(resolve_out);
+    try std.testing.expect(contains(resolve_out, "\"ok\":true"));
+    try std.testing.expect(contains(resolve_out, "\"updated\":3"));
+
+    // Verify: all three raw records are now consumed.
+    const consumed_list = mustRunAgent(&suite, &.{
+        "context",  "list",     "--run",  run_info.run_id_str, "--stage", "code",
+        "--status", "consumed", "--json",
+    });
+    defer gpa.free(consumed_list);
+    try std.testing.expect(contains(consumed_list, "\"status\":\"consumed\""));
+    // No active records remain for this stage.
+    const active_after = mustRunAgent(&suite, &.{
+        "context",  "list",   "--run",  run_info.run_id_str, "--stage", "code",
+        "--status", "active", "--json",
+    });
+    defer gpa.free(active_after);
+    try std.testing.expect(contains(active_after, "\"records\":[]"));
+
+    // Q603 STEP 4: write the capsule AFTER (not swept because it's inserted now).
+    const compiled_from = std.fmt.allocPrint(gpa, "{d},{d},{d}", .{ id_f, id_r, id_fo }) catch @panic("OOM");
+    defer gpa.free(compiled_from);
+    const cap_out = mustRunAgent(&suite, &.{
+        "context",         "capsule",
+        "--run",           run_info.run_id_str,
+        "--stage",         "code",
+        "--body",          "[finding] a code finding\n[risk] a code risk\n[followup] a code followup",
+        "--compiled-from", compiled_from,
+        "--json",
+    });
+    defer gpa.free(cap_out);
+
+    // Assert (b): capsule is active.
+    try std.testing.expect(contains(cap_out, "\"ok\":true"));
+    try std.testing.expect(contains(cap_out, "\"kind\":\"capsule\""));
+    try std.testing.expect(contains(cap_out, "\"status\":\"active\""));
+    // Assert (d): claim_id is null (decision 456: run-keyed).
+    try std.testing.expect(contains(cap_out, "\"claim_id\":null"));
+
+    const cap_id = extractIntField(cap_out, "\"id\":") orelse @panic("no id in capsule output");
+    try std.testing.expect(cap_id > 0);
+
+    // List all records for the run; assert capsule is active and appears.
+    const final_list = mustRunAgent(&suite, &.{
+        "context", "list", "--run", run_info.run_id_str, "--kind", "capsule", "--json",
+    });
+    defer gpa.free(final_list);
+    try std.testing.expect(contains(final_list, "\"kind\":\"capsule\""));
+    try std.testing.expect(contains(final_list, "\"status\":\"active\""));
+    // Assert (c): compiled_from carries the raw record ids.
+    try std.testing.expect(contains(final_list, compiled_from));
 }
