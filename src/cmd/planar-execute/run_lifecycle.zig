@@ -250,6 +250,67 @@ pub fn runEnd(
     }
 }
 
+/// associateClaim shells `planar-agent claim-associate --claim <token> --run <id>
+/// [--stage <stage>]` as a best-effort call (plan 586 task 3948 / decision 457).
+///
+/// Called by `driveAgentCallPreYield` just before the worker is spawned so
+/// that `context add --claim` (which reads `run_id` from the claim row via
+/// decision 447/450) finds the correct run context.
+///
+/// Best-effort invariant: any failure is logged and SILENTLY SWALLOWED.
+/// A missed association only degrades that worker's `context add`; it NEVER
+/// blocks or fails the spawn. The caller MUST NOT treat this function's return
+/// as a gate.
+///
+/// `stage` may be empty — when empty `--stage` is omitted entirely (NULL in DB).
+pub fn associateClaim(
+    allocator: std.mem.Allocator,
+    io: Io,
+    claim_token: []const u8,
+    run_db_id: i64,
+    stage: []const u8,
+) void {
+    if (claim_token.len == 0) return; // no token → nothing to associate.
+    if (run_db_id == 0) return; // no run row → nothing to associate.
+
+    const run_id_str = std.fmt.allocPrint(allocator, "{d}", .{run_db_id}) catch {
+        log.warn("associateClaim: OOM allocating run_id_str; skipping association", .{});
+        return;
+    };
+    defer allocator.free(run_id_str);
+
+    // Build argv: always include --claim and --run; append --stage only when
+    // non-empty. Use a fixed-size buffer (max 8 elements) — no heap needed.
+    var argv_buf: [8][]const u8 = undefined;
+    const base: []const []const u8 = &.{
+        "planar-agent", "claim-associate",
+        "--claim",      claim_token,
+        "--run",        run_id_str,
+    };
+    @memcpy(argv_buf[0..base.len], base);
+    const argv_len: usize = if (stage.len > 0) blk: {
+        argv_buf[base.len + 0] = "--stage";
+        argv_buf[base.len + 1] = stage;
+        break :blk base.len + 2;
+    } else base.len;
+    const argv_slice = argv_buf[0..argv_len];
+
+    const result = std.process.run(allocator, io, .{
+        .argv = argv_slice,
+        .stdout_limit = Io.Limit.limited(256),
+        .stderr_limit = Io.Limit.limited(512),
+    }) catch |e| {
+        log.warn("associateClaim: subprocess spawn failed: {s}; skipping association", .{@errorName(e)});
+        return;
+    };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    if (result.term != .exited or result.term.exited != 0) {
+        log.warn("associateClaim: planar-agent claim-associate exited non-zero (term={any}); skipping", .{result.term});
+    }
+}
+
 // ===========================================================================
 // Unit tests
 // ===========================================================================

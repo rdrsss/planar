@@ -567,6 +567,42 @@ fn recordEntityCreateActionInner(
 }
 
 // =========================================================================
+// Associate claim with a run/stage
+// =========================================================================
+
+/// Stamp `run_id` and (optionally) `stage` on an active claim identified by
+/// `claim_token`. Best-effort: when no active claim matches the token the
+/// function returns 0 (no-op). Used by `planar-execute` at dispatch time to
+/// backfill the run context onto a PRE-ACQUIRED claim (decision 457/Q602).
+///
+/// Returns the number of rows updated (0 when the claim is not active or does
+/// not exist, 1 on success). Caller does NOT need to wrap in a transaction
+/// for the single-row UPDATE.
+pub fn associateClaimRun(
+    d: *db.sqlite.Db,
+    claim_token: []const u8,
+    run_id: i64,
+    stage: ?[]const u8,
+) Error!i64 {
+    _ = d.execParams(
+        \\update agent_work_claims
+        \\set run_id = ?,
+        \\    stage = ?
+        \\where claim_token = ? and status = 'active'
+    , &.{
+        .{ .int = run_id },
+        textOrNull(stage),
+        .{ .text = claim_token },
+    }) catch return Error.QueryFailed;
+    // execParams returns the last-insert-rowid, not changes(). Use a follow-up
+    // query to count the updated rows.
+    const updated = d.intQuery(
+        "select changes()",
+    ) catch return Error.QueryFailed;
+    return updated;
+}
+
+// =========================================================================
 // Reconcile
 // =========================================================================
 
@@ -2048,6 +2084,135 @@ test "acquireClaim without run_id and stage leaves both null" {
 
     try std.testing.expect(c.run_id == null);
     try std.testing.expect(c.stage == null);
+}
+
+test "associateClaimRun stamps run_id and stage on an active claim" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const sid = try insertTestSession(&d);
+    const tid = try insertTestTask(&d);
+
+    const plan_id = try d.execParams(
+        "insert into plans (scope_kind, title, slug) values ('global','p','assoc-plan')",
+        &.{},
+    );
+    const run_id = try d.execParams(
+        \\insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, repo_root)
+        \\values (?, 'test-wf', 'assoc-test-1', 12345, '/tmp/repo')
+    ,
+        &.{.{ .int = plan_id }},
+    );
+
+    // Acquire WITHOUT run_id/stage.
+    const c = try acquireClaim(&d, a, .{
+        .session_id = sid,
+        .entity_kind = .task,
+        .entity_id = tid,
+        .vendor = "test",
+    });
+    defer c.deinit(a);
+    try std.testing.expect(c.run_id == null);
+    try std.testing.expect(c.stage == null);
+
+    // Associate with run + stage.
+    const updated = try associateClaimRun(&d, c.claim_token, run_id, "code");
+    try std.testing.expectEqual(@as(i64, 1), updated);
+
+    // Re-fetch and verify both columns are now populated.
+    const reloaded = try getClaimByToken(&d, a, c.claim_token);
+    defer reloaded.deinit(a);
+    try std.testing.expect(reloaded.run_id != null);
+    try std.testing.expectEqual(run_id, reloaded.run_id.?);
+    try std.testing.expect(reloaded.stage != null);
+    try std.testing.expectEqualStrings("code", reloaded.stage.?);
+}
+
+test "associateClaimRun with null stage stamps run_id only (stage stays NULL)" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const sid = try insertTestSession(&d);
+    const tid = try insertTestTask(&d);
+
+    const plan_id = try d.execParams(
+        "insert into plans (scope_kind, title, slug) values ('global','p','assoc-null-stage-plan')",
+        &.{},
+    );
+    const run_id = try d.execParams(
+        \\insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, repo_root)
+        \\values (?, 'test-wf', 'assoc-null-stage-1', 99, '/tmp')
+    ,
+        &.{.{ .int = plan_id }},
+    );
+
+    const c = try acquireClaim(&d, a, .{
+        .session_id = sid,
+        .entity_kind = .task,
+        .entity_id = tid,
+        .vendor = "test",
+    });
+    defer c.deinit(a);
+
+    const updated = try associateClaimRun(&d, c.claim_token, run_id, null);
+    try std.testing.expectEqual(@as(i64, 1), updated);
+
+    const reloaded = try getClaimByToken(&d, a, c.claim_token);
+    defer reloaded.deinit(a);
+    try std.testing.expect(reloaded.run_id != null);
+    try std.testing.expectEqual(run_id, reloaded.run_id.?);
+    // stage remains null when not supplied.
+    try std.testing.expect(reloaded.stage == null);
+}
+
+test "associateClaimRun returns 0 for a terminal claim (no-op)" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const sid = try insertTestSession(&d);
+    const tid = try insertTestTask(&d);
+
+    const plan_id = try d.execParams(
+        "insert into plans (scope_kind, title, slug) values ('global','p','assoc-terminal-plan')",
+        &.{},
+    );
+    const run_id = try d.execParams(
+        \\insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, repo_root)
+        \\values (?, 'test-wf', 'assoc-terminal-1', 42, '/tmp')
+    ,
+        &.{.{ .int = plan_id }},
+    );
+
+    const c = try acquireClaim(&d, a, .{
+        .session_id = sid,
+        .entity_kind = .task,
+        .entity_id = tid,
+        .vendor = "test",
+    });
+    defer c.deinit(a);
+
+    // Release the claim (moves it to a terminal status).
+    const r = try releaseClaim(&d, a, c.claim_token, .released, "done");
+    r.deinit(a);
+
+    // associateClaimRun must be a no-op on a non-active claim.
+    const updated = try associateClaimRun(&d, c.claim_token, run_id, "code");
+    try std.testing.expectEqual(@as(i64, 0), updated);
+
+    // Stage and run_id stay null (they were never stamped).
+    const reloaded = try getClaimByToken(&d, a, c.claim_token);
+    defer reloaded.deinit(a);
+    try std.testing.expect(reloaded.run_id == null);
+    try std.testing.expect(reloaded.stage == null);
+}
+
+test "associateClaimRun returns 0 for a nonexistent token" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const updated = try associateClaimRun(&d, "nonexistent_token", 99, "code");
+    try std.testing.expectEqual(@as(i64, 0), updated);
 }
 
 test "getClaimByToken round-trips run_id and stage" {

@@ -14,6 +14,7 @@ comptime {
     _ = @import("planar_execute_agent_live_test.zig");
     _ = @import("planar_execute_eligible_test.zig");
     _ = @import("planar_execute_context_test.zig");
+    _ = @import("planar_execute_agent_text_test.zig");
     _ = @import("planar_execute_refusal_guard_test.zig");
     _ = @import("planar_execute_quality_spine_test.zig");
     _ = @import("planar_execute_schema_test.zig");
@@ -66,6 +67,7 @@ comptime {
     _ = @import("planar_agent_context_test.zig");
     _ = @import("workflow_run_lifecycle_test.zig");
     _ = @import("m23_claims_run_stage_test.zig");
+    _ = @import("planar_agent_claim_associate_test.zig");
     _ = @import("planar_watch_test.zig");
     _ = @import("scope_test.zig");
     _ = @import("search_test.zig");

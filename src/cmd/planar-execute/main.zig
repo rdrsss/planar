@@ -561,6 +561,17 @@ pub const HostState = struct {
     // back-compat.
     active_run: ?run_lifecycle.RunStartResult = null,
 
+    // plan 586 task 3948 — current-stage tracking for claim association.
+    //
+    // `hostPhase` records the latest phase title here so that
+    // `driveAgentCallPreYield` can stamp it as the `--stage` value when
+    // shelling `planar-agent claim-associate`. Empty string means no phase has
+    // been entered yet (the claim is associated with the run only; stage → NULL).
+    // The slice borrows from the `HostCall.arg0` heap copy that `record` duped,
+    // so its lifetime is tied to the HostState. It is NOT freed separately —
+    // the `calls` deinit loop owns the backing memory.
+    current_stage: []const u8 = "",
+
     pub fn init(allocator: std.mem.Allocator, now: i64, seed: i64, budget_total: i64, budget_spent: i64) HostState {
         return .{
             .allocator = allocator,
@@ -1138,6 +1149,18 @@ fn stampCostFields(L: ?*c.lua_State, cost_usd: f64, cost_exceeded: bool) void {
     c.lua_setfield(L, -2, "cost_exceeded");
 }
 
+/// stampTextField adds the `text` field (worker's final assistant-message text)
+/// to the agent() result table on top of the Lua stack (task 3946). Called
+/// immediately after `pushAgentResult` + `stampCostFields` so the table is on
+/// the stack. `text` is the extracted final assistant-message text from the
+/// worker's stdout, bounded to `spawn.FINAL_TEXT_CAP` bytes (best-effort parse;
+/// "" when no parseable message was found). The field is ALWAYS present so a
+/// workflow can unconditionally read `.text` without a nil check.
+fn stampTextField(L: ?*c.lua_State, text: []const u8) void {
+    _ = c.lua_pushlstring(L, text.ptr, text.len);
+    c.lua_setfield(L, -2, "text");
+}
+
 /// pushSkippedResult builds the Lua return table for one `agent()` call that the
 /// M8 resume path SKIPPED without spawning (task 3197):
 ///   { status = "skipped", skip_reason = "already-done"|"blocked",
@@ -1148,7 +1171,7 @@ fn stampCostFields(L: ?*c.lua_State, cost_usd: f64, cost_exceeded: bool) void {
 /// blocked-skip. No claim was acquired, no worktree built, no worker spawned, so
 /// `exit_code`/`commit_present`/`terminal_verb` carry their no-op values.
 fn pushSkippedResult(L: ?*c.lua_State, skip_reason: []const u8) void {
-    c.lua_createtable(L, 0, 5);
+    c.lua_createtable(L, 0, 6);
     const status = "skipped";
     _ = c.lua_pushlstring(L, status.ptr, status.len);
     c.lua_setfield(L, -2, "status");
@@ -1161,6 +1184,11 @@ fn pushSkippedResult(L: ?*c.lua_State, skip_reason: []const u8) void {
     const verb_name = "none";
     _ = c.lua_pushlstring(L, verb_name.ptr, verb_name.len);
     c.lua_setfield(L, -2, "terminal_verb");
+    // Always-present text field (task 3946). Skipped calls produced no worker
+    // stdout, so text is always empty on this path.
+    const empty = "";
+    _ = c.lua_pushlstring(L, empty.ptr, empty.len);
+    c.lua_setfield(L, -2, "text");
 }
 
 /// pushBlockedByBudgetResult builds the Lua return table for one `agent()` call
@@ -1174,7 +1202,7 @@ fn pushSkippedResult(L: ?*c.lua_State, skip_reason: []const u8) void {
 /// from an M7 worker self-block in the result table. No claim was re-acquired,
 /// no worker spawned.
 fn pushBlockedByBudgetResult(L: ?*c.lua_State) void {
-    c.lua_createtable(L, 0, 5);
+    c.lua_createtable(L, 0, 6);
     const status = "blocked";
     _ = c.lua_pushlstring(L, status.ptr, status.len);
     c.lua_setfield(L, -2, "status");
@@ -1188,6 +1216,11 @@ fn pushBlockedByBudgetResult(L: ?*c.lua_State) void {
     const verb_name = "block";
     _ = c.lua_pushlstring(L, verb_name.ptr, verb_name.len);
     c.lua_setfield(L, -2, "terminal_verb");
+    // Always-present text field (task 3946). Budget-blocked calls produced no
+    // worker stdout, so text is always empty on this path.
+    const empty = "";
+    _ = c.lua_pushlstring(L, empty.ptr, empty.len);
+    c.lua_setfield(L, -2, "text");
 }
 
 /// AgentCallState is the per-`agent()`-call state threaded ACROSS the coroutine
@@ -1523,6 +1556,21 @@ fn driveAgentCallPreYield(
         // the default tier and silently ignore the operator's override (3709).
         .model = acs.model,
     };
+    // plan 586 task 3948 / decision 457 — claim-run association (best-effort).
+    //
+    // The claim was PRE-ACQUIRED by the orchestrator before this run row
+    // existed. Now that we have both the active run id and the current stage
+    // we stamp them onto the claim via `planar-agent claim-associate` so
+    // `context add --claim` can resolve the run context (decision 447/450).
+    //
+    // BEST-EFFORT: a failure here NEVER blocks the spawn. A missed association
+    // only degrades that worker's `context add`; the worker still runs.
+    if (hs.active_run) |ar| {
+        if (ar.run_db_id != 0 and acs.claim_token.len > 0) {
+            run_lifecycle.associateClaim(alloc, io, acs.claim_token, ar.run_db_id, hs.current_stage);
+        }
+    }
+
     // task 3708 / plan 540: a one-line dispatch banner on stderr so an operator
     // tailing a run sees per-call routing (vendor + model) without grepping the
     // binary. Fires for every real (and mock) spawn — the stub path returns
@@ -1677,6 +1725,12 @@ fn agentContinue(L: ?*c.lua_State, status: c_int, ctx: c.lua_KContext) callconv(
     const observed_cost_usd: f64 = slot.last_cost_usd;
     const cap = hs.budgets.max_worker_cost_usd;
     const cost_exceeded: bool = (cap > 0) and (observed_cost_usd > cap);
+    // Extract the worker's FINAL assistant-message text from stdout (task 3946).
+    // Vendor-aware, best-effort, bounded to spawn.FINAL_TEXT_CAP. Returns "" on
+    // any parse failure — never panics, never errors. Read BEFORE the deferred
+    // `outcome.deinit` would free `outcome.stdout`.
+    const worker_text: []const u8 = spawn.extractFinalText(alloc, outcome.stdout, acs.vendor);
+    defer if (worker_text.len > 0) alloc.free(worker_text);
     // Free the call state + release the slot when we leave (the result table is
     // already on the Lua stack by then; nothing below borrows acs after this).
     // First unregister the claim from the heartbeat thread (task 3187): the
@@ -1761,6 +1815,9 @@ fn agentContinue(L: ?*c.lua_State, status: c_int, ctx: c.lua_KContext) callconv(
         // on a timed-out worker is still flagged (the worker DID exceed the cap,
         // even though the timed-out path is the primary disposition).
         stampCostFields(L, observed_cost_usd, cost_exceeded);
+        // Stamp the final-message text (task 3946). Always present; "" on a
+        // timed-out worker whose stdout was not fully parseable.
+        stampTextField(L, worker_text);
         if (cost_exceeded) hs.recordCostExceeded(acs.task_slug, observed_cost_usd);
         return 1;
     }
@@ -1849,6 +1906,9 @@ fn agentContinue(L: ?*c.lua_State, status: c_int, ctx: c.lua_KContext) callconv(
         writeJournalRecord(acs, "blocked", outcome.exit_code, terminal_mono_ns, blocked_run_id);
         pushAgentResult(L, "blocked", outcome.exit_code, commit_present, .none, false);
         stampCostFields(L, observed_cost_usd, cost_exceeded);
+        // Stamp the final-message text (task 3946). Always present; "" on
+        // a blocked worker whose stdout carried no parseable final message.
+        stampTextField(L, worker_text);
         if (cost_exceeded) hs.recordCostExceeded(acs.task_slug, observed_cost_usd);
         return 1;
     }
@@ -1866,6 +1926,9 @@ fn agentContinue(L: ?*c.lua_State, status: c_int, ctx: c.lua_KContext) callconv(
     // Stamp cost fields on the result (task 3445). Done AFTER pushAgentResult
     // so the result table is on the stack and we can set fields on it.
     stampCostFields(L, observed_cost_usd, cost_exceeded);
+    // Stamp the worker's final assistant-message text (task 3946). Always
+    // present; "" when the stdout carried no parseable final message.
+    stampTextField(L, worker_text);
     if (cost_exceeded) hs.recordCostExceeded(acs.task_slug, observed_cost_usd);
 
     // 8) M9 FAN-IN (tasks 3199/3200/3201 + task 3540 finding 1).
@@ -3066,10 +3129,20 @@ fn hostPipeline(L: ?*c.lua_State) callconv(.c) c_int {
 
 /// hostPhase — `phase(title)`. Records the phase title. Recording IS the real
 /// M2 behavior (progress reporting); returns nothing.
+///
+/// plan 586 task 3948: also stores the phase title as `hs.current_stage` so
+/// `driveAgentCallPreYield` can use it as the `--stage` value when associating
+/// pre-acquired claims with the active run at dispatch time.
 fn hostPhase(L: ?*c.lua_State) callconv(.c) c_int {
     const hs = hostStateUpvalue(L);
     const title = luaArgString(L, 1);
     recordOrError(L, hs, .phase, title, "");
+    // `record` duped `title` into hs.calls.items[last].arg0; borrow that copy
+    // so current_stage's lifetime is tied to the HostState (no extra alloc).
+    if (hs.calls.items.len > 0) {
+        const last = &hs.calls.items[hs.calls.items.len - 1];
+        if (last.kind == .phase) hs.current_stage = last.arg0;
+    }
     return 0;
 }
 
@@ -10483,4 +10556,85 @@ test "task 3540 finding 2: terminal_verb_error=false on the happy path (no regre
     ;
     var err_buf: [256]u8 = @splat(0);
     try runModule(src, "test:f2-tv-ok", &.{}, &host, &err_buf);
+}
+
+// ---------------------------------------------------------------------------
+// task 3946: result.text — worker final-message text on the agent() result.
+// ---------------------------------------------------------------------------
+
+test "task 3946 (result.text): always present as empty string when stdout has no parseable message" {
+    // The canned stdout "ok" does not parse as vendor stream-json → result.text
+    // is "" (the always-present contract). The workflow can unconditionally
+    // read `.text` without a nil check.
+    const a = testing_alloc;
+    var fake = spawn.FakeSpawnerState.init(a, 0, "ok", "");
+    defer fake.deinit();
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+
+    const src =
+        \\return {
+        \\  meta = { name = "t3946-empty", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local r = ctx.agent("brief", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/abs/wt",
+        \\      claim_token = "tok-t3946-e",
+        \\      task_slug = "t3946-e",
+        \\    })
+        \\    assert(r.text ~= nil, "text must be present (never nil)")
+        \\    assert(r.text == "", "text must be empty when stdout unparseable, got: " .. tostring(r.text))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:t3946-empty", &.{}, &host, &err_buf);
+}
+
+test "task 3946 (result.text): claude stream-json stdout → final result field extracted" {
+    // When canned_stdout is a minimal claude stream-json result event, the
+    // extracted text equals the result field value.
+    const a = testing_alloc;
+    // Minimal claude stream-json: a result event whose "result" field is the
+    // expected text. extractClaudeFinalText scans for "type":"result" and
+    // extracts the "result" string.
+    const claude_stdout =
+        \\{"type":"system","subtype":"init"}
+        \\{"type":"result","subtype":"success","result":"task complete"}
+    ;
+    var fake = spawn.FakeSpawnerState.init(a, 0, claude_stdout, "");
+    defer fake.deinit();
+    var driver = AgentDriver{
+        .spawner = fake.spawner(),
+        .io = std.testing.io,
+        .skip_terminal_subprocess = true,
+    };
+    var host = HostState.init(a, 0, 0, 100, 0);
+    defer host.deinit();
+    host.agent_driver = &driver;
+
+    const src =
+        \\return {
+        \\  meta = { name = "t3946-claude", description = "d", phases = {} },
+        \\  run = function(ctx)
+        \\    local r = ctx.agent("brief", {
+        \\      role = "coder",
+        \\      worktree_path = "/tmp/abs/wt",
+        \\      claim_token = "tok-t3946-c",
+        \\      task_slug = "t3946-c",
+        \\    })
+        \\    assert(r.text ~= nil, "text must be present")
+        \\    assert(r.text == "task complete",
+        \\      "expected 'task complete', got: " .. tostring(r.text))
+        \\  end,
+        \\}
+    ;
+    var err_buf: [256]u8 = @splat(0);
+    try runModule(src, "test:t3946-claude", &.{}, &host, &err_buf);
 }
