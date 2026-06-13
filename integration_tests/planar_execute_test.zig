@@ -1511,3 +1511,202 @@ test "planar-execute consumes `planar models routing`: [role_vendors] coder=code
     const reviewer = rowCell(res.stdout, "reviewer") orelse unreachable;
     try std.testing.expectEqualStrings("claude", reviewer.vendor);
 }
+
+// ---------------------------------------------------------------------------
+// plan 586 task 3937 — user-definable roles end-to-end (custom role dispatch)
+// ---------------------------------------------------------------------------
+
+test "planar-execute custom role: --dry-run shows custom role in dispatch table (plan 586 task 3937)" {
+    // A config with [roles] compactor = "small" / [role_vendors] compactor = "claude"
+    // must surface in the --dry-run dispatch model table alongside the four built-ins.
+    const gpa = std.testing.allocator;
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
+
+    // Write the custom-role config at the Iso's PLANAR_CONFIG_PATH.
+    {
+        var f = try iso.tmp.dir.createFile(std.testing.io, "home/config.toml", .{});
+        defer f.close(std.testing.io);
+        try f.writeStreamingAll(std.testing.io,
+            \\[roles]
+            \\compactor = "small"
+            \\[role_vendors]
+            \\compactor = "claude"
+        );
+    }
+
+    try iso.writeWorkflow("cr_dry.lua",
+        \\return { meta = { name = "cr-dry", description = "custom role dry-run", phases = {} }, run = function(ctx) end }
+    );
+    const wf_path = try iso.workflowPath("cr_dry.lua");
+    defer gpa.free(wf_path);
+
+    // Build the isolated env, then put `planar` on PATH so execute can shell
+    // `planar models routing`.
+    var env_map = try iso.buildEnv(gpa);
+    defer env_map.deinit();
+    const planar_dir = std.fs.path.dirname(resolvePlanarBin()) orelse ".";
+    const old_path = env_map.get("PATH") orelse "/usr/bin:/bin";
+    const new_path = try std.fmt.allocPrint(gpa, "{s}:{s}", .{ planar_dir, old_path });
+    defer gpa.free(new_path);
+    try env_map.put("PATH", new_path);
+
+    var argv: std.ArrayList([]const u8) = .empty;
+    defer argv.deinit(gpa);
+    try argv.append(gpa, resolveExecuteBin());
+    for ([_][]const u8{ "run", "--dry-run", wf_path }) |a| try argv.append(gpa, a);
+
+    const res = try std.process.run(gpa, std.testing.io, .{ .argv = argv.items, .environ_map = &env_map });
+    defer gpa.free(res.stdout);
+    defer gpa.free(res.stderr);
+
+    const exit_code: u32 = switch (res.term) {
+        .exited => |c| c,
+        else => 255,
+    };
+    if (exit_code != 0) {
+        std.debug.print("\ncustom role dry-run failed (exit {d}):\nstdout:\n{s}\nstderr:\n{s}\n", .{ exit_code, res.stdout, res.stderr });
+        return error.TestUnexpectedResult;
+    }
+
+    // The four built-ins must still be present with unchanged defaults.
+    for ([_][]const u8{ "coder", "reviewer", "test-coder", "documenter" }) |role| {
+        if (rowCell(res.stdout, role) == null) {
+            std.debug.print("\ndry-run table missing built-in role '{s}':\n{s}\n", .{ role, res.stdout });
+            return error.TestUnexpectedResult;
+        }
+    }
+    try std.testing.expectEqualStrings("claude-sonnet-4-6", rowModel(res.stdout, "coder"));
+    try std.testing.expectEqualStrings("claude-opus-4-8", rowModel(res.stdout, "reviewer"));
+
+    // The custom compactor role must appear in the table.
+    const compactor = rowCell(res.stdout, "compactor") orelse {
+        std.debug.print("\ndry-run table missing 'compactor' row:\n{s}\n", .{res.stdout});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expectEqualStrings("claude", compactor.vendor);
+    try std.testing.expectEqualStrings("claude-haiku-4-5", compactor.model);
+}
+
+test "planar-execute custom role: --mock-worker dispatches ctx.agent via config-defined role (plan 586 task 3937)" {
+    // A workflow calling ctx.agent({role="compactor"}) must succeed under
+    // --mock-worker when compactor is defined in config. The dispatch banner
+    // must show the custom role name and its resolved model.
+    const gpa = std.testing.allocator;
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
+
+    // Write the custom-role config.
+    {
+        var f = try iso.tmp.dir.createFile(std.testing.io, "home/config.toml", .{});
+        defer f.close(std.testing.io);
+        try f.writeStreamingAll(std.testing.io,
+            \\[roles]
+            \\compactor = "small"
+            \\[role_vendors]
+            \\compactor = "claude"
+        );
+    }
+
+    try iso.writeWorkflow("cr_mock.lua",
+        \\return {
+        \\  meta = { name = "cr-mock", description = "custom role mock", phases = {} },
+        \\  run = function(ctx)
+        \\    local r = ctx.agent("brief", {
+        \\      role = "compactor",
+        \\      worktree_path = "/tmp/cr-wt",
+        \\      claim_token = "tok-cr",
+        \\      task_slug = "ts-cr",
+        \\    })
+        \\    assert(r ~= nil, "agent must return a result table")
+        \\  end,
+        \\}
+    );
+    const wf_path = try iso.workflowPath("cr_mock.lua");
+    defer gpa.free(wf_path);
+
+    // Build isolated env with `planar` on PATH so execute can shell
+    // `planar models routing` to load the custom role.
+    var env_map = try iso.buildEnv(gpa);
+    defer env_map.deinit();
+    const planar_dir = std.fs.path.dirname(resolvePlanarBin()) orelse ".";
+    const old_path = env_map.get("PATH") orelse "/usr/bin:/bin";
+    const new_path = try std.fmt.allocPrint(gpa, "{s}:{s}", .{ planar_dir, old_path });
+    defer gpa.free(new_path);
+    try env_map.put("PATH", new_path);
+
+    var argv: std.ArrayList([]const u8) = .empty;
+    defer argv.deinit(gpa);
+    try argv.append(gpa, resolveExecuteBin());
+    for ([_][]const u8{ "run", "--mock-worker", wf_path }) |a| try argv.append(gpa, a);
+
+    const res = try std.process.run(gpa, std.testing.io, .{ .argv = argv.items, .environ_map = &env_map });
+    defer gpa.free(res.stdout);
+    defer gpa.free(res.stderr);
+
+    const exit_code: u32 = switch (res.term) {
+        .exited => |c| c,
+        else => 255,
+    };
+    if (exit_code != 0) {
+        std.debug.print("\ncustom role mock-worker failed (exit {d}):\nstderr:\n{s}\n", .{ exit_code, res.stderr });
+        return error.TestUnexpectedResult;
+    }
+
+    // The dispatch banner on stderr must name the custom role and its model.
+    const found_role = std.mem.indexOf(u8, res.stderr, "role=compactor") != null;
+    const found_model = std.mem.indexOf(u8, res.stderr, "model=claude-haiku-4-5") != null;
+    if (!found_role or !found_model) {
+        std.debug.print(
+            "\ndispatch banner missing custom role/model:\nfound_role={} found_model={}\nstderr:\n{s}\n",
+            .{ found_role, found_model, res.stderr },
+        );
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "planar-execute custom role: unknown role (not in config) → clear Lua error (plan 586 task 3937)" {
+    // A workflow calling ctx.agent({role="researcher"}) where "researcher" is
+    // NOT in config must exit non-zero with a clear error (not a silent crash).
+    const gpa = std.testing.allocator;
+    var iso = try Iso.init(gpa);
+    defer iso.deinit();
+
+    // Config has compactor but NOT researcher → researcher is unknown.
+    {
+        var f = try iso.tmp.dir.createFile(std.testing.io, "home/config.toml", .{});
+        defer f.close(std.testing.io);
+        try f.writeStreamingAll(std.testing.io,
+            \\[roles]
+            \\compactor = "small"
+        );
+    }
+
+    try iso.writeWorkflow("cr_err.lua",
+        \\return {
+        \\  meta = { name = "cr-err", description = "unknown role error", phases = {} },
+        \\  run = function(ctx)
+        \\    ctx.agent("brief", {
+        \\      role = "researcher",
+        \\      worktree_path = "/tmp/cr-err-wt",
+        \\      claim_token = "tok",
+        \\      task_slug = "ts",
+        \\    })
+        \\  end,
+        \\}
+    );
+    const wf_path = try iso.workflowPath("cr_err.lua");
+    defer gpa.free(wf_path);
+
+    const res = try iso.run(&.{ "run", "--mock-worker", wf_path });
+    defer res.deinit();
+
+    // Must exit non-zero: unknown role is a script-author bug.
+    try std.testing.expect(res.exitCode() != 0);
+    // Error message must mention the role name.
+    const has_role = std.mem.indexOf(u8, res.stderr, "researcher") != null;
+    if (!has_role) {
+        std.debug.print("\nunknown-role error missing 'researcher' in message:\nstderr:\n{s}\n", .{res.stderr});
+        return error.TestUnexpectedResult;
+    }
+}

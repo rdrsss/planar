@@ -505,6 +505,42 @@ pub fn resolve(
         });
     }
 
+    // User-defined custom roles (plan 586 task 3937): any `roles.<name>` key
+    // in the config file that is NOT one of the four built-in roles gets
+    // picked into the effective map so `buildRouting` can enumerate them.
+    // Similarly, any `role_vendors.<name>` for a custom role is picked.
+    // No embedded-default counterpart (custom roles are config-only).
+    {
+        const builtin_roles = [_][]const u8{ "coder", "reviewer", "test-coder", "documenter" };
+        var fmap_it = file_map.iterator();
+        while (fmap_it.next()) |fentry| {
+            const fkey = fentry.key_ptr.*;
+            // Check for `roles.<name>` or `role_vendors.<name>`.
+            const is_roles = std.mem.startsWith(u8, fkey, "roles.");
+            const is_rv = std.mem.startsWith(u8, fkey, "role_vendors.");
+            if (!is_roles and !is_rv) continue;
+            const suffix = if (is_roles) fkey["roles.".len..] else fkey["role_vendors.".len..];
+            if (suffix.len == 0) continue;
+            // Skip the four built-ins — they are already handled above.
+            var is_builtin = false;
+            for (builtin_roles) |b| {
+                if (std.mem.eql(u8, suffix, b)) {
+                    is_builtin = true;
+                    break;
+                }
+            }
+            if (is_builtin) continue;
+            // Pick the key: file-only (no env override, no embedded default).
+            _ = try pickStr(allocator, environ, &file_map, &def_map, &eff, .{
+                .key = fkey,
+                .env_name = null,
+                .assoc_val = null,
+                .file_key = null,
+                .def_key = null, // no embedded default → returns "" if only in file
+            });
+        }
+    }
+
     // external.jira.base_url — env var is JIRA_BASE_URL (Go resolve.go L262).
     const jira_base_url = try pickStr(allocator, environ, &file_map, &def_map, &eff, .{
         .key = "external.jira.base_url",

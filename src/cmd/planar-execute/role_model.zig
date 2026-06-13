@@ -140,13 +140,23 @@ pub const Dispatch = struct {
 
 /// The effective per-role dispatch mapping. Field defaults encode the task-3709
 /// routing (sonnet coder, opus reviewer), all on the claude vendor.
+///
+/// Custom roles (user-defined roles from `[roles]` config, e.g. `compactor`)
+/// are stored in `custom_roles`. The map is populated from `planar models
+/// routing --json` output by `parseRoutingJson` in main.zig; the strings it
+/// holds are arena-owned by `ResolvedTable.arena`.
 pub const ModelTable = struct {
     coder: Dispatch = .{ .vendor = .claude, .model = SONNET_TIER },
     reviewer: Dispatch = .{ .vendor = .claude, .model = OPUS_TIER },
     @"test-coder": Dispatch = .{ .vendor = .claude, .model = SONNET_TIER },
     documenter: Dispatch = .{ .vendor = .claude, .model = SONNET_TIER },
 
-    /// The full dispatch (vendor + model) for `role`.
+    /// User-defined roles from config (e.g. `compactor`, `researcher`).
+    /// Keys and values are arena-owned by `ResolvedTable.arena`. Null when
+    /// no custom roles are configured (the common case).
+    custom_roles: ?std.StringHashMapUnmanaged(Dispatch) = null,
+
+    /// The full dispatch (vendor + model) for a built-in `role`.
     pub fn dispatchForRole(self: ModelTable, role: Role) Dispatch {
         return switch (role) {
             .coder => self.coder,
@@ -154,6 +164,13 @@ pub const ModelTable = struct {
             .@"test-coder" => self.@"test-coder",
             .documenter => self.documenter,
         };
+    }
+
+    /// Look up dispatch for a custom (non-built-in) role by name. Returns
+    /// null when the role is not in the custom map.
+    pub fn dispatchForCustomRole(self: *const ModelTable, name: []const u8) ?Dispatch {
+        const map = self.custom_roles orelse return null;
+        return map.get(name);
     }
 
     /// The model string for `role` (convenience over `dispatchForRole`).
@@ -166,7 +183,7 @@ pub const ModelTable = struct {
         return self.dispatchForRole(role).vendor;
     }
 
-    /// Assign a dispatch to the field matching `role`.
+    /// Assign a dispatch to the field matching built-in `role`.
     pub fn set(self: *ModelTable, role: Role, d: Dispatch) void {
         switch (role) {
             .coder => self.coder = d,
@@ -174,6 +191,15 @@ pub const ModelTable = struct {
             .@"test-coder" => self.@"test-coder" = d,
             .documenter => self.documenter = d,
         }
+    }
+
+    /// Insert a custom role entry. The caller is responsible for ensuring
+    /// `name` and `d.model` are arena-owned and outlive the table.
+    pub fn setCustom(self: *ModelTable, allocator: std.mem.Allocator, name: []const u8, d: Dispatch) std.mem.Allocator.Error!void {
+        if (self.custom_roles == null) {
+            self.custom_roles = .{};
+        }
+        try self.custom_roles.?.put(allocator, name, d);
     }
 };
 
@@ -238,4 +264,39 @@ test "role_model: tier constants are non-empty and stable" {
     // Pin the exact constants so a stealth edit fails the gate loudly.
     try std.testing.expectEqualStrings("claude-opus-4-8", OPUS_TIER);
     try std.testing.expectEqualStrings("claude-sonnet-4-6", SONNET_TIER);
+}
+
+test "role_model: custom role lookup via dispatchForCustomRole" {
+    const a = std.testing.allocator;
+    var table = ModelTable{};
+    // Insert a custom role via setCustom.
+    const name = try a.dupe(u8, "compactor");
+    defer a.free(name);
+    const model = try a.dupe(u8, "claude-haiku-4-5");
+    defer a.free(model);
+    // Allocate a throwaway map arena.
+    var map_arena = std.heap.ArenaAllocator.init(a);
+    defer map_arena.deinit();
+    try table.setCustom(map_arena.allocator(), name, .{ .vendor = .claude, .model = model });
+
+    // Custom role found.
+    const found = table.dispatchForCustomRole("compactor");
+    try std.testing.expect(found != null);
+    try std.testing.expectEqualStrings("claude-haiku-4-5", found.?.model);
+    try std.testing.expectEqual(Vendor.claude, found.?.vendor);
+
+    // Unknown custom role returns null.
+    try std.testing.expect(table.dispatchForCustomRole("researcher") == null);
+
+    // Built-in roles are still reachable via their fast path.
+    try std.testing.expectEqualStrings(SONNET_TIER, table.forRole(.coder));
+}
+
+test "role_model: empty config — four default built-in roles unchanged (no custom_roles)" {
+    const table = ModelTable{};
+    try std.testing.expect(table.custom_roles == null);
+    try std.testing.expectEqualStrings(SONNET_TIER, table.forRole(.coder));
+    try std.testing.expectEqualStrings(OPUS_TIER, table.forRole(.reviewer));
+    try std.testing.expectEqualStrings(SONNET_TIER, table.forRole(.@"test-coder"));
+    try std.testing.expectEqualStrings(SONNET_TIER, table.forRole(.documenter));
 }

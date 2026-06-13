@@ -124,16 +124,28 @@ pub const RoutingRow = struct {
 /// The canonical roles whose routing `planar models routing` reports.
 pub const routing_roles = [_][]const u8{ "coder", "reviewer", "test-coder", "documenter" };
 
+/// Returns true when `role` is one of the four built-in canonical roles.
+fn isBuiltinRole(role: []const u8) bool {
+    for (routing_roles) |r| {
+        if (std.mem.eql(u8, r, role)) return true;
+    }
+    return false;
+}
+
 /// Build the effective routing table (role → vendor/tier/model + provenance)
-/// for the canonical roles. Rows borrow from `eff`; the returned slice is owned
-/// by `allocator`. A role that fails to resolve is skipped (should not happen
-/// with embedded defaults present).
+/// for the canonical roles UNION any user-configured roles in `[roles]` /
+/// `[role_vendors]`. Built-ins always appear first (in their declared order);
+/// custom roles follow in the iteration order of the effective map. Rows borrow
+/// from `eff`; the returned slice is owned by `allocator`. A role that fails to
+/// resolve is skipped (should not happen for well-formed configs).
 pub fn buildRouting(allocator: std.mem.Allocator, eff: *const config.EffectiveMap) std.mem.Allocator.Error![]RoutingRow {
-    var list = try std.ArrayList(RoutingRow).initCapacity(allocator, routing_roles.len);
+    var list: std.ArrayListUnmanaged(RoutingRow) = try .initCapacity(allocator, routing_roles.len + 4);
     errdefer list.deinit(allocator);
+
+    // 1. Built-in roles (guaranteed by embedded defaults).
     for (routing_roles) |role| {
         const r = resolveRoleAuto(eff, role) catch continue;
-        list.appendAssumeCapacity(.{
+        try list.append(allocator, .{
             .role = role,
             .vendor = r.vendor,
             .tier = r.tier,
@@ -141,6 +153,29 @@ pub fn buildRouting(allocator: std.mem.Allocator, eff: *const config.EffectiveMa
             .source = r.source,
         });
     }
+
+    // 2. Custom roles: any `roles.<name>` key whose name is not a built-in.
+    //    Enumerate the effective map; skip non-roles keys and built-ins.
+    var it = eff.iterator();
+    while (it.next()) |entry| {
+        const key = entry.key_ptr.*;
+        const prefix = "roles.";
+        if (!std.mem.startsWith(u8, key, prefix)) continue;
+        const role = key[prefix.len..];
+        if (isBuiltinRole(role)) continue;
+        if (role.len == 0) continue;
+        // Attempt resolution; skip silently if the config is malformed
+        // (e.g. tier key present in [roles] but no models.<vendor>.<tier>).
+        const r = resolveRoleAuto(eff, role) catch continue;
+        try list.append(allocator, .{
+            .role = role,
+            .vendor = r.vendor,
+            .tier = r.tier,
+            .model = r.model,
+            .source = r.source,
+        });
+    }
+
     return list.toOwnedSlice(allocator);
 }
 
@@ -605,6 +640,44 @@ test "resolver: buildRouting returns a row per canonical role" {
     try testing.expectEqualStrings("coder", rows[0].role);
     try testing.expectEqualStrings("claude", rows[0].vendor);
     try testing.expectEqualStrings("claude-sonnet-4-6", rows[0].model);
+}
+
+test "resolver: buildRouting with custom role includes it after built-ins" {
+    const a = testing.allocator;
+    const file =
+        \\[roles]
+        \\compactor = "small"
+        \\[role_vendors]
+        \\compactor = "claude"
+    ;
+    var res = try config.resolve(a, file, std.process.Environ.empty, null);
+    defer res.deinit(a);
+    const rows = try buildRouting(a, &res.effective);
+    defer a.free(rows);
+    // Four built-ins plus one custom.
+    try testing.expectEqual(routing_roles.len + 1, rows.len);
+    // First four are the built-ins.
+    try testing.expectEqualStrings("coder", rows[0].role);
+    try testing.expectEqualStrings("reviewer", rows[1].role);
+    // Last row is the custom role.
+    const last = rows[rows.len - 1];
+    try testing.expectEqualStrings("compactor", last.role);
+    try testing.expectEqualStrings("claude", last.vendor);
+    try testing.expectEqualStrings("small", last.tier);
+    try testing.expectEqualStrings("claude-haiku-4-5", last.model);
+}
+
+test "resolver: buildRouting empty config — exactly four built-in rows, unchanged" {
+    const a = testing.allocator;
+    var res = try config.resolve(a, null, std.process.Environ.empty, null);
+    defer res.deinit(a);
+    const rows = try buildRouting(a, &res.effective);
+    defer a.free(rows);
+    try testing.expectEqual(routing_roles.len, rows.len);
+    try testing.expectEqualStrings("coder", rows[0].role);
+    try testing.expectEqualStrings("claude-sonnet-4-6", rows[0].model);
+    try testing.expectEqualStrings("reviewer", rows[1].role);
+    try testing.expectEqualStrings("claude-opus-4-8", rows[1].model);
 }
 
 test "models: isKnownModel recognizes curated ids, rejects custom" {

@@ -1367,11 +1367,39 @@ fn driveAgentCallPreYield(
         }
     }
 
-    // Resolve role; unknown roles raise a Lua error (the script author's bug).
-    const role = role_model.Role.fromString(opts.role) catch {
-        _ = c.luaL_error(L, "agent: unknown role '%s'", opts.role.ptr);
-        return 0; // unreachable — luaL_error longjmps
+    // Resolve role → (dispatch, role_name, spawn_role_enum).
+    //
+    // Fast path: built-in roles (coder, reviewer, test-coder, documenter) are
+    // enum-keyed; their dispatch reads directly from the struct fields.
+    //
+    // Custom-role path: roles defined in `[roles]` config (e.g. compactor) are
+    // stored in model_table.custom_roles (populated by parseRoutingJson). A
+    // custom role that resolves is dispatched like a built-in but uses .coder
+    // as the SpawnInputs.role placeholder (the model is always explicit so the
+    // placeholder never drives model selection — see spawn.buildSpawnArgv).
+    //
+    // A role that is neither built-in NOR in the custom map is the script
+    // author's bug; the error distinguishes "completely unknown" from "unknown
+    // because config was not loaded".
+    const role_dispatch: role_model.Dispatch = blk: {
+        if (role_model.Role.fromString(opts.role)) |builtin_role| {
+            break :blk hs.model_table.dispatchForRole(builtin_role);
+        } else |_| {
+            if (hs.model_table.dispatchForCustomRole(opts.role)) |d| {
+                break :blk d;
+            }
+            _ = c.luaL_error(
+                L,
+                "agent: unknown role '%s' (not a built-in role and not defined in [roles] config)",
+                opts.role.ptr,
+            );
+            return 0; // unreachable — luaL_error longjmps
+        }
     };
+    // The built-in enum is used only as a SpawnInputs placeholder; when the
+    // model is supplied explicitly (always the case here) the enum value is
+    // never consulted by buildSpawnArgv for model selection.
+    const spawn_role_enum: role_model.Role = role_model.Role.fromString(opts.role) catch .coder;
 
     // Worktree path is required. Defer the absolute-path check to
     // buildSpawnArgv inside the spawner; we surface a clearer error here.
@@ -1407,12 +1435,12 @@ fn driveAgentCallPreYield(
         .claim_token = &.{},
         .task_slug = &.{},
         .task_id = opts.task_id,
-        // model borrows from hs.model_table (a comptime default constant or a
-        // process-lifetime arena-owned override); role_name borrows a comptime
-        // constant from role_model. Neither needs a dupe.
-        .model = hs.model_table.forRole(role),
-        .vendor = hs.model_table.vendorForRole(role).name(),
-        .role_name = role.name(),
+        // model and vendor borrow from role_dispatch (arena-owned overrides or
+        // comptime constants); role_name borrows opts.role (a Lua-stack slice
+        // that is duped before the yield in the prompt_hash step above).
+        .model = role_dispatch.model,
+        .vendor = role_dispatch.vendor.name(),
+        .role_name = opts.role,
         .prompt_hash = &.{},
         .branch = null,
         .spawn_mono_ns = 0,
@@ -1477,10 +1505,12 @@ fn driveAgentCallPreYield(
     // std.process.spawn so the child does NOT inherit the parent's full env.
     // The vendor for this role (defaults + execute-config.toml overlay). Selects
     // the worker CLI (claude vs codex) in buildSpawnArgv.
-    const vendor = hs.model_table.vendorForRole(role);
     const spawn_inputs = spawn.SpawnInputs{
-        .role = role,
-        .vendor = vendor,
+        // For custom roles, spawn_role_enum is .coder (a placeholder); the
+        // explicit `.model = acs.model` below always overrides any enum-derived
+        // default inside buildSpawnArgv, so the placeholder is never consulted.
+        .role = spawn_role_enum,
+        .vendor = role_dispatch.vendor,
         .worktree_path = acs.worktree_path,
         .brief = prompt,
         .role_spec = opts.role_spec,
@@ -1500,7 +1530,7 @@ fn driveAgentCallPreYield(
     const banner_run_id: []const u8 = if (hs.active_run) |ar| ar.run_identifier else "";
     std.debug.print(
         "[dispatch] task:{d} vendor={s} role={s} model={s} run={s}\n",
-        .{ opts.task_id, vendor.name(), role.name(), acs.model, banner_run_id },
+        .{ opts.task_id, role_dispatch.vendor.name(), opts.role, acs.model, banner_run_id },
     );
 
     const handle = driver.spawner.start(alloc, io, spawn_inputs) catch |err| {
@@ -3710,8 +3740,11 @@ fn hostBudgetRemaining(L: ?*c.lua_State) callconv(.c) c_int {
 fn hostDispatchTable(L: ?*c.lua_State) callconv(.c) c_int {
     const hs = hostStateUpvalue(L);
     recordOrError(L, hs, .dispatch_table, "", "");
-    c.lua_createtable(L, 0, 4);
+    // Pre-size: 4 built-ins + however many custom roles exist.
+    const n_custom: c_int = if (hs.model_table.custom_roles) |m| @intCast(m.count()) else 0;
+    c.lua_createtable(L, 0, 4 + n_custom);
     const idx: c_int = c.lua_absindex(L, -1);
+    // Built-in roles (comptime fast path — enum keyed).
     inline for ([_]role_model.Role{ .coder, .reviewer, .@"test-coder", .documenter }) |role| {
         const d = hs.model_table.dispatchForRole(role);
         // Per-role nested table { vendor = "...", model = "..." }.
@@ -3730,6 +3763,27 @@ fn hostDispatchTable(L: ?*c.lua_State) callconv(.c) c_int {
             .documenter => "documenter",
         };
         c.lua_setfield(L, idx, key); // pops the per-role sub-table
+    }
+    // Custom roles (dynamic map path — user-defined via [roles] config).
+    if (hs.model_table.custom_roles) |map| {
+        var it = map.iterator();
+        while (it.next()) |entry| {
+            const name = entry.key_ptr.*;
+            const d = entry.value_ptr.*;
+            // Push the key first so the stack is [..., idx_table, key, sub_table]
+            // before rawset. lua_rawset(t) pops key+value where key is at -2 and
+            // value at -1, then sets t[key] = value.
+            _ = c.lua_pushlstring(L, name.ptr, name.len); // key
+            c.lua_createtable(L, 0, 2); // value (sub-table)
+            const sub: c_int = c.lua_absindex(L, -1);
+            const vendor_str = d.vendor.name();
+            _ = c.lua_pushlstring(L, vendor_str.ptr, vendor_str.len);
+            c.lua_setfield(L, sub, "vendor");
+            _ = c.lua_pushlstring(L, d.model.ptr, d.model.len);
+            c.lua_setfield(L, sub, "model");
+            // Stack is now [..., idx_table, key, sub_table].
+            c.lua_rawset(L, idx); // pops key + sub_table, sets t[key] = sub_table
+        }
     }
     return 1;
 }
@@ -4968,6 +5022,15 @@ pub fn printDryRun(mod: WorkflowModule, table: role_model.ModelTable, writer: *I
         const d = table.dispatchForRole(role);
         try writer.print("  {s: <10} → {s: <6} {s}\n", .{ role.name(), d.vendor.name(), d.model });
     }
+    // Custom roles from config (user-defined).
+    if (table.custom_roles) |map| {
+        var it = map.iterator();
+        while (it.next()) |entry| {
+            const name = entry.key_ptr.*;
+            const d = entry.value_ptr.*;
+            try writer.print("  {s: <10} → {s: <6} {s}\n", .{ name, d.vendor.name(), d.model });
+        }
+    }
     try writer.print("phases: {d}\n", .{mod.meta.phases.len});
     for (mod.meta.phases, 0..) |phase, i| {
         if (phase.detail.len > 0) {
@@ -5021,10 +5084,12 @@ fn loadModelTable(ctx: *const ExecCtx) std.mem.Allocator.Error!role_model.Resolv
     return parseRoutingJson(gpa, result.stdout);
 }
 
-/// Build a ModelTable from `planar models routing --json` output. Unknown roles
-/// / vendors and empty models are skipped (those roles keep their default).
-/// Returns defaults on a JSON parse failure. Override model strings are duped
-/// into the result's arena.
+/// Build a ModelTable from `planar models routing --json` output. Built-in
+/// roles are applied to the enum-keyed struct fields; user-defined custom roles
+/// (any role name not recognized by `Role.fromString`) are stored in
+/// `table.custom_roles`. Unknown vendors and empty models are skipped (those
+/// roles keep their default). Returns defaults on a JSON parse failure.
+/// Override model strings are duped into the result's arena.
 fn parseRoutingJson(gpa: std.mem.Allocator, json_bytes: []const u8) std.mem.Allocator.Error!role_model.ResolvedTable {
     const parsed = std.json.parseFromSlice([]RoutingRowJson, gpa, json_bytes, .{
         .ignore_unknown_fields = true,
@@ -5036,11 +5101,20 @@ fn parseRoutingJson(gpa: std.mem.Allocator, json_bytes: []const u8) std.mem.Allo
     var table = role_model.ModelTable{};
     var applied = false;
     for (parsed.value) |row| {
-        const role = role_model.Role.fromString(row.role) catch continue;
         const vendor = role_model.Vendor.fromString(row.vendor) orelse continue;
         if (row.model.len == 0) continue;
-        table.set(role, .{ .vendor = vendor, .model = try arena.allocator().dupe(u8, row.model) });
-        applied = true;
+        const model_duped = try arena.allocator().dupe(u8, row.model);
+        const dispatch: role_model.Dispatch = .{ .vendor = vendor, .model = model_duped };
+        if (role_model.Role.fromString(row.role)) |role| {
+            // Built-in role: apply to the enum-keyed fast-path struct field.
+            table.set(role, dispatch);
+            applied = true;
+        } else |_| {
+            // Custom role: dupe the name and store in the dynamic map.
+            const name_duped = try arena.allocator().dupe(u8, row.role);
+            try table.setCustom(arena.allocator(), name_duped, dispatch);
+            applied = true;
+        }
     }
 
     return .{
