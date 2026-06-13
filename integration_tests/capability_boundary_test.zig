@@ -13,7 +13,7 @@
 //!     (pull, peek, claim, heartbeat, complete, fail, release, block,
 //!     action, ingest, reconcile, abort, version, schema, run, context) plus
 //!     action's start/end subverbs, run's start/end subverbs, and
-//!     context's add/list/resolve subverbs, AND contains NONE of the
+//!     context's add/capsule/list/resolve subverbs, AND contains NONE of the
 //!     planning-entity verbs (plan, task, decision, question, scenario,
 //!     artifact, annotate, init, workbench, doc, spec, templates, ext,
 //!     sync, promote, demote, capture, dashboard, tree, health).
@@ -245,7 +245,7 @@ fn assertExactSet(
 //     action, ingest, reconcile, abort, version, run, schema, context
 //
 // `action` has two subverbs (start, end); `run` has two subverbs
-// (start, end); `context` has three subverbs (add, list, resolve) —
+// (start, end); `context` has four subverbs (add, capsule, list, resolve) —
 // all verified by recursing into their --help output.
 //
 // The forbidden set covers every planning-entity mutation verb that
@@ -294,7 +294,7 @@ test "planar-agent verb set is EXACTLY the 16 documented agent verbs" {
     }, "planar-agent");
 }
 
-test "planar-agent context subverbs are EXACTLY {add, list, resolve}" {
+test "planar-agent context subverbs are EXACTLY {add, capsule, list, resolve}" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
@@ -307,7 +307,7 @@ test "planar-agent context subverbs are EXACTLY {add, list, resolve}" {
     var verbs = parseHelpVerbs(gpa, res.stdout);
     defer freeVerbSet(gpa, &verbs);
 
-    try assertExactSet(&verbs, &.{ "add", "list", "resolve" }, "planar-agent context");
+    try assertExactSet(&verbs, &.{ "add", "capsule", "list", "resolve" }, "planar-agent context");
 }
 
 test "planar-agent run subverbs are EXACTLY {start, end}" {
@@ -395,7 +395,7 @@ test "planar-agent recursive --help walk: every verb's --help exits 0" {
         }
     }
 
-    for ([_][]const u8{ "add", "list", "resolve" }) |sub| {
+    for ([_][]const u8{ "add", "capsule", "list", "resolve" }) |sub| {
         const res = runBin(&suite, resolveAgentBin(), &.{ "context", sub, "--help" });
         defer res.deinit(gpa);
         if (res.term != .exited or res.term.exited != 0) {

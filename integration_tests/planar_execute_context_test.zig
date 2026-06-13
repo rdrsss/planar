@@ -1,12 +1,13 @@
 //! integration_tests/planar_execute_context_test.zig —
-//!   `ctx.context([stage])` host function (plan 585 task 3903).
+//!   `ctx.context([stage])` host function (plan 585 task 3903) and
+//!   `ctx.compact(stage, opts)` host function (plan 585 task 3905).
 //!
 //! Black-box integration gate: runs Lua workflows under `--mock-worker` and
-//! asserts the `ctx.context` host function behaves correctly as an observable
-//! CLI surface.
+//! asserts the host functions behave correctly as observable CLI surfaces.
 //!
 //! ## What these tests cover
 //!
+//!   ctx.context:
 //!   1. `ctx.context()` (no args) returns an empty Lua table for a fresh run
 //!      (no records in the harness's own run row). Workflow exits 0.
 //!   2. `ctx.context("plan")` (stage filter) returns an empty table with no
@@ -15,29 +16,33 @@
 //!      degrades gracefully to an empty table; exits 0.
 //!   4. Passing a non-string argument raises a Lua error (exit 1). The error
 //!      message mentions "ctx.context".
-//!   5. The capability boundary: `planar-execute` stays DB-handle-free.
-//!      `ctx.context` shells `planar-agent context list` and parses its JSON;
-//!      it never opens SQLite directly (verified by capability_boundary_test;
-//!      here we verify the end-to-end behaviour via the black-box run).
 //!
-//! ## Why no "reads seeded records" test
+//!   ctx.compact (task 3905):
+//!   5. `ctx.compact("plan")` with no active records (empty stage) returns
+//!      { ok=true, consumed=0, capsule_id=0, body="" } — clean no-op.
+//!   6. `ctx.compact()` with wrong argument type (no stage string) raises a
+//!      Lua error (exit 1). The error message mentions "ctx.compact".
+//!   7. `ctx.compact("plan")` without `--plan` (active_run is null) returns
+//!      the degradation result { ok=false, consumed=0, capsule_id=0 }.
 //!
-//! `ctx.context` queries by the workflow_runs row opened by the harness's
-//! OWN `planar-agent run start` call. Pre-seeding records in that row
-//! requires knowing the harness's run_db_id before the run starts, which
-//! is not possible without a separate mechanism. The JSON→Lua mapping for
-//! non-empty results is pinned by the unit tests in state.zig (task 3903).
-//! The end-to-end add→list path is already covered by
-//! planar_agent_context_test.zig. The integration tests here focus on the
-//! host-function surface and its degradation contract.
+//! ## Why no "compacts seeded records" end-to-end test
+//!
+//! `ctx.compact` operates on the workflow_runs row created by the harness's
+//! OWN `planar-agent run start` call. Pre-seeding active records in that row
+//! requires knowing the harness's run_db_id before the run starts, which is
+//! not available through a supported mechanism. The Q603 order contract
+//! (resolve FIRST, capsule AFTER) is tested by:
+//!   (a) unit tests in capsule.zig (DB-layer);
+//!   (b) Scenario F in planar_agent_context_test.zig (CLI-layer: resolve→capsule).
+//! This file focuses on the host-function surface and degradation contract.
 //!
 //! ## Hermeticity
 //!
 //!   - Fixture DB seeded via the real CLI (harness Suite injects PLANAR_DB).
 //!   - PATH is prepended with the freshly-built bin dir so bare `planar-agent`
-//!     subprocess calls from `hostContext` resolve to `./bin/planar-agent`.
+//!     subprocess calls resolve to `./bin/planar-agent`.
 //!   - `--mock-worker` is used so no real `claude -p` spawn is attempted.
-//!   - PLANAR_EXECUTE_LIVE_AGENT is NOT set — ctx.context must work without it.
+//!   - PLANAR_EXECUTE_LIVE_AGENT is NOT set.
 
 const std = @import("std");
 const harness = @import("harness");
@@ -401,4 +406,173 @@ test "ctx.context(): non-string argument raises Lua error — exits 1 (task 3903
     // The error message must mention ctx.context (from the luaL_error call).
     const has_mention = contains(res.stderr, "ctx.context") or contains(res.stdout, "ctx.context");
     try std.testing.expect(has_mention);
+}
+
+// ---------------------------------------------------------------------------
+// ctx.compact tests (plan 585 task 3905)
+// ---------------------------------------------------------------------------
+
+// Test 5: ctx.compact("plan") with no active records returns a clean no-op:
+//   { ok=true, consumed=0, capsule_id=0, body="" }.
+// The stage has no records in a fresh run, so compact must succeed (no-op).
+test "ctx.compact(stage): empty stage is a clean no-op — exits 0 (task 3905)" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    gpa.free(suite.mustRun(&.{ "init", "--skip-project" }));
+    const plan_json = suite.mustRun(&.{ "plan", "create", "--slug", "cmp-noop", "--json", "cmp-noop" });
+    defer gpa.free(plan_json);
+    const plan_id = extractIntField(plan_json, "\"id\"") orelse @panic("no plan id");
+    const plan_arg = std.fmt.allocPrint(gpa, "{d}", .{plan_id}) catch @panic("OOM");
+    defer gpa.free(plan_arg);
+    gpa.free(suite.mustRun(&.{ "task", "add", "--plan", plan_arg, "compact noop task" }));
+
+    // Workflow: calls ctx.compact("plan") on a stage with no records.
+    // The stage has zero active records so this should be a clean no-op.
+    const workflow_src =
+        \\return {
+        \\  meta = { name = "compact-noop", description = "ctx.compact no-op test", phases = {} },
+        \\  run = function(ctx)
+        \\    local r = ctx.compact("plan")
+        \\    print("ok:" .. tostring(r.ok))
+        \\    print("consumed:" .. tostring(r.consumed))
+        \\    print("capsule_id:" .. tostring(r.capsule_id))
+        \\    -- body may be empty string
+        \\    print("body_len:" .. tostring(#r.body))
+        \\  end
+        \\}
+    ;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_abs = try tmpAbsPath(&tmp, gpa);
+    defer gpa.free(tmp_abs);
+
+    try writeWorkflow(&tmp, "compact_noop.lua", workflow_src);
+    const wf_path = try workflowPath(tmp_abs, "compact_noop.lua", gpa);
+    defer gpa.free(wf_path);
+
+    const res = try runExecuteWithFixture(gpa, &suite, &.{
+        wf_path,
+        "--mock-worker",
+        "--plan",
+        plan_arg,
+    });
+    defer res.deinit();
+
+    if (res.exitCode() != 0) {
+        std.debug.print(
+            "\nctx.compact noop test stdout:\n{s}\nstderr:\n{s}\n",
+            .{ res.stdout, res.stderr },
+        );
+    }
+    try std.testing.expectEqual(@as(u32, 0), res.exitCode());
+
+    // No active records → consumed=0, capsule_id=0, ok=true (clean no-op).
+    try std.testing.expect(contains(res.stdout, "ok:true"));
+    try std.testing.expect(contains(res.stdout, "consumed:0"));
+    try std.testing.expect(contains(res.stdout, "capsule_id:0"));
+    try std.testing.expect(contains(res.stdout, "body_len:0"));
+}
+
+// Test 6: ctx.compact() with wrong argument type (missing stage string) raises
+// a Lua error. The error message must mention "ctx.compact".
+test "ctx.compact(): missing stage argument raises Lua error — exits 1 (task 3905)" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    gpa.free(suite.mustRun(&.{ "init", "--skip-project" }));
+    const plan_json = suite.mustRun(&.{ "plan", "create", "--slug", "cmp-typeerr", "--json", "cmp-typeerr" });
+    defer gpa.free(plan_json);
+    const plan_id = extractIntField(plan_json, "\"id\"") orelse @panic("no plan id");
+    const plan_arg = std.fmt.allocPrint(gpa, "{d}", .{plan_id}) catch @panic("OOM");
+    defer gpa.free(plan_arg);
+    gpa.free(suite.mustRun(&.{ "task", "add", "--plan", plan_arg, "compact typeerr task" }));
+
+    // Workflow passes no argument to ctx.compact() — requires a string stage.
+    const workflow_src =
+        \\return {
+        \\  meta = { name = "compact-typeerr", description = "ctx.compact type-error test", phases = {} },
+        \\  run = function(ctx)
+        \\    ctx.compact(42)
+        \\  end
+        \\}
+    ;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_abs = try tmpAbsPath(&tmp, gpa);
+    defer gpa.free(tmp_abs);
+
+    try writeWorkflow(&tmp, "compact_typeerr.lua", workflow_src);
+    const wf_path = try workflowPath(tmp_abs, "compact_typeerr.lua", gpa);
+    defer gpa.free(wf_path);
+
+    const res = try runExecuteWithFixture(gpa, &suite, &.{
+        wf_path,
+        "--mock-worker",
+        "--plan",
+        plan_arg,
+    });
+    defer res.deinit();
+
+    // A type-error in hostCompact propagates as a Lua runtime error → exit 1.
+    try std.testing.expect(res.exitCode() != 0);
+    // The error message must mention ctx.compact.
+    const has_mention = contains(res.stderr, "ctx.compact") or contains(res.stdout, "ctx.compact");
+    try std.testing.expect(has_mention);
+}
+
+// Test 7: ctx.compact("plan") without --plan (active_run is null) returns the
+// degradation result { ok=false, consumed=0, capsule_id=0 }. Exits 0.
+test "ctx.compact(): null active_run degrades to ok=false — exits 0 (task 3905)" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    // No plan init needed — we deliberately omit --plan.
+    const workflow_src =
+        \\return {
+        \\  meta = { name = "compact-norun", description = "ctx.compact no-run degradation test", phases = {} },
+        \\  run = function(ctx)
+        \\    -- active_run is null (no --plan), so ctx.compact() degrades gracefully.
+        \\    local r = ctx.compact("plan")
+        \\    print("ok:" .. tostring(r.ok))
+        \\    print("consumed:" .. tostring(r.consumed))
+        \\    print("capsule_id:" .. tostring(r.capsule_id))
+        \\  end
+        \\}
+    ;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_abs = try tmpAbsPath(&tmp, gpa);
+    defer gpa.free(tmp_abs);
+
+    try writeWorkflow(&tmp, "compact_norun.lua", workflow_src);
+    const wf_path = try workflowPath(tmp_abs, "compact_norun.lua", gpa);
+    defer gpa.free(wf_path);
+
+    // NOTE: no --plan flag → plan_id==0 → runStart not called → active_run is null.
+    const res = try runExecuteWithFixture(gpa, &suite, &.{
+        wf_path,
+        "--mock-worker",
+        // no --plan
+    });
+    defer res.deinit();
+
+    if (res.exitCode() != 0) {
+        std.debug.print(
+            "\nctx.compact no-run degradation stdout:\n{s}\nstderr:\n{s}\n",
+            .{ res.stdout, res.stderr },
+        );
+    }
+    try std.testing.expectEqual(@as(u32, 0), res.exitCode());
+
+    // No active_run → ok=false, consumed=0, capsule_id=0.
+    try std.testing.expect(contains(res.stdout, "ok:false"));
+    try std.testing.expect(contains(res.stdout, "consumed:0"));
+    try std.testing.expect(contains(res.stdout, "capsule_id:0"));
 }

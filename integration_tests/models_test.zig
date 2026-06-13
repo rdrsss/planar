@@ -207,6 +207,123 @@ test "planar models list: codex entries carry human display labels (task 3633)" 
     try std.testing.expect(std.mem.indexOf(u8, stdout, "frontier") != null); // label text
 }
 
+test "planar models routing: custom role in config appears in --json output (plan 586 task 3937)" {
+    // A user-defined role ([roles] compactor = "small") must surface in the
+    // routing table alongside the four built-ins, with the correct tier and model.
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const cfg = std.fs.path.join(gpa, &.{ std.fs.path.dirname(suite.db_path).?, "custom_roles.toml" }) catch @panic("OOM");
+    defer gpa.free(cfg);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{
+        .sub_path = cfg,
+        .data =
+        \\[roles]
+        \\compactor = "small"
+        \\[role_vendors]
+        \\compactor = "claude"
+        ,
+    });
+    const extra: []const harness.Suite.ExtraEnvEntry = &.{.{ .key = "PLANAR_CONFIG_PATH", .value = cfg }};
+
+    const stdout = suite.mustRunWith(&.{ "models", "routing", "--json" }, extra);
+    defer gpa.free(stdout);
+
+    const parsed = std.json.parseFromSlice(std.json.Value, arena, std.mem.trim(u8, stdout, " \n"), .{
+        .allocate = .alloc_always,
+    }) catch |e| {
+        std.debug.print("\nrouting --json parse failed: {s}\n{s}\n", .{ @errorName(e), stdout });
+        return error.TestUnexpectedResult;
+    };
+    const rows = parsed.value.array;
+
+    // Must have 5 rows (4 built-ins + compactor).
+    if (rows.items.len != 5) {
+        std.debug.print("\nexpected 5 routing rows, got {d}\n{s}\n", .{ rows.items.len, stdout });
+        return error.TestUnexpectedResult;
+    }
+
+    // Find the compactor row.
+    var saw_compactor = false;
+    var saw_coder = false;
+    var saw_reviewer = false;
+    for (rows.items) |row| {
+        const o = row.object;
+        const role = o.get("role").?.string;
+        if (std.mem.eql(u8, role, "coder")) {
+            saw_coder = true;
+            // Built-in coder unchanged: medium/claude/sonnet.
+            try std.testing.expectEqualStrings("claude", o.get("vendor").?.string);
+            try std.testing.expectEqualStrings("medium", o.get("tier").?.string);
+            try std.testing.expectEqualStrings("claude-sonnet-4-6", o.get("model").?.string);
+        }
+        if (std.mem.eql(u8, role, "reviewer")) saw_reviewer = true;
+        if (std.mem.eql(u8, role, "compactor")) {
+            saw_compactor = true;
+            try std.testing.expectEqualStrings("claude", o.get("vendor").?.string);
+            try std.testing.expectEqualStrings("small", o.get("tier").?.string);
+            try std.testing.expectEqualStrings("claude-haiku-4-5", o.get("model").?.string);
+        }
+    }
+    if (!saw_coder or !saw_reviewer or !saw_compactor) {
+        std.debug.print("\nmissing expected roles: coder={} reviewer={} compactor={}\n{s}\n", .{
+            saw_coder, saw_reviewer, saw_compactor, stdout,
+        });
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "planar models routing: empty config — exactly 4 built-in rows, no custom (plan 586 invariant)" {
+    // An empty config must produce exactly the four default rows.
+    // This pins the no-behavior-change invariant from the spec.
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    // Point config at a path that does NOT exist → embedded defaults only.
+    const cfg = std.fs.path.join(gpa, &.{ std.fs.path.dirname(suite.db_path).?, "absent.toml" }) catch @panic("OOM");
+    defer gpa.free(cfg);
+    const extra: []const harness.Suite.ExtraEnvEntry = &.{.{ .key = "PLANAR_CONFIG_PATH", .value = cfg }};
+
+    const stdout = suite.mustRunWith(&.{ "models", "routing", "--json" }, extra);
+    defer gpa.free(stdout);
+
+    const parsed = std.json.parseFromSlice(std.json.Value, arena, std.mem.trim(u8, stdout, " \n"), .{
+        .allocate = .alloc_always,
+    }) catch |e| {
+        std.debug.print("\nrouting --json parse failed: {s}\n{s}\n", .{ @errorName(e), stdout });
+        return error.TestUnexpectedResult;
+    };
+    const rows = parsed.value.array;
+    if (rows.items.len != 4) {
+        std.debug.print("\nexpected 4 routing rows with empty config, got {d}\n{s}\n", .{ rows.items.len, stdout });
+        return error.TestUnexpectedResult;
+    }
+    // All four built-ins present with correct defaults.
+    const expected = [_]struct { role: []const u8, vendor: []const u8, tier: []const u8, model: []const u8 }{
+        .{ .role = "coder", .vendor = "claude", .tier = "medium", .model = "claude-sonnet-4-6" },
+        .{ .role = "reviewer", .vendor = "claude", .tier = "large", .model = "claude-opus-4-8" },
+        .{ .role = "test-coder", .vendor = "claude", .tier = "medium", .model = "claude-sonnet-4-6" },
+        .{ .role = "documenter", .vendor = "claude", .tier = "medium", .model = "claude-sonnet-4-6" },
+    };
+    for (rows.items, expected) |row, exp| {
+        const o = row.object;
+        try std.testing.expectEqualStrings(exp.role, o.get("role").?.string);
+        try std.testing.expectEqualStrings(exp.vendor, o.get("vendor").?.string);
+        try std.testing.expectEqualStrings(exp.tier, o.get("tier").?.string);
+        try std.testing.expectEqualStrings(exp.model, o.get("model").?.string);
+    }
+}
+
 test "planar models apply: writes the config block, idempotent without --force (task 3740)" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);

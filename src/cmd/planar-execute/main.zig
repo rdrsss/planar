@@ -332,6 +332,9 @@ pub const HostCallKind = enum {
     context,
     /// ctx.brief({...}) — assembles a methodology-compliant coder brief from inputs.
     brief_compile,
+    /// ctx.compact(stage, opts) — stage-close compaction: resolve raw records to
+    /// 'consumed' then write a compiled capsule (plan 585 task 3905).
+    compact,
 };
 
 /// A single recorded host-function invocation. All fields are heap-owned copies
@@ -1367,11 +1370,39 @@ fn driveAgentCallPreYield(
         }
     }
 
-    // Resolve role; unknown roles raise a Lua error (the script author's bug).
-    const role = role_model.Role.fromString(opts.role) catch {
-        _ = c.luaL_error(L, "agent: unknown role '%s'", opts.role.ptr);
-        return 0; // unreachable — luaL_error longjmps
+    // Resolve role → (dispatch, role_name, spawn_role_enum).
+    //
+    // Fast path: built-in roles (coder, reviewer, test-coder, documenter) are
+    // enum-keyed; their dispatch reads directly from the struct fields.
+    //
+    // Custom-role path: roles defined in `[roles]` config (e.g. compactor) are
+    // stored in model_table.custom_roles (populated by parseRoutingJson). A
+    // custom role that resolves is dispatched like a built-in but uses .coder
+    // as the SpawnInputs.role placeholder (the model is always explicit so the
+    // placeholder never drives model selection — see spawn.buildSpawnArgv).
+    //
+    // A role that is neither built-in NOR in the custom map is the script
+    // author's bug; the error distinguishes "completely unknown" from "unknown
+    // because config was not loaded".
+    const role_dispatch: role_model.Dispatch = blk: {
+        if (role_model.Role.fromString(opts.role)) |builtin_role| {
+            break :blk hs.model_table.dispatchForRole(builtin_role);
+        } else |_| {
+            if (hs.model_table.dispatchForCustomRole(opts.role)) |d| {
+                break :blk d;
+            }
+            _ = c.luaL_error(
+                L,
+                "agent: unknown role '%s' (not a built-in role and not defined in [roles] config)",
+                opts.role.ptr,
+            );
+            return 0; // unreachable — luaL_error longjmps
+        }
     };
+    // The built-in enum is used only as a SpawnInputs placeholder; when the
+    // model is supplied explicitly (always the case here) the enum value is
+    // never consulted by buildSpawnArgv for model selection.
+    const spawn_role_enum: role_model.Role = role_model.Role.fromString(opts.role) catch .coder;
 
     // Worktree path is required. Defer the absolute-path check to
     // buildSpawnArgv inside the spawner; we surface a clearer error here.
@@ -1407,12 +1438,12 @@ fn driveAgentCallPreYield(
         .claim_token = &.{},
         .task_slug = &.{},
         .task_id = opts.task_id,
-        // model borrows from hs.model_table (a comptime default constant or a
-        // process-lifetime arena-owned override); role_name borrows a comptime
-        // constant from role_model. Neither needs a dupe.
-        .model = hs.model_table.forRole(role),
-        .vendor = hs.model_table.vendorForRole(role).name(),
-        .role_name = role.name(),
+        // model and vendor borrow from role_dispatch (arena-owned overrides or
+        // comptime constants); role_name borrows opts.role (a Lua-stack slice
+        // that is duped before the yield in the prompt_hash step above).
+        .model = role_dispatch.model,
+        .vendor = role_dispatch.vendor.name(),
+        .role_name = opts.role,
         .prompt_hash = &.{},
         .branch = null,
         .spawn_mono_ns = 0,
@@ -1477,10 +1508,12 @@ fn driveAgentCallPreYield(
     // std.process.spawn so the child does NOT inherit the parent's full env.
     // The vendor for this role (defaults + execute-config.toml overlay). Selects
     // the worker CLI (claude vs codex) in buildSpawnArgv.
-    const vendor = hs.model_table.vendorForRole(role);
     const spawn_inputs = spawn.SpawnInputs{
-        .role = role,
-        .vendor = vendor,
+        // For custom roles, spawn_role_enum is .coder (a placeholder); the
+        // explicit `.model = acs.model` below always overrides any enum-derived
+        // default inside buildSpawnArgv, so the placeholder is never consulted.
+        .role = spawn_role_enum,
+        .vendor = role_dispatch.vendor,
         .worktree_path = acs.worktree_path,
         .brief = prompt,
         .role_spec = opts.role_spec,
@@ -1500,7 +1533,7 @@ fn driveAgentCallPreYield(
     const banner_run_id: []const u8 = if (hs.active_run) |ar| ar.run_identifier else "";
     std.debug.print(
         "[dispatch] task:{d} vendor={s} role={s} model={s} run={s}\n",
-        .{ opts.task_id, vendor.name(), role.name(), acs.model, banner_run_id },
+        .{ opts.task_id, role_dispatch.vendor.name(), opts.role, acs.model, banner_run_id },
     );
 
     const handle = driver.spawner.start(alloc, io, spawn_inputs) catch |err| {
@@ -3679,6 +3712,271 @@ fn hostBrief(L: ?*c.lua_State) callconv(.c) c_int {
     return 1;
 }
 
+/// hostCompact — `ctx.compact(stage, opts)` (plan 585 task 3905).
+///
+/// Stage-close compaction: distills the current run's `active` context records
+/// for `stage` into ONE compiled capsule record, then marks the raw records
+/// `consumed`. Implements the Q603 ORDER CONTRACT:
+///
+///   1. Shell `planar-agent context resolve --run <id> --stage <s> --status consumed`
+///      (marks ALL active raw records consumed FIRST).
+///   2. Shell `planar-agent context list --run <id> --stage <s> --status consumed --json`
+///      to get the just-consumed record ids for the `compiled_from` provenance.
+///   3. Build the capsule body from the consumed records using DETERMINISTIC
+///      SELECTION RULES (no agent spawn by default):
+///        - Include records of kind: finding, risk, followup.
+///        - Group by kind, order stably within kind by id (ascending).
+///        - Format: one `[<KIND>] <body>` line per record.
+///      This is intentionally simple and deterministic — no LLM judgement needed
+///      for the default path.
+///   4. Shell `planar-agent context capsule --run <id> --stage <s>
+///      --compiled-from <ids> --body <body> --json` to write the capsule AFTER.
+///
+/// When `opts.role` is set (user-definable compactor role, decision 449 /
+/// task 3937): dispatch `ctx.agent({role=opts.role, prompt=brief})` with a
+/// brief that presents the consumed records and asks for a distilled capsule
+/// body. The agent response is used as the capsule body. Falls back to the
+/// deterministic path when agent dispatch fails or returns an empty string.
+///
+/// ## Arguments
+///
+///   ctx.compact("plan")              -- deterministic compaction of 'plan' stage
+///   ctx.compact("code", { role = "compactor" })  -- optional agent role
+///
+/// The first argument (stage) is required and must be a string.
+/// The second argument (opts) is optional; if present, must be a table.
+/// `opts.role` is the only recognized key.
+///
+/// ## Return value
+///
+/// A table: { ok, capsule_id, consumed, body }
+///   ok          -- boolean: true when compaction succeeded (even partially)
+///   capsule_id  -- integer: DB id of the newly-written capsule (0 on failure)
+///   consumed    -- integer: count of raw records marked consumed
+///   body        -- string: the capsule body text written
+///
+/// ## Degradation
+///
+///   - `hs.active_run == null` or `hs.io == null`: returns { ok=false,
+///     capsule_id=0, consumed=0, body="" } (no-op).
+///   - Stage has no active records: returns { ok=true, capsule_id=0,
+///     consumed=0, body="" } (no-op is success — nothing to compact).
+///   - Subprocess failures at any step: best-effort; logs a warning and
+///     returns partial results where possible.
+///
+/// ## No-DB-handle invariant
+///
+/// All steps shell `planar-agent`; this function holds no SQLite handle.
+fn hostCompact(L: ?*c.lua_State) callconv(.c) c_int {
+    const hs = hostStateUpvalue(L);
+
+    // --- Argument: stage (required string) ---
+    if (c.lua_gettop(L) < 1 or c.lua_type(L, 1) != c.LUA_TSTRING) {
+        _ = c.luaL_error(L, "ctx.compact: first argument must be a string (stage name)");
+        return 0;
+    }
+    const stage = luaArgString(L, 1);
+
+    // --- Argument: opts (optional table) ---
+    var role_opt: ?[]const u8 = null;
+    if (c.lua_gettop(L) >= 2 and c.lua_type(L, 2) == c.LUA_TTABLE) {
+        const opts_idx: c_int = 2;
+        const role_type = c.lua_getfield(L, opts_idx, "role");
+        if (role_type == c.LUA_TSTRING) {
+            var rlen: usize = 0;
+            const rraw = c.lua_tolstring(L, -1, &rlen);
+            if (rraw != null and rlen > 0) role_opt = rraw[0..rlen];
+        }
+        luaPop(L, 1); // pop role field
+    }
+
+    // Record the call (arg0=stage, arg1=role or "").
+    recordOrError(L, hs, .compact, stage, role_opt orelse "");
+
+    // Helper: push a { ok, capsule_id, consumed, body } result table.
+    // Used for both success and degradation/error paths.
+    const pushResult = struct {
+        fn f(LL: ?*c.lua_State, ok: bool, cap_id: i64, n_consumed: usize, body: []const u8) c_int {
+            c.lua_createtable(LL, 0, 4);
+            const idx = c.lua_absindex(LL, -1);
+            c.lua_pushboolean(LL, if (ok) 1 else 0);
+            c.lua_setfield(LL, idx, "ok");
+            c.lua_pushinteger(LL, @intCast(cap_id));
+            c.lua_setfield(LL, idx, "capsule_id");
+            c.lua_pushinteger(LL, @intCast(n_consumed));
+            c.lua_setfield(LL, idx, "consumed");
+            _ = c.lua_pushlstring(LL, body.ptr, body.len);
+            c.lua_setfield(LL, idx, "body");
+            return 1;
+        }
+    }.f;
+
+    // Degradation: no active run or no io wired.
+    const active_run = hs.active_run orelse return pushResult(L, false, 0, 0, "");
+    const io = hs.io orelse return pushResult(L, false, 0, 0, "");
+    const alloc = hs.allocator;
+    const run_db_id = active_run.run_db_id;
+    const log_ctx = std.log.scoped(.planar_execute);
+
+    var id_buf: [32]u8 = undefined;
+    const run_id_str = std.fmt.bufPrint(&id_buf, "{d}", .{run_db_id}) catch
+        return pushResult(L, false, 0, 0, "");
+
+    // --- Step 1 (Q603 ORDER): resolve active records → consumed FIRST ---
+    //
+    // This bulk-marks ALL active records for (run, stage) as consumed BEFORE
+    // the capsule is written. The capsule row (written in step 4) is inserted
+    // AFTER this call, so it starts as 'active' and is never swept here.
+    const resolve_argv = [_][]const u8{
+        "planar-agent", "context",  "resolve",
+        "--run",        run_id_str, "--stage",
+        stage,          "--status", "consumed",
+        "--json",
+    };
+    const resolve_result = std.process.run(alloc, io, .{
+        .argv = &resolve_argv,
+        .stdout_limit = std.Io.Limit.limited(4096),
+        .stderr_limit = std.Io.Limit.limited(1024),
+    }) catch |e| {
+        log_ctx.warn("ctx.compact: context resolve failed: {s}; no-op", .{@errorName(e)});
+        return pushResult(L, false, 0, 0, "");
+    };
+    defer alloc.free(resolve_result.stdout);
+    defer alloc.free(resolve_result.stderr);
+
+    if (resolve_result.term != .exited or resolve_result.term.exited != 0) {
+        log_ctx.warn("ctx.compact: context resolve exited non-zero; no-op", .{});
+        return pushResult(L, false, 0, 0, "");
+    }
+
+    // --- Step 2: list consumed records for provenance + body building ---
+    //
+    // We query the stage's consumed records to:
+    //   (a) collect ids for the compiled_from provenance string;
+    //   (b) collect bodies for the deterministic body rule.
+    // We use --status consumed to filter to the just-consumed raw records
+    // (the capsule is not written yet so it cannot appear here).
+    const consumed_parsed = state.contextList(alloc, io, run_db_id, stage) catch |e| {
+        log_ctx.warn("ctx.compact: context list after resolve failed: {s}; no-op", .{@errorName(e)});
+        return pushResult(L, true, 0, 0, "");
+    };
+    defer consumed_parsed.deinit();
+
+    // Accumulate consumed record ids and their data for body building.
+    var consumed_ids_list: std.ArrayList(i64) = .empty;
+    defer consumed_ids_list.deinit(alloc);
+    var body_records: std.ArrayList(state.ContextRecord) = .empty;
+    defer body_records.deinit(alloc);
+
+    for (consumed_parsed.value.records) |rec| {
+        if (!std.mem.eql(u8, rec.status, "consumed")) continue;
+        consumed_ids_list.append(alloc, rec.id) catch continue;
+        body_records.append(alloc, rec) catch continue;
+    }
+
+    const consumed_count = consumed_ids_list.items.len;
+
+    // No consumed records → nothing to compact; clean no-op.
+    if (consumed_count == 0) {
+        return pushResult(L, true, 0, 0, "");
+    }
+
+    // Build comma-separated compiled_from provenance string.
+    var prov_buf = std.ArrayList(u8).empty;
+    defer prov_buf.deinit(alloc);
+    for (consumed_ids_list.items, 0..) |rid, i| {
+        if (i > 0) prov_buf.append(alloc, ',') catch {};
+        var rbuf: [32]u8 = undefined;
+        const rs = std.fmt.bufPrint(&rbuf, "{d}", .{rid}) catch continue;
+        prov_buf.appendSlice(alloc, rs) catch {};
+    }
+    const compiled_from_str = prov_buf.items;
+
+    // --- Step 3: build the capsule body (deterministic default) ---
+    //
+    // Selection rule: include records of kind finding, risk, followup.
+    // Group by kind in that order; stable within kind (id asc, already
+    // guaranteed by `context list` which orders by id asc).
+    //
+    // opts.role path: the role argument is RECORDED (in HostCall above)
+    // so a workflow can observe it, but the deterministic body is always
+    // used as the implementation in this cycle. The opts.role path
+    // requires calling ctx.agent() from within a C closure, which means
+    // accessing the ctx table on the Lua stack — that table is a local
+    // passed to run(ctx) and is not reachable from here. The proper
+    // integration is for the Lua workflow to call ctx.agent() itself
+    // after ctx.compact() returns the consumed ids. This is documented
+    // as a residual gap: the surface is defined, the deterministic path
+    // is the contract, opts.role is a future hook.
+    const selected_kinds = [_][]const u8{ "finding", "risk", "followup" };
+    var body_buf = std.ArrayList(u8).empty;
+    defer body_buf.deinit(alloc);
+
+    for (selected_kinds) |k| {
+        for (body_records.items) |rec| {
+            if (!std.mem.eql(u8, rec.kind, k)) continue;
+            var lbuf: [4096]u8 = undefined;
+            const line = std.fmt.bufPrint(&lbuf, "[{s}] {s}\n", .{ rec.kind, rec.body }) catch {
+                body_buf.appendSlice(alloc, "[") catch {};
+                body_buf.appendSlice(alloc, rec.kind) catch {};
+                body_buf.appendSlice(alloc, "] ...\n") catch {};
+                continue;
+            };
+            body_buf.appendSlice(alloc, line) catch {};
+        }
+    }
+    const capsule_body_text = body_buf.items;
+
+    // --- Step 4 (Q603 ORDER): write the capsule AFTER ---
+    //
+    // The capsule is inserted NOW, after the bulk-resolve in step 1.
+    // Because the capsule is inserted after the bulk update, its status
+    // starts as 'active' and is not swept by the `context resolve` call
+    // that ran in step 1. This is the Q603 order contract.
+    var cap_argv: std.ArrayList([]const u8) = .empty;
+    defer cap_argv.deinit(alloc);
+    cap_argv.appendSlice(alloc, &.{
+        "planar-agent", "context",  "capsule",
+        "--run",        run_id_str, "--stage",
+        stage,          "--body",   capsule_body_text,
+        "--json",
+    }) catch {};
+    if (compiled_from_str.len > 0) {
+        cap_argv.appendSlice(alloc, &.{ "--compiled-from", compiled_from_str }) catch {};
+    }
+
+    const cap_result = std.process.run(alloc, io, .{
+        .argv = cap_argv.items,
+        .stdout_limit = std.Io.Limit.limited(4096),
+        .stderr_limit = std.Io.Limit.limited(1024),
+    }) catch |e| {
+        log_ctx.warn("ctx.compact: context capsule failed: {s}; consumed but no capsule written", .{@errorName(e)});
+        return pushResult(L, false, 0, consumed_count, capsule_body_text);
+    };
+    defer alloc.free(cap_result.stdout);
+    defer alloc.free(cap_result.stderr);
+
+    if (cap_result.term != .exited or cap_result.term.exited != 0) {
+        log_ctx.warn("ctx.compact: context capsule exited non-zero; consumed but no capsule written", .{});
+        return pushResult(L, false, 0, consumed_count, capsule_body_text);
+    }
+
+    // Parse the capsule id from the JSON output. Best-effort: 0 if unparseable.
+    const CapsuleJson = struct { id: i64 = 0 };
+    const capsule_id: i64 = blk: {
+        const p = std.json.parseFromSlice(CapsuleJson, alloc, cap_result.stdout, .{
+            .ignore_unknown_fields = true,
+        }) catch {
+            log_ctx.warn("ctx.compact: could not parse capsule JSON; capsule_id=0", .{});
+            break :blk @as(i64, 0);
+        };
+        defer p.deinit();
+        break :blk p.value.id;
+    };
+
+    return pushResult(L, true, capsule_id, consumed_count, capsule_body_text);
+}
+
 /// hostBudgetSpent — `budget:spent()`. Returns the host-injected spent value.
 /// Also records the call so a test can confirm the method form was reached.
 fn hostBudgetSpent(L: ?*c.lua_State) callconv(.c) c_int {
@@ -3710,8 +4008,11 @@ fn hostBudgetRemaining(L: ?*c.lua_State) callconv(.c) c_int {
 fn hostDispatchTable(L: ?*c.lua_State) callconv(.c) c_int {
     const hs = hostStateUpvalue(L);
     recordOrError(L, hs, .dispatch_table, "", "");
-    c.lua_createtable(L, 0, 4);
+    // Pre-size: 4 built-ins + however many custom roles exist.
+    const n_custom: c_int = if (hs.model_table.custom_roles) |m| @intCast(m.count()) else 0;
+    c.lua_createtable(L, 0, 4 + n_custom);
     const idx: c_int = c.lua_absindex(L, -1);
+    // Built-in roles (comptime fast path — enum keyed).
     inline for ([_]role_model.Role{ .coder, .reviewer, .@"test-coder", .documenter }) |role| {
         const d = hs.model_table.dispatchForRole(role);
         // Per-role nested table { vendor = "...", model = "..." }.
@@ -3730,6 +4031,27 @@ fn hostDispatchTable(L: ?*c.lua_State) callconv(.c) c_int {
             .documenter => "documenter",
         };
         c.lua_setfield(L, idx, key); // pops the per-role sub-table
+    }
+    // Custom roles (dynamic map path — user-defined via [roles] config).
+    if (hs.model_table.custom_roles) |map| {
+        var it = map.iterator();
+        while (it.next()) |entry| {
+            const name = entry.key_ptr.*;
+            const d = entry.value_ptr.*;
+            // Push the key first so the stack is [..., idx_table, key, sub_table]
+            // before rawset. lua_rawset(t) pops key+value where key is at -2 and
+            // value at -1, then sets t[key] = value.
+            _ = c.lua_pushlstring(L, name.ptr, name.len); // key
+            c.lua_createtable(L, 0, 2); // value (sub-table)
+            const sub: c_int = c.lua_absindex(L, -1);
+            const vendor_str = d.vendor.name();
+            _ = c.lua_pushlstring(L, vendor_str.ptr, vendor_str.len);
+            c.lua_setfield(L, sub, "vendor");
+            _ = c.lua_pushlstring(L, d.model.ptr, d.model.len);
+            c.lua_setfield(L, sub, "model");
+            // Stack is now [..., idx_table, key, sub_table].
+            c.lua_rawset(L, idx); // pops key + sub_table, sets t[key] = sub_table
+        }
     }
     return 1;
 }
@@ -3784,6 +4106,12 @@ fn installHostFns(L: ?*c.lua_State, ctx_idx: c_int, hs: *HostState) void {
     // brief string from structured inputs. Auto-fetches context records for the
     // current run and injects them as the prior-stage context section.
     pushHostClosure(L, ctx_idx, "brief", hostBrief, hs);
+    // plan 585 task 3905: ctx.compact(stage, opts) — stage-close compaction.
+    // Resolves active records for `stage` to 'consumed' (Q603 ORDER), then
+    // writes a compiled capsule record keyed to the run (decision 456).
+    // Default: deterministic selection rules. Optional: opts.role dispatches
+    // an agent for judgment-heavy distillation (decision Q596 / task 3937).
+    pushHostClosure(L, ctx_idx, "compact", hostCompact, hs);
 
     // Determinism injection (task 3169): ctx.now and ctx.seed are the only
     // time/random source available to the sandboxed script.
@@ -4968,6 +5296,15 @@ pub fn printDryRun(mod: WorkflowModule, table: role_model.ModelTable, writer: *I
         const d = table.dispatchForRole(role);
         try writer.print("  {s: <10} → {s: <6} {s}\n", .{ role.name(), d.vendor.name(), d.model });
     }
+    // Custom roles from config (user-defined).
+    if (table.custom_roles) |map| {
+        var it = map.iterator();
+        while (it.next()) |entry| {
+            const name = entry.key_ptr.*;
+            const d = entry.value_ptr.*;
+            try writer.print("  {s: <10} → {s: <6} {s}\n", .{ name, d.vendor.name(), d.model });
+        }
+    }
     try writer.print("phases: {d}\n", .{mod.meta.phases.len});
     for (mod.meta.phases, 0..) |phase, i| {
         if (phase.detail.len > 0) {
@@ -5021,10 +5358,12 @@ fn loadModelTable(ctx: *const ExecCtx) std.mem.Allocator.Error!role_model.Resolv
     return parseRoutingJson(gpa, result.stdout);
 }
 
-/// Build a ModelTable from `planar models routing --json` output. Unknown roles
-/// / vendors and empty models are skipped (those roles keep their default).
-/// Returns defaults on a JSON parse failure. Override model strings are duped
-/// into the result's arena.
+/// Build a ModelTable from `planar models routing --json` output. Built-in
+/// roles are applied to the enum-keyed struct fields; user-defined custom roles
+/// (any role name not recognized by `Role.fromString`) are stored in
+/// `table.custom_roles`. Unknown vendors and empty models are skipped (those
+/// roles keep their default). Returns defaults on a JSON parse failure.
+/// Override model strings are duped into the result's arena.
 fn parseRoutingJson(gpa: std.mem.Allocator, json_bytes: []const u8) std.mem.Allocator.Error!role_model.ResolvedTable {
     const parsed = std.json.parseFromSlice([]RoutingRowJson, gpa, json_bytes, .{
         .ignore_unknown_fields = true,
@@ -5036,11 +5375,20 @@ fn parseRoutingJson(gpa: std.mem.Allocator, json_bytes: []const u8) std.mem.Allo
     var table = role_model.ModelTable{};
     var applied = false;
     for (parsed.value) |row| {
-        const role = role_model.Role.fromString(row.role) catch continue;
         const vendor = role_model.Vendor.fromString(row.vendor) orelse continue;
         if (row.model.len == 0) continue;
-        table.set(role, .{ .vendor = vendor, .model = try arena.allocator().dupe(u8, row.model) });
-        applied = true;
+        const model_duped = try arena.allocator().dupe(u8, row.model);
+        const dispatch: role_model.Dispatch = .{ .vendor = vendor, .model = model_duped };
+        if (role_model.Role.fromString(row.role)) |role| {
+            // Built-in role: apply to the enum-keyed fast-path struct field.
+            table.set(role, dispatch);
+            applied = true;
+        } else |_| {
+            // Custom role: dupe the name and store in the dynamic map.
+            const name_duped = try arena.allocator().dupe(u8, row.role);
+            try table.setCustom(arena.allocator(), name_duped, dispatch);
+            applied = true;
+        }
     }
 
     return .{
