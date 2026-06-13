@@ -184,13 +184,39 @@ pub fn runStart(
     return .{ .run_identifier = run_id_owned, .run_db_id = db_id, .allocator = allocator };
 }
 
+/// eagerReconcile shells `planar-agent reconcile` as a best-effort call.
+///
+/// Used by the stale-runlock takeover path (task 3928 Q597): when
+/// `planar-execute` detects a dead prior run at startup it shells
+/// `planar-agent reconcile` so the existing reconcile sweep marks the dead
+/// run `abandoned` via the established `reconcileRuns` path.  This preserves
+/// Q597 — `run end` NEVER writes `abandoned`; reconcile does.
+///
+/// Best-effort: any failure is logged and swallowed; a failure must NOT block
+/// the subsequent `runStart`. The lazy `planar-agent reconcile` sweep at the
+/// next startup is the backstop.
+pub fn eagerReconcile(allocator: std.mem.Allocator, io: Io) void {
+    const argv = [_][]const u8{ "planar-agent", "reconcile" };
+    const result = std.process.run(allocator, io, .{
+        .argv = &argv,
+        .stdout_limit = Io.Limit.limited(512),
+        .stderr_limit = Io.Limit.limited(512),
+    }) catch |e| {
+        log.warn("eager-reconcile: subprocess spawn failed: {s}; lazy sweep is the backstop", .{@errorName(e)});
+        return;
+    };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    if (result.term != .exited or result.term.exited != 0) {
+        log.warn("eager-reconcile: planar-agent reconcile exited non-zero (term={any}); lazy sweep is the backstop", .{result.term});
+    }
+}
+
 /// runEnd shells `planar-agent run end --run-id <id> --status <status>`.
 ///
 /// `run_identifier` is the string passed to `run start --run-id`. `status`
-/// must be "completed", "interrupted", or "abandoned". "abandoned" is used by
-/// the eager stale-runlock takeover path (task 3928 Q597): when `planar-execute`
-/// starts and takes over a stale lock whose prior holder is dead, it calls
-/// runEnd with "abandoned" for the dead run BEFORE opening its own run row.
+/// must be "completed" or "interrupted". (`abandoned` is written only by
+/// `planar-agent reconcile` — see Q597 and `eagerReconcile`.)
 ///
 /// Best-effort: any failure is logged and swallowed. This function does NOT
 /// return an error to the caller because a failed `run end` does not affect

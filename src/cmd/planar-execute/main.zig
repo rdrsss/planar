@@ -5542,8 +5542,9 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
         //
         // task 3928 eager-reconcile: when acquire returns with a non-null
         // `stale_run_id`, the prior run's holder was dead and its runlock was
-        // taken over. Eagerly mark that dead run `abandoned` via
-        // `planar-agent run end --status abandoned` BEFORE opening our own row.
+        // taken over. Shell `planar-agent reconcile` so the existing
+        // reconcileRuns sweep marks the dead run `abandoned`.  Routing through
+        // reconcile preserves Q597 — `run end` never writes `abandoned`.
         // Best-effort: a failure here is logged and does NOT block startup
         // (the lazy `planar-agent reconcile` sweep is the backstop).
         if (binaries_ok and plan > 0) {
@@ -5551,13 +5552,15 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
                 .repo_root = if (live_repo_root) |r| r else "",
             })) |lock| {
                 run_lock = lock;
-                // task 3928: eager-reconcile — mark the dead run abandoned.
-                if (run_lock.?.stale_run_id) |stale_id| {
+                // task 3928: eager-reconcile — shell `planar-agent reconcile`
+                // so the dead prior run is marked abandoned via the established
+                // reconcileRuns path (Q597: run end NEVER writes abandoned).
+                if (run_lock.?.stale_run_id != null) {
                     std.log.scoped(.planar_execute).info(
-                        "eager-reconcile: marking stale run '{s}' abandoned before opening new run",
-                        .{stale_id},
+                        "eager-reconcile: stale runlock taken over; shelling planar-agent reconcile to mark dead run abandoned",
+                        .{},
                     );
-                    run_lifecycle.runEnd(allocator, ctx.io, stale_id, "abandoned");
+                    run_lifecycle.eagerReconcile(allocator, ctx.io);
                 }
             } else |e| switch (e) {
                 error.RunLockHeld => {
