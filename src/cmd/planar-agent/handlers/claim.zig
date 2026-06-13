@@ -50,6 +50,15 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
     const ctx = runtime.current();
     const d = runtime.ensureDbConsumer() catch |e| exit.die(ctx, e, "{s}", .{@errorName(e)});
 
+    // Validate: --stage requires --run (spec invariant).
+    if (args.stage != null and args.run == null)
+        exit.die(
+            ctx,
+            error.InvalidInput,
+            "--stage requires --run: provide a workflow_runs.id via --run <id>",
+            .{},
+        );
+
     const eref = util.parseEntityRef(args.entity) catch |e|
         exit.die(ctx, e, "invalid --entity '{s}' ({s}); expected task:<id>|plan:<id>|plan_step:<id>", .{ args.entity, @errorName(e) });
 

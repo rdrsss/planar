@@ -18,10 +18,13 @@
 const std = @import("std");
 const cli = @import("cli");
 const db = @import("db");
+const engine = @import("engine");
 const runtime = @import("runtime");
 
 const main = @import("../../main.zig");
 const exit = @import("../../exit.zig");
+
+const store = engine.runtime.agentactivity.store;
 
 pub const verb: cli.Cmd = .{
     .name = "add",
@@ -62,30 +65,17 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
             .{args.kind},
         );
 
-    // Look up the claim by token.
-    var claim_stmt = d.prepare(
-        \\select id, run_id, stage, session_id
-        \\from agent_work_claims
-        \\where claim_token = ?
-    ) catch |e| exit.die(ctx, e, "prepare claim lookup: {s}", .{@errorName(e)});
-    defer claim_stmt.finalize();
-    claim_stmt.bind(&.{.{ .text = args.claim }}) catch |e|
-        exit.die(ctx, e, "bind claim lookup: {s}", .{@errorName(e)});
+    // Look up the claim by token via the shared store helper so a future
+    // claim-schema change propagates through one code path (task 3925).
+    const claim = store.getClaimByToken(d, ctx.allocator, args.claim) catch |e|
+        exit.die(ctx, e, "claim lookup: {s}", .{@errorName(e)});
+    defer claim.deinit(ctx.allocator);
 
-    const step = claim_stmt.step() catch |e|
-        exit.die(ctx, e, "step claim lookup: {s}", .{@errorName(e)});
-    if (step != .row)
-        exit.die(ctx, error.NotFound, "claim token not found: '{s}'", .{args.claim});
-
-    const claim_id = claim_stmt.columnInt(0);
-    const run_id_opt = claim_stmt.columnIntOpt(1);
-    const stage_opt = claim_stmt.columnTextOpt(2, ctx.allocator) catch |e|
-        exit.die(ctx, e, "read claim stage: {s}", .{@errorName(e)});
-    defer if (stage_opt) |s| ctx.allocator.free(s);
-    const session_id = claim_stmt.columnInt(3);
+    const claim_id = claim.id;
+    const session_id = claim.session_id;
 
     // Enforce run_id required (decision 447).
-    const run_id = run_id_opt orelse exit.die(
+    const run_id = claim.run_id orelse exit.die(
         ctx,
         error.InvalidInput,
         "claim '{s}' has no run_id: context records are run-scoped; acquire the claim with --run <id>",
@@ -95,7 +85,7 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
     // stage: use the claim's stage value; default to empty string when null.
     // The schema requires stage NOT NULL; blank is acceptable for claims
     // dispatched without --stage.
-    const stage = stage_opt orelse "";
+    const stage = claim.stage orelse "";
 
     // --compiled-from: optional comma-separated list of record ids.
     // Field name derived from --compiled-from by stripping -- and converting

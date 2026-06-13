@@ -281,3 +281,82 @@ test "scenario D: claim without --run/--stage leaves run_id and stage null in cl
     try std.testing.expect(contains(claim_out, "\"run_id\":null"));
     try std.testing.expect(contains(claim_out, "\"stage\":null"));
 }
+
+// =========================================================================
+// Scenario E — pull --stage without --run is rejected (guard)
+// =========================================================================
+
+test "scenario E: pull --stage without --run fails with non-zero exit" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const plan_arg = seedPlan(&suite, "rs-guard-pull");
+    defer gpa.free(plan_arg);
+
+    const task_json = suite.mustRun(&.{
+        "task", "add", "--plan", plan_arg, "--json", "Guard pull task",
+    });
+    defer gpa.free(task_json);
+
+    // Supplying --stage without --run must be rejected (exit non-zero).
+    const res = runAgent(&suite, &.{
+        "pull", plan_arg, "--no-locality-probe", "--stage", "code", "--json",
+    });
+    defer gpa.free(res.stdout);
+    defer gpa.free(res.stderr);
+
+    // Must exit non-zero.
+    if (res.term == .exited and res.term.exited == 0) {
+        std.debug.print("expected non-zero exit for pull --stage without --run, got 0\nstdout: {s}\n", .{res.stdout});
+        @panic("pull --stage without --run should have failed");
+    }
+    // Error message must mention --stage requires --run.
+    const combined = std.mem.concat(gpa, u8, &.{ res.stdout, res.stderr }) catch @panic("OOM");
+    defer gpa.free(combined);
+    if (!contains(combined, "--stage requires --run")) {
+        std.debug.print("expected '--stage requires --run' in output, got:\n{s}\n{s}\n", .{ res.stdout, res.stderr });
+        @panic("missing expected error message");
+    }
+}
+
+// =========================================================================
+// Scenario F — claim --stage without --run is rejected (guard)
+// =========================================================================
+
+test "scenario F: claim --stage without --run fails with non-zero exit" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const plan_arg = seedPlan(&suite, "rs-guard-claim");
+    defer gpa.free(plan_arg);
+
+    const task_json = suite.mustRun(&.{
+        "task", "add", "--plan", plan_arg, "--json", "Guard claim task",
+    });
+    defer gpa.free(task_json);
+    const task_id = extractIntField(task_json, "\"id\"") orelse @panic("no task id");
+    const task_ref = std.fmt.allocPrint(gpa, "task:{d}", .{task_id}) catch @panic("OOM");
+    defer gpa.free(task_ref);
+
+    // Supplying --stage without --run must be rejected (exit non-zero).
+    const res = runAgent(&suite, &.{
+        "claim", "--entity", task_ref, "--no-locality-probe", "--stage", "review", "--json",
+    });
+    defer gpa.free(res.stdout);
+    defer gpa.free(res.stderr);
+
+    // Must exit non-zero.
+    if (res.term == .exited and res.term.exited == 0) {
+        std.debug.print("expected non-zero exit for claim --stage without --run, got 0\nstdout: {s}\n", .{res.stdout});
+        @panic("claim --stage without --run should have failed");
+    }
+    // Error message must mention --stage requires --run.
+    const combined = std.mem.concat(gpa, u8, &.{ res.stdout, res.stderr }) catch @panic("OOM");
+    defer gpa.free(combined);
+    if (!contains(combined, "--stage requires --run")) {
+        std.debug.print("expected '--stage requires --run' in output, got:\n{s}\n{s}\n", .{ res.stdout, res.stderr });
+        @panic("missing expected error message");
+    }
+}

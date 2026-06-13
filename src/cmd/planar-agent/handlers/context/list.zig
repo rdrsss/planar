@@ -139,7 +139,7 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
                 "\"body\":",
             .{ rec_id, rec_run_id, rec_stage, rec_session_id, rec_claim_id, rec_kind },
         );
-        // body may contain arbitrary text — use JSON string encoding.
+        // body may contain arbitrary text -- use JSON string encoding.
         try writeJsonString(w, rec_body);
         try w.print(
             ",\"status\":\"{s}\"" ++
@@ -160,15 +160,34 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
 }
 
 /// Write a JSON-safe string (double-quoted, with control characters escaped).
+///
+/// Covers the full C0 control range (< 0x20) plus the two structural
+/// characters that must always be escaped in a JSON string value:
+///   - Backspace    (0x08) -> \b
+///   - Form feed    (0x0C) -> \f
+///   - Newline      (0x0A) -> \n
+///   - Carriage ret (0x0D) -> \r
+///   - Tab          (0x09) -> \t
+///   - Other C0     (< 0x20, excluding the above) -> \uXXXX
+///   - Backslash    (0x5C) -> \\
+///   - Double quote (0x22) -> \"
 fn writeJsonString(w: anytype, s: []const u8) !void {
     try w.writeAll("\"");
     for (s) |c| {
         switch (c) {
             '"' => try w.writeAll("\\\""),
             '\\' => try w.writeAll("\\\\"),
+            '\x08' => try w.writeAll("\\b"),
+            '\x0C' => try w.writeAll("\\f"),
             '\n' => try w.writeAll("\\n"),
             '\r' => try w.writeAll("\\r"),
             '\t' => try w.writeAll("\\t"),
+            0x00...0x07, 0x0B, 0x0E...0x1F => {
+                // Remaining C0 control characters: emit \uXXXX.
+                var buf: [7]u8 = undefined;
+                const escape = std.fmt.bufPrint(&buf, "\\u{X:0>4}", .{c}) catch unreachable;
+                try w.writeAll(escape);
+            },
             else => try w.writeByte(c),
         }
     }
@@ -186,28 +205,80 @@ fn setupTestDb(allocator: std.mem.Allocator) !db.sqlite.Db {
     return d;
 }
 
+// Minimal writer for unit-testing writeJsonString without a full runtime.
+const TestWriter = struct {
+    slice: *[512]u8,
+    len: *usize,
+    pub fn writeAll(self: @This(), s: []const u8) !void {
+        @memcpy(self.slice[self.len.* .. self.len.* + s.len], s);
+        self.len.* += s.len;
+    }
+    pub fn writeByte(self: @This(), c: u8) !void {
+        self.slice[self.len.*] = c;
+        self.len.* += 1;
+    }
+};
+
 test "writeJsonString escapes special characters" {
-    var buf: [256]u8 = undefined;
+    var buf: [512]u8 = undefined;
     var out_len: usize = 0;
-    const Writer = struct {
-        slice: *[256]u8,
-        len: *usize,
-        pub fn writeAll(self: @This(), s: []const u8) !void {
-            @memcpy(self.slice[self.len.* .. self.len.* + s.len], s);
-            self.len.* += s.len;
-        }
-        pub fn writeByte(self: @This(), c: u8) !void {
-            self.slice[self.len.*] = c;
-            self.len.* += 1;
-        }
-    };
-    const w = Writer{ .slice = &buf, .len = &out_len };
+    const w = TestWriter{ .slice = &buf, .len = &out_len };
     try writeJsonString(w, "hello \"world\"\nnewline\\backslash");
     const got = buf[0..out_len];
     try std.testing.expectEqualStrings(
         "\"hello \\\"world\\\"\\nnewline\\\\backslash\"",
         got,
     );
+}
+
+test "writeJsonString escapes full C0 control range" {
+    // Test each named escape and the generic \uXXXX fallback.
+    var buf: [512]u8 = undefined;
+
+    // backspace (0x08) -> \b
+    var len: usize = 0;
+    try writeJsonString(TestWriter{ .slice = &buf, .len = &len }, "\x08");
+    try std.testing.expectEqualStrings("\"\\b\"", buf[0..len]);
+
+    // form feed (0x0C) -> \f
+    len = 0;
+    try writeJsonString(TestWriter{ .slice = &buf, .len = &len }, "\x0C");
+    try std.testing.expectEqualStrings("\"\\f\"", buf[0..len]);
+
+    // newline (0x0A) -> \n
+    len = 0;
+    try writeJsonString(TestWriter{ .slice = &buf, .len = &len }, "\n");
+    try std.testing.expectEqualStrings("\"\\n\"", buf[0..len]);
+
+    // carriage return (0x0D) -> \r
+    len = 0;
+    try writeJsonString(TestWriter{ .slice = &buf, .len = &len }, "\r");
+    try std.testing.expectEqualStrings("\"\\r\"", buf[0..len]);
+
+    // tab (0x09) -> \t
+    len = 0;
+    try writeJsonString(TestWriter{ .slice = &buf, .len = &len }, "\t");
+    try std.testing.expectEqualStrings("\"\\t\"", buf[0..len]);
+
+    // NUL (0x00) -> 0x00
+    len = 0;
+    try writeJsonString(TestWriter{ .slice = &buf, .len = &len }, "\x00");
+    try std.testing.expectEqualStrings("\"\\u0000\"", buf[0..len]);
+
+    // SOH (0x01) -> 0x01
+    len = 0;
+    try writeJsonString(TestWriter{ .slice = &buf, .len = &len }, "\x01");
+    try std.testing.expectEqualStrings("\"\\u0001\"", buf[0..len]);
+
+    // US (0x1F) -> 0x1F
+    len = 0;
+    try writeJsonString(TestWriter{ .slice = &buf, .len = &len }, "\x1F");
+    try std.testing.expectEqualStrings("\"\\u001F\"", buf[0..len]);
+
+    // Verify a body containing a mix of control chars produces valid JSON-escaped output.
+    len = 0;
+    try writeJsonString(TestWriter{ .slice = &buf, .len = &len }, "a\x01b\x1Fc");
+    try std.testing.expectEqualStrings("\"a\\u0001b\\u001Fc\"", buf[0..len]);
 }
 
 test "context list: filters return correct rows from DB" {

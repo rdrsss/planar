@@ -52,6 +52,15 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
     const ctx = runtime.current();
     const d = runtime.ensureDbConsumer() catch |e| exit.die(ctx, e, "{s}", .{@errorName(e)});
 
+    // Validate: --stage requires --run (spec invariant).
+    if (args.stage != null and args.run == null)
+        exit.die(
+            ctx,
+            error.InvalidInput,
+            "--stage requires --run: provide a workflow_runs.id via --run <id>",
+            .{},
+        );
+
     // Per-role probe default: planner/coder/reviewer/test_coder probe;
     // tool_call/heartbeat skip. pull picks a role kind (coder by
     // default) so its default is probe-on.
