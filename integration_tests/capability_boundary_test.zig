@@ -239,10 +239,11 @@ fn assertExactSet(
 // t#2598 — planar-agent capability boundary.
 // =========================================================================
 //
-// The expected verb set is the atomic + recovery + run lifecycle + context verbs:
+// The expected verb set is the atomic + recovery + run lifecycle + context
+// verbs plus claim-associate (plan 586 task 3948 / decision 457):
 //
-//     pull, peek, claim, heartbeat, complete, fail, release, block,
-//     action, ingest, reconcile, abort, version, run, schema, context
+//     pull, peek, claim, heartbeat, claim-associate, complete, fail, release,
+//     block, action, ingest, reconcile, abort, version, run, schema, context
 //
 // `action` has two subverbs (start, end); `run` has two subverbs
 // (start, end); `context` has four subverbs (add, capsule, list, resolve) —
@@ -252,7 +253,7 @@ fn assertExactSet(
 // `planar` owns. A future change that mistakenly registers any of
 // these on planar-agent fails this test immediately.
 
-test "planar-agent verb set is EXACTLY the 16 documented agent verbs" {
+test "planar-agent verb set is EXACTLY the 17 documented agent verbs" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
@@ -275,6 +276,7 @@ test "planar-agent verb set is EXACTLY the 16 documented agent verbs" {
         "block",
         "claim",
         "heartbeat",
+        "claim-associate",
         "action",
         "ingest",
         "reconcile",
@@ -354,10 +356,10 @@ test "planar-agent recursive --help walk: every verb's --help exits 0" {
 
     // Walk the top-level verbs; for `action`, `run`, and `context`, recurse one level.
     const top = [_][]const u8{
-        "version", "pull",      "peek",  "complete",  "fail",
-        "release", "block",     "claim", "heartbeat", "action",
-        "ingest",  "reconcile", "abort", "schema",    "run",
-        "context",
+        "version", "pull",    "peek",      "complete",  "fail",
+        "release", "block",   "claim",     "heartbeat", "claim-associate",
+        "action",  "ingest",  "reconcile", "abort",     "schema",
+        "run",     "context",
     };
     for (top) |v| {
         const res = runBin(&suite, resolveAgentBin(), &.{ v, "--help" });

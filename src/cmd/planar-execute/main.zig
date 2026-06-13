@@ -561,6 +561,17 @@ pub const HostState = struct {
     // back-compat.
     active_run: ?run_lifecycle.RunStartResult = null,
 
+    // plan 586 task 3948 — current-stage tracking for claim association.
+    //
+    // `hostPhase` records the latest phase title here so that
+    // `driveAgentCallPreYield` can stamp it as the `--stage` value when
+    // shelling `planar-agent claim-associate`. Empty string means no phase has
+    // been entered yet (the claim is associated with the run only; stage → NULL).
+    // The slice borrows from the `HostCall.arg0` heap copy that `record` duped,
+    // so its lifetime is tied to the HostState. It is NOT freed separately —
+    // the `calls` deinit loop owns the backing memory.
+    current_stage: []const u8 = "",
+
     pub fn init(allocator: std.mem.Allocator, now: i64, seed: i64, budget_total: i64, budget_spent: i64) HostState {
         return .{
             .allocator = allocator,
@@ -1545,6 +1556,21 @@ fn driveAgentCallPreYield(
         // the default tier and silently ignore the operator's override (3709).
         .model = acs.model,
     };
+    // plan 586 task 3948 / decision 457 — claim-run association (best-effort).
+    //
+    // The claim was PRE-ACQUIRED by the orchestrator before this run row
+    // existed. Now that we have both the active run id and the current stage
+    // we stamp them onto the claim via `planar-agent claim-associate` so
+    // `context add --claim` can resolve the run context (decision 447/450).
+    //
+    // BEST-EFFORT: a failure here NEVER blocks the spawn. A missed association
+    // only degrades that worker's `context add`; the worker still runs.
+    if (hs.active_run) |ar| {
+        if (ar.run_db_id != 0 and acs.claim_token.len > 0) {
+            run_lifecycle.associateClaim(alloc, io, acs.claim_token, ar.run_db_id, hs.current_stage);
+        }
+    }
+
     // task 3708 / plan 540: a one-line dispatch banner on stderr so an operator
     // tailing a run sees per-call routing (vendor + model) without grepping the
     // binary. Fires for every real (and mock) spawn — the stub path returns
@@ -3103,10 +3129,20 @@ fn hostPipeline(L: ?*c.lua_State) callconv(.c) c_int {
 
 /// hostPhase — `phase(title)`. Records the phase title. Recording IS the real
 /// M2 behavior (progress reporting); returns nothing.
+///
+/// plan 586 task 3948: also stores the phase title as `hs.current_stage` so
+/// `driveAgentCallPreYield` can use it as the `--stage` value when associating
+/// pre-acquired claims with the active run at dispatch time.
 fn hostPhase(L: ?*c.lua_State) callconv(.c) c_int {
     const hs = hostStateUpvalue(L);
     const title = luaArgString(L, 1);
     recordOrError(L, hs, .phase, title, "");
+    // `record` duped `title` into hs.calls.items[last].arg0; borrow that copy
+    // so current_stage's lifetime is tied to the HostState (no extra alloc).
+    if (hs.calls.items.len > 0) {
+        const last = &hs.calls.items[hs.calls.items.len - 1];
+        if (last.kind == .phase) hs.current_stage = last.arg0;
+    }
     return 0;
 }
 
