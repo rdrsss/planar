@@ -167,7 +167,7 @@ test "planar-watch --help lists the read verbs + version + completion" {
 
     // Must mention each read verb.
     inline for ([_][]const u8{
-        "feed", "ps", "claims", "actions", "plans", "log", "tree", "version", "completion",
+        "feed", "ps", "claims", "actions", "plans", "log", "tree", "run", "version", "completion",
     }) |v| {
         if (std.mem.indexOf(u8, res.stdout, v) == null) {
             std.debug.print("missing verb '{s}' in --help:\n{s}\n", .{ v, res.stdout });
@@ -1399,4 +1399,315 @@ test "planar-watch tree --root-session renders two disjoint chains under one ses
         );
         return error.MissingMultiChainRender;
     }
+}
+
+// =========================================================================
+// plan 585 — planar-watch run list / run show (task 3906).
+//
+// Seeds a workflow_runs row + context_records via planar-agent run start +
+// pull (with --run / --stage) + context add. Then asserts:
+//   - run list --json returns {generated_at, runs:[RunRow]} with correct shape.
+//   - run list --plan <id> --json returns only the seeded run.
+//   - run list --status running --json returns the running run.
+//   - run show <id> --json returns {run: RunRow, context_records:[...]} with
+//     records grouped by stage (stage=plan before stage=code).
+//   - run show <id> (text) renders without error.
+//   - run show <id+999> exits non-zero for an unknown id.
+// =========================================================================
+
+/// Helper: run planar-agent and assert exit 0. Returns stdout (caller frees).
+fn mustRunAgentWith(
+    suite: *const harness.Suite,
+    args: []const []const u8,
+) []u8 {
+    return mustRunAgent(suite, args);
+}
+
+test "planar-watch run list --json returns {generated_at, runs} with RunRow shape" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    // Seed plan + task.
+    const pid_str = seedPlanWithTask(&suite, "watch-run-list", "run-list-task");
+    defer gpa.free(pid_str);
+
+    // Start a workflow run via planar-agent run start.
+    const self_pid_str = std.fmt.allocPrint(gpa, "{d}", .{std.c.getpid()}) catch @panic("OOM");
+    defer gpa.free(self_pid_str);
+    const run_id_label = std.fmt.allocPrint(gpa, "wrl-{d}", .{std.c.getpid()}) catch @panic("OOM");
+    defer gpa.free(run_id_label);
+
+    const start_out = mustRunAgent(&suite, &.{
+        "run",         "start",
+        "--plan",      pid_str,
+        "--workflow",  "watch-run-list-wf",
+        "--run-id",    run_id_label,
+        "--pid",       self_pid_str,
+        "--repo-root", "/tmp/watch-run-list",
+        "--json",
+    });
+    defer gpa.free(start_out);
+
+    const run_db_id = extractIntField(start_out, "\"run_id\":") orelse @panic("no run_id in start output");
+    try std.testing.expect(run_db_id > 0);
+
+    // planar-watch run list --json.
+    const out = mustRunWatch(&suite, &.{ "run", "list", "--json" });
+    defer gpa.free(out);
+
+    // Top-level shape.
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"generated_at\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"runs\":[") != null);
+
+    // RunRow fields.
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"workflow_name\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"run_identifier\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"pid\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"started_at\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"ended_at\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"status\":\"running\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "watch-run-list-wf") != null);
+}
+
+test "planar-watch run list --plan filters to the seeded plan's run only" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const pid_a = seedPlanWithTask(&suite, "watch-run-plan-a", "task-a");
+    defer gpa.free(pid_a);
+
+    // Create a second plan with its own run.
+    const plan_b_json = suite.mustRun(&.{ "plan", "create", "--slug", "watch-run-plan-b", "--json", "watch-run-plan-b" });
+    defer gpa.free(plan_b_json);
+    const pid_b_int = extractIntField(plan_b_json, "\"id\"") orelse @panic("no plan-b id");
+    const pid_b = std.fmt.allocPrint(gpa, "{d}", .{pid_b_int}) catch @panic("OOM");
+    defer gpa.free(pid_b);
+    gpa.free(suite.mustRun(&.{ "task", "add", "--plan", pid_b, "task-b" }));
+
+    const self_pid = std.fmt.allocPrint(gpa, "{d}", .{std.c.getpid()}) catch @panic("OOM");
+    defer gpa.free(self_pid);
+
+    // Start run on plan A.
+    const run_a_label = std.fmt.allocPrint(gpa, "run-a-{d}", .{std.c.getpid()}) catch @panic("OOM");
+    defer gpa.free(run_a_label);
+    const start_a = mustRunAgent(&suite, &.{
+        "run",        "start",  "--plan",      pid_a,
+        "--workflow", "wf-a",   "--run-id",    run_a_label,
+        "--pid",      self_pid, "--repo-root", "/tmp",
+        "--json",
+    });
+    defer gpa.free(start_a);
+
+    // Start run on plan B.
+    const run_b_label = std.fmt.allocPrint(gpa, "run-b-{d}", .{std.c.getpid()}) catch @panic("OOM");
+    defer gpa.free(run_b_label);
+    const start_b = mustRunAgent(&suite, &.{
+        "run",        "start",  "--plan",      pid_b,
+        "--workflow", "wf-b",   "--run-id",    run_b_label,
+        "--pid",      self_pid, "--repo-root", "/tmp",
+        "--json",
+    });
+    defer gpa.free(start_b);
+
+    // Filter: run list --plan <pid_a> --json should return only plan A's run.
+    const out = mustRunWatch(&suite, &.{ "run", "list", "--plan", pid_a, "--json" });
+    defer gpa.free(out);
+
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"runs\":[") != null);
+    // wf-a appears; wf-b must not.
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"wf-a\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"wf-b\"") == null);
+}
+
+test "planar-watch run list --status filters by run status" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const pid_str = seedPlanWithTask(&suite, "watch-run-status", "status-task");
+    defer gpa.free(pid_str);
+
+    const self_pid = std.fmt.allocPrint(gpa, "{d}", .{std.c.getpid()}) catch @panic("OOM");
+    defer gpa.free(self_pid);
+    const run_label = std.fmt.allocPrint(gpa, "run-status-{d}", .{std.c.getpid()}) catch @panic("OOM");
+    defer gpa.free(run_label);
+
+    const start = mustRunAgent(&suite, &.{
+        "run",        "start",     "--plan",      pid_str,
+        "--workflow", "status-wf", "--run-id",    run_label,
+        "--pid",      self_pid,    "--repo-root", "/tmp",
+        "--json",
+    });
+    defer gpa.free(start);
+
+    // --status running returns the live run.
+    const running_out = mustRunWatch(&suite, &.{ "run", "list", "--status", "running", "--json" });
+    defer gpa.free(running_out);
+    try std.testing.expect(std.mem.indexOf(u8, running_out, "\"status\":\"running\"") != null);
+
+    // --status completed returns nothing (the run is still running).
+    const done_out = mustRunWatch(&suite, &.{ "run", "list", "--status", "completed", "--json" });
+    defer gpa.free(done_out);
+    try std.testing.expect(std.mem.indexOf(u8, done_out, "\"runs\":[]") != null);
+}
+
+test "planar-watch run show --json returns {run, context_records} with stage grouping" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    // Need two tasks so we can pull twice with different stages.
+    gpa.free(suite.mustRun(&.{ "init", "--skip-project" }));
+    const plan_json = suite.mustRun(&.{ "plan", "create", "--slug", "watch-run-show", "--json", "watch-run-show" });
+    defer gpa.free(plan_json);
+    const plan_id = extractIntField(plan_json, "\"id\"") orelse @panic("no plan id");
+    const plan_arg = std.fmt.allocPrint(gpa, "{d}", .{plan_id}) catch @panic("OOM");
+    defer gpa.free(plan_arg);
+    gpa.free(suite.mustRun(&.{ "task", "add", "--plan", plan_arg, "show-task-1" }));
+    gpa.free(suite.mustRun(&.{ "task", "add", "--plan", plan_arg, "show-task-2" }));
+
+    // Start run.
+    const self_pid = std.fmt.allocPrint(gpa, "{d}", .{std.c.getpid()}) catch @panic("OOM");
+    defer gpa.free(self_pid);
+    const run_label = std.fmt.allocPrint(gpa, "show-run-{d}", .{std.c.getpid()}) catch @panic("OOM");
+    defer gpa.free(run_label);
+
+    const start_out = mustRunAgent(&suite, &.{
+        "run",         "start",
+        "--plan",      plan_arg,
+        "--workflow",  "show-wf",
+        "--run-id",    run_label,
+        "--pid",       self_pid,
+        "--repo-root", "/tmp",
+        "--json",
+    });
+    defer gpa.free(start_out);
+
+    const run_db_id = extractIntField(start_out, "\"run_id\":") orelse @panic("no run_id");
+    const run_id_str = std.fmt.allocPrint(gpa, "{d}", .{run_db_id}) catch @panic("OOM");
+    defer gpa.free(run_id_str);
+
+    // Pull first task with stage=plan, add a finding context record.
+    const pull_plan_out = mustRunAgent(&suite, &.{
+        "pull", plan_arg, "--no-locality-probe", "--run", run_id_str, "--stage", "plan", "--json",
+    });
+    defer gpa.free(pull_plan_out);
+
+    const token_plan = extractStringField(gpa, pull_plan_out, "\"claim_token\":\"") catch @panic("no claim_token plan");
+    defer gpa.free(token_plan);
+
+    const add_plan = mustRunAgent(&suite, &.{
+        "context", "add",
+        "--claim", token_plan,
+        "--kind",  "finding",
+        "--body",  "finding from plan stage",
+        "--json",
+    });
+    defer gpa.free(add_plan);
+    try std.testing.expect(std.mem.indexOf(u8, add_plan, "\"ok\":true") != null);
+
+    // Pull second task with stage=code, add a risk context record.
+    const pull_code_out = mustRunAgent(&suite, &.{
+        "pull", plan_arg, "--no-locality-probe", "--run", run_id_str, "--stage", "code", "--json",
+    });
+    defer gpa.free(pull_code_out);
+
+    const token_code = extractStringField(gpa, pull_code_out, "\"claim_token\":\"") catch @panic("no claim_token code");
+    defer gpa.free(token_code);
+
+    const add_code = mustRunAgent(&suite, &.{
+        "context", "add",
+        "--claim", token_code,
+        "--kind",  "risk",
+        "--body",  "risk from code stage",
+        "--json",
+    });
+    defer gpa.free(add_code);
+    try std.testing.expect(std.mem.indexOf(u8, add_code, "\"ok\":true") != null);
+
+    // planar-watch run show <id> --json.
+    const out = mustRunWatch(&suite, &.{ "run", "show", run_id_str, "--json" });
+    defer gpa.free(out);
+
+    // Top-level shape.
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"run\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"context_records\":[") != null);
+
+    // RunRow fields.
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"workflow_name\":\"show-wf\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"status\":\"running\"") != null);
+
+    // Context records: both kinds present.
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"kind\":\"finding\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"kind\":\"risk\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"stage\":\"plan\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"stage\":\"code\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "finding from plan stage") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "risk from code stage") != null);
+
+    // Stage ordering: records are ordered by stage asc (alphabetical)
+    // then created_at asc. "code" sorts before "plan" alphabetically,
+    // so the code-stage record must appear first in the JSON output.
+    const code_pos = std.mem.indexOf(u8, out, "\"stage\":\"code\"") orelse return error.MissingCodeStage;
+    const plan_pos = std.mem.indexOf(u8, out, "\"stage\":\"plan\"") orelse return error.MissingPlanStage;
+    if (code_pos >= plan_pos) {
+        std.debug.print(
+            "run show: expected stage=code before stage=plan (alphabetical asc);\ncode_pos={d} plan_pos={d}\n{s}\n",
+            .{ code_pos, plan_pos, out },
+        );
+        return error.StageOrderWrong;
+    }
+}
+
+test "planar-watch run show text format renders without error" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const pid_str = seedPlanWithTask(&suite, "watch-run-show-text", "show-text-task");
+    defer gpa.free(pid_str);
+
+    const self_pid = std.fmt.allocPrint(gpa, "{d}", .{std.c.getpid()}) catch @panic("OOM");
+    defer gpa.free(self_pid);
+    const run_label = std.fmt.allocPrint(gpa, "show-text-{d}", .{std.c.getpid()}) catch @panic("OOM");
+    defer gpa.free(run_label);
+
+    const start_out = mustRunAgent(&suite, &.{
+        "run",        "start",   "--plan",      pid_str,
+        "--workflow", "text-wf", "--run-id",    run_label,
+        "--pid",      self_pid,  "--repo-root", "/tmp",
+        "--json",
+    });
+    defer gpa.free(start_out);
+
+    const run_db_id = extractIntField(start_out, "\"run_id\":") orelse @panic("no run_id");
+    const run_id_str = std.fmt.allocPrint(gpa, "{d}", .{run_db_id}) catch @panic("OOM");
+    defer gpa.free(run_id_str);
+
+    // Text format (no --json).
+    const out = mustRunWatch(&suite, &.{ "run", "show", run_id_str });
+    defer gpa.free(out);
+
+    // The run id, workflow name, and status must appear.
+    try std.testing.expect(std.mem.indexOf(u8, out, "run:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "text-wf") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "running") != null);
+    // No context records yet.
+    try std.testing.expect(std.mem.indexOf(u8, out, "(no context records)") != null);
+}
+
+test "planar-watch run show with unknown id exits non-zero" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    gpa.free(suite.mustRun(&.{ "init", "--skip-project" }));
+
+    const res = runBin(&suite, resolveWatchBin(), &.{ "run", "show", "999999", "--json" });
+    defer res.deinit(gpa);
+
+    try std.testing.expect(res.term == .exited);
+    try std.testing.expect(res.term.exited != 0);
 }

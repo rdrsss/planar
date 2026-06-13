@@ -2,7 +2,7 @@
 
 Reference for every `planar` subcommand. Authoritative current surface for the installed binary. For machine-readable help, use `planar <subcommand> --help`.
 
-**Source of truth:** schema across `migrations/00001_foundation.up.sql` through `migrations/00021_session_commits.up.sql`. Every "schema effects" section below cites real columns from those migrations. See [docs/architecture.md § Application tables](architecture.md#application-tables) for the migration-by-migration table inventory.
+**Source of truth:** schema across `migrations/00001_foundation.up.sql` through `migrations/00023_claims_run_stage.up.sql`. Every "schema effects" section below cites real columns from those migrations. See [docs/architecture.md § Application tables](architecture.md#application-tables) for the migration-by-migration table inventory.
 
 ---
 
@@ -5391,12 +5391,12 @@ The `children` array is always present, even when empty (the empty-`global` sign
 
 Schema-version handshake: `planar-agent` is a **consumer** of the schema, not its owner. Startup queries `schema_migrations.max(version)` and refuses with exit **7** when the live DB is older than the binary's embedded minimum. The remediation pointer ("run `planar init`") is printed to stderr.
 
-### Verb surface (13 verbs)
+### Verb surface (16 verbs)
 
 ```text
 # Atomic operations — each wraps (claim lifecycle + action lifecycle +
 # task status transition) in a single BEGIN IMMEDIATE transaction.
-planar-agent pull       <plan-id> [--vendor <v>] [--vendor-session <vendor:id>] [--role coder] [--ttl <duration>] [--purpose <text>] [--base-ref <git-ref>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--metadata <json>] [--parent-action <action-id>] [--json]
+planar-agent pull       <plan-id> [--vendor <v>] [--vendor-session <vendor:id>] [--role coder] [--ttl <duration>] [--purpose <text>] [--base-ref <git-ref>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--metadata <json>] [--parent-action <action-id>] [--run <run-id>] [--stage <stage>] [--json]
 planar-agent peek       <plan-id> [--json]
 planar-agent complete   --claim <token> [--summary <text>] [--json]
 planar-agent fail       --claim <token> --reason <text> [--json]
@@ -5405,7 +5405,7 @@ planar-agent block      --claim <token> --blocker <task-id> [--reason <text>] [-
 
 # Claim primitives — for orchestrator-dispatch (caller already knows the
 # target entity by id). claim does NOT auto-transition task status.
-planar-agent claim      --entity task:<id>|plan:<id>|plan_step:<id> [--vendor <v>] [--vendor-session <vendor:id>] [--role <r>] [--ttl <duration>] [--purpose <text>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--force] [--json]
+planar-agent claim      --entity task:<id>|plan:<id>|plan_step:<id> [--vendor <v>] [--vendor-session <vendor:id>] [--role <r>] [--ttl <duration>] [--purpose <text>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--force] [--run <run-id>] [--stage <stage>] [--json]
 planar-agent heartbeat  --claim <token> [--ttl <duration>] [--status <text>] [--json]
 
 # Nested action lifecycle — for sub-tool-calls or sub-phases inside a
@@ -5422,6 +5422,28 @@ planar-agent ingest     --vendor claude --event @<file|-> [--json]
 # hooks never do.
 planar-agent reconcile  [--dry-run] [--stale-after <duration>] [--json]
 planar-agent abort      --claim <token> [--reason <text>] [--vendor <s>] [--vendor-session <vendor:id>] [--json]
+
+# Workflow run lifecycle — used by planar-execute to manage workflow_runs
+# rows while staying DB-handle-free (decision 444). The caller supplies
+# the harness pid (not getpid()) so crash reconciliation probes the right
+# process. `abandoned` status is reserved for `reconcile`; `run end` never
+# writes it.
+planar-agent run start  --plan <plan-id> --workflow <name> --run-id <identifier> --pid <harness-pid> --repo-root <path> [--json]
+planar-agent run end    --run-id <identifier> --status completed|failed|interrupted [--json]
+
+# Run-scoped working-memory (context_records) — plan 585 task 3901.
+# Workers holding a run-associated claim write records via `context add`;
+# anyone can read via `context list`; `context resolve` drives the
+# active → consumed|superseded lifecycle (stage-close compaction calls these
+# primitives). `run_id`, `stage`, `session_id`, and `claim_id` are stamped
+# server-side from the claim row (decision 447) — the caller never sets them.
+# `kind` must be one of: finding | risk | artifact | followup | summary | capsule.
+# For a `capsule` kind, `--compiled-from <id,id,...>` records provenance back
+# to the raw record ids that were distilled (decision 446).
+# Records are append-only — no uniqueness constraint per Q599.
+planar-agent context add     --claim <token> --kind <kind> --body <text> [--compiled-from <id,...>] [--json]
+planar-agent context list    --run <run-id> [--stage <s>] [--status active|consumed|superseded] [--kind <k>] [--json]
+planar-agent context resolve --status consumed|superseded (--id <record-id> | --run <run-id> --stage <s>) [--json]
 ```
 
 **Duration grammar:** `--ttl`, `--stale-after`, and `--interval` accept either a bare integer (interpreted as seconds for the `--ttl` / `--stale-after` surface; `--interval` follows the same default for back-compat with the legacy parser) or a number with an ISO-style suffix: `ns`, `us`, `ms`, `s`, `m`, `h`. Examples: `--ttl 600` (10 minutes), `--ttl 10m` (same), `--ttl 1h`, `--interval 500ms`. The implementation is the shared `cli.duration` helper.
@@ -5438,7 +5460,7 @@ planar-agent abort      --claim <token> [--reason <text>] [--vendor <s>] [--vend
 | `release`  | Same as fail with outcome='aborted', claim status='released'. (Distinct semantically from fail — "graceful give-up" vs "I tried and failed".) |
 | `block`    | INSERT `entity_links(from=task, to=blocker, relationship='blocks')` → UPDATE task status='blocked' → UPDATE action ended_at + outcome='aborted' → UPDATE claim status='released'. |
 | `peek`     | Read-only: same SELECT as step 1 of pull; no writes. |
-| `reconcile`| SELECT expired active claims → UPDATE status='stale' → UPDATE orphaned actions ended_at + outcome='aborted'. Does NOT touch tasks.status. `--dry-run` returns candidates without writing. |
+| `reconcile`| (1) Claim sweep: SELECT expired active claims → UPDATE status='stale' → UPDATE orphaned actions ended_at + outcome='aborted'. Does NOT touch tasks.status. (2) Run sweep: SELECT running `workflow_runs` rows → `kill(pid,0)` each → ESRCH ⇒ mark `abandoned` + set `ended_at`. Both sweeps run inside the same `BEGIN IMMEDIATE` transaction. `--dry-run` returns candidates + run_candidates without writing. |
 | `abort`    | UPDATE claim status='aborted' + released_at + release_reason → INSERT audit `agent_actions` row naming the aborting session. Does NOT touch tasks.status. |
 
 All write verbs open `BEGIN IMMEDIATE` so the writer lock blocks any concurrent claim attempt on the same row. The status-transition guard (`policy.status.check`) is consulted before each `UPDATE tasks SET status` — refusal rolls the transaction back and the claim keeps its previous state.
@@ -5455,10 +5477,12 @@ Stable across versions; new keys may be added, existing keys do not change name 
 | `claim` / `heartbeat` | `{ok, claim_token, claim}` |
 | `action start` / `action end` | `{ok, action_id, action}` |
 | `ingest`      | `{ok, sessions_created, claims_created, actions_created, events_processed}` |
-| `reconcile`   | `{ok, claims_marked_stale, actions_closed, candidates?}` (`candidates` present only with `--dry-run`) |
+| `reconcile`   | `{ok, claims_marked_stale, actions_closed, runs_abandoned, candidates?, run_candidates?}` (`candidates` + `run_candidates` present only with `--dry-run`) |
 | `abort`       | `{ok, claim_token, claim, aborting_session}` |
+| `run start`   | `{ok, run_id, run}` where `run` includes `id`, `plan_id`, `workflow_name`, `run_identifier`, `pid`, `repo_root`, `status:"running"` |
+| `run end`     | `{ok, run_id, status}` where `status` is the terminal status written |
 
-`ClaimRow` matches the `agent_work_claims` row shape with snake_case keys (including locality columns `repo_root`, `branch`, `head_sha_at_claim`, `dirty_at_claim` and worktree columns `worktree_id`, `worktree_path`). `Task` matches `planar task show --json`. `ActionRow` matches `agent_actions` (including locality columns `head_sha`, `dirty`).
+`ClaimRow` matches the `agent_work_claims` row shape with snake_case keys (including locality columns `repo_root`, `branch`, `head_sha_at_claim`, `dirty_at_claim`, worktree columns `worktree_id`, `worktree_path`, and workflow run correlation columns `run_id`, `stage`). `Task` matches `planar task show --json`. `ActionRow` matches `agent_actions` (including locality columns `head_sha`, `dirty`).
 
 ### Locality flags
 
@@ -5468,6 +5492,15 @@ Stable across versions; new keys may be added, existing keys do not change name 
 - `--no-locality-probe` — short-circuit; records locality columns as NULL.
 
 Per-action-kind defaults: planner / coder / reviewer / test_coder probe; heartbeat / tool_call skip. The probe runs `git symbolic-ref`, `git rev-parse HEAD`, and `git status --porcelain` against the resolved root; any subprocess failure (non-git directory, missing `git`, error exit) records `unknown` rather than refusing the claim.
+
+### Workflow run correlation flags (`pull` and `claim`)
+
+`pull` and `claim` accept two optional flags for associating a claim with a `planar-execute` workflow run (decision 450):
+
+- `--run <run-id>` — integer id of the `workflow_runs` row to link on the claim. Set by `planar-execute` when dispatching a worker inside a run. Omit for interactive operator claims (leaves `run_id` NULL on the row).
+- `--stage <stage>` — free-text stage name (e.g. `code`, `review`, `plan`) recorded on the claim. Requires `--run`; omitting `--stage` while passing `--run` leaves `stage` NULL. The `context add --claim <token>` verb (task 3901) stamps `run_id` and `stage` server-side from the claim row — the worker passes only `--claim` (decision 447).
+
+Claims acquired without `--run`/`--stage` behave byte-for-byte as before (no behavior change, no default values). The columns are nullable; existing callers and tools that do not pass these flags are unaffected.
 
 ### Entity-ref parser (`claim --entity`)
 
@@ -5485,7 +5518,7 @@ Per-action-kind defaults: planner / coder / reviewer / test_coder probe; heartbe
 
 ### Capability boundary
 
-A process invoked as `planar-agent` writes ONLY to `agent_work_claims`, `agent_actions`, and `tasks.status` (the last only as part of atomic coordinated operations with status guards). It NEVER writes to plan / decision / question / scenario / artifact / annotation. A vendor hook configured with only `planar-agent` on its PATH has bounded blast radius — it cannot touch planning state.
+A process invoked as `planar-agent` writes ONLY to `agent_work_claims`, `agent_actions`, `tasks.status` (the last only as part of atomic coordinated operations with status guards), and `workflow_runs` (via `run start` / `run end` / the `reconcile` run sweep). It NEVER writes to plan / decision / question / scenario / artifact / annotation. A vendor hook configured with only `planar-agent` on its PATH has bounded blast radius — it cannot touch planning state.
 
 ---
 
@@ -5499,7 +5532,7 @@ Schema-version handshake: `planar-watch` is a **consumer** of the schema, not it
 
 A process invoked as `planar-watch` performs **no writes**. Two defenses:
 
-1. The command tree (`src/cmd/planar-watch/handlers/cmd.zig`) registers exactly seven read verbs plus the conventional `version` / `completion` helpers. There is no write verb anywhere in the tree.
+1. The command tree (`src/cmd/planar-watch/handlers/cmd.zig`) registers exactly eight read verbs plus the conventional `version` / `completion` helpers. There is no write verb anywhere in the tree.
 2. The bootstrap calls `runtime.ensureDbStrictReadOnly` which opens the DB via `sqlite3_open_v2(..., SQLITE_OPEN_READONLY, ...)`. The SQLite driver itself returns `SQLITE_READONLY` on any attempted `INSERT` / `UPDATE` / `DELETE` / DDL — verified by the `openReadOnly: write SQL is rejected at the driver layer` unit test in `src/db/sqlite.zig`.
 
 A vendor hook or operator script configured with only `planar-watch` on its PATH cannot modify the database under any circumstances.
@@ -5529,6 +5562,10 @@ planar-watch log      (--task <id> | --plan <id> | --entity <kind:id> | --sessio
 
 # Orchestrator → sub-agent topology forest (M4 addition, plan 467).
 planar-watch tree     [--root-session <id>] [--follow] [--interval <D>]
+
+# Workflow run observability (plan 585 addition).
+planar-watch run list [--plan <id>] [--status running|completed|failed|interrupted|abandoned] [--json]
+planar-watch run show <id> [--json]
 
 # Conventional helpers.
 planar-watch version
@@ -5597,6 +5634,34 @@ Each row shows the same columns as `ps`: `scope`, `vendor`, `activity`, `worktre
 
 **Implementation:** `src/cmd/planar-watch/handlers/tree.zig` (plan 467 M4, tasks 3064–3067).
 
+### `planar-watch run` — workflow run observability (plan 585)
+
+Read-only view of the `workflow_runs` and `context_records` tables (migration 00022).
+
+**`run list [--plan <id>] [--status <s>] [--json]`**
+
+Lists `workflow_runs` rows, newest first. Filters are combined with AND when both are supplied.
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--plan <id>` | Restrict to runs associated with the given plan id. | unset (all plans) |
+| `--status <s>` | Restrict by run status: `running`, `completed`, `failed`, `interrupted`, `abandoned`. | unset (all statuses) |
+| `--json` | Emit a single JSON object `{generated_at, runs:[RunRow]}`. | false (human text) |
+
+**`run show <id> [--json]`**
+
+Shows the full `workflow_runs` row for `<id>` plus all `context_records` for that run,
+grouped by stage (alphabetical ascending) then ordered by `created_at` ascending within each stage.
+Exits non-zero when the run id is not found.
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--json` | Emit `{run: RunRow, context_records: [ContextRecord]}`. | false (human text) |
+
+Human text format for `run show`: prints run metadata (id, plan_id, status, pid, workflow, timestamps, identifier, repo_root), followed by context records indented under `[stage: <name>]` section headers. The `body` field is previewed at up to 80 bytes with `…` when truncated.
+
+**Implementation:** `src/cmd/planar-watch/handlers/run.zig` (plan 585, task 3906).
+
 ### JSON shapes
 
 ```
@@ -5637,6 +5702,22 @@ planar-watch log --json:
           | "claim_aborted" | "claim_stale",
       at: ISO8601,
       claim: ClaimRow }
+
+planar-watch run list --json:
+  { generated_at: ISO8601,
+    runs: [RunRow] }
+  RunRow: { id, plan_id, workflow_name, run_identifier, pid,
+            repo_root, started_at, ended_at: ISO8601|null,
+            status: "running"|"completed"|"failed"|"interrupted"|"abandoned" }
+
+planar-watch run show <id> --json:
+  { run: RunRow,
+    context_records: [ContextRecord] }
+  ContextRecord: { id, run_id, stage, session_id, claim_id,
+                   kind: "finding"|"risk"|"artifact"|"followup"|"summary"|"capsule",
+                   body, status: "active"|"consumed"|"superseded",
+                   compiled_from: string|null, created_at: ISO8601 }
+  Records are grouped by stage (alphabetical asc) then ordered by created_at asc.
 ```
 
 `ClaimRow` matches the canonical shape from `engine.runtime.agentactivity.json.writeClaim` (snake_case keys mirroring the `agent_work_claims` columns, including the locality columns `repo_root`, `branch`, `head_sha_at_claim`, `dirty_at_claim` and the worktree columns). `ActionRow` mirrors `agent_actions`. `Plan` matches `planar plan show --json`.
@@ -5754,7 +5835,7 @@ Load and execute a Lua workflow module. The module must export a table with a `m
 
 | Flag | Description |
 |------|-------------|
-| `--plan <id>` | Plan id for the run. Required when `PLANAR_EXECUTE_LIVE_AGENT=1`; optional in mock/stub modes (degrades claim-status reads and commit-presence sampling when absent). |
+| `--plan <id>` | Plan id for the run. Required when `PLANAR_EXECUTE_LIVE_AGENT=1`; optional in mock/stub modes (degrades claim-status reads and commit-presence sampling when absent). When `--plan` is supplied (and the mode is not `--dry-run`), `planar-execute` opens a `workflow_runs` row via `planar-agent run start` before entering `run()` and closes it via `planar-agent run end` on exit — `completed` on clean exit, `interrupted` on SIGINT or ceiling shutdown. The row is audit metadata; a failure to open or close it is logged and swallowed without aborting the workflow. `abandoned` status is reserved for crash reconciliation by `planar-agent reconcile`. |
 | `--dry-run` | Load + validate `meta`, print `meta` + the dispatch model table + `phases`, and exit 0 without entering `run()`. Mutually exclusive with `--mock-worker`, `--mock-outcomes`, and `PLANAR_EXECUTE_LIVE_AGENT=1`. |
 | `--mock-worker` | Run with `FakeSpawner` — full pipeline, no real workers. Mutually exclusive with `--dry-run` and `PLANAR_EXECUTE_LIVE_AGENT=1`. See also `--mock-outcomes`. |
 | `--mock-outcomes <file>` | Per-call scripted FakeSpawner outcomes (NDJSON file; one JSON object per line with optional `exit_code`, `stdout`, `stderr` fields). The Nth `agent()` call returns the Nth scripted outcome; extra calls beyond the script fall back to the canned default (exit_code=0). Implies `--mock-worker` — no need to pass both. Mutually exclusive with `--dry-run` and `PLANAR_EXECUTE_LIVE_AGENT=1`. Parse errors (bad JSON, unreadable file) exit 1 at startup with a clear message. |
@@ -5807,7 +5888,7 @@ Supported vendors: `claude` (spawns `claude --print …`) and `codex` (spawns `c
 The same effective mapping is reachable from a running workflow and from a live run's stderr:
 
 - **`ctx.dispatch_table()`** (Lua host fn) returns the role→dispatch mapping as a nested table — `{ coder = { vendor = "…", model = "…" }, reviewer = {…}, ["test-coder"] = {…}, documenter = {…} }` — so a workflow can log its own routing in its narrative. Available in all modes (it reads the resolved table, not a spawn).
-- **Per-spawn dispatch banner:** every real (and `--mock-worker`) `agent()` spawn prints a one-line banner to stderr — `[dispatch] task:<id> vendor=<vendor> role=<role> model=<model>` — so an operator tailing a live run sees per-call routing without grepping the binary.
+- **Per-spawn dispatch banner:** every real (and `--mock-worker`) `agent()` spawn prints a one-line banner to stderr — `[dispatch] task:<id> vendor=<vendor> role=<role> model=<model> run=<run_identifier>` — so an operator tailing a live run sees per-call routing and the active run identifier without grepping the binary. The `run=` field is the runlock-derived identifier (format `run-<pid>-<nanos>`) when a run row was opened for this invocation; empty string when no `--plan` was supplied or when `run start` failed.
 
 **Example:**
 
@@ -5893,6 +5974,7 @@ The `ctx` object is injected by the host into every `run(ctx)` call. Available f
 | `ctx.parallel(thunks)` | N-way barrier. `thunks` is a table of zero-arg functions. Runs all concurrently; returns a table of results in the same order. |
 | `ctx.pipeline(items, ...stages)` | Per-item stage pipeline. `items` is a list; each `stage` is a function `(ctx, item) -> result`. Chains stages sequentially per item. |
 | `ctx.eligible(plan_id)` | Read `planar plan recommend-strategy` for `plan_id`. Returns `{eligible: bool, fan_out_available: bool, serialized: bool}`. |
+| `ctx.context([stage])` | Read context records for the current run. Shells `planar-agent context list --run <run_id>`. Optional `stage` string filters records to that stage (e.g. `"plan"`, `"code"`). Returns a 1-based Lua array of tables, each with fields: `id`, `run_id`, `stage`, `session_id`, `claim_id`, `kind`, `body`, `status`, `compiled_from` (string or nil), `created_at`. Returns an empty table when no run row is open, when no records exist, or on subprocess failure (best-effort read). Available in all modes (control-plane read — no `PLANAR_EXECUTE_LIVE_AGENT` gate required). |
 | `ctx.phase(title)` | Mark the start of a named phase (recorded in the journal). |
 | `ctx.log(msg)` | Append a log line to the workflow journal. |
 | `ctx.workflow(name)` | Record the workflow name in the journal (stub; full recording in a later milestone). |

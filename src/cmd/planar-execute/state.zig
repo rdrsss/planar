@@ -652,6 +652,97 @@ pub const SerializedTask = struct {
     excluded_by: []ExclusionReason,
 };
 
+// ---------------------------------------------------------------------------
+// Context record helpers (plan 585 task 3903 — ctx.context host function)
+// ---------------------------------------------------------------------------
+
+/// One record from `planar-agent context list --run <id> --json`.
+///
+/// Real shape (from handlers/context/list.zig emitter):
+///   { "id": int, "run_id": int, "stage": str, "session_id": int,
+///     "claim_id": int, "kind": str, "body": str, "status": str,
+///     "compiled_from": str|null, "created_at": str }
+///
+/// `.allocate = .alloc_always` (same rationale as planShow): escape-free
+/// string fields (stage, kind, body, status, created_at, compiled_from)
+/// must be arena-owned copies so they survive the caller's
+/// `defer allocator.free(stdout)`.
+pub const ContextRecord = struct {
+    id: i64,
+    run_id: i64,
+    stage: []const u8,
+    session_id: i64,
+    claim_id: i64,
+    kind: []const u8,
+    body: []const u8,
+    status: []const u8,
+    compiled_from: ?[]const u8 = null,
+    created_at: []const u8,
+};
+
+/// Wrapper for `planar-agent context list --json` output:
+///   { "ok": true, "records": [...] }
+pub const ContextList = struct {
+    ok: bool,
+    records: []ContextRecord = &.{},
+};
+
+/// contextList shells `planar-agent context list --run <run_id>` with optional
+/// `--stage` filter and returns a `std.json.Parsed(ContextList)`.
+///
+/// `run_id` must be the DB integer row id of the `workflow_runs` row
+/// (the value stored in `HostState.active_run.run_db_id`).
+///
+/// `stage` is an optional filter: when non-empty the flag `--stage <s>` is
+/// appended to the argv. Passing null or empty string returns all stages.
+///
+/// The caller owns the memory and MUST call `.deinit()` on the returned value.
+/// All string fields are arena-owned copies (`.alloc_always` — same as planShow).
+pub fn contextList(
+    allocator: std.mem.Allocator,
+    io: Io,
+    run_id: i64,
+    stage: ?[]const u8,
+) StateError!std.json.Parsed(ContextList) {
+    var id_buf: [32]u8 = undefined;
+    const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{run_id}) catch return StateError.SubprocessFailed;
+
+    const has_stage = stage != null and stage.?.len > 0;
+
+    // Build argv tail: ["context", "list", "--run", id_str, "--json"] + optional ["--stage", s].
+    const stdout = if (has_stage) blk: {
+        break :blk try spawnBin(allocator, io, "planar-agent", &.{
+            "context", "list", "--run", id_str, "--stage", stage.?, "--json",
+        }, 4 * 1024 * 1024);
+    } else blk: {
+        break :blk try spawnBin(allocator, io, "planar-agent", &.{
+            "context", "list", "--run", id_str, "--json",
+        }, 4 * 1024 * 1024);
+    };
+    defer allocator.free(stdout);
+
+    // `.alloc_always`: see planShow — escape-free string fields must be copied
+    // into the Parsed arena or they dangle after the stdout defer fires.
+    return std.json.parseFromSlice(ContextList, allocator, stdout, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    }) catch return StateError.ParseFailed;
+}
+
+/// parseContextList is the PURE parse half of `contextList`: given a JSON
+/// string (without spawning a subprocess), returns a `std.json.Parsed(ContextList)`.
+/// Factored out so unit tests can exercise the JSON→struct mapping against
+/// a fixture without needing a live `planar-agent`.
+pub fn parseContextList(
+    allocator: std.mem.Allocator,
+    json: []const u8,
+) StateError!std.json.Parsed(ContextList) {
+    return std.json.parseFromSlice(ContextList, allocator, json, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    }) catch return StateError.ParseFailed;
+}
+
 /// The `summary` sub-object inside `planar plan recommend-strategy --json`.
 pub const RecommendSummary = struct {
     open_tasks: u64,
@@ -1524,4 +1615,97 @@ test "RecommendStrategy: malformed JSON → error" {
         .ignore_unknown_fields = true,
     });
     try std.testing.expectError(error.SyntaxError, result);
+}
+
+// ---------------------------------------------------------------------------
+// ContextList / ContextRecord unit tests (plan 585 task 3903)
+// ---------------------------------------------------------------------------
+//
+// These tests use parseContextList (the pure parse half) to verify the
+// JSON→struct mapping without spawning a subprocess, following the same
+// fixture-parse pattern as the classifyClaim / RecommendStrategy tests above.
+
+test "ContextList: parse two records — fields mapped correctly (task 3903)" {
+    const a = std.testing.allocator;
+
+    // Fixture that matches the real `planar-agent context list --json` shape
+    // (from handlers/context/list.zig emitter).
+    const fixture =
+        \\{"ok":true,"records":[
+        \\  {"id":1,"run_id":42,"stage":"plan","session_id":7,"claim_id":100,
+        \\   "kind":"finding","body":"a test finding","status":"active",
+        \\   "compiled_from":null,"created_at":"2026-06-12T10:00:00.000Z"},
+        \\  {"id":2,"run_id":42,"stage":"code","session_id":7,"claim_id":101,
+        \\   "kind":"artifact","body":"an artifact","status":"consumed",
+        \\   "compiled_from":"1,2","created_at":"2026-06-12T11:00:00.000Z"}
+        \\]}
+    ;
+
+    const parsed = try parseContextList(a, fixture);
+    defer parsed.deinit();
+
+    try std.testing.expect(parsed.value.ok);
+    try std.testing.expectEqual(@as(usize, 2), parsed.value.records.len);
+
+    const r0 = parsed.value.records[0];
+    try std.testing.expectEqual(@as(i64, 1), r0.id);
+    try std.testing.expectEqual(@as(i64, 42), r0.run_id);
+    try std.testing.expectEqualStrings("plan", r0.stage);
+    try std.testing.expectEqual(@as(i64, 7), r0.session_id);
+    try std.testing.expectEqual(@as(i64, 100), r0.claim_id);
+    try std.testing.expectEqualStrings("finding", r0.kind);
+    try std.testing.expectEqualStrings("a test finding", r0.body);
+    try std.testing.expectEqualStrings("active", r0.status);
+    try std.testing.expect(r0.compiled_from == null);
+    try std.testing.expectEqualStrings("2026-06-12T10:00:00.000Z", r0.created_at);
+
+    const r1 = parsed.value.records[1];
+    try std.testing.expectEqual(@as(i64, 2), r1.id);
+    try std.testing.expectEqualStrings("code", r1.stage);
+    try std.testing.expectEqualStrings("artifact", r1.kind);
+    try std.testing.expectEqualStrings("consumed", r1.status);
+    try std.testing.expectEqualStrings("1,2", r1.compiled_from.?);
+}
+
+test "ContextList: empty records array (task 3903)" {
+    const a = std.testing.allocator;
+    const fixture =
+        \\{"ok":true,"records":[]}
+    ;
+    const parsed = try parseContextList(a, fixture);
+    defer parsed.deinit();
+
+    try std.testing.expect(parsed.value.ok);
+    try std.testing.expectEqual(@as(usize, 0), parsed.value.records.len);
+}
+
+test "ContextList: .alloc_always — strings survive freed input (task 3903)" {
+    // Mirrors the planShow UAF regression test: prove that escape-free string
+    // fields (stage, kind, body, status, created_at) are COPIED into the Parsed
+    // arena and do NOT dangle after the input buffer is freed + poisoned.
+    const a = std.testing.allocator;
+    const fixture_src =
+        \\{"ok":true,"records":[{"id":5,"run_id":10,"stage":"plan","session_id":1,"claim_id":2,"kind":"finding","body":"surviving body","status":"active","compiled_from":null,"created_at":"2026-06-12T00:00:00Z"}]}
+    ;
+    const input = try a.dupe(u8, fixture_src);
+
+    const parsed = try parseContextList(a, input);
+    defer parsed.deinit();
+
+    // Poison + free the input to expose any borrowing.
+    @memset(input, 0xAA);
+    a.free(input);
+
+    // If strings borrow into input, these reads yield 0xAA garbage.
+    try std.testing.expectEqualStrings("plan", parsed.value.records[0].stage);
+    try std.testing.expectEqualStrings("finding", parsed.value.records[0].kind);
+    try std.testing.expectEqualStrings("surviving body", parsed.value.records[0].body);
+    try std.testing.expectEqualStrings("active", parsed.value.records[0].status);
+    try std.testing.expectEqualStrings("2026-06-12T00:00:00Z", parsed.value.records[0].created_at);
+}
+
+test "ContextList: malformed JSON → ParseFailed error (task 3903)" {
+    const a = std.testing.allocator;
+    const result = parseContextList(a, "{not valid json {{");
+    try std.testing.expectError(StateError.ParseFailed, result);
 }

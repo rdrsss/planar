@@ -124,6 +124,8 @@ pub fn writeClaimWithActivity(
     try std.json.Stringify.encodeJsonString(c.lease_expires_at, .{}, w);
     try writeStringOpt(w, "released_at", c.released_at);
     try writeStringOpt(w, "release_reason", c.release_reason);
+    try writeIntOpt(w, "run_id", c.run_id);
+    try writeStringOpt(w, "stage", c.stage);
     // latest_action — emitted only by planar-watch ps (plan 467 M3
     // task 3056). When include_latest_action is false the field is
     // omitted entirely for backward compatibility with other consumers

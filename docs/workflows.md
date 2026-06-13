@@ -2486,6 +2486,142 @@ Workers spawned under `PLANAR_EXECUTE_LIVE_AGENT=1` appear as active claims; the
 
 For reference documentation on all flags see [`docs/cli-reference.md § Binary: planar-execute`](./cli-reference.md#binary-planar-execute). For the conceptual model of the Lua control plane and the no-DB-handle stance see [`docs/concepts.md § Embedded-Lua control plane`](./concepts.md#embedded-lua-control-plane).
 
+## Recipe 24b — Use the context plane in a workflow
+
+The context plane lets one workflow stage pass structured, typed findings to the next. Workers accumulate records into the run's working memory via `planar-agent context add`; later stages read them back via `ctx.context` and fold them into the next coder brief via `ctx.brief`. See [`docs/concepts.md § Context plane`](./concepts.md#context-plane) for the mental model, the table design, and the lifecycle.
+
+### Prerequisites
+
+- `planar-execute` installed and a plan with at least two tasks (`planar task list --plan <id>`).
+- For live runs: `claude` on `$PATH` and `PLANAR_EXECUTE_LIVE_AGENT=1`.
+
+### Step 1 — Worker accumulates context records
+
+A worker in the `plan` stage writes findings and a risk via `planar-agent context add`. The worker receives its `--claim` token in the brief; `planar-agent` stamps `run_id`, `stage`, `session_id`, and `task_id` server-side from the claim row.
+
+```sh
+# Inside a worker brief (the claim token is provided by the orchestrator):
+planar-agent context add \
+  --claim  <claim_token> \
+  --kind   finding \
+  --body   "Migration 00023 adds run_id/stage to agent_work_claims; apply before testing."
+
+planar-agent context add \
+  --claim  <claim_token> \
+  --kind   risk \
+  --body   "Schema change requires running make test-integration twice to confirm stability."
+```
+
+The worker does not pass `--run` or `--stage`. Those are stamped from the claim row, which carries them because the orchestrator issued the pull/claim with `--run <run_db_id> --stage plan` (planar-execute does this automatically for every worker it dispatches).
+
+### Step 2 — Observe accumulated records
+
+At any point during or after the run, use `planar-watch` to inspect what has been written:
+
+```sh
+planar-watch run list --plan <plan_id>
+# run:5  plan:42  workflow:my-workflow  status:running  started_at:…
+
+planar-watch run show 5
+# run:5 plan:42 status:running
+# stage: plan
+#   finding  Migration 00023 adds run_id/stage …
+#   risk     Schema change requires …
+```
+
+Use `--json` for machine-readable output:
+
+```sh
+planar-watch run show 5 --json
+# {"run":{"id":5,"plan_id":42,"status":"running",…},"context_records":[…]}
+```
+
+You can also filter records directly via `planar-agent context list`:
+
+```sh
+planar-agent context list --run 5 --stage plan --json
+# {"ok":true,"records":[{"id":1,"kind":"finding","body":"…","status":"active",…},…]}
+```
+
+### Step 3 — Next stage reads prior context and composes a brief
+
+A Lua workflow calls `ctx.context("plan")` to read the plan stage's records, then uses `ctx.brief` to compose a brief that carries them forward. `ctx.brief` auto-injects all active records into the "Prior-stage context" section; any `capsule` record is promoted to a "Compiled capsule" sub-section.
+
+```lua
+-- my-workflow.lua
+return {
+  meta = {
+    name    = "two-stage-context",
+    description = "Plan stage writes context; code stage reads it.",
+    phases  = { "Plan", "Code" },
+  },
+  run = function(ctx)
+    local plan_id = tonumber(ctx.args[1])
+
+    -- Stage 1: dispatch a planner; its findings land in context_records.
+    ctx.phase("Plan")
+    local plan_result = ctx.agent(
+      ctx.brief({
+        problem_statement = "Decompose the plan. Write your findings via context add.",
+        claim_token       = "<claim_token>",  -- filled by ctx.agent at dispatch time
+        gates             = { "make build" },
+      }),
+      { role = "coder", task_id = 0 }  -- replace 0 with real task id
+    )
+
+    -- Stage 2: read plan stage records, compose a brief that carries them forward.
+    ctx.phase("Code")
+    local records = ctx.context("plan")     -- Lua table of {id, kind, body, status, …}
+    ctx.log("plan stage left " .. #records .. " context records")
+
+    local code_brief = ctx.brief({
+      problem_statement = "Implement the tasks. See 'Prior-stage context' for findings.",
+      claim_token       = "<claim_token>",
+      gates             = { "make fmt-check", "make build", "make test", "make test-integration" },
+    })
+    -- ctx.brief auto-fetches ALL context records for the current run and injects
+    -- them into the "## Prior-stage context" section of the compiled brief.
+    -- Records with kind="capsule" are promoted to "### Compiled capsule".
+
+    local code_result = ctx.agent(code_brief, { role = "coder", task_id = 0 })
+    ctx.log("code stage done: status=" .. tostring(code_result.status))
+  end,
+}
+```
+
+### Step 4 — Stage close: compile a capsule
+
+When a stage is complete, write a summary `capsule` record that distills the raw findings. The capsule's `--compiled-from` flag records which raw record ids it was distilled from (decision 446 provenance). Future stages that call `ctx.brief` see the capsule under "Compiled capsule" and the raw records under "Context records".
+
+```sh
+# After the plan stage completes, compile a capsule from records 1 and 2:
+planar-agent context add \
+  --claim          <claim_token> \
+  --kind           capsule \
+  --body           "Plan stage summary: migration 00023 pre-req identified; double-run gate required." \
+  --compiled-from  "1,2"
+
+# Mark the raw records consumed (bulk stage sweep):
+planar-agent context resolve \
+  --run    5 \
+  --stage  plan \
+  --status consumed
+```
+
+Raw records are never deleted (decision 446). `consumed` status marks them as incorporated; they remain visible in `planar-watch run show` and `context list` for the audit trail.
+
+### Mock-mode testing
+
+Use `--mock-worker` to exercise the full context-plane loop — including `ctx.context` and `ctx.brief` injection — without a live `claude -p` worker:
+
+```sh
+planar-execute run --mock-worker --plan 42 my-workflow.lua 42
+```
+
+`--mock-worker` mode still calls `planar-agent run start/end` (run-row bracketing is independent of worker spawning), so `planar-watch run list --plan 42` shows the run row after the mock run completes.
+
+For the conceptual background see [`docs/concepts.md § Context plane`](./concepts.md#context-plane).
+
 ## Recipe 25 — Review and configure per-role model routing
 
 Inspect which models your agent roles will spawn, and re-route them — across Claude and Codex — through the unified config (plan 540). All model routing (skills render, `agents/models.md`, and `planar-execute`) resolves from one source via the shared resolver.

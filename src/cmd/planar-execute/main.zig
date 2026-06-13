@@ -159,6 +159,14 @@ pub const journal = @import("journal.zig");
 /// planar_execute_gate_lazy_eval — a pub-const alias forces analysis).
 pub const runlock = @import("runlock.zig");
 
+/// run_lifecycle — `planar-agent run start`/`end` bracketing (plan 585 task
+/// 3922). Shells the lifecycle verbs to open/close a `workflow_runs` row
+/// around each `planar-execute run` invocation. Best-effort: a failure is
+/// logged and swallowed; the run continues. Aliased here so its `test` blocks
+/// run under the execute_exe_tests target (memory:
+/// planar_execute_gate_lazy_eval — a pub-const alias forces analysis).
+pub const run_lifecycle = @import("run_lifecycle.zig");
+
 /// budget — budgets and ceilings, the hard kill-switch (M8 task 3198). Per-task
 /// max-attempt → block (fail-count derived from the journal so resume respects
 /// prior attempts) + whole-run ceiling (max-total-spawns / max-wall-clock →
@@ -320,6 +328,10 @@ pub const HostCallKind = enum {
     budget_remaining,
     eligible,
     dispatch_table,
+    /// ctx.context(stage) — returns context records for the current run.
+    context,
+    /// ctx.brief({...}) — assembles a methodology-compliant coder brief from inputs.
+    brief_compile,
 };
 
 /// A single recorded host-function invocation. All fields are heap-owned copies
@@ -533,6 +545,19 @@ pub const HostState = struct {
     /// full token when shorter). Quiet when empty — a clean run prints nothing.
     heartbeat_register_failures: std.ArrayList([]const u8) = .empty,
 
+    // plan 585 task 3922 — run-row bracketing.
+    //
+    // When `handleRun` successfully opens a `workflow_runs` row via
+    // `run_lifecycle.runStart`, it stores the result here so:
+    //   a) `runEnd` (called on clean completion or interrupt) can pass the
+    //      run_identifier back to `planar-agent run end`;
+    //   b) the `[dispatch]` banner and journal records can carry it.
+    //
+    // `null` means no run row was opened (dry-run; plan_id==0; runStart
+    // failed). When null the banner and journal emit empty string for
+    // back-compat.
+    active_run: ?run_lifecycle.RunStartResult = null,
+
     pub fn init(allocator: std.mem.Allocator, now: i64, seed: i64, budget_total: i64, budget_spent: i64) HostState {
         return .{
             .allocator = allocator,
@@ -567,6 +592,7 @@ pub const HostState = struct {
             self.allocator.free(tok);
         }
         self.heartbeat_register_failures.deinit(self.allocator);
+        if (self.active_run) |*ar| ar.deinit();
     }
 
     /// record appends a HostCall, taking ownership of heap-duped copies of the
@@ -1468,9 +1494,13 @@ fn driveAgentCallPreYield(
     // tailing a run sees per-call routing (vendor + model) without grepping the
     // binary. Fires for every real (and mock) spawn — the stub path returns
     // before reaching here.
+    // plan 585 task 3922: include run_id so banners can be correlated to the
+    // enclosing workflow_runs row. Empty string when no run row was opened
+    // (dry-run or plan_id==0).
+    const banner_run_id: []const u8 = if (hs.active_run) |ar| ar.run_identifier else "";
     std.debug.print(
-        "[dispatch] task:{d} vendor={s} role={s} model={s}\n",
-        .{ opts.task_id, vendor.name(), role.name(), acs.model },
+        "[dispatch] task:{d} vendor={s} role={s} model={s} run={s}\n",
+        .{ opts.task_id, vendor.name(), role.name(), acs.model, banner_run_id },
     );
 
     const handle = driver.spawner.start(alloc, io, spawn_inputs) catch |err| {
@@ -1688,7 +1718,8 @@ fn agentContinue(L: ?*c.lua_State, status: c_int, ctx: c.lua_KContext) callconv(
 
         // Journal the spawn (best-effort, skipped when no repo/plan). One record
         // per spawn — this is the timed-out worker's record.
-        writeJournalRecord(acs, "timed-out", outcome.exit_code, terminal_mono_ns);
+        const timed_out_run_id: []const u8 = if (hs.active_run) |ar| ar.run_identifier else "";
+        writeJournalRecord(acs, "timed-out", outcome.exit_code, terminal_mono_ns, timed_out_run_id);
         pushAgentResult(L, "timed-out", outcome.exit_code, commit_present, .fail, false);
         const reason = timed_out_reason.name();
         _ = c.lua_pushlstring(L, reason.ptr, reason.len);
@@ -1781,7 +1812,8 @@ fn agentContinue(L: ?*c.lua_State, status: c_int, ctx: c.lua_KContext) callconv(
         // in-memory summary entry (the operator still sees the blocked task via
         // `planar plan next`); never abort the run for it.
         hs.recordBlocked(acs.task_slug, "", "") catch {};
-        writeJournalRecord(acs, "blocked", outcome.exit_code, terminal_mono_ns);
+        const blocked_run_id: []const u8 = if (hs.active_run) |ar| ar.run_identifier else "";
+        writeJournalRecord(acs, "blocked", outcome.exit_code, terminal_mono_ns, blocked_run_id);
         pushAgentResult(L, "blocked", outcome.exit_code, commit_present, .none, false);
         stampCostFields(L, observed_cost_usd, cost_exceeded);
         if (cost_exceeded) hs.recordCostExceeded(acs.task_slug, observed_cost_usd);
@@ -1795,7 +1827,8 @@ fn agentContinue(L: ?*c.lua_State, status: c_int, ctx: c.lua_KContext) callconv(
         .release => "released",
         .fail => "failed",
     };
-    writeJournalRecord(acs, status_str, outcome.exit_code, terminal_mono_ns);
+    const normal_run_id: []const u8 = if (hs.active_run) |ar| ar.run_identifier else "";
+    writeJournalRecord(acs, status_str, outcome.exit_code, terminal_mono_ns, normal_run_id);
     pushAgentResult(L, status_str, outcome.exit_code, commit_present, verb, terminal_verb_failed);
     // Stamp cost fields on the result (task 3445). Done AFTER pushAgentResult
     // so the result table is on the stack and we can set fields on it.
@@ -2097,6 +2130,7 @@ fn writeJournalRecord(
     final_status: []const u8,
     exit_code: u32,
     terminal_mono_ns: i128,
+    active_run_id: []const u8,
 ) void {
     const driver = acs.driver;
     const alloc = acs.allocator;
@@ -2134,6 +2168,7 @@ fn writeJournalRecord(
         .terminal_verb = final_status,
         .wall_clock_ms = wall_ms,
         .timestamp = nowUnixSeconds(),
+        .run_id = active_run_id,
     };
 
     journal.append(alloc, io, path, record) catch |err| {
@@ -3180,6 +3215,470 @@ fn pushEmptyEligibleTable(L: ?*c.lua_State) void {
     c.lua_setfield(L, top_idx, "serialized");
 }
 
+/// hostContext — `ctx.context([stage])` (plan 585 task 3903).
+///
+/// Reads context records for the CURRENT run by shelling
+/// `planar-agent context list --run <run_db_id> [--stage <stage>] --json`
+/// and returns a Lua 1-based sequence of record tables.
+///
+/// ## Arguments
+///
+///   ctx.context()           -- returns ALL records for the current run
+///   ctx.context("plan")     -- returns records filtered to stage="plan"
+///   ctx.context("code")     -- etc.
+///
+/// The first argument, if present, must be a string (the stage filter).
+/// Any other type raises a Lua error.
+///
+/// ## Return value
+///
+/// A 1-based Lua array of tables.  Each table carries:
+///   { id, run_id, stage, session_id, claim_id, kind, body, status,
+///     compiled_from (string or nil), created_at }
+///
+/// ## Degradation
+///
+///   - `hs.active_run == null` (no run row opened): returns an empty table.
+///   - `hs.io == null` (unit-test paths that don't wire io): returns empty.
+///   - Subprocess failure or parse error: logs a warning and returns empty
+///     (best-effort read, same stance as journal reads).
+///
+/// ## No-DB-handle invariant
+///
+/// This is a CONTROL-PLANE READ: it shells `planar-agent context list`
+/// and parses the `--json` output. `planar-execute` holds no DB handle
+/// (decision 444).
+fn hostContext(L: ?*c.lua_State) callconv(.c) c_int {
+    const hs = hostStateUpvalue(L);
+
+    // Optional first argument: stage filter string.
+    // Accept: absent, nil, or a string. Any other type is an error.
+    const has_stage_arg = c.lua_gettop(L) >= 1 and c.lua_type(L, 1) != c.LUA_TNIL;
+    if (has_stage_arg and c.lua_type(L, 1) != c.LUA_TSTRING) {
+        _ = c.luaL_error(L, "ctx.context: stage argument must be a string (or omitted)");
+        return 0;
+    }
+    // luaArgString returns "" when the argument is absent or nil/non-string.
+    const raw_stage = if (has_stage_arg) luaArgString(L, 1) else "";
+    const stage_arg: ?[]const u8 = if (raw_stage.len > 0) raw_stage else null;
+
+    // Record the call so HostState observability tests can detect it.
+    recordOrError(L, hs, .context, stage_arg orelse "", "");
+
+    // No run row → return an empty table (silent degradation).
+    const active_run = hs.active_run orelse {
+        c.lua_createtable(L, 0, 0);
+        return 1;
+    };
+    const run_db_id = active_run.run_db_id;
+
+    // io not wired → return an empty table (unit-test paths).
+    const io = hs.io orelse {
+        c.lua_createtable(L, 0, 0);
+        return 1;
+    };
+
+    const alloc = hs.allocator;
+    const parsed = state.contextList(alloc, io, run_db_id, stage_arg) catch |err| {
+        // Best-effort: log + return empty table on any subprocess/parse error.
+        const log_ctx = std.log.scoped(.planar_execute);
+        log_ctx.warn("ctx.context: contextList failed: {s}; returning empty table", .{@errorName(err)});
+        c.lua_createtable(L, 0, 0);
+        return 1;
+    };
+    defer parsed.deinit();
+
+    const records = parsed.value.records;
+
+    // Build the 1-based Lua array of record tables.
+    c.lua_createtable(L, @intCast(records.len), 0);
+    const arr_idx: c_int = c.lua_absindex(L, -1);
+
+    for (records, 0..) |rec, i| {
+        // Each record: 9 string/int fields + 1 nullable string.
+        c.lua_createtable(L, 0, 10);
+        const rec_idx: c_int = c.lua_absindex(L, -1);
+
+        c.lua_pushinteger(L, @intCast(rec.id));
+        c.lua_setfield(L, rec_idx, "id");
+
+        c.lua_pushinteger(L, @intCast(rec.run_id));
+        c.lua_setfield(L, rec_idx, "run_id");
+
+        _ = c.lua_pushlstring(L, rec.stage.ptr, rec.stage.len);
+        c.lua_setfield(L, rec_idx, "stage");
+
+        c.lua_pushinteger(L, @intCast(rec.session_id));
+        c.lua_setfield(L, rec_idx, "session_id");
+
+        c.lua_pushinteger(L, @intCast(rec.claim_id));
+        c.lua_setfield(L, rec_idx, "claim_id");
+
+        _ = c.lua_pushlstring(L, rec.kind.ptr, rec.kind.len);
+        c.lua_setfield(L, rec_idx, "kind");
+
+        _ = c.lua_pushlstring(L, rec.body.ptr, rec.body.len);
+        c.lua_setfield(L, rec_idx, "body");
+
+        _ = c.lua_pushlstring(L, rec.status.ptr, rec.status.len);
+        c.lua_setfield(L, rec_idx, "status");
+
+        if (rec.compiled_from) |cf| {
+            _ = c.lua_pushlstring(L, cf.ptr, cf.len);
+        } else {
+            c.lua_pushnil(L);
+        }
+        c.lua_setfield(L, rec_idx, "compiled_from");
+
+        _ = c.lua_pushlstring(L, rec.created_at.ptr, rec.created_at.len);
+        c.lua_setfield(L, rec_idx, "created_at");
+
+        c.lua_rawseti(L, arr_idx, @intCast(i + 1)); // pops the record table
+    }
+
+    return 1; // return the sequence
+}
+
+/// hostBrief — `ctx.brief({...})` (plan 585 task 3904).
+///
+/// Marshals a Lua table of brief inputs into a `brief.BriefInputs` and calls
+/// `brief.compileBrief`, returning the compiled brief STRING to Lua.
+///
+/// ## Lua-table shape accepted
+///
+///   ctx.brief({
+///     problem_statement = "...",            -- string (required; defaults to "")
+///     claim_token       = "...",            -- string (defaults to "<claim_token>")
+///     plan = {                              -- table (optional)
+///       id     = 492,                       -- integer
+///       title  = "...",                     -- string
+///       status = "active",                  -- string
+///       slug   = "...",                     -- string (optional)
+///     },
+///     tasks = {                             -- array (optional)
+///       { id = 3901, title = "...", slug = "..." }, ...
+///     },
+///     gates             = { "make fmt-check", "make test" },  -- array of strings
+///     spec_citations    = { { path = "...", verbatim_slice = "..." }, ... },
+///     locked_decisions  = { { id = "D-1", text = "..." }, ... },
+///   })
+///
+/// ## Context-capsule injection
+///
+/// When `hs.active_run` is non-null the function auto-fetches ALL context
+/// records for the run (via `state.contextList`) and maps them into
+/// `BriefInputs.context_records`.  Any record whose `kind == "capsule"` is
+/// additionally promoted to `BriefInputs.context_capsule` (the first such
+/// record wins).  When `active_run` is null or `io` is not wired the context
+/// section of the brief renders the empty-state placeholder — no crash.
+///
+/// ## Schema injection
+///
+/// `agent_schema` is obtained by calling `schema.loadSchema` on `planar-agent`.
+/// On failure (subprocess unavailable, non-zero exit, bad JSON) a zero-entry
+/// schema is used — the brief still renders (best-effort).
+///
+/// ## Memory
+///
+/// All Zig allocations are freed before returning.  The brief string is pushed
+/// to Lua via `lua_pushlstring` then freed — Lua copies it internally.
+///
+/// ## No-DB-handle invariant
+///
+/// This function holds NO SQLite handle.  State reads are subprocess calls
+/// (schema.loadSchema shells `planar-agent schema`; contextList shells
+/// `planar-agent context list`).
+fn hostBrief(L: ?*c.lua_State) callconv(.c) c_int {
+    const hs = hostStateUpvalue(L);
+
+    // Record the call kind so observability tests can detect ctx.brief was invoked.
+    recordOrError(L, hs, .brief_compile, "", "");
+
+    // Argument: the input table at stack index 1.  A non-table argument is a
+    // script-author bug — treat as empty inputs so the brief still renders.
+    const has_table = c.lua_gettop(L) >= 1 and c.lua_type(L, 1) == c.LUA_TTABLE;
+    const tbl: c_int = if (has_table) 1 else 0; // 0 means "no table"
+
+    const alloc = hs.allocator;
+
+    // -----------------------------------------------------------------------
+    // Marshal scalar fields from the Lua table.
+    // -----------------------------------------------------------------------
+    const problem_statement: []const u8 = if (has_table) luaOptString(L, tbl, "problem_statement", "") else "";
+    const claim_token: []const u8 = if (has_table) luaOptString(L, tbl, "claim_token", "<claim_token>") else "<claim_token>";
+
+    // -----------------------------------------------------------------------
+    // Marshal plan from the Lua table.
+    // plan = { id, title, status, slug? }
+    // -----------------------------------------------------------------------
+    var plan = state.PlanShow{
+        .id = 0,
+        .title = "<plan>",
+        .status = "active",
+        .slug = null,
+        .parent_plan_id = null,
+    };
+    if (has_table) {
+        const plan_type = c.lua_getfield(L, tbl, "plan");
+        defer luaPop(L, 1);
+        if (plan_type == c.LUA_TTABLE) {
+            const plan_idx: c_int = c.lua_absindex(L, -1);
+            plan.id = @intCast(@max(0, luaOptInt(L, plan_idx, "id", 0)));
+            plan.title = luaOptString(L, plan_idx, "title", "<plan>");
+            plan.status = luaOptString(L, plan_idx, "status", "active");
+            const slug_type = c.lua_getfield(L, plan_idx, "slug");
+            defer luaPop(L, 1);
+            if (slug_type == c.LUA_TSTRING) {
+                var slug_len: usize = 0;
+                const slug_raw = c.lua_tolstring(L, -1, &slug_len);
+                if (slug_raw != null and slug_len > 0) {
+                    plan.slug = slug_raw[0..slug_len];
+                }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Marshal tasks array from the Lua table.
+    // tasks = { { id, title, slug? }, ... }
+    // -----------------------------------------------------------------------
+    // We build a heap-owned slice of TaskEntry.  All string slices inside
+    // borrow from Lua memory (valid for the lifetime of this call).
+    // Zig 0.16: ArrayList is unmanaged — allocator is passed at each call site.
+    var tasks_list: std.ArrayList(state.TaskEntry) = .empty;
+    defer tasks_list.deinit(alloc);
+
+    if (has_table) {
+        const tasks_type = c.lua_getfield(L, tbl, "tasks");
+        if (tasks_type == c.LUA_TTABLE) {
+            const tasks_tbl: c_int = c.lua_absindex(L, -1);
+            const n_tasks: usize = @intCast(c.lua_rawlen(L, tasks_tbl));
+            for (0..n_tasks) |i| {
+                _ = c.lua_rawgeti(L, tasks_tbl, @intCast(i + 1));
+                const task_entry_type = c.lua_type(L, -1);
+                if (task_entry_type == c.LUA_TTABLE) {
+                    const entry_idx: c_int = c.lua_absindex(L, -1);
+                    const tid = luaOptInt(L, entry_idx, "id", 0);
+                    const ttitle = luaOptString(L, entry_idx, "title", "<task>");
+                    // slug optional
+                    var tslug: ?[]const u8 = null;
+                    const tslug_type = c.lua_getfield(L, entry_idx, "slug");
+                    if (tslug_type == c.LUA_TSTRING) {
+                        var sl: usize = 0;
+                        const sr = c.lua_tolstring(L, -1, &sl);
+                        if (sr != null and sl > 0) tslug = sr[0..sl];
+                    }
+                    luaPop(L, 1); // pop slug field
+                    tasks_list.append(alloc, .{
+                        .id = tid,
+                        .plan_id = plan.id,
+                        .title = ttitle,
+                        .slug = tslug,
+                        .status = "todo",
+                    }) catch {};
+                }
+                luaPop(L, 1); // pop task entry
+            }
+        }
+        luaPop(L, 1); // pop tasks field
+    }
+
+    // Ensure at least one task entry so compileBrief doesn't panic on empty slice.
+    if (tasks_list.items.len == 0) {
+        tasks_list.append(alloc, .{
+            .id = 0,
+            .plan_id = plan.id,
+            .title = "<task>",
+            .slug = null,
+            .status = "todo",
+        }) catch {};
+    }
+
+    // -----------------------------------------------------------------------
+    // Marshal gates array.
+    // gates = { "make fmt-check", ... }
+    // -----------------------------------------------------------------------
+    var gates_list: std.ArrayList([]const u8) = .empty;
+    defer gates_list.deinit(alloc);
+
+    if (has_table) {
+        const gates_type = c.lua_getfield(L, tbl, "gates");
+        if (gates_type == c.LUA_TTABLE) {
+            const gates_tbl: c_int = c.lua_absindex(L, -1);
+            const n_gates: usize = @intCast(c.lua_rawlen(L, gates_tbl));
+            for (0..n_gates) |i| {
+                _ = c.lua_rawgeti(L, gates_tbl, @intCast(i + 1));
+                if (c.lua_type(L, -1) == c.LUA_TSTRING) {
+                    var gl: usize = 0;
+                    const gr = c.lua_tolstring(L, -1, &gl);
+                    if (gr != null and gl > 0) {
+                        gates_list.append(alloc, gr[0..gl]) catch {};
+                    }
+                }
+                luaPop(L, 1);
+            }
+        }
+        luaPop(L, 1); // pop gates field
+    }
+
+    // -----------------------------------------------------------------------
+    // Marshal spec_citations array.
+    // spec_citations = { { path = "...", verbatim_slice = "..." }, ... }
+    // -----------------------------------------------------------------------
+    var cits_list: std.ArrayList(brief.SpecCitation) = .empty;
+    defer cits_list.deinit(alloc);
+
+    if (has_table) {
+        const cits_type = c.lua_getfield(L, tbl, "spec_citations");
+        if (cits_type == c.LUA_TTABLE) {
+            const cits_tbl: c_int = c.lua_absindex(L, -1);
+            const n_cits: usize = @intCast(c.lua_rawlen(L, cits_tbl));
+            for (0..n_cits) |i| {
+                _ = c.lua_rawgeti(L, cits_tbl, @intCast(i + 1));
+                if (c.lua_type(L, -1) == c.LUA_TTABLE) {
+                    const cit_idx: c_int = c.lua_absindex(L, -1);
+                    const cpath = luaOptString(L, cit_idx, "path", "");
+                    if (cpath.len > 0) {
+                        var cvslice: ?[]const u8 = null;
+                        const cvt = c.lua_getfield(L, cit_idx, "verbatim_slice");
+                        if (cvt == c.LUA_TSTRING) {
+                            var vl: usize = 0;
+                            const vr = c.lua_tolstring(L, -1, &vl);
+                            if (vr != null and vl > 0) cvslice = vr[0..vl];
+                        }
+                        luaPop(L, 1); // pop verbatim_slice field
+                        cits_list.append(alloc, .{ .path = cpath, .verbatim_slice = cvslice }) catch {};
+                    } else {
+                        // no path — nothing to push but skip verbatim_slice field read
+                    }
+                }
+                luaPop(L, 1); // pop citation entry
+            }
+        }
+        luaPop(L, 1); // pop spec_citations field
+    }
+
+    // -----------------------------------------------------------------------
+    // Marshal locked_decisions array.
+    // locked_decisions = { { id = "D-1", text = "..." }, ... }
+    // -----------------------------------------------------------------------
+    var decisions_list: std.ArrayList(brief.LockedDecision) = .empty;
+    defer decisions_list.deinit(alloc);
+
+    if (has_table) {
+        const decs_type = c.lua_getfield(L, tbl, "locked_decisions");
+        if (decs_type == c.LUA_TTABLE) {
+            const decs_tbl: c_int = c.lua_absindex(L, -1);
+            const n_decs: usize = @intCast(c.lua_rawlen(L, decs_tbl));
+            for (0..n_decs) |i| {
+                _ = c.lua_rawgeti(L, decs_tbl, @intCast(i + 1));
+                if (c.lua_type(L, -1) == c.LUA_TTABLE) {
+                    const dec_idx: c_int = c.lua_absindex(L, -1);
+                    const did = luaOptString(L, dec_idx, "id", "");
+                    const dtext = luaOptString(L, dec_idx, "text", "");
+                    if (did.len > 0) {
+                        decisions_list.append(alloc, .{ .id = did, .text = dtext }) catch {};
+                    }
+                }
+                luaPop(L, 1); // pop decision entry
+            }
+        }
+        luaPop(L, 1); // pop locked_decisions field
+    }
+
+    // -----------------------------------------------------------------------
+    // Auto-fetch context records for the current run (context-capsule section).
+    //
+    // When active_run is non-null and io is wired, shell
+    // `planar-agent context list --run <id> --json` and map the results into
+    // ContextRef entries.  Any record with kind="capsule" promotes to
+    // context_capsule (first wins).  All other records go into context_records.
+    // On any failure → empty context (best-effort, silent degradation).
+    // -----------------------------------------------------------------------
+    var ctx_records_list: std.ArrayList(brief.ContextRef) = .empty;
+    defer {
+        for (ctx_records_list.items) |rec| {
+            alloc.free(rec.kind);
+            alloc.free(rec.body);
+        }
+        ctx_records_list.deinit(alloc);
+    }
+    var ctx_capsule: ?[]const u8 = null;
+    defer if (ctx_capsule) |cap| alloc.free(cap);
+
+    fetch_context: {
+        const active_run = hs.active_run orelse break :fetch_context;
+        const io = hs.io orelse break :fetch_context;
+        const parsed = state.contextList(alloc, io, active_run.run_db_id, null) catch break :fetch_context;
+        defer parsed.deinit();
+        for (parsed.value.records) |rec| {
+            if (ctx_capsule == null and std.mem.eql(u8, rec.kind, "capsule")) {
+                // Dupe the body so it outlives the parsed arena.
+                ctx_capsule = alloc.dupe(u8, rec.body) catch break :fetch_context;
+            }
+            // Map every record into a ContextRef — dupe strings to outlive the arena.
+            const kind_dup = alloc.dupe(u8, rec.kind) catch break :fetch_context;
+            const body_dup = alloc.dupe(u8, rec.body) catch {
+                alloc.free(kind_dup);
+                break :fetch_context;
+            };
+            ctx_records_list.append(alloc, .{ .kind = kind_dup, .body = body_dup }) catch {
+                alloc.free(kind_dup);
+                alloc.free(body_dup);
+                break :fetch_context;
+            };
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Load agent_schema (best-effort).
+    // Shell `planar-agent schema`; on failure use an empty schema.
+    // -----------------------------------------------------------------------
+    const io_for_schema = hs.io;
+    var schema_parsed: ?std.json.Parsed(schema.RawSchema) = null;
+    defer if (schema_parsed) |*sp| sp.deinit();
+    var agent_schema = schema.BinSchema.init(.{
+        .schemaVersion = 1,
+        .layout = "flat",
+        .root = "planar-agent",
+        .commands = &.{},
+    });
+    if (io_for_schema) |io| {
+        if (schema.loadSchema(alloc, io, "planar-agent")) |parsed| {
+            schema_parsed = parsed;
+            agent_schema = schema.BinSchema.init(parsed.value);
+        } else |_| {
+            // Best-effort: schema unavailable → keep the empty schema.
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Assemble BriefInputs and call compileBrief.
+    // -----------------------------------------------------------------------
+    const inputs = brief.BriefInputs{
+        .plan = plan,
+        .tasks = tasks_list.items,
+        .claim_token = claim_token,
+        .problem_statement = problem_statement,
+        .spec_citations = cits_list.items,
+        .locked_decisions = decisions_list.items,
+        .agent_schema = agent_schema,
+        .gates = gates_list.items,
+        .context_capsule = ctx_capsule,
+        .context_records = ctx_records_list.items,
+    };
+
+    const compiled = brief.compileBrief(alloc, inputs) catch |err| {
+        _ = c.luaL_error(L, "ctx.brief: compileBrief failed: %s", @errorName(err).ptr);
+        return 0;
+    };
+    defer alloc.free(compiled);
+
+    // Push as a Lua string (Lua copies the bytes).
+    _ = c.lua_pushlstring(L, compiled.ptr, compiled.len);
+    return 1;
+}
+
 /// hostBudgetSpent — `budget:spent()`. Returns the host-injected spent value.
 /// Also records the call so a test can confirm the method form was reached.
 fn hostBudgetSpent(L: ?*c.lua_State) callconv(.c) c_int {
@@ -3276,6 +3775,15 @@ fn installHostFns(L: ?*c.lua_State, ctx_idx: c_int, hs: *HostState) void {
     // task 3708: ctx.dispatch_table() returns the effective role→model mapping
     // for this run so a workflow can log its own routing.
     pushHostClosure(L, ctx_idx, "dispatch_table", hostDispatchTable, hs);
+    // plan 585 task 3903: ctx.context([stage]) returns context_records for the
+    // current run. Shells `planar-agent context list --run <id>`. Control-plane
+    // read — no PLANAR_EXECUTE_LIVE_AGENT gate required; degrades to empty table
+    // when active_run is null or io is not wired.
+    pushHostClosure(L, ctx_idx, "context", hostContext, hs);
+    // plan 585 task 3904: ctx.brief({...}) compiles a methodology-compliant
+    // brief string from structured inputs. Auto-fetches context records for the
+    // current run and injects them as the prior-stage context section.
+    pushHostClosure(L, ctx_idx, "brief", hostBrief, hs);
 
     // Determinism injection (task 3169): ctx.now and ctx.seed are the only
     // time/random source available to the sandboxed script.
@@ -5031,11 +5539,29 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
         // over. The lock is scoped to gated runs WITH a plan: an agent-free /
         // pure-Lua run (no real workers, no claims, no worktrees) has no
         // contention to guard, and a gated run without --plan has no plan key.
+        //
+        // task 3928 eager-reconcile: when acquire returns with a non-null
+        // `stale_run_id`, the prior run's holder was dead and its runlock was
+        // taken over. Shell `planar-agent reconcile` so the existing
+        // reconcileRuns sweep marks the dead run `abandoned`.  Routing through
+        // reconcile preserves Q597 — `run end` never writes `abandoned`.
+        // Best-effort: a failure here is logged and does NOT block startup
+        // (the lazy `planar-agent reconcile` sweep is the backstop).
         if (binaries_ok and plan > 0) {
             if (runlock.acquire(allocator, ctx.io, plan, .{
                 .repo_root = if (live_repo_root) |r| r else "",
             })) |lock| {
                 run_lock = lock;
+                // task 3928: eager-reconcile — shell `planar-agent reconcile`
+                // so the dead prior run is marked abandoned via the established
+                // reconcileRuns path (Q597: run end NEVER writes abandoned).
+                if (run_lock.?.stale_run_id != null) {
+                    std.log.scoped(.planar_execute).info(
+                        "eager-reconcile: stale runlock taken over; shelling planar-agent reconcile to mark dead run abandoned",
+                        .{},
+                    );
+                    run_lifecycle.eagerReconcile(allocator, ctx.io);
+                }
             } else |e| switch (e) {
                 error.RunLockHeld => {
                     try ctx.stderr.print(
@@ -5057,9 +5583,61 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
         }
     }
 
+    // ---- plan 585 task 3922: run-row bracketing --------------------------------
+    //
+    // Open a `workflow_runs` row BEFORE entering runModule so the DB carries a
+    // `running` record for the full duration. This is only done when:
+    //   - a plan_id is present (plan_id>0) AND
+    //   - the run is NOT dry-run (dry-run exited above).
+    //   - both live-agent AND mock-worker modes bracket the run (the lifecycle
+    //     verbs are run-level, distinct from the worker spawn that --mock-worker
+    //     fakes out).
+    //
+    // The `run_identifier` string comes from the run-lock (which already
+    // generated one for its lock payload) when the lock was acquired; otherwise
+    // we reuse `args.plan` + the harness PID to form a fresh identifier.
+    // The run-lock identifier has the form "run-<pid>-<nanos>" (same format
+    // `run start` expects).
+    //
+    // Robustness: runStart is best-effort; a failure logs and returns null.
+    // host.active_run = null means no run row is open — journal/banner emit "".
+    {
+        const run_plan_id: u64 = if (args.plan > 0) @intCast(args.plan) else 0;
+        if (run_plan_id > 0) {
+            // Prefer the run_lock's run_identifier (already generated + unique).
+            // Fall back to a plan+pid-scoped string if the lock was not acquired.
+            const run_id_for_row: []const u8 = if (run_lock) |rl| rl.run_id else blk: {
+                // No lock: the run_lock was not acquired (mock mode, or the
+                // live gate without a full plan). Generate a unique identifier
+                // from the harness PID so distinct runs on the same plan within
+                // the same millisecond still have distinct identifiers.
+                var fallback_buf: [64]u8 = undefined;
+                const fallback_slice = std.fmt.bufPrint(&fallback_buf, "run-{d}-0", .{std.c.getpid()}) catch {
+                    break :blk "run-unknown";
+                };
+                break :blk fallback_slice;
+            };
+
+            const repo_root_for_row: []const u8 = if (live_repo_root) |r| r else "";
+
+            host.active_run = run_lifecycle.runStart(allocator, ctx.io, .{
+                .plan_id = run_plan_id,
+                .workflow_name = mod.meta.name,
+                .run_identifier = run_id_for_row,
+                .pid = std.c.getpid(),
+                .repo_root = if (repo_root_for_row.len > 0) repo_root_for_row else "/",
+            });
+        }
+    }
+
     // Invoke run(ctx) with the trailing args threaded into ctx.args and the
     // host-function surface + determinism installed on ctx.
     runModule(source, chunkname, rest_args, &host, &err_buf) catch |e| {
+        // plan 585 task 3922: close the run row as `interrupted` on any error
+        // exit (ceiling or SIGINT). Best-effort: log+continue on failure.
+        if (host.active_run) |ar| {
+            run_lifecycle.runEnd(allocator, ctx.io, ar.run_identifier, "interrupted");
+        }
         // M8 whole-run ceiling (task 3198): a ceiling-terminated run unwinds
         // through here AFTER the clean interrupt shutdown ran (in-flight workers
         // released + worktrees torn down, journal terminus written). Emit a
@@ -5083,6 +5661,12 @@ fn handleRun(args_ptr: *const anyopaque) anyerror!void {
         try flushCtx();
         std.process.exit(1);
     };
+
+    // plan 585 task 3922: close the run row as `completed` on a clean exit.
+    // This is best-effort — a failure is logged and swallowed.
+    if (host.active_run) |ar| {
+        run_lifecycle.runEnd(allocator, ctx.io, ar.run_identifier, "completed");
+    }
 
     // ---- M7 end-of-run blocked-items summary (task 3195) ----
     //

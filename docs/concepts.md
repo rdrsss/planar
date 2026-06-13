@@ -11,14 +11,14 @@ Planar ships as four planning-state executables plus one orchestration driver, e
 | Binary | Audience | Writes to |
 |---|---|---|
 | `planar` | Operator (human + scripts) | Planning entities (`plans`, `tasks.status` via manual transitions, `decisions`, `questions`, `scenarios`, `artifacts`, `annotations`, …) — everything **except** `agent_work_claims`. It does not write `agent_actions` either, save for one best-effort exception: the entity-create provenance hook (plan 467 D2/D3) appends a `created <entity>` action when `decision`/`question`/`artifact add` runs under an active agent claim; with no active claim it is a silent no-op. |
-| `planar-agent` | Agent (vendor hook, orchestrator dispatch) + operator recovery | `agent_actions`, `agent_work_claims`, and `tasks.status` (the last only as part of atomic coordinated operations: `pull`, `complete`, `fail`, `release`, `block`). **Never** to plan / decision / question / scenario / artifact / annotation. |
+| `planar-agent` | Agent (vendor hook, orchestrator dispatch) + operator recovery | `agent_actions`, `agent_work_claims`, `tasks.status` (the last only as part of atomic coordinated operations: `pull`, `complete`, `fail`, `release`, `block`), `workflow_runs` (via `run start`/`end`), `context_records` (via `context add`/`resolve`). **Never** to plan / decision / question / scenario / artifact / annotation. |
 | `planar-watch` | Operator (live view) + scripts (`--json`) | **Nothing.** Opens SQLite via `file:?mode=ro` so the driver itself rejects every write SQL string. |
 | `planar-doc` | Operator + documenter agent | **`.planar-manifest` only** — the repo-state merkle index at the repo root. Never opens SQLite at all. |
 | `planar-execute` | Operator + orchestrator | **Nothing directly.** Holds no DB handle; all writes go through `planar-agent` verbs called by the workers it spawns. See [§ Embedded-Lua control plane](#embedded-lua-control-plane). |
 
-**Capability invariant — `planar-agent`:** a process invoked as `planar-agent` has no verbs that mutate any planning entity. The verb set is exactly `pull`, `peek`, `claim`, `heartbeat`, `complete`, `fail`, `release`, `block`, `action start`/`action end`, `ingest`, `reconcile`, `abort`, `version`, `schema`.
+**Capability invariant — `planar-agent`:** a process invoked as `planar-agent` has no verbs that mutate any planning entity. The verb set is exactly `pull`, `peek`, `claim`, `heartbeat`, `complete`, `fail`, `release`, `block`, `action start`/`action end`, `run start`/`end`, `context add`/`list`/`resolve`, `ingest`, `reconcile`, `abort`, `version`, `schema`.
 
-**Capability invariant — `planar-watch`:** the binary's verb set contains zero write verbs (`feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `version`, `completion`, `schema` only). Enforced two ways: (1) the verb set; (2) the read-only DB handle.
+**Capability invariant — `planar-watch`:** the binary's verb set contains zero write verbs (`feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `run`, `version`, `completion`, `schema` only). Enforced two ways: (1) the verb set; (2) the read-only DB handle.
 
 **Capability invariant — `planar-doc`:** the binary has no SQLite driver linked at all. Its verb set is exactly `build`, `verify`, `diff`, `cover`, `nodoc`, `lint`, `schema`. The only write is `.planar-manifest` at the repo root.
 
@@ -58,6 +58,36 @@ Inside `planar-execute`:
 - The journal (`ctx.phase`, `ctx.log`) records the execution arc as a sequence of timestamped entries; the journal is printed to stdout as the workflow progresses.
 
 For the full flag reference and modes (stub / dry-run / mock-worker / live) see [`docs/cli-reference.md § Binary: planar-execute`](./cli-reference.md#binary-planar-execute). For an end-to-end authoring walkthrough see [`docs/workflows.md § Recipe 24`](./workflows.md#recipe-24--author-and-run-a-planar-execute-workflow).
+
+---
+
+## Context plane
+
+The context plane is the durable working-memory layer that lets one workflow stage pass structured information to the next. It is distinct from the session timeline (`session_entries`) by deliberate design (decision 445): `session_entries` is a narrative record of what happened; `context_records` is working memory — typed, lifecycle-managed rows that the next stage reads and acts on. The two tables have different consumers, different lifecycles, and overloading the timeline with working-memory noise would force every downstream reader to filter it out forever.
+
+### Tables
+
+**`workflow_runs`** is the identity and audit record for one `planar-execute` invocation. A row is opened by `planar-agent run start` before the Lua `run()` function is entered, and closed by `planar-agent run end` after it returns. `planar-execute` itself holds no DB handle (decision 444) — it shells those verbs exactly as it shells the coordination verbs (`pull`, `complete`, etc.). The row carries `plan_id`, `workflow_name`, a unique `run_identifier` (`run-<pid>-<nanos>`), `pid`, `repo_root`, and a `status` in `running | completed | failed | interrupted | abandoned`. `abandoned` is written only by `planar-agent reconcile`, which pid-probes stalled rows whose process is no longer alive. Dry-run (`--dry-run`) creates no run row.
+
+**`context_records`** is run-scoped working memory. Every record is keyed `(run_id, stage, session_id, claim_id)` and carries a `kind` (`finding`, `risk`, `artifact`, `followup`, `summary`, `capsule`) plus a free-text `body`. The `status` column (`active | consumed | superseded`) is the lifecycle signal. A nullable `compiled_from` column on `capsule` records stores the integer ids of the raw records the capsule distilled — full provenance without deletion.
+
+### Accumulate → read → compose loop
+
+**Accumulate.** A worker writes records via `planar-agent context add --claim <token> --kind <kind> --body <text>`. The claim token is the only envelope the worker needs to thread (decision 447): `planar-agent` stamps `run_id`, `stage`, `session_id`, and `task_id` server-side from the claim row. The claim row gains nullable `run_id` and `stage` columns (migration 00023), populated at `pull`/`claim` time when the orchestrator passes `--run <id> --stage <name>` (decision 450). Interactive claims leave these null; the context verb is a no-op for claims without a run row.
+
+**Read.** A workflow script reads accumulated records from a prior stage via `ctx.context([stage])`. With no argument it returns all records for the current run; with a stage name it returns only that stage's records. The Lua return value is a 1-based sequence of tables, each carrying `id`, `run_id`, `stage`, `kind`, `body`, `status`, `compiled_from` (nil when absent), and `created_at`. Under the hood `planar-execute` shells `planar-agent context list --run <run_db_id> [--stage <s>] --json` and maps the parsed JSON into the Lua table — no DB handle is opened.
+
+**Compose.** `ctx.brief({...})` assembles a methodology-compliant coder brief and automatically injects the current run's context records into the "Prior-stage context" section. Any `capsule`-kind record is promoted to a compiled-capsule sub-section; remaining records render as a `kind: body` bullet list. The caller supplies the `problem_statement`, `claim_token`, `gates`, and optional `spec_citations`/`locked_decisions`; the context injection is automatic when `active_run` is non-null.
+
+### Lifecycle: active → consumed | superseded, never deletion
+
+Raw records start life as `active`. Stage close marks them `consumed` (records incorporated into the capsule) or `superseded` (records overridden by a later record in the same stage) and writes one compiled `capsule` record whose `compiled_from` column points back to the raw record ids (decision 446). Raw records are retained permanently — the audit trail is preserved for `pl-introspect` and journal-based resume. The three-value status is the machine-readable lifecycle signal; `compiled_from` is the provenance trace.
+
+### Observability
+
+`planar-watch run list [--plan <id>] [--status <s>]` lists runs. `planar-watch run show <id> [--json]` returns the full run row plus all `context_records`, grouped and ordered by stage then `created_at`. The JSON shape is `{run: RunRow, context_records: [...]}`.
+
+**SQLite tables:** `workflow_runs` (migration 00022), `context_records` (migration 00022), `agent_work_claims.run_id/stage` (migration 00023). **Primary verbs:** `planar-agent run start/end`, `planar-agent context add/list/resolve`, `ctx.context([stage])`, `ctx.brief({...})` (host functions on `planar-execute`), `planar-watch run list/show`. **Decisions:** 444 (run row owned by `planar-agent`; `planar-execute` DB-handle-free), 445 (separate table — timeline vs working memory), 446 (lifecycle not deletion; capsule provenance), 447 (claim is the correlation key), 450 (claims carry run/stage).
 
 ---
 

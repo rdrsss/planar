@@ -132,6 +132,13 @@ pub const Claim = struct {
     lease_expires_at: []const u8,
     released_at: ?[]const u8,
     release_reason: ?[]const u8,
+    /// Nullable FK to workflow_runs.id; non-null when the claim was
+    /// acquired inside a planar-execute workflow run via --run <id>.
+    run_id: ?i64 = null,
+    /// Free-text stage name from the workflow that dispatched this
+    /// worker (e.g. "plan", "code", "review"). Null when the claim was
+    /// not acquired inside a run, or when --stage was omitted.
+    stage: ?[]const u8 = null,
 
     pub fn deinit(self: Claim, allocator: std.mem.Allocator) void {
         allocator.free(self.claim_token);
@@ -150,6 +157,7 @@ pub const Claim = struct {
         allocator.free(self.lease_expires_at);
         if (self.released_at) |s| allocator.free(s);
         if (self.release_reason) |s| allocator.free(s);
+        if (self.stage) |s| allocator.free(s);
     }
 
     pub fn deinitMany(items: []const Claim, allocator: std.mem.Allocator) void {

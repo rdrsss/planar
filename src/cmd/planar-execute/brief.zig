@@ -75,6 +75,22 @@ pub const LockedDecision = struct {
     text: []const u8,
 };
 
+/// A single prior-stage context record to surface in the brief.
+///
+/// `kind` is the record kind (e.g. `"note"`, `"capsule"`, `"summary"`,
+/// `"decision"`); `body` is the verbatim record body.  The compiler renders
+/// each entry as a `kind:` bullet so the coder can orient quickly.
+///
+/// The caller pre-maps `state.ContextRecord` values into this lightweight
+/// struct; no arena ownership is carried — all slices are borrowed from the
+/// parsed context records or the `BriefInputs` arena.
+pub const ContextRef = struct {
+    /// Record kind string, e.g. `"note"`, `"capsule"`.
+    kind: []const u8,
+    /// Verbatim record body.
+    body: []const u8,
+};
+
 /// All inputs to `compileBrief`.  The caller pre-gathers these by:
 ///   - calling `state.planShow` / `state.planNext` for `plan` and `tasks`,
 ///   - calling `schema.loadSchema` + `schema.BinSchema.init` for `agent_schema`,
@@ -149,6 +165,22 @@ pub const BriefInputs = struct {
     /// work-complete report.  Each entry is a gate command string, e.g.
     /// `"make fmt-check"` or `"make test-integration"`.
     gates: []const []const u8,
+
+    // -----------------------------------------------------------------------
+    // Prior-stage context capsule (plan 585 task 3904)
+    // -----------------------------------------------------------------------
+
+    /// An optional pre-compiled capsule from a prior stage — rendered verbatim
+    /// when present.  The caller sets this to the body of a `kind="capsule"`
+    /// `context_record` if one is available.  When null the capsule portion of
+    /// the section is omitted.
+    context_capsule: ?[]const u8 = null,
+
+    /// Selected prior-stage records to surface in the brief.  Each entry is a
+    /// `(kind, body)` pair; the compiler lists them under "Prior-stage context".
+    /// When empty the section shows a placeholder line.  Slice is borrowed — no
+    /// ownership transfer.
+    context_records: []const ContextRef = &.{},
 };
 
 // ---------------------------------------------------------------------------
@@ -268,6 +300,40 @@ pub fn compileBrief(
             try buf.writer.print("- **{s}**: {s}\n", .{ d.id, d.text });
         }
         try buf.writer.writeByte('\n');
+    }
+
+    // -----------------------------------------------------------------------
+    // Section 4.5 — Prior-stage context (plan 585 task 3904).
+    //
+    // Renders the run's accumulated context records so the coder carries
+    // forward what prior stages left behind.  Two sub-parts:
+    //   a) The compiled capsule (verbatim, when present) — the authoritative
+    //      prior-stage summary produced by a prior compaction step.
+    //   b) Individual records (kind + body) — the raw per-record detail.
+    //
+    // When both inputs are empty/null the section shows a placeholder line so
+    // the structural completeness of the brief is preserved (mirrors the
+    // existing empty-section handling in sections 3 and 4).
+    // -----------------------------------------------------------------------
+    try buf.writer.writeAll("## Prior-stage context\n\n");
+    const has_capsule = inputs.context_capsule != null and inputs.context_capsule.?.len > 0;
+    const has_records = inputs.context_records.len > 0;
+
+    if (!has_capsule and !has_records) {
+        try buf.writer.writeAll("_(no prior-stage context for this cycle)_\n\n");
+    } else {
+        if (has_capsule) {
+            try buf.writer.writeAll("### Compiled capsule\n\n");
+            try buf.writer.writeAll(inputs.context_capsule.?);
+            try buf.writer.writeAll("\n\n");
+        }
+        if (has_records) {
+            try buf.writer.writeAll("### Context records\n\n");
+            for (inputs.context_records) |rec| {
+                try buf.writer.print("- **{s}**: {s}\n", .{ rec.kind, rec.body });
+            }
+            try buf.writer.writeByte('\n');
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -870,4 +936,156 @@ test "compileBrief: plan without slug renders without crashing" {
     // Must still produce a non-empty brief with the plan ID.
     try std.testing.expect(brief.len > 0);
     try std.testing.expect(std.mem.indexOf(u8, brief, "492") != null);
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests — Prior-stage context section (plan 585 task 3904)
+// ---------------------------------------------------------------------------
+
+test "compileBrief: empty context inputs render placeholder, not missing section" {
+    // When both context_capsule and context_records are absent/empty the
+    // section header must still appear AND the placeholder text must appear.
+    const tasks = [_]state.TaskEntry{task_a};
+    const inputs = BriefInputs{
+        .plan = syntheticPlan(),
+        .tasks = &tasks,
+        .claim_token = "abc123",
+        .problem_statement = "Empty context test.",
+        .spec_citations = &.{},
+        .locked_decisions = &.{},
+        .agent_schema = syntheticSchema(),
+        .gates = default_gates,
+        // context_capsule and context_records default to null / &.{}.
+    };
+
+    const brief = try compileBrief(std.testing.allocator, inputs);
+    defer std.testing.allocator.free(brief);
+
+    // Section header must appear.
+    try std.testing.expect(std.mem.indexOf(u8, brief, "Prior-stage context") != null);
+    // Empty placeholder must appear.
+    try std.testing.expect(std.mem.indexOf(u8, brief, "no prior-stage context") != null);
+    // Non-empty brief.
+    try std.testing.expect(brief.len > 0);
+}
+
+test "compileBrief: context_capsule renders verbatim when present" {
+    const capsule_text = "Stage-1 summary: plan decomposed into 4 tasks; decisions D-1, D-2 locked.";
+    const tasks = [_]state.TaskEntry{task_a};
+    const inputs = BriefInputs{
+        .plan = syntheticPlan(),
+        .tasks = &tasks,
+        .claim_token = "abc123",
+        .problem_statement = "Capsule render test.",
+        .spec_citations = &.{},
+        .locked_decisions = &.{},
+        .agent_schema = syntheticSchema(),
+        .gates = default_gates,
+        .context_capsule = capsule_text,
+    };
+
+    const brief = try compileBrief(std.testing.allocator, inputs);
+    defer std.testing.allocator.free(brief);
+
+    // Section header must appear.
+    try std.testing.expect(std.mem.indexOf(u8, brief, "Prior-stage context") != null);
+    // The capsule sub-header must appear.
+    try std.testing.expect(std.mem.indexOf(u8, brief, "Compiled capsule") != null);
+    // The capsule text must appear verbatim.
+    try std.testing.expect(std.mem.indexOf(u8, brief, capsule_text) != null);
+    // The empty placeholder must NOT appear when content is present.
+    try std.testing.expect(std.mem.indexOf(u8, brief, "no prior-stage context") == null);
+}
+
+test "compileBrief: context_records render by kind+body when present" {
+    const records = [_]ContextRef{
+        .{ .kind = "note", .body = "Found schema drift in migration 19." },
+        .{ .kind = "decision", .body = "Use alloc_always for JSON parsed strings." },
+    };
+    const tasks = [_]state.TaskEntry{task_a};
+    const inputs = BriefInputs{
+        .plan = syntheticPlan(),
+        .tasks = &tasks,
+        .claim_token = "abc123",
+        .problem_statement = "Context records render test.",
+        .spec_citations = &.{},
+        .locked_decisions = &.{},
+        .agent_schema = syntheticSchema(),
+        .gates = default_gates,
+        .context_records = &records,
+    };
+
+    const brief = try compileBrief(std.testing.allocator, inputs);
+    defer std.testing.allocator.free(brief);
+
+    // Section header and sub-header must appear.
+    try std.testing.expect(std.mem.indexOf(u8, brief, "Prior-stage context") != null);
+    try std.testing.expect(std.mem.indexOf(u8, brief, "Context records") != null);
+    // Both records must appear by kind and body verbatim.
+    try std.testing.expect(std.mem.indexOf(u8, brief, "note") != null);
+    try std.testing.expect(std.mem.indexOf(u8, brief, "Found schema drift in migration 19.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, brief, "decision") != null);
+    try std.testing.expect(std.mem.indexOf(u8, brief, "Use alloc_always for JSON parsed strings.") != null);
+    // Empty placeholder must NOT appear.
+    try std.testing.expect(std.mem.indexOf(u8, brief, "no prior-stage context") == null);
+}
+
+test "compileBrief: capsule + records both render when both are provided" {
+    const capsule_text = "Compiled capsule from stage-plan.";
+    const records = [_]ContextRef{
+        .{ .kind = "summary", .body = "3 tasks completed in stage-plan." },
+    };
+    const tasks = [_]state.TaskEntry{task_a};
+    const inputs = BriefInputs{
+        .plan = syntheticPlan(),
+        .tasks = &tasks,
+        .claim_token = "abc123",
+        .problem_statement = "Capsule + records combined test.",
+        .spec_citations = &.{},
+        .locked_decisions = &.{},
+        .agent_schema = syntheticSchema(),
+        .gates = default_gates,
+        .context_capsule = capsule_text,
+        .context_records = &records,
+    };
+
+    const brief = try compileBrief(std.testing.allocator, inputs);
+    defer std.testing.allocator.free(brief);
+
+    try std.testing.expect(std.mem.indexOf(u8, brief, "Prior-stage context") != null);
+    try std.testing.expect(std.mem.indexOf(u8, brief, "Compiled capsule") != null);
+    try std.testing.expect(std.mem.indexOf(u8, brief, capsule_text) != null);
+    try std.testing.expect(std.mem.indexOf(u8, brief, "Context records") != null);
+    try std.testing.expect(std.mem.indexOf(u8, brief, "summary") != null);
+    try std.testing.expect(std.mem.indexOf(u8, brief, "3 tasks completed in stage-plan.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, brief, "no prior-stage context") == null);
+}
+
+test "compileBrief: context section memory ownership — testing allocator catches leaks" {
+    // Full context inputs; testing allocator surfaces any leak.
+    const capsule_text = "Capsule memory ownership test.";
+    const records = [_]ContextRef{
+        .{ .kind = "note", .body = "Note body for leak test." },
+        .{ .kind = "capsule", .body = "Capsule body for leak test." },
+    };
+    const tasks = [_]state.TaskEntry{ task_a, task_b };
+    const inputs = BriefInputs{
+        .plan = syntheticPlan(),
+        .tasks = &tasks,
+        .claim_token = "memtest-token",
+        .problem_statement = "Context memory ownership test.",
+        .spec_citations = &.{},
+        .locked_decisions = &.{},
+        .agent_schema = syntheticSchema(),
+        .gates = default_gates,
+        .context_capsule = capsule_text,
+        .context_records = &records,
+    };
+
+    const brief = try compileBrief(std.testing.allocator, inputs);
+    defer std.testing.allocator.free(brief);
+
+    try std.testing.expect(brief.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, brief, "memtest-token") != null);
+    try std.testing.expect(std.mem.indexOf(u8, brief, "Capsule memory ownership test.") != null);
 }

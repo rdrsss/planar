@@ -105,6 +105,12 @@ pub const JournalRecord = struct {
     /// useful for triage and ordering. Informational; resume keys on the
     /// record sequence, not this value.
     timestamp: i64,
+    /// The workflow_runs run identifier for the enclosing `planar-execute run`
+    /// invocation (e.g. "run-<pid>-<nanos>"). Empty-string default for
+    /// back-compat with journals written before plan 585 task 3922 added this
+    /// field (`ignore_unknown_fields` on the read path; the write path defaults
+    /// here so callers that do not set it emit `""` rather than a missing key).
+    run_id: []const u8 = "",
 };
 
 /// journalPath derives the append-only journal file path for `plan_id` under
@@ -341,6 +347,7 @@ test "journal: appended record JSON carries all fields" {
         "prompt_hash", "worktree",      "branch",        "claim_token",
         "model",       "vendor",        "role",          "task_slug",
         "exit_code",   "terminal_verb", "wall_clock_ms", "timestamp",
+        "run_id",
     }) |field| {
         try testing.expect(std.mem.indexOf(u8, data, field) != null);
     }

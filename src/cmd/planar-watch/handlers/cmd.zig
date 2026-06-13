@@ -16,6 +16,7 @@
 //!   - log        — per-entity / per-claim history (union of
 //!                  actions + claim transitions).
 //!   - tree       — orchestrator → sub-agent forest (M4).
+//!   - run        — workflow runs + context records (plan 585).
 //!   - version    — print binary version (no DB touch).
 //!   - completion — shell autocompletion script (no DB touch).
 
@@ -31,6 +32,7 @@ const actions_h = @import("actions.zig");
 const plans_h = @import("plans.zig");
 const log_h = @import("log.zig");
 const tree_h = @import("tree.zig");
+const run_h = @import("run.zig");
 
 pub const verbs: []const cli.Cmd = &.{
     feed_h.verb,
@@ -40,6 +42,7 @@ pub const verbs: []const cli.Cmd = &.{
     plans_h.verb,
     log_h.verb,
     tree_h.verb,
+    run_h.verb,
     version_h.verb,
     completion_h.verb,
     schema_h.verb,
