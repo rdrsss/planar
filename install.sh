@@ -7,10 +7,11 @@
 #   ~/.planar/
 #     bin/planar                      # the operator binary
 #     bin/planar-agent                # the agent-callable coordination binary
-#                                     # (plan 85 — three-binary architecture)
 #     bin/planar-watch                # the human-facing read-only viewer
-#                                     # (plan 85 M8 — opens DB read-only,
-#                                     #  zero write verbs)
+#                                     # (opens DB read-only, zero write verbs)
+#     bin/planar-doc                  # the doc-state manifest tool
+#                                     # (build/verify/diff/cover/nodoc/lint;
+#                                     #  never opens SQLite)
 #     planar.db                       # created on first `planar init`
 #     migrations/0001_foundation.up.sql  # canonical migration sources (also
 #                                     # embedded into the binary at compile
