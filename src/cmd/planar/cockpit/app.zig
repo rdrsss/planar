@@ -38,6 +38,7 @@ const view_switcher = @import("widgets/view_switcher.zig");
 const split_layout = @import("widgets/split_layout.zig");
 const scope_explorer = @import("views/scope_explorer.zig");
 const agent_monitor = @import("views/agent_monitor.zig");
+const task_board = @import("views/task_board.zig");
 
 /// Minimum usable terminal dimensions.
 const MIN_WIDTH: u16 = 40;
@@ -203,6 +204,10 @@ pub fn run(
     var monitor: agent_monitor.MonitorState = agent_monitor.MonitorState.init(alloc);
     defer monitor.deinit();
 
+    // ---- Task Board state (tasks 4018–4020, M5) -------------------------
+    var board: task_board.BoardState = task_board.BoardState.init(alloc);
+    defer board.deinit();
+
     // Determine cwd-scope filter on launch. Falls back to .all when the
     // cwd is outside any registered repo (q607: cwd-derived default).
     const cwd_for_scope = std.Io.Dir.realPathFileAlloc(
@@ -225,6 +230,9 @@ pub fn run(
     // Initial load of the Agent Monitor.
     try monitor.reload(db_handle);
 
+    // Initial load of the Task Board.
+    try board.reload(db_handle);
+
     // ---- Spine state ----------------------------------------------------
     // Scope Explorer is the default (index 0) landing view per the spec.
     var vs: view_switcher.ViewSwitcher = .{};
@@ -239,7 +247,7 @@ pub fn run(
     try vx.queryTerminal(tty.writer(), .fromSeconds(1));
 
     // Render the initial frame.
-    try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor);
+    try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor, &board);
 
     // Main event loop.
     while (true) {
@@ -271,6 +279,12 @@ pub fn run(
                         } else {
                             need_render = false;
                         }
+                    } else if (active != null and active.?.id == .task_board) {
+                        if (board.handleKey(key, db_handle)) {
+                            // Consumed by task board — render.
+                        } else {
+                            need_render = false;
+                        }
                     } else {
                         need_render = false;
                     }
@@ -289,11 +303,13 @@ pub fn run(
                     explorer.reload(db_handle) catch {};
                 } else if (active != null and active.?.id == .agent_monitor) {
                     monitor.reload(db_handle) catch {};
+                } else if (active != null and active.?.id == .task_board) {
+                    board.reload(db_handle) catch {};
                 }
             },
         }
         if (need_render) {
-            try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor);
+            try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor, &board);
         }
     }
     // Terminal restored by deferred vx.deinit.
@@ -358,6 +374,7 @@ fn renderFrame(
     sl: *const split_layout.SplitLayout,
     explorer: *const scope_explorer.ExplorerState,
     monitor: *const agent_monitor.MonitorState,
+    board: *const task_board.BoardState,
 ) !void {
     const win = vx.window();
     win.clear();
@@ -414,6 +431,13 @@ fn renderFrame(
             .text = legend,
             .style = .{ .dim = true },
         }, .{ .row_offset = legend_row, .col_offset = 0 });
+    } else if (active != null and active.?.id == .task_board) {
+        var legend_buf: [128]u8 = undefined;
+        const legend = task_board.legendLabel(&legend_buf);
+        _ = content_win.printSegment(.{
+            .text = legend,
+            .style = .{ .dim = true },
+        }, .{ .row_offset = legend_row, .col_offset = 0 });
     } else {
         _ = content_win.printSegment(.{
             .text = "  q Quit  Tab Focus  1-3 View  Ctrl-C Quit",
@@ -441,14 +465,16 @@ fn renderFrame(
         try scope_explorer.render(explorer, panes.nav, panes.detail, alloc);
     } else if (active != null and active.?.id == .agent_monitor) {
         try agent_monitor.render(monitor, panes.nav, panes.detail, alloc);
+    } else if (active != null and active.?.id == .task_board) {
+        try task_board.render(board, panes.nav, panes.detail, alloc);
     } else {
-        // Placeholder for views not yet implemented (M5+).
+        // Placeholder for views not yet implemented (M6+).
         _ = panes.nav.printSegment(.{
-            .text = "[Navigator — M5+]",
+            .text = "[Navigator — M6+]",
             .style = .{ .dim = true },
         }, .{ .row_offset = 1, .col_offset = 1 });
         _ = panes.detail.printSegment(.{
-            .text = "[Detail pane — M5+]",
+            .text = "[Detail pane — M6+]",
             .style = .{ .dim = true },
         }, .{ .row_offset = 1, .col_offset = 1 });
     }
@@ -539,6 +565,7 @@ const tree_navigator = @import("widgets/tree_navigator.zig");
 const markdown_detail = @import("widgets/markdown_detail.zig");
 const scope_explorer_mod = @import("views/scope_explorer.zig");
 const agent_monitor_mod = @import("views/agent_monitor.zig");
+const task_board_mod = @import("views/task_board.zig");
 
 // =========================================================================
 // Tests
@@ -657,4 +684,5 @@ test "cockpit spine modules compile" {
     std.testing.refAllDecls(split_layout);
     std.testing.refAllDecls(scope_explorer_mod);
     std.testing.refAllDecls(agent_monitor_mod);
+    std.testing.refAllDecls(task_board_mod);
 }
