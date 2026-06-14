@@ -27,6 +27,7 @@
 - Use `planar import` to import an existing repo's planning content; it supports an optional `--interpret` LLM pass. The binary verb was trimmed from `pl-import` to `import` in plan 85; the slash command stays `/pl-import` because the `pl-` prefix namespaces it inside the vendor command tree.
 - The data model is the contract. Schema changes flow through versioned migrations starting at `migrations/00001_foundation.up.sql`. Other binaries (read-side viewers, web servers, Obsidian bridges) must open the database read-only and verify schema version before operating.
 - Architecture changes must update `docs/architecture.md` (and other affected reference docs) in the same change. The schema migration is the primary contract; docs are the human-readable annotation of it.
+- External tool dependencies are tracked in two places that MUST stay in sync: `README.md` § Prerequisites (the human-readable inventory) and the `BUILD_DEPS` / `RUN_DEPS` manifests in `install.sh` (the machine-checked list the installer preflights). Whenever the binary, a bundled skill/agent, or the installer starts shelling out to a new program — or stops needing one — update both in the same change. `install.sh` fails fast on a missing build-tier tool and warns on a missing runtime-tier tool; an un-manifested dependency silently breaks for users who lack it.
 
 ## Source Layout
 
