@@ -495,6 +495,21 @@ pub fn build(b: *std.Build) void {
     const lua_tests = b.addTest(.{ .root_module = lua_zig_mod, .filters = test_filters_opt });
     const run_lua_tests = b.addRunArtifact(lua_tests);
 
+    // -----------------------------------------------------------------
+    // `planar-execute` spawn-free modules (P0.2a).
+    // No executable yet (that is P0.2c). This module compiles the three
+    // salvaged spawn-free modules (schema, state, brief) and runs their
+    // unit tests. The module depends on nothing beyond std.
+    // -----------------------------------------------------------------
+    const planar_execute_mod = b.addModule("planar_execute", .{
+        .root_source_file = b.path("src/cmd/planar-execute/modules.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const planar_execute_tests = b.addTest(.{ .root_module = planar_execute_mod, .filters = test_filters_opt });
+    const run_planar_execute_tests = b.addRunArtifact(planar_execute_tests);
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
@@ -507,6 +522,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_engine_tests.step);
     test_step.dependOn(&run_runtime_tests.step);
     test_step.dependOn(&run_lua_tests.step);
+    test_step.dependOn(&run_planar_execute_tests.step);
 
     // -----------------------------------------------------------------
     // Integration tests. Separate from `zig build test` (mirrors Go's
