@@ -1,7 +1,7 @@
 //! handlers/claim_associate — `planar-agent claim-associate --claim <token> --run <id> [--stage <s>]`
 //!
 //! Associates a pre-acquired claim with a workflow_runs row (and optionally a
-//! stage name) at dispatch time.  Used by `planar-execute` so that a claim
+//! stage name) at dispatch time.  Used by centurion (or another external harness) so that a claim
 //! pulled before the run row was opened can have its `run_id` / `stage`
 //! backfilled, making `planar-agent context add --claim` work correctly
 //! (context add needs run_id stamped on the claim — decision 447/450/457).
@@ -26,7 +26,7 @@ const store = engine.runtime.agentactivity.store;
 
 pub const verb: cli.Cmd = .{
     .name = "claim-associate",
-    .desc = "Associate a pre-acquired active claim with a workflow run (and optional stage). Used by planar-execute at dispatch time.",
+    .desc = "Associate a pre-acquired active claim with a workflow run (and optional stage). Used by centurion (external harness) at dispatch time.",
     .flags = &.{
         .{ .long = "--claim", .kind = .string, .required = true, .desc = "Claim token to associate" },
         .{ .long = "--run", .kind = .int, .required = true, .desc = "workflow_runs.id to stamp on the claim" },

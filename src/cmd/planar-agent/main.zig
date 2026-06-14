@@ -110,7 +110,7 @@ pub fn main(init: std.process.Init) !void {
 //
 // Without this, Zig's lazy-eval silently skips modules that are only
 // reachable via `pub const @import` chains (the same failure mode fixed
-// for planar-execute by task 3238). refAllDecls on @This() reaches the
+// for centurion by task 3238). refAllDecls on @This() reaches the
 // handlers via the `cmd_tree` import above, which imports every verb file.
 //
 // Note: Zig 0.16 ships refAllDecls (non-recursive); refAllDeclsRecursive

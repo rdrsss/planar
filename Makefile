@@ -12,13 +12,11 @@ BINARY        := planar
 AGENT_BINARY  := planar-agent
 WATCH_BINARY  := planar-watch
 DOC_BINARY    := planar-doc
-EXECUTE_BINARY := planar-execute
 BIN_DIR       := bin
 BIN           := $(BIN_DIR)/$(BINARY)
 AGENT_BIN     := $(BIN_DIR)/$(AGENT_BINARY)
 WATCH_BIN     := $(BIN_DIR)/$(WATCH_BINARY)
 DOC_BIN       := $(BIN_DIR)/$(DOC_BINARY)
-EXECUTE_BIN   := $(BIN_DIR)/$(EXECUTE_BINARY)
 
 ZIG         ?= zig
 
@@ -37,14 +35,13 @@ help:
 	@awk 'BEGIN {FS = ":.*##"; printf "Targets:\n"} /^[a-zA-Z0-9_.-]+:.*##/ {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 .PHONY: build
-build: ## Build the planar + planar-agent + planar-watch + planar-doc + planar-execute binaries into ./bin/ (at repo root)
+build: ## Build the planar + planar-agent + planar-watch + planar-doc binaries into ./bin/ (at repo root)
 	@mkdir -p $(BIN_DIR)
 	$(ZIG) build -Doptimize=$(OPTIMIZE) $(ARGS)
 	@cp -f zig-out/bin/$(BINARY) $(BIN)
 	@cp -f zig-out/bin/$(AGENT_BINARY) $(AGENT_BIN)
 	@cp -f zig-out/bin/$(WATCH_BINARY) $(WATCH_BIN)
 	@cp -f zig-out/bin/$(DOC_BINARY) $(DOC_BIN)
-	@cp -f zig-out/bin/$(EXECUTE_BINARY) $(EXECUTE_BIN)
 
 .PHONY: install
 install: ## Full install via ./install.sh — pass extra flags as INSTALL_FLAGS="..."

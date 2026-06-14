@@ -133,7 +133,7 @@ pub const Claim = struct {
     released_at: ?[]const u8,
     release_reason: ?[]const u8,
     /// Nullable FK to workflow_runs.id; non-null when the claim was
-    /// acquired inside a planar-execute workflow run via --run <id>.
+    /// acquired inside a centurion (external harness) workflow run via --run <id>.
     run_id: ?i64 = null,
     /// Free-text stage name from the workflow that dispatched this
     /// worker (e.g. "plan", "code", "review"). Null when the claim was
