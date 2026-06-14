@@ -63,7 +63,12 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
                 // is a defensive fallback in case of unexpected initialization.
                 exit.die(ctx, error.NoEnvironMap, "internal: environ_map not available", .{});
             };
-            cockpit_app.run(ctx.io, ctx.allocator, env_map) catch |e| {
+            // M2: run without a DB until the DB path is wired through the
+            // runtime context (M3). The full `run(io, alloc, env_map,
+            // db_path, db_handle)` path is available but requires a live DB;
+            // `runWithoutDb` is the scaffold entry point for now.
+            // TODO(plan:591, task:4012): wire DB path from runtime context in M3.
+            cockpit_app.runWithoutDb(ctx.io, ctx.allocator, env_map) catch |e| {
                 exit.die(ctx, e, "cockpit error: {s}", .{@errorName(e)});
             };
         },

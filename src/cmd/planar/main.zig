@@ -162,7 +162,10 @@ pub fn main(init: std.process.Init) !void {
                 // always set by main.zig. Defensive fallback.
                 return cli.dispatch(root, args, ctx.stdout);
             };
-            cockpit_app.run(ctx.io, ctx.allocator, env_map) catch |e| {
+            // M2: run without a DB until the DB path is wired through
+            // the runtime context (M3).
+            // TODO(plan:591, task:4012): wire DB path from runtime in M3.
+            cockpit_app.runWithoutDb(ctx.io, ctx.allocator, env_map) catch |e| {
                 exit.die(ctx, e, "cockpit error: {s}", .{@errorName(e)});
             };
             try runtime.flush();
