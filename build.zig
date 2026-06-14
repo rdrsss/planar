@@ -64,76 +64,6 @@ pub fn build(b: *std.Build) void {
     });
 
     // -----------------------------------------------------------------
-    // Lua 5.5 — compile the vendored multi-file library as a static lib.
-    // lua.c and luac.c (standalone interpreter/compiler mains) are excluded
-    // from the source list; only the library sources are compiled.
-    //
-    // Platform define: Lua's Makefile uses LUA_USE_MACOSX on macOS,
-    // LUA_USE_LINUX on Linux, and LUA_USE_POSIX as a portable fallback;
-    // we mirror that conditional here via the host OS tag so cross-compile
-    // targets get the right syscall/readline guards.
-    // -----------------------------------------------------------------
-    const lua_mod = b.createModule(.{
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    const lua_platform_define: []const u8 = switch (target.result.os.tag) {
-        .macos => "-DLUA_USE_MACOSX",
-        .linux => "-DLUA_USE_LINUX",
-        else => "-DLUA_USE_POSIX",
-    };
-    const lua_src_dir = "vendor/lua/src";
-    // Library C sources — mirrors CORE_O + LIB_O from Lua's Makefile.
-    // lua.c and luac.c are intentionally absent.
-    const lua_lib_c_sources: []const []const u8 = &.{
-        lua_src_dir ++ "/lapi.c",
-        lua_src_dir ++ "/lauxlib.c",
-        lua_src_dir ++ "/lbaselib.c",
-        lua_src_dir ++ "/lcode.c",
-        lua_src_dir ++ "/lcorolib.c",
-        lua_src_dir ++ "/lctype.c",
-        lua_src_dir ++ "/ldblib.c",
-        lua_src_dir ++ "/ldebug.c",
-        lua_src_dir ++ "/ldo.c",
-        lua_src_dir ++ "/ldump.c",
-        lua_src_dir ++ "/lfunc.c",
-        lua_src_dir ++ "/lgc.c",
-        lua_src_dir ++ "/linit.c",
-        lua_src_dir ++ "/liolib.c",
-        lua_src_dir ++ "/llex.c",
-        lua_src_dir ++ "/lmathlib.c",
-        lua_src_dir ++ "/lmem.c",
-        lua_src_dir ++ "/loadlib.c",
-        lua_src_dir ++ "/lobject.c",
-        lua_src_dir ++ "/lopcodes.c",
-        lua_src_dir ++ "/loslib.c",
-        lua_src_dir ++ "/lparser.c",
-        lua_src_dir ++ "/lstate.c",
-        lua_src_dir ++ "/lstring.c",
-        lua_src_dir ++ "/lstrlib.c",
-        lua_src_dir ++ "/ltable.c",
-        lua_src_dir ++ "/ltablib.c",
-        lua_src_dir ++ "/ltm.c",
-        lua_src_dir ++ "/lundump.c",
-        lua_src_dir ++ "/lutf8lib.c",
-        lua_src_dir ++ "/lvm.c",
-        lua_src_dir ++ "/lzio.c",
-    };
-    for (lua_lib_c_sources) |src| {
-        lua_mod.addCSourceFile(.{
-            .file = b.path(src),
-            .flags = &.{ lua_platform_define, "-std=c99" },
-        });
-    }
-    lua_mod.addIncludePath(b.path(lua_src_dir));
-    const lua_lib = b.addLibrary(.{
-        .name = "lua55",
-        .linkage = .static,
-        .root_module = lua_mod,
-    });
-
-    // -----------------------------------------------------------------
     // Migrations codegen — scan ../migrations/ and emit a manifest.zig
     // that the `migrations` module exposes as `pub const all: []Migration`.
     // The generator runs on the build host, not the user's target.
@@ -394,29 +324,6 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(doc_exe);
 
-    // -----------------------------------------------------------------
-    // `planar-execute` executable (plan 492 M1). Fifth binary — the Lua
-    // script execution harness. Links Lua as a static lib; intentionally
-    // does NOT link the db, engine, or runtime modules (no DB handle in
-    // M1). Script execution, module loading, and CLI flag parsing are
-    // tasks 3163-3166; this M1 target only proves the Lua link works.
-    // -----------------------------------------------------------------
-    const execute_exe = b.addExecutable(.{
-        .name = "planar-execute",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/cmd/planar-execute/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-            .imports = &.{
-                .{ .name = "cli", .module = cli_mod },
-            },
-        }),
-    });
-    execute_exe.root_module.addIncludePath(b.path(lua_src_dir));
-    execute_exe.root_module.linkLibrary(lua_lib);
-    b.installArtifact(execute_exe);
-
     // Vendored-deps drift check runs before the binary is installed, so
     // `zig build` (which depends on the install step) fails loudly on
     // any vendor/<name>/VENDOR.toml mismatch.
@@ -444,7 +351,6 @@ pub fn build(b: *std.Build) void {
     cli_usage_check_run.addArg(b.getInstallPath(.bin, "planar-agent"));
     cli_usage_check_run.addArg(b.getInstallPath(.bin, "planar-watch"));
     cli_usage_check_run.addArg(b.getInstallPath(.bin, "planar-doc"));
-    cli_usage_check_run.addArg(b.getInstallPath(.bin, "planar-execute"));
     cli_usage_check_step.dependOn(&cli_usage_check_run.step);
 
     const run_step = b.step("run", "Run the app");
@@ -485,9 +391,6 @@ pub fn build(b: *std.Build) void {
     const doc_exe_tests = b.addTest(.{ .root_module = doc_exe.root_module, .filters = test_filters_opt });
     const run_doc_exe_tests = b.addRunArtifact(doc_exe_tests);
 
-    const execute_exe_tests = b.addTest(.{ .root_module = execute_exe.root_module, .filters = test_filters_opt });
-    const run_execute_exe_tests = b.addRunArtifact(execute_exe_tests);
-
     const cli_usage_lint_tests = b.addTest(.{ .root_module = cli_usage_lint_exe.root_module, .filters = test_filters_opt });
     const run_cli_usage_lint_tests = b.addRunArtifact(cli_usage_lint_tests);
 
@@ -509,7 +412,6 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_agent_exe_tests.step);
     test_step.dependOn(&run_watch_exe_tests.step);
     test_step.dependOn(&run_doc_exe_tests.step);
-    test_step.dependOn(&run_execute_exe_tests.step);
     test_step.dependOn(&run_cli_usage_lint_tests.step);
     test_step.dependOn(&run_db_tests.step);
     test_step.dependOn(&run_cli_tests.step);
@@ -565,10 +467,6 @@ pub fn build(b: *std.Build) void {
     run_integration_all.setEnvironmentVariable(
         "PLANAR_DOC_BIN",
         b.getInstallPath(.bin, "planar-doc"),
-    );
-    run_integration_all.setEnvironmentVariable(
-        "PLANAR_EXECUTE_BIN",
-        b.getInstallPath(.bin, "planar-execute"),
     );
     test_integration_step.dependOn(&run_integration_all.step);
 
@@ -654,10 +552,6 @@ fn registerIntegrationTestDir(
         run.setEnvironmentVariable(
             "PLANAR_DOC_BIN",
             b.getInstallPath(.bin, "planar-doc"),
-        );
-        run.setEnvironmentVariable(
-            "PLANAR_EXECUTE_BIN",
-            b.getInstallPath(.bin, "planar-execute"),
         );
         test_integration_step.dependOn(&run.step);
     }
