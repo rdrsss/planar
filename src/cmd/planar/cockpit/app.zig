@@ -40,6 +40,7 @@ const scope_explorer = @import("views/scope_explorer.zig");
 const agent_monitor = @import("views/agent_monitor.zig");
 const task_board = @import("views/task_board.zig");
 const decision_log = @import("views/decision_log.zig");
+const open_questions = @import("views/open_questions.zig");
 
 /// Minimum usable terminal dimensions.
 const MIN_WIDTH: u16 = 40;
@@ -213,6 +214,10 @@ pub fn run(
     var declog: decision_log.DecisionLogState = decision_log.DecisionLogState.init(alloc);
     defer declog.deinit();
 
+    // ---- Open Questions state (tasks 4023–4024, M7) ---------------------
+    var questions: open_questions.OpenQuestionsState = open_questions.OpenQuestionsState.init(alloc);
+    defer questions.deinit();
+
     // Determine cwd-scope filter on launch. Falls back to .all when the
     // cwd is outside any registered repo (q607: cwd-derived default).
     const cwd_for_scope = std.Io.Dir.realPathFileAlloc(
@@ -241,6 +246,9 @@ pub fn run(
     // Initial load of the Decision Log.
     try declog.reload(db_handle);
 
+    // Initial load of the Open Questions view.
+    try questions.reload(db_handle);
+
     // ---- Spine state ----------------------------------------------------
     // Scope Explorer is the default (index 0) landing view per the spec.
     var vs: view_switcher.ViewSwitcher = .{};
@@ -248,6 +256,7 @@ pub fn run(
     try vs.register(.{ .id = .agent_monitor, .name = "Monitor", .key = '2' });
     try vs.register(.{ .id = .task_board, .name = "Tasks", .key = '3' });
     try vs.register(.{ .id = .decision_log, .name = "Decisions", .key = '4' });
+    try vs.register(.{ .id = .open_questions, .name = "Questions", .key = '5' });
 
     var sl: split_layout.SplitLayout = .{};
 
@@ -256,7 +265,7 @@ pub fn run(
     try vx.queryTerminal(tty.writer(), .fromSeconds(1));
 
     // Render the initial frame.
-    try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor, &board, &declog);
+    try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor, &board, &declog, &questions);
 
     // Main event loop.
     while (true) {
@@ -300,6 +309,12 @@ pub fn run(
                         } else {
                             need_render = false;
                         }
+                    } else if (active != null and active.?.id == .open_questions) {
+                        if (questions.handleKey(key, db_handle)) {
+                            // Consumed by open questions — render.
+                        } else {
+                            need_render = false;
+                        }
                     } else {
                         need_render = false;
                     }
@@ -322,11 +337,13 @@ pub fn run(
                     board.reload(db_handle) catch {};
                 } else if (active != null and active.?.id == .decision_log) {
                     declog.reload(db_handle) catch {};
+                } else if (active != null and active.?.id == .open_questions) {
+                    questions.reload(db_handle) catch {};
                 }
             },
         }
         if (need_render) {
-            try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor, &board, &declog);
+            try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor, &board, &declog, &questions);
         }
     }
     // Terminal restored by deferred vx.deinit.
@@ -393,6 +410,7 @@ fn renderFrame(
     monitor: *const agent_monitor.MonitorState,
     board: *const task_board.BoardState,
     declog: *const decision_log.DecisionLogState,
+    questions: *const open_questions.OpenQuestionsState,
 ) !void {
     const win = vx.window();
     win.clear();
@@ -463,9 +481,16 @@ fn renderFrame(
             .text = legend,
             .style = .{ .dim = true },
         }, .{ .row_offset = legend_row, .col_offset = 0 });
+    } else if (active != null and active.?.id == .open_questions) {
+        var legend_buf: [128]u8 = undefined;
+        const legend = open_questions.legendLabel(&legend_buf);
+        _ = content_win.printSegment(.{
+            .text = legend,
+            .style = .{ .dim = true },
+        }, .{ .row_offset = legend_row, .col_offset = 0 });
     } else {
         _ = content_win.printSegment(.{
-            .text = "  q Quit  Tab Focus  1-4 View  Ctrl-C Quit",
+            .text = "  q Quit  Tab Focus  1-5 View  Ctrl-C Quit",
             .style = .{ .dim = true },
         }, .{ .row_offset = legend_row, .col_offset = 0 });
     }
@@ -494,14 +519,16 @@ fn renderFrame(
         try task_board.render(board, panes.nav, panes.detail, alloc);
     } else if (active != null and active.?.id == .decision_log) {
         try decision_log.render(declog, panes.nav, panes.detail, alloc);
+    } else if (active != null and active.?.id == .open_questions) {
+        try open_questions.render(questions, panes.nav, panes.detail, alloc);
     } else {
-        // Placeholder for views not yet implemented (M7+).
+        // Placeholder for views not yet implemented (M8+).
         _ = panes.nav.printSegment(.{
-            .text = "[Navigator — M7+]",
+            .text = "[Navigator — M8+]",
             .style = .{ .dim = true },
         }, .{ .row_offset = 1, .col_offset = 1 });
         _ = panes.detail.printSegment(.{
-            .text = "[Detail pane — M7+]",
+            .text = "[Detail pane — M8+]",
             .style = .{ .dim = true },
         }, .{ .row_offset = 1, .col_offset = 1 });
     }
@@ -594,6 +621,7 @@ const scope_explorer_mod = @import("views/scope_explorer.zig");
 const agent_monitor_mod = @import("views/agent_monitor.zig");
 const task_board_mod = @import("views/task_board.zig");
 const decision_log_mod = @import("views/decision_log.zig");
+const open_questions_mod = @import("views/open_questions.zig");
 
 // =========================================================================
 // Tests
@@ -715,4 +743,5 @@ test "cockpit spine modules compile" {
     std.testing.refAllDecls(agent_monitor_mod);
     std.testing.refAllDecls(task_board_mod);
     std.testing.refAllDecls(decision_log_mod);
+    std.testing.refAllDecls(open_questions_mod);
 }
