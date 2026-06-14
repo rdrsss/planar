@@ -178,14 +178,14 @@ These tasks follow the same terminal rules as any task — they must reach `done
 
 Finalization (Phase 3.7) does merge + DB closeout: the plan transitions to `done` through the gate. Archive (Phase 5) does workbench FS archival (`planar workbench archive`). They are distinct steps. Finalization typically runs first; Archive can follow in the same invocation via `--finalize --archive`.
 
-### planar-execute finalization hook
+### External harness finalization hook
 
-`planar-execute` (the Lua-driven autonomous workflow harness) exposes a **finalization hook after a clean workflow run** — the harness-side equivalent of the orchestrator's Phase 3.7. When a `.lua` workflow script completes all its worker tasks without a `failure-surfaced` or `abort` outcome, the harness is expected to invoke the janitor (or run `planar plan closeout` directly as an operator-aligned harness call) to mirror what the model-driven orchestrator does in Phase 3.7. This is an **integration point** (the actual Lua hook wiring is implementation work separate from this contract); its contract here is:
+The external `centurion` harness exposes a **finalization hook after a clean workflow run** — the harness-side equivalent of the orchestrator's Phase 3.7. When a `.lua` workflow script completes all its worker tasks without a `failure-surfaced` or `abort` outcome, the harness is expected to invoke the janitor (or run `planar plan closeout` directly as an operator-aligned harness call) to mirror what the model-driven orchestrator does in Phase 3.7. This is an **integration point**; its contract here is:
 
 - The hook fires only on a clean workflow run (all workers green, no unresolved test-coder failures, no orphaned claims blocking the gate).
 - The hook is gated identically to the orchestrator's Phase 3.7: `planar plan closeout --dry-run` must pass before apply; `ready: false` surfaces to the operator and halts without force-closing.
-- Coders dispatched by `planar-execute` workers still never call `planar plan closeout`; the finalization hook is the harness-level call, operating at the operator-plane boundary, not the agent-plane boundary.
-- When `PLANAR_EXECUTE_LIVE_AGENT=0` (mock mode) the hook should be a no-op or dry-run-only, consistent with the rest of `planar-execute`'s mock-mode contract.
+- Coders dispatched by `centurion` workers still never call `planar plan closeout`; the finalization hook is the harness-level call, operating at the operator-plane boundary, not the agent-plane boundary.
+- In mock mode the hook should be a no-op or dry-run-only.
 
 ## Flow
 
@@ -210,7 +210,7 @@ Three named strategies run in the **model-driven orchestrator** — all in-pwd. 
 - **`barrel-deferred`** — Coder cycles run back-to-back in pwd; reviewer dispatched once at a milestone or plan boundary on the union diff. No isolation. Recommended for: long sequential plans where per-cycle reviewer overhead exceeds the value.
 - **`barrel-bypass`** — No reviewer at all; quality gates (`make fmt-check`, `make build`, `make test`, `make test-integration` twice, `planar skills render --check` against an out-of-tree staging dir, and any remaining relevant validators) are the entire signal. Sequential, in-pwd. Recommended for: mechanical sweeps, docs-polish, single-verb additions where the contract is fully gated.
 
-Two further strategies — **`isolated-sequential`** (coder in a dedicated worktree on an epic-child branch; sequential) and **`parallel-fanout`** (N coders fanned out across parallel-eligible tasks, each in its own worktree, consolidated at fan-in) — require deterministic worktree and branch management and are therefore **owned by the `planar-orchestrate` harness**, not the model-driven orchestrator. The model orchestrator never creates worktrees, cuts epic branches, or fans out; for that work it hands the plan to the harness. Their axis bundles, the six parallel-eligibility rules, and the fan-in conflict protocol live in the harness design documentation.
+Two further strategies — **`isolated-sequential`** (coder in a dedicated worktree on an epic-child branch; sequential) and **`parallel-fanout`** (N coders fanned out across parallel-eligible tasks, each in its own worktree, consolidated at fan-in) — require deterministic worktree and branch management and are therefore **owned by the external `centurion` harness**, not the model-driven orchestrator. The model orchestrator never creates worktrees, cuts epic branches, or fans out; for that work it hands the plan to the harness. Their axis bundles, the six parallel-eligibility rules, and the fan-in conflict protocol live in the harness design documentation.
 
 ### Continuity guarantee: `classic`
 
@@ -218,7 +218,7 @@ Two further strategies — **`isolated-sequential`** (coder in a dedicated workt
 
 ### Axes
 
-The five axes underlying every strategy. The model-driven orchestrator only reaches the in-pwd subset of axis values; the `worktree` / `epic-child` / `fan-out` / `per-fanin` values are reachable only through the `planar-orchestrate` harness. A custom strategy (`--strategy custom` with per-axis flags) is the escape hatch for advanced operators outside the named menu.
+The five axes underlying every strategy. The model-driven orchestrator only reaches the in-pwd subset of axis values; the `worktree` / `epic-child` / `fan-out` / `per-fanin` values are reachable only through the external `centurion` harness. A custom strategy (`--strategy custom` with per-axis flags) is the escape hatch for advanced operators outside the named menu.
 
 | Axis | Values | `classic` default |
 |------|--------|-------------------|
@@ -242,7 +242,7 @@ The two worktree bundles (`isolated-sequential`, `parallel-fanout`) are document
 
 ### Invalid combinations
 
-Because the model orchestrator only reaches the in-pwd axis subset, the fan-out invalid-combination guards (`fan-out` + `in-pwd`, `fan-out` + `current-branch`, `per-cycle` + `fan-out`) are enforced by the `planar-orchestrate` harness, which owns the `fan-out` axis. A `--strategy custom` request that selects a `worktree`/`fan-out` value from the model orchestrator is refused with a pointer to the harness.
+Because the model orchestrator only reaches the in-pwd axis subset, the fan-out invalid-combination guards (`fan-out` + `in-pwd`, `fan-out` + `current-branch`, `per-cycle` + `fan-out`) are enforced by the external `centurion` harness, which owns the `fan-out` axis. A `--strategy custom` request that selects a `worktree`/`fan-out` value from the model orchestrator is refused with a pointer to the harness.
 
 ### Recommendation algorithm
 
@@ -250,7 +250,7 @@ The orchestrator proposes a strategy per plan based on plan shape, with status-q
 
 1. If the plan is tagged as mechanical, docs-only, or single-verb → recommend `barrel-bypass`.
 2. Else if the plan has a multi-milestone roadmap and at most one parallel-eligible task per milestone → recommend `barrel-deferred`.
-3. Else if the plan has ≥3 tasks with ≥2 parallel-eligible, or 2–3 tasks where worktree isolation would help → surface that the plan is a fit for the `planar-orchestrate` harness (`isolated-sequential` / `parallel-fanout`) and recommend handing it off; the model orchestrator itself recommends `classic` for the in-pwd path.
+3. Else if the plan has ≥3 tasks with ≥2 parallel-eligible, or 2–3 tasks where worktree isolation would help → surface that the plan is a fit for the external `centurion` harness (`isolated-sequential` / `parallel-fanout`) and recommend handing it off; the model orchestrator itself recommends `classic` for the in-pwd path.
 4. Else if the plan has exactly 1 task → recommend `classic`.
 5. Else if the most recent dispatch on this plan used a non-default strategy `S` → recommend `S` (stickiness — the operator already made a choice for this plan).
 6. Otherwise → recommend `classic` (status-quo bias).
@@ -263,7 +263,7 @@ Phase 3 of the orchestrator now runs **two** gates in order before dispatch:
 
 1. **Strategy gate** (new). "Which strategy for this plan?" The orchestrator surfaces its recommended strategy + a one-line rationale + the named alternatives. The operator confirms or overrides.
 2. **Dispatch-shape gate** (existing — see [Dispatch Granularity](#dispatch-granularity)). "Within that strategy, which shape for this cycle?" Constrained by the strategy: `barrel-bypass` forces the `barrel-bypass` shape; `barrel-deferred` forces the `barrel-deferred` shape; `classic` keeps the full strict / grouped / single menu.
-3. **Dispatch.** Orchestrator claims tasks and dispatches coders in pwd. (Worktree creation and fan-out dispatch belong to the `planar-orchestrate` harness, not this loop.)
+3. **Dispatch.** Orchestrator claims tasks and dispatches coders in pwd. (Worktree creation and fan-out dispatch belong to the external `centurion` harness, not this loop.)
 
 The strategy gate is operator-confirmed by default. Skip flags:
 
@@ -296,10 +296,10 @@ The dispatch-shape gate's six shapes (`strict`, `grouped`, `single`, `barrel-gro
 
 Worktree lifecycle — the `epic/` integration branch and per-task `cycle/`
 working branches, their creation, fan-in merge, and cleanup — is **owned by the
-`planar-orchestrate` harness**, not by the model-driven orchestrator.
+external `centurion` harness**, not by the model-driven orchestrator.
 The model orchestrator runs `classic` (in-pwd) only and creates no worktrees.
 The branch/path naming scheme, the six parallel-eligibility rules, and the
-fan-in conflict protocol live in the harness design documentation.
+fan-in conflict protocol live in the `centurion` harness design documentation.
 
 `classic` and the barrel strategies never use worktrees. The runtime invariant
 below still governs scope whenever a process (such as a harness-spawned coder)
@@ -623,7 +623,7 @@ and the reviewer cannot recover the loss after the fact.
 
 ## Concurrency
 
-- Parallel coder dispatch is owned by the `planar-orchestrate` harness, not the model-driven orchestrator. The codified eligibility test (six parallelizability rules) and the `parallel-fanout` frame that uses them live in the harness design documentation. The model orchestrator runs `classic` (one coder, in pwd) only.
+- Parallel coder dispatch is owned by the external `centurion` harness, not the model-driven orchestrator. The codified eligibility test (six parallelizability rules) and the `parallel-fanout` frame that uses them live in the harness design documentation. The model orchestrator runs `classic` (one coder, in pwd) only.
 - The substrate that lets parallel coders run without clobbering each other — per-task worktrees on epic-child branches with fan-in merge — is owned by the harness. See [Worktrees](#worktrees) for the ownership boundary.
 - Reviewers may run in parallel against independent coder outputs. Under `parallel-fanout` a single reviewer cycle runs against the integrated diff on the epic, not per child.
 - A single task is always coder→reviewer sequential — never two coders on the same task simultaneously.
@@ -689,6 +689,6 @@ Status strings describe the **agent's own state** (what it is doing), not a mirr
 
 - **Iteration cap of 5.** Hard-coded today. Revisit once empirical data on real workloads exists — the right number may be 3, 5, or 8 depending on task shape. Move to the `config` table or methodology frontmatter if it needs to flex per project.
 - **Per-tier reviewer.** Currently all reviewers are `large`-tier. Some review work may not need that; a cheaper review tier could be useful for routine tasks.
-- **Parallelism heuristics.** The six parallel-eligibility rules — deliberately conservative (empty `task_touches` is "touches everything," singleton authoritative files block fan-out, schema migrations serialize) — are owned by the `planar-orchestrate` harness and specified in the harness design documentation. The list of singleton files may grow as new coordination points emerge; revisit once enough fan-out cycles have shipped to identify whether the conservatism has the right shape.
+- **Parallelism heuristics.** The six parallel-eligibility rules — deliberately conservative (empty `task_touches` is "touches everything," singleton authoritative files block fan-out, schema migrations serialize) — are owned by the external `centurion` harness and specified in the harness design documentation. The list of singleton files may grow as new coordination points emerge; revisit once enough fan-out cycles have shipped to identify whether the conservatism has the right shape.
 - **Cross-vendor pairings.** A reviewer may be a different vendor than the coder (Claude reviewing Codex output, etc.). The methodology assumes this works; verify once cross-vendor handoff is exercised in real cycles.
 - **Reviewer feedback format.** "Concrete remediation" is loose today. As patterns emerge, codify the structure (e.g. file:line + proposed change, or a structured issue list).

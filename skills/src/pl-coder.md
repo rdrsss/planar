@@ -51,7 +51,7 @@ These six things are load-bearing. The blind-read reviewer cannot recover them a
 
 ## Worktrees: inherit the cwd, don't manage them
 
-Under the harness-owned worktree strategies (`isolated-sequential` / `parallel-fanout`, run by `planar-orchestrate`), the harness dispatches the coder into a pre-created worktree on a pre-created child branch. The coder's contract there is narrow:
+Under the harness-owned worktree strategies (`isolated-sequential` / `parallel-fanout`, run by the external `centurion` harness), the harness dispatches the coder into a pre-created worktree on a pre-created child branch. The coder's contract there is narrow:
 
 - **Inherit the dispatched cwd.** That cwd is the worktree path. Stay in it. Do not `cd` out to the main checkout or another worktree to do work.
 - **Do not create, destroy, or relocate worktrees.** `git worktree add/remove/move` are the harness's verbs, not the coder's. If the worktree looks wrong, stop and return to the dispatcher rather than reshaping it.

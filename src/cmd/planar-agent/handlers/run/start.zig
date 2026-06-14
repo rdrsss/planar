@@ -1,9 +1,10 @@
 //! handlers/run/start — `planar-agent run start` verb.
 //!
 //! Inserts a `workflow_runs` row in `running` status. The caller
-//! (planar-execute) supplies the harness pid, run-identifier, and
-//! repo_root via flags so crash-reconciliation can probe the HARNESS
-//! process, not the planar-agent subprocess that ran this verb.
+//! (centurion, or another external harness) supplies the harness pid,
+//! run-identifier, and repo_root via flags so crash-reconciliation can
+//! probe the HARNESS process, not the planar-agent subprocess that ran
+//! this verb.
 //!
 //! JSON output: { ok, run_id, run }.
 
@@ -22,7 +23,7 @@ pub const verb: cli.Cmd = .{
         .{ .long = "--plan", .kind = .string, .required = true, .desc = "Plan id the run belongs to" },
         .{ .long = "--workflow", .kind = .string, .required = true, .desc = "Workflow name (e.g. isolated-sequential)" },
         .{ .long = "--run-id", .kind = .string, .required = true, .desc = "Unique run identifier (run-<pid>-<nanos>)" },
-        .{ .long = "--pid", .kind = .string, .required = true, .desc = "PID of the planar-execute harness process" },
+        .{ .long = "--pid", .kind = .string, .required = true, .desc = "PID of the external workflow harness process (e.g. centurion)" },
         .{ .long = "--repo-root", .kind = .string, .required = true, .desc = "Absolute path of the repo root the harness is driving" },
         .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
     },

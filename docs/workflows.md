@@ -2099,7 +2099,7 @@ The orchestrator records the choice and moves on to the parallel-fanout per-cycl
 
 ## Recipe 22 — Orchestrate a multi-task plan with parallel coders
 
-> **Ownership note (plan 492).** The `parallel-fanout` and `isolated-sequential` lifecycles — worktree creation, the epic/cycle branch model, fan-in merge, and cleanup — are **owned by the `planar-orchestrate` harness**, not the model-driven `/orchestrator` skill. `/orchestrator` runs `classic` (in-pwd) only; when a plan is a fit for parallel fan-out it recommends handing the plan to the harness. The walkthrough below is retained as **the specification of that lifecycle** (what the harness automates) and as the manual git procedure an operator can run by hand in the interim until `planar-orchestrate` ships. The `$ /orchestrator …` transcripts illustrate the flow; in the harness era the driver is `planar-orchestrate`, not the model orchestrator. The six eligibility rules and the path/branch conventions live in plan 492's tech spec.
+> **Ownership note.** The `parallel-fanout` and `isolated-sequential` lifecycles — worktree creation, the epic/cycle branch model, fan-in merge, and cleanup — are **owned by the external `centurion` harness**, not the model-driven `/orchestrator` skill. `/orchestrator` runs `classic` (in-pwd) only; when a plan is a fit for parallel fan-out it recommends handing the plan to `centurion`. The walkthrough below is retained as **the specification of that lifecycle** (what the harness automates) and as the manual git procedure an operator can run by hand. The `$ /orchestrator …` transcripts illustrate the flow; in live use, the driver is `centurion`, not the model orchestrator. The six eligibility rules and the path/branch conventions live in `centurion`'s design documentation.
 
 The full `parallel-fanout` lifecycle, from strategy confirmation through fan-in and reviewer to cleanup. Use this when you have a plan in `active` status with ≥3 tasks, at least 2 of which are parallel-eligible (disjoint `task_touches`, no migration, no singleton-file touch, no blocking open question or proposed-decision dependency).
 
@@ -2372,259 +2372,9 @@ For the persistence-on-claim contract see [`docs/concepts.md §Worktree`](concep
 
 ---
 
-## Recipe 24 — Author and run a `planar-execute` workflow
-
-`planar-execute` is a thin Lua 5.5 runtime that drives `claude -p` agent workers through a `ctx` host-function surface. This recipe walks from authoring a minimal workflow through mock testing to a live run.
-
-### What you need
-
-- `planar-execute` installed at `~/.planar/bin/planar-execute` (via `install.sh`).
-- A plan with at least one open task (`planar task list --plan <id>`).
-- For live runs: `claude` on `$PATH` and `PLANAR_EXECUTE_LIVE_AGENT=1` in the environment.
-
-### Step 1 — Write a minimal workflow
-
-A workflow is a Lua file that returns a table with `meta` and `run`:
-
-```lua
--- my-workflow.lua
-return {
-  meta = {
-    name        = "my-workflow",
-    description = "Single-task coder dispatch, no reviewer.",
-    phases      = { "Dispatch" },
-    -- Omit meta.reviewer = true only if the plan has no risky tasks.
-    -- For plans touching migrations or new CLI verbs, add: reviewer = true,
-  },
-  run = function(ctx)
-    local plan_id = tonumber(ctx.args[1])
-    ctx.phase("Dispatch")
-    ctx.log("dispatching coder for plan " .. plan_id)
-    local result = ctx.agent("Brief text here", {
-      role     = "coder",
-      task_id  = 0,   -- replace with real task id
-    })
-    ctx.log("agent returned status=" .. tostring(result.status))
-  end,
-}
-```
-
-For canonical examples see [`workflows/quality-spine.lua`](../workflows/quality-spine.lua) (coder + reviewer cadence) and [`workflows/parallel-fanout.lua`](../workflows/parallel-fanout.lua) (N-way parallel dispatch). See [`workflows/README.md`](../workflows/README.md) for template documentation and the operator extension checklist.
-
-### Step 2 — Validate meta with `--dry-run`
-
-Load and print `meta` without entering `run()`:
-
-```sh
-planar-execute run --dry-run my-workflow.lua
-```
-
-A clean exit (0) confirms the module loads, exports the required `meta` table, and lists the phases. Fix any load errors before proceeding.
-
-### Step 3 — Exercise control flow with `--mock-worker`
-
-Run the full workflow pipeline — including `ctx.parallel`, `ctx.pipeline`, `ctx.eligible`, and the journal — against a real plan but with a `FakeSpawner` instead of a real `claude -p` worker. No API cost, no filesystem writes from any worker:
-
-```sh
-planar-execute run --mock-worker --plan 42 my-workflow.lua 42
-```
-
-Stderr prints a `MOCK MODE` notice and per-agent canned outcomes (`status=released`). Inspect the output to confirm your `ctx.phase` / `ctx.log` calls and result-routing logic are correct.
-
-`--plan` is optional in mock mode (plan-state reads degrade gracefully when absent) but providing it exercises `ctx.eligible` against real plan state, which surfaces routing logic errors early.
-
-To test **branchy control flow** (e.g. "the 2nd `agent()` call fails, the 3rd succeeds"), use `--mock-outcomes <file>` with a small NDJSON file specifying per-call outcomes:
-
-```sh
-# outcomes.ndjson:
-# {"exit_code":0,"stdout":"","stderr":""}
-# {"exit_code":1,"stdout":"","stderr":"worker-failed"}
-# {"exit_code":0,"stdout":"","stderr":""}
-
-planar-execute run --mock-outcomes outcomes.ndjson --plan 42 my-workflow.lua 42
-```
-
-`--mock-outcomes` implies `--mock-worker` — no need to pass both. Extra `agent()` calls beyond the script fall back to the default canned outcome (exit_code=0). Parse errors exit 1 at startup with a clear message.
-
-### Step 4 — Run live
-
-Set `PLANAR_EXECUTE_LIVE_AGENT=1` and provide `--plan`. The harness spawns real `claude -p` workers with a constrained PATH (`planar-agent` + `git` + system dirs; `planar` is intentionally absent — workers operate through `planar-agent` only):
-
-```sh
-PLANAR_EXECUTE_LIVE_AGENT=1 planar-execute run --plan 42 my-workflow.lua 42
-```
-
-To reclaim workers that are alive but no longer producing `stream-json` events, also set `PLANAR_EXECUTE_STALL_SECS=<seconds>`; the hard per-worker wall-clock timeout still applies when the stall detector is unset.
-
-**Prerequisites for a live run:**
-
-1. `claude` is on `$PATH` (or the vendor binary your harness targets).
-2. The plan has open tasks (`todo` or `in_progress` status).
-3. If any open task touches `migrations/*.sql`, a new top-level CLI verb, or invariant/methodology code: the workflow MUST declare `meta.reviewer = true`. Without it, the bright-line refusal guard trips with exit code 2 and a loud stderr message. Either add the declaration (and wire a reviewer `ctx.agent()` call for each task) or pass `--bypass-reviewer-guard` (with a loud warning and conscious acceptance of the doctrine risk).
-
-### Step 5 — Diagnose with `doctor`
-
-If something looks wrong with the read paths (schema mismatch, plan not found, reconcile probe failure), run the read-only diagnostic:
-
-```sh
-planar-execute doctor --plan 42
-planar-execute doctor --plan 42 --json   # machine-readable
-```
-
-`doctor` exercises all state-read helpers in order, collects every probe outcome, and exits non-zero if any probe failed. It never writes anything.
-
-### Observing a running workflow
-
-While a workflow is running, use `planar-watch` to observe the claim activity it generates:
-
-```sh
-planar-watch feed --follow   # cross-cutting activity feed
-planar-watch claims --plan 42 --json --follow
-```
-
-Workers spawned under `PLANAR_EXECUTE_LIVE_AGENT=1` appear as active claims; the harness heartbeats each claim automatically. Press Ctrl-C to stop the watcher (exit 0).
-
-For reference documentation on all flags see [`docs/cli-reference.md § Binary: planar-execute`](./cli-reference.md#binary-planar-execute). For the conceptual model of the Lua control plane and the no-DB-handle stance see [`docs/concepts.md § Embedded-Lua control plane`](./concepts.md#embedded-lua-control-plane).
-
-## Recipe 24b — Use the context plane in a workflow
-
-The context plane lets one workflow stage pass structured, typed findings to the next. Workers accumulate records into the run's working memory via `planar-agent context add`; later stages read them back via `ctx.context` and fold them into the next coder brief via `ctx.brief`. See [`docs/concepts.md § Context plane`](./concepts.md#context-plane) for the mental model, the table design, and the lifecycle.
-
-### Prerequisites
-
-- `planar-execute` installed and a plan with at least two tasks (`planar task list --plan <id>`).
-- For live runs: `claude` on `$PATH` and `PLANAR_EXECUTE_LIVE_AGENT=1`.
-
-### Step 1 — Worker accumulates context records
-
-A worker in the `plan` stage writes findings and a risk via `planar-agent context add`. The worker receives its `--claim` token in the brief; `planar-agent` stamps `run_id`, `stage`, `session_id`, and `task_id` server-side from the claim row.
-
-```sh
-# Inside a worker brief (the claim token is provided by the orchestrator):
-planar-agent context add \
-  --claim  <claim_token> \
-  --kind   finding \
-  --body   "Migration 00023 adds run_id/stage to agent_work_claims; apply before testing."
-
-planar-agent context add \
-  --claim  <claim_token> \
-  --kind   risk \
-  --body   "Schema change requires running make test-integration twice to confirm stability."
-```
-
-The worker does not pass `--run` or `--stage`. Those are stamped from the claim row, which carries them because the orchestrator issued the pull/claim with `--run <run_db_id> --stage plan` (planar-execute does this automatically for every worker it dispatches).
-
-### Step 2 — Observe accumulated records
-
-At any point during or after the run, use `planar-watch` to inspect what has been written:
-
-```sh
-planar-watch run list --plan <plan_id>
-# run:5  plan:42  workflow:my-workflow  status:running  started_at:…
-
-planar-watch run show 5
-# run:5 plan:42 status:running
-# stage: plan
-#   finding  Migration 00023 adds run_id/stage …
-#   risk     Schema change requires …
-```
-
-Use `--json` for machine-readable output:
-
-```sh
-planar-watch run show 5 --json
-# {"run":{"id":5,"plan_id":42,"status":"running",…},"context_records":[…]}
-```
-
-You can also filter records directly via `planar-agent context list`:
-
-```sh
-planar-agent context list --run 5 --stage plan --json
-# {"ok":true,"records":[{"id":1,"kind":"finding","body":"…","status":"active",…},…]}
-```
-
-### Step 3 — Next stage reads prior context and composes a brief
-
-A Lua workflow calls `ctx.context("plan")` to read the plan stage's records, then uses `ctx.brief` to compose a brief that carries them forward. `ctx.brief` auto-injects all active records into the "Prior-stage context" section; any `capsule` record is promoted to a "Compiled capsule" sub-section.
-
-```lua
--- my-workflow.lua
-return {
-  meta = {
-    name    = "two-stage-context",
-    description = "Plan stage writes context; code stage reads it.",
-    phases  = { "Plan", "Code" },
-  },
-  run = function(ctx)
-    local plan_id = tonumber(ctx.args[1])
-
-    -- Stage 1: dispatch a planner; its findings land in context_records.
-    ctx.phase("Plan")
-    local plan_result = ctx.agent(
-      ctx.brief({
-        problem_statement = "Decompose the plan. Write your findings via context add.",
-        claim_token       = "<claim_token>",  -- filled by ctx.agent at dispatch time
-        gates             = { "make build" },
-      }),
-      { role = "coder", task_id = 0 }  -- replace 0 with real task id
-    )
-
-    -- Stage 2: read plan stage records, compose a brief that carries them forward.
-    ctx.phase("Code")
-    local records = ctx.context("plan")     -- Lua table of {id, kind, body, status, …}
-    ctx.log("plan stage left " .. #records .. " context records")
-
-    local code_brief = ctx.brief({
-      problem_statement = "Implement the tasks. See 'Prior-stage context' for findings.",
-      claim_token       = "<claim_token>",
-      gates             = { "make fmt-check", "make build", "make test", "make test-integration" },
-    })
-    -- ctx.brief auto-fetches ALL context records for the current run and injects
-    -- them into the "## Prior-stage context" section of the compiled brief.
-    -- Records with kind="capsule" are promoted to "### Compiled capsule".
-
-    local code_result = ctx.agent(code_brief, { role = "coder", task_id = 0 })
-    ctx.log("code stage done: status=" .. tostring(code_result.status))
-  end,
-}
-```
-
-### Step 4 — Stage close: compile a capsule
-
-When a stage is complete, write a summary `capsule` record that distills the raw findings. The capsule's `--compiled-from` flag records which raw record ids it was distilled from (decision 446 provenance). Future stages that call `ctx.brief` see the capsule under "Compiled capsule" and the raw records under "Context records".
-
-```sh
-# After the plan stage completes, compile a capsule from records 1 and 2:
-planar-agent context add \
-  --claim          <claim_token> \
-  --kind           capsule \
-  --body           "Plan stage summary: migration 00023 pre-req identified; double-run gate required." \
-  --compiled-from  "1,2"
-
-# Mark the raw records consumed (bulk stage sweep):
-planar-agent context resolve \
-  --run    5 \
-  --stage  plan \
-  --status consumed
-```
-
-Raw records are never deleted (decision 446). `consumed` status marks them as incorporated; they remain visible in `planar-watch run show` and `context list` for the audit trail.
-
-### Mock-mode testing
-
-Use `--mock-worker` to exercise the full context-plane loop — including `ctx.context` and `ctx.brief` injection — without a live `claude -p` worker:
-
-```sh
-planar-execute run --mock-worker --plan 42 my-workflow.lua 42
-```
-
-`--mock-worker` mode still calls `planar-agent run start/end` (run-row bracketing is independent of worker spawning), so `planar-watch run list --plan 42` shows the run row after the mock run completes.
-
-For the conceptual background see [`docs/concepts.md § Context plane`](./concepts.md#context-plane).
-
 ## Recipe 25 — Review and configure per-role model routing
 
-Inspect which models your agent roles will spawn, and re-route them — across Claude and Codex — through the unified config (plan 540). All model routing (skills render, `agents/models.md`, and `planar-execute`) resolves from one source via the shared resolver.
+Inspect which models your agent roles will spawn, and re-route them — across Claude and Codex — through the unified config (plan 540). All model routing (skills render, `agents/models.md`, and the external `centurion` harness) resolves from one source via the shared resolver.
 
 **1. Discover installed providers + their catalogs.**
 
@@ -2649,7 +2399,7 @@ planar models routing
 #   reviewer   → claude claude-opus-4-8        (large)  [embedded default]
 ```
 
-`planar models routing --json` is the machine form `planar-execute` shells to pick its worker model per role.
+`planar models routing --json` is the machine form `centurion` (the external workflow harness) shells to pick its worker model per role.
 
 **3. Override routing in `~/.planar/config.toml`.** Optionally scaffold an editable block first:
 
@@ -2680,7 +2430,7 @@ planar models routing
 #   coder      → codex  gpt-5.4                (medium) [config file]
 ```
 
-A `planar-execute run --dry-run <workflow.lua>` shows the same table for a specific run; each live spawn logs a `[dispatch] task:N vendor=… role=… model=…` banner. See [`docs/concepts.md § Model routing`](./concepts.md#model-routing) and the `pl-models-config` skill.
+See [`docs/concepts.md § Model routing`](./concepts.md#model-routing) and the `pl-models-config` skill.
 
 ## Recipe 26 — Self-report a usage finding to GitHub Issues
 

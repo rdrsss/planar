@@ -3,9 +3,9 @@
 //! Single source of truth for the six parallel-eligibility rules locked
 //! by decision 370 (accepted). Consumed by `planar plan
 //! recommend-strategy` (the operator-facing verb) and, downstream, by
-//! planar-execute's fan-out eligibility gate (M5 task 3185) and the
-//! orchestrator skill. The rules are NOT re-derived in planar-execute
-//! Zig — they live here, once.
+//! centurion's fan-out eligibility gate (M5 task 3185) and the
+//! orchestrator skill. The rules are NOT re-derived in centurion
+//! — they live here, once.
 //!
 //! READ-ONLY: this module only SELECTs. No writes, no migration.
 //!

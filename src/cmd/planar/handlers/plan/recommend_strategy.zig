@@ -6,8 +6,8 @@
 //! open (todo) tasks by applying the six parallel-eligibility rules and
 //! emits the eligible subset + the serialized remainder with per-task
 //! exclusion reasons. This is the single source of truth consumed by
-//! planar-execute's fan-out gate (M5 task 3185) and the orchestrator
-//! skill — the rules are NOT re-derived in planar-execute.
+//! centurion's fan-out gate (M5 task 3185) and the orchestrator
+//! skill — the rules are NOT re-derived in centurion.
 //!
 //! JSON shape:
 //!   { "plan_id": int,
