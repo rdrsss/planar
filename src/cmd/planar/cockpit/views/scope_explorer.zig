@@ -143,9 +143,10 @@ pub const ExplorerState = struct {
         try self.refreshDetail(d);
     }
 
-    /// Build the flat node list from plans (filtered). Plan nodes that are
-    /// collapsed hide their children. Uses queryPlanNodesFiltered which now
-    /// includes parent_plan_id for depth computation.
+    /// Build the flat node list from plans (filtered) and their drill children.
+    /// Plan nodes that are collapsed hide their children. Uses
+    /// queryPlanNodesFiltered for the plan tier and queryPlanDrillRows for the
+    /// task/decision/question/scenario/artifact tier under each plan.
     fn buildPlanTree(
         self: *ExplorerState,
         d: *db.sqlite.Db,
@@ -162,7 +163,7 @@ pub const ExplorerState = struct {
             self.allocator.free(plan_rows);
         }
 
-        // Compute depth for each node using a parent-id → depth map.
+        // Compute depth for each plan using a parent-id → depth map.
         // queryPlanNodesFiltered orders rows by coalesce(parent_plan_id, id)
         // so parents appear before their children — depth is resolved in one pass.
         var id_to_depth = std.AutoHashMap(i64, u32).init(self.allocator);
@@ -195,23 +196,71 @@ pub const ExplorerState = struct {
                 .badge = p.status_badge,
                 .depth = depth,
                 .collapsed = was_collapsed,
-                .hidden = false, // computed below
+                .hidden = false, // computed in second pass below
                 .count_badge = if (p.task_count > 0) p.task_count else null,
             });
+
+            // Append drill children (tasks, decisions, questions, scenarios,
+            // artifacts) under this plan node at depth+1. Children are fetched
+            // unconditionally; the hidden flag in the second pass will gate
+            // visibility when the plan is collapsed.
+            const drill_rows = try view_model.queryPlanDrillRows(d, self.allocator, p.id);
+            defer view_model.DrillRow.deinitMany(drill_rows, self.allocator);
+
+            for (drill_rows) |dr| {
+                const child_kind: NodeKind = switch (dr.kind) {
+                    .task => .task,
+                    .decision => .decision,
+                    .question => .question,
+                    .scenario => .scenario,
+                    .artifact => .artifact,
+                };
+                const child_label = try self.allocator.dupe(u8, dr.title);
+                errdefer self.allocator.free(child_label);
+
+                try out.append(self.allocator, .{
+                    .kind = child_kind,
+                    .entity_id = dr.id,
+                    // parent_plan_id for drill children is the plan they belong
+                    // to; used by the hidden-flag pass below.
+                    .parent_plan_id = p.id,
+                    .label = child_label,
+                    .badge = dr.status_badge,
+                    .depth = depth + 1,
+                    .collapsed = false,
+                    .hidden = false, // computed in second pass below
+                    .count_badge = null,
+                });
+            }
         }
 
-        // Second pass: mark nodes as hidden when their parent plan is collapsed.
+        // Second pass: mark nodes as hidden when their parent plan is collapsed
+        // or when the plan itself is hidden (ancestor collapsed). This applies
+        // to both subplan nodes (kind == .plan with a parent_plan_id) and drill
+        // child nodes (kind != .plan with parent_plan_id = their plan's id).
         var collapsed_set = std.AutoHashMap(i64, void).init(self.allocator);
         defer collapsed_set.deinit();
 
         for (out.items) |*node| {
-            if (node.kind != .plan) continue;
-            if (node.collapsed) {
-                try collapsed_set.put(node.entity_id, {});
-            }
-            if (node.parent_plan_id) |ppid| {
-                if (collapsed_set.contains(ppid)) {
-                    node.hidden = true;
+            if (node.kind == .plan) {
+                if (node.collapsed) {
+                    try collapsed_set.put(node.entity_id, {});
+                }
+                if (node.parent_plan_id) |ppid| {
+                    if (collapsed_set.contains(ppid)) {
+                        node.hidden = true;
+                        // A hidden plan also collapses its children implicitly;
+                        // add it to the collapsed set so its children are hidden.
+                        try collapsed_set.put(node.entity_id, {});
+                    }
+                }
+            } else {
+                // Drill children: hidden when their parent plan is in the
+                // collapsed set (i.e. collapsed or itself hidden).
+                if (node.parent_plan_id) |ppid| {
+                    if (collapsed_set.contains(ppid)) {
+                        node.hidden = true;
+                    }
                 }
             }
         }
@@ -298,11 +347,11 @@ pub const ExplorerState = struct {
             return false;
         }
 
-        // Drill: Enter on a non-plan node (or right-arrow) — currently
-        // detail pane is automatically updated on selection; no separate
-        // drill action needed (the detail is already live).
+        // Selecting a non-plan node (task, decision, question, scenario,
+        // artifact) automatically updates the detail pane via refreshDetail;
+        // no separate drill key action is needed.
 
-        // Scope toggle: 'a' = all scopes, 's' = cwd scope.
+        // Scope toggle: 'a' = all scopes.
         if (key.matches('a', .{})) {
             self.filter = .all;
             self.filter_is_cwd = false;
@@ -321,14 +370,28 @@ pub const ExplorerState = struct {
                 break;
             }
         }
-        // Recompute hidden flags.
+        // Recompute hidden flags for all node kinds. Drill children (kind !=
+        // .plan) are hidden when their parent_plan_id is in the collapsed set.
         var collapsed_set = std.AutoHashMap(i64, void).init(self.allocator);
         defer collapsed_set.deinit();
         for (self.nodes) |*n| {
-            if (n.kind != .plan) continue;
-            if (n.collapsed) collapsed_set.put(n.entity_id, {}) catch {};
-            if (n.parent_plan_id) |ppid| {
-                n.hidden = collapsed_set.contains(ppid);
+            if (n.kind == .plan) {
+                if (n.collapsed) collapsed_set.put(n.entity_id, {}) catch {};
+                if (n.parent_plan_id) |ppid| {
+                    n.hidden = collapsed_set.contains(ppid);
+                    // A hidden plan's subtree must also be collapsed so its
+                    // children (subplans and drill rows) are hidden.
+                    if (n.hidden) collapsed_set.put(n.entity_id, {}) catch {};
+                } else {
+                    n.hidden = false;
+                }
+            } else {
+                // Drill children: hide when their parent plan is collapsed.
+                if (n.parent_plan_id) |ppid| {
+                    n.hidden = collapsed_set.contains(ppid);
+                } else {
+                    n.hidden = false;
+                }
             }
         }
     }
@@ -570,6 +633,162 @@ test "scope_explorer: scopeLabel returns cwd-scope for filter=.repo" {
     var buf: [64]u8 = undefined;
     const label = scopeLabel(&state, &buf);
     try testing.expectEqualStrings("cwd-scope", label);
+}
+
+// -------------------------------------------------------------------------
+// Task 3966/3968/3969 tests: drill children, collapse, and detail pane.
+// -------------------------------------------------------------------------
+
+/// Seed a plan with one task, one linked decision, one linked question, one
+/// linked test_scenario, and one linked artifact. Returns the plan_id.
+fn seedPlanWithDrillData(d: *db.sqlite.Db) !i64 {
+    const plan_id = try d.execParams(
+        "insert into plans (scope_kind, title, slug, status) values ('global','DrillPlan','drill-plan','active')",
+        &.{},
+    );
+    // Task directly on the plan.
+    _ = try d.execParams(
+        "insert into tasks (scope_kind, plan_id, title, status) values ('global', ?, 'DrillTask','doing')",
+        &.{.{ .int = plan_id }},
+    );
+    // Decision linked via entity_links.
+    const dec_id = try d.execParams(
+        "insert into decisions (scope_kind, title, body, status) values ('global','DrillDec','Dec body','accepted')",
+        &.{},
+    );
+    _ = try d.execParams(
+        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('plan', ?, 'decision', ?, 'derives-from')",
+        &.{ .{ .int = plan_id }, .{ .int = dec_id } },
+    );
+    // Question linked via entity_links.
+    const q_id = try d.execParams(
+        "insert into questions (scope_kind, title, status) values ('global','DrillQ','open')",
+        &.{},
+    );
+    _ = try d.execParams(
+        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('plan', ?, 'question', ?, 'addresses')",
+        &.{ .{ .int = plan_id }, .{ .int = q_id } },
+    );
+    // Test scenario linked via entity_links.
+    const sc_id = try d.execParams(
+        "insert into test_scenarios (scope_kind, title, status) values ('global','DrillScenario','verified')",
+        &.{},
+    );
+    _ = try d.execParams(
+        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('plan', ?, 'test_scenario', ?, 'verifies')",
+        &.{ .{ .int = plan_id }, .{ .int = sc_id } },
+    );
+    // Artifact linked via entity_links.
+    const art_id = try d.execParams(
+        "insert into artifacts (scope_kind, kind, title, body) values ('global','tech_spec','DrillArtifact','Artifact body')",
+        &.{},
+    );
+    _ = try d.execParams(
+        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('plan', ?, 'artifact', ?, 'cites')",
+        &.{ .{ .int = plan_id }, .{ .int = art_id } },
+    );
+    return plan_id;
+}
+
+test "scope_explorer: drill children appear under a plan with seeded entities" {
+    // (a) Asserts task 3966/3968: queryPlanDrillRows is wired into buildPlanTree.
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    _ = try seedPlanWithDrillData(&d);
+
+    var state = ExplorerState.init(a);
+    defer state.deinit();
+
+    try state.reload(&d);
+
+    // Expect 1 plan + 5 drill children (task + decision + question + scenario + artifact).
+    try testing.expectEqual(@as(usize, 6), state.nodes.len);
+    try testing.expectEqual(@as(usize, 6), state.visibleCount());
+
+    // First node must be the plan.
+    try testing.expectEqual(NodeKind.plan, state.nodes[0].kind);
+
+    // Remaining nodes must be child kinds.
+    var found_task = false;
+    var found_decision = false;
+    var found_question = false;
+    var found_scenario = false;
+    var found_artifact = false;
+    for (state.nodes[1..]) |n| {
+        switch (n.kind) {
+            .task => found_task = true,
+            .decision => found_decision = true,
+            .question => found_question = true,
+            .scenario => found_scenario = true,
+            .artifact => found_artifact = true,
+            .plan => {},
+        }
+        // All drill children must have depth > 0.
+        try testing.expect(n.depth > 0);
+        // All drill children must have parent_plan_id set.
+        try testing.expect(n.parent_plan_id != null);
+    }
+    try testing.expect(found_task);
+    try testing.expect(found_decision);
+    try testing.expect(found_question);
+    try testing.expect(found_scenario);
+    try testing.expect(found_artifact);
+}
+
+test "scope_explorer: collapsing a plan hides its drill children" {
+    // (b) Asserts that collapse still works after drill children are wired in.
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const plan_id = try seedPlanWithDrillData(&d);
+
+    var state = ExplorerState.init(a);
+    defer state.deinit();
+
+    try state.reload(&d);
+    // 1 plan + 5 drill children all visible.
+    try testing.expectEqual(@as(usize, 6), state.visibleCount());
+
+    // Collapse the plan.
+    state.toggleCollapse(plan_id);
+    // Only the plan itself should be visible; all 5 drill children hidden.
+    try testing.expectEqual(@as(usize, 1), state.visibleCount());
+
+    // Expand again — all 6 back.
+    state.toggleCollapse(plan_id);
+    try testing.expectEqual(@as(usize, 6), state.visibleCount());
+}
+
+test "scope_explorer: selecting a non-plan node yields non-empty detail body" {
+    // (c) Asserts task 3969: refreshDetail dispatches correctly for drill nodes.
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    _ = try seedPlanWithDrillData(&d);
+
+    var state = ExplorerState.init(a);
+    defer state.deinit();
+
+    try state.reload(&d);
+
+    // Walk through all visible nodes. For each non-plan node, set the
+    // selection to that position and assert the detail body is non-empty.
+    var visible_idx: usize = 0;
+    for (state.nodes) |n| {
+        if (n.hidden) continue;
+        if (n.kind != .plan) {
+            state.nav.selected_idx = visible_idx;
+            try state.refreshDetail(&d);
+            try testing.expect(state.detail != null);
+            // The detail body must mention the entity's content (non-empty body).
+            try testing.expect(state.detail.?.body.len > 0);
+        }
+        visible_idx += 1;
+    }
 }
 
 test "scope_explorer compiles" {
