@@ -195,8 +195,12 @@ test "view_switcher: switchTo by id" {
     try vs.register(.{ .id = .agent_monitor, .name = "M", .key = '1' });
     try vs.register(.{ .id = .scope_explorer, .name = "E", .key = '2' });
     try vs.register(.{ .id = .task_board, .name = "T", .key = '3' });
+    try vs.register(.{ .id = .decision_log, .name = "D", .key = '4' });
     try std.testing.expect(vs.switchTo(.task_board));
     try std.testing.expectEqual(@as(usize, 2), vs.active_idx);
+    // Switch to decision_log by id.
+    try std.testing.expect(vs.switchTo(.decision_log));
+    try std.testing.expectEqual(@as(usize, 3), vs.active_idx);
     // Switch back to agent_monitor by id.
     try std.testing.expect(vs.switchTo(.agent_monitor));
     try std.testing.expectEqual(@as(usize, 0), vs.active_idx);

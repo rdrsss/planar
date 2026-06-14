@@ -39,6 +39,7 @@ const split_layout = @import("widgets/split_layout.zig");
 const scope_explorer = @import("views/scope_explorer.zig");
 const agent_monitor = @import("views/agent_monitor.zig");
 const task_board = @import("views/task_board.zig");
+const decision_log = @import("views/decision_log.zig");
 
 /// Minimum usable terminal dimensions.
 const MIN_WIDTH: u16 = 40;
@@ -208,6 +209,10 @@ pub fn run(
     var board: task_board.BoardState = task_board.BoardState.init(alloc);
     defer board.deinit();
 
+    // ---- Decision Log state (tasks 4021–4022, M6) -----------------------
+    var declog: decision_log.DecisionLogState = decision_log.DecisionLogState.init(alloc);
+    defer declog.deinit();
+
     // Determine cwd-scope filter on launch. Falls back to .all when the
     // cwd is outside any registered repo (q607: cwd-derived default).
     const cwd_for_scope = std.Io.Dir.realPathFileAlloc(
@@ -233,12 +238,16 @@ pub fn run(
     // Initial load of the Task Board.
     try board.reload(db_handle);
 
+    // Initial load of the Decision Log.
+    try declog.reload(db_handle);
+
     // ---- Spine state ----------------------------------------------------
     // Scope Explorer is the default (index 0) landing view per the spec.
     var vs: view_switcher.ViewSwitcher = .{};
     try vs.register(.{ .id = .scope_explorer, .name = "Explorer", .key = '1' });
     try vs.register(.{ .id = .agent_monitor, .name = "Monitor", .key = '2' });
     try vs.register(.{ .id = .task_board, .name = "Tasks", .key = '3' });
+    try vs.register(.{ .id = .decision_log, .name = "Decisions", .key = '4' });
 
     var sl: split_layout.SplitLayout = .{};
 
@@ -247,7 +256,7 @@ pub fn run(
     try vx.queryTerminal(tty.writer(), .fromSeconds(1));
 
     // Render the initial frame.
-    try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor, &board);
+    try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor, &board, &declog);
 
     // Main event loop.
     while (true) {
@@ -285,6 +294,12 @@ pub fn run(
                         } else {
                             need_render = false;
                         }
+                    } else if (active != null and active.?.id == .decision_log) {
+                        if (declog.handleKey(key, db_handle)) {
+                            // Consumed by decision log — render.
+                        } else {
+                            need_render = false;
+                        }
                     } else {
                         need_render = false;
                     }
@@ -305,11 +320,13 @@ pub fn run(
                     monitor.reload(db_handle) catch {};
                 } else if (active != null and active.?.id == .task_board) {
                     board.reload(db_handle) catch {};
+                } else if (active != null and active.?.id == .decision_log) {
+                    declog.reload(db_handle) catch {};
                 }
             },
         }
         if (need_render) {
-            try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor, &board);
+            try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor, &board, &declog);
         }
     }
     // Terminal restored by deferred vx.deinit.
@@ -375,6 +392,7 @@ fn renderFrame(
     explorer: *const scope_explorer.ExplorerState,
     monitor: *const agent_monitor.MonitorState,
     board: *const task_board.BoardState,
+    declog: *const decision_log.DecisionLogState,
 ) !void {
     const win = vx.window();
     win.clear();
@@ -438,9 +456,16 @@ fn renderFrame(
             .text = legend,
             .style = .{ .dim = true },
         }, .{ .row_offset = legend_row, .col_offset = 0 });
+    } else if (active != null and active.?.id == .decision_log) {
+        var legend_buf: [128]u8 = undefined;
+        const legend = decision_log.legendLabel(&legend_buf);
+        _ = content_win.printSegment(.{
+            .text = legend,
+            .style = .{ .dim = true },
+        }, .{ .row_offset = legend_row, .col_offset = 0 });
     } else {
         _ = content_win.printSegment(.{
-            .text = "  q Quit  Tab Focus  1-3 View  Ctrl-C Quit",
+            .text = "  q Quit  Tab Focus  1-4 View  Ctrl-C Quit",
             .style = .{ .dim = true },
         }, .{ .row_offset = legend_row, .col_offset = 0 });
     }
@@ -467,14 +492,16 @@ fn renderFrame(
         try agent_monitor.render(monitor, panes.nav, panes.detail, alloc);
     } else if (active != null and active.?.id == .task_board) {
         try task_board.render(board, panes.nav, panes.detail, alloc);
+    } else if (active != null and active.?.id == .decision_log) {
+        try decision_log.render(declog, panes.nav, panes.detail, alloc);
     } else {
-        // Placeholder for views not yet implemented (M6+).
+        // Placeholder for views not yet implemented (M7+).
         _ = panes.nav.printSegment(.{
-            .text = "[Navigator — M6+]",
+            .text = "[Navigator — M7+]",
             .style = .{ .dim = true },
         }, .{ .row_offset = 1, .col_offset = 1 });
         _ = panes.detail.printSegment(.{
-            .text = "[Detail pane — M6+]",
+            .text = "[Detail pane — M7+]",
             .style = .{ .dim = true },
         }, .{ .row_offset = 1, .col_offset = 1 });
     }
@@ -566,6 +593,7 @@ const markdown_detail = @import("widgets/markdown_detail.zig");
 const scope_explorer_mod = @import("views/scope_explorer.zig");
 const agent_monitor_mod = @import("views/agent_monitor.zig");
 const task_board_mod = @import("views/task_board.zig");
+const decision_log_mod = @import("views/decision_log.zig");
 
 // =========================================================================
 // Tests
@@ -664,6 +692,7 @@ test "cockpit app: view_switcher default landing is scope_explorer" {
     var vs: view_switcher.ViewSwitcher = .{};
     try vs.register(.{ .id = .scope_explorer, .name = "Explorer", .key = '1' });
     try vs.register(.{ .id = .agent_monitor, .name = "Monitor", .key = '2' });
+    try vs.register(.{ .id = .decision_log, .name = "Decisions", .key = '4' });
     const act = vs.active();
     try std.testing.expect(act != null);
     try std.testing.expectEqual(view_model.ViewId.scope_explorer, act.?.id);
@@ -685,4 +714,5 @@ test "cockpit spine modules compile" {
     std.testing.refAllDecls(scope_explorer_mod);
     std.testing.refAllDecls(agent_monitor_mod);
     std.testing.refAllDecls(task_board_mod);
+    std.testing.refAllDecls(decision_log_mod);
 }
