@@ -7,10 +7,11 @@
 #   ~/.planar/
 #     bin/planar                      # the operator binary
 #     bin/planar-agent                # the agent-callable coordination binary
-#                                     # (plan 85 — three-binary architecture)
 #     bin/planar-watch                # the human-facing read-only viewer
-#                                     # (plan 85 M8 — opens DB read-only,
-#                                     #  zero write verbs)
+#                                     # (opens DB read-only, zero write verbs)
+#     bin/planar-doc                  # the doc-state manifest tool
+#                                     # (build/verify/diff/cover/nodoc/lint;
+#                                     #  never opens SQLite)
 #     planar.db                       # created on first `planar init`
 #     migrations/0001_foundation.up.sql  # canonical migration sources (also
 #                                     # embedded into the binary at compile
@@ -263,21 +264,44 @@ title "Building the planar + planar-agent binaries"
 
 mkdir -p "$PLANAR_HOME/bin"
 # `zig build --prefix <root>` installs every `installArtifact` target into
-# <root>/bin/. As of plan 85 M8 the build registers THREE binaries:
+# <root>/bin/. The build registers FOUR binaries:
 #
 #   planar         — operator surface
 #   planar-agent   — agent-callable coordination (atomic claim ops,
 #                    nested actions, ingest, operator recovery)
 #   planar-watch   — human-facing read-only viewer (no write verbs,
 #                    strict SQLITE_OPEN_READONLY handle)
+#   planar-doc     — doc-state manifest tool (build/verify/diff/cover/
+#                    nodoc/lint; never opens SQLite)
 #
-# All three land in $PLANAR_HOME/bin/ in one shot — no extra cp step needed.
+# All four land in $PLANAR_HOME/bin/ in one shot — no extra cp step needed.
 # Migrations and templates/defaults are read from the repo root at
 # codegen time (build.zig sits at the repo root).
 ( cd "$REPO_ROOT" && zig build -Doptimize="$OPTIMIZE" --prefix "$PLANAR_HOME" )
 log "wrote $PLANAR_HOME/bin/planar"
 log "wrote $PLANAR_HOME/bin/planar-agent"
 log "wrote $PLANAR_HOME/bin/planar-watch"
+log "wrote $PLANAR_HOME/bin/planar-doc"
+
+# `zig build --prefix` only writes the targets it builds — it never removes
+# files a PRIOR install left behind. Iterate the cleanup manifest and delete
+# any $PLANAR_HOME-relative artifact current Planar no longer ships (e.g. a
+# binary dropped in a refactor) so a re-install over an older tree is clean.
+# See install-cleanup.txt.
+CLEANUP_LIST="$REPO_ROOT/install-cleanup.txt"
+if [[ -f "$CLEANUP_LIST" ]]; then
+  while IFS= read -r _raw; do
+    _line="${_raw%%#*}"                  # strip an inline comment
+    read -r _relpath _ <<< "$_line"      # trim whitespace; first token = path
+    [[ -z "$_relpath" ]] && continue
+    _target="$PLANAR_HOME/$_relpath"
+    if [[ "$_relpath" == */ ]]; then
+      [[ -d "$_target" ]] && { rm -rf "$_target"; log "removed stale dir  $_target"; }
+    else
+      [[ -e "$_target" ]] && { rm -f "$_target"; log "removed stale file $_target"; }
+    fi
+  done < "$CLEANUP_LIST"
+fi
 
 # ---------- place artifacts ----------
 

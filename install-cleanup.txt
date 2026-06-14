@@ -1,0 +1,17 @@
+# install-cleanup.txt — artifacts that older Planar versions installed into
+# $PLANAR_HOME but current Planar no longer ships. On every run, install.sh
+# removes each listed path (if present) so a re-install over an old tree is
+# clean: `zig build --prefix` overwrites the targets it builds but never
+# deletes files left behind by a prior install.
+#
+# Format: one path per line, RELATIVE to $PLANAR_HOME. Blank lines and lines
+# starting with `#` are ignored; an inline `# note` is stripped. A trailing
+# slash means "directory" (removed with `rm -rf`); otherwise it's a file
+# (removed with `rm -f`). Paths must not contain spaces.
+#
+# When you remove something Planar used to install under $PLANAR_HOME, add it
+# here with a short why/when note. (Vendor-surface orphans rendered OUTSIDE
+# $PLANAR_HOME — e.g. ~/.claude/commands/ — are the `planar skills render`
+# step's domain, not this manifest.)
+
+bin/planar-execute    # Lua workflow harness, extracted to the centurion repo (2026-06)

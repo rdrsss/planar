@@ -339,3 +339,4 @@ The defaults are mainstream Zig; deviations require justification.
 | `docs/architecture.md` drifts from migrations | Schema change not reflected in docs | Update `docs/architecture.md` in the same change as the migration. |
 | Agent or skill scaffolds repo-local context | Pre-context-plane template assumption | Keep context in `docs/`, Planar artifacts, and SQLite. |
 | Workflow surfaces drift apart | Updated one vendor but not the others | Audit Claude, Codex, Copilot, and agent surfaces; run parity checks. |
+| Re-install leaves an orphaned binary/file in `~/.planar/bin` | Stopped shipping an installed artifact without recording it | Add its `$PLANAR_HOME`-relative path to `install-cleanup.txt`; `install.sh` removes listed paths every run (`zig build --prefix` overwrites what it builds but never deletes a prior install's leftovers). Vendor-surface orphans outside `$PLANAR_HOME` are pruned by `planar skills render`. |
