@@ -37,6 +37,7 @@ const view_model = @import("view_model.zig");
 const view_switcher = @import("widgets/view_switcher.zig");
 const split_layout = @import("widgets/split_layout.zig");
 const scope_explorer = @import("views/scope_explorer.zig");
+const agent_monitor = @import("views/agent_monitor.zig");
 
 /// Minimum usable terminal dimensions.
 const MIN_WIDTH: u16 = 40;
@@ -198,6 +199,10 @@ pub fn run(
     var explorer: scope_explorer.ExplorerState = scope_explorer.ExplorerState.init(alloc);
     defer explorer.deinit();
 
+    // ---- Agent Monitor state (task 4015, M4) ----------------------------
+    var monitor: agent_monitor.MonitorState = agent_monitor.MonitorState.init(alloc);
+    defer monitor.deinit();
+
     // Determine cwd-scope filter on launch. Falls back to .all when the
     // cwd is outside any registered repo (q607: cwd-derived default).
     const cwd_for_scope = std.Io.Dir.realPathFileAlloc(
@@ -217,6 +222,9 @@ pub fn run(
     // Initial load of the Scope Explorer tree.
     try explorer.reload(db_handle);
 
+    // Initial load of the Agent Monitor.
+    try monitor.reload(db_handle);
+
     // ---- Spine state ----------------------------------------------------
     // Scope Explorer is the default (index 0) landing view per the spec.
     var vs: view_switcher.ViewSwitcher = .{};
@@ -231,7 +239,7 @@ pub fn run(
     try vx.queryTerminal(tty.writer(), .fromSeconds(1));
 
     // Render the initial frame.
-    try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer);
+    try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor);
 
     // Main event loop.
     while (true) {
@@ -257,6 +265,12 @@ pub fn run(
                         } else {
                             need_render = false;
                         }
+                    } else if (active != null and active.?.id == .agent_monitor) {
+                        if (monitor.handleKey(key)) {
+                            // Consumed by monitor — render.
+                        } else {
+                            need_render = false;
+                        }
                     } else {
                         need_render = false;
                     }
@@ -268,14 +282,18 @@ pub fn run(
             .db_changed => {
                 // Re-query the active view's data on WAL change or heartbeat.
                 // Task 4055: this is the live wake-redraw path exercised end-to-end.
+                // Task 4016: Agent Monitor reloads on .db_changed via the SAME
+                // wake thread — no second wake thread is spawned.
                 const active = vs.active();
                 if (active != null and active.?.id == .scope_explorer) {
                     explorer.reload(db_handle) catch {};
+                } else if (active != null and active.?.id == .agent_monitor) {
+                    monitor.reload(db_handle) catch {};
                 }
             },
         }
         if (need_render) {
-            try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer);
+            try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor);
         }
     }
     // Terminal restored by deferred vx.deinit.
@@ -339,6 +357,7 @@ fn renderFrame(
     vs: *const view_switcher.ViewSwitcher,
     sl: *const split_layout.SplitLayout,
     explorer: *const scope_explorer.ExplorerState,
+    monitor: *const agent_monitor.MonitorState,
 ) !void {
     const win = vx.window();
     win.clear();
@@ -372,7 +391,7 @@ fn renderFrame(
     });
 
     // ---- Key legend bar (bottom row of content) -----------------------
-    // Show scope label for the Explorer view, generic legend for others.
+    // Show view-specific legend for Explorer and Monitor; generic otherwise.
     var scope_buf: [32]u8 = undefined;
     const legend_row: u16 = content_win.height -| 1;
     const active = vs.active();
@@ -384,6 +403,13 @@ fn renderFrame(
             "  q Quit  j/k Move  Enter Expand  a All-scopes  Tab Focus  [{s}]",
             .{scope_lbl},
         ) catch "  q Quit  j/k Move  Enter Expand  a All-scopes  Tab Focus";
+        _ = content_win.printSegment(.{
+            .text = legend,
+            .style = .{ .dim = true },
+        }, .{ .row_offset = legend_row, .col_offset = 0 });
+    } else if (active != null and active.?.id == .agent_monitor) {
+        var legend_buf: [128]u8 = undefined;
+        const legend = agent_monitor.legendLabel(&legend_buf);
         _ = content_win.printSegment(.{
             .text = legend,
             .style = .{ .dim = true },
@@ -413,14 +439,16 @@ fn renderFrame(
     // ---- Route content rendering to the active view -------------------
     if (active != null and active.?.id == .scope_explorer) {
         try scope_explorer.render(explorer, panes.nav, panes.detail, alloc);
+    } else if (active != null and active.?.id == .agent_monitor) {
+        try agent_monitor.render(monitor, panes.nav, panes.detail, alloc);
     } else {
-        // Placeholder for views not yet implemented (M4+).
+        // Placeholder for views not yet implemented (M5+).
         _ = panes.nav.printSegment(.{
-            .text = "[Navigator — M4+]",
+            .text = "[Navigator — M5+]",
             .style = .{ .dim = true },
         }, .{ .row_offset = 1, .col_offset = 1 });
         _ = panes.detail.printSegment(.{
-            .text = "[Detail pane — M4+]",
+            .text = "[Detail pane — M5+]",
             .style = .{ .dim = true },
         }, .{ .row_offset = 1, .col_offset = 1 });
     }
@@ -510,6 +538,7 @@ fn renderTooSmall(win: Window) void {
 const tree_navigator = @import("widgets/tree_navigator.zig");
 const markdown_detail = @import("widgets/markdown_detail.zig");
 const scope_explorer_mod = @import("views/scope_explorer.zig");
+const agent_monitor_mod = @import("views/agent_monitor.zig");
 
 // =========================================================================
 // Tests
@@ -627,4 +656,5 @@ test "cockpit spine modules compile" {
     std.testing.refAllDecls(view_switcher);
     std.testing.refAllDecls(split_layout);
     std.testing.refAllDecls(scope_explorer_mod);
+    std.testing.refAllDecls(agent_monitor_mod);
 }
