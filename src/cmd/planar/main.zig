@@ -162,10 +162,21 @@ pub fn main(init: std.process.Init) !void {
                 // always set by main.zig. Defensive fallback.
                 return cli.dispatch(root, args, ctx.stdout);
             };
-            // M2: run without a DB until the DB path is wired through
-            // the runtime context (M3).
-            // TODO(plan:591, task:4012): wire DB path from runtime in M3.
-            cockpit_app.runWithoutDb(ctx.io, ctx.allocator, env_map) catch |e| {
+            // M3 (task 4055): open the DB and run the live cockpit.
+            // openDb surfaces clean errors before entering the alt-screen.
+            // ctx.db_path is [:0]const u8 — coerce to []const u8.
+            const db_path_slice: []const u8 = ctx.db_path;
+            var db_handle = cockpit_app.openDb(ctx.io, db_path_slice, ctx.allocator) catch |e| {
+                const msg = switch (e) {
+                    cockpit_app.DbOpenError.DbMissing => "database not found — run `planar init` first",
+                    cockpit_app.DbOpenError.DbLocked => "database is locked by another process",
+                    cockpit_app.DbOpenError.DbSchemaMismatch => "database schema is newer than this binary — rebuild/reinstall planar",
+                    cockpit_app.DbOpenError.DbOpenFailed => "failed to open database",
+                };
+                exit.die(ctx, e, "{s}", .{msg});
+            };
+            defer db_handle.close();
+            cockpit_app.run(ctx.io, ctx.allocator, env_map, db_path_slice, &db_handle) catch |e| {
                 exit.die(ctx, e, "cockpit error: {s}", .{@errorName(e)});
             };
             try runtime.flush();

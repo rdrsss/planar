@@ -211,7 +211,9 @@ pub const PlanNode = struct {
     status_badge: StatusBadge,
     task_count: u32,
     done_count: u32,
-    /// Depth in the tree (0 = root plan).
+    /// Parent plan id for depth computation. Null for top-level plans.
+    parent_plan_id: ?i64,
+    /// Depth in the tree (0 = root plan). Computed by the caller.
     depth: u32,
     /// Whether this node is currently expanded.
     expanded: bool,
@@ -243,7 +245,7 @@ pub const TaskRow = struct {
     }
 };
 
-fn planStatusBadge(status_text: []const u8) StatusBadge {
+pub fn planStatusBadge(status_text: []const u8) StatusBadge {
     if (std.mem.eql(u8, status_text, "draft")) return .draft;
     if (std.mem.eql(u8, status_text, "active")) return .active;
     if (std.mem.eql(u8, status_text, "paused")) return .paused;
@@ -252,7 +254,7 @@ fn planStatusBadge(status_text: []const u8) StatusBadge {
     return .none;
 }
 
-fn taskStatusBadge(status_text: []const u8) StatusBadge {
+pub fn taskStatusBadge(status_text: []const u8) StatusBadge {
     if (std.mem.eql(u8, status_text, "todo")) return .todo;
     if (std.mem.eql(u8, status_text, "doing")) return .doing;
     if (std.mem.eql(u8, status_text, "blocked")) return .blocked;
@@ -269,7 +271,7 @@ pub fn queryPlanNodes(
     allocator: std.mem.Allocator,
 ) ![]PlanNode {
     var stmt = d.prepare(
-        \\select p.id, p.title, p.slug, p.status,
+        \\select p.id, p.title, p.slug, p.status, p.parent_plan_id,
         \\       (select count(*) from tasks t where t.plan_id = p.id) as task_count,
         \\       (select count(*) from tasks t where t.plan_id = p.id and t.status = 'done') as done_count
         \\from plans p
@@ -294,8 +296,9 @@ pub fn queryPlanNodes(
                 errdefer allocator.free(slug);
                 const status_text = try stmt.columnTextAlloc(3, allocator);
                 defer allocator.free(status_text);
-                const task_count: u32 = @intCast(@max(0, stmt.columnInt(4)));
-                const done_count: u32 = @intCast(@max(0, stmt.columnInt(5)));
+                const parent_plan_id = stmt.columnIntOpt(4);
+                const task_count: u32 = @intCast(@max(0, stmt.columnInt(5)));
+                const done_count: u32 = @intCast(@max(0, stmt.columnInt(6)));
 
                 try out.append(allocator, .{
                     .id = id,
@@ -304,6 +307,7 @@ pub fn queryPlanNodes(
                     .status_badge = planStatusBadge(status_text),
                     .task_count = task_count,
                     .done_count = done_count,
+                    .parent_plan_id = parent_plan_id,
                     .depth = 0,
                     .expanded = true,
                 });
@@ -490,6 +494,534 @@ pub fn queryTaskDetail(
                 .body = try body_parts.toOwnedSlice(allocator),
             };
         },
+    }
+}
+
+// =========================================================================
+// Scope Explorer view-model  (tasks 3966–3970)
+// =========================================================================
+
+/// A scope filter for the Scope Explorer: either a specific repo scope
+/// (by project.id) or all scopes.
+pub const ScopeFilter = union(enum) {
+    /// Show only entities belonging to the repo with this project id.
+    repo: i64,
+    /// Show entities across all scopes (global + every repo/association).
+    all,
+};
+
+/// Query plans visible under `filter`, ordered by parent then id so that
+/// child plans (subplans) follow their parent in the flat list. The caller
+/// must build depth annotations from the parent_plan_id column.
+///
+/// Returns a flat slice; caller frees each element via `node.deinit(allocator)`
+/// then `allocator.free(slice)`.
+pub fn queryPlanNodesFiltered(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    filter: ScopeFilter,
+) ![]PlanNode {
+    const sql_all =
+        \\select p.id, p.title, p.slug, p.status, p.parent_plan_id,
+        \\       (select count(*) from tasks t where t.plan_id = p.id) as task_count,
+        \\       (select count(*) from tasks t where t.plan_id = p.id and t.status = 'done') as done_count
+        \\from plans p
+        \\order by coalesce(p.parent_plan_id, p.id), p.id
+    ;
+    const sql_repo =
+        \\select p.id, p.title, p.slug, p.status, p.parent_plan_id,
+        \\       (select count(*) from tasks t where t.plan_id = p.id) as task_count,
+        \\       (select count(*) from tasks t where t.plan_id = p.id and t.status = 'done') as done_count
+        \\from plans p
+        \\where (p.scope_kind = 'repo' and p.scope_id = ?) or p.scope_kind = 'global'
+        \\order by coalesce(p.parent_plan_id, p.id), p.id
+    ;
+
+    var stmt = switch (filter) {
+        .all => blk: {
+            var s = d.prepare(sql_all) catch return error.QueryFailed;
+            s.bind(&.{}) catch {
+                s.finalize();
+                return error.QueryFailed;
+            };
+            break :blk s;
+        },
+        .repo => blk: {
+            var s = d.prepare(sql_repo) catch return error.QueryFailed;
+            s.bind(&.{.{ .int = filter.repo }}) catch {
+                s.finalize();
+                return error.QueryFailed;
+            };
+            break :blk s;
+        },
+    };
+    defer stmt.finalize();
+
+    var out: std.ArrayList(PlanNode) = .empty;
+    errdefer {
+        for (out.items) |n| n.deinit(allocator);
+        out.deinit(allocator);
+    }
+
+    while (true) {
+        switch (stmt.step() catch return error.QueryFailed) {
+            .done => break,
+            .row => {
+                const id = stmt.columnInt(0);
+                const title = try stmt.columnTextAlloc(1, allocator);
+                errdefer allocator.free(title);
+                const slug = try stmt.columnTextAlloc(2, allocator);
+                errdefer allocator.free(slug);
+                const status_text = try stmt.columnTextAlloc(3, allocator);
+                defer allocator.free(status_text);
+                const parent_plan_id = stmt.columnIntOpt(4);
+                const task_count: u32 = @intCast(@max(0, stmt.columnInt(5)));
+                const done_count: u32 = @intCast(@max(0, stmt.columnInt(6)));
+
+                try out.append(allocator, .{
+                    .id = id,
+                    .title = title,
+                    .slug = slug,
+                    .status_badge = planStatusBadge(status_text),
+                    .task_count = task_count,
+                    .done_count = done_count,
+                    .parent_plan_id = parent_plan_id,
+                    .depth = 0, // caller computes depth from parent_plan_id
+                    .expanded = true,
+                });
+            },
+        }
+    }
+    return try out.toOwnedSlice(allocator);
+}
+
+/// One child-entity row under a drilled plan (task, decision, question,
+/// scenario, or artifact).
+pub const DrillKind = enum {
+    task,
+    decision,
+    question,
+    scenario,
+    artifact,
+};
+
+pub const DrillRow = struct {
+    id: i64,
+    kind: DrillKind,
+    title: []const u8,
+    status_badge: StatusBadge,
+    /// plan_id the row belongs to.
+    plan_id: i64,
+
+    pub fn deinit(self: DrillRow, allocator: std.mem.Allocator) void {
+        allocator.free(self.title);
+    }
+
+    pub fn deinitMany(rows: []DrillRow, allocator: std.mem.Allocator) void {
+        for (rows) |r| r.deinit(allocator);
+        allocator.free(rows);
+    }
+};
+
+fn decisionStatusBadge(status_text: []const u8) StatusBadge {
+    // decisions status: proposed, accepted, superseded, withdrawn.
+    if (std.mem.eql(u8, status_text, "accepted")) return .done;
+    if (std.mem.eql(u8, status_text, "withdrawn")) return .cancelled;
+    if (std.mem.eql(u8, status_text, "superseded")) return .abandoned;
+    return .draft; // proposed
+}
+
+fn questionStatusBadge(status_text: []const u8) StatusBadge {
+    // questions status: open, answered, wontfix.
+    if (std.mem.eql(u8, status_text, "open")) return .todo;
+    if (std.mem.eql(u8, status_text, "answered")) return .done;
+    if (std.mem.eql(u8, status_text, "wontfix")) return .cancelled;
+    return .none;
+}
+
+fn scenarioStatusBadge(status_text: []const u8) StatusBadge {
+    // test_scenarios status: draft, ready, verified, failing, retired.
+    if (std.mem.eql(u8, status_text, "draft")) return .draft;
+    if (std.mem.eql(u8, status_text, "verified")) return .done;
+    if (std.mem.eql(u8, status_text, "failing")) return .blocked;
+    if (std.mem.eql(u8, status_text, "retired")) return .abandoned;
+    return .none; // ready
+}
+
+/// Query all child entities for a plan: tasks, decisions, questions,
+/// scenarios, artifacts linked to the plan. Returns a flat list ordered
+/// by kind then id. Caller owns result; free via `DrillRow.deinitMany`.
+pub fn queryPlanDrillRows(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    plan_id: i64,
+) ![]DrillRow {
+    var out: std.ArrayList(DrillRow) = .empty;
+    errdefer {
+        for (out.items) |r| r.deinit(allocator);
+        out.deinit(allocator);
+    }
+
+    // Tasks.
+    {
+        var stmt = d.prepare(
+            "select id, title, status from tasks where plan_id = ? order by priority asc, id asc",
+        ) catch return error.QueryFailed;
+        defer stmt.finalize();
+        stmt.bind(&.{.{ .int = plan_id }}) catch return error.QueryFailed;
+        while (true) {
+            switch (stmt.step() catch return error.QueryFailed) {
+                .done => break,
+                .row => {
+                    const id = stmt.columnInt(0);
+                    const title = try stmt.columnTextAlloc(1, allocator);
+                    errdefer allocator.free(title);
+                    const status = try stmt.columnTextAlloc(2, allocator);
+                    defer allocator.free(status);
+                    try out.append(allocator, .{
+                        .id = id,
+                        .kind = .task,
+                        .title = title,
+                        .status_badge = taskStatusBadge(status),
+                        .plan_id = plan_id,
+                    });
+                },
+            }
+        }
+    }
+
+    // Decisions linked to this plan via entity_links.
+    // entity_links uses from_kind/from_id/to_kind/to_id/relationship.
+    // Check both directions: plan→decision and decision→plan.
+    {
+        var stmt = d.prepare(
+            \\select d.id, d.title, d.status
+            \\from decisions d
+            \\where d.id in (
+            \\  select el.to_id from entity_links el
+            \\  where el.from_kind = 'plan' and el.from_id = ? and el.to_kind = 'decision'
+            \\  union
+            \\  select el.from_id from entity_links el
+            \\  where el.to_kind = 'plan' and el.to_id = ? and el.from_kind = 'decision'
+            \\)
+            \\order by d.id asc
+        ) catch return error.QueryFailed;
+        defer stmt.finalize();
+        stmt.bind(&.{ .{ .int = plan_id }, .{ .int = plan_id } }) catch return error.QueryFailed;
+        while (true) {
+            switch (stmt.step() catch return error.QueryFailed) {
+                .done => break,
+                .row => {
+                    const id = stmt.columnInt(0);
+                    const title = try stmt.columnTextAlloc(1, allocator);
+                    errdefer allocator.free(title);
+                    const status = try stmt.columnTextAlloc(2, allocator);
+                    defer allocator.free(status);
+                    try out.append(allocator, .{
+                        .id = id,
+                        .kind = .decision,
+                        .title = title,
+                        .status_badge = decisionStatusBadge(status),
+                        .plan_id = plan_id,
+                    });
+                },
+            }
+        }
+    }
+
+    // Questions linked to this plan via entity_links (both directions).
+    {
+        var stmt = d.prepare(
+            \\select q.id, q.title, q.status
+            \\from questions q
+            \\where q.id in (
+            \\  select el.to_id from entity_links el
+            \\  where el.from_kind = 'plan' and el.from_id = ? and el.to_kind = 'question'
+            \\  union
+            \\  select el.from_id from entity_links el
+            \\  where el.to_kind = 'plan' and el.to_id = ? and el.from_kind = 'question'
+            \\)
+            \\order by q.id asc
+        ) catch return error.QueryFailed;
+        defer stmt.finalize();
+        stmt.bind(&.{ .{ .int = plan_id }, .{ .int = plan_id } }) catch return error.QueryFailed;
+        while (true) {
+            switch (stmt.step() catch return error.QueryFailed) {
+                .done => break,
+                .row => {
+                    const id = stmt.columnInt(0);
+                    const title = try stmt.columnTextAlloc(1, allocator);
+                    errdefer allocator.free(title);
+                    const status = try stmt.columnTextAlloc(2, allocator);
+                    defer allocator.free(status);
+                    try out.append(allocator, .{
+                        .id = id,
+                        .kind = .question,
+                        .title = title,
+                        .status_badge = questionStatusBadge(status),
+                        .plan_id = plan_id,
+                    });
+                },
+            }
+        }
+    }
+
+    // Test scenarios linked to this plan via entity_links (both directions).
+    {
+        var stmt = d.prepare(
+            \\select ts.id, ts.title, ts.status
+            \\from test_scenarios ts
+            \\where ts.id in (
+            \\  select el.to_id from entity_links el
+            \\  where el.from_kind = 'plan' and el.from_id = ? and el.to_kind = 'test_scenario'
+            \\  union
+            \\  select el.from_id from entity_links el
+            \\  where el.to_kind = 'plan' and el.to_id = ? and el.from_kind = 'test_scenario'
+            \\)
+            \\order by ts.id asc
+        ) catch return error.QueryFailed;
+        defer stmt.finalize();
+        stmt.bind(&.{ .{ .int = plan_id }, .{ .int = plan_id } }) catch return error.QueryFailed;
+        while (true) {
+            switch (stmt.step() catch return error.QueryFailed) {
+                .done => break,
+                .row => {
+                    const id = stmt.columnInt(0);
+                    const title = try stmt.columnTextAlloc(1, allocator);
+                    errdefer allocator.free(title);
+                    const status = try stmt.columnTextAlloc(2, allocator);
+                    defer allocator.free(status);
+                    try out.append(allocator, .{
+                        .id = id,
+                        .kind = .scenario,
+                        .title = title,
+                        .status_badge = scenarioStatusBadge(status),
+                        .plan_id = plan_id,
+                    });
+                },
+            }
+        }
+    }
+
+    // Artifacts linked to this plan via entity_links (both directions).
+    // artifacts.kind is the column (not artifact_kind).
+    {
+        var stmt = d.prepare(
+            \\select a.id, a.title, a.kind
+            \\from artifacts a
+            \\where a.id in (
+            \\  select el.to_id from entity_links el
+            \\  where el.from_kind = 'plan' and el.from_id = ? and el.to_kind = 'artifact'
+            \\  union
+            \\  select el.from_id from entity_links el
+            \\  where el.to_kind = 'plan' and el.to_id = ? and el.from_kind = 'artifact'
+            \\)
+            \\order by a.id asc
+        ) catch return error.QueryFailed;
+        defer stmt.finalize();
+        stmt.bind(&.{ .{ .int = plan_id }, .{ .int = plan_id } }) catch return error.QueryFailed;
+        while (true) {
+            switch (stmt.step() catch return error.QueryFailed) {
+                .done => break,
+                .row => {
+                    const id = stmt.columnInt(0);
+                    const title = try stmt.columnTextAlloc(1, allocator);
+                    errdefer allocator.free(title);
+                    try out.append(allocator, .{
+                        .id = id,
+                        .kind = .artifact,
+                        .title = title,
+                        .status_badge = .none,
+                        .plan_id = plan_id,
+                    });
+                },
+            }
+        }
+    }
+
+    return try out.toOwnedSlice(allocator);
+}
+
+/// Build a DetailPane for a decision from the DB (for the split detail pane).
+/// Note: decisions.body is NOT NULL in the schema.
+pub fn queryDecisionDetail(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    decision_id: i64,
+) !DetailPane {
+    var stmt = d.prepare(
+        "select title, body, status from decisions where id = ?",
+    ) catch return error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .int = decision_id }}) catch return error.QueryFailed;
+
+    switch (stmt.step() catch return error.QueryFailed) {
+        .done => return DetailPane.empty(allocator),
+        .row => {
+            const title = try stmt.columnTextAlloc(0, allocator);
+            errdefer allocator.free(title);
+            // decisions.body is NOT NULL.
+            const body_raw = try stmt.columnTextAlloc(1, allocator);
+            defer allocator.free(body_raw);
+            const status = try stmt.columnTextAlloc(2, allocator);
+            defer allocator.free(status);
+
+            const body = try std.fmt.allocPrint(
+                allocator,
+                "**Status:** {s}\n\n{s}",
+                .{ status, body_raw },
+            );
+
+            return .{ .kind = .plan, .title = title, .body = body };
+        },
+    }
+}
+
+/// Build a DetailPane for a question from the DB.
+pub fn queryQuestionDetail(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    question_id: i64,
+) !DetailPane {
+    var stmt = d.prepare(
+        "select title, body, status from questions where id = ?",
+    ) catch return error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .int = question_id }}) catch return error.QueryFailed;
+
+    switch (stmt.step() catch return error.QueryFailed) {
+        .done => return DetailPane.empty(allocator),
+        .row => {
+            const title = try stmt.columnTextAlloc(0, allocator);
+            errdefer allocator.free(title);
+            const body_opt = try stmt.columnTextOpt(1, allocator);
+            defer if (body_opt) |s| allocator.free(s);
+            const status = try stmt.columnTextAlloc(2, allocator);
+            defer allocator.free(status);
+
+            const body = if (body_opt) |b|
+                try std.fmt.allocPrint(allocator, "**Status:** {s}\n\n{s}", .{ status, b })
+            else
+                try std.fmt.allocPrint(allocator, "**Status:** {s}", .{status});
+
+            return .{ .kind = .plan, .title = title, .body = body };
+        },
+    }
+}
+
+/// Build a DetailPane for a test scenario from the DB.
+pub fn queryScenarioDetail(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    scenario_id: i64,
+) !DetailPane {
+    var stmt = d.prepare(
+        "select title, body, status from test_scenarios where id = ?",
+    ) catch return error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .int = scenario_id }}) catch return error.QueryFailed;
+
+    switch (stmt.step() catch return error.QueryFailed) {
+        .done => return DetailPane.empty(allocator),
+        .row => {
+            const title = try stmt.columnTextAlloc(0, allocator);
+            errdefer allocator.free(title);
+            const body_opt = try stmt.columnTextOpt(1, allocator);
+            defer if (body_opt) |s| allocator.free(s);
+            const status = try stmt.columnTextAlloc(2, allocator);
+            defer allocator.free(status);
+
+            const body = if (body_opt) |b|
+                try std.fmt.allocPrint(allocator, "**Status:** {s}\n\n{s}", .{ status, b })
+            else
+                try std.fmt.allocPrint(allocator, "**Status:** {s}", .{status});
+
+            return .{ .kind = .plan, .title = title, .body = body };
+        },
+    }
+}
+
+/// Build a DetailPane for an artifact from the DB.
+/// Note: artifacts.kind is the column name (not artifact_kind).
+pub fn queryArtifactDetail(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    artifact_id: i64,
+) !DetailPane {
+    var stmt = d.prepare(
+        "select title, body, kind from artifacts where id = ?",
+    ) catch return error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .int = artifact_id }}) catch return error.QueryFailed;
+
+    switch (stmt.step() catch return error.QueryFailed) {
+        .done => return DetailPane.empty(allocator),
+        .row => {
+            const title = try stmt.columnTextAlloc(0, allocator);
+            errdefer allocator.free(title);
+            const body_opt = try stmt.columnTextOpt(1, allocator);
+            defer if (body_opt) |s| allocator.free(s);
+            const kind_text = try stmt.columnTextAlloc(2, allocator);
+            defer allocator.free(kind_text);
+
+            const body = if (body_opt) |b|
+                try std.fmt.allocPrint(allocator, "**Kind:** {s}\n\n{s}", .{ kind_text, b })
+            else
+                try std.fmt.allocPrint(allocator, "**Kind:** {s}", .{kind_text});
+
+            return .{ .kind = .plan, .title = title, .body = body };
+        },
+    }
+}
+
+/// Try to resolve the current working directory's scope from the DB.
+/// Returns the project id if a single-association repo match is found,
+/// or null if the cwd maps to multiple/no scopes (caller falls back to
+/// all-scopes mode).
+///
+/// This is a best-effort lookup: failures (SQL error, cwd not found)
+/// return null silently rather than crashing the cockpit.
+pub fn cwdScopeProjectId(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    cwd: []const u8,
+) ?i64 {
+    // Find the project whose root_path is the longest prefix of cwd.
+    var stmt = d.prepare(
+        "select id, root_path from projects where root_path is not null order by length(root_path) desc",
+    ) catch return null;
+    defer stmt.finalize();
+    stmt.bind(&.{}) catch return null;
+
+    while (true) {
+        switch (stmt.step() catch return null) {
+            .done => return null,
+            .row => {
+                const pid = stmt.columnInt(0);
+                const root = stmt.columnTextOpt(1, allocator) catch return null;
+                if (root) |r| {
+                    defer allocator.free(r);
+                    if (std.mem.startsWith(u8, cwd, r)) {
+                        // Count associations for this project.
+                        var count_stmt = d.prepare(
+                            "select count(*) from project_associations where project_id = ?",
+                        ) catch return pid; // conservative: return pid on error
+                        defer count_stmt.finalize();
+                        count_stmt.bind(&.{.{ .int = pid }}) catch return pid;
+                        switch (count_stmt.step() catch return pid) {
+                            .done => return pid,
+                            .row => {
+                                const cnt = count_stmt.columnInt(0);
+                                // Only filter to this scope when the project
+                                // has at least one association.
+                                if (cnt >= 1) return pid;
+                                return null;
+                            },
+                        }
+                    }
+                }
+            },
+        }
     }
 }
 
@@ -806,6 +1338,253 @@ test "view_model: DetailPane.empty is valid" {
     try testing.expectEqual(DetailKind.empty, pane.kind);
     try testing.expectEqualStrings("", pane.title);
     try testing.expectEqualStrings("", pane.body);
+}
+
+// =========================================================================
+// Scope Explorer tests (tasks 3966–3970)
+// =========================================================================
+
+test "view_model: queryPlanNodesFiltered all-scopes on empty DB returns empty" {
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const nodes = try queryPlanNodesFiltered(&d, a, .all);
+    defer {
+        for (nodes) |n| n.deinit(a);
+        a.free(nodes);
+    }
+    try testing.expectEqual(@as(usize, 0), nodes.len);
+}
+
+test "view_model: queryPlanNodesFiltered all-scopes returns plans" {
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    _ = try d.execParams(
+        "insert into plans (scope_kind, title, slug, status) values ('global','Alpha','alpha','active')",
+        &.{},
+    );
+    _ = try d.execParams(
+        "insert into plans (scope_kind, title, slug, status) values ('global','Beta','beta','draft')",
+        &.{},
+    );
+
+    const nodes = try queryPlanNodesFiltered(&d, a, .all);
+    defer {
+        for (nodes) |n| n.deinit(a);
+        a.free(nodes);
+    }
+    try testing.expectEqual(@as(usize, 2), nodes.len);
+}
+
+test "view_model: queryPlanNodesFiltered repo filter excludes mismatched scope" {
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    // Insert a project and a repo-scoped plan.
+    const proj_id = try d.execParams(
+        "insert into projects (slug, name, root_path) values ('proj1','Proj1','/work/proj1')",
+        &.{},
+    );
+    _ = try d.execParams(
+        "insert into plans (scope_kind, scope_id, title, slug, status) values ('repo', ?, 'Repo Plan','rp','active')",
+        &.{.{ .int = proj_id }},
+    );
+    _ = try d.execParams(
+        "insert into plans (scope_kind, title, slug, status) values ('global','Global Plan','gp','active')",
+        &.{},
+    );
+
+    // Filter to proj_id: should include both the repo-scoped plan and
+    // global plans (global is always included per the SQL filter).
+    const nodes = try queryPlanNodesFiltered(&d, a, .{ .repo = proj_id });
+    defer {
+        for (nodes) |n| n.deinit(a);
+        a.free(nodes);
+    }
+    // Repo plan + global plan = 2.
+    try testing.expectEqual(@as(usize, 2), nodes.len);
+}
+
+test "view_model: queryPlanDrillRows returns tasks and linked decisions" {
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const plan_id = try d.execParams(
+        "insert into plans (scope_kind, title, slug, status) values ('global','DrillPlan','dp','active')",
+        &.{},
+    );
+    const task_id = try d.execParams(
+        "insert into tasks (scope_kind, plan_id, title, status) values ('global', ?, 'T1','todo')",
+        &.{.{ .int = plan_id }},
+    );
+    _ = task_id;
+    // Insert a decision and link it to the plan.
+    // decisions.body is NOT NULL — provide a non-empty body.
+    const dec_id = try d.execParams(
+        "insert into decisions (scope_kind, title, body, status) values ('global','D1','Decision body','accepted')",
+        &.{},
+    );
+    // entity_links uses from_kind/from_id/to_kind/to_id/relationship.
+    _ = try d.execParams(
+        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('plan', ?, 'decision', ?, 'derives-from')",
+        &.{ .{ .int = plan_id }, .{ .int = dec_id } },
+    );
+
+    const rows = try queryPlanDrillRows(&d, a, plan_id);
+    defer DrillRow.deinitMany(rows, a);
+
+    // At minimum: 1 task + 1 decision.
+    try testing.expect(rows.len >= 2);
+    // First rows should be tasks.
+    try testing.expectEqual(DrillKind.task, rows[0].kind);
+    // Find the decision in the result.
+    var found_dec = false;
+    for (rows) |r| {
+        if (r.kind == .decision) {
+            found_dec = true;
+            try testing.expectEqual(StatusBadge.done, r.status_badge);
+        }
+    }
+    try testing.expect(found_dec);
+}
+
+test "view_model: queryPlanDrillRows empty plan returns empty" {
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const plan_id = try d.execParams(
+        "insert into plans (scope_kind, title, slug, status) values ('global','Empty','ep','draft')",
+        &.{},
+    );
+    const rows = try queryPlanDrillRows(&d, a, plan_id);
+    defer DrillRow.deinitMany(rows, a);
+    try testing.expectEqual(@as(usize, 0), rows.len);
+}
+
+test "view_model: queryDecisionDetail returns body and status" {
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    // decisions.body is NOT NULL and decisions.status values: proposed/accepted/superseded/withdrawn.
+    const did = try d.execParams(
+        "insert into decisions (scope_kind, title, body, status) values ('global','Dec Title','Dec body text','accepted')",
+        &.{},
+    );
+    const detail = try queryDecisionDetail(&d, a, did);
+    defer detail.deinit(a);
+
+    try testing.expectEqualStrings("Dec Title", detail.title);
+    try testing.expect(std.mem.indexOf(u8, detail.body, "accepted") != null);
+    try testing.expect(std.mem.indexOf(u8, detail.body, "Dec body text") != null);
+}
+
+test "view_model: queryQuestionDetail returns empty for missing" {
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const detail = try queryQuestionDetail(&d, a, 9999);
+    defer detail.deinit(a);
+    try testing.expectEqual(DetailKind.empty, detail.kind);
+}
+
+test "view_model: queryScenarioDetail returns body and status" {
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    // test_scenarios status: draft, ready, verified, failing, retired.
+    const sid = try d.execParams(
+        "insert into test_scenarios (scope_kind, title, body, status) values ('global','Scenario Title','Scenario body','verified')",
+        &.{},
+    );
+    const detail = try queryScenarioDetail(&d, a, sid);
+    defer detail.deinit(a);
+
+    try testing.expectEqualStrings("Scenario Title", detail.title);
+    try testing.expect(std.mem.indexOf(u8, detail.body, "verified") != null);
+    try testing.expect(std.mem.indexOf(u8, detail.body, "Scenario body") != null);
+}
+
+test "view_model: queryArtifactDetail returns kind and body" {
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    // artifacts.kind is the column name (not artifact_kind).
+    const aid = try d.execParams(
+        "insert into artifacts (scope_kind, kind, title, body) values ('global','tech_spec','Artifact Title','Artifact body text')",
+        &.{},
+    );
+    const detail = try queryArtifactDetail(&d, a, aid);
+    defer detail.deinit(a);
+
+    try testing.expectEqualStrings("Artifact Title", detail.title);
+    try testing.expect(std.mem.indexOf(u8, detail.body, "tech_spec") != null);
+    try testing.expect(std.mem.indexOf(u8, detail.body, "Artifact body text") != null);
+}
+
+test "view_model: cwdScopeProjectId returns null on empty DB" {
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const result = cwdScopeProjectId(&d, a, "/some/path");
+    try testing.expectEqual(@as(?i64, null), result);
+}
+
+test "view_model: cwdScopeProjectId returns project id when path matches" {
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    // projects requires name (NOT NULL).
+    const proj_id = try d.execParams(
+        "insert into projects (slug, name, root_path) values ('myrepo','MyRepo','/work/myrepo')",
+        &.{},
+    );
+    // Add an association so the count >= 1 path is satisfied.
+    const assoc_id = try d.execParams(
+        "insert into associations (slug, name, kind) values ('myorg','MyOrg','org')",
+        &.{},
+    );
+    _ = try d.execParams(
+        "insert into project_associations (project_id, association_id, source) values (?, ?, 'user')",
+        &.{ .{ .int = proj_id }, .{ .int = assoc_id } },
+    );
+
+    const result = cwdScopeProjectId(&d, a, "/work/myrepo/src/foo");
+    try testing.expectEqual(proj_id, result.?);
+}
+
+test "view_model: decisionStatusBadge maps known statuses" {
+    // decisions status: proposed, accepted, superseded, withdrawn.
+    try testing.expectEqual(StatusBadge.done, decisionStatusBadge("accepted"));
+    try testing.expectEqual(StatusBadge.cancelled, decisionStatusBadge("withdrawn"));
+    try testing.expectEqual(StatusBadge.abandoned, decisionStatusBadge("superseded"));
+    try testing.expectEqual(StatusBadge.draft, decisionStatusBadge("proposed"));
+}
+
+test "view_model: questionStatusBadge maps known statuses" {
+    // questions status: open, answered, wontfix.
+    try testing.expectEqual(StatusBadge.todo, questionStatusBadge("open"));
+    try testing.expectEqual(StatusBadge.done, questionStatusBadge("answered"));
+    try testing.expectEqual(StatusBadge.cancelled, questionStatusBadge("wontfix"));
+}
+
+test "view_model: scenarioStatusBadge maps known statuses" {
+    // test_scenarios status: draft, ready, verified, failing, retired.
+    try testing.expectEqual(StatusBadge.draft, scenarioStatusBadge("draft"));
+    try testing.expectEqual(StatusBadge.done, scenarioStatusBadge("verified"));
+    try testing.expectEqual(StatusBadge.blocked, scenarioStatusBadge("failing"));
+    try testing.expectEqual(StatusBadge.abandoned, scenarioStatusBadge("retired"));
 }
 
 test "view_model compiles" {

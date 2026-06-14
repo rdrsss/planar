@@ -223,6 +223,65 @@ test "view_switcher: next with zero count is safe" {
     try std.testing.expect(vs.active() == null);
 }
 
+test "view_switcher: handleKey Shift-Tab cycles to previous view" {
+    // Task 4056: missing Shift-Tab unit test for handleKey.
+    var vs: ViewSwitcher = .{};
+    try vs.register(.{ .id = .agent_monitor, .name = "M", .key = '1' });
+    try vs.register(.{ .id = .scope_explorer, .name = "E", .key = '2' });
+    try vs.register(.{ .id = .task_board, .name = "T", .key = '3' });
+
+    // Start at index 0 (agent_monitor). Shift-Tab should wrap to last (task_board).
+    const shift_tab = Key{ .codepoint = Key.tab, .mods = .{ .shift = true } };
+    const consumed = vs.handleKey(shift_tab);
+    try std.testing.expect(consumed);
+    try std.testing.expectEqual(@as(usize, 2), vs.active_idx);
+
+    // Shift-Tab again → index 1.
+    const consumed2 = vs.handleKey(shift_tab);
+    try std.testing.expect(consumed2);
+    try std.testing.expectEqual(@as(usize, 1), vs.active_idx);
+
+    // Shift-Tab again → index 0.
+    const consumed3 = vs.handleKey(shift_tab);
+    try std.testing.expect(consumed3);
+    try std.testing.expectEqual(@as(usize, 0), vs.active_idx);
+}
+
+test "view_switcher: handleKey Tab cycles to next view" {
+    var vs: ViewSwitcher = .{};
+    try vs.register(.{ .id = .agent_monitor, .name = "M", .key = '1' });
+    try vs.register(.{ .id = .scope_explorer, .name = "E", .key = '2' });
+
+    const tab = Key{ .codepoint = Key.tab, .mods = .{} };
+    const consumed = vs.handleKey(tab);
+    try std.testing.expect(consumed);
+    try std.testing.expectEqual(@as(usize, 1), vs.active_idx);
+
+    // Tab again → wraps to 0.
+    const consumed2 = vs.handleKey(tab);
+    try std.testing.expect(consumed2);
+    try std.testing.expectEqual(@as(usize, 0), vs.active_idx);
+}
+
+test "view_switcher: handleKey digit direct-jump" {
+    var vs: ViewSwitcher = .{};
+    try vs.register(.{ .id = .agent_monitor, .name = "M", .key = '1' });
+    try vs.register(.{ .id = .scope_explorer, .name = "E", .key = '2' });
+    try vs.register(.{ .id = .task_board, .name = "T", .key = '3' });
+
+    const key2 = Key{ .codepoint = '2', .mods = .{} };
+    const consumed = vs.handleKey(key2);
+    try std.testing.expect(consumed);
+    try std.testing.expectEqual(@as(usize, 1), vs.active_idx);
+
+    // Out-of-range digit (e.g. '9' with only 3 views) → not consumed.
+    const key9 = Key{ .codepoint = '9', .mods = .{} };
+    const consumed9 = vs.handleKey(key9);
+    try std.testing.expect(!consumed9);
+    // Active index unchanged.
+    try std.testing.expectEqual(@as(usize, 1), vs.active_idx);
+}
+
 test "view_switcher compiles" {
     std.testing.refAllDecls(@This());
 }
