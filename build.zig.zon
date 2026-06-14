@@ -40,6 +40,24 @@
         .etc_cli = .{
             .path = "vendor/etc-cli",
         },
+        // libvaxis — Zig TUI library (v0.6.0, MIT). Cockpit (planar explore)
+        // foundation. Vendored under vendor/libvaxis/; re-vendor per
+        // vendor/libvaxis/VENDOR.toml. Path dep for hermetic builds.
+        .libvaxis = .{
+            .path = "vendor/libvaxis",
+        },
+        // zigimg — pure-Zig image library. Non-lazy dep of libvaxis.
+        // Vendored under vendor/zigimg/; re-vendor per
+        // vendor/zigimg/VENDOR.toml.
+        .zigimg = .{
+            .path = "vendor/zigimg",
+        },
+        // uucode — Unicode tables library. Lazy dep of libvaxis.
+        // Vendored under vendor/uucode/ (includes ucd/ for table gen).
+        // Re-vendor per vendor/uucode/VENDOR.toml.
+        .uucode = .{
+            .path = "vendor/uucode",
+        },
         // See `zig fetch --save <url>` for a command-line interface for adding dependencies.
         //.example = .{
         //    // When updating this field to a new URL, be sure to delete the corresponding
