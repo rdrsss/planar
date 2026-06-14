@@ -174,8 +174,37 @@ on_err() {
 }
 trap 'on_err $? $LINENO' ERR
 
-require_cmd() {
-  command -v "$1" >/dev/null 2>&1 || err "required command not found: $1"
+# check_deps "<tier label>" <fatal:0|1> "cmd|brewpkg|what it's for" …
+# Checks every entry and reports ALL missing tools at once (not one-at-a-time),
+# with a `brew install …` hint built from the entries that have a Homebrew
+# package. Fatal tier aborts; non-fatal tier warns (counted) and continues.
+# Keep the BUILD_DEPS / RUN_DEPS manifests below in sync with README.md
+# § Prerequisites.
+check_deps() {
+  local label="$1" fatal="$2"; shift 2
+  local entry cmd rest pkg desc m
+  local -a missing=() brew=()
+  for entry in "$@"; do
+    cmd="${entry%%|*}"; rest="${entry#*|}"; pkg="${rest%%|*}"; desc="${rest#*|}"
+    if command -v "$cmd" >/dev/null 2>&1; then
+      vlog "dep ok: $cmd"
+    else
+      missing+=("$cmd — $desc")
+      [[ -n "$pkg" ]] && brew+=("$pkg")
+    fi
+  done
+  [[ ${#missing[@]} -eq 0 ]] && return 0
+  if [[ "$fatal" -eq 1 ]]; then
+    printf '\n%sinstall.sh: missing required %s tool(s):%s\n' "$C_RED$C_BOLD" "$label" "$C_RESET" >&2
+    for m in "${missing[@]}"; do printf '  %s✗%s %s\n' "$C_RED" "$C_RESET" "$m" >&2; done
+    [[ ${#brew[@]} -gt 0 ]] && printf '  macOS: brew install %s\n' "${brew[*]}" >&2
+    exit 1
+  fi
+  printf '  %s!%s %s tool(s) missing — install proceeds, but some workflows will degrade:\n' \
+    "$C_YELLOW" "$C_RESET" "$label" >&2
+  for m in "${missing[@]}"; do WARN_COUNT=$((WARN_COUNT + 1)); printf '    %s-%s %s\n' "$C_YELLOW" "$C_RESET" "$m" >&2; done
+  [[ ${#brew[@]} -gt 0 ]] && printf '    macOS: brew install %s\n' "${brew[*]}" >&2
+  return 0
 }
 
 # version_ge "1.2.3" "1.2.0" → true if the first is >= the second. Pure bash,
@@ -337,10 +366,41 @@ fi
 
 title "Planar — install from $REPO_ROOT"
 
-require_cmd zig
-require_cmd ln
-require_cmd cp
-require_cmd find
+# Dependency manifest — keep in sync with README.md § Prerequisites and the
+# CLAUDE.md "external tool dependencies" rule. Format: "cmd|brewpkg|what for"
+# (empty brewpkg = base system tool, no Homebrew hint).
+#
+# build_deps: the installer itself shells these; a miss aborts the install.
+# run_deps:   Planar (the binary + bundled agent skills) needs these at run
+#             time; a miss only warns — the install still produces a binary.
+BUILD_DEPS=(
+  "zig|zig|builds the four Planar binaries"
+  "cp||copy install artifacts into place"
+  "ln||symlink vendor surfaces"
+  "mkdir||create the install tree"
+  "rm||replace prior-install artifacts"
+  "find||walk vendor + template source trees"
+  "rmdir||remove emptied vendor skill directories"
+  "sed||parse the pinned zig version from build.zig.zon"
+  "awk||read the build id from 'planar version'"
+  "grep||validate the Planar package manifest"
+  "head||take the first match when parsing build.zig.zon"
+  "cat||read help text + vendor ownership markers"
+  "ls||detect a non-empty / foreign install prefix"
+  "readlink||resolve existing vendor symlinks safely"
+  "basename||derive install target names"
+  "dirname||resolve parent directories"
+  "tr||normalize version / PATH strings"
+  "chmod||mark shipped scripts executable"
+)
+RUN_DEPS=(
+  "git|git|repo discovery + 'planar import' (required at runtime)"
+  "jq|jq|bundled agent skills parse 'planar … --json' output"
+  "gh|gh|GitHub adapter auth + issue import (degrades gracefully)"
+  "rg|ripgrep|agent-workflow code-search recipes (ripgrep)"
+)
+
+check_deps "build" 1 "${BUILD_DEPS[@]}"
 
 # Zig version gate — build.zig.zon pins a minimum; an older toolchain otherwise
 # fails deep in the build with a cryptic error. Surface it up front. Dev/build
@@ -357,6 +417,10 @@ fi
 [[ -f "$REPO_ROOT/build.zig" ]] || err "build.zig not found in $REPO_ROOT (run install.sh from the Planar source repo)"
 [[ -f "$REPO_ROOT/build.zig.zon" ]] || err "build.zig.zon not found in $REPO_ROOT"
 grep -q '^[[:space:]]*\.name = \.planar' "$REPO_ROOT/build.zig.zon" || err "$REPO_ROOT does not look like the Planar Zig package (build.zig.zon name mismatch)"
+
+# Runtime tools — non-fatal; the install still produces a working binary, but
+# Planar's git-backed verbs and the bundled agent skills need these to work.
+check_deps "Planar runtime" 0 "${RUN_DEPS[@]}"
 
 log "PLANAR_HOME = $PLANAR_HOME"
 log "mode        = $MODE"
