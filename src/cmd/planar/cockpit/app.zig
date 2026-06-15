@@ -46,6 +46,7 @@ const entity_link_graph = @import("views/entity_link_graph.zig");
 const external_ops_plane = @import("views/external_ops_plane.zig");
 const sessions_handoff = @import("views/sessions_handoff.zig");
 const audit_log_view = @import("views/audit_log.zig");
+const cli_history_view = @import("views/cli_history.zig");
 
 /// Minimum usable terminal dimensions.
 const MIN_WIDTH: u16 = 40;
@@ -243,6 +244,10 @@ pub fn run(
     var audit: audit_log_view.AuditLogState = audit_log_view.AuditLogState.init(alloc);
     defer audit.deinit();
 
+    // ---- CLI Invocation History state (tasks 4037–4038, M13) -----------
+    var cli_history: cli_history_view.CliHistoryState = cli_history_view.CliHistoryState.init(alloc);
+    defer cli_history.deinit();
+
     // Determine cwd-scope filter on launch. Falls back to .all when the
     // cwd is outside any registered repo (q607: cwd-derived default).
     const cwd_for_scope = std.Io.Dir.realPathFileAlloc(
@@ -289,6 +294,9 @@ pub fn run(
     // Initial load of the Audit Log view.
     audit.reload(db_handle) catch {};
 
+    // Initial load of the CLI Invocation History view.
+    cli_history.reload(db_handle) catch {};
+
     // ---- Spine state ----------------------------------------------------
     // Scope Explorer is the default (index 0) landing view per the spec.
     var vs: view_switcher.ViewSwitcher = .{};
@@ -306,6 +314,9 @@ pub fn run(
     // The key '0' is display-only in the tab bar (view_switcher.zig line 88:
     // handleKey digit jump only fires for '1'–'9').
     try vs.register(.{ .id = .audit_log, .name = "AuditLog", .key = '0' });
+    // M13: CLI History is the 11th view. Reachable via Tab/Shift-Tab only.
+    // Key 'h' is display-only (not a jump key).
+    try vs.register(.{ .id = .cli_history, .name = "CLIHist", .key = 'h' });
 
     var sl: split_layout.SplitLayout = .{};
 
@@ -314,7 +325,7 @@ pub fn run(
     try vx.queryTerminal(tty.writer(), .fromSeconds(1));
 
     // Render the initial frame.
-    try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor, &board, &declog, &questions, &coverage, &entity_graph, &ext_ops, &sessions, &audit);
+    try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor, &board, &declog, &questions, &coverage, &entity_graph, &ext_ops, &sessions, &audit, &cli_history);
 
     // Main event loop.
     while (true) {
@@ -406,6 +417,12 @@ pub fn run(
                         } else {
                             need_render = false;
                         }
+                    } else if (active != null and active.?.id == .cli_history) {
+                        if (cli_history.handleKey(key, db_handle)) {
+                            // Consumed by cli history view — render.
+                        } else {
+                            need_render = false;
+                        }
                     } else {
                         need_render = false;
                     }
@@ -440,11 +457,13 @@ pub fn run(
                     sessions.reload(db_handle) catch {};
                 } else if (active != null and active.?.id == .audit_log) {
                     audit.reload(db_handle) catch {};
+                } else if (active != null and active.?.id == .cli_history) {
+                    cli_history.reload(db_handle) catch {};
                 }
             },
         }
         if (need_render) {
-            try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor, &board, &declog, &questions, &coverage, &entity_graph, &ext_ops, &sessions, &audit);
+            try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor, &board, &declog, &questions, &coverage, &entity_graph, &ext_ops, &sessions, &audit, &cli_history);
         }
     }
     // Terminal restored by deferred vx.deinit.
@@ -517,6 +536,7 @@ fn renderFrame(
     ext_ops_state: *const external_ops_plane.ExtOpsState,
     sessions_state: *const sessions_handoff.SessionsHandoffState,
     audit_state: *const audit_log_view.AuditLogState,
+    cli_history_state: *const cli_history_view.CliHistoryState,
 ) !void {
     const win = vx.window();
     win.clear();
@@ -629,6 +649,13 @@ fn renderFrame(
             .text = legend,
             .style = .{ .dim = true },
         }, .{ .row_offset = legend_row, .col_offset = 0 });
+    } else if (active != null and active.?.id == .cli_history) {
+        var legend_buf: [128]u8 = undefined;
+        const legend = cli_history_view.legendLabel(&legend_buf);
+        _ = content_win.printSegment(.{
+            .text = legend,
+            .style = .{ .dim = true },
+        }, .{ .row_offset = legend_row, .col_offset = 0 });
     } else {
         _ = content_win.printSegment(.{
             .text = "  q Quit  Tab Focus  1-9 View  Ctrl-C Quit",
@@ -672,14 +699,16 @@ fn renderFrame(
         try sessions_handoff.render(sessions_state, panes.nav, panes.detail, alloc);
     } else if (active != null and active.?.id == .audit_log) {
         try audit_log_view.render(audit_state, panes.nav, panes.detail, alloc);
+    } else if (active != null and active.?.id == .cli_history) {
+        try cli_history_view.render(cli_history_state, panes.nav, panes.detail, alloc);
     } else {
-        // Placeholder for views not yet implemented (M13+).
+        // Placeholder for views not yet implemented (M14+).
         _ = panes.nav.printSegment(.{
-            .text = "[Navigator — M13+]",
+            .text = "[Navigator — M14+]",
             .style = .{ .dim = true },
         }, .{ .row_offset = 1, .col_offset = 1 });
         _ = panes.detail.printSegment(.{
-            .text = "[Detail pane — M13+]",
+            .text = "[Detail pane — M14+]",
             .style = .{ .dim = true },
         }, .{ .row_offset = 1, .col_offset = 1 });
     }
@@ -778,6 +807,7 @@ const entity_link_graph_mod = @import("views/entity_link_graph.zig");
 const external_ops_plane_mod = @import("views/external_ops_plane.zig");
 const sessions_handoff_mod = @import("views/sessions_handoff.zig");
 const audit_log_mod = @import("views/audit_log.zig");
+const cli_history_mod = @import("views/cli_history.zig");
 
 // =========================================================================
 // Tests
@@ -905,4 +935,5 @@ test "cockpit spine modules compile" {
     std.testing.refAllDecls(external_ops_plane_mod);
     std.testing.refAllDecls(sessions_handoff_mod);
     std.testing.refAllDecls(audit_log_mod);
+    std.testing.refAllDecls(cli_history_mod);
 }
