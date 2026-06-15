@@ -1,4 +1,10 @@
 .{
+    // RULE: every vendored third-party dependency MUST be sourced from a pinned
+    // release archive (url + sha256) listed here — never a git checkout or
+    // submodule. The only sanctioned exception is a dep with no published
+    // archive, which must be documented explicitly at its call site. See
+    // CLAUDE.md § Operating Rules ("Vendoring rule").
+    //
     // Declarative manifest for vendored third-party sources. The `vendor_sync`
     // tool reads this file and writes a matching VENDOR.toml into each
     // `vendor/<name>/` directory after a successful sync. `build.zig` performs
@@ -32,6 +38,45 @@
             // from zip archives, so the normalised tree has files at root level.
             .strip_prefix = "",
             .keep = .{ "sqlite3.c", "sqlite3.h", "sqlite3ext.h" },
+        },
+        .{
+            .name = "etcli",
+            .version = "0.2.0",
+            // Direct codeload URL. The friendlier
+            // github.com/rdrsss/etcli/archive/refs/tags/v0.2.0.tar.gz form
+            // 302-redirects to this; vendor_sync's std.http fetch does not
+            // follow redirects (it hard-fails on any non-200), so pin the
+            // redirect target directly. Identical bytes, identical sha256.
+            .url = "https://codeload.github.com/rdrsss/etcli/tar.gz/refs/tags/v0.2.0",
+            .sha256 = "56cbe09ecd069d0ccb89dc5e514c37f0fffb5fd8e588d94c2dd5bd4579e545d4",
+            .archive = .tar_gz,
+            // zig fetch strips the single top-level dir ("etcli-0.2.0/"); the
+            // normalised tree has build.zig + src/cli/ at root. Library only —
+            // examples/integration_tests/docs/scripts/CHANGELOG are dropped, as
+            // Planar only consumes the `cli` module via a path dependency.
+            .strip_prefix = "",
+            .keep = .{
+                "build.zig",
+                "build.zig.zon",
+                "LICENSE",
+                "README.md",
+                "src/cli/app.zig",
+                "src/cli/artifacts.zig",
+                "src/cli/cmd.zig",
+                "src/cli/completion.zig",
+                "src/cli/doc.zig",
+                "src/cli/duration.zig",
+                "src/cli/error.zig",
+                "src/cli/flag.zig",
+                "src/cli/help.zig",
+                "src/cli/man.zig",
+                "src/cli/meta.zig",
+                "src/cli/parser.zig",
+                "src/cli/platform/root.zig",
+                "src/cli/root.zig",
+                "src/cli/schema.zig",
+                "src/cli/validate.zig",
+            },
         },
     },
 }

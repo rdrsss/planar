@@ -21,8 +21,8 @@ pub const verb: cli.Cmd = .{
         .{ .long = "--apply", .kind = .bool, .default = .{ .bool = false } },
         .{ .long = "--apply-removals", .kind = .bool, .default = .{ .bool = false } },
         .{ .long = "--no-status-inference", .kind = .bool, .default = .{ .bool = false } },
+        // `--no-interpret` is auto-provided by etcli's implicit bool negation.
         .{ .long = "--interpret", .kind = .bool, .default = .{ .bool = false } },
-        .{ .long = "--no-interpret", .kind = .bool, .default = .{ .bool = false } },
         .{ .long = "--accept-spec", .kind = .string, .desc = "Non-interactive forward-spec selection — slug, comma-separated slugs, or 'all'" },
         .{ .long = "--no-forward-specs", .kind = .bool, .default = .{ .bool = false }, .desc = "Skip forward-spec processing entirely" },
         .{ .long = "--scope", .kind = .string },
@@ -47,7 +47,6 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
     const out = engine.import.run(d, ctx.allocator, ctx.environ, planar_home, .{
         .repo_root = args.repo_root,
         .interpret = args.interpret,
-        .no_interpret = args.no_interpret,
         .apply = args.apply,
         .apply_removals = args.apply_removals,
         .scope = args.scope,

@@ -13,7 +13,6 @@ pub const deferred_priority_floor: i64 = 150;
 pub const Opts = struct {
     repo_root: []const u8,
     interpret: bool = false,
-    no_interpret: bool = false,
     apply: bool = false,
     apply_removals: bool = false,
     provider_override: ?[]const u8 = null,
@@ -74,7 +73,6 @@ pub fn run(
     opts: Opts,
 ) !Outcome {
     if (opts.apply_removals and !opts.apply) return error.InvalidInput;
-    if (opts.interpret and opts.no_interpret) return error.InvalidInput;
     // --accept-spec and --no-forward-specs are mutually exclusive
     // — one selects forward specs to materialize, the other skips
     // the phase entirely. Passing both is operator confusion.
@@ -88,7 +86,7 @@ pub fn run(
     const repo_slug = try deriveRepoSlug(allocator, abs_root);
     errdefer allocator.free(repo_slug);
 
-    if (!opts.interpret or opts.no_interpret) {
+    if (!opts.interpret) {
         const req = try buildRequest(allocator, abs_root, repo_slug, provider_kind);
         defer deinitRequest(req, allocator);
         var out: Outcome = .{

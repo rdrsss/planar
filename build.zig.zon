@@ -32,13 +32,14 @@
     // Once all dependencies are fetched, `zig build` no longer requires
     // internet connectivity.
     .dependencies = .{
-        // etc-cli — extracted from Planar's former src/cli/. Vendored
-        // under vendor/etc-cli/ (private upstream at
-        // git@github.com:rdrsss/etc-cli.git; re-vendor per
-        // vendor/etc-cli/VENDOR.toml). Path dep so the build is
-        // hermetic — no network, no auth.
-        .etc_cli = .{
-            .path = "vendor/etc-cli",
+        // etcli — comptime CLI parser, extracted from Planar's former
+        // src/cli/ and published at github.com/rdrsss/etcli. Vendored
+        // in-tree under vendor/etcli/ from the v0.2.0 **release archive**
+        // (managed by vendor/manifest.zon + `zig build vendor-sync`),
+        // not a git checkout. Path dep so the build stays hermetic — no
+        // network, no auth.
+        .etcli = .{
+            .path = "vendor/etcli",
         },
         // See `zig fetch --save <url>` for a command-line interface for adding dependencies.
         //.example = .{
