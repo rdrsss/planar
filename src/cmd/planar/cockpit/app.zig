@@ -43,6 +43,7 @@ const decision_log = @import("views/decision_log.zig");
 const open_questions = @import("views/open_questions.zig");
 const coverage_view = @import("views/coverage_view.zig");
 const entity_link_graph = @import("views/entity_link_graph.zig");
+const external_ops_plane = @import("views/external_ops_plane.zig");
 
 /// Minimum usable terminal dimensions.
 const MIN_WIDTH: u16 = 40;
@@ -228,6 +229,10 @@ pub fn run(
     var entity_graph: entity_link_graph.EntityLinkState = entity_link_graph.EntityLinkState.init(alloc);
     defer entity_graph.deinit();
 
+    // ---- External / Ops Plane state (tasks 4029–4031, M10) --------------
+    var ext_ops: external_ops_plane.ExtOpsState = external_ops_plane.ExtOpsState.init(alloc);
+    defer ext_ops.deinit();
+
     // Determine cwd-scope filter on launch. Falls back to .all when the
     // cwd is outside any registered repo (q607: cwd-derived default).
     const cwd_for_scope = std.Io.Dir.realPathFileAlloc(
@@ -265,6 +270,9 @@ pub fn run(
     // Initial load of the Entity-Link Graph (default entity heuristic).
     entity_graph.reloadDefault(db_handle) catch {};
 
+    // Initial load of the External / Ops Plane.
+    ext_ops.reload(db_handle) catch {};
+
     // ---- Spine state ----------------------------------------------------
     // Scope Explorer is the default (index 0) landing view per the spec.
     var vs: view_switcher.ViewSwitcher = .{};
@@ -275,6 +283,7 @@ pub fn run(
     try vs.register(.{ .id = .open_questions, .name = "Questions", .key = '5' });
     try vs.register(.{ .id = .coverage_view, .name = "Coverage", .key = '6' });
     try vs.register(.{ .id = .entity_link_graph, .name = "Links", .key = '7' });
+    try vs.register(.{ .id = .external_ops_plane, .name = "ExtOps", .key = '8' });
 
     var sl: split_layout.SplitLayout = .{};
 
@@ -283,7 +292,7 @@ pub fn run(
     try vx.queryTerminal(tty.writer(), .fromSeconds(1));
 
     // Render the initial frame.
-    try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor, &board, &declog, &questions, &coverage, &entity_graph);
+    try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor, &board, &declog, &questions, &coverage, &entity_graph, &ext_ops);
 
     // Main event loop.
     while (true) {
@@ -357,6 +366,12 @@ pub fn run(
                         } else {
                             need_render = false;
                         }
+                    } else if (active != null and active.?.id == .external_ops_plane) {
+                        if (ext_ops.handleKey(key)) {
+                            // Consumed by external ops plane — render.
+                        } else {
+                            need_render = false;
+                        }
                     } else {
                         need_render = false;
                     }
@@ -385,11 +400,13 @@ pub fn run(
                     coverage.reload(db_handle) catch {};
                 } else if (active != null and active.?.id == .entity_link_graph) {
                     entity_graph.reload(db_handle) catch {};
+                } else if (active != null and active.?.id == .external_ops_plane) {
+                    ext_ops.reload(db_handle) catch {};
                 }
             },
         }
         if (need_render) {
-            try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor, &board, &declog, &questions, &coverage, &entity_graph);
+            try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor, &board, &declog, &questions, &coverage, &entity_graph, &ext_ops);
         }
     }
     // Terminal restored by deferred vx.deinit.
@@ -459,6 +476,7 @@ fn renderFrame(
     questions: *const open_questions.OpenQuestionsState,
     coverage: *const coverage_view.CoverageState,
     entity_graph_state: *const entity_link_graph.EntityLinkState,
+    ext_ops_state: *const external_ops_plane.ExtOpsState,
 ) !void {
     const win = vx.window();
     win.clear();
@@ -550,9 +568,16 @@ fn renderFrame(
             .text = legend,
             .style = .{ .dim = true },
         }, .{ .row_offset = legend_row, .col_offset = 0 });
+    } else if (active != null and active.?.id == .external_ops_plane) {
+        var legend_buf: [128]u8 = undefined;
+        const legend = external_ops_plane.legendLabel(&legend_buf);
+        _ = content_win.printSegment(.{
+            .text = legend,
+            .style = .{ .dim = true },
+        }, .{ .row_offset = legend_row, .col_offset = 0 });
     } else {
         _ = content_win.printSegment(.{
-            .text = "  q Quit  Tab Focus  1-7 View  Ctrl-C Quit",
+            .text = "  q Quit  Tab Focus  1-8 View  Ctrl-C Quit",
             .style = .{ .dim = true },
         }, .{ .row_offset = legend_row, .col_offset = 0 });
     }
@@ -587,14 +612,16 @@ fn renderFrame(
         try coverage_view.render(coverage, panes.nav, panes.detail, alloc);
     } else if (active != null and active.?.id == .entity_link_graph) {
         try entity_link_graph.render(entity_graph_state, panes.nav, panes.detail, alloc);
+    } else if (active != null and active.?.id == .external_ops_plane) {
+        try external_ops_plane.render(ext_ops_state, panes.nav, panes.detail, alloc);
     } else {
-        // Placeholder for views not yet implemented (M10+).
+        // Placeholder for views not yet implemented (M11+).
         _ = panes.nav.printSegment(.{
-            .text = "[Navigator — M10+]",
+            .text = "[Navigator — M11+]",
             .style = .{ .dim = true },
         }, .{ .row_offset = 1, .col_offset = 1 });
         _ = panes.detail.printSegment(.{
-            .text = "[Detail pane — M10+]",
+            .text = "[Detail pane — M11+]",
             .style = .{ .dim = true },
         }, .{ .row_offset = 1, .col_offset = 1 });
     }
@@ -690,6 +717,7 @@ const decision_log_mod = @import("views/decision_log.zig");
 const open_questions_mod = @import("views/open_questions.zig");
 const coverage_view_mod = @import("views/coverage_view.zig");
 const entity_link_graph_mod = @import("views/entity_link_graph.zig");
+const external_ops_plane_mod = @import("views/external_ops_plane.zig");
 
 // =========================================================================
 // Tests
@@ -814,4 +842,5 @@ test "cockpit spine modules compile" {
     std.testing.refAllDecls(open_questions_mod);
     std.testing.refAllDecls(coverage_view_mod);
     std.testing.refAllDecls(entity_link_graph_mod);
+    std.testing.refAllDecls(external_ops_plane_mod);
 }
