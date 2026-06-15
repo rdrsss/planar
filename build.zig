@@ -346,6 +346,13 @@ pub fn build(b: *std.Build) void {
     engine_mod.addImport("db", db_mod);
     engine_mod.addImport("templates_embed", templates_embed_mod);
     engine_mod.addImport("metrics_sql", metrics_sql_mod);
+    // The derived-closure extractor (engine/closure/) parses source with the
+    // tree-sitter binding. Import the module and link the static lib + headers
+    // so engine unit tests build the symbol-resolution code.
+    engine_mod.addImport("treesitter", treesitter_zig_mod);
+    engine_mod.link_libc = true;
+    engine_mod.addIncludePath(b.path(ts_core_dir ++ "/lib/include"));
+    engine_mod.linkLibrary(treesitter_lib);
 
     // -----------------------------------------------------------------
     // Library module (existing planar package surface).
