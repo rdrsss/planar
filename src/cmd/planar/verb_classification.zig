@@ -92,7 +92,15 @@ pub fn classify(path: []const []const u8) Class {
         eq(top, "completion") or
         eq(top, "schema") or
         eq(top, "import") or
-        eq(top, "synthesize"))
+        eq(top, "synthesize") or
+        // `explore` (plan 591) is the read-only interactive cockpit alias.
+        // A viewer must run from inside a worktree like `dashboard`/`tree`.
+        eq(top, "explore") or
+        // `bench *` is the measurement-rig verb group. The harness drives
+        // it from inside worktrees (protected-instrument invariant from
+        // docs/research/run-record-schema.md §1); refused from worktrees
+        // would defeat its purpose.
+        eq(top, "bench"))
     {
         return .execution_or_read;
     }
