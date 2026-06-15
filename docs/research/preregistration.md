@@ -31,10 +31,11 @@ build-spec.md` (implementation). **Capture mechanics:** `run-record-schema.md`
   confirmatory; it exists to set thresholds and validate the pipeline.
 
 ```
-Stage-1 frozen: __________ (date)   commit/tag: __________
+Stage-1 frozen: 2026-06-15           commit/tag: prereg-stage1
 Stage-2 frozen: __________ (date)   commit/tag: __________
 Amendments (append-only):
-  - __________
+  - 2026-06-15: corpus repo named `git-fleet` (was placeholder codename
+    `arbustum`); naming reconciled pre-freeze, no change to definitions/design.
 ```
 
 Anything discovered after a freeze is **exploratory** (§8), labeled as such,
@@ -217,14 +218,14 @@ why the corpus must *vary* in coupling: RQ4's finding is the slope, not a point.
 - **Internal — reviewer variance.** *Mitigation:* arm-independent objective gate
   (§3); reviewer behavior is measured, not load-bearing.
 - **External — generality.** Single language (one tree-sitter grammar), few
-  repos, single model family. *Mitigation:* ≥1 non-Planar repo (`arbustum`
+  repos, single model family. *Mitigation:* ≥1 non-Planar repo (`git-fleet`
   primary) to break the single-repo objection; remaining limits disclosed, not
   hidden.
 - **Conclusion — small N + multiplicity.** *Mitigation:* primary metrics
   pre-registered (§2); everything else labeled exploratory (§0); sign tests and
   effect sizes over p-values (§5).
 - **Disclosure — self-hosting.** Planar evaluated partly on its own backlog.
-  Accepted in systems work; disclosed explicitly; `arbustum` carries the
+  Accepted in systems work; disclosed explicitly; `git-fleet` carries the
   primary claim to keep self-hosting from being load-bearing.
 
 ---

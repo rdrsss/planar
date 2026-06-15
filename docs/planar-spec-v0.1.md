@@ -129,7 +129,7 @@ Re-orient against this. The mandate (§0) is the filter: if a task does not serv
 
 ## 6. Corpus requirement (the step people skip and then stall on)
 
-The result needs a **real task graph over a real codebase** with enough closure overlap to measure. Do **not** synthesize one — a corpus with hand-tuned overlap is the first thing a reviewer distrusts. Decompose an actual feature in one of your own repositories; dogfood as user #1 (e.g. `git-fleet` or `arbustum`). Authenticity of the corpus is part of the claim's credibility, not a logistical detail.
+The result needs a **real task graph over a real codebase** with enough closure overlap to measure. Do **not** synthesize one — a corpus with hand-tuned overlap is the first thing a reviewer distrusts. Decompose an actual feature in one of your own repositories; dogfood as user #1 (e.g. `git-fleet`). Authenticity of the corpus is part of the claim's credibility, not a logistical detail.
 
 ---
 

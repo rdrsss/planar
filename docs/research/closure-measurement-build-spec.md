@@ -324,7 +324,7 @@ treats them as locked.
 
 ## 7. Corpus (spec v0.1 §6)
 
-Primary: `arbustum` (a real decomposed feature, not synthetic — authenticity is
+Primary: `git-fleet` (a real decomposed feature, not synthetic — authenticity is
 part of the claim). Secondary: Planar's own backlog (self-hosted, disclosed).
 Pick plans that **vary in coupling density** — one heavily coupled, one
 embarrassingly parallel, one mixed — because RQ4's finding is how the arm-delta
