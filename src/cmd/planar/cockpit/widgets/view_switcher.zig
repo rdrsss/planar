@@ -31,7 +31,10 @@ pub const ViewEntry = struct {
 };
 
 /// Maximum number of registered views. Fixed at comptime.
-pub const MAX_VIEWS = 8;
+/// Set to 24 to give headroom for all planned cockpit milestones (M11–M17+).
+/// Numeric quick-keys cover '1'–'9' (views 1–9); views 10+ are reachable
+/// via Tab/Shift-Tab cycling only (no numeric key assigned).
+pub const MAX_VIEWS = 24;
 
 /// View-switcher state managed by the caller.
 pub const ViewSwitcher = struct {
