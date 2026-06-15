@@ -8,7 +8,7 @@ It is **vendor-agnostic by design**: Claude, Codex, and Copilot are first-class 
 
 ## Status
 
-Planar is a feature-complete, local-first tool built as four binaries (`planar`, `planar-agent`, `planar-watch`, `planar-doc`). The schema (eighteen migration files, `migrations/00001_foundation.up.sql` through `00018_fix_schema_migration_descriptions.up.sql`) is versioned and stable; the runtime applies migrations automatically from an embedded `migrations` Zig module produced by build-time codegen. **608+ unit tests, 64+ integration tests**; `zig fmt`, `zig build`, `zig build test`, `zig build test-integration` all clean. Vendored SQLite amalgamation compiled by `build.zig` (no system library dependency). Schema at version 18.
+Planar is a feature-complete, local-first tool built as five binaries (`planar`, `planar-agent`, `planar-watch`, `planar-doc`, and `planar-execute` — the deterministic, spawn-free Lua workflow engine, which holds no DB handle and reaches state only by shelling the others). The schema (eighteen migration files, `migrations/00001_foundation.up.sql` through `00018_fix_schema_migration_descriptions.up.sql`) is versioned and stable; the runtime applies migrations automatically from an embedded `migrations` Zig module produced by build-time codegen. **608+ unit tests, 64+ integration tests**; `zig fmt`, `zig build`, `zig build test`, `zig build test-integration` all clean. Vendored SQLite amalgamation compiled by `build.zig` (no system library dependency). Schema at version 18.
 
 **History.** Repo split — the original Go implementation (M1–M19) is preserved at `github.com/rdrsss/planar-go-archive.git`; the current canonical Zig implementation lives at `github.com/rdrsss/planar.git`.
 

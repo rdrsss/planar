@@ -64,6 +64,76 @@ pub fn build(b: *std.Build) void {
     });
 
     // -----------------------------------------------------------------
+    // Lua 5.5 — compile the vendored multi-file library as a static lib.
+    // lua.c and luac.c (standalone interpreter/compiler mains) are excluded
+    // from the source list; only the library sources are compiled.
+    //
+    // Platform define: Lua's Makefile uses LUA_USE_MACOSX on macOS,
+    // LUA_USE_LINUX on Linux, and LUA_USE_POSIX as a portable fallback;
+    // we mirror that conditional here via the host OS tag so cross-compile
+    // targets get the right syscall/readline guards.
+    // -----------------------------------------------------------------
+    const lua_mod = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    const lua_platform_define: []const u8 = switch (target.result.os.tag) {
+        .macos => "-DLUA_USE_MACOSX",
+        .linux => "-DLUA_USE_LINUX",
+        else => "-DLUA_USE_POSIX",
+    };
+    const lua_src_dir = "vendor/lua/src";
+    // Library C sources — mirrors CORE_O + LIB_O from Lua's Makefile.
+    // lua.c and luac.c are intentionally absent.
+    const lua_lib_c_sources: []const []const u8 = &.{
+        lua_src_dir ++ "/lapi.c",
+        lua_src_dir ++ "/lauxlib.c",
+        lua_src_dir ++ "/lbaselib.c",
+        lua_src_dir ++ "/lcode.c",
+        lua_src_dir ++ "/lcorolib.c",
+        lua_src_dir ++ "/lctype.c",
+        lua_src_dir ++ "/ldblib.c",
+        lua_src_dir ++ "/ldebug.c",
+        lua_src_dir ++ "/ldo.c",
+        lua_src_dir ++ "/ldump.c",
+        lua_src_dir ++ "/lfunc.c",
+        lua_src_dir ++ "/lgc.c",
+        lua_src_dir ++ "/linit.c",
+        lua_src_dir ++ "/liolib.c",
+        lua_src_dir ++ "/llex.c",
+        lua_src_dir ++ "/lmathlib.c",
+        lua_src_dir ++ "/lmem.c",
+        lua_src_dir ++ "/loadlib.c",
+        lua_src_dir ++ "/lobject.c",
+        lua_src_dir ++ "/lopcodes.c",
+        lua_src_dir ++ "/loslib.c",
+        lua_src_dir ++ "/lparser.c",
+        lua_src_dir ++ "/lstate.c",
+        lua_src_dir ++ "/lstring.c",
+        lua_src_dir ++ "/lstrlib.c",
+        lua_src_dir ++ "/ltable.c",
+        lua_src_dir ++ "/ltablib.c",
+        lua_src_dir ++ "/ltm.c",
+        lua_src_dir ++ "/lundump.c",
+        lua_src_dir ++ "/lutf8lib.c",
+        lua_src_dir ++ "/lvm.c",
+        lua_src_dir ++ "/lzio.c",
+    };
+    for (lua_lib_c_sources) |src| {
+        lua_mod.addCSourceFile(.{
+            .file = b.path(src),
+            .flags = &.{ lua_platform_define, "-std=c99" },
+        });
+    }
+    lua_mod.addIncludePath(b.path(lua_src_dir));
+    const lua_lib = b.addLibrary(.{
+        .name = "lua55",
+        .linkage = .static,
+        .root_module = lua_mod,
+    });
+
+    // -----------------------------------------------------------------
     // Migrations codegen — scan ../migrations/ and emit a manifest.zig
     // that the `migrations` module exposes as `pub const all: []Migration`.
     // The generator runs on the build host, not the user's target.
@@ -117,6 +187,22 @@ pub fn build(b: *std.Build) void {
         .root_source_file = tmpl_manifest_path,
         .target = target,
     });
+
+    // -----------------------------------------------------------------
+    // `lua` module: Lua 5.5 C-API bindings stub + linkage smoke test.
+    // Imports the Lua headers via @cImport and links the static library.
+    // This module is the build-graph anchor that ensures lua_lib is
+    // compiled and linked by `zig build test`; the planar-execute engine
+    // (P0.2+) will import it to reach the raw C API.
+    // -----------------------------------------------------------------
+    const lua_zig_mod = b.addModule("lua", .{
+        .root_source_file = b.path("src/lua/lua.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    lua_zig_mod.addIncludePath(b.path(lua_src_dir));
+    lua_zig_mod.linkLibrary(lua_lib);
 
     // -----------------------------------------------------------------
     // `db` module: SQLite wrapper + migration runner. Needs the sqlite
@@ -324,6 +410,29 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(doc_exe);
 
+    // -----------------------------------------------------------------
+    // `planar-execute` executable (plan 633 P0.2c). Fifth binary — the
+    // deterministic, spawn-free Lua workflow engine. Links Lua as a static
+    // lib (addIncludePath + linkLibrary, mirroring the lua_zig_mod wiring)
+    // and intentionally does NOT link db / engine / runtime: the engine
+    // reaches Planar state only by shelling allowlisted CLI verbs (the D7
+    // host surface in src/cmd/planar-execute/host.zig). There is no
+    // model-spawn primitive (decision D5) — the host-fn manifest is the
+    // frozen capability surface P0.3 locks.
+    // -----------------------------------------------------------------
+    const execute_exe = b.addExecutable(.{
+        .name = "planar-execute",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/cmd/planar-execute/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    execute_exe.root_module.addIncludePath(b.path(lua_src_dir));
+    execute_exe.root_module.linkLibrary(lua_lib);
+    b.installArtifact(execute_exe);
+
     // Vendored-deps drift check runs before the binary is installed, so
     // `zig build` (which depends on the install step) fails loudly on
     // any vendor/<name>/VENDOR.toml mismatch.
@@ -406,6 +515,31 @@ pub fn build(b: *std.Build) void {
     const runtime_tests = b.addTest(.{ .root_module = runtime_mod, .filters = test_filters_opt });
     const run_runtime_tests = b.addRunArtifact(runtime_tests);
 
+    const lua_tests = b.addTest(.{ .root_module = lua_zig_mod, .filters = test_filters_opt });
+    const run_lua_tests = b.addRunArtifact(lua_tests);
+
+    // -----------------------------------------------------------------
+    // `planar-execute` spawn-free modules (P0.2a).
+    // No executable yet (that is P0.2c). This module compiles the three
+    // salvaged spawn-free modules (schema, state, brief) and runs their
+    // unit tests. The module depends on nothing beyond std.
+    // -----------------------------------------------------------------
+    const planar_execute_mod = b.addModule("planar_execute", .{
+        .root_source_file = b.path("src/cmd/planar-execute/modules.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const planar_execute_tests = b.addTest(.{ .root_module = planar_execute_mod, .filters = test_filters_opt });
+    const run_planar_execute_tests = b.addRunArtifact(planar_execute_tests);
+
+    // `planar-execute` engine tests (P0.2c): the new main.zig + host.zig.
+    // Keyed on the executable's root module so the host-fn manifest tests,
+    // sandbox tests, and arg-parse tests run under `zig build test`. The
+    // refAllDecls block in main.zig pulls the aliased engine modules in too.
+    const planar_execute_engine_tests = b.addTest(.{ .root_module = execute_exe.root_module, .filters = test_filters_opt });
+    const run_planar_execute_engine_tests = b.addRunArtifact(planar_execute_engine_tests);
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
@@ -417,6 +551,9 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_cli_tests.step);
     test_step.dependOn(&run_engine_tests.step);
     test_step.dependOn(&run_runtime_tests.step);
+    test_step.dependOn(&run_lua_tests.step);
+    test_step.dependOn(&run_planar_execute_tests.step);
+    test_step.dependOn(&run_planar_execute_engine_tests.step);
 
     // -----------------------------------------------------------------
     // Integration tests. Separate from `zig build test` (mirrors Go's
@@ -467,6 +604,10 @@ pub fn build(b: *std.Build) void {
     run_integration_all.setEnvironmentVariable(
         "PLANAR_DOC_BIN",
         b.getInstallPath(.bin, "planar-doc"),
+    );
+    run_integration_all.setEnvironmentVariable(
+        "PLANAR_EXECUTE_BIN",
+        b.getInstallPath(.bin, "planar-execute"),
     );
     test_integration_step.dependOn(&run_integration_all.step);
 

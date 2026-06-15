@@ -12,6 +12,9 @@
 #     bin/planar-doc                  # the doc-state manifest tool
 #                                     # (build/verify/diff/cover/nodoc/lint;
 #                                     #  never opens SQLite)
+#     bin/planar-execute              # deterministic spawn-free Lua workflow
+#                                     # engine (run <wf.lua> --phase; shells
+#                                     #  planar for state, holds no DB handle)
 #     planar.db                       # created on first `planar init`
 #     migrations/0001_foundation.up.sql  # canonical migration sources (also
 #                                     # embedded into the binary at compile
@@ -374,7 +377,7 @@ title "Planar — install from $REPO_ROOT"
 # run_deps:   Planar (the binary + bundled agent skills) needs these at run
 #             time; a miss only warns — the install still produces a binary.
 BUILD_DEPS=(
-  "zig|zig|builds the four Planar binaries"
+  "zig|zig|builds the five Planar binaries"
   "cp||copy install artifacts into place"
   "ln||symlink vendor surfaces"
   "mkdir||create the install tree"
@@ -457,7 +460,7 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   [[ -f "$REPO_ROOT/install-cleanup.txt" ]] && \
     _cleanup_n="$(grep -cE '^[[:space:]]*[^#[:space:]]' "$REPO_ROOT/install-cleanup.txt" || true)"
   title "Dry run — planned actions"
-  log "build 4 binaries (planar, planar-agent, planar-watch, planar-doc) → $PLANAR_HOME/bin  [optimize=$OPTIMIZE]"
+  log "build 5 binaries (planar, planar-agent, planar-watch, planar-doc, planar-execute) → $PLANAR_HOME/bin  [optimize=$OPTIMIZE]"
   log "run cleanup manifest: $_cleanup_n path(s) checked for removal"
   log "wipe + re-place: agents/, scripts/, skills/, commands/, migrations/$([[ -d "$REPO_ROOT/copilot" ]] && echo ', copilot/')"
   log "render per-vendor skill + agent outputs into $PLANAR_HOME"
@@ -478,7 +481,7 @@ title "Building the Planar binaries"
 
 mkdir -p "$PLANAR_HOME/bin"
 # `zig build --prefix <root>` installs every `installArtifact` target into
-# <root>/bin/. The build registers FOUR binaries:
+# <root>/bin/. The build registers FIVE binaries:
 #
 #   planar         — operator surface
 #   planar-agent   — agent-callable coordination (atomic claim ops,
@@ -487,8 +490,11 @@ mkdir -p "$PLANAR_HOME/bin"
 #                    strict SQLITE_OPEN_READONLY handle)
 #   planar-doc     — doc-state manifest tool (build/verify/diff/cover/
 #                    nodoc/lint; never opens SQLite)
+#   planar-execute — deterministic spawn-free Lua workflow engine
+#                    (run <wf.lua> --phase; shells planar for state,
+#                    holds no DB handle, no model-spawn host fn)
 #
-# All four land in $PLANAR_HOME/bin/ in one shot — no extra cp step needed.
+# All five land in $PLANAR_HOME/bin/ in one shot — no extra cp step needed.
 # Migrations and templates/defaults are read from the repo root at
 # codegen time (build.zig sits at the repo root).
 ( cd "$REPO_ROOT" && zig build -Doptimize="$OPTIMIZE" --prefix "$PLANAR_HOME" )
@@ -496,6 +502,7 @@ vlog "wrote $PLANAR_HOME/bin/planar"
 vlog "wrote $PLANAR_HOME/bin/planar-agent"
 vlog "wrote $PLANAR_HOME/bin/planar-watch"
 vlog "wrote $PLANAR_HOME/bin/planar-doc"
+vlog "wrote $PLANAR_HOME/bin/planar-execute"
 
 # Smoke check — a build can succeed yet produce a binary that won't run. Confirm
 # it executes now (and capture the build id) rather than discovering it broken
@@ -505,7 +512,7 @@ PLANAR_VERSION_LINE="$("$PLANAR_HOME/bin/planar" version 2>/dev/null || true)"
 [[ -n "$PLANAR_VERSION_LINE" ]] || \
   err "built $PLANAR_HOME/bin/planar but it failed to run ('planar version' produced no output)"
 PLANAR_BUILD_ID="$(printf '%s' "$PLANAR_VERSION_LINE" | awk '{print $2}')"
-ok "built 4 binaries → $PLANAR_HOME/bin  ${C_DIM}($PLANAR_VERSION_LINE)${C_RESET}"
+ok "built 5 binaries → $PLANAR_HOME/bin  ${C_DIM}($PLANAR_VERSION_LINE)${C_RESET}"
 
 # `zig build --prefix` only writes the targets it builds — it never removes
 # files a PRIOR install left behind. Iterate the cleanup manifest and delete
@@ -968,7 +975,7 @@ skills_n="$(count_glob "$PLANAR_HOME"/commands/claude/pl-*.md)"
 agents_n="$(count_glob "$PLANAR_HOME"/agents/claude/*.md)"
 
 ok "Planar ${PLANAR_BUILD_ID:-installed} → $PLANAR_HOME  ${C_DIM}(${SECONDS}s, $MODE mode)${C_RESET}"
-log "binaries:   planar, planar-agent, planar-watch, planar-doc"
+log "binaries:   planar, planar-agent, planar-watch, planar-doc, planar-execute"
 log "surfaces:   $skills_n skills · $agents_n agents · vendors: ${VENDORS:-none}"
 if [[ "$WARN_COUNT" -gt 0 ]]; then
   printf '  %s!%s %s warning(s) above — review before first run\n' "$C_YELLOW" "$C_RESET" "$WARN_COUNT"
