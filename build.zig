@@ -134,6 +134,50 @@ pub fn build(b: *std.Build) void {
     });
 
     // -----------------------------------------------------------------
+    // tree-sitter — compile the vendored C runtime + the Zig grammar as
+    // a single static library, no system dependency (mirrors sqlite/lua).
+    //
+    // The runtime is a single-TU amalgam: vendor/tree-sitter/lib/src/lib.c
+    // #includes every other lib/src/*.c, so we compile ONLY lib.c. We do
+    // NOT define TREE_SITTER_FEATURE_WASM, so wasm_store.c compiles to
+    // nothing requiring wasmtime. The grammar (tree-sitter-zig v1.1.2) has
+    // no external scanner — parser.c is the whole grammar.
+    //
+    // Include paths:
+    //   - lib/include : public header tree (tree_sitter/api.h)
+    //   - lib/src     : internal headers lib.c reaches via "./*.h"
+    //   - the grammar's src : parser.c reaches "tree_sitter/parser.h"
+    // -----------------------------------------------------------------
+    const ts_core_dir = "vendor/tree-sitter";
+    const ts_zig_dir = "vendor/tree-sitter-zig";
+    const treesitter_mod = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    treesitter_mod.addCSourceFile(.{
+        .file = b.path(ts_core_dir ++ "/lib/src/lib.c"),
+        .flags = &.{
+            "-std=c11",
+            // Quiet the runtime's intentional unused-parameter / sign
+            // patterns; upstream builds with these tolerated.
+            "-fno-sanitize=undefined",
+        },
+    });
+    treesitter_mod.addCSourceFile(.{
+        .file = b.path(ts_zig_dir ++ "/src/parser.c"),
+        .flags = &.{ "-std=c11", "-fno-sanitize=undefined" },
+    });
+    treesitter_mod.addIncludePath(b.path(ts_core_dir ++ "/lib/include"));
+    treesitter_mod.addIncludePath(b.path(ts_core_dir ++ "/lib/src"));
+    treesitter_mod.addIncludePath(b.path(ts_zig_dir ++ "/src"));
+    const treesitter_lib = b.addLibrary(.{
+        .name = "treesitter",
+        .linkage = .static,
+        .root_module = treesitter_mod,
+    });
+
+    // -----------------------------------------------------------------
     // Migrations codegen — scan ../migrations/ and emit a manifest.zig
     // that the `migrations` module exposes as `pub const all: []Migration`.
     // The generator runs on the build host, not the user's target.
@@ -218,6 +262,23 @@ pub fn build(b: *std.Build) void {
     });
     lua_zig_mod.addIncludePath(b.path(lua_src_dir));
     lua_zig_mod.linkLibrary(lua_lib);
+
+    // -----------------------------------------------------------------
+    // `treesitter` module: tree-sitter C-API bindings + parse smoke test.
+    // @cImports tree_sitter/api.h (one cImport, shared type set — the
+    // funnel lesson from src/lua/lua.zig) and links the static lib so
+    // `zig build test` exercises the runtime + Zig grammar object code.
+    // The derived-closure extractor (M2.2+) imports this to reach the
+    // raw C API.
+    // -----------------------------------------------------------------
+    const treesitter_zig_mod = b.addModule("treesitter", .{
+        .root_source_file = b.path("src/treesitter/treesitter.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    treesitter_zig_mod.addIncludePath(b.path(ts_core_dir ++ "/lib/include"));
+    treesitter_zig_mod.linkLibrary(treesitter_lib);
 
     // -----------------------------------------------------------------
     // `db` module: SQLite wrapper + migration runner. Needs the sqlite
@@ -547,6 +608,9 @@ pub fn build(b: *std.Build) void {
     const lua_tests = b.addTest(.{ .root_module = lua_zig_mod, .filters = test_filters_opt });
     const run_lua_tests = b.addRunArtifact(lua_tests);
 
+    const treesitter_tests = b.addTest(.{ .root_module = treesitter_zig_mod, .filters = test_filters_opt });
+    const run_treesitter_tests = b.addRunArtifact(treesitter_tests);
+
     // -----------------------------------------------------------------
     // `planar-execute` spawn-free modules (P0.2a).
     // No executable yet (that is P0.2c). This module compiles the three
@@ -581,6 +645,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_engine_tests.step);
     test_step.dependOn(&run_runtime_tests.step);
     test_step.dependOn(&run_lua_tests.step);
+    test_step.dependOn(&run_treesitter_tests.step);
     test_step.dependOn(&run_planar_execute_tests.step);
     test_step.dependOn(&run_planar_execute_engine_tests.step);
 

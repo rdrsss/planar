@@ -116,6 +116,88 @@
             },
         },
         .{
+            .name = "tree-sitter",
+            .version = "0.25.10",
+            // codeload direct URL (no redirect) — vendor_sync's std.http
+            // fetch hard-fails on any non-200, so pin the redirect target.
+            .url = "https://codeload.github.com/tree-sitter/tree-sitter/tar.gz/refs/tags/v0.25.10",
+            .sha256 = "ad5040537537012b16ef6e1210a572b927c7cdc2b99d1ee88d44a7dcdc3ff44c",
+            .archive = .tar_gz,
+            // zig fetch strips the single top-level dir ("tree-sitter-0.25.10/");
+            // the normalised tree has lib/ at root level.
+            .strip_prefix = "",
+            // The C runtime is a single-TU amalgam: lib/src/lib.c #includes
+            // every other lib/src/*.c (alloc, language, lexer, node, parser,
+            // query, stack, subtree, tree_cursor, tree, get_changed_ranges,
+            // wasm_store). We compile ONLY lib.c, but every #include'd .c and
+            // .h must be present. wasm_store.c is fully guarded by
+            // TREE_SITTER_FEATURE_WASM (not defined), so no wasmtime dep.
+            // Non-source files (LICENSE, README, ICU_SHA, wasm/ stdlib blobs)
+            // are not vendored — they are not in the compile chain.
+            .keep = .{
+                "lib/include/tree_sitter/api.h",
+                "lib/src/alloc.c",
+                "lib/src/alloc.h",
+                "lib/src/array.h",
+                "lib/src/atomic.h",
+                "lib/src/clock.h",
+                "lib/src/error_costs.h",
+                "lib/src/get_changed_ranges.c",
+                "lib/src/get_changed_ranges.h",
+                "lib/src/host.h",
+                "lib/src/language.c",
+                "lib/src/language.h",
+                "lib/src/length.h",
+                "lib/src/lexer.c",
+                "lib/src/lexer.h",
+                "lib/src/lib.c",
+                "lib/src/node.c",
+                "lib/src/parser.c",
+                "lib/src/parser.h",
+                "lib/src/point.h",
+                "lib/src/portable/endian.h",
+                "lib/src/query.c",
+                "lib/src/reduce_action.h",
+                "lib/src/reusable_node.h",
+                "lib/src/stack.c",
+                "lib/src/stack.h",
+                "lib/src/subtree.c",
+                "lib/src/subtree.h",
+                "lib/src/tree_cursor.c",
+                "lib/src/tree_cursor.h",
+                "lib/src/tree.c",
+                "lib/src/tree.h",
+                "lib/src/ts_assert.h",
+                "lib/src/unicode.h",
+                "lib/src/unicode/ptypes.h",
+                "lib/src/unicode/umachine.h",
+                "lib/src/unicode/urename.h",
+                "lib/src/unicode/utf.h",
+                "lib/src/unicode/utf16.h",
+                "lib/src/unicode/utf8.h",
+                "lib/src/wasm_store.c",
+                "lib/src/wasm_store.h",
+            },
+        },
+        .{
+            .name = "tree-sitter-zig",
+            .version = "1.1.2",
+            // codeload direct URL (no redirect). Maintained Zig grammar from
+            // the tree-sitter-grammars org. v1.1.2 has NO external scanner
+            // (EXTERNAL_TOKEN_COUNT 0), so only parser.c + tree_sitter/parser.h
+            // are needed; no scanner.c.
+            .url = "https://codeload.github.com/tree-sitter-grammars/tree-sitter-zig/tar.gz/refs/tags/v1.1.2",
+            .sha256 = "612d67059faa90ec7691e5d786d70d8f7c2c8b15b83de901b9b801122ad4cf25",
+            .archive = .tar_gz,
+            // zig fetch strips the single top-level dir ("tree-sitter-zig-1.1.2/");
+            // the normalised tree has src/ at root level.
+            .strip_prefix = "",
+            .keep = .{
+                "src/parser.c",
+                "src/tree_sitter/parser.h",
+            },
+        },
+        .{
             .name = "etcli",
             .version = "0.2.0",
             // Direct codeload URL. The friendlier
