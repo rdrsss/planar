@@ -611,17 +611,11 @@ fn renderFrame(
 
     // ---- Key legend bar (bottom row of content) -----------------------
     // Show view-specific legend for Explorer and Monitor; generic otherwise.
-    var scope_buf: [32]u8 = undefined;
     const legend_row: u16 = content_win.height -| 1;
     const active = vs.active();
     if (active != null and active.?.id == .scope_explorer) {
-        const scope_lbl = scope_explorer.scopeLabel(explorer, &scope_buf);
-        var legend_buf: [128]u8 = undefined;
-        const legend = std.fmt.bufPrint(
-            &legend_buf,
-            "  q Quit  j/k Move  Enter Expand  a All-scopes  Tab Focus  [{s}]",
-            .{scope_lbl},
-        ) catch "  q Quit  j/k Move  Enter Expand  a All-scopes  Tab Focus";
+        var legend_buf: [256]u8 = undefined;
+        const legend = scope_explorer.legendLabel(explorer, &legend_buf);
         _ = content_win.printSegment(.{
             .text = legend,
             .style = .{ .dim = true },
@@ -868,6 +862,8 @@ const audit_log_mod = @import("views/audit_log.zig");
 const cli_history_mod = @import("views/cli_history.zig");
 const topology_mod = @import("views/topology.zig");
 const utility_view_mod = @import("views/utility_view.zig");
+// M16: edit action module — pulled in so its test blocks run.
+const edit_actions_mod = @import("edit/actions.zig");
 
 // =========================================================================
 // Tests
@@ -997,4 +993,8 @@ test "cockpit spine modules compile" {
     std.testing.refAllDecls(audit_log_mod);
     std.testing.refAllDecls(cli_history_mod);
     std.testing.refAllDecls(topology_mod);
+    // M15 utility view.
+    std.testing.refAllDecls(utility_view_mod);
+    // M16 edit action layer.
+    std.testing.refAllDecls(edit_actions_mod);
 }

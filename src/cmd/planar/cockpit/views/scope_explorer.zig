@@ -1,4 +1,4 @@
-//! cockpit/views/scope_explorer.zig — Scope Explorer view (M3).
+//! cockpit/views/scope_explorer.zig — Scope Explorer view (M3 + M16).
 //!
 //! The default landing view for the cockpit. Renders a collapsible
 //! association → plan → subplan → task tree in the navigator pane, with
@@ -7,8 +7,16 @@
 //! Tasks 3966 (plan-tree), 3967 (scope-filter), 3968 (task-drill),
 //! 3969 (split-detail), 3970 (collapse-expand).
 //!
+//! M16 edit additions (tasks 4044, 4045, 4046):
+//!   - 'e' on any entity node enters inline title-edit mode.
+//!   - The input buffer is displayed in the detail pane header.
+//!   - On Enter: if the old title is non-empty, transitions to
+//!     confirmation mode (task 4046). On confirm ('y'/'Y'), calls the
+//!     edit action (task 4044). Escape cancels at any point.
+//!   - All writes go through cockpit/edit/actions.editTitle which
+//!     uses the engine write path + scope guard (task 4045).
+//!
 //! Design invariants:
-//!   - Pure view: reads from DB via view_model.zig; no writes.
 //!   - All heap-owned data is owned by the ExplorerState and released
 //!     via `deinit`.
 //!   - The navigator pane is driven by the tree_navigator widget; the
@@ -17,6 +25,9 @@
 //!     Falls back to all-scopes when launched outside a registered repo.
 //!   - Collapse/expand: Enter on a plan node collapses/expands its
 //!     children. j/k or arrow keys move the selection.
+//!   - Edit mode: 'e' on any selected node begins inline editing.
+//!     Escape aborts at any stage; Enter in edit mode transitions to
+//!     confirm (if destructive) or commits directly (if non-destructive).
 
 const std = @import("std");
 const vaxis = @import("vaxis");
@@ -26,6 +37,7 @@ const view_model = @import("../view_model.zig");
 const tree_nav = @import("../widgets/tree_navigator.zig");
 const markdown_detail = @import("../widgets/markdown_detail.zig");
 const split_layout = @import("../widgets/split_layout.zig");
+const edit_actions = @import("../edit/actions.zig");
 
 const Window = vaxis.Window;
 const Key = vaxis.Key;
@@ -68,6 +80,50 @@ pub const ExplorerNode = struct {
 };
 
 // =========================================================================
+// Edit mode state (M16, tasks 4044/4045/4046)
+// =========================================================================
+
+/// Maximum length of the inline edit input buffer. Entity titles are
+/// bounded to 512 bytes in practice; 256 is a safe UI limit.
+pub const EDIT_BUF_MAX = 256;
+
+/// State machine for inline title editing in the Scope Explorer.
+///
+///   .none       — no edit in progress.
+///   .typing     — user is typing a new title; `input_buf[0..input_len]`
+///                 holds the current input. Pressing Enter advances to
+///                 .confirming (if old title non-empty) or commits directly.
+///                 Escape cancels.
+///   .confirming — new title ready; old title was non-empty, so we ask
+///                 the user to confirm before overwriting (task 4046).
+///                 'y'/'Y' commits the write; any other key cancels.
+///   .error_msg  — a write or scope-guard error; shown in the detail pane
+///                 for one keystroke then reverts to .none.
+pub const EditMode = union(enum) {
+    none,
+    typing: struct {
+        kind: edit_actions.EntityKind,
+        entity_id: i64,
+        /// Current title before the edit (owned by edit mode; freed on exit).
+        old_title: []const u8,
+        /// Mutable input buffer. Fixed-capacity; content is input_buf[0..input_len].
+        input_buf: [EDIT_BUF_MAX]u8,
+        input_len: usize,
+    },
+    confirming: struct {
+        kind: edit_actions.EntityKind,
+        entity_id: i64,
+        old_title: []const u8,
+        /// The new title to write on confirm. Owned by edit mode.
+        new_title: []const u8,
+    },
+    error_msg: struct {
+        /// Error message string. Owned by edit mode allocator.
+        msg: []const u8,
+    },
+};
+
+// =========================================================================
 // ExplorerState
 // =========================================================================
 
@@ -92,6 +148,17 @@ pub const ExplorerState = struct {
     /// Cached detail pane content for the currently selected node.
     detail: ?view_model.DetailPane = null,
 
+    /// M16: inline edit mode (task 4044/4045/4046).
+    edit_mode: EditMode = .none,
+
+    /// M16: explicit scope override supplied by the operator. When non-null,
+    /// this overrides the filter-derived write scope in the guard check.
+    /// The cockpit does not yet expose a UI for setting this; it is set
+    /// programmatically (e.g. from an explicit --scope flag on launch) or
+    /// left null. When null and filter is .all, writes to scoped entities
+    /// will be refused by the guard (task 4045).
+    explicit_scope: ?[]const u8 = null,
+
     /// Labels buffer. All node label slices point into allocations from
     /// this allocator (same as ExplorerState.allocator).
     pub fn init(allocator: std.mem.Allocator) ExplorerState {
@@ -101,6 +168,22 @@ pub const ExplorerState = struct {
     pub fn deinit(self: *ExplorerState) void {
         self.freeNodes();
         if (self.detail) |d| d.deinit(self.allocator);
+        self.clearEditMode();
+    }
+
+    /// Free any heap-allocated strings owned by the current edit mode and
+    /// reset to .none.
+    fn clearEditMode(self: *ExplorerState) void {
+        switch (self.edit_mode) {
+            .none => {},
+            .typing => |*t| self.allocator.free(t.old_title),
+            .confirming => |*c| {
+                self.allocator.free(c.old_title);
+                self.allocator.free(c.new_title);
+            },
+            .error_msg => |*e| self.allocator.free(e.msg),
+        }
+        self.edit_mode = .none;
     }
 
     fn freeNodes(self: *ExplorerState) void {
@@ -318,6 +401,89 @@ pub const ExplorerState = struct {
         key: Key,
         d: *db.sqlite.Db,
     ) bool {
+        // ---- M16: edit mode keys (task 4044/4045/4046) take priority ----
+        switch (self.edit_mode) {
+            .typing => |*t| {
+                // Escape: cancel edit.
+                if (key.matches(Key.escape, .{})) {
+                    self.clearEditMode();
+                    return true;
+                }
+                // Enter: attempt to commit (or transition to confirmation).
+                if (key.matches(Key.enter, .{})) {
+                    const new_title = t.input_buf[0..t.input_len];
+                    if (new_title.len == 0) {
+                        // Empty title — refuse silently; stay in typing mode.
+                        return true;
+                    }
+                    // Task 4046: if old title is non-empty, require confirmation.
+                    if (edit_actions.editIsDestructive(t.old_title)) {
+                        // Transition to confirming state. Transfer ownership
+                        // of old_title and new_title to the confirming variant.
+                        const new_title_owned = self.allocator.dupe(u8, new_title) catch {
+                            self.setErrorMsg("out of memory");
+                            return true;
+                        };
+                        const confirming: EditMode = .{ .confirming = .{
+                            .kind = t.kind,
+                            .entity_id = t.entity_id,
+                            .old_title = t.old_title,
+                            .new_title = new_title_owned,
+                        } };
+                        // Do NOT free t.old_title here — ownership transferred.
+                        self.edit_mode = confirming;
+                        return true;
+                    }
+                    // Non-destructive: commit directly.
+                    self.commitEdit(d, t.kind, t.entity_id, new_title);
+                    return true;
+                }
+                // Backspace: remove last character.
+                if (key.matches(Key.backspace, .{})) {
+                    if (t.input_len > 0) t.input_len -= 1;
+                    return true;
+                }
+                // Printable ASCII: append to buffer.
+                if (key.text) |text| {
+                    for (text) |byte| {
+                        if (t.input_len < EDIT_BUF_MAX) {
+                            t.input_buf[t.input_len] = byte;
+                            t.input_len += 1;
+                        }
+                    }
+                    return true;
+                }
+                return true;
+            },
+            .confirming => |c| {
+                // Escape or anything except 'y'/'Y': cancel.
+                if (key.matches(Key.escape, .{})) {
+                    self.clearEditMode();
+                    return true;
+                }
+                if (key.matches('y', .{}) or key.matches('Y', .{})) {
+                    // Commit the write. Transfer fields before clearEditMode.
+                    const kind = c.kind;
+                    const eid = c.entity_id;
+                    const new_title = c.new_title;
+                    // Temporarily take ownership; commitEditOwned will free new_title.
+                    self.commitEditOwned(d, kind, eid, new_title);
+                    // old_title was already in confirming; clearEditMode would free it
+                    // but commitEditOwned cleared the mode itself.
+                    return true;
+                }
+                // Any other key = cancel.
+                self.clearEditMode();
+                return true;
+            },
+            .error_msg => {
+                // Any key dismisses the error.
+                self.clearEditMode();
+                return true;
+            },
+            .none => {},
+        }
+
         const visible = self.visibleCount();
 
         // Movement: j / arrow-down / k / arrow-up.
@@ -347,6 +513,37 @@ pub const ExplorerState = struct {
             return false;
         }
 
+        // M16: 'e' starts inline title editing on any selected entity node.
+        if (key.matches('e', .{})) {
+            if (self.selectedNode()) |sel| {
+                const ek: edit_actions.EntityKind = switch (sel.kind) {
+                    .plan => .plan,
+                    .task => .task,
+                    .question => .question,
+                    .decision => .decision,
+                    .scenario => .scenario,
+                    .artifact => .artifact,
+                };
+                const old_title = edit_actions.fetchCurrentTitle(d, self.allocator, ek, sel.entity_id) catch {
+                    self.setErrorMsg("could not fetch title");
+                    return true;
+                };
+                var input_buf: [EDIT_BUF_MAX]u8 = undefined;
+                // Pre-fill input with current title.
+                const prefill_len = @min(old_title.len, EDIT_BUF_MAX);
+                @memcpy(input_buf[0..prefill_len], old_title[0..prefill_len]);
+                self.edit_mode = .{ .typing = .{
+                    .kind = ek,
+                    .entity_id = sel.entity_id,
+                    .old_title = old_title,
+                    .input_buf = input_buf,
+                    .input_len = prefill_len,
+                } };
+                return true;
+            }
+            return false;
+        }
+
         // Selecting a non-plan node (task, decision, question, scenario,
         // artifact) automatically updates the detail pane via refreshDetail;
         // no separate drill key action is needed.
@@ -360,6 +557,101 @@ pub const ExplorerState = struct {
         }
 
         return false;
+    }
+
+    /// Commit an edit where the new title is a borrowed slice (not yet owned).
+    /// Used for the non-destructive direct-commit path.
+    fn commitEdit(
+        self: *ExplorerState,
+        d: *db.sqlite.Db,
+        kind: edit_actions.EntityKind,
+        entity_id: i64,
+        new_title: []const u8,
+    ) void {
+        // Derive the cockpit write scope from the current filter (task 4045).
+        const vm_filter: edit_actions.view_model_ScopeFilter = switch (self.filter) {
+            .repo => |pid| .{ .repo = pid },
+            .all => .all,
+        };
+        const write_scope = edit_actions.cockpitWriteScope(
+            d,
+            self.allocator,
+            vm_filter,
+            self.explicit_scope,
+        ) catch null;
+        defer if (write_scope) |s| self.allocator.free(s);
+
+        // Call the engine write path (task 4044).
+        edit_actions.editTitle(d, self.allocator, kind, entity_id, new_title, write_scope) catch |e| {
+            const msg = switch (e) {
+                edit_actions.EditError.ScopeMismatch => "scope mismatch: entity scope differs from cockpit scope; set explicit_scope to override",
+                edit_actions.EditError.EmptyValueNotAllowed => "title must not be empty",
+                edit_actions.EditError.EntityNotFound => "entity not found",
+                else => "write failed",
+            };
+            self.clearEditMode();
+            self.setErrorMsg(msg);
+            return;
+        };
+
+        self.clearEditMode();
+        self.reload(d) catch {};
+    }
+
+    /// Commit an edit where `new_title` is already heap-allocated and owned
+    /// by the caller. This function frees it (and old_title via clearEditMode).
+    /// Used for the confirmation-path commit.
+    fn commitEditOwned(
+        self: *ExplorerState,
+        d: *db.sqlite.Db,
+        kind: edit_actions.EntityKind,
+        entity_id: i64,
+        new_title: []const u8,
+    ) void {
+        // We need to free new_title after use. Borrow it, then free.
+        defer self.allocator.free(new_title);
+        // Derive write scope.
+        const vm_filter: edit_actions.view_model_ScopeFilter = switch (self.filter) {
+            .repo => |pid| .{ .repo = pid },
+            .all => .all,
+        };
+        const write_scope = edit_actions.cockpitWriteScope(
+            d,
+            self.allocator,
+            vm_filter,
+            self.explicit_scope,
+        ) catch null;
+        defer if (write_scope) |s| self.allocator.free(s);
+
+        // Before calling the engine, we need to clear the edit mode so that
+        // old_title (owned by confirming variant) is freed. We already
+        // have new_title in a defer-freed local.
+        // Free only old_title from confirming, then clear mode.
+        switch (self.edit_mode) {
+            .confirming => |*c| self.allocator.free(c.old_title),
+            else => {},
+        }
+        self.edit_mode = .none;
+
+        edit_actions.editTitle(d, self.allocator, kind, entity_id, new_title, write_scope) catch |e| {
+            const msg = switch (e) {
+                edit_actions.EditError.ScopeMismatch => "scope mismatch: entity scope differs from cockpit scope; set explicit_scope to override",
+                edit_actions.EditError.EmptyValueNotAllowed => "title must not be empty",
+                edit_actions.EditError.EntityNotFound => "entity not found",
+                else => "write failed",
+            };
+            self.setErrorMsg(msg);
+            return;
+        };
+
+        self.reload(d) catch {};
+    }
+
+    /// Set an error message in edit mode. Allocates a copy of `msg`.
+    fn setErrorMsg(self: *ExplorerState, msg: []const u8) void {
+        self.clearEditMode();
+        const owned = self.allocator.dupe(u8, msg) catch return;
+        self.edit_mode = .{ .error_msg = .{ .msg = owned } };
     }
 
     /// Toggle the collapsed state of the plan node with `plan_id`.
@@ -439,12 +731,91 @@ pub fn render(
         tree_nav.render(nav_win, tree_nodes, &state.nav);
     }
 
-    // ---- Header: scope indicator (top row of nav) ----------------------
-    // Draw scope label in dim style above the tree (row 0 of nav_win is
-    // used by the tree; we'd need to shift — skip for now and show scope
-    // label in the legend bar managed by app.zig).
+    // ---- M16: Edit-mode overlay in the detail pane --------------------
+    // When in edit/confirm/error mode, the detail pane shows the edit UI
+    // instead of the normal entity content.
+    switch (state.edit_mode) {
+        .typing => |*t| {
+            if (detail_win.height >= 1) {
+                _ = detail_win.printSegment(.{
+                    .text = "Edit title (Enter=commit, Esc=cancel):",
+                    .style = .{ .bold = true },
+                }, .{ .row_offset = 0, .col_offset = 0 });
+            }
+            if (detail_win.height >= 2) {
+                // Render the editable line as two segments so that the input
+                // text slice (which lives in the EditMode union on the heap)
+                // is passed directly without being copied into a stack-local
+                // format buffer. Stack-local buffers produce dangling grapheme
+                // pointers in the Screen cell array after render() returns.
+                _ = detail_win.print(&.{
+                    .{ .text = "> ", .style = .{ .ul_style = .single } },
+                    .{ .text = t.input_buf[0..t.input_len], .style = .{ .ul_style = .single } },
+                }, .{ .row_offset = 1, .col_offset = 0 });
+            }
+            if (detail_win.height >= 3) {
+                _ = detail_win.printSegment(.{
+                    .text = "(old title will be overwritten on confirm)",
+                    .style = .{ .dim = true },
+                }, .{ .row_offset = 2, .col_offset = 0 });
+            }
+            return;
+        },
+        .confirming => |*c| {
+            if (detail_win.height >= 1) {
+                _ = detail_win.printSegment(.{
+                    .text = "Overwrite existing title? [y/N]",
+                    .style = .{ .bold = true },
+                }, .{ .row_offset = 0, .col_offset = 0 });
+            }
+            if (detail_win.height >= 2) {
+                // Use two-segment print so old_title (heap-owned) is passed
+                // directly; avoids dangling grapheme pointers from a
+                // stack-local format buffer.
+                _ = detail_win.print(&.{
+                    .{ .text = "  Old: ", .style = .{ .dim = true } },
+                    .{ .text = c.old_title, .style = .{ .dim = true } },
+                }, .{ .row_offset = 1, .col_offset = 0 });
+            }
+            if (detail_win.height >= 3) {
+                _ = detail_win.print(&.{
+                    .{ .text = "  New: ", .style = .{} },
+                    .{ .text = c.new_title, .style = .{} },
+                }, .{ .row_offset = 2, .col_offset = 0 });
+            }
+            if (detail_win.height >= 4) {
+                _ = detail_win.printSegment(.{
+                    .text = "Press y to confirm, any other key to cancel.",
+                    .style = .{ .dim = true },
+                }, .{ .row_offset = 3, .col_offset = 0 });
+            }
+            return;
+        },
+        .error_msg => |*e| {
+            if (detail_win.height >= 1) {
+                _ = detail_win.printSegment(.{
+                    .text = "Error:",
+                    .style = .{ .bold = true },
+                }, .{ .row_offset = 0, .col_offset = 0 });
+            }
+            if (detail_win.height >= 2) {
+                _ = detail_win.printSegment(.{
+                    .text = e.msg,
+                    .style = .{},
+                }, .{ .row_offset = 1, .col_offset = 0 });
+            }
+            if (detail_win.height >= 3) {
+                _ = detail_win.printSegment(.{
+                    .text = "(press any key to dismiss)",
+                    .style = .{ .dim = true },
+                }, .{ .row_offset = 2, .col_offset = 0 });
+            }
+            return;
+        },
+        .none => {},
+    }
 
-    // ---- Detail pane ---------------------------------------------------
+    // ---- Normal detail pane (no edit mode) -----------------------------
     if (state.detail) |det| {
         // Title row.
         if (det.title.len > 0 and detail_win.height > 0) {
@@ -488,6 +859,21 @@ pub fn scopeLabel(state: *const ExplorerState, buf: []u8) []const u8 {
     return switch (state.filter) {
         .all => std.fmt.bufPrint(buf, "all-scopes", .{}) catch "all-scopes",
         .repo => std.fmt.bufPrint(buf, "cwd-scope", .{}) catch "cwd-scope",
+    };
+}
+
+/// Return the legend string for the key legend bar when the Explorer is active.
+/// Shows edit-mode hint when in edit/confirm mode.
+pub fn legendLabel(state: *const ExplorerState, buf: []u8) []const u8 {
+    return switch (state.edit_mode) {
+        .typing => std.fmt.bufPrint(buf, "  Typing title — Enter=commit  Esc=cancel", .{}) catch
+            "  Typing title — Enter=commit  Esc=cancel",
+        .confirming => std.fmt.bufPrint(buf, "  Confirm overwrite? y=yes  any=cancel", .{}) catch
+            "  Confirm overwrite? y=yes  any=cancel",
+        .error_msg => std.fmt.bufPrint(buf, "  Edit error — press any key to dismiss", .{}) catch
+            "  Edit error — press any key to dismiss",
+        .none => std.fmt.bufPrint(buf, "  q Quit  j/k Move  Enter Expand  e Edit  a All-scopes  Tab Focus", .{}) catch
+            "  q Quit  j/k Move  Enter Expand  e Edit  a All-scopes  Tab Focus",
     };
 }
 
@@ -789,6 +1175,475 @@ test "scope_explorer: selecting a non-plan node yields non-empty detail body" {
         }
         visible_idx += 1;
     }
+}
+
+// =========================================================================
+// M16 controller tests: handleKey edit path (tasks 4044/4045/4046)
+// =========================================================================
+//
+// These tests drive the handleKey state machine with synthetic Key events
+// under testing.allocator so the GPA leak detector exercises the EditMode
+// ownership across typing→confirming→commit/cancel.
+
+/// Helper: query the current title of a plan from the DB. Caller must free.
+fn fetchPlanTitle(d: *db.sqlite.Db, plan_id: i64) ![]const u8 {
+    var stmt = try d.prepare("select title from plans where id = ?");
+    defer stmt.finalize();
+    try stmt.bind(&.{.{ .int = plan_id }});
+    switch (try stmt.step()) {
+        .done => return error.NotFound,
+        .row => return stmt.columnTextAlloc(0, testing.allocator),
+    }
+}
+
+/// Helper: make a Key event for a printable ASCII character with `text` set.
+fn keyChar(comptime ch: u8) Key {
+    return .{
+        .codepoint = ch,
+        .text = &.{ch},
+    };
+}
+
+/// Helper: make a Key event for a special (non-printable) key.
+fn keySpecial(cp: u21) Key {
+    return .{ .codepoint = cp };
+}
+
+test "scope_explorer handleKey: 'e' on selected plan node enters typing mode with title prefilled" {
+    // (a) Pressing 'e' on a selected node enters typing mode with the title
+    // pre-filled in the input buffer. GPA leak-detector validates ownership.
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const plan_id = try d.execParams(
+        "insert into plans (scope_kind, title, slug, status) values ('global','My Plan','my-plan','active')",
+        &.{},
+    );
+
+    var state = ExplorerState.init(a);
+    defer state.deinit();
+
+    try state.reload(&d);
+
+    // Select the plan (idx 0 is the only visible node).
+    state.nav.selected_idx = 0;
+
+    const consumed = state.handleKey(keyChar('e'), &d);
+    try testing.expect(consumed);
+
+    // Must be in typing mode.
+    switch (state.edit_mode) {
+        .typing => |*t| {
+            try testing.expectEqual(edit_actions.EntityKind.plan, t.kind);
+            try testing.expectEqual(plan_id, t.entity_id);
+            // old_title must match the DB value.
+            try testing.expectEqualStrings("My Plan", t.old_title);
+            // input_buf must be pre-filled with the current title.
+            try testing.expectEqualStrings("My Plan", t.input_buf[0..t.input_len]);
+        },
+        else => {
+            try testing.expect(false); // expected .typing
+        },
+    }
+    // GPA will detect any leak on state.deinit() via defer above.
+}
+
+test "scope_explorer handleKey: Enter on non-empty old title transitions to .confirming without writing" {
+    // (b) Enter while typing a new title for an entity with a non-empty old
+    // title transitions to .confirming — NOT a direct commit. The DB must be
+    // UNCHANGED at this point (no write before confirm — task 4046 contract).
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const plan_id = try d.execParams(
+        "insert into plans (scope_kind, title, slug, status) values ('global','Original Title','orig-title','active')",
+        &.{},
+    );
+
+    var state = ExplorerState.init(a);
+    defer state.deinit();
+
+    try state.reload(&d);
+    state.nav.selected_idx = 0;
+
+    // Enter typing mode.
+    _ = state.handleKey(keyChar('e'), &d);
+    try testing.expect(state.edit_mode == .typing);
+
+    // Clear the prefilled buffer and type a new title.
+    // Backspace 14 times ("Original Title" = 14 chars), then type "New Title".
+    for (0..14) |_| _ = state.handleKey(keySpecial(Key.backspace), &d);
+    for ("New Title") |ch| _ = state.handleKey(.{ .codepoint = ch, .text = &.{ch} }, &d);
+
+    // Press Enter — destructive (old title was non-empty), should go to confirming.
+    _ = state.handleKey(keySpecial(Key.enter), &d);
+
+    // MUST be in .confirming now.
+    switch (state.edit_mode) {
+        .confirming => |c| {
+            try testing.expectEqualStrings("Original Title", c.old_title);
+            try testing.expectEqualStrings("New Title", c.new_title);
+        },
+        else => {
+            try testing.expect(false); // expected .confirming
+        },
+    }
+
+    // DB must be UNCHANGED — no write before confirm.
+    const title_now = try fetchPlanTitle(&d, plan_id);
+    defer a.free(title_now);
+    try testing.expectEqualStrings("Original Title", title_now);
+}
+
+test "scope_explorer handleKey: 'y' from .confirming commits and DB reflects new title" {
+    // (c) Pressing 'y' from .confirming commits the write. The DB must reflect
+    // the new title after. GPA validates the double-free risk in commitEditOwned.
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const plan_id = try d.execParams(
+        "insert into plans (scope_kind, title, slug, status) values ('global','Before Confirm','bef-confirm','active')",
+        &.{},
+    );
+
+    var state = ExplorerState.init(a);
+    defer state.deinit();
+
+    try state.reload(&d);
+    state.nav.selected_idx = 0;
+
+    // Enter typing mode, clear buffer, type new title, press Enter.
+    _ = state.handleKey(keyChar('e'), &d);
+    for (0.."Before Confirm".len) |_| _ = state.handleKey(keySpecial(Key.backspace), &d);
+    for ("After Confirm") |ch| _ = state.handleKey(.{ .codepoint = ch, .text = &.{ch} }, &d);
+    _ = state.handleKey(keySpecial(Key.enter), &d);
+
+    // Verify we're in .confirming.
+    try testing.expect(state.edit_mode == .confirming);
+
+    // Press 'y' to confirm.
+    _ = state.handleKey(keyChar('y'), &d);
+
+    // Must be back to .none.
+    try testing.expectEqual(EditMode.none, state.edit_mode);
+
+    // DB must now have the new title.
+    const title_now = try fetchPlanTitle(&d, plan_id);
+    defer a.free(title_now);
+    try testing.expectEqualStrings("After Confirm", title_now);
+}
+
+test "scope_explorer handleKey: Escape from .confirming cancels — DB unchanged" {
+    // (d-1) Pressing Escape from .confirming cancels the write. The DB must
+    // remain unchanged. GPA validates no leak on the cancelled path.
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const plan_id = try d.execParams(
+        "insert into plans (scope_kind, title, slug, status) values ('global','Cancel Me','cancel-me','active')",
+        &.{},
+    );
+
+    var state = ExplorerState.init(a);
+    defer state.deinit();
+
+    try state.reload(&d);
+    state.nav.selected_idx = 0;
+
+    _ = state.handleKey(keyChar('e'), &d);
+    for (0.."Cancel Me".len) |_| _ = state.handleKey(keySpecial(Key.backspace), &d);
+    for ("Should Not Land") |ch| _ = state.handleKey(.{ .codepoint = ch, .text = &.{ch} }, &d);
+    _ = state.handleKey(keySpecial(Key.enter), &d);
+    try testing.expect(state.edit_mode == .confirming);
+
+    // Escape cancels.
+    _ = state.handleKey(keySpecial(Key.escape), &d);
+    try testing.expectEqual(EditMode.none, state.edit_mode);
+
+    // DB must be unchanged.
+    const title_now = try fetchPlanTitle(&d, plan_id);
+    defer a.free(title_now);
+    try testing.expectEqualStrings("Cancel Me", title_now);
+}
+
+test "scope_explorer handleKey: non-'y' key from .confirming cancels — DB unchanged" {
+    // (d-2) Any key other than 'y'/'Y' from .confirming cancels. DB unchanged.
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const plan_id = try d.execParams(
+        "insert into plans (scope_kind, title, slug, status) values ('global','Stay Intact','stay-intact','active')",
+        &.{},
+    );
+
+    var state = ExplorerState.init(a);
+    defer state.deinit();
+
+    try state.reload(&d);
+    state.nav.selected_idx = 0;
+
+    _ = state.handleKey(keyChar('e'), &d);
+    for (0.."Stay Intact".len) |_| _ = state.handleKey(keySpecial(Key.backspace), &d);
+    for ("Never Lands") |ch| _ = state.handleKey(.{ .codepoint = ch, .text = &.{ch} }, &d);
+    _ = state.handleKey(keySpecial(Key.enter), &d);
+    try testing.expect(state.edit_mode == .confirming);
+
+    // Press 'n' (non-'y') — should cancel.
+    _ = state.handleKey(keyChar('n'), &d);
+    try testing.expectEqual(EditMode.none, state.edit_mode);
+
+    // DB must be unchanged.
+    const title_now = try fetchPlanTitle(&d, plan_id);
+    defer a.free(title_now);
+    try testing.expectEqualStrings("Stay Intact", title_now);
+}
+
+test "scope_explorer handleKey: ScopeMismatch error sets error_msg and performs no write" {
+    // (e) A scoped entity with no matching write scope triggers ScopeMismatch.
+    // The controller must set .error_msg mode and perform NO write.
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    // Seed a repo-scoped plan.
+    const proj_id = try d.execParams(
+        "insert into projects (slug, name) values ('acme/core', 'Core')",
+        &.{},
+    );
+    // Plans don't have scope_id column — use a task instead (tasks have scope_id).
+    // Seed a global plan first (needed for state.reload to have a node).
+    const plan_id = try d.execParams(
+        "insert into plans (scope_kind, title, slug, status) values ('global','Parent Plan','pp-scope-test','active')",
+        &.{},
+    );
+    // Seed a repo-scoped task under the plan.
+    const task_id = try d.execParams(
+        "insert into tasks (scope_kind, scope_id, plan_id, title, status, priority) values ('repo', ?, ?, 'Scoped Task', 'todo', 100)",
+        &.{ .{ .int = proj_id }, .{ .int = plan_id } },
+    );
+    var state = ExplorerState.init(a);
+    defer state.deinit();
+
+    // Reload so the task node is in the list.
+    try state.reload(&d);
+
+    // Find the task node (it's a drill child under the plan).
+    var task_node_idx: ?usize = null;
+    var vis_idx: usize = 0;
+    for (state.nodes) |n| {
+        if (n.hidden) continue;
+        if (n.kind == .task) {
+            task_node_idx = vis_idx;
+            break;
+        }
+        vis_idx += 1;
+    }
+    try testing.expect(task_node_idx != null);
+    state.nav.selected_idx = task_node_idx.?;
+
+    // explicit_scope = null, filter = .all → write_scope = null → ScopeMismatch.
+    state.explicit_scope = null;
+    state.filter = .all;
+
+    // Press 'e' to enter typing mode.
+    _ = state.handleKey(keyChar('e'), &d);
+    try testing.expect(state.edit_mode == .typing);
+
+    // Type a new title and press Enter.
+    // (Old title "Scoped Task" is non-empty → goes to .confirming.)
+    for (0.."Scoped Task".len) |_| _ = state.handleKey(keySpecial(Key.backspace), &d);
+    for ("New Scoped") |ch| _ = state.handleKey(.{ .codepoint = ch, .text = &.{ch} }, &d);
+    _ = state.handleKey(keySpecial(Key.enter), &d);
+    try testing.expect(state.edit_mode == .confirming);
+
+    // Confirm with 'y' — this will call commitEditOwned which hits ScopeMismatch.
+    _ = state.handleKey(keyChar('y'), &d);
+
+    // Must be in .error_msg, NOT .none.
+    switch (state.edit_mode) {
+        .error_msg => |e| {
+            // Error message must mention "scope".
+            try testing.expect(std.mem.indexOf(u8, e.msg, "scope") != null);
+        },
+        else => {
+            try testing.expect(false); // expected .error_msg
+        },
+    }
+
+    // DB must be unchanged — no write was performed.
+    var stmt = try d.prepare("select title from tasks where id = ?");
+    defer stmt.finalize();
+    try stmt.bind(&.{.{ .int = task_id }});
+    try testing.expect((try stmt.step()) == .row);
+    const title_now = try stmt.columnTextAlloc(0, a);
+    defer a.free(title_now);
+    try testing.expectEqualStrings("Scoped Task", title_now);
+}
+
+test "scope_explorer handleKey: Escape from .typing cancels — edit_mode reset and no leak" {
+    // Extra: Escape from .typing must cleanly free old_title (GPA validates).
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    _ = try d.execParams(
+        "insert into plans (scope_kind, title, slug, status) values ('global','Typed Plan','typed-plan','active')",
+        &.{},
+    );
+
+    var state = ExplorerState.init(a);
+    defer state.deinit();
+
+    try state.reload(&d);
+    state.nav.selected_idx = 0;
+
+    _ = state.handleKey(keyChar('e'), &d);
+    try testing.expect(state.edit_mode == .typing);
+
+    // Escape from typing must cancel cleanly.
+    _ = state.handleKey(keySpecial(Key.escape), &d);
+    try testing.expectEqual(EditMode.none, state.edit_mode);
+    // GPA will detect any leak on defer state.deinit().
+}
+
+// =========================================================================
+// M16 render-level tests: confirming overlay and error overlay text
+// =========================================================================
+
+/// Collect all non-empty grapheme text from a Screen's cell buffer.
+fn collectScreenText(screen: *const vaxis.Screen, out: *std.ArrayList(u8)) !void {
+    for (screen.buf) |cell| {
+        const g = cell.char.grapheme;
+        if (g.len > 0 and g[0] != 0) {
+            try out.appendSlice(testing.allocator, g);
+        }
+    }
+}
+
+test "scope_explorer render: .confirming overlay emits 'Overwrite existing title? [y/N]'" {
+    // Render-level: the .confirming overlay must render the destructive-confirm
+    // prompt text exactly as the code emits it.
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    var state = ExplorerState.init(a);
+    defer state.deinit();
+
+    // Set up confirming mode directly (no need to go through the full key flow).
+    const old_title = try a.dupe(u8, "Old Plan");
+    const new_title = try a.dupe(u8, "New Plan");
+    state.edit_mode = .{ .confirming = .{
+        .kind = .plan,
+        .entity_id = 1,
+        .old_title = old_title,
+        .new_title = new_title,
+    } };
+
+    const win_w: u16 = 80;
+    const win_h: u16 = 10;
+    var screen = try vaxis.Screen.init(a, .{
+        .cols = win_w,
+        .rows = win_h,
+        .x_pixel = 0,
+        .y_pixel = 0,
+    });
+    defer screen.deinit(a);
+
+    const nav_win: Window = .{
+        .x_off = 0,
+        .y_off = 0,
+        .parent_x_off = 0,
+        .parent_y_off = 0,
+        .width = 30,
+        .height = win_h,
+        .screen = &screen,
+    };
+    const detail_win: Window = .{
+        .x_off = 30,
+        .y_off = 0,
+        .parent_x_off = 0,
+        .parent_y_off = 0,
+        .width = win_w - 30,
+        .height = win_h,
+        .screen = &screen,
+    };
+
+    try render(&state, nav_win, detail_win, a);
+
+    var rendered: std.ArrayList(u8) = .empty;
+    defer rendered.deinit(a);
+    try collectScreenText(&screen, &rendered);
+    const text = rendered.items;
+
+    // The exact prompt string the code emits.
+    try testing.expect(std.mem.indexOf(u8, text, "Overwrite existing title? [y/N]") != null);
+    // The old/new titles must appear.
+    try testing.expect(std.mem.indexOf(u8, text, "Old Plan") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "New Plan") != null);
+}
+
+test "scope_explorer render: .error_msg overlay emits scope-mismatch refusal text" {
+    // Render-level: the .error_msg overlay must render the scope-mismatch
+    // refusal message set by the error path.
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    var state = ExplorerState.init(a);
+    defer state.deinit();
+
+    // Set error mode with the exact scope-mismatch message from the controller.
+    const msg = try a.dupe(u8, "scope mismatch: entity scope differs from cockpit scope; set explicit_scope to override");
+    state.edit_mode = .{ .error_msg = .{ .msg = msg } };
+
+    const win_w: u16 = 120;
+    const win_h: u16 = 6;
+    var screen = try vaxis.Screen.init(a, .{
+        .cols = win_w,
+        .rows = win_h,
+        .x_pixel = 0,
+        .y_pixel = 0,
+    });
+    defer screen.deinit(a);
+
+    const nav_win: Window = .{
+        .x_off = 0,
+        .y_off = 0,
+        .parent_x_off = 0,
+        .parent_y_off = 0,
+        .width = 40,
+        .height = win_h,
+        .screen = &screen,
+    };
+    const detail_win: Window = .{
+        .x_off = 40,
+        .y_off = 0,
+        .parent_x_off = 0,
+        .parent_y_off = 0,
+        .width = win_w - 40,
+        .height = win_h,
+        .screen = &screen,
+    };
+
+    try render(&state, nav_win, detail_win, a);
+
+    var rendered: std.ArrayList(u8) = .empty;
+    defer rendered.deinit(a);
+    try collectScreenText(&screen, &rendered);
+    const text = rendered.items;
+
+    // The "Error:" header must appear.
+    try testing.expect(std.mem.indexOf(u8, text, "Error:") != null);
+    // The scope-mismatch message text must appear.
+    try testing.expect(std.mem.indexOf(u8, text, "scope mismatch") != null);
+    // The dismiss hint must appear.
+    try testing.expect(std.mem.indexOf(u8, text, "press any key to dismiss") != null);
 }
 
 test "scope_explorer compiles" {
