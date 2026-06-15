@@ -177,6 +177,7 @@ pub fn run(
     io: std.Io,
     alloc: std.mem.Allocator,
     env_map: *std.process.Environ.Map,
+    environ: std.process.Environ,
     db_path: []const u8,
     db_handle: *db.sqlite.Db,
 ) !void {
@@ -235,7 +236,8 @@ pub fn run(
     defer entity_graph.deinit();
 
     // ---- External / Ops Plane state (tasks 4029–4031, M10) --------------
-    var ext_ops: external_ops_plane.ExtOpsState = external_ops_plane.ExtOpsState.init(alloc);
+    // M18 (task 4049): initFull wires io + environ for the sync-pull action.
+    var ext_ops: external_ops_plane.ExtOpsState = external_ops_plane.ExtOpsState.initFull(alloc, io, environ);
     defer ext_ops.deinit();
 
     // ---- Sessions & Handoff state (tasks 4032–4034, M11) ----------------
@@ -255,7 +257,8 @@ pub fn run(
     defer topology.deinit();
 
     // ---- Utility view state (tasks 4041–4043, M15) ----------------------
-    var utility: utility_view.UtilityState = utility_view.UtilityState.init(alloc);
+    // M18 (task 4050): initFull wires io + environ for the workbench action.
+    var utility: utility_view.UtilityState = utility_view.UtilityState.initFull(alloc, io, environ);
     defer utility.deinit();
 
     // Determine cwd-scope filter on launch. Falls back to .all when the
@@ -422,7 +425,7 @@ pub fn run(
                             need_render = false;
                         }
                     } else if (active != null and active.?.id == .external_ops_plane) {
-                        if (ext_ops.handleKey(key)) {
+                        if (ext_ops.handleKey(key, db_handle)) {
                             // Consumed by external ops plane — render.
                         } else {
                             need_render = false;
@@ -452,7 +455,7 @@ pub fn run(
                             need_render = false;
                         }
                     } else if (active != null and active.?.id == .utility_view) {
-                        if (utility.handleKey(key)) {
+                        if (utility.handleKey(key, db_handle)) {
                             // Consumed by utility view — render.
                         } else {
                             need_render = false;
@@ -663,8 +666,8 @@ fn renderFrame(
             .style = .{ .dim = true },
         }, .{ .row_offset = legend_row, .col_offset = 0 });
     } else if (active != null and active.?.id == .external_ops_plane) {
-        var legend_buf: [128]u8 = undefined;
-        const legend = external_ops_plane.legendLabel(&legend_buf);
+        var legend_buf: [256]u8 = undefined;
+        const legend = external_ops_plane.legendLabel(ext_ops_state, &legend_buf);
         _ = content_win.printSegment(.{
             .text = legend,
             .style = .{ .dim = true },
@@ -698,8 +701,8 @@ fn renderFrame(
             .style = .{ .dim = true },
         }, .{ .row_offset = legend_row, .col_offset = 0 });
     } else if (active != null and active.?.id == .utility_view) {
-        var legend_buf: [128]u8 = undefined;
-        const legend = utility_view.legendLabel(&legend_buf);
+        var legend_buf: [256]u8 = undefined;
+        const legend = utility_view.legendLabel(utility_state, &legend_buf);
         _ = content_win.printSegment(.{
             .text = legend,
             .style = .{ .dim = true },
@@ -866,6 +869,8 @@ const utility_view_mod = @import("views/utility_view.zig");
 const edit_actions_mod = @import("edit/actions.zig");
 // M17: task lifecycle module — pulled in so its test blocks run.
 const task_lifecycle_mod = @import("edit/task_lifecycle.zig");
+// M18: external / workbench action module — pulled in so its test blocks run.
+const external_actions_mod = @import("edit/external_actions.zig");
 
 // =========================================================================
 // Tests
@@ -1001,4 +1006,6 @@ test "cockpit spine modules compile" {
     std.testing.refAllDecls(edit_actions_mod);
     // M17 task lifecycle layer.
     std.testing.refAllDecls(task_lifecycle_mod);
+    // M18 external / workbench action layer.
+    std.testing.refAllDecls(external_actions_mod);
 }

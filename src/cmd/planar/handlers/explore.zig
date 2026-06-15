@@ -78,7 +78,7 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
                 exit.die(ctx, e, "{s}", .{msg});
             };
             defer db_handle.close();
-            cockpit_app.run(ctx.io, ctx.allocator, env_map, db_path_slice, &db_handle) catch |e| {
+            cockpit_app.run(ctx.io, ctx.allocator, env_map, ctx.environ, db_path_slice, &db_handle) catch |e| {
                 exit.die(ctx, e, "cockpit error: {s}", .{@errorName(e)});
             };
         },

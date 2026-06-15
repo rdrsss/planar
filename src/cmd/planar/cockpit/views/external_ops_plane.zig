@@ -47,6 +47,7 @@ const db = @import("db");
 
 const view_model = @import("../view_model.zig");
 const markdown_detail = @import("../widgets/markdown_detail.zig");
+const external_actions = @import("../edit/external_actions.zig");
 
 const Window = vaxis.Window;
 const Key = vaxis.Key;
@@ -81,11 +82,38 @@ pub const ExtOpsState = struct {
     /// Whether to show the systems surface or the conflicts surface.
     mode: DisplayMode = .systems,
 
+    /// M18 (task 4049): sync / propagate action overlay controller.
+    /// Holds confirm/working/result overlay state for the 'S' key action.
+    action: external_actions.ExternalActionState,
+
+    /// Initialize with test-safe defaults (testing.io + empty environ).
+    /// Use `initFull` in the cockpit run path to wire live io/environ.
     pub fn init(allocator: std.mem.Allocator) ExtOpsState {
-        return .{ .allocator = allocator };
+        return .{
+            .allocator = allocator,
+            .action = external_actions.ExternalActionState.init(
+                allocator,
+                std.testing.io,
+                std.process.Environ.empty,
+            ),
+        };
+    }
+
+    /// Initialize with live I/O and process environ for cockpit runtime use.
+    /// Called by app.zig `run()` to wire sync-adapter credentials at launch.
+    pub fn initFull(
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        environ: std.process.Environ,
+    ) ExtOpsState {
+        return .{
+            .allocator = allocator,
+            .action = external_actions.ExternalActionState.init(allocator, io, environ),
+        };
     }
 
     pub fn deinit(self: *ExtOpsState) void {
+        self.action.deinit();
         if (self.snapshot) |snap| snap.deinit(self.allocator);
         self.snapshot = null;
     }
@@ -110,9 +138,33 @@ pub const ExtOpsState = struct {
     }
 
     /// Handle a key event. Returns true when the key was consumed.
-    pub fn handleKey(self: *ExtOpsState, key: Key) bool {
+    ///
+    /// M18 (task 4049): 'S' triggers the sync-pull-all action overlay. When
+    /// the action overlay is active, all keys are forwarded to it first.
+    pub fn handleKey(self: *ExtOpsState, key: Key, d: *db.sqlite.Db) bool {
+        // Action overlay takes priority (M18 confirm/dismiss/cancel paths).
+        if (self.action.isActive()) {
+            return self.action.handleKey(key, d);
+        }
+
         const snap = self.snapshot orelse return false;
         const count = snap.systems.len;
+
+        // 'S': enter the sync-pull-all confirm overlay (task 4049).
+        // Mirrors `planar sync pull --all` via engine.external.link.allPullable
+        // + per-link adapter + engine.external.sync.pullLink.
+        if (key.matches('S', .{ .shift = true }) or
+            (key.matches('s', .{}) and key.mods.shift))
+        {
+            self.action.enterSyncConfirm(.pull_all);
+            return true;
+        }
+        // Uppercase 'S' in vaxis is codepoint 'S' (0x53) with mods.shift=false
+        // when the terminal sends shifted-s as just 'S'. Accept either form.
+        if (key.codepoint == 'S' and !key.mods.ctrl and !key.mods.alt) {
+            self.action.enterSyncConfirm(.pull_all);
+            return true;
+        }
 
         // j / arrow-down: move selection down (only in systems mode).
         if (key.matches('j', .{}) or key.matches(Key.down, .{})) {
@@ -181,6 +233,9 @@ pub const ExtOpsState = struct {
 // =========================================================================
 
 /// Render the External/Ops Plane view into the navigator and detail windows.
+///
+/// M18 (task 4049): when the action overlay is active, render it on top of the
+/// detail pane (the navigator remains visible for context).
 pub fn render(
     state: *const ExtOpsState,
     nav_win: Window,
@@ -191,11 +246,20 @@ pub fn render(
     switch (state.mode) {
         .systems => {
             renderSystemsNavigator(state, nav_win);
-            try renderSystemsDetail(state, detail_win);
+            if (state.action.isActive()) {
+                // Render the confirm/working/result overlay over the detail pane.
+                external_actions.renderOverlay(&state.action, detail_win);
+            } else {
+                try renderSystemsDetail(state, detail_win);
+            }
         },
         .conflicts => {
             renderConflictsNavigator(state, nav_win);
-            renderConflictsDetail(state, detail_win);
+            if (state.action.isActive()) {
+                external_actions.renderOverlay(&state.action, detail_win);
+            } else {
+                renderConflictsDetail(state, detail_win);
+            }
         },
     }
 }
@@ -582,12 +646,17 @@ fn renderConflictsDetail(state: *const ExtOpsState, win: Window) void {
 }
 
 /// Return a one-line legend string for the key legend bar.
-pub fn legendLabel(buf: []u8) []const u8 {
+///
+/// M18 (task 4049): when the action overlay is active, defer to its legend.
+pub fn legendLabel(state: *const ExtOpsState, buf: []u8) []const u8 {
+    if (state.action.isActive()) {
+        return external_actions.legendLabel(&state.action, buf);
+    }
     return std.fmt.bufPrint(
         buf,
-        "  q Quit  j/k Select  c Conflicts/Systems  Tab Focus  1-8 View",
+        "  q Quit  j/k Select  c Conflicts/Systems  S Sync-pull  Tab Focus  1-8 View",
         .{},
-    ) catch "  q Quit  j/k Select  c Conflicts/Systems";
+    ) catch "  q Quit  j/k Select  c Conflicts/Systems  S Sync-pull";
 }
 
 // =========================================================================
@@ -773,11 +842,11 @@ test "external_ops: handleKey j/k moves selection" {
     try testing.expectEqual(@as(usize, 0), state.selected_idx);
 
     const j_key = Key{ .codepoint = 'j', .mods = .{} };
-    _ = state.handleKey(j_key);
+    _ = state.handleKey(j_key, &d);
     try testing.expectEqual(@as(usize, 1), state.selected_idx);
 
     const k_key = Key{ .codepoint = 'k', .mods = .{} };
-    _ = state.handleKey(k_key);
+    _ = state.handleKey(k_key, &d);
     try testing.expectEqual(@as(usize, 0), state.selected_idx);
 }
 
@@ -793,10 +862,10 @@ test "external_ops: handleKey c toggles display mode (task 4031)" {
     try testing.expectEqual(DisplayMode.systems, state.mode);
 
     const c_key = Key{ .codepoint = 'c', .mods = .{} };
-    _ = state.handleKey(c_key);
+    _ = state.handleKey(c_key, &d);
     try testing.expectEqual(DisplayMode.conflicts, state.mode);
 
-    _ = state.handleKey(c_key);
+    _ = state.handleKey(c_key, &d);
     try testing.expectEqual(DisplayMode.systems, state.mode);
 }
 
@@ -1170,11 +1239,84 @@ test "external_ops: renderConflictsDetail shows (none) when no conflicts (task 4
 }
 
 test "external_ops: legendLabel fits in buf" {
-    var buf: [128]u8 = undefined;
-    const label = legendLabel(&buf);
+    const a = testing.allocator;
+    var state = ExtOpsState.init(a);
+    defer state.deinit();
+    var buf: [256]u8 = undefined;
+    const label = legendLabel(&state, &buf);
     try testing.expect(label.len > 0);
     try testing.expect(std.mem.indexOf(u8, label, "Quit") != null);
     try testing.expect(std.mem.indexOf(u8, label, "Conflicts") != null);
+    try testing.expect(std.mem.indexOf(u8, label, "Sync-pull") != null);
+}
+
+// =========================================================================
+// M18 (task 4049) controller tests: sync action wiring in ext_ops view
+// =========================================================================
+
+test "external_ops M18: 'S' key enters sync confirm overlay" {
+    // Task 4049: pressing 'S' in the ExtOps view must enter the confirm_sync
+    // overlay via ExternalActionState.enterSyncConfirm.
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    var state = ExtOpsState.init(a);
+    defer state.deinit();
+    try state.reload(&d);
+
+    try testing.expect(!state.action.isActive());
+
+    const s_key = Key{ .codepoint = 'S', .mods = .{} };
+    const consumed = state.handleKey(s_key, &d);
+    try testing.expect(consumed);
+    try testing.expect(state.action.isActive());
+
+    switch (state.action.mode) {
+        .confirm_sync => |cs| try testing.expectEqual(external_actions.SyncKind.pull_all, cs.kind),
+        else => try testing.expect(false),
+    }
+}
+
+test "external_ops M18: action overlay dismisses on Esc without executing" {
+    // Task 4049: Esc from confirm_sync must cancel without calling engine.
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    var state = ExtOpsState.init(a);
+    defer state.deinit();
+    try state.reload(&d);
+
+    state.action.enterSyncConfirm(.pull_all);
+    try testing.expect(state.action.isActive());
+
+    const esc_key = Key{ .codepoint = Key.escape };
+    _ = state.handleKey(esc_key, &d);
+    try testing.expect(!state.action.isActive());
+}
+
+test "external_ops M18: 'y' confirm executes sync and shows success (no-links fixture)" {
+    // Task 4049: 'y' from confirm_sync executes the action. Empty DB → no links
+    // → zero-count success. Confirm gate + engine dispatch together.
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    var state = ExtOpsState.init(a);
+    defer state.deinit();
+    try state.reload(&d);
+
+    state.action.enterSyncConfirm(.pull_all);
+
+    const y_key = Key{ .codepoint = 'y', .text = "y" };
+    _ = state.handleKey(y_key, &d);
+
+    // Should be in success_msg — action ran.
+    switch (state.action.mode) {
+        .success_msg => |*s| try testing.expect(std.mem.indexOf(u8, s.msg, "0") != null),
+        else => try testing.expect(false),
+    }
 }
 
 test "external_ops compiles" {

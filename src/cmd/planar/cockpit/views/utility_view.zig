@@ -51,6 +51,7 @@ const vaxis = @import("vaxis");
 const db = @import("db");
 
 const view_model = @import("../view_model.zig");
+const external_actions = @import("../edit/external_actions.zig");
 
 const Window = vaxis.Window;
 const Key = vaxis.Key;
@@ -106,11 +107,40 @@ pub const UtilityState = struct {
     wb_rows: []view_model.WorkbenchSyncRow = &.{},
     wb_selected_idx: usize = 0,
 
+    // ---- M18 (task 4050): workbench action overlay ----------------------
+    /// Workbench push/pull/status action controller.
+    /// Keys 'p' (push), 'l' (pull), 's' (status) in .workbench_sync mode
+    /// enter the confirm overlay. The selected plan's id/slug is used.
+    action: external_actions.ExternalActionState,
+
+    /// Initialize with test-safe defaults (testing.io + empty environ).
+    /// Use `initFull` in the cockpit run path to wire live io/environ.
     pub fn init(allocator: std.mem.Allocator) UtilityState {
-        return .{ .allocator = allocator };
+        return .{
+            .allocator = allocator,
+            .action = external_actions.ExternalActionState.init(
+                allocator,
+                std.testing.io,
+                std.process.Environ.empty,
+            ),
+        };
+    }
+
+    /// Initialize with live I/O and process environ for cockpit runtime use.
+    /// Called by app.zig `run()` to wire workbench-adapter credentials at launch.
+    pub fn initFull(
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        environ: std.process.Environ,
+    ) UtilityState {
+        return .{
+            .allocator = allocator,
+            .action = external_actions.ExternalActionState.init(allocator, io, environ),
+        };
     }
 
     pub fn deinit(self: *UtilityState) void {
+        self.action.deinit();
         view_model.ConfigRow.deinitMany(self.config_rows, self.allocator);
         self.config_rows = &.{};
         view_model.AnnotationRow.deinitMany(self.annotation_rows, self.allocator);
@@ -155,11 +185,51 @@ pub const UtilityState = struct {
     }
 
     /// Handle a key event. Returns true when the key was consumed.
-    pub fn handleKey(self: *UtilityState, key: Key) bool {
+    ///
+    /// M18 (task 4050): in .workbench_sync mode, 'p' triggers push,
+    /// 'l' triggers pull, and 's' triggers status for the selected plan.
+    /// The action overlay takes priority when active.
+    pub fn handleKey(self: *UtilityState, key: Key, d: *db.sqlite.Db) bool {
+        // Action overlay takes priority (M18 confirm/dismiss/cancel paths).
+        if (self.action.isActive()) {
+            return self.action.handleKey(key, d);
+        }
+
         // 'm': cycle sub-mode.
         if (key.matches('m', .{})) {
             self.mode = self.mode.next();
             return true;
+        }
+
+        // M18 (task 4050): workbench action keys in .workbench_sync mode.
+        // 'p' = push (DB → FS), 'l' = pull (FS → DB), 's' = status.
+        // These mirror engine.workbench.sync.{push,pull,status} via
+        // the same paths as handlers/workbench/{push,pull,status}.zig.
+        if (self.mode == .workbench_sync) {
+            // Determine the selected plan for the workbench action.
+            const selected_row = if (self.wb_rows.len > 0)
+                &self.wb_rows[self.wb_selected_idx]
+            else
+                null;
+
+            if (key.matches('p', .{})) {
+                if (selected_row) |row| {
+                    self.action.enterWorkbenchConfirm(.push, row.anchor_plan_id, row.plan_title);
+                }
+                return true;
+            }
+            if (key.matches('l', .{})) {
+                if (selected_row) |row| {
+                    self.action.enterWorkbenchConfirm(.pull, row.anchor_plan_id, row.plan_title);
+                }
+                return true;
+            }
+            if (key.matches('s', .{})) {
+                if (selected_row) |row| {
+                    self.action.enterWorkbenchConfirm(.status, row.anchor_plan_id, row.plan_title);
+                }
+                return true;
+            }
         }
 
         // j / arrow-down: move selection down in active sub-mode.
@@ -218,18 +288,35 @@ pub fn render(
     allocator: std.mem.Allocator,
 ) !void {
     _ = allocator;
+
+    // M18 (task 4050): when the action overlay is active, render it on top
+    // of the detail pane (navigator remains visible for context).
+    const overlay_active = state.action.isActive();
+
     switch (state.mode) {
         .config => {
             renderConfigNavigator(state, nav_win);
-            renderConfigDetail(state, detail_win);
+            if (overlay_active) {
+                external_actions.renderOverlay(&state.action, detail_win);
+            } else {
+                renderConfigDetail(state, detail_win);
+            }
         },
         .annotations => {
             renderAnnotationsNavigator(state, nav_win);
-            renderAnnotationsDetail(state, detail_win);
+            if (overlay_active) {
+                external_actions.renderOverlay(&state.action, detail_win);
+            } else {
+                renderAnnotationsDetail(state, detail_win);
+            }
         },
         .workbench_sync => {
             renderWbSyncNavigator(state, nav_win);
-            renderWbSyncDetail(state, detail_win);
+            if (overlay_active) {
+                external_actions.renderOverlay(&state.action, detail_win);
+            } else {
+                renderWbSyncDetail(state, detail_win);
+            }
         },
     }
 }
@@ -726,7 +813,21 @@ fn renderWbSyncDetail(state: *const UtilityState, win: Window) void {
 }
 
 /// Return a one-line legend string for the key legend bar.
-pub fn legendLabel(buf: []u8) []const u8 {
+/// Return a one-line legend string for the key legend bar.
+///
+/// M18 (task 4050): when the action overlay is active, defer to its legend.
+/// When in .workbench_sync mode, show the workbench action keys.
+pub fn legendLabel(state: *const UtilityState, buf: []u8) []const u8 {
+    if (state.action.isActive()) {
+        return external_actions.legendLabel(&state.action, buf);
+    }
+    if (state.mode == .workbench_sync) {
+        return std.fmt.bufPrint(
+            buf,
+            "  q Quit  j/k Select  m Mode  p Push  l Pull  s Status  Tab Focus",
+            .{},
+        ) catch "  q Quit  j/k Select  m Mode  p Push  l Pull  s Status";
+    }
     return std.fmt.bufPrint(
         buf,
         "  q Quit  j/k Select  m Mode(Config/Ann/Sync)  Tab Focus  Tab/S-Tab View",
@@ -788,16 +889,20 @@ test "utility_view: reload on empty DB yields all empty rows" {
 }
 
 test "utility_view: mode cycling via handleKey 'm'" {
-    var state = UtilityState.init(testing.allocator);
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    var state = UtilityState.init(a);
     defer state.deinit();
 
     try testing.expectEqual(UtilityMode.config, state.mode);
     const m_key = Key{ .codepoint = 'm', .mods = .{} };
-    _ = state.handleKey(m_key);
+    _ = state.handleKey(m_key, &d);
     try testing.expectEqual(UtilityMode.annotations, state.mode);
-    _ = state.handleKey(m_key);
+    _ = state.handleKey(m_key, &d);
     try testing.expectEqual(UtilityMode.workbench_sync, state.mode);
-    _ = state.handleKey(m_key);
+    _ = state.handleKey(m_key, &d);
     try testing.expectEqual(UtilityMode.config, state.mode);
 }
 
@@ -842,11 +947,11 @@ test "utility_view: j/k navigate config rows (task 4041)" {
     try testing.expectEqual(@as(usize, 0), state.config_selected_idx);
 
     const j_key = Key{ .codepoint = 'j', .mods = .{} };
-    _ = state.handleKey(j_key);
+    _ = state.handleKey(j_key, &d);
     try testing.expectEqual(@as(usize, 1), state.config_selected_idx);
 
     const k_key = Key{ .codepoint = 'k', .mods = .{} };
-    _ = state.handleKey(k_key);
+    _ = state.handleKey(k_key, &d);
     try testing.expectEqual(@as(usize, 0), state.config_selected_idx);
 }
 
@@ -1453,7 +1558,7 @@ test "utility_view: reload->mode_change->reload does not UAF or leak" {
 
     // Step 2: change mode.
     const m = Key{ .codepoint = 'm', .mods = .{} };
-    _ = state.handleKey(m);
+    _ = state.handleKey(m, &d);
     try testing.expectEqual(UtilityMode.annotations, state.mode);
 
     // Step 3: reload again — old allocations freed, new ones created.
@@ -1467,10 +1572,147 @@ test "utility_view: reload->mode_change->reload does not UAF or leak" {
 }
 
 test "utility_view legendLabel fits in buf" {
+    const a = testing.allocator;
+    var state = UtilityState.init(a);
+    defer state.deinit();
     var buf: [256]u8 = undefined;
-    const label = legendLabel(&buf);
+    const label = legendLabel(&state, &buf);
     try testing.expect(label.len > 0);
     try testing.expect(std.mem.indexOf(u8, label, "Mode") != null);
+}
+
+// =========================================================================
+// M18 (task 4050) controller tests: workbench action wiring in utility view
+// =========================================================================
+
+fn seedWbPlan(d: *db.sqlite.Db, slug: []const u8) !i64 {
+    const plan_id = try d.execParams(
+        "insert into plans (scope_kind, title, slug, status) values ('global',?,?,'active')",
+        &.{ .{ .text = slug }, .{ .text = slug } },
+    );
+    // Seed a workbench_sync_state row so the plan appears in wb_rows.
+    const task_id = try d.execParams(
+        "insert into tasks (scope_kind, title, status) values ('global','T','todo')",
+        &.{},
+    );
+    _ = try d.execParams(
+        \\insert into workbench_sync_state
+        \\  (anchor_plan_id, entity_kind, entity_id, file_path, content_hash, db_updated_at)
+        \\values (?, 'task', ?, 'tasks/t.md', 'abc', '2025-01-01T00:00:00.000Z')
+    , &.{ .{ .int = plan_id }, .{ .int = task_id } });
+    return plan_id;
+}
+
+test "utility_view M18: 'p' push key enters workbench confirm overlay when in workbench_sync mode" {
+    // Task 4050: 'p' in .workbench_sync mode enters confirm_workbench(.push).
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    _ = try seedWbPlan(&d, "wb-push-test");
+
+    var state = UtilityState.init(a);
+    defer state.deinit();
+    try state.reload(&d);
+    // Switch to workbench_sync mode.
+    state.mode = .workbench_sync;
+
+    try testing.expect(!state.action.isActive());
+    try testing.expect(state.wb_rows.len > 0);
+
+    const p_key = Key{ .codepoint = 'p', .mods = .{} };
+    const consumed = state.handleKey(p_key, &d);
+    try testing.expect(consumed);
+    try testing.expect(state.action.isActive());
+
+    switch (state.action.mode) {
+        .confirm_workbench => |*cw| try testing.expectEqual(external_actions.WorkbenchKind.push, cw.kind),
+        else => try testing.expect(false),
+    }
+}
+
+test "utility_view M18: 'l' pull key enters workbench confirm overlay" {
+    // Task 4050: 'l' in .workbench_sync mode enters confirm_workbench(.pull).
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    _ = try seedWbPlan(&d, "wb-pull-test");
+
+    var state = UtilityState.init(a);
+    defer state.deinit();
+    try state.reload(&d);
+    state.mode = .workbench_sync;
+
+    const l_key = Key{ .codepoint = 'l', .mods = .{} };
+    const consumed = state.handleKey(l_key, &d);
+    try testing.expect(consumed);
+    try testing.expect(state.action.isActive());
+
+    switch (state.action.mode) {
+        .confirm_workbench => |*cw| try testing.expectEqual(external_actions.WorkbenchKind.pull, cw.kind),
+        else => try testing.expect(false),
+    }
+}
+
+test "utility_view M18: 's' status key enters workbench confirm overlay" {
+    // Task 4050: 's' in .workbench_sync mode enters confirm_workbench(.status).
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    _ = try seedWbPlan(&d, "wb-status-test");
+
+    var state = UtilityState.init(a);
+    defer state.deinit();
+    try state.reload(&d);
+    state.mode = .workbench_sync;
+
+    const s_key = Key{ .codepoint = 's', .mods = .{} };
+    const consumed = state.handleKey(s_key, &d);
+    try testing.expect(consumed);
+    try testing.expect(state.action.isActive());
+
+    switch (state.action.mode) {
+        .confirm_workbench => |*cw| try testing.expectEqual(external_actions.WorkbenchKind.status, cw.kind),
+        else => try testing.expect(false),
+    }
+}
+
+test "utility_view M18: action overlay dismisses on Esc without executing" {
+    // Task 4050: Esc from confirm_workbench must cancel without calling engine.
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    _ = try seedWbPlan(&d, "wb-esc-test");
+
+    var state = UtilityState.init(a);
+    defer state.deinit();
+    try state.reload(&d);
+    state.mode = .workbench_sync;
+
+    // Enter confirm via 'p'.
+    _ = state.handleKey(Key{ .codepoint = 'p', .mods = .{} }, &d);
+    try testing.expect(state.action.isActive());
+
+    // Esc should cancel.
+    _ = state.handleKey(Key{ .codepoint = Key.escape }, &d);
+    try testing.expect(!state.action.isActive());
+}
+
+test "utility_view M18: legendLabel shows workbench action keys in workbench_sync mode" {
+    // Task 4050: legend must show 'p Push', 'l Pull', 's Status' keys.
+    const a = testing.allocator;
+    var state = UtilityState.init(a);
+    defer state.deinit();
+    state.mode = .workbench_sync;
+
+    var buf: [256]u8 = undefined;
+    const label = legendLabel(&state, &buf);
+    try testing.expect(std.mem.indexOf(u8, label, "Push") != null);
+    try testing.expect(std.mem.indexOf(u8, label, "Pull") != null);
+    try testing.expect(std.mem.indexOf(u8, label, "Status") != null);
 }
 
 test "utility_view compiles" {
