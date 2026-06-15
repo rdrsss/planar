@@ -77,6 +77,11 @@ comptime {
     _ = @import("closeout_recompute_test.zig");
     _ = @import("closeout_gate_test.zig");
 
+    // M0 seam-hardening primitives (plan 638)
+    _ = @import("plan_descendants_test.zig");
+    _ = @import("propagate_one_test.zig");
+    _ = @import("propagate_faithful_test.zig");
+
     _ = @import("scenarios/scenario_annotations_test.zig");
     _ = @import("scenarios/scenario_audit_trail_test.zig");
     _ = @import("scenarios/scenario_cross_scope_polyrepo_test.zig");

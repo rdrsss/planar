@@ -1,4 +1,4 @@
-//! handlers/ext/cmd.zig — `planar ext {register {jira, github}, list, test, create, propagate}`
+//! handlers/ext/cmd.zig — `planar ext {register {jira, github}, list, test, create, propagate, propagate-one}`
 
 const cli = @import("cli");
 
@@ -7,6 +7,7 @@ const list = @import("list.zig");
 const test_h = @import("test.zig");
 const create = @import("create.zig");
 const propagate = @import("propagate.zig");
+const propagate_one = @import("propagate_one.zig");
 
 pub const verb: cli.Cmd = .{
     .name = "ext",
@@ -40,6 +41,25 @@ pub const verb: cli.Cmd = .{
             },
             .positionals = &.{.{ .name = "system-slug", .kind = .string, .required = true }},
             .run = cli.handler(create.handle),
+        },
+        .{
+            .name = "propagate-one",
+            .desc = "Render + POST + record one entity counterpart in one transaction, idempotent skip on existing link.",
+            .long_desc = "Render one entity's template, POST the counterpart to the external system, and\n" ++
+                "  record the external_links row in one transaction. Idempotent: if a mirror link\n" ++
+                "  already exists for this entity+system pair, the call is a no-op and returns\n" ++
+                "  op=skipped.\n\n" ++
+                "  --from <kind:id>  Source local entity ref (plan:N or task:N)\n" ++
+                "  --strategy        Override GitHub strategy: parent-issue, projects-v2, tracking-issue",
+            .flags = &.{
+                .{ .long = "--from", .kind = .string, .required = true, .desc = "Source local entity ref (kind:id, e.g. plan:42 or task:7)" },
+                .{ .long = "--strategy", .kind = .string, .desc = "Override GitHub strategy: parent-issue, projects-v2, tracking-issue" },
+                .{ .long = "--sync", .kind = .string, .desc = "Sync direction for created link: read-only, write-back, two-way" },
+                .{ .long = "--dry-run", .kind = .bool, .default = .{ .bool = false }, .desc = "Preview without contacting the remote system" },
+                .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
+            },
+            .positionals = &.{.{ .name = "system", .kind = .string, .required = true }},
+            .run = cli.handler(propagate_one.handle),
         },
         .{
             .name = "propagate",
