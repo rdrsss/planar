@@ -426,7 +426,8 @@ test "planar-watch verb set is EXACTLY the read verbs + version + completion" {
     defer freeVerbSet(gpa, &verbs);
 
     try assertExactSet(&verbs, &.{
-        "feed", "ps", "claims", "actions", "plans", "log", "tree", "run", "version", "completion", "schema",
+        "feed",        "ps",      "claims",     "actions", "plans", "log", "tree", "run",
+        "sync-events", "version", "completion", "schema",
     }, "planar-watch");
 
     // Forbidden: every planar-agent write verb.
