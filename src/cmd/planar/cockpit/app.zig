@@ -47,6 +47,7 @@ const external_ops_plane = @import("views/external_ops_plane.zig");
 const sessions_handoff = @import("views/sessions_handoff.zig");
 const audit_log_view = @import("views/audit_log.zig");
 const cli_history_view = @import("views/cli_history.zig");
+const topology_view = @import("views/topology.zig");
 
 /// Minimum usable terminal dimensions.
 const MIN_WIDTH: u16 = 40;
@@ -248,6 +249,10 @@ pub fn run(
     var cli_history: cli_history_view.CliHistoryState = cli_history_view.CliHistoryState.init(alloc);
     defer cli_history.deinit();
 
+    // ---- Topology state (tasks 4039–4040, M14) --------------------------
+    var topology: topology_view.TopologyState = topology_view.TopologyState.init(alloc);
+    defer topology.deinit();
+
     // Determine cwd-scope filter on launch. Falls back to .all when the
     // cwd is outside any registered repo (q607: cwd-derived default).
     const cwd_for_scope = std.Io.Dir.realPathFileAlloc(
@@ -297,6 +302,9 @@ pub fn run(
     // Initial load of the CLI Invocation History view.
     cli_history.reload(db_handle) catch {};
 
+    // Initial load of the Topology view.
+    topology.reload(db_handle) catch {};
+
     // ---- Spine state ----------------------------------------------------
     // Scope Explorer is the default (index 0) landing view per the spec.
     var vs: view_switcher.ViewSwitcher = .{};
@@ -317,6 +325,9 @@ pub fn run(
     // M13: CLI History is the 11th view. Reachable via Tab/Shift-Tab only.
     // Key 'h' is display-only (not a jump key).
     try vs.register(.{ .id = .cli_history, .name = "CLIHist", .key = 'h' });
+    // M14: Topology is the 12th view. Reachable via Tab/Shift-Tab only.
+    // Key 't' is display-only (not a jump key).
+    try vs.register(.{ .id = .topology, .name = "Topology", .key = 't' });
 
     var sl: split_layout.SplitLayout = .{};
 
@@ -325,7 +336,7 @@ pub fn run(
     try vx.queryTerminal(tty.writer(), .fromSeconds(1));
 
     // Render the initial frame.
-    try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor, &board, &declog, &questions, &coverage, &entity_graph, &ext_ops, &sessions, &audit, &cli_history);
+    try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor, &board, &declog, &questions, &coverage, &entity_graph, &ext_ops, &sessions, &audit, &cli_history, &topology);
 
     // Main event loop.
     while (true) {
@@ -423,6 +434,12 @@ pub fn run(
                         } else {
                             need_render = false;
                         }
+                    } else if (active != null and active.?.id == .topology) {
+                        if (topology.handleKey(key)) {
+                            // Consumed by topology view — render.
+                        } else {
+                            need_render = false;
+                        }
                     } else {
                         need_render = false;
                     }
@@ -459,11 +476,13 @@ pub fn run(
                     audit.reload(db_handle) catch {};
                 } else if (active != null and active.?.id == .cli_history) {
                     cli_history.reload(db_handle) catch {};
+                } else if (active != null and active.?.id == .topology) {
+                    topology.reload(db_handle) catch {};
                 }
             },
         }
         if (need_render) {
-            try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor, &board, &declog, &questions, &coverage, &entity_graph, &ext_ops, &sessions, &audit, &cli_history);
+            try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor, &board, &declog, &questions, &coverage, &entity_graph, &ext_ops, &sessions, &audit, &cli_history, &topology);
         }
     }
     // Terminal restored by deferred vx.deinit.
@@ -537,6 +556,7 @@ fn renderFrame(
     sessions_state: *const sessions_handoff.SessionsHandoffState,
     audit_state: *const audit_log_view.AuditLogState,
     cli_history_state: *const cli_history_view.CliHistoryState,
+    topology_state: *const topology_view.TopologyState,
 ) !void {
     const win = vx.window();
     win.clear();
@@ -656,6 +676,13 @@ fn renderFrame(
             .text = legend,
             .style = .{ .dim = true },
         }, .{ .row_offset = legend_row, .col_offset = 0 });
+    } else if (active != null and active.?.id == .topology) {
+        var legend_buf: [128]u8 = undefined;
+        const legend = topology_view.legendLabel(&legend_buf);
+        _ = content_win.printSegment(.{
+            .text = legend,
+            .style = .{ .dim = true },
+        }, .{ .row_offset = legend_row, .col_offset = 0 });
     } else {
         _ = content_win.printSegment(.{
             .text = "  q Quit  Tab Focus  1-9 View  Ctrl-C Quit",
@@ -701,14 +728,16 @@ fn renderFrame(
         try audit_log_view.render(audit_state, panes.nav, panes.detail, alloc);
     } else if (active != null and active.?.id == .cli_history) {
         try cli_history_view.render(cli_history_state, panes.nav, panes.detail, alloc);
+    } else if (active != null and active.?.id == .topology) {
+        try topology_view.render(topology_state, panes.nav, panes.detail, alloc);
     } else {
-        // Placeholder for views not yet implemented (M14+).
+        // Placeholder for views not yet implemented (M15+).
         _ = panes.nav.printSegment(.{
-            .text = "[Navigator — M14+]",
+            .text = "[Navigator — M15+]",
             .style = .{ .dim = true },
         }, .{ .row_offset = 1, .col_offset = 1 });
         _ = panes.detail.printSegment(.{
-            .text = "[Detail pane — M14+]",
+            .text = "[Detail pane — M15+]",
             .style = .{ .dim = true },
         }, .{ .row_offset = 1, .col_offset = 1 });
     }
@@ -808,6 +837,7 @@ const external_ops_plane_mod = @import("views/external_ops_plane.zig");
 const sessions_handoff_mod = @import("views/sessions_handoff.zig");
 const audit_log_mod = @import("views/audit_log.zig");
 const cli_history_mod = @import("views/cli_history.zig");
+const topology_mod = @import("views/topology.zig");
 
 // =========================================================================
 // Tests
@@ -936,4 +966,5 @@ test "cockpit spine modules compile" {
     std.testing.refAllDecls(sessions_handoff_mod);
     std.testing.refAllDecls(audit_log_mod);
     std.testing.refAllDecls(cli_history_mod);
+    std.testing.refAllDecls(topology_mod);
 }
