@@ -7,7 +7,9 @@
 //! add the reference-edge walk, token weighting, and the `closures` store.
 
 pub const symbols = @import("closure/symbols.zig");
+pub const walk = @import("closure/walk.zig");
 
 test {
     _ = symbols;
+    _ = walk;
 }
