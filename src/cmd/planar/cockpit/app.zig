@@ -864,6 +864,8 @@ const topology_mod = @import("views/topology.zig");
 const utility_view_mod = @import("views/utility_view.zig");
 // M16: edit action module — pulled in so its test blocks run.
 const edit_actions_mod = @import("edit/actions.zig");
+// M17: task lifecycle module — pulled in so its test blocks run.
+const task_lifecycle_mod = @import("edit/task_lifecycle.zig");
 
 // =========================================================================
 // Tests
@@ -997,4 +999,6 @@ test "cockpit spine modules compile" {
     std.testing.refAllDecls(utility_view_mod);
     // M16 edit action layer.
     std.testing.refAllDecls(edit_actions_mod);
+    // M17 task lifecycle layer.
+    std.testing.refAllDecls(task_lifecycle_mod);
 }

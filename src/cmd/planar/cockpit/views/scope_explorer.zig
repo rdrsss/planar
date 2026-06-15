@@ -1,4 +1,4 @@
-//! cockpit/views/scope_explorer.zig — Scope Explorer view (M3 + M16).
+//! cockpit/views/scope_explorer.zig — Scope Explorer view (M3 + M16 + M17).
 //!
 //! The default landing view for the cockpit. Renders a collapsible
 //! association → plan → subplan → task tree in the navigator pane, with
@@ -15,6 +15,19 @@
 //!     edit action (task 4044). Escape cancels at any point.
 //!   - All writes go through cockpit/edit/actions.editTitle which
 //!     uses the engine write path + scope guard (task 4045).
+//!
+//! M17 task lifecycle additions (tasks 4047, 4048):
+//!   - 'L' on a task node enters the lifecycle overlay.
+//!   - The overlay first shows live claim state (task 4048).
+//!   - If an active unexpired claim exists, the overlay shows a clear
+//!     refusal ("CLAIM ACTIVE — STATUS CHANGE REFUSED") and blocks any
+//!     status flip (the never-strand invariant).
+//!   - If no active claim, Enter advances to the action menu where the
+//!     operator can: start, done, reopen, block, adjust priority.
+//!   - All status transitions route through engine.planning.task functions
+//!     (markDone, reopen, update, markBlocked) — no raw SQL.
+//!   - The lifecycle controller (TaskLifecycleState.handleKey) is
+//!     unit-testable from testing.allocator (see task_lifecycle.zig).
 //!
 //! Design invariants:
 //!   - All heap-owned data is owned by the ExplorerState and released
@@ -38,6 +51,7 @@ const tree_nav = @import("../widgets/tree_navigator.zig");
 const markdown_detail = @import("../widgets/markdown_detail.zig");
 const split_layout = @import("../widgets/split_layout.zig");
 const edit_actions = @import("../edit/actions.zig");
+const task_lifecycle = @import("../edit/task_lifecycle.zig");
 
 const Window = vaxis.Window;
 const Key = vaxis.Key;
@@ -159,16 +173,26 @@ pub const ExplorerState = struct {
     /// will be refused by the guard (task 4045).
     explicit_scope: ?[]const u8 = null,
 
+    /// M17: task lifecycle overlay controller (tasks 4047, 4048).
+    /// Active only when a task node is selected and the operator pressed 'L'.
+    /// Deinit'd via lifecycle.deinit() in ExplorerState.deinit.
+    lifecycle: task_lifecycle.TaskLifecycleState = undefined,
+    lifecycle_inited: bool = false,
+
     /// Labels buffer. All node label slices point into allocations from
     /// this allocator (same as ExplorerState.allocator).
     pub fn init(allocator: std.mem.Allocator) ExplorerState {
-        return .{ .allocator = allocator };
+        var s: ExplorerState = .{ .allocator = allocator };
+        s.lifecycle = task_lifecycle.TaskLifecycleState.init(allocator);
+        s.lifecycle_inited = true;
+        return s;
     }
 
     pub fn deinit(self: *ExplorerState) void {
         self.freeNodes();
         if (self.detail) |d| d.deinit(self.allocator);
         self.clearEditMode();
+        if (self.lifecycle_inited) self.lifecycle.deinit();
     }
 
     /// Free any heap-allocated strings owned by the current edit mode and
@@ -394,6 +418,16 @@ pub const ExplorerState = struct {
         return null;
     }
 
+    /// Derive the write scope for use with lifecycle transitions (same
+    /// logic as commitEdit uses for entity-field edits).
+    fn lifecycleWriteScope(self: *ExplorerState, d: *db.sqlite.Db) ?[]const u8 {
+        const vm_filter: edit_actions.view_model_ScopeFilter = switch (self.filter) {
+            .repo => |pid| .{ .repo = pid },
+            .all => .all,
+        };
+        return edit_actions.cockpitWriteScope(d, self.allocator, vm_filter, self.explicit_scope) catch null;
+    }
+
     /// Handle a key event for the Scope Explorer. Returns true when the
     /// key was consumed.
     pub fn handleKey(
@@ -401,6 +435,23 @@ pub const ExplorerState = struct {
         key: Key,
         d: *db.sqlite.Db,
     ) bool {
+        // ---- M17: lifecycle overlay keys take highest priority (task 4047/4048) ----
+        if (self.lifecycle_inited and self.lifecycle.isActive()) {
+            // Derive write scope for lifecycle transitions.
+            const write_scope = self.lifecycleWriteScope(d);
+            defer if (write_scope) |s| self.allocator.free(s);
+
+            const consumed = self.lifecycle.handleKey(key, d, write_scope);
+            if (consumed) {
+                // After the overlay is dismissed, reload if needed.
+                if (!self.lifecycle.isActive() and self.lifecycle.wantsReload()) {
+                    self.reload(d) catch {};
+                }
+                return true;
+            }
+            return true; // lifecycle overlay always consumes all keys
+        }
+
         // ---- M16: edit mode keys (task 4044/4045/4046) take priority ----
         switch (self.edit_mode) {
             .typing => |*t| {
@@ -540,6 +591,19 @@ pub const ExplorerState = struct {
                     .input_len = prefill_len,
                 } };
                 return true;
+            }
+            return false;
+        }
+
+        // M17: 'L' on a task node enters the lifecycle overlay (tasks 4047/4048).
+        if (key.matches('L', .{})) {
+            if (self.lifecycle_inited) {
+                if (self.selectedNode()) |sel| {
+                    if (sel.kind == .task) {
+                        self.lifecycle.enter(d, sel.entity_id);
+                        return true;
+                    }
+                }
             }
             return false;
         }
@@ -731,6 +795,13 @@ pub fn render(
         tree_nav.render(nav_win, tree_nodes, &state.nav);
     }
 
+    // ---- M17: Lifecycle overlay in the detail pane (task 4047/4048) ------
+    // When the lifecycle overlay is active, it takes over the detail pane.
+    if (state.lifecycle_inited and state.lifecycle.isActive()) {
+        try task_lifecycle.renderOverlay(&state.lifecycle, detail_win, allocator);
+        return;
+    }
+
     // ---- M16: Edit-mode overlay in the detail pane --------------------
     // When in edit/confirm/error mode, the detail pane shows the edit UI
     // instead of the normal entity content.
@@ -863,8 +934,12 @@ pub fn scopeLabel(state: *const ExplorerState, buf: []u8) []const u8 {
 }
 
 /// Return the legend string for the key legend bar when the Explorer is active.
-/// Shows edit-mode hint when in edit/confirm mode.
+/// Shows lifecycle-mode hint when lifecycle overlay is active, otherwise edit-mode hint.
 pub fn legendLabel(state: *const ExplorerState, buf: []u8) []const u8 {
+    // M17: lifecycle overlay legend takes priority.
+    if (state.lifecycle_inited and state.lifecycle.isActive()) {
+        return task_lifecycle.legendLabel(&state.lifecycle, buf);
+    }
     return switch (state.edit_mode) {
         .typing => std.fmt.bufPrint(buf, "  Typing title — Enter=commit  Esc=cancel", .{}) catch
             "  Typing title — Enter=commit  Esc=cancel",
@@ -872,8 +947,8 @@ pub fn legendLabel(state: *const ExplorerState, buf: []u8) []const u8 {
             "  Confirm overwrite? y=yes  any=cancel",
         .error_msg => std.fmt.bufPrint(buf, "  Edit error — press any key to dismiss", .{}) catch
             "  Edit error — press any key to dismiss",
-        .none => std.fmt.bufPrint(buf, "  q Quit  j/k Move  Enter Expand  e Edit  a All-scopes  Tab Focus", .{}) catch
-            "  q Quit  j/k Move  Enter Expand  e Edit  a All-scopes  Tab Focus",
+        .none => std.fmt.bufPrint(buf, "  q Quit  j/k Move  Enter Expand  e Edit  L Lifecycle  a All-scopes  Tab Focus", .{}) catch
+            "  q Quit  j/k Move  Enter Expand  e Edit  L Lifecycle  a All-scopes  Tab Focus",
     };
 }
 
