@@ -8,6 +8,7 @@ const std = @import("std");
 const cmd_mod = @import("cmd.zig");
 const doc_mod = @import("doc.zig");
 const flag_mod = @import("flag.zig");
+const duration_mod = @import("duration.zig");
 
 pub const Options = struct {
     section: u8 = 1,
@@ -32,11 +33,11 @@ pub fn page(
     comptime options: Options,
 ) []const u8 {
     @setEvalBranchQuota(4_000_000);
-    if (options.section != 1) {
-        @compileError("cli.man.page: only section 1 is supported for now");
+    if (options.section < 1 or options.section > 9) {
+        @compileError("man.page: section must be between 1 and 9");
     }
     const target = comptime cmd_mod.findCmd(root, path) orelse @compileError(
-        "cli.man.page: no command at path",
+        "man.page: no command at path",
     );
     return comptime renderPage(root, target, path, options);
 }
@@ -93,14 +94,15 @@ fn renderPage(
 ) []const u8 {
     comptime {
         const name = pageName(root, path);
-        const title = options.title orelse name;
+        const title = options.title orelse roffTitle(name);
+        const date = roffDate(options.date);
         const command = commandPath(root, path);
         const desc = if (node.desc.len > 0) node.desc else "";
         const flags = flagsFor(root, node, path, options.include_inherited_flags);
 
         var out: []const u8 = "";
         out = out ++ ".TH \"" ++ roffQuoted(title) ++ "\" \"" ++ std.fmt.comptimePrint("{d}", .{options.section}) ++ "\"";
-        out = out ++ " \"" ++ roffQuoted(options.date) ++ "\"";
+        out = out ++ " \"" ++ roffQuoted(date) ++ "\"";
         out = out ++ " \"" ++ roffQuoted(options.source) ++ "\"";
         out = out ++ " \"" ++ roffQuoted(options.manual) ++ "\"\n";
 
@@ -127,7 +129,7 @@ fn renderPage(
         const long_desc = if (node.long_desc.len > 0) node.long_desc else node.desc;
         if (long_desc.len > 0) {
             out = out ++ ".SH DESCRIPTION\n";
-            out = out ++ ".PP\n" ++ roff(long_desc) ++ "\n";
+            out = out ++ roff(long_desc) ++ "\n";
         }
 
         if (hasVisibleCommands(node.cmds, options)) {
@@ -135,7 +137,9 @@ fn renderPage(
             for (node.cmds) |child| {
                 if (!visibleCmd(child, options)) continue;
                 out = out ++ ".TP\n";
-                out = out ++ ".B " ++ roff(child.name) ++ "\n";
+                out = out ++ ".B " ++ roff(child.name);
+                for (child.aliases) |alias| out = out ++ ", " ++ roff(alias);
+                out = out ++ "\n";
                 if (child.desc.len > 0) out = out ++ roff(child.desc) ++ "\n";
                 if (child.deprecated) |d| out = out ++ roff(deprecationText(d)) ++ "\n";
             }
@@ -146,6 +150,14 @@ fn renderPage(
             for (flags) |f| {
                 if (!visibleFlag(f, options)) continue;
                 out = out ++ renderFlag(f);
+            }
+        }
+
+        if (hasVisibleFlagGroups(node.flag_groups, flags, options)) {
+            out = out ++ ".SH FLAG GROUPS\n";
+            for (node.flag_groups) |group| {
+                if (!visibleFlagGroup(group, flags, options)) continue;
+                out = out ++ renderFlagGroup(group);
             }
         }
 
@@ -174,7 +186,10 @@ fn renderPage(
 
         if (node.doc.notes.len > 0) {
             out = out ++ ".SH NOTES\n";
-            for (node.doc.notes) |note| out = out ++ ".PP\n" ++ roff(note) ++ "\n";
+            for (node.doc.notes, 0..) |note, idx| {
+                if (idx > 0) out = out ++ ".PP\n";
+                out = out ++ roff(note) ++ "\n";
+            }
         }
 
         if (node.doc.files.len > 0) {
@@ -191,18 +206,27 @@ fn renderPage(
 
         if (node.doc.bugs.len > 0) {
             out = out ++ ".SH BUGS\n";
-            for (node.doc.bugs) |bug| out = out ++ ".PP\n" ++ roff(bug) ++ "\n";
+            for (node.doc.bugs, 0..) |bug, idx| {
+                if (idx > 0) out = out ++ ".PP\n";
+                out = out ++ roff(bug) ++ "\n";
+            }
         }
 
         if (node.doc.authors.len > 0) {
             out = out ++ ".SH AUTHORS\n";
-            for (node.doc.authors) |author| out = out ++ ".PP\n" ++ roff(author) ++ "\n";
+            for (node.doc.authors, 0..) |author, idx| {
+                if (idx > 0) out = out ++ ".PP\n";
+                out = out ++ roff(author) ++ "\n";
+            }
         }
 
         if (node.doc.license.len > 0 or node.doc.copyright.len > 0) {
             out = out ++ ".SH COPYRIGHT\n";
-            if (node.doc.copyright.len > 0) out = out ++ ".PP\n" ++ roff(node.doc.copyright) ++ "\n";
-            if (node.doc.license.len > 0) out = out ++ ".PP\nLicense: " ++ roff(node.doc.license) ++ "\n";
+            if (node.doc.copyright.len > 0) out = out ++ roff(node.doc.copyright) ++ "\n";
+            if (node.doc.license.len > 0) {
+                if (node.doc.copyright.len > 0) out = out ++ ".PP\n";
+                out = out ++ "License: " ++ roff(node.doc.license) ++ "\n";
+            }
         }
 
         if (node.doc.see_also.len > 0) {
@@ -237,8 +261,13 @@ fn renderFlag(comptime f: flag_mod.Flag) []const u8 {
             out = out ++ ", " ++ roffOption("-" ++ &[_]u8{s});
             if (value.len > 0) out = out ++ " " ++ value;
         }
+        for (f.aliases) |alias| {
+            out = out ++ ", " ++ roffOption(alias);
+            if (value.len > 0) out = out ++ " " ++ value;
+        }
         out = out ++ "\n";
-        out = out ++ "type: " ++ @tagName(f.kind);
+        out = out ++ "type: " ++ (if (f.count) "count" else @tagName(f.kind));
+        if (f.list or f.count) out = out ++ ", repeatable";
         if (value.len > 0) out = out ++ ", value: " ++ value;
         if (f.required) out = out ++ ", required";
         if (f.default) |d| out = out ++ ", default: " ++ renderDefault(d);
@@ -249,11 +278,22 @@ fn renderFlag(comptime f: flag_mod.Flag) []const u8 {
     }
 }
 
+fn renderFlagGroup(comptime group: flag_mod.FlagGroup) []const u8 {
+    comptime {
+        var out: []const u8 = ".TP\n.B " ++ roff(group.name) ++ "\n";
+        out = out ++ roff(flagGroupModeLabel(group.mode)) ++ ": " ++ renderFlagGroupMembers(group.flags);
+        if (group.desc.len > 0) out = out ++ "\n" ++ roff(group.desc);
+        out = out ++ "\n";
+        return out;
+    }
+}
+
 fn renderPositional(comptime p: flag_mod.Positional) []const u8 {
     comptime {
         var out: []const u8 = ".TP\n.I " ++ roff(p.name) ++ "\n";
         out = out ++ "type: " ++ @tagName(p.kind);
         if (!p.required) out = out ++ ", optional";
+        if (p.default) |d| out = out ++ ", default: " ++ renderDefault(d);
         if (p.desc.len > 0) out = out ++ "\n" ++ roff(p.desc);
         out = out ++ "\n";
         return out;
@@ -264,7 +304,7 @@ fn renderEnv(comptime f: flag_mod.Flag) []const u8 {
     comptime {
         if (f.env == null) return "";
         var out: []const u8 = ".TP\n.B " ++ roff(f.env.?) ++ "\n";
-        out = out ++ "Associated with " ++ roffOption(f.long) ++ " metadata. The parser does not read environment variables.\n";
+        out = out ++ "Fallback source for " ++ roffOption(f.long) ++ " when invoked through cli.run. The runner applies env-backed values on the resolved command path before parsing. The low-level parse/dispatch APIs do not read the environment.\n";
         return out;
     }
 }
@@ -325,6 +365,35 @@ fn hasVisibleFlags(comptime flags: []const flag_mod.Flag, comptime options: Opti
     return false;
 }
 
+fn hasVisibleFlagGroups(
+    comptime groups: []const flag_mod.FlagGroup,
+    comptime flags: []const flag_mod.Flag,
+    comptime options: Options,
+) bool {
+    for (groups) |group| if (visibleFlagGroup(group, flags, options)) return true;
+    return false;
+}
+
+fn visibleFlagGroup(
+    comptime group: flag_mod.FlagGroup,
+    comptime flags: []const flag_mod.Flag,
+    comptime options: Options,
+) bool {
+    if (group.flags.len == 0) return false;
+    for (group.flags) |member| {
+        const flag = flagByLong(flags, member) orelse return false;
+        if (!visibleFlag(flag, options)) return false;
+    }
+    return true;
+}
+
+fn flagByLong(comptime flags: []const flag_mod.Flag, comptime long: []const u8) ?flag_mod.Flag {
+    for (flags) |f| {
+        if (std.mem.eql(u8, f.long, long)) return f;
+    }
+    return null;
+}
+
 fn deprecationText(comptime d: anytype) []const u8 {
     comptime {
         var out: []const u8 = "Deprecated";
@@ -338,9 +407,30 @@ fn renderDefault(comptime d: flag_mod.Default) []const u8 {
     comptime {
         return switch (d) {
             .bool => |b| if (b) "true" else "false",
-            .string => |s| "\"" ++ roff(s) ++ "\"",
+            .string, .choice, .path => |s| "\"" ++ roff(s) ++ "\"",
             .int => |i| std.fmt.comptimePrint("{d}", .{i}),
+            .float => |x| std.fmt.comptimePrint("{d}", .{x}),
+            .duration => |ns| roff(duration_mod.formatNanos(ns)),
         };
+    }
+}
+
+fn flagGroupModeLabel(comptime mode: flag_mod.FlagGroupMode) []const u8 {
+    return switch (mode) {
+        .mutually_exclusive => "mutually exclusive",
+        .required_one => "at least one required",
+        .required_exactly_one => "exactly one required",
+    };
+}
+
+fn renderFlagGroupMembers(comptime flags: []const []const u8) []const u8 {
+    comptime {
+        var out: []const u8 = "";
+        for (flags, 0..) |name, idx| {
+            if (idx > 0) out = out ++ ", ";
+            out = out ++ roffOption(name);
+        }
+        return out;
     }
 }
 
@@ -350,6 +440,22 @@ fn commandPath(comptime root: cmd_mod.Cmd, comptime path: []const []const u8) []
         for (path) |seg| out = out ++ " " ++ seg;
         return out;
     }
+}
+
+fn roffTitle(comptime text: []const u8) []const u8 {
+    comptime {
+        var out: []const u8 = "";
+        for (text) |c| {
+            out = out ++ &[_]u8{std.ascii.toUpper(c)};
+        }
+        return out;
+    }
+}
+
+fn roffDate(comptime text: []const u8) []const u8 {
+    // `mandoc -Tlint` warns on an empty date. Keep default output reproducible;
+    // release tooling can pass the package date when it has one.
+    return if (text.len > 0) text else "1970-01-01";
 }
 
 fn roffOption(comptime text: []const u8) []const u8 {
@@ -402,7 +508,21 @@ fn roffChar(comptime c: u8) []const u8 {
 }
 
 fn flagValuePlaceholder(comptime f: flag_mod.Flag) []const u8 {
-    return f.value_name orelse fallbackValuePlaceholder(f.kind);
+    comptime {
+        if (f.kind == .choice) return joinChoices(f.choices);
+        return f.value_name orelse fallbackValuePlaceholder(f.kind);
+    }
+}
+
+fn joinChoices(comptime choices: []const []const u8) []const u8 {
+    comptime {
+        var out: []const u8 = "";
+        for (choices, 0..) |c, i| {
+            if (i > 0) out = out ++ "|";
+            out = out ++ c;
+        }
+        return out;
+    }
 }
 
 fn fallbackValuePlaceholder(comptime kind: flag_mod.Kind) []const u8 {
@@ -410,6 +530,10 @@ fn fallbackValuePlaceholder(comptime kind: flag_mod.Kind) []const u8 {
         .bool => "",
         .string => "VALUE",
         .int => "N",
+        .float => "X",
+        .duration => "DURATION",
+        .path => "PATH",
+        .choice => "",
     };
 }
 
@@ -426,6 +550,14 @@ const test_root = cmd_mod.Cmd{
             .flags = &.{
                 .{ .long = "--count", .desc = "Run count", .kind = .int, .default = .{ .int = 1 } },
             },
+            .flag_groups = &.{
+                .{
+                    .name = "run-input",
+                    .mode = .required_one,
+                    .flags = &.{ "--verbose", "--count" },
+                    .desc = "Choose a run input.",
+                },
+            },
             .positionals = &.{
                 .{ .name = "target", .desc = "Target name", .kind = .string },
             },
@@ -435,7 +567,7 @@ const test_root = cmd_mod.Cmd{
 
 test "page renders root sections" {
     const text = comptime page(test_root, &.{}, .{});
-    try std.testing.expect(std.mem.indexOf(u8, text, ".TH \"tool\" \"1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, ".TH \"TOOL\" \"1\" \"1970-01-01\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, ".SH NAME") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "tool \\- Test tool") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, ".SH COMMANDS") != null);
@@ -447,6 +579,35 @@ test "page renders inherited flags for leaf commands" {
     try std.testing.expect(std.mem.indexOf(u8, text, "\\-\\-verbose") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "\\-\\-count N") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, ".SH ARGUMENTS") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, ".SH FLAG GROUPS") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, ".B run-input") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "at least one required: \\-\\-verbose, \\-\\-count") != null);
+}
+
+test "page surfaces command and flag aliases" {
+    const root = cmd_mod.Cmd{
+        .name = "tool",
+        .cmds = &.{
+            .{
+                .name = "status",
+                .aliases = &.{ "st", "stat" },
+                .desc = "Show status",
+                .flags = &.{
+                    .{ .long = "--output", .short = 'o', .aliases = &.{"--out"}, .desc = "Output", .kind = .string },
+                },
+            },
+        },
+    };
+    const root_text = comptime page(root, &.{}, .{});
+    try std.testing.expect(std.mem.indexOf(u8, root_text, ".B status, st, stat") != null);
+
+    const leaf_text = comptime page(root, &.{"status"}, .{});
+    try std.testing.expect(std.mem.indexOf(u8, leaf_text, "\\-\\-out") != null);
+}
+
+test "page accepts sections other than 1" {
+    const text = comptime page(test_root, &.{}, .{ .section = 8 });
+    try std.testing.expect(std.mem.indexOf(u8, text, ".TH \"TOOL\" \"8\" \"1970-01-01\"") != null);
 }
 
 test "page omits empty optional sections" {

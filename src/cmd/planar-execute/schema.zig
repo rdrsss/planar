@@ -561,7 +561,7 @@ test "BinSchema: findCommand for 'planar-agent heartbeat' — --claim required, 
 }
 
 test "FlagEntry: short field parses as string — emitter shape match (task 3235)" {
-    // The etc-cli emitter serializes `short` as a JSON string: "short":"v", NOT
+    // The etcli emitter serializes `short` as a JSON string: "short":"v", NOT
     // a JSON number. This test confirms ?[]const u8 parses that correctly and
     // that the prior ?u8 declaration (which would ParseFailed on a string) is fixed.
     const fixture =

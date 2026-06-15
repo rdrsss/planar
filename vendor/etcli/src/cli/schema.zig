@@ -13,6 +13,8 @@ pub const Options = struct {
     include_inherited_flags: bool = true,
     include_docs: bool = true,
     include_env_metadata: bool = true,
+    // Additive opt-in view; schemaVersion stays 1 because callers request it.
+    include_command_tree: bool = false,
     include_hidden: bool = false,
     include_deprecated: bool = true,
 };
@@ -38,11 +40,30 @@ fn renderRoot(comptime root: cmd_mod.Cmd, comptime options: Options) []const u8 
         out = out ++ "\"root\":" ++ jsonString(root.name) ++ ",";
         out = out ++ "\"commands\":[";
         out = out ++ renderCommand(root, root, &.{}, options);
-        for (cmd_mod.allNodes(root)) |node| {
-            if (!visibleCmd(node.cmd, options)) continue;
-            out = out ++ "," ++ renderCommand(root, node.cmd, node.path, options);
+        out = out ++ renderDescendantCommands(root, root, &.{}, options);
+        out = out ++ "]";
+        if (options.include_command_tree) {
+            out = out ++ ",\"commandTree\":" ++ renderCommandTree(root, root, &.{}, options);
         }
-        out = out ++ "]}";
+        out = out ++ "}";
+        return out;
+    }
+}
+
+fn renderDescendantCommands(
+    comptime root: cmd_mod.Cmd,
+    comptime node: cmd_mod.Cmd,
+    comptime path: []const []const u8,
+    comptime options: Options,
+) []const u8 {
+    comptime {
+        var out: []const u8 = "";
+        for (node.cmds) |child| {
+            if (!visibleCmd(child, options)) continue;
+            const child_path = path ++ &[_][]const u8{child.name};
+            out = out ++ "," ++ renderCommand(root, child, child_path, options);
+            out = out ++ renderDescendantCommands(root, child, child_path, options);
+        }
         return out;
     }
 }
@@ -55,6 +76,20 @@ fn renderCommand(
 ) []const u8 {
     comptime {
         var out: []const u8 = "{";
+        out = out ++ renderCommandFields(root, node, path, options);
+        out = out ++ "}";
+        return out;
+    }
+}
+
+fn renderCommandFields(
+    comptime root: cmd_mod.Cmd,
+    comptime node: cmd_mod.Cmd,
+    comptime path: []const []const u8,
+    comptime options: Options,
+) []const u8 {
+    comptime {
+        var out: []const u8 = "";
         out = out ++ "\"name\":" ++ jsonString(node.name) ++ ",";
         out = out ++ "\"aliases\":" ++ renderStringArray(node.aliases) ++ ",";
         out = out ++ "\"hidden\":" ++ boolText(node.hidden) ++ ",";
@@ -65,9 +100,9 @@ fn renderCommand(
         out = out ++ "\"description\":" ++ jsonString(if (options.include_docs) (if (node.long_desc.len > 0) node.long_desc else node.desc) else "") ++ ",";
         out = out ++ "\"subcommands\":" ++ renderSubcommands(node.cmds, options) ++ ",";
         out = out ++ "\"flags\":" ++ renderFlags(root, node, path, options) ++ ",";
+        out = out ++ "\"flagGroups\":" ++ renderFlagGroups(root, node, path, options) ++ ",";
         out = out ++ "\"positionals\":" ++ renderPositionals(node.positionals, options);
         if (options.include_docs) out = out ++ ",\"docs\":" ++ renderDocs(node.doc);
-        out = out ++ "}";
         return out;
     }
 }
@@ -99,6 +134,40 @@ fn renderFlags(
     }
 }
 
+fn renderFlagGroups(
+    comptime root: cmd_mod.Cmd,
+    comptime node: cmd_mod.Cmd,
+    comptime path: []const []const u8,
+    comptime options: Options,
+) []const u8 {
+    comptime {
+        const inherited: []const flag_mod.Flag = if (options.include_inherited_flags) cmd_mod.collectInheritedFlags(root, path) else &.{};
+        const visible_flags = inherited ++ node.flags;
+        var out: []const u8 = "[";
+        var first = true;
+        for (node.flag_groups) |group| {
+            if (!visibleFlagGroup(group, visible_flags, options)) continue;
+            if (!first) out = out ++ ",";
+            first = false;
+            out = out ++ renderFlagGroup(group, options);
+        }
+        out = out ++ "]";
+        return out;
+    }
+}
+
+fn renderFlagGroup(comptime group: flag_mod.FlagGroup, comptime options: Options) []const u8 {
+    comptime {
+        var out: []const u8 = "{";
+        out = out ++ "\"name\":" ++ jsonString(group.name) ++ ",";
+        out = out ++ "\"mode\":" ++ jsonString(@tagName(group.mode)) ++ ",";
+        out = out ++ "\"flags\":" ++ renderStringArray(group.flags) ++ ",";
+        out = out ++ "\"description\":" ++ jsonString(if (options.include_docs) group.desc else "");
+        out = out ++ "}";
+        return out;
+    }
+}
+
 fn renderFlag(comptime f: flag_mod.Flag, comptime source: []const u8, comptime options: Options) []const u8 {
     comptime {
         var out: []const u8 = "{";
@@ -114,6 +183,9 @@ fn renderFlag(comptime f: flag_mod.Flag, comptime source: []const u8, comptime o
         }
         out = out ++ ",";
         out = out ++ "\"kind\":" ++ jsonString(@tagName(f.kind)) ++ ",";
+        out = out ++ "\"choices\":" ++ renderStringArray(f.choices) ++ ",";
+        out = out ++ "\"list\":" ++ boolText(f.list) ++ ",";
+        out = out ++ "\"count\":" ++ boolText(f.count) ++ ",";
         out = out ++ "\"required\":" ++ boolText(f.required) ++ ",";
         out = out ++ "\"source\":" ++ jsonString(source) ++ ",";
         out = out ++ "\"valueName\":";
@@ -129,7 +201,7 @@ fn renderFlag(comptime f: flag_mod.Flag, comptime source: []const u8, comptime o
         if (options.include_env_metadata) {
             out = out ++ ",\"env\":";
             if (f.env) |env| {
-                out = out ++ jsonString(env) ++ ",\"envBehavior\":\"metadata-only\"";
+                out = out ++ jsonString(env) ++ ",\"envBehavior\":\"cli-run-fallback\"";
             } else {
                 out = out ++ "null";
             }
@@ -148,6 +220,7 @@ fn renderPositionals(comptime positionals: []const flag_mod.Positional, comptime
             out = out ++ "\"name\":" ++ jsonString(p.name) ++ ",";
             out = out ++ "\"kind\":" ++ jsonString(@tagName(p.kind)) ++ ",";
             out = out ++ "\"required\":" ++ boolText(p.required) ++ ",";
+            out = out ++ "\"default\":" ++ renderDefault(p.default) ++ ",";
             out = out ++ "\"description\":" ++ jsonString(if (options.include_docs) p.desc else "") ++ ",";
             out = out ++ "\"completion\":" ++ renderCompletion(p.completion);
             out = out ++ "}";
@@ -223,6 +296,28 @@ fn renderSubcommands(comptime cmds: []const cmd_mod.Cmd, comptime options: Optio
     }
 }
 
+fn renderCommandTree(
+    comptime root: cmd_mod.Cmd,
+    comptime node: cmd_mod.Cmd,
+    comptime path: []const []const u8,
+    comptime options: Options,
+) []const u8 {
+    comptime {
+        var out: []const u8 = "{";
+        out = out ++ renderCommandFields(root, node, path, options);
+        out = out ++ ",\"children\":[";
+        var first = true;
+        for (node.cmds) |child| {
+            if (!visibleCmd(child, options)) continue;
+            if (!first) out = out ++ ",";
+            first = false;
+            out = out ++ renderCommandTree(root, child, path ++ &[_][]const u8{child.name}, options);
+        }
+        out = out ++ "]}";
+        return out;
+    }
+}
+
 fn renderDeprecation(comptime deprecated: anytype) []const u8 {
     comptime {
         if (deprecated == null) return "null";
@@ -252,6 +347,26 @@ fn visibleFlag(comptime f: flag_mod.Flag, comptime options: Options) bool {
     return true;
 }
 
+fn visibleFlagGroup(
+    comptime group: flag_mod.FlagGroup,
+    comptime flags: []const flag_mod.Flag,
+    comptime options: Options,
+) bool {
+    if (group.flags.len == 0) return false;
+    for (group.flags) |member| {
+        const flag = flagByLong(flags, member) orelse return false;
+        if (!visibleFlag(flag, options)) return false;
+    }
+    return true;
+}
+
+fn flagByLong(comptime flags: []const flag_mod.Flag, comptime long: []const u8) ?flag_mod.Flag {
+    for (flags) |f| {
+        if (std.mem.eql(u8, f.long, long)) return f;
+    }
+    return null;
+}
+
 fn renderStringArray(comptime values: []const []const u8) []const u8 {
     comptime {
         var out: []const u8 = "[";
@@ -279,8 +394,11 @@ fn renderDefault(comptime default: ?flag_mod.Default) []const u8 {
         if (default == null) return "null";
         return switch (default.?) {
             .bool => |b| boolText(b),
-            .string => |s| jsonString(s),
+            .string, .choice, .path => |s| jsonString(s),
             .int => |i| std.fmt.comptimePrint("{d}", .{i}),
+            .float => |x| std.fmt.comptimePrint("{d}", .{x}),
+            // Nanoseconds — precise integer for machine consumers.
+            .duration => |ns| std.fmt.comptimePrint("{d}", .{ns}),
         };
     }
 }
@@ -298,6 +416,10 @@ fn fallbackValueName(comptime kind: flag_mod.Kind) []const u8 {
         .bool => "",
         .string => "VALUE",
         .int => "N",
+        .float => "X",
+        .duration => "DURATION",
+        .path => "PATH",
+        .choice => "",
     };
 }
 
@@ -315,6 +437,11 @@ fn jsonString(comptime text: []const u8) []const u8 {
                 '\n' => "\\n",
                 '\r' => "\\r",
                 '\t' => "\\t",
+                0x08 => "\\b",
+                0x0c => "\\f",
+                // Remaining C0 control characters have no short escape and
+                // are invalid raw in a JSON string; emit a \u00XX escape.
+                0x00...0x07, 0x0b, 0x0e...0x1f => std.fmt.comptimePrint("\\u{x:0>4}", .{c}),
                 else => &[_]u8{c},
             };
         }
@@ -337,6 +464,14 @@ const test_root = cmd_mod.Cmd{
             .flags = &.{
                 .{ .long = "--name", .desc = "Name value", .kind = .string, .value_name = "NAME", .required = true, .env = "TOOL_NAME" },
             },
+            .flag_groups = &.{
+                .{
+                    .name = "run-input",
+                    .mode = .required_one,
+                    .flags = &.{ "--verbose", "--name" },
+                    .desc = "Choose a run input.",
+                },
+            },
             .positionals = &.{
                 .{ .name = "target", .desc = "Target value", .kind = .string },
             },
@@ -357,7 +492,8 @@ test "json emits flat schema for root and child commands" {
     try std.testing.expect(std.mem.indexOf(u8, text, "\"path\":[]") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "\"path\":[\"run\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "\"source\":\"inherited\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "\"envBehavior\":\"metadata-only\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "\"envBehavior\":\"cli-run-fallback\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "\"flagGroups\":[{\"name\":\"run-input\",\"mode\":\"required_one\",\"flags\":[\"--verbose\",\"--name\"],\"description\":\"Choose a run input.\"}]") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "\"examples\":[") != null);
 }
 
@@ -368,4 +504,19 @@ test "json escapes strings" {
     };
     const text = comptime json(root, .{});
     try std.testing.expect(std.mem.indexOf(u8, text, "quote \\\" slash \\\\ newline\\n") != null);
+}
+
+test "json escapes control characters" {
+    const root = cmd_mod.Cmd{
+        .name = "ctrl",
+        .desc = "bell\x07 back\x08 form\x0c vtab\x0b unit\x1f",
+    };
+    const text = comptime json(root, .{});
+    try std.testing.expect(std.mem.indexOf(u8, text, "bell\\u0007") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "back\\b") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "form\\f") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "vtab\\u000b") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "unit\\u001f") != null);
+    // No raw control byte should survive into the output.
+    try std.testing.expect(std.mem.indexOfScalar(u8, text, 0x07) == null);
 }
