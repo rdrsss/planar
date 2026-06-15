@@ -16,8 +16,10 @@
 -- So the ritual is split into two deterministic phases:
 --
 --   * setup   (phase A) — clean the worktree to base_sha and open the run.
---                         Snapshots the plan's declared touches into the run.
---                         Exits; the caller then runs the LLM coder slice.
+--                         `bench start` snapshots the plan's declared touches
+--                         into the run in-transaction (M1.5); this phase no
+--                         longer writes them explicitly. Exits; the caller
+--                         then runs the LLM coder slice.
 --   * measure (phase C) — after the (simulated or real) edit, harvest the
 --                         actual git diff per task and finish the run.
 --
@@ -30,7 +32,7 @@
 -- state by shelling `bench *` via cli.planar (the protected-instrument
 -- invariant: the harness records runs the same way it reads state — by
 -- subprocess). The host functions used are exactly the D7 surface:
---   cli.planar, git.reset_hard, ctx.task_touches, ctx.args, flow.{phase,log,
+--   cli.planar, cli.planar_json, git.reset_hard, ctx.args, flow.{phase,log,
 --   result,fail}.
 --
 -- ## How to run
@@ -84,17 +86,20 @@ end
 -- ---------------------------------------------------------------------------
 -- Phase A: setup
 --
--- Deterministic clean-slate open. Resets the run's worktree to base_sha, opens
--- the run record, and snapshots the plan's declared touches into the run.
+-- Deterministic clean-slate open. Resets the run's worktree to base_sha and
+-- opens the run record. `bench start` itself snapshots the plan's declared
+-- touches into the run, in the same transaction as the runs row insert.
 --
--- NOTE ON THE DECLARED-SNAPSHOT SEAM (M1.5):
---   Snapshotting declared touches at `bench start` is slated to move INTO the
---   engine in task M1.5 ("Declared-touch snapshot at run start"). Until that
---   lands, the ritual snapshots them EXPLICITLY here: it reads each task's
---   declared touches via ctx.task_touches and writes one `bench touch
---   --kind declared` row per (task, path). When M1.5 lands, this loop is
---   deleted and `bench start` does the snapshot in-transaction — the ritual's
---   external behavior (declared rows present after setup) is unchanged.
+-- THE DECLARED-SNAPSHOT SEAM (M1.5) IS NOW CLOSED:
+--   As of M1.5 ("Declared-touch snapshot at bench start"), the engine reads
+--   the plan's task_touch_paths and writes one run_touches(kind='declared')
+--   row per declared (task, path) inside `bench start`'s transaction. The
+--   ritual no longer snapshots them explicitly — the old per-(task,path)
+--   `bench touch --kind declared` loop was DELETED (re-running it here would
+--   double-write and trip the UNIQUE(run_id,task_id,path,kind) constraint).
+--   The snapshot is an immutable value-copy: re-declaring touches afterward
+--   cannot rewrite the recorded prediction (run-record-schema.md §2).
+--   The ritual reads the resulting declared count back from `bench show`.
 -- ---------------------------------------------------------------------------
 function setup()
   flow.phase("setup")
@@ -105,7 +110,9 @@ function setup()
   local base_sha    = require_arg("base_sha")
   local config_hash = require_arg("config_hash")
   local arm         = ctx.args.arm or "strict"
-  local tasks       = task_id_list()
+  -- tasks is still required (the measure phase harvests per-task), and asserts
+  -- the slice is non-empty before we open a run.
+  local _tasks      = task_id_list()
 
   -- 1. Clean-slate reset: every arm for a corpus member starts from this exact
   --    SHA in its worktree (run-record-schema §1). git.* is confined by the
@@ -113,7 +120,8 @@ function setup()
   flow.log("bench_run_ritual: git reset --hard " .. tostr(base_sha))
   git.reset_hard(tostr(base_sha))
 
-  -- 2. Open the run record. run_uid is the harness-minted positional (D8).
+  -- 2. Open the run record (which snapshots declared touches in-transaction).
+  --    run_uid is the harness-minted positional (D8).
   local start_argv = {
     "bench", "start", tostr(run_uid),
     "--plan", tostr(plan_id),
@@ -131,23 +139,18 @@ function setup()
   end
   cli.planar(start_argv)
 
-  -- 3. Snapshot declared touches into the run (M1.5 seam — see header note).
-  --    ctx.task_touches(id) returns { task_id, repos[], paths:[{repo,path}] }.
+  -- 3. Read back the declared count the engine snapshotted at start. The
+  --    declared rows are present in the run now without any explicit touch
+  --    loop here (M1.5 closed that seam). cli.planar_json shells
+  --    `planar bench show --json` and returns the parsed table.
+  local run = cli.planar_json({ "bench", "show", tostr(run_uid), "--json" })
   local declared = 0
-  for _, task_id in ipairs(tasks) do
-    local t = ctx.task_touches(task_id)
-    local paths = t.paths or {}
-    for _, row in ipairs(paths) do
-      cli.planar({
-        "bench", "touch", tostr(run_uid),
-        "--task", tostr(task_id),
-        "--path", tostr(row.path),
-        "--kind", "declared",
-      })
+  for _, t in ipairs(run.touches or {}) do
+    if t.kind == "declared" then
       declared = declared + 1
     end
   end
-  flow.log("bench_run_ritual: snapshotted " .. tostr(declared) .. " declared touch(es)")
+  flow.log("bench_run_ritual: bench start snapshotted " .. tostr(declared) .. " declared touch(es)")
 
   flow.result({
     ok            = true,

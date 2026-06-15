@@ -14,11 +14,16 @@
 //!   run_touches — the declared-vs-actual touch harvest. Each row is one
 //!                 (task, path) touch tagged kind in {declared, actual}.
 //!
-//! Scope boundary: this module implements the lifecycle PRIMITIVES only —
-//! `start`, `event`, `touch`, `finish`, `show`. The declared-touch
-//! snapshot-on-start (reading task_touch_paths into kind='declared' at
-//! run start) is a SEPARATE task (M1.5) that will extend `start`; it is
-//! deliberately absent here.
+//! Scope boundary: this module implements the lifecycle PRIMITIVES —
+//! `start`, `event`, `touch`, `finish`, `show`. As of M1.5, `start` also
+//! snapshots the plan's declared touches: in the SAME transaction as the
+//! `runs` row insert it reads the plan's current `task_touch_paths` and
+//! writes one `run_touches (task_id, path, kind='declared')` row per
+//! declared (task, path). The snapshot is a value-copy, NOT a live FK to
+//! `task_touch_paths`: re-declaring touches or improving the closure
+//! extractor after `start` cannot retroactively rewrite a recorded
+//! prediction (run-record-schema.md §2). That immutability is what RQ1
+//! measures.
 //!
 //! Like the rest of the engine this module holds no IO writers and no
 //! global state; callers pass `*db.sqlite.Db` plus an allocator and do
@@ -125,12 +130,17 @@ pub const StartArgs = struct {
     status: ?[]const u8 = null,
 };
 
-/// The result of `start`: the new autoincrement id plus the caller's
-/// run_uid echoed back. The id is the FK target for events/touches; the
-/// run_uid is the stable external handle.
+/// The result of `start`: the new autoincrement id, the caller's run_uid
+/// echoed back, and the number of declared touches snapshotted from
+/// `task_touch_paths` into this run. The id is the FK target for
+/// events/touches; the run_uid is the stable external handle.
 pub const StartResult = struct {
     id: i64,
     run_uid: []const u8,
+    /// Count of kind='declared' run_touches rows snapshotted at start from
+    /// the plan's task_touch_paths (M1.5). Zero when the plan declared no
+    /// path-level touches.
+    declared_snapshotted: i64,
 
     pub fn deinit(self: StartResult, allocator: std.mem.Allocator) void {
         allocator.free(self.run_uid);
@@ -150,9 +160,28 @@ pub const Error = error{
 // Lifecycle
 // =========================================================================
 
-/// Insert a `runs` row and return its new id + run_uid. Does NOT snapshot
-/// declared touches — that is M1.5's extension point.
+/// Insert a `runs` row and snapshot the plan's declared touches into it,
+/// returning the new id + run_uid + snapshotted-declared count.
+///
+/// Atomicity: the `runs` insert and the `run_touches (kind='declared')`
+/// snapshot commit together inside one savepoint. If the snapshot fails
+/// mid-way the savepoint rolls back, so a run never exists with a
+/// partial declared set.
+///
+/// The snapshot is a VALUE COPY of `task_touch_paths.path` for every task
+/// under `args.plan_id` at this instant — not a live FK. Mutating
+/// `task_touch_paths` after `start` cannot alter the recorded prediction
+/// (run-record-schema.md §2; this immutability is RQ1's instrument).
 pub fn start(d: *db.sqlite.Db, allocator: std.mem.Allocator, args: StartArgs) Error!StartResult {
+    const sp_name = "runs_start_snapshot";
+    d.savepoint(allocator, sp_name) catch return Error.QueryFailed;
+    // On any error below, roll the whole start (runs row + declared rows)
+    // back so the run is never left half-snapshotted.
+    errdefer {
+        d.rollbackToSavepoint(allocator, sp_name) catch {};
+        d.releaseSavepoint(allocator, sp_name) catch {};
+    }
+
     const id = d.execParams(
         \\insert into runs
         \\  (run_uid, plan_id, arm, base_sha, config_hash, config_json, corpus_repo, status)
@@ -173,7 +202,52 @@ pub fn start(d: *db.sqlite.Db, allocator: std.mem.Allocator, args: StartArgs) Er
         return Error.QueryFailed;
     };
 
-    return .{ .id = id, .run_uid = try allocator.dupe(u8, args.run_uid) };
+    // Snapshot declared touches: copy every (task_id, path) the plan's
+    // tasks currently declare in task_touch_paths into run_touches as a
+    // kind='declared' row. The INSERT...SELECT does the value-copy in a
+    // single statement; `path` is taken from task_touch_paths verbatim
+    // (the bare repo-relative path, matching what the harness previously
+    // wrote per-row).
+    const declared = d.execParams(
+        \\insert into run_touches (run_id, task_id, path, kind)
+        \\select ?, ttp.task_id, ttp.path, 'declared'
+        \\from task_touch_paths ttp
+        \\join tasks t on t.id = ttp.task_id
+        \\where t.plan_id = ?
+    , &.{ .{ .int = id }, .{ .int = args.plan_id } }) catch |e| {
+        std.log.err("runs.start declared snapshot failed: {s}", .{@errorName(e)});
+        return Error.QueryFailed;
+    };
+    _ = declared; // execParams returns last_insert_rowid, not a row count.
+
+    // Count what landed so the caller can report it (and so a future
+    // count assertion has a single source of truth).
+    const snapshotted = blk: {
+        var stmt = d.prepare(
+            "select count(*) from run_touches where run_id = ? and kind = 'declared'",
+        ) catch return Error.QueryFailed;
+        defer stmt.finalize();
+        stmt.bind(&.{.{ .int = id }}) catch return Error.QueryFailed;
+        break :blk switch (stmt.step() catch return Error.QueryFailed) {
+            .row => stmt.columnInt(0),
+            .done => 0,
+        };
+    };
+
+    // Dupe the run_uid BEFORE releasing the savepoint so an OOM here still
+    // trips the errdefer (which rolls back) rather than leaving a committed
+    // run with a leaked savepoint. After a successful release the errdefer
+    // must not fire, so release is the last fallible step.
+    const owned_uid = try allocator.dupe(u8, args.run_uid);
+    errdefer allocator.free(owned_uid);
+
+    d.releaseSavepoint(allocator, sp_name) catch return Error.QueryFailed;
+
+    return .{
+        .id = id,
+        .run_uid = owned_uid,
+        .declared_snapshotted = snapshotted,
+    };
 }
 
 /// Append a `run_events` row. `seq` is caller-supplied and ordered per
@@ -617,6 +691,144 @@ test "touch task_id is a plain integer — survives task deletion" {
     defer deinitTouches(remaining, a);
     try std.testing.expectEqual(@as(usize, 1), remaining.len);
     try std.testing.expectEqual(tid, remaining[0].task_id);
+}
+
+/// Seed a project (repo) row so task_touch_paths.repo_id FK is satisfiable.
+fn seedRepo(d: *db.sqlite.Db, slug: []const u8) !i64 {
+    return d.execParams(
+        "insert into projects (slug, name, root_path) values (?, ?, ?)",
+        &.{ .{ .text = slug }, .{ .text = slug }, .{ .text = "/tmp/repo" } },
+    );
+}
+
+/// Seed a task hung off `plan_id` and return its id.
+fn seedTask(d: *db.sqlite.Db, plan_id: i64, title: []const u8) !i64 {
+    return d.execParams(
+        "insert into tasks (scope_kind, plan_id, title, status) values ('global', ?, ?, 'todo')",
+        &.{ .{ .int = plan_id }, .{ .text = title } },
+    );
+}
+
+test "start snapshots the plan's declared touches into kind='declared' rows" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const pid = try seedPlan(&d, "snap plan");
+    const repo = try seedRepo(&d, "snap-repo");
+    const t1 = try seedTask(&d, pid, "task one");
+    const t2 = try seedTask(&d, pid, "task two");
+
+    // Declare two paths on t1, one on t2 — three declared touches total.
+    _ = try d.execParams(
+        "insert into task_touch_paths (task_id, repo_id, path) values (?, ?, ?)",
+        &.{ .{ .int = t1 }, .{ .int = repo }, .{ .text = "src/a.zig" } },
+    );
+    _ = try d.execParams(
+        "insert into task_touch_paths (task_id, repo_id, path) values (?, ?, ?)",
+        &.{ .{ .int = t1 }, .{ .int = repo }, .{ .text = "src/b.zig" } },
+    );
+    _ = try d.execParams(
+        "insert into task_touch_paths (task_id, repo_id, path) values (?, ?, ?)",
+        &.{ .{ .int = t2 }, .{ .int = repo }, .{ .text = "src/c.zig" } },
+    );
+
+    const res = try start(&d, a, .{
+        .run_uid = "uid-snap",
+        .plan_id = pid,
+        .arm = "strict",
+        .base_sha = "s",
+        .config_hash = "h",
+    });
+    defer res.deinit(a);
+
+    // The result reports the count it snapshotted in-transaction.
+    try std.testing.expectEqual(@as(i64, 3), res.declared_snapshotted);
+
+    const declared = try touches(&d, a, res.id, .declared);
+    defer deinitTouches(declared, a);
+    try std.testing.expectEqual(@as(usize, 3), declared.len);
+    // The snapshot copies the bare repo-relative path verbatim.
+    for (declared) |x| try std.testing.expect(x.path.len > 0);
+    // No actual rows yet — start only writes declared.
+    const actual = try touches(&d, a, res.id, .actual);
+    defer deinitTouches(actual, a);
+    try std.testing.expectEqual(@as(usize, 0), actual.len);
+}
+
+test "start with no declared touches snapshots zero rows" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const pid = try seedPlan(&d, "empty plan");
+    _ = try seedTask(&d, pid, "task with no touches");
+
+    const res = try start(&d, a, .{
+        .run_uid = "uid-empty",
+        .plan_id = pid,
+        .arm = "strict",
+        .base_sha = "s",
+        .config_hash = "h",
+    });
+    defer res.deinit(a);
+    try std.testing.expectEqual(@as(i64, 0), res.declared_snapshotted);
+
+    const declared = try touches(&d, a, res.id, .declared);
+    defer deinitTouches(declared, a);
+    try std.testing.expectEqual(@as(usize, 0), declared.len);
+}
+
+test "declared snapshot is immutable: mutating task_touch_paths after start does not rewrite the run" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const pid = try seedPlan(&d, "immutable plan");
+    const repo = try seedRepo(&d, "imm-repo");
+    const tid = try seedTask(&d, pid, "the task");
+
+    // One declared path at start time.
+    _ = try d.execParams(
+        "insert into task_touch_paths (task_id, repo_id, path) values (?, ?, ?)",
+        &.{ .{ .int = tid }, .{ .int = repo }, .{ .text = "src/original.zig" } },
+    );
+
+    const res = try start(&d, a, .{
+        .run_uid = "uid-immutable",
+        .plan_id = pid,
+        .arm = "strict",
+        .base_sha = "s",
+        .config_hash = "h",
+    });
+    defer res.deinit(a);
+    try std.testing.expectEqual(@as(i64, 1), res.declared_snapshotted);
+
+    // Capture the snapshotted declared set.
+    const before = try touches(&d, a, res.id, .declared);
+    defer deinitTouches(before, a);
+    try std.testing.expectEqual(@as(usize, 1), before.len);
+    try std.testing.expectEqualStrings("src/original.zig", before[0].path);
+
+    // --- Mutate task_touch_paths AFTER the snapshot. ---
+    // 1. Add a brand-new declared path the run never saw.
+    _ = try d.execParams(
+        "insert into task_touch_paths (task_id, repo_id, path) values (?, ?, ?)",
+        &.{ .{ .int = tid }, .{ .int = repo }, .{ .text = "src/added-later.zig" } },
+    );
+    // 2. Remove the original path the run DID snapshot.
+    _ = try d.execParams(
+        "delete from task_touch_paths where task_id = ? and path = ?",
+        &.{ .{ .int = tid }, .{ .text = "src/original.zig" } },
+    );
+
+    // task_touch_paths now holds exactly {added-later}, NOT {original}.
+    const live_count = try d.intQuery("select count(*) from task_touch_paths");
+    try std.testing.expectEqual(@as(i64, 1), live_count);
+
+    // The run's recorded declared set is UNCHANGED: still exactly the
+    // original path, with neither the added path nor the deletion reflected.
+    const after = try touches(&d, a, res.id, .declared);
+    defer deinitTouches(after, a);
+    try std.testing.expectEqual(@as(usize, 1), after.len);
+    try std.testing.expectEqualStrings("src/original.zig", after[0].path);
 }
 
 test "finish sets terminal status and stamps ended_at" {
