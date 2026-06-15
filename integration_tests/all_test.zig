@@ -10,6 +10,7 @@ comptime {
     _ = @import("models_test.zig");
     _ = @import("planar_doc_test.zig");
     _ = @import("planar_execute_test.zig");
+    _ = @import("bench_run_ritual_test.zig");
     _ = @import("workbench_terminal_filter_test.zig");
     _ = @import("workbench_gc_test.zig");
     _ = @import("config_test.zig");
@@ -76,12 +77,16 @@ comptime {
 
     _ = @import("closeout_recompute_test.zig");
     _ = @import("closeout_gate_test.zig");
+    _ = @import("explore_test.zig");
 
     // M0 seam-hardening primitives (plan 638)
     _ = @import("plan_descendants_test.zig");
     _ = @import("propagate_one_test.zig");
     _ = @import("propagate_faithful_test.zig");
 
+    _ = @import("bench_lifecycle_test.zig");
+
+    _ = @import("scenarios/scenario_cockpit_entry_test.zig");
     _ = @import("scenarios/scenario_annotations_test.zig");
     _ = @import("scenarios/scenario_audit_trail_test.zig");
     _ = @import("scenarios/scenario_cross_scope_polyrepo_test.zig");

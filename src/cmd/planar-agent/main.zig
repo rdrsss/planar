@@ -62,7 +62,7 @@ pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(arena);
 
     const db_path = try runtime.resolveDbPath(arena, init.minimal.environ);
-    runtime.init(arena, init.io, &stdout_buffer, &stderr_buffer, db_path, init.minimal.environ, args);
+    runtime.init(arena, init.io, &stdout_buffer, &stderr_buffer, db_path, init.minimal.environ, null, args);
     defer runtime.shutdown();
 
     // Schema-version handshake. We perform it lazily AFTER help / version

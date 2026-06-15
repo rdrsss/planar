@@ -1,0 +1,24 @@
+.{
+    .name = .vaxis,
+    .fingerprint = 0x14fbbb94fc556305,
+    .version = "0.6.0",
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        // Vendored as path deps for hermetic builds — original upstream
+        // URLs preserved in VENDOR.toml. Patched from URL to path deps
+        // during vendoring (2026-06-14).
+        .zigimg = .{
+            .path = "../zigimg",
+        },
+        .uucode = .{
+            .path = "../uucode",
+            .lazy = true,
+        },
+    },
+    .paths = .{
+        "LICENSE",
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

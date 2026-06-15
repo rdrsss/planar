@@ -29,6 +29,7 @@ pub const models = @import("models.zig");
 pub const identity = @import("identity.zig");
 pub const policy = @import("policy.zig");
 pub const planning = @import("planning.zig");
+pub const runs = @import("runs.zig");
 pub const promotion = @import("promotion.zig");
 pub const entitylink = @import("entitylink.zig");
 pub const workbench = @import("workbench.zig");
@@ -57,6 +58,7 @@ test {
     _ = identity;
     _ = policy;
     _ = planning;
+    _ = runs;
     _ = promotion;
     _ = entitylink;
     _ = workbench;

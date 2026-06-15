@@ -1,0 +1,13 @@
+# Hand-vendored from public GitHub repo. Transitive dep of vendor/libvaxis/.
+# Not managed by tools/vendor_sync.zig. Re-vendor by:
+#
+#   curl -sL https://github.com/zigimg/zigimg/archive/<commit>.tar.gz | tar xz
+#   cp -r zigimg-<commit>/{src,zigimg.zig,build.zig,build.zig.zon,LICENSE,README.md} vendor/zigimg/
+#   # Update commit + fetched_at below.
+#
+# Pin must match the hash in vendor/libvaxis/VENDOR.toml (upstream libvaxis build.zig.zon).
+name = "zigimg"
+source = "https://github.com/zigimg/zigimg"
+commit = "d695acd97c02e57bb151e8f659d1280f5cd6ca70"
+version = "0.1.0"
+fetched_at = "2026-06-14"

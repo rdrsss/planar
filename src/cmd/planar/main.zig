@@ -12,6 +12,9 @@ const worktree_gate = @import("worktree_gate.zig");
 // group verbs (with subverbs) live at `handlers/<verb>/cmd.zig` with
 // one sibling file per subverb. Both shapes export `pub const verb:
 // cli.Cmd`, so main.zig composes uniformly.
+const cockpit_gate = @import("cockpit/gate.zig");
+const cockpit_app = @import("cockpit/app.zig");
+
 const init_h = @import("handlers/init.zig");
 const scope_h = @import("handlers/scope/cmd.zig");
 const association_h = @import("handlers/association/cmd.zig");
@@ -52,6 +55,8 @@ const version_h = @import("handlers/version.zig");
 const completion_h = @import("handlers/completion.zig");
 const schema_h = @import("handlers/schema.zig");
 const report_h = @import("handlers/report.zig");
+const bench_h = @import("handlers/bench/cmd.zig");
+const explore_h = @import("handlers/explore.zig");
 
 /// Root command tree. `pub` because each `handlers/*.zig` imports it to
 /// derive its typed args via `cli.castArgs(main.root, &.{…}, ptr)`.
@@ -104,6 +109,8 @@ pub const root: cli.Cmd = .{
         completion_h.verb,
         schema_h.verb,
         report_h.verb,
+        bench_h.verb,
+        explore_h.verb,
     },
 };
 
@@ -124,7 +131,7 @@ pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(arena);
 
     const db_path = try runtime.resolveDbPath(arena, init.minimal.environ);
-    runtime.init(arena, init.io, &stdout_buffer, &stderr_buffer, db_path, init.minimal.environ, args);
+    runtime.init(arena, init.io, &stdout_buffer, &stderr_buffer, db_path, init.minimal.environ, init.environ_map, args);
     defer runtime.shutdown();
 
     // Capture the process start timestamp as early as meaningful (runtime
@@ -139,6 +146,48 @@ pub fn main(init: std.process.Init) !void {
     // `worktree_gate.check` and `docs/.../tech-spec § Scope handling
     // for worktrees`.
     worktree_gate.check(root, args);
+
+    // Cockpit-entry gate (task 4007 / bare-planar-tty-gate).
+    // When `planar` is invoked with no verb AND stdout is a TTY AND the
+    // terminal capability gate approves, launch the interactive cockpit.
+    // In all other cases (including any flags like --help) fall through to
+    // `cli.dispatch`, which prints help for the bare-invocation path.
+    //
+    // Condition: exactly one argv entry (the program name itself) means
+    // no verb, no flags, and no positionals.
+    if (args.len == 1) {
+        const ctx = runtime.current();
+        const gate_result = cockpit_gate.check(ctx.io, ctx.environ, false);
+        if (gate_result == .launch_cockpit) {
+            const env_map = ctx.environ_map orelse {
+                // Should not happen on the planar binary — environ_map is
+                // always set by main.zig. Defensive fallback.
+                return cli.dispatch(root, args, ctx.stdout);
+            };
+            // M3 (task 4055): open the DB and run the live cockpit.
+            // openDb surfaces clean errors before entering the alt-screen.
+            // ctx.db_path is [:0]const u8 — coerce to []const u8.
+            const db_path_slice: []const u8 = ctx.db_path;
+            var db_handle = cockpit_app.openDb(ctx.io, db_path_slice, ctx.allocator) catch |e| {
+                const msg = switch (e) {
+                    cockpit_app.DbOpenError.DbMissing => "database not found — run `planar init` first",
+                    cockpit_app.DbOpenError.DbLocked => "database is locked by another process",
+                    cockpit_app.DbOpenError.DbSchemaMismatch => "database schema is newer than this binary — rebuild/reinstall planar",
+                    cockpit_app.DbOpenError.DbOpenFailed => "failed to open database",
+                };
+                exit.die(ctx, e, "{s}", .{msg});
+            };
+            defer db_handle.close();
+            cockpit_app.run(ctx.io, ctx.allocator, env_map, ctx.environ, db_path_slice, &db_handle) catch |e| {
+                exit.die(ctx, e, "cockpit error: {s}", .{@errorName(e)});
+            };
+            try runtime.flush();
+            cli_log.record(0, null, cli_log.startNs());
+            return;
+        }
+        // Gate refused (TERM=dumb, PLANAR_NO_TUI, non-TTY, etc.) —
+        // fall through to cli.dispatch which prints the root help.
+    }
 
     cli.dispatch(root, args, runtime.current().stdout) catch |e| switch (e) {
         cli.Parse.UnknownFlag,
