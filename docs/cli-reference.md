@@ -943,6 +943,65 @@ A task may be excluded by multiple rules; every rule it trips is listed in `excl
 
 ---
 
+### `planar plan descendants <plan-id>`
+
+**Synopsis:**
+```
+planar plan descendants <plan-id> [--json]
+```
+
+**Description:** Emit the anchor plan's full subtree — child plans and tasks — in dependency-topological order (anchor → child plans → tasks). Read-only; queries and reports, no writes.
+
+The topological ordering follows `parent_plan_id` chains for plans and `plan_id` for tasks. Use this verb to enumerate the complete work graph for a plan before feeding it to a propagation or orchestration step.
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<plan-id>` | Anchor plan id (integer). |
+
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--json` | Emit the subtree as JSON instead of human text. | off |
+
+**Output (human):**
+```
+plan:7 "Add Checkout RPC" [active]
+  plan:8 "Protos Changes" [active]
+    task:21 "Define CheckoutRequest proto" [todo]
+    task:22 "Regenerate stubs" [todo]
+  plan:9 "API Layer" [active]
+    task:23 "Implement handler" [todo]
+```
+
+**Output (`--json`):**
+```json
+{
+  "plan_id": 7,
+  "title": "Add Checkout RPC",
+  "nodes": [
+    {"kind":"plan","id":7,"title":"Add Checkout RPC","status":"active","parent_plan_id":null,"depth":0},
+    {"kind":"plan","id":8,"title":"Protos Changes","status":"active","parent_plan_id":7,"depth":1},
+    {"kind":"task","id":21,"title":"Define CheckoutRequest proto","status":"todo","plan_id":8,"depth":2},
+    {"kind":"task","id":22,"title":"Regenerate stubs","status":"todo","plan_id":8,"depth":2},
+    {"kind":"plan","id":9,"title":"API Layer","status":"active","parent_plan_id":7,"depth":1},
+    {"kind":"task","id":23,"title":"Implement handler","status":"todo","plan_id":9,"depth":2}
+  ]
+}
+```
+
+**Schema effects:** Reads `plans`, `tasks`. No writes.
+
+**Capture:** None (read-only).
+
+**Exit codes:**
+- `0` — success (including plans with no descendants).
+- `1` — plan id not found, or invalid integer.
+
+---
+
 ### `planar plan step add <plan-id> <body>`
 
 **Synopsis:**
@@ -3142,6 +3201,64 @@ The JSON shape gains `verified`, `abandoned`, `partial`, `missing`, and `warning
 - `0` — success (including a fully-skipped rerun or fully-verified rerun).
 - `1` — plan not found, no registered system, entity-level failures, or missing counterparts reported without `--unlink` / `--recreate`.
 - `2` — adapter or database failure.
+
+---
+
+### `planar ext propagate-one <system> --from <kind:id>`
+
+**Synopsis:**
+```
+planar ext propagate-one <system> --from <kind:id> [--strategy <value>] [--sync <direction>] [--dry-run] [--json]
+```
+
+**Description:** Render one entity's propagation template, POST the counterpart to the named external system, and record the resulting `external_links(link_role='mirror')` row in a single transaction. Designed for targeted one-off propagation (e.g. a missing entity after a bulk `ext propagate` run) and for orchestrator dispatch that creates counterparts one task at a time.
+
+Idempotent: if a mirror link already exists for the `(entity, system)` pair the call is a no-op and returns `op=skipped`. No duplicate counterparts are created on repeated invocations.
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<system>` | External system slug (must be registered via `planar ext register`). |
+
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--from <kind:id>` | Source local entity. Accepts `plan:N` or `task:N`. | Required. |
+| `--strategy <value>` | Override the GitHub ADR-0006 strategy for this entity. Accepted values: `parent-issue`, `projects-v2`, `tracking-issue`. GitHub-only; rejected for non-GitHub systems. | (auto-detect) |
+| `--sync <direction>` | Sync direction for the created `external_links` row. Accepted values: `read-only`, `write-back`, `two-way`. | `read-only` |
+| `--dry-run` | Preview: render the template and report what would be POSTed without contacting the remote system. | off |
+| `--json` | Emit a JSON result object. | off |
+
+**Output (human):**
+```
+created PROJ-42 on acme-jira for task:7
+link id: 11  (read-only mirror)
+```
+
+On a skipped (already-linked) invocation:
+```
+skipped task:7 on acme-jira: mirror link already exists (link id: 11)
+```
+
+**Output (`--json`):**
+```json
+{"ok":true,"op":"created","link_id":11,"entity_kind":"task","entity_id":7,"system":"acme-jira","external_id":"PROJ-42","external_url":"https://acme.atlassian.net/browse/PROJ-42"}
+```
+
+On skip: `{"ok":true,"op":"skipped","link_id":11}`.
+
+**Schema effects:**
+- On create: calls adapter → inserts `external_links(entity_kind, entity_id, system_id, external_id, external_url, link_role='mirror', sync_direction, last_sync_status='ok')` and `sync_events(direction='push', outcome='ok')`.
+- On skip or `--dry-run`: no writes.
+
+**Capture:** None.
+
+**Exit codes:**
+- `0` — success (created or skipped).
+- `1` — `--from` entity or `<system>` not found; `--strategy` value invalid for the target system.
+- `2` — adapter failure (remote HTTP error).
 
 ---
 
@@ -5422,7 +5539,7 @@ planar-agent ingest     --vendor claude --event @<file|-> [--json]
 # Operator recovery — agent_* table writers, which is why they live on
 # planar-agent (not planar). The operator invokes them directly; vendor
 # hooks never do.
-planar-agent reconcile  [--dry-run] [--stale-after <duration>] [--json]
+planar-agent reconcile  [--dry-run] [--stale-after <duration>] [--plan <id>] [--json]
 planar-agent abort      --claim <token> [--reason <text>] [--vendor <s>] [--vendor-session <vendor:id>] [--json]
 
 # Workflow run lifecycle — used by centurion (external harness) to manage
@@ -5462,7 +5579,7 @@ planar-agent context resolve --status consumed|superseded (--id <record-id> | --
 | `release`  | Same as fail with outcome='aborted', claim status='released'. (Distinct semantically from fail — "graceful give-up" vs "I tried and failed".) |
 | `block`    | INSERT `entity_links(from=task, to=blocker, relationship='blocks')` → UPDATE task status='blocked' → UPDATE action ended_at + outcome='aborted' → UPDATE claim status='released'. |
 | `peek`     | Read-only: same SELECT as step 1 of pull; no writes. |
-| `reconcile`| (1) Claim sweep: SELECT expired active claims → UPDATE status='stale' → UPDATE orphaned actions ended_at + outcome='aborted'. Does NOT touch tasks.status. (2) Run sweep: SELECT running `workflow_runs` rows → `kill(pid,0)` each → ESRCH ⇒ mark `abandoned` + set `ended_at`. Both sweeps run inside the same `BEGIN IMMEDIATE` transaction. `--dry-run` returns candidates + run_candidates without writing. |
+| `reconcile`| (1) Claim sweep: SELECT expired active claims → UPDATE status='stale' → UPDATE orphaned actions ended_at + outcome='aborted'. Does NOT touch tasks.status. (2) Run sweep: SELECT running `workflow_runs` rows → `kill(pid,0)` each → ESRCH ⇒ mark `abandoned` + set `ended_at`. Both sweeps run inside the same `BEGIN IMMEDIATE` transaction. `--dry-run` returns candidates + run_candidates without writing. `--plan <id>` scopes both sweeps to claims/actions/runs belonging to the given plan. |
 | `abort`    | UPDATE claim status='aborted' + released_at + release_reason → INSERT audit `agent_actions` row naming the aborting session. Does NOT touch tasks.status. |
 
 All write verbs open `BEGIN IMMEDIATE` so the writer lock blocks any concurrent claim attempt on the same row. The status-transition guard (`policy.status.check`) is consulted before each `UPDATE tasks SET status` — refusal rolls the transaction back and the claim keeps its previous state.
@@ -5485,6 +5602,29 @@ Stable across versions; new keys may be added, existing keys do not change name 
 | `run end`     | `{ok, run_id, status}` where `status` is the terminal status written |
 
 `ClaimRow` matches the `agent_work_claims` row shape with snake_case keys (including locality columns `repo_root`, `branch`, `head_sha_at_claim`, `dirty_at_claim`, worktree columns `worktree_id`, `worktree_path`, and workflow run correlation columns `run_id`, `stage`). `Task` matches `planar task show --json`. `ActionRow` matches `agent_actions` (including locality columns `head_sha`, `dirty`).
+
+### `planar-agent reconcile` flags
+
+`reconcile` sweeps expired claims, orphaned actions, and dead workflow run pids. All flags are optional; without filters the sweep is global.
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--dry-run` | Report candidates without writing. Returns the same JSON shape as a live run, with `candidates` and `run_candidates` arrays populated. | off |
+| `--stale-after <duration>` | Additional grace period beyond the lease expiry before marking a claim stale. Accepts bare integer (seconds) or a suffixed duration (`10m`, `1h`, `500ms`). Useful for giving agents a small window to heartbeat after lease expiry before the reconciler fires. | `0` |
+| `--plan <id>` | Scope both the claim sweep and the run sweep to claims/actions/runs belonging to the given plan id. When omitted, the sweep is global (all plans). | (global) |
+| `--json` | Emit a JSON result object. | off |
+
+**JSON shape:**
+```json
+{"ok":true,"claims_marked_stale":2,"actions_closed":1,"runs_abandoned":0}
+```
+
+With `--dry-run`:
+```json
+{"ok":true,"claims_marked_stale":0,"actions_closed":0,"runs_abandoned":0,"candidates":[{"claim_token":"...","claimed_at":"..."}],"run_candidates":[]}
+```
+
+---
 
 ### Locality flags
 
@@ -5568,6 +5708,9 @@ planar-watch tree     [--root-session <id>] [--follow] [--interval <D>]
 # Workflow run observability (plan 585 addition).
 planar-watch run list [--plan <id>] [--status running|completed|failed|interrupted|abandoned] [--json]
 planar-watch run show <id> [--json]
+
+# Sync-event ledger (plan 638 addition — read-only view over sync_events).
+planar-watch sync-events [--plan <id>] [--system <slug>] [--entity <kind:id>] [--outcome <value>] [--since <ISO8601>] [--limit <n>] [--json]
 
 # Conventional helpers.
 planar-watch version
@@ -5663,6 +5806,50 @@ Exits non-zero when the run id is not found.
 Human text format for `run show`: prints run metadata (id, plan_id, status, pid, workflow, timestamps, identifier, repo_root), followed by context records indented under `[stage: <name>]` section headers. The `body` field is previewed at up to 80 bytes with `…` when truncated.
 
 **Implementation:** `src/cmd/planar-watch/handlers/run.zig` (plan 585, task 3906).
+
+### `planar-watch sync-events` — per-row view over sync_events (plan 638)
+
+Read-only, filterable window into the `sync_events` table. Returns rows ordered by `at` descending.
+
+**Synopsis:**
+```
+planar-watch sync-events [--plan <id>] [--system <slug>] [--entity <kind:id>] [--outcome <value>] [--since <ISO8601>] [--limit <n>] [--json]
+```
+
+**Flags:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--plan <id>` | Restrict to events whose `external_links` row belongs to the given plan id. | unset (all plans) |
+| `--system <slug>` | Restrict to events via a link on the named external system slug. | unset (all systems) |
+| `--entity <kind:id>` | Restrict to events via a link on one entity, e.g. `task:42` or `plan:7`. | unset |
+| `--outcome <value>` | Filter by outcome value (e.g. `ok`, `conflict`, `error`, `noop`). | unset (all outcomes) |
+| `--since <ISO8601>` | Only return rows with `at` >= this timestamp. | unset |
+| `--limit <n>` | Cap row count. | 100 |
+| `--json` | Emit one JSON object per row (NDJSON). | off |
+
+Filters are combined with AND when multiple are supplied.
+
+**Human output (one row per line):**
+```
+id    at                         direction  outcome   link_id  detail
+15    2026-06-14T10:03:12.000Z   push       ok        7
+16    2026-06-14T09:55:00.000Z   pull       conflict  7        status: local=done remote=in-progress
+```
+
+**JSON output (NDJSON, one object per row):**
+```json
+{"id":15,"at":"2026-06-14T10:03:12.000Z","link_id":7,"direction":"push","outcome":"ok","fields_changed":"title,status","detail":null}
+{"id":16,"at":"2026-06-14T09:55:00.000Z","link_id":7,"direction":"pull","outcome":"conflict","fields_changed":"status","detail":"status: local=done remote=in-progress"}
+```
+
+**Schema effects:** Reads `sync_events`, `external_links`, `external_systems`. No writes.
+
+**Exit codes:**
+- `0` — success (empty result is not an error).
+- `1` — invalid flag value (non-integer `--plan` or `--limit`, malformed `--entity` reference, invalid `--since` timestamp).
+
+---
 
 ### JSON shapes
 
@@ -5812,6 +5999,179 @@ planar-doc schema
 ```
 
 The catalog is built at comptime from the command tree, so the verb is a pure write with no DB access. It is intended for structured consumers — LLM tool routers, editor integrations, and the CLI-usage linter (`make cli-usage-check`) that validates authored agent/skill/doc surfaces never reference a flag a binary does not expose (implemented in `tools/cli_usage_lint.zig`).
+
+---
+
+## Domain: `run`
+
+Operational run-record surface for Planar-native workflow execution. Run records track a workflow's lifecycle — start, streamed journal events, and a terminal finish — and are queryable via `planar run show`. The `run` domain uses `arm=op` (the operational arm), distinguishing it from the measurement-rig `planar bench` surface (which uses `arm=strict`, `arm=eligibility`, etc. and additionally tracks declared/actual file touches and git-diff harvests).
+
+Both `planar run` and `planar bench` write to the same `runs` + `run_events` tables (migration `00025_runs`). The read surface is shared: `planar-watch run list` / `planar-watch run show` display records from both. The `run` domain does NOT manage claims — claim lifecycle is `planar-agent pull` / `complete` / `fail` / `release`. Use `planar run` to bracket the outer workflow trace; claims inside the workflow use `planar-agent`.
+
+Note: `runs`/`run_events`/`run_touches` are distinct from the centurion context-plane tables `workflow_runs`/`context_records` (migration `00022`), which are written by `planar-agent run start/end` and `planar-agent context` — not by `planar run`/`bench`.
+
+---
+
+### `planar run start`
+
+**Synopsis:**
+```
+planar run start --plan <plan-id> [--workflow <name>] [--json]
+```
+
+**Description:** Mint a new operational run record for the named plan and print its `run_uid` (a stable string identifier) as JSON. The run starts in `running` status. The caller uses `run_uid` for all subsequent `event` and `finish` calls.
+
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--plan <plan-id>` | Plan id to associate the run with. | Required. |
+| `--workflow <name>` | Human-readable workflow name (free-form). When supplied, it is recorded as the `workflow_name` on the run row. | (none) |
+| `--json` | Emit a JSON object. | off |
+
+**Output (`--json`):**
+```json
+{"run_uid":"run-2026-06-14-abc123","plan_id":7,"arm":"op"}
+```
+
+**Schema effects:** Inserts into `runs(run_uid, plan_id, arm, status='running', started_at)`. When `--workflow <name>` is supplied the name is stored as the `arm` value instead of the default `"op"`.
+
+**Capture:** None.
+
+**Exit codes:**
+- `0` — success.
+- `1` — plan id not found or invalid integer.
+
+---
+
+### `planar run event <run-uid>`
+
+**Synopsis:**
+```
+planar run event <run-uid> --kind <kind> [--payload <text>] [--json]
+```
+
+**Description:** Append a journal event to the named run. The sequence number is auto-incremented server-side. Repeat for each meaningful step during workflow execution.
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<run-uid>` | Run uid returned by `run start`. |
+
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--kind <kind>` | Event kind (free-form label, e.g. `step`, `note`, `error`). | Required. |
+| `--payload <text>` | Optional event payload body. | none |
+| `--json` | Emit a JSON result object. | off |
+
+**Output (`--json`):**
+```json
+{"ok":true,"run_uid":"run-2026-06-14-abc123","seq":1,"kind":"step"}
+```
+
+**Schema effects:** Inserts into `run_events(run_uid, seq, kind, payload, at)`.
+
+**Capture:** None.
+
+**Exit codes:**
+- `0` — success.
+- `1` — run uid not found or run is already in a terminal status.
+
+---
+
+### `planar run finish <run-uid>`
+
+**Synopsis:**
+```
+planar run finish <run-uid> --status <status> [--json]
+```
+
+**Description:** Set the terminal status on a run. After `finish`, no further `event` calls are accepted.
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<run-uid>` | Run uid returned by `run start`. |
+
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--status <status>` | Terminal status. Accepted values: `completed`, `aborted`, `error`. | Required. |
+| `--json` | Emit a JSON result object. | off |
+
+**Output (`--json`):**
+```json
+{"run_uid":"run-2026-06-14-abc123","status":"completed"}
+```
+
+**Schema effects:** Updates `runs(status, ended_at)`.
+
+**Capture:** None.
+
+**Exit codes:**
+- `0` — success.
+- `1` — run uid not found; or run is already in a terminal status; or `--status` value is not one of the accepted values.
+
+---
+
+### `planar run show <run-uid>`
+
+**Synopsis:**
+```
+planar run show <run-uid> [--json]
+```
+
+**Description:** Show a run's full state — header metadata and all journal events in sequence order.
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<run-uid>` | Run uid returned by `run start`. |
+
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--json` | Emit a JSON object with `run` header and `events` array. | off |
+
+**Output (human):**
+```
+run run-2026-06-14-abc123  plan:7  status:completed
+  started:  2026-06-14T10:00:00Z
+  ended:    2026-06-14T10:05:30Z
+  workflow: my-workflow
+
+events:
+  1  step     "Started coder dispatch"
+  2  step     "Coder cycle complete"
+  3  note     "Integration tests passed"
+```
+
+**Output (`--json`):**
+```json
+{
+  "run_uid":"run-2026-06-14-abc123","plan_id":7,"arm":"op","status":"completed","started_at":"2026-06-14T10:00:00Z","ended_at":"2026-06-14T10:05:30Z",
+  "events": [
+    {"id":1,"seq":1,"kind":"step","payload":"Started coder dispatch","created_at":"2026-06-14T10:00:01Z"},
+    {"id":2,"seq":2,"kind":"step","payload":"Coder cycle complete","created_at":"2026-06-14T10:04:00Z"},
+    {"id":3,"seq":3,"kind":"note","payload":"Integration tests passed","created_at":"2026-06-14T10:05:00Z"}
+  ]
+}
+```
+
+**Schema effects:** Reads `runs`, `run_events`. No writes.
+
+**Capture:** None (read-only).
+
+**Exit codes:**
+- `0` — success.
+- `1` — run uid not found.
 
 ---
 
@@ -5965,7 +6325,7 @@ For quick reference, all documented commands grouped by domain:
 | `skills` | `skills render [slug...]`, `skills render --check`, `skills render --check --diff` |
 | `scope` | `scope show`, `scope suggest` (`scope use`/`pop`/`clear` removed in plan 153 M5) |
 | `assoc` | `assoc list`, `assoc create`, `assoc add`, `assoc remove`, `assoc members`, `assoc detect` |
-| `plan` | `plan create`, `plan show`, `plan list`, `plan update`, `plan step add`, `plan step done`, `plan step skip`, `plan step link`, `plan link` |
+| `plan` | `plan create`, `plan show`, `plan list`, `plan update`, `plan descendants`, `plan step add`, `plan step done`, `plan step skip`, `plan step link`, `plan link` |
 | `task` | `task add`, `task show`, `task list`, `task update`, `task edit`, `task view`, `task diff`, `task review`, `task done`, `task reopen`, `task block`, `task link`, `task touches add`, `task touches remove` |
 | `question` | `question add`, `question answer`, `question wontfix`, `question list`, `question show`, `question edit`, `question view`, `question diff`, `question review`, `question link` |
 | `scenario` | `scenario add`, `scenario verify`, `scenario list`, `scenario show`, `scenario edit`, `scenario view`, `scenario diff`, `scenario retire` |
@@ -5975,7 +6335,7 @@ For quick reference, all documented commands grouped by domain:
 | `promote` | `promote`, `demote` |
 | `workbench` | `workbench push`, `workbench pull`, `workbench status`, `workbench resolve`, `workbench sync`, `workbench archive`, `workbench restore`, `workbench list`, `workbench publish`, `workbench edit` |
 | `workspace` | `workspace init`, `workspace doctor`, `workspace routing build`, `workspace routing show`, `workspace regenerate` |
-| `ext` | `ext register jira`, `ext register github`, `ext list`, `ext test`, `ext create`, `ext propagate` |
+| `ext` | `ext register jira`, `ext register github`, `ext list`, `ext test`, `ext create`, `ext propagate`, `ext propagate-one` |
 | `link` | `link`, `unlink` |
 | `sync` | `sync pull`, `sync push`, `sync status`, `sync resolve` |
 | `resume` | `resume`, `resume validate` |
@@ -5993,4 +6353,5 @@ For quick reference, all documented commands grouped by domain:
 | `synthesize` | `synthesize <repo-root>` |
 | `local` | `local list`, `local link`, `local unlink`, `local import`, `local migrate` |
 | `help` | `help` |
+| `run` | `run start`, `run event`, `run finish`, `run show` |
 | `schema` | `schema` (also on `planar-agent`, `planar-watch`, `planar-doc`) |
