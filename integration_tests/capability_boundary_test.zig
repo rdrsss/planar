@@ -92,6 +92,21 @@ fn resolveDocBin() []const u8 {
     );
 }
 
+fn resolveExecuteBin() []const u8 {
+    const raw: [*:null]?[*:0]u8 = std.c.environ;
+    var i: usize = 0;
+    while (raw[i]) |entry| : (i += 1) {
+        const s: []const u8 = std.mem.span(entry);
+        if (std.mem.startsWith(u8, s, "PLANAR_EXECUTE_BIN=")) {
+            return s["PLANAR_EXECUTE_BIN=".len..];
+        }
+    }
+    @panic(
+        \\PLANAR_EXECUTE_BIN is not set.
+        \\Run integration tests via: make test-integration (which sets it).
+    );
+}
+
 // Run a binary with the suite's PLANAR_DB injected; return RunResult.
 fn runBin(
     suite: *const harness.Suite,
@@ -605,4 +620,87 @@ fn runSqliteScalar(gpa: std.mem.Allocator, db_path: []const u8, sql: []const u8)
     return std.fmt.parseInt(i64, trimmed, 10) catch |e| {
         std.debug.panic("sqlite3 output not integer ('{s}'): {s}", .{ trimmed, @errorName(e) });
     };
+}
+
+// =========================================================================
+// planar-execute capability boundary — D5/D7 no-model-spawn lock.
+// =========================================================================
+//
+// planar-execute is the deterministic, spawn-free Lua workflow engine (plan
+// 633 D5 + D7). Unlike the other four binaries, planar-execute uses manual
+// arg parsing (not the etc-cli COMMANDS table), so we cannot apply the
+// parseHelpVerbs/assertExactSet pattern. Instead we:
+//
+//   1. Assert `--help` exits 0 (the binary is functional).
+//   2. Assert the combined help text contains NONE of the D7 DENIED_HOST_FNS
+//      names (agent, parallel, pipeline, workflow, dispatch_table, compact,
+//      budget, exec, spawn, child, claude, codex, headless, model) — ensuring
+//      the binary surface description advertises no spawn affordance.
+//
+// The unit-level lock (host.zig: "runtime lock: installHostSurface registers
+// EXACTLY the ALLOWED_HOST_FNS set") complements this integration check: the
+// unit tests observe the actual Lua state; this test locks the binary-level
+// capability description.
+
+test "planar-execute --help exits 0 and advertises no spawn affordance" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const res = runBin(&suite, resolveExecuteBin(), &.{"--help"});
+    defer res.deinit(gpa);
+
+    // The binary must respond to --help with exit 0.
+    if (res.term != .exited or res.term.exited != 0) {
+        std.debug.print(
+            "planar-execute --help exited non-zero (term={any}):\nstdout: {s}\nstderr: {s}\n",
+            .{ res.term, res.stdout, res.stderr },
+        );
+        return error.HelpExitedNonZero;
+    }
+
+    // The combined help text must contain NONE of the spawn-primitive names as
+    // standalone words. These names, if present in the binary's advertised
+    // surface, would violate D5 (no-model-spawn invariant).
+    //
+    // Excluded from this prose check (each exclusion is justified below):
+    //   "workflow"  — appears legitimately as the Lua file noun ("<workflow.lua>")
+    //                 and as "Lua workflow engine" in the description. The Lua
+    //                 host surface lock (host.zig unit tests) asserts it is not
+    //                 a registered host fn.
+    //   "model"     — appears legitimately in "no model-spawn" prose.
+    //   "exec"      — is a substring of "planar-execute" itself.
+    //   "spawn"     — appears legitimately in "spawn-free" (the D5 description).
+    //   "dispatch_table" — compound name unlikely in prose; covered by the unit lock.
+    //
+    // The binary-level check focuses on names that would unambiguously indicate
+    // a spawn affordance if they appeared as standalone words in the help text.
+    const denied_names = [_][]const u8{
+        "agent", "parallel", "pipeline", "compact",  "budget",
+        "child", "claude",   "codex",    "headless",
+    };
+
+    const combined = try std.fmt.allocPrint(gpa, "{s}{s}", .{ res.stdout, res.stderr });
+    defer gpa.free(combined);
+
+    for (denied_names) |name| {
+        // Word-boundary check: the name must not appear as a standalone word
+        // (preceded and followed by a non-alphanumeric character or the
+        // beginning/end of the string). We scan for the token and check
+        // context to avoid false positives from substrings.
+        var search_pos: usize = 0;
+        while (std.mem.indexOfPos(u8, combined, search_pos, name)) |idx| {
+            const before_ok = idx == 0 or !std.ascii.isAlphanumeric(combined[idx - 1]);
+            const after_idx = idx + name.len;
+            const after_ok = after_idx >= combined.len or !std.ascii.isAlphanumeric(combined[after_idx]);
+            if (before_ok and after_ok) {
+                std.debug.print(
+                    "[planar-execute capability-boundary] denied name '{s}' found as a word in --help output:\n{s}\n",
+                    .{ name, combined },
+                );
+                return error.SpawnAffordanceAdvertised;
+            }
+            search_pos = idx + 1;
+        }
+    }
 }

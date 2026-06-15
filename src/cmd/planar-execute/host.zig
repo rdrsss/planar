@@ -933,3 +933,231 @@ test "manifest: allowlisted cli bins are the three planar binaries" {
     try std.testing.expectEqualStrings("planar-agent", ALLOWED_CLI_BINS[1]);
     try std.testing.expectEqualStrings("planar-watch", ALLOWED_CLI_BINS[2]);
 }
+
+// ---------------------------------------------------------------------------
+// P0.3 RUNTIME LOCK — asserts the REAL registered Lua surface matches D7.
+//
+// These tests create an actual sandboxed Lua state, call installHostSurface,
+// then walk the live Lua global tables using lua_next to enumerate every
+// function actually registered at runtime. The enumerated set is compared
+// against ALLOWED_HOST_FNS exactly (no extras, no missing entries), and
+// every entry in DENIED_HOST_FNS is asserted absent. This catches
+// registrar↔manifest drift that the comptime guard cannot observe.
+// ---------------------------------------------------------------------------
+
+/// enumerateHostTable walks a Lua table by iterating its keys with lua_next
+/// and appends every string-keyed function entry to `out` as a heap-allocated
+/// "table.fn" pair. Non-function values are ignored (e.g. ctx.now / ctx.seed /
+/// ctx.args are integers and a table, not functions).
+fn enumerateHostTable(
+    gpa: std.mem.Allocator,
+    L: ?*c.lua_State,
+    table_name: []const u8,
+    out: *std.ArrayList([]const u8),
+) !void {
+    // Push the global table by name.
+    const name_z = try gpa.dupeZ(u8, table_name);
+    defer gpa.free(name_z);
+    const ty = c.lua_getglobal(L, name_z.ptr);
+    defer c.lua_settop(L, -2); // always pop the table (or nil) when done
+    if (ty != c.LUA_TTABLE) return; // global not present; that's a test failure path
+
+    // lua_next iteration: push nil as first key, then advance.
+    c.lua_pushnil(L);
+    while (c.lua_next(L, -2) != 0) {
+        // key is at -2, value at -1.
+        defer c.lua_settop(L, -2); // pop value; keep key for next iteration
+        // We only care about string-keyed function entries.
+        if (c.lua_type(L, -2) == c.LUA_TSTRING and c.lua_type(L, -1) == c.LUA_TFUNCTION) {
+            var klen: usize = 0;
+            const kraw = c.lua_tolstring(L, -2, &klen);
+            const fn_name = kraw[0..klen];
+            // Build "table.fn" label for comparison with ALLOWED_HOST_FNS.
+            const label = try std.fmt.allocPrint(gpa, "{s}.{s}", .{ table_name, fn_name });
+            try out.append(gpa, label);
+        }
+    }
+}
+
+test "runtime lock: installHostSurface registers EXACTLY the ALLOWED_HOST_FNS set" {
+    // This test observes the REAL Lua state — not the manifest alone.
+    // It catches any drift between ALLOWED_HOST_FNS and what installHostSurface
+    // actually registers (e.g. an extra push that the manifest doesn't list).
+    const gpa = std.testing.allocator;
+
+    const L = c.luaL_newstate();
+    defer c.lua_close(L);
+
+    // Open the sandboxed stdlib and install the host surface.
+    openSandboxedLibs(L);
+
+    // Construct a minimal HostState. The test only validates what's registered;
+    // no host fn is actually called, so we don't need a real io handle.
+    var hs: HostState = .{
+        .arena = gpa,
+        .io = std.testing.io,
+    };
+    installHostSurface(L, &hs);
+
+    // Enumerate every function actually registered on the five host tables.
+    var runtime_fns: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (runtime_fns.items) |s| gpa.free(s);
+        runtime_fns.deinit(gpa);
+    }
+
+    const tables = [_][]const u8{ "cli", "git", "fs", "flow", "ctx" };
+    for (tables) |tbl| {
+        try enumerateHostTable(gpa, L, tbl, &runtime_fns);
+    }
+
+    // Build a set from the runtime functions.
+    var runtime_set = std.StringHashMap(void).init(gpa);
+    defer runtime_set.deinit();
+    for (runtime_fns.items) |label| {
+        try runtime_set.put(label, {});
+    }
+
+    // Build the expected set from ALLOWED_HOST_FNS.
+    var expected_set = std.StringHashMap(void).init(gpa);
+    defer expected_set.deinit();
+    var expected_labels: std.ArrayList([]u8) = .empty;
+    defer {
+        for (expected_labels.items) |s| gpa.free(s);
+        expected_labels.deinit(gpa);
+    }
+    for (ALLOWED_HOST_FNS) |hf| {
+        const label = try std.fmt.allocPrint(gpa, "{s}.{s}", .{ hf.table, hf.name });
+        try expected_labels.append(gpa, label);
+        try expected_set.put(label, {});
+    }
+
+    // Assert: every expected entry is present in the runtime set.
+    var exp_it = expected_set.keyIterator();
+    while (exp_it.next()) |k| {
+        if (!runtime_set.contains(k.*)) {
+            std.debug.print(
+                "[host lock] ALLOWED fn '{s}' is missing from the runtime-registered surface\n",
+                .{k.*},
+            );
+            return error.AllowedFnMissingAtRuntime;
+        }
+    }
+
+    // Assert: every runtime entry is in the expected set (no extras).
+    var rt_it = runtime_set.keyIterator();
+    while (rt_it.next()) |k| {
+        if (!expected_set.contains(k.*)) {
+            std.debug.print(
+                "[host lock] runtime fn '{s}' is registered but NOT in ALLOWED_HOST_FNS\n",
+                .{k.*},
+            );
+            return error.UnexpectedRuntimeFn;
+        }
+    }
+
+    // Assert: counts match (catches the case where a fn appears under two
+    // tables — would pass the individual membership checks but inflate the count).
+    if (runtime_set.count() != expected_set.count()) {
+        std.debug.print(
+            "[host lock] runtime fn count {d} != expected {d}\n",
+            .{ runtime_set.count(), expected_set.count() },
+        );
+        return error.FnCountMismatch;
+    }
+}
+
+test "runtime lock: DENIED_HOST_FNS names are absent from every host table at runtime" {
+    // Walk the five host tables and assert no key matches a denied name.
+    // This catches a registration that sneaks past the comptime guard
+    // (e.g. a helper registered under an alias not in DENIED_HOST_FNS at compile
+    // time but whose effect is spawn-shaped).
+    const gpa = std.testing.allocator;
+
+    const L = c.luaL_newstate();
+    defer c.lua_close(L);
+
+    openSandboxedLibs(L);
+    var hs: HostState = .{
+        .arena = gpa,
+        .io = std.testing.io,
+    };
+    installHostSurface(L, &hs);
+
+    var runtime_fns: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (runtime_fns.items) |s| gpa.free(s);
+        runtime_fns.deinit(gpa);
+    }
+
+    const tables = [_][]const u8{ "cli", "git", "fs", "flow", "ctx" };
+    for (tables) |tbl| {
+        try enumerateHostTable(gpa, L, tbl, &runtime_fns);
+    }
+
+    // For each runtime fn label ("table.fn"), check if the fn-name component
+    // appears in DENIED_HOST_FNS.
+    for (runtime_fns.items) |label| {
+        // Extract the fn-name part after the dot.
+        const dot = std.mem.lastIndexOfScalar(u8, label, '.') orelse continue;
+        const fn_name = label[dot + 1 ..];
+        for (DENIED_HOST_FNS) |denied| {
+            if (std.mem.eql(u8, fn_name, denied)) {
+                std.debug.print(
+                    "[host lock] DENIED fn name '{s}' found registered as '{s}'\n",
+                    .{ denied, label },
+                );
+                return error.DeniedFnPresentAtRuntime;
+            }
+        }
+    }
+}
+
+test "runtime lock: sandbox nils os, io, load, loadfile, loadstring, dofile, require, math.random, math.randomseed" {
+    // Assert against the LIVE Lua state that every escape hatch is nil.
+    // A positive test: openSandboxedLibs is the function under test here.
+    const gpa = std.testing.allocator;
+    _ = gpa;
+
+    const L = c.luaL_newstate();
+    defer c.lua_close(L);
+
+    openSandboxedLibs(L);
+
+    // Top-level globals that MUST be nil.
+    const nil_globals = [_][*:0]const u8{
+        "os", "io", "load", "loadfile", "loadstring", "dofile", "require",
+    };
+    for (nil_globals) |g| {
+        const ty = c.lua_getglobal(L, g);
+        defer c.lua_settop(L, -2);
+        if (ty != c.LUA_TNIL) {
+            std.debug.print(
+                "[sandbox lock] global '{s}' should be nil but is type {d}\n",
+                .{ std.mem.span(g), ty },
+            );
+            return error.SandboxEscapeHatchPresent;
+        }
+    }
+
+    // math.random and math.randomseed must be nil within the math table.
+    const math_ty = c.lua_getglobal(L, "math");
+    defer c.lua_settop(L, -2);
+    // math table must exist (we opened math).
+    try std.testing.expectEqual(c.LUA_TTABLE, math_ty);
+    const math_idx = c.lua_absindex(L, -1);
+
+    const random_ty = c.lua_getfield(L, math_idx, "random");
+    defer c.lua_settop(L, -2);
+    if (random_ty != c.LUA_TNIL) {
+        std.debug.print("[sandbox lock] math.random should be nil but is type {d}\n", .{random_ty});
+        return error.MathRandomPresent;
+    }
+
+    const randomseed_ty = c.lua_getfield(L, math_idx, "randomseed");
+    defer c.lua_settop(L, -2);
+    if (randomseed_ty != c.LUA_TNIL) {
+        std.debug.print("[sandbox lock] math.randomseed should be nil but is type {d}\n", .{randomseed_ty});
+        return error.MathRandomseedPresent;
+    }
+}
