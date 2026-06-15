@@ -8,8 +8,10 @@
 
 pub const symbols = @import("closure/symbols.zig");
 pub const walk = @import("closure/walk.zig");
+pub const weight = @import("closure/weight.zig");
 
 test {
     _ = symbols;
     _ = walk;
+    _ = weight;
 }
