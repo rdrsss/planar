@@ -48,6 +48,7 @@ const sessions_handoff = @import("views/sessions_handoff.zig");
 const audit_log_view = @import("views/audit_log.zig");
 const cli_history_view = @import("views/cli_history.zig");
 const topology_view = @import("views/topology.zig");
+const utility_view = @import("views/utility_view.zig");
 
 /// Minimum usable terminal dimensions.
 const MIN_WIDTH: u16 = 40;
@@ -253,6 +254,10 @@ pub fn run(
     var topology: topology_view.TopologyState = topology_view.TopologyState.init(alloc);
     defer topology.deinit();
 
+    // ---- Utility view state (tasks 4041–4043, M15) ----------------------
+    var utility: utility_view.UtilityState = utility_view.UtilityState.init(alloc);
+    defer utility.deinit();
+
     // Determine cwd-scope filter on launch. Falls back to .all when the
     // cwd is outside any registered repo (q607: cwd-derived default).
     const cwd_for_scope = std.Io.Dir.realPathFileAlloc(
@@ -305,6 +310,9 @@ pub fn run(
     // Initial load of the Topology view.
     topology.reload(db_handle) catch {};
 
+    // Initial load of the Utility view.
+    utility.reload(db_handle) catch {};
+
     // ---- Spine state ----------------------------------------------------
     // Scope Explorer is the default (index 0) landing view per the spec.
     var vs: view_switcher.ViewSwitcher = .{};
@@ -328,6 +336,9 @@ pub fn run(
     // M14: Topology is the 12th view. Reachable via Tab/Shift-Tab only.
     // Key 't' is display-only (not a jump key).
     try vs.register(.{ .id = .topology, .name = "Topology", .key = 't' });
+    // M15: Utility view is the 13th view (config/annotations/workbench-sync).
+    // Reachable via Tab/Shift-Tab only. Key 'u' is display-only.
+    try vs.register(.{ .id = .utility_view, .name = "Utility", .key = 'u' });
 
     var sl: split_layout.SplitLayout = .{};
 
@@ -336,7 +347,7 @@ pub fn run(
     try vx.queryTerminal(tty.writer(), .fromSeconds(1));
 
     // Render the initial frame.
-    try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor, &board, &declog, &questions, &coverage, &entity_graph, &ext_ops, &sessions, &audit, &cli_history, &topology);
+    try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor, &board, &declog, &questions, &coverage, &entity_graph, &ext_ops, &sessions, &audit, &cli_history, &topology, &utility);
 
     // Main event loop.
     while (true) {
@@ -440,6 +451,12 @@ pub fn run(
                         } else {
                             need_render = false;
                         }
+                    } else if (active != null and active.?.id == .utility_view) {
+                        if (utility.handleKey(key)) {
+                            // Consumed by utility view — render.
+                        } else {
+                            need_render = false;
+                        }
                     } else {
                         need_render = false;
                     }
@@ -478,11 +495,13 @@ pub fn run(
                     cli_history.reload(db_handle) catch {};
                 } else if (active != null and active.?.id == .topology) {
                     topology.reload(db_handle) catch {};
+                } else if (active != null and active.?.id == .utility_view) {
+                    utility.reload(db_handle) catch {};
                 }
             },
         }
         if (need_render) {
-            try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor, &board, &declog, &questions, &coverage, &entity_graph, &ext_ops, &sessions, &audit, &cli_history, &topology);
+            try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor, &board, &declog, &questions, &coverage, &entity_graph, &ext_ops, &sessions, &audit, &cli_history, &topology, &utility);
         }
     }
     // Terminal restored by deferred vx.deinit.
@@ -557,6 +576,7 @@ fn renderFrame(
     audit_state: *const audit_log_view.AuditLogState,
     cli_history_state: *const cli_history_view.CliHistoryState,
     topology_state: *const topology_view.TopologyState,
+    utility_state: *const utility_view.UtilityState,
 ) !void {
     const win = vx.window();
     win.clear();
@@ -683,6 +703,13 @@ fn renderFrame(
             .text = legend,
             .style = .{ .dim = true },
         }, .{ .row_offset = legend_row, .col_offset = 0 });
+    } else if (active != null and active.?.id == .utility_view) {
+        var legend_buf: [128]u8 = undefined;
+        const legend = utility_view.legendLabel(&legend_buf);
+        _ = content_win.printSegment(.{
+            .text = legend,
+            .style = .{ .dim = true },
+        }, .{ .row_offset = legend_row, .col_offset = 0 });
     } else {
         _ = content_win.printSegment(.{
             .text = "  q Quit  Tab Focus  1-9 View  Ctrl-C Quit",
@@ -730,8 +757,10 @@ fn renderFrame(
         try cli_history_view.render(cli_history_state, panes.nav, panes.detail, alloc);
     } else if (active != null and active.?.id == .topology) {
         try topology_view.render(topology_state, panes.nav, panes.detail, alloc);
+    } else if (active != null and active.?.id == .utility_view) {
+        try utility_view.render(utility_state, panes.nav, panes.detail, alloc);
     } else {
-        // Placeholder for views not yet implemented (M15+).
+        // Placeholder for views not yet implemented (M16+).
         _ = panes.nav.printSegment(.{
             .text = "[Navigator — M15+]",
             .style = .{ .dim = true },
@@ -838,6 +867,7 @@ const sessions_handoff_mod = @import("views/sessions_handoff.zig");
 const audit_log_mod = @import("views/audit_log.zig");
 const cli_history_mod = @import("views/cli_history.zig");
 const topology_mod = @import("views/topology.zig");
+const utility_view_mod = @import("views/utility_view.zig");
 
 // =========================================================================
 // Tests
