@@ -92,6 +92,18 @@ fn writeWorkflow(suite: *harness.Suite, name: []const u8, body: []const u8) ![]c
     return path;
 }
 
+/// repoRootFromBin derives the repo root directory from the PLANAR_BIN env
+/// var. The installed binary sits at <repo>/zig-out/bin/planar (three levels
+/// deep), so dirname × 3 yields the repo root. Returns an allocator-owned
+/// absolute path.
+fn repoRootFromBin(allocator: std.mem.Allocator) ![]const u8 {
+    const bin_path = resolveEnv("PLANAR_BIN");
+    const d1 = std.fs.path.dirname(bin_path) orelse return error.FileNotFound;
+    const d2 = std.fs.path.dirname(d1) orelse return error.FileNotFound;
+    const d3 = std.fs.path.dirname(d2) orelse return error.FileNotFound;
+    return allocator.dupe(u8, d3);
+}
+
 test "planar-execute runs a trivial deterministic workflow shelling cli.planar_json" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
@@ -99,34 +111,28 @@ test "planar-execute runs a trivial deterministic workflow shelling cli.planar_j
     const root = suite.registerProject("execwf");
     suite.addAssoc("execwf", null);
 
-    // A trivial workflow: shell `planar schema --json`-equivalent (the schema
-    // verb emits JSON with no DB dependency), confirm a known field, and emit a
-    // result table. Proves the full engine path: sandbox → host registry →
-    // cli.planar_json shell → JSON parse → flow.result → JSON stdout.
-    const wf =
-        \\function setup()
-        \\  flow.phase("setup")
-        \\  local sch = cli.planar_json({"schema"})
-        \\  flow.log("schemaVersion=" .. tostring(sch.schemaVersion))
-        \\  flow.result({ ok = true, root = sch.root, version = sch.schemaVersion })
-        \\end
-    ;
-    const path = try writeWorkflow(&suite, "trivial.lua", wf);
-    defer gpa.free(path);
+    // Load the committed reference example from the repo rather than an
+    // inline fixture so that bit-rot is caught immediately (a broken
+    // example.lua fails this test). The workflow shells `planar schema`
+    // (no DB dependency), logs the result, and calls flow.result.
+    const repo_root = try repoRootFromBin(gpa);
+    defer gpa.free(repo_root);
+    const wf_path = try std.fs.path.join(gpa, &.{ repo_root, "workflows", "example.lua" });
+    defer gpa.free(wf_path);
 
-    const res = try runExecute(gpa, root, suite.absDbPath(), &.{ "run", path, "--phase", "setup" });
+    const res = try runExecute(gpa, root, suite.absDbPath(), &.{ "run", wf_path, "--phase", "setup" });
     defer res.deinit();
 
     try std.testing.expect(res.term == .exited);
     try std.testing.expectEqual(@as(u32, 0), res.term.exited);
 
     // stdout is the flow.result payload as JSON.
-    const Parsed = struct { ok: bool, root: []const u8, version: i64 };
+    const Parsed = struct { ok: bool, planar_root: []const u8, schema_version: i64 };
     const parsed = try std.json.parseFromSlice(Parsed, gpa, std.mem.trim(u8, res.stdout, " \t\r\n"), .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
     try std.testing.expect(parsed.value.ok);
-    try std.testing.expectEqualStrings("planar", parsed.value.root);
-    try std.testing.expectEqual(@as(i64, 1), parsed.value.version);
+    try std.testing.expectEqualStrings("planar", parsed.value.planar_root);
+    try std.testing.expectEqual(@as(i64, 1), parsed.value.schema_version);
 }
 
 test "planar-execute shells planar plan show against a seeded plan" {
