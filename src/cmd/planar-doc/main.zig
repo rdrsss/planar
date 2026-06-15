@@ -38,7 +38,7 @@ pub fn main(init: std.process.Init) !void {
     const raw_args = try init.minimal.args.toSlice(arena);
 
     const db_path = try runtime.resolveDbPath(arena, init.minimal.environ);
-    runtime.init(arena, init.io, &stdout_buffer, &stderr_buffer, db_path, init.minimal.environ, raw_args);
+    runtime.init(arena, init.io, &stdout_buffer, &stderr_buffer, db_path, init.minimal.environ, null, raw_args);
     defer runtime.shutdown();
 
     cli.dispatch(root, raw_args, runtime.current().stdout) catch |e| switch (e) {

@@ -1,0 +1,16 @@
+# Hand-vendored from public GitHub repo. Transitive dep of vendor/libvaxis/
+# (lazy — only needed when Unicode width / grapheme support is compiled in).
+# Not managed by tools/vendor_sync.zig. Re-vendor by:
+#
+#   curl -sL https://github.com/jacobsandlund/uucode/archive/<commit>.tar.gz | tar xz
+#   cp -r uucode-<commit>/{src,ucd,build.zig,build.zig.zon,LICENSE.md,README.md} vendor/uucode/
+#   # Update commit + fetched_at below.
+#
+# ucd/ directory contains Unicode data files required for build-time table
+# generation and must be included.
+# Pin must match the hash in vendor/libvaxis/VENDOR.toml (upstream libvaxis build.zig.zon).
+name = "uucode"
+source = "https://github.com/jacobsandlund/uucode"
+commit = "2826a37a4562284fdacd8fa029d49509cc9bffcd"
+version = "0.2.0"
+fetched_at = "2026-06-14"

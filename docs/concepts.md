@@ -12,14 +12,14 @@ The fifth, `planar-execute`, is **not** a planning-state executable: it is the d
 
 | Binary | Audience | Writes to |
 |---|---|---|
-| `planar` | Operator (human + scripts) | Planning entities (`plans`, `tasks.status` via manual transitions, `decisions`, `questions`, `scenarios`, `artifacts`, `annotations`, …) — everything **except** `agent_work_claims`. It does not write `agent_actions` either, save for one best-effort exception: the entity-create provenance hook (plan 467 D2/D3) appends a `created <entity>` action when `decision`/`question`/`artifact add` runs under an active agent claim; with no active claim it is a silent no-op. |
+| `planar` | Operator (human + scripts) | Planning entities (`plans`, `tasks.status` via manual transitions, `decisions`, `questions`, `scenarios`, `artifacts`, `annotations`, …) — everything **except** `agent_work_claims`. It does not write `agent_actions` either, save for one best-effort exception: the entity-create provenance hook (plan 467 D2/D3) appends a `created <entity>` action when `decision`/`question`/`artifact add` runs under an active agent claim; with no active claim it is a silent no-op. Also hosts the interactive operator cockpit (bare `planar` on a TTY, or `planar explore`). |
 | `planar-agent` | Agent (vendor hook, orchestrator dispatch) + operator recovery | `agent_actions`, `agent_work_claims`, `tasks.status` (the last only as part of atomic coordinated operations: `pull`, `complete`, `fail`, `release`, `block`), `workflow_runs` (via `run start`/`end`), `context_records` (via `context add`/`resolve`). **Never** to plan / decision / question / scenario / artifact / annotation. |
 | `planar-watch` | Operator (live view) + scripts (`--json`) | **Nothing.** Opens SQLite via `file:?mode=ro` so the driver itself rejects every write SQL string. |
 | `planar-doc` | Operator + documenter agent | **`.planar-manifest` only** — the repo-state merkle index at the repo root. Never opens SQLite at all. |
 
 **Capability invariant — `planar-agent`:** a process invoked as `planar-agent` has no verbs that mutate any planning entity. The verb set is exactly `pull`, `peek`, `claim`, `heartbeat`, `complete`, `fail`, `release`, `block`, `action start`/`action end`, `run start`/`end`, `context add`/`list`/`resolve`, `ingest`, `reconcile`, `abort`, `version`, `schema`.
 
-**Capability invariant — `planar-watch`:** the binary's verb set contains zero write verbs (`feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `run`, `version`, `completion`, `schema` only). Enforced two ways: (1) the verb set; (2) the read-only DB handle.
+**Capability invariant — `planar-watch`:** the binary's verb set contains zero write verbs (`feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `run`, `version`, `completion`, `schema` only). Enforced two ways: (1) the verb set; (2) the read-only DB handle. `planar-watch` is **not** the interactive cockpit — it is and remains the scriptable, read-only NDJSON streaming viewer. The cockpit lives in the read-write `planar` binary because editing requires a read-write DB handle (see [§ Interactive cockpit](#interactive-cockpit)).
 
 **Capability invariant — `planar-doc`:** the binary has no SQLite driver linked at all. Its verb set is exactly `build`, `verify`, `diff`, `cover`, `nodoc`, `lint`, `schema`. The only write is `.planar-manifest` at the repo root.
 
@@ -77,6 +77,78 @@ Inside `centurion`:
 - A cooperative scheduler drives `ctx.parallel` (N-way barrier) and `ctx.pipeline` (per-item stage chains).
 - A preemptive heartbeat thread fires at TTL/2 cadence independently of the Lua scheduler to keep active claims alive during long-running workflows.
 - The journal (`ctx.phase`, `ctx.log`) records the execution arc as a sequence of timestamped entries; the journal is printed to stdout as the workflow progresses.
+
+---
+
+## Interactive cockpit
+
+The interactive cockpit is an operator-facing TUI embedded in the `planar` binary. It provides a live, multi-view window into the full planning graph — agent activity, tasks, decisions, questions, sessions, external systems, and more — with support for editing planning entities and triggering workbench or sync actions directly from the interface.
+
+### Entry
+
+There are two entry points:
+
+- **Bare invocation.** `planar` with no verb on a TTY launches the cockpit, landing on the Scope Explorer. This is the "open the dashboard" idiom: `planar` becomes `vim` in the sense that the bare binary is the interactive entry point when stdout is a terminal.
+- **Explicit alias.** `planar explore` is the explicit, always-available verb that does the same thing. Use it when you want to name the intent explicitly, or from a context where bare-invocation TTY detection may not fire (e.g. a tmux pane launched by a script).
+
+Both paths run the same terminal-capability gate before entering the alt-screen.
+
+### Terminal-capability gate
+
+The gate determines whether to launch the cockpit or fall back to help/usage output. **Any one** of the following conditions triggers fallback:
+
+- stdout is not a TTY (piped, redirected, CI, the integration test harness)
+- `TERM=dumb` (terminal cannot handle VT sequences)
+- `PLANAR_NO_TUI` environment variable is set (any value, including empty)
+- `--plain` flag passed to `planar explore`
+
+Skills, agents, and scripts always invoke explicit verbs and run in non-TTY contexts, so the cockpit never activates in automated pipelines — `TERM=dumb` / `PLANAR_NO_TUI` are available as belt-and-suspenders overrides when needed.
+
+### Views
+
+The cockpit ships thirteen views. Tab / Shift-Tab cycle through them; `1`–`9` jump to the first nine by position:
+
+| View | Default key | What it shows |
+|------|-------------|---------------|
+| Scope Explorer | `1` / landing | Collapsible plan tree filtered to cwd-derived scope; scope toggle reveals all scopes; split detail pane renders artifact or task body |
+| Agent Monitor | `2` | Live agent-claim roster with heartbeat coloring; event stream tails `agent_actions` and claim transitions |
+| Task Board | `3` | Tasks grouped by status (`todo` / `doing` / `blocked` / `done`) with reopen history and touched-path detail |
+| Decision Log | `4` | Decisions in chronological order; selecting one renders body and derives-from edges |
+| Open Questions | `5` | Questions filtered by status; jump-to-linked entity |
+| Test Scenario & Coverage | `6` | Scenarios with `verifies` edges; surfaces uncovered tasks and orphan scenarios |
+| Entity-Link Graph | `7` | Related entities via `entity_links`; navigate an edge to refocus |
+| External / Ops Plane | `8` | External systems, sync status, unresolved conflicts |
+| Sessions & Handoff | `9` | Session lineage, resume-readiness, commit attribution |
+| Audit Log | Tab | `audit_log` rows in chronological order, filterable by entity |
+| CLI Invocation History | Tab | `cli_invocations` rows with verb / args-shape / outcome, filterable by verb |
+| Scope / Association Topology | Tab | Associations mapped to member projects with scope-resolution context |
+| Utility | Tab | Config inspector, annotations, workbench-sync state |
+
+All views are **read-only projections** — they read existing tables and add no schema. The cockpit opens the DB read-write (as `planar` already does) only to support the editing tiers described below; the views themselves never write.
+
+The default landing view is the Scope Explorer. On launch the cockpit filters to the cwd-derived scope and offers a one-key all-scopes toggle; it falls back to showing all scopes when launched outside any registered repository.
+
+The wake loop behind the views is edge-triggered: a dedicated thread owns the `Wake` (kqueue on macOS, inotify on Linux, on the SQLite `-wal` file) and posts a `db_changed` event to the libvaxis event queue on a WAL change, and on a ≤1 second heartbeat as the coalesced/missed-wake backstop. The main loop re-queries the active view's data on each `db_changed` event with no polling.
+
+### Editing tiers
+
+The cockpit offers three editing tiers. All edits route through `planar`'s existing write engine paths and scope guards — no new write code or schema.
+
+| Tier | Key | What it does | Guard |
+|------|-----|--------------|-------|
+| Entity-field editing | `e` | Edit a planning entity's title, body, or field (e.g. answer a question, update a task body) | Strict scope resolver — cross-scope edit refused without explicit scope; confirm-on-overwrite for destructive changes |
+| Task lifecycle editing | `L` | Move a task through its status lifecycle (open → doing → done, block, reopen, reprioritize) | Claim-aware: reads the task's live claim/heartbeat state and refuses or safely routes any transition that would strand an active claim — never a raw flip under a live claim |
+| External / workbench actions | `S` | Trigger a sync/propagate or workbench push/pull/status | Confirmation-gated before executing |
+
+Agent-claim mutation (releasing, reassigning claims) stays on `planar-agent` and is not available from the cockpit.
+
+### Why the cockpit is in `planar`, not `planar-watch`
+
+Editing requires a read-write DB handle, which is structurally incompatible with `planar-watch`'s `SQLITE_OPEN_READONLY` driver (the driver rejects every write SQL string; this is load-bearing for its capability invariant). `planar-watch` is unchanged and remains the scriptable, NDJSON-streaming, read-only viewer for agents and monitoring pipelines. The cockpit is in `planar` — the operator binary that already owns mutation — so the read-only boundary of `planar-watch` is preserved in full.
+
+**SQLite tables:** projections of all existing application tables (no new tables or columns). **Primary entry points:** bare `planar` on a TTY, `planar explore [--plan <id>] [--task <id>] [--scope <s>] [--plain]`. **TUI framework:** libvaxis (vendored under `vendor/libvaxis/`). **Source:** `src/cmd/planar/cockpit/` (`gate.zig`, `app.zig`, `view_model.zig`, `views/`, `widgets/`, `edit/`).
+
+See [`docs/cli-reference.md § Domain: explore`](cli-reference.md#domain-explore) for the full flag reference and fallback conditions.
 
 ---
 
