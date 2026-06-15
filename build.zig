@@ -188,6 +188,21 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
 
+    // libvaxis — Zig TUI library (v0.6.0, MIT). Used by the cockpit
+    // (`planar explore` / bare `planar` on a TTY). Vendored as a path
+    // dep under vendor/libvaxis/; its transitive deps (zigimg, uucode)
+    // are also vendored under vendor/zigimg/ and vendor/uucode/.
+    //
+    // libvaxis's own build.zig resolves zigimg and uucode from its dep
+    // tree (patched to path deps in vendor/libvaxis/build.zig.zon).
+    // We pass the uucode fields required for the cockpit's Unicode ops.
+    // -----------------------------------------------------------------
+    const libvaxis_dep = b.dependency("libvaxis", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const libvaxis_mod = libvaxis_dep.module("vaxis");
+
     // -----------------------------------------------------------------
     // `lua` module: Lua 5.5 C-API bindings stub + linkage smoke test.
     // Imports the Lua headers via @cImport and links the static library.
@@ -332,6 +347,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "engine", .module = engine_mod },
                 .{ .name = "runtime", .module = runtime_mod },
                 .{ .name = "build_options", .module = build_options_mod },
+                .{ .name = "vaxis", .module = libvaxis_mod },
             },
         }),
     });

@@ -84,7 +84,7 @@ pub fn main(init: std.process.Init) !void {
     const args = maybeInjectDefaultVerb(arena, raw_args);
 
     const db_path = try runtime.resolveDbPath(arena, init.minimal.environ);
-    runtime.init(arena, init.io, &stdout_buffer, &stderr_buffer, db_path, init.minimal.environ, args);
+    runtime.init(arena, init.io, &stdout_buffer, &stderr_buffer, db_path, init.minimal.environ, null, args);
     defer runtime.shutdown();
 
     // The handshake is performed lazily by each handler that touches

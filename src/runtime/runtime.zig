@@ -43,6 +43,12 @@ pub const Ctx = struct {
     stderr: *Io.Writer,
     db_path: [:0]const u8,
     environ: std.process.Environ,
+    /// Parsed environment map from std.process.Init. Needed by any
+    /// handler that calls into a library requiring `*Environ.Map`
+    /// (e.g. libvaxis for the cockpit). Null on binaries that do not
+    /// receive the full std.process.Init (planar-agent, planar-watch
+    /// use a stripped init). The cockpit handler must check for null.
+    environ_map: ?*std.process.Environ.Map,
     argv: []const []const u8,
 };
 
@@ -54,6 +60,10 @@ var db_storage: ?db.sqlite.Db = null;
 /// Install the process Ctx. Call exactly once from main, before
 /// dispatch. The buffer slices and `db_path` must outlive the process.
 /// Does NOT open the DB — see `ensureDb`.
+///
+/// `environ_map` is optional: pass the `*std.process.Environ.Map` from
+/// `std.process.Init` in the `planar` binary (which receives the full
+/// Init), and null from other binaries that use the stripped init.
 pub fn init(
     allocator: std.mem.Allocator,
     io: Io,
@@ -61,6 +71,7 @@ pub fn init(
     stderr_buf: []u8,
     db_path: [:0]const u8,
     environ: std.process.Environ,
+    environ_map: ?*std.process.Environ.Map,
     argv: []const []const u8,
 ) void {
     stdout_writer_storage = Io.File.Writer.init(.stdout(), io, stdout_buf);
@@ -72,6 +83,7 @@ pub fn init(
         .stderr = &stderr_writer_storage.?.interface,
         .db_path = db_path,
         .environ = environ,
+        .environ_map = environ_map,
         .argv = argv,
     };
 }
