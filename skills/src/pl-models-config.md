@@ -30,12 +30,12 @@ Routing is config-driven and unified in `~/.planar/config.toml`:
 - `[roles]` — role → tier (e.g. `coder = "medium"`, `reviewer = "large"`).
 - `[role_vendors]` — optional role → vendor override (defaults to `[defaults].vendor`).
 
-The shared resolver composes these. Skills render, `agents/models.md`, and `planar-execute` all resolve through it — there is no separate per-tool model table.
+The shared resolver composes these. Skills render, `agents/models.md`, and the external `centurion` harness all resolve through it — there is no separate per-tool model table.
 
 ## What It Does
 
 1. **Discover** — `planar models list` reports each provider CLI's installed-state + version and its curated model catalog (with human labels), plus the default routing.
-2. **Inspect routing** — `planar models routing` prints the effective role → `vendor model` mapping with provenance (`[embedded default]` vs `[config file]`). `--json` for machine consumption (this is what `planar-execute` shells).
+2. **Inspect routing** — `planar models routing` prints the effective role → `vendor model` mapping with provenance (`[embedded default]` vs `[config file]`). `--json` for machine consumption (this is what `centurion`, the external workflow harness, shells).
 3. **Cache** — `planar models refresh` writes the discovery result to `~/.planar/models/catalog.json`.
 4. **Scaffold** — `planar models apply` writes the `[models]`/`[roles]` block into the config file as an editable starting point (idempotent; `--force` to append again).
 5. **Override** — guide the operator to edit `~/.planar/config.toml`:
@@ -47,7 +47,7 @@ The shared resolver composes these. Skills render, `agents/models.md`, and `plan
 ## What It Must Not Do
 
 - Do not hand-edit `agents/models.md` or any rendered surface — those regenerate from config via the resolver.
-- Do not invent per-call model overrides in Lua workflows; routing is per-role and config-driven (see `pl-execute-workflow`).
+- Do not invent per-call model overrides in Lua workflows; routing is per-role and config-driven.
 
 ## Vendor Notes
 

@@ -20,13 +20,15 @@ Vendor profile data and model-tier resolution are embedded directly into the `pl
 
 ## Binary architecture
 
-Planar ships five executables, each with a disjoint capability boundary enforced by its verb set (not by runtime ACLs). Skills and agents reach for the binary that matches the work - and only that binary. The capability boundary is locked by integration tests (`integration_tests/capability_boundary_test.zig`).
+Planar ships five executables. Four are planning-state binaries, each with a disjoint capability boundary over the shared SQLite DB enforced by its verb set (not by runtime ACLs); skills and agents reach for the binary that matches the work - and only that binary. The capability boundary across those four is locked by integration tests (`integration_tests/capability_boundary_test.zig`). The fifth, `planar-execute`, is the deterministic, spawn-free Lua workflow engine and holds no DB handle.
 
 - `planar` — operator binary. Read-write to the full schema; owns every planning-entity verb (`plan`, `task`, `decision`, `question`, `scenario`, `artifact`, `workbench`, `doc`, `spec`, `templates`, `ext`, `sync`, `init`, `dashboard`, `tree`, `audit`, `health`, …). Has **no** `agent` subcommand namespace; agent-table writes live on `planar-agent` and agent-table reads live on `planar-watch`.
 - `planar-agent` — agent-callable coordination binary. Read-write **only** to `agent_actions`, `agent_work_claims`, and `tasks.status` (the last only as part of atomic coordinated operations). Verbs: `pull`, `peek`, `claim`, `heartbeat`, `complete`, `fail`, `release`, `block`, `action start`/`action end`, `ingest`, `reconcile`, `abort`, `version`. **Capability invariant:** a vendor hook configured with only `planar-agent` on its PATH cannot touch any plan / decision / question / scenario / artifact / annotation row.
 - `planar-watch` — human-facing read-only viewer. Opens SQLite via `file:?mode=ro` so the driver itself refuses any write SQL. Verbs: `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `version`, `completion`. **Capability invariant:** a watcher process holding the binary on PATH cannot corrupt operator state even under hostile verb invocation — enforced both by the zero-write verb set and the read-only DB handle.
 - `planar-doc` — doc-state binary. Owns manifest-driven documentation verbs (`build`, `verify`, `diff`, `cover`, `nodoc`, `lint`, `schema`) and never opens SQLite.
-- `planar-execute` — Lua workflow harness. Owns `run`, `doctor`, `version`, and `schema`; holds no DB handle and shells the other binaries plus headless workers through the documented `ctx` host-function surface.
+- `planar-execute` — deterministic, spawn-free Lua workflow engine (plan 633). A caller invokes `planar-execute run <wf.lua> --phase <name>` to run a deterministic workflow over an allowlisted host surface (`cli`/`git`/`fs`/`flow`/`ctx`) and collect its JSON result. It holds **no** DB handle (it shells the planning-state binaries for state) and exposes **no** model-spawning host function, so it is a workflow runner, not a harness. It is outside the claim ritual.
+
+The Lua-based **harness** `centurion` (a **separate external repo**, distinct from `planar-execute`) is a pure CLI driver that shells these binaries to orchestrate LLM calls; it holds no DB handle and is not part of the Planar binary set.
 
 Every skill in this document routes its writes through the binary that owns them. Skills that schedule agent work (`/orchestrator`, `/pl-coder`) drive the `planar-agent pull → heartbeat → complete|fail|release|block` ritual; skills that surface live operator views (status, dashboard, audit trail) read through `planar` and `planar-watch`.
 
@@ -57,19 +59,6 @@ Source: `commands/claude/pl-orchestrator.md` · `skills/codex/pl-orchestrator.md
 
 ---
 
-### `/pl-execute-workflow`
-
-Plan, author, and validate a `planar-execute` Lua workflow for an active plan. The workflow planner chooses topology, worker roles, model-tier intent, context capsules, mock cases, budgets, and safety posture; the skill materializes the plan into Lua and validates it before any live run.
-
-**Example:**
-```
-/pl-execute-workflow <plan-id> --write ~/.planar/local/workflows/<workflow-name>.lua
-/pl-execute-workflow <plan-id> --canonical
-```
-
-Source: `commands/claude/pl-execute-workflow.md` · `skills/codex/pl-execute-workflow.md` · `agents/workflow-planner.md`
-
----
 
 ### `/coder`
 
@@ -573,7 +562,6 @@ The vendor-neutral role specs live under `agents/`. Vendor skill files defer to 
 |------|------|
 | `agents/methodology.md` | Shared orchestration methodology: iteration loop, reviewer decisions, escalation, concurrency rules, state capture |
 | `agents/orchestrator.md` | Orchestrator role: phase descriptions, dispatch-shape gate, per-phase triggers |
-| `agents/workflow-planner.md` | Workflow planner role: planar-execute topology, worker model routing intent, context capsules, validation matrix |
 | `agents/spec-reviewer.md` | Spec reviewer role: adversarial planning review, open-question reconciliation, feature/test gap analysis |
 | `agents/planner.md` | Planner role: input/output contract, document shape, workbench seeding |
 | `agents/ingestor.md` | Ingestor role: parsing contract, idempotency invariant, preview-first rule |

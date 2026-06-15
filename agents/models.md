@@ -21,7 +21,6 @@ Agent specs in `agents/` reference abstract tiers (`small`, `medium`, `large`). 
 | Agent              | Tier   |
 |--------------------|--------|
 | `orchestrator`     | large  |
-| `workflow-planner` | large |
 | `spec-reviewer`    | large  |
 | `coder`            | medium |
 | `test-coder`       | large  |

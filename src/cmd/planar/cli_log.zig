@@ -464,7 +464,7 @@ test "parseArgs: multibyte flag value — value never in shape" {
 
 test "parseArgs: inline flag value (--flag=value) never leaks value into shape" {
     const a = std.testing.allocator;
-    // etc-cli accepts --flag=value as a single token (inline_value form).
+    // etcli accepts --flag=value as a single token (inline_value form).
     // The value after = must NOT appear in args_shape; only the flag name
     // up to (and including) = should be recorded as a marker.
     const sentinel = "SENTINEL_MUST_NOT_LEAK";

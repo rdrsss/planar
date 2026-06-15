@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# planar-diff-watch — live, accumulating diffnav view of a worktree, in the
+# current terminal.
+#
+# Usage: planar-diff-watch [dir] [base]
+#   dir   worktree to watch (default: current directory)
+#   base  diff base ref (default: HEAD at launch time)
+#
+# The base is resolved to a SHA once, at launch. Everything that happens
+# after that point — unstaged edits, staged changes, commits, pushes —
+# accumulates in the view instead of disappearing on commit. Untracked
+# files are included. Refreshes every 2 seconds; quit with q.
+#
+# Examples:
+#   planar-diff-watch                         # watch cwd, accumulate from now
+#   planar-diff-watch ../wt-agent-3 master    # agent worktree, whole branch
+set -euo pipefail
+
+dir="$(cd "${1:-$PWD}" && pwd)"
+cd "$dir"
+
+if ! git rev-parse --git-dir >/dev/null 2>&1; then
+  echo "planar-diff-watch: not a git worktree: $dir" >&2
+  exit 1
+fi
+
+# Pin the base to a SHA so the view only ever accumulates: `HEAD` or a
+# branch name would move as agents commit or merges land.
+base="$(git rev-parse --verify "${2:-HEAD}^{commit}")"
+
+# diffnav runs this via `sh -c` and treats a non-zero exit as failure, so it
+# must end with `exit 0` — `git diff --no-index` exits 1 whenever files differ.
+watch_cmd="git diff $base; git ls-files --others --exclude-standard -z | xargs -0 -I{} git diff --no-index -- /dev/null \"{}\"; exit 0"
+
+echo "watching $dir (since ${base:0:8})" >&2
+exec diffnav --watch --watch-cmd "$watch_cmd" --watch-interval 2s

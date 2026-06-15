@@ -10,14 +10,6 @@ comptime {
     _ = @import("models_test.zig");
     _ = @import("planar_doc_test.zig");
     _ = @import("planar_execute_test.zig");
-    _ = @import("planar_execute_doctor_test.zig");
-    _ = @import("planar_execute_agent_live_test.zig");
-    _ = @import("planar_execute_eligible_test.zig");
-    _ = @import("planar_execute_context_test.zig");
-    _ = @import("planar_execute_agent_text_test.zig");
-    _ = @import("planar_execute_refusal_guard_test.zig");
-    _ = @import("planar_execute_quality_spine_test.zig");
-    _ = @import("planar_execute_schema_test.zig");
     _ = @import("workbench_terminal_filter_test.zig");
     _ = @import("workbench_gc_test.zig");
     _ = @import("config_test.zig");
@@ -65,7 +57,6 @@ comptime {
     _ = @import("planar_agent_ingest_test.zig");
     _ = @import("planar_agent_run_test.zig");
     _ = @import("planar_agent_context_test.zig");
-    _ = @import("workflow_run_lifecycle_test.zig");
     _ = @import("m23_claims_run_stage_test.zig");
     _ = @import("planar_agent_claim_associate_test.zig");
     _ = @import("planar_watch_test.zig");
@@ -90,7 +81,6 @@ comptime {
     _ = @import("scenarios/scenario_cockpit_entry_test.zig");
     _ = @import("scenarios/scenario_annotations_test.zig");
     _ = @import("scenarios/scenario_audit_trail_test.zig");
-    _ = @import("scenarios/scenario_context_plane_test.zig");
     _ = @import("scenarios/scenario_cross_scope_polyrepo_test.zig");
     _ = @import("scenarios/scenario_decision_workflow_test.zig");
     _ = @import("scenarios/scenario_external_plane_test.zig");

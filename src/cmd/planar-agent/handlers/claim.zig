@@ -38,7 +38,7 @@ pub const verb: cli.Cmd = .{
         .{ .long = "--repo-root", .kind = .string, .desc = "Absolute path of checkout to probe locality against" },
         .{ .long = "--no-locality-probe", .kind = .bool, .default = .{ .bool = false }, .desc = "Skip the git locality probe" },
         .{ .long = "--force", .kind = .bool, .default = .{ .bool = false }, .desc = "Take over an existing live claim (operator recovery)" },
-        .{ .long = "--run", .kind = .int, .desc = "workflow_runs.id to associate with this claim (populated by planar-execute; omit for interactive claims)" },
+        .{ .long = "--run", .kind = .int, .desc = "workflow_runs.id to associate with this claim (populated by centurion or another external harness; omit for interactive claims)" },
         .{ .long = "--stage", .kind = .string, .desc = "Workflow stage name (e.g. code, review) to record on the claim; requires --run" },
         .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
     },

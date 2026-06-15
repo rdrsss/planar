@@ -85,8 +85,8 @@ pub const PullArgs = struct {
     /// cross-session hierarchy edge that `walkTree` relies on.
     /// When null (default), the new action is a root (no parent).
     parent_action_id: ?i64 = null,
-    /// Optional FK to workflow_runs.id; populated by planar-execute via
-    /// --run <id>. NULL for interactive / non-workflow pulls.
+    /// Optional FK to workflow_runs.id; populated by centurion (external
+    /// workflow harness) via --run <id>. NULL for interactive / non-workflow pulls.
     run_id: ?i64 = null,
     /// Optional stage name from the workflow that dispatched the worker.
     /// NULL when --stage is omitted.

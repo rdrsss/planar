@@ -188,7 +188,6 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
 
-    // -----------------------------------------------------------------
     // libvaxis — Zig TUI library (v0.6.0, MIT). Used by the cockpit
     // (`planar explore` / bare `planar` on a TTY). Vendored as a path
     // dep under vendor/libvaxis/; its transitive deps (zigimg, uucode)
@@ -203,6 +202,22 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const libvaxis_mod = libvaxis_dep.module("vaxis");
+
+    // -----------------------------------------------------------------
+    // `lua` module: Lua 5.5 C-API bindings stub + linkage smoke test.
+    // Imports the Lua headers via @cImport and links the static library.
+    // This module is the build-graph anchor that ensures lua_lib is
+    // compiled and linked by `zig build test`; the planar-execute engine
+    // (P0.2+) will import it to reach the raw C API.
+    // -----------------------------------------------------------------
+    const lua_zig_mod = b.addModule("lua", .{
+        .root_source_file = b.path("src/lua/lua.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    lua_zig_mod.addIncludePath(b.path(lua_src_dir));
+    lua_zig_mod.linkLibrary(lua_lib);
 
     // -----------------------------------------------------------------
     // `db` module: SQLite wrapper + migration runner. Needs the sqlite
@@ -220,16 +235,16 @@ pub fn build(b: *std.Build) void {
 
     // -----------------------------------------------------------------
     // `cli` module: comptime-driven command-tree argument parser.
-    // Sourced from the etc-cli package (vendored under vendor/etc-cli;
+    // Sourced from the etcli package (vendored under vendor/etcli;
     // declared in build.zig.zon as a path dependency). Previously
     // lived in-tree under src/cli/; extracted upstream so it can be
     // shared across Planar and other CLI projects.
     // -----------------------------------------------------------------
-    const etc_cli_dep = b.dependency("etc_cli", .{
+    const etcli_dep = b.dependency("etcli", .{
         .target = target,
         .optimize = optimize,
     });
-    const cli_mod = etc_cli_dep.module("cli");
+    const cli_mod = etcli_dep.module("cli");
 
     // -----------------------------------------------------------------
     // `runtime` module: shared process-context bootstrap. Linked into
@@ -412,11 +427,14 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(doc_exe);
 
     // -----------------------------------------------------------------
-    // `planar-execute` executable (plan 492 M1). Fifth binary — the Lua
-    // script execution harness. Links Lua as a static lib; intentionally
-    // does NOT link the db, engine, or runtime modules (no DB handle in
-    // M1). Script execution, module loading, and CLI flag parsing are
-    // tasks 3163-3166; this M1 target only proves the Lua link works.
+    // `planar-execute` executable (plan 633 P0.2c). Fifth binary — the
+    // deterministic, spawn-free Lua workflow engine. Links Lua as a static
+    // lib (addIncludePath + linkLibrary, mirroring the lua_zig_mod wiring)
+    // and intentionally does NOT link db / engine / runtime: the engine
+    // reaches Planar state only by shelling allowlisted CLI verbs (the D7
+    // host surface in src/cmd/planar-execute/host.zig). There is no
+    // model-spawn primitive (decision D5) — the host-fn manifest is the
+    // frozen capability surface P0.3 locks.
     // -----------------------------------------------------------------
     const execute_exe = b.addExecutable(.{
         .name = "planar-execute",
@@ -425,9 +443,6 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .link_libc = true,
-            .imports = &.{
-                .{ .name = "cli", .module = cli_mod },
-            },
         }),
     });
     execute_exe.root_module.addIncludePath(b.path(lua_src_dir));
@@ -461,7 +476,6 @@ pub fn build(b: *std.Build) void {
     cli_usage_check_run.addArg(b.getInstallPath(.bin, "planar-agent"));
     cli_usage_check_run.addArg(b.getInstallPath(.bin, "planar-watch"));
     cli_usage_check_run.addArg(b.getInstallPath(.bin, "planar-doc"));
-    cli_usage_check_run.addArg(b.getInstallPath(.bin, "planar-execute"));
     cli_usage_check_step.dependOn(&cli_usage_check_run.step);
 
     const run_step = b.step("run", "Run the app");
@@ -502,9 +516,6 @@ pub fn build(b: *std.Build) void {
     const doc_exe_tests = b.addTest(.{ .root_module = doc_exe.root_module, .filters = test_filters_opt });
     const run_doc_exe_tests = b.addRunArtifact(doc_exe_tests);
 
-    const execute_exe_tests = b.addTest(.{ .root_module = execute_exe.root_module, .filters = test_filters_opt });
-    const run_execute_exe_tests = b.addRunArtifact(execute_exe_tests);
-
     const cli_usage_lint_tests = b.addTest(.{ .root_module = cli_usage_lint_exe.root_module, .filters = test_filters_opt });
     const run_cli_usage_lint_tests = b.addRunArtifact(cli_usage_lint_tests);
 
@@ -520,18 +531,45 @@ pub fn build(b: *std.Build) void {
     const runtime_tests = b.addTest(.{ .root_module = runtime_mod, .filters = test_filters_opt });
     const run_runtime_tests = b.addRunArtifact(runtime_tests);
 
+    const lua_tests = b.addTest(.{ .root_module = lua_zig_mod, .filters = test_filters_opt });
+    const run_lua_tests = b.addRunArtifact(lua_tests);
+
+    // -----------------------------------------------------------------
+    // `planar-execute` spawn-free modules (P0.2a).
+    // No executable yet (that is P0.2c). This module compiles the three
+    // salvaged spawn-free modules (schema, state, brief) and runs their
+    // unit tests. The module depends on nothing beyond std.
+    // -----------------------------------------------------------------
+    const planar_execute_mod = b.addModule("planar_execute", .{
+        .root_source_file = b.path("src/cmd/planar-execute/modules.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const planar_execute_tests = b.addTest(.{ .root_module = planar_execute_mod, .filters = test_filters_opt });
+    const run_planar_execute_tests = b.addRunArtifact(planar_execute_tests);
+
+    // `planar-execute` engine tests (P0.2c): the new main.zig + host.zig.
+    // Keyed on the executable's root module so the host-fn manifest tests,
+    // sandbox tests, and arg-parse tests run under `zig build test`. The
+    // refAllDecls block in main.zig pulls the aliased engine modules in too.
+    const planar_execute_engine_tests = b.addTest(.{ .root_module = execute_exe.root_module, .filters = test_filters_opt });
+    const run_planar_execute_engine_tests = b.addRunArtifact(planar_execute_engine_tests);
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
     test_step.dependOn(&run_agent_exe_tests.step);
     test_step.dependOn(&run_watch_exe_tests.step);
     test_step.dependOn(&run_doc_exe_tests.step);
-    test_step.dependOn(&run_execute_exe_tests.step);
     test_step.dependOn(&run_cli_usage_lint_tests.step);
     test_step.dependOn(&run_db_tests.step);
     test_step.dependOn(&run_cli_tests.step);
     test_step.dependOn(&run_engine_tests.step);
     test_step.dependOn(&run_runtime_tests.step);
+    test_step.dependOn(&run_lua_tests.step);
+    test_step.dependOn(&run_planar_execute_tests.step);
+    test_step.dependOn(&run_planar_execute_engine_tests.step);
 
     // -----------------------------------------------------------------
     // Integration tests. Separate from `zig build test` (mirrors Go's
@@ -671,10 +709,6 @@ fn registerIntegrationTestDir(
         run.setEnvironmentVariable(
             "PLANAR_DOC_BIN",
             b.getInstallPath(.bin, "planar-doc"),
-        );
-        run.setEnvironmentVariable(
-            "PLANAR_EXECUTE_BIN",
-            b.getInstallPath(.bin, "planar-execute"),
         );
         test_integration_step.dependOn(&run.step);
     }

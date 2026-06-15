@@ -51,7 +51,7 @@ The orchestrator selects phases based on the anchor plan's current `status`:
 
 2. **Ingestion (Phase 2)** — anchor plan in `draft` with workbench artifacts present: invokes `pl-spec-ingest <plan>` in preview mode (no `--apply`), presents the diff to the user, and **waits for explicit confirmation** before running `--apply`. Never auto-applies.
 
-3. **Execution (Phase 3)** — anchor plan `active` or `paused`: first reads claim-aware state with `planar plan next <plan>` (operator-side) or `planar-agent peek <plan>` (agent-side dry-run for explicit task IDs), excludes active unexpired claims, and surfaces stale claims before dispatch. Phase 3 then runs **two gates in order** before any coder runs: the **strategy gate** (new — see below), which picks the overall in-pwd methodology for the plan (`classic` / `barrel-deferred` / `barrel-bypass`; the worktree strategies `isolated-sequential` / `parallel-fanout` are owned by the `planar-orchestrate` harness), followed by the **dispatch-shape gate** (existing — `strict` / `grouped` / `single`), which picks the per-cycle batching nested under the chosen strategy. Both gates wait for explicit operator confirmation; both can be pre-committed via flags (`--strategy <name>` / `--strict` / `--grouped` / `--batch`). Before dispatching each cycle the orchestrator acquires the lease atomically via `planar-agent pull <plan>` (or `planar-agent claim --entity task:<id>` for hand-picked targets) and records the returned `claim_token` in the dispatch entry. The model orchestrator runs cycles **sequentially in pwd**. Parallel fan-out — consulting the `entity_links` graph + task touches to find the parallel-eligible subset and dispatching N coders into N worktrees — is owned by the `planar-orchestrate` harness; when a plan is a fit, the strategy gate recommends handing it off rather than running it here. After the coder reports done, the orchestrator runs **Phase 3.5 — test-coder dispatch** (see below): consults `planar test-spec status <plan> --json` and, when the cycle's dispatched slugs intersect the JSON's `uncovered_task_slugs`, dispatches `pl-test-coder`. The output (coder diff alone or the union of coder + test-coder diffs) is routed through `pl-reviewer`. The cycle terminates via one of `planar-agent complete` / `fail` / `release` / `block` (atomic — flips both claim status and task status in a single transaction). Enforces the 5-iteration cap per coder/reviewer cycle (the test-coder cycle has its own cap, default 2), and surfaces escalations (open questions, aborts, ship-with-caveats, failure-surfaced).
+3. **Execution (Phase 3)** — anchor plan `active` or `paused`: first reads claim-aware state with `planar plan next <plan>` (operator-side) or `planar-agent peek <plan>` (agent-side dry-run for explicit task IDs), excludes active unexpired claims, and surfaces stale claims before dispatch. Phase 3 then runs **two gates in order** before any coder runs: the **strategy gate** (new — see below), which picks the overall in-pwd methodology for the plan (`classic` / `barrel-deferred` / `barrel-bypass`; the worktree strategies `isolated-sequential` / `parallel-fanout` are owned by the external `centurion` harness), followed by the **dispatch-shape gate** (existing — `strict` / `grouped` / `single`), which picks the per-cycle batching nested under the chosen strategy. Both gates wait for explicit operator confirmation; both can be pre-committed via flags (`--strategy <name>` / `--strict` / `--grouped` / `--batch`). Before dispatching each cycle the orchestrator acquires the lease atomically via `planar-agent pull <plan>` (or `planar-agent claim --entity task:<id>` for hand-picked targets) and records the returned `claim_token` in the dispatch entry. The model orchestrator runs cycles **sequentially in pwd**. Parallel fan-out — consulting the `entity_links` graph + task touches to find the parallel-eligible subset and dispatching N coders into N worktrees — is owned by the external `centurion` harness; when a plan is a fit, the strategy gate recommends handing it off to `centurion` rather than running it here. After the coder reports done, the orchestrator runs **Phase 3.5 — test-coder dispatch** (see below): consults `planar test-spec status <plan> --json` and, when the cycle's dispatched slugs intersect the JSON's `uncovered_task_slugs`, dispatches `pl-test-coder`. The output (coder diff alone or the union of coder + test-coder diffs) is routed through `pl-reviewer`. The cycle terminates via one of `planar-agent complete` / `fail` / `release` / `block` (atomic — flips both claim status and task status in a single transaction). Enforces the 5-iteration cap per coder/reviewer cycle (the test-coder cycle has its own cap, default 2), and surfaces escalations (open questions, aborts, ship-with-caveats, failure-surfaced).
 
    **Strategy gate (first thing Phase 3 does, after reading claim state).** The orchestrator runs the recommendation algorithm against the plan — see [`agents/methodology.md` § Recommendation algorithm](../../agents/methodology.md#recommendation-algorithm) for the rules (mechanical/docs/single-verb → `barrel-bypass`; multi-milestone roadmap with ≤1 parallel-eligible per milestone → `barrel-deferred`; ≥3 tasks with ≥2 parallel-eligible → `parallel-fanout`; 2–3 tasks none parallel-eligible → `isolated-sequential`; single-task → `classic`; otherwise stickiness then `classic`). It then surfaces:
 
@@ -185,7 +185,7 @@ When dispatching the reviewer, the orchestrator composes a fresh brief — it MU
 
 ## Strategy menu
 
-Before asking the operator to confirm the strategy gate, the orchestrator surfaces the three in-pwd strategies it runs — plus a pointer to the two worktree strategies owned by the `planar-orchestrate` harness — with a one-line trade-off each, plus the `--strategy custom` escape hatch. Strategy answers "what is the overall methodology for this plan?" — dispatch shape (next section) answers "within that strategy, how do I batch *this cycle's* work?"
+Before asking the operator to confirm the strategy gate, the orchestrator surfaces the three in-pwd strategies it runs — plus a pointer to the two worktree strategies owned by the external `centurion` harness — with a one-line trade-off each, plus the `--strategy custom` escape hatch. Strategy answers "what is the overall methodology for this plan?" — dispatch shape (next section) answers "within that strategy, how do I batch *this cycle's* work?"
 
 ```
   classic                Coder runs in operator's pwd on the current
@@ -199,9 +199,9 @@ Before asking the operator to confirm the strategy gate, the orchestrator surfac
   isolated-sequential    Worktree on an epic-child branch; sequential.
   parallel-fanout        N coders fanned out, each in its own worktree;
                          reviewer at fan-in.
-                         [both OWNED BY planar-orchestrate, NOT
+                         [both OWNED BY the external centurion harness, NOT
                          run by this model orchestrator — hand the plan to
-                         the harness for worktree / parallel execution]
+                         centurion for worktree / parallel execution]
 
   barrel-deferred        Coder cycles run back-to-back in pwd; reviewer
                          dispatched once at a milestone or plan boundary
@@ -247,7 +247,7 @@ The promise: introducing the strategy menu does not require existing operators t
 These two strategies require deterministic worktree creation, epic/cycle branch
 management, fan-in merging, and (for `parallel-fanout`) parallel-eligibility
 analysis and conflict isolation. That machinery is **owned by the
-`planar-orchestrate` harness**, not this model-driven orchestrator
+external `centurion` harness**, not this model-driven orchestrator
 skill. This skill does not create worktrees, cut epic branches, run fan-in
 merges, or fan out coders — it runs `classic` and the barrel strategies in the
 operator's pwd.
@@ -255,9 +255,9 @@ operator's pwd.
 When a plan is a fit for worktree isolation or parallel fan-out (≥3 tasks with
 ≥2 parallel-eligible, or a multi-task plan where pwd hygiene matters), the
 strategy recommendation surfaces that fit and the operator runs the plan through
-`planar-orchestrate`. The full worktree lifecycle, the branch/path naming
+`centurion`. The full worktree lifecycle, the branch/path naming
 scheme, the six parallel-eligibility rules, and the fan-in conflict protocol
-live in the harness design documentation.
+live in the `centurion` harness design documentation.
 
 ## Dispatch shape options
 
@@ -275,7 +275,7 @@ Once the strategy is chosen, the orchestrator runs the dispatch-shape gate **nes
   single           All tasks in one coder cycle; one reviewer pass.
                    [tiny features only] — Decomposition is theatre.
 
-  fan-out          (harness-owned — planar-orchestrate; not
+  fan-out          (harness-owned — centurion; not
                    run by this skill) N parallel coders + N worktrees,
                    single reviewer at fan-in.
 
