@@ -614,6 +614,11 @@ pub const ReconcilePolicy = struct {
     /// When non-null, scope the sweep to this session only.
     /// Null = global sweep (all sessions), the default.
     session_id: ?i64 = null,
+    /// When non-null, scope the sweep to claims/actions whose entity
+    /// belongs to the given plan (entity_kind='plan' AND entity_id=N,
+    /// or entity_kind='task' AND tasks.plan_id=N).
+    /// Null = global sweep (all plans), the default.
+    plan_id: ?i64 = null,
 };
 
 pub const ReconcileResult = struct {
@@ -670,16 +675,64 @@ pub fn reconcileStale(
 
     var stmt = d.prepare(sel_sql) catch return Error.QueryFailed;
     defer stmt.finalize();
+    var all_candidates: std.ArrayList(types.Claim) = .empty;
+    errdefer {
+        for (all_candidates.items) |c| c.deinit(allocator);
+        all_candidates.deinit(allocator);
+    }
+    while (true) {
+        switch (stmt.step() catch return Error.QueryFailed) {
+            .done => break,
+            .row => try all_candidates.append(allocator, try readClaimRow(&stmt, allocator)),
+        }
+    }
+
+    // When plan_id is set, filter candidates to those belonging to that plan.
+    // A claim belongs to a plan if entity_kind='plan' and entity_id=plan_id,
+    // or entity_kind='task' and the task's plan_id matches.
     var candidates: std.ArrayList(types.Claim) = .empty;
     errdefer {
         for (candidates.items) |c| c.deinit(allocator);
         candidates.deinit(allocator);
     }
-    while (true) {
-        switch (stmt.step() catch return Error.QueryFailed) {
-            .done => break,
-            .row => try candidates.append(allocator, try readClaimRow(&stmt, allocator)),
+    if (policy.plan_id) |pid| {
+        for (all_candidates.items) |c| {
+            const belongs = switch (c.entity_kind) {
+                .plan => c.entity_id == pid,
+                .task => blk: {
+                    var pstmt = d.prepare(
+                        "select coalesce(plan_id, -1) from tasks where id = ?",
+                    ) catch break :blk false;
+                    defer pstmt.finalize();
+                    pstmt.bind(&.{.{ .int = c.entity_id }}) catch break :blk false;
+                    const step = pstmt.step() catch break :blk false;
+                    if (step != .row) break :blk false;
+                    break :blk pstmt.columnInt(0) == pid;
+                },
+                .plan_step => blk: {
+                    var pstmt = d.prepare(
+                        "select plan_id from plan_steps where id = ?",
+                    ) catch break :blk false;
+                    defer pstmt.finalize();
+                    pstmt.bind(&.{.{ .int = c.entity_id }}) catch break :blk false;
+                    const step = pstmt.step() catch break :blk false;
+                    if (step != .row) break :blk false;
+                    break :blk pstmt.columnInt(0) == pid;
+                },
+            };
+            if (belongs) {
+                try candidates.append(allocator, c);
+            } else {
+                c.deinit(allocator);
+            }
         }
+        all_candidates.clearAndFree(allocator);
+    } else {
+        // No plan filter: move all_candidates into candidates directly.
+        for (all_candidates.items) |c| {
+            try candidates.append(allocator, c);
+        }
+        all_candidates.clearAndFree(allocator);
     }
 
     var result: ReconcileResult = .{};
@@ -688,29 +741,47 @@ pub fn reconcileStale(
         return result;
     }
 
-    // Apply the mark-stale UPDATE scoped to the session when set.
-    var upd_buf: [640]u8 = undefined;
-    const upd_sql = if (policy.session_id) |sid|
-        std.fmt.bufPrintZ(&upd_buf,
-            \\update agent_work_claims
-            \\set status = 'stale',
-            \\    released_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
-            \\    release_reason = 'reconcile: heartbeat expired'
-            \\where status = 'active'
-            \\  and lease_expires_at < strftime('%Y-%m-%dT%H:%M:%fZ','now', '-{d} seconds')
-            \\  and session_id = {d}
-        , .{ policy.stale_after_secs, sid }) catch return Error.QueryFailed
-    else
-        std.fmt.bufPrintZ(&upd_buf,
-            \\update agent_work_claims
-            \\set status = 'stale',
-            \\    released_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
-            \\    release_reason = 'reconcile: heartbeat expired'
-            \\where status = 'active'
-            \\  and lease_expires_at < strftime('%Y-%m-%dT%H:%M:%fZ','now', '-{d} seconds')
-        , .{policy.stale_after_secs}) catch return Error.QueryFailed;
-    _ = d.execParams(upd_sql, &.{}) catch return Error.QueryFailed;
-    result.claims_marked_stale = @intCast(candidates.items.len);
+    // Apply the mark-stale UPDATE.
+    // When plan_id is set, update only the specific filtered claim IDs to
+    // avoid touching claims on other plans. When no plan filter, use the
+    // bulk UPDATE scoped to session_id (or global) for efficiency.
+    if (policy.plan_id != null) {
+        // Per-ID UPDATE for the plan-scoped path.
+        for (candidates.items) |c| {
+            _ = d.execParams(
+                \\update agent_work_claims
+                \\set status = 'stale',
+                \\    released_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+                \\    release_reason = 'reconcile: heartbeat expired'
+                \\where id = ? and status = 'active'
+            , &.{.{ .int = c.id }}) catch return Error.QueryFailed;
+        }
+        result.claims_marked_stale = @intCast(candidates.items.len);
+    } else {
+        // Bulk UPDATE scoped to session when set.
+        var upd_buf: [640]u8 = undefined;
+        const upd_sql = if (policy.session_id) |sid|
+            std.fmt.bufPrintZ(&upd_buf,
+                \\update agent_work_claims
+                \\set status = 'stale',
+                \\    released_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+                \\    release_reason = 'reconcile: heartbeat expired'
+                \\where status = 'active'
+                \\  and lease_expires_at < strftime('%Y-%m-%dT%H:%M:%fZ','now', '-{d} seconds')
+                \\  and session_id = {d}
+            , .{ policy.stale_after_secs, sid }) catch return Error.QueryFailed
+        else
+            std.fmt.bufPrintZ(&upd_buf,
+                \\update agent_work_claims
+                \\set status = 'stale',
+                \\    released_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+                \\    release_reason = 'reconcile: heartbeat expired'
+                \\where status = 'active'
+                \\  and lease_expires_at < strftime('%Y-%m-%dT%H:%M:%fZ','now', '-{d} seconds')
+            , .{policy.stale_after_secs}) catch return Error.QueryFailed;
+        _ = d.execParams(upd_sql, &.{}) catch return Error.QueryFailed;
+        result.claims_marked_stale = @intCast(candidates.items.len);
+    }
 
     // Orphaned actions: ended_at IS NULL and the owning session has
     // ended. Close them with outcome='aborted' and the session's

@@ -33,6 +33,7 @@ pub const verb: cli.Cmd = .{
         .{ .long = "--dry-run", .kind = .bool, .default = .{ .bool = false }, .desc = "Report candidates without writing" },
         .{ .long = "--stale-after", .kind = .string, .default = .{ .string = "0" }, .desc = "Additional grace beyond lease expiry (default 0s; accepts bare int seconds or suffixed duration: 10m, 1h, 500ms)" },
         .{ .long = "--session", .kind = .int, .default = .{ .int = 0 }, .desc = "Scope the sweep to a single session id (0 = global sweep, the default)" },
+        .{ .long = "--plan", .kind = .int, .desc = "Scope the sweep to claims/actions/runs belonging to this plan id (0 or absent = global sweep)" },
         .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
     },
     .run = cli.handler(handle),
@@ -69,17 +70,28 @@ const RunCandidate = struct {
 /// reconcileRuns finds running workflow_runs rows whose harness PID is dead
 /// and marks them `abandoned`. Returns the count of rows abandoned.
 /// In dry_run mode returns the candidates slice and does NOT write.
+/// When plan_id is non-null, only rows belonging to that plan are considered.
 /// MUST be called inside `BEGIN IMMEDIATE` (when not dry_run) — the caller
 /// in `handle` owns the transaction.
 fn reconcileRuns(
     d: *db.sqlite.Db,
     allocator: std.mem.Allocator,
     dry_run: bool,
+    plan_id: ?i64,
 ) !struct { abandoned: i64, candidates: []RunCandidate } {
     // Select all 'running' rows (there should rarely be more than a handful).
-    var stmt = try d.prepare(
-        "select id, run_identifier, pid, plan_id from workflow_runs where status = 'running'",
-    );
+    // When plan_id is set, scope to that plan.
+    var sel_buf: [256]u8 = undefined;
+    const sel_sql: [:0]const u8 = if (plan_id) |pid|
+        std.fmt.bufPrintZ(
+            &sel_buf,
+            "select id, run_identifier, pid, plan_id from workflow_runs" ++
+                " where status = 'running' and plan_id = {d}",
+            .{pid},
+        ) catch return error.QueryFailed
+    else
+        "select id, run_identifier, pid, plan_id from workflow_runs where status = 'running'";
+    var stmt = try d.prepare(sel_sql);
     defer stmt.finalize();
 
     var dead: std.ArrayList(RunCandidate) = .empty;
@@ -96,14 +108,14 @@ fn reconcileRuns(
                 const rid = try stmt.columnTextAlloc(1, allocator);
                 errdefer allocator.free(rid);
                 const pid = stmt.columnInt(2);
-                const plan_id = stmt.columnInt(3);
+                const row_plan_id = stmt.columnInt(3);
 
                 if (!pidAlive(pid)) {
                     try dead.append(allocator, .{
                         .id = row_id,
                         .run_identifier = rid,
                         .pid = pid,
-                        .plan_id = plan_id,
+                        .plan_id = row_plan_id,
                     });
                 } else {
                     allocator.free(rid);
@@ -145,10 +157,13 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
         d.exec("BEGIN IMMEDIATE") catch |e| exit.die(ctx, e, "BEGIN IMMEDIATE: {s}", .{@errorName(e)});
     }
 
+    const plan_id_opt: ?i64 = if (args.plan) |p| (if (p > 0) p else null) else null;
+
     const result = store.reconcileStale(d, ctx.allocator, .{
         .stale_after_secs = stale_after_secs,
         .dry_run = args.dry_run,
         .session_id = if (args.session > 0) args.session else null,
+        .plan_id = plan_id_opt,
     }) catch |e| {
         if (!args.dry_run) d.exec("ROLLBACK") catch {};
         exit.die(ctx, e, "reconcile: {s}", .{@errorName(e)});
@@ -156,7 +171,7 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
     defer result.deinit(ctx.allocator);
 
     // Run sweep: probe pid liveness for each `running` workflow_runs row.
-    const run_result = reconcileRuns(d, ctx.allocator, args.dry_run) catch |e| {
+    const run_result = reconcileRuns(d, ctx.allocator, args.dry_run, plan_id_opt) catch |e| {
         if (!args.dry_run) d.exec("ROLLBACK") catch {};
         exit.die(ctx, e, "reconcile runs: {s}", .{@errorName(e)});
     };
@@ -257,7 +272,7 @@ test "reconcileRuns: dead-pid row is marked abandoned (dry_run=false)" {
     const dead_pid: i64 = 2147483600;
     const row_id = try insertRunningRow(&d, plan_id, "run-dead-1", dead_pid);
 
-    const res = try reconcileRuns(&d, a, false);
+    const res = try reconcileRuns(&d, a, false, null);
     defer {
         for (res.candidates) |c| c.deinit(a);
         a.free(res.candidates);
@@ -288,7 +303,7 @@ test "reconcileRuns: dry_run returns candidates without writing" {
     const dead_pid: i64 = 2147483600;
     _ = try insertRunningRow(&d, plan_id, "run-dead-dry", dead_pid);
 
-    const res = try reconcileRuns(&d, a, true);
+    const res = try reconcileRuns(&d, a, true, null);
     defer {
         for (res.candidates) |c| c.deinit(a);
         a.free(res.candidates);
@@ -325,7 +340,7 @@ test "reconcileRuns: live-pid row is NOT marked abandoned" {
     const live_pid: i64 = @intCast(std.c.getpid());
     _ = try insertRunningRow(&d, plan_id, "run-live-1", live_pid);
 
-    const res = try reconcileRuns(&d, a, false);
+    const res = try reconcileRuns(&d, a, false, null);
     defer {
         for (res.candidates) |c| c.deinit(a);
         a.free(res.candidates);
@@ -350,7 +365,7 @@ test "reconcileRuns: non-positive pid treated as dead (guard against kill(-1,0) 
     // Insert a row with pid=-1 (malformed/stale payload).
     _ = try insertRunningRow(&d, plan_id, "run-neg-pid", -1);
 
-    const res = try reconcileRuns(&d, a, false);
+    const res = try reconcileRuns(&d, a, false, null);
     defer {
         for (res.candidates) |c| c.deinit(a);
         a.free(res.candidates);
