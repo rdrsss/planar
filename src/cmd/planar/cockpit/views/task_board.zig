@@ -275,14 +275,12 @@ pub fn render(
     detail_win: Window,
     allocator: std.mem.Allocator,
 ) !void {
-    _ = allocator;
-
-    renderNavigator(state, nav_win);
-    try renderDetail(state, detail_win);
+    renderNavigator(state, nav_win, allocator);
+    try renderDetail(state, detail_win, allocator);
 }
 
 /// Render the navigator pane (left).
-fn renderNavigator(state: *const BoardState, win: Window) void {
+fn renderNavigator(state: *const BoardState, win: Window, arena: std.mem.Allocator) void {
     if (win.height == 0 or win.width == 0) return;
 
     if (state.entries.len == 0) {
@@ -341,10 +339,12 @@ fn renderNavigator(state: *const BoardState, win: Window) void {
 
                 // Build the row text: "[badge] [*] title"
                 // [*] marks a task with an active claim.
-                var buf: [256]u8 = undefined;
+                // Use arena allocation so the slice remains valid through
+                // vaxis.render() — a stack-local buf would dangle after
+                // renderNavigator returns.
                 const claim_marker: []const u8 = if (t.has_claim) "[*] " else "    ";
-                const text = std.fmt.bufPrint(
-                    &buf,
+                const text = std.fmt.allocPrint(
+                    arena,
                     "[{s}] {s}{s}",
                     .{ t.badge.glyph(), claim_marker, t.title },
                 ) catch t.title;
@@ -377,7 +377,7 @@ fn renderNavigator(state: *const BoardState, win: Window) void {
 ///   "Reopen history" section (4019)
 ///   "Touch paths" section (4019)
 ///   "Blocked by:" / "Blocks:" sections (4020)
-fn renderDetail(state: *const BoardState, win: Window) !void {
+fn renderDetail(state: *const BoardState, win: Window, arena: std.mem.Allocator) !void {
     if (win.height == 0 or win.width == 0) return;
 
     const detail = state.detail orelse {
@@ -391,15 +391,16 @@ fn renderDetail(state: *const BoardState, win: Window) !void {
     var row: u16 = 0;
 
     // Title row.
+    // Slice into detail.title (heap-allocated) for each byte — stable
+    // grapheme pointer that outlives renderDetail's stack frame.
     if (detail.title.len > 0 and row < win.height) {
         const title_style: Style = .{ .bold = true };
         var col: usize = 0;
-        for (detail.title) |byte| {
+        for (detail.title, 0..) |byte, ti| {
             if (col >= win.width) break;
             if (byte & 0x80 == 0) {
-                const ch: [1]u8 = .{byte};
                 win.writeCell(@intCast(col), row, .{
-                    .char = .{ .grapheme = &ch, .width = 1 },
+                    .char = .{ .grapheme = detail.title[ti .. ti + 1], .width = 1 },
                     .style = title_style,
                 });
                 col += 1;
@@ -454,9 +455,10 @@ fn renderDetail(state: *const BoardState, win: Window) !void {
             .width = win.width,
             .height = body_h,
         });
-        var buf: [8192]u8 = undefined;
-        var fba = std.heap.FixedBufferAllocator.init(&buf);
-        try markdown_detail.render(body_win, fba.allocator(), detail.body);
+        // Pass the frame arena to markdown_detail.render so its internal
+        // writeCell calls for individual characters use arena-allocated
+        // grapheme slices that outlive renderDetail's stack frame.
+        try markdown_detail.render(body_win, arena, detail.body);
         row = body_start + body_h;
     }
 
@@ -477,14 +479,14 @@ fn renderDetail(state: *const BoardState, win: Window) !void {
 
         for (detail.reopens) |reo| {
             if (row >= win.height) break;
-            var buf: [256]u8 = undefined;
+            // Use arena allocation so the slice remains valid through vaxis.render().
             const reason_part = reo.reason orelse "";
             const text = if (reason_part.len > 0)
-                std.fmt.bufPrint(&buf, "  {s} -> {s}  [{s}]  {s}", .{
+                std.fmt.allocPrint(arena, "  {s} -> {s}  [{s}]  {s}", .{
                     reo.from_status, reo.to_status, reo.source, reason_part,
                 }) catch reo.from_status
             else
-                std.fmt.bufPrint(&buf, "  {s} -> {s}  [{s}]", .{
+                std.fmt.allocPrint(arena, "  {s} -> {s}  [{s}]", .{
                     reo.from_status, reo.to_status, reo.source,
                 }) catch reo.from_status;
             _ = win.printSegment(.{
@@ -998,7 +1000,12 @@ test "task_board: renderDetail renders reopens + touch_paths + links (tasks 4019
     };
 
     // Render the detail pane into the real screen.
-    try renderDetail(&state, detail_win);
+    // Use an arena so that allocPrint calls inside renderDetail do not
+    // leak when inspected by testing.allocator (render functions own no
+    // arena; the arena is reset each frame by renderFrame).
+    var render_arena = std.heap.ArenaAllocator.init(a);
+    defer render_arena.deinit();
+    try renderDetail(&state, detail_win, render_arena.allocator());
 
     // Collect all rendered text from the screen buffer.
     var rendered: std.ArrayList(u8) = .empty;

@@ -183,14 +183,13 @@ pub fn render(
     detail_win: Window,
     allocator: std.mem.Allocator,
 ) !void {
-    _ = allocator;
     switch (state.mode) {
         .scenarios => {
             renderScenarioNavigator(state, nav_win);
             try renderScenarioDetail(state, detail_win);
         },
         .gaps => {
-            renderGapNavigator(state, nav_win);
+            renderGapNavigator(state, nav_win, allocator);
             renderGapDetail(state, detail_win);
         },
     }
@@ -372,7 +371,7 @@ fn renderScenarioDetail(state: *const CoverageState, win: Window) !void {
 ///   "  Uncovered tasks:  N"
 ///   ""
 ///   "  [g] back to list"
-fn renderGapNavigator(state: *const CoverageState, win: Window) void {
+fn renderGapNavigator(state: *const CoverageState, win: Window, arena: std.mem.Allocator) void {
     if (win.height == 0 or win.width == 0) return;
 
     var row: u16 = 0;
@@ -385,10 +384,9 @@ fn renderGapNavigator(state: *const CoverageState, win: Window) void {
     if (row >= win.height) return;
 
     if (state.gap) |g| {
-        // Orphan scenarios count line — heap-free-safe via stack buf.
-        var count_buf: [64]u8 = undefined;
-        const orphan_line = std.fmt.bufPrint(
-            &count_buf,
+        // Use arena allocation so slices remain valid through vaxis.render().
+        const orphan_line = std.fmt.allocPrint(
+            arena,
             "  Orphan scenarios: {d}",
             .{g.orphan_scenarios.len},
         ) catch "  Orphan scenarios: ?";
@@ -399,9 +397,8 @@ fn renderGapNavigator(state: *const CoverageState, win: Window) void {
         row += 1;
         if (row >= win.height) return;
 
-        var count_buf2: [64]u8 = undefined;
-        const uncov_line = std.fmt.bufPrint(
-            &count_buf2,
+        const uncov_line = std.fmt.allocPrint(
+            arena,
             "  Uncovered tasks:  {d}",
             .{g.uncovered_tasks.len},
         ) catch "  Uncovered tasks:  ?";

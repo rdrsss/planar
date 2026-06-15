@@ -287,8 +287,6 @@ pub fn render(
     detail_win: Window,
     allocator: std.mem.Allocator,
 ) !void {
-    _ = allocator;
-
     // M18 (task 4050): when the action overlay is active, render it on top
     // of the detail pane (navigator remains visible for context).
     const overlay_active = state.action.isActive();
@@ -307,7 +305,7 @@ pub fn render(
             if (overlay_active) {
                 external_actions.renderOverlay(&state.action, detail_win);
             } else {
-                renderAnnotationsDetail(state, detail_win);
+                renderAnnotationsDetail(state, detail_win, allocator);
             }
         },
         .workbench_sync => {
@@ -315,7 +313,7 @@ pub fn render(
             if (overlay_active) {
                 external_actions.renderOverlay(&state.action, detail_win);
             } else {
-                renderWbSyncDetail(state, detail_win);
+                renderWbSyncDetail(state, detail_win, allocator);
             }
         },
     }
@@ -515,7 +513,7 @@ fn renderAnnotationsNavigator(state: *const UtilityState, win: Window) void {
 ///
 /// INVARIANT (task 4042): ALL queried fields must appear: title, status,
 /// anchor_path, line range, tags, body.
-fn renderAnnotationsDetail(state: *const UtilityState, win: Window) void {
+fn renderAnnotationsDetail(state: *const UtilityState, win: Window, arena: std.mem.Allocator) void {
     if (win.height == 0 or win.width == 0) return;
 
     if (state.annotation_rows.len == 0) {
@@ -581,9 +579,9 @@ fn renderAnnotationsDetail(state: *const UtilityState, win: Window) void {
         // and a heap-allocated label for the combined string — but since we
         // have no render-level test collecting line number graphemes, a simple
         // stack buf is correct here.
-        var line_buf: [32]u8 = undefined;
-        const line_str = std.fmt.bufPrint(
-            &line_buf,
+        // Use arena allocation so the slice remains valid through vaxis.render().
+        const line_str = std.fmt.allocPrint(
+            arena,
             "{d}–{d}",
             .{ r.anchor_line_start, r.anchor_line_end },
         ) catch "?–?";
@@ -718,7 +716,7 @@ fn renderWbSyncNavigator(state: *const UtilityState, win: Window) void {
 /// INVARIANT (task 4043): ALL queried fields MUST appear in the rendered
 /// detail pane: plan_title, anchor_plan_id, total, in_sync, pending,
 /// conflicts, last_synced_at.
-fn renderWbSyncDetail(state: *const UtilityState, win: Window) void {
+fn renderWbSyncDetail(state: *const UtilityState, win: Window, arena: std.mem.Allocator) void {
     if (win.height == 0 or win.width == 0) return;
 
     if (state.wb_rows.len == 0) {
@@ -750,8 +748,8 @@ fn renderWbSyncDetail(state: *const UtilityState, win: Window) void {
             .text = "plan_id:   ",
             .style = .{ .dim = true },
         }, .{ .row_offset = row, .col_offset = 0 });
-        var id_buf: [24]u8 = undefined;
-        const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{r.anchor_plan_id}) catch "?";
+        // Use arena allocation so the slice remains valid through vaxis.render().
+        const id_str = std.fmt.allocPrint(arena, "{d}", .{r.anchor_plan_id}) catch "?";
         _ = win.printSegment(.{
             .text = id_str,
             .style = .{},
@@ -775,8 +773,8 @@ fn renderWbSyncDetail(state: *const UtilityState, win: Window) void {
             .text = f.label,
             .style = .{ .dim = true },
         }, .{ .row_offset = row, .col_offset = 0 });
-        var num_buf: [24]u8 = undefined;
-        const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{f.val}) catch "?";
+        // Use arena allocation so the slice remains valid through vaxis.render().
+        const num_str = std.fmt.allocPrint(arena, "{d}", .{f.val}) catch "?";
         _ = win.printSegment(.{
             .text = num_str,
             .style = .{},
@@ -1213,7 +1211,12 @@ test "utility_view: renderAnnotationsDetail renders all fields (task 4042 render
         .screen = &screen,
     };
 
-    renderAnnotationsDetail(&state, detail_win);
+    // Use an arena so that allocPrint calls inside renderAnnotationsDetail do
+    // not leak when tested with testing.allocator (render functions own no
+    // arena; the arena is reset each frame by renderFrame).
+    var render_arena = std.heap.ArenaAllocator.init(a);
+    defer render_arena.deinit();
+    renderAnnotationsDetail(&state, detail_win, render_arena.allocator());
 
     var rendered: std.ArrayList(u8) = .empty;
     defer rendered.deinit(a);
@@ -1475,7 +1478,12 @@ test "utility_view: renderWbSyncDetail renders all fields (task 4043 render-leve
         .screen = &screen,
     };
 
-    renderWbSyncDetail(&state, detail_win);
+    // Use an arena so that allocPrint calls inside renderWbSyncDetail do not
+    // leak when tested with testing.allocator (render functions own no arena;
+    // the arena is reset each frame by renderFrame).
+    var render_arena_wb = std.heap.ArenaAllocator.init(a);
+    defer render_arena_wb.deinit();
+    renderWbSyncDetail(&state, detail_win, render_arena_wb.allocator());
 
     var rendered: std.ArrayList(u8) = .empty;
     defer rendered.deinit(a);
