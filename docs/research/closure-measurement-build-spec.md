@@ -155,7 +155,7 @@ planar run finish  <run_uid> --status <completed|aborted|error>
 planar run show    <run_uid> [--json]
 
 # M2+
-planar closure compute <task-id> [--json]    -- run extractor, write `closures`
+planar closure compute <task-id> [--json]    -- run extractor, write `closures`   cli-lint-ignore
 planar closure show    <task-id> [--json]
 
 # M3

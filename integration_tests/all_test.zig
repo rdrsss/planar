@@ -80,6 +80,7 @@ comptime {
     _ = @import("explore_test.zig");
 
     _ = @import("bench_lifecycle_test.zig");
+    _ = @import("closure_compute_show_test.zig");
 
     _ = @import("scenarios/scenario_cockpit_entry_test.zig");
     _ = @import("scenarios/scenario_annotations_test.zig");
