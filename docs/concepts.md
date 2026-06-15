@@ -6,7 +6,9 @@ This document explains the core concepts in Planar. Read it after `planar init` 
 
 ## Binaries
 
-Planar ships as four planning-state executables, each with a disjoint capability boundary enforced **by the verb set the binary registers** (not by runtime ACLs). The boundary is a compile-time and install-time property: the binary on PATH literally has no verb for the work it is not allowed to do. This makes vendor-hook blast radius bounded — a hook configured with only `planar-agent` on its PATH cannot mutate planning state regardless of how it is invoked.
+Planar ships as five executables. Four are **planning-state executables**, each with a disjoint capability boundary over the shared SQLite DB enforced **by the verb set the binary registers** (not by runtime ACLs). The boundary is a compile-time and install-time property: the binary on PATH literally has no verb for the work it is not allowed to do. This makes vendor-hook blast radius bounded — a hook configured with only `planar-agent` on its PATH cannot mutate planning state regardless of how it is invoked.
+
+The fifth, `planar-execute`, is **not** a planning-state executable: it is the deterministic, spawn-free Lua workflow engine (plan 633) and holds no DB handle at all. A caller invokes `planar-execute run <wf.lua> --phase <name>` to run a deterministic workflow over an allowlisted host surface (`cli`/`git`/`fs`/`flow`/`ctx`) and collect its JSON result; it reaches Planar state only by shelling the planning-state binaries. It exposes no model-spawning host function, so it is a workflow *runner*, not a harness. See [the workflow-engine section](#deterministic-workflow-engine) below; do not conflate it with `centurion`, the separate external full-harness project described under [External workflow harness control plane](#external-workflow-harness-control-plane).
 
 | Binary | Audience | Writes to |
 |---|---|---|
@@ -25,11 +27,31 @@ All three invariants are locked by `integration_tests/capability_boundary_test.z
 
 The ritual every code-writing agent dispatch follows is `planar-agent pull → heartbeat → complete|fail|release|block` (atomic across all three tables). See [agents/methodology.md § Coordination claims](../agents/methodology.md#coordination-claims) and the tech spec § "Agent methodology contract" for the full sequence.
 
+`planar-execute` is deliberately **outside** this ritual: it is a workflow engine the caller invokes, not an agent-table writer, and holds no DB handle. When a workflow needs to participate in a claim, it does so by shelling `planar-agent` verbs through the `cli` host function — exactly as any other caller would — never by holding a claim itself.
+
+---
+
+## Deterministic workflow engine
+
+`planar-execute` (revived in plan 633) is a deterministic, spawn-free Lua workflow engine — the fifth binary. An LLM caller (or any script) invokes `planar-execute run <wf.lua> --phase <name> [--args <json>]`; the engine loads the workflow in a Lua sandbox, registers an allowlisted, deterministic host surface, runs the named phase, and prints the workflow's `flow.result(table)` payload as JSON on stdout. It is the deterministic counterpart to the external `centurion` harness: where `centurion` orchestrates LLM calls, `planar-execute` runs only deterministic work and hands control back to its caller for any model step.
+
+### No DB handle, no model spawn
+
+`planar-execute` holds **no SQLite handle**. It reaches Planar state only by shelling the planning-state binaries via the `cli` host function (`cli.planar` / `cli.planar_json` — binary hardcoded to `planar`/`planar-agent`/`planar-watch`, the script supplies only args). It exposes **no** model-spawning primitive — no `agent`, `parallel`, `pipeline`, `dispatch`, `exec`, or any process-spawn function. This is the load-bearing invariant: an earlier `planar-execute` grew re-entrant headless LLM spawning and became a harness in its own right, which is why it was extracted to `centurion`; the revival reigns that scope back in by construction. A unit test asserts the registered host-fn set equals a frozen allowlist and contains none of the denied spawn-surface names.
+
+### Confined host surface
+
+The host functions are grouped: `cli.*` (allowlisted shell of the planar binaries), `git.*` (a `-C <worktree>`-confined group — the host injects the worktree dir, the script cannot name it), `fs.*` (read/write/exists/mkdir, path-confined to the sandbox root — `..` and absolute paths rejected), `flow.*` (pure: `log`, `phase`, `fail`, `result`), and `ctx.*` (deterministic planner reads — `plan_show`, `task_show`, `recommend_strategy`, `brief`, etc.). The Lua sandbox additionally nils `os`, `io`, `load`, `loadfile`, `loadstring`, `require`, `dofile`, and `math.random` so a workflow script cannot perform I/O or nondeterministic work from Lua itself.
+
+### Hand-back model
+
+Phases are discrete entrypoints — one clean process per deterministic segment. A setup phase runs, the engine exits, the caller does the LLM coder/reviewer step, then a measure phase runs in a fresh process. No coroutine parks awaiting a worker (that resume point is exactly where re-entrant spawning regrew); arm/repetition sequencing lives in the caller's loop, not in the engine.
+
 ---
 
 ## External workflow harness control plane
 
-`centurion` (the external Lua-based workflow harness, extracted from plan 492) drives `claude -p` agent workers through a `ctx` host-function surface. It is architecturally distinct from the four planning-state binaries: it holds **no DB handle** and never opens SQLite. All state reads go through `planar` / `planar-agent` subprocesses; the workflow script cannot write directly to any database or planning entity.
+`centurion` (the external Lua-based workflow harness, extracted from plan 492) drives `claude -p` agent workers through a `ctx` host-function surface. It is a **separate external project**, not part of the Planar binary set, and must not be confused with the in-repo deterministic `planar-execute` engine described above: `centurion` orchestrates LLM calls (it *is* a harness, with `ctx.agent` / `ctx.parallel` / `ctx.pipeline` spawn surfaces), whereas `planar-execute` runs only deterministic work and exposes no model-spawn function. `centurion` is architecturally distinct from the four planning-state binaries: it holds **no DB handle** and never opens SQLite. All state reads go through `planar` / `planar-agent` subprocesses; the workflow script cannot write directly to any database or planning entity.
 
 ### No-DB-handle stance
 
