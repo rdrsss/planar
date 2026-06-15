@@ -18,7 +18,7 @@ flowchart TD
 
     subgraph Binaries["planar CLI (four binaries — disjoint write surfaces)"]
         direction LR
-        B1["<b>planar</b><br/>operator RW<br/>planning entities"]
+        B1["<b>planar</b><br/>operator RW<br/>planning entities + cockpit TUI"]
         B2["<b>planar-agent</b><br/>agent RW<br/>agent_actions + claims"]
         B3["<b>planar-watch</b><br/>read-only viewer<br/>file:?mode=ro"]
         B4["<b>planar-doc</b><br/>repo-state manifest<br/>.planar-manifest only"]
@@ -36,7 +36,7 @@ flowchart TD
 
 Two layers are touched by users and agents:
 
-1. **The Planar binaries** — four Zig executables that share one schema and one engine module. `planar` is the operator surface; `planar-agent` is the agent-callable coordination binary; `planar-watch` is a read-only viewer; `planar-doc` is the repo-state documentation-manifest tool (no SQLite access at all — its only write is `.planar-manifest` at the repo root). The split is enforced **by each binary's verb set** at compile time, not by runtime ACLs. See [Four-binary architecture](#four-binary-architecture) below for the full capability matrix.
+1. **The Planar binaries** — four Zig executables that share one schema and one engine module. `planar` is the operator surface and also hosts the interactive cockpit (bare `planar` on a TTY / `planar explore`); `planar-agent` is the agent-callable coordination binary; `planar-watch` is a read-only viewer (unchanged — NDJSON streaming, `file:?mode=ro`, no cockpit); `planar-doc` is the repo-state documentation-manifest tool (no SQLite access at all — its only write is `.planar-manifest` at the repo root). The split is enforced **by each binary's verb set** at compile time, not by runtime ACLs. See [Four-binary architecture](#four-binary-architecture) and [Interactive cockpit — embedded in `planar`](#interactive-cockpit--embedded-in-planar) below for the full capability matrix.
 2. **The skill and agent layer** — vendor-specific command surfaces (Claude slash commands, Codex skills, Copilot skills) generated from a single source tree under `skills/src/` at install time. Skills invoke binary verbs; binary verbs operate on SQLite.
 
 An LLM agent running a skill has no direct database access. It calls Planar verbs and reads their stdout.
@@ -141,6 +141,31 @@ The `planar-agent run start/end` verbs and the `planar-agent context add/list/re
 
 The shared engine module lives at `src/engine/runtime/agentactivity/`; per-binary handlers live under `src/cmd/<binary>/handlers/`. `planar-agent` carries the full coordination surface; `planar-watch` carries the read-only viewer surface (`feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `run`, `version`, `completion`, `schema`) with a Tier-2 event-driven `--follow` loop.
 
+### Interactive cockpit — embedded in `planar`
+
+The `planar` binary embeds an interactive TUI cockpit (plan 591). Bare `planar` on a TTY launches it (landing on the Scope Explorer); `planar explore` is the explicit alias. Non-TTY contexts, `TERM=dumb`, `PLANAR_NO_TUI`, and `--plain` all fall back to the existing help/usage output — the cockpit never activates in automated pipelines.
+
+**Why `planar`, not `planar-watch`:** the cockpit offers three editing tiers (entity-field editing, claim-aware task lifecycle transitions, external/workbench actions). Editing requires a read-write DB handle, which is structurally incompatible with `planar-watch`'s `SQLITE_OPEN_READONLY` driver. `planar-watch` is **unchanged** — it remains the scriptable, zero-write, NDJSON-streaming viewer whose `capability_boundary_test.zig` invariants stand. The cockpit's placement in `planar` preserves the four-binary capability model.
+
+**No schema change.** The cockpit's views are read-only projections of existing tables (see the data-source table in the tech spec). Editing reuses the existing engine write paths and guards — no new tables, columns, or write code.
+
+**Cockpit source layout under `src/cmd/planar/cockpit/`:**
+
+| Path | Role |
+|------|------|
+| `gate.zig` | Terminal-capability gate: checks TTY, `TERM`, `PLANAR_NO_TUI`, `--plain`; returns `launch_cockpit` or `fallback_help`. Called from `main.zig` (bare-invocation path) and from `handlers/explore.zig` (explicit alias). |
+| `app.zig` | Top-level cockpit shell: libvaxis `Loop(Event)`, wake-thread integration, view-switcher chrome, minimum-size guard. Entry points: `run(io, alloc, env_map, environ, db_path, db_handle)`. |
+| `view_model.zig` | Pure data layer: maps `agentactivity` + planning store reads into renderable row/tree/detail structs. Unit-testable without a real TTY. |
+| `views/` | Per-view modules (`scope_explorer.zig`, `agent_monitor.zig`, `task_board.zig`, `decision_log.zig`, `open_questions.zig`, `coverage_view.zig`, `entity_link_graph.zig`, `external_ops_plane.zig`, `sessions_handoff.zig`, `audit_log.zig`, `cli_history.zig`, `topology.zig`, `utility_view.zig`). |
+| `widgets/` | Spine widgets: tree-navigator, markdown detail pane, split layout, view-switcher. |
+| `edit/` | Edit-action modules: `actions.zig` (entity-field tier), `task_lifecycle.zig` (claim-aware task tier), `external_actions.zig` (sync/workbench tier). |
+
+**TUI framework:** libvaxis (vendored under `vendor/libvaxis/`), MIT-licensed, Zig 0.16-compatible. The cockpit uses the `vxfw` app runtime for the main loop and built-in widgets, and the low-level cell surface for custom spine widgets.
+
+**Wake integration:** a dedicated wake thread owns the `Wake` (`follow.zig`'s kqueue/inotify on the SQLite `-wal` file) and posts `loop.postEvent(.db_changed)` on each WAL change and on a ≤1 second heartbeat tick (the coalesced/missed-wake backstop). The main event loop drains `nextEvent()` and re-queries the active view's view-model slice on `.db_changed`. No polling.
+
+See [docs/concepts.md § Interactive cockpit](concepts.md#interactive-cockpit) for the operator-facing model and [docs/cli-reference.md § Domain: explore](cli-reference.md#domain-explore) for the full flag reference.
+
 ### `planar-execute` — fifth binary, no DB handle
 
 `planar-execute` (plan 492) is the embedded-Lua orchestration driver. It sits **outside** the four-binary SQLite boundary: it holds no DB handle and never opens SQLite at all. Its source tree lives under `src/cmd/planar-execute/` (separate `addExecutable` entry in `build.zig`); it links the Lua 5.5 C library (vendored) but does not link `src/db/` or `vendor/sqlite/`.
@@ -238,9 +263,9 @@ flowchart LR
 
 | Path | Role |
 |------|------|
-| `src/cmd/planar/` | Operator binary entry — `main.zig` plus runtime scaffolding (`runtime.zig`, `scope.zig`, `output.zig`, `editflow.zig`, `editor.zig`, `exit.zig`) and ~38 per-verb handlers under `handlers/`. |
+| `src/cmd/planar/` | Operator binary entry — `main.zig` plus runtime scaffolding (`runtime.zig`, `scope.zig`, `output.zig`, `editflow.zig`, `editor.zig`, `exit.zig`) and per-verb handlers under `handlers/`. Also contains the interactive cockpit under `cockpit/` (`gate.zig`, `app.zig`, `view_model.zig`, `views/`, `widgets/`, `edit/`). |
 | `src/cmd/planar-agent/` | Agent-callable coordination binary — `main.zig`, `exit.zig`, and per-verb handlers under `handlers/` for the 13-verb coordination surface. |
-| `src/cmd/planar-watch/` | Read-only viewer binary — `main.zig`, `exit.zig`, and per-verb handlers under `handlers/` (including the `--follow` wake loop). |
+| `src/cmd/planar-watch/` | Read-only viewer binary — `main.zig`, `exit.zig`, and per-verb handlers under `handlers/` (including the `--follow` wake loop). Unchanged by the cockpit addition; `planar-watch` remains the scriptable NDJSON viewer. |
 
 ### Domain engine (`src/engine/`)
 

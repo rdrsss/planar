@@ -87,6 +87,7 @@ comptime {
     _ = @import("closeout_gate_test.zig");
     _ = @import("explore_test.zig");
 
+    _ = @import("scenarios/scenario_cockpit_entry_test.zig");
     _ = @import("scenarios/scenario_annotations_test.zig");
     _ = @import("scenarios/scenario_audit_trail_test.zig");
     _ = @import("scenarios/scenario_context_plane_test.zig");
