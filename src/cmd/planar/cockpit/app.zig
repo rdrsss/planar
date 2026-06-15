@@ -45,6 +45,7 @@ const coverage_view = @import("views/coverage_view.zig");
 const entity_link_graph = @import("views/entity_link_graph.zig");
 const external_ops_plane = @import("views/external_ops_plane.zig");
 const sessions_handoff = @import("views/sessions_handoff.zig");
+const audit_log_view = @import("views/audit_log.zig");
 
 /// Minimum usable terminal dimensions.
 const MIN_WIDTH: u16 = 40;
@@ -238,6 +239,10 @@ pub fn run(
     var sessions: sessions_handoff.SessionsHandoffState = sessions_handoff.SessionsHandoffState.init(alloc);
     defer sessions.deinit();
 
+    // ---- Audit Log state (tasks 4035–4036, M12) -------------------------
+    var audit: audit_log_view.AuditLogState = audit_log_view.AuditLogState.init(alloc);
+    defer audit.deinit();
+
     // Determine cwd-scope filter on launch. Falls back to .all when the
     // cwd is outside any registered repo (q607: cwd-derived default).
     const cwd_for_scope = std.Io.Dir.realPathFileAlloc(
@@ -281,6 +286,9 @@ pub fn run(
     // Initial load of the Sessions & Handoff view.
     sessions.reload(db_handle) catch {};
 
+    // Initial load of the Audit Log view.
+    audit.reload(db_handle) catch {};
+
     // ---- Spine state ----------------------------------------------------
     // Scope Explorer is the default (index 0) landing view per the spec.
     var vs: view_switcher.ViewSwitcher = .{};
@@ -293,6 +301,11 @@ pub fn run(
     try vs.register(.{ .id = .entity_link_graph, .name = "Links", .key = '7' });
     try vs.register(.{ .id = .external_ops_plane, .name = "ExtOps", .key = '8' });
     try vs.register(.{ .id = .sessions_handoff, .name = "Sessions", .key = '9' });
+    // M12: Audit Log is the 10th view. Numeric jump ('1'–'9') only covers
+    // views 1–9; this view is reachable via Tab/Shift-Tab cycling only.
+    // The key '0' is display-only in the tab bar (view_switcher.zig line 88:
+    // handleKey digit jump only fires for '1'–'9').
+    try vs.register(.{ .id = .audit_log, .name = "AuditLog", .key = '0' });
 
     var sl: split_layout.SplitLayout = .{};
 
@@ -301,7 +314,7 @@ pub fn run(
     try vx.queryTerminal(tty.writer(), .fromSeconds(1));
 
     // Render the initial frame.
-    try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor, &board, &declog, &questions, &coverage, &entity_graph, &ext_ops, &sessions);
+    try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor, &board, &declog, &questions, &coverage, &entity_graph, &ext_ops, &sessions, &audit);
 
     // Main event loop.
     while (true) {
@@ -387,6 +400,12 @@ pub fn run(
                         } else {
                             need_render = false;
                         }
+                    } else if (active != null and active.?.id == .audit_log) {
+                        if (audit.handleKey(key, db_handle)) {
+                            // Consumed by audit log view — render.
+                        } else {
+                            need_render = false;
+                        }
                     } else {
                         need_render = false;
                     }
@@ -419,11 +438,13 @@ pub fn run(
                     ext_ops.reload(db_handle) catch {};
                 } else if (active != null and active.?.id == .sessions_handoff) {
                     sessions.reload(db_handle) catch {};
+                } else if (active != null and active.?.id == .audit_log) {
+                    audit.reload(db_handle) catch {};
                 }
             },
         }
         if (need_render) {
-            try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor, &board, &declog, &questions, &coverage, &entity_graph, &ext_ops, &sessions);
+            try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor, &board, &declog, &questions, &coverage, &entity_graph, &ext_ops, &sessions, &audit);
         }
     }
     // Terminal restored by deferred vx.deinit.
@@ -495,6 +516,7 @@ fn renderFrame(
     entity_graph_state: *const entity_link_graph.EntityLinkState,
     ext_ops_state: *const external_ops_plane.ExtOpsState,
     sessions_state: *const sessions_handoff.SessionsHandoffState,
+    audit_state: *const audit_log_view.AuditLogState,
 ) !void {
     const win = vx.window();
     win.clear();
@@ -600,6 +622,13 @@ fn renderFrame(
             .text = legend,
             .style = .{ .dim = true },
         }, .{ .row_offset = legend_row, .col_offset = 0 });
+    } else if (active != null and active.?.id == .audit_log) {
+        var legend_buf: [128]u8 = undefined;
+        const legend = audit_log_view.legendLabel(&legend_buf);
+        _ = content_win.printSegment(.{
+            .text = legend,
+            .style = .{ .dim = true },
+        }, .{ .row_offset = legend_row, .col_offset = 0 });
     } else {
         _ = content_win.printSegment(.{
             .text = "  q Quit  Tab Focus  1-9 View  Ctrl-C Quit",
@@ -641,14 +670,16 @@ fn renderFrame(
         try external_ops_plane.render(ext_ops_state, panes.nav, panes.detail, alloc);
     } else if (active != null and active.?.id == .sessions_handoff) {
         try sessions_handoff.render(sessions_state, panes.nav, panes.detail, alloc);
+    } else if (active != null and active.?.id == .audit_log) {
+        try audit_log_view.render(audit_state, panes.nav, panes.detail, alloc);
     } else {
-        // Placeholder for views not yet implemented (M12+).
+        // Placeholder for views not yet implemented (M13+).
         _ = panes.nav.printSegment(.{
-            .text = "[Navigator — M12+]",
+            .text = "[Navigator — M13+]",
             .style = .{ .dim = true },
         }, .{ .row_offset = 1, .col_offset = 1 });
         _ = panes.detail.printSegment(.{
-            .text = "[Detail pane — M12+]",
+            .text = "[Detail pane — M13+]",
             .style = .{ .dim = true },
         }, .{ .row_offset = 1, .col_offset = 1 });
     }
@@ -746,6 +777,7 @@ const coverage_view_mod = @import("views/coverage_view.zig");
 const entity_link_graph_mod = @import("views/entity_link_graph.zig");
 const external_ops_plane_mod = @import("views/external_ops_plane.zig");
 const sessions_handoff_mod = @import("views/sessions_handoff.zig");
+const audit_log_mod = @import("views/audit_log.zig");
 
 // =========================================================================
 // Tests
@@ -872,4 +904,5 @@ test "cockpit spine modules compile" {
     std.testing.refAllDecls(entity_link_graph_mod);
     std.testing.refAllDecls(external_ops_plane_mod);
     std.testing.refAllDecls(sessions_handoff_mod);
+    std.testing.refAllDecls(audit_log_mod);
 }
