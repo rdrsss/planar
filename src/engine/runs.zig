@@ -17,4 +17,5 @@ pub const harvest = @import("runs/harvest.zig");
 test {
     _ = lifecycle;
     _ = harvest;
+    _ = @import("runs/rq1_test.zig");
 }

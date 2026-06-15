@@ -83,6 +83,7 @@
         "build.zig",
         "integration_tests",
         "migrations",
+        "metrics",
         "templates",
         "build.zig.zon",
         "src",

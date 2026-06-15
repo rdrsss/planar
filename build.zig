@@ -250,6 +250,18 @@ pub fn build(b: *std.Build) void {
     // explicitly. The CLI handlers and integration tests both call into
     // it. Depends on `db` and nothing else.
     // -----------------------------------------------------------------
+    // -----------------------------------------------------------------
+    // `metrics_sql` module: embeds the analyst-facing SQL metric queries
+    // from metrics/ as Zig string constants. Used by the RQ1 fixture test
+    // (src/engine/runs/rq1_test.zig) to execute the frozen query files
+    // in-process without runtime path resolution.
+    // -----------------------------------------------------------------
+    const metrics_sql_mod = b.addModule("metrics_sql", .{
+        .root_source_file = b.path("metrics/metrics_sql.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const engine_mod = b.addModule("engine", .{
         .root_source_file = b.path("src/engine/root.zig"),
         .target = target,
@@ -257,6 +269,7 @@ pub fn build(b: *std.Build) void {
     });
     engine_mod.addImport("db", db_mod);
     engine_mod.addImport("templates_embed", templates_embed_mod);
+    engine_mod.addImport("metrics_sql", metrics_sql_mod);
 
     // -----------------------------------------------------------------
     // Library module (existing planar package surface).
