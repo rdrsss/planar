@@ -410,6 +410,29 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(doc_exe);
 
+    // -----------------------------------------------------------------
+    // `planar-execute` executable (plan 633 P0.2c). Fifth binary — the
+    // deterministic, spawn-free Lua workflow engine. Links Lua as a static
+    // lib (addIncludePath + linkLibrary, mirroring the lua_zig_mod wiring)
+    // and intentionally does NOT link db / engine / runtime: the engine
+    // reaches Planar state only by shelling allowlisted CLI verbs (the D7
+    // host surface in src/cmd/planar-execute/host.zig). There is no
+    // model-spawn primitive (decision D5) — the host-fn manifest is the
+    // frozen capability surface P0.3 locks.
+    // -----------------------------------------------------------------
+    const execute_exe = b.addExecutable(.{
+        .name = "planar-execute",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/cmd/planar-execute/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    execute_exe.root_module.addIncludePath(b.path(lua_src_dir));
+    execute_exe.root_module.linkLibrary(lua_lib);
+    b.installArtifact(execute_exe);
+
     // Vendored-deps drift check runs before the binary is installed, so
     // `zig build` (which depends on the install step) fails loudly on
     // any vendor/<name>/VENDOR.toml mismatch.
@@ -510,6 +533,13 @@ pub fn build(b: *std.Build) void {
     const planar_execute_tests = b.addTest(.{ .root_module = planar_execute_mod, .filters = test_filters_opt });
     const run_planar_execute_tests = b.addRunArtifact(planar_execute_tests);
 
+    // `planar-execute` engine tests (P0.2c): the new main.zig + host.zig.
+    // Keyed on the executable's root module so the host-fn manifest tests,
+    // sandbox tests, and arg-parse tests run under `zig build test`. The
+    // refAllDecls block in main.zig pulls the aliased engine modules in too.
+    const planar_execute_engine_tests = b.addTest(.{ .root_module = execute_exe.root_module, .filters = test_filters_opt });
+    const run_planar_execute_engine_tests = b.addRunArtifact(planar_execute_engine_tests);
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
@@ -523,6 +553,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_runtime_tests.step);
     test_step.dependOn(&run_lua_tests.step);
     test_step.dependOn(&run_planar_execute_tests.step);
+    test_step.dependOn(&run_planar_execute_engine_tests.step);
 
     // -----------------------------------------------------------------
     // Integration tests. Separate from `zig build test` (mirrors Go's
@@ -573,6 +604,10 @@ pub fn build(b: *std.Build) void {
     run_integration_all.setEnvironmentVariable(
         "PLANAR_DOC_BIN",
         b.getInstallPath(.bin, "planar-doc"),
+    );
+    run_integration_all.setEnvironmentVariable(
+        "PLANAR_EXECUTE_BIN",
+        b.getInstallPath(.bin, "planar-execute"),
     );
     test_integration_step.dependOn(&run_integration_all.step);
 
