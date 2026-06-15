@@ -42,6 +42,7 @@ const task_board = @import("views/task_board.zig");
 const decision_log = @import("views/decision_log.zig");
 const open_questions = @import("views/open_questions.zig");
 const coverage_view = @import("views/coverage_view.zig");
+const entity_link_graph = @import("views/entity_link_graph.zig");
 
 /// Minimum usable terminal dimensions.
 const MIN_WIDTH: u16 = 40;
@@ -223,6 +224,10 @@ pub fn run(
     var coverage: coverage_view.CoverageState = coverage_view.CoverageState.init(alloc);
     defer coverage.deinit();
 
+    // ---- Entity-Link Graph state (tasks 4027–4028, M9) ------------------
+    var entity_graph: entity_link_graph.EntityLinkState = entity_link_graph.EntityLinkState.init(alloc);
+    defer entity_graph.deinit();
+
     // Determine cwd-scope filter on launch. Falls back to .all when the
     // cwd is outside any registered repo (q607: cwd-derived default).
     const cwd_for_scope = std.Io.Dir.realPathFileAlloc(
@@ -257,6 +262,9 @@ pub fn run(
     // Initial load of the Coverage view.
     try coverage.reload(db_handle);
 
+    // Initial load of the Entity-Link Graph (default entity heuristic).
+    entity_graph.reloadDefault(db_handle) catch {};
+
     // ---- Spine state ----------------------------------------------------
     // Scope Explorer is the default (index 0) landing view per the spec.
     var vs: view_switcher.ViewSwitcher = .{};
@@ -266,6 +274,7 @@ pub fn run(
     try vs.register(.{ .id = .decision_log, .name = "Decisions", .key = '4' });
     try vs.register(.{ .id = .open_questions, .name = "Questions", .key = '5' });
     try vs.register(.{ .id = .coverage_view, .name = "Coverage", .key = '6' });
+    try vs.register(.{ .id = .entity_link_graph, .name = "Links", .key = '7' });
 
     var sl: split_layout.SplitLayout = .{};
 
@@ -274,7 +283,7 @@ pub fn run(
     try vx.queryTerminal(tty.writer(), .fromSeconds(1));
 
     // Render the initial frame.
-    try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor, &board, &declog, &questions, &coverage);
+    try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor, &board, &declog, &questions, &coverage, &entity_graph);
 
     // Main event loop.
     while (true) {
@@ -330,6 +339,24 @@ pub fn run(
                         } else {
                             need_render = false;
                         }
+                    } else if (active != null and active.?.id == .entity_link_graph) {
+                        const kr = entity_graph.handleKey(key);
+                        if (kr.consumed) {
+                            // Task 4028: if a FocusRequest is returned, re-center
+                            // the view on the target entity.
+                            if (kr.focus) |fr| {
+                                entity_graph.reloadFor(db_handle, fr.kind, fr.id) catch {};
+                                // Extension point: if fr.switch_to_view != null,
+                                // switch the active view. Not wired in M9 (switch_to_view
+                                // is always null for the re-center-in-place case).
+                                if (fr.switch_to_view) |target_id| {
+                                    _ = vs.switchTo(target_id);
+                                }
+                            }
+                            // render.
+                        } else {
+                            need_render = false;
+                        }
                     } else {
                         need_render = false;
                     }
@@ -356,11 +383,13 @@ pub fn run(
                     questions.reload(db_handle) catch {};
                 } else if (active != null and active.?.id == .coverage_view) {
                     coverage.reload(db_handle) catch {};
+                } else if (active != null and active.?.id == .entity_link_graph) {
+                    entity_graph.reload(db_handle) catch {};
                 }
             },
         }
         if (need_render) {
-            try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor, &board, &declog, &questions, &coverage);
+            try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor, &board, &declog, &questions, &coverage, &entity_graph);
         }
     }
     // Terminal restored by deferred vx.deinit.
@@ -429,6 +458,7 @@ fn renderFrame(
     declog: *const decision_log.DecisionLogState,
     questions: *const open_questions.OpenQuestionsState,
     coverage: *const coverage_view.CoverageState,
+    entity_graph_state: *const entity_link_graph.EntityLinkState,
 ) !void {
     const win = vx.window();
     win.clear();
@@ -513,9 +543,16 @@ fn renderFrame(
             .text = legend,
             .style = .{ .dim = true },
         }, .{ .row_offset = legend_row, .col_offset = 0 });
+    } else if (active != null and active.?.id == .entity_link_graph) {
+        var legend_buf: [128]u8 = undefined;
+        const legend = entity_link_graph.legendLabel(&legend_buf);
+        _ = content_win.printSegment(.{
+            .text = legend,
+            .style = .{ .dim = true },
+        }, .{ .row_offset = legend_row, .col_offset = 0 });
     } else {
         _ = content_win.printSegment(.{
-            .text = "  q Quit  Tab Focus  1-6 View  Ctrl-C Quit",
+            .text = "  q Quit  Tab Focus  1-7 View  Ctrl-C Quit",
             .style = .{ .dim = true },
         }, .{ .row_offset = legend_row, .col_offset = 0 });
     }
@@ -548,14 +585,16 @@ fn renderFrame(
         try open_questions.render(questions, panes.nav, panes.detail, alloc);
     } else if (active != null and active.?.id == .coverage_view) {
         try coverage_view.render(coverage, panes.nav, panes.detail, alloc);
+    } else if (active != null and active.?.id == .entity_link_graph) {
+        try entity_link_graph.render(entity_graph_state, panes.nav, panes.detail, alloc);
     } else {
-        // Placeholder for views not yet implemented (M9+).
+        // Placeholder for views not yet implemented (M10+).
         _ = panes.nav.printSegment(.{
-            .text = "[Navigator — M9+]",
+            .text = "[Navigator — M10+]",
             .style = .{ .dim = true },
         }, .{ .row_offset = 1, .col_offset = 1 });
         _ = panes.detail.printSegment(.{
-            .text = "[Detail pane — M9+]",
+            .text = "[Detail pane — M10+]",
             .style = .{ .dim = true },
         }, .{ .row_offset = 1, .col_offset = 1 });
     }
@@ -650,6 +689,7 @@ const task_board_mod = @import("views/task_board.zig");
 const decision_log_mod = @import("views/decision_log.zig");
 const open_questions_mod = @import("views/open_questions.zig");
 const coverage_view_mod = @import("views/coverage_view.zig");
+const entity_link_graph_mod = @import("views/entity_link_graph.zig");
 
 // =========================================================================
 // Tests
@@ -773,4 +813,5 @@ test "cockpit spine modules compile" {
     std.testing.refAllDecls(decision_log_mod);
     std.testing.refAllDecls(open_questions_mod);
     std.testing.refAllDecls(coverage_view_mod);
+    std.testing.refAllDecls(entity_link_graph_mod);
 }
