@@ -792,7 +792,9 @@ pub fn render(
         const tree_nodes = try buildTreeNodes(state, allocator);
         defer allocator.free(tree_nodes);
 
-        tree_nav.render(nav_win, tree_nodes, &state.nav);
+        // Pass the frame arena (allocator) so tree_nav can use arena-allocated
+        // grapheme slices for writeCell calls that outlive the render function.
+        tree_nav.render(nav_win, tree_nodes, &state.nav, allocator);
     }
 
     // ---- M17: Lifecycle overlay in the detail pane (task 4047/4048) ------
@@ -889,15 +891,19 @@ pub fn render(
     // ---- Normal detail pane (no edit mode) -----------------------------
     if (state.detail) |det| {
         // Title row.
+        // IMPORTANT: writeCell stores a borrowed grapheme pointer in the back
+        // buffer. `const ch: [1]u8 = .{byte}` produces a loop-iteration-scoped
+        // local that is freed before vaxis.render() flushes — a UAF.
+        // We slice into det.title (heap-allocated, long-lived) for each byte
+        // so the grapheme pointer is stable across the flush.
         if (det.title.len > 0 and detail_win.height > 0) {
             const title_style: Style = .{ .bold = true };
             var col: usize = 0;
-            for (det.title) |byte| {
+            for (det.title, 0..) |byte, ti| {
                 if (col >= detail_win.width) break;
                 if (byte & 0x80 == 0) {
-                    const ch: [1]u8 = .{byte};
                     detail_win.writeCell(@intCast(col), 0, .{
-                        .char = .{ .grapheme = &ch, .width = 1 },
+                        .char = .{ .grapheme = det.title[ti .. ti + 1], .width = 1 },
                         .style = title_style,
                     });
                     col += 1;

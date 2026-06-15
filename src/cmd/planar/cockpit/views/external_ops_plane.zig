@@ -242,10 +242,9 @@ pub fn render(
     detail_win: Window,
     allocator: std.mem.Allocator,
 ) !void {
-    _ = allocator;
     switch (state.mode) {
         .systems => {
-            renderSystemsNavigator(state, nav_win);
+            renderSystemsNavigator(state, nav_win, allocator);
             if (state.action.isActive()) {
                 // Render the confirm/working/result overlay over the detail pane.
                 external_actions.renderOverlay(&state.action, detail_win);
@@ -254,7 +253,7 @@ pub fn render(
             }
         },
         .conflicts => {
-            renderConflictsNavigator(state, nav_win);
+            renderConflictsNavigator(state, nav_win, allocator);
             if (state.action.isActive()) {
                 external_actions.renderOverlay(&state.action, detail_win);
             } else {
@@ -274,7 +273,7 @@ pub fn render(
 /// Each row: "[kind] slug  (N links)"
 /// Conflict/error tally shown on rows with non-zero counts.
 /// Empty state: "(no external systems registered)"
-fn renderSystemsNavigator(state: *const ExtOpsState, win: Window) void {
+fn renderSystemsNavigator(state: *const ExtOpsState, win: Window, arena: std.mem.Allocator) void {
     if (win.height == 0 or win.width == 0) return;
 
     const snap = state.snapshot orelse {
@@ -327,9 +326,9 @@ fn renderSystemsNavigator(state: *const ExtOpsState, win: Window) void {
 
         // Conflict/error indicator on the next row (indented), when non-zero.
         if (display_row < win.height and (sys.conflict_count > 0 or sys.error_count > 0)) {
-            var count_buf: [64]u8 = undefined;
-            const indicator = std.fmt.bufPrint(
-                &count_buf,
+            // Use arena allocation so the slice remains valid through vaxis.render().
+            const indicator = std.fmt.allocPrint(
+                arena,
                 "  ! conflicts:{d} errors:{d}",
                 .{ sys.conflict_count, sys.error_count },
             ) catch "  ! (tally error)";
@@ -539,7 +538,7 @@ fn renderSystemsDetail(state: *const ExtOpsState, win: Window) !void {
 ///   "Unresolved Conflicts  [c back]"
 ///   "  N unresolved"
 ///   "(no conflicts — all resolved)" when clean
-fn renderConflictsNavigator(state: *const ExtOpsState, win: Window) void {
+fn renderConflictsNavigator(state: *const ExtOpsState, win: Window, arena: std.mem.Allocator) void {
     if (win.height == 0 or win.width == 0) return;
 
     var row: u16 = 0;
@@ -559,10 +558,10 @@ fn renderConflictsNavigator(state: *const ExtOpsState, win: Window) void {
         return;
     };
 
-    var count_buf: [64]u8 = undefined;
+    // Use arena allocation so the slice remains valid through vaxis.render().
     const count = snap.conflicts.len;
-    const count_line = std.fmt.bufPrint(
-        &count_buf,
+    const count_line = std.fmt.allocPrint(
+        arena,
         "  {d} unresolved",
         .{count},
     ) catch "  (count error)";
@@ -907,7 +906,7 @@ test "external_ops: renderSystemsNavigator shows system slug (task 4029 render-l
         .screen = &screen,
     };
 
-    renderSystemsNavigator(&state, nav_win);
+    renderSystemsNavigator(&state, nav_win, a);
 
     var rendered: std.ArrayList(u8) = .empty;
     defer rendered.deinit(a);
@@ -954,7 +953,7 @@ test "external_ops: renderSystemsNavigator shows empty state (render-level)" {
         .screen = &screen,
     };
 
-    renderSystemsNavigator(&state, nav_win);
+    renderSystemsNavigator(&state, nav_win, a);
 
     var rendered: std.ArrayList(u8) = .empty;
     defer rendered.deinit(a);

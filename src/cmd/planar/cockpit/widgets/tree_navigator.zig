@@ -77,10 +77,15 @@ pub const Navigator = struct {
 
 /// Render the tree navigator into `win`. Nodes is the full flat list
 /// (hidden ones are skipped); `nav` carries the scroll/selection state.
+///
+/// `arena` is the per-frame allocator. Single-character grapheme slices for
+/// ASCII text (writeCell calls) must be arena-allocated: the back buffer stores
+/// borrowed grapheme pointers and they must remain valid through vaxis.render().
 pub fn render(
     win: Window,
     nodes: []const TreeNode,
     nav: *const Navigator,
+    arena: std.mem.Allocator,
 ) void {
     if (win.height == 0 or win.width == 0) return;
     const h: usize = @intCast(win.height);
@@ -157,14 +162,18 @@ pub fn render(
         }
 
         // ---- Label text (clipped to row width) ---------------------
+        // IMPORTANT: writeCell stores a borrowed grapheme pointer in the back
+        // buffer. Using `const ch: [1]u8 = .{byte}` produces a loop-iteration-
+        // scoped local that is freed before vaxis.render() — a classic UAF.
+        // We use node.label's bytes as subslices (node.label is heap-allocated
+        // and long-lived) so the grapheme pointer is stable across the flush.
         var label_bytes_written: usize = 0;
-        for (node.label) |byte| {
+        for (node.label, 0..) |byte, li| {
             if (col >= w) break;
-            // Simple ASCII path: each byte is one column for printable chars.
             if (byte < 0x80) {
-                const ch: [1]u8 = .{byte};
+                // Slice into the heap-allocated label string — pointer is stable.
                 win.writeCell(@intCast(col), @intCast(row), .{
-                    .char = .{ .grapheme = &ch, .width = 1 },
+                    .char = .{ .grapheme = node.label[li .. li + 1], .width = 1 },
                     .style = sel_style,
                 });
                 col += 1;
@@ -174,18 +183,18 @@ pub fn render(
 
         // ---- Count badge "[n]" at the end, right-aligned if space --
         if (node.count_badge) |cnt| {
-            var buf: [16]u8 = undefined;
-            const badge_text = std.fmt.bufPrint(&buf, "[{d}]", .{cnt}) catch "";
+            // Allocate via arena so the grapheme slices remain valid through flush.
+            const badge_text = std.fmt.allocPrint(arena, "[{d}]", .{cnt}) catch "";
             if (badge_text.len > 0 and w >= badge_text.len) {
                 const badge_col = w - badge_text.len;
                 if (badge_col > col) {
                     // Enough space to draw it without overlapping the label.
                     var bc: usize = badge_col;
-                    for (badge_text) |byte| {
+                    for (badge_text, 0..) |_, bi| {
                         if (bc >= w) break;
-                        const ch: [1]u8 = .{byte};
+                        // Slice into the arena-allocated badge_text — stable pointer.
                         win.writeCell(@intCast(bc), @intCast(row), .{
-                            .char = .{ .grapheme = &ch, .width = 1 },
+                            .char = .{ .grapheme = badge_text[bi .. bi + 1], .width = 1 },
                             .style = .{ .dim = true },
                         });
                         bc += 1;

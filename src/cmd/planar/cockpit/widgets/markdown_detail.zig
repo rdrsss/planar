@@ -267,10 +267,14 @@ fn renderPlain(
     while (i < text.len and col < max_col) {
         const byte = text[i];
         if (byte & 0x80 == 0) {
-            // ASCII
-            const ch: [1]u8 = .{byte};
+            // ASCII: slice into `text` so the grapheme pointer is stable
+            // (valid for the lifetime of the text parameter, which is either
+            // a static literal, a slice of the heap-allocated body, or an
+            // arena-allocated parts buffer).
+            // `const ch: [1]u8 = .{byte}` would be a loop-iteration stack
+            // local that dies before vaxis.render() — a UAF.
             win.writeCell(@intCast(col), @intCast(row), .{
-                .char = .{ .grapheme = &ch, .width = 1 },
+                .char = .{ .grapheme = text[i .. i + 1], .width = 1 },
                 .style = style,
             });
             col += 1;
@@ -324,16 +328,31 @@ fn renderInline(
         if (text[i] == '[' and !in_code) {
             if (parseLinkLabel(text[i..])) |parsed| {
                 // Render the label with underline style.
+                // `label` is a subslice of `text` (itself a subslice of the
+                // heap-allocated body or the arena parts buffer), so
+                // label[j..j+1] gives a stable pointer — no stack-local ch needed.
                 const label = parsed.label;
-                for (label) |byte| {
+                var j: usize = 0;
+                while (j < label.len) {
                     if (col >= max_col) break;
-                    if (byte & 0x80 == 0) {
-                        const ch: [1]u8 = .{byte};
+                    const lbyte = label[j];
+                    if (lbyte & 0x80 == 0) {
                         win.writeCell(@intCast(col), @intCast(row), .{
-                            .char = .{ .grapheme = &ch, .width = 1 },
+                            .char = .{ .grapheme = label[j .. j + 1], .width = 1 },
                             .style = .{ .ul_style = .single },
                         });
                         col += 1;
+                        j += 1;
+                    } else {
+                        const seq = utf8SeqLen(lbyte);
+                        if (j + seq <= label.len) {
+                            win.writeCell(@intCast(col), @intCast(row), .{
+                                .char = .{ .grapheme = label[j .. j + seq], .width = 1 },
+                                .style = .{ .ul_style = .single },
+                            });
+                            col += 1;
+                        }
+                        j += seq;
                     }
                 }
                 i += parsed.consumed;
@@ -373,9 +392,11 @@ fn renderInline(
         const style = kindStyle(effective_kind);
         const byte = text[i];
         if (byte & 0x80 == 0) {
-            const ch: [1]u8 = .{byte};
+            // Slice into `text` for a stable grapheme pointer.  A stack-local
+            // `const ch: [1]u8 = .{byte}` dies at end of the loop iteration —
+            // the back-buffer cell would hold a dangling pointer (UAF).
             win.writeCell(@intCast(col), @intCast(row), .{
-                .char = .{ .grapheme = &ch, .width = 1 },
+                .char = .{ .grapheme = text[i .. i + 1], .width = 1 },
                 .style = style,
             });
             col += 1;

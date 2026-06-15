@@ -212,17 +212,15 @@ pub fn render(
     detail_win: Window,
     allocator: std.mem.Allocator,
 ) !void {
-    _ = allocator;
-
     // ---- Navigator: roster -------------------------------------------
-    renderRoster(state, nav_win);
+    renderRoster(state, nav_win, allocator);
 
     // ---- Detail: event stream ----------------------------------------
-    renderStream(state, detail_win);
+    renderStream(state, detail_win, allocator);
 }
 
 /// Render the roster pane (left / navigator).
-fn renderRoster(state: *const MonitorState, win: Window) void {
+fn renderRoster(state: *const MonitorState, win: Window, arena: std.mem.Allocator) void {
     if (win.height == 0 or win.width == 0) return;
     var row: u16 = 0;
 
@@ -259,7 +257,7 @@ fn renderRoster(state: *const MonitorState, win: Window) void {
             if (row >= win.height) break;
             const is_selected = (state.roster_idx == i);
             const age = if (i < state.active_ages.len) state.active_ages[i] else .warning;
-            renderClaimRow(win, row, is_selected, age, claim, false);
+            renderClaimRow(win, row, is_selected, age, claim, false, arena);
             row += 1;
         }
     }
@@ -280,7 +278,7 @@ fn renderRoster(state: *const MonitorState, win: Window) void {
         for (snap.stale, 0..) |claim, i| {
             if (row >= win.height) break;
             const is_selected = (state.roster_idx == stale_base + i);
-            renderClaimRow(win, row, is_selected, .stale, claim, true);
+            renderClaimRow(win, row, is_selected, .stale, claim, true, arena);
             row += 1;
         }
     }
@@ -294,6 +292,7 @@ fn renderClaimRow(
     age: view_model.HeartbeatAge,
     claim: view_model.ClaimRow,
     force_stale_marker: bool,
+    arena: std.mem.Allocator,
 ) void {
     _ = force_stale_marker;
     if (row >= win.height) return;
@@ -320,11 +319,12 @@ fn renderClaimRow(
         badge_style;
 
     // Format the roster row: "<badge> <vendor> <entity_ref> <role?>".
-    var buf: [256]u8 = undefined;
+    // Use arena allocation (fmtFrame) so the slice remains valid through
+    // vaxis.render() — a stack-local buf would dangle after this function returns.
     const role_part = claim.role orelse "";
     const role_display = if (role_part.len > 0) role_part else "-";
-    const text = std.fmt.bufPrint(
-        &buf,
+    const text = std.fmt.allocPrint(
+        arena,
         "{s} {s} {s} {s}",
         .{ age_badge, claim.vendor, claim.entity_ref, role_display },
     ) catch "(error)";
@@ -340,7 +340,7 @@ fn renderClaimRow(
 /// Task 4016: rows are newest-first (queryAgentActionStream already sorts
 /// them); the view tails in live because the existing wake integration
 /// calls reload on .db_changed, which re-queries and repaints.
-fn renderStream(state: *const MonitorState, win: Window) void {
+fn renderStream(state: *const MonitorState, win: Window, arena: std.mem.Allocator) void {
     if (win.height == 0 or win.width == 0) return;
 
     if (state.actions.len == 0) {
@@ -380,10 +380,11 @@ fn renderStream(state: *const MonitorState, win: Window) void {
         const ts_short = if (action.ts.len >= 19) action.ts[0..19] else action.ts;
 
         // Format: "<ts>  <kind>  <entity>  <summary?>".
-        var buf: [300]u8 = undefined;
+        // Use arena allocation so the slice remains valid through vaxis.render().
+        // A stack-local buf would dangle after this function returns.
         const summary_part = action.summary orelse "";
-        const text = std.fmt.bufPrint(
-            &buf,
+        const text = std.fmt.allocPrint(
+            arena,
             "{s}  {s}  {s}  {s}",
             .{ ts_short, action.kind_label, action.entity_ref, summary_part },
         ) catch "(error)";

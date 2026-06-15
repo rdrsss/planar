@@ -316,6 +316,17 @@ pub fn run(
     // Initial load of the Utility view.
     utility.reload(db_handle) catch {};
 
+    // ---- Per-frame arena (UAF fix: task 4174) ---------------------------
+    // Allocates a per-frame arena backed by the long-lived `alloc`. The
+    // arena is reset at the TOP of each renderFrame call (before any view
+    // renders), so every arena-allocated grapheme slice lives from its
+    // allocation through vaxis.render()'s back→front buffer copy — the
+    // exact window that the back buffer's borrowed grapheme pointers must
+    // remain valid. The arena is NOT reset between renderFrame and
+    // vaxis.render(); both happen inside renderFrame with the arena alive.
+    var frame_arena = std.heap.ArenaAllocator.init(alloc);
+    defer frame_arena.deinit();
+
     // ---- Spine state ----------------------------------------------------
     // Scope Explorer is the default (index 0) landing view per the spec.
     var vs: view_switcher.ViewSwitcher = .{};
@@ -350,7 +361,7 @@ pub fn run(
     try vx.queryTerminal(tty.writer(), .fromSeconds(1));
 
     // Render the initial frame.
-    try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor, &board, &declog, &questions, &coverage, &entity_graph, &ext_ops, &sessions, &audit, &cli_history, &topology, &utility);
+    try renderFrame(&vx, tty.writer(), &vs, &sl, &explorer, &monitor, &board, &declog, &questions, &coverage, &entity_graph, &ext_ops, &sessions, &audit, &cli_history, &topology, &utility, &frame_arena);
 
     // Main event loop.
     while (true) {
@@ -504,7 +515,7 @@ pub fn run(
             },
         }
         if (need_render) {
-            try renderFrame(&vx, tty.writer(), alloc, &vs, &sl, &explorer, &monitor, &board, &declog, &questions, &coverage, &entity_graph, &ext_ops, &sessions, &audit, &cli_history, &topology, &utility);
+            try renderFrame(&vx, tty.writer(), &vs, &sl, &explorer, &monitor, &board, &declog, &questions, &coverage, &entity_graph, &ext_ops, &sessions, &audit, &cli_history, &topology, &utility, &frame_arena);
         }
     }
     // Terminal restored by deferred vx.deinit.
@@ -557,6 +568,20 @@ pub fn runWithoutDb(
     }
 }
 
+/// Format a string into the per-frame arena allocator, returning a slice that
+/// remains valid until the frame arena is reset at the top of the next frame.
+///
+/// This is the canonical replacement for `var buf:[N]u8; std.fmt.bufPrint(&buf, ...)`
+/// patterns throughout the cockpit render layer. The arena lifetime guarantees the
+/// slice outlives the back-buffer flush (vaxis.render() copies grapheme pointers
+/// from the back buffer into the front buffer during the flush — the source must
+/// be alive throughout that window).
+///
+/// On OOM falls back to "?" so render never panics.
+pub fn fmtFrame(arena: std.mem.Allocator, comptime fmt: []const u8, args: anytype) []const u8 {
+    return std.fmt.allocPrint(arena, fmt, args) catch "?";
+}
+
 /// Render one frame of the cockpit UI with live Scope Explorer data.
 ///
 /// Minimum-size guard (task 3965): when the terminal is below
@@ -564,7 +589,6 @@ pub fn runWithoutDb(
 fn renderFrame(
     vx: *Vaxis,
     tty_writer: *std.Io.Writer,
-    alloc: std.mem.Allocator,
     vs: *const view_switcher.ViewSwitcher,
     sl: *const split_layout.SplitLayout,
     explorer: *const scope_explorer.ExplorerState,
@@ -580,7 +604,19 @@ fn renderFrame(
     cli_history_state: *const cli_history_view.CliHistoryState,
     topology_state: *const topology_view.TopologyState,
     utility_state: *const utility_view.UtilityState,
+    frame_arena: *std.heap.ArenaAllocator,
 ) !void {
+    // Reset the frame arena at the TOP of the frame, before any view renders.
+    // All arena-allocated strings from this point (including those in sub-render
+    // helpers that return before vaxis.render() flushes) live until the next
+    // frame's reset. This is the lifetime guarantee that prevents the UAF:
+    // back-buffer cells store borrowed grapheme slices that must survive
+    // from writeCell/printSegment through vaxis.render()'s flush into the front
+    // buffer. retain_capacity reuses the backing allocation across frames so
+    // steady-state renders are alloc-free.
+    _ = frame_arena.reset(.retain_capacity);
+    const arena = frame_arena.allocator();
+
     const win = vx.window();
     win.clear();
 
@@ -598,7 +634,7 @@ fn renderFrame(
         .width = win.width,
         .height = 1,
     });
-    vs.renderTabBar(tab_bar_win);
+    vs.renderTabBar(tab_bar_win, arena);
 
     // ---- Content area (below the tab bar) -----------------------------
     if (win.height < 2) {
@@ -614,94 +650,94 @@ fn renderFrame(
 
     // ---- Key legend bar (bottom row of content) -----------------------
     // Show view-specific legend for Explorer and Monitor; generic otherwise.
+    //
+    // UAF fix (task 4174, iter 2): legend_buf is declared at FUNCTION-BODY
+    // scope (not inside each if/else-if block) so the slice passed to
+    // printSegment remains valid through the vx.render() flush at the bottom
+    // of this function.  The previous pattern used a block-scoped
+    // `var legend_buf: [N]u8 = undefined` declared inside each if/else-if
+    // block; Zig/LLVM marks those stack slots as dead at block exit and may
+    // reuse the slot for the view-render dispatch below before vx.render()
+    // reads the grapheme pointer.  A function-body-scope buffer lives until
+    // renderFrame returns — well past vx.render().
     const legend_row: u16 = content_win.height -| 1;
     const active = vs.active();
+    // Single function-body-scope legend buffer, sized for the largest legend
+    // (256 B).  Only one branch executes per frame, so there is no aliasing.
+    var legend_buf: [256]u8 = undefined;
     if (active != null and active.?.id == .scope_explorer) {
-        var legend_buf: [256]u8 = undefined;
         const legend = scope_explorer.legendLabel(explorer, &legend_buf);
         _ = content_win.printSegment(.{
             .text = legend,
             .style = .{ .dim = true },
         }, .{ .row_offset = legend_row, .col_offset = 0 });
     } else if (active != null and active.?.id == .agent_monitor) {
-        var legend_buf: [128]u8 = undefined;
         const legend = agent_monitor.legendLabel(&legend_buf);
         _ = content_win.printSegment(.{
             .text = legend,
             .style = .{ .dim = true },
         }, .{ .row_offset = legend_row, .col_offset = 0 });
     } else if (active != null and active.?.id == .task_board) {
-        var legend_buf: [128]u8 = undefined;
         const legend = task_board.legendLabel(&legend_buf);
         _ = content_win.printSegment(.{
             .text = legend,
             .style = .{ .dim = true },
         }, .{ .row_offset = legend_row, .col_offset = 0 });
     } else if (active != null and active.?.id == .decision_log) {
-        var legend_buf: [128]u8 = undefined;
         const legend = decision_log.legendLabel(&legend_buf);
         _ = content_win.printSegment(.{
             .text = legend,
             .style = .{ .dim = true },
         }, .{ .row_offset = legend_row, .col_offset = 0 });
     } else if (active != null and active.?.id == .open_questions) {
-        var legend_buf: [128]u8 = undefined;
         const legend = open_questions.legendLabel(&legend_buf);
         _ = content_win.printSegment(.{
             .text = legend,
             .style = .{ .dim = true },
         }, .{ .row_offset = legend_row, .col_offset = 0 });
     } else if (active != null and active.?.id == .coverage_view) {
-        var legend_buf: [128]u8 = undefined;
         const legend = coverage_view.legendLabel(&legend_buf);
         _ = content_win.printSegment(.{
             .text = legend,
             .style = .{ .dim = true },
         }, .{ .row_offset = legend_row, .col_offset = 0 });
     } else if (active != null and active.?.id == .entity_link_graph) {
-        var legend_buf: [128]u8 = undefined;
         const legend = entity_link_graph.legendLabel(&legend_buf);
         _ = content_win.printSegment(.{
             .text = legend,
             .style = .{ .dim = true },
         }, .{ .row_offset = legend_row, .col_offset = 0 });
     } else if (active != null and active.?.id == .external_ops_plane) {
-        var legend_buf: [256]u8 = undefined;
         const legend = external_ops_plane.legendLabel(ext_ops_state, &legend_buf);
         _ = content_win.printSegment(.{
             .text = legend,
             .style = .{ .dim = true },
         }, .{ .row_offset = legend_row, .col_offset = 0 });
     } else if (active != null and active.?.id == .sessions_handoff) {
-        var legend_buf: [128]u8 = undefined;
         const legend = sessions_handoff.legendLabel(&legend_buf);
         _ = content_win.printSegment(.{
             .text = legend,
             .style = .{ .dim = true },
         }, .{ .row_offset = legend_row, .col_offset = 0 });
     } else if (active != null and active.?.id == .audit_log) {
-        var legend_buf: [128]u8 = undefined;
         const legend = audit_log_view.legendLabel(&legend_buf);
         _ = content_win.printSegment(.{
             .text = legend,
             .style = .{ .dim = true },
         }, .{ .row_offset = legend_row, .col_offset = 0 });
     } else if (active != null and active.?.id == .cli_history) {
-        var legend_buf: [128]u8 = undefined;
         const legend = cli_history_view.legendLabel(&legend_buf);
         _ = content_win.printSegment(.{
             .text = legend,
             .style = .{ .dim = true },
         }, .{ .row_offset = legend_row, .col_offset = 0 });
     } else if (active != null and active.?.id == .topology) {
-        var legend_buf: [128]u8 = undefined;
         const legend = topology_view.legendLabel(&legend_buf);
         _ = content_win.printSegment(.{
             .text = legend,
             .style = .{ .dim = true },
         }, .{ .row_offset = legend_row, .col_offset = 0 });
     } else if (active != null and active.?.id == .utility_view) {
-        var legend_buf: [256]u8 = undefined;
         const legend = utility_view.legendLabel(utility_state, &legend_buf);
         _ = content_win.printSegment(.{
             .text = legend,
@@ -730,32 +766,37 @@ fn renderFrame(
     sl.drawFocusBorder(panes.nav, panes.detail);
 
     // ---- Route content rendering to the active view -------------------
+    // Pass `arena` (the per-frame arena allocator) instead of `alloc` so
+    // every render sub-function can use fmtFrame for dynamic cell text.
+    // The arena lifetime spans from the reset at the top of this function
+    // through vaxis.render() below — guaranteeing grapheme slices in the
+    // back buffer remain valid for the full flush window.
     if (active != null and active.?.id == .scope_explorer) {
-        try scope_explorer.render(explorer, panes.nav, panes.detail, alloc);
+        try scope_explorer.render(explorer, panes.nav, panes.detail, arena);
     } else if (active != null and active.?.id == .agent_monitor) {
-        try agent_monitor.render(monitor, panes.nav, panes.detail, alloc);
+        try agent_monitor.render(monitor, panes.nav, panes.detail, arena);
     } else if (active != null and active.?.id == .task_board) {
-        try task_board.render(board, panes.nav, panes.detail, alloc);
+        try task_board.render(board, panes.nav, panes.detail, arena);
     } else if (active != null and active.?.id == .decision_log) {
-        try decision_log.render(declog, panes.nav, panes.detail, alloc);
+        try decision_log.render(declog, panes.nav, panes.detail, arena);
     } else if (active != null and active.?.id == .open_questions) {
-        try open_questions.render(questions, panes.nav, panes.detail, alloc);
+        try open_questions.render(questions, panes.nav, panes.detail, arena);
     } else if (active != null and active.?.id == .coverage_view) {
-        try coverage_view.render(coverage, panes.nav, panes.detail, alloc);
+        try coverage_view.render(coverage, panes.nav, panes.detail, arena);
     } else if (active != null and active.?.id == .entity_link_graph) {
-        try entity_link_graph.render(entity_graph_state, panes.nav, panes.detail, alloc);
+        try entity_link_graph.render(entity_graph_state, panes.nav, panes.detail, arena);
     } else if (active != null and active.?.id == .external_ops_plane) {
-        try external_ops_plane.render(ext_ops_state, panes.nav, panes.detail, alloc);
+        try external_ops_plane.render(ext_ops_state, panes.nav, panes.detail, arena);
     } else if (active != null and active.?.id == .sessions_handoff) {
-        try sessions_handoff.render(sessions_state, panes.nav, panes.detail, alloc);
+        try sessions_handoff.render(sessions_state, panes.nav, panes.detail, arena);
     } else if (active != null and active.?.id == .audit_log) {
-        try audit_log_view.render(audit_state, panes.nav, panes.detail, alloc);
+        try audit_log_view.render(audit_state, panes.nav, panes.detail, arena);
     } else if (active != null and active.?.id == .cli_history) {
-        try cli_history_view.render(cli_history_state, panes.nav, panes.detail, alloc);
+        try cli_history_view.render(cli_history_state, panes.nav, panes.detail, arena);
     } else if (active != null and active.?.id == .topology) {
-        try topology_view.render(topology_state, panes.nav, panes.detail, alloc);
+        try topology_view.render(topology_state, panes.nav, panes.detail, arena);
     } else if (active != null and active.?.id == .utility_view) {
-        try utility_view.render(utility_state, panes.nav, panes.detail, alloc);
+        try utility_view.render(utility_state, panes.nav, panes.detail, arena);
     } else {
         // Placeholder for views not yet implemented (M16+).
         _ = panes.nav.printSegment(.{
@@ -775,10 +816,16 @@ fn renderFrame(
 fn renderFrameNoDb(
     vx: *Vaxis,
     tty_writer: *std.Io.Writer,
-    _: std.mem.Allocator,
+    alloc: std.mem.Allocator,
     vs: *const view_switcher.ViewSwitcher,
     sl: *const split_layout.SplitLayout,
 ) !void {
+    // Per-frame arena for grapheme allocations (renderTabBar needs arena for
+    // the key-byte slice; must outlive vaxis.render()).
+    var frame_arena = std.heap.ArenaAllocator.init(alloc);
+    defer frame_arena.deinit();
+    const arena = frame_arena.allocator();
+
     const win = vx.window();
     win.clear();
 
@@ -794,7 +841,7 @@ fn renderFrameNoDb(
         .width = win.width,
         .height = 1,
     });
-    vs.renderTabBar(tab_bar_win);
+    vs.renderTabBar(tab_bar_win, arena);
 
     if (win.height < 2) {
         try vx.render(tty_writer);
@@ -844,6 +891,300 @@ fn renderTooSmall(win: Window) void {
         .text = msg,
         .style = .{},
     }, .{ .row_offset = 0, .col_offset = 0 });
+}
+
+// =========================================================================
+// Grapheme-lifetime regression tests (task 4174: per-frame arena UAF fix,
+// iter 2: legend-bar UAF fix + deterministic discriminator).
+// =========================================================================
+//
+// Back buffer UAF recap:
+//   vaxis.Screen.writeCell stores a BORROWED grapheme slice pointer in the
+//   back buffer (Screen.buf[n].char.grapheme).  The pointer is read again
+//   during vaxis.render() when the front buffer diffing copies graphemes to
+//   the InternalScreen.  Any grapheme pointer that refers to a stack-local
+//   that was freed BEFORE vaxis.render() is a use-after-free.
+//
+// Four concrete UAF patterns fixed by task 4174:
+//   (a) `const ch: [1]u8 = .{byte}; win.writeCell(...grapheme=&ch...)` —
+//       per-loop-iteration stack local, freed at end of each iteration.
+//   (b) `var buf:[N]u8; bufPrint(&buf, ...); printSegment(.{.text=&buf})` —
+//       stack buffer freed when the render helper returns (widget/view level).
+//   (c) `const key_slice:[1]u8=.{key}` inside a for loop body, stored in
+//       tab_parts and then sliced in writeCell calls.
+//   (d) Block-scoped `var legend_buf: [N]u8` inside each if/else-if branch
+//       of the renderFrame legend section (lines ~651-751).  After the branch
+//       block closes, the slot is marked dead; the view-render dispatch that
+//       follows (lines 774-810) may reuse it before vx.render() (line 812).
+//       This is Defect 1 (iter 2).
+//
+// HOW THE DETERMINISTIC TEST WORKS (iter 2):
+//   The iter-1 stackClobber approach was non-deterministic: it relied on the
+//   optimizer/ReleaseSafe reusing a freed stack slot before the check, which
+//   does not happen in Debug mode and is therefore invisible to `zig build
+//   test`.  More critically, it NEVER called vaxis.render(), so the actual
+//   flush — the moment the borrowed pointer is read — was never exercised.
+//
+//   The deterministic replacement:
+//     1. Initialize a real Vaxis instance backed by an in-memory Writer
+//        (Writer.Allocating) instead of a TTY.  Force vx.refresh=true so
+//        the first render emits ALL cells (no diff-skip).
+//     2. Call renderFrame.  This writes cells into screen.buf, then calls
+//        vx.render() internally which reads every cell's .char.grapheme
+//        pointer and emits the grapheme bytes to the in-memory writer.
+//        If any grapheme pointer is dangling at render time, vx.render()
+//        reads garbage bytes → U+FFFD (or other corruption) in the output.
+//     3. Inspect the in-memory writer's bytes:
+//        (a) No 0xEF 0xBF 0xBD (U+FFFD) anywhere in the output.
+//        (b) Expected legend and view text is present (proves the frame
+//            was actually rendered, not skipped).
+//
+//   WHY IT CATCHES THE LEGEND UAF (Defect 1):
+//     With the OLD block-scoped legend_buf, the slot is dead after each
+//     if/else branch closes (~line 751).  In ReleaseSafe, the view-render
+//     dispatch call at line 774 reuses that slot.  vx.render() at line 812
+//     then reads the clobbered pointer → garbled grapheme bytes → U+FFFD in
+//     the Writer.Allocating output → assertion (a) fails.
+//
+//     In Debug mode, Zig does not aggressively reuse stack slots, so the
+//     corruption is latent.  The test is a safety net for ReleaseSafe builds
+//     (the production optimize level) and for future optimizer improvements.
+//     Run `zig build test -Doptimize=ReleaseSafe` to see the test go RED on
+//     the pre-fix code.
+//
+//   WHY IT COVERS ALL VIEWS (Defect 1 + iter-1 sites):
+//     renderFrame is called once per view (all 13 views + the generic legend
+//     path).  Each call exercises the tab bar (view_switcher — iter-1 fix c),
+//     the legend bar (iter-2 fix d), and the view-specific render path (iter-1
+//     fixes a and b for tree_navigator, markdown_detail, and per-view arenas).
+
+/// Helper: set up a minimal Vaxis instance backed by an in-memory writer for
+/// grapheme-lifetime regression tests.  Returns the Writer.Allocating so the
+/// caller can inspect emitted bytes.  The caller is responsible for calling
+/// vx.deinit(alloc, &aw.writer) after use (so pass `&aw.writer` as the tty).
+///
+/// Sizes the screen to W×H cells (must be ≥ MIN_WIDTH × MIN_HEIGHT so the
+/// minimum-size guard does not short-circuit rendering).
+fn testVxSetup(
+    alloc: std.mem.Allocator,
+    W: u16,
+    H: u16,
+    env_map: *std.process.Environ.Map,
+) !struct { vx: Vaxis, aw: std.Io.Writer.Allocating } {
+    var aw: std.Io.Writer.Allocating = .init(alloc);
+    var vx = try vaxis.init(std.testing.io, alloc, env_map, .{});
+    // Resize the screen so it has actual cells.  The writer receives the
+    // resize escape sequences; we ignore them and only care about the render
+    // output.
+    try vx.resize(alloc, &aw.writer, .{ .rows = H, .cols = W, .x_pixel = 0, .y_pixel = 0 });
+    // Force a full redraw on the next render (diff-skip would suppress output
+    // for cells that match the (empty) previous frame).
+    vx.refresh = true;
+    return .{ .vx = vx, .aw = aw };
+}
+
+test "grapheme lifetime (task 4174 iter 2): renderFrame emits no U+FFFD for scope_explorer legend and view" {
+    // DETERMINISTIC: drives the full renderFrame → vx.render() pipeline to an
+    // in-memory writer.  Asserts no U+FFFD in the output and that the expected
+    // scope_explorer legend text appears.
+    //
+    // RED on pre-fix (block-scoped legend_buf) when compiled with ReleaseSafe.
+    // GREEN with the fix (function-body-scope legend_buf in renderFrame).
+    const a = std.testing.allocator;
+    const W: u16 = 120;
+    const H: u16 = 40;
+
+    var env_map: std.process.Environ.Map = .init(a);
+    defer env_map.deinit();
+
+    var setup = try testVxSetup(a, W, H, &env_map);
+    // Defers run LIFO: vx.deinit() must run before aw.deinit() because
+    // vx.deinit writes to the tty writer (aw.writer) during state reset.
+    defer setup.aw.deinit();
+    defer setup.vx.deinit(a, &setup.aw.writer);
+
+    // All view states at their default (empty) values — no DB needed.
+    var explorer = scope_explorer.ExplorerState.init(a);
+    defer explorer.deinit();
+    var monitor = agent_monitor.MonitorState.init(a);
+    defer monitor.deinit();
+    var board = task_board.BoardState.init(a);
+    defer board.deinit();
+    var declog = decision_log.DecisionLogState.init(a);
+    defer declog.deinit();
+    var questions = open_questions.OpenQuestionsState.init(a);
+    defer questions.deinit();
+    var coverage = coverage_view.CoverageState.init(a);
+    defer coverage.deinit();
+    var entity_graph = entity_link_graph.EntityLinkState.init(a);
+    defer entity_graph.deinit();
+    var ext_ops = external_ops_plane.ExtOpsState.init(a);
+    defer ext_ops.deinit();
+    var sessions = sessions_handoff.SessionsHandoffState.init(a);
+    defer sessions.deinit();
+    var audit = audit_log_view.AuditLogState.init(a);
+    defer audit.deinit();
+    var cli_history = cli_history_view.CliHistoryState.init(a);
+    defer cli_history.deinit();
+    var topology = topology_view.TopologyState.init(a);
+    defer topology.deinit();
+    var utility = utility_view.UtilityState.init(a);
+    defer utility.deinit();
+
+    // View switcher with scope_explorer as the ACTIVE view (index 0).
+    // This exercises the legend branch: scope_explorer.legendLabel().
+    var vs: view_switcher.ViewSwitcher = .{};
+    try vs.register(.{ .id = .scope_explorer, .name = "Explorer", .key = '1' });
+    try vs.register(.{ .id = .agent_monitor, .name = "Monitor", .key = '2' });
+    try vs.register(.{ .id = .task_board, .name = "Board", .key = '3' });
+    try vs.register(.{ .id = .decision_log, .name = "Decisions", .key = '4' });
+    try vs.register(.{ .id = .open_questions, .name = "Questions", .key = '5' });
+    try vs.register(.{ .id = .coverage_view, .name = "Coverage", .key = '6' });
+    try vs.register(.{ .id = .entity_link_graph, .name = "Links", .key = '7' });
+    try vs.register(.{ .id = .external_ops_plane, .name = "ExtOps", .key = '8' });
+    try vs.register(.{ .id = .sessions_handoff, .name = "Sessions", .key = '9' });
+    try vs.register(.{ .id = .audit_log, .name = "AuditLog", .key = '0' });
+    try vs.register(.{ .id = .cli_history, .name = "CLIHist", .key = 'h' });
+    try vs.register(.{ .id = .topology, .name = "Topology", .key = 't' });
+    try vs.register(.{ .id = .utility_view, .name = "Utility", .key = 'u' });
+
+    var sl: split_layout.SplitLayout = .{};
+    var frame_arena = std.heap.ArenaAllocator.init(a);
+    defer frame_arena.deinit();
+
+    // renderFrame calls vx.render() internally.  After it returns, all
+    // grapheme pointers have been read by vx.render(); the output is in
+    // setup.aw.writer.buffered().
+    try renderFrame(&setup.vx, &setup.aw.writer, &vs, &sl, &explorer, &monitor, &board, &declog, &questions, &coverage, &entity_graph, &ext_ops, &sessions, &audit, &cli_history, &topology, &utility, &frame_arena);
+
+    const out = setup.aw.writer.buffered();
+
+    // No U+FFFD replacement character — the UAF discriminator.
+    const replacement = "\xEF\xBF\xBD";
+    if (std.mem.indexOf(u8, out, replacement) != null) {
+        std.debug.print("FAIL: U+FFFD found in renderFrame output (legend bar UAF)\n", .{});
+        return error.TestUnexpectedResult;
+    }
+
+    // The scope_explorer legend must appear in the VT output.
+    // "q Quit" is the stable fragment of the default scope_explorer legend.
+    if (std.mem.indexOf(u8, out, "q Quit") == null) {
+        std.debug.print("FAIL: expected 'q Quit' in renderFrame output (scope_explorer legend not rendered)\n", .{});
+        return error.TestUnexpectedResult;
+    }
+
+    // The "Explorer" tab label must appear (tab bar rendered).
+    if (std.mem.indexOf(u8, out, "Explorer") == null) {
+        std.debug.print("FAIL: expected 'Explorer' in renderFrame output (tab bar not rendered)\n", .{});
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "grapheme lifetime (task 4174 iter 2): renderFrame cycles through all view legends without U+FFFD" {
+    // Comprehensive coverage: render one frame per view (each exercises a
+    // different legend branch in renderFrame).  All views must produce output
+    // with no U+FFFD.  Cycling through views also exercises the tab bar
+    // (view_switcher arena fix), view-specific render paths (per-view arena
+    // fixes), and all legend branches (iter-2 legend-bar fix).
+    const a = std.testing.allocator;
+    const W: u16 = 120;
+    const H: u16 = 40;
+    const replacement = "\xEF\xBF\xBD";
+
+    const ViewCase = struct {
+        id: view_model.ViewId,
+        name: []const u8,
+        key: u8,
+        // A stable substring that must appear in the rendered output to prove
+        // the legend was actually written and read by vx.render().
+        legend_needle: []const u8,
+    };
+
+    const cases = [_]ViewCase{
+        .{ .id = .scope_explorer, .name = "Explorer", .key = '1', .legend_needle = "q Quit" },
+        .{ .id = .agent_monitor, .name = "Monitor", .key = '2', .legend_needle = "Roster" },
+        .{ .id = .task_board, .name = "Board", .key = '3', .legend_needle = "j/k" },
+        .{ .id = .decision_log, .name = "Decisions", .key = '4', .legend_needle = "j/k" },
+        .{ .id = .open_questions, .name = "Questions", .key = '5', .legend_needle = "j/k" },
+        .{ .id = .coverage_view, .name = "Coverage", .key = '6', .legend_needle = "j/k" },
+        .{ .id = .entity_link_graph, .name = "Links", .key = '7', .legend_needle = "j/k" },
+        .{ .id = .external_ops_plane, .name = "ExtOps", .key = '8', .legend_needle = "q Quit" },
+        .{ .id = .sessions_handoff, .name = "Sessions", .key = '9', .legend_needle = "j/k" },
+        .{ .id = .audit_log, .name = "AuditLog", .key = '0', .legend_needle = "j/k" },
+        .{ .id = .cli_history, .name = "CLIHist", .key = 'h', .legend_needle = "j/k" },
+        .{ .id = .topology, .name = "Topology", .key = 't', .legend_needle = "j/k" },
+        .{ .id = .utility_view, .name = "Utility", .key = 'u', .legend_needle = "q Quit" },
+    };
+
+    // All view states at their default (empty) values — no DB needed.
+    var explorer = scope_explorer.ExplorerState.init(a);
+    defer explorer.deinit();
+    var monitor = agent_monitor.MonitorState.init(a);
+    defer monitor.deinit();
+    var board = task_board.BoardState.init(a);
+    defer board.deinit();
+    var declog = decision_log.DecisionLogState.init(a);
+    defer declog.deinit();
+    var questions = open_questions.OpenQuestionsState.init(a);
+    defer questions.deinit();
+    var coverage = coverage_view.CoverageState.init(a);
+    defer coverage.deinit();
+    var entity_graph = entity_link_graph.EntityLinkState.init(a);
+    defer entity_graph.deinit();
+    var ext_ops = external_ops_plane.ExtOpsState.init(a);
+    defer ext_ops.deinit();
+    var sessions = sessions_handoff.SessionsHandoffState.init(a);
+    defer sessions.deinit();
+    var audit = audit_log_view.AuditLogState.init(a);
+    defer audit.deinit();
+    var cli_history = cli_history_view.CliHistoryState.init(a);
+    defer cli_history.deinit();
+    var topology = topology_view.TopologyState.init(a);
+    defer topology.deinit();
+    var utility = utility_view.UtilityState.init(a);
+    defer utility.deinit();
+
+    var sl: split_layout.SplitLayout = .{};
+
+    for (cases) |case| {
+        // Fresh Vaxis + in-memory writer per case (avoids front-buffer diff
+        // caching from prior frame confusing the output assertions).
+        var env_map: std.process.Environ.Map = .init(a);
+        defer env_map.deinit();
+        var setup = try testVxSetup(a, W, H, &env_map);
+        // LIFO: vx.deinit writes to aw.writer, so aw.deinit must run last.
+        defer setup.aw.deinit();
+        defer setup.vx.deinit(a, &setup.aw.writer);
+
+        // Register all views but switch to the target view before rendering.
+        var vs: view_switcher.ViewSwitcher = .{};
+        for (cases) |reg| {
+            try vs.register(.{ .id = reg.id, .name = reg.name, .key = reg.key });
+        }
+        // Activate the target view via switchTo (works for all views, including
+        // those with non-numeric keys that handleKey would not handle).
+        _ = vs.switchTo(case.id);
+
+        var frame_arena = std.heap.ArenaAllocator.init(a);
+        defer frame_arena.deinit();
+
+        try renderFrame(&setup.vx, &setup.aw.writer, &vs, &sl, &explorer, &monitor, &board, &declog, &questions, &coverage, &entity_graph, &ext_ops, &sessions, &audit, &cli_history, &topology, &utility, &frame_arena);
+
+        const out = setup.aw.writer.buffered();
+
+        // No U+FFFD — the legend-bar UAF discriminator.
+        if (std.mem.indexOf(u8, out, replacement) != null) {
+            std.debug.print("FAIL [{s}]: U+FFFD found in renderFrame output (legend bar or view UAF)\n", .{case.name});
+            return error.TestUnexpectedResult;
+        }
+
+        // Legend needle must appear — proves the legend branch was taken and
+        // the grapheme bytes were actually emitted by vx.render().
+        if (std.mem.indexOf(u8, out, case.legend_needle) == null) {
+            std.debug.print("FAIL [{s}]: legend needle '{s}' not found in renderFrame output\n", .{ case.name, case.legend_needle });
+            return error.TestUnexpectedResult;
+        }
+    }
 }
 
 // Pull every cockpit sub-module into the test build so their `test` blocks
