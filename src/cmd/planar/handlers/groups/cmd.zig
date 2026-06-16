@@ -27,6 +27,11 @@ pub const verb: cli.Cmd = .{
     \\budget, and the slice-DAG induced by the task `blocks` dependencies is
     \\always schedulable (no slice is grouped across a dependency violation).
     \\
+    \\  --solver greedy|mtkahypar  (default greedy) selects the partitioner.
+    \\  `mtkahypar` is the optional external hypergraph solver: when its binary
+    \\  is absent or fails, the verb degrades to greedy and reports
+    \\  `optimal_available:false` (it never errors on a missing optional dep).
+    \\
     \\  Workflow: closure compute <task> (per task) → groups recommend <plan>.
     ,
     .cmds = &.{
@@ -35,6 +40,7 @@ pub const verb: cli.Cmd = .{
             .desc = "Recommend closure-minimizing task slices for a plan.",
             .flags = &.{
                 .{ .long = "--budget", .kind = .string },
+                .{ .long = "--solver", .kind = .string },
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },
             .positionals = &.{.{ .name = "plan-id", .kind = .string, .required = true }},

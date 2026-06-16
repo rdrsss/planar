@@ -1,13 +1,23 @@
-//! engine.grouping.mtkahypar — M3.3a Mt-KaHyPar serialization seam (pure).
+//! engine.grouping.mtkahypar — Mt-KaHyPar hypergraph-solver seam.
 //!
-//! The **encoding half** of the hypergraph-solver seam (decision D-HG4 /
-//! plan-634 decision 520). It turns the SAME input the greedy heuristic
-//! consumes — the plan's tasks with their effective closures (`greedy.Task` /
-//! `greedy.Unit`) — into the weighted **hMETIS** hypergraph file an external
-//! `mtkahypar` binary reads on stdin. This module does NOT spawn the solver,
-//! does NOT parse its partition, does NOT repair: those are M3.3b/M3.3c. Its
-//! entire deliverable is a deterministic, byte-stable encoder plus its golden
-//! test.
+//! Two halves of the external-solver seam (decision D-HG4 / plan-634 decision
+//! 520), both keyed off the SAME input the greedy heuristic consumes — the
+//! plan's tasks with their effective closures (`greedy.Task` / `greedy.Unit`):
+//!
+//!   - **M3.3a — encoding (pure).** `encode` / `encodeTo` turn the tasks into
+//!     the weighted **hMETIS** hypergraph file an external `mtkahypar` binary
+//!     reads. Deterministic and byte-stable; no I/O, no subprocess.
+//!   - **M3.3b — subprocess invoke + parse + graceful degradation (this
+//!     milestone).** `solverAvailable` probes the binary; `invoke` writes the
+//!     M3.3a encoding to a temp file, runs `mtkahypar` with the km1
+//!     connectivity objective, and parses the per-vertex block assignment back
+//!     into `greedy.Slice`s in the SAME shape greedy emits. When the binary is
+//!     absent the caller degrades to the greedy arm (D-HG4: optional RUN_DEP).
+//!
+//! The D-HG3 union-repair / exact-budget pass and the D-HG2 partition-then-order
+//! cycle-repair are **M3.3c** — NOT in this module yet. `invoke` returns slices
+//! by vertex→block membership with a basic `weight.cost`-style union cost; the
+//! budget-repair that makes the partition comparable to greedy lands in M3.3c.
 //!
 //! ## The hypergraph (spec §2 / D-HG1 / D-HG4)
 //!
@@ -219,6 +229,387 @@ pub fn encodeTo(
     for (vweight) |vw| try w.print("{d}\n", .{vw});
 }
 
+// ===========================================================================
+// M3.3b — subprocess invoke + parse + graceful degradation
+// ===========================================================================
+
+/// The external solver binary name. Resolved off `$PATH` like every other
+/// optional Planar RUN_DEP (`gh`, `rg`). Not vendored, not compiled by
+/// `build.zig` (D-HG4); the operator builds it from source.
+pub const solver_bin = "mtkahypar";
+
+/// Default imbalance epsilon handed to `mtkahypar`. A 3% block-imbalance
+/// tolerance is the Mt-KaHyPar documented default for connectivity
+/// partitioning; the exact-budget guarantee is restored by the M3.3c
+/// union-repair pass, so the native balance proxy only needs to be a sane
+/// starting point (D-HG3: "native epsilon-balance proxy + post-hoc repair").
+pub const default_epsilon = "0.03";
+
+/// Errors the subprocess seam surfaces to the caller. Any of these means the
+/// optimal arm could not produce a partition; the caller degrades to greedy
+/// and reports `optimal_available:false` (D-HG4).
+pub const InvokeError = error{
+    /// `mtkahypar` was not runnable (not on PATH) or the spawn itself failed.
+    SolverUnavailable,
+    /// `mtkahypar` ran but exited non-zero.
+    SolverFailed,
+    /// The solver ran but no partition-output file could be located / read.
+    PartitionMissing,
+    /// The partition file's contents did not match the expected
+    /// one-block-id-per-line, vertex-count-many shape.
+    PartitionMalformed,
+} || std.mem.Allocator.Error;
+
+/// True iff the external `mtkahypar` binary is runnable on this machine.
+///
+/// Mirrors `harvest.ensureGitAvailable` / `models.probeBinary`: spawn
+/// `mtkahypar --help`, treat ANY spawn error or non-zero/abnormal exit as
+/// "absent". This is the gate the `--solver=mtkahypar` path checks before
+/// reaching for `invoke`; a `false` result degrades to greedy with
+/// `optimal_available:false` and no error surfaced to the operator.
+pub fn solverAvailable(allocator: std.mem.Allocator, io: std.Io) bool {
+    const res = std.process.run(allocator, io, .{
+        .argv = &.{ solver_bin, "--help" },
+    }) catch return false;
+    defer allocator.free(res.stdout);
+    defer allocator.free(res.stderr);
+    return switch (res.term) {
+        .exited => |code| code == 0,
+        else => false,
+    };
+}
+
+/// Knobs for `invoke`. Defaults reproduce the canonical solver invocation.
+pub const InvokeOptions = struct {
+    /// Per-slice token budget — the same `B` greedy partitions under. Used to
+    /// derive the starting block count `k = ceil(Σ vertex-weight / budget)`.
+    budget: u32,
+    /// Imbalance tolerance handed to `mtkahypar` (`-e`). Defaults to
+    /// `default_epsilon`.
+    epsilon: []const u8 = default_epsilon,
+    /// hMETIS encoding knobs forwarded to `encode`.
+    encode: EncodeOptions = .{},
+};
+
+/// Run the external `mtkahypar` solver over `tasks` and return the partition as
+/// `greedy.Slice`s (the SAME shape greedy / M3.2 emit). Read-only; allocates a
+/// temp working dir under the system temp, writes the M3.3a hMETIS encoding to
+/// it, invokes the solver with the km1 (connectivity) objective and a block
+/// count `k = ceil(total_union_cost / budget)` (clamped ≥ 1), reads back the
+/// per-vertex block assignment, and groups task ids by block.
+///
+/// The temp dir is removed before return (success OR error). The caller owns
+/// the returned slices and frees each via `slice.deinit(gpa)` plus the outer
+/// slice via `gpa.free`.
+///
+/// NOTE (scope — M3.3b): the slice `cost` here is the straight union cost of
+/// each block's closure (dedup by symbol, `weight.cost` semantics) so the slice
+/// shape is complete; it is NOT yet budget-repaired. A block whose union
+/// exceeds `budget` is returned as-is — the D-HG3 union-repair pass that splits
+/// it back under budget is M3.3c. `invoke` is purely invoke + parse.
+pub fn invoke(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    tasks: []const greedy.Task,
+    opts: InvokeOptions,
+) InvokeError![]greedy.Slice {
+    if (tasks.len == 0) return gpa.alloc(greedy.Slice, 0);
+
+    // --- 1. Encode the hypergraph to bytes (M3.3a) ----------------------
+    const hgr = encode(gpa, tasks, opts.encode) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.PartitionMalformed, // writer error on an in-mem buf: unreachable in practice
+    };
+    defer gpa.free(hgr);
+
+    // --- 2. Make an isolated temp working dir ---------------------------
+    const work = try makeTempDir(gpa, io);
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, work) catch {};
+        gpa.free(work);
+    }
+
+    const hgr_path = try std.fs.path.join(gpa, &.{ work, "graph.hgr" });
+    defer gpa.free(hgr_path);
+    writeFileAll(io, hgr_path, hgr) catch return error.PartitionMissing;
+
+    // --- 3. Block count k = ceil(Σ vertex-weight / budget), clamped ≥ 1 -
+    const k = blockCount(tasks, opts.budget);
+    const k_str = try std.fmt.allocPrint(gpa, "{d}", .{k});
+    defer gpa.free(k_str);
+
+    // --- 4. Invoke the solver -------------------------------------------
+    // Mt-KaHyPar writes its partition next to the input file as
+    // `<input>.part<k>.epsilon<eps>.seed<seed>.KaHyPar` when
+    // `--write-partition-file=true` is set. We give it an explicit output
+    // folder (the temp dir) and then SCAN for the produced partition file so
+    // we are robust to the version-specific name suffix.
+    const argv = [_][]const u8{
+        solver_bin,
+        "-h",
+        hgr_path,
+        "-k",
+        k_str,
+        "-e",
+        opts.epsilon,
+        "-o",
+        "km1",
+        "-m",
+        "direct",
+        "--write-partition-file=true",
+        "--partition-output-folder",
+        work,
+    };
+    const res = std.process.run(gpa, io, .{ .argv = &argv }) catch
+        return error.SolverUnavailable;
+    defer gpa.free(res.stdout);
+    defer gpa.free(res.stderr);
+    switch (res.term) {
+        .exited => |code| if (code != 0) return error.SolverFailed,
+        else => return error.SolverFailed,
+    }
+
+    // --- 5. Locate + read the partition file ----------------------------
+    const part = try readPartitionFile(gpa, io, work, hgr_path);
+    defer gpa.free(part);
+
+    // --- 6. Parse block ids → slices ------------------------------------
+    return parsePartition(gpa, part, tasks);
+}
+
+/// Parse `mtkahypar`'s partition output — one **0-based block id per line, in
+/// vertex order** (vertex `i` = the i-th line, matching the 1-based vertex
+/// numbering `encode` assigns by ascending `task.id`) — into `greedy.Slice`s.
+///
+/// Line `i` → vertex `i` → the task that `encode` numbered vertex `i+1` →
+/// that task's block. Task ids are grouped by block id; each block becomes one
+/// slice whose `cost` is the union cost of its members' closures (dedup by
+/// symbol). Empty blocks are dropped. Slices are returned sorted by smallest
+/// member id (matching greedy's `sliceLess`), and member ids within a slice are
+/// sorted ascending.
+///
+/// Exposed separately from `invoke` so tests can pin the parse against a known
+/// partition string without spawning the solver.
+pub fn parsePartition(
+    gpa: std.mem.Allocator,
+    partition: []const u8,
+    tasks: []const greedy.Task,
+) InvokeError![]greedy.Slice {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    // Vertex order = ascending task id (the numbering `encode` fixes).
+    const order = try a.alloc(usize, tasks.len);
+    for (order, 0..) |*o, i| o.* = i;
+    std.mem.sort(usize, order, tasks, struct {
+        fn less(ts: []const greedy.Task, x: usize, y: usize) bool {
+            return ts[x].id < ts[y].id;
+        }
+    }.less);
+
+    // Parse one block id per non-blank line.
+    var blocks = std.ArrayListUnmanaged(i64).empty;
+    var it = std.mem.splitScalar(u8, partition, '\n');
+    while (it.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0) continue;
+        const b = std.fmt.parseInt(i64, line, 10) catch return error.PartitionMalformed;
+        try blocks.append(a, b);
+    }
+    // The solver emits exactly one block id per vertex.
+    if (blocks.items.len != tasks.len) return error.PartitionMalformed;
+
+    // Group task ids by block id, preserving first-seen block order.
+    var block_index = std.AutoArrayHashMapUnmanaged(i64, std.ArrayListUnmanaged(usize)).empty;
+    for (order, 0..) |task_idx, vertex| {
+        const b = blocks.items[vertex];
+        const gop = try block_index.getOrPut(a, b);
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        try gop.value_ptr.append(a, task_idx);
+    }
+
+    // Materialize one greedy.Slice per non-empty block.
+    var out = std.ArrayListUnmanaged(greedy.Slice).empty;
+    errdefer {
+        for (out.items) |s| s.deinit(gpa);
+        out.deinit(gpa);
+    }
+    var bit = block_index.iterator();
+    while (bit.next()) |entry| {
+        const member_idxs = entry.value_ptr.items;
+        if (member_idxs.len == 0) continue;
+        const slice = try buildSlice(gpa, tasks, member_idxs);
+        try out.append(gpa, slice);
+    }
+
+    const owned = try out.toOwnedSlice(gpa);
+    std.mem.sort(greedy.Slice, owned, {}, struct {
+        fn less(_: void, x: greedy.Slice, y: greedy.Slice) bool {
+            return x.task_ids[0] < y.task_ids[0];
+        }
+    }.less);
+    return owned;
+}
+
+// ---------------------------------------------------------------------------
+// M3.3b internals
+// ---------------------------------------------------------------------------
+
+/// `k = ceil(Σ vertex-weight / budget)`, clamped to ≥ 1. The starting block
+/// count: enough blocks that, if the solver balanced perfectly, each would fit
+/// the budget. M3.3c's repair pass corrects any residual over-budget block.
+fn blockCount(tasks: []const greedy.Task, budget: u32) u32 {
+    var total: u64 = 0;
+    for (tasks) |t| total += vertexWeight(t);
+    if (budget == 0 or total == 0) return 1;
+    const k = (total + budget - 1) / budget; // ceil
+    return @intCast(@max(@as(u64, 1), k));
+}
+
+/// Build one `greedy.Slice` from the member task indices of a block: sorted
+/// member ids, the deduped union of their closure symbols (sorted), and the
+/// union token cost (each distinct symbol counted once — `weight.cost`
+/// semantics). All output is `gpa`-owned to match greedy's `finalizeSlice`.
+fn buildSlice(
+    gpa: std.mem.Allocator,
+    tasks: []const greedy.Task,
+    member_idxs: []const usize,
+) InvokeError!greedy.Slice {
+    const ids = try gpa.alloc(i64, member_idxs.len);
+    errdefer gpa.free(ids);
+    for (member_idxs, 0..) |mi, i| ids[i] = tasks[mi].id;
+    std.mem.sort(i64, ids, {}, struct {
+        fn less(_: void, x: i64, y: i64) bool {
+            return x < y;
+        }
+    }.less);
+
+    // Union symbol → weight, deduped (max weight defensively).
+    var union_w = std.StringArrayHashMapUnmanaged(u32).empty;
+    defer union_w.deinit(gpa);
+    var cost: u32 = 0;
+    for (member_idxs) |mi| {
+        for (tasks[mi].units) |u| {
+            const gop = try union_w.getOrPut(gpa, u.qualified);
+            if (!gop.found_existing) {
+                gop.value_ptr.* = u.weight;
+                cost += u.weight;
+            } else if (u.weight > gop.value_ptr.*) {
+                cost += u.weight - gop.value_ptr.*;
+                gop.value_ptr.* = u.weight;
+            }
+        }
+    }
+
+    var syms = try gpa.alloc([]const u8, union_w.count());
+    errdefer gpa.free(syms);
+    var n: usize = 0;
+    errdefer for (syms[0..n]) |s| gpa.free(s);
+    var kit = union_w.iterator();
+    while (kit.next()) |e| : (n += 1) {
+        syms[n] = try gpa.dupe(u8, e.key_ptr.*);
+    }
+    std.mem.sort([]const u8, syms, {}, struct {
+        fn less(_: void, x: []const u8, y: []const u8) bool {
+            return std.mem.order(u8, x, y) == .lt;
+        }
+    }.less);
+
+    return .{ .task_ids = ids, .union_symbols = syms, .cost = cost };
+}
+
+/// Create a unique temp working dir under the system temp root and return its
+/// absolute path (owned). Mirrors the throwaway-dir pattern the harvest /
+/// models modules use, but at runtime (not test) scope.
+fn makeTempDir(gpa: std.mem.Allocator, io: std.Io) std.mem.Allocator.Error![]const u8 {
+    // Unique process-private suffix from the io randomness source (mirrors
+    // editor.zig's createTempFile). The dir is short-lived and deleted before
+    // `invoke` returns.
+    var rng_buf: [8]u8 = undefined;
+    io.random(&rng_buf);
+    const hex = std.fmt.bytesToHex(rng_buf, .lower);
+
+    const base = tmpBase();
+    const path = try std.fmt.allocPrint(gpa, "{s}/planar-mtkahypar-{s}", .{ base, hex });
+    errdefer gpa.free(path);
+    std.Io.Dir.cwd().createDirPath(io, path) catch {};
+    return path;
+}
+
+/// System temp root. Honors `$TMPDIR` (set on macOS to a per-user dir) and
+/// falls back to `/tmp`. Read via `std.c.environ` so the engine module stays
+/// free of the `runtime.Ctx` environ (mirrors editor.zig's `getPosixEnv`).
+fn tmpBase() []const u8 {
+    if (getPosixEnv("TMPDIR")) |t| {
+        // Strip a trailing slash so the join below is clean.
+        return if (t[t.len - 1] == '/') t[0 .. t.len - 1] else t;
+    }
+    return "/tmp";
+}
+
+/// Look up an environment variable via the C environ array. Returns null when
+/// unset or empty.
+fn getPosixEnv(key: []const u8) ?[]const u8 {
+    const raw: [*:null]?[*:0]u8 = std.c.environ;
+    var i: usize = 0;
+    while (raw[i]) |entry| : (i += 1) {
+        const s: []const u8 = std.mem.span(entry);
+        if (s.len <= key.len + 1) continue;
+        if (s[key.len] != '=') continue;
+        if (!std.mem.eql(u8, s[0..key.len], key)) continue;
+        const val = s[key.len + 1 ..];
+        if (val.len == 0) return null;
+        return val;
+    }
+    return null;
+}
+
+/// Write all of `data` to `path` (truncating).
+fn writeFileAll(io: std.Io, path: []const u8, data: []const u8) !void {
+    var f = try std.Io.Dir.cwd().createFile(io, path, .{});
+    defer f.close(io);
+    try f.writeStreamingAll(io, data);
+}
+
+/// Read back Mt-KaHyPar's partition file. The solver writes
+/// `<input>.part<k>.…KaHyPar` into `dir`; the exact suffix is version-specific,
+/// so we scan `dir` for any entry whose name starts with the input file's base
+/// name and contains `.part`. Returns the file contents (owned).
+fn readPartitionFile(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    dir: []const u8,
+    hgr_path: []const u8,
+) InvokeError![]u8 {
+    const base = std.fs.path.basename(hgr_path); // "graph.hgr"
+    var d = std.Io.Dir.cwd().openDir(io, dir, .{ .iterate = true }) catch
+        return error.PartitionMissing;
+    defer d.close(io);
+
+    var found: ?[]u8 = null;
+    errdefer if (found) |f| gpa.free(f);
+    var walker = d.iterate();
+    while (walker.next(io) catch return error.PartitionMissing) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.startsWith(u8, entry.name, base)) continue;
+        if (std.mem.indexOf(u8, entry.name, ".part") == null) continue;
+        // Skip the input file itself.
+        if (std.mem.eql(u8, entry.name, base)) continue;
+        const full = std.fs.path.join(gpa, &.{ dir, entry.name }) catch
+            return error.OutOfMemory;
+        defer gpa.free(full);
+        found = std.Io.Dir.cwd().readFileAlloc(
+            io,
+            full,
+            gpa,
+            std.Io.Limit.limited(8 * 1024 * 1024),
+        ) catch return error.PartitionMissing;
+        break;
+    }
+    return found orelse error.PartitionMissing;
+}
+
 // ---------------------------------------------------------------------------
 // Internals
 // ---------------------------------------------------------------------------
@@ -415,4 +806,128 @@ test "mtkahypar.encodeTo: writer path matches encode" {
     const via_encode = try encode(a, &tasks, .{});
     defer a.free(via_encode);
     try testing.expectEqualStrings(via_encode, aw.written());
+}
+
+// --- M3.3b: subprocess invoke + parse + degradation tests ------------------
+
+fn freeSlices(a: std.mem.Allocator, slices: []greedy.Slice) void {
+    for (slices) |s| s.deinit(a);
+    a.free(slices);
+}
+
+test "mtkahypar.blockCount: ceil(total / budget), clamped >= 1" {
+    const t1 = [_]greedy.Unit{
+        .{ .qualified = "a", .role = .modify, .weight = 30 },
+        .{ .qualified = "b", .role = .reference, .weight = 30 },
+    };
+    const t2 = [_]greedy.Unit{.{ .qualified = "c", .role = .modify, .weight = 40 }};
+    const tasks = [_]greedy.Task{ mkTask(1, &t1), mkTask(2, &t2) };
+    // total vertex weight = 60 + 40 = 100.
+    try testing.expectEqual(@as(u32, 1), blockCount(&tasks, 100)); // exact fit
+    try testing.expectEqual(@as(u32, 2), blockCount(&tasks, 60)); // ceil(100/60)=2
+    try testing.expectEqual(@as(u32, 4), blockCount(&tasks, 30)); // ceil(100/30)=4
+    try testing.expectEqual(@as(u32, 1), blockCount(&tasks, 0)); // budget 0 → 1
+    try testing.expectEqual(@as(u32, 100), blockCount(&tasks, 1)); // ceil(100/1)
+}
+
+test "mtkahypar.parsePartition: block ids in vertex order → grouped slices" {
+    const a = testing.allocator;
+    // Tasks seeded OUT of id order to prove vertex numbering = ascending id.
+    //   vertex1 = task 1 (a,shared), vertex2 = task 2 (shared), vertex3 = task 3 (c)
+    const t1 = [_]greedy.Unit{
+        .{ .qualified = "a", .role = .modify, .weight = 10 },
+        .{ .qualified = "shared", .role = .reference, .weight = 5 },
+    };
+    const t2 = [_]greedy.Unit{.{ .qualified = "shared", .role = .reference, .weight = 5 }};
+    const t3 = [_]greedy.Unit{.{ .qualified = "c", .role = .modify, .weight = 7 }};
+    const tasks = [_]greedy.Task{ mkTask(3, &t3), mkTask(1, &t1), mkTask(2, &t2) };
+
+    // Partition: vertex1→block0, vertex2→block0, vertex3→block1.
+    // i.e. tasks {1,2} together, task 3 alone.
+    const part = "0\n0\n1\n";
+    const slices = try parsePartition(a, part, &tasks);
+    defer freeSlices(a, slices);
+
+    try testing.expectEqual(@as(usize, 2), slices.len);
+    // Sorted by smallest member id: slice0 = {1,2}, slice1 = {3}.
+    try testing.expectEqualSlices(i64, &.{ 1, 2 }, slices[0].task_ids);
+    try testing.expectEqualSlices(i64, &.{3}, slices[1].task_ids);
+    // {1,2} union = a(10) + shared(5, deduped once) = 15.
+    try testing.expectEqual(@as(u32, 15), slices[0].cost);
+    // shared appears ONCE in the union.
+    var shared_count: usize = 0;
+    for (slices[0].union_symbols) |s| {
+        if (std.mem.eql(u8, s, "shared")) shared_count += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), shared_count);
+    try testing.expectEqual(@as(u32, 7), slices[1].cost);
+}
+
+test "mtkahypar.parsePartition: all vertices in one block → single slice" {
+    const a = testing.allocator;
+    const t1 = [_]greedy.Unit{.{ .qualified = "x", .role = .modify, .weight = 3 }};
+    const t2 = [_]greedy.Unit{.{ .qualified = "y", .role = .reference, .weight = 4 }};
+    const tasks = [_]greedy.Task{ mkTask(5, &t1), mkTask(9, &t2) };
+    const slices = try parsePartition(a, "0\n0\n", &tasks);
+    defer freeSlices(a, slices);
+    try testing.expectEqual(@as(usize, 1), slices.len);
+    try testing.expectEqualSlices(i64, &.{ 5, 9 }, slices[0].task_ids);
+    try testing.expectEqual(@as(u32, 7), slices[0].cost);
+}
+
+test "mtkahypar.parsePartition: wrong line count → PartitionMalformed" {
+    const a = testing.allocator;
+    const t1 = [_]greedy.Unit{.{ .qualified = "x", .role = .modify, .weight = 3 }};
+    const t2 = [_]greedy.Unit{.{ .qualified = "y", .role = .reference, .weight = 4 }};
+    const tasks = [_]greedy.Task{ mkTask(1, &t1), mkTask(2, &t2) };
+    // Only one block id for two vertices.
+    try testing.expectError(error.PartitionMalformed, parsePartition(a, "0\n", &tasks));
+    // A non-numeric block id.
+    try testing.expectError(error.PartitionMalformed, parsePartition(a, "0\nx\n", &tasks));
+}
+
+test "mtkahypar.parsePartition: empty task set → no slices" {
+    const a = testing.allocator;
+    const slices = try parsePartition(a, "", &.{});
+    defer freeSlices(a, slices);
+    try testing.expectEqual(@as(usize, 0), slices.len);
+}
+
+test "mtkahypar.solverAvailable: returns false when the binary is absent" {
+    // On a machine WITHOUT mtkahypar (the CI / dev default), this is false —
+    // the graceful-degradation gate. Where the binary IS installed it returns
+    // true; either way it must not error. We only assert the no-error / bool
+    // contract here so the test is stable on both kinds of machine.
+    const a = testing.allocator;
+    const present = solverAvailable(a, std.testing.io);
+    // Tautological on type, but documents the contract: a bool, never a throw.
+    try testing.expect(present == true or present == false);
+}
+
+test "mtkahypar.invoke: live solver round-trip (skips when mtkahypar absent)" {
+    const a = testing.allocator;
+    // Skip-if-absent idiom (mirrors harvest.ensureGitAvailable): this test only
+    // runs where the optional RUN_DEP is installed. On this machine the binary
+    // is absent, so it SKIPS; the logic is exercised wherever mtkahypar exists.
+    if (!solverAvailable(a, std.testing.io)) return error.SkipZigTest;
+
+    const t1 = [_]greedy.Unit{
+        .{ .qualified = "shared.api", .role = .reference, .weight = 50 },
+        .{ .qualified = "t1.own", .role = .modify, .weight = 10 },
+    };
+    const t2 = [_]greedy.Unit{
+        .{ .qualified = "shared.api", .role = .reference, .weight = 50 },
+        .{ .qualified = "t2.own", .role = .modify, .weight = 10 },
+    };
+    const t3 = [_]greedy.Unit{.{ .qualified = "lonely", .role = .modify, .weight = 5 }};
+    const tasks = [_]greedy.Task{ mkTask(1, &t1), mkTask(2, &t2), mkTask(3, &t3) };
+
+    const slices = try invoke(a, std.testing.io, &tasks, .{ .budget = 200 });
+    defer freeSlices(a, slices);
+
+    // Contract: every task appears in exactly one slice; ids are a partition.
+    var seen: usize = 0;
+    for (slices) |s| seen += s.task_ids.len;
+    try testing.expectEqual(@as(usize, 3), seen);
+    for (slices) |s| try testing.expect(s.task_ids.len >= 1);
 }

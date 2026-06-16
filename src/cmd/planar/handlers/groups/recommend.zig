@@ -11,10 +11,19 @@
 //! Default budget: 128000 tokens (a typical large context window). Override
 //! with `--budget <tokens>`.
 //!
+//! Solver selection (--solver, M3.3b): `greedy` (default) is the always-
+//! available M3.1 heuristic; `mtkahypar` is the optional external hypergraph
+//! solver (D-HG4). When `--solver=mtkahypar` is requested but the binary is
+//! absent or fails, the verb DEGRADES to greedy and reports
+//! `optimal_available:false` (+ `solver:"greedy"`) — it never errors on a
+//! missing optional dependency.
+//!
 //! JSON shape (--json):
 //!   { "plan_id": int,
 //!     "budget": int,
 //!     "open_tasks": int,
+//!     "solver": "greedy"|"mtkahypar",
+//!     "optimal_available": bool,
 //!     "slices": [ { "task_ids": [int],
 //!                   "union_symbols": [str],
 //!                   "cost": int } ],
@@ -48,7 +57,13 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     else
         default_budget;
 
-    var rec = load.recommend(d, ctx.allocator, plan_id, budget) catch |e| switch (e) {
+    const solver: load.Solver = if (args.solver) |s|
+        (load.Solver.parse(s) orelse
+            exit.die(ctx, error.InvalidInput, "--solver must be 'greedy' or 'mtkahypar', got '{s}'", .{s}))
+    else
+        .greedy;
+
+    var rec = load.recommendWith(d, ctx.allocator, ctx.io, plan_id, budget, solver) catch |e| switch (e) {
         error.NotFound => exit.die(ctx, error.NotFound, "plan {d} not found", .{plan_id}),
         else => exit.die(ctx, e, "groups recommend: {s}", .{@errorName(e)}),
     };
@@ -64,8 +79,8 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
 fn emitJSON(ctx: *const runtime.Ctx, rec: load.Recommendation) !void {
     const w = ctx.stdout;
     try w.print(
-        "{{\"plan_id\":{d},\"budget\":{d},\"open_tasks\":{d},\"slices\":[",
-        .{ rec.plan_id, rec.budget, rec.open_tasks },
+        "{{\"plan_id\":{d},\"budget\":{d},\"open_tasks\":{d},\"solver\":\"{s}\",\"optimal_available\":{s},\"slices\":[",
+        .{ rec.plan_id, rec.budget, rec.open_tasks, rec.solver.label(), if (rec.optimal_available) "true" else "false" },
     );
     for (rec.grouping.slices, 0..) |s, i| {
         if (i != 0) try w.print(",", .{});
@@ -90,8 +105,16 @@ fn emitJSON(ctx: *const runtime.Ctx, rec: load.Recommendation) !void {
 fn emitText(ctx: *const runtime.Ctx, rec: load.Recommendation) !void {
     const w = ctx.stdout;
     try w.print(
-        "plan:{d}  budget:{d}  open:{d}  slices:{d}  total_cost:{d}\n",
-        .{ rec.plan_id, rec.budget, rec.open_tasks, rec.grouping.slices.len, rec.grouping.totalCost() },
+        "plan:{d}  budget:{d}  open:{d}  solver:{s}  optimal_available:{s}  slices:{d}  total_cost:{d}\n",
+        .{
+            rec.plan_id,
+            rec.budget,
+            rec.open_tasks,
+            rec.solver.label(),
+            if (rec.optimal_available) "true" else "false",
+            rec.grouping.slices.len,
+            rec.grouping.totalCost(),
+        },
     );
     if (rec.grouping.slices.len == 0) {
         try w.print("  (no open tasks to group)\n", .{});

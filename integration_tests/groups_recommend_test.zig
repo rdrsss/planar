@@ -45,6 +45,8 @@ const GroupsJSON = struct {
     plan_id: i64 = 0,
     budget: i64 = 0,
     open_tasks: usize = 0,
+    solver: []const u8 = "",
+    optimal_available: bool = false,
     slices: []const Slice = &.{},
     summary: Summary = .{},
 };
@@ -184,6 +186,9 @@ test "groups recommend: overlapping tasks co-locate, disjoint stay apart, budget
     try std.testing.expectEqual(@as(usize, 3), g.open_tasks);
     try std.testing.expectEqual(@as(usize, 2), g.slices.len);
     try std.testing.expectEqual(@as(usize, 2), g.summary.slices);
+    // Default solver is greedy; greedy is the baseline (not the optimal arm).
+    try std.testing.expectEqualStrings("greedy", g.solver);
+    try std.testing.expect(!g.optimal_available);
 
     // A's slice holds B but not C.
     const sa = sliceWith(g, ta) orelse std.debug.panic("no slice for A", .{});
@@ -366,6 +371,93 @@ test "groups recommend: a blocks edge produces a schedulable grouping (caveat gu
     // "load.loadDeps: edge-direction — from_id=blocked, to_id=blocker" in
     // src/engine/grouping/load.zig.
     try std.testing.expect(schedulableJSON(arena, g));
+}
+
+test "groups recommend: --solver=mtkahypar degrades to greedy when the binary is absent" {
+    // M3.3b graceful-degradation path (D-HG4). On a machine WITHOUT the
+    // optional `mtkahypar` binary — the CI / dev default — requesting the
+    // optimal arm must NOT error: it falls back to the greedy arm, exits 0,
+    // and reports `solver:"greedy"` + `optimal_available:false`. This is the
+    // path that actually runs in this suite (the binary is not installed here);
+    // the live optimal arm is exercised by the skip-if-absent unit test in
+    // src/engine/grouping/mtkahypar.zig wherever the binary exists.
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const repo = registerRepoSlug(&suite, arena);
+
+    writeFixture(&suite,
+        \\src/core.zig
+    ,
+        \\pub fn api(n: u32) u32 {
+        \\    return n + 1;
+        \\}
+        \\
+    );
+    writeFixture(&suite,
+        \\src/a.zig
+    ,
+        \\const core = @import("core.zig");
+        \\pub fn run() u32 {
+        \\    return core.api(1);
+        \\}
+        \\
+    );
+    writeFixture(&suite,
+        \\src/b.zig
+    ,
+        \\const core = @import("core.zig");
+        \\pub fn run() u32 {
+        \\    return core.api(2);
+        \\}
+        \\
+    );
+
+    const plan = suite.mustRunJSON(PlanJSON, arena, &.{
+        "plan", "create", "--slug", "gr-solver", "--json", "GR_SOLVER",
+    });
+    const pid = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch unreachable;
+    const ta = addTask(&suite, arena, pid, "task A");
+    const tb = addTask(&suite, arena, pid, "task B");
+    touchPath(&suite, repo, ta, "src/a.zig");
+    touchPath(&suite, repo, tb, "src/b.zig");
+    computeClosure(&suite, arena, ta);
+    computeClosure(&suite, arena, tb);
+
+    // Request the optimal arm explicitly. Binary absent → degrade to greedy.
+    const g = suite.mustRunJSON(GroupsJSON, arena, &.{
+        "groups", "recommend", pid, "--budget", "100000", "--solver", "mtkahypar", "--json",
+    });
+    // Degraded, not errored: solver is greedy and optimal_available is false.
+    try std.testing.expectEqualStrings("greedy", g.solver);
+    try std.testing.expect(!g.optimal_available);
+    // The grouping is still produced (greedy result): A+B co-locate.
+    try std.testing.expectEqual(@as(usize, 2), g.open_tasks);
+    const sa = sliceWith(g, ta) orelse std.debug.panic("no slice for A", .{});
+    try std.testing.expect(sliceHas(sa, tb));
+}
+
+test "groups recommend: an unknown --solver value is rejected" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    _ = registerRepoSlug(&suite, arena);
+    const plan = suite.mustRunJSON(PlanJSON, arena, &.{
+        "plan", "create", "--slug", "gr-badsolver", "--json", "GR_BADSOLVER",
+    });
+    const pid = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch unreachable;
+
+    // 'optimal' is not a valid solver name → non-zero exit.
+    const stderr = suite.expectFailure(&.{ "groups", "recommend", pid, "--solver", "optimal", "--json" });
+    suite.allocator.free(stderr);
 }
 
 /// Build the slice-precedence DAG from the known dependency chain

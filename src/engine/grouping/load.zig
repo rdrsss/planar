@@ -40,11 +40,36 @@
 const std = @import("std");
 const db = @import("db");
 const greedy = @import("greedy.zig");
+const mtkahypar = @import("mtkahypar.zig");
 
 pub const Error = error{
     NotFound,
     QueryFailed,
 } || std.mem.Allocator.Error;
+
+/// Which partitioner the operator asked for. `greedy` is the always-available
+/// M3.1 heuristic; `mtkahypar` is the optional external solver (D-HG4). When
+/// `mtkahypar` is selected but the binary is absent/failing, `recommend`
+/// degrades to greedy and records `optimal_available = false`.
+pub const Solver = enum {
+    greedy,
+    mtkahypar,
+
+    /// Parse a `--solver` flag value. Returns null on an unknown value so the
+    /// handler can surface a clear error.
+    pub fn parse(s: []const u8) ?Solver {
+        if (std.mem.eql(u8, s, "greedy")) return .greedy;
+        if (std.mem.eql(u8, s, "mtkahypar")) return .mtkahypar;
+        return null;
+    }
+
+    pub fn label(self: Solver) []const u8 {
+        return switch (self) {
+            .greedy => "greedy",
+            .mtkahypar => "mtkahypar",
+        };
+    }
+};
 
 /// The grouping recommendation for a plan: the formed slices plus the loading
 /// stats the caller reports. The arena backing all borrowed data inside the
@@ -55,10 +80,18 @@ pub const Recommendation = struct {
     budget: u32,
     /// Open (todo) tasks considered.
     open_tasks: usize,
-    /// The greedy result. Borrows nothing from `arena`; it is `gpa`-owned.
+    /// The result. Borrows nothing from `arena`; it is `gpa`-owned.
     grouping: greedy.Grouping,
+    /// The solver that ACTUALLY produced the grouping. Equals the requested
+    /// solver unless an `mtkahypar` request degraded to `greedy`.
+    solver: Solver,
+    /// True iff the optimal (mtkahypar) arm produced this grouping. False
+    /// whenever the grouping came from the greedy arm — either because greedy
+    /// was requested, or because mtkahypar was requested but the binary was
+    /// absent/failing and the result degraded to greedy (D-HG4).
+    optimal_available: bool,
     /// Backs every `greedy.Unit`/`Task`/`Dep` slice fed to the solver; freed
-    /// on `deinit`. (The greedy result itself is `gpa`-owned and copied out.)
+    /// on `deinit`. (The grouping itself is `gpa`-owned and copied out.)
     arena: *std.heap.ArenaAllocator,
 
     pub fn deinit(self: Recommendation, gpa: std.mem.Allocator) void {
@@ -70,6 +103,8 @@ pub const Recommendation = struct {
 
 /// Load a plan's open tasks + their effective closures + dependency DAG and
 /// group them under `budget` via the greedy heuristic (M3.1). Read-only.
+/// Convenience wrapper over `recommendWith` that always uses the greedy arm
+/// (no `io` needed). Existing callers / tests keep their signature.
 ///
 /// Returns `Error.NotFound` when the plan does not exist. Caller owns the
 /// returned `Recommendation` and must call `deinit(gpa)`.
@@ -79,6 +114,74 @@ pub fn recommend(
     plan_id: i64,
     budget: u32,
 ) Error!Recommendation {
+    return recommendGreedy(d, gpa, plan_id, budget);
+}
+
+/// Greedy-only grouping recommendation. No `io` needed (the greedy arm spawns
+/// nothing). `solver = .greedy`, `optimal_available = false`.
+pub fn recommendGreedy(
+    d: *db.sqlite.Db,
+    gpa: std.mem.Allocator,
+    plan_id: i64,
+    budget: u32,
+) Error!Recommendation {
+    const loaded = try loadInputs(d, gpa, plan_id);
+    const grouping = try greedy.group(gpa, loaded.tasks, loaded.deps, budget);
+    return finish(loaded, budget, grouping, .greedy, false);
+}
+
+/// Solver-aware grouping recommendation (M3.3b).
+///
+/// Loads the same inputs as `recommend`, then partitions them with the
+/// requested `solver`:
+///   - `.greedy` — the M3.1 heuristic; `io` is unused, `optimal_available`
+///     is false (greedy is the baseline, not the optimal arm).
+///   - `.mtkahypar` — probe the external binary; when present, run it
+///     (`mtkahypar.invoke`) and set `optimal_available = true`. When the
+///     binary is ABSENT or the invocation FAILS, **degrade to greedy** and
+///     set `solver = .greedy`, `optimal_available = false` (D-HG4). The
+///     degradation is silent (no error) — the operator sees the greedy result
+///     plus the `optimal_available:false` signal.
+///
+/// Returns `Error.NotFound` when the plan does not exist. Caller owns the
+/// returned `Recommendation` and must call `deinit(gpa)`.
+pub fn recommendWith(
+    d: *db.sqlite.Db,
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    plan_id: i64,
+    budget: u32,
+    solver: Solver,
+) Error!Recommendation {
+    if (solver == .greedy) return recommendGreedy(d, gpa, plan_id, budget);
+
+    const loaded = try loadInputs(d, gpa, plan_id);
+
+    // mtkahypar requested: run the optimal arm when available, else degrade.
+    if (mtkahypar.solverAvailable(gpa, io)) {
+        if (mtkahypar.invoke(gpa, io, loaded.tasks, .{ .budget = budget })) |slices| {
+            return finish(loaded, budget, .{ .slices = slices }, .mtkahypar, true);
+        } else |_| {
+            // Invocation failed mid-run → degrade to greedy.
+        }
+    }
+    const grouping = try greedy.group(gpa, loaded.tasks, loaded.deps, budget);
+    return finish(loaded, budget, grouping, .greedy, false);
+}
+
+/// The loaded inputs for a plan plus the arena that backs them. `tasks` and
+/// `deps` borrow from `arena`.
+const Loaded = struct {
+    plan_id: i64,
+    open_tasks: usize,
+    tasks: []const greedy.Task,
+    deps: []const greedy.Dep,
+    arena: *std.heap.ArenaAllocator,
+};
+
+/// Load a plan's open tasks + their effective closures + dependency DAG into a
+/// fresh arena. Returns `Error.NotFound` when the plan does not exist.
+fn loadInputs(d: *db.sqlite.Db, gpa: std.mem.Allocator, plan_id: i64) Error!Loaded {
     try ensurePlanExists(d, plan_id);
 
     const arena_ptr = try gpa.create(std.heap.ArenaAllocator);
@@ -91,7 +194,7 @@ pub fn recommend(
     const task_ids = try loadOpenTaskIds(d, a, plan_id);
 
     // 2. Per task: its effective closure (modify/reference) as greedy Units.
-    var tasks = try a.alloc(greedy.Task, task_ids.len);
+    const tasks = try a.alloc(greedy.Task, task_ids.len);
     for (task_ids, 0..) |id, i| {
         tasks[i] = .{ .id = id, .units = try loadUnits(d, a, id) };
     }
@@ -102,14 +205,32 @@ pub fn recommend(
     //    caveat: from_id -> blocked, to_id -> blocker.
     const deps = try loadDeps(d, a, task_ids);
 
-    const grouping = try greedy.group(gpa, tasks, deps, budget);
-
     return .{
         .plan_id = plan_id,
-        .budget = budget,
         .open_tasks = task_ids.len,
-        .grouping = grouping,
+        .tasks = tasks,
+        .deps = deps,
         .arena = arena_ptr,
+    };
+}
+
+/// Assemble the public `Recommendation` from loaded inputs + a computed
+/// grouping.
+fn finish(
+    loaded: Loaded,
+    budget: u32,
+    grouping: greedy.Grouping,
+    solver: Solver,
+    optimal_available: bool,
+) Recommendation {
+    return .{
+        .plan_id = loaded.plan_id,
+        .budget = budget,
+        .open_tasks = loaded.open_tasks,
+        .grouping = grouping,
+        .solver = solver,
+        .optimal_available = optimal_available,
+        .arena = loaded.arena,
     };
 }
 
