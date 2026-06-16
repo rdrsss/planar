@@ -152,9 +152,8 @@ pub fn render(
     detail_win: Window,
     allocator: std.mem.Allocator,
 ) !void {
-    _ = allocator;
     renderNavigator(state, nav_win);
-    try renderDetail(state, detail_win);
+    try renderDetail(state, detail_win, allocator);
 }
 
 /// Render the navigator pane (left): chronological list of decisions.
@@ -220,7 +219,7 @@ fn renderNavigator(state: *const DecisionLogState, win: Window) void {
 /// INVARIANT (task 4022): BOTH the body AND the derives-from section are
 /// ALWAYS rendered when a decision is selected. This is the load-bearing
 /// acceptance check for the M3/M4/M5 recurring bug pattern.
-fn renderDetail(state: *const DecisionLogState, win: Window) !void {
+fn renderDetail(state: *const DecisionLogState, win: Window, arena: std.mem.Allocator) !void {
     if (win.height == 0 or win.width == 0) return;
 
     const detail = state.detail orelse {
@@ -263,9 +262,7 @@ fn renderDetail(state: *const DecisionLogState, win: Window) !void {
             .width = win.width,
             .height = body_h,
         });
-        var buf: [8192]u8 = undefined;
-        var fba = std.heap.FixedBufferAllocator.init(&buf);
-        try markdown_detail.render(body_win, fba.allocator(), detail.body);
+        try markdown_detail.render(body_win, arena, detail.body);
         row = body_start + body_h;
     }
 
@@ -767,8 +764,11 @@ test "decision_log: renderDetail renders body AND derives-from (task 4022 render
         .screen = &screen,
     };
 
-    // Render the detail pane.
-    try renderDetail(&state, detail_win);
+    // Render the detail pane using a test arena so the allocator contract is
+    // exercised (body text grapheme slices must be arena-backed, not FBA-backed).
+    var test_arena = std.heap.ArenaAllocator.init(a);
+    defer test_arena.deinit();
+    try renderDetail(&state, detail_win, test_arena.allocator());
 
     // Collect all rendered text.
     var rendered: std.ArrayList(u8) = .empty;
@@ -786,12 +786,11 @@ test "decision_log: renderDetail renders body AND derives-from (task 4022 render
     // The derives-from target label must appear — containing the artifact title.
     // This is rendered via printSegment using the heap-allocated df.label slice.
     try testing.expect(std.mem.indexOf(u8, text, "FoundingSpec") != null);
-    // Note: body text goes through markdown_detail.render which writes cells
-    // via writeCell(&ch, ...) with local stack addresses. Those grapheme
-    // pointers are not stable for collectScreenText. The body rendering is
-    // verified structurally above (detail.body contains the expected text)
-    // and visually in the manual test tier. The render path is exercised
-    // (no panic, no early return), which is the observable signal.
+    // (c) Body text goes through markdown_detail.render → writeCell with
+    //     grapheme slices backed by the test arena (not an FBA stack buffer).
+    //     After the UAF fix (task 4198) the body text IS stable across
+    //     collectScreenText; verify a keyword appears.
+    try testing.expect(std.mem.indexOf(u8, text, "decision body text") != null);
 }
 
 test "decision_log: renderDetail shows (none) when no derives-from edges (task 4022 render-level)" {
@@ -838,7 +837,9 @@ test "decision_log: renderDetail shows (none) when no derives-from edges (task 4
         .screen = &screen,
     };
 
-    try renderDetail(&state, detail_win);
+    var test_arena = std.heap.ArenaAllocator.init(a);
+    defer test_arena.deinit();
+    try renderDetail(&state, detail_win, test_arena.allocator());
 
     var rendered: std.ArrayList(u8) = .empty;
     defer rendered.deinit(a);
@@ -854,10 +855,9 @@ test "decision_log: renderDetail shows (none) when no derives-from edges (task 4
     // "(none)" placeholder must appear when derives_from is empty.
     // This is rendered via printSegment using a string literal.
     try testing.expect(std.mem.indexOf(u8, text, "(none)") != null);
-    // Note: body text ("Standalone body text.") goes through markdown_detail.render
-    // using writeCell(&ch) with local stack addresses. Those grapheme pointers are
-    // not stable for collectScreenText. Body rendering is verified structurally
-    // (detail.body check above) and the render path is exercised without panic.
+    // Body text goes through markdown_detail.render → writeCell with arena-backed
+    // grapheme slices. After the UAF fix (task 4198) the body IS stable.
+    try testing.expect(std.mem.indexOf(u8, text, "Standalone body text") != null);
 }
 
 test "decision_log: legendLabel fits in buf" {
