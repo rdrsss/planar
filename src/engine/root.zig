@@ -51,6 +51,7 @@ pub const synthesize = @import("synthesize.zig");
 pub const skillrender = @import("skillrender.zig");
 pub const introspect = @import("introspect.zig");
 pub const closure = @import("closure.zig");
+pub const grouping = @import("grouping.zig");
 
 // Pull every submodule into the test build so per-file `test` blocks
 // are reachable from `zig build test`.
@@ -81,4 +82,5 @@ test {
     _ = skillrender;
     _ = introspect;
     _ = closure;
+    _ = grouping;
 }
