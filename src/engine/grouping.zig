@@ -8,7 +8,9 @@
 //! and the Mt-KaHyPar binding (M3.3).
 
 pub const greedy = @import("grouping/greedy.zig");
+pub const load = @import("grouping/load.zig");
 
 test {
     _ = greedy;
+    _ = load;
 }
