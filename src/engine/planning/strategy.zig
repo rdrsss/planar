@@ -109,6 +109,36 @@ pub const Error = error{
     QueryFailed,
 } || std.mem.Allocator.Error;
 
+/// Which signal rule 2's overlap test reads (decision D4, plan 634).
+///
+/// The baseline (`declared`) is the existing, behavior-preserving default:
+/// rule 2 disjointness is computed from a task's DECLARED touches
+/// (`task_touch_paths` + the coarse `entity_links` whole-repo edges). The
+/// derived variant (`derived`) reads the COMPUTED symbol-level closure
+/// (`closures`, the M2 extractor's output) instead: two tasks overlap when
+/// their effective closures (role `modify`/`reference`; `transitive` is
+/// excluded) share a symbol, even when their declared file touches are
+/// disjoint. The gap between the two verdicts is the divergence the
+/// extractor exists to surface — see `divergence`.
+///
+/// ONLY rule 2's touch signal switches. Rules 1/3/4/5/6 are unchanged
+/// across sources (rules 3/4 still read declared paths — a migration or
+/// singleton touch is a declared-path property, not a closure property).
+pub const ClosureSource = enum {
+    /// Baseline: declared `task_touch_paths` + whole-repo edges (default).
+    declared,
+    /// Derived: the computed symbol-level closure in `closures`.
+    derived,
+
+    /// Parse the operator-facing flag value; returns null on an unknown
+    /// token so the handler can emit a precise error.
+    pub fn parse(s: []const u8) ?ClosureSource {
+        if (std.mem.eql(u8, s, "declared")) return .declared;
+        if (std.mem.eql(u8, s, "derived")) return .derived;
+        return null;
+    }
+};
+
 /// One exclusion reason for a serialized task: the rule number (1..6)
 /// and an operator-actionable reason string. Owned by the report's
 /// allocator.
@@ -193,25 +223,57 @@ const WorkTask = struct {
     id: i64,
     slug: ?[]const u8,
     title: []const u8,
-    /// Touch set: declared repo + path touches (path heap-owned strings).
+    /// DECLARED touch set: declared repo + path touches (path heap-owned).
+    /// Rules 2 (empty-touches branch), 3, and 4 always read THIS set,
+    /// regardless of `ClosureSource` — migration/singleton detection and the
+    /// touches-everything guard are declared-path properties.
     touches: []Touch,
+    /// DERIVED closure touch set: one `Touch{ repo_id, path = symbol }` per
+    /// effective-closure unit (role modify/reference) from `closures`. Empty
+    /// under `.declared`. Rule 2's pairwise OVERLAP test reads this set when
+    /// the source is `.derived`; otherwise it reads `touches`.
+    closure_touches: []Touch,
     /// Accumulated exclusions (heap-owned reason strings).
     exclusions: std.ArrayList(Exclusion),
     /// Set once any rule drops this task.
     dropped: bool,
+
+    /// The touch set rule 2's OVERLAP pass should read for `source`.
+    fn overlapTouches(self: WorkTask, source: ClosureSource) []const Touch {
+        return switch (source) {
+            .declared => self.touches,
+            .derived => self.closure_touches,
+        };
+    }
 };
 
 // =========================================================================
 // Public entry point
 // =========================================================================
 
-/// Compute the parallel-eligibility recommendation for a plan. Caller
-/// owns the returned Recommendation and must call `deinit`. Returns
-/// `Error.NotFound` when the plan does not exist.
+/// Compute the parallel-eligibility recommendation for a plan using the
+/// baseline DECLARED closure source. Behavior-preserving wrapper over
+/// `recommendWith(.declared)`. Caller owns the returned Recommendation and
+/// must call `deinit`. Returns `Error.NotFound` when the plan does not exist.
 pub fn recommend(
     d: *db.sqlite.Db,
     allocator: std.mem.Allocator,
     plan_id: i64,
+) Error!Recommendation {
+    return recommendWith(d, allocator, plan_id, .declared);
+}
+
+/// Compute the parallel-eligibility recommendation for a plan, choosing the
+/// signal rule 2 reads via `source` (decision D4). `.declared` is the
+/// baseline and is byte-for-byte identical to the pre-D4 behavior; `.derived`
+/// swaps rule 2's touch signal for the computed symbol-level closure
+/// (`closures`). Caller owns the returned Recommendation and must call
+/// `deinit`. Returns `Error.NotFound` when the plan does not exist.
+pub fn recommendWith(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    plan_id: i64,
+    source: ClosureSource,
 ) Error!Recommendation {
     try ensurePlanExists(d, plan_id);
 
@@ -222,7 +284,7 @@ pub fn recommend(
     try loadNotDoneIds(d, allocator, plan_id, &not_done);
 
     // Open (todo) tasks are the candidate set.
-    var tasks = try loadOpenTasks(d, allocator, plan_id);
+    var tasks = try loadOpenTasks(d, allocator, plan_id, source);
     defer {
         for (tasks.items) |*t| deinitWorkTask(t, allocator);
         tasks.deinit(allocator);
@@ -325,7 +387,10 @@ pub fn recommend(
         var j: usize = i + 1;
         while (j < n) : (j += 1) {
             if (tasks.items[j].dropped) continue;
-            const overlap = sharedTouch(tasks.items[i], tasks.items[j]);
+            const overlap = sharedTouch(
+                tasks.items[i].overlapTouches(source),
+                tasks.items[j].overlapTouches(source),
+            );
             if (overlap) |shared| {
                 const desc = try describeTouch(allocator, shared);
                 defer allocator.free(desc);
@@ -395,13 +460,113 @@ fn freeRefsList(list: *std.ArrayList(TaskRef), allocator: std.mem.Allocator) voi
     list.deinit(allocator);
 }
 
-/// Return the first conflicting touch from `a` (the touch whose conflict
-/// with some touch of `b` made the pair overlap), or null if the two
-/// touch-sets are disjoint. The returned touch carries the repo + path
-/// context for the exclusion reason.
-fn sharedTouch(a: WorkTask, b: WorkTask) ?Touch {
-    for (a.touches) |ta| {
-        for (b.touches) |tb| {
+// =========================================================================
+// Divergence: the gap that justifies the extractor (decision D4, M2)
+// =========================================================================
+
+/// The derived-vs-declared rule-2 overlap divergence for a plan — the
+/// concrete number the closure extractor exists to surface.
+///
+/// For every unordered pair of the plan's open (todo) tasks we evaluate
+/// rule 2's pairwise overlap verdict TWICE: once over each task's DECLARED
+/// touch set and once over its DERIVED closure set. The verdict is binary
+/// (overlap / disjoint). A pair whose verdict differs between the two
+/// sources is a FLIP — the declared baseline and the derived closure
+/// DISAGREE about whether those two tasks can run in parallel. `flips` is
+/// the count of such pairs; `jaccard` is the Jaccard distance between the
+/// two verdict sets (flips / union-of-overlapping-pairs), a normalized
+/// [0,1] measure of how far apart the two sources are. `flips > 0` means
+/// the derived closure caught a conflict (or freed a pair) the declared
+/// touches missed — the gap the extractor is for.
+pub const Divergence = struct {
+    /// Open tasks considered (the pair universe is `pairs` over these).
+    open_tasks: usize,
+    /// Unordered task-pairs evaluated (`open_tasks choose 2`).
+    pairs: usize,
+    /// Pairs that overlap under the DECLARED source.
+    declared_overlaps: usize,
+    /// Pairs that overlap under the DERIVED source.
+    derived_overlaps: usize,
+    /// Pairs whose overlap verdict FLIPS between the two sources.
+    flips: usize,
+    /// Jaccard distance between the declared and derived overlap-pair sets:
+    /// `flips / |declared_overlaps ∪ derived_overlaps|`. 0.0 when the two
+    /// sources agree on every pair; 1.0 when they share no overlapping pair.
+    jaccard: f64,
+};
+
+/// Compute the rule-2 overlap divergence between the declared and derived
+/// closure sources for a plan (decision D4). Loads the plan's open tasks
+/// with BOTH touch sets populated and compares the pairwise overlap verdict
+/// under each source. Returns `Error.NotFound` when the plan does not exist.
+///
+/// This is a pure measurement: it applies ONLY rule 2's pairwise overlap
+/// test (no unilateral rules, no drop-both partitioning) so the number
+/// isolates exactly the signal D4 swaps — the gap between declared touches
+/// and the derived closure. It writes nothing.
+pub fn divergence(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    plan_id: i64,
+) Error!Divergence {
+    try ensurePlanExists(d, plan_id);
+
+    // Load every open task with BOTH touch sets so we can compare in one pass.
+    var tasks = try loadOpenTasks(d, allocator, plan_id, .declared);
+    defer {
+        for (tasks.items) |*t| deinitWorkTask(t, allocator);
+        tasks.deinit(allocator);
+    }
+    // loadOpenTasks(.declared) leaves closure_touches empty; fill it now so a
+    // single task list carries both sources for the pairwise comparison.
+    for (tasks.items) |*t| {
+        t.closure_touches = try loadClosureTouches(d, allocator, t.id);
+    }
+
+    const n = tasks.items.len;
+    var pairs: usize = 0;
+    var declared_overlaps: usize = 0;
+    var derived_overlaps: usize = 0;
+    var flips: usize = 0;
+    var union_overlaps: usize = 0;
+
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        var j: usize = i + 1;
+        while (j < n) : (j += 1) {
+            pairs += 1;
+            const decl = sharedTouch(tasks.items[i].touches, tasks.items[j].touches) != null;
+            const der = sharedTouch(tasks.items[i].closure_touches, tasks.items[j].closure_touches) != null;
+            if (decl) declared_overlaps += 1;
+            if (der) derived_overlaps += 1;
+            if (decl or der) union_overlaps += 1;
+            if (decl != der) flips += 1;
+        }
+    }
+
+    const jaccard: f64 = if (union_overlaps == 0)
+        0.0
+    else
+        @as(f64, @floatFromInt(flips)) / @as(f64, @floatFromInt(union_overlaps));
+
+    return .{
+        .open_tasks = n,
+        .pairs = pairs,
+        .declared_overlaps = declared_overlaps,
+        .derived_overlaps = derived_overlaps,
+        .flips = flips,
+        .jaccard = jaccard,
+    };
+}
+
+/// Return the first conflicting touch from touch-set `a` (the touch whose
+/// conflict with some touch of `b` made the pair overlap), or null if the
+/// two touch-sets are disjoint. The returned touch carries the repo + path
+/// context for the exclusion reason. The caller passes whichever touch set
+/// (declared or derived-closure) the active `ClosureSource` selects.
+fn sharedTouch(a: []const Touch, b: []const Touch) ?Touch {
+    for (a) |ta| {
+        for (b) |tb| {
             if (ta.conflicts(tb)) return ta;
         }
     }
@@ -468,6 +633,7 @@ fn loadOpenTasks(
     d: *db.sqlite.Db,
     allocator: std.mem.Allocator,
     plan_id: i64,
+    source: ClosureSource,
 ) Error!std.ArrayList(WorkTask) {
     var out: std.ArrayList(WorkTask) = .empty;
     errdefer {
@@ -490,11 +656,24 @@ fn loadOpenTasks(
                 const title = stmt.columnTextAlloc(2, allocator) catch return Error.QueryFailed;
                 errdefer allocator.free(title);
                 const touches = try loadTouches(d, allocator, id);
+                errdefer {
+                    for (touches) |t| if (t.path) |p| allocator.free(p);
+                    allocator.free(touches);
+                }
+                // The derived overlap set is only loaded (and only consulted)
+                // under `.derived`; under `.declared` it stays empty so the
+                // baseline path does ZERO extra DB work and is byte-for-byte
+                // identical to the pre-D4 behavior.
+                const closure_touches: []Touch = switch (source) {
+                    .declared => &.{},
+                    .derived => try loadClosureTouches(d, allocator, id),
+                };
                 try out.append(allocator, .{
                     .id = id,
                     .slug = slug,
                     .title = title,
                     .touches = touches,
+                    .closure_touches = closure_touches,
                     .exclusions = .empty,
                     .dropped = false,
                 });
@@ -626,6 +805,51 @@ fn appendUniqueWholeRepo(
     try out.append(allocator, .{ .repo_id = repo_id, .path = null });
 }
 
+/// Derived overlap set for a task: one `Touch{ repo_id, path = symbol }`
+/// per row of the task's EFFECTIVE derived closure (decision D4, M2). The
+/// effective closure is the `closures` rows with role `modify` or
+/// `reference`; `transitive` is EXCLUDED (matching the schema's "excluded
+/// from the effective closure by default" semantics — migration 00026).
+///
+/// The symbol (qualified name) is carried in the `path` field of `Touch`
+/// so `Touch.conflicts` treats two tasks as overlapping when their derived
+/// closures share a symbol within the same repo. A symbol-level overlap is
+/// the finer signal the extractor produces: two tasks whose DECLARED file
+/// touches are disjoint can still share a referenced symbol, and under
+/// `.derived` that surfaces as a rule-2 overlap.
+///
+/// Returns heap-owned symbol strings (every derived touch carries a
+/// non-null `path`). Empty when the task has no effective-closure rows.
+fn loadClosureTouches(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    task_id: i64,
+) Error![]Touch {
+    var out: std.ArrayList(Touch) = .empty;
+    errdefer {
+        for (out.items) |t| if (t.path) |p| allocator.free(p);
+        out.deinit(allocator);
+    }
+
+    var stmt = d.prepare(
+        \\select repo_id, symbol from closures
+        \\where task_id = ? and role in ('modify', 'reference')
+    ) catch return Error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .int = task_id }}) catch return Error.QueryFailed;
+    while (true) {
+        switch (stmt.step() catch return Error.QueryFailed) {
+            .done => break,
+            .row => {
+                const repo_id = stmt.columnInt(0);
+                const symbol = stmt.columnTextAlloc(1, allocator) catch return Error.QueryFailed;
+                try appendUniquePath(allocator, &out, repo_id, symbol);
+            },
+        }
+    }
+    return try out.toOwnedSlice(allocator);
+}
+
 /// Rule 1: walk the transitive closure of outgoing `blocks` edges
 /// (task -[blocks]-> task, meaning from_id is blocked BY to_id — see
 /// task.markBlocked). Return the id of the first reached task that is
@@ -704,6 +928,8 @@ fn deinitWorkTask(t: *WorkTask, allocator: std.mem.Allocator) void {
     if (t.slug) |s| allocator.free(s);
     for (t.touches) |touch| if (touch.path) |p| allocator.free(p);
     allocator.free(t.touches);
+    for (t.closure_touches) |touch| if (touch.path) |p| allocator.free(p);
+    allocator.free(t.closure_touches);
     for (t.exclusions.items) |e| allocator.free(e.reason);
     t.exclusions.deinit(allocator);
 }
@@ -754,6 +980,27 @@ fn touchPath(d: *db.sqlite.Db, task_id: i64, repo_id: i64, path: []const u8) !vo
         "insert into task_touch_paths (task_id, repo_id, path) values (?, ?, ?)",
         &.{ .{ .int = task_id }, .{ .int = repo_id }, .{ .text = path } },
     );
+}
+
+fn seedClosure(
+    d: *db.sqlite.Db,
+    task_id: i64,
+    repo_id: i64,
+    path: []const u8,
+    symbol: []const u8,
+    role: []const u8,
+) !void {
+    _ = try d.execParams(
+        \\insert into closures
+        \\  (task_id, repo_id, path, symbol, role, token_weight, extractor_version)
+        \\values (?, ?, ?, ?, ?, 0, 'test')
+    , &.{
+        .{ .int = task_id },
+        .{ .int = repo_id },
+        .{ .text = path },
+        .{ .text = symbol },
+        .{ .text = role },
+    });
 }
 
 test "isMigrationPath / isSingletonFile classify correctly" {
@@ -1128,4 +1375,147 @@ test "recommend returns NotFound for a missing plan" {
     var d = try setupTestDb(a);
     defer d.close();
     try testing.expectError(Error.NotFound, recommend(&d, a, 9999));
+}
+
+// =========================================================================
+// D4: derived closure source + divergence (decision D4, plan 636 M2.6)
+// =========================================================================
+
+test "ClosureSource.parse maps tokens; default declared preserved by recommend" {
+    try testing.expectEqual(ClosureSource.declared, ClosureSource.parse("declared").?);
+    try testing.expectEqual(ClosureSource.derived, ClosureSource.parse("derived").?);
+    try testing.expect(ClosureSource.parse("bogus") == null);
+
+    // `recommend` is the byte-for-byte declared wrapper over recommendWith.
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const plan_id = try seedPlan(&d);
+    const t1 = try seedTask(&d, plan_id, "A");
+    const t2 = try seedTask(&d, plan_id, "B");
+    const r1 = try seedRepo(&d, "ra");
+    const r2 = try seedRepo(&d, "rb");
+    try linkTouchesRepo(&d, t1, r1);
+    try linkTouchesRepo(&d, t2, r2);
+
+    const rec_default = try recommend(&d, a, plan_id);
+    defer rec_default.deinit(a);
+    const rec_declared = try recommendWith(&d, a, plan_id, .declared);
+    defer rec_declared.deinit(a);
+    try testing.expectEqual(rec_default.parallel_eligible.len, rec_declared.parallel_eligible.len);
+    try testing.expectEqual(rec_default.serialized.len, rec_declared.serialized.len);
+}
+
+test "D4: declared-disjoint but derived-overlap flips rule 2 under .derived" {
+    // Two tasks edit DIFFERENT files in the same repo (declared touches
+    // disjoint → declared says parallel-eligible). But their DERIVED
+    // closures both REFERENCE the same symbol → under .derived rule 2 sees
+    // an overlap and serializes both. This is exactly the gap the extractor
+    // surfaces.
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const plan_id = try seedPlan(&d);
+    const t1 = try seedTask(&d, plan_id, "A");
+    const t2 = try seedTask(&d, plan_id, "B");
+    const r = try seedRepo(&d, "r");
+
+    // Declared: disjoint paths in the same repo.
+    try touchPath(&d, t1, r, "src/foo.zig");
+    try touchPath(&d, t2, r, "src/bar.zig");
+
+    // Derived closures: each task modifies its own symbol AND both reference
+    // the SAME shared symbol — the symbol-level conflict declared touches miss.
+    try seedClosure(&d, t1, r, "src/foo.zig", "foo.run", "modify");
+    try seedClosure(&d, t1, r, "src/shared.zig", "shared.helper", "reference");
+    try seedClosure(&d, t2, r, "src/bar.zig", "bar.run", "modify");
+    try seedClosure(&d, t2, r, "src/shared.zig", "shared.helper", "reference");
+
+    // Declared: both eligible (different files).
+    const rec_decl = try recommendWith(&d, a, plan_id, .declared);
+    defer rec_decl.deinit(a);
+    try testing.expectEqual(@as(usize, 2), rec_decl.parallel_eligible.len);
+    try testing.expectEqual(@as(usize, 0), rec_decl.serialized.len);
+
+    // Derived: both serialized on the shared symbol (rule 2).
+    const rec_der = try recommendWith(&d, a, plan_id, .derived);
+    defer rec_der.deinit(a);
+    try testing.expectEqual(@as(usize, 0), rec_der.parallel_eligible.len);
+    try testing.expectEqual(@as(usize, 2), rec_der.serialized.len);
+    for (rec_der.serialized) |s| {
+        var has_rule2 = false;
+        for (s.excluded_by) |e| if (e.rule == 2) {
+            has_rule2 = true;
+        };
+        try testing.expect(has_rule2);
+    }
+
+    // Divergence: exactly one pair flips (declared disjoint → derived overlap).
+    const div = try divergence(&d, a, plan_id);
+    try testing.expectEqual(@as(usize, 2), div.open_tasks);
+    try testing.expectEqual(@as(usize, 1), div.pairs);
+    try testing.expectEqual(@as(usize, 0), div.declared_overlaps);
+    try testing.expectEqual(@as(usize, 1), div.derived_overlaps);
+    try testing.expectEqual(@as(usize, 1), div.flips);
+    try testing.expect(div.flips > 0);
+    // The single pair flips and is the only overlapping pair → Jaccard 1.0.
+    try testing.expectApproxEqAbs(@as(f64, 1.0), div.jaccard, 1e-9);
+}
+
+test "D4: transitive closure rows are excluded from the derived overlap set" {
+    // The ONLY shared symbol between the two tasks is role 'transitive',
+    // which the effective closure excludes. Derived must therefore NOT see
+    // an overlap, and divergence must be zero.
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const plan_id = try seedPlan(&d);
+    const t1 = try seedTask(&d, plan_id, "A");
+    const t2 = try seedTask(&d, plan_id, "B");
+    const r = try seedRepo(&d, "r");
+    try touchPath(&d, t1, r, "src/foo.zig");
+    try touchPath(&d, t2, r, "src/bar.zig");
+
+    try seedClosure(&d, t1, r, "src/foo.zig", "foo.run", "modify");
+    try seedClosure(&d, t1, r, "src/deep.zig", "deep.thing", "transitive");
+    try seedClosure(&d, t2, r, "src/bar.zig", "bar.run", "modify");
+    try seedClosure(&d, t2, r, "src/deep.zig", "deep.thing", "transitive");
+
+    const rec_der = try recommendWith(&d, a, plan_id, .derived);
+    defer rec_der.deinit(a);
+    // Shared symbol is transitive-only → no overlap → both eligible.
+    try testing.expectEqual(@as(usize, 2), rec_der.parallel_eligible.len);
+
+    const div = try divergence(&d, a, plan_id);
+    try testing.expectEqual(@as(usize, 0), div.flips);
+    try testing.expectEqual(@as(f64, 0.0), div.jaccard);
+}
+
+test "D4: divergence is zero when declared and derived agree" {
+    // Both tasks share the same declared path AND the same derived symbol —
+    // both sources say overlap → no flip.
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const plan_id = try seedPlan(&d);
+    const t1 = try seedTask(&d, plan_id, "A");
+    const t2 = try seedTask(&d, plan_id, "B");
+    const r = try seedRepo(&d, "r");
+    try touchPath(&d, t1, r, "src/foo.zig");
+    try touchPath(&d, t2, r, "src/foo.zig");
+    try seedClosure(&d, t1, r, "src/foo.zig", "foo.run", "modify");
+    try seedClosure(&d, t2, r, "src/foo.zig", "foo.run", "modify");
+
+    const div = try divergence(&d, a, plan_id);
+    try testing.expectEqual(@as(usize, 1), div.declared_overlaps);
+    try testing.expectEqual(@as(usize, 1), div.derived_overlaps);
+    try testing.expectEqual(@as(usize, 0), div.flips);
+    try testing.expectEqual(@as(f64, 0.0), div.jaccard);
+}
+
+test "divergence returns NotFound for a missing plan" {
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    try testing.expectError(Error.NotFound, divergence(&d, a, 9999));
 }

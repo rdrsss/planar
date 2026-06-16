@@ -35,21 +35,31 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     const plan_id = std.fmt.parseInt(i64, args.plan_id, 10) catch
         exit.die(ctx, error.InvalidInput, "plan id must be an integer, got '{s}'", .{args.plan_id});
 
-    const rec = strategy.recommend(d, ctx.allocator, plan_id) catch |e| switch (e) {
+    const source = strategy.ClosureSource.parse(args.closure_source) orelse
+        exit.die(ctx, error.InvalidInput, "--closure-source must be 'declared' or 'derived', got '{s}'", .{args.closure_source});
+
+    const rec = strategy.recommendWith(d, ctx.allocator, plan_id, source) catch |e| switch (e) {
         error.NotFound => exit.die(ctx, error.NotFound, "plan {d} not found", .{plan_id}),
         else => exit.die(ctx, e, "recommend-strategy: {s}", .{@errorName(e)}),
     };
     defer rec.deinit(ctx.allocator);
 
     if (args.json) {
-        try writeJson(ctx.stdout, rec);
+        try writeJson(ctx.stdout, rec, source);
     } else {
-        try writeText(ctx.stdout, rec);
+        try writeText(ctx.stdout, rec, source);
     }
 }
 
-fn writeJson(w: *std.Io.Writer, rec: strategy.Recommendation) !void {
-    try w.print("{{\"plan_id\":{d},\"parallel_eligible\":[", .{rec.plan_id});
+fn sourceName(source: strategy.ClosureSource) []const u8 {
+    return switch (source) {
+        .declared => "declared",
+        .derived => "derived",
+    };
+}
+
+fn writeJson(w: *std.Io.Writer, rec: strategy.Recommendation, source: strategy.ClosureSource) !void {
+    try w.print("{{\"plan_id\":{d},\"closure_source\":\"{s}\",\"parallel_eligible\":[", .{ rec.plan_id, sourceName(source) });
     for (rec.parallel_eligible, 0..) |t, i| {
         if (i != 0) try w.print(",", .{});
         try w.print("{{\"id\":{d},\"slug\":", .{t.id});
@@ -89,13 +99,14 @@ fn writeJson(w: *std.Io.Writer, rec: strategy.Recommendation) !void {
     try w.print("}}\n", .{});
 }
 
-fn writeText(w: *std.Io.Writer, rec: strategy.Recommendation) !void {
+fn writeText(w: *std.Io.Writer, rec: strategy.Recommendation, source: strategy.ClosureSource) !void {
     var note_buf: [128]u8 = undefined;
     const note = noteText(&note_buf, rec);
     try w.print(
-        "plan:{d}  open:{d}  eligible:{d}  serialized:{d}  fan_out_available:{s}\n",
+        "plan:{d}  source:{s}  open:{d}  eligible:{d}  serialized:{d}  fan_out_available:{s}\n",
         .{
             rec.plan_id,
+            sourceName(source),
             rec.open_tasks,
             rec.parallel_eligible.len,
             rec.serialized.len,

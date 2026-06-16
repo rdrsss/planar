@@ -85,6 +85,7 @@ comptime {
     _ = @import("propagate_faithful_test.zig");
 
     _ = @import("bench_lifecycle_test.zig");
+    _ = @import("closure_compute_show_test.zig");
     _ = @import("run_lifecycle_test.zig");
     _ = @import("finalize_closeout_workflow_test.zig");
 
