@@ -186,7 +186,7 @@ pub fn render(
     switch (state.mode) {
         .scenarios => {
             renderScenarioNavigator(state, nav_win);
-            try renderScenarioDetail(state, detail_win);
+            try renderScenarioDetail(state, detail_win, allocator);
         },
         .gaps => {
             renderGapNavigator(state, nav_win, allocator);
@@ -264,7 +264,7 @@ fn renderScenarioNavigator(state: *const CoverageState, win: Window) void {
 ///
 /// INVARIANT (task 4025): BOTH the body AND the verifies section are
 /// ALWAYS rendered when a scenario is selected.
-fn renderScenarioDetail(state: *const CoverageState, win: Window) !void {
+fn renderScenarioDetail(state: *const CoverageState, win: Window, arena: std.mem.Allocator) !void {
     if (win.height == 0 or win.width == 0) return;
 
     if (state.rows.len == 0) {
@@ -310,14 +310,14 @@ fn renderScenarioDetail(state: *const CoverageState, win: Window) !void {
             .height = body_h,
         });
         // Build the status line to render via markdown_detail.
-        var buf: [4096]u8 = undefined;
-        var fba = std.heap.FixedBufferAllocator.init(&buf);
+        // Use the frame arena so grapheme slices written into the vaxis
+        // back-buffer remain valid until vaxis.render() flushes them.
         const body_text = std.fmt.allocPrint(
-            fba.allocator(),
+            arena,
             "**Status:** {s}",
             .{sel.status},
         ) catch sel.status;
-        try markdown_detail.render(body_win, fba.allocator(), body_text);
+        try markdown_detail.render(body_win, arena, body_text);
         row = body_start + body_h;
     }
 
@@ -921,7 +921,9 @@ test "coverage_view: renderScenarioDetail renders Verifies section with task (ta
         .screen = &screen,
     };
 
-    try renderScenarioDetail(&state, detail_win);
+    var test_arena = std.heap.ArenaAllocator.init(a);
+    defer test_arena.deinit();
+    try renderScenarioDetail(&state, detail_win, test_arena.allocator());
 
     var rendered: std.ArrayList(u8) = .empty;
     defer rendered.deinit(a);
@@ -935,6 +937,8 @@ test "coverage_view: renderScenarioDetail renders Verifies section with task (ta
     try testing.expect(std.mem.indexOf(u8, text, "Verifies:") != null);
     // (c) The verified task's label must appear — heap-allocated, stable pointer.
     try testing.expect(std.mem.indexOf(u8, text, "RenderTask") != null);
+    // (d) Status line body text is arena-backed after UAF fix (task 4198).
+    try testing.expect(std.mem.indexOf(u8, text, "Status:") != null);
 }
 
 test "coverage_view: renderScenarioDetail shows (none) for orphan scenario (task 4025 render-level)" {
@@ -975,7 +979,9 @@ test "coverage_view: renderScenarioDetail shows (none) for orphan scenario (task
         .screen = &screen,
     };
 
-    try renderScenarioDetail(&state, detail_win);
+    var test_arena = std.heap.ArenaAllocator.init(a);
+    defer test_arena.deinit();
+    try renderScenarioDetail(&state, detail_win, test_arena.allocator());
 
     var rendered: std.ArrayList(u8) = .empty;
     defer rendered.deinit(a);

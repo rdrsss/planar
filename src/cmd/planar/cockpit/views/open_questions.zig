@@ -221,9 +221,8 @@ pub fn render(
     detail_win: Window,
     allocator: std.mem.Allocator,
 ) !void {
-    _ = allocator;
     renderNavigator(state, nav_win);
-    try renderDetail(state, detail_win);
+    try renderDetail(state, detail_win, allocator);
 }
 
 /// Render the navigator pane (left): list of questions filtered by status.
@@ -302,7 +301,7 @@ fn renderNavigator(state: *const OpenQuestionsState, win: Window) void {
 ///
 /// INVARIANT (tasks 4023/4024): BOTH the body AND the linked section are
 /// ALWAYS rendered when a question is selected. This matches the M6 pattern.
-fn renderDetail(state: *const OpenQuestionsState, win: Window) !void {
+fn renderDetail(state: *const OpenQuestionsState, win: Window, arena: std.mem.Allocator) !void {
     if (win.height == 0 or win.width == 0) return;
 
     const detail = state.detail orelse {
@@ -348,9 +347,7 @@ fn renderDetail(state: *const OpenQuestionsState, win: Window) !void {
             .width = win.width,
             .height = body_h,
         });
-        var buf: [8192]u8 = undefined;
-        var fba = std.heap.FixedBufferAllocator.init(&buf);
-        try markdown_detail.render(body_win, fba.allocator(), detail.body);
+        try markdown_detail.render(body_win, arena, detail.body);
         row = body_start + body_h;
     }
 
@@ -1053,7 +1050,9 @@ test "open_questions: renderDetail renders body AND linked section (task 4023 re
         .screen = &screen,
     };
 
-    try renderDetail(&state, detail_win);
+    var test_arena = std.heap.ArenaAllocator.init(a);
+    defer test_arena.deinit();
+    try renderDetail(&state, detail_win, test_arena.allocator());
 
     var rendered: std.ArrayList(u8) = .empty;
     defer rendered.deinit(a);
@@ -1069,6 +1068,8 @@ test "open_questions: renderDetail renders body AND linked section (task 4023 re
     try testing.expect(std.mem.indexOf(u8, text, "RenderPlan") != null);
     // (d) The relationship must appear.
     try testing.expect(std.mem.indexOf(u8, text, "addresses") != null);
+    // (e) Body text is arena-backed after UAF fix (task 4198); verify it renders.
+    try testing.expect(std.mem.indexOf(u8, text, "render question body") != null);
 }
 
 test "open_questions: renderDetail shows (none) when no linked entities (task 4023 render-level)" {
@@ -1108,7 +1109,9 @@ test "open_questions: renderDetail shows (none) when no linked entities (task 40
         .screen = &screen,
     };
 
-    try renderDetail(&state, detail_win);
+    var test_arena = std.heap.ArenaAllocator.init(a);
+    defer test_arena.deinit();
+    try renderDetail(&state, detail_win, test_arena.allocator());
 
     var rendered: std.ArrayList(u8) = .empty;
     defer rendered.deinit(a);
@@ -1121,6 +1124,8 @@ test "open_questions: renderDetail shows (none) when no linked entities (task 40
     try testing.expect(std.mem.indexOf(u8, text, "Linked to:") != null);
     // "(none)" placeholder must appear when linked is empty.
     try testing.expect(std.mem.indexOf(u8, text, "(none)") != null);
+    // Body text is arena-backed after UAF fix (task 4198); verify it renders.
+    try testing.expect(std.mem.indexOf(u8, text, "Standalone body text") != null);
 }
 
 test "open_questions: renderNavigator changes rendered set when filter changes (task 4024 render-level)" {
@@ -1256,7 +1261,9 @@ test "open_questions: renderDetail shows Jump line when jump_target is set (task
         .screen = &screen,
     };
 
-    try renderDetail(&state, detail_win);
+    var test_arena = std.heap.ArenaAllocator.init(a);
+    defer test_arena.deinit();
+    try renderDetail(&state, detail_win, test_arena.allocator());
 
     var rendered: std.ArrayList(u8) = .empty;
     defer rendered.deinit(a);
