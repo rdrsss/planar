@@ -26,6 +26,10 @@ brew install zig git gh jq ripgrep
 - `jq` — required by the bundled agent skills (`pl-spec-draft`, `pl-spec-ingest`) to parse `planar … --json` output in their shell snippets. The Zig binary itself does not depend on `jq`, but skipping it will break those workflows. No `yq` is needed; Planar handles YAML and TOML internally.
 - `ripgrep` (`rg`) — recommended. Planar's agent workflows and the example session below (`planar capture command "rg -l 'v1.client'"`) prefer `rg` over `grep` for fast, gitignore-aware codebase search. Not a hard dependency, but the documented recipes assume it is available.
 
+### Optional / research tools
+
+- `mtkahypar` — optional. The external [Mt-KaHyPar](https://github.com/kahypar/mt-kahypar) hypergraph partitioner backs the optimal arm of `planar groups recommend --solver=mtkahypar`. Planar shells out to it as a subprocess; it is **not vendored or compiled by `build.zig`** (its C++14/CMake/TBB/Boost toolchain is not a `build.zig`-compilable amalgam), so there is **no Homebrew formula** — build it from source per its README. When `mtkahypar` is absent, `groups recommend` degrades gracefully to the greedy arm and reports `optimal_available:false`; the greedy default never needs it.
+
 `sqlx-cli` and `sqlite3` are only needed for ad-hoc developer workflows against a scratch database (see [Build from source](#build-from-source)); the runtime embeds migrations via build-time codegen and uses the vendored SQLite amalgamation, so neither CLI is a runtime dependency. Install the optional `sqlx-cli` for authoring new migration pairs:
 
 ```bash

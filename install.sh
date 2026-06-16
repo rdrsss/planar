@@ -401,6 +401,7 @@ RUN_DEPS=(
   "jq|jq|bundled agent skills parse 'planar … --json' output"
   "gh|gh|GitHub adapter auth + issue import (degrades gracefully)"
   "rg|ripgrep|agent-workflow code-search recipes (ripgrep)"
+  "mtkahypar||optional: 'planar groups recommend --solver=mtkahypar' optimal arm; greedy runs without it (built from source, no brew)"
 )
 
 check_deps "build" 1 "${BUILD_DEPS[@]}"
