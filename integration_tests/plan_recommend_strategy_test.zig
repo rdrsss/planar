@@ -55,6 +55,7 @@ const Summary = struct {
 
 const RecommendJSON = struct {
     plan_id: i64,
+    closure_source: []const u8,
     parallel_eligible: []EligibleTask,
     serialized: []SerializedTask,
     summary: Summary,
@@ -421,6 +422,68 @@ test "recommend-strategy: rule-2 does NOT cascade through a migration-dropped pe
     const a_serialized = serializedById(rec, t_a);
     try std.testing.expect(hasRule(a_serialized, 3));
     try std.testing.expect(!hasRule(a_serialized, 2));
+}
+
+test "recommend-strategy: --closure-source flag surface (D4)" {
+    // D4 (plan 636 M2.6): the rule-2 overlap signal is selectable via
+    // --closure-source. 'declared' is the default and is byte-for-byte the
+    // pre-D4 behavior; 'derived' reads the computed closure. With no
+    // `closures` rows seeded, the derived overlap set is empty so each task
+    // is disjoint under derived — but the flag must be accepted, echoed in
+    // the JSON, and produce a coherent partition. An invalid value errors.
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const repo = registerRepoSlug(&suite, arena);
+    const plan = suite.mustRunJSON(PlanJSON, arena, &.{
+        "plan", "create", "--slug", "rs-d4", "--json", "RS_D4",
+    });
+    const pid = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch unreachable;
+
+    // Two tasks overlapping on the SAME declared path → declared serializes
+    // both (rule 2). Under derived with no closure rows the overlap set is
+    // empty, so the same two tasks become eligible — proving the signal
+    // actually switched sources.
+    const t1 = addTask(&suite, arena, pid, "one");
+    touchPath(&suite, repo, t1, "src/shared.zig");
+    const t2 = addTask(&suite, arena, pid, "two");
+    touchPath(&suite, repo, t2, "src/shared.zig");
+
+    // Default = declared: both serialized on the shared path.
+    const rec_default = suite.mustRunJSON(RecommendJSON, arena, &.{
+        "plan", "recommend-strategy", pid, "--json",
+    });
+    try std.testing.expectEqualStrings("declared", rec_default.closure_source);
+    try std.testing.expectEqual(@as(usize, 0), rec_default.parallel_eligible.len);
+    try std.testing.expect(hasRule(serializedById(rec_default, t1), 2));
+    try std.testing.expect(hasRule(serializedById(rec_default, t2), 2));
+
+    // Explicit declared matches the default exactly.
+    const rec_decl = suite.mustRunJSON(RecommendJSON, arena, &.{
+        "plan", "recommend-strategy", pid, "--closure-source", "declared", "--json",
+    });
+    try std.testing.expectEqualStrings("declared", rec_decl.closure_source);
+    try std.testing.expectEqual(@as(usize, 0), rec_decl.parallel_eligible.len);
+
+    // Derived: no closure rows → empty derived overlap set → both eligible.
+    const rec_der = suite.mustRunJSON(RecommendJSON, arena, &.{
+        "plan", "recommend-strategy", pid, "--closure-source", "derived", "--json",
+    });
+    try std.testing.expectEqualStrings("derived", rec_der.closure_source);
+    try std.testing.expect(isEligible(rec_der, t1));
+    try std.testing.expect(isEligible(rec_der, t2));
+    try std.testing.expectEqual(@as(usize, 2), rec_der.parallel_eligible.len);
+
+    // Invalid value errors with an actionable message.
+    const stderr = suite.expectFailure(&.{
+        "plan", "recommend-strategy", pid, "--closure-source", "bogus", "--json",
+    });
+    defer gpa.free(stderr);
+    try std.testing.expect(std.mem.indexOf(u8, stderr, "closure-source") != null);
 }
 
 test "recommend-strategy on a missing plan exits non-zero" {
