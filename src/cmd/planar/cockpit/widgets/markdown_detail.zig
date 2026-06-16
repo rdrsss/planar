@@ -150,12 +150,21 @@ pub fn render(
                 const indent = line.len - trimmed.len;
                 const item_text = trimmed[2..];
                 // Render "  • text" with indentation.
-                var buf: [4]u8 = undefined;
-                const bullet = std.fmt.bufPrint(&buf, "{s}\xe2\x80\xa2 ", .{
+                // Allocate the bullet prefix from the frame arena so that its
+                // bytes remain valid through vaxis.render() — a stack buf would
+                // dangle once the render helper returns.
+                const bullet = try std.fmt.allocPrint(allocator, "{s}\xe2\x80\xa2 ", .{
                     line[0..@min(indent, 4)],
-                }) catch "• ";
+                });
                 var parts: std.ArrayList(u8) = .empty;
-                defer parts.deinit(allocator);
+                // Do NOT call parts.deinit(allocator) here.  With an arena allocator
+                // (the required caller contract), deinit rewinds the arena end_index
+                // to the most-recent allocation boundary.  The *next* appendSlice call
+                // then re-uses the same address range, silently overwriting the bytes
+                // that live vaxis screen cells still point into.  The arena's own
+                // deinit (called by the frame owner after vaxis render) frees everything
+                // in one shot — individual per-item deinits are both unnecessary and
+                // harmful here.
                 try parts.appendSlice(allocator, bullet);
                 try parts.appendSlice(allocator, item_text);
                 try renderInline(win, allocator, parts.items, row, .normal);
@@ -170,7 +179,8 @@ pub fn render(
             if (orderedListPrefix(trimmed)) |prefix_len| {
                 const item_text = trimmed[prefix_len..];
                 var parts: std.ArrayList(u8) = .empty;
-                defer parts.deinit(allocator);
+                // Same arena-reuse hazard as the unordered list path above:
+                // do not deinit the parts ArrayList individually.
                 const indent = line.len - trimmed.len;
                 try parts.appendSlice(allocator, line[0..@min(indent, 4)]);
                 try parts.appendSlice(allocator, trimmed[0..prefix_len]);
@@ -235,7 +245,9 @@ fn renderTableRow(
     if (content.len > 0 and content[content.len - 1] == '|') content = content[0 .. content.len - 1];
 
     var parts: std.ArrayList(u8) = .empty;
-    defer parts.deinit(allocator);
+    // Do NOT deinit parts individually — same arena-reuse hazard as the list
+    // item paths in render().  The frame arena frees all at once after the
+    // entire render pass is complete and the vaxis back-buffer has been flushed.
 
     var first = true;
     var cell_iter = std.mem.splitScalar(u8, content, '|');
@@ -267,10 +279,14 @@ fn renderPlain(
     while (i < text.len and col < max_col) {
         const byte = text[i];
         if (byte & 0x80 == 0) {
-            // ASCII
-            const ch: [1]u8 = .{byte};
+            // ASCII: slice into `text` so the grapheme pointer is stable
+            // (valid for the lifetime of the text parameter, which is either
+            // a static literal, a slice of the heap-allocated body, or an
+            // arena-allocated parts buffer).
+            // `const ch: [1]u8 = .{byte}` would be a loop-iteration stack
+            // local that dies before vaxis.render() — a UAF.
             win.writeCell(@intCast(col), @intCast(row), .{
-                .char = .{ .grapheme = &ch, .width = 1 },
+                .char = .{ .grapheme = text[i .. i + 1], .width = 1 },
                 .style = style,
             });
             col += 1;
@@ -324,16 +340,31 @@ fn renderInline(
         if (text[i] == '[' and !in_code) {
             if (parseLinkLabel(text[i..])) |parsed| {
                 // Render the label with underline style.
+                // `label` is a subslice of `text` (itself a subslice of the
+                // heap-allocated body or the arena parts buffer), so
+                // label[j..j+1] gives a stable pointer — no stack-local ch needed.
                 const label = parsed.label;
-                for (label) |byte| {
+                var j: usize = 0;
+                while (j < label.len) {
                     if (col >= max_col) break;
-                    if (byte & 0x80 == 0) {
-                        const ch: [1]u8 = .{byte};
+                    const lbyte = label[j];
+                    if (lbyte & 0x80 == 0) {
                         win.writeCell(@intCast(col), @intCast(row), .{
-                            .char = .{ .grapheme = &ch, .width = 1 },
+                            .char = .{ .grapheme = label[j .. j + 1], .width = 1 },
                             .style = .{ .ul_style = .single },
                         });
                         col += 1;
+                        j += 1;
+                    } else {
+                        const seq = utf8SeqLen(lbyte);
+                        if (j + seq <= label.len) {
+                            win.writeCell(@intCast(col), @intCast(row), .{
+                                .char = .{ .grapheme = label[j .. j + seq], .width = 1 },
+                                .style = .{ .ul_style = .single },
+                            });
+                            col += 1;
+                        }
+                        j += seq;
                     }
                 }
                 i += parsed.consumed;
@@ -373,9 +404,11 @@ fn renderInline(
         const style = kindStyle(effective_kind);
         const byte = text[i];
         if (byte & 0x80 == 0) {
-            const ch: [1]u8 = .{byte};
+            // Slice into `text` for a stable grapheme pointer.  A stack-local
+            // `const ch: [1]u8 = .{byte}` dies at end of the loop iteration —
+            // the back-buffer cell would hold a dangling pointer (UAF).
             win.writeCell(@intCast(col), @intCast(row), .{
-                .char = .{ .grapheme = &ch, .width = 1 },
+                .char = .{ .grapheme = text[i .. i + 1], .width = 1 },
                 .style = style,
             });
             col += 1;
@@ -483,6 +516,112 @@ test "markdown_detail: utf8SeqLen" {
     try std.testing.expectEqual(@as(usize, 2), utf8SeqLen(0xC2));
     try std.testing.expectEqual(@as(usize, 3), utf8SeqLen(0xE2));
     try std.testing.expectEqual(@as(usize, 4), utf8SeqLen(0xF0));
+}
+
+/// Collect all grapheme bytes from a vaxis Screen buffer into `out`.
+/// Used by render-level tests to verify cell content without re-running render.
+fn collectScreenText(screen: *const vaxis.Screen, out: *std.ArrayList(u8)) !void {
+    for (screen.buf) |cell| {
+        const g = cell.char.grapheme;
+        if (g.len > 0 and g[0] != 0) {
+            try out.appendSlice(std.testing.allocator, g);
+        }
+    }
+}
+
+test "markdown_detail: render with arena allocator — no U+FFFD, bullet path exercised (task 4198)" {
+    // Regression test for the UAF bug fixed in task 4198.
+    //
+    // The bug: callers of markdown_detail.render passed a stack-backed
+    // FixedBufferAllocator. writeCell stores borrowed grapheme slices in the
+    // vaxis back-buffer; those slices must outlive the render call. A
+    // stack-backed FBA dies when renderDetail returns → dangling → U+FFFD.
+    //
+    // The fix: callers now pass the per-frame arena. This test exercises the
+    // fix by rendering a body that exercises all the internal paths:
+    //   - ATX heading (heading1 style)
+    //   - Blank line (paragraph separator)
+    //   - Unordered bullet list (exercises the allocPrint bullet path at md:154)
+    //   - Normal paragraph with inline **bold**
+    //
+    // Approach: render into a vaxis Screen backed by a test arena. After
+    // render() returns (but BEFORE the arena is freed), collect the screen
+    // text and assert (a) U+FFFD does not appear, and (b) expected body
+    // content appears verbatim.
+    //
+    // Note on red-capability: in Debug mode the Zig allocator zeroes freed
+    // memory, which may turn UAF garbage into \x00 rather than U+FFFD.
+    // In ReleaseSafe the stack is reused and the replacement-character
+    // manifestation is reliable. This test is therefore reliable in CI
+    // (make build uses ReleaseSafe). In Debug it still exercises the render
+    // path and provides the content assertions, catching logical regressions.
+    const a = std.testing.allocator;
+
+    const body =
+        \\# Implementation Notes
+        \\
+        \\- First bullet item
+        \\- Second bullet with **bold** text
+        \\
+        \\Normal paragraph follows.
+    ;
+
+    const win_w: u16 = 80;
+    const win_h: u16 = 20;
+    var screen = try vaxis.Screen.init(a, .{
+        .cols = win_w,
+        .rows = win_h,
+        .x_pixel = 0,
+        .y_pixel = 0,
+    });
+    defer screen.deinit(a);
+
+    const win: Window = .{
+        .x_off = 0,
+        .y_off = 0,
+        .parent_x_off = 0,
+        .parent_y_off = 0,
+        .width = win_w,
+        .height = win_h,
+        .screen = &screen,
+    };
+
+    // Use a test arena as the frame-arena stand-in.  The arena must outlive
+    // the render call (which it does — we deinit AFTER collect).
+    var frame_arena = std.heap.ArenaAllocator.init(a);
+    defer frame_arena.deinit();
+
+    // render() must not error.
+    try render(win, frame_arena.allocator(), body);
+
+    // Collect rendered text with the arena still live.
+    var rendered: std.ArrayList(u8) = .empty;
+    defer rendered.deinit(a);
+    try collectScreenText(&screen, &rendered);
+    const text = rendered.items;
+
+    // (a) No U+FFFD replacement characters. If grapheme slices pointed to
+    //     freed stack memory the corruption would surface as garbage bytes;
+    //     U+FFFD (EF BF BD) is the canonical marker.
+    try std.testing.expect(std.mem.indexOf(u8, text, "\xef\xbf\xbd") == null);
+
+    // (b) Heading text must appear — rendered via renderInline.
+    try std.testing.expect(std.mem.indexOf(u8, text, "Implementation") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "Notes") != null);
+
+    // (c) Bullet items must appear — rendered via renderInline after the
+    //     bullet prefix is built with allocPrint (the md:154 path).
+    try std.testing.expect(std.mem.indexOf(u8, text, "First") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "bullet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "Second") != null);
+
+    // (d) Bullet glyph U+2022 (E2 80 A2) must appear in the output —
+    //     confirms the multibyte sequence is rendered correctly and not dropped.
+    try std.testing.expect(std.mem.indexOf(u8, text, "\xe2\x80\xa2") != null);
+
+    // (e) Normal paragraph must appear.
+    try std.testing.expect(std.mem.indexOf(u8, text, "Normal") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "paragraph") != null);
 }
 
 test "markdown_detail compiles" {

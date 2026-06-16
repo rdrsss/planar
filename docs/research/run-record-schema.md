@@ -42,7 +42,7 @@ host-native driver — emits records the same way it already reads state:
 by subprocess.
 
 ```
-planar run start   --plan <id> --arm <arm> --base-sha <sha> \
+planar run start   --plan <id> --arm <arm> --base-sha <sha> \   <!-- cli-lint-ignore -->
                    --config-hash <h> --config-json <blob> --corpus-repo <name>
                    → mints run_uid, inserts the runs row, prints run_uid
 

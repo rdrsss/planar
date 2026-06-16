@@ -1,5 +1,5 @@
 //! handlers/plan/cmd.zig — `planar plan {create, show, list, update, link, recompute-status,
-//!   edit, view, step {add, list, done, skip, link}, closeout}`
+//!   edit, view, step {add, list, done, skip, link}, closeout, descendants}`
 
 const cli = @import("cli");
 
@@ -17,6 +17,7 @@ const recommend_strategy = @import("recommend_strategy.zig");
 const recompute_status = @import("recompute_status.zig");
 const closeout = @import("closeout.zig");
 const step = @import("step/cmd.zig");
+const descendants = @import("descendants.zig");
 
 pub const verb: cli.Cmd = .{
     .name = "plan",
@@ -170,5 +171,17 @@ pub const verb: cli.Cmd = .{
             .run = cli.handler(closeout.handle),
         },
         step.verb,
+        .{
+            .name = "descendants",
+            .desc = "Emit the anchor plan's full subtree in dependency-topological order. READ-ONLY.",
+            .long_desc = "Emit the anchor plan's full subtree (child plans + tasks) in\n" ++
+                "  dependency-topological order (anchor → child plans → tasks).\n\n" ++
+                "  READ-ONLY: queries and reports; writes nothing.",
+            .flags = &.{
+                .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
+            },
+            .positionals = &.{.{ .name = "plan-id", .kind = .string, .required = true }},
+            .run = cli.handler(descendants.handle),
+        },
     },
 };

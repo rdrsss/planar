@@ -33,6 +33,7 @@ const plans_h = @import("plans.zig");
 const log_h = @import("log.zig");
 const tree_h = @import("tree.zig");
 const run_h = @import("run.zig");
+const syncevents_h = @import("syncevents.zig");
 
 pub const verbs: []const cli.Cmd = &.{
     feed_h.verb,
@@ -43,6 +44,7 @@ pub const verbs: []const cli.Cmd = &.{
     log_h.verb,
     tree_h.verb,
     run_h.verb,
+    syncevents_h.verb,
     version_h.verb,
     completion_h.verb,
     schema_h.verb,

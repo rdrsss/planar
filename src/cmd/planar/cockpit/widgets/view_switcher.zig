@@ -109,7 +109,10 @@ pub const ViewSwitcher = struct {
     /// Render the tab bar into the top row of `win`. The row at y=0 is
     /// consumed; callers should use `win.child(.{.y_off=1, ...})` for
     /// the content area below the tab bar.
-    pub fn renderTabBar(self: *const ViewSwitcher, win: Window) void {
+    ///
+    /// `arena` is the per-frame allocator. The key byte in each tab label is
+    /// arena-allocated so the grapheme pointer is stable through vaxis.render().
+    pub fn renderTabBar(self: *const ViewSwitcher, win: Window, arena: std.mem.Allocator) void {
         if (win.height == 0 or win.width == 0) return;
         const w: usize = @intCast(win.width);
         var col: usize = 0;
@@ -132,18 +135,30 @@ pub const ViewSwitcher = struct {
                 .{ .dim = true };
 
             // Render " [key] name " per tab.
+            // IMPORTANT: writeCell stores borrowed grapheme pointers in the back
+            // buffer — they must remain valid through vaxis.render(). A
+            // loop-iteration-local `const ch: [1]u8 = .{byte}` or `key_slice`
+            // dies when the outer for loop advances to the next entry, causing a
+            // UAF. Fix: arena-allocate the key byte slice so its backing memory
+            // lives until the next frame reset (after render).
+            //
+            // " [" and "] " are string literals (static storage — always valid).
+            // entry.name is heap-allocated state (always valid).
+            // entry.key is a u8 value field; allocate a one-byte slice via arena.
+            const key_str = std.fmt.allocPrint(arena, "{c}", .{entry.key}) catch " ";
             const tab_parts: [4][]const u8 = .{
                 " [",
-                &[_]u8{entry.key},
+                key_str,
                 "] ",
                 entry.name,
             };
             for (tab_parts) |part| {
-                for (part) |byte| {
+                var pi: usize = 0;
+                while (pi < part.len) : (pi += 1) {
                     if (col >= w) break;
-                    const ch: [1]u8 = .{byte};
+                    // Slice into `part` for a stable grapheme pointer.
                     win.writeCell(@intCast(col), 0, .{
-                        .char = .{ .grapheme = &ch, .width = 1 },
+                        .char = .{ .grapheme = part[pi .. pi + 1], .width = 1 },
                         .style = tab_style,
                     });
                     col += 1;

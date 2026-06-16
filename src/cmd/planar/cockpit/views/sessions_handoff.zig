@@ -293,11 +293,10 @@ pub fn render(
     detail_win: Window,
     allocator: std.mem.Allocator,
 ) !void {
-    _ = allocator;
     switch (state.mode) {
         .sessions => {
             renderSessionsNavigator(state, nav_win);
-            renderSessionsDetail(state, detail_win);
+            renderSessionsDetail(state, detail_win, allocator);
         },
         .handoffs => {
             renderHandoffsNavigator(state, nav_win);
@@ -391,7 +390,7 @@ fn renderSessionsNavigator(state: *const SessionsHandoffState, win: Window) void
 /// INVARIANT (task 4032): vendor, model, started_at, ended_at, and ALL
 /// entry rows (prefix + body) are rendered.
 /// INVARIANT (task 4034): ALL commit rows (sha, subject) are rendered.
-fn renderSessionsDetail(state: *const SessionsHandoffState, win: Window) void {
+fn renderSessionsDetail(state: *const SessionsHandoffState, win: Window, arena: std.mem.Allocator) void {
     if (win.height == 0 or win.width == 0) return;
 
     const snap = state.snapshot orelse {
@@ -457,8 +456,8 @@ fn renderSessionsDetail(state: *const SessionsHandoffState, win: Window) void {
     // ---- task_id (row 3, optional) --------------------------------------
     if (row < win.height) {
         if (det.task_id) |tid| {
-            var task_buf: [32]u8 = undefined;
-            const task_ref = std.fmt.bufPrint(&task_buf, "task:{d}", .{tid}) catch "task:?";
+            // Use arena allocation so the slice remains valid through vaxis.render().
+            const task_ref = std.fmt.allocPrint(arena, "task:{d}", .{tid}) catch "task:?";
             _ = win.printSegment(.{ .text = "task:    ", .style = .{ .dim = true } }, .{ .row_offset = row, .col_offset = 0 });
             _ = win.printSegment(.{ .text = task_ref, .style = .{} }, .{ .row_offset = row, .col_offset = 9 });
             row += 1;
@@ -1093,7 +1092,12 @@ test "sessions_handoff: renderSessionsDetail shows entries and commits (tasks 40
         .screen = &screen,
     };
 
-    renderSessionsDetail(&state, detail_win);
+    // Use an arena so that allocPrint calls inside renderSessionsDetail do not
+    // leak when tested with testing.allocator (render functions own no arena;
+    // the arena is reset each frame by renderFrame).
+    var render_arena = std.heap.ArenaAllocator.init(a);
+    defer render_arena.deinit();
+    renderSessionsDetail(&state, detail_win, render_arena.allocator());
 
     var rendered: std.ArrayList(u8) = .empty;
     defer rendered.deinit(a);

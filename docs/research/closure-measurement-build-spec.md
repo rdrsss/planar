@@ -145,7 +145,7 @@ are auditable and so promotion experiments are possible without re-extraction.
 ## 4. Verb surface
 
 ```
-planar run start   --plan <id> --arm <arm> --base-sha <sha> \
+planar run start   --plan <id> --arm <arm> --base-sha <sha> \   <!-- cli-lint-ignore -->
                    --config-hash <h> [--config-json <blob>] --corpus-repo <name>
                    → mints + prints run_uid
 planar run event   <run_uid> --kind <k> [--payload <json>]

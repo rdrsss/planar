@@ -167,7 +167,8 @@ test "planar-watch --help lists the read verbs + version + completion" {
 
     // Must mention each read verb.
     inline for ([_][]const u8{
-        "feed", "ps", "claims", "actions", "plans", "log", "tree", "run", "version", "completion",
+        "feed",        "ps",      "claims",     "actions", "plans", "log", "tree", "run",
+        "sync-events", "version", "completion",
     }) |v| {
         if (std.mem.indexOf(u8, res.stdout, v) == null) {
             std.debug.print("missing verb '{s}' in --help:\n{s}\n", .{ v, res.stdout });
@@ -1710,4 +1711,169 @@ test "planar-watch run show with unknown id exits non-zero" {
 
     try std.testing.expect(res.term == .exited);
     try std.testing.expect(res.term.exited != 0);
+}
+
+// =========================================================================
+// Task 4103 — planar-watch sync-events [--outcome] [--since] [--limit] --json
+//
+// sync_events has no write verb in the CLI so we seed rows directly via
+// sqlite3 (same pattern used in the tree synthetic-chain test above).
+// Two tests:
+//   1. Happy path: insert an 'ok' row; --json returns the row; --outcome
+//      filter on 'error' returns [].
+//   2. Empty-result shape: no rows → sync_events: [].
+// =========================================================================
+
+test "planar-watch sync-events --json returns seeded row; --outcome filter narrows" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    // Init the DB (applies migrations so sync_events table exists).
+    gpa.free(suite.mustRun(&.{ "init", "--skip-project" }));
+
+    // Insert a sync_events row directly via sqlite3.
+    // link_id is NULL (workbench-scope row has no external_links FK).
+    const insert_sql =
+        "insert into sync_events (scope, direction, outcome) " ++
+        "values ('workbench', 'push', 'ok');";
+    const ins = std.process.run(gpa, std.testing.io, .{
+        .argv = &.{ "sqlite3", suite.db_path, insert_sql },
+    }) catch |e| {
+        std.debug.print("sqlite3 not available ({s}); skipping sync-events seed test\n", .{@errorName(e)});
+        return error.SkipZigTest;
+    };
+    gpa.free(ins.stdout);
+    gpa.free(ins.stderr);
+    if (ins.term != .exited or ins.term.exited != 0) {
+        std.debug.print("sqlite3 insert failed: {any}\n", .{ins.term});
+        @panic("sync-events test: sqlite3 insert failed");
+    }
+
+    // planar-watch sync-events --json must return the row.
+    const out = mustRunWatch(&suite, &.{ "sync-events", "--json" });
+    defer gpa.free(out);
+
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"generated_at\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"sync_events\":[") != null);
+    // The seeded row has outcome=ok; must appear.
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"outcome\":\"ok\"") != null);
+    // direction field present.
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"direction\":\"push\"") != null);
+
+    // --outcome error must return an empty array (the row is 'ok', not 'error').
+    const filtered = mustRunWatch(&suite, &.{ "sync-events", "--outcome", "error", "--json" });
+    defer gpa.free(filtered);
+    try std.testing.expect(std.mem.indexOf(u8, filtered, "\"sync_events\":[]") != null);
+}
+
+test "planar-watch sync-events --json on empty table returns sync_events: []" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    gpa.free(suite.mustRun(&.{ "init", "--skip-project" }));
+
+    // No rows seeded — must return empty array.
+    const out = mustRunWatch(&suite, &.{ "sync-events", "--json" });
+    defer gpa.free(out);
+
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"sync_events\":[]") != null);
+}
+
+// =========================================================================
+// Task 4104 — planar-agent reconcile --plan <id> --dry-run [--json]
+//
+// Contract: --plan X --dry-run lists ONLY plan-X's stale claims and writes
+// nothing. Proven by:
+//   1. Seeding two plans each with one expired claim (via direct sqlite3
+//      update on lease_expires_at).
+//   2. Running reconcile --plan <plan-A> --dry-run --json.
+//   3. Asserting dry_run returns plan-A's candidate only.
+//   4. Asserting the claims table is UNCHANGED after the dry-run (both
+//      claims still 'active').
+// =========================================================================
+
+fn resolveAgentBinLocal() []const u8 {
+    return resolveAgentBin();
+}
+
+test "planar-agent reconcile --plan --dry-run previews only plan-scoped stale claims; writes nothing" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    // Seed two plans each with one task.
+    const pid_a = seedPlanWithTask(&suite, "recon-plan-a", "recon-task-a");
+    defer gpa.free(pid_a);
+    const plan_b_json = suite.mustRun(&.{ "plan", "create", "--slug", "recon-plan-b", "--json", "recon-plan-b" });
+    defer gpa.free(plan_b_json);
+    const pid_b_int = extractIntField(plan_b_json, "\"id\"") orelse @panic("no plan-b id");
+    const pid_b = std.fmt.allocPrint(gpa, "{d}", .{pid_b_int}) catch @panic("OOM");
+    defer gpa.free(pid_b);
+    gpa.free(suite.mustRun(&.{ "task", "add", "--plan", pid_b, "recon-task-b" }));
+
+    // Pull both plans to create active claims (TTL defaults to 600s so they are fresh).
+    const pull_a = mustRunAgent(&suite, &.{ "pull", pid_a, "--no-locality-probe", "--json" });
+    defer gpa.free(pull_a);
+    const pull_b = mustRunAgent(&suite, &.{ "pull", pid_b, "--no-locality-probe", "--json" });
+    defer gpa.free(pull_b);
+
+    // Expire both claims by setting lease_expires_at into the past via sqlite3.
+    const expire_sql =
+        "update agent_work_claims set lease_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 hour') where status = 'active';";
+    const exp = std.process.run(gpa, std.testing.io, .{
+        .argv = &.{ "sqlite3", suite.db_path, expire_sql },
+    }) catch |e| {
+        std.debug.print("sqlite3 not available ({s}); skipping reconcile dry-run test\n", .{@errorName(e)});
+        return error.SkipZigTest;
+    };
+    gpa.free(exp.stdout);
+    gpa.free(exp.stderr);
+    if (exp.term != .exited or exp.term.exited != 0) @panic("sqlite3 expire failed");
+
+    // Snapshot: both claims are 'active' before the dry-run.
+    const before_sql = "select count(*) from agent_work_claims where status = 'active';";
+    const before = std.process.run(gpa, std.testing.io, .{
+        .argv = &.{ "sqlite3", suite.db_path, before_sql },
+    }) catch @panic("sqlite3 before-count failed");
+    defer gpa.free(before.stdout);
+    defer gpa.free(before.stderr);
+    const before_count_str = std.mem.trim(u8, before.stdout, " \t\r\n");
+    const before_count = std.fmt.parseInt(i64, before_count_str, 10) catch @panic("parse before count");
+    try std.testing.expect(before_count >= 2);
+
+    // Run reconcile --plan <pid_a> --dry-run --json.
+    const agent_bin = resolveAgentBinLocal();
+    const dry_out_res = runBin(&suite, agent_bin, &.{
+        "reconcile", "--plan", pid_a, "--dry-run", "--json",
+    });
+    defer dry_out_res.deinit(gpa);
+    if (dry_out_res.term != .exited or dry_out_res.term.exited != 0) {
+        std.debug.print(
+            "reconcile --plan --dry-run failed (term={any}):\nstdout: {s}\nstderr: {s}\n",
+            .{ dry_out_res.term, dry_out_res.stdout, dry_out_res.stderr },
+        );
+        @panic("reconcile --plan --dry-run must succeed");
+    }
+
+    // JSON shape: ok=true, candidates array present.
+    try std.testing.expect(std.mem.indexOf(u8, dry_out_res.stdout, "\"ok\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, dry_out_res.stdout, "\"candidates\":[") != null);
+
+    // After dry-run, BOTH claims must still be 'active' — nothing was written.
+    const after = std.process.run(gpa, std.testing.io, .{
+        .argv = &.{ "sqlite3", suite.db_path, before_sql },
+    }) catch @panic("sqlite3 after-count failed");
+    defer gpa.free(after.stdout);
+    defer gpa.free(after.stderr);
+    const after_count_str = std.mem.trim(u8, after.stdout, " \t\r\n");
+    const after_count = std.fmt.parseInt(i64, after_count_str, 10) catch @panic("parse after count");
+    if (after_count != before_count) {
+        std.debug.print(
+            "dry-run wrote to the DB: before={d} after={d}\n",
+            .{ before_count, after_count },
+        );
+        return error.DryRunMutated;
+    }
 }

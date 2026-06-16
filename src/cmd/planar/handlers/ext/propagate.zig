@@ -34,9 +34,9 @@ const runtime = @import("runtime");
 const exit = @import("../../exit.zig");
 const output = @import("../../output.zig");
 const adapter_factory = @import("adapter_factory.zig");
-const remote = @import("remote.zig");
 const tmpl_common = @import("../templates/common.zig");
 const ext_strategy = @import("engine").extsync.strategy;
+const propagate_one = @import("propagate_one.zig");
 
 /// RunOpts captures the propagate options passed in from either the
 /// `ext propagate` handler or the `link --propagate` convenience verb.
@@ -209,12 +209,6 @@ pub fn runForPlan(
         if (!isStaticStrategy(report_strategy_kind)) ctx.allocator.free(report_strategy_kind);
     }
 
-    // Resolve the per-entity template kinds for the (possibly cache-supplied)
-    // strategy. The walkTree below dispatches identically to the M10 happy
-    // path; only the cache-write decision uses the strategy kind.
-    const strategy_kinds = strategyTemplateKinds(sys.kind.toText(), report_strategy_kind) catch |e|
-        exit.die(ctx, e, "ext propagate: map strategy '{s}' to templates: {s}", .{ report_strategy_kind, @errorName(e) });
-
     // Templates root + sync direction default.
     const root = tmpl_common.resolveTemplatesRoot(ctx) catch |e|
         exit.die(ctx, e, "resolving templates root: {s}", .{@errorName(e)});
@@ -305,126 +299,75 @@ pub fn runForPlan(
             exit.die(ctx, e, "ext propagate: projects-v2: {s}", .{@errorName(e)});
         };
     } else for (tree) |entry| {
+        // Reimplement ext propagate as the trivial loop:
+        //   descendants | for each propagate-one
+        // This calls the shared per-entity body from propagate_one.zig so both
+        // `ext propagate` and `ext propagate-one` use identical logic (task 4105).
         const entity_kind_str: []const u8 = if (entry.kind == .task) "task" else "plan";
-        const template_kind: []const u8 = switch (entry.kind) {
-            .plan_anchor => strategy_kinds.plan_anchor_kind,
-            .plan_child => strategy_kinds.plan_child_kind,
-            .task => strategy_kinds.task_kind,
+        const role: propagate_one.EntityRole = switch (entry.kind) {
+            .plan_anchor => .plan_anchor,
+            .plan_child => .plan_child,
+            .task => .task,
+        };
+        const template_kind = propagate_one.templateKindForEntity(
+            sys.kind.toText(),
+            report_strategy_kind,
+            role,
+        ) catch |e| {
+            try recordFailure(ctx.allocator, &results_buf, entity_kind_str, entry, e);
+            failed_count += 1;
+            continue;
         };
 
-        // Idempotent skip.
-        const existing = engine.extsync.propagate.loadExistingMirror(ctx.allocator, d, entity_kind_str, entry.id, sys.id) catch |e|
-            exit.die(ctx, e, "ext propagate: read mirror link: {s}", .{@errorName(e)});
-        if (existing.len > 0) {
+        var result = propagate_one.propagateOneEntity(
+            ctx,
+            d,
+            sys,
+            adp,
+            entity_kind_str,
+            entry.id,
+            entry.title,
+            role,
+            report_strategy_kind,
+            template_kind,
+            sync_dir,
+            opts.dry_run,
+            root,
+        ) catch |e| {
+            try recordFailure(ctx.allocator, &results_buf, entity_kind_str, entry, e);
+            failed_count += 1;
+            continue;
+        };
+        defer result.deinit(ctx.allocator);
+
+        if (std.mem.eql(u8, result.op, "skipped")) {
             try results_buf.append(ctx.allocator, .{
-                .entity_kind = try ctx.allocator.dupe(u8, entity_kind_str),
-                .entity_id = entry.id,
-                .title = try ctx.allocator.dupe(u8, entry.title),
+                .entity_kind = try ctx.allocator.dupe(u8, result.entity_kind),
+                .entity_id = result.entity_id,
+                .title = try ctx.allocator.dupe(u8, result.title),
                 .op = "skipped",
-                .external_id = existing,
+                .external_id = try ctx.allocator.dupe(u8, result.external_id),
             });
             skipped_count += 1;
-            continue;
-        }
-        ctx.allocator.free(existing);
-
-        // Build context + load template + render.
-        var owned = switch (entry.kind) {
-            .plan_anchor, .plan_child => engine.templates.builder.buildPlanContext(ctx.allocator, d, entry.id) catch |e| {
-                try recordFailure(ctx.allocator, &results_buf, entity_kind_str, entry, e);
-                failed_count += 1;
-                continue;
-            },
-            .task => engine.templates.builder.buildTaskContext(ctx.allocator, d, entry.id) catch |e| {
-                try recordFailure(ctx.allocator, &results_buf, entity_kind_str, entry, e);
-                failed_count += 1;
-                continue;
-            },
-        };
-        defer owned.deinit();
-
-        const tmpl = engine.templates.load(ctx.allocator, "default", sys.kind.toText(), template_kind, root) catch |e| {
-            try recordFailure(ctx.allocator, &results_buf, entity_kind_str, entry, e);
-            failed_count += 1;
-            continue;
-        };
-        defer engine.templates.deinitTemplate(tmpl, ctx.allocator);
-
-        var rendered = engine.templates.renderTemplate(ctx.allocator, tmpl.fields, owned.ctx) catch |e| {
-            try recordFailure(ctx.allocator, &results_buf, entity_kind_str, entry, e);
-            failed_count += 1;
-            continue;
-        };
-        defer rendered.deinit();
-
-        const payload = rendered.toJson(ctx.allocator) catch |e| {
-            try recordFailure(ctx.allocator, &results_buf, entity_kind_str, entry, e);
-            failed_count += 1;
-            continue;
-        };
-        defer ctx.allocator.free(payload);
-
-        if (opts.dry_run) {
+        } else if (std.mem.eql(u8, result.op, "planned")) {
             try results_buf.append(ctx.allocator, .{
-                .entity_kind = try ctx.allocator.dupe(u8, entity_kind_str),
-                .entity_id = entry.id,
-                .title = try ctx.allocator.dupe(u8, entry.title),
+                .entity_kind = try ctx.allocator.dupe(u8, result.entity_kind),
+                .entity_id = result.entity_id,
+                .title = try ctx.allocator.dupe(u8, result.title),
                 .op = "planned",
-                .external_id = try std.fmt.allocPrint(ctx.allocator, "<{s}>", .{template_kind}),
+                .external_id = try ctx.allocator.dupe(u8, result.external_id),
             });
             created_count += 1;
-            continue;
+        } else {
+            try results_buf.append(ctx.allocator, .{
+                .entity_kind = try ctx.allocator.dupe(u8, result.entity_kind),
+                .entity_id = result.entity_id,
+                .title = try ctx.allocator.dupe(u8, result.title),
+                .op = "created",
+                .external_id = try ctx.allocator.dupe(u8, result.external_id),
+            });
+            created_count += 1;
         }
-
-        const created = remote.createRemote(adp.?, ctx.allocator, sys, payload) catch |e| {
-            try recordFailure(ctx.allocator, &results_buf, entity_kind_str, entry, e);
-            failed_count += 1;
-            continue;
-        };
-        defer ctx.allocator.free(created.external_url);
-
-        // Record external_links row. Anchor plan also carries the strategy
-        // cache in config_json so a future propagate hits the stickiness path.
-        const entity_kind_enum = engine.external.link.ExternalEntityKind.fromText(entity_kind_str) orelse {
-            ctx.allocator.free(created.external_id);
-            try recordFailure(ctx.allocator, &results_buf, entity_kind_str, entry, error.InvalidInput);
-            failed_count += 1;
-            continue;
-        };
-        const is_anchor = entry.kind == .plan_anchor;
-        const anchor_config_json = if (is_anchor) try std.fmt.allocPrint(
-            ctx.allocator,
-            "{{\"strategy\":\"{s}\"}}",
-            .{report_strategy_kind},
-        ) else null;
-        defer if (anchor_config_json) |s| ctx.allocator.free(s);
-
-        const link = engine.external.link.create(d, ctx.allocator, .{
-            .entity_kind = entity_kind_enum,
-            .entity_id = entry.id,
-            .system_id = sys.id,
-            .external_id = created.external_id,
-            .external_url = if (created.external_url.len > 0) created.external_url else null,
-            .link_role = .mirror,
-            .sync_direction = sync_dir,
-            .initial_status = .ok,
-            .config_json = anchor_config_json,
-        }) catch |e| {
-            ctx.allocator.free(created.external_id);
-            try recordFailure(ctx.allocator, &results_buf, entity_kind_str, entry, e);
-            failed_count += 1;
-            continue;
-        };
-        defer engine.external.link.deinit(link, ctx.allocator);
-
-        try results_buf.append(ctx.allocator, .{
-            .entity_kind = try ctx.allocator.dupe(u8, entity_kind_str),
-            .entity_id = entry.id,
-            .title = try ctx.allocator.dupe(u8, entry.title),
-            .op = "created",
-            .external_id = created.external_id, // ownership transferred to results
-        });
-        created_count += 1;
     }
 
     // --- verify-counterparts pass -----------------------------------------
@@ -540,36 +483,6 @@ pub fn runForPlan(
     if (failed_count > 0) {
         exit.die(ctx, error.InvalidInput, "{d} entity/entities failed during propagation", .{failed_count});
     }
-}
-
-// ---- per-strategy template kinds -------------------------------------------
-
-/// strategyTemplateKinds maps a (system_kind, strategy_kind) pair to the
-/// per-entity template kind triple. Mirrors `strategyForSystem` in
-/// engine/extsync/propagate.zig but allows cached/override strategies to pick
-/// the same template surface (currently every GitHub strategy variant uses the
-/// same triple in the zig port — only the cache/audit value differs).
-fn strategyTemplateKinds(system_kind: []const u8, strategy_kind: []const u8) !engine.extsync.propagate.Strategy {
-    if (std.mem.eql(u8, system_kind, "jira")) {
-        return .{
-            .kind = "jira-epic",
-            .plan_anchor_kind = "epic",
-            .plan_child_kind = "story",
-            .task_kind = "sub-task",
-        };
-    }
-    if (std.mem.eql(u8, system_kind, "github-issues")) {
-        // tracking-issue and (eventually) parent-issue/projects-v2 share the
-        // same per-entity template kinds in the zig port. Cache the strategy
-        // separately via writeAnchorConfigJSON.
-        return .{
-            .kind = strategy_kind,
-            .plan_anchor_kind = "parent-issue",
-            .plan_child_kind = "issue",
-            .task_kind = "sub-task",
-        };
-    }
-    return error.UnsupportedSystemKind;
 }
 
 // ---- restrategize prompt ---------------------------------------------------

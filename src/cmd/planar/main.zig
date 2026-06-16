@@ -57,6 +57,7 @@ const schema_h = @import("handlers/schema.zig");
 const report_h = @import("handlers/report.zig");
 const bench_h = @import("handlers/bench/cmd.zig");
 const closure_h = @import("handlers/closure/cmd.zig");
+const run_h = @import("handlers/run/cmd.zig");
 const explore_h = @import("handlers/explore.zig");
 
 /// Root command tree. `pub` because each `handlers/*.zig` imports it to
@@ -112,6 +113,7 @@ pub const root: cli.Cmd = .{
         report_h.verb,
         bench_h.verb,
         closure_h.verb,
+        run_h.verb,
         explore_h.verb,
     },
 };
