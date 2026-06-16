@@ -158,8 +158,10 @@ pub fn recommendWith(
     const loaded = try loadInputs(d, gpa, plan_id);
 
     // mtkahypar requested: run the optimal arm when available, else degrade.
+    // `deps` is threaded so the M3.3c D-HG2 cycle-repair can make the solver's
+    // partition schedulable (the solver itself is precedence-blind).
     if (mtkahypar.solverAvailable(gpa, io)) {
-        if (mtkahypar.invoke(gpa, io, loaded.tasks, .{ .budget = budget })) |slices| {
+        if (mtkahypar.invoke(gpa, io, loaded.tasks, .{ .budget = budget, .deps = loaded.deps })) |slices| {
             return finish(loaded, budget, .{ .slices = slices }, .mtkahypar, true);
         } else |_| {
             // Invocation failed mid-run → degrade to greedy.

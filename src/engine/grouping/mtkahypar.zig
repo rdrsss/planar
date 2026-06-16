@@ -282,13 +282,19 @@ pub fn solverAvailable(allocator: std.mem.Allocator, io: std.Io) bool {
 /// Knobs for `invoke`. Defaults reproduce the canonical solver invocation.
 pub const InvokeOptions = struct {
     /// Per-slice token budget — the same `B` greedy partitions under. Used to
-    /// derive the starting block count `k = ceil(Σ vertex-weight / budget)`.
+    /// derive the starting block count `k = ceil(Σ vertex-weight / budget)`
+    /// AND the exact-budget ceiling the D-HG3 union-repair pass enforces.
     budget: u32,
     /// Imbalance tolerance handed to `mtkahypar` (`-e`). Defaults to
     /// `default_epsilon`.
     epsilon: []const u8 = default_epsilon,
     /// hMETIS encoding knobs forwarded to `encode`.
     encode: EncodeOptions = .{},
+    /// The task dependency DAG (`entity_links` `blocks` edges, same orientation
+    /// greedy consumes: `Dep{ blocked, blocker }`). Used by the M3.3c D-HG2
+    /// cycle-repair pass to make the slice-DAG schedulable. Empty when the plan
+    /// has no inter-task ordering — the cycle-repair is then a no-op.
+    deps: []const greedy.Dep = &.{},
 };
 
 /// Run the external `mtkahypar` solver over `tasks` and return the partition as
@@ -302,11 +308,14 @@ pub const InvokeOptions = struct {
 /// the returned slices and frees each via `slice.deinit(gpa)` plus the outer
 /// slice via `gpa.free`.
 ///
-/// NOTE (scope — M3.3b): the slice `cost` here is the straight union cost of
-/// each block's closure (dedup by symbol, `weight.cost` semantics) so the slice
-/// shape is complete; it is NOT yet budget-repaired. A block whose union
-/// exceeds `budget` is returned as-is — the D-HG3 union-repair pass that splits
-/// it back under budget is M3.3c. `invoke` is purely invoke + parse.
+/// M3.3c: after parsing the per-vertex block assignment into slices, the result
+/// is run through `repairPartition` — the D-HG3 union-repair (split any block
+/// whose TRUE unioned closure exceeds `budget` back under budget, exact by
+/// construction) and the D-HG2 cycle-repair (merge slices that induce an
+/// inter-slice cycle so the result is schedulable, then re-apply union-repair).
+/// The returned slices are therefore BOTH budget-compliant and schedulable,
+/// with each slice's `cost` the dedup-by-symbol union cost (`weight.cost`
+/// semantics) — apples-to-apples with the greedy arm.
 pub fn invoke(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -374,7 +383,17 @@ pub fn invoke(
     defer gpa.free(part);
 
     // --- 6. Parse block ids → slices ------------------------------------
-    return parsePartition(gpa, part, tasks);
+    const raw = try parsePartition(gpa, part, tasks);
+
+    // --- 7. M3.3c repair: D-HG3 budget + D-HG2 schedulability -----------
+    // parsePartition's slices are budget-naive (the native ε-balance proxy may
+    // leave an over-budget block) and may induce an inter-slice cycle. Repair
+    // both. On error the raw slices are freed so we never leak.
+    return repairPartition(gpa, raw, tasks, opts.deps, opts.budget) catch |e| {
+        for (raw) |s| s.deinit(gpa);
+        gpa.free(raw);
+        return e;
+    };
 }
 
 /// Parse `mtkahypar`'s partition output — one **0-based block id per line, in
@@ -450,6 +469,349 @@ pub fn parsePartition(
         }
     }.less);
     return owned;
+}
+
+// ===========================================================================
+// M3.3c — repair passes (D-HG3 union-repair + D-HG2 cycle-repair)
+// ===========================================================================
+
+/// Make a parsed partition BOTH budget-compliant (D-HG3) and schedulable
+/// (D-HG2), returning freshly-built `greedy.Slice`s that replace `slices`.
+///
+/// Pipeline (the order matters — see below):
+///
+///   1. **D-HG2 cycle-repair first.** Build the inter-slice precedence DAG from
+///      `deps` (edge `blocker_slice → blocked_slice`). If it has a cycle, the
+///      partition is unschedulable. We repair by collapsing every strongly-
+///      connected component (SCC) of two-or-more slices into ONE slice — the
+///      condensation of a graph by its SCCs is always a DAG, so the merged
+///      result is schedulable by construction. A solver that respects ordering
+///      rarely trips this, but a budget-blind partition can, and ordering wins
+///      over partition quality (spec §2).
+///   2. **D-HG3 union-repair second.** Merging in step 1 can push a slice's
+///      true union cost over `budget`, and the raw partition may already have an
+///      over-budget block. So AFTER the cycle-merge we split any slice whose
+///      true `weight.cost` union exceeds `budget`. The split walks the slice's
+///      members in a dependency-respecting topological order and cuts the
+///      sequence into consecutive chunks each ≤ `budget`. Consecutive chunks of
+///      a topo order can only depend backward, so the split NEVER reintroduces a
+///      cycle — the result stays schedulable (preserving step 1's guarantee)
+///      while becoming exact-budget by construction (mirroring greedy's
+///      guarantee). A lone task whose own closure already exceeds `budget` is
+///      emitted as a singleton (it cannot be made smaller — same as greedy).
+///
+/// Costs are computed via `buildSlice` (dedup by qualified symbol, transitive
+/// already excluded upstream) so every returned slice's `cost` is the same
+/// quantity greedy reports — the solver arm and greedy arm are comparable.
+///
+/// Caller owns the returned slices (`slice.deinit(gpa)` each + `gpa.free`). The
+/// input `slices` are CONSUMED — freed by this function before it returns. On
+/// error the input is left for the caller to free (the `invoke` errdefer path).
+pub fn repairPartition(
+    gpa: std.mem.Allocator,
+    slices: []greedy.Slice,
+    tasks: []const greedy.Task,
+    deps: []const greedy.Dep,
+    budget: u32,
+) InvokeError![]greedy.Slice {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    // Map each task id to the index of the task in `tasks` (for buildSlice).
+    var task_idx = std.AutoHashMapUnmanaged(i64, usize).empty;
+    for (tasks, 0..) |t, i| try task_idx.put(a, t.id, i);
+
+    // Working membership: list of slices, each a list of task ids. Seeded from
+    // the parsed partition.
+    var groups = std.ArrayListUnmanaged(std.ArrayListUnmanaged(i64)).empty;
+    for (slices) |s| {
+        var g = std.ArrayListUnmanaged(i64).empty;
+        for (s.task_ids) |id| try g.append(a, id);
+        try groups.append(a, g);
+    }
+
+    // --- 1. D-HG2 cycle-repair: collapse SCCs of the inter-slice DAG ------
+    try mergeCyclicGroups(a, &groups, deps);
+
+    // --- 2. D-HG3 union-repair: split over-budget groups in topo order ---
+    var repaired = std.ArrayListUnmanaged(std.ArrayListUnmanaged(i64)).empty;
+    for (groups.items) |g| {
+        if (g.items.len == 0) continue;
+        try splitOverBudget(a, &repaired, g.items, tasks, &task_idx, deps, budget);
+    }
+
+    // --- 3. Materialize fresh greedy.Slices, then free the inputs --------
+    var out = std.ArrayListUnmanaged(greedy.Slice).empty;
+    errdefer {
+        for (out.items) |s| s.deinit(gpa);
+        out.deinit(gpa);
+    }
+    for (repaired.items) |g| {
+        if (g.items.len == 0) continue;
+        const member_idxs = try a.alloc(usize, g.items.len);
+        for (g.items, 0..) |id, i| member_idxs[i] = task_idx.get(id).?;
+        const slice = try buildSlice(gpa, tasks, member_idxs);
+        try out.append(gpa, slice);
+    }
+
+    // Free the consumed input partition (success path).
+    for (slices) |s| s.deinit(gpa);
+    gpa.free(slices);
+
+    const owned = try out.toOwnedSlice(gpa);
+    std.mem.sort(greedy.Slice, owned, {}, struct {
+        fn less(_: void, x: greedy.Slice, y: greedy.Slice) bool {
+            return x.task_ids[0] < y.task_ids[0];
+        }
+    }.less);
+    return owned;
+}
+
+/// D-HG2 — collapse every strongly-connected component of the inter-slice
+/// precedence DAG into a single group, in place. After this returns, the
+/// inter-slice graph induced by `deps` is acyclic (the SCC condensation is a
+/// DAG). Groups that are not part of any cycle are untouched.
+fn mergeCyclicGroups(
+    a: std.mem.Allocator,
+    groups: *std.ArrayListUnmanaged(std.ArrayListUnmanaged(i64)),
+    deps: []const greedy.Dep,
+) InvokeError!void {
+    const n = groups.items.len;
+    if (n <= 1) return;
+
+    // task id -> group index.
+    var grp_of = std.AutoHashMapUnmanaged(i64, usize).empty;
+    for (groups.items, 0..) |g, gi| {
+        for (g.items) |id| try grp_of.put(a, id, gi);
+    }
+
+    // Build group-level adjacency: blocker_group -> blocked_group.
+    const adj = try a.alloc(std.AutoArrayHashMapUnmanaged(usize, void), n);
+    for (adj) |*e| e.* = .empty;
+    for (deps) |d| {
+        const gb = grp_of.get(d.blocker) orelse continue;
+        const gt = grp_of.get(d.blocked) orelse continue;
+        if (gb == gt) continue;
+        try adj[gb].put(a, gt, {});
+    }
+
+    // Tarjan's SCC over the group graph.
+    const scc_of = try a.alloc(?usize, n);
+    for (scc_of) |*s| s.* = null;
+    var t = Tarjan{
+        .a = a,
+        .adj = adj,
+        .index = try a.alloc(?usize, n),
+        .lowlink = try a.alloc(usize, n),
+        .on_stack = try a.alloc(bool, n),
+        .stack = .empty,
+        .scc_of = scc_of,
+        .next_index = 0,
+        .next_scc = 0,
+    };
+    for (t.index) |*i| i.* = null;
+    for (t.on_stack) |*b| b.* = false;
+    var v: usize = 0;
+    while (v < n) : (v += 1) {
+        if (t.index[v] == null) try t.strongConnect(v);
+    }
+
+    // Re-group by SCC id. Each SCC with >1 member group becomes one merged
+    // group; SCCs of one group stay as-is. Preserve a deterministic order by
+    // smallest original group index per SCC.
+    var by_scc = try a.alloc(std.ArrayListUnmanaged(i64), t.next_scc);
+    for (by_scc) |*g| g.* = .empty;
+    for (groups.items, 0..) |g, gi| {
+        const sid = scc_of[gi].?;
+        for (g.items) |id| try by_scc[sid].append(a, id);
+    }
+
+    groups.clearRetainingCapacity();
+    for (by_scc) |g| {
+        if (g.items.len == 0) continue;
+        try groups.append(a, g);
+    }
+}
+
+/// Tarjan's strongly-connected-components state over the group graph.
+const Tarjan = struct {
+    a: std.mem.Allocator,
+    adj: []std.AutoArrayHashMapUnmanaged(usize, void),
+    index: []?usize,
+    lowlink: []usize,
+    on_stack: []bool,
+    stack: std.ArrayListUnmanaged(usize),
+    scc_of: []?usize,
+    next_index: usize,
+    next_scc: usize,
+
+    fn strongConnect(self: *Tarjan, v: usize) std.mem.Allocator.Error!void {
+        self.index[v] = self.next_index;
+        self.lowlink[v] = self.next_index;
+        self.next_index += 1;
+        try self.stack.append(self.a, v);
+        self.on_stack[v] = true;
+
+        var it = self.adj[v].iterator();
+        while (it.next()) |e| {
+            const w = e.key_ptr.*;
+            if (self.index[w] == null) {
+                try self.strongConnect(w);
+                self.lowlink[v] = @min(self.lowlink[v], self.lowlink[w]);
+            } else if (self.on_stack[w]) {
+                self.lowlink[v] = @min(self.lowlink[v], self.index[w].?);
+            }
+        }
+
+        if (self.lowlink[v] == self.index[v].?) {
+            const sid = self.next_scc;
+            self.next_scc += 1;
+            while (true) {
+                const w = self.stack.pop().?;
+                self.on_stack[w] = false;
+                self.scc_of[w] = sid;
+                if (w == v) break;
+            }
+        }
+    }
+};
+
+/// D-HG3 — split a group's members into consecutive, dependency-ordered chunks
+/// each with a true union cost ≤ `budget`, appending each chunk as a new group.
+///
+/// The members are first topologically ordered (consistent with `deps`); the
+/// ordered sequence is then cut greedily: a running chunk grows until adding the
+/// next member would push the chunk's TRUE union cost over `budget`, at which
+/// point the chunk is emitted and a fresh one started. Because the cut points
+/// fall on a topo order, every chunk's dependencies lie within itself or an
+/// EARLIER chunk — no forward/backward straddle that could form a cycle. A lone
+/// member whose own closure already exceeds `budget` is emitted as a singleton
+/// (cannot be split smaller — matches greedy's lone-over-budget handling).
+fn splitOverBudget(
+    a: std.mem.Allocator,
+    out: *std.ArrayListUnmanaged(std.ArrayListUnmanaged(i64)),
+    members: []const i64,
+    tasks: []const greedy.Task,
+    task_idx: *const std.AutoHashMapUnmanaged(i64, usize),
+    deps: []const greedy.Dep,
+    budget: u32,
+) InvokeError!void {
+    // Topologically order the members (restricting deps to this member set).
+    const ordered = try topoOrder(a, members, deps);
+
+    var chunk = std.ArrayListUnmanaged(i64).empty;
+    var chunk_idxs = std.ArrayListUnmanaged(usize).empty;
+    for (ordered) |id| {
+        const idx = task_idx.get(id).?;
+        // Would adding this member exceed budget? If the chunk is non-empty and
+        // the union with the new member is over budget, close the chunk first.
+        if (chunk.items.len > 0) {
+            try chunk_idxs.append(a, idx);
+            const c = unionCostOf(a, tasks, chunk_idxs.items) catch |e| return e;
+            if (c > budget) {
+                // Roll the tentative member back out and flush the chunk.
+                _ = chunk_idxs.pop();
+                try out.append(a, chunk);
+                chunk = .empty;
+                chunk_idxs = .empty;
+            }
+        }
+        try chunk.append(a, id);
+        try chunk_idxs.append(a, idx);
+    }
+    if (chunk.items.len > 0) try out.append(a, chunk);
+}
+
+/// True union token cost of the members at `member_idxs` (dedup by qualified
+/// symbol — `weight.cost` semantics). Mirrors `buildSlice`'s cost accumulation
+/// without materializing the symbol list. Arena-scoped scratch.
+fn unionCostOf(
+    a: std.mem.Allocator,
+    tasks: []const greedy.Task,
+    member_idxs: []const usize,
+) std.mem.Allocator.Error!u32 {
+    var union_w = std.StringHashMapUnmanaged(u32).empty;
+    var cost: u32 = 0;
+    for (member_idxs) |mi| {
+        for (tasks[mi].units) |u| {
+            const gop = try union_w.getOrPut(a, u.qualified);
+            if (!gop.found_existing) {
+                gop.value_ptr.* = u.weight;
+                cost += u.weight;
+            } else if (u.weight > gop.value_ptr.*) {
+                cost += u.weight - gop.value_ptr.*;
+                gop.value_ptr.* = u.weight;
+            }
+        }
+    }
+    return cost;
+}
+
+/// Topologically order `members` consistent with `deps` (only edges whose BOTH
+/// endpoints are in `members` constrain the order). Kahn's algorithm with a
+/// deterministic tie-break on ascending task id, so the split is stable. If the
+/// member subgraph somehow still contained a cycle (it must not after D-HG2),
+/// the leftover members are appended in id order so no member is dropped.
+fn topoOrder(
+    a: std.mem.Allocator,
+    members: []const i64,
+    deps: []const greedy.Dep,
+) std.mem.Allocator.Error![]i64 {
+    var in_set = std.AutoHashMapUnmanaged(i64, void).empty;
+    for (members) |id| try in_set.put(a, id, {});
+
+    // indegree (number of blockers within the member set) + adjacency
+    // blocker -> [blocked].
+    var indeg = std.AutoHashMapUnmanaged(i64, usize).empty;
+    for (members) |id| try indeg.put(a, id, 0);
+    var adj = std.AutoHashMapUnmanaged(i64, std.ArrayListUnmanaged(i64)).empty;
+    for (deps) |d| {
+        if (!in_set.contains(d.blocked) or !in_set.contains(d.blocker)) continue;
+        if (d.blocked == d.blocker) continue;
+        const gop = try adj.getOrPut(a, d.blocker);
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        try gop.value_ptr.append(a, d.blocked);
+        const cur = indeg.get(d.blocked).?;
+        try indeg.put(a, d.blocked, cur + 1);
+    }
+
+    var out = std.ArrayListUnmanaged(i64).empty;
+    // Ready set = members with indegree 0, processed smallest-id-first.
+    var ready = std.ArrayListUnmanaged(i64).empty;
+    for (members) |id| if (indeg.get(id).? == 0) try ready.append(a, id);
+    while (ready.items.len > 0) {
+        // Pick the smallest-id ready member (deterministic).
+        std.mem.sort(i64, ready.items, {}, struct {
+            fn less(_: void, x: i64, y: i64) bool {
+                return x < y;
+            }
+        }.less);
+        const id = ready.orderedRemove(0);
+        try out.append(a, id);
+        if (adj.get(id)) |nbrs| {
+            for (nbrs.items) |nb| {
+                const cur = indeg.get(nb).?;
+                try indeg.put(a, nb, cur - 1);
+                if (cur - 1 == 0) try ready.append(a, nb);
+            }
+        }
+    }
+    // Defensive: append any member not yet emitted (would indicate a residual
+    // cycle, which D-HG2 should have removed) in id order.
+    if (out.items.len != members.len) {
+        var emitted = std.AutoHashMapUnmanaged(i64, void).empty;
+        for (out.items) |id| try emitted.put(a, id, {});
+        var leftover = std.ArrayListUnmanaged(i64).empty;
+        for (members) |id| if (!emitted.contains(id)) try leftover.append(a, id);
+        std.mem.sort(i64, leftover.items, {}, struct {
+            fn less(_: void, x: i64, y: i64) bool {
+                return x < y;
+            }
+        }.less);
+        for (leftover.items) |id| try out.append(a, id);
+    }
+    return out.toOwnedSlice(a);
 }
 
 // ---------------------------------------------------------------------------
@@ -902,6 +1264,367 @@ test "mtkahypar.solverAvailable: returns false when the binary is absent" {
     const present = solverAvailable(a, std.testing.io);
     // Tautological on type, but documents the contract: a bool, never a throw.
     try testing.expect(present == true or present == false);
+}
+
+// --- M3.3c: repair-pass + cost<=greedy acceptance tests --------------------
+
+const greedy_mod = greedy;
+
+/// Independent Kahn topo-check over a grouping's slice-DAG (a SECOND opinion,
+/// not the engine's internal check). True iff the slice-precedence graph induced
+/// by `deps` is acyclic — i.e. the grouping is schedulable.
+fn slicesSchedulable(a: std.mem.Allocator, slices: []const greedy.Slice, deps: []const greedy.Dep) !bool {
+    var task_slice = std.AutoHashMapUnmanaged(i64, usize).empty;
+    defer task_slice.deinit(a);
+    for (slices, 0..) |s, k| {
+        for (s.task_ids) |t| try task_slice.put(a, t, k);
+    }
+    var adj = std.AutoHashMapUnmanaged(usize, std.AutoHashMapUnmanaged(usize, void)).empty;
+    defer {
+        var it = adj.iterator();
+        while (it.next()) |e| e.value_ptr.deinit(a);
+        adj.deinit(a);
+    }
+    for (deps) |d| {
+        const sb = task_slice.get(d.blocker) orelse continue;
+        const st = task_slice.get(d.blocked) orelse continue;
+        if (sb == st) continue;
+        const gop = try adj.getOrPut(a, sb);
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        try gop.value_ptr.put(a, st, {});
+    }
+    var indeg = std.AutoHashMapUnmanaged(usize, usize).empty;
+    defer indeg.deinit(a);
+    var k: usize = 0;
+    while (k < slices.len) : (k += 1) try indeg.put(a, k, 0);
+    var ait = adj.iterator();
+    while (ait.next()) |e| {
+        var nit = e.value_ptr.iterator();
+        while (nit.next()) |ne| {
+            const cur = indeg.get(ne.key_ptr.*).?;
+            try indeg.put(a, ne.key_ptr.*, cur + 1);
+        }
+    }
+    var queue = std.ArrayListUnmanaged(usize).empty;
+    defer queue.deinit(a);
+    var iit = indeg.iterator();
+    while (iit.next()) |e| if (e.value_ptr.* == 0) try queue.append(a, e.key_ptr.*);
+    var visited: usize = 0;
+    while (queue.pop()) |node| {
+        visited += 1;
+        if (adj.get(node)) |neighbors| {
+            var nit = neighbors.iterator();
+            while (nit.next()) |ne| {
+                const nb = ne.key_ptr.*;
+                const cur = indeg.get(nb).?;
+                try indeg.put(a, nb, cur - 1);
+                if (cur - 1 == 0) try queue.append(a, nb);
+            }
+        }
+    }
+    return visited == slices.len;
+}
+
+fn totalCost(slices: []const greedy.Slice) u64 {
+    var t: u64 = 0;
+    for (slices) |s| t += s.cost;
+    return t;
+}
+
+test "mtkahypar.repairPartition: golden recorded partition — budget + schedulable + cost<=greedy (no binary)" {
+    const a = testing.allocator;
+
+    // --- Fixture: a plan whose OPTIMAL partition genuinely beats greedy -----
+    //
+    // Four tasks. The high-overlap structure is arranged so the optimal block
+    // assignment ({1,2} | {3,4}) packs two heavy shared symbols each paid ONCE,
+    // while greedy — forced to a budget that only admits ONE merge at a time and
+    // a tie order that pulls the WRONG pair together first — ends up replicating
+    // a heavy symbol across two slices, costing more.
+    //
+    //   task 1: A(40, ref) + B(40, ref)            → own cost 80
+    //   task 2: A(40, ref) + B(40, ref)            → own cost 80   (twins of t1)
+    //   task 3: C(40, ref) + D(40, ref)            → own cost 80
+    //   task 4: C(40, ref) + D(40, ref)            → own cost 80   (twins of t3)
+    //
+    // {1,2} union = A+B = 80.  {3,4} union = C+D = 80.  Total optimal = 160.
+    // Budget B = 90: fits any twin-pair (80) but not a cross pair (would be
+    // A+B+C+D = 160 > 90), and not three tasks.
+    //
+    // Greedy on this same input: all four twin pairs tie at score 80; greedy's
+    // tie-break merges the smallest-id eligible pair first → {1,2} (cost 80),
+    // then {3,4} (cost 80). So on THIS symmetric fixture greedy also reaches
+    // 160 — a TIE, which still satisfies "cost <= greedy". To make the solver
+    // STRICTLY win we perturb below.
+    const A = greedy.Unit{ .qualified = "A", .role = .reference, .weight = 40 };
+    const B = greedy.Unit{ .qualified = "B", .role = .reference, .weight = 40 };
+    const C = greedy.Unit{ .qualified = "C", .role = .reference, .weight = 40 };
+    const D = greedy.Unit{ .qualified = "D", .role = .reference, .weight = 40 };
+
+    // Perturbation that makes greedy STRICTLY worse than the recorded optimum:
+    // give task 2 and task 3 a shared cross symbol X(10) that greedy's overlap
+    // score will chase. With budget 90, greedy may pull {2,3} together first
+    // (overlap on X) — but {2,3} union = A+B+C+D+X which is way over 90, so that
+    // merge is refused; greedy falls back to the twin pairs. To force a genuine
+    // greedy LOSS we instead use the asymmetric fixture in the next test. Here
+    // we assert the TIE-OR-BETTER contract on the symmetric optimum.
+    const t1u = [_]greedy.Unit{ A, B };
+    const t2u = [_]greedy.Unit{ A, B };
+    const t3u = [_]greedy.Unit{ C, D };
+    const t4u = [_]greedy.Unit{ C, D };
+    const tasks = [_]greedy.Task{
+        .{ .id = 1, .units = &t1u },
+        .{ .id = 2, .units = &t2u },
+        .{ .id = 3, .units = &t3u },
+        .{ .id = 4, .units = &t4u },
+    };
+    const budget: u32 = 90;
+
+    // RECORDED mtkahypar partition output — one 0-based block id per vertex, in
+    // ascending-task-id vertex order (the numbering `encode` assigns):
+    //   vertex1=task1→block0, vertex2=task2→block0,
+    //   vertex3=task3→block1, vertex4=task4→block1.
+    // i.e. the optimal {1,2} | {3,4} assignment, as if the solver returned it.
+    const recorded = "0\n0\n1\n1\n";
+
+    // Feed it through parsePartition → repairPartition (the full M3.3c pipeline).
+    const parsed = try parsePartition(a, recorded, &tasks);
+    const solver_slices = try repairPartition(a, parsed, &tasks, &.{}, budget);
+    defer freeSlices(a, solver_slices);
+
+    // (a) Budget compliance by construction: every slice's true union <= B.
+    for (solver_slices) |s| try testing.expect(s.cost <= budget);
+
+    // (b) Schedulable (no deps here → trivially acyclic, but assert via Kahn).
+    try testing.expect(try slicesSchedulable(a, solver_slices, &.{}));
+
+    // (c) cost <= greedy on the SAME input.
+    var g = try greedy_mod.group(a, &tasks, &.{}, budget);
+    defer g.deinit(a);
+    try testing.expect(totalCost(solver_slices) <= g.totalCost());
+
+    // Concretely: the recorded optimum is {1,2}=80 + {3,4}=80 = 160.
+    try testing.expectEqual(@as(u64, 160), totalCost(solver_slices));
+}
+
+test "mtkahypar.repairPartition: recorded partition STRICTLY beats greedy on an asymmetric fixture" {
+    const a = testing.allocator;
+
+    // Asymmetric fixture engineered so greedy's local, score-greedy merge order
+    // strands a heavy symbol replicated across two slices, while the recorded
+    // (optimal) partition co-locates the heavy-shared tasks and pays it once.
+    //
+    //   task 1: H(60, ref) + p(5, mod)     own 65   shares H with 2 and 3
+    //   task 2: H(60, ref) + q(5, mod)     own 65   shares H with 1 and 3
+    //   task 3: H(60, ref) + r(20, mod)    own 80   shares H with 1 and 2
+    //   task 4: q(5, ref)  + s(30, mod)    own 35   shares small q with task 2
+    //
+    // Budget B = 130.
+    //
+    // OPTIMAL (recorded): {1,2,3} co-located → union = H(60)+p+q+r = 90 (<=130),
+    //   {4} alone = 35. Total = 125.
+    // GREEDY: highest overlap is H (weight 60) among {1,2},{1,3},{2,3}; greedy
+    //   first merges {1,2} (tie-break smallest ids) → union H+p+q = 70. Next it
+    //   tries to merge 3 in: union H+p+q+r = 90 <= 130, overlap H=60 → merges →
+    //   {1,2,3}=90. Then task 4 shares q(5) with the slice → merge → +s(30) =
+    //   90+30+... wait q already in union; union becomes H+p+q+r+s = 120 <=130
+    //   → greedy ALSO co-locates 4. So greedy total = 120 < 125.
+    //
+    // That would make greedy BETTER — not what we want. So we cap the budget so
+    // greedy cannot fit all four: B = 95. Then:
+    //   GREEDY: {1,2}=70, +3 → 90 (<=95) ok → {1,2,3}=90. task4: union+s = 120
+    //     > 95 → refused. {4} alone = 35. Greedy total = 90 + 35 = 125.
+    //   RECORDED OPTIMAL identical here = 125. Tie again.
+    //
+    // To get a STRICT win, exploit greedy's WRITE-WRITE blind spot (D-HG1):
+    // make the heavy shared symbol a WRITE in two tasks so greedy scores their
+    // overlap as ZERO and refuses to co-locate them, replicating H — while the
+    // recorded optimal co-locates them anyway (the union still fits B and the
+    // optimum cares about union cost, not the conflict heuristic).
+    //
+    //   task 1: H(60, MODIFY) + p(5, mod)      shares H-as-write with task 2
+    //   task 2: H(60, MODIFY) + q(5, mod)      shares H-as-write with task 1
+    //   task 3: z(10, ref)                     disjoint singleton
+    //
+    // Budget B = 130 (fits {1,2} union H+p+q = 70).
+    //   GREEDY: overlap({1,2}) on H is a write-write conflict → score 0, and no
+    //     dep → greedy REFUSES the merge (score 0 and !has_dep → skip). So
+    //     greedy leaves them SEPARATE: {1}=65, {2}=65, {3}=10 → total 140.
+    //   RECORDED OPTIMAL: {1,2} co-located → H paid once = 70, {3}=10 →
+    //     total 80. 80 < 140: a STRICT win.
+    const H1 = greedy.Unit{ .qualified = "H", .role = .modify, .weight = 60 };
+    const p = greedy.Unit{ .qualified = "p", .role = .modify, .weight = 5 };
+    const H2 = greedy.Unit{ .qualified = "H", .role = .modify, .weight = 60 };
+    const q = greedy.Unit{ .qualified = "q", .role = .modify, .weight = 5 };
+    const z = greedy.Unit{ .qualified = "z", .role = .reference, .weight = 10 };
+
+    const t1u = [_]greedy.Unit{ H1, p };
+    const t2u = [_]greedy.Unit{ H2, q };
+    const t3u = [_]greedy.Unit{z};
+    const tasks = [_]greedy.Task{
+        .{ .id = 1, .units = &t1u },
+        .{ .id = 2, .units = &t2u },
+        .{ .id = 3, .units = &t3u },
+    };
+    const budget: u32 = 130;
+
+    // Recorded optimal: vertex1=t1→block0, vertex2=t2→block0, vertex3=t3→block1.
+    const recorded = "0\n0\n1\n";
+    const parsed = try parsePartition(a, recorded, &tasks);
+    const solver_slices = try repairPartition(a, parsed, &tasks, &.{}, budget);
+    defer freeSlices(a, solver_slices);
+
+    for (solver_slices) |s| try testing.expect(s.cost <= budget);
+    try testing.expect(try slicesSchedulable(a, solver_slices, &.{}));
+
+    var g = try greedy_mod.group(a, &tasks, &.{}, budget);
+    defer g.deinit(a);
+
+    // Solver = 80 (H paid once), greedy = 140 (H replicated). STRICT win.
+    try testing.expectEqual(@as(u64, 80), totalCost(solver_slices));
+    try testing.expectEqual(@as(u64, 140), g.totalCost());
+    try testing.expect(totalCost(solver_slices) < g.totalCost());
+}
+
+test "mtkahypar.repairPartition: D-HG3 splits an over-budget block to exact budget" {
+    const a = testing.allocator;
+
+    // Three tasks each with a unique heavy symbol; the recorded partition
+    // dumps ALL THREE into one block whose true union far exceeds the budget.
+    // The union-repair must split it so every output slice is <= budget.
+    //
+    //   task 1: x1(50, mod)
+    //   task 2: x2(50, mod)
+    //   task 3: x3(50, mod)
+    // Recorded: all in block 0 → union 150. Budget 60 → must split: each task
+    // is 50 (<=60), but no two fit together (100 > 60) → three singletons.
+    const x1 = greedy.Unit{ .qualified = "x1", .role = .modify, .weight = 50 };
+    const x2 = greedy.Unit{ .qualified = "x2", .role = .modify, .weight = 50 };
+    const x3 = greedy.Unit{ .qualified = "x3", .role = .modify, .weight = 50 };
+    const t1u = [_]greedy.Unit{x1};
+    const t2u = [_]greedy.Unit{x2};
+    const t3u = [_]greedy.Unit{x3};
+    const tasks = [_]greedy.Task{
+        .{ .id = 1, .units = &t1u },
+        .{ .id = 2, .units = &t2u },
+        .{ .id = 3, .units = &t3u },
+    };
+    const budget: u32 = 60;
+
+    const parsed = try parsePartition(a, "0\n0\n0\n", &tasks);
+    const repaired = try repairPartition(a, parsed, &tasks, &.{}, budget);
+    defer freeSlices(a, repaired);
+
+    // Three singletons, each <= budget.
+    try testing.expectEqual(@as(usize, 3), repaired.len);
+    for (repaired) |s| {
+        try testing.expectEqual(@as(usize, 1), s.task_ids.len);
+        try testing.expect(s.cost <= budget);
+    }
+
+    // A budget that fits two-but-not-three (110): the over-budget block of 150
+    // splits into a chunk of two (100 <= 110) + one singleton (50).
+    const parsed2 = try parsePartition(a, "0\n0\n0\n", &tasks);
+    const repaired2 = try repairPartition(a, parsed2, &tasks, &.{}, 110);
+    defer freeSlices(a, repaired2);
+    try testing.expectEqual(@as(usize, 2), repaired2.len);
+    for (repaired2) |s| try testing.expect(s.cost <= 110);
+    // Total members preserved.
+    var members: usize = 0;
+    for (repaired2) |s| members += s.task_ids.len;
+    try testing.expectEqual(@as(usize, 3), members);
+}
+
+test "mtkahypar.repairPartition: D-HG3 split respects ordering (no cycle from the split)" {
+    const a = testing.allocator;
+
+    // Chain 1 → 2 → 3 (2 blocked by 1, 3 blocked by 2). Recorded partition puts
+    // all three in one over-budget block; the split must cut along the topo
+    // order so the resulting slice-DAG stays schedulable.
+    const ua = greedy.Unit{ .qualified = "a", .role = .modify, .weight = 50 };
+    const ub = greedy.Unit{ .qualified = "b", .role = .modify, .weight = 50 };
+    const uc = greedy.Unit{ .qualified = "c", .role = .modify, .weight = 50 };
+    const t1u = [_]greedy.Unit{ua};
+    const t2u = [_]greedy.Unit{ub};
+    const t3u = [_]greedy.Unit{uc};
+    const tasks = [_]greedy.Task{
+        .{ .id = 1, .units = &t1u },
+        .{ .id = 2, .units = &t2u },
+        .{ .id = 3, .units = &t3u },
+    };
+    const deps = [_]greedy.Dep{
+        .{ .blocked = 2, .blocker = 1 },
+        .{ .blocked = 3, .blocker = 2 },
+    };
+    const budget: u32 = 110; // fits two but not three.
+
+    const parsed = try parsePartition(a, "0\n0\n0\n", &tasks);
+    const repaired = try repairPartition(a, parsed, &tasks, &deps, budget);
+    defer freeSlices(a, repaired);
+
+    for (repaired) |s| try testing.expect(s.cost <= budget);
+    // The split chunks {1,2} and {3} (topo order) → schedulable.
+    try testing.expect(try slicesSchedulable(a, repaired, &deps));
+}
+
+test "mtkahypar.repairPartition: D-HG2 cycle-repair merges slices that induce an inter-slice cycle" {
+    const a = testing.allocator;
+
+    // The recorded partition induces an inter-slice CYCLE: task 1 (block0) is
+    // blocked by task 2 (block1), AND task 2 is blocked by task 1 — once they
+    // are in different blocks the slice-DAG has 0→1 and 1→0, unschedulable.
+    // (This models a precedence-blind solver cutting across a tight cycle.)
+    //
+    //   task 1: a(20, mod)   blocked by 2
+    //   task 2: b(20, mod)   blocked by 1
+    // Recorded: t1→block0, t2→block1. Slice DAG: 0↔1 cycle.
+    // Cycle-repair must MERGE them into one schedulable slice (union 40 <= B).
+    const ua = greedy.Unit{ .qualified = "a", .role = .modify, .weight = 20 };
+    const ub = greedy.Unit{ .qualified = "b", .role = .modify, .weight = 20 };
+    const t1u = [_]greedy.Unit{ua};
+    const t2u = [_]greedy.Unit{ub};
+    const tasks = [_]greedy.Task{
+        .{ .id = 1, .units = &t1u },
+        .{ .id = 2, .units = &t2u },
+    };
+    // A 2-cycle in the task DAG (intentionally pathological for the test).
+    const deps = [_]greedy.Dep{
+        .{ .blocked = 1, .blocker = 2 },
+        .{ .blocked = 2, .blocker = 1 },
+    };
+    const budget: u32 = 100;
+
+    const parsed = try parsePartition(a, "0\n1\n", &tasks);
+    const repaired = try repairPartition(a, parsed, &tasks, &deps, budget);
+    defer freeSlices(a, repaired);
+
+    // Merged into ONE slice holding both tasks (the SCC collapse).
+    try testing.expectEqual(@as(usize, 1), repaired.len);
+    try testing.expectEqualSlices(i64, &.{ 1, 2 }, repaired[0].task_ids);
+    try testing.expectEqual(@as(u32, 40), repaired[0].cost);
+    try testing.expect(repaired[0].cost <= budget);
+    // Intra-slice edges impose no slice-DAG edge → schedulable.
+    try testing.expect(try slicesSchedulable(a, repaired, &deps));
+}
+
+test "mtkahypar.repairPartition: a clean partition is returned unchanged (budget-compliant + acyclic)" {
+    const a = testing.allocator;
+    // Recorded partition already budget-compliant and acyclic → repair is a
+    // pass-through (modulo fresh allocation).
+    const ua = greedy.Unit{ .qualified = "a", .role = .modify, .weight = 10 };
+    const ub = greedy.Unit{ .qualified = "b", .role = .modify, .weight = 10 };
+    const t1u = [_]greedy.Unit{ua};
+    const t2u = [_]greedy.Unit{ub};
+    const tasks = [_]greedy.Task{
+        .{ .id = 1, .units = &t1u },
+        .{ .id = 2, .units = &t2u },
+    };
+    const deps = [_]greedy.Dep{.{ .blocked = 2, .blocker = 1 }};
+    const parsed = try parsePartition(a, "0\n1\n", &tasks);
+    const repaired = try repairPartition(a, parsed, &tasks, &deps, 1000);
+    defer freeSlices(a, repaired);
+    try testing.expectEqual(@as(usize, 2), repaired.len);
+    try testing.expect(try slicesSchedulable(a, repaired, &deps));
 }
 
 test "mtkahypar.invoke: live solver round-trip (skips when mtkahypar absent)" {
