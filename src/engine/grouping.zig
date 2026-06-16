@@ -9,8 +9,10 @@
 
 pub const greedy = @import("grouping/greedy.zig");
 pub const load = @import("grouping/load.zig");
+pub const mtkahypar = @import("grouping/mtkahypar.zig");
 
 test {
     _ = greedy;
     _ = load;
+    _ = mtkahypar;
 }
