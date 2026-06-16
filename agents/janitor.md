@@ -132,28 +132,54 @@ If `git worktree remove` fails because the worktree has uncommitted changes from
 
 If the local branch is absent (already cleaned up by a prior run), skip Step 4b without error.
 
-### Step 5 — DB closeout via the gate
+### Step 5 — DB closeout via the gate (delegated to `finalize_closeout` workflow)
 
-The `planar plan closeout` gate is the authority on readiness. Run dry-run first:
+The closeout gate is now owned by the `workflows/finalize_closeout.lua`
+workflow (plan 638, M1, tasks 4108/4110). Delegate to it:
 
+```bash
+planar-execute run workflows/finalize_closeout.lua \
+    --phase closeout --args '{"plan_id":<N>}'
 ```
-planar plan closeout <plan-id> --dry-run --json
-```
 
-Parse the `ready` field and `blocked_by` array:
+Parse the `flow.result` JSON from stdout:
 
-- **`ready: true`, `blocked_by: []`** — the plan passes all three hard gates (all tasks terminal, all descendants terminal, no live claims). Apply:
-  ```
-  planar plan closeout <plan-id>
-  ```
-- **`ready: false`, `blocked_by` non-empty** — do NOT force-close. Surface the blocker list to the operator. Common blockers:
+- **`ready: true, closed: true`** — the plan passed all three hard gates and
+  was applied. The plan status is now `done`. The workflow also records a run
+  trace (use `run_uid` from the result for audit).
+- **`ready: false, blocked_by: [...]`** — do NOT force-close. The workflow
+  structurally cannot force-close a blocked plan: the apply call is reachable
+  ONLY inside the `gate.ready=true` branch (Rule 7 structural guarantee). The
+  run was finished `aborted`; the plan is UNCHANGED. Surface the blocker list
+  to the operator. Common blockers:
   - Open tasks (`todo`/`doing`/`blocked`) — need coder resolution.
   - Open descendant plans — close child plans first, recursively.
-  - Live claims (non-expired) — wait for the claiming agent to finish or for the claim to expire, then `planar-agent reconcile`.
+  - Live claims (non-expired) — wait or run `planar-agent reconcile`.
 
-Do not fabricate a `ready` state or manually mark the plan `done` outside this verb. The gate's DB evidence is the contract.
+Do not fabricate a `ready` state or manually mark the plan `done` outside the
+workflow. The workflow's gate evaluation (`plan closeout --dry-run --json`) is
+the contract.
 
-Anchor plans (no `parent_plan_id`) are closeable through `planar plan closeout`. This is an operator-plane action; the agent-side `recompute-status` logic caps anchor transitions at `active` and leaves the final `done` transition to the operator. The janitor, acting on behalf of the operator, is the appropriate caller here.
+#### Closeout gate workflow boundary
+
+The workflow (`finalize_closeout.lua`) is `cli.planar`-only — it cannot shell
+`gh`, `planar-agent`, or `git`. That is why Steps 1–4 (PR verify/merge,
+reconcile, worktree/branch cleanup) remain in this agent. The workflow owns
+only the deterministic DB-hard-gate evaluation and the `plan closeout` apply;
+the caller (this agent) owns everything that touches the external plane.
+
+Anchor plans (no `parent_plan_id`) are closeable through the workflow. The
+`plan closeout` operator verb bypasses the anchor cap in `recompute-status`,
+so the workflow can mark anchor plans `done` when all hard gates pass.
+
+If `planar-execute` is unavailable (the binary was not built or installed),
+fall back to the manual sequence the workflow encodes:
+
+```bash
+# Fallback only — prefer the workflow for traceability.
+planar plan closeout <plan-id> --dry-run --json    # check ready field
+planar plan closeout <plan-id>                     # apply if ready=true
+```
 
 ### Step 6 — Optional reinstall
 
@@ -205,8 +231,8 @@ The janitor emits a status string at each phase boundary:
 | Waiting for merge confirmation | `"awaiting merge confirmation: PR <N>"` |
 | Reconciling Planar state | `"reconciling planar state"` |
 | Cleaning up worktrees and branches | `"cleaning up worktree <path>"` |
-| Running closeout gate (dry-run) | `"running closeout gate --dry-run: plan <id>"` |
-| Applying closeout | `"applying closeout: plan <id>"` |
+| Running closeout gate workflow | `"running closeout gate workflow: plan <id>"` |
+| Awaiting closeout gate result | `"awaiting closeout gate result: plan <id>"` |
 | Reinstalling binary | `"reinstalling binary"` |
 
 ## Forward references
