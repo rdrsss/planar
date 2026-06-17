@@ -206,6 +206,59 @@ test "planar-execute sandbox nils os and io" {
     try std.testing.expect(std.mem.indexOf(u8, res.stdout, "\"sandboxed\":true") != null);
 }
 
+// Red test: nested tables (JSON objects) and empty tables inside flow.result
+// previously panicked because writeLuaTableJson used a relative stack index
+// (-1) when calling lua_next — after lua_pushnil shifted the stack the index
+// pointed at the nil, not the table. Empty tables (rawlen==0) also hit the
+// object branch and panicked the same way. This test documents the contract
+// and was written BEFORE the fix; it must fail/panic on the unfixed build and
+// pass cleanly after the index-absolutization fix lands.
+test "planar-execute flow.result serializes nested objects, array-of-objects, and empty tables" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    const root = suite.registerProject("execnested");
+    suite.addAssoc("execnested", null);
+
+    // Workflow returns a nested object, an array of objects, and an empty table.
+    const wf =
+        \\function run()
+        \\  flow.result({
+        \\    meta   = { a = 1, b = "x" },
+        \\    items  = { {k = 1}, {k = 2} },
+        \\    empty  = {},
+        \\  })
+        \\end
+    ;
+    const path = try writeWorkflow(&suite, "nested.lua", wf);
+    defer gpa.free(path);
+
+    const res = try runExecute(gpa, root, suite.absDbPath(), &.{ "run", path, "--phase", "run" });
+    defer res.deinit();
+
+    try std.testing.expect(res.term == .exited);
+    try std.testing.expectEqual(@as(u32, 0), res.term.exited);
+
+    // Parse and verify the nested structure.
+    // `empty` serializes as `{}` (empty JSON object) per the engine's
+    // empty-table policy: a Lua `{}` with rawlen==0 and no string keys
+    // goes through the object branch and naturally emits `{}`.
+    const Out = struct {
+        meta: struct { a: i64, b: []const u8 },
+        items: []const struct { k: i64 },
+        // empty is `{}` in JSON — parse as an anonymous struct with no fields.
+        empty: struct {},
+    };
+    const out = try std.json.parseFromSlice(Out, gpa, std.mem.trim(u8, res.stdout, " \t\r\n"), .{ .ignore_unknown_fields = true });
+    defer out.deinit();
+    try std.testing.expectEqual(@as(i64, 1), out.value.meta.a);
+    try std.testing.expectEqualStrings("x", out.value.meta.b);
+    try std.testing.expectEqual(@as(usize, 2), out.value.items.len);
+    try std.testing.expectEqual(@as(i64, 1), out.value.items[0].k);
+    try std.testing.expectEqual(@as(i64, 2), out.value.items[1].k);
+    _ = out.value.empty; // present and parseable as empty object
+}
+
 test "planar-execute exits non-zero on a missing phase" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
