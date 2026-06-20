@@ -157,6 +157,10 @@ pub const Error =
         InvalidStatus,
         InvalidDueAt,
         QueryFailed,
+        /// The task has an active, unexpired work claim. The operator must
+        /// release/complete the claim via the agent path, or pass force=true
+        /// to override (decision 533 / task 4165).
+        TaskClaimed,
     } ||
     std.mem.Allocator.Error ||
     policy.scope_guard.Error ||
@@ -239,6 +243,29 @@ fn isLeapYear(year: u32) bool {
     return year % 4 == 0;
 }
 
+/// Return true when `task_id` has an active, unexpired work claim.
+///
+/// Inlined from engine.runtime.agentactivity.store.hasActiveClaim — importing
+/// that module from planning/task.zig would create a compile cycle (atomic.zig
+/// already imports planning/plan.zig). The SQL is identical; cite decision 533
+/// and task 4165 as the authoritative source for this invariant.
+fn hasActiveClaimOnTask(d: *db.sqlite.Db, task_id: i64) Error!bool {
+    var stmt = d.prepare(
+        \\select 1 from agent_work_claims
+        \\where entity_kind = 'task'
+        \\  and entity_id = ?
+        \\  and status = 'active'
+        \\  and lease_expires_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        \\limit 1
+    ) catch return Error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .int = task_id }}) catch return Error.QueryFailed;
+    return switch (stmt.step() catch return Error.QueryFailed) {
+        .done => false,
+        .row => true,
+    };
+}
+
 fn beginSavepoint(d: *db.sqlite.Db, allocator: std.mem.Allocator, name: []const u8) Error!void {
     d.savepoint(allocator, name) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -250,6 +277,25 @@ fn finishSavepoint(d: *db.sqlite.Db, allocator: std.mem.Allocator, name: []const
     d.releaseSavepoint(allocator, name) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return Error.WriteFailed,
+    };
+}
+
+/// Begin an IMMEDIATE transaction, acquiring the writer lock right away.
+/// Used by the status-transition verbs (markDone, markBlocked, reopen,
+/// update) so the claim check and the UPDATE run inside the same
+/// write-locked transaction — no other writer can interleave between
+/// the SELECT on agent_work_claims and the UPDATE on tasks.
+fn beginImmediate(d: *db.sqlite.Db) Error!void {
+    d.exec("BEGIN IMMEDIATE") catch return Error.QueryFailed;
+}
+
+fn commitTx(d: *db.sqlite.Db) Error!void {
+    d.exec("COMMIT") catch return Error.QueryFailed;
+}
+
+fn rollbackTx(d: *db.sqlite.Db) void {
+    d.exec("ROLLBACK") catch |e| {
+        std.log.warn("task: rollback failed: {s}", .{@errorName(e)});
     };
 }
 
@@ -639,10 +685,6 @@ pub fn update(
 
     if (patch.due_at) |due| _ = try parseDueAt(due);
 
-    if (patch.status) |new_status| {
-        try policy.status.check(.task, @tagName(current.status), @tagName(new_status));
-    }
-
     var sql_buf: std.ArrayList(u8) = .empty;
     defer sql_buf.deinit(allocator);
     try sql_buf.appendSlice(allocator, "update tasks set ");
@@ -717,21 +759,44 @@ pub fn update(
 
     if (first) return try show(d, allocator, id);
 
-    try beginSavepoint(d, allocator, "task_update");
-    var savepoint_released = false;
-    defer {
-        if (!savepoint_released) {
-            d.rollbackToSavepoint(allocator, "task_update") catch {};
-            d.releaseSavepoint(allocator, "task_update") catch {};
-        }
-    }
-
     try appendSep(&sql_buf, &first, allocator);
     try sql_buf.appendSlice(allocator, "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') where id = ?");
     try params.append(allocator, .{ .int = id });
 
     const sql_z = try allocator.dupeZ(u8, sql_buf.items);
     defer allocator.free(sql_z);
+
+    // When the patch includes a status change, open a BEGIN IMMEDIATE so the
+    // claim check and the UPDATE are in one write-locked transaction
+    // (decision 533 / task 4165 correctness fix). Non-status-change updates
+    // use an ordinary savepoint — no claim guard applies.
+    const has_status_change = patch.status != null;
+    if (has_status_change) {
+        try policy.status.check(.task, @tagName(current.status), @tagName(patch.status.?));
+        try beginImmediate(d);
+    } else {
+        try beginSavepoint(d, allocator, "task_update");
+    }
+    var tx_done = false;
+    defer {
+        if (!tx_done) {
+            if (has_status_change) {
+                rollbackTx(d);
+            } else {
+                d.rollbackToSavepoint(allocator, "task_update") catch {};
+                d.releaseSavepoint(allocator, "task_update") catch {};
+            }
+        }
+    }
+
+    // Claim guard executes inside the write-locked transaction (status path).
+    if (has_status_change and !patch.force) {
+        if (try hasActiveClaimOnTask(d, id)) {
+            rollbackTx(d);
+            tx_done = true;
+            return Error.TaskClaimed;
+        }
+    }
 
     _ = d.execParams(sql_z, params.items) catch |e| {
         if (d.lastWasUniqueViolation()) return Error.SlugConflict;
@@ -776,8 +841,12 @@ pub fn update(
             recompute.deinit(allocator);
         }
     }
-    try finishSavepoint(d, allocator, "task_update");
-    savepoint_released = true;
+    if (has_status_change) {
+        try commitTx(d);
+    } else {
+        try finishSavepoint(d, allocator, "task_update");
+    }
+    tx_done = true;
     return updated;
 }
 
@@ -788,8 +857,55 @@ pub fn update(
 /// Mark a task as done. Records a `status_change` audit row with a
 /// "done" summary so the trail shows which verb the operator used,
 /// not just that the status changed.
-pub fn markDone(d: *db.sqlite.Db, allocator: std.mem.Allocator, id: i64) Error!Task {
-    return try transition(d, allocator, id, .done, "done");
+///
+/// Returns `error.TaskClaimed` when an active, unexpired work claim exists on
+/// the task and `force` is false (decision 533 / task 4165 TOCTOU guard).
+/// Pass `force=true` to override the guard and flip the status anyway.
+///
+/// Atomicity: the claim check and the UPDATE are executed inside one
+/// BEGIN IMMEDIATE transaction, so no concurrent process can acquire a
+/// claim between the check and the flip (task 4165 correctness fix).
+pub fn markDone(d: *db.sqlite.Db, allocator: std.mem.Allocator, id: i64, force: bool) Error!Task {
+    try beginImmediate(d);
+    var committed = false;
+    errdefer if (!committed) rollbackTx(d);
+
+    // Claim guard executes inside the write-locked transaction.
+    if (!force) {
+        if (try hasActiveClaimOnTask(d, id)) {
+            rollbackTx(d);
+            committed = true;
+            return Error.TaskClaimed;
+        }
+    }
+
+    const current = try show(d, allocator, id);
+    defer deinit(current, allocator);
+    try policy.scope_guard.check(null, null);
+    try policy.status.check(.task, @tagName(current.status), "done");
+
+    _ = d.execParams(
+        "update tasks set status = 'done', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') where id = ?",
+        &.{.{ .int = id }},
+    ) catch return Error.QueryFailed;
+
+    try policy.audit.record(d, .{
+        .verb = .status_change,
+        .entity = .{ .kind = "task", .id = id },
+        .scope = null,
+        .summary = "done",
+    });
+
+    const updated = try show(d, allocator, id);
+    errdefer deinit(updated, allocator);
+    if (updated.plan_id) |pid| {
+        const recompute = try plan.recomputeStatus(d, allocator, pid);
+        recompute.deinit(allocator);
+    }
+
+    try commitTx(d);
+    committed = true;
+    return updated;
 }
 
 pub fn markCancelled(d: *db.sqlite.Db, allocator: std.mem.Allocator, id: i64) Error!Task {
@@ -800,14 +916,23 @@ pub fn markCancelled(d: *db.sqlite.Db, allocator: std.mem.Allocator, id: i64) Er
 /// blocking it; the audit summary mentions both so the trail is
 /// self-describing. A future iteration will also insert a row into
 /// entity_links (`task -> task` "blocked-by") once that module exists.
+///
+/// Returns `error.TaskClaimed` when an active, unexpired work claim exists on
+/// the task and `force` is false (decision 533 / task 4165 TOCTOU guard).
+/// Pass `force=true` to override.
+///
+/// Atomicity: the claim check and the UPDATE are executed inside one
+/// BEGIN IMMEDIATE transaction (task 4165 correctness fix).
 pub fn markBlocked(
     d: *db.sqlite.Db,
     allocator: std.mem.Allocator,
     id: i64,
     blocked_on_id: i64,
     reason: ?[]const u8,
+    force: bool,
 ) Error!Task {
-    // Verify the blocker exists before writing.
+    // Verify the blocker exists before opening the transaction (read-only,
+    // no write-lock needed).
     const blocker = try show(d, allocator, blocked_on_id);
     deinit(blocker, allocator);
 
@@ -817,19 +942,23 @@ pub fn markBlocked(
         try std.fmt.allocPrint(allocator, "blocked on task {d}", .{blocked_on_id});
     defer allocator.free(summary);
 
+    try beginImmediate(d);
+    var committed = false;
+    errdefer if (!committed) rollbackTx(d);
+
+    // Claim guard executes inside the write-locked transaction.
+    if (!force) {
+        if (try hasActiveClaimOnTask(d, id)) {
+            rollbackTx(d);
+            committed = true;
+            return Error.TaskClaimed;
+        }
+    }
+
     const current = try show(d, allocator, id);
     defer deinit(current, allocator);
     try policy.scope_guard.check(null, null);
     try policy.status.check(.task, @tagName(current.status), "blocked");
-
-    try beginSavepoint(d, allocator, "task_block");
-    var savepoint_released = false;
-    defer {
-        if (!savepoint_released) {
-            d.rollbackToSavepoint(allocator, "task_block") catch {};
-            d.releaseSavepoint(allocator, "task_block") catch {};
-        }
-    }
 
     _ = d.execParams(
         "update tasks set status = 'blocked', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') where id = ?",
@@ -854,8 +983,8 @@ pub fn markBlocked(
         const recompute = try plan.recomputeStatus(d, allocator, pid);
         recompute.deinit(allocator);
     }
-    try finishSavepoint(d, allocator, "task_block");
-    savepoint_released = true;
+    try commitTx(d);
+    committed = true;
     return updated;
 }
 
@@ -864,14 +993,22 @@ pub fn markBlocked(
 /// the trail explains why the task came back to life.
 ///
 /// Inserts a `task_reopens` row with source='task-reopen' in the same
-/// savepoint as the status change so the audit table is always consistent
+/// transaction as the status change so the audit table is always consistent
 /// with the tasks row.
+///
+/// Returns `error.TaskClaimed` when an active, unexpired work claim exists on
+/// the task and `force` is false (decision 533 / task 4165 TOCTOU guard).
+/// Pass `force=true` to override.
+///
+/// Atomicity: the claim check and the UPDATE are executed inside one
+/// BEGIN IMMEDIATE transaction (task 4165 correctness fix).
 pub fn reopen(
     d: *db.sqlite.Db,
     allocator: std.mem.Allocator,
     id: i64,
     new_status: Status,
     reason: []const u8,
+    force: bool,
 ) Error!Task {
     const summary = try std.fmt.allocPrint(
         allocator,
@@ -880,19 +1017,23 @@ pub fn reopen(
     );
     defer allocator.free(summary);
 
+    try beginImmediate(d);
+    var committed = false;
+    errdefer if (!committed) rollbackTx(d);
+
+    // Claim guard executes inside the write-locked transaction.
+    if (!force) {
+        if (try hasActiveClaimOnTask(d, id)) {
+            rollbackTx(d);
+            committed = true;
+            return Error.TaskClaimed;
+        }
+    }
+
     const current = try show(d, allocator, id);
     defer deinit(current, allocator);
     try policy.scope_guard.check(null, null);
     try policy.status.check(.task, @tagName(current.status), @tagName(new_status));
-
-    try beginSavepoint(d, allocator, "task_reopen");
-    var savepoint_released = false;
-    defer {
-        if (!savepoint_released) {
-            d.rollbackToSavepoint(allocator, "task_reopen") catch {};
-            d.releaseSavepoint(allocator, "task_reopen") catch {};
-        }
-    }
 
     _ = d.execParams(
         "update tasks set status = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') where id = ?",
@@ -930,8 +1071,8 @@ pub fn reopen(
         const recompute = try plan.recomputeStatus(d, allocator, pid);
         recompute.deinit(allocator);
     }
-    try finishSavepoint(d, allocator, "task_reopen");
-    savepoint_released = true;
+    try commitTx(d);
+    committed = true;
     return updated;
 }
 
@@ -1226,7 +1367,7 @@ test "markDone transitions todo → done and records status_change audit" {
 
     const t = try create(&d, a, .{ .title = "finish it" });
     defer deinit(t, a);
-    const done_task = try markDone(&d, a, t.id);
+    const done_task = try markDone(&d, a, t.id, false);
     defer deinit(done_task, a);
 
     try std.testing.expectEqual(Status.done, done_task.status);
@@ -1258,7 +1399,7 @@ test "markBlocked stores summary referencing the blocker" {
     const target = try create(&d, a, .{ .title = "the blocked" });
     defer deinit(target, a);
 
-    const blocked = try markBlocked(&d, a, target.id, blocker.id, null);
+    const blocked = try markBlocked(&d, a, target.id, blocker.id, null, false);
     defer deinit(blocked, a);
 
     try std.testing.expectEqual(Status.blocked, blocked.status);
@@ -1280,10 +1421,10 @@ test "reopen returns done task to todo with reason in audit" {
 
     const t = try create(&d, a, .{ .title = "redo this" });
     defer deinit(t, a);
-    const done_t = try markDone(&d, a, t.id);
+    const done_t = try markDone(&d, a, t.id, false);
     defer deinit(done_t, a);
 
-    const reopened = try reopen(&d, a, t.id, .todo, "scope changed");
+    const reopened = try reopen(&d, a, t.id, .todo, "scope changed", false);
     defer deinit(reopened, a);
     try std.testing.expectEqual(Status.todo, reopened.status);
     try std.testing.expectEqual(
@@ -1302,10 +1443,10 @@ test "reopen from done writes exactly one task_reopens row with source task-reop
 
     const t = try create(&d, a, .{ .title = "reopen audit" });
     defer deinit(t, a);
-    const done_t = try markDone(&d, a, t.id);
+    const done_t = try markDone(&d, a, t.id, false);
     defer deinit(done_t, a);
 
-    const reopened = try reopen(&d, a, t.id, .todo, "reconsider");
+    const reopened = try reopen(&d, a, t.id, .todo, "reconsider", false);
     defer deinit(reopened, a);
     try std.testing.expectEqual(Status.todo, reopened.status);
 
@@ -1337,7 +1478,7 @@ test "update with force from done writes task_reopens row with source task-updat
 
     const t = try create(&d, a, .{ .title = "force reopen" });
     defer deinit(t, a);
-    const done_t = try markDone(&d, a, t.id);
+    const done_t = try markDone(&d, a, t.id, false);
     defer deinit(done_t, a);
 
     const updated = try update(&d, a, t.id, .{
@@ -1366,7 +1507,7 @@ test "normal non-reopen transition does not write task_reopens" {
     const t = try create(&d, a, .{ .title = "normal transition" });
     defer deinit(t, a);
     // todo → done is a normal terminal transition, not a reopen.
-    const done_t = try markDone(&d, a, t.id);
+    const done_t = try markDone(&d, a, t.id, false);
     defer deinit(done_t, a);
 
     try std.testing.expectEqual(Status.done, done_t.status);
@@ -1506,6 +1647,251 @@ test "touchedPaths returns empty slice for a task with no declared paths" {
     const paths = try touchedPaths(&d, a, t.id);
     defer deinitTouchPaths(paths, a);
     try std.testing.expectEqual(@as(usize, 0), paths.len);
+}
+
+// =========================================================================
+// Claim-atomic unit tests (decision 533 / task 4165)
+// =========================================================================
+//
+// These tests cover the TOCTOU guard added to markDone, markBlocked,
+// and reopen. Claims are seeded via agentactivity.store.acquireClaim
+// (the engine primitive, same as the planar-agent pull path), NOT raw SQL.
+//
+// Note on import cycle: store.zig imports only db + types.zig — no
+// planning module is imported from the runtime side — so this import is
+// safe here.
+
+fn seedClaimForTask(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    task_id: i64,
+) ![]const u8 {
+    // Import only from within the test helper to keep the production code
+    // import-free of the runtime layer.
+    const agentactivity_store = @import("../runtime/agentactivity/store.zig");
+
+    // Seed a session row first (FK on agent_work_claims.session_id).
+    const session_id = d.execParams(
+        "insert into sessions (vendor) values ('test-claim')",
+        &.{},
+    ) catch return error.WriteFailed;
+
+    d.exec("BEGIN IMMEDIATE") catch return error.WriteFailed;
+    var committed = false;
+    errdefer if (!committed) d.exec("ROLLBACK") catch {};
+
+    const claim = try agentactivity_store.acquireClaim(d, allocator, .{
+        .session_id = session_id,
+        .entity_kind = .task,
+        .entity_id = task_id,
+        .vendor = "test",
+        .ttl_secs = 3600,
+    });
+    d.exec("COMMIT") catch {
+        claim.deinit(allocator);
+        return error.WriteFailed;
+    };
+    committed = true;
+    const token = try allocator.dupe(u8, claim.claim_token);
+    claim.deinit(allocator);
+    return token;
+}
+
+test "markDone: active claim returns TaskClaimed, leaves status doing" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const t = try create(&d, a, .{ .title = "claimed task", .status = .doing });
+    defer deinit(t, a);
+    const token = try seedClaimForTask(&d, a, t.id);
+    defer a.free(token);
+
+    // Guard must refuse.
+    try std.testing.expectError(Error.TaskClaimed, markDone(&d, a, t.id, false));
+
+    // Status must be unchanged.
+    const still = try show(&d, a, t.id);
+    defer deinit(still, a);
+    try std.testing.expectEqual(Status.doing, still.status);
+}
+
+test "markDone: force=true bypasses claim guard" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const t = try create(&d, a, .{ .title = "force done", .status = .doing });
+    defer deinit(t, a);
+    const token = try seedClaimForTask(&d, a, t.id);
+    defer a.free(token);
+
+    const done_t = try markDone(&d, a, t.id, true);
+    defer deinit(done_t, a);
+    try std.testing.expectEqual(Status.done, done_t.status);
+}
+
+test "markDone: unclaimed task transitions normally" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const t = try create(&d, a, .{ .title = "unclaimed done", .status = .doing });
+    defer deinit(t, a);
+
+    const done_t = try markDone(&d, a, t.id, false);
+    defer deinit(done_t, a);
+    try std.testing.expectEqual(Status.done, done_t.status);
+}
+
+test "markDone: expired claim does not block transition" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const t = try create(&d, a, .{ .title = "expired claim", .status = .doing });
+    defer deinit(t, a);
+
+    // Insert an already-expired claim directly (lease_expires_at in the past).
+    // Uses the exact schema from migration 00015_agent_activity.up.sql.
+    const session_id = try d.execParams(
+        "insert into sessions (vendor) values ('test-expired')",
+        &.{},
+    );
+    _ = try d.execParams(
+        \\insert into agent_work_claims
+        \\  (session_id, entity_kind, entity_id, claim_token, status, vendor,
+        \\   lease_expires_at)
+        \\values (?, 'task', ?, 'expired-token-4165', 'active', 'test',
+        \\        strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 hour'))
+    , &.{ .{ .int = session_id }, .{ .int = t.id } });
+
+    // Expired claim must NOT block the transition (lease_expires_at < now).
+    const done_t = try markDone(&d, a, t.id, false);
+    defer deinit(done_t, a);
+    try std.testing.expectEqual(Status.done, done_t.status);
+}
+
+test "markBlocked: active claim returns TaskClaimed" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const blocker = try create(&d, a, .{ .title = "blocker" });
+    defer deinit(blocker, a);
+    const target = try create(&d, a, .{ .title = "target", .status = .doing });
+    defer deinit(target, a);
+    const token = try seedClaimForTask(&d, a, target.id);
+    defer a.free(token);
+
+    try std.testing.expectError(Error.TaskClaimed, markBlocked(&d, a, target.id, blocker.id, null, false));
+
+    const still = try show(&d, a, target.id);
+    defer deinit(still, a);
+    try std.testing.expectEqual(Status.doing, still.status);
+}
+
+test "markBlocked: force=true bypasses claim guard" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const blocker = try create(&d, a, .{ .title = "blocker" });
+    defer deinit(blocker, a);
+    const target = try create(&d, a, .{ .title = "target", .status = .doing });
+    defer deinit(target, a);
+    const token = try seedClaimForTask(&d, a, target.id);
+    defer a.free(token);
+
+    const blocked = try markBlocked(&d, a, target.id, blocker.id, null, true);
+    defer deinit(blocked, a);
+    try std.testing.expectEqual(Status.blocked, blocked.status);
+}
+
+test "reopen: active claim on a done task returns TaskClaimed" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    // Create task, mark done without a claim, then add a claim (simulates a
+    // claim acquired post-done or a claim on a doing task before it was done).
+    const t = try create(&d, a, .{ .title = "reopen guard", .status = .done });
+    defer deinit(t, a);
+    const token = try seedClaimForTask(&d, a, t.id);
+    defer a.free(token);
+
+    try std.testing.expectError(Error.TaskClaimed, reopen(&d, a, t.id, .todo, "redo", false));
+
+    const still = try show(&d, a, t.id);
+    defer deinit(still, a);
+    try std.testing.expectEqual(Status.done, still.status);
+}
+
+test "reopen: force=true bypasses claim guard" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const t = try create(&d, a, .{ .title = "force reopen guard", .status = .done });
+    defer deinit(t, a);
+    const token = try seedClaimForTask(&d, a, t.id);
+    defer a.free(token);
+
+    const reopened = try reopen(&d, a, t.id, .todo, "override", true);
+    defer deinit(reopened, a);
+    try std.testing.expectEqual(Status.todo, reopened.status);
+}
+
+test "update with status change: active claim returns TaskClaimed" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const t = try create(&d, a, .{ .title = "update guard", .status = .doing });
+    defer deinit(t, a);
+    const token = try seedClaimForTask(&d, a, t.id);
+    defer a.free(token);
+
+    try std.testing.expectError(
+        Error.TaskClaimed,
+        update(&d, a, t.id, .{ .status = .done, .force = false }),
+    );
+
+    const still = try show(&d, a, t.id);
+    defer deinit(still, a);
+    try std.testing.expectEqual(Status.doing, still.status);
+}
+
+test "update with status change: force=true bypasses claim guard" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const t = try create(&d, a, .{ .title = "update force guard", .status = .doing });
+    defer deinit(t, a);
+    const token = try seedClaimForTask(&d, a, t.id);
+    defer a.free(token);
+
+    const updated = try update(&d, a, t.id, .{ .status = .done, .force = true });
+    defer deinit(updated, a);
+    try std.testing.expectEqual(Status.done, updated.status);
+}
+
+test "update without status change: active claim does NOT block non-status updates" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const t = try create(&d, a, .{ .title = "update no-status", .status = .doing });
+    defer deinit(t, a);
+    const token = try seedClaimForTask(&d, a, t.id);
+    defer a.free(token);
+
+    // Title-only update — no status change → no claim guard applies.
+    const updated = try update(&d, a, t.id, .{ .title = "New Title" });
+    defer deinit(updated, a);
+    try std.testing.expectEqualStrings("New Title", updated.title);
+    try std.testing.expectEqual(Status.doing, updated.status);
 }
 
 test "task_touch_paths cascade-deletes when the task is removed" {

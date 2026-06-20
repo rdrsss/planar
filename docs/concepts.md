@@ -137,7 +137,7 @@ The cockpit offers three editing tiers. All edits route through `planar`'s exist
 | Tier | Key | What it does | Guard |
 |------|-----|--------------|-------|
 | Entity-field editing | `e` | Edit a planning entity's title, body, or field (e.g. answer a question, update a task body) | Strict scope resolver — cross-scope edit refused without explicit scope; confirm-on-overwrite for destructive changes |
-| Task lifecycle editing | `L` | Move a task through its status lifecycle (open → doing → done, block, reopen, reprioritize) | Claim-aware: reads the task's live claim/heartbeat state and refuses or safely routes any transition that would strand an active claim — never a raw flip under a live claim |
+| Task lifecycle editing | `L` | Move a task through its status lifecycle (open → doing → done, block, reopen, reprioritize) | Claim-atomic: when the engine returns `ActiveClaimRefused`, the cockpit enters `force_confirm` mode — the overlay shows the active claim and prompts `f` to force-override or Esc to cancel. Never a silent raw flip under a live claim. |
 | External / workbench actions | `S` | Trigger a sync/propagate or workbench push/pull/status | Confirmation-gated before executing |
 
 Agent-claim mutation (releasing, reassigning claims) stays on `planar-agent` and is not available from the cockpit.
@@ -497,6 +497,14 @@ todo → doing → done
 A task in `blocked` status requires `next_action` to be set — `planar resume validate` refuses a resume packet without it. `doing` tasks are the ones currently being worked on by an agent session.
 
 Tasks carry a `title`, an optional `body` (Markdown), a `next_action` field for handoff continuity, and a `scope_kind`/`scope_id` pair that records which scope they belong to.
+
+### Claim-atomic operator transitions
+
+Operator-driven status transitions (`task done`, `task block`, `task reopen`, `task update --status`) are **claim-atomic**: when the task has an active work claim (`agent_work_claims.status = 'active'` and `lease_expires_at >= now()`), the operator verb refuses the status flip and exits non-zero with a message identifying the active claim.
+
+This closes the TOCTOU window where an operator `task done` would strand a live agent lease mid-flight. The correct closure path for a claimed task is the agent terminal verb (`planar-agent complete | fail | release`). The operator override is `--force`, which bypasses the guard — use it only when the agent is known to be no longer active (e.g. the process crashed without releasing its claim).
+
+Expired claims (`lease_expires_at < now()`) are NOT active and do not trigger the guard. The check is real-time on every operator status-flip.
 
 **SQLite table:** `tasks`. **Primary verbs:** `planar task add`, `planar task list`, `planar task show`, `planar task doing`, `planar task done`, `planar task block`, `planar task cancel`.
 
