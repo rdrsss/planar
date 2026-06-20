@@ -1282,10 +1282,12 @@ planar task update <task-id> [--title <text>] [--body <text>] [--status <status>
 | `--next-action <text>` | Update the next concrete action. | unchanged |
 | `--due <date>` | Update due date. | unchanged |
 | `--plan <plan-id>` | Move task to a different plan (or `none` to detach). | unchanged |
-| `--force` | Bypass the terminal-status guard. Required to move a `done` / `cancelled` task back to a non-terminal status; the transition is recorded in `task_reopens` with `source='task-update-force'`. Prefer `task reopen <id>` for the documented recovery path. | off |
+| `--force` | Bypass the active-claim guard (see **Claim-atomic guard** below) AND the terminal-status guard. Required to move a `done` / `cancelled` task back to a non-terminal status (transition recorded in `task_reopens` with `source='task-update-force'`). Prefer `task reopen <id>` for the documented recovery path. | off |
 | `--reason <text>` | Operator-supplied rationale recorded on the `task_reopens` audit row when `--force` triggers a terminal → non-terminal transition. | empty |
 | `--no-auto-promote` | Skip the [plan-status auto-promotion invariant](concepts.md#plan) (plan 304) for this operation. Escape hatch for scripted migrations that don't intend the plan-level transition. | off |
 | `--editor` | Accepted as a no-op. The editor-driven path is `task edit`; this flag exists so scripts that pass `--editor=false` alongside other flags (e.g. copied from `task add` invocations) are not rejected with `UnknownFlag`. | off |
+
+**Claim-atomic guard:** When `--status` is supplied and the task has an active work claim (`agent_work_claims.status='active'` and lease not yet expired), the status flip is refused with exit code `1` and a message identifying the active claim. This prevents an operator `task update --status done` from stranding a live agent lease. Pass `--force` to override and flip the status anyway — use this only when you know the agent is no longer working the task (e.g. it crashed without releasing the claim).
 
 **Schema effects:** Updates `tasks(title, body, status, priority, next_action, due_at, plan_id, updated_at)`. When `--force` triggers a terminal → non-terminal transition, also inserts into `task_reopens(task_id, from_status, to_status, source='task-update-force', reason)`.
 
@@ -1295,6 +1297,7 @@ planar task update <task-id> [--title <text>] [--body <text>] [--status <status>
 - `1` — task not found.
 - `1` — invalid status value.
 - `1` — terminal-status transition attempted without `--force`.
+- `1` — task has an active work claim; re-run with `--force` to override.
 
 ---
 
@@ -1302,12 +1305,20 @@ planar task update <task-id> [--title <text>] [--body <text>] [--status <status>
 
 **Synopsis:**
 ```
-planar task done <task-id>
+planar task done <task-id> [--force]
 ```
 
 **Description:** Mark a task as done. Shorthand for `task update --status done`.
 
 **Scope guard:** Refuses when the operator's resolved write scope disagrees with the task's stored scope. See [Cross-scope guard](#cross-scope-guard).
+
+**Claim-atomic guard:** Refuses if the task has an active work claim. The agent path (`planar-agent complete`) is the correct way to close out a claimed task. Pass `--force` to override and mark done anyway — use this only when the agent is known to be no longer active.
+
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--force` | Override the active-claim guard and mark the task done regardless of any live claim. | off |
 
 **Schema effects:** Updates `tasks(status='done', updated_at)`.
 
@@ -1315,6 +1326,7 @@ planar task done <task-id>
 
 **Exit codes:**
 - `1` — task not found.
+- `1` — task has an active work claim; re-run with `--force` to override.
 
 ---
 
@@ -1322,12 +1334,14 @@ planar task done <task-id>
 
 **Synopsis:**
 ```
-planar task reopen <task-id> [--status todo|doing|blocked] [--reason <text>] [--scope <slug>]
+planar task reopen <task-id> [--status todo|doing|blocked] [--reason <text>] [--scope <slug>] [--force]
 ```
 
 **Description:** Reopen a task currently in a terminal status (`done` or `cancelled`). The dedicated recovery path for wrongly-marked tasks — see [`import`](#planar-import-repo-root) for the producer of the most common false-done case. Refuses if the task is not in a terminal status; use `task update --status <s>` for ordinary transitions.
 
 **Scope guard:** Refuses when the operator's resolved write scope disagrees with the task's stored scope. See [Cross-scope guard](#cross-scope-guard).
+
+**Claim-atomic guard:** Refuses if the task has an active work claim. Pass `--force` to override.
 
 **Options:**
 
@@ -1336,6 +1350,7 @@ planar task reopen <task-id> [--status todo|doing|blocked] [--reason <text>] [--
 | `--status <status>` | Non-terminal status to move the task to: `todo`, `doing`, `blocked`. | `todo` |
 | `--reason <text>` | Operator-supplied rationale recorded on the `task_reopens` audit row. | empty |
 | `--scope <slug>` | Scope override for the cross-scope guard. | cwd-derived |
+| `--force` | Override the active-claim guard. | off |
 
 **Schema effects:**
 - Updates `tasks(status, updated_at)`.
@@ -1346,6 +1361,7 @@ planar task reopen <task-id> [--status todo|doing|blocked] [--reason <text>] [--
 **Exit codes:**
 - `1` — task not found.
 - `1` — task is not currently in a terminal status.
+- `1` — task has an active work claim; re-run with `--force` to override.
 
 ---
 
@@ -1353,18 +1369,21 @@ planar task reopen <task-id> [--status todo|doing|blocked] [--reason <text>] [--
 
 **Synopsis:**
 ```
-planar task block <task-id> --on <task-id>
+planar task block <task-id> --on <task-id> [--force]
 ```
 
 **Description:** Mark a task as blocked and record the blocking relationship in `entity_links`. Sets the blocked task's status to `blocked`.
 
 **Scope guard:** Refuses when either the blocked task or the blocking task is in a scope that disagrees with the operator's resolved write scope. Both endpoints are guarded. See [Cross-scope guard](#cross-scope-guard).
 
+**Claim-atomic guard:** Refuses if the task being blocked has an active work claim. Pass `--force` to override.
+
 **Options:**
 
 | Flag | Description | Required |
 |------|-------------|----------|
 | `--on <task-id>` | The task that is blocking. | yes |
+| `--force` | Override the active-claim guard. | no |
 
 **Schema effects:**
 - Updates `tasks(status='blocked', updated_at)` for the blocked task.
@@ -1374,6 +1393,7 @@ planar task block <task-id> --on <task-id>
 
 **Exit codes:**
 - `1` — either task id not found.
+- `1` — task has an active work claim; re-run with `--force` to override.
 
 ---
 

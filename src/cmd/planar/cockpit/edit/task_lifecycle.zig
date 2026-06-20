@@ -69,7 +69,8 @@ const Style = vaxis.Style;
 pub const LifecycleError = error{
     /// The task has an active, unexpired claim. A raw status flip would
     /// strand the claim; the transition is refused. The operator must
-    /// use `planar-agent complete|fail|release|block` on the agent path.
+    /// use `planar-agent complete|fail|release|block` on the agent path,
+    /// or confirm the force-override affordance in the cockpit (task 4165).
     ActiveClaimRefused,
     /// The requested status transition is not legal per the engine policy
     /// (e.g. done→doing without reopen).
@@ -279,12 +280,17 @@ pub const TransitionIntent = enum {
 };
 
 /// Execute a status transition (or priority change) on a task, routing
-/// through the engine write path. The claim guard is checked first;
-/// the scope guard is checked second.
+/// through the engine write path. The claim guard is checked first (via
+/// both a UI pre-flight and the engine's atomic claim check); the scope
+/// guard is checked second.
 ///
-/// ## Claim guard (task 4048)
-/// Queries the live claim state and refuses if an active, unexpired claim
-/// exists. The task status is NEVER written under an active claim.
+/// ## Claim guard (task 4048 / task 4165)
+/// The UI pre-flight (`guardActiveClaim`) runs first as a fast surface of
+/// claim state. Even if the pre-check passes, the ENGINE itself performs
+/// an atomic claim check inside the write transaction (decision 533), so
+/// the TOCTOU window is fully closed. If the engine returns
+/// `error.TaskClaimed` it is surfaced as `LifecycleError.ActiveClaimRefused`.
+/// Pass `force=true` to bypass both the UI pre-check and the engine guard.
 ///
 /// ## Engine write paths (task 4047 / task 4164)
 /// - `start` (todo → doing): `engine.planning.task.update` with `status=.doing`
@@ -309,11 +315,16 @@ pub fn executeTransition(
     reopen_reason: ?[]const u8,
     blocker_id: ?i64,
     write_scope: ?[]const u8,
+    force: bool,
 ) LifecycleError!void {
-    // 1. Claim guard (task 4048) — MUST be first.
-    const claim_state = try queryTaskClaimState(d, allocator, task_id);
-    defer claim_state.deinit(allocator);
-    try guardActiveClaim(claim_state);
+    // 1. UI claim pre-flight (task 4048) — fast surface only; the real
+    //    atomic authority is the engine write (decision 533). Skip when
+    //    force=true.
+    if (!force) {
+        const claim_state = try queryTaskClaimState(d, allocator, task_id);
+        defer claim_state.deinit(allocator);
+        try guardActiveClaim(claim_state);
+    }
 
     // 2. Scope guard (mirrors edit/actions.checkScopeGuard).
     const scope_result = edit_actions.entityScopeSlug(
@@ -332,22 +343,26 @@ pub fn executeTransition(
 
     // 3. Engine write path (task 4047). Reuse the existing engine functions
     //    that the CLI handlers call — no raw SQL status flips.
+    //    The engine performs its own atomic claim check (decision 533); if
+    //    it refuses, surface the error as ActiveClaimRefused.
     switch (intent) {
         .start => {
             // todo → doing via engine.planning.task.update with status=.doing.
-            const patch: engine.planning.task.UpdateArgs = .{ .status = .doing };
+            const patch: engine.planning.task.UpdateArgs = .{ .status = .doing, .force = force };
             const updated = engine.planning.task.update(d, allocator, task_id, patch) catch |e| switch (e) {
                 error.IllegalTransition => return LifecycleError.InvalidTransition,
                 error.NotFound => return LifecycleError.TaskNotFound,
+                error.TaskClaimed => return LifecycleError.ActiveClaimRefused,
                 else => return LifecycleError.WriteFailed,
             };
             engine.planning.task.deinit(updated, allocator);
         },
         .done => {
             // doing → done via engine.planning.task.markDone.
-            const updated = engine.planning.task.markDone(d, allocator, task_id) catch |e| switch (e) {
+            const updated = engine.planning.task.markDone(d, allocator, task_id, force) catch |e| switch (e) {
                 error.IllegalTransition => return LifecycleError.InvalidTransition,
                 error.NotFound => return LifecycleError.TaskNotFound,
+                error.TaskClaimed => return LifecycleError.ActiveClaimRefused,
                 else => return LifecycleError.WriteFailed,
             };
             engine.planning.task.deinit(updated, allocator);
@@ -363,9 +378,10 @@ pub fn executeTransition(
             //     returned as BlockerNotFound
             const bid = blocker_id orelse return LifecycleError.BlockerNotFound;
             if (bid == task_id) return LifecycleError.SelfBlockerRefused;
-            const updated = engine.planning.task.markBlocked(d, allocator, task_id, bid, "blocked via cockpit") catch |e| switch (e) {
+            const updated = engine.planning.task.markBlocked(d, allocator, task_id, bid, "blocked via cockpit", force) catch |e| switch (e) {
                 error.IllegalTransition => return LifecycleError.InvalidTransition,
                 error.NotFound => return LifecycleError.BlockerNotFound,
+                error.TaskClaimed => return LifecycleError.ActiveClaimRefused,
                 else => return LifecycleError.WriteFailed,
             };
             engine.planning.task.deinit(updated, allocator);
@@ -373,18 +389,20 @@ pub fn executeTransition(
         .reopen_todo => {
             const reason = reopen_reason orelse "reopened via cockpit";
             // done → todo via engine.planning.task.reopen.
-            const updated = engine.planning.task.reopen(d, allocator, task_id, .todo, reason) catch |e| switch (e) {
+            const updated = engine.planning.task.reopen(d, allocator, task_id, .todo, reason, force) catch |e| switch (e) {
                 error.IllegalTransition => return LifecycleError.InvalidTransition,
                 error.NotFound => return LifecycleError.TaskNotFound,
+                error.TaskClaimed => return LifecycleError.ActiveClaimRefused,
                 else => return LifecycleError.WriteFailed,
             };
             engine.planning.task.deinit(updated, allocator);
         },
         .reopen_doing => {
             const reason = reopen_reason orelse "reopened (doing) via cockpit";
-            const updated = engine.planning.task.reopen(d, allocator, task_id, .doing, reason) catch |e| switch (e) {
+            const updated = engine.planning.task.reopen(d, allocator, task_id, .doing, reason, force) catch |e| switch (e) {
                 error.IllegalTransition => return LifecycleError.InvalidTransition,
                 error.NotFound => return LifecycleError.TaskNotFound,
+                error.TaskClaimed => return LifecycleError.ActiveClaimRefused,
                 else => return LifecycleError.WriteFailed,
             };
             engine.planning.task.deinit(updated, allocator);
@@ -433,19 +451,22 @@ pub const BLOCKER_BUF_MAX = 32;
 
 /// State machine for task-lifecycle editing from the cockpit.
 ///
-///   .none            — no lifecycle edit in progress; normal navigation.
-///   .claim_info      — showing live claim state for the selected task;
-///                      the operator pressed 's' (lifecycle) but we always
-///                      first show the claim state. Any key proceeds to
-///                      .choose_action or (if active claim) stays here
-///                      with the refusal displayed.
-///   .choose_action   — showing the action menu (s=start, d=done, r=reopen,
-///                      b=block, +/- priority). The task has no active claim.
-///   .confirming_done — confirm mark-as-done before writing.
-///   .reopen_reason   — typing a reopen reason before the write.
-///   .error_msg       — a lifecycle or claim error; one keystroke dismisses.
-///   .success_msg     — confirmation that the write succeeded; one keystroke
-///                      dismisses and triggers a reload.
+///   .none              — no lifecycle edit in progress; normal navigation.
+///   .claim_info        — showing live claim state for the selected task;
+///                        the operator pressed 's' (lifecycle) but we always
+///                        first show the claim state. Any key proceeds to
+///                        .choose_action or (if active claim) stays here
+///                        with the refusal displayed.
+///   .choose_action     — showing the action menu (s=start, d=done, r=reopen,
+///                        b=block, +/- priority). The task has no active claim.
+///   .confirming_done   — confirm mark-as-done before writing.
+///   .reopen_reason     — typing a reopen reason before the write.
+///   .force_confirm     — the engine refused due to an active claim; offering
+///                        the operator an F-key force-override affordance
+///                        (task 4165 / decision 533). Escape cancels.
+///   .error_msg         — a lifecycle or claim error; one keystroke dismisses.
+///   .success_msg       — confirmation that the write succeeded; one keystroke
+///                        dismisses and triggers a reload.
 pub const LifecycleMode = union(enum) {
     none,
     /// Showing claim state. `.active_claim=true` means the action menu is
@@ -481,6 +502,18 @@ pub const LifecycleMode = union(enum) {
         task_id: i64,
         input_buf: [BLOCKER_BUF_MAX]u8,
         input_len: usize,
+    },
+    /// Force-confirm overlay shown after the engine refused a transition due to
+    /// an active work claim (task 4165 / decision 533). Operator presses F to
+    /// retry with force=true, or Esc to cancel.
+    force_confirm: struct {
+        task_id: i64,
+        intent: TransitionIntent,
+        /// Reopen reason if applicable. Owned heap slice (null for non-reopen).
+        reopen_reason: ?[]const u8,
+        /// Blocker id if applicable (null for non-block transitions).
+        blocker_id: ?i64,
+        write_scope: ?[]const u8,
     },
     /// Error message.
     error_msg: struct {
@@ -518,6 +551,9 @@ pub const TaskLifecycleState = struct {
             .confirming_done => {},
             .reopen_reason => {},
             .blocker_input => {},
+            .force_confirm => |*fc| {
+                if (fc.reopen_reason) |r| self.allocator.free(r);
+            },
             .error_msg => |*e| self.allocator.free(e.msg),
             .success_msg => |*s| self.allocator.free(s.msg),
         }
@@ -793,6 +829,56 @@ pub const TaskLifecycleState = struct {
                 return true;
             },
 
+            // Task 4165: force-confirm overlay — engine refused due to active
+            // claim. 'f' retries with force=true; Escape cancels.
+            .force_confirm => |*fc| {
+                if (key.matches(Key.escape, .{})) {
+                    self.clearMode();
+                    return true;
+                }
+                if (key.matches('f', .{}) or key.matches('F', .{})) {
+                    const task_id = fc.task_id;
+                    const intent = fc.intent;
+                    const reason = fc.reopen_reason;
+                    const bid = fc.blocker_id;
+                    const ws = fc.write_scope;
+                    // clearMode frees reopen_reason — duplicate before clear.
+                    const reason_owned: ?[]const u8 = if (reason) |r|
+                        self.allocator.dupe(u8, r) catch null
+                    else
+                        null;
+                    defer if (reason_owned) |r| self.allocator.free(r);
+                    self.clearMode();
+                    // Retry with force=true.
+                    executeTransition(d, self.allocator, task_id, intent, reason_owned, bid, ws, true) catch |e| {
+                        const msg = switch (e) {
+                            LifecycleError.InvalidTransition => "invalid status transition",
+                            LifecycleError.TaskNotFound => "task not found",
+                            LifecycleError.BlockerNotFound => "blocker task not found",
+                            LifecycleError.SelfBlockerRefused => "cannot block a task on itself",
+                            LifecycleError.ScopeMismatch => "scope mismatch",
+                            else => "write failed",
+                        };
+                        self.setError(msg);
+                        return true;
+                    };
+                    const msg = switch (intent) {
+                        .start => "task started (forced)",
+                        .done => "task marked done (forced)",
+                        .block => "task marked blocked (forced)",
+                        .reopen_todo => "task reopened → todo (forced)",
+                        .reopen_doing => "task reopened → doing (forced)",
+                        .priority_up => "priority raised",
+                        .priority_down => "priority lowered",
+                    };
+                    self.setSuccess(msg, true);
+                    return true;
+                }
+                // Any other key: cancel.
+                self.clearMode();
+                return true;
+            },
+
             .error_msg => {
                 self.clearMode();
                 return true;
@@ -806,8 +892,10 @@ pub const TaskLifecycleState = struct {
         }
     }
 
-    /// Execute a transition and update mode with success/error. This is
-    /// the only function that calls `executeTransition`.
+    /// Execute a transition (with force=false) and update mode with
+    /// success/error. On `ActiveClaimRefused`, enters `force_confirm` mode
+    /// so the operator can optionally force the override (decision 533 /
+    /// task 4165). This is the only function that calls `executeTransition`.
     fn runTransition(
         self: *TaskLifecycleState,
         d: *db.sqlite.Db,
@@ -817,9 +905,26 @@ pub const TaskLifecycleState = struct {
         blocker_id: ?i64,
         write_scope: ?[]const u8,
     ) void {
-        executeTransition(d, self.allocator, task_id, intent, reason, blocker_id, write_scope) catch |e| {
+        executeTransition(d, self.allocator, task_id, intent, reason, blocker_id, write_scope, false) catch |e| {
+            if (e == LifecycleError.ActiveClaimRefused) {
+                // Engine refused atomically due to an active claim. Enter
+                // force_confirm mode so the operator can press F to override.
+                self.clearMode();
+                const reason_owned: ?[]const u8 = if (reason) |r|
+                    self.allocator.dupe(u8, r) catch null
+                else
+                    null;
+                self.mode = .{ .force_confirm = .{
+                    .task_id = task_id,
+                    .intent = intent,
+                    .reopen_reason = reason_owned,
+                    .blocker_id = blocker_id,
+                    .write_scope = write_scope,
+                } };
+                return;
+            }
             const msg = switch (e) {
-                LifecycleError.ActiveClaimRefused => "task has an active claim — cannot flip status; release/complete via the agent path",
+                LifecycleError.ActiveClaimRefused => unreachable, // handled above
                 LifecycleError.InvalidTransition => "invalid status transition (not allowed from current status)",
                 LifecycleError.TaskNotFound => "task not found",
                 LifecycleError.BlockerNotFound => "blocker task not found — enter a valid task id",
@@ -1003,6 +1108,15 @@ pub fn renderOverlay(
             printAt(win, row, "  Enter=commit, Esc=cancel  (digits only; must be a real task id != this task)", .{ .dim = true });
         },
 
+        // Task 4165: force-confirm overlay — engine refused due to active claim.
+        .force_confirm => {
+            printAt(win, row, "[CLAIM ACTIVE — TRANSITION REFUSED]", .{ .bold = true });
+            row += 1;
+            printAt(win, row, "  The engine refused atomically: an active work claim exists.", .{});
+            row += 1;
+            printAt(win, row, "  f = force override (strands the claim), Esc = cancel", .{ .dim = true });
+        },
+
         .error_msg => |*e| {
             printAt(win, row, "Lifecycle error:", .{ .bold = true });
             row += 1;
@@ -1035,6 +1149,8 @@ pub fn legendLabel(state: *const TaskLifecycleState, buf: []u8) []const u8 {
             "  Typing reopen reason — Enter=commit Esc=cancel",
         .blocker_input => std.fmt.bufPrint(buf, "  Enter blocker task id — Enter=commit  Esc=cancel", .{}) catch
             "  Enter blocker task id — Enter=commit Esc=cancel",
+        .force_confirm => std.fmt.bufPrint(buf, "  Claim refused — f=force override  Esc=cancel", .{}) catch
+            "  Claim refused — f=force override  Esc=cancel",
         .error_msg => std.fmt.bufPrint(buf, "  Error — press any key to dismiss", .{}) catch
             "  Error — press any key to dismiss",
         .success_msg => std.fmt.bufPrint(buf, "  Done — press any key to continue", .{}) catch
@@ -1194,10 +1310,10 @@ test "executeTransition: active-claim task REFUSES status flip — status and cl
     const token = try seedActiveClaim(&d, a, sid, task_id);
     defer a.free(token);
 
-    // Attempt to flip to done — MUST be refused.
+    // Attempt to flip to done — MUST be refused (force=false).
     try std.testing.expectError(
         LifecycleError.ActiveClaimRefused,
-        executeTransition(&d, a, task_id, .done, null, null, null),
+        executeTransition(&d, a, task_id, .done, null, null, null, false),
     );
 
     // Assert task status still "doing" — no write happened.
@@ -1226,7 +1342,7 @@ test "executeTransition: todo→doing (start) persists via engine.planning.task.
 
     const task_id = try seedTask(&d, "todo");
     // No claim — guard passes.
-    try executeTransition(&d, a, task_id, .start, null, null, null);
+    try executeTransition(&d, a, task_id, .start, null, null, null, false);
 
     // Assert via re-query.
     var stmt = try d.prepare("select status from tasks where id = ?");
@@ -1244,7 +1360,7 @@ test "executeTransition: doing→done (markDone) persists via engine.planning.ta
     defer d.close();
 
     const task_id = try seedTask(&d, "doing");
-    try executeTransition(&d, a, task_id, .done, null, null, null);
+    try executeTransition(&d, a, task_id, .done, null, null, null, false);
 
     var stmt = try d.prepare("select status from tasks where id = ?");
     defer stmt.finalize();
@@ -1261,7 +1377,7 @@ test "executeTransition: done→todo (reopen_todo) persists via engine.planning.
     defer d.close();
 
     const task_id = try seedTask(&d, "done");
-    try executeTransition(&d, a, task_id, .reopen_todo, "test reopen", null, null);
+    try executeTransition(&d, a, task_id, .reopen_todo, "test reopen", null, null, false);
 
     var stmt = try d.prepare("select status from tasks where id = ?");
     defer stmt.finalize();
@@ -1286,7 +1402,7 @@ test "executeTransition: priority_up lowers the numeric priority value" {
         "insert into tasks (scope_kind, title, status, priority) values ('global','T','todo',100)",
         &.{},
     );
-    try executeTransition(&d, a, task_id, .priority_up, null, null, null);
+    try executeTransition(&d, a, task_id, .priority_up, null, null, null, false);
 
     var stmt = try d.prepare("select priority from tasks where id = ?");
     defer stmt.finalize();
@@ -1305,7 +1421,7 @@ test "executeTransition: priority_down raises the numeric priority value" {
         "insert into tasks (scope_kind, title, status, priority) values ('global','T','todo',100)",
         &.{},
     );
-    try executeTransition(&d, a, task_id, .priority_down, null, null, null);
+    try executeTransition(&d, a, task_id, .priority_down, null, null, null, false);
 
     var stmt = try d.prepare("select priority from tasks where id = ?");
     defer stmt.finalize();
@@ -1332,7 +1448,7 @@ test "executeTransition: cross-scope task refuses without explicit scope" {
     // write_scope=null → ScopeMismatch.
     try std.testing.expectError(
         LifecycleError.ScopeMismatch,
-        executeTransition(&d, a, task_id, .start, null, null, null),
+        executeTransition(&d, a, task_id, .start, null, null, null, false),
     );
 
     // Verify status unchanged.
@@ -1468,6 +1584,146 @@ test "TaskLifecycleState: unclaimed task Enter→choose_action→'d'→'y' marks
     const s = try stmt.columnTextAlloc(0, a);
     defer a.free(s);
     try std.testing.expectEqualStrings("done", s);
+}
+
+// -------------------------------------------------------------------------
+// Task 4165: force-confirm path — engine-atomic refusal + F-key override
+// -------------------------------------------------------------------------
+
+test "executeTransition: force=true on claimed task bypasses guard and flips status" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const sid = try seedSession(&d);
+    const task_id = try seedTask(&d, "doing");
+    const token = try seedActiveClaim(&d, a, sid, task_id);
+    defer a.free(token);
+
+    // force=true must bypass the claim check and flip status.
+    try executeTransition(&d, a, task_id, .done, null, null, null, true);
+
+    var stmt = try d.prepare("select status from tasks where id = ?");
+    defer stmt.finalize();
+    try stmt.bind(&.{.{ .int = task_id }});
+    try std.testing.expect((try stmt.step()) == .row);
+    const s = try stmt.columnTextAlloc(0, a);
+    defer a.free(s);
+    try std.testing.expectEqualStrings("done", s);
+}
+
+test "TaskLifecycleState: runTransition on claimed task enters force_confirm mode" {
+    // The engine refuses (atomic guard) → runTransition must enter .force_confirm,
+    // NOT .error_msg, so the operator can press F to override.
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const sid = try seedSession(&d);
+    const task_id = try seedTask(&d, "doing");
+    const token = try seedActiveClaim(&d, a, sid, task_id);
+    defer a.free(token);
+
+    var ls = TaskLifecycleState.init(a);
+    defer ls.deinit();
+
+    // Directly call runTransition (via the controller entering choose_action
+    // with no UI pre-check, simulating a TOCTOU race where the claim was
+    // acquired between the UI check and the write).
+    ls.runTransition(&d, task_id, .done, null, null, null);
+
+    // Must have entered force_confirm (not error_msg).
+    switch (ls.mode) {
+        .force_confirm => |fc| {
+            try std.testing.expectEqual(task_id, fc.task_id);
+            try std.testing.expectEqual(TransitionIntent.done, fc.intent);
+        },
+        else => {
+            std.debug.print("unexpected mode: {any}\n", .{ls.mode});
+            try std.testing.expect(false);
+        },
+    }
+
+    // Status must still be "doing" — no write happened.
+    var stmt = try d.prepare("select status from tasks where id = ?");
+    defer stmt.finalize();
+    try stmt.bind(&.{.{ .int = task_id }});
+    try std.testing.expect((try stmt.step()) == .row);
+    const s = try stmt.columnTextAlloc(0, a);
+    defer a.free(s);
+    try std.testing.expectEqualStrings("doing", s);
+}
+
+test "TaskLifecycleState: force_confirm F-key executes with force=true and succeeds" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const sid = try seedSession(&d);
+    const task_id = try seedTask(&d, "doing");
+    const token = try seedActiveClaim(&d, a, sid, task_id);
+    defer a.free(token);
+
+    var ls = TaskLifecycleState.init(a);
+    defer ls.deinit();
+
+    // Put the state machine into force_confirm mode directly.
+    ls.mode = .{ .force_confirm = .{
+        .task_id = task_id,
+        .intent = .done,
+        .reopen_reason = null,
+        .blocker_id = null,
+        .write_scope = null,
+    } };
+
+    // Press 'f' — should execute force=true and enter success_msg.
+    const consumed = ls.handleKey(makeKeyText('f'), &d, null);
+    try std.testing.expect(consumed);
+    try std.testing.expect(ls.mode == .success_msg);
+    try std.testing.expect(ls.wantsReload());
+
+    // Status must be "done" now.
+    var stmt = try d.prepare("select status from tasks where id = ?");
+    defer stmt.finalize();
+    try stmt.bind(&.{.{ .int = task_id }});
+    try std.testing.expect((try stmt.step()) == .row);
+    const s = try stmt.columnTextAlloc(0, a);
+    defer a.free(s);
+    try std.testing.expectEqualStrings("done", s);
+}
+
+test "TaskLifecycleState: force_confirm Esc cancels without write" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const sid = try seedSession(&d);
+    const task_id = try seedTask(&d, "doing");
+    const token = try seedActiveClaim(&d, a, sid, task_id);
+    defer a.free(token);
+
+    var ls = TaskLifecycleState.init(a);
+    defer ls.deinit();
+
+    ls.mode = .{ .force_confirm = .{
+        .task_id = task_id,
+        .intent = .done,
+        .reopen_reason = null,
+        .blocker_id = null,
+        .write_scope = null,
+    } };
+
+    _ = ls.handleKey(makeKey(Key.escape), &d, null);
+    try std.testing.expect(!ls.isActive());
+
+    // Status must still be "doing" — no write.
+    var stmt = try d.prepare("select status from tasks where id = ?");
+    defer stmt.finalize();
+    try stmt.bind(&.{.{ .int = task_id }});
+    try std.testing.expect((try stmt.step()) == .row);
+    const s = try stmt.columnTextAlloc(0, a);
+    defer a.free(s);
+    try std.testing.expectEqualStrings("doing", s);
 }
 
 test "TaskLifecycleState: reopen_reason Enter with blank uses default reason" {
@@ -1677,7 +1933,7 @@ test "executeTransition: block with real blocker persists entity_links edge" {
         &.{},
     );
 
-    try executeTransition(&d, a, task_id, .block, null, blocker_id, null);
+    try executeTransition(&d, a, task_id, .block, null, blocker_id, null, false);
 
     // Assert task status = 'blocked'.
     var stmt = try d.prepare("select status from tasks where id = ?");
@@ -1709,7 +1965,7 @@ test "executeTransition: block with self blocker returns SelfBlockerRefused — 
 
     try std.testing.expectError(
         LifecycleError.SelfBlockerRefused,
-        executeTransition(&d, a, task_id, .block, null, task_id, null),
+        executeTransition(&d, a, task_id, .block, null, task_id, null, false),
     );
 
     // Status must be unchanged.
@@ -1731,7 +1987,7 @@ test "executeTransition: block with null blocker_id returns BlockerNotFound" {
 
     try std.testing.expectError(
         LifecycleError.BlockerNotFound,
-        executeTransition(&d, a, task_id, .block, null, null, null),
+        executeTransition(&d, a, task_id, .block, null, null, null, false),
     );
 }
 
@@ -1745,7 +2001,7 @@ test "executeTransition: block with non-existent blocker id returns BlockerNotFo
 
     try std.testing.expectError(
         LifecycleError.BlockerNotFound,
-        executeTransition(&d, a, task_id, .block, null, nonexistent_id, null),
+        executeTransition(&d, a, task_id, .block, null, nonexistent_id, null, false),
     );
 }
 
