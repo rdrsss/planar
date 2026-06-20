@@ -282,7 +282,7 @@ pub fn solverAvailable(allocator: std.mem.Allocator, io: std.Io) bool {
 /// Knobs for `invoke`. Defaults reproduce the canonical solver invocation.
 pub const InvokeOptions = struct {
     /// Per-slice token budget — the same `B` greedy partitions under. Used to
-    /// derive the starting block count `k = ceil(Σ vertex-weight / budget)`
+    /// derive the starting block count `k = ceil(deduped-union cost / budget)`
     /// AND the exact-budget ceiling the D-HG3 union-repair pass enforces.
     budget: u32,
     /// Imbalance tolerance handed to `mtkahypar` (`-e`). Defaults to
@@ -342,8 +342,8 @@ pub fn invoke(
     defer gpa.free(hgr_path);
     writeFileAll(io, hgr_path, hgr) catch return error.PartitionMissing;
 
-    // --- 3. Block count k = ceil(Σ vertex-weight / budget), clamped ≥ 1 -
-    const k = blockCount(tasks, opts.budget);
+    // --- 3. Block count k = ceil(deduped-union cost / budget), clamped ≥ 1 -
+    const k = try blockCount(gpa, tasks, opts.budget);
     const k_str = try std.fmt.allocPrint(gpa, "{d}", .{k});
     defer gpa.free(k_str);
 
@@ -818,13 +818,54 @@ fn topoOrder(
 // M3.3b internals
 // ---------------------------------------------------------------------------
 
-/// `k = ceil(Σ vertex-weight / budget)`, clamped to ≥ 1. The starting block
-/// count: enough blocks that, if the solver balanced perfectly, each would fit
-/// the budget. M3.3c's repair pass corrects any residual over-budget block.
-fn blockCount(tasks: []const greedy.Task, budget: u32) u32 {
+/// `k = ceil(total_union_cost / budget)`, clamped to ≥ 1, where
+/// `total_union_cost` is the DEDUPED union of ALL tasks' closures (each
+/// distinct qualified symbol counted ONCE), not the sum of per-task vertex
+/// weights.
+///
+/// ## Why the deduped union, not Σ vertex-weight (the bug fix for task 4247)
+///
+/// The old formula summed each task's OWN closure cost. For COUPLED tasks that
+/// share most of their symbols this massively over-counts the achievable
+/// merged cost: 3 tightly-coupled tasks whose union is `B` but whose
+/// per-task weights each approach `B` summed to `≈3B`, forcing `k=3`. With
+/// `k=3` Mt-KaHyPar is REQUIRED to emit 3 non-empty blocks → 3 singletons →
+/// zero merge benefit → a partition WORSE than greedy, violating the M3
+/// "cost ≤ greedy" acceptance.
+///
+/// The deduped union is the true lower bound on the number of budget-sized
+/// blocks the input can occupy (you cannot pack the union into fewer than
+/// `ceil(union / B)` blocks), so basing `k` on it gives the solver maximal
+/// room to co-locate coupled tasks into ONE block. The D-HG3 union-repair
+/// pass (`repairPartition`) still SPLITS any block whose true union exceeds
+/// `budget`, so a too-small `k` cannot produce an over-budget slice — the
+/// floor only ever helps the solver merge, never hurts budget compliance.
+fn blockCount(
+    scratch: std.mem.Allocator,
+    tasks: []const greedy.Task,
+    budget: u32,
+) std.mem.Allocator.Error!u32 {
+    if (budget == 0) return 1;
+
+    // Deduped union of every task's closure (each qualified symbol once).
+    var arena = std.heap.ArenaAllocator.init(scratch);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var seen = std.StringHashMapUnmanaged(u32).empty;
     var total: u64 = 0;
-    for (tasks) |t| total += vertexWeight(t);
-    if (budget == 0 or total == 0) return 1;
+    for (tasks) |t| {
+        for (t.units) |u| {
+            const gop = try seen.getOrPut(a, u.qualified);
+            if (!gop.found_existing) {
+                gop.value_ptr.* = u.weight;
+                total += u.weight;
+            } else if (u.weight > gop.value_ptr.*) {
+                total += u.weight - gop.value_ptr.*;
+                gop.value_ptr.* = u.weight;
+            }
+        }
+    }
+    if (total == 0) return 1;
     const k = (total + budget - 1) / budget; // ceil
     return @intCast(@max(@as(u64, 1), k));
 }
@@ -1177,19 +1218,40 @@ fn freeSlices(a: std.mem.Allocator, slices: []greedy.Slice) void {
     a.free(slices);
 }
 
-test "mtkahypar.blockCount: ceil(total / budget), clamped >= 1" {
+test "mtkahypar.blockCount: ceil(deduped-union / budget), clamped >= 1 (disjoint)" {
+    const a = testing.allocator;
+    // DISJOINT symbols (a, b, c): the deduped union equals the per-task sum,
+    // so k matches the old Σ-vertex-weight behaviour exactly. union = 100.
     const t1 = [_]greedy.Unit{
         .{ .qualified = "a", .role = .modify, .weight = 30 },
         .{ .qualified = "b", .role = .reference, .weight = 30 },
     };
     const t2 = [_]greedy.Unit{.{ .qualified = "c", .role = .modify, .weight = 40 }};
     const tasks = [_]greedy.Task{ mkTask(1, &t1), mkTask(2, &t2) };
-    // total vertex weight = 60 + 40 = 100.
-    try testing.expectEqual(@as(u32, 1), blockCount(&tasks, 100)); // exact fit
-    try testing.expectEqual(@as(u32, 2), blockCount(&tasks, 60)); // ceil(100/60)=2
-    try testing.expectEqual(@as(u32, 4), blockCount(&tasks, 30)); // ceil(100/30)=4
-    try testing.expectEqual(@as(u32, 1), blockCount(&tasks, 0)); // budget 0 → 1
-    try testing.expectEqual(@as(u32, 100), blockCount(&tasks, 1)); // ceil(100/1)
+    try testing.expectEqual(@as(u32, 1), try blockCount(a, &tasks, 100)); // exact fit
+    try testing.expectEqual(@as(u32, 2), try blockCount(a, &tasks, 60)); // ceil(100/60)=2
+    try testing.expectEqual(@as(u32, 4), try blockCount(a, &tasks, 30)); // ceil(100/30)=4
+    try testing.expectEqual(@as(u32, 1), try blockCount(a, &tasks, 0)); // budget 0 → 1
+    try testing.expectEqual(@as(u32, 100), try blockCount(a, &tasks, 1)); // ceil(100/1)
+}
+
+test "mtkahypar.blockCount: coupled tasks dedup to a SMALL k (the task-4247 fix)" {
+    const a = testing.allocator;
+    // Three tightly-COUPLED tasks: they all share the same heavy symbol H plus
+    // one tiny private symbol each. The deduped union is H + the three tinies,
+    // NOT 3*H. Under the OLD Σ-vertex-weight formula k would have been
+    // ceil(3*H / budget) — forcing the solver into 3 singletons. The deduped
+    // union keeps k at 1, giving the solver room to co-locate all three.
+    const H = greedy.Unit{ .qualified = "H", .role = .reference, .weight = 90 };
+    const t1u = [_]greedy.Unit{ H, .{ .qualified = "p1", .role = .modify, .weight = 1 } };
+    const t2u = [_]greedy.Unit{ H, .{ .qualified = "p2", .role = .modify, .weight = 1 } };
+    const t3u = [_]greedy.Unit{ H, .{ .qualified = "p3", .role = .modify, .weight = 1 } };
+    const tasks = [_]greedy.Task{ mkTask(1, &t1u), mkTask(2, &t2u), mkTask(3, &t3u) };
+    // Deduped union = H(90) + p1 + p2 + p3 = 93. budget 100 → k = 1 (one block).
+    try testing.expectEqual(@as(u32, 1), try blockCount(a, &tasks, 100));
+    // The OLD summed weight would have been 92*3 = 276 → ceil(276/100) = 3.
+    // Prove the dedup matters: with the deduped union (93) k stays 1.
+    try testing.expectEqual(@as(u32, 1), try blockCount(a, &tasks, 93));
 }
 
 test "mtkahypar.parsePartition: block ids in vertex order → grouped slices" {
@@ -1653,4 +1715,62 @@ test "mtkahypar.invoke: live solver round-trip (skips when mtkahypar absent)" {
     for (slices) |s| seen += s.task_ids.len;
     try testing.expectEqual(@as(usize, 3), seen);
     for (slices) |s| try testing.expect(s.task_ids.len >= 1);
+}
+
+test "mtkahypar.invoke: live coupled fixture — solver-arm cost <= greedy (task 4247)" {
+    const a = testing.allocator;
+    // The regression guard for task 4247. On a machine WITH mtkahypar installed
+    // this RUNS the real solver; the harness for this worktree has the official
+    // PyPI-backed CLI shim on PATH, so it must NOT skip here.
+    //
+    // Fixture mirrors the bug repro (artifact 356): three TIGHTLY-COUPLED tasks
+    // whose closures share one heavy symbol H plus a tiny private symbol each.
+    //
+    //   task 1: H(90, ref) + p1(2, mod)    own cost 92
+    //   task 2: H(90, ref) + p2(2, mod)    own cost 92
+    //   task 3: H(90, ref) + p3(2, mod)    own cost 92
+    //
+    // Deduped union of all three = H(90)+p1+p2+p3 = 96. Budget 100 fits the
+    // whole union in ONE block (cost 96).
+    //
+    // GREEDY co-locates all three (each merge stays under 100, H paid once) →
+    // one slice, cost 96.
+    //
+    // The OLD blockCount summed per-task weights = 276 → k = ceil(276/100) = 3,
+    // forcing mtkahypar to emit 3 non-empty blocks → 3 singletons → cost
+    // 92+92+92 = 276, WORSE than greedy (the exact bug). With the deduped-union
+    // k (= 1) the solver gets to co-locate, and the load.zig min-guard would
+    // pick greedy regardless. Here we assert the RAW invoke arm now produces
+    // cost <= greedy on this coupled input.
+    if (!solverAvailable(a, std.testing.io)) return error.SkipZigTest;
+
+    const H = greedy.Unit{ .qualified = "H", .role = .reference, .weight = 90 };
+    const t1u = [_]greedy.Unit{ H, .{ .qualified = "p1", .role = .modify, .weight = 2 } };
+    const t2u = [_]greedy.Unit{ H, .{ .qualified = "p2", .role = .modify, .weight = 2 } };
+    const t3u = [_]greedy.Unit{ H, .{ .qualified = "p3", .role = .modify, .weight = 2 } };
+    const tasks = [_]greedy.Task{ mkTask(1, &t1u), mkTask(2, &t2u), mkTask(3, &t3u) };
+    const budget: u32 = 100;
+
+    // Greedy arm on the same input.
+    var g = try greedy_mod.group(a, &tasks, &.{}, budget);
+    defer g.deinit(a);
+
+    // Solver arm (the real binary).
+    const slices = try invoke(a, std.testing.io, &tasks, .{ .budget = budget });
+    defer freeSlices(a, slices);
+
+    // Every slice stays within budget (D-HG3 union-repair invariant).
+    for (slices) |s| try testing.expect(s.cost <= budget);
+
+    // The whole input is still partitioned.
+    var seen: usize = 0;
+    for (slices) |s| seen += s.task_ids.len;
+    try testing.expectEqual(@as(usize, 3), seen);
+
+    // THE GUARANTEE: the solver-arm cost must not exceed greedy on this coupled
+    // input. The min-of-{solver,greedy} guard in load.recommendWith enforces
+    // this end-to-end; the k-selection fix is what lets the raw solver arm meet
+    // it here instead of collapsing to 3 singletons (cost 276 > greedy 96).
+    const solver_cost = totalCost(slices);
+    try testing.expect(solver_cost <= g.totalCost());
 }

@@ -47,9 +47,27 @@ const GroupsJSON = struct {
     open_tasks: usize = 0,
     solver: []const u8 = "",
     optimal_available: bool = false,
+    selected_greedy: bool = false,
     slices: []const Slice = &.{},
     summary: Summary = .{},
 };
+
+/// True iff the optional external `mtkahypar` binary is runnable on this
+/// machine (mirrors `engine.grouping.mtkahypar.solverAvailable` and the
+/// `gitAvailable` probe in the worktree scenario). When false, the
+/// `--solver=mtkahypar` path degrades to greedy; when true, the optimal arm
+/// actually runs and the cost-≤-greedy guard (task 4247) is exercised.
+fn mtkahyparAvailable(gpa: std.mem.Allocator) bool {
+    const r = std.process.run(gpa, std.testing.io, .{
+        .argv = &.{ "mtkahypar", "--help" },
+    }) catch return false;
+    defer gpa.free(r.stdout);
+    defer gpa.free(r.stderr);
+    return switch (r.term) {
+        .exited => |code| code == 0,
+        else => false,
+    };
+}
 
 /// Write `data` to `<tmp>/<rel>`, creating parent dirs.
 fn writeFixture(suite: *harness.Suite, rel: []const u8, data: []const u8) void {
@@ -382,6 +400,12 @@ test "groups recommend: --solver=mtkahypar degrades to greedy when the binary is
     // the live optimal arm is exercised by the skip-if-absent unit test in
     // src/engine/grouping/mtkahypar.zig wherever the binary exists.
     const gpa = std.testing.allocator;
+    // This test pins the binary-ABSENT degradation contract. When the optional
+    // binary IS installed on the host the optimal arm actually runs, so the
+    // `solver:"greedy"` + `optimal_available:false` assertions below would not
+    // hold — the present-path contract is covered by the sibling
+    // "...cost is never worse than greedy" test. Skip here when present.
+    if (mtkahyparAvailable(gpa)) return error.SkipZigTest;
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
     var arena_state = std.heap.ArenaAllocator.init(gpa);
@@ -435,10 +459,83 @@ test "groups recommend: --solver=mtkahypar degrades to greedy when the binary is
     // Degraded, not errored: solver is greedy and optimal_available is false.
     try std.testing.expectEqualStrings("greedy", g.solver);
     try std.testing.expect(!g.optimal_available);
+    try std.testing.expect(!g.selected_greedy);
     // The grouping is still produced (greedy result): A+B co-locate.
     try std.testing.expectEqual(@as(usize, 2), g.open_tasks);
     const sa = sliceWith(g, ta) orelse std.debug.panic("no slice for A", .{});
     try std.testing.expect(sliceHas(sa, tb));
+}
+
+test "groups recommend: --solver=mtkahypar cost is never worse than greedy (task 4247)" {
+    // The end-to-end cost-≤-greedy guard. Runs only where the optional binary
+    // is installed (skip-if-absent). On a COUPLED plan — three tasks whose
+    // closures all share one heavy seed — the pre-fix solver arm could return a
+    // partition WORSE than greedy (forced into singletons by an over-counted k).
+    // The min-of-{solver,greedy} guard + the deduped-union k-selection make the
+    // returned grouping's total_cost ≤ the greedy arm's on the same input.
+    const gpa = std.testing.allocator;
+    if (!mtkahyparAvailable(gpa)) return error.SkipZigTest;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const repo = registerRepoSlug(&suite, arena);
+
+    // A heavy shared core all three tasks reference → tight coupling.
+    writeFixture(&suite,
+        \\src/core.zig
+    ,
+        \\pub fn api(n: u32) u32 {
+        \\    return n + 1;
+        \\}
+        \\pub fn helper(n: u32) u32 {
+        \\    return api(n) + 2;
+        \\}
+        \\
+    );
+    inline for (.{ "a", "b", "c" }) |name| {
+        writeFixture(&suite, "src/" ++ name ++ ".zig",
+            \\const core = @import("core.zig");
+            \\pub fn run() u32 {
+            \\    return core.api(1) + core.helper(2);
+            \\}
+            \\
+        );
+    }
+
+    const plan = suite.mustRunJSON(PlanJSON, arena, &.{
+        "plan", "create", "--slug", "gr-coupled", "--json", "GR_COUPLED",
+    });
+    const pid = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch unreachable;
+    const ta = addTask(&suite, arena, pid, "task A");
+    const tb = addTask(&suite, arena, pid, "task B");
+    const tc = addTask(&suite, arena, pid, "task C");
+    touchPath(&suite, repo, ta, "src/a.zig");
+    touchPath(&suite, repo, tb, "src/b.zig");
+    touchPath(&suite, repo, tc, "src/c.zig");
+    computeClosure(&suite, arena, ta);
+    computeClosure(&suite, arena, tb);
+    computeClosure(&suite, arena, tc);
+
+    // Greedy baseline on the same input + budget.
+    const budget = "100000";
+    const greedy_g = suite.mustRunJSON(GroupsJSON, arena, &.{
+        "groups", "recommend", pid, "--budget", budget, "--solver", "greedy", "--json",
+    });
+    // Optimal arm (binary present → actually runs).
+    const solver_g = suite.mustRunJSON(GroupsJSON, arena, &.{
+        "groups", "recommend", pid, "--budget", budget, "--solver", "mtkahypar", "--json",
+    });
+
+    // The optimal arm ran (binary present) → honest reporting.
+    try std.testing.expectEqualStrings("mtkahypar", solver_g.solver);
+    try std.testing.expect(solver_g.optimal_available);
+
+    // THE GUARANTEE: the solver arm's total cost is ≤ greedy's on this coupled
+    // input. Before the fix the solver could report a strictly higher cost.
+    try std.testing.expect(solver_g.summary.total_cost <= greedy_g.summary.total_cost);
 }
 
 test "groups recommend: an unknown --solver value is rejected" {
