@@ -1,3 +1,10 @@
+--[[ @meta
+name: resume
+description: Task resume packet read — wraps planar resume and returns key fields for agent handoff.
+phases: resume
+seam: planar resume <task_id> --json
+--]]
+
 -- resume.lua — task resume packet read workflow (plan 638, M5).
 --
 -- Wraps `planar resume <task_id> --json` and returns the key fields from the

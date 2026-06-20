@@ -2612,3 +2612,100 @@ cd /path/to/planar-repo && ./install.sh
 **Finalization tasks convention:** The janitor (and orchestrator) create tasks with slug prefixes `finalize-`, `merge-`, or `reconcile-` to track discrete merge/reconciliation work items. `planar plan closeout --json` reports these as `hard_evidence.finalization_tasks` — an advisory count that identifies finalization work in the audit output without changing gate logic.
 
 **Capability boundary reminder:** Coders close tasks via `planar-agent complete`. The janitor is the only agent role that runs `planar plan closeout`. The orchestrator dispatches the janitor; it never calls closeout directly. See `docs/concepts.md § Closeout gate` and `agents/janitor.md` for the full boundary specification.
+
+## Recipe 28 — Author and graduate a workflow
+
+Use the personal sandbox at `~/.planar/local/workflows/` to draft, test, and iterate on a new Lua workflow before promoting it to the repo's `workflows/` directory. The flow mirrors Recipe 14 (skill sandbox), but the surface is `planar-execute` rather than a vendor CLI.
+
+**When to use:** You want to automate a deterministic multi-step operation (a composed read, a traced propagation, a closeout gate) that fits the `planar-execute` model — spawning a clean process per phase, shelling only allowlisted binaries (`planar`, `planar-agent`, `planar-watch`), and never opening SQLite directly.
+
+### Step 1 — Draft the workflow in the sandbox
+
+```bash
+mkdir -p ~/.planar/local/workflows/
+cat > ~/.planar/local/workflows/my-workflow.lua <<'EOF'
+--[[ @meta
+name: my-workflow
+description: Describe what this workflow does.
+phases: run
+seam: planar plan list --json, planar task list --json
+--]]
+
+-- my-workflow.lua — a personal sandbox workflow.
+
+function run()
+  flow.phase("run")
+  flow.log("my-workflow: starting")
+
+  -- Shell an allowlisted planar verb and parse the result.
+  local plans = cli.planar_json({"plan", "list", "--status", "active", "--json"})
+  flow.log("my-workflow: " .. tostring(#plans) .. " active plan(s)")
+
+  flow.result({ plan_count = #plans })
+end
+EOF
+```
+
+The `@meta` block is optional but strongly recommended — it is what `planar workflow list/show` displays to the operator.
+
+### Step 2 — Verify it appears in the discovery surface
+
+```bash
+planar workflow list --local
+```
+
+Expected output (text):
+```
+name           kind    phases  description
+my-workflow    local   run     Describe what this workflow does.
+```
+
+```bash
+planar workflow show my-workflow
+```
+
+Expected:
+```
+name:        my-workflow
+kind:        local
+path:        /Users/<you>/.planar/local/workflows/my-workflow.lua
+meta:        present
+description: Describe what this workflow does.
+phases:      run
+seam:        planar plan list --json, planar task list --json
+```
+
+### Step 3 — Run it with planar-execute
+
+```bash
+planar-execute run ~/.planar/local/workflows/my-workflow.lua --phase run
+```
+
+The engine runs the `run` phase in the sandbox (no `os`/`io`/`require`; only the D7 host surface). Iterate until the output looks right.
+
+For workflows that need `--args`:
+
+```bash
+planar-execute run ~/.planar/local/workflows/my-workflow.lua \
+    --phase run \
+    --args '{"plan_id": 42}'
+```
+
+### Step 4 — Graduate to the repo (manual)
+
+When the workflow is stable, copy it into the repo's `workflows/` directory:
+
+```bash
+cp ~/.planar/local/workflows/my-workflow.lua /path/to/planar-repo/workflows/my-workflow.lua
+```
+
+Then follow the normal contribution flow: add a `@meta` block if not already present, open a PR, run `make test`. There is no `planar workflow promote` shortcut — graduation is explicit so the operator reviews what ships.
+
+After the next `./install.sh` run, `planar workflow list` will show the workflow as `shipped` rather than `local`.
+
+**Author contract.** A workflow running under `planar-execute` operates in a spawn-free sandbox that Planar enforces by construction:
+
+- **No SQLite handle.** The engine never opens a database; the workflow reaches Planar state exclusively by shelling allowlisted CLI verbs.
+- **No general exec.** `os.execute`, `io.popen`, `load`, `require`, and spawn-shaped host functions (`agent`, `exec`, `spawn`, `parallel`, etc.) are all nil or blocked. The only host reach is the D7 surface (`cli.planar`, `cli.planar_json`, `cli.planar_watch`, `cli.planar_watch_json`, `git.*`, `fs.*`, `flow.*`, `ctx.*`).
+- **Trace by convention.** Tracing (opening a run record via `planar run start`, emitting events, finishing the run) is the workflow's responsibility, not the engine's. The shipped workflows all open trace runs when a `plan_id` is available. Personal sandbox workflows should follow the same pattern for observability.
+- **Scope-checked by the CLI.** Every CLI verb the workflow shells goes through the normal scope resolver. A workflow that passes `--scope` to its inner CLI calls is explicit; one that relies on cwd-derived scope should document that assumption.

@@ -1,3 +1,10 @@
+--[[ @meta
+name: finalize-closeout
+description: Deterministic closeout gate — evaluates plan readiness and closes without force.
+phases: closeout
+seam: planar run start/event/finish, planar plan closeout
+--]]
+
 -- finalize_closeout.lua — deterministic closeout-gate workflow (plan 638, M1).
 --
 -- Owns the highest-value, most-corrupting part of plan finalization: the DB

@@ -1,3 +1,10 @@
+--[[ @meta
+name: example
+description: Reference workflow demonstrating the planar-execute host surface.
+phases: setup
+seam: planar schema (no DB dependency)
+--]]
+
 -- example.lua — reference workflow for planar-execute.
 --
 -- planar-execute is a deterministic, spawn-free Lua workflow engine. It

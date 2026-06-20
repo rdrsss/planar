@@ -549,7 +549,7 @@ title "Placing source artifacts into $PLANAR_HOME"
 # mode we still symlink skills/src so source edits propagate; the
 # rendered outputs are always real files (writing through a link-mode
 # symlink would mutate the repo).
-for d in agents scripts; do
+for d in agents scripts workflows; do
   if [[ -d "$REPO_ROOT/$d" ]]; then
     rm -rf "$PLANAR_HOME/$d"
     place "$REPO_ROOT/$d" "$PLANAR_HOME/$d"
