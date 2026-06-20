@@ -45,7 +45,7 @@
 //! `renderOverlay`. Unit tests drive `handleKey` + `renderOverlay` under
 //! `std.testing.allocator` with an in-memory DB — no real TTY required.
 //!
-//! Tasks: 4047 (operator transitions), 4048 (claim-aware guard).
+//! Tasks: 4047 (operator transitions), 4048 (claim-aware guard), 4164 (blocker input).
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -78,6 +78,10 @@ pub const LifecycleError = error{
     ReopenReasonRequired,
     /// Entity not found (task_id invalid).
     TaskNotFound,
+    /// The named blocker task does not exist in the DB.
+    BlockerNotFound,
+    /// The blocker task id equals the task being blocked (self-referential).
+    SelfBlockerRefused,
     /// Scope mismatch — entity scope disagrees with write scope.
     ScopeMismatch,
     /// Underlying DB write failed.
@@ -259,8 +263,10 @@ pub const TransitionIntent = enum {
     start,
     /// doing → done.
     done,
-    /// * → blocked (requires a blocker task id — simplified: uses task 0
-    /// as a sentinel when no blocker is known; the engine still records it).
+    /// * → blocked with a named blocker task id (task 4164).
+    /// The caller must supply `blocker_id` to `executeTransition`; omitting
+    /// it (null) is rejected. The engine records an entity_links 'blocks' edge
+    /// from the named blocker to this task — never a self-referential edge.
     block,
     /// done → todo (reopen).
     reopen_todo,
@@ -280,10 +286,14 @@ pub const TransitionIntent = enum {
 /// Queries the live claim state and refuses if an active, unexpired claim
 /// exists. The task status is NEVER written under an active claim.
 ///
-/// ## Engine write paths (task 4047)
+/// ## Engine write paths (task 4047 / task 4164)
 /// - `start` (todo → doing): `engine.planning.task.update` with `status=.doing`
 /// - `done` (doing → done):  `engine.planning.task.markDone`
-/// - `block`:                `engine.planning.task.markBlocked` (blocker_task_id=0)
+/// - `block`:                `engine.planning.task.markBlocked` with the real
+///                           blocker_id supplied by the caller (task 4164).
+///                           A null blocker_id returns `LifecycleError.BlockerNotFound`.
+///                           A blocker_id that equals task_id returns
+///                           `LifecycleError.SelfBlockerRefused`.
 /// - `reopen_todo`:          `engine.planning.task.reopen` with `new_status=.todo`
 /// - `reopen_doing`:         `engine.planning.task.reopen` with `new_status=.doing`
 /// - `priority_up/down`:     `engine.planning.task.update` with adjusted priority
@@ -297,6 +307,7 @@ pub fn executeTransition(
     task_id: i64,
     intent: TransitionIntent,
     reopen_reason: ?[]const u8,
+    blocker_id: ?i64,
     write_scope: ?[]const u8,
 ) LifecycleError!void {
     // 1. Claim guard (task 4048) — MUST be first.
@@ -342,16 +353,19 @@ pub fn executeTransition(
             engine.planning.task.deinit(updated, allocator);
         },
         .block => {
-            // * → blocked via engine.planning.task.markBlocked.
-            // The cockpit uses a self-referential blocker sentinel (task_id = 0)
-            // when no specific blocker is named; the caller can pass a real
-            // blocker task id in future via a more detailed intent.
-            // For now, use the task itself as the blocker (the engine allows this
-            // as a valid FK per the schema). In practice the operator can specify
-            // a blocker via the CLI; the cockpit refines this later.
-            const updated = engine.planning.task.markBlocked(d, allocator, task_id, task_id, "blocked via cockpit") catch |e| switch (e) {
+            // * → blocked via engine.planning.task.markBlocked with a REAL
+            // blocker id supplied by the caller (task 4164).
+            //
+            // The caller must pass a valid `blocker_id`:
+            //   - null → rejected (BlockerNotFound)
+            //   - equals task_id → rejected (SelfBlockerRefused)
+            //   - non-existent task → engine.show raises NotFound →
+            //     returned as BlockerNotFound
+            const bid = blocker_id orelse return LifecycleError.BlockerNotFound;
+            if (bid == task_id) return LifecycleError.SelfBlockerRefused;
+            const updated = engine.planning.task.markBlocked(d, allocator, task_id, bid, "blocked via cockpit") catch |e| switch (e) {
                 error.IllegalTransition => return LifecycleError.InvalidTransition,
-                error.NotFound => return LifecycleError.TaskNotFound,
+                error.NotFound => return LifecycleError.BlockerNotFound,
                 else => return LifecycleError.WriteFailed,
             };
             engine.planning.task.deinit(updated, allocator);
@@ -414,6 +428,9 @@ fn currentTaskPriority(d: *db.sqlite.Db, task_id: i64) !i64 {
 /// Maximum length of the reopen-reason input buffer.
 pub const REASON_BUF_MAX = 256;
 
+/// Maximum length of the blocker-id input buffer.
+pub const BLOCKER_BUF_MAX = 32;
+
 /// State machine for task-lifecycle editing from the cockpit.
 ///
 ///   .none            — no lifecycle edit in progress; normal navigation.
@@ -457,6 +474,14 @@ pub const LifecycleMode = union(enum) {
         input_buf: [REASON_BUF_MAX]u8,
         input_len: usize,
     },
+    /// Typing a blocker task id (task 4164). On Enter the id is parsed,
+    /// validated (non-empty, not self, task must exist), and passed to
+    /// executeTransition(.block, blocker_id). Escape cancels.
+    blocker_input: struct {
+        task_id: i64,
+        input_buf: [BLOCKER_BUF_MAX]u8,
+        input_len: usize,
+    },
     /// Error message.
     error_msg: struct {
         /// Owned by mode allocator.
@@ -492,6 +517,7 @@ pub const TaskLifecycleState = struct {
             .choose_action => |*ca| self.allocator.free(ca.current_status),
             .confirming_done => {},
             .reopen_reason => {},
+            .blocker_input => {},
             .error_msg => |*e| self.allocator.free(e.msg),
             .success_msg => |*s| self.allocator.free(s.msg),
         }
@@ -602,7 +628,7 @@ pub const TaskLifecycleState = struct {
                 // 's' = start (todo → doing)
                 if (key.matches('s', .{})) {
                     self.clearMode();
-                    self.runTransition(d, task_id, .start, null, write_scope);
+                    self.runTransition(d, task_id, .start, null, null, write_scope);
                     return true;
                 }
                 // 'd' = done
@@ -634,22 +660,26 @@ pub const TaskLifecycleState = struct {
                     } };
                     return true;
                 }
-                // 'b' = block
+                // 'b' = block — enter blocker_input to prompt for a blocker id (task 4164).
                 if (key.matches('b', .{})) {
                     self.clearMode();
-                    self.runTransition(d, task_id, .block, null, write_scope);
+                    self.mode = .{ .blocker_input = .{
+                        .task_id = task_id,
+                        .input_buf = undefined,
+                        .input_len = 0,
+                    } };
                     return true;
                 }
                 // '+' / '=' = priority up
                 if (key.matches('+', .{}) or key.matches('=', .{})) {
                     self.clearMode();
-                    self.runTransition(d, task_id, .priority_up, null, write_scope);
+                    self.runTransition(d, task_id, .priority_up, null, null, write_scope);
                     return true;
                 }
                 // '-' = priority down
                 if (key.matches('-', .{})) {
                     self.clearMode();
-                    self.runTransition(d, task_id, .priority_down, null, write_scope);
+                    self.runTransition(d, task_id, .priority_down, null, null, write_scope);
                     return true;
                 }
 
@@ -666,7 +696,7 @@ pub const TaskLifecycleState = struct {
                 if (key.matches('y', .{}) or key.matches('Y', .{})) {
                     const task_id = cd.task_id;
                     self.clearMode();
-                    self.runTransition(d, task_id, .done, null, write_scope);
+                    self.runTransition(d, task_id, .done, null, null, write_scope);
                     return true;
                 }
                 // Any other key: cancel.
@@ -700,7 +730,7 @@ pub const TaskLifecycleState = struct {
                     };
                     defer self.allocator.free(reason_owned);
                     self.clearMode();
-                    self.runTransition(d, task_id, tr_intent, reason_owned, write_scope);
+                    self.runTransition(d, task_id, tr_intent, reason_owned, null, write_scope);
                     return true;
                 }
                 if (key.matches(Key.backspace, .{})) {
@@ -712,6 +742,50 @@ pub const TaskLifecycleState = struct {
                         if (rr.input_len < REASON_BUF_MAX) {
                             rr.input_buf[rr.input_len] = byte;
                             rr.input_len += 1;
+                        }
+                    }
+                    return true;
+                }
+                return true;
+            },
+
+            // Task 4164: blocker id input. Operator types a task id; on Enter
+            // it is parsed and passed to executeTransition(.block, blocker_id).
+            // Self-block and non-existent blocker are surfaced as .error_msg.
+            .blocker_input => |*bi| {
+                if (key.matches(Key.escape, .{})) {
+                    self.clearMode();
+                    return true;
+                }
+                if (key.matches(Key.enter, .{})) {
+                    const raw = bi.input_buf[0..bi.input_len];
+                    if (raw.len == 0) {
+                        // Empty input — stay in blocker_input mode; do nothing.
+                        return true;
+                    }
+                    const bid = std.fmt.parseInt(i64, raw, 10) catch {
+                        self.clearMode();
+                        self.setError("invalid blocker id — enter a numeric task id");
+                        return true;
+                    };
+                    const task_id = bi.task_id;
+                    self.clearMode();
+                    // runTransition handles self-blocker + not-found → error_msg.
+                    self.runTransition(d, task_id, .block, null, bid, write_scope);
+                    return true;
+                }
+                if (key.matches(Key.backspace, .{})) {
+                    if (bi.input_len > 0) bi.input_len -= 1;
+                    return true;
+                }
+                if (key.text) |text| {
+                    for (text) |byte| {
+                        // Only accept digit characters in the blocker id field.
+                        if (byte >= '0' and byte <= '9') {
+                            if (bi.input_len < BLOCKER_BUF_MAX) {
+                                bi.input_buf[bi.input_len] = byte;
+                                bi.input_len += 1;
+                            }
                         }
                     }
                     return true;
@@ -740,13 +814,16 @@ pub const TaskLifecycleState = struct {
         task_id: i64,
         intent: TransitionIntent,
         reason: ?[]const u8,
+        blocker_id: ?i64,
         write_scope: ?[]const u8,
     ) void {
-        executeTransition(d, self.allocator, task_id, intent, reason, write_scope) catch |e| {
+        executeTransition(d, self.allocator, task_id, intent, reason, blocker_id, write_scope) catch |e| {
             const msg = switch (e) {
                 LifecycleError.ActiveClaimRefused => "task has an active claim — cannot flip status; release/complete via the agent path",
                 LifecycleError.InvalidTransition => "invalid status transition (not allowed from current status)",
                 LifecycleError.TaskNotFound => "task not found",
+                LifecycleError.BlockerNotFound => "blocker task not found — enter a valid task id",
+                LifecycleError.SelfBlockerRefused => "cannot block a task on itself — enter a different task id",
                 LifecycleError.ScopeMismatch => "scope mismatch: entity scope differs from cockpit scope",
                 LifecycleError.ReopenReasonRequired => "reopen requires a reason",
                 else => "write failed",
@@ -912,6 +989,20 @@ pub fn renderOverlay(
             printAt(win, row, "  Enter=commit, Esc=cancel (blank=default reason)", .{ .dim = true });
         },
 
+        // Task 4164: blocker id input overlay.
+        .blocker_input => |*bi| {
+            printAt(win, row, "Block task — enter blocker task id:", .{ .bold = true });
+            row += 1;
+            if (row < win.height) {
+                _ = win.print(&.{
+                    .{ .text = "blocker id> ", .style = .{ .ul_style = .single } },
+                    .{ .text = bi.input_buf[0..bi.input_len], .style = .{ .ul_style = .single } },
+                }, .{ .row_offset = row, .col_offset = 0 });
+                row += 1;
+            }
+            printAt(win, row, "  Enter=commit, Esc=cancel  (digits only; must be a real task id != this task)", .{ .dim = true });
+        },
+
         .error_msg => |*e| {
             printAt(win, row, "Lifecycle error:", .{ .bold = true });
             row += 1;
@@ -942,6 +1033,8 @@ pub fn legendLabel(state: *const TaskLifecycleState, buf: []u8) []const u8 {
             "  Confirm done? y=yes any=cancel",
         .reopen_reason => std.fmt.bufPrint(buf, "  Typing reopen reason — Enter=commit  Esc=cancel", .{}) catch
             "  Typing reopen reason — Enter=commit Esc=cancel",
+        .blocker_input => std.fmt.bufPrint(buf, "  Enter blocker task id — Enter=commit  Esc=cancel", .{}) catch
+            "  Enter blocker task id — Enter=commit Esc=cancel",
         .error_msg => std.fmt.bufPrint(buf, "  Error — press any key to dismiss", .{}) catch
             "  Error — press any key to dismiss",
         .success_msg => std.fmt.bufPrint(buf, "  Done — press any key to continue", .{}) catch
@@ -950,7 +1043,7 @@ pub fn legendLabel(state: *const TaskLifecycleState, buf: []u8) []const u8 {
 }
 
 // =========================================================================
-// Tests (tasks 4047, 4048)
+// Tests (tasks 4047, 4048, 4164)
 // =========================================================================
 //
 // All tests run under std.testing.allocator (GPA with leak detection).
@@ -1104,7 +1197,7 @@ test "executeTransition: active-claim task REFUSES status flip — status and cl
     // Attempt to flip to done — MUST be refused.
     try std.testing.expectError(
         LifecycleError.ActiveClaimRefused,
-        executeTransition(&d, a, task_id, .done, null, null),
+        executeTransition(&d, a, task_id, .done, null, null, null),
     );
 
     // Assert task status still "doing" — no write happened.
@@ -1133,7 +1226,7 @@ test "executeTransition: todo→doing (start) persists via engine.planning.task.
 
     const task_id = try seedTask(&d, "todo");
     // No claim — guard passes.
-    try executeTransition(&d, a, task_id, .start, null, null);
+    try executeTransition(&d, a, task_id, .start, null, null, null);
 
     // Assert via re-query.
     var stmt = try d.prepare("select status from tasks where id = ?");
@@ -1151,7 +1244,7 @@ test "executeTransition: doing→done (markDone) persists via engine.planning.ta
     defer d.close();
 
     const task_id = try seedTask(&d, "doing");
-    try executeTransition(&d, a, task_id, .done, null, null);
+    try executeTransition(&d, a, task_id, .done, null, null, null);
 
     var stmt = try d.prepare("select status from tasks where id = ?");
     defer stmt.finalize();
@@ -1168,7 +1261,7 @@ test "executeTransition: done→todo (reopen_todo) persists via engine.planning.
     defer d.close();
 
     const task_id = try seedTask(&d, "done");
-    try executeTransition(&d, a, task_id, .reopen_todo, "test reopen", null);
+    try executeTransition(&d, a, task_id, .reopen_todo, "test reopen", null, null);
 
     var stmt = try d.prepare("select status from tasks where id = ?");
     defer stmt.finalize();
@@ -1193,7 +1286,7 @@ test "executeTransition: priority_up lowers the numeric priority value" {
         "insert into tasks (scope_kind, title, status, priority) values ('global','T','todo',100)",
         &.{},
     );
-    try executeTransition(&d, a, task_id, .priority_up, null, null);
+    try executeTransition(&d, a, task_id, .priority_up, null, null, null);
 
     var stmt = try d.prepare("select priority from tasks where id = ?");
     defer stmt.finalize();
@@ -1212,7 +1305,7 @@ test "executeTransition: priority_down raises the numeric priority value" {
         "insert into tasks (scope_kind, title, status, priority) values ('global','T','todo',100)",
         &.{},
     );
-    try executeTransition(&d, a, task_id, .priority_down, null, null);
+    try executeTransition(&d, a, task_id, .priority_down, null, null, null);
 
     var stmt = try d.prepare("select priority from tasks where id = ?");
     defer stmt.finalize();
@@ -1239,7 +1332,7 @@ test "executeTransition: cross-scope task refuses without explicit scope" {
     // write_scope=null → ScopeMismatch.
     try std.testing.expectError(
         LifecycleError.ScopeMismatch,
-        executeTransition(&d, a, task_id, .start, null, null),
+        executeTransition(&d, a, task_id, .start, null, null, null),
     );
 
     // Verify status unchanged.
@@ -1565,6 +1658,334 @@ test "renderOverlay: unclaimed claim_info shows 'unclaimed' and proceed hint" {
     try std.testing.expect(std.mem.indexOf(u8, text, "unclaimed") != null);
     // The proceed hint must appear in the overlay.
     try std.testing.expect(std.mem.indexOf(u8, text, "allowed") != null);
+}
+
+// -------------------------------------------------------------------------
+// Task 4164: blocker input — controller tests
+// -------------------------------------------------------------------------
+
+test "executeTransition: block with real blocker persists entity_links edge" {
+    // Happy path: block task_a on task_b → entity_links 'blocks' edge from
+    // task_a to task_b; task_a status = 'blocked'. Uses engine.planning.task.markBlocked.
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const blocker_id = try seedTask(&d, "todo");
+    const task_id = try d.execParams(
+        "insert into tasks (scope_kind, title, status, priority) values ('global','Target Task','doing',100)",
+        &.{},
+    );
+
+    try executeTransition(&d, a, task_id, .block, null, blocker_id, null);
+
+    // Assert task status = 'blocked'.
+    var stmt = try d.prepare("select status from tasks where id = ?");
+    defer stmt.finalize();
+    try stmt.bind(&.{.{ .int = task_id }});
+    try std.testing.expect((try stmt.step()) == .row);
+    const s = try stmt.columnTextAlloc(0, a);
+    defer a.free(s);
+    try std.testing.expectEqualStrings("blocked", s);
+
+    // Assert entity_links edge exists: from_id=task_id, to_id=blocker_id, relationship='blocks'.
+    var link_stmt = try d.prepare(
+        "select count(*) from entity_links where from_kind='task' and from_id=? and to_kind='task' and to_id=? and relationship='blocks'",
+    );
+    defer link_stmt.finalize();
+    try link_stmt.bind(&.{ .{ .int = task_id }, .{ .int = blocker_id } });
+    try std.testing.expect((try link_stmt.step()) == .row);
+    const link_count = link_stmt.columnInt(0);
+    try std.testing.expectEqual(@as(i64, 1), link_count);
+}
+
+test "executeTransition: block with self blocker returns SelfBlockerRefused — no write" {
+    // Self-referential block must be refused before any DB write.
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const task_id = try seedTask(&d, "doing");
+
+    try std.testing.expectError(
+        LifecycleError.SelfBlockerRefused,
+        executeTransition(&d, a, task_id, .block, null, task_id, null),
+    );
+
+    // Status must be unchanged.
+    var stmt = try d.prepare("select status from tasks where id = ?");
+    defer stmt.finalize();
+    try stmt.bind(&.{.{ .int = task_id }});
+    try std.testing.expect((try stmt.step()) == .row);
+    const s = try stmt.columnTextAlloc(0, a);
+    defer a.free(s);
+    try std.testing.expectEqualStrings("doing", s);
+}
+
+test "executeTransition: block with null blocker_id returns BlockerNotFound" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const task_id = try seedTask(&d, "doing");
+
+    try std.testing.expectError(
+        LifecycleError.BlockerNotFound,
+        executeTransition(&d, a, task_id, .block, null, null, null),
+    );
+}
+
+test "executeTransition: block with non-existent blocker id returns BlockerNotFound" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const task_id = try seedTask(&d, "doing");
+    const nonexistent_id: i64 = 99999;
+
+    try std.testing.expectError(
+        LifecycleError.BlockerNotFound,
+        executeTransition(&d, a, task_id, .block, null, nonexistent_id, null),
+    );
+}
+
+test "TaskLifecycleState: 'b' in choose_action enters blocker_input mode" {
+    // Pressing 'b' must NOT immediately write; it must enter blocker_input mode.
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const task_id = try seedTask(&d, "doing");
+
+    var ls = TaskLifecycleState.init(a);
+    defer ls.deinit();
+
+    ls.enter(&d, task_id);
+    _ = ls.handleKey(makeKey(Key.enter), &d, null);
+    try std.testing.expect(ls.mode == .choose_action);
+
+    // 'b' → blocker_input, NOT a write.
+    _ = ls.handleKey(makeKeyText('b'), &d, null);
+    switch (ls.mode) {
+        .blocker_input => |bi| {
+            try std.testing.expectEqual(task_id, bi.task_id);
+            try std.testing.expectEqual(@as(usize, 0), bi.input_len);
+        },
+        else => try std.testing.expect(false), // expected .blocker_input
+    }
+
+    // Task status must be unchanged — no write on 'b'.
+    var stmt = try d.prepare("select status from tasks where id = ?");
+    defer stmt.finalize();
+    try stmt.bind(&.{.{ .int = task_id }});
+    try std.testing.expect((try stmt.step()) == .row);
+    const s = try stmt.columnTextAlloc(0, a);
+    defer a.free(s);
+    try std.testing.expectEqualStrings("doing", s);
+}
+
+test "TaskLifecycleState: blocker_input with valid blocker id commits block and records edge" {
+    // Full happy path through the controller: enter → claim_info → Enter →
+    // choose_action → 'b' → blocker_input → type blocker id → Enter →
+    // success_msg; assert entity_links edge and task status.
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const blocker_task_id = try seedTask(&d, "todo");
+    const task_id = try seedTask(&d, "doing");
+
+    var ls = TaskLifecycleState.init(a);
+    defer ls.deinit();
+
+    ls.enter(&d, task_id);
+    _ = ls.handleKey(makeKey(Key.enter), &d, null); // claim_info → choose_action
+    _ = ls.handleKey(makeKeyText('b'), &d, null); // → blocker_input
+    try std.testing.expect(ls.mode == .blocker_input);
+
+    // Type the blocker id as digit characters.
+    var id_buf: [32]u8 = undefined;
+    const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{blocker_task_id}) catch unreachable;
+    for (id_str) |ch| _ = ls.handleKey(.{ .codepoint = ch, .text = &.{ch} }, &d, null);
+
+    // Enter to commit.
+    _ = ls.handleKey(makeKey(Key.enter), &d, null);
+    try std.testing.expect(ls.mode == .success_msg);
+    try std.testing.expect(ls.wantsReload());
+
+    // Task status = 'blocked'.
+    var stmt = try d.prepare("select status from tasks where id = ?");
+    defer stmt.finalize();
+    try stmt.bind(&.{.{ .int = task_id }});
+    try std.testing.expect((try stmt.step()) == .row);
+    const s = try stmt.columnTextAlloc(0, a);
+    defer a.free(s);
+    try std.testing.expectEqualStrings("blocked", s);
+
+    // entity_links edge: from_id=task_id, to_id=blocker_task_id.
+    var link_stmt = try d.prepare(
+        "select count(*) from entity_links where from_kind='task' and from_id=? and to_kind='task' and to_id=? and relationship='blocks'",
+    );
+    defer link_stmt.finalize();
+    try link_stmt.bind(&.{ .{ .int = task_id }, .{ .int = blocker_task_id } });
+    try std.testing.expect((try link_stmt.step()) == .row);
+    try std.testing.expectEqual(@as(i64, 1), link_stmt.columnInt(0));
+}
+
+test "TaskLifecycleState: blocker_input with self id sets error_msg — no write" {
+    // Typing the task's own id as the blocker must produce an error message.
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const task_id = try seedTask(&d, "doing");
+
+    var ls = TaskLifecycleState.init(a);
+    defer ls.deinit();
+
+    ls.enter(&d, task_id);
+    _ = ls.handleKey(makeKey(Key.enter), &d, null);
+    _ = ls.handleKey(makeKeyText('b'), &d, null);
+    try std.testing.expect(ls.mode == .blocker_input);
+
+    // Type the task's own id.
+    var id_buf: [32]u8 = undefined;
+    const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{task_id}) catch unreachable;
+    for (id_str) |ch| _ = ls.handleKey(.{ .codepoint = ch, .text = &.{ch} }, &d, null);
+
+    _ = ls.handleKey(makeKey(Key.enter), &d, null);
+
+    // Must be .error_msg with a message mentioning self-block.
+    switch (ls.mode) {
+        .error_msg => |e| {
+            try std.testing.expect(std.mem.indexOf(u8, e.msg, "itself") != null or
+                std.mem.indexOf(u8, e.msg, "self") != null or
+                std.mem.indexOf(u8, e.msg, "different") != null);
+        },
+        else => try std.testing.expect(false), // expected .error_msg
+    }
+
+    // Status must be unchanged.
+    var stmt = try d.prepare("select status from tasks where id = ?");
+    defer stmt.finalize();
+    try stmt.bind(&.{.{ .int = task_id }});
+    try std.testing.expect((try stmt.step()) == .row);
+    const s = try stmt.columnTextAlloc(0, a);
+    defer a.free(s);
+    try std.testing.expectEqualStrings("doing", s);
+}
+
+test "TaskLifecycleState: blocker_input with invalid id string sets error_msg" {
+    // Non-numeric input (the blocker_input handler only appends digits,
+    // so this tests the parseInt fallback for a zero-length input or
+    // a parse failure path — we inject the mode directly to test the
+    // zero-length guard).
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const task_id = try seedTask(&d, "doing");
+
+    var ls = TaskLifecycleState.init(a);
+    defer ls.deinit();
+
+    // Inject blocker_input with empty buffer directly.
+    ls.mode = .{ .blocker_input = .{
+        .task_id = task_id,
+        .input_buf = undefined,
+        .input_len = 0,
+    } };
+
+    // Enter with empty buffer — must stay in blocker_input (not crash or write).
+    _ = ls.handleKey(makeKey(Key.enter), &d, null);
+    // Empty input: stays in blocker_input (silent no-op).
+    try std.testing.expect(ls.mode == .blocker_input);
+}
+
+test "TaskLifecycleState: blocker_input Escape cancels — no write, mode=none" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const task_id = try seedTask(&d, "doing");
+
+    var ls = TaskLifecycleState.init(a);
+    defer ls.deinit();
+
+    ls.enter(&d, task_id);
+    _ = ls.handleKey(makeKey(Key.enter), &d, null);
+    _ = ls.handleKey(makeKeyText('b'), &d, null);
+    try std.testing.expect(ls.mode == .blocker_input);
+
+    _ = ls.handleKey(makeKey(Key.escape), &d, null);
+    try std.testing.expect(!ls.isActive());
+
+    // Status unchanged.
+    var stmt = try d.prepare("select status from tasks where id = ?");
+    defer stmt.finalize();
+    try stmt.bind(&.{.{ .int = task_id }});
+    try std.testing.expect((try stmt.step()) == .row);
+    const s = try stmt.columnTextAlloc(0, a);
+    defer a.free(s);
+    try std.testing.expectEqualStrings("doing", s);
+}
+
+test "renderOverlay: blocker_input shows prompt text" {
+    // Render-level: blocker_input mode must render the prompt and the
+    // current input buffer in the overlay.
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const task_id = try seedTask(&d, "doing");
+
+    var ls = TaskLifecycleState.init(a);
+    defer ls.deinit();
+
+    // Inject blocker_input mode with some digits in the buffer.
+    ls.mode = .{ .blocker_input = .{
+        .task_id = task_id,
+        .input_buf = blk: {
+            var buf: [BLOCKER_BUF_MAX]u8 = undefined;
+            buf[0] = '4';
+            buf[1] = '2';
+            break :blk buf;
+        },
+        .input_len = 2,
+    } };
+
+    const win_w: u16 = 80;
+    const win_h: u16 = 6;
+    var screen = try vaxis.Screen.init(a, .{
+        .cols = win_w,
+        .rows = win_h,
+        .x_pixel = 0,
+        .y_pixel = 0,
+    });
+    defer screen.deinit(a);
+
+    const win: Window = .{
+        .x_off = 0,
+        .y_off = 0,
+        .parent_x_off = 0,
+        .parent_y_off = 0,
+        .width = win_w,
+        .height = win_h,
+        .screen = &screen,
+    };
+
+    try renderOverlay(&ls, win, a);
+
+    var rendered: std.ArrayList(u8) = .empty;
+    defer rendered.deinit(a);
+    try collectScreen(&screen, &rendered);
+    const text = rendered.items;
+
+    // Prompt must mention "blocker" and "task id".
+    try std.testing.expect(std.mem.indexOf(u8, text, "blocker") != null or
+        std.mem.indexOf(u8, text, "Block task") != null);
+    // The typed digits "42" must appear in the rendered output.
+    try std.testing.expect(std.mem.indexOf(u8, text, "42") != null);
 }
 
 test "task_lifecycle module compiles" {

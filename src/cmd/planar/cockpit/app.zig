@@ -406,8 +406,19 @@ pub fn run(
                             need_render = false;
                         }
                     } else if (active != null and active.?.id == .open_questions) {
-                        if (questions.handleKey(key, db_handle)) {
-                            // Consumed by open questions — render.
+                        const kr = questions.handleKey(key, db_handle);
+                        if (kr.consumed) {
+                            // Task 4136: if 'g' produced a FocusRequest, switch to the
+                            // Entity-Link Graph view and refocus it on the linked entity.
+                            // Mirrors the entity_link_graph dispatch (lines below) so both
+                            // views share the same app-level dispatch contract.
+                            if (kr.focus) |fr| {
+                                entity_graph.reloadFor(db_handle, fr.kind, fr.id) catch {};
+                                if (fr.switch_to_view) |target_id| {
+                                    _ = vs.switchTo(target_id);
+                                }
+                            }
+                            // render.
                         } else {
                             need_render = false;
                         }

@@ -11,14 +11,13 @@
 //!       - Body (markdown, via markdown_detail widget): includes status + body + answer
 //!       - "Linked to:" section with entity_links targets (both directions)
 //!         showing each linked entity's kind:id and title, and its relationship.
-//!       - "Jump:" affordance — pressing 'g' on a selected question surfaces
-//!         the first linked entity's identity (kind:id — title) prominently in
-//!         the detail pane, allowing the operator to navigate there manually.
-//!         This is the documented limitation: the existing view-switching
-//!         machinery (vs.switchTo) supports switching views but the cockpit
-//!         does not yet carry a cross-view focus cursor, so a full "switch to
-//!         Scope Explorer focused on plan:42" is not feasible in M7. The linked
-//!         entity identity IS surfaced so the operator can act on it.
+//!       - "Jump:" affordance — pressing 'g' on a selected question that has a
+//!         linked entity performs a real cross-view focus jump: handleKey returns
+//!         a entity_link_graph.FocusRequest with switch_to_view=.entity_link_graph
+//!         so that app.zig switches to the Entity-Link Graph view focused on the
+//!         target entity. When no linked entity exists, 'g' is a safe no-op.
+//!         This mechanism was introduced in M9 for entity_link_graph and is reused
+//!         here (same FocusRequest type, same app.zig dispatch path). Task 4136.
 //!
 //! Tasks 4023 (List questions filtered by status + linked entities) and
 //!       4024 (Status filter cycling + jump-to-linked-entity affordance).
@@ -31,6 +30,9 @@
 //!   (4024) 'f' cycles the status filter; the rendered list changes accordingly.
 //!          The detail pane surfaces linked entity labels (kind:id — title)
 //!          so the operator can navigate to the linked plan/artifact.
+//!   (4136) 'g' on a question with a linked entity returns a FocusRequest that
+//!          causes app.zig to switch to the Entity-Link Graph view centered on
+//!          the linked entity. No linked entity → 'g' is a no-op (no crash).
 //!
 //! Status enum values (from migration 00003_work_items.up.sql):
 //!   check(status in ('open','answered','wontfix'))
@@ -43,8 +45,10 @@
 //!   - All heap-owned data is owned by OpenQuestionsState and released via deinit.
 //!   - Live updates: the wake thread posts .db_changed → app.zig calls
 //!     `reload` on the active view. No second wake thread.
-//!   - Jump-to-linked-entity: surfaces the linked entity's label in the detail
-//!     pane's "Jump:" line; 'g' triggers the jump (updates jump_target).
+//!   - Jump-to-linked-entity (task 4136): 'g' returns a FocusRequest{kind, id,
+//!     switch_to_view=.entity_link_graph} so app.zig can switch + refocus the
+//!     Entity-Link Graph view on the first linked entity. The jump_target field
+//!     still surfaces the label in the detail pane for the in-view affordance.
 //!   - linked entities use the entity_links table's both-direction query.
 
 const std = @import("std");
@@ -53,6 +57,7 @@ const db = @import("db");
 
 const view_model = @import("../view_model.zig");
 const markdown_detail = @import("../widgets/markdown_detail.zig");
+const entity_link_graph = @import("entity_link_graph.zig");
 
 const Window = vaxis.Window;
 const Key = vaxis.Key;
@@ -138,8 +143,23 @@ pub const OpenQuestionsState = struct {
         self.detail = try view_model.queryOpenQuestionsDetail(d, self.allocator, sel.id);
     }
 
-    /// Handle a key event. Returns true when the key was consumed.
-    pub fn handleKey(self: *OpenQuestionsState, key: Key, d: *db.sqlite.Db) bool {
+    /// Result returned by handleKey.
+    ///
+    /// Mirrors entity_link_graph.EntityLinkState.HandleKeyResult so that
+    /// app.zig can apply the same FocusRequest dispatch path for both views.
+    /// When focus is non-null, app.zig switches to the Entity-Link Graph view
+    /// and calls entity_graph.reloadFor(fr.kind, fr.id).
+    pub const HandleKeyResult = struct {
+        consumed: bool,
+        focus: ?entity_link_graph.FocusRequest,
+    };
+
+    /// Handle a key event. Returns a HandleKeyResult.
+    ///
+    /// consumed=true when the key was handled (triggers a re-render).
+    /// focus != null when 'g' was pressed on a question with a linked entity;
+    ///   app.zig uses focus to switch+refocus the Entity-Link Graph view.
+    pub fn handleKey(self: *OpenQuestionsState, key: Key, d: *db.sqlite.Db) HandleKeyResult {
         const count = self.rows.len;
 
         // j / arrow-down: move selection down.
@@ -153,7 +173,7 @@ pub const OpenQuestionsState = struct {
                     self.jump_target = null;
                 }
             }
-            return true;
+            return .{ .consumed = true, .focus = null };
         }
         // k / arrow-up: move selection up.
         if (key.matches('k', .{}) or key.matches(Key.up, .{})) {
@@ -166,7 +186,7 @@ pub const OpenQuestionsState = struct {
                     self.jump_target = null;
                 }
             }
-            return true;
+            return .{ .consumed = true, .focus = null };
         }
 
         // 'f': cycle the status filter (task 4024).
@@ -179,16 +199,17 @@ pub const OpenQuestionsState = struct {
             }
             self.selected_idx = 0;
             self.reload(d) catch {};
-            return true;
+            return .{ .consumed = true, .focus = null };
         }
 
-        // 'g': jump-to-linked-entity affordance (task 4024).
-        // Surfaces the first linked entity's label in jump_target so it is
-        // prominently displayed in the detail pane. The operator can then
-        // navigate to that entity using the entity identity (kind:id — title).
-        // Full cross-view focus is not yet implemented in the M7 cockpit wiring
-        // (no cross-view cursor is tracked in app.zig). This is the documented
-        // limitation; the linked entity identity is surfaced for the operator.
+        // 'g': jump-to-linked-entity (task 4024 affordance + task 4136 real jump).
+        //
+        // Task 4136: when the question has a linked entity, return a FocusRequest
+        // so that app.zig switches to the Entity-Link Graph view focused on that
+        // entity. The jump_target field is also set so the detail pane surfaces
+        // the label as the in-view affordance.
+        //
+        // When no linked entity exists, 'g' is a no-op (consumed but no focus).
         if (key.matches('g', .{})) {
             if (self.jump_target) |s| {
                 self.allocator.free(s);
@@ -196,14 +217,28 @@ pub const OpenQuestionsState = struct {
             }
             if (self.detail) |det| {
                 if (det.linked.len > 0) {
-                    // Surface the first linked entity's label.
-                    self.jump_target = self.allocator.dupe(u8, det.linked[0].label) catch null;
+                    const linked = det.linked[0];
+                    // Surface the first linked entity's label in the detail pane.
+                    self.jump_target = self.allocator.dupe(u8, linked.label) catch null;
+                    // Return a FocusRequest so app.zig switches to the entity-link
+                    // graph view focused on this entity. The kind and id fields
+                    // point into the detail's linked slice which is owned by this
+                    // state and valid until the next reload().
+                    return .{
+                        .consumed = true,
+                        .focus = .{
+                            .kind = linked.target_kind,
+                            .id = linked.target_id,
+                            .switch_to_view = .entity_link_graph,
+                        },
+                    };
                 }
             }
-            return true;
+            // No linked entity: key was consumed (no crash), no focus change.
+            return .{ .consumed = true, .focus = null };
         }
 
-        return false;
+        return .{ .consumed = false, .focus = null };
     }
 };
 
@@ -851,6 +886,133 @@ test "open_questions: handleKey g with no linked entities does not set jump_targ
 
     // No linked entities → jump_target stays null.
     try testing.expect(state.jump_target == null);
+}
+
+// -------------------------------------------------------------------------
+// Task 4136: 'g' returns a real FocusRequest for cross-view jump
+// -------------------------------------------------------------------------
+
+test "open_questions: handleKey g returns FocusRequest with correct kind/id (task 4136)" {
+    // Core contract: 'g' on a question with a linked entity returns a
+    // HandleKeyResult where:
+    //   - consumed = true
+    //   - focus.kind = linked entity kind ("plan")
+    //   - focus.id = linked entity id
+    //   - focus.switch_to_view = .entity_link_graph
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const qid = try d.execParams(
+        "insert into questions (scope_kind, title, body, status) values ('global','FocusReqQ','body','open')",
+        &.{},
+    );
+    const pid = try d.execParams(
+        "insert into plans (scope_kind, title, slug, status) values ('global','FocusPlan','focus-plan','active')",
+        &.{},
+    );
+    _ = try d.execParams(
+        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('question', ?, 'plan', ?, 'addresses')",
+        &.{ .{ .int = qid }, .{ .int = pid } },
+    );
+
+    var state = OpenQuestionsState.init(a);
+    defer state.deinit();
+    state.filter = .open;
+    try state.reload(&d);
+
+    const g_key = Key{ .codepoint = 'g', .mods = .{} };
+    const result = state.handleKey(g_key, &d);
+
+    // Must be consumed.
+    try testing.expect(result.consumed);
+
+    // Focus request must be non-null and point at the linked plan.
+    try testing.expect(result.focus != null);
+    const fr = result.focus.?;
+    try testing.expectEqualStrings("plan", fr.kind);
+    try testing.expectEqual(pid, fr.id);
+
+    // switch_to_view must be .entity_link_graph (the cross-view jump target).
+    try testing.expect(fr.switch_to_view != null);
+    try testing.expectEqual(@as(view_model.ViewId, .entity_link_graph), fr.switch_to_view.?);
+}
+
+test "open_questions: handleKey g no-linked-entity is a no-op (task 4136)" {
+    // When the question has no linked entity, 'g' must be consumed (no crash)
+    // and focus must be null (no spurious view switch).
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    _ = try d.execParams(
+        "insert into questions (scope_kind, title, body, status) values ('global','NolinkQ2','body','open')",
+        &.{},
+    );
+
+    var state = OpenQuestionsState.init(a);
+    defer state.deinit();
+    state.filter = .open;
+    try state.reload(&d);
+
+    const g_key = Key{ .codepoint = 'g', .mods = .{} };
+    const result = state.handleKey(g_key, &d);
+
+    // Consumed (no crash, no spurious view switch).
+    try testing.expect(result.consumed);
+    // No FocusRequest — must not switch views.
+    try testing.expect(result.focus == null);
+}
+
+test "open_questions: app-level dispatch — entity_graph reloadFor invoked with correct kind/id (task 4136)" {
+    // Simulate the app.zig dispatch path: after 'g' returns a FocusRequest,
+    // call entity_graph.reloadFor(fr.kind, fr.id) and assert the entity-link
+    // graph state is now focused on the linked plan.
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const qid = try d.execParams(
+        "insert into questions (scope_kind, title, body, status) values ('global','DispatchQ','body','open')",
+        &.{},
+    );
+    const pid = try d.execParams(
+        "insert into plans (scope_kind, title, slug, status) values ('global','DispatchPlan','dispatch-plan','active')",
+        &.{},
+    );
+    _ = try d.execParams(
+        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('question', ?, 'plan', ?, 'addresses')",
+        &.{ .{ .int = qid }, .{ .int = pid } },
+    );
+
+    // Open Questions state.
+    var state = OpenQuestionsState.init(a);
+    defer state.deinit();
+    state.filter = .open;
+    try state.reload(&d);
+
+    // Entity-Link Graph state (starts with no focus).
+    var eg_state = entity_link_graph.EntityLinkState.init(a);
+    defer eg_state.deinit();
+    try testing.expect(eg_state.data.focus == null);
+
+    // Press 'g' to get the FocusRequest.
+    const g_key = Key{ .codepoint = 'g', .mods = .{} };
+    const result = state.handleKey(g_key, &d);
+    try testing.expect(result.consumed);
+    try testing.expect(result.focus != null);
+
+    const fr = result.focus.?;
+
+    // Simulate app.zig: call reloadFor on entity_graph with the focus kind/id.
+    try eg_state.reloadFor(&d, fr.kind, fr.id);
+
+    // Assert the entity-link graph is now focused on the linked plan.
+    try testing.expect(eg_state.data.focus != null);
+    try testing.expectEqualStrings("plan", eg_state.data.focus.?.kind);
+    try testing.expectEqual(pid, eg_state.data.focus.?.id);
+    // Title must be resolved.
+    try testing.expectEqualStrings("DispatchPlan", eg_state.data.focus.?.title);
 }
 
 test "open_questions: detail incoming link from artifact (task 4023)" {
