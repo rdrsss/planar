@@ -85,11 +85,23 @@ pub const Recommendation = struct {
     /// The solver that ACTUALLY produced the grouping. Equals the requested
     /// solver unless an `mtkahypar` request degraded to `greedy`.
     solver: Solver,
-    /// True iff the optimal (mtkahypar) arm produced this grouping. False
-    /// whenever the grouping came from the greedy arm — either because greedy
-    /// was requested, or because mtkahypar was requested but the binary was
-    /// absent/failing and the result degraded to greedy (D-HG4).
+    /// True iff the optimal (mtkahypar) arm RAN and produced a partition. False
+    /// whenever the mtkahypar binary was absent or its invocation failed and the
+    /// request fell back to greedy (D-HG4). Note: this reports whether the
+    /// optimal arm was *available*, NOT whether its result was the one returned
+    /// — when mtkahypar ran but greedy scored lower, `optimal_available` stays
+    /// true while `selected_greedy` flips (see below).
     optimal_available: bool,
+    /// True iff the RETURNED grouping is the greedy arm's result even though the
+    /// mtkahypar arm also ran. The solver arm is guaranteed never to ship a
+    /// partition worse than greedy: `recommendWith(.mtkahypar)` computes BOTH
+    /// arms and returns whichever has the lower total cost (M3 acceptance:
+    /// "cost ≤ greedy on the same input"). When mtkahypar's partition tied or
+    /// beat greedy this is false (the solver result shipped); when greedy was
+    /// strictly better it is true (greedy result shipped as the safe floor).
+    /// Always false when the optimal arm did not run (`optimal_available` false)
+    /// — that is plain degradation, not a cost-guard selection.
+    selected_greedy: bool,
     /// Backs every `greedy.Unit`/`Task`/`Dep` slice fed to the solver; freed
     /// on `deinit`. (The grouping itself is `gpa`-owned and copied out.)
     arena: *std.heap.ArenaAllocator,
@@ -127,7 +139,7 @@ pub fn recommendGreedy(
 ) Error!Recommendation {
     const loaded = try loadInputs(d, gpa, plan_id);
     const grouping = try greedy.group(gpa, loaded.tasks, loaded.deps, budget);
-    return finish(loaded, budget, grouping, .greedy, false);
+    return finish(loaded, budget, grouping, .greedy, false, false);
 }
 
 /// Solver-aware grouping recommendation (M3.3b).
@@ -137,11 +149,25 @@ pub fn recommendGreedy(
 ///   - `.greedy` — the M3.1 heuristic; `io` is unused, `optimal_available`
 ///     is false (greedy is the baseline, not the optimal arm).
 ///   - `.mtkahypar` — probe the external binary; when present, run it
-///     (`mtkahypar.invoke`) and set `optimal_available = true`. When the
-///     binary is ABSENT or the invocation FAILS, **degrade to greedy** and
-///     set `solver = .greedy`, `optimal_available = false` (D-HG4). The
-///     degradation is silent (no error) — the operator sees the greedy result
-///     plus the `optimal_available:false` signal.
+///     (`mtkahypar.invoke`). When the binary is ABSENT or the invocation FAILS,
+///     **degrade to greedy** and set `solver = .greedy`,
+///     `optimal_available = false` (D-HG4). The degradation is silent (no
+///     error) — the operator sees the greedy result plus the
+///     `optimal_available:false` signal.
+///
+/// ## Cost-≤-greedy guarantee (task 4247)
+///
+/// When the mtkahypar arm RUNS, this function ALSO computes the greedy arm on
+/// the identical inputs and returns whichever grouping has the lower total
+/// cost (`greedy.Grouping.totalCost`). The solver arm is therefore guaranteed
+/// never to ship a partition worse than greedy — the M3 acceptance contract
+/// ("partition with cost ≤ the greedy pass on the same input"). Reporting stays
+/// honest: `solver = .mtkahypar` and `optimal_available = true` whenever the
+/// optimal arm ran, and a new `selected_greedy` flag records when greedy's
+/// lower-cost result was the one actually returned (a strict mtkahypar
+/// improvement leaves `selected_greedy = false`; a tie keeps the mtkahypar
+/// result, which already satisfies ≤). The unused arm's grouping is freed
+/// before return so the returned `Recommendation` owns exactly one grouping.
 ///
 /// Returns `Error.NotFound` when the plan does not exist. Caller owns the
 /// returned `Recommendation` and must call `deinit(gpa)`.
@@ -162,13 +188,24 @@ pub fn recommendWith(
     // partition schedulable (the solver itself is precedence-blind).
     if (mtkahypar.solverAvailable(gpa, io)) {
         if (mtkahypar.invoke(gpa, io, loaded.tasks, .{ .budget = budget, .deps = loaded.deps })) |slices| {
-            return finish(loaded, budget, .{ .slices = slices }, .mtkahypar, true);
+            // Both arms ran on identical inputs: ship the lower-cost grouping.
+            // The solver arm must NEVER do worse than greedy (M3 acceptance).
+            const solver_grouping: greedy.Grouping = .{ .slices = slices };
+            var greedy_grouping = try greedy.group(gpa, loaded.tasks, loaded.deps, budget);
+            if (greedy_grouping.totalCost() < solver_grouping.totalCost()) {
+                // Greedy strictly better → ship greedy, free the solver result.
+                solver_grouping.deinit(gpa);
+                return finish(loaded, budget, greedy_grouping, .mtkahypar, true, true);
+            }
+            // mtkahypar tied or beat greedy → ship the solver result.
+            greedy_grouping.deinit(gpa);
+            return finish(loaded, budget, solver_grouping, .mtkahypar, true, false);
         } else |_| {
             // Invocation failed mid-run → degrade to greedy.
         }
     }
     const grouping = try greedy.group(gpa, loaded.tasks, loaded.deps, budget);
-    return finish(loaded, budget, grouping, .greedy, false);
+    return finish(loaded, budget, grouping, .greedy, false, false);
 }
 
 /// The loaded inputs for a plan plus the arena that backs them. `tasks` and
@@ -224,6 +261,7 @@ fn finish(
     grouping: greedy.Grouping,
     solver: Solver,
     optimal_available: bool,
+    selected_greedy: bool,
 ) Recommendation {
     return .{
         .plan_id = loaded.plan_id,
@@ -232,6 +270,7 @@ fn finish(
         .grouping = grouping,
         .solver = solver,
         .optimal_available = optimal_available,
+        .selected_greedy = selected_greedy,
         .arena = loaded.arena,
     };
 }

@@ -24,6 +24,7 @@
 //!     "open_tasks": int,
 //!     "solver": "greedy"|"mtkahypar",
 //!     "optimal_available": bool,
+//!     "selected_greedy": bool,   // mtkahypar ran but greedy scored lower
 //!     "slices": [ { "task_ids": [int],
 //!                   "union_symbols": [str],
 //!                   "cost": int } ],
@@ -79,8 +80,15 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
 fn emitJSON(ctx: *const runtime.Ctx, rec: load.Recommendation) !void {
     const w = ctx.stdout;
     try w.print(
-        "{{\"plan_id\":{d},\"budget\":{d},\"open_tasks\":{d},\"solver\":\"{s}\",\"optimal_available\":{s},\"slices\":[",
-        .{ rec.plan_id, rec.budget, rec.open_tasks, rec.solver.label(), if (rec.optimal_available) "true" else "false" },
+        "{{\"plan_id\":{d},\"budget\":{d},\"open_tasks\":{d},\"solver\":\"{s}\",\"optimal_available\":{s},\"selected_greedy\":{s},\"slices\":[",
+        .{
+            rec.plan_id,
+            rec.budget,
+            rec.open_tasks,
+            rec.solver.label(),
+            if (rec.optimal_available) "true" else "false",
+            if (rec.selected_greedy) "true" else "false",
+        },
     );
     for (rec.grouping.slices, 0..) |s, i| {
         if (i != 0) try w.print(",", .{});
@@ -105,13 +113,14 @@ fn emitJSON(ctx: *const runtime.Ctx, rec: load.Recommendation) !void {
 fn emitText(ctx: *const runtime.Ctx, rec: load.Recommendation) !void {
     const w = ctx.stdout;
     try w.print(
-        "plan:{d}  budget:{d}  open:{d}  solver:{s}  optimal_available:{s}  slices:{d}  total_cost:{d}\n",
+        "plan:{d}  budget:{d}  open:{d}  solver:{s}  optimal_available:{s}  selected_greedy:{s}  slices:{d}  total_cost:{d}\n",
         .{
             rec.plan_id,
             rec.budget,
             rec.open_tasks,
             rec.solver.label(),
             if (rec.optimal_available) "true" else "false",
+            if (rec.selected_greedy) "true" else "false",
             rec.grouping.slices.len,
             rec.grouping.totalCost(),
         },
