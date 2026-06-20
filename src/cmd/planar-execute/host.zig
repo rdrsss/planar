@@ -16,6 +16,8 @@
 //!
 //!   cli.planar(argv)          — allowlisted shell of planar/planar-agent/
 //!   cli.planar_json(argv)       planar-watch ONLY; binary hardcoded.  No exec.
+//!   cli.planar_agent(argv)    — mutation shell of planar-agent (claim ritual:
+//!   cli.planar_agent_json(argv)  pull/complete/fail/release/block/heartbeat).
 //!   cli.planar_watch(argv)    — read-only shell of planar-watch (mode=ro).
 //!   cli.planar_watch_json(argv)
 //!   git.reset_hard(sha)     — confined git group; host injects `-C <worktree>`
@@ -91,6 +93,8 @@ pub const HostFn = struct {
 pub const ALLOWED_HOST_FNS = [_]HostFn{
     // cli.* — allowlisted-binary shells (no general exec).
     .{ .table = "cli", .name = "planar" },
+    .{ .table = "cli", .name = "planar_agent" },
+    .{ .table = "cli", .name = "planar_agent_json" },
     .{ .table = "cli", .name = "planar_json" },
     .{ .table = "cli", .name = "planar_watch" },
     .{ .table = "cli", .name = "planar_watch_json" },
@@ -212,7 +216,7 @@ pub fn installHostSurface(L: ?*c.lua_State, hs: *HostState) void {
     // comptimePrint + dispatchFor for every ALLOWED_HOST_FNS entry. Each
     // additional allowlist entry consumes additional comptime branches; the
     // default quota (3000) is exhausted when the manifest reaches ~23 entries.
-    @setEvalBranchQuota(8000);
+    @setEvalBranchQuota(10000);
     // Create the five tables and register them as globals.
     inline for ([_][]const u8{ "cli", "git", "fs", "flow", "ctx" }) |tbl_name| {
         c.lua_createtable(L, 0, 8);
@@ -245,7 +249,7 @@ pub fn installHostSurface(L: ?*c.lua_State, hs: *HostState) void {
 /// is a comptime error, so the manifest can never name an unimplemented fn.
 fn dispatchFor(comptime hf: HostFn) *const fn (?*c.lua_State) callconv(.c) c_int {
     const key = hf.table ++ "." ++ hf.name;
-    return comptime if (std.mem.eql(u8, key, "cli.planar")) hostCliPlanar else if (std.mem.eql(u8, key, "cli.planar_json")) hostCliPlanarJson else if (std.mem.eql(u8, key, "cli.planar_watch")) hostCliPlanarWatch else if (std.mem.eql(u8, key, "cli.planar_watch_json")) hostCliPlanarWatchJson else if (std.mem.eql(u8, key, "git.reset_hard")) hostGitResetHard else if (std.mem.eql(u8, key, "git.checkout")) hostGitCheckout else if (std.mem.eql(u8, key, "git.diff_name_only")) hostGitDiffNameOnly else if (std.mem.eql(u8, key, "git.head_sha")) hostGitHeadSha else if (std.mem.eql(u8, key, "git.clean")) hostGitClean else if (std.mem.eql(u8, key, "fs.read")) hostFsRead else if (std.mem.eql(u8, key, "fs.write")) hostFsWrite else if (std.mem.eql(u8, key, "fs.exists")) hostFsExists else if (std.mem.eql(u8, key, "fs.mkdir")) hostFsMkdir else if (std.mem.eql(u8, key, "flow.log")) hostFlowLog else if (std.mem.eql(u8, key, "flow.phase")) hostFlowPhase else if (std.mem.eql(u8, key, "flow.fail")) hostFlowFail else if (std.mem.eql(u8, key, "flow.result")) hostFlowResult else if (std.mem.eql(u8, key, "ctx.plan_show")) hostCtxPlanShow else if (std.mem.eql(u8, key, "ctx.task_show")) hostCtxTaskShow else if (std.mem.eql(u8, key, "ctx.task_touches")) hostCtxTaskTouches else if (std.mem.eql(u8, key, "ctx.recommend_strategy")) hostCtxRecommendStrategy else if (std.mem.eql(u8, key, "ctx.context")) hostCtxContext else if (std.mem.eql(u8, key, "ctx.brief")) hostCtxBrief else @compileError("host.zig: no dispatch for " ++ key);
+    return comptime if (std.mem.eql(u8, key, "cli.planar")) hostCliPlanar else if (std.mem.eql(u8, key, "cli.planar_agent")) hostCliPlanarAgent else if (std.mem.eql(u8, key, "cli.planar_agent_json")) hostCliPlanarAgentJson else if (std.mem.eql(u8, key, "cli.planar_json")) hostCliPlanarJson else if (std.mem.eql(u8, key, "cli.planar_watch")) hostCliPlanarWatch else if (std.mem.eql(u8, key, "cli.planar_watch_json")) hostCliPlanarWatchJson else if (std.mem.eql(u8, key, "git.reset_hard")) hostGitResetHard else if (std.mem.eql(u8, key, "git.checkout")) hostGitCheckout else if (std.mem.eql(u8, key, "git.diff_name_only")) hostGitDiffNameOnly else if (std.mem.eql(u8, key, "git.head_sha")) hostGitHeadSha else if (std.mem.eql(u8, key, "git.clean")) hostGitClean else if (std.mem.eql(u8, key, "fs.read")) hostFsRead else if (std.mem.eql(u8, key, "fs.write")) hostFsWrite else if (std.mem.eql(u8, key, "fs.exists")) hostFsExists else if (std.mem.eql(u8, key, "fs.mkdir")) hostFsMkdir else if (std.mem.eql(u8, key, "flow.log")) hostFlowLog else if (std.mem.eql(u8, key, "flow.phase")) hostFlowPhase else if (std.mem.eql(u8, key, "flow.fail")) hostFlowFail else if (std.mem.eql(u8, key, "flow.result")) hostFlowResult else if (std.mem.eql(u8, key, "ctx.plan_show")) hostCtxPlanShow else if (std.mem.eql(u8, key, "ctx.task_show")) hostCtxTaskShow else if (std.mem.eql(u8, key, "ctx.task_touches")) hostCtxTaskTouches else if (std.mem.eql(u8, key, "ctx.recommend_strategy")) hostCtxRecommendStrategy else if (std.mem.eql(u8, key, "ctx.context")) hostCtxContext else if (std.mem.eql(u8, key, "ctx.brief")) hostCtxBrief else @compileError("host.zig: no dispatch for " ++ key);
 }
 
 /// pushHostClosure installs `fn_ptr` as a field `name` on the table at the top
@@ -623,6 +627,27 @@ fn hostCliPlanarJson(L: ?*c.lua_State) callconv(.c) c_int {
     return 1;
 }
 
+/// cli.planar_agent(argv) → stdout string. Shells `planar-agent <argv...>`.
+/// Mutation-capable (claim/complete/fail/release/block/heartbeat) but still
+/// an allowlisted CLI subprocess — not a spawn primitive.
+fn hostCliPlanarAgent(L: ?*c.lua_State) callconv(.c) c_int {
+    const hs = hostStateUpvalue(L);
+    const argv = argvFromLuaTable(L, hs, 1);
+    const out = runAllowlisted(L, hs, "planar-agent", argv);
+    _ = c.lua_pushlstring(L, out.ptr, out.len);
+    return 1;
+}
+
+/// cli.planar_agent_json(argv) → parsed JSON value. Shells `planar-agent <argv...>`
+/// and parses stdout as JSON (the caller is responsible for passing `--json`).
+fn hostCliPlanarAgentJson(L: ?*c.lua_State) callconv(.c) c_int {
+    const hs = hostStateUpvalue(L);
+    const argv = argvFromLuaTable(L, hs, 1);
+    const out = runAllowlisted(L, hs, "planar-agent", argv);
+    pushParsedJson(L, hs, out);
+    return 1;
+}
+
 /// cli.planar_watch(argv) → stdout string. Shells `planar-watch <argv...>`.
 /// Read-only: planar-watch opens the DB in mode=ro and registers no write verbs.
 fn hostCliPlanarWatch(L: ?*c.lua_State) callconv(.c) c_int {
@@ -968,8 +993,8 @@ test "manifest: ALLOWED contains the D7 surface and none of DENIED" {
             try std.testing.expect(!std.mem.eql(u8, hf.name, denied));
         }
     }
-    // The surface must be exactly the D7 allowlist size (23 fns).
-    try std.testing.expectEqual(@as(usize, 23), ALLOWED_HOST_FNS.len);
+    // The surface must be exactly the D7 allowlist size (25 fns).
+    try std.testing.expectEqual(@as(usize, 25), ALLOWED_HOST_FNS.len);
 }
 
 test "manifest: cli surface has no general exec" {
