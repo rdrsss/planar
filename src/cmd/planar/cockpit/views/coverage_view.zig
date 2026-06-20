@@ -299,6 +299,8 @@ fn renderScenarioDetail(state: *const CoverageState, win: Window, arena: std.mem
     // ---- Body (markdown_detail widget) -----------------------------------
     // Build an owned body string: "**Status:** {status}\n\n{body_text}"
     // Since test_scenarios.body is nullable we render at least the status.
+    // Use the frame arena so grapheme slices written into the vaxis back-buffer
+    // remain valid until vaxis.render() flushes them (arena-backed, not FBA).
     const body_start = row;
     if (body_start < win.height) {
         const remaining: u16 = win.height - body_start;
@@ -309,14 +311,14 @@ fn renderScenarioDetail(state: *const CoverageState, win: Window, arena: std.mem
             .width = win.width,
             .height = body_h,
         });
-        // Build the status line to render via markdown_detail.
-        // Use the frame arena so grapheme slices written into the vaxis
-        // back-buffer remain valid until vaxis.render() flushes them.
-        const body_text = std.fmt.allocPrint(
-            arena,
-            "**Status:** {s}",
-            .{sel.status},
-        ) catch sel.status;
+        // Build the combined status + body text for the markdown_detail widget.
+        // sel.body is the scenario body from the DB (nullable); when present,
+        // append it after the status line so the operator sees the full scenario.
+        const body_text = if (sel.body) |b|
+            std.fmt.allocPrint(arena, "**Status:** {s}\n\n{s}", .{ sel.status, b }) catch
+                std.fmt.allocPrint(arena, "**Status:** {s}", .{sel.status}) catch sel.status
+        else
+            std.fmt.allocPrint(arena, "**Status:** {s}", .{sel.status}) catch sel.status;
         try markdown_detail.render(body_win, arena, body_text);
         row = body_start + body_h;
     }
@@ -616,6 +618,9 @@ test "coverage_view: reload populates scenario rows with verifies links (task 40
     try testing.expectEqual(@as(usize, 1), state.rows.len);
     try testing.expectEqualStrings("Alpha Scenario", state.rows[0].title);
     try testing.expectEqualStrings("ready", state.rows[0].status);
+    // body must be carried through from the DB (task 4138).
+    try testing.expect(state.rows[0].body != null);
+    try testing.expectEqualStrings("The scenario body.", state.rows[0].body.?);
     // verifies link must be populated.
     try testing.expectEqual(@as(usize, 1), state.rows[0].verifies.len);
     try testing.expectEqual(tid, state.rows[0].verifies[0].task_id);
@@ -939,6 +944,68 @@ test "coverage_view: renderScenarioDetail renders Verifies section with task (ta
     try testing.expect(std.mem.indexOf(u8, text, "RenderTask") != null);
     // (d) Status line body text is arena-backed after UAF fix (task 4198).
     try testing.expect(std.mem.indexOf(u8, text, "Status:") != null);
+}
+
+test "coverage_view: renderScenarioDetail renders scenario body text (task 4138 render-level)" {
+    // task 4138: the detail pane must render the scenario body, not just the status.
+    // This test seeds a scenario with a non-empty body and asserts the body text
+    // appears in the rendered screen buffer via markdown_detail.
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    _ = try d.execParams(
+        "insert into test_scenarios (scope_kind, title, body, status) values ('global','BodyScenario','The scenario body content here.','ready')",
+        &.{},
+    );
+
+    var state = CoverageState.init(a);
+    defer state.deinit();
+    try state.reload(&d);
+
+    try testing.expectEqual(@as(usize, 1), state.rows.len);
+    // Struct-level: body must be populated.
+    try testing.expect(state.rows[0].body != null);
+    try testing.expect(std.mem.indexOf(u8, state.rows[0].body.?, "scenario body content") != null);
+
+    const win_w: u16 = 80;
+    const win_h: u16 = 40;
+    var screen = try vaxis.Screen.init(a, .{
+        .cols = win_w,
+        .rows = win_h,
+        .x_pixel = 0,
+        .y_pixel = 0,
+    });
+    defer screen.deinit(a);
+
+    const detail_win: Window = .{
+        .x_off = 0,
+        .y_off = 0,
+        .parent_x_off = 0,
+        .parent_y_off = 0,
+        .width = win_w,
+        .height = win_h,
+        .screen = &screen,
+    };
+
+    var test_arena = std.heap.ArenaAllocator.init(a);
+    defer test_arena.deinit();
+    try renderScenarioDetail(&state, detail_win, test_arena.allocator());
+
+    var rendered: std.ArrayList(u8) = .empty;
+    defer rendered.deinit(a);
+    try collectScreenText(&screen, &rendered);
+    const text = rendered.items;
+
+    // RENDER-LEVEL ASSERTIONS (task 4138):
+    // (a) Status must appear.
+    try testing.expect(std.mem.indexOf(u8, text, "Status:") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "ready") != null);
+    // (b) Body content must appear — this is the key assertion for task 4138.
+    //     Previously the detail pane showed only "Status: ..." and omitted the body.
+    try testing.expect(std.mem.indexOf(u8, text, "scenario body content") != null);
+    // (c) Title must appear.
+    try testing.expect(std.mem.indexOf(u8, text, "BodyScenario") != null);
 }
 
 test "coverage_view: renderScenarioDetail shows (none) for orphan scenario (task 4025 render-level)" {

@@ -228,6 +228,7 @@ fn badgeStyle(badge: view_model.StatusBadge) Style {
         .cancelled => .{ .dim = true },
         .paused => .{ .fg = .{ .index = 5 } }, // magenta
         .abandoned => .{ .dim = true },
+        .superseded => .{ .dim = true }, // superseded: visually de-emphasised like abandoned
         .none => .{},
     };
 }

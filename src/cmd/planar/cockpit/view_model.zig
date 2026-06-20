@@ -37,6 +37,10 @@ pub const StatusBadge = enum {
     draft,
     paused,
     abandoned,
+    /// Decision status: superseded — replaced by a later decision.
+    /// Distinct glyph '^' signals "overridden from above", different from
+    /// abandoned ('~'), draft ('d'), and every other badge.
+    superseded,
     none,
 
     /// One-character summary glyph for compact tree nodes.
@@ -52,6 +56,7 @@ pub const StatusBadge = enum {
             .draft => "d",
             .paused => "P",
             .abandoned => "~",
+            .superseded => "^",
             .none => " ",
         };
     }
@@ -905,7 +910,10 @@ fn decisionStatusBadge(status_text: []const u8) StatusBadge {
     // decisions status: proposed, accepted, superseded, withdrawn.
     if (std.mem.eql(u8, status_text, "accepted")) return .done;
     if (std.mem.eql(u8, status_text, "withdrawn")) return .cancelled;
-    if (std.mem.eql(u8, status_text, "superseded")) return .abandoned;
+    // superseded uses .superseded (glyph '^') — distinct from .abandoned ('~')
+    // and .draft ('d') so the operator can immediately tell a superseded decision
+    // apart from a merely-proposed or abandoned one.
+    if (std.mem.eql(u8, status_text, "superseded")) return .superseded;
     return .draft; // proposed
 }
 
@@ -2111,13 +2119,16 @@ pub fn queryDecisionDerivesFrom(
 
                 // Resolve the title for this target entity.
                 const title_opt = resolveEntityTitle(d, allocator, to_kind, to_id);
+                // Build the label. On OOM, propagate the error rather than
+                // aliasing to_kind into label — aliasing causes a double-free
+                // in deinit (target_kind and label both freed separately).
                 const label = if (title_opt) |t|
                     std.fmt.allocPrint(allocator, "{s}:{d} — {s}", .{ to_kind, to_id, t }) catch blk: {
                         allocator.free(t);
-                        break :blk std.fmt.allocPrint(allocator, "{s}:{d}", .{ to_kind, to_id }) catch to_kind;
+                        break :blk std.fmt.allocPrint(allocator, "{s}:{d}", .{ to_kind, to_id }) catch return error.OutOfMemory;
                     }
                 else
-                    std.fmt.allocPrint(allocator, "{s}:{d}", .{ to_kind, to_id }) catch to_kind;
+                    std.fmt.allocPrint(allocator, "{s}:{d}", .{ to_kind, to_id }) catch return error.OutOfMemory;
                 errdefer allocator.free(label);
 
                 // Free the resolved title if it was successfully embedded in label.
@@ -2517,13 +2528,15 @@ pub fn queryQuestionLinkedEntities(
                     errdefer allocator.free(rel);
 
                     const title_opt = resolveEntityTitle(d, allocator, to_kind, to_id);
+                    // On OOM, propagate the error rather than aliasing to_kind
+                    // into label — aliasing causes a double-free in deinit.
                     const label = if (title_opt) |t|
                         std.fmt.allocPrint(allocator, "{s}:{d} — {s}", .{ to_kind, to_id, t }) catch blk: {
                             allocator.free(t);
-                            break :blk std.fmt.allocPrint(allocator, "{s}:{d}", .{ to_kind, to_id }) catch to_kind;
+                            break :blk std.fmt.allocPrint(allocator, "{s}:{d}", .{ to_kind, to_id }) catch return error.OutOfMemory;
                         }
                     else
-                        std.fmt.allocPrint(allocator, "{s}:{d}", .{ to_kind, to_id }) catch to_kind;
+                        std.fmt.allocPrint(allocator, "{s}:{d}", .{ to_kind, to_id }) catch return error.OutOfMemory;
                     errdefer allocator.free(label);
 
                     if (title_opt) |t| allocator.free(t);
@@ -2561,13 +2574,15 @@ pub fn queryQuestionLinkedEntities(
                     errdefer allocator.free(rel);
 
                     const title_opt = resolveEntityTitle(d, allocator, from_kind, from_id);
+                    // On OOM, propagate the error rather than aliasing from_kind
+                    // into label — aliasing causes a double-free in deinit.
                     const label = if (title_opt) |t|
                         std.fmt.allocPrint(allocator, "{s}:{d} — {s}", .{ from_kind, from_id, t }) catch blk: {
                             allocator.free(t);
-                            break :blk std.fmt.allocPrint(allocator, "{s}:{d}", .{ from_kind, from_id }) catch from_kind;
+                            break :blk std.fmt.allocPrint(allocator, "{s}:{d}", .{ from_kind, from_id }) catch return error.OutOfMemory;
                         }
                     else
-                        std.fmt.allocPrint(allocator, "{s}:{d}", .{ from_kind, from_id }) catch from_kind;
+                        std.fmt.allocPrint(allocator, "{s}:{d}", .{ from_kind, from_id }) catch return error.OutOfMemory;
                     errdefer allocator.free(label);
 
                     if (title_opt) |t| allocator.free(t);
@@ -2728,6 +2743,9 @@ pub const ScenarioCoverageRow = struct {
     /// Pre-formatted display string: "[badge] status  title" — heap-allocated
     /// so grapheme pointers from printSegment remain valid after render returns.
     display_text: []const u8,
+    /// Scenario body (markdown), or null when the column is NULL in the DB.
+    /// Owned by this struct; freed via deinit.
+    body: ?[]const u8,
     /// Tasks this scenario verifies (may be empty = orphan scenario).
     verifies: []ScenarioVerifiesRow,
 
@@ -2735,6 +2753,7 @@ pub const ScenarioCoverageRow = struct {
         allocator.free(self.title);
         allocator.free(self.status);
         allocator.free(self.display_text);
+        if (self.body) |b| allocator.free(b);
         ScenarioVerifiesRow.deinitMany(self.verifies, allocator);
     }
 
@@ -2822,12 +2841,12 @@ pub fn queryScenarioCoverage(
     filter: ScopeFilter,
 ) ![]ScenarioCoverageRow {
     const sql_all =
-        \\select id, title, status
+        \\select id, title, status, body
         \\from test_scenarios
         \\order by created_at desc, id desc
     ;
     const sql_repo =
-        \\select id, title, status
+        \\select id, title, status, body
         \\from test_scenarios
         \\where (scope_kind = 'repo' and scope_id = ?) or scope_kind = 'global'
         \\order by created_at desc, id desc
@@ -2868,6 +2887,9 @@ pub fn queryScenarioCoverage(
                 errdefer allocator.free(title);
                 const status_text = try stmt.columnTextAlloc(2, allocator);
                 errdefer allocator.free(status_text);
+                // body is nullable (test_scenarios.body text without NOT NULL).
+                const body_opt = try stmt.columnTextOpt(3, allocator);
+                errdefer if (body_opt) |b| allocator.free(b);
 
                 const badge = scenarioStatusBadge(status_text);
 
@@ -2889,6 +2911,7 @@ pub fn queryScenarioCoverage(
                     .badge = badge,
                     .status = status_text,
                     .display_text = display_text,
+                    .body = body_opt,
                     .verifies = verifies,
                 });
             },
@@ -3553,6 +3576,9 @@ test "view_model: StatusBadge.glyph returns expected chars" {
     try testing.expectEqualStrings(">", StatusBadge.doing.glyph());
     try testing.expectEqualStrings("B", StatusBadge.blocked.glyph());
     try testing.expectEqualStrings(" ", StatusBadge.none.glyph());
+    try testing.expectEqualStrings("^", StatusBadge.superseded.glyph());
+    try testing.expectEqualStrings("~", StatusBadge.abandoned.glyph());
+    try testing.expectEqualStrings("d", StatusBadge.draft.glyph());
 }
 
 test "view_model: queryAgentMonitor on empty DB returns empty slices" {
@@ -4236,8 +4262,21 @@ test "view_model: decisionStatusBadge maps known statuses" {
     // decisions status: proposed, accepted, superseded, withdrawn.
     try testing.expectEqual(StatusBadge.done, decisionStatusBadge("accepted"));
     try testing.expectEqual(StatusBadge.cancelled, decisionStatusBadge("withdrawn"));
-    try testing.expectEqual(StatusBadge.abandoned, decisionStatusBadge("superseded"));
+    // superseded now maps to .superseded (glyph '^'), not .abandoned (glyph '~').
+    try testing.expectEqual(StatusBadge.superseded, decisionStatusBadge("superseded"));
     try testing.expectEqual(StatusBadge.draft, decisionStatusBadge("proposed"));
+}
+
+test "view_model: StatusBadge.superseded has distinct glyph from draft and abandoned" {
+    // task 4100: 'superseded' must be visually distinct from 'proposed'/'draft'
+    // and from 'abandoned'. All three must have different glyphs.
+    const sup = StatusBadge.superseded.glyph();
+    const dra = StatusBadge.draft.glyph();
+    const aba = StatusBadge.abandoned.glyph();
+    try testing.expect(!std.mem.eql(u8, sup, dra));
+    try testing.expect(!std.mem.eql(u8, sup, aba));
+    // Confirm the exact glyph so a future change is caught explicitly.
+    try testing.expectEqualStrings("^", sup);
 }
 
 test "view_model: questionStatusBadge maps known statuses" {
