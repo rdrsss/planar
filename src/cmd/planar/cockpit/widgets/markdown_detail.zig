@@ -293,7 +293,11 @@ fn renderPlain(
             i += 1;
         } else {
             // Multi-byte UTF-8: find the full codepoint sequence.
-            const seq_len = utf8SeqLen(byte);
+            const seq_len = cpSeqLen(byte) catch {
+                // Stray continuation byte or invalid lead byte — skip 1 safely.
+                i += 1;
+                continue;
+            };
             if (i + seq_len <= text.len) {
                 win.writeCell(@intCast(col), @intCast(row), .{
                     .char = .{ .grapheme = text[i .. i + seq_len], .width = 1 },
@@ -356,7 +360,10 @@ fn renderInline(
                         col += 1;
                         j += 1;
                     } else {
-                        const seq = utf8SeqLen(lbyte);
+                        const seq = cpSeqLen(lbyte) catch {
+                            j += 1;
+                            continue;
+                        };
                         if (j + seq <= label.len) {
                             win.writeCell(@intCast(col), @intCast(row), .{
                                 .char = .{ .grapheme = label[j .. j + seq], .width = 1 },
@@ -414,7 +421,10 @@ fn renderInline(
             col += 1;
             i += 1;
         } else {
-            const seq_len = utf8SeqLen(byte);
+            const seq_len = cpSeqLen(byte) catch {
+                i += 1;
+                continue;
+            };
             if (i + seq_len <= text.len) {
                 win.writeCell(@intCast(col), @intCast(row), .{
                     .char = .{ .grapheme = text[i .. i + seq_len], .width = 1 },
@@ -464,11 +474,17 @@ fn kindStyle(kind: SpanKind) Style {
     };
 }
 
-fn utf8SeqLen(first_byte: u8) usize {
-    if (first_byte & 0xF0 == 0xF0) return 4;
-    if (first_byte & 0xE0 == 0xE0) return 3;
-    if (first_byte & 0xC0 == 0xC0) return 2;
-    return 1;
+/// Return the byte-sequence length of the UTF-8 codepoint whose lead byte is
+/// `first_byte`. On a stray continuation byte (0x80–0xBF) or an invalid
+/// lead byte (0xF8–0xFF) the function returns `error.InvalidByte`; callers
+/// MUST advance by 1 and continue — never by the result of a prior call —
+/// to avoid desync.
+///
+/// Replaces the old hand-rolled `utf8SeqLen` which returned 1 for every
+/// continuation byte, causing multi-byte codepoints to be emitted as a
+/// sequence of 1-byte cells (split → U+FFFD, or in gated loops, dropped).
+pub fn cpSeqLen(first_byte: u8) error{InvalidByte}!usize {
+    return std.unicode.utf8ByteSequenceLength(first_byte) catch error.InvalidByte;
 }
 
 // =========================================================================
@@ -511,11 +527,23 @@ test "markdown_detail: parseLinkLabel returns null for non-links" {
     try std.testing.expect(parseLinkLabel("[unclosed") == null);
 }
 
-test "markdown_detail: utf8SeqLen" {
-    try std.testing.expectEqual(@as(usize, 1), utf8SeqLen('A'));
-    try std.testing.expectEqual(@as(usize, 2), utf8SeqLen(0xC2));
-    try std.testing.expectEqual(@as(usize, 3), utf8SeqLen(0xE2));
-    try std.testing.expectEqual(@as(usize, 4), utf8SeqLen(0xF0));
+test "markdown_detail: cpSeqLen — lead bytes" {
+    try std.testing.expectEqual(@as(usize, 1), try cpSeqLen('A'));
+    try std.testing.expectEqual(@as(usize, 2), try cpSeqLen(0xC2));
+    try std.testing.expectEqual(@as(usize, 3), try cpSeqLen(0xE2));
+    try std.testing.expectEqual(@as(usize, 4), try cpSeqLen(0xF0));
+}
+
+test "markdown_detail: cpSeqLen — continuation bytes return InvalidByte (task 4196)" {
+    // Continuation bytes (0x80–0xBF) are not valid UTF-8 lead bytes.
+    // The old utf8SeqLen returned 1 for these, causing multi-byte codepoints
+    // to be emitted as split 1-byte cells.  cpSeqLen must reject them.
+    try std.testing.expectError(error.InvalidByte, cpSeqLen(0x80));
+    try std.testing.expectError(error.InvalidByte, cpSeqLen(0x9F));
+    try std.testing.expectError(error.InvalidByte, cpSeqLen(0xBF));
+    // Also reject overlong / surrogate lead bytes.
+    try std.testing.expectError(error.InvalidByte, cpSeqLen(0xF8));
+    try std.testing.expectError(error.InvalidByte, cpSeqLen(0xFF));
 }
 
 /// Collect all grapheme bytes from a vaxis Screen buffer into `out`.
@@ -622,6 +650,74 @@ test "markdown_detail: render with arena allocator — no U+FFFD, bullet path ex
     // (e) Normal paragraph must appear.
     try std.testing.expect(std.mem.indexOf(u8, text, "Normal") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "paragraph") != null);
+}
+
+test "markdown_detail: non-ASCII title/body rendered without dropped chars (task 4195)" {
+    // Regression test for the byte-drop bug fixed in task 4195.
+    //
+    // The bug: renderPlain / renderInline iterated byte-by-byte and emitted
+    // cells only when `byte & 0x80 == 0` — silently dropping the high bytes of
+    // every multi-byte UTF-8 codepoint.  A title like "Café•λ" would appear
+    // as "Caf" in the rendered output (the accented 'é', bullet '•', and Greek
+    // 'λ' were silently dropped).
+    //
+    // RED-BEFORE: on the old loops the assertions for "é" (0xC3 0xA9),
+    // "•" (0xE2 0x80 0xA2), and "λ" (0xCE 0xBB) all FAILED (indexOf returned null).
+    // GREEN-AFTER: all assertions pass with the cpSeqLen-based loops.
+    //
+    // String breakdown:
+    //   "Café"  — C(1) a(1) f(1) é(2: 0xC3 0xA9)
+    //   "•"     — bullet U+2022 (3: 0xE2 0x80 0xA2)
+    //   "λ"     — lambda U+03BB (2: 0xCE 0xBB)
+    const a = std.testing.allocator;
+
+    // A paragraph with non-ASCII characters that the old byte-gated loop dropped.
+    const body = "Caf\xc3\xa9\xe2\x80\xa2\xce\xbb";
+
+    const win_w: u16 = 40;
+    const win_h: u16 = 4;
+    var screen = try vaxis.Screen.init(a, .{
+        .cols = win_w,
+        .rows = win_h,
+        .x_pixel = 0,
+        .y_pixel = 0,
+    });
+    defer screen.deinit(a);
+
+    const win: Window = .{
+        .x_off = 0,
+        .y_off = 0,
+        .parent_x_off = 0,
+        .parent_y_off = 0,
+        .width = win_w,
+        .height = win_h,
+        .screen = &screen,
+    };
+
+    var frame_arena = std.heap.ArenaAllocator.init(a);
+    defer frame_arena.deinit();
+
+    try render(win, frame_arena.allocator(), body);
+
+    var rendered: std.ArrayList(u8) = .empty;
+    defer rendered.deinit(a);
+    try collectScreenText(&screen, &rendered);
+    const text = rendered.items;
+
+    // No replacement characters.
+    try std.testing.expect(std.mem.indexOf(u8, text, "\xef\xbf\xbd") == null);
+
+    // ASCII prefix must appear.
+    try std.testing.expect(std.mem.indexOf(u8, text, "Caf") != null);
+
+    // é (U+00E9, 0xC3 0xA9) must appear — 2-byte sequence.
+    try std.testing.expect(std.mem.indexOf(u8, text, "\xc3\xa9") != null);
+
+    // • (U+2022, 0xE2 0x80 0xA2) must appear — 3-byte sequence.
+    try std.testing.expect(std.mem.indexOf(u8, text, "\xe2\x80\xa2") != null);
+
+    // λ (U+03BB, 0xCE 0xBB) must appear — 2-byte sequence.
+    try std.testing.expect(std.mem.indexOf(u8, text, "\xce\xbb") != null);
 }
 
 test "markdown_detail compiles" {

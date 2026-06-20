@@ -153,15 +153,25 @@ pub const ViewSwitcher = struct {
                 entry.name,
             };
             for (tab_parts) |part| {
+                // Iterate by UTF-8 codepoint so that multi-byte characters in
+                // tab names (e.g. non-ASCII labels) are emitted as a single cell.
+                // The old `pi += 1` loop emitted one byte per cell, splitting
+                // multi-byte sequences into invalid 1-byte graphemes.
                 var pi: usize = 0;
-                while (pi < part.len) : (pi += 1) {
-                    if (col >= w) break;
+                while (pi < part.len and col < w) {
+                    const byte = part[pi];
+                    const seq_len: usize = std.unicode.utf8ByteSequenceLength(byte) catch {
+                        pi += 1;
+                        continue;
+                    };
+                    if (pi + seq_len > part.len) break;
                     // Slice into `part` for a stable grapheme pointer.
                     win.writeCell(@intCast(col), 0, .{
-                        .char = .{ .grapheme = part[pi .. pi + 1], .width = 1 },
+                        .char = .{ .grapheme = part[pi .. pi + seq_len], .width = 1 },
                         .style = tab_style,
                     });
                     col += 1;
+                    pi += seq_len;
                 }
             }
             // Separator between tabs.
@@ -302,6 +312,67 @@ test "view_switcher: handleKey digit direct-jump" {
     try std.testing.expect(!consumed9);
     // Active index unchanged.
     try std.testing.expectEqual(@as(usize, 1), vs.active_idx);
+}
+
+test "view_switcher: renderTabBar — non-ASCII tab name characters are NOT split (task 4195)" {
+    // Regression test for the byte-split bug fixed in task 4195.
+    //
+    // The bug: the tab part render loop advanced `pi += 1` per iteration, emitting
+    // one byte per cell.  For a 2+ byte UTF-8 codepoint this splits the sequence
+    // into invalid 1-byte graphemes (→ U+FFFD or garbled output).
+    //
+    // The fix: advance by cpSeqLen (via std.unicode.utf8ByteSequenceLength) so the
+    // full sequence is emitted as a single grapheme.
+    //
+    // RED-BEFORE: on the old loop the assertion for é (0xC3 0xA9) FAILED because
+    // the two bytes were emitted as two separate cells instead of one grapheme.
+    // GREEN-AFTER: the full 2-byte sequence appears as a single cell grapheme.
+    const a = std.testing.allocator;
+    var vs: ViewSwitcher = .{};
+    // Tab name "Caf\xc3\xa9" = "Café" — the 'é' (U+00E9) is a 2-byte sequence.
+    try vs.register(.{ .id = .agent_monitor, .name = "Caf\xc3\xa9", .key = '1' });
+
+    const win_w: u16 = 40;
+    const win_h: u16 = 2;
+    var screen = try vaxis.Screen.init(a, .{
+        .cols = win_w,
+        .rows = win_h,
+        .x_pixel = 0,
+        .y_pixel = 0,
+    });
+    defer screen.deinit(a);
+
+    const win: Window = .{
+        .x_off = 0,
+        .y_off = 0,
+        .parent_x_off = 0,
+        .parent_y_off = 0,
+        .width = win_w,
+        .height = win_h,
+        .screen = &screen,
+    };
+
+    var frame_arena = std.heap.ArenaAllocator.init(a);
+    defer frame_arena.deinit();
+    vs.renderTabBar(win, frame_arena.allocator());
+
+    // Collect all grapheme bytes emitted into the screen.
+    var rendered: std.ArrayList(u8) = .empty;
+    defer rendered.deinit(a);
+    for (screen.buf) |cell| {
+        const g = cell.char.grapheme;
+        if (g.len > 0 and g[0] != 0) {
+            try rendered.appendSlice(a, g);
+        }
+    }
+    const text = rendered.items;
+
+    // No replacement characters.
+    try std.testing.expect(std.mem.indexOf(u8, text, "\xef\xbf\xbd") == null);
+    // ASCII prefix of the name must appear.
+    try std.testing.expect(std.mem.indexOf(u8, text, "Caf") != null);
+    // é (U+00E9, 0xC3 0xA9) must appear as a 2-byte grapheme (not split bytes).
+    try std.testing.expect(std.mem.indexOf(u8, text, "\xc3\xa9") != null);
 }
 
 test "view_switcher compiles" {

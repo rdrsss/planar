@@ -396,15 +396,24 @@ fn renderDetail(state: *const BoardState, win: Window, arena: std.mem.Allocator)
     if (detail.title.len > 0 and row < win.height) {
         const title_style: Style = .{ .bold = true };
         var col: usize = 0;
-        for (detail.title, 0..) |byte, ti| {
-            if (col >= win.width) break;
-            if (byte & 0x80 == 0) {
-                win.writeCell(@intCast(col), row, .{
-                    .char = .{ .grapheme = detail.title[ti .. ti + 1], .width = 1 },
-                    .style = title_style,
-                });
-                col += 1;
-            }
+        // Iterate by UTF-8 codepoint so that multi-byte characters (accented
+        // letters, arrows, bullets, etc.) are emitted as a single cell.
+        // The old byte-by-byte loop gated on `byte & 0x80 == 0` and silently
+        // DROPPED every high byte — non-ASCII titles appeared truncated.
+        var ti: usize = 0;
+        while (ti < detail.title.len and col < win.width) {
+            const byte = detail.title[ti];
+            const seq_len = markdown_detail.cpSeqLen(byte) catch {
+                ti += 1;
+                continue;
+            };
+            if (ti + seq_len > detail.title.len) break;
+            win.writeCell(@intCast(col), row, .{
+                .char = .{ .grapheme = detail.title[ti .. ti + seq_len], .width = 1 },
+                .style = title_style,
+            });
+            col += 1;
+            ti += seq_len;
         }
         row += 1;
     }
@@ -1023,6 +1032,73 @@ test "task_board: renderDetail renders reopens + touch_paths + links (tasks 4019
     // Verify the blocker and blockee labels appear.
     try testing.expect(std.mem.indexOf(u8, text, "BlockerTask") != null);
     try testing.expect(std.mem.indexOf(u8, text, "BlockeeTask") != null);
+}
+
+test "task_board: renderDetail — non-ASCII title characters are NOT dropped (task 4195)" {
+    // Regression test for the byte-drop bug fixed in task 4195.
+    //
+    // The bug: the title render loop gated on `byte & 0x80 == 0` and silently
+    // dropped every high byte — a title like "Café•λ" rendered as "Caf".
+    //
+    // RED-BEFORE: assertions for é (0xC3 0xA9), • (0xE2 0x80 0xA2), and
+    // λ (0xCE 0xBB) all FAILED (indexOf returned null).
+    // GREEN-AFTER: all assertions pass after converting to cpSeqLen iteration.
+    const a = testing.allocator;
+    // "Café•λ" — 'é' is 2-byte (0xC3 0xA9), '•' is 3-byte (0xE2 0x80 0xA2),
+    // 'λ' is 2-byte (0xCE 0xBB).
+    const non_ascii_title = "Caf\xc3\xa9\xe2\x80\xa2\xce\xbb";
+
+    var state = BoardState.init(a);
+    defer state.deinit();
+    // Inject a detail pane with a non-ASCII title directly (no DB needed).
+    state.detail = view_model.TaskBoardDetail{
+        .id = 1,
+        .title = try a.dupe(u8, non_ascii_title),
+        .body = try a.dupe(u8, ""),
+        .reopens = try a.alloc(view_model.TaskReopenRow, 0),
+        .touch_paths = try a.alloc(view_model.TaskTouchPathRow, 0),
+        .links = try a.alloc(view_model.TaskLinkRow, 0),
+    };
+
+    const win_w: u16 = 80;
+    const win_h: u16 = 6;
+    var screen = try vaxis.Screen.init(a, .{
+        .cols = win_w,
+        .rows = win_h,
+        .x_pixel = 0,
+        .y_pixel = 0,
+    });
+    defer screen.deinit(a);
+
+    const detail_win: Window = .{
+        .x_off = 0,
+        .y_off = 0,
+        .parent_x_off = 0,
+        .parent_y_off = 0,
+        .width = win_w,
+        .height = win_h,
+        .screen = &screen,
+    };
+
+    var render_arena = std.heap.ArenaAllocator.init(a);
+    defer render_arena.deinit();
+    try renderDetail(&state, detail_win, render_arena.allocator());
+
+    var rendered: std.ArrayList(u8) = .empty;
+    defer rendered.deinit(a);
+    try collectScreenText(&screen, &rendered);
+    const text = rendered.items;
+
+    // No replacement characters.
+    try testing.expect(std.mem.indexOf(u8, text, "\xef\xbf\xbd") == null);
+    // ASCII prefix must appear.
+    try testing.expect(std.mem.indexOf(u8, text, "Caf") != null);
+    // é (U+00E9) must appear — 2-byte sequence.
+    try testing.expect(std.mem.indexOf(u8, text, "\xc3\xa9") != null);
+    // • (U+2022) must appear — 3-byte sequence.
+    try testing.expect(std.mem.indexOf(u8, text, "\xe2\x80\xa2") != null);
+    // λ (U+03BB) must appear — 2-byte sequence.
+    try testing.expect(std.mem.indexOf(u8, text, "\xce\xbb") != null);
 }
 
 test "task_board: legendLabel fits in buf" {

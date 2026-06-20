@@ -167,18 +167,27 @@ pub fn render(
         // scoped local that is freed before vaxis.render() — a classic UAF.
         // We use node.label's bytes as subslices (node.label is heap-allocated
         // and long-lived) so the grapheme pointer is stable across the flush.
-        var label_bytes_written: usize = 0;
-        for (node.label, 0..) |byte, li| {
-            if (col >= w) break;
-            if (byte < 0x80) {
-                // Slice into the heap-allocated label string — pointer is stable.
-                win.writeCell(@intCast(col), @intCast(row), .{
-                    .char = .{ .grapheme = node.label[li .. li + 1], .width = 1 },
-                    .style = sel_style,
-                });
-                col += 1;
-            }
-            label_bytes_written += 1;
+        //
+        // Iterate by UTF-8 codepoint so that multi-byte characters (accented
+        // letters, arrows, bullets, etc.) are emitted as a single cell.
+        // The old loop gated on `byte < 0x80` and silently DROPPED every high
+        // byte — non-ASCII labels appeared truncated.
+        var li: usize = 0;
+        while (li < node.label.len and col < w) {
+            const byte = node.label[li];
+            const seq_len: usize = std.unicode.utf8ByteSequenceLength(byte) catch {
+                // Stray continuation or invalid byte — skip 1, stay in sync.
+                li += 1;
+                continue;
+            };
+            if (li + seq_len > node.label.len) break;
+            // Slice into the heap-allocated label string — pointer is stable.
+            win.writeCell(@intCast(col), @intCast(row), .{
+                .char = .{ .grapheme = node.label[li .. li + seq_len], .width = 1 },
+                .style = sel_style,
+            });
+            col += 1;
+            li += seq_len;
         }
 
         // ---- Count badge "[n]" at the end, right-aligned if space --
@@ -219,6 +228,7 @@ fn badgeStyle(badge: view_model.StatusBadge) Style {
         .cancelled => .{ .dim = true },
         .paused => .{ .fg = .{ .index = 5 } }, // magenta
         .abandoned => .{ .dim = true },
+        .superseded => .{ .dim = true }, // superseded: visually de-emphasised like abandoned
         .none => .{},
     };
 }
@@ -260,6 +270,76 @@ test "tree_navigator: Navigator moveDown with zero visible_count is safe" {
     var nav: Navigator = .{};
     nav.moveDown(0);
     try std.testing.expectEqual(@as(usize, 0), nav.selected_idx);
+}
+
+test "tree_navigator: render — non-ASCII label characters are NOT dropped (task 4195)" {
+    // Regression test for the byte-drop bug fixed in task 4195.
+    //
+    // The bug: the label render loop gated on `byte < 0x80` and silently
+    // dropped every high byte — a label like "Café•λ" rendered as "Caf".
+    //
+    // RED-BEFORE: on the old loop the assertions for é (0xC3 0xA9),
+    // • (0xE2 0x80 0xA2), and λ (0xCE 0xBB) all FAILED (indexOf returned null).
+    // GREEN-AFTER: all assertions pass after converting to utf8ByteSequenceLength.
+    const a = std.testing.allocator;
+    // "Café•λ": 'é' = 2-byte, '•' = 3-byte, 'λ' = 2-byte.
+    const label = "Caf\xc3\xa9\xe2\x80\xa2\xce\xbb";
+
+    const nodes = [_]TreeNode{.{
+        .label = label,
+        .depth = 0,
+        .badge = .none,
+        .count_badge = null,
+        .collapsed = false,
+        .hidden = false,
+    }};
+    const nav: Navigator = .{};
+
+    const win_w: u16 = 40;
+    const win_h: u16 = 4;
+    var screen = try vaxis.Screen.init(a, .{
+        .cols = win_w,
+        .rows = win_h,
+        .x_pixel = 0,
+        .y_pixel = 0,
+    });
+    defer screen.deinit(a);
+
+    const win: Window = .{
+        .x_off = 0,
+        .y_off = 0,
+        .parent_x_off = 0,
+        .parent_y_off = 0,
+        .width = win_w,
+        .height = win_h,
+        .screen = &screen,
+    };
+
+    var frame_arena = std.heap.ArenaAllocator.init(a);
+    defer frame_arena.deinit();
+    render(win, &nodes, &nav, frame_arena.allocator());
+
+    // Collect all grapheme bytes emitted into the screen.
+    var rendered: std.ArrayList(u8) = .empty;
+    defer rendered.deinit(a);
+    for (screen.buf) |cell| {
+        const g = cell.char.grapheme;
+        if (g.len > 0 and g[0] != 0) {
+            try rendered.appendSlice(a, g);
+        }
+    }
+    const text = rendered.items;
+
+    // No replacement characters.
+    try std.testing.expect(std.mem.indexOf(u8, text, "\xef\xbf\xbd") == null);
+    // ASCII prefix must appear.
+    try std.testing.expect(std.mem.indexOf(u8, text, "Caf") != null);
+    // é (U+00E9) must appear — 2-byte sequence.
+    try std.testing.expect(std.mem.indexOf(u8, text, "\xc3\xa9") != null);
+    // • (U+2022) must appear — 3-byte sequence.
+    try std.testing.expect(std.mem.indexOf(u8, text, "\xe2\x80\xa2") != null);
+    // λ (U+03BB) must appear — 2-byte sequence.
+    try std.testing.expect(std.mem.indexOf(u8, text, "\xce\xbb") != null);
 }
 
 test "tree_navigator compiles" {
