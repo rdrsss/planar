@@ -300,11 +300,11 @@ pub fn event(
 /// Insert a `run_touches` row. `task_id` is a plain integer (not an FK
 /// cascade) so deleting a task later cannot erase the historical record
 /// of what it once touched. Duplicate (run, task, path, kind) tuples are
-/// rejected by the UNIQUE constraint; the engine surfaces that as a
-/// no-op-friendly idempotent insert by returning the existing rowid is
-/// NOT attempted here — callers that re-touch the same tuple receive
-/// Error.QueryFailed via the UNIQUE violation. (Harvest dedupes before
-/// inserting, so this path is for genuine programmer error.)
+/// rejected by the UNIQUE constraint; callers that re-touch the same
+/// tuple receive Error.QueryFailed via the UNIQUE violation. (Harvest
+/// dedupes before inserting, so this path is for genuine programmer
+/// error.) When idempotent re-harvest behavior is needed, use
+/// `touchIdempotent` instead.
 pub fn touch(
     d: *db.sqlite.Db,
     run_id: i64,
@@ -322,6 +322,33 @@ pub fn touch(
         .{ .text = @tagName(kind) },
     }) catch |e| {
         std.log.err("runs.touch exec failed: {s}", .{@errorName(e)});
+        return Error.QueryFailed;
+    };
+}
+
+/// Insert a `run_touches` row idempotently. Identical to `touch` except
+/// that a UNIQUE constraint conflict on (run_id, task_id, path, kind) is
+/// silently ignored — the existing row is left untouched and the call
+/// succeeds with no error. All other errors (malformed SQL, disk I/O,
+/// etc.) still propagate as Error.QueryFailed. Use this in harvest paths
+/// where a re-harvest of the same (run, task) must be a safe no-op.
+pub fn touchIdempotent(
+    d: *db.sqlite.Db,
+    run_id: i64,
+    task_id: i64,
+    path: []const u8,
+    kind: TouchKind,
+) Error!void {
+    _ = d.execParams(
+        \\insert or ignore into run_touches (run_id, task_id, path, kind)
+        \\values (?, ?, ?, ?)
+    , &.{
+        .{ .int = run_id },
+        .{ .int = task_id },
+        .{ .text = path },
+        .{ .text = @tagName(kind) },
+    }) catch |e| {
+        std.log.err("runs.touchIdempotent exec failed: {s}", .{@errorName(e)});
         return Error.QueryFailed;
     };
 }
