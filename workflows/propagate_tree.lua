@@ -49,8 +49,8 @@ seam: planar run start/event/finish, planar tree, planar ext propagate-one
 --
 -- ## Host surface used
 --
---   cli.planar_json  — descendants, propagate-one (with --json), run start/finish/event
---   cli.planar       — run finish, run event (non-json; simpler for status-only calls)
+--   cli.planar_json  — run start, plan descendants, ext propagate-one (with --json)
+--   cli.planar       — run finish, run event (non-json)
 --   flow.phase / flow.log / flow.fail / flow.result
 --   ctx.args
 

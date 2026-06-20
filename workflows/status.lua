@@ -1,6 +1,6 @@
 --[[ @meta
 name: status
-description: Read-composition status — scope, plans, tasks, and questions composed into a scalar summary.
+description: Read-composition status — scope, plans, tasks, and questions composed into a structured summary.
 phases: status
 seam: planar scope show, planar plan list, planar task list, planar question list, planar run start/event/finish
 --]]
@@ -24,27 +24,24 @@ seam: planar scope show, planar plan list, planar task list, planar question lis
 --
 -- ## Output (flow.result)
 --
--- Scalar fields only (engine limitation: nested object tables in flow.result
--- crash the writeLuaTableJson serializer). Arrays of objects are returned as
--- counts; the LLM/consumer composes the display from the raw planar CLI output.
+-- Scalar counts + full entity lists (the writeLuaTableJson nested-object panic
+-- is fixed in plan 638 — lua_absindex captures the table slot before any
+-- lua_push* call, so arrays of objects now serialize correctly).
 --
---   scope_slug        (string)  — resolved scope slug from scope show
---   active_plan_count (int)     — number of active plans
---   paused_plan_count (int)     — number of paused plans
---   todo_task_count   (int)     — number of todo tasks
---   doing_task_count  (int)     — number of doing tasks
---   blocked_task_count(int)     — number of blocked tasks
---   open_question_count(int)    — number of open questions
---   summary           (string)  — human-readable one-liner
---   run_uid           (string)  — trace run uid (absent when plan_id not given)
---
--- ## Engine limitation note
---
--- The planar-execute writeLuaTableJson serializer panics on nested Lua tables
--- with string keys (objects) — lua_next with a relative stack index after
--- lua_pushnil becomes invalid. This affects any table containing sub-objects
--- (e.g. [{id=1, title="..."}]). To avoid this, this workflow returns only
--- scalar counts rather than the full entity lists.
+--   scope_slug          (string)  — resolved scope slug from scope show
+--   active_plan_count   (int)     — number of active plans
+--   paused_plan_count   (int)     — number of paused plans
+--   todo_task_count     (int)     — number of todo tasks
+--   doing_task_count    (int)     — number of doing tasks
+--   blocked_task_count  (int)     — number of blocked tasks
+--   open_question_count (int)     — number of open questions
+--   active_plans        (array)   — [{id, title, status}, ...] active plans
+--   paused_plans        (array)   — [{id, title, status}, ...] paused plans
+--   doing_tasks         (array)   — [{id, title, status}, ...] doing tasks
+--   blocked_tasks       (array)   — [{id, title, status}, ...] blocked tasks
+--   open_questions      (array)   — [{id, title, status}, ...] open questions
+--   summary             (string)  — human-readable one-liner
+--   run_uid             (string)  — trace run uid (absent when plan_id not given)
 --
 -- ## Tracing
 --
@@ -88,8 +85,8 @@ end
 -- Phase: status
 --
 -- Composes scope + plans + tasks + questions into a result payload with
--- scalar counts. Returns counts rather than entity arrays to avoid the
--- nested-object-table serializer limitation.
+-- scalar counts AND full entity arrays. The writeLuaTableJson nested-object
+-- panic is fixed (lua_absindex), so arrays of objects now serialize correctly.
 -- ---------------------------------------------------------------------------
 function status()
   flow.phase("status")
@@ -129,7 +126,7 @@ function status()
     flow.log("status: trace run " .. run_uid .. " opened for plan " .. plan_id_str)
   end
 
-  -- 3. Compose the reads (collect counts only, not entity arrays).
+  -- 3. Compose the reads: collect entity lists AND derive counts from them.
 
   -- 3a. Plan list: active + paused.
   local active_argv = {"plan", "list", "--status", "active", "--json"}
@@ -157,6 +154,30 @@ function status()
   local qopen_argv = {"question", "list", "--status", "open", "--json"}
   for _, v in ipairs(scope_suffix) do qopen_argv[#qopen_argv + 1] = v end
   local open_questions = cli.planar_json(qopen_argv)
+
+  -- Extract id/title/status sub-tables for inclusion in flow.result.
+  -- The engine's writeLuaTableJson now handles nested object tables correctly
+  -- (lua_absindex fix); we build minimal {id, title, status} summaries.
+  local function extract_entities(list, id_field, title_field, status_field)
+    local out = {}
+    id_field     = id_field     or "id"
+    title_field  = title_field  or "title"
+    status_field = status_field or "status"
+    for _, item in ipairs(list) do
+      out[#out + 1] = {
+        id     = item[id_field],
+        title  = tostring(item[title_field] or ""),
+        status = tostring(item[status_field] or ""),
+      }
+    end
+    return out
+  end
+
+  local active_plan_list  = extract_entities(active_plans)
+  local paused_plan_list  = extract_entities(paused_plans)
+  local doing_task_list   = extract_entities(doing_tasks)
+  local blocked_task_list = extract_entities(blocked_tasks)
+  local open_question_list = extract_entities(open_questions)
 
   -- Count results.
   local n_active     = #active_plans
@@ -202,9 +223,8 @@ function status()
     flow.log("status: trace run " .. run_uid .. " finished")
   end
 
-  -- 7. Return scalars only. No arrays/sub-tables — the engine's writeLuaTableJson
-  --    panics on nested object tables (string-keyed sub-tables use lua_next with a
-  --    relative idx after lua_pushnil, corrupting the stack).
+  -- 7. Return scalar counts + full entity lists. The engine's writeLuaTableJson
+  --    now handles nested object tables (lua_absindex fix applied in plan 638).
   local result = {
     scope_slug          = scope_slug,
     active_plan_count   = n_active,
@@ -213,6 +233,11 @@ function status()
     doing_task_count    = n_doing,
     blocked_task_count  = n_blocked,
     open_question_count = n_questions,
+    active_plans        = active_plan_list,
+    paused_plans        = paused_plan_list,
+    doing_tasks         = doing_task_list,
+    blocked_tasks       = blocked_task_list,
+    open_questions      = open_question_list,
     summary             = summary,
   }
   if run_uid ~= nil then

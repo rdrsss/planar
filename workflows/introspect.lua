@@ -127,11 +127,6 @@ function introspect()
   local bundle = cli.planar_json(report_argv)
 
   -- 2b. planar-watch read surfaces (always-on observability tables)
-  flow.log("introspect.lua: reading planar-watch actions")
-  local ok_actions, pw_actions = pcall(function()
-    return cli.planar_watch_json({"actions", "--json"})
-  end)
-
   flow.log("introspect.lua: reading planar-watch claims")
   local ok_claims, pw_claims = pcall(function()
     return cli.planar_watch_json({"claims", "--json", "--status", "all"})

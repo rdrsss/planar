@@ -530,9 +530,10 @@ fn pushArgsTable(L: ?*c.lua_State, hs: *HostState) void {
 // Subprocess shells (allowlisted binaries only — NO general exec)
 // ---------------------------------------------------------------------------
 
-/// ALLOWED_CLI_BINS — the only binaries `cli.planar` may shell. The binary is
-/// hardcoded per-fn (cli.planar always shells "planar"); this constant documents
-/// the boundary and is the allowlist a future cli.planar_agent/etc. would join.
+/// ALLOWED_CLI_BINS — the only binaries the cli.* fns may shell. Each fn
+/// hardcodes its binary (cli.planar → "planar", cli.planar_agent →
+/// "planar-agent", cli.planar_watch → "planar-watch"); this constant
+/// documents the full allowlist and is the guard runAllowlisted checks.
 const ALLOWED_CLI_BINS = [_][]const u8{ "planar", "planar-agent", "planar-watch" };
 
 /// runAllowlisted shells `<bin> <argv...>` (bin MUST be in ALLOWED_CLI_BINS)
