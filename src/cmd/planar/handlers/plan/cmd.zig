@@ -1,5 +1,5 @@
 //! handlers/plan/cmd.zig — `planar plan {create, show, list, update, link, recompute-status,
-//!   edit, view, step {add, list, done, skip, link}, closeout, descendants}`
+//!   edit, view, step {add, list, done, skip, link}, closeout, descendants, divergence}`
 
 const cli = @import("cli");
 
@@ -14,6 +14,7 @@ const review = @import("review.zig");
 const link = @import("link.zig");
 const next = @import("next.zig");
 const recommend_strategy = @import("recommend_strategy.zig");
+const divergence = @import("divergence.zig");
 const recompute_status = @import("recompute_status.zig");
 const closeout = @import("closeout.zig");
 const step = @import("step/cmd.zig");
@@ -141,6 +142,23 @@ pub const verb: cli.Cmd = .{
             },
             .positionals = &.{.{ .name = "plan-id", .kind = .string, .required = true }},
             .run = cli.handler(recommend_strategy.handle),
+        },
+        .{
+            .name = "divergence",
+            .desc = "Report the declared-vs-derived closure divergence for a plan's open tasks (decision D4).",
+            .long_desc = "Report the declared-vs-derived closure divergence for a plan's open tasks.\n\n" ++
+                "  For every unordered pair of open (todo) tasks, compares whether the two\n" ++
+                "  tasks overlap under the DECLARED touch set vs. the DERIVED closure set.\n" ++
+                "  A pair whose verdict differs between sources is a FLIP — the two sources\n" ++
+                "  disagree about whether those tasks can run in parallel.\n\n" ++
+                "  Jaccard distance = flips / |declared_overlaps ∪ derived_overlaps|.\n" ++
+                "  0.0 = sources agree on every pair; 1.0 = no overlapping pair in common.\n\n" ++
+                "  READ-ONLY: computes and reports; writes nothing.",
+            .flags = &.{
+                .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
+            },
+            .positionals = &.{.{ .name = "plan-id", .kind = .string, .required = true }},
+            .run = cli.handler(divergence.handle),
         },
         .{
             .name = "recompute-status",

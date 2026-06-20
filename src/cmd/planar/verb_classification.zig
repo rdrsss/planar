@@ -43,7 +43,7 @@ pub const Class = enum {
 ///
 ///  - `init`                                 → planning
 ///  - `plan {create, update, done, ...}`     → planning
-///  - `plan {show, list, next, recommend-strategy, view, diff}`
+///  - `plan {show, list, next, recommend-strategy, divergence, view, diff}`
 ///                                            → execution_or_read
 ///  - `task {add, update, done, touches add/remove, ...}` → planning
 ///  - `task touches list`                  → execution_or_read
@@ -194,6 +194,7 @@ fn isReadLeaf(sub: []const u8) bool {
         eq(sub, "diff") or
         eq(sub, "next") or
         eq(sub, "recommend-strategy") or
+        eq(sub, "divergence") or
         eq(sub, "tree") or
         eq(sub, "review") or
         eq(sub, "status") or
@@ -254,6 +255,7 @@ test "classify: plan reads are execution_or_read" {
     try std.testing.expectEqual(Class.execution_or_read, classify(&.{ "plan", "list" }));
     try std.testing.expectEqual(Class.execution_or_read, classify(&.{ "plan", "next" }));
     try std.testing.expectEqual(Class.execution_or_read, classify(&.{ "plan", "recommend-strategy" }));
+    try std.testing.expectEqual(Class.execution_or_read, classify(&.{ "plan", "divergence" }));
 }
 
 test "classify: task done is planning (coders use planar-agent complete)" {

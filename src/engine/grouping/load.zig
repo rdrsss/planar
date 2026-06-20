@@ -138,6 +138,12 @@ pub fn recommendGreedy(
     budget: u32,
 ) Error!Recommendation {
     const loaded = try loadInputs(d, gpa, plan_id);
+    // errdefer: if greedy.group returns error.OutOfMemory, release the arena so
+    // we do not leak the loaded task/dep slices that back into it.
+    errdefer {
+        loaded.arena.deinit();
+        gpa.destroy(loaded.arena);
+    }
     const grouping = try greedy.group(gpa, loaded.tasks, loaded.deps, budget);
     return finish(loaded, budget, grouping, .greedy, false, false);
 }
@@ -182,6 +188,13 @@ pub fn recommendWith(
     if (solver == .greedy) return recommendGreedy(d, gpa, plan_id, budget);
 
     const loaded = try loadInputs(d, gpa, plan_id);
+    // errdefer: if any greedy.group call below returns error.OutOfMemory, release
+    // the arena (and the solver slices, if the mtkahypar arm already allocated
+    // them) so neither leaks on the OOM path.
+    errdefer {
+        loaded.arena.deinit();
+        gpa.destroy(loaded.arena);
+    }
 
     // mtkahypar requested: run the optimal arm when available, else degrade.
     // `deps` is threaded so the M3.3c D-HG2 cycle-repair can make the solver's
@@ -191,6 +204,9 @@ pub fn recommendWith(
             // Both arms ran on identical inputs: ship the lower-cost grouping.
             // The solver arm must NEVER do worse than greedy (M3 acceptance).
             const solver_grouping: greedy.Grouping = .{ .slices = slices };
+            // errdefer for the solver slices: if greedy.group OOMs after the
+            // solver already allocated its partition, free the solver result too.
+            errdefer solver_grouping.deinit(gpa);
             var greedy_grouping = try greedy.group(gpa, loaded.tasks, loaded.deps, budget);
             if (greedy_grouping.totalCost() < solver_grouping.totalCost()) {
                 // Greedy strictly better → ship greedy, free the solver result.
