@@ -434,19 +434,11 @@ test "guardrail: workflow cannot call a DENIED spawn-shaped function (agent)" {
     try std.testing.expect(std.mem.indexOf(u8, res.stdout, "\"spawn_denied\":true") != null);
 }
 
-test "guardrail: runAllowlisted rejects a non-allowlisted binary" {
-    // Attempting to shell a binary not in ALLOWED_CLI_BINS via cli.planar
-    // is impossible by design (the fn signature hardcodes "planar").
-    // The runAllowlisted gate rejects any binary not in the allowlist.
-    // We test this by confirming cli.planar cannot be used to run arbitrary
-    // binaries — the argv goes to `planar` (allowlisted), not the caller's
-    // binary. A workflow that "tricks" planar into running a bad subcommand
-    // just gets a planar error, not arbitrary exec.
-    //
-    // What we actually test: a workflow that tries to use a global `exec`
-    // or `os.execute` fails, and cli.planar only shells "planar" (the
-    // ALLOWED_CLI_BINS enforcement is at the Zig level, not Lua-visible).
-    // The Lua-level proof is that os/io are nil AND cli.exec is nil.
+test "guardrail: no general exec surface in Lua (os, io, cli.exec, cli.spawn all nil)" {
+    // The ALLOWED_CLI_BINS enforcement is at the Zig level, not Lua-visible:
+    // cli.planar hardcodes "planar", cli.planar_agent hardcodes "planar-agent",
+    // etc. There is no way for a workflow to reach an arbitrary binary from Lua.
+    // Proof: os and io are nil (sandbox), and cli has no exec/spawn fields.
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();

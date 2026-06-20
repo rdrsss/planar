@@ -102,62 +102,14 @@ function closeout()
 
   -- 3. Evaluate the gate in dry-run mode.
   --
-  --    IMPORTANT: `plan closeout --dry-run` exits NON-ZERO when the plan is
-  --    NOT ready. The host's runAllowlisted raises a Lua error on non-zero
-  --    exit. We wrap the call in pcall so we can handle the blocked case
-  --    without crashing the phase. The JSON is always written to stdout before
-  --    the non-zero exit, so cli.planar_json has already received it; but
-  --    because the exit is non-zero runAllowlisted never returns — it raises.
-  --
-  --    Solution: call plan closeout --dry-run without --json first via pcall
-  --    to detect readiness, then re-call with --json only on the ready path.
-  --    Actually simpler: call with --json inside pcall; on error the plan is
-  --    not ready (the error message carries the stderr). Then call show via
-  --    a separate read for the blocked_by information.
-  --
-  --    Cleanest approach given the host surface: pcall the dry-run --json
-  --    call; on success → gate table is our result; on error → plan is blocked
-  --    and we read blocked_by by re-running with the same call (which will
-  --    still emit JSON to stdout before exiting non-zero). We need the
-  --    blocked_by array from the JSON, so we use a two-step:
-  --      step A: pcall dry-run --json (success means ready=true)
-  --      step B: if step A failed, re-run dry-run --json via pcall and parse
-  --              the output — but runAllowlisted raises before returning stdout.
-  --
-  --    The only reliable way is: run dry-run WITHOUT --json (text mode) and
-  --    then separately run plan show to read current status. But we lose the
-  --    structured blocked_by array.
-  --
-  --    Best approach: use pcall around cli.planar_json for the dry-run. On
-  --    the error path, run a separate `plan closeout --dry-run --json` via
-  --    cli.planar (not _json) to get the raw stdout, then do a manual parse
-  --    of the ready field and blocked_by. BUT cli.planar also raises on
-  --    non-zero exit.
-  --
-  --    Root solution: since both cli.planar and cli.planar_json raise on
-  --    non-zero exit, we must use pcall for the dry-run call and accept that
-  --    on the error path we only have the Lua error string (which is the
-  --    stderr from planar). The blocked_by list must come from a second
-  --    dry-run call that we ALSO pcall. Both will raise, but we collect what
-  --    we can from the error message.
-  --
-  --    Pragmatic design: pcall the dry-run _json call. On success → ready=true
-  --    (gate table has blocked_by=[]). On failure → blocked; run a second
-  --    pcall dry-run call to read the JSON gate table (both will raise, but
-  --    runAllowlisted does write the error message with the stderr contents).
-  --    The stderr on a blocked plan is the `plan <id> is not ready to close`
-  --    message, not the JSON. The JSON went to stdout before the non-zero exit,
-  --    but runAllowlisted only exposes the exit-error raiseError message which
-  --    embeds stderr.
-  --
-  --    FINAL DESIGN: use a three-step approach:
-  --    (a) pcall cli.planar_json on the dry-run -- if it succeeds, gate.ready
-  --        must be true (ready plans exit 0). Proceed with apply.
-  --    (b) If it fails (non-zero exit = not ready), surface blocked state.
-  --        We know the plan is not ready. For the blocked_by list: the engine
-  --        provides the stderr message in the Lua error string. We emit the
-  --        raw error as the blocked_by payload rather than an empty array, so
-  --        the caller has diagnostic information.
+  --    FINAL DESIGN: pcall cli.planar_json on the dry-run.
+  --    (a) Success  → gate.ready=true (ready plans exit 0). Proceed with apply.
+  --    (b) Failure  → plan is not ready (non-zero exit). The host's raiseError
+  --        embeds stderr in the Lua error string, which carries the diagnostic
+  --        reason. runAllowlisted raises before returning stdout, so the JSON
+  --        blocked_by array is not directly accessible on the error path. We
+  --        surface the error string as the blocked_by content — it contains the
+  --        actual "plan N is not ready: …" message from stderr.
 
   local gate_ok, gate_or_err = pcall(function()
     return cli.planar_json({
@@ -200,9 +152,11 @@ function closeout()
 
     -- Return the not-ready result. The plan is UNCHANGED; closeout was NEVER
     -- applied. This is the structural Rule-7 guarantee.
+    -- blocked_by carries the real diagnostic from stderr (embedded by
+    -- raiseError as "{bin} exited non-zero: {stderr}").
     flow.result({
       ready       = false,
-      blocked_by  = {"gate blocked: see run " .. run_uid .. " events for details"},
+      blocked_by  = {err_msg},
       run_uid     = run_uid,
     })
     return

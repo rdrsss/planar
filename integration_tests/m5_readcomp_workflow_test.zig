@@ -174,8 +174,10 @@ test "status workflow: seeded active plan + doing task + open question appear in
     try std.testing.expect(res.term == .exited);
     try std.testing.expectEqual(@as(u32, 0), res.term.exited);
 
-    // Parse the flow.result. The status workflow returns scalar counts (no nested
-    // object arrays — the engine panics on nested object tables in writeLuaTableJson).
+    // Parse the flow.result. The status workflow now returns scalar counts AND
+    // full entity lists (the writeLuaTableJson nested-object panic is fixed in
+    // plan 638 — lua_absindex captures the table slot before any lua_push*).
+    const EntitySummary = struct { id: i64 = 0, title: []const u8 = "", status: []const u8 = "" };
     const StatusResult = struct {
         scope_slug: []const u8 = "",
         active_plan_count: i64 = 0,
@@ -184,6 +186,9 @@ test "status workflow: seeded active plan + doing task + open question appear in
         doing_task_count: i64 = 0,
         blocked_task_count: i64 = 0,
         open_question_count: i64 = 0,
+        active_plans: []const EntitySummary = &.{},
+        doing_tasks: []const EntitySummary = &.{},
+        open_questions: []const EntitySummary = &.{},
         summary: []const u8 = "",
         run_uid: []const u8 = "",
     };
@@ -215,6 +220,26 @@ test "status workflow: seeded active plan + doing task + open question appear in
         std.debug.print("status result open_question_count expected 1, got {d}\nraw: {s}\n", .{ status_result.open_question_count, res.stdout });
     }
     try std.testing.expectEqual(@as(i64, 1), status_result.open_question_count);
+
+    // Entity lists: seeded 1 active plan → active_plans has 1 entry with the plan id.
+    if (status_result.active_plans.len != 1) {
+        std.debug.print("status result active_plans expected 1 entry, got {d}\nraw: {s}\n", .{ status_result.active_plans.len, res.stdout });
+    }
+    try std.testing.expectEqual(@as(usize, 1), status_result.active_plans.len);
+    try std.testing.expectEqual(plan.id, status_result.active_plans[0].id);
+
+    // Entity lists: seeded 1 doing task → doing_tasks has 1 entry with the task id.
+    if (status_result.doing_tasks.len != 1) {
+        std.debug.print("status result doing_tasks expected 1 entry, got {d}\nraw: {s}\n", .{ status_result.doing_tasks.len, res.stdout });
+    }
+    try std.testing.expectEqual(@as(usize, 1), status_result.doing_tasks.len);
+    try std.testing.expectEqual(task.id, status_result.doing_tasks[0].id);
+
+    // Entity lists: seeded 1 open question → open_questions has 1 entry.
+    if (status_result.open_questions.len != 1) {
+        std.debug.print("status result open_questions expected 1 entry, got {d}\nraw: {s}\n", .{ status_result.open_questions.len, res.stdout });
+    }
+    try std.testing.expectEqual(@as(usize, 1), status_result.open_questions.len);
 
     // run_uid must be present (we passed plan_id → trace run opened).
     if (status_result.run_uid.len == 0) {
@@ -337,15 +362,25 @@ test "health workflow: returns health object with overall=ok on a fresh DB" {
 // Test 4: resume workflow — returns seeded task's resume packet
 // =============================================================================
 
-const ResumePacketJSON = struct {
+// Full resume packet shape — identity + state sections (the workflow now
+// forwards the entire packet verbatim; writeLuaTableJson is fixed in plan 638).
+const ResumeIdentityJSON = struct {
     task_id: i64 = 0,
+    plan_id: ?i64 = null,
     title: []const u8 = "",
     status: []const u8 = "",
+    scope_kind: []const u8 = "",
+};
+const ResumeStateJSON = struct {
+    status: []const u8 = "",
     next_action: []const u8 = "",
-    plan_id: i64 = 0,
+};
+const ResumePacketJSON = struct {
+    identity: ResumeIdentityJSON = .{},
+    state: ResumeStateJSON = .{},
 };
 
-test "resume workflow: returns the seeded task's resume packet" {
+test "resume workflow: returns the full structured resume packet" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
@@ -387,12 +422,26 @@ test "resume workflow: returns the seeded task's resume packet" {
     try std.testing.expect(res.term == .exited);
     try std.testing.expectEqual(@as(u32, 0), res.term.exited);
 
-    // The result should be the resume packet: task_id, title, plan_id, next_action.
+    // The result is the full 8-section resume packet forwarded verbatim.
+    // Assert that the identity and state sections are present and correct.
     const packet = parseJSON(ResumePacketJSON, arena, res.stdout);
-    try std.testing.expectEqual(task.id, packet.task_id);
-    try std.testing.expectEqualStrings("M5 Resume Task", packet.title);
-    try std.testing.expectEqual(plan.id, packet.plan_id);
-    try std.testing.expectEqualStrings("implement the feature", packet.next_action);
+
+    // identity section: task_id, plan_id, title, scope_kind must be present.
+    if (packet.identity.task_id != task.id) {
+        std.debug.print("resume packet identity.task_id expected {d}, got {d}\nraw: {s}\n", .{ task.id, packet.identity.task_id, res.stdout });
+    }
+    try std.testing.expectEqual(task.id, packet.identity.task_id);
+    try std.testing.expectEqualStrings("M5 Resume Task", packet.identity.title);
+    if (packet.identity.plan_id == null or packet.identity.plan_id.? != plan.id) {
+        std.debug.print("resume packet identity.plan_id expected {d}, got {?d}\nraw: {s}\n", .{ plan.id, packet.identity.plan_id, res.stdout });
+    }
+    try std.testing.expect(packet.identity.plan_id != null);
+    try std.testing.expectEqual(plan.id, packet.identity.plan_id.?);
+    try std.testing.expect(packet.identity.scope_kind.len > 0);
+
+    // state section: status + next_action must be present.
+    try std.testing.expect(packet.state.status.len > 0);
+    try std.testing.expectEqualStrings("implement the feature", packet.state.next_action);
 }
 
 // =============================================================================
