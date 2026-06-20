@@ -16,6 +16,16 @@
 //!   - All writes go through cockpit/edit/actions.editTitle which
 //!     uses the engine write path + scope guard (task 4045).
 //!
+//! M18 explicit-scope affordance (task 4162):
+//!   - 'S' enters a set-scope typing mode; the operator types a scope slug
+//!     (e.g. "repo:acme/core"). On commit, ExplorerState.explicit_scope is
+//!     set to the typed slug, which is forwarded to cockpitWriteScope /
+//!     checkScopeGuard for all subsequent edits.
+//!   - 'X' clears the explicit scope.
+//!   - scopeLabel surfaces the active explicit scope so the operator always
+//!     knows it is set.
+//!   - The guard is NOT bypassed; a wrong explicit scope still refuses.
+//!
 //! M17 task lifecycle additions (tasks 4047, 4048):
 //!   - 'L' on a task node enters the lifecycle overlay.
 //!   - The overlay first shows live claim state (task 4048).
@@ -101,6 +111,10 @@ pub const ExplorerNode = struct {
 /// bounded to 512 bytes in practice; 256 is a safe UI limit.
 pub const EDIT_BUF_MAX = 256;
 
+/// Maximum length of the set-scope input buffer. Scope slugs are bounded
+/// to 128 chars in practice; 256 is a safe UI limit.
+pub const SCOPE_BUF_MAX = 256;
+
 /// State machine for inline title editing in the Scope Explorer.
 ///
 ///   .none       — no edit in progress.
@@ -111,6 +125,10 @@ pub const EDIT_BUF_MAX = 256;
 ///   .confirming — new title ready; old title was non-empty, so we ask
 ///                 the user to confirm before overwriting (task 4046).
 ///                 'y'/'Y' commits the write; any other key cancels.
+///   .set_scope  — operator is typing a scope slug (task 4162). On Enter,
+///                 ExplorerState.explicit_scope is set to the slug and all
+///                 subsequent edits forward it to the scope guard. Escape
+///                 cancels without changing explicit_scope.
 ///   .error_msg  — a write or scope-guard error; shown in the detail pane
 ///                 for one keystroke then reverts to .none.
 pub const EditMode = union(enum) {
@@ -130,6 +148,13 @@ pub const EditMode = union(enum) {
         old_title: []const u8,
         /// The new title to write on confirm. Owned by edit mode.
         new_title: []const u8,
+    },
+    /// Task 4162: scope slug input. The operator types a scope slug;
+    /// on commit it is stored in ExplorerState.explicit_scope (heap-alloc'd,
+    /// owned by ExplorerState). No heap memory in the mode itself.
+    set_scope: struct {
+        input_buf: [SCOPE_BUF_MAX]u8,
+        input_len: usize,
     },
     error_msg: struct {
         /// Error message string. Owned by edit mode allocator.
@@ -192,6 +217,9 @@ pub const ExplorerState = struct {
         self.freeNodes();
         if (self.detail) |d| d.deinit(self.allocator);
         self.clearEditMode();
+        // Free explicit_scope if it was set via the set-scope affordance (task 4162).
+        if (self.explicit_scope) |s| self.allocator.free(s);
+        self.explicit_scope = null;
         if (self.lifecycle_inited) self.lifecycle.deinit();
     }
 
@@ -205,6 +233,9 @@ pub const ExplorerState = struct {
                 self.allocator.free(c.old_title);
                 self.allocator.free(c.new_title);
             },
+            // set_scope carries no heap-allocated strings (input lives in the
+            // fixed-size buffer; explicit_scope is owned by ExplorerState).
+            .set_scope => {},
             .error_msg => |*e| self.allocator.free(e.msg),
         }
         self.edit_mode = .none;
@@ -527,6 +558,48 @@ pub const ExplorerState = struct {
                 self.clearEditMode();
                 return true;
             },
+            // Task 4162: set-scope input. Operator typed 'S'; now typing a slug.
+            .set_scope => |*ss| {
+                if (key.matches(Key.escape, .{})) {
+                    self.clearEditMode();
+                    return true;
+                }
+                if (key.matches(Key.enter, .{})) {
+                    const slug = ss.input_buf[0..ss.input_len];
+                    if (slug.len == 0) {
+                        // Empty slug — treat as clearing explicit scope.
+                        if (self.explicit_scope) |old| self.allocator.free(old);
+                        self.explicit_scope = null;
+                        self.clearEditMode();
+                        return true;
+                    }
+                    // Heap-allocate the new slug and store it in ExplorerState.
+                    // Free the previous explicit_scope if one was set.
+                    const new_slug = self.allocator.dupe(u8, slug) catch {
+                        self.clearEditMode();
+                        self.setErrorMsg("out of memory");
+                        return true;
+                    };
+                    if (self.explicit_scope) |old| self.allocator.free(old);
+                    self.explicit_scope = new_slug;
+                    self.clearEditMode();
+                    return true;
+                }
+                if (key.matches(Key.backspace, .{})) {
+                    if (ss.input_len > 0) ss.input_len -= 1;
+                    return true;
+                }
+                if (key.text) |text| {
+                    for (text) |byte| {
+                        if (ss.input_len < SCOPE_BUF_MAX) {
+                            ss.input_buf[ss.input_len] = byte;
+                            ss.input_len += 1;
+                        }
+                    }
+                    return true;
+                }
+                return true;
+            },
             .error_msg => {
                 // Any key dismisses the error.
                 self.clearEditMode();
@@ -611,6 +684,31 @@ pub const ExplorerState = struct {
         // Selecting a non-plan node (task, decision, question, scenario,
         // artifact) automatically updates the detail pane via refreshDetail;
         // no separate drill key action is needed.
+
+        // Task 4162: 'S' = set explicit write scope (enter slug via typing mode).
+        if (key.matches('S', .{})) {
+            // Pre-fill the input buffer with the current explicit_scope if any,
+            // so the operator can edit it rather than re-type from scratch.
+            var input_buf: [SCOPE_BUF_MAX]u8 = undefined;
+            const prefill_len: usize = if (self.explicit_scope) |s| blk: {
+                const n = @min(s.len, SCOPE_BUF_MAX);
+                @memcpy(input_buf[0..n], s[0..n]);
+                break :blk n;
+            } else 0;
+            self.clearEditMode();
+            self.edit_mode = .{ .set_scope = .{
+                .input_buf = input_buf,
+                .input_len = prefill_len,
+            } };
+            return true;
+        }
+
+        // Task 4162: 'X' = clear explicit write scope.
+        if (key.matches('X', .{})) {
+            if (self.explicit_scope) |s| self.allocator.free(s);
+            self.explicit_scope = null;
+            return true;
+        }
 
         // Scope toggle: 'a' = all scopes.
         if (key.matches('a', .{})) {
@@ -864,6 +962,28 @@ pub fn render(
             }
             return;
         },
+        // Task 4162: set-scope overlay — operator is typing a scope slug.
+        .set_scope => |*ss| {
+            if (detail_win.height >= 1) {
+                _ = detail_win.printSegment(.{
+                    .text = "Set explicit scope slug (e.g. repo:acme/core):",
+                    .style = .{ .bold = true },
+                }, .{ .row_offset = 0, .col_offset = 0 });
+            }
+            if (detail_win.height >= 2) {
+                _ = detail_win.print(&.{
+                    .{ .text = "scope> ", .style = .{ .ul_style = .single } },
+                    .{ .text = ss.input_buf[0..ss.input_len], .style = .{ .ul_style = .single } },
+                }, .{ .row_offset = 1, .col_offset = 0 });
+            }
+            if (detail_win.height >= 3) {
+                _ = detail_win.printSegment(.{
+                    .text = "  Enter=commit  Esc=cancel  (blank=clear scope)",
+                    .style = .{ .dim = true },
+                }, .{ .row_offset = 2, .col_offset = 0 });
+            }
+            return;
+        },
         .error_msg => |*e| {
             if (detail_win.height >= 1) {
                 _ = detail_win.printSegment(.{
@@ -945,11 +1065,19 @@ pub fn render(
 
 /// Return a one-line scope indicator string for the key legend bar.
 /// Does not allocate — writes into buf and returns the used slice.
+///
+/// When an explicit_scope is set (task 4162), it is shown so the operator
+/// knows the override is active. Format: "explicit:<slug>" or
+/// "all-scopes+explicit:<slug>" / "cwd-scope+explicit:<slug>".
 pub fn scopeLabel(state: *const ExplorerState, buf: []u8) []const u8 {
-    return switch (state.filter) {
-        .all => std.fmt.bufPrint(buf, "all-scopes", .{}) catch "all-scopes",
-        .repo => std.fmt.bufPrint(buf, "cwd-scope", .{}) catch "cwd-scope",
+    const filter_str: []const u8 = switch (state.filter) {
+        .all => "all-scopes",
+        .repo => "cwd-scope",
     };
+    if (state.explicit_scope) |slug| {
+        return std.fmt.bufPrint(buf, "{s}+explicit:{s}", .{ filter_str, slug }) catch filter_str;
+    }
+    return std.fmt.bufPrint(buf, "{s}", .{filter_str}) catch filter_str;
 }
 
 /// Return the legend string for the key legend bar when the Explorer is active.
@@ -964,10 +1092,13 @@ pub fn legendLabel(state: *const ExplorerState, buf: []u8) []const u8 {
             "  Typing title — Enter=commit  Esc=cancel",
         .confirming => std.fmt.bufPrint(buf, "  Confirm overwrite? y=yes  any=cancel", .{}) catch
             "  Confirm overwrite? y=yes  any=cancel",
+        // Task 4162: set-scope mode hint.
+        .set_scope => std.fmt.bufPrint(buf, "  Set scope slug — Enter=commit  Esc=cancel", .{}) catch
+            "  Set scope slug — Enter=commit  Esc=cancel",
         .error_msg => std.fmt.bufPrint(buf, "  Edit error — press any key to dismiss", .{}) catch
             "  Edit error — press any key to dismiss",
-        .none => std.fmt.bufPrint(buf, "  q Quit  j/k Move  Enter Expand  e Edit  L Lifecycle  a All-scopes  Tab Focus", .{}) catch
-            "  q Quit  j/k Move  Enter Expand  e Edit  L Lifecycle  a All-scopes  Tab Focus",
+        .none => std.fmt.bufPrint(buf, "  q Quit  j/k Move  Enter Expand  e Edit  S Set-scope  X Clear-scope  L Lifecycle  a All-scopes  Tab Focus", .{}) catch
+            "  q Quit  j/k Move  Enter Expand  e Edit  S Set-scope  X Clear-scope  L Lifecycle  a All-scopes  Tab Focus",
     };
 }
 
@@ -1808,6 +1939,316 @@ test "scope_explorer render: non-ASCII title characters are NOT dropped (task 41
     try testing.expect(std.mem.indexOf(u8, text, "\xe2\x80\xa2") != null);
     // λ (U+03BB) must appear — 2-byte sequence.
     try testing.expect(std.mem.indexOf(u8, text, "\xce\xbb") != null);
+}
+
+// =========================================================================
+// Task 4162 controller tests: explicit-scope affordance
+// =========================================================================
+
+test "scope_explorer handleKey: 'S' enters set_scope mode pre-filled with current explicit_scope" {
+    // Pressing 'S' enters set_scope mode. If explicit_scope is already set,
+    // the buffer is pre-filled with it so the operator can edit in place.
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    _ = try d.execParams(
+        "insert into plans (scope_kind, title, slug, status) values ('global','P','p-4162a','active')",
+        &.{},
+    );
+
+    var state = ExplorerState.init(a);
+    defer state.deinit();
+    try state.reload(&d);
+
+    // Set an existing explicit scope.
+    state.explicit_scope = try a.dupe(u8, "repo:existing");
+
+    // Press 'S'.
+    const consumed = state.handleKey(keyChar('S'), &d);
+    try testing.expect(consumed);
+
+    // Must be in .set_scope mode.
+    switch (state.edit_mode) {
+        .set_scope => |*ss| {
+            // Pre-filled with "repo:existing".
+            try testing.expectEqualStrings("repo:existing", ss.input_buf[0..ss.input_len]);
+        },
+        else => try testing.expect(false), // expected .set_scope
+    }
+}
+
+test "scope_explorer handleKey: set_scope Enter stores explicit_scope — subsequent edit succeeds" {
+    // Task 4162 core invariant: from the .all filter with explicit_scope=null,
+    // an edit on a scoped entity REFUSES. After 'S' + typing the entity's
+    // scope + Enter, explicit_scope is set and the same edit SUCCEEDS.
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const proj_id = try d.execParams(
+        "insert into projects (slug, name) values ('acme/core', 'Core')",
+        &.{},
+    );
+    const plan_id = try d.execParams(
+        "insert into plans (scope_kind, title, slug, status) values ('global','Parent','par-4162b','active')",
+        &.{},
+    );
+    const task_id = try d.execParams(
+        "insert into tasks (scope_kind, scope_id, plan_id, title, status, priority) values ('repo', ?, ?, 'Scoped Task','doing',100)",
+        &.{ .{ .int = proj_id }, .{ .int = plan_id } },
+    );
+
+    var state = ExplorerState.init(a);
+    defer state.deinit();
+    state.filter = .all;
+    state.explicit_scope = null;
+
+    try state.reload(&d);
+
+    // --- Verify REFUSES without explicit scope ---
+    // editTitle with write_scope=null → ScopeMismatch.
+    try testing.expectError(
+        edit_actions.EditError.ScopeMismatch,
+        edit_actions.editTitle(&d, a, .task, task_id, "New Title 1", null),
+    );
+
+    // --- Set explicit scope via 'S' key flow ---
+    _ = state.handleKey(keyChar('S'), &d);
+    try testing.expect(state.edit_mode == .set_scope);
+
+    // Type "repo:acme/core".
+    for ("repo:acme/core") |ch| _ = state.handleKey(.{ .codepoint = ch, .text = &.{ch} }, &d);
+
+    // Enter commits.
+    _ = state.handleKey(keySpecial(Key.enter), &d);
+    try testing.expectEqual(EditMode.none, state.edit_mode);
+
+    // explicit_scope must now be "repo:acme/core".
+    try testing.expect(state.explicit_scope != null);
+    try testing.expectEqualStrings("repo:acme/core", state.explicit_scope.?);
+
+    // --- Now the same edit SUCCEEDS ---
+    try edit_actions.editTitle(&d, a, .task, task_id, "New Title 2", state.explicit_scope);
+
+    var stmt = try d.prepare("select title from tasks where id = ?");
+    defer stmt.finalize();
+    try stmt.bind(&.{.{ .int = task_id }});
+    try testing.expect((try stmt.step()) == .row);
+    const title_now = try stmt.columnTextAlloc(0, a);
+    defer a.free(title_now);
+    try testing.expectEqualStrings("New Title 2", title_now);
+}
+
+test "scope_explorer handleKey: wrong explicit_scope still refuses (guard not bypassed)" {
+    // Task 4162 invariant: a WRONG explicit scope still hits ScopeMismatch.
+    // The scope guard is not bypassed; it just forwards the explicit slug.
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const proj_id = try d.execParams(
+        "insert into projects (slug, name) values ('acme/core', 'Core')",
+        &.{},
+    );
+    const plan_id = try d.execParams(
+        "insert into plans (scope_kind, title, slug, status) values ('global','Par','par-4162c','active')",
+        &.{},
+    );
+    const task_id = try d.execParams(
+        "insert into tasks (scope_kind, scope_id, plan_id, title, status, priority) values ('repo', ?, ?, 'Scoped','doing',100)",
+        &.{ .{ .int = proj_id }, .{ .int = plan_id } },
+    );
+
+    var state = ExplorerState.init(a);
+    defer state.deinit();
+    state.filter = .all;
+
+    // Set a WRONG explicit scope.
+    state.explicit_scope = try a.dupe(u8, "repo:wrong/scope");
+
+    // editTitle with the wrong explicit scope must still refuse.
+    try testing.expectError(
+        edit_actions.EditError.ScopeMismatch,
+        edit_actions.editTitle(&d, a, .task, task_id, "Should Not Land", state.explicit_scope),
+    );
+
+    // DB unchanged.
+    var stmt = try d.prepare("select title from tasks where id = ?");
+    defer stmt.finalize();
+    try stmt.bind(&.{.{ .int = task_id }});
+    try testing.expect((try stmt.step()) == .row);
+    const title_now = try stmt.columnTextAlloc(0, a);
+    defer a.free(title_now);
+    try testing.expectEqualStrings("Scoped", title_now);
+}
+
+test "scope_explorer handleKey: 'X' clears explicit_scope — GPA validates no leak" {
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    _ = try d.execParams(
+        "insert into plans (scope_kind, title, slug, status) values ('global','P','p-4162d','active')",
+        &.{},
+    );
+
+    var state = ExplorerState.init(a);
+    defer state.deinit();
+    try state.reload(&d);
+
+    // Set an explicit scope.
+    state.explicit_scope = try a.dupe(u8, "repo:some/scope");
+
+    // Press 'X' to clear.
+    const consumed = state.handleKey(keyChar('X'), &d);
+    try testing.expect(consumed);
+    try testing.expect(state.explicit_scope == null);
+    // GPA validates no leak from the freed slug.
+}
+
+test "scope_explorer handleKey: set_scope Escape cancels — explicit_scope unchanged" {
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    _ = try d.execParams(
+        "insert into plans (scope_kind, title, slug, status) values ('global','P','p-4162e','active')",
+        &.{},
+    );
+
+    var state = ExplorerState.init(a);
+    defer state.deinit();
+    try state.reload(&d);
+
+    // Set a prior explicit scope.
+    state.explicit_scope = try a.dupe(u8, "repo:prior");
+
+    // Enter set_scope mode, type something, then Escape.
+    _ = state.handleKey(keyChar('S'), &d);
+    try testing.expect(state.edit_mode == .set_scope);
+    for ("repo:new/slug") |ch| _ = state.handleKey(.{ .codepoint = ch, .text = &.{ch} }, &d);
+    _ = state.handleKey(keySpecial(Key.escape), &d);
+
+    // Must be back to .none with the old explicit_scope unchanged.
+    try testing.expectEqual(EditMode.none, state.edit_mode);
+    try testing.expect(state.explicit_scope != null);
+    try testing.expectEqualStrings("repo:prior", state.explicit_scope.?);
+}
+
+test "scope_explorer handleKey: set_scope Enter with empty input clears explicit_scope" {
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    _ = try d.execParams(
+        "insert into plans (scope_kind, title, slug, status) values ('global','P','p-4162f','active')",
+        &.{},
+    );
+
+    var state = ExplorerState.init(a);
+    defer state.deinit();
+    try state.reload(&d);
+
+    // Set an existing explicit scope.
+    state.explicit_scope = try a.dupe(u8, "repo:acme");
+
+    // Enter set_scope, clear the pre-filled buffer by backspacing, then Enter.
+    _ = state.handleKey(keyChar('S'), &d);
+    try testing.expect(state.edit_mode == .set_scope);
+    // Backspace all "repo:acme" (9 chars).
+    for (0..9) |_| _ = state.handleKey(keySpecial(Key.backspace), &d);
+    // Enter with empty buffer → clear scope.
+    _ = state.handleKey(keySpecial(Key.enter), &d);
+
+    try testing.expectEqual(EditMode.none, state.edit_mode);
+    try testing.expect(state.explicit_scope == null);
+}
+
+test "scopeLabel: shows explicit scope when set" {
+    var state = ExplorerState.init(testing.allocator);
+    defer state.deinit();
+    state.filter = .all;
+    state.explicit_scope = try testing.allocator.dupe(u8, "repo:acme/core");
+
+    var buf: [128]u8 = undefined;
+    const label = scopeLabel(&state, &buf);
+    // Must contain both "all-scopes" and the explicit slug.
+    try testing.expect(std.mem.indexOf(u8, label, "all-scopes") != null);
+    try testing.expect(std.mem.indexOf(u8, label, "repo:acme/core") != null);
+}
+
+test "scopeLabel: shows only filter when explicit_scope is null" {
+    var state = ExplorerState.init(testing.allocator);
+    defer state.deinit();
+    state.filter = .all;
+
+    var buf: [64]u8 = undefined;
+    const label = scopeLabel(&state, &buf);
+    try testing.expectEqualStrings("all-scopes", label);
+}
+
+test "scope_explorer render: set_scope overlay shows prompt and input text" {
+    // Render-level: .set_scope mode must render the prompt and the current
+    // buffer contents in the detail pane.
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    var state = ExplorerState.init(a);
+    defer state.deinit();
+
+    // Inject set_scope mode with a partial slug.
+    state.edit_mode = .{ .set_scope = .{
+        .input_buf = blk: {
+            var buf: [SCOPE_BUF_MAX]u8 = undefined;
+            const s = "repo:acme";
+            @memcpy(buf[0..s.len], s);
+            break :blk buf;
+        },
+        .input_len = "repo:acme".len,
+    } };
+
+    const win_w: u16 = 80;
+    const win_h: u16 = 8;
+    var screen = try vaxis.Screen.init(a, .{
+        .cols = win_w,
+        .rows = win_h,
+        .x_pixel = 0,
+        .y_pixel = 0,
+    });
+    defer screen.deinit(a);
+
+    const nav_win: Window = .{
+        .x_off = 0,
+        .y_off = 0,
+        .parent_x_off = 0,
+        .parent_y_off = 0,
+        .width = 30,
+        .height = win_h,
+        .screen = &screen,
+    };
+    const detail_win: Window = .{
+        .x_off = 30,
+        .y_off = 0,
+        .parent_x_off = 0,
+        .parent_y_off = 0,
+        .width = win_w - 30,
+        .height = win_h,
+        .screen = &screen,
+    };
+
+    try render(&state, nav_win, detail_win, a);
+
+    var rendered: std.ArrayList(u8) = .empty;
+    defer rendered.deinit(a);
+    try collectScreenText(&screen, &rendered);
+    const text = rendered.items;
+
+    // Must contain the prompt.
+    try testing.expect(std.mem.indexOf(u8, text, "scope") != null);
+    // Must contain the typed input.
+    try testing.expect(std.mem.indexOf(u8, text, "repo:acme") != null);
 }
 
 test "scope_explorer compiles" {
