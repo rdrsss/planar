@@ -1,3 +1,10 @@
+--[[ @meta
+name: propagate-tree
+description: Resumable, traced propagate tree-walk — walks a feature tree and propagates each entity to an external system.
+phases: propagate
+seam: planar run start/event/finish, planar tree, planar ext propagate-one
+--]]
+
 -- propagate_tree.lua — resumable, traced propagate tree-walk workflow (plan 638, M3).
 --
 -- Walks a feature's entity tree and propagates each entity to an external

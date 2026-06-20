@@ -6312,6 +6312,108 @@ Tab / Shift-Tab cycle through views; `1`–`9` jump to the first nine by positio
 
 ---
 
+## Domain: `workflow`
+
+Discovery layer for user-authored and shipped Lua workflows for `planar-execute`. Both subverbs are **read-only filesystem scans** — they never open SQLite.
+
+**Shipped workflows** are sourced from `$PLANAR_HOME/workflows/` (default `~/.planar/workflows/`, populated by `install.sh`). **Sandbox workflows** live at `~/.planar/local/workflows/` and are marked `local`.
+
+### `@meta` block convention
+
+Every workflow file may declare a machine-parseable metadata block in a Lua long-string comment at the very top of the file:
+
+```lua
+--[[ @meta
+name: finalize-closeout
+description: Deterministic closeout gate — never force-closes.
+phases: closeout
+seam: planar run start/event/finish, planar plan closeout
+--]]
+```
+
+Rules:
+- The opening line must be `--[[ @meta` (no leading whitespace).
+- Key/value pairs are `key: value` (plain scalars; no nesting).
+- The block closes with `--]]` on its own line.
+- Unknown keys are silently skipped.
+- A missing block is not an error — `workflow list/show` fall back to the filename stem as the name.
+
+### `planar workflow list [--local] [--json]`
+
+**Description:** List every discovered workflow across shipped and sandbox directories, sorted by name.
+
+**Flags:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--local` | Show only sandbox workflows (`~/.planar/local/workflows/`). | off |
+| `--json` | Emit one JSON object per line (NDJSON). | off |
+
+**Behavior:**
+- Without `--local`, shipped workflows are listed first, then sandbox workflows.
+- When a workflow has a `@meta` block with a `name:` field, that name is used; otherwise the filename stem (sans `.lua`) is used.
+- An absent directory (no workflows installed yet) is silently treated as empty.
+
+**Text output columns:** `name`, `kind` (`shipped` or `local`), `phases`, `description`.
+
+**JSON shape (one object per line):**
+```json
+{"name":"finalize-closeout","kind":"shipped","path":"/…/workflows/finalize_closeout.lua","filename":"finalize_closeout.lua","meta_found":true,"description":"…","phases":"closeout","seam":"…"}
+```
+
+**Exit codes:**
+- `0` — success (including zero results).
+- `1` — directory scan error (unreadable dir).
+
+### `planar workflow show <name> [--json]`
+
+**Description:** Resolve a workflow by name and print its `@meta` fields and source path. Name matching uses the effective name (see `@meta` convention above). Shipped directories are searched before sandbox.
+
+**Positional:**
+
+| Argument | Description | Required |
+|----------|-------------|----------|
+| `<name>` | Workflow name to resolve. | yes |
+
+**Flags:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--json` | Emit a single JSON object. | off |
+
+**Behavior:**
+- The `<name>` argument is matched against each workflow's effective name (the `name:` field from `@meta`, or the filename stem).
+- Shipped directories are searched before sandbox directories.
+- Exits `1` (not found) when no workflow with that name exists.
+
+**Text output:**
+```
+name:        finalize-closeout
+kind:        shipped
+path:        /…/workflows/finalize_closeout.lua
+meta:        present
+description: Deterministic closeout gate — never force-closes.
+phases:      closeout
+seam:        planar run start/event/finish, planar plan closeout
+```
+
+**JSON shape:**
+```json
+{"name":"finalize-closeout","kind":"shipped","path":"…","filename":"finalize_closeout.lua","meta_found":true,"description":"…","phases":"closeout","seam":"…"}
+```
+
+**Exit codes:**
+- `0` — workflow found.
+- `1` — workflow not found.
+
+### Sandbox directory
+
+The sandbox directory `~/.planar/local/workflows/` mirrors the `~/.planar/local/skills/` model: it is user-machine-local state, never committed to the repo, and is created on demand. Place any `.lua` file there to author and test a workflow before promoting it to the repo's `workflows/` directory. See [Recipe 28 — Author and graduate a workflow](#recipe-28--author-and-graduate-a-workflow) in `docs/workflows.md`.
+
+**`PLANAR_WORKFLOWS_DIR` env var:** When set, overrides the shipped workflows directory. Used by the integration test harness to point `workflow list/show` at a temporary directory seeded with fixture workflows.
+
+---
+
 ## Command Index
 
 For quick reference, all documented commands grouped by domain:
@@ -6354,4 +6456,5 @@ For quick reference, all documented commands grouped by domain:
 | `local` | `local list`, `local link`, `local unlink`, `local import`, `local migrate` |
 | `help` | `help` |
 | `run` | `run start`, `run event`, `run finish`, `run show` |
+| `workflow` | `workflow list`, `workflow list --local`, `workflow show <name>` |
 | `schema` | `schema` (also on `planar-agent`, `planar-watch`, `planar-doc`) |

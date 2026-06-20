@@ -60,6 +60,7 @@ const closure_h = @import("handlers/closure/cmd.zig");
 const run_h = @import("handlers/run/cmd.zig");
 const groups_h = @import("handlers/groups/cmd.zig");
 const explore_h = @import("handlers/explore.zig");
+const workflow_h = @import("handlers/workflow/cmd.zig");
 
 /// Root command tree. `pub` because each `handlers/*.zig` imports it to
 /// derive its typed args via `cli.castArgs(main.root, &.{…}, ptr)`.
@@ -117,6 +118,7 @@ pub const root: cli.Cmd = .{
         run_h.verb,
         groups_h.verb,
         explore_h.verb,
+        workflow_h.verb,
     },
 };
 

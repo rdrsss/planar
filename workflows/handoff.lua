@@ -1,3 +1,10 @@
+--[[ @meta
+name: handoff
+description: Traced end-of-session handoff — snapshot, create, validate, and return handoff record.
+phases: handoff
+seam: planar run start/event/finish, planar capture snapshot, planar handoff create/validate, planar resume validate
+--]]
+
 -- handoff.lua — traced handoff creation workflow (plan 638, M5).
 --
 -- Implements the end-of-session capture ritual: snapshot the current state,

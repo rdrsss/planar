@@ -118,7 +118,11 @@ pub fn classify(path: []const []const u8) Class {
         eq(top, "local") or
         eq(top, "skills") or
         eq(top, "test-spec") or
-        eq(top, "sync"))
+        eq(top, "sync") or
+        // `workflow *` is a read-only filesystem scan (no SQLite handle).
+        // Allowed from worktrees: discovering and inspecting workflows is
+        // exactly the kind of read that should work from a coder's worktree.
+        eq(top, "workflow"))
     {
         return .execution_or_read;
     }

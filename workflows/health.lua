@@ -1,3 +1,10 @@
+--[[ @meta
+name: health
+description: Single-call health read — wraps planar health and returns db/schema/handoff status.
+phases: health
+seam: planar health --json
+--]]
+
 -- health.lua — single-call health read workflow (plan 638, M5).
 --
 -- Wraps `planar health --json` and returns the result via flow.result.

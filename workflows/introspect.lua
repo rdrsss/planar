@@ -1,3 +1,10 @@
+--[[ @meta
+name: introspect
+description: Usage-introspection mining pipeline — classifies failure/retry/abandoned/gap signals and files findings.
+phases: introspect
+seam: planar report --json, planar-watch, planar question add, planar task add, planar run start/event/finish
+--]]
+
 -- introspect.lua — usage-introspection mining pipeline (plan 638 tasks 4120, 4121).
 --
 -- Phase: introspect

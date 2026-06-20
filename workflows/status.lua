@@ -1,3 +1,10 @@
+--[[ @meta
+name: status
+description: Read-composition status — scope, plans, tasks, and questions composed into a scalar summary.
+phases: status
+seam: planar scope show, planar plan list, planar task list, planar question list, planar run start/event/finish
+--]]
+
 -- status.lua — read-composition status workflow (plan 638, M5).
 --
 -- Composes scope show + plan list (active, paused) + task list (todo, doing,
