@@ -5666,7 +5666,7 @@ A process invoked as `planar-agent` writes ONLY to `agent_work_claims`, `agent_a
 
 ## Binary: `planar-watch`
 
-`planar-watch` is the human-facing **read-only viewer** for live agent activity. Third binary in the four-binary architecture (plan 85 M8). See `docs/architecture.md` § "Four-binary architecture" for the binary split. Note: `planar-watch` is the scriptable NDJSON streaming viewer; the interactive operator cockpit is `planar explore` (bare `planar` on a TTY) — see [Domain: `explore`](#domain-explore).
+`planar-watch` is the human-facing **read-only viewer** for live agent activity. Third binary in the five-binary architecture (plan 85 M8). See `docs/architecture.md` § "Five-binary architecture" for the binary split. Note: `planar-watch` is the scriptable NDJSON streaming viewer; the interactive operator cockpit is `planar explore` (bare `planar` on a TTY) — see [Domain: `explore`](#domain-explore).
 
 Schema-version handshake: `planar-watch` is a **consumer** of the schema, not its owner. Startup queries `schema_migrations.max(version)` and refuses with exit **7** when the live DB is older than the binary's embedded minimum (same code `planar-agent` uses; remediation message "run `planar init`").
 
@@ -5938,7 +5938,7 @@ Each `--follow` verb installs a SIGINT handler that flips an atomic flag. The po
 
 `planar-doc` is the **repo-state documentation manifest tool**. Fourth binary in the architecture (plan 423 M6). It owns `.planar-manifest` — an xxh64-keyed, merkle-rooted index over the working tree that links published docs under `docs/` to source-area subtrees. The binary never opens SQLite; its only write is the manifest file itself.
 
-See `docs/features/doc-system.md` for the model, `docs/architecture.md` for the four-binary boundary, and `docs/workflows.md` § Recipe 13 for the end-to-end docs-maintenance workflow.
+See `docs/features/doc-system.md` for the model, `docs/architecture.md` for the five-binary boundary, and `docs/workflows.md` § Recipe 13 for the end-to-end docs-maintenance workflow.
 
 ### Capability invariant
 

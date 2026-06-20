@@ -1429,6 +1429,63 @@ test "cli_history: reload->cycleScopeFilter->reload does not UAF or leak (scope 
     try testing.expectEqual(@as(usize, 1), state.rows.len);
 }
 
+test "cli_history: time filter INCLUDES recent row and EXCLUDES old row (task 4139 behavioral)" {
+    // Behavioral test: seed one RECENT row (datetime('now') — within the last
+    // hour/day) and one OLD row ('2020-01-01T00:00:00.000Z' — well outside any
+    // time bucket). Apply the .hour bucket and verify:
+    //   - recent row IS included in the queried set (rows[].verb_path = 'task add')
+    //   - old row IS excluded (no row with verb_path = 'plan show')
+    // Then apply the .day bucket and verify the same inclusion/exclusion pattern.
+    // This exercises the SQL `recorded_at >= datetime('now', '-1 hour')` predicate
+    // (and the '-24 hours' variant) in queryCliHistory.
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    // RECENT row: recorded_at = datetime('now') — always within last hour/day.
+    _ = try d.execParams(
+        "insert into cli_invocations (verb_path, args_shape, exit_code, recorded_at) values ('task add', '', 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+        &.{},
+    );
+
+    // OLD row: recorded_at far in the past — outside any hour/day bucket.
+    _ = try d.execParams(
+        "insert into cli_invocations (verb_path, args_shape, exit_code, recorded_at) values ('plan show', '', 0, '2020-01-01T00:00:00.000Z')",
+        &.{},
+    );
+
+    var state = CliHistoryState.init(a);
+    defer state.deinit();
+    try state.reload(&d);
+
+    // Baseline: both rows visible with no filter.
+    try testing.expectEqual(@as(usize, 2), state.rows.len);
+
+    // --- Apply .hour bucket ---
+    // Advance from .all → .hour.
+    try state.cycleTimeFilter(&d);
+    try testing.expect(state.filter.time == .hour);
+
+    // Only the recent row must be included.
+    try testing.expectEqual(@as(usize, 1), state.rows.len);
+    try testing.expectEqualStrings("task add", state.rows[0].verb_path);
+
+    // Reset to .all so we can verify .day independently.
+    try state.cycleTimeFilter(&d); // .hour → .day
+    try state.cycleTimeFilter(&d); // .day  → .all
+    try testing.expect(state.filter.time == .all);
+    try testing.expectEqual(@as(usize, 2), state.rows.len);
+
+    // --- Apply .day bucket ---
+    try state.cycleTimeFilter(&d); // .all → .hour
+    try state.cycleTimeFilter(&d); // .hour → .day
+    try testing.expect(state.filter.time == .day);
+
+    // Only the recent row must be included.
+    try testing.expectEqual(@as(usize, 1), state.rows.len);
+    try testing.expectEqualStrings("task add", state.rows[0].verb_path);
+}
+
 test "cli_history: legendLabel fits in buf and contains expected keys" {
     var buf: [256]u8 = undefined;
     const label = legendLabel(&buf);

@@ -1439,6 +1439,118 @@ test "utility_view: renderWbSyncNavigator renders drifted feature with '~' indic
     try testing.expect(std.mem.indexOf(u8, text, "1 pending") != null);
 }
 
+// RENDER-LEVEL TEST (task 4161) — conflict indicator
+test "utility_view: renderWbSyncNavigator renders '!' conflict indicator at render level (task 4161)" {
+    // This is a RENDER-LEVEL test: it seeds a real workbench_sync_state row
+    // plus a sync_events conflict row (same seed shape as the M15 view-model
+    // conflict test), renders the navigator pane into a vaxis.Screen, collects
+    // the cell text, and asserts that:
+    //   (a) The '!' conflict indicator appears in the rendered output.
+    //   (b) The conflict count ("1 conflicts") appears in the rendered output.
+    //   (c) The plan title appears in the rendered output.
+    //
+    // The view-model-level test in view_model.zig confirms queryWorkbenchSync
+    // computes conflicts > 0 for a matching sync_events row. This test confirms
+    // that the computed flag propagates all the way through renderWbSyncNavigator
+    // into the vaxis back buffer — the layer the existing tests did not cover.
+    //
+    // Seed shape (mirrors queryWorkbenchSync conflict test in view_model.zig):
+    //   - workbench_sync_state row with in-sync db_updated_at (not the source
+    //     of the conflict indicator; conflicts come from sync_events).
+    //   - sync_events row: scope='workbench', outcome='conflict',
+    //     context_json with anchor_plan_id matching the plan.
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const plan_id = try d.execParams(
+        "insert into plans (scope_kind, title, slug, status) values ('global', 'Conflict Feature', 'conflict-feature', 'active')",
+        &.{},
+    );
+    const task_id = try d.execParams(
+        "insert into tasks (plan_id, scope_kind, title, status, priority) values (?, 'global', 'T-Conflict', 'todo', 2)",
+        &.{.{ .int = plan_id }},
+    );
+
+    // Read the task's current updated_at so we can set db_updated_at to match
+    // (making the entity "in sync" at the DB level — the conflict comes solely
+    // from the sync_events row, not from a db_updated_at mismatch).
+    const task_updated_at = blk: {
+        var stmt = try d.prepare("select coalesce(updated_at,'') from tasks where id = ?");
+        defer stmt.finalize();
+        try stmt.bind(&.{.{ .int = task_id }});
+        switch (try stmt.step()) {
+            .done => break :blk try a.dupe(u8, ""),
+            .row => break :blk try stmt.columnTextAlloc(0, a),
+        }
+    };
+    defer a.free(task_updated_at);
+
+    _ = try d.execParams(
+        "insert into workbench_sync_state (anchor_plan_id, entity_kind, entity_id, file_path, content_hash, db_updated_at, last_synced_at) values (?, 'task', ?, 'feat/conflict.md', 'abc', ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+        &.{ .{ .int = plan_id }, .{ .int = task_id }, .{ .text = task_updated_at } },
+    );
+
+    // Insert an unresolved workbench conflict event. queryWorkbenchSync counts
+    // sync_events where scope='workbench', outcome='conflict', and
+    // json_extract(context_json, '$.anchor_plan_id') = anchor_plan_id.
+    const ctx_json = try std.fmt.allocPrint(
+        a,
+        "{{\"anchor_plan_id\":{d},\"entity_kind\":\"task\",\"entity_id\":{d},\"file_path\":\"feat/conflict.md\",\"fs_hash\":\"aaa\",\"db_hash\":\"bbb\"}}",
+        .{ plan_id, task_id },
+    );
+    defer a.free(ctx_json);
+
+    _ = try d.execParams(
+        "insert into sync_events (scope, direction, outcome, context_json) values ('workbench', 'push', 'conflict', ?)",
+        &.{.{ .text = ctx_json }},
+    );
+
+    var state = UtilityState.init(a);
+    defer state.deinit();
+    state.mode = .workbench_sync;
+    try state.reload(&d);
+
+    // Confirm the view-model computed conflicts > 0 (sanity check that the
+    // seed is correct before hitting the render layer).
+    try testing.expectEqual(@as(usize, 1), state.wb_rows.len);
+    try testing.expect(state.wb_rows[0].conflicts > 0);
+
+    const win_w: u16 = 80;
+    const win_h: u16 = 10;
+    var screen = try vaxis.Screen.init(a, .{
+        .cols = win_w,
+        .rows = win_h,
+        .x_pixel = 0,
+        .y_pixel = 0,
+    });
+    defer screen.deinit(a);
+    const nav_win: Window = .{
+        .x_off = 0,
+        .y_off = 0,
+        .parent_x_off = 0,
+        .parent_y_off = 0,
+        .width = win_w,
+        .height = win_h,
+        .screen = &screen,
+    };
+
+    renderWbSyncNavigator(&state, nav_win);
+
+    var rendered: std.ArrayList(u8) = .empty;
+    defer rendered.deinit(a);
+    try collectScreenText(&screen, &rendered);
+    const text = rendered.items;
+
+    // RENDER-LEVEL ASSERTIONS (task 4161):
+    // (a) Plan title must appear.
+    try testing.expect(std.mem.indexOf(u8, text, "Conflict Feature") != null);
+    // (b) '!' conflict indicator must appear in the rendered cell text.
+    try testing.expect(std.mem.indexOf(u8, text, "!") != null);
+    // (c) The conflict count must appear.
+    try testing.expect(std.mem.indexOf(u8, text, "1 conflicts") != null);
+}
+
 // RENDER-LEVEL TEST (task 4043, rule (b)) — detail pane
 test "utility_view: renderWbSyncDetail renders all fields (task 4043 render-level)" {
     const a = testing.allocator;

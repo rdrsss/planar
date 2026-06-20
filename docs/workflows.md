@@ -1828,7 +1828,7 @@ Both error paths are atomic — the surrounding `BEGIN IMMEDIATE` transaction ro
 
 ## Recipe 19 — Live agent cockpit with `planar-watch`
 
-`planar-watch` is the third binary in the four-binary architecture — the **human-facing read-only viewer**. It opens the database in strict read-only mode (`SQLITE_OPEN_READONLY`); the SQLite driver itself refuses every write SQL string, which is the second line of defense behind the binary's "no write verbs registered" capability boundary. The first defense is the verb tree itself: it contains exactly seven read verbs — `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree` — plus the conventional `version` and `completion` helpers, and zero anything that mutates state.
+`planar-watch` is the third binary in the five-binary architecture — the **human-facing read-only viewer**. It opens the database in strict read-only mode (`SQLITE_OPEN_READONLY`); the SQLite driver itself refuses every write SQL string, which is the second line of defense behind the binary's "no write verbs registered" capability boundary. The first defense is the verb tree itself: it contains exactly seven read verbs — `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree` — plus the conventional `version` and `completion` helpers, and zero anything that mutates state.
 
 This recipe walks the streaming-cockpit workflow. The companion recipe for the operator's read-fold-ins on the `planar` binary lives in Recipe 16.
 

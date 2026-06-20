@@ -129,5 +129,5 @@ tracks the manifest contract.
 
 - [Concepts: artifacts and the workbench](../concepts.md)
 - [Workflows: synthesising and refreshing docs](../workflows.md)
-- [Architecture: the four-binary boundary](../architecture.md)
+- [Architecture: the five-binary boundary](../architecture.md)
 - [Features: scope resolution](scope-resolution.md)
