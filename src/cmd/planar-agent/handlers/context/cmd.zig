@@ -16,7 +16,7 @@ const resolve = @import("resolve.zig");
 
 pub const verb: cli.Cmd = .{
     .name = "context",
-    .desc = "Run-scoped working-memory records (add / list / resolve / capsule). Used by centurion workers.",
+    .desc = "Run-scoped working-memory records (add / list / resolve / capsule). Used by an external workflow harness.",
     .cmds = &.{
         add.verb,
         capsule.verb,

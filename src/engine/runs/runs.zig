@@ -213,7 +213,7 @@ pub fn start(d: *db.sqlite.Db, allocator: std.mem.Allocator, args: StartArgs) Er
     // When args.task_filter is null: snapshot ALL tasks under the plan (the
     // original behavior). When non-null: snapshot only the listed task IDs,
     // which must belong to the plan (the FK join enforces it). The filter
-    // enables centurion to scope the snapshot to the tasks it actually
+    // enables an external harness to scope the snapshot to the tasks it actually
     // dispatches in a given arm, skipping meta-tasks with no declared touches.
     if (args.task_filter) |filter_ids| {
         // Per-task inserts — SQLite has no native array-bind, so iterate.

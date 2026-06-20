@@ -44,7 +44,7 @@ pub const verb: cli.Cmd = .{
         .{
             .name = "routing",
             .desc = "Print the effective role→vendor/tier/model routing (resolved via config).",
-            .long_desc = "Resolve each role through the shared model resolver against the\n  effective config ([models.<vendor>] tiers, [roles] role→tier,\n  [role_vendors] role→vendor, [defaults].vendor) and print the\n  result with provenance. This is the routing centurion (the external\n  workflow harness) consumes to pick a worker model per role.",
+            .long_desc = "Resolve each role through the shared model resolver against the\n  effective config ([models.<vendor>] tiers, [roles] role→tier,\n  [role_vendors] role→vendor, [defaults].vendor) and print the\n  result with provenance. This is the routing an external workflow\n  harness consumes to pick a worker model per role.",
             .flags = &.{
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },

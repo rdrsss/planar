@@ -77,8 +77,8 @@ pub const AcquireArgs = struct {
     /// row. Operator-only recovery path; the normal acquireClaim flow
     /// returns ClaimContention instead.
     force: bool = false,
-    /// Optional FK to workflow_runs.id; set by centurion (external
-    /// workflow harness) via --run <id>. NULL for interactive / non-workflow claims.
+    /// Optional FK to workflow_runs.id; set by an external workflow
+    /// harness via --run <id>. NULL for interactive / non-workflow claims.
     run_id: ?i64 = null,
     /// Optional stage name from the workflow that dispatched this
     /// worker (e.g. "code", "review"). NULL when --stage is omitted.
@@ -572,7 +572,7 @@ fn recordEntityCreateActionInner(
 
 /// Stamp `run_id` and (optionally) `stage` on an active claim identified by
 /// `claim_token`. Best-effort: when no active claim matches the token the
-/// function returns 0 (no-op). Used by centurion (external workflow harness)
+/// function returns 0 (no-op). Used by an external workflow harness
 /// at dispatch time to backfill the run context onto a PRE-ACQUIRED claim (decision 457/Q602).
 ///
 /// Returns the number of rows updated (0 when the claim is not active or does
