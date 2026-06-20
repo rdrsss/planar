@@ -91,6 +91,7 @@ comptime {
     _ = @import("finalize_closeout_workflow_test.zig");
     _ = @import("propagate_tree_workflow_test.zig");
     _ = @import("m5_readcomp_workflow_test.zig");
+    _ = @import("introspect_workflow_test.zig");
 
     _ = @import("scenarios/scenario_cockpit_entry_test.zig");
     _ = @import("scenarios/scenario_annotations_test.zig");

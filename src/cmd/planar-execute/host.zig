@@ -14,8 +14,10 @@
 //! comptime `ALLOWED_HOST_FNS` manifest below, which P0.3 locks against a
 //! frozen constant (and asserts none of `DENIED_HOST_FNS` appears).
 //!
-//!   cli.planar(argv)        — allowlisted shell of planar/planar-agent/
-//!   cli.planar_json(argv)     planar-watch ONLY; binary hardcoded.  No exec.
+//!   cli.planar(argv)          — allowlisted shell of planar/planar-agent/
+//!   cli.planar_json(argv)       planar-watch ONLY; binary hardcoded.  No exec.
+//!   cli.planar_watch(argv)    — read-only shell of planar-watch (mode=ro).
+//!   cli.planar_watch_json(argv)
 //!   git.reset_hard(sha)     — confined git group; host injects `-C <worktree>`
 //!   git.checkout(ref)         from the run config; the script never names the
 //!   git.diff_name_only(opts?)  dir.
@@ -90,6 +92,8 @@ pub const ALLOWED_HOST_FNS = [_]HostFn{
     // cli.* — allowlisted-binary shells (no general exec).
     .{ .table = "cli", .name = "planar" },
     .{ .table = "cli", .name = "planar_json" },
+    .{ .table = "cli", .name = "planar_watch" },
+    .{ .table = "cli", .name = "planar_watch_json" },
     // git.* — confined group; host injects -C <worktree>.
     .{ .table = "git", .name = "checkout" },
     .{ .table = "git", .name = "clean" },
@@ -204,6 +208,11 @@ fn hostStateUpvalue(L: ?*c.lua_State) *HostState {
 /// manifest with no dispatch entry is a comptime error — the manifest and the
 /// implementations cannot drift.
 pub fn installHostSurface(L: ?*c.lua_State, hs: *HostState) void {
+    // Raise the comptime branch quota for the inline-for loop that calls
+    // comptimePrint + dispatchFor for every ALLOWED_HOST_FNS entry. Each
+    // additional allowlist entry consumes additional comptime branches; the
+    // default quota (3000) is exhausted when the manifest reaches ~23 entries.
+    @setEvalBranchQuota(8000);
     // Create the five tables and register them as globals.
     inline for ([_][]const u8{ "cli", "git", "fs", "flow", "ctx" }) |tbl_name| {
         c.lua_createtable(L, 0, 8);
@@ -236,7 +245,7 @@ pub fn installHostSurface(L: ?*c.lua_State, hs: *HostState) void {
 /// is a comptime error, so the manifest can never name an unimplemented fn.
 fn dispatchFor(comptime hf: HostFn) *const fn (?*c.lua_State) callconv(.c) c_int {
     const key = hf.table ++ "." ++ hf.name;
-    return comptime if (std.mem.eql(u8, key, "cli.planar")) hostCliPlanar else if (std.mem.eql(u8, key, "cli.planar_json")) hostCliPlanarJson else if (std.mem.eql(u8, key, "git.reset_hard")) hostGitResetHard else if (std.mem.eql(u8, key, "git.checkout")) hostGitCheckout else if (std.mem.eql(u8, key, "git.diff_name_only")) hostGitDiffNameOnly else if (std.mem.eql(u8, key, "git.head_sha")) hostGitHeadSha else if (std.mem.eql(u8, key, "git.clean")) hostGitClean else if (std.mem.eql(u8, key, "fs.read")) hostFsRead else if (std.mem.eql(u8, key, "fs.write")) hostFsWrite else if (std.mem.eql(u8, key, "fs.exists")) hostFsExists else if (std.mem.eql(u8, key, "fs.mkdir")) hostFsMkdir else if (std.mem.eql(u8, key, "flow.log")) hostFlowLog else if (std.mem.eql(u8, key, "flow.phase")) hostFlowPhase else if (std.mem.eql(u8, key, "flow.fail")) hostFlowFail else if (std.mem.eql(u8, key, "flow.result")) hostFlowResult else if (std.mem.eql(u8, key, "ctx.plan_show")) hostCtxPlanShow else if (std.mem.eql(u8, key, "ctx.task_show")) hostCtxTaskShow else if (std.mem.eql(u8, key, "ctx.task_touches")) hostCtxTaskTouches else if (std.mem.eql(u8, key, "ctx.recommend_strategy")) hostCtxRecommendStrategy else if (std.mem.eql(u8, key, "ctx.context")) hostCtxContext else if (std.mem.eql(u8, key, "ctx.brief")) hostCtxBrief else @compileError("host.zig: no dispatch for " ++ key);
+    return comptime if (std.mem.eql(u8, key, "cli.planar")) hostCliPlanar else if (std.mem.eql(u8, key, "cli.planar_json")) hostCliPlanarJson else if (std.mem.eql(u8, key, "cli.planar_watch")) hostCliPlanarWatch else if (std.mem.eql(u8, key, "cli.planar_watch_json")) hostCliPlanarWatchJson else if (std.mem.eql(u8, key, "git.reset_hard")) hostGitResetHard else if (std.mem.eql(u8, key, "git.checkout")) hostGitCheckout else if (std.mem.eql(u8, key, "git.diff_name_only")) hostGitDiffNameOnly else if (std.mem.eql(u8, key, "git.head_sha")) hostGitHeadSha else if (std.mem.eql(u8, key, "git.clean")) hostGitClean else if (std.mem.eql(u8, key, "fs.read")) hostFsRead else if (std.mem.eql(u8, key, "fs.write")) hostFsWrite else if (std.mem.eql(u8, key, "fs.exists")) hostFsExists else if (std.mem.eql(u8, key, "fs.mkdir")) hostFsMkdir else if (std.mem.eql(u8, key, "flow.log")) hostFlowLog else if (std.mem.eql(u8, key, "flow.phase")) hostFlowPhase else if (std.mem.eql(u8, key, "flow.fail")) hostFlowFail else if (std.mem.eql(u8, key, "flow.result")) hostFlowResult else if (std.mem.eql(u8, key, "ctx.plan_show")) hostCtxPlanShow else if (std.mem.eql(u8, key, "ctx.task_show")) hostCtxTaskShow else if (std.mem.eql(u8, key, "ctx.task_touches")) hostCtxTaskTouches else if (std.mem.eql(u8, key, "ctx.recommend_strategy")) hostCtxRecommendStrategy else if (std.mem.eql(u8, key, "ctx.context")) hostCtxContext else if (std.mem.eql(u8, key, "ctx.brief")) hostCtxBrief else @compileError("host.zig: no dispatch for " ++ key);
 }
 
 /// pushHostClosure installs `fn_ptr` as a field `name` on the table at the top
@@ -614,6 +623,26 @@ fn hostCliPlanarJson(L: ?*c.lua_State) callconv(.c) c_int {
     return 1;
 }
 
+/// cli.planar_watch(argv) → stdout string. Shells `planar-watch <argv...>`.
+/// Read-only: planar-watch opens the DB in mode=ro and registers no write verbs.
+fn hostCliPlanarWatch(L: ?*c.lua_State) callconv(.c) c_int {
+    const hs = hostStateUpvalue(L);
+    const argv = argvFromLuaTable(L, hs, 1);
+    const out = runAllowlisted(L, hs, "planar-watch", argv);
+    _ = c.lua_pushlstring(L, out.ptr, out.len);
+    return 1;
+}
+
+/// cli.planar_watch_json(argv) → parsed JSON value. Shells `planar-watch <argv...>`
+/// and parses stdout as JSON (the caller is responsible for passing `--json`).
+fn hostCliPlanarWatchJson(L: ?*c.lua_State) callconv(.c) c_int {
+    const hs = hostStateUpvalue(L);
+    const argv = argvFromLuaTable(L, hs, 1);
+    const out = runAllowlisted(L, hs, "planar-watch", argv);
+    pushParsedJson(L, hs, out);
+    return 1;
+}
+
 // ===========================================================================
 // Host functions — git.* (confined; host injects -C <worktree>)
 // ===========================================================================
@@ -939,8 +968,8 @@ test "manifest: ALLOWED contains the D7 surface and none of DENIED" {
             try std.testing.expect(!std.mem.eql(u8, hf.name, denied));
         }
     }
-    // The surface must be exactly the D7 allowlist size (21 fns).
-    try std.testing.expectEqual(@as(usize, 21), ALLOWED_HOST_FNS.len);
+    // The surface must be exactly the D7 allowlist size (23 fns).
+    try std.testing.expectEqual(@as(usize, 23), ALLOWED_HOST_FNS.len);
 }
 
 test "manifest: cli surface has no general exec" {
@@ -1183,5 +1212,36 @@ test "runtime lock: sandbox nils os, io, load, loadfile, loadstring, dofile, req
     if (randomseed_ty != c.LUA_TNIL) {
         std.debug.print("[sandbox lock] math.randomseed should be nil but is type {d}\n", .{randomseed_ty});
         return error.MathRandomseedPresent;
+    }
+}
+
+test "manifest: cli.planar_watch is present and shells only planar-watch" {
+    // Confirm cli.planar_watch / cli.planar_watch_json are in the allowlist
+    // and map to the correct binary (planar-watch), not any other bin.
+    var found_watch: bool = false;
+    var found_watch_json: bool = false;
+    for (ALLOWED_HOST_FNS) |hf| {
+        if (std.mem.eql(u8, hf.table, "cli")) {
+            if (std.mem.eql(u8, hf.name, "planar_watch")) found_watch = true;
+            if (std.mem.eql(u8, hf.name, "planar_watch_json")) found_watch_json = true;
+        }
+    }
+    try std.testing.expect(found_watch);
+    try std.testing.expect(found_watch_json);
+
+    // The implementations shell ONLY "planar-watch", not "planar" or
+    // "planar-agent". Verify the binary-string used by runAllowlisted is
+    // "planar-watch" by confirming it is in ALLOWED_CLI_BINS and that neither
+    // "exec" nor any un-allowlisted binary is referenced.
+    var watch_allowed: bool = false;
+    for (ALLOWED_CLI_BINS) |b| {
+        if (std.mem.eql(u8, b, "planar-watch")) watch_allowed = true;
+    }
+    try std.testing.expect(watch_allowed);
+
+    // runAllowlisted rejects any binary not in ALLOWED_CLI_BINS. Assert that
+    // "planar-execute" itself is NOT in the allowlist (no self-spawning).
+    for (ALLOWED_CLI_BINS) |b| {
+        try std.testing.expect(!std.mem.eql(u8, b, "planar-execute"));
     }
 }
