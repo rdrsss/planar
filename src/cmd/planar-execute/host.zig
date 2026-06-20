@@ -433,27 +433,51 @@ fn writeLuaJson(L: ?*c.lua_State, hs: *HostState, idx: c_int, w: *std.Io.Writer)
 }
 
 fn writeLuaTableJson(L: ?*c.lua_State, hs: *HostState, idx: c_int, w: *std.Io.Writer) std.Io.Writer.Error!void {
-    const n = c.lua_rawlen(L, idx);
-    // Decide array vs object: a non-empty array if rawlen > 0 AND every key in
-    // 1..n is present (Lua's # operator already implies a contiguous span for
-    // sequence tables).
+    // Absolutize immediately. Any subsequent lua_push* call shifts the stack,
+    // making a relative index (e.g. -1) point at the wrong slot. lua_next in
+    // the object branch and lua_rawgeti in the array branch both require the
+    // table index to remain stable across pushes; capturing the absolute index
+    // here is the single fix for the nested-table panic.
+    const abs_idx = c.lua_absindex(L, idx);
+    const n = c.lua_rawlen(L, abs_idx);
+
+    // Decide array vs object.
+    //
+    // Non-empty sequence table (rawlen > 0): emit as JSON array.
+    //
+    // Any other table (rawlen == 0): emit as JSON object by iterating
+    // string keys via lua_next.  This covers both the "pure map" case
+    // ({a=1, b=2}) and the "truly empty table" case ({}).  A truly empty
+    // table has no string keys either, so lua_next returns 0 immediately
+    // and we emit `{}`.
+    //
+    // Empty-table policy: an empty Lua `{}` serializes as `{}` (empty JSON
+    // object). This is deterministic and faithful: the table has no
+    // sequence keys and no string keys, so both `[]` and `{}` are
+    // technically valid but `{}` is what the object branch naturally
+    // produces and is what callers expect when they write `key = {}` as a
+    // placeholder.  Changing this would require a two-pass scan (first check
+    // for any string keys, then decide) which adds complexity for no benefit
+    // over the natural `{}` output.
     if (n > 0) {
         try w.writeByte('[');
         var i: usize = 1;
         while (i <= n) : (i += 1) {
             if (i > 1) try w.writeByte(',');
-            _ = c.lua_rawgeti(L, idx, @intCast(i));
+            _ = c.lua_rawgeti(L, abs_idx, @intCast(i));
             try writeLuaJson(L, hs, -1, w);
             c.lua_settop(L, -2);
         }
         try w.writeByte(']');
         return;
     }
-    // Object: iterate all key/value pairs.
+    // Object (or empty table): iterate all key/value pairs. Use abs_idx
+    // throughout so that lua_pushnil (the first-key seed) and subsequent
+    // lua_next pushes do not invalidate the table reference.
     try w.writeByte('{');
     var first = true;
-    c.lua_pushnil(L); // first key
-    while (c.lua_next(L, idx) != 0) {
+    c.lua_pushnil(L); // first key — must come AFTER abs_idx is captured
+    while (c.lua_next(L, abs_idx) != 0) {
         // key at -2, value at -1.
         if (c.lua_type(L, -2) != c.LUA_TSTRING) {
             // Non-string keys in an object table: coerce via tostring of a
