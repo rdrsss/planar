@@ -193,7 +193,10 @@ library.
 - **Optional RUN_DEP (warn-only).** Like `gh`/`rg`: when `mtkahypar` is absent,
   `groups recommend` degrades to the M3.1 greedy arm and reports
   `optimal_available:false`. No committed binary; the operator builds from
-  source and the README documents it.
+  source and the README documents it. When the optimal arm DID run but greedy's
+  total cost was strictly lower, `selected_greedy:true` is set in the JSON output
+  (the greedy result is shipped as the safe cost floor; the solver's partition is
+  freed). `selected_greedy` is always false when `optimal_available` is false.
 - **Invocation: subprocess.** Matches the `planar`-shells-out idiom and keeps
   the engine's C/C++ surface bounded to the vendored SQLite. `solverAvailable`
   probes `mtkahypar --help`; `invoke` writes the hMETIS encoding to an isolated

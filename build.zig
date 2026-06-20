@@ -345,7 +345,10 @@ pub fn build(b: *std.Build) void {
     });
     engine_mod.addImport("db", db_mod);
     engine_mod.addImport("templates_embed", templates_embed_mod);
-    engine_mod.addImport("metrics_sql", metrics_sql_mod);
+    // NOTE: metrics_sql is intentionally NOT imported into production engine_mod.
+    // Only the rq1_test.zig fixture consumes it; it is wired into the test-only
+    // engine_test_mod below so the ~6 KB analyst SQL is never embedded in the
+    // shipped binary.
     // The derived-closure extractor (engine/closure/) parses source with the
     // tree-sitter binding. Import the module and link the static lib + headers
     // so engine unit tests build the symbol-resolution code.
@@ -606,7 +609,24 @@ pub fn build(b: *std.Build) void {
     const cli_tests = b.addTest(.{ .root_module = cli_mod, .filters = test_filters_opt });
     const run_cli_tests = b.addRunArtifact(cli_tests);
 
-    const engine_tests = b.addTest(.{ .root_module = engine_mod, .filters = test_filters_opt });
+    // Test-only engine module: identical to engine_mod but adds metrics_sql so
+    // rq1_test.zig can embed the analyst SQL without it landing in the production
+    // binary. A fresh module instance is needed because Zig's build graph does not
+    // support "add an import only for the test compilation of an existing module".
+    const engine_test_mod = b.createModule(.{
+        .root_source_file = b.path("src/engine/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    engine_test_mod.addImport("db", db_mod);
+    engine_test_mod.addImport("templates_embed", templates_embed_mod);
+    engine_test_mod.addImport("metrics_sql", metrics_sql_mod);
+    engine_test_mod.addImport("treesitter", treesitter_zig_mod);
+    engine_test_mod.addIncludePath(b.path(ts_core_dir ++ "/lib/include"));
+    engine_test_mod.linkLibrary(treesitter_lib);
+
+    const engine_tests = b.addTest(.{ .root_module = engine_test_mod, .filters = test_filters_opt });
     const run_engine_tests = b.addRunArtifact(engine_tests);
 
     const runtime_tests = b.addTest(.{ .root_module = runtime_mod, .filters = test_filters_opt });

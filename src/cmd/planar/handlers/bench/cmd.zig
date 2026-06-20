@@ -35,6 +35,15 @@ pub const verb: cli.Cmd = .{
         .{
             .name = "start",
             .desc = "Mint a new run record and print its run_uid.",
+            .long_desc =
+            \\Mint a new run record and print its run_uid.
+            \\
+            \\  --task <id> (repeatable): limit the declared-touch snapshot to
+            \\  the given task ids. When omitted, all plan tasks are snapshotted
+            \\  (backward-compatible default). Use when the arm only dispatches
+            \\  a known subset of tasks and meta-tasks with no touches would
+            \\  otherwise inflate the declared set.
+            ,
             .flags = &.{
                 .{ .long = "--plan", .kind = .int, .required = true },
                 .{ .long = "--arm", .kind = .string, .required = true },
@@ -42,6 +51,7 @@ pub const verb: cli.Cmd = .{
                 .{ .long = "--config-hash", .kind = .string, .required = true },
                 .{ .long = "--config-json", .kind = .string },
                 .{ .long = "--corpus-repo", .kind = .string },
+                .{ .long = "--task", .kind = .string, .list = true, .desc = "Limit declared-touch snapshot to this task id (repeatable)." },
             },
             .positionals = &.{.{ .name = "run-uid", .kind = .string, .required = true }},
             .run = cli.handler(start.handle),

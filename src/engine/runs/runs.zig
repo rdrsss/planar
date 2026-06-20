@@ -128,6 +128,11 @@ pub const StartArgs = struct {
     corpus_repo: ?[]const u8 = null,
     /// Initial status; defaults to the schema default 'running' when null.
     status: ?[]const u8 = null,
+    /// Optional task-id filter for the declared-touch snapshot. When non-null,
+    /// only tasks whose id appears in this slice have their task_touch_paths
+    /// snapshotted into kind='declared' rows. When null, all plan tasks are
+    /// snapshotted (existing behavior — fully backward-compatible).
+    task_filter: ?[]const i64 = null,
 };
 
 /// The result of `start`: the new autoincrement id, the caller's run_uid
@@ -202,23 +207,40 @@ pub fn start(d: *db.sqlite.Db, allocator: std.mem.Allocator, args: StartArgs) Er
         return Error.QueryFailed;
     };
 
-    // Snapshot declared touches: copy every (task_id, path) the plan's
-    // tasks currently declare in task_touch_paths into run_touches as a
-    // kind='declared' row. The INSERT...SELECT does the value-copy in a
-    // single statement; `path` is taken from task_touch_paths verbatim
-    // (the bare repo-relative path, matching what the harness previously
-    // wrote per-row).
-    const declared = d.execParams(
-        \\insert into run_touches (run_id, task_id, path, kind)
-        \\select ?, ttp.task_id, ttp.path, 'declared'
-        \\from task_touch_paths ttp
-        \\join tasks t on t.id = ttp.task_id
-        \\where t.plan_id = ?
-    , &.{ .{ .int = id }, .{ .int = args.plan_id } }) catch |e| {
-        std.log.err("runs.start declared snapshot failed: {s}", .{@errorName(e)});
-        return Error.QueryFailed;
-    };
-    _ = declared; // execParams returns last_insert_rowid, not a row count.
+    // Snapshot declared touches: copy (task_id, path) pairs from
+    // task_touch_paths into run_touches as kind='declared' rows.
+    //
+    // When args.task_filter is null: snapshot ALL tasks under the plan (the
+    // original behavior). When non-null: snapshot only the listed task IDs,
+    // which must belong to the plan (the FK join enforces it). The filter
+    // enables centurion to scope the snapshot to the tasks it actually
+    // dispatches in a given arm, skipping meta-tasks with no declared touches.
+    if (args.task_filter) |filter_ids| {
+        // Per-task inserts — SQLite has no native array-bind, so iterate.
+        for (filter_ids) |tid| {
+            _ = d.execParams(
+                \\insert into run_touches (run_id, task_id, path, kind)
+                \\select ?, ttp.task_id, ttp.path, 'declared'
+                \\from task_touch_paths ttp
+                \\join tasks t on t.id = ttp.task_id
+                \\where ttp.task_id = ? and t.plan_id = ?
+            , &.{ .{ .int = id }, .{ .int = tid }, .{ .int = args.plan_id } }) catch |e| {
+                std.log.err("runs.start declared snapshot (filtered) failed: {s}", .{@errorName(e)});
+                return Error.QueryFailed;
+            };
+        }
+    } else {
+        _ = d.execParams(
+            \\insert into run_touches (run_id, task_id, path, kind)
+            \\select ?, ttp.task_id, ttp.path, 'declared'
+            \\from task_touch_paths ttp
+            \\join tasks t on t.id = ttp.task_id
+            \\where t.plan_id = ?
+        , &.{ .{ .int = id }, .{ .int = args.plan_id } }) catch |e| {
+            std.log.err("runs.start declared snapshot failed: {s}", .{@errorName(e)});
+            return Error.QueryFailed;
+        };
+    }
 
     // Count what landed so the caller can report it (and so a future
     // count assertion has a single source of truth).
@@ -829,6 +851,79 @@ test "declared snapshot is immutable: mutating task_touch_paths after start does
     defer deinitTouches(after, a);
     try std.testing.expectEqual(@as(usize, 1), after.len);
     try std.testing.expectEqualStrings("src/original.zig", after[0].path);
+}
+
+test "start with task_filter snapshots only the listed tasks" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const pid = try seedPlan(&d, "filter plan");
+    const repo = try seedRepo(&d, "filter-repo");
+    const t1 = try seedTask(&d, pid, "task one");
+    const t2 = try seedTask(&d, pid, "task two");
+    const t3 = try seedTask(&d, pid, "task three (no touches)");
+    _ = t3;
+
+    // t1 and t2 each have one declared touch.
+    _ = try d.execParams(
+        "insert into task_touch_paths (task_id, repo_id, path) values (?, ?, ?)",
+        &.{ .{ .int = t1 }, .{ .int = repo }, .{ .text = "src/one.zig" } },
+    );
+    _ = try d.execParams(
+        "insert into task_touch_paths (task_id, repo_id, path) values (?, ?, ?)",
+        &.{ .{ .int = t2 }, .{ .int = repo }, .{ .text = "src/two.zig" } },
+    );
+
+    // Filter to t1 only — t2's touch and t3 must NOT appear.
+    const filter = [_]i64{t1};
+    const res = try start(&d, a, .{
+        .run_uid = "uid-filter",
+        .plan_id = pid,
+        .arm = "strict",
+        .base_sha = "s",
+        .config_hash = "h",
+        .task_filter = &filter,
+    });
+    defer res.deinit(a);
+
+    try std.testing.expectEqual(@as(i64, 1), res.declared_snapshotted);
+
+    const declared = try touches(&d, a, res.id, .declared);
+    defer deinitTouches(declared, a);
+    try std.testing.expectEqual(@as(usize, 1), declared.len);
+    try std.testing.expectEqual(t1, declared[0].task_id);
+    try std.testing.expectEqualStrings("src/one.zig", declared[0].path);
+}
+
+test "start with empty task_filter snapshots zero rows" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const pid = try seedPlan(&d, "empty filter plan");
+    const repo = try seedRepo(&d, "empty-filter-repo");
+    const t1 = try seedTask(&d, pid, "task one");
+
+    _ = try d.execParams(
+        "insert into task_touch_paths (task_id, repo_id, path) values (?, ?, ?)",
+        &.{ .{ .int = t1 }, .{ .int = repo }, .{ .text = "src/one.zig" } },
+    );
+
+    // Empty slice filter → no tasks → zero rows (not "all tasks").
+    const filter = [_]i64{};
+    const res = try start(&d, a, .{
+        .run_uid = "uid-empty-filter",
+        .plan_id = pid,
+        .arm = "strict",
+        .base_sha = "s",
+        .config_hash = "h",
+        .task_filter = &filter,
+    });
+    defer res.deinit(a);
+
+    try std.testing.expectEqual(@as(i64, 0), res.declared_snapshotted);
+    const declared = try touches(&d, a, res.id, .declared);
+    defer deinitTouches(declared, a);
+    try std.testing.expectEqual(@as(usize, 0), declared.len);
 }
 
 test "finish sets terminal status and stamps ended_at" {

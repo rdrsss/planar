@@ -51,6 +51,23 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         parsed.deinit();
     }
 
+    // Parse the optional repeatable --task filter into a slice of i64.
+    // args.task is []const []const u8 (list flag of strings); each element is
+    // an integer task id supplied by the caller. When empty (no --task given)
+    // we pass null to preserve the "all plan tasks" behavior.
+    var task_ids_buf: [256]i64 = undefined;
+    var task_ids_len: usize = 0;
+    for (args.task) |s| {
+        if (task_ids_len >= task_ids_buf.len) {
+            exit.die(ctx, error.InvalidInput, "bench start: too many --task flags (max 256)", .{});
+        }
+        const tid = std.fmt.parseInt(i64, s, 10) catch
+            exit.die(ctx, error.InvalidInput, "bench start: --task value must be an integer, got '{s}'", .{s});
+        task_ids_buf[task_ids_len] = tid;
+        task_ids_len += 1;
+    }
+    const task_filter: ?[]const i64 = if (task_ids_len > 0) task_ids_buf[0..task_ids_len] else null;
+
     const res = engine.runs.lifecycle.start(d, ctx.allocator, .{
         .run_uid = args.run_uid,
         .plan_id = args.plan,
@@ -59,6 +76,7 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         .config_hash = args.config_hash,
         .config_json = args.config_json,
         .corpus_repo = args.corpus_repo,
+        .task_filter = task_filter,
     }) catch |e| switch (e) {
         error.DuplicateRunUid => exit.die(
             ctx,
