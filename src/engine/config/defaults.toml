@@ -10,7 +10,7 @@
 
 [defaults]
 # Default vendor identity used when $PLANAR_VENDOR is not set.
-# Acceptable values today: claude, codex, copilot.
+# Acceptable values today: claude, codex, copilot, opencode.
 vendor = "claude"
 
 # Default scope when no scope is active. Acceptable: global, repo, association.
@@ -46,6 +46,13 @@ large  = "gpt-5.5"
 small  = "gpt-5-mini"
 medium = "gpt-5"
 large  = "claude-opus-4"
+
+# OpenCode model ids use the `provider/model-id` format (e.g. via OpenCode Zen
+# or a configured provider). Override to point a tier at a different provider.
+[models.opencode]
+small  = "anthropic/claude-haiku-4-5"
+medium = "anthropic/claude-sonnet-4-6"
+large  = "anthropic/claude-opus-4-8"
 
 # Role → tier mapping (vendor-independent). The shared resolver composes this
 # with [models.<vendor>] to pick a concrete model for a role: e.g. the coder

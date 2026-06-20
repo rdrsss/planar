@@ -25,17 +25,21 @@
 #     codex-skills/pl-*/SKILL.md      # Codex runtime skill directories
 #     skills/copilot/pl-*.md          # Copilot skill sources
 #     copilot/                        # Copilot instructions/prompts (if any)
+#     skills/opencode/pl-*.md         # OpenCode skill sources
+#     opencode-skills/pl-*/SKILL.md   # OpenCode runtime skill directories
 #     scripts/validate-{barrel-modes,plan-status}-acceptance
 #
 # Then installs into the vendor harness dirs (only when --vendor flags select
-# them; default is all three):
+# them; default is all four):
 #
 #   ~/.claude/commands/pl-*.md   ->   ~/.planar/commands/claude/pl-*.md
 #   ~/.codex/skills/pl-*         # real Codex skill dirs copied from ~/.planar/codex-skills/pl-*
 #   ~/.copilot/skills/pl-*       # real Copilot skill dirs copied from ~/.planar/copilot-skills/pl-*
+#   ~/.config/opencode/skills/pl-*   # real OpenCode skill dirs copied from ~/.planar/opencode-skills/pl-*
 #   ~/.claude/agents/<name>.md   ->   ~/.planar/agents/claude/<name>.md
 #   ~/.codex/agents/<name>.toml  ->   ~/.planar/agents/codex/<name>.toml
 #   ~/.copilot/agents/<name>.agent.md -> ~/.planar/agents/copilot/<name>.agent.md
+#   ~/.config/opencode/agents/<name>.md -> ~/.planar/agents/opencode/<name>.md
 #
 # The binary lives at ~/.planar/bin/planar. Add ~/.planar/bin to your PATH:
 #
@@ -71,7 +75,8 @@ set -eEuo pipefail
 
 PLANAR_HOME="${PLANAR_HOME:-$HOME/.planar}"
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
-VENDORS="claude,codex,copilot"
+OPENCODE_HOME="${OPENCODE_HOME:-$HOME/.config/opencode}"
+VENDORS="claude,codex,copilot,opencode"
 MODE="copy"                   # copy | link
 FORCE=0
 UNINSTALL=0
@@ -95,7 +100,7 @@ Usage:
 
 Options:
   --prefix DIR       Install root (default: ~/.planar)
-  --vendors LIST     Comma-separated vendors to wire: claude,codex,copilot (default: all)
+  --vendors LIST     Comma-separated vendors to wire: claude,codex,copilot,opencode (default: all)
   --no-vendor        Install Planar core only; skip vendor surfaces
   --link             Symlink from this repo instead of copying (dev mode)
   --force            Overwrite existing symlinks / adopt a non-Planar prefix
@@ -325,6 +330,24 @@ if [[ "$UNINSTALL" -eq 1 ]]; then
     done < <(find "$HOME/.copilot/skills" -mindepth 2 -maxdepth 2 -path '*/pl-*/SKILL.md' -print0)
   fi
 
+  if [[ -d "$OPENCODE_HOME/skills" ]]; then
+    while IFS= read -r -d '' link; do
+      skill_dir="$(dirname "$link")"
+      target="$(readlink "$link" 2>/dev/null || true)"
+      marker="$skill_dir/.planar-source"
+      marker_target=""
+      if [[ -f "$marker" ]]; then
+        marker_target="$(cat "$marker" 2>/dev/null || true)"
+      fi
+      if [[ "$target" == "$PLANAR_HOME"/* || "$marker_target" == "$PLANAR_HOME"/* ]]; then
+        log "removing OpenCode skill: $skill_dir"
+        rm -f "$link"
+        rm -f "$marker"
+        rmdir "$skill_dir" 2>/dev/null || true
+      fi
+    done < <(find "$OPENCODE_HOME/skills" -mindepth 2 -maxdepth 2 -path '*/pl-*/SKILL.md' -print0)
+  fi
+
   if [[ -d "$PLANAR_HOME/codex-skills" ]]; then
     log "removing Codex runtime skills: $PLANAR_HOME/codex-skills"
     rm -rf "$PLANAR_HOME/codex-skills"
@@ -335,11 +358,16 @@ if [[ "$UNINSTALL" -eq 1 ]]; then
     rm -rf "$PLANAR_HOME/copilot-skills"
   fi
 
+  if [[ -d "$PLANAR_HOME/opencode-skills" ]]; then
+    log "removing OpenCode runtime skills: $PLANAR_HOME/opencode-skills"
+    rm -rf "$PLANAR_HOME/opencode-skills"
+  fi
+
   # Remove agent symlinks installed by symlink_vendor_agents. Mirrors the
   # prune_stale_vendor_agents safety semantics: only remove files whose symlink
   # target points into $PLANAR_HOME; regular files and operator-authored links
   # are left untouched.
-  for agent_dir in "$HOME/.claude/agents" "$CODEX_HOME/agents" "$HOME/.copilot/agents"; do
+  for agent_dir in "$HOME/.claude/agents" "$CODEX_HOME/agents" "$HOME/.copilot/agents" "$OPENCODE_HOME/agents"; do
     [[ -d "$agent_dir" ]] || continue
     while IFS= read -r -d '' link; do
       target="$(readlink "$link" 2>/dev/null || true)"
@@ -579,7 +607,7 @@ if [[ "$VERBOSE" -eq 1 ]]; then
 else
   ( cd "$PLANAR_HOME" && "$PLANAR_HOME/bin/planar" skills render --src "$PLANAR_HOME/skills/src" --out "$PLANAR_HOME" ) >/dev/null
 fi
-log "rendered: commands/claude, skills/codex, skills/copilot (+ agents/models.md tier table)"
+log "rendered: commands/claude, skills/codex, skills/copilot, skills/opencode (+ agents/models.md tier table)"
 
 # Migrations live at repo root in sqlx-cli format and are read by the Zig
 # build via codegen. We also stage them under $PLANAR_HOME for ad-hoc
@@ -804,6 +832,87 @@ if [[ -n "$VENDORS" ]]; then
     log "copilot: installed $count skill directories into $dst_dir"
   }
 
+  # OpenCode discovers Agent Skills as directories containing SKILL.md (same
+  # layout as Codex/Copilot), under ~/.config/opencode/skills/<name>/SKILL.md.
+  # Keep Planar's flat source-of-truth files, materialize runtime skill
+  # directories, then install real skill directories into OPENCODE_HOME so
+  # discovery works.
+  install_opencode_vendor() {
+    local src_dir="$1" runtime_dir="$2" dst_dir="$3"
+    if [[ ! -d "$src_dir" ]]; then
+      warn "opencode: source $src_dir not found, skipping"
+      return 0
+    fi
+    rm -rf "$runtime_dir"
+    mkdir -p "$runtime_dir"
+    mkdir -p "$dst_dir"
+    local count=0
+    while IFS= read -r -d '' f; do
+      local skill_name legacy runtime_skill_dir dst_skill_dir marker
+      skill_name="$(basename "$f" .md)"
+      legacy="$dst_dir/${skill_name}.md"
+      runtime_skill_dir="$runtime_dir/$skill_name"
+      dst_skill_dir="$dst_dir/$skill_name"
+      marker="$dst_skill_dir/.planar-source"
+
+      # Clean up legacy flat symlinks from previous installs.
+      if [[ -L "$legacy" ]]; then
+        local legacy_target
+        legacy_target="$(readlink "$legacy" 2>/dev/null || true)"
+        if [[ "$legacy_target" == "$src_dir/"* || "$legacy_target" == "$PLANAR_HOME/skills/opencode/"* ]]; then
+          rm -f "$legacy"
+        fi
+      fi
+
+      if [[ -L "$dst_skill_dir" ]]; then
+        local dir_target
+        dir_target="$(readlink "$dst_skill_dir" 2>/dev/null || true)"
+        if [[ "$dir_target" == "$runtime_dir/"* || "$dir_target" == "$PLANAR_HOME/opencode-skills/"* ]]; then
+          rm -f "$dst_skill_dir"
+        elif [[ "$FORCE" -eq 1 ]]; then
+          rm -f "$dst_skill_dir"
+        else
+          err "$dst_skill_dir already exists and was not installed by Planar (rerun with --force to overwrite)"
+        fi
+      fi
+
+      if [[ -d "$dst_skill_dir" && -f "$marker" ]]; then
+        local marker_target
+        marker_target="$(cat "$marker" 2>/dev/null || true)"
+        if [[ "$marker_target" == "$f" || "$marker_target" == "$PLANAR_HOME/skills/opencode/"* ]]; then
+          rm -f "$dst_skill_dir/SKILL.md"
+          rm -f "$marker"
+          rmdir "$dst_skill_dir" 2>/dev/null || true
+        fi
+      fi
+
+      if [[ -d "$dst_skill_dir" && ( -e "$dst_skill_dir/SKILL.md" || -L "$dst_skill_dir/SKILL.md" ) ]]; then
+        local skill_target
+        skill_target="$(readlink "$dst_skill_dir/SKILL.md" 2>/dev/null || true)"
+        if [[ "$skill_target" == "$f" || "$skill_target" == "$PLANAR_HOME/skills/opencode/"* ]]; then
+          rm -f "$dst_skill_dir/SKILL.md"
+          rmdir "$dst_skill_dir" 2>/dev/null || true
+        elif [[ "$FORCE" -eq 1 ]]; then
+          rm -rf "$dst_skill_dir"
+        else
+          err "$dst_skill_dir already exists and was not installed by Planar (rerun with --force to overwrite)"
+        fi
+      fi
+
+      mkdir -p "$runtime_skill_dir"
+      if [[ "$MODE" == "link" ]]; then
+        symlink_to "$f" "$runtime_skill_dir/SKILL.md"
+      else
+        cp -f "$f" "$runtime_skill_dir/SKILL.md"
+      fi
+      mkdir -p "$dst_skill_dir"
+      cp -f "$runtime_skill_dir/SKILL.md" "$dst_skill_dir/SKILL.md"
+      printf '%s\n' "$f" > "$marker"
+      count=$((count + 1))
+    done < <(find "$src_dir" -maxdepth 1 -name 'pl-*.md' -print0)
+    log "opencode: installed $count skill directories into $dst_dir"
+  }
+
   # symlink_vendor_agents links every file in the rendered agents/<vendor>/
   # directory into the vendor's agents/ harness directory. Mirrors symlink_vendor
   # but uses a wildcard pattern that covers all file extensions (.md, .toml,
@@ -925,6 +1034,29 @@ if [[ -n "$VENDORS" ]]; then
     fi
   }
 
+  # prune_stale_opencode is the opencode equivalent: same directory-based layout
+  # as codex/copilot, with .planar-source marker files for ownership tracking.
+  prune_stale_opencode() {
+    local dst_dir="$1"
+    [[ "$NO_PRUNE" -eq 1 ]] && return 0
+    [[ -d "$dst_dir" ]] || return 0
+    local removed=0
+    while IFS= read -r -d '' skill_dir; do
+      local marker="$skill_dir/.planar-source"
+      [[ -f "$marker" ]] || continue                  # no marker — operator skill
+      local marker_target
+      marker_target="$(cat "$marker" 2>/dev/null || true)"
+      [[ -n "$marker_target" ]] || continue
+      [[ -e "$marker_target" ]] && continue           # source still exists — keep
+      vlog "opencode: pruning stale skill dir $(basename "$skill_dir") (source removed)"
+      rm -rf "$skill_dir"
+      removed=$((removed + 1))
+    done < <(find "$dst_dir" -maxdepth 1 -name 'pl-*' -type d -print0)
+    if [[ "$removed" -gt 0 ]]; then
+      log "opencode: pruned $removed stale skill director$([[ $removed -eq 1 ]] && echo y || echo ies)"
+    fi
+  }
+
   IFS=',' read -r -a vendor_list <<< "$VENDORS"
   for v in "${vendor_list[@]}"; do
     case "$v" in
@@ -951,6 +1083,12 @@ if [[ -n "$VENDORS" ]]; then
             symlink_to "$f" "$HOME/.copilot/$(basename "$f")"
           done < <(find "$PLANAR_HOME/copilot" -maxdepth 1 -type f -print0)
         fi
+        ;;
+      opencode)
+        install_opencode_vendor "$PLANAR_HOME/skills/opencode" "$PLANAR_HOME/opencode-skills" "$OPENCODE_HOME/skills"
+        prune_stale_opencode "$OPENCODE_HOME/skills"
+        symlink_vendor_agents "opencode" "$PLANAR_HOME/agents/opencode" "$OPENCODE_HOME/agents"
+        prune_stale_vendor_agents "opencode" "$PLANAR_HOME/agents/opencode" "$OPENCODE_HOME/agents"
         ;;
       *) warn "unknown vendor: $v (skipping)" ;;
     esac

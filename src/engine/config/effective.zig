@@ -488,6 +488,7 @@ pub fn resolve(
         "models.claude.small",     "models.claude.medium",    "models.claude.large",
         "models.codex.small",      "models.codex.medium",     "models.codex.large",
         "models.copilot.small",    "models.copilot.medium",   "models.copilot.large",
+        "models.opencode.small",   "models.opencode.medium",  "models.opencode.large",
         "roles.coder",             "roles.reviewer",          "roles.test-coder",
         "roles.documenter",
         // role_vendors.* are override-only (no embedded default → resolver falls

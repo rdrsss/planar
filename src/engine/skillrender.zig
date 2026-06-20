@@ -52,6 +52,18 @@ const embedded_vendors_yaml =
     \\    install_bullets:
     \\      - "Installed to `~/.copilot/skills/<slug>.md`."
     \\      - "Companion instruction and prompt files (when needed) live under `copilot/`."
+    \\  opencode:
+    \\    title: OpenCode
+    \\    output_dir: skills/opencode
+    \\    install_path: ~/.config/opencode/skills/<slug>/SKILL.md
+    \\    invoke: <slug>
+    \\    has_invocation_block: false
+    \\    frontmatter_fields: [name, description]
+    \\    agents_output_dir: agents/opencode
+    \\    agent_format: md-yaml
+    \\    agent_frontmatter_fields: [name, description, tools, model]
+    \\    install_bullets:
+    \\      - "Installed into `~/.config/opencode/skills/<slug>/SKILL.md` from `~/.planar/opencode-skills/<slug>`."
 ;
 
 pub const VendorModel = struct {
