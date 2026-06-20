@@ -4147,7 +4147,7 @@ overall: DEGRADED  (2 tasks not resumable)
 
 Provider + model capability discovery (plan 540/543). Reports which supported provider CLIs are installed on the local machine and the curated model catalog each exposes, classified into the canonical `small`/`medium`/`large` tiers, plus the default role→tier→model routing. **No database handle** is used — discovery is PATH + subprocess + a curated in-repo catalog.
 
-> The provider CLIs (`claude`, `codex`) do **not** expose a machine-readable "list models" command, so the per-vendor model list is curated in-repo (`src/engine/models.zig`); discovery confirms which CLIs are *callable* by invoking `<bin> --version` (instant, auth-free). This is the interim discovery surface; the plan-540 shared resolver and main-config tier maps (phases 1–2/4) supersede it, and the role→tier defaults here are kept in sync with centurion's defaults.
+> The provider CLIs (`claude`, `codex`) do **not** expose a machine-readable "list models" command, so the per-vendor model list is curated in-repo (`src/engine/models.zig`); discovery confirms which CLIs are *callable* by invoking `<bin> --version` (instant, auth-free). This is the interim discovery surface; the plan-540 shared resolver and main-config tier maps (phases 1–2/4) supersede it, and the role→tier defaults here reflect the shared resolver defaults.
 
 ---
 
@@ -4883,7 +4883,7 @@ override-only) routes individual roles to a different vendor; unset roles use
 provenance; `planar models routing` prints the resolved role→vendor/model
 table; `planar models` reports which provider CLIs are installed. This is the
 **single authoritative routing source** — the skill-render Tier Table
-(`agents/models.md`) and centurion (the external workflow harness) both resolve
+(`agents/models.md`) and external workflow harnesses resolve
 through it (plan 540); there is no separate `execute-config.toml`.
 
 ---
@@ -5562,7 +5562,7 @@ planar-agent ingest     --vendor claude --event @<file|-> [--json]
 planar-agent reconcile  [--dry-run] [--stale-after <duration>] [--plan <id>] [--json]
 planar-agent abort      --claim <token> [--reason <text>] [--vendor <s>] [--vendor-session <vendor:id>] [--json]
 
-# Workflow run lifecycle — used by centurion (external harness) to manage
+# Workflow run lifecycle — used by an external workflow harness to manage
 # workflow_runs rows while staying DB-handle-free (decision 444). The caller
 # supplies the harness pid (not getpid()) so crash reconciliation probes the
 # right process. `abandoned` status is reserved for `reconcile`; `run end`
@@ -5657,9 +5657,9 @@ Per-action-kind defaults: planner / coder / reviewer / test_coder probe; heartbe
 
 ### Workflow run correlation flags (`pull` and `claim`)
 
-`pull` and `claim` accept two optional flags for associating a claim with a centurion (or another external harness) workflow run (decision 450):
+`pull` and `claim` accept two optional flags for associating a claim with an external workflow harness run (decision 450):
 
-- `--run <run-id>` — integer id of the `workflow_runs` row to link on the claim. Set by the external harness (e.g. centurion) when dispatching a worker inside a run. Omit for interactive operator claims (leaves `run_id` NULL on the row).
+- `--run <run-id>` — integer id of the `workflow_runs` row to link on the claim. Set by the external harness when dispatching a worker inside a run. Omit for interactive operator claims (leaves `run_id` NULL on the row).
 - `--stage <stage>` — free-text stage name (e.g. `code`, `review`, `plan`) recorded on the claim. Requires `--run`; omitting `--stage` while passing `--run` leaves `stage` NULL. The `context add --claim <token>` verb (task 3901) stamps `run_id` and `stage` server-side from the claim row — the worker passes only `--claim` (decision 447).
 
 Claims acquired without `--run`/`--stage` behave byte-for-byte as before (no behavior change, no default values). The columns are nullable; existing callers and tools that do not pass these flags are unaffected.
@@ -6028,7 +6028,7 @@ Operational run-record surface for Planar-native workflow execution. Run records
 
 Both `planar run` and `planar bench` write to the same `runs` + `run_events` tables (migration `00025_runs`). The read surface is shared: `planar-watch run list` / `planar-watch run show` display records from both. The `run` domain does NOT manage claims — claim lifecycle is `planar-agent pull` / `complete` / `fail` / `release`. Use `planar run` to bracket the outer workflow trace; claims inside the workflow use `planar-agent`.
 
-Note: `runs`/`run_events`/`run_touches` are distinct from the centurion context-plane tables `workflow_runs`/`context_records` (migration `00022`), which are written by `planar-agent run start/end` and `planar-agent context` — not by `planar run`/`bench`.
+Note: `runs`/`run_events`/`run_touches` are distinct from the context-plane tables `workflow_runs`/`context_records` (migration `00022`), which are written by `planar-agent run start/end` and `planar-agent context` — not by `planar run`/`bench`.
 
 ---
 

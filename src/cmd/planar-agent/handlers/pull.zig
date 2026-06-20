@@ -37,7 +37,7 @@ pub const verb: cli.Cmd = .{
         .{ .long = "--no-locality-probe", .kind = .bool, .default = .{ .bool = false }, .desc = "Skip the git locality probe" },
         .{ .long = "--metadata", .kind = .string, .desc = "Opaque text (typically JSON) persisted on the dispatch action row; validated as well-formed JSON when supplied" },
         .{ .long = "--parent-action", .kind = .int, .desc = "Parent action id; wires the new action as a child of this action in `planar-watch tree` (cross-session hierarchy)" },
-        .{ .long = "--run", .kind = .int, .desc = "workflow_runs.id to associate with this claim (populated by centurion or another external harness; omit for interactive claims)" },
+        .{ .long = "--run", .kind = .int, .desc = "workflow_runs.id to associate with this claim (populated by an external workflow harness; omit for interactive claims)" },
         .{ .long = "--stage", .kind = .string, .desc = "Workflow stage name (e.g. code, review) to record on the claim; requires --run" },
         .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
     },

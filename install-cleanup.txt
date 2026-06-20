@@ -15,6 +15,7 @@
 # step's domain, not this manifest.)
 #
 # (No active entries. `bin/planar-execute` was listed here when the Lua harness
-# was extracted to the centurion repo (2026-06); plan 633 revived planar-execute
-# as a shipped fifth binary — the deterministic spawn-free workflow engine — so
-# the cleanup line was removed (a re-install must keep, not delete, it).)
+# was extracted to a separate external project (2026-06); plan 633 revived
+# planar-execute as a shipped fifth binary — the deterministic spawn-free
+# workflow engine — so the cleanup line was removed (a re-install must keep,
+# not delete, it).)

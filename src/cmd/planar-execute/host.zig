@@ -125,7 +125,7 @@ pub const ALLOWED_HOST_FNS = [_]HostFn{
 
 /// DENIED_HOST_FNS — names that MUST NOT appear in the registered set. These
 /// are the spawn / general-exec primitives that grew planar-execute into a
-/// harness (the reason it was extracted to centurion). P0.3 asserts the
+/// harness (the reason it was extracted to a separate project). P0.3 asserts the
 /// intersection with the registered set is empty; this module asserts the same
 /// at comptime so a regression cannot even compile.
 pub const DENIED_HOST_FNS = [_][]const u8{
