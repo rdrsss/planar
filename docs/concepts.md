@@ -429,18 +429,30 @@ A plan is the anchor unit of work. It is a structured intent — a named body of
 ### Status lifecycle
 
 ```
-draft → active → done
-          ↕
-        paused
+draft → active ⇄ paused
           ↓
-       abandoned
+        done  (terminal)
+          |
+       abandoned  (terminal)
 ```
+
+Legal transitions (enforced by `policy.status.check`):
+
+| From | To |
+|------|----|
+| `draft` | `active` |
+| `active` | `paused`, `done`, `abandoned` |
+| `paused` | `active` |
+| `done` | — terminal; no operator escape path |
+| `abandoned` | — terminal; no operator escape path |
 
 - `draft`: planning documents are being authored. The workbench tree exists but tasks may not yet be created.
 - `active`: tasks are being executed.
-- `paused`: work is interrupted; resumable.
-- `done`: all tasks complete.
-- `abandoned`: work stopped without completion.
+- `paused`: work is interrupted; resumable via `plan update --status active`.
+- `done`: all tasks complete. Terminal for operator transitions.
+- `abandoned`: work stopped without completion. Terminal for operator transitions.
+
+`plan.recomputeStatus` (triggered by task writes) deliberately bypasses this check — it is an engine-internal aggregate roll-up whose target is computed by `computeTarget` and can only emit transitions the matrix considers valid. Operator overrides go through `plan update --status <s>`.
 
 A plan has a filesystem-safe `slug` unique within its parent scope, used in workbench directory names.
 
@@ -489,16 +501,36 @@ A task is the leaf unit of work. It is attached to a plan via `plan_id` and opti
 ### Status lifecycle
 
 ```
-todo → doing → done
-              → cancelled
-              → blocked
+        ┌──────────────────────┐
+        ↓                      |
+todo ⇄ doing ⇄ blocked → done  (terminal)
+  ↘     ↓                ↓
+cancelled (terminal)  cancelled (terminal)
 ```
 
-A task in `blocked` status requires `next_action` to be set — `planar resume validate` refuses a resume packet without it. `doing` tasks are the ones currently being worked on by an agent session.
+Legal transitions (enforced by `policy.status.check`):
+
+| From | To | Notes |
+|------|----|-------|
+| `todo` | `doing`, `blocked`, `cancelled` | |
+| `doing` | `todo`, `blocked`, `done`, `cancelled` | |
+| `blocked` | `doing`, `done`, `cancelled` | |
+| `done` | `todo`, `doing`, `blocked` | Only via `task reopen --reason` or `task update --force` |
+| `cancelled` | `todo`, `doing`, `blocked` | Only via `task reopen --reason` or `task update --force` |
+
+- `todo`: task is queued, not yet started.
+- `doing`: an agent is actively working on it.
+- `blocked`: work is stalled; requires `next_action` — `planar resume validate` refuses a resume packet without it.
+- `done`: task is complete. Terminal for bare `task update`; escape via `task reopen --reason <why>`.
+- `cancelled`: task was deliberately dropped. Terminal for bare `task update`; escape via `task reopen --reason <why>`.
+
+**Verb-gated escape from terminal status.** `planar task reopen <id> [--status todo|doing|blocked] --reason <why>` performs the terminal → open move that bare `task update --status` refuses, and records a `task_reopens` audit row. `task update --force` is the operator override that also performs the move and records a `task_reopens` row with `source='task-update-force'`. Both paths bypass the matrix explicitly; the bypass is the documented exception, not the default.
+
+**Identity transition** (`from == to`) is accepted silently by all arms — a redundant `--status doing` on a `doing` task is a no-op, not a refusal.
 
 Tasks carry a `title`, an optional `body` (Markdown), a `next_action` field for handoff continuity, and a `scope_kind`/`scope_id` pair that records which scope they belong to.
 
-**SQLite table:** `tasks`. **Primary verbs:** `planar task add`, `planar task list`, `planar task show`, `planar task doing`, `planar task done`, `planar task block`, `planar task cancel`.
+**SQLite table:** `tasks`. **Primary verbs:** `planar task add`, `planar task list`, `planar task show`, `planar task doing`, `planar task done`, `planar task block`, `planar task cancel`, `planar task reopen`.
 
 ---
 
@@ -648,11 +680,11 @@ A question is an open inquiry attached to a scope, plan, or task. Agents record 
 ### Status lifecycle
 
 ```
-open → answered
-     → wontfix
+open → answered  (terminal)
+     → wontfix   (terminal)
 ```
 
-The `answered` status requires both `answer_body` and `answered_at` to be set — the schema enforces this with a CHECK constraint.
+Legal transitions: `open → {answered, wontfix}` only. Both `answered` and `wontfix` are terminal — there is no `question reopen` verb. The `answered` status requires both `answer_body` and `answered_at` — the schema enforces this with a CHECK constraint.
 
 ### Sources
 
@@ -668,7 +700,27 @@ A scenario is a verification test case attached to a spec, plan, or task. Scenar
 
 The ingestor imports scenario sections from `tech-spec.md` into `test_scenarios` rows. The coder agent runs scenarios after implementation and records pass/fail outcomes.
 
-**SQLite table:** `test_scenarios`. **Primary verbs:** `planar scenario add`, `planar scenario list`, `planar scenario pass`, `planar scenario fail`.
+### Status lifecycle
+
+```
+draft → ready → verified  ⇄  failing
+    ↘     ↓        ↓             ↓
+      retired (terminal, from any non-terminal state)
+```
+
+Legal transitions (enforced by `policy.status.check`):
+
+| From | To |
+|------|----|
+| `draft` | `ready`, `retired` |
+| `ready` | `verified`, `failing`, `retired` |
+| `verified` | `failing`, `retired` |
+| `failing` | `verified`, `retired` |
+| `retired` | — terminal |
+
+Note: `scenario verify --outcome pass` on a `draft` scenario auto-walks `draft → ready → verified` internally (two policy-checked hops), so the operator workflow `scenario add → scenario verify` works without an explicit `scenario ready` step. There is no `scenario ready` CLI verb.
+
+**SQLite table:** `test_scenarios`. **Primary verbs:** `planar scenario add`, `planar scenario list`, `planar scenario pass`, `planar scenario fail`, `planar scenario retire`.
 
 ---
 
@@ -678,9 +730,21 @@ A decision is a recorded design choice. Decisions have a `kind` (`design`, `tech
 
 ```
 proposed → accepted
-         → superseded
-         → withdrawn
+         → superseded  (terminal)
+         → withdrawn   (terminal)
+
+accepted → superseded  (terminal)
+         → withdrawn   (terminal)
 ```
+
+Legal transitions (enforced by `policy.status.check`):
+
+| From | To |
+|------|----|
+| `proposed` | `accepted`, `superseded`, `withdrawn` |
+| `accepted` | `superseded`, `withdrawn` |
+| `superseded` | — terminal |
+| `withdrawn` | — terminal |
 
 Architecture decision records (ADRs) are artifacts of `kind=adr`, not decision rows — the `decisions` table is for in-flight design choices made during feature work. A decision row points to the session in which it was made and optionally to a plan.
 
@@ -711,6 +775,22 @@ An artifact is a long-form prose document attached to a plan. Artifacts are the 
 | `glossary_term` | Single term definition; aggregated into a glossary page. |
 
 Artifacts are stored as Markdown in the `body` column and mirrored to the workbench filesystem as `.md` files under the plan's workbench directory.
+
+### Status lifecycle
+
+```
+draft ⇄ active → superseded  (terminal)
+                → retired     (terminal)
+```
+
+Legal transitions (enforced by `policy.status.check`):
+
+| From | To |
+|------|----|
+| `draft` | `active` |
+| `active` | `draft`, `superseded`, `retired` |
+| `superseded` | — terminal |
+| `retired` | — terminal |
 
 **SQLite table:** `artifacts`. **Primary verbs:** `planar artifact add`, `planar artifact show`, `planar artifact list`, `planar artifact update`.
 

@@ -1988,6 +1988,164 @@ test "renderOverlay: blocker_input shows prompt text" {
     try std.testing.expect(std.mem.indexOf(u8, text, "42") != null);
 }
 
+// -------------------------------------------------------------------------
+// Task 4343 / GitHub #4163: cockpit InvalidTransition — illegal task moves
+// surface LifecycleError.InvalidTransition, not a silent success.
+//
+// The .task arm in policy.status.check is now real (M1–M5). A done/cancelled
+// task driven through executeTransition(.start) (which calls
+// engine.planning.task.update with status=.doing → policy.status.check(.task,
+// "done", "doing", false) → error.IllegalTransition) MUST propagate back as
+// LifecycleError.InvalidTransition, not succeed silently.
+//
+// Failure mode under a permissive arm: if policy.status.check returned `void`
+// for all transitions, the engine write would succeed, the task would flip to
+// "doing", and these tests would fail on both the expected error AND the
+// post-state assertion.
+// -------------------------------------------------------------------------
+
+test "executeTransition: done task cannot be started (illegal transition surfaces InvalidTransition)" {
+    // Verifies task:cockpit-invalid-transition-test (#4163).
+    //
+    // Seeded status: done.  Intent: .start (todo → doing).
+    // The engine calls policy.status.check(.task, "done", "doing", false);
+    // the .task arm returns error.IllegalTransition;
+    // executeTransition maps it to LifecycleError.InvalidTransition.
+    //
+    // Under a permissive arm this would return void and the task would flip to
+    // "doing" — the status post-assertion below catches that regression.
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const task_id = try seedTask(&d, "done");
+
+    // Must return InvalidTransition — not succeed silently.
+    try std.testing.expectError(
+        LifecycleError.InvalidTransition,
+        executeTransition(&d, a, task_id, .start, null, null, null),
+    );
+
+    // Assert task status still "done" — the arm must have blocked the write.
+    // Under a permissive arm status would be "doing" here and this fails.
+    var stmt = try d.prepare("select status from tasks where id = ?");
+    defer stmt.finalize();
+    try stmt.bind(&.{.{ .int = task_id }});
+    try std.testing.expect((try stmt.step()) == .row);
+    const s = try stmt.columnTextAlloc(0, a);
+    defer a.free(s);
+    try std.testing.expectEqualStrings("done", s);
+}
+
+test "executeTransition: cancelled task cannot be started (illegal transition surfaces InvalidTransition)" {
+    // Same as the done test but with the other terminal status.
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const task_id = try seedTask(&d, "cancelled");
+
+    try std.testing.expectError(
+        LifecycleError.InvalidTransition,
+        executeTransition(&d, a, task_id, .start, null, null, null),
+    );
+
+    // Status must remain "cancelled".
+    var stmt = try d.prepare("select status from tasks where id = ?");
+    defer stmt.finalize();
+    try stmt.bind(&.{.{ .int = task_id }});
+    try std.testing.expect((try stmt.step()) == .row);
+    const s = try stmt.columnTextAlloc(0, a);
+    defer a.free(s);
+    try std.testing.expectEqualStrings("cancelled", s);
+}
+
+test "executeTransition: cancelled task cannot be marked done (illegal transition via markDone)" {
+    // cancelled → done via .done intent: markDone calls policy.status.check(.task,
+    // "cancelled", "done", false) → not in the matrix → error.IllegalTransition
+    // → executeTransition maps it to LifecycleError.InvalidTransition.
+    //
+    // Under a permissive arm: the write would succeed, status would flip to
+    // "done", and the post-state assertion below would fail.
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const task_id = try seedTask(&d, "cancelled");
+
+    try std.testing.expectError(
+        LifecycleError.InvalidTransition,
+        executeTransition(&d, a, task_id, .done, null, null, null),
+    );
+
+    // Status must still be "cancelled".
+    var stmt = try d.prepare("select status from tasks where id = ?");
+    defer stmt.finalize();
+    try stmt.bind(&.{.{ .int = task_id }});
+    try std.testing.expect((try stmt.step()) == .row);
+    const s = try stmt.columnTextAlloc(0, a);
+    defer a.free(s);
+    try std.testing.expectEqualStrings("cancelled", s);
+}
+
+test "TaskLifecycleState: 's' (start) on a done task surfaces error_msg with invalid-transition text" {
+    // Full controller path: enter → claim_info → Enter → choose_action → 's'
+    // on a DONE task → runTransition(.start) → InvalidTransition → error_msg.
+    //
+    // Proves the cockpit maps the engine's IllegalTransition to an operator-
+    // visible error message rather than silently flipping the status.
+    //
+    // Under a permissive .task arm: runTransition would succeed and the mode
+    // would be .success_msg with the DB flipped — both asserts below fail.
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const task_id = try seedTask(&d, "done");
+
+    var ls = TaskLifecycleState.init(a);
+    defer ls.deinit();
+
+    ls.enter(&d, task_id);
+    try std.testing.expect(ls.mode == .claim_info);
+
+    // Enter → choose_action.
+    _ = ls.handleKey(makeKey(Key.enter), &d, null);
+    try std.testing.expect(ls.mode == .choose_action);
+
+    // 's' (start / todo→doing) on a DONE task — must be refused.
+    _ = ls.handleKey(makeKeyText('s'), &d, null);
+
+    // Must be .error_msg, not .success_msg.
+    switch (ls.mode) {
+        .error_msg => |e| {
+            // The error message must mention "invalid" or "transition" or "status"
+            // so the operator knows why it was refused.
+            try std.testing.expect(
+                std.mem.indexOf(u8, e.msg, "invalid") != null or
+                    std.mem.indexOf(u8, e.msg, "transition") != null or
+                    std.mem.indexOf(u8, e.msg, "status") != null or
+                    std.mem.indexOf(u8, e.msg, "allowed") != null,
+            );
+        },
+        .success_msg => {
+            // Under a permissive arm the write would succeed — this catch
+            // makes the failure visible ("expected error_msg, got success_msg").
+            try std.testing.expect(false); // illegal transition must not succeed
+        },
+        else => try std.testing.expect(false), // expected .error_msg
+    }
+
+    // The task status must still be "done" — no write happened.
+    var stmt = try d.prepare("select status from tasks where id = ?");
+    defer stmt.finalize();
+    try stmt.bind(&.{.{ .int = task_id }});
+    try std.testing.expect((try stmt.step()) == .row);
+    const s = try stmt.columnTextAlloc(0, a);
+    defer a.free(s);
+    try std.testing.expectEqualStrings("done", s);
+}
+
 test "task_lifecycle module compiles" {
     std.testing.refAllDecls(@This());
 }

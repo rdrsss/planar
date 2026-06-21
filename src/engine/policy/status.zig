@@ -187,9 +187,8 @@ pub fn check(
             // no `question reopen` verb. Terminal → anything raises
             // IllegalTransition.
             //
-            // Plan 352 bug 2: M4 scenario surfaced that wontfix from
-            // answered silently succeeded; the engine called this
-            // check but the arm was a permissive TODO stub.
+            // Plan 352 bug 2: wontfix from answered silently succeeded
+            // before this arm was enforced; this comment records the fix.
             if (std.mem.eql(u8, from, "open")) {
                 if (std.mem.eql(u8, to, "answered") or std.mem.eql(u8, to, "wontfix")) return;
                 return Error.IllegalTransition;

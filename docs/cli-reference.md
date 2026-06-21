@@ -681,7 +681,9 @@ The `scope` column shows where the plan lives: `global`, `repo:<slug>`, or `asso
 planar plan update <plan-id> [--title <text>] [--slug <slug>] [--summary <text>] [--status <status>]
 ```
 
-**Description:** Update mutable fields on a plan.
+**Description:** Update mutable fields on a plan. Status changes are validated against the plan transition matrix: `draft → active`, `active → {paused, done, abandoned}`, `paused → active`; `done` and `abandoned` are terminal. Illegal moves exit non-zero and leave the plan unchanged. There is no `--force` flag for plans — terminal plans have no operator escape path via this verb.
+
+Note: `plan recompute-status` deliberately bypasses this matrix (it is an engine-internal aggregate roll-up, not an operator transition). Direct operator status changes always go through this verb and are matrix-checked.
 
 **Scope guard:** Refuses when the operator's resolved write scope disagrees with the plan's stored scope. See [Cross-scope guard](#cross-scope-guard).
 
@@ -692,7 +694,7 @@ planar plan update <plan-id> [--title <text>] [--slug <slug>] [--summary <text>]
 | `--title <text>` | New title. | unchanged |
 | `--slug <slug>` | New slug. Must remain unique within the plan's slug namespace. | unchanged |
 | `--summary <text>` | New summary. May be `@<file>`. | unchanged |
-| `--status <status>` | New status: `draft`, `active`, `paused`, `done`, `abandoned`. | unchanged |
+| `--status <status>` | New status. Must be a legal transition from the current status per the matrix: `draft → active`, `active → {paused, done, abandoned}`, `paused → active`. | unchanged |
 
 **Schema effects:** Updates `plans(title, slug, summary, status, updated_at)`.
 
@@ -700,7 +702,7 @@ planar plan update <plan-id> [--title <text>] [--slug <slug>] [--summary <text>]
 
 **Exit codes:**
 - `1` — plan id not found.
-- `1` — invalid status value.
+- `1` — invalid status value or illegal transition.
 
 ---
 
@@ -1267,7 +1269,7 @@ The `scope` column shows where the task lives: `global`, `repo:<slug>`, or `asso
 planar task update <task-id> [--title <text>] [--body <text>] [--status <status>] [--priority <n>] [--next-action <text>] [--due <date>] [--plan <plan-id>] [--force] [--reason <text>] [--editor]
 ```
 
-**Description:** Update mutable fields on a task.
+**Description:** Update mutable fields on a task. Status changes are validated against the per-entity transition matrix in `policy.status.check`; illegal moves exit non-zero and leave the task unchanged. Legal status moves: `todo → {doing, blocked, cancelled}`, `doing → {todo, blocked, done, cancelled}`, `blocked → {doing, done, cancelled}`. The terminal statuses `done` and `cancelled` block bare `--status` updates; use `task reopen --reason` (the preferred verb-gated path) or `--force` (operator override, records audit row).
 
 **Scope guard:** Refuses when the operator's resolved write scope disagrees with the task's stored scope. See [Cross-scope guard](#cross-scope-guard).
 
@@ -1277,12 +1279,12 @@ planar task update <task-id> [--title <text>] [--body <text>] [--status <status>
 |------|-------------|---------|
 | `--title <text>` | New title. | unchanged |
 | `--body <text>` | New body. May be `@<file>`. | unchanged |
-| `--status <status>` | New status: `todo`, `doing`, `blocked`, `done`, `cancelled`. | unchanged |
+| `--status <status>` | New status: `todo`, `doing`, `blocked`, `done`, `cancelled`. Must be a legal transition from the current status per the matrix (see description). | unchanged |
 | `--priority <n>` | New priority integer. | unchanged |
 | `--next-action <text>` | Update the next concrete action. | unchanged |
 | `--due <date>` | Update due date. | unchanged |
 | `--plan <plan-id>` | Move task to a different plan (or `none` to detach). | unchanged |
-| `--force` | Bypass the terminal-status guard. Required to move a `done` / `cancelled` task back to a non-terminal status; the transition is recorded in `task_reopens` with `source='task-update-force'`. Prefer `task reopen <id>` for the documented recovery path. | off |
+| `--force` | Bypass the status-transition matrix. Required to move a `done` / `cancelled` task back to a non-terminal status without going through `task reopen`; the transition is recorded in `task_reopens` with `source='task-update-force'`. Prefer `task reopen <id>` for the documented recovery path. | off |
 | `--reason <text>` | Operator-supplied rationale recorded on the `task_reopens` audit row when `--force` triggers a terminal → non-terminal transition. | empty |
 | `--no-auto-promote` | Skip the [plan-status auto-promotion invariant](concepts.md#plan) (plan 304) for this operation. Escape hatch for scripted migrations that don't intend the plan-level transition. | off |
 | `--editor` | Accepted as a no-op. The editor-driven path is `task edit`; this flag exists so scripts that pass `--editor=false` alongside other flags (e.g. copied from `task add` invocations) are not rejected with `UnknownFlag`. | off |
@@ -1305,7 +1307,7 @@ planar task update <task-id> [--title <text>] [--body <text>] [--status <status>
 planar task done <task-id>
 ```
 
-**Description:** Mark a task as done. Shorthand for `task update --status done`.
+**Description:** Mark a task as done. Legal from `doing` or `blocked` — not from `todo` (the matrix requires `todo → doing` first) or from a terminal status (`done`/`cancelled`). Equivalent to `task update --status done` but spelled explicitly for the common case.
 
 **Scope guard:** Refuses when the operator's resolved write scope disagrees with the task's stored scope. See [Cross-scope guard](#cross-scope-guard).
 
@@ -1315,6 +1317,7 @@ planar task done <task-id>
 
 **Exit codes:**
 - `1` — task not found.
+- `1` — task is not in a legal pre-done status (e.g. `todo` or already `done`/`cancelled`).
 
 ---
 
