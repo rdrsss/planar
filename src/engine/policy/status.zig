@@ -28,6 +28,19 @@
 //!   question  {open, answered, wontfix}
 //!     open → {answered, wontfix}; answered, wontfix → terminal
 //!
+//!   scenario  {draft, ready, verified, failing, retired}
+//!     draft    → {ready, retired}
+//!     ready    → {verified, failing, retired}
+//!     verified → {failing, retired}
+//!     failing  → {verified, retired}
+//!     retired  → terminal
+//!     identity (from == to) → no-op early return
+//!     NOTE: `scenario verify --outcome pass` on a `draft` scenario
+//!     auto-walks draft → ready → verified internally (two policy-checked
+//!     hops) so the operator workflow `scenario add → scenario verify`
+//!     works without an explicit `scenario ready` step.  There is no
+//!     `scenario ready` CLI verb.
+//!
 //!   All other arms remain permissive stubs; each entity adds its rows
 //!   here as it lands (or in a sibling file `policy/status_<kind>.zig`).
 //!   The signature is locked now so callers can wire it from day one.
@@ -57,9 +70,9 @@ pub const Error = error{
 /// `true` (caller-level override) or when `from == to` (identity
 /// no-op).
 ///
-/// The `.task` and `.plan` arms are fully enforced.  The `.question`
-/// arm is also fully enforced.  All other arms remain permissive stubs
-/// until their respective milestone lands.
+/// The `.task`, `.plan`, `.question`, and `.scenario` arms are fully
+/// enforced.  All other arms remain permissive stubs until their
+/// respective milestone lands.
 pub fn check(
     kind: EntityKind,
     from: []const u8,
@@ -162,7 +175,39 @@ pub fn check(
             return Error.IllegalTransition;
         },
         .scenario => {
-            // TODO(status-matrix:scenario): draft → verified → retired
+            // Real enforcement.  See module docstring for the full matrix.
+            //
+            // Status set: {draft, ready, verified, failing, retired}.
+            //   draft    → {ready, retired}
+            //   ready    → {verified, failing, retired}
+            //   verified → {failing, retired}
+            //   failing  → {verified, retired}
+            //   retired  → terminal (no outgoing operator edges)
+            //
+            // scenario verbs expose no --force flag, so force is always false
+            // at scenario call sites.
+            const legal: bool = blk: {
+                if (std.mem.eql(u8, from, "draft")) {
+                    break :blk std.mem.eql(u8, to, "ready") or
+                        std.mem.eql(u8, to, "retired");
+                } else if (std.mem.eql(u8, from, "ready")) {
+                    break :blk std.mem.eql(u8, to, "verified") or
+                        std.mem.eql(u8, to, "failing") or
+                        std.mem.eql(u8, to, "retired");
+                } else if (std.mem.eql(u8, from, "verified")) {
+                    break :blk std.mem.eql(u8, to, "failing") or
+                        std.mem.eql(u8, to, "retired");
+                } else if (std.mem.eql(u8, from, "failing")) {
+                    break :blk std.mem.eql(u8, to, "verified") or
+                        std.mem.eql(u8, to, "retired");
+                } else if (std.mem.eql(u8, from, "retired")) {
+                    // Terminal for operator transitions.
+                    break :blk false;
+                } else {
+                    return Error.UnknownStatus;
+                }
+            };
+            if (!legal) return Error.IllegalTransition;
         },
         .decision => {
             // TODO(status-matrix:decision): proposed → accepted → superseded|withdrawn
@@ -300,6 +345,56 @@ test "question arm: terminal sources refused" {
 test "question arm: identity no-op" {
     try check(.question, "open", "open", false);
     try check(.question, "answered", "answered", false);
+}
+
+test "scenario arm: legal edges are accepted" {
+    // draft → {ready, retired}
+    try check(.scenario, "draft", "ready", false);
+    try check(.scenario, "draft", "retired", false);
+    // ready → {verified, failing, retired}
+    try check(.scenario, "ready", "verified", false);
+    try check(.scenario, "ready", "failing", false);
+    try check(.scenario, "ready", "retired", false);
+    // verified → {failing, retired}
+    try check(.scenario, "verified", "failing", false);
+    try check(.scenario, "verified", "retired", false);
+    // failing → {verified, retired}
+    try check(.scenario, "failing", "verified", false);
+    try check(.scenario, "failing", "retired", false);
+}
+
+test "scenario arm: illegal edges are refused" {
+    // draft cannot jump directly to verified or failing
+    try std.testing.expectError(error.IllegalTransition, check(.scenario, "draft", "verified", false));
+    try std.testing.expectError(error.IllegalTransition, check(.scenario, "draft", "failing", false));
+    // ready cannot go back to draft
+    try std.testing.expectError(error.IllegalTransition, check(.scenario, "ready", "draft", false));
+    // verified cannot go back to ready or draft
+    try std.testing.expectError(error.IllegalTransition, check(.scenario, "verified", "ready", false));
+    try std.testing.expectError(error.IllegalTransition, check(.scenario, "verified", "draft", false));
+    // failing cannot go back to ready or draft
+    try std.testing.expectError(error.IllegalTransition, check(.scenario, "failing", "ready", false));
+    try std.testing.expectError(error.IllegalTransition, check(.scenario, "failing", "draft", false));
+}
+
+test "scenario arm: retired is terminal — all moves refused" {
+    try std.testing.expectError(error.IllegalTransition, check(.scenario, "retired", "draft", false));
+    try std.testing.expectError(error.IllegalTransition, check(.scenario, "retired", "ready", false));
+    try std.testing.expectError(error.IllegalTransition, check(.scenario, "retired", "verified", false));
+    try std.testing.expectError(error.IllegalTransition, check(.scenario, "retired", "failing", false));
+}
+
+test "scenario arm: identity transition is a no-op" {
+    try check(.scenario, "draft", "draft", false);
+    try check(.scenario, "ready", "ready", false);
+    try check(.scenario, "verified", "verified", false);
+    try check(.scenario, "failing", "failing", false);
+    try check(.scenario, "retired", "retired", false);
+}
+
+test "scenario arm: unknown status returns UnknownStatus" {
+    try std.testing.expectError(error.UnknownStatus, check(.scenario, "active", "verified", false));
+    try std.testing.expectError(error.UnknownStatus, check(.scenario, "published", "retired", false));
 }
 
 test "annotation enum arm: stub accepts open and terminal transitions" {

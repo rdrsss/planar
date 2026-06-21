@@ -117,12 +117,14 @@ test "scenario: test-spec authoring — add, link to task, verify (passing)" {
     try std.testing.expect(std.mem.containsAtLeast(u8, links_raw, 1, "verifies"));
     try std.testing.expect(std.mem.containsAtLeast(u8, links_raw, 1, task_id_str));
 
-    // ---- 5. Verify the scenario.
+    // ---- 5. Verify the scenario (draft → verified via auto-transition).
     //
-    // `scenario verify <id> --summary "<text>"` flips status to
-    // `verified` and populates last_outcome="pass" + last_run_at.
-    // The current implementation only records successful runs;
-    // a failing-run flow is open (see TS-Z2 in the test spec).
+    // `scenario verify <id> --summary "<text>"` internally walks
+    // draft → ready → verified (two policy-checked hops) so the
+    // operator can go directly from `scenario add` to `scenario verify`
+    // without an explicit `scenario ready` step (there is no such verb).
+    // On pass: flips status to `verified` and populates last_outcome="pass"
+    // + last_run_at.
     const ver_out = suite.mustRun(&.{
         "scenario",  "verify",                                          scen_id_str,
         "--summary", "Ran 2026-05-26: clean pass, no allocator leaks.",

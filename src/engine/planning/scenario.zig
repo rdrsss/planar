@@ -397,6 +397,13 @@ pub fn listTouching(
 /// every case last_outcome and last_run_at update so the operator
 /// can see when the most recent run happened and what its result
 /// was. Optional `summary` is included in the audit row.
+///
+/// Auto-transition: when the scenario is in `draft` status and outcome
+/// is `pass`, `verify` internally walks `draft → ready → verified`
+/// (two policy-checked hops) so the operator workflow
+/// `scenario add → scenario verify` works without an explicit
+/// `scenario ready` step.  Each hop goes through `policy.status.check`
+/// — the matrix is honored step-by-step, not bypassed.
 pub fn verify(
     d: *db.sqlite.Db,
     allocator: std.mem.Allocator,
@@ -416,7 +423,26 @@ pub fn verify(
     };
 
     if (outcome == .pass) {
-        try policy.status.check(.scenario, @tagName(current.status), "verified", false);
+        // Auto-transition: if the scenario is still in `draft`, walk it
+        // through the legal path draft → ready first, then ready → verified.
+        // Each hop goes through policy.status.check so the matrix is honored.
+        const status_before_verify: []const u8 = if (current.status == .draft) blk: {
+            try policy.status.check(.scenario, "draft", "ready", false);
+            _ = d.execParams(
+                \\update test_scenarios
+                \\set status = 'ready',
+                \\    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                \\where id = ?
+            , &.{.{ .int = id }}) catch return Error.QueryFailed;
+            try policy.audit.record(d, .{
+                .verb = .status_change,
+                .entity = .{ .kind = "scenario", .id = id },
+                .summary = "ready: auto-transition via verify",
+            });
+            break :blk "ready";
+        } else @tagName(current.status);
+        // Now perform the → verified hop using the actual current status.
+        try policy.status.check(.scenario, status_before_verify, "verified", false);
         _ = d.execParams(
             \\update test_scenarios
             \\set status = 'verified',
@@ -447,6 +473,41 @@ pub fn verify(
         .verb = .status_change,
         .entity = .{ .kind = "scenario", .id = id },
         .summary = audit_summary,
+    });
+
+    return try show(d, allocator, id);
+}
+
+/// Advance a scenario from draft to ready.  Only `draft → ready` is
+/// legal; any other source status raises `error.IllegalTransition`.
+/// Optional `reason` is included in the audit summary.
+pub fn ready(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    id: i64,
+    reason: ?[]const u8,
+) Error!Scenario {
+    const current = try show(d, allocator, id);
+    defer deinit(current, allocator);
+    try policy.scope_guard.check(null, null);
+    try policy.status.check(.scenario, @tagName(current.status), "ready", false);
+
+    _ = d.execParams(
+        \\update test_scenarios
+        \\set status = 'ready',
+        \\    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        \\where id = ?
+    , &.{.{ .int = id }}) catch return Error.QueryFailed;
+
+    const summary = if (reason) |r|
+        try std.fmt.allocPrint(allocator, "ready: {s}", .{r})
+    else
+        try allocator.dupe(u8, "ready");
+    defer allocator.free(summary);
+    try policy.audit.record(d, .{
+        .verb = .status_change,
+        .entity = .{ .kind = "scenario", .id = id },
+        .summary = summary,
     });
 
     return try show(d, allocator, id);
@@ -627,13 +688,60 @@ test "create with repo: scope writes scope_kind='repo'" {
     try std.testing.expectEqual(repo_id, s.scope_id.?);
 }
 
-test "verify sets status + outcome + last_run_at" {
+test "ready advances draft to ready" {
     const a = std.testing.allocator;
     var d = try setupTestDb(a);
     defer d.close();
-    const s = try create(&d, a, .{ .title = "happy path" });
+    const s = try create(&d, a, .{ .title = "to advance" });
     defer deinit(s, a);
+    try std.testing.expectEqual(Status.draft, s.status);
+    const r = try ready(&d, a, s.id, null);
+    defer deinit(r, a);
+    try std.testing.expectEqual(Status.ready, r.status);
+}
+
+test "ready: verified → ready is refused (not in matrix)" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const s = try create(&d, a, .{ .title = "already verified" });
+    defer deinit(s, a);
+    // draft → ready → verified
+    const rd = try ready(&d, a, s.id, null);
+    defer deinit(rd, a);
+    const v = try verify(&d, a, s.id, .pass, null);
+    defer deinit(v, a);
+    try std.testing.expectEqual(Status.verified, v.status);
+    // verified → ready is not in the matrix; must raise IllegalTransition.
+    try std.testing.expectError(error.IllegalTransition, ready(&d, a, s.id, null));
+}
+
+test "verify sets status + outcome + last_run_at (from ready)" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    // Calling verify() from ready: single-hop ready → verified.
+    const s = try create(&d, a, .{ .title = "happy path via ready" });
+    defer deinit(s, a);
+    const rd = try ready(&d, a, s.id, null);
+    defer deinit(rd, a);
     const v = try verify(&d, a, s.id, .pass, "ran clean in CI");
+    defer deinit(v, a);
+    try std.testing.expectEqual(Status.verified, v.status);
+    try std.testing.expectEqual(Outcome.pass, v.last_outcome.?);
+    try std.testing.expect(v.last_run_at != null);
+}
+
+test "verify auto-transitions draft → ready → verified in one call" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    // Auto-transition: calling verify() directly from draft must land verified
+    // without an explicit ready() call.
+    const s = try create(&d, a, .{ .title = "auto-transition" });
+    defer deinit(s, a);
+    try std.testing.expectEqual(Status.draft, s.status);
+    const v = try verify(&d, a, s.id, .pass, null);
     defer deinit(v, a);
     try std.testing.expectEqual(Status.verified, v.status);
     try std.testing.expectEqual(Outcome.pass, v.last_outcome.?);
@@ -646,6 +754,9 @@ test "retire flips status; doesn't touch last_outcome" {
     defer d.close();
     const s = try create(&d, a, .{ .title = "old test" });
     defer deinit(s, a);
+    // Matrix: draft → ready → verified, then retire.
+    const rd = try ready(&d, a, s.id, null);
+    defer deinit(rd, a);
     const v = try verify(&d, a, s.id, .pass, null);
     defer deinit(v, a);
     const r = try retire(&d, a, s.id, "feature removed");
@@ -662,6 +773,9 @@ test "list filters by status" {
     defer deinit(s1, a);
     const s2 = try create(&d, a, .{ .title = "drafting" });
     defer deinit(s2, a);
+    // Matrix: draft → ready → verified.
+    const rd = try ready(&d, a, s1.id, null);
+    defer deinit(rd, a);
     const v = try verify(&d, a, s1.id, .pass, null);
     defer deinit(v, a);
 

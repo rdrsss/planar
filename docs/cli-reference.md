@@ -1711,14 +1711,18 @@ scenario 9: "Stripe webhook idempotency"  [draft]  (scope: association:3 [from c
 
 ---
 
-### `planar scenario verify <scenario-id> --outcome <outcome>`
+### `planar scenario verify <scenario-id>`
 
 **Synopsis:**
 ```
-planar scenario verify <scenario-id> --outcome <outcome> [--summary <text>]
+planar scenario verify <scenario-id> [--outcome <outcome>] [--summary <text>] [--json]
 ```
 
-**Description:** Record the outcome of running a scenario. Transitions status to `verified` (on pass) or `failing` (on fail). Does not execute the scenario — execution is the agent's job.
+**Description:** Record the outcome of running a scenario. When `--outcome pass` (the default), transitions status to `verified`. Non-passing outcomes (`fail`, `error`, `skipped`) record `last_outcome` and `last_run_at` but leave the status unchanged. Does not execute the scenario — execution is the agent's job.
+
+**Auto-transition from draft:** When the scenario is in `draft` status and `--outcome pass`, `verify` internally walks `draft → ready → verified` (two policy-checked hops) so the operator workflow `scenario add → scenario verify` works with no intermediate step required. There is no `scenario ready` CLI verb.
+
+**Status matrix:** `ready → verified` (on pass). When source is `draft`, auto-walks `draft → ready → verified` first. Non-passing outcomes leave status unchanged regardless of source status.
 
 **Arguments:**
 
@@ -1730,18 +1734,20 @@ planar scenario verify <scenario-id> --outcome <outcome> [--summary <text>]
 
 | Flag | Description | Required |
 |------|-------------|----------|
-| `--outcome <outcome>` | One of `pass`, `fail`, `error`, `skipped`. | yes |
-| `--notes <text>` | Optional notes on the run. May be `@<file>`. | no |
+| `--outcome <outcome>` | One of `pass`, `fail`, `error`, `skipped`. Defaults to `pass`. | no |
+| `--summary <text>` | Optional summary of the run. Included in the audit row. | no |
+| `--json` | Emit the updated scenario as JSON. | no |
 
 **Schema effects:**
 - Updates `test_scenarios(last_run_at=now(), last_outcome=<outcome>, updated_at)`.
-- Status transitions: `pass` → `verified`; `fail` → `failing`; `error` stays at current status; `skipped` stays at current status.
+- On `pass`: additionally sets `status='verified'`.
 
 **Capture:** Appends `session_entries` row with `prefix='observation'`.
 
 **Exit codes:**
 - `1` — scenario not found.
 - `1` — outcome not in allowed values.
+- `1` — illegal transition (source status does not permit `→ verified`; e.g. calling `verify` from `retired`).
 
 ---
 
@@ -1802,10 +1808,12 @@ planar scenario show <scenario-id>
 
 **Synopsis:**
 ```
-planar scenario retire <scenario-id>
+planar scenario retire <scenario-id> [--reason <text>] [--json]
 ```
 
-**Description:** Mark a scenario as retired (no longer relevant).
+**Description:** Mark a scenario as retired (no longer relevant). Legal from any non-terminal status (`draft`, `ready`, `verified`, `failing`). `retired` is terminal — there is no reopen verb.
+
+**Status matrix:** any `{draft, ready, verified, failing} → retired`.
 
 **Schema effects:** Updates `test_scenarios(status='retired', updated_at)`.
 

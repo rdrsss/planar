@@ -1426,6 +1426,18 @@ fn applyMutations(
 ) !void {
     if (new_title == null and new_status == null) return;
 
+    // For scenario status changes, validate through policy.status.check before
+    // writing.  The engine planning.scenario module owns the dedicated verbs
+    // (ready/verify/retire); the editflow path is the escape hatch when the
+    // operator edits frontmatter directly.
+    if (kind == .scenario) {
+        if (new_status) |to| {
+            const current = try fetchEntityTitleForSlug(d, allocator, "test_scenarios", entity_id);
+            defer current.deinit(allocator);
+            try engine.policy.status.check(.scenario, current.status, to, false);
+        }
+    }
+
     // Build dynamic UPDATE. We always set updated_at.
     var sql_buf: std.ArrayList(u8) = .empty;
     defer sql_buf.deinit(allocator);

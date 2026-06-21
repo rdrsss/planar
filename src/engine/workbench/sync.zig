@@ -928,6 +928,11 @@ fn softDeleteEntity(d: *db.sqlite.Db, kind: []const u8, id: i64) !void {
     else if (std.mem.eql(u8, kind, "artifact"))
         "update artifacts set status='retired', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') where id=?"
     else if (std.mem.eql(u8, kind, "scenario"))
+        // INTENTIONAL BYPASS of policy.status.check: softDeleteEntity can only
+        // ever target `retired`, which is a legal destination from every
+        // non-retired scenario status, and an identity (no-op) from retired
+        // itself. Adding the check here would require an allocator parameter
+        // propagating to all callers. The bypass is safe by construction.
         "update test_scenarios set status='retired', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') where id=?"
     else if (std.mem.eql(u8, kind, "question"))
         "update questions set status='wontfix', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') where id=?"
