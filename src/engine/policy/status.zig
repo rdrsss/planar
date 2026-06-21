@@ -41,9 +41,23 @@
 //!     works without an explicit `scenario ready` step.  There is no
 //!     `scenario ready` CLI verb.
 //!
-//!   All other arms remain permissive stubs; each entity adds its rows
-//!   here as it lands (or in a sibling file `policy/status_<kind>.zig`).
-//!   The signature is locked now so callers can wire it from day one.
+//!   decision  {proposed, accepted, superseded, withdrawn}
+//!     proposed  → {accepted, superseded, withdrawn}
+//!     accepted  → {superseded, withdrawn}
+//!     superseded, withdrawn → terminal
+//!     identity (from == to) → no-op early return
+//!     NOTE: decision.validateTransition delegates to this arm.
+//!
+//!   artifact  {draft, active, superseded, retired}
+//!     draft   → active
+//!     active  → {draft, superseded, retired}
+//!     superseded, retired → terminal
+//!     identity (from == to) → no-op early return
+//!     NOTE: artifact.validateTransition delegates to this arm.
+//!
+//!   handoff and annotation arms remain permissive stubs until their
+//!   respective milestones land.  The signature is locked so callers can
+//!   wire it from day one.
 
 const std = @import("std");
 
@@ -70,9 +84,9 @@ pub const Error = error{
 /// `true` (caller-level override) or when `from == to` (identity
 /// no-op).
 ///
-/// The `.task`, `.plan`, `.question`, and `.scenario` arms are fully
-/// enforced.  All other arms remain permissive stubs until their
-/// respective milestone lands.
+/// The `.task`, `.plan`, `.question`, `.scenario`, `.decision`, and
+/// `.artifact` arms are fully enforced.  `.handoff` and `.annotation`
+/// remain permissive stubs until their respective milestones land.
 pub fn check(
     kind: EntityKind,
     from: []const u8,
@@ -210,10 +224,69 @@ pub fn check(
             if (!legal) return Error.IllegalTransition;
         },
         .decision => {
-            // TODO(status-matrix:decision): proposed → accepted → superseded|withdrawn
+            // Real enforcement.  See module docstring for the full matrix.
+            //
+            // Status set: {proposed, accepted, superseded, withdrawn}.
+            //   proposed  → {accepted, superseded, withdrawn}
+            //   accepted  → {superseded, withdrawn}
+            //   superseded, withdrawn → terminal (no outgoing operator edges)
+            //
+            // decision.validateTransition delegates to this arm and maps the
+            // returned errors back to the module's existing error spelling
+            // (TerminalStatus / InvalidStatus) so callers are unaffected.
+            //
+            // Decision verbs expose no --force flag; force is always false
+            // at decision call sites.
+            const legal: bool = blk: {
+                if (std.mem.eql(u8, from, "proposed")) {
+                    break :blk std.mem.eql(u8, to, "accepted") or
+                        std.mem.eql(u8, to, "superseded") or
+                        std.mem.eql(u8, to, "withdrawn");
+                } else if (std.mem.eql(u8, from, "accepted")) {
+                    break :blk std.mem.eql(u8, to, "superseded") or
+                        std.mem.eql(u8, to, "withdrawn");
+                } else if (std.mem.eql(u8, from, "superseded") or
+                    std.mem.eql(u8, from, "withdrawn"))
+                {
+                    // Terminal for all operator transitions.
+                    break :blk false;
+                } else {
+                    return Error.UnknownStatus;
+                }
+            };
+            if (!legal) return Error.IllegalTransition;
         },
         .artifact => {
-            // TODO(status-matrix:artifact): draft → published; rare lifecycle
+            // Real enforcement.  See module docstring for the full matrix.
+            //
+            // Status set: {draft, active, superseded, retired}.
+            //   draft  → active
+            //   active → {draft, superseded, retired}
+            //   superseded, retired → terminal (no outgoing operator edges)
+            //
+            // artifact.validateTransition delegates to this arm and maps the
+            // returned errors back to the module's existing error spelling
+            // (IllegalTransition — same name) so callers are unaffected.
+            //
+            // Artifact verbs expose no --force flag; force is always false
+            // at artifact call sites.
+            const legal: bool = blk: {
+                if (std.mem.eql(u8, from, "draft")) {
+                    break :blk std.mem.eql(u8, to, "active");
+                } else if (std.mem.eql(u8, from, "active")) {
+                    break :blk std.mem.eql(u8, to, "draft") or
+                        std.mem.eql(u8, to, "superseded") or
+                        std.mem.eql(u8, to, "retired");
+                } else if (std.mem.eql(u8, from, "superseded") or
+                    std.mem.eql(u8, from, "retired"))
+                {
+                    // Terminal for all operator transitions.
+                    break :blk false;
+                } else {
+                    return Error.UnknownStatus;
+                }
+            };
+            if (!legal) return Error.IllegalTransition;
         },
         .handoff => {
             // TODO(status-matrix:handoff): pending → validated → consumed
@@ -409,4 +482,84 @@ test "annotation enum arm: stub accepts open and terminal transitions" {
     try check(.annotation, "resolved", "active", false);
     try check(.annotation, "dismissed", "active", false);
     try check(.annotation, "archived", "active", false);
+}
+
+// ---- decision arm tests ----
+
+test "decision arm: legal edges are accepted" {
+    // proposed → {accepted, superseded, withdrawn}
+    try check(.decision, "proposed", "accepted", false);
+    try check(.decision, "proposed", "superseded", false);
+    try check(.decision, "proposed", "withdrawn", false);
+    // accepted → {superseded, withdrawn}
+    try check(.decision, "accepted", "superseded", false);
+    try check(.decision, "accepted", "withdrawn", false);
+}
+
+test "decision arm: terminal sources are refused" {
+    // superseded is terminal — no outgoing edges.
+    try std.testing.expectError(error.IllegalTransition, check(.decision, "superseded", "proposed", false));
+    try std.testing.expectError(error.IllegalTransition, check(.decision, "superseded", "accepted", false));
+    try std.testing.expectError(error.IllegalTransition, check(.decision, "superseded", "withdrawn", false));
+    // withdrawn is terminal — no outgoing edges.
+    try std.testing.expectError(error.IllegalTransition, check(.decision, "withdrawn", "proposed", false));
+    try std.testing.expectError(error.IllegalTransition, check(.decision, "withdrawn", "accepted", false));
+    try std.testing.expectError(error.IllegalTransition, check(.decision, "withdrawn", "superseded", false));
+}
+
+test "decision arm: illegal non-terminal moves are refused" {
+    // accepted cannot go back to proposed.
+    try std.testing.expectError(error.IllegalTransition, check(.decision, "accepted", "proposed", false));
+}
+
+test "decision arm: identity transition is a no-op" {
+    try check(.decision, "proposed", "proposed", false);
+    try check(.decision, "accepted", "accepted", false);
+    try check(.decision, "superseded", "superseded", false);
+    try check(.decision, "withdrawn", "withdrawn", false);
+}
+
+test "decision arm: unknown status returns UnknownStatus" {
+    try std.testing.expectError(error.UnknownStatus, check(.decision, "open", "accepted", false));
+    try std.testing.expectError(error.UnknownStatus, check(.decision, "draft", "proposed", false));
+}
+
+// ---- artifact arm tests ----
+
+test "artifact arm: legal edges are accepted" {
+    // draft → active
+    try check(.artifact, "draft", "active", false);
+    // active → {draft, superseded, retired}
+    try check(.artifact, "active", "draft", false);
+    try check(.artifact, "active", "superseded", false);
+    try check(.artifact, "active", "retired", false);
+}
+
+test "artifact arm: terminal sources are refused" {
+    // superseded is terminal — no outgoing edges.
+    try std.testing.expectError(error.IllegalTransition, check(.artifact, "superseded", "draft", false));
+    try std.testing.expectError(error.IllegalTransition, check(.artifact, "superseded", "active", false));
+    try std.testing.expectError(error.IllegalTransition, check(.artifact, "superseded", "retired", false));
+    // retired is terminal — no outgoing edges.
+    try std.testing.expectError(error.IllegalTransition, check(.artifact, "retired", "draft", false));
+    try std.testing.expectError(error.IllegalTransition, check(.artifact, "retired", "active", false));
+    try std.testing.expectError(error.IllegalTransition, check(.artifact, "retired", "superseded", false));
+}
+
+test "artifact arm: illegal non-terminal moves are refused" {
+    // draft cannot jump to superseded or retired directly.
+    try std.testing.expectError(error.IllegalTransition, check(.artifact, "draft", "superseded", false));
+    try std.testing.expectError(error.IllegalTransition, check(.artifact, "draft", "retired", false));
+}
+
+test "artifact arm: identity transition is a no-op" {
+    try check(.artifact, "draft", "draft", false);
+    try check(.artifact, "active", "active", false);
+    try check(.artifact, "superseded", "superseded", false);
+    try check(.artifact, "retired", "retired", false);
+}
+
+test "artifact arm: unknown status returns UnknownStatus" {
+    try std.testing.expectError(error.UnknownStatus, check(.artifact, "published", "active", false));
+    try std.testing.expectError(error.UnknownStatus, check(.artifact, "open", "draft", false));
 }

@@ -105,20 +105,22 @@ pub const Status = enum {
     }
 };
 
+/// validateTransition delegates to policy.status.check(.artifact, …) and maps
+/// the policy module's errors back to this module's public error set.
+/// Both modules use `IllegalTransition` as the error name, so the mapping is
+/// direct: policy.IllegalTransition → Error.IllegalTransition.
+/// policy.UnknownStatus is also mapped to IllegalTransition to preserve the
+/// module's single-error-spelling contract toward callers.
 fn validateTransition(current: Status, next: Status) Error!void {
-    if (current == next) return;
-    if (current.isTerminal()) return Error.IllegalTransition;
-    switch (current) {
-        .draft => switch (next) {
-            .active => return,
-            else => return Error.IllegalTransition,
-        },
-        .active => switch (next) {
-            .draft, .superseded, .retired => return,
-            else => return Error.IllegalTransition,
-        },
-        .superseded, .retired => return Error.IllegalTransition,
-    }
+    policy.status.check(
+        .artifact,
+        @tagName(current),
+        @tagName(next),
+        false,
+    ) catch |e| switch (e) {
+        error.IllegalTransition => return Error.IllegalTransition,
+        error.UnknownStatus => return Error.IllegalTransition,
+    };
 }
 
 /// readBody parses --body semantics. "@path" means file contents.
