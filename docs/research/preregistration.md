@@ -32,10 +32,19 @@ build-spec.md` (implementation). **Capture mechanics:** `run-record-schema.md`
 
 ```
 Stage-1 frozen: 2026-06-15           commit/tag: prereg-stage1
-Stage-2 frozen: __________ (date)   commit/tag: __________
+Stage-2 frozen: 2026-06-21           commit/tag: prereg-stage2
 Amendments (append-only):
   - 2026-06-15: corpus repo named `git-fleet` (was placeholder codename
     `arbustum`); naming reconciled pre-freeze, no change to definitions/design.
+  - 2026-06-21: Stage-2 thresholds set (§6 X=0.70, Y=50%, Z = H3 tax must not
+    consume >100% of the H2 token gain). Calibrated from a SMALL sample — the
+    M1.7 pilot (N=1) + an in-session pilot expansion (m7-polish N=2: grouped
+    28–48% fewer tokens than eligibility) + one coupled-plan run (Plan-475:
+    grouped recovers the parallelism eligibility serializes). H3's Z is set
+    CONSERVATIVELY because no reviewer-inclusive run has been done yet (M-ITER /
+    M-BLAST unmeasured); first confirmatory reps that include reviewers may
+    refine Z via an explicit, dated amendment. Thresholds frozen now to unblock
+    confirmatory runs per the operator's decision.
 ```
 
 Anything discovered after a freeze is **exploratory** (§8), labeled as such,
@@ -151,21 +160,37 @@ Small N forbids NHST theater. The analysis is:
 Directional hypotheses with explicit nulls and falsifiers. X/Y/Z are filled
 from the pilot's observed spread and frozen at Stage-2, before confirmatory runs.
 
-- **H1 (RQ1).** Declared-touch precision and recall are each ≥ **X**.
+- **H1 (RQ1).** Declared-touch precision and recall are each ≥ **X = 0.70**.
   *Null:* declared touches are no better than a path-frequency baseline.
-  *Falsifier / pivot:* if recall < **X** (declared systematically misses real
-  dependencies) → triggers the RQ1-poor branch (§7), and the derived-closure
+  *Falsifier / pivot:* if recall < **X (0.70)** (declared systematically misses
+  real dependencies) → triggers the RQ1-poor branch (§7), and the derived-closure
   extractor (M2) becomes the central contribution rather than a refinement.
-- **H2 (RQ2).** Grouped recovers ≥ **Y%** of the parallelism that eligibility
-  serializes, at total tokens ≤ eligibility.
+  *Calibration note:* observed precision 0.89–1.0 (clears X); observed recall
+  spans 0.58 (M1.7 pilot, plan 635) – 0.67–1.0 (m7-polish live), so recall
+  straddles X — the low end already places the program in the §7.2 "recall low /
+  precision ok" branch, i.e. M2 as headline. This is the expected, pre-committed
+  outcome, not a surprise.
+- **H2 (RQ2).** Grouped recovers ≥ **Y% = 50%** of the parallelism that
+  eligibility serializes, at total tokens ≤ eligibility.
   *Null:* grouped = eligibility on M-PAR and M-TOK.
-  *Falsifier:* M-PAR recovery < **Y%** → co-location buys little; report the
+  *Falsifier:* M-PAR recovery < **Y% (50%)** → co-location buys little; report the
   null and pivot the contribution toward the measurement framework + RQ1/RQ3.
-- **H3 (RQ3).** Co-location's failure tax (M-BLAST × failure rate, M-ITER) does
-  not erase H2's throughput gain at budget B.
-  *Falsifier:* if the tax exceeds the gain → the finding is the **crossover
-  point** (the budget/coupling regime where co-location stops paying), itself a
-  design result.
+  *Calibration note:* the token condition (tokens ≤ eligibility) is already met
+  with margin in the in-session data (grouped 28–48% fewer tokens, N=2 m7-polish);
+  on the coupled plan (Plan-475) grouped formed 2 concurrently-executable slices
+  where eligibility serialized all 3 (overlap), demonstrating the recovery
+  mechanism Y bounds.
+- **H3 (RQ3).** Co-location's failure tax (M-BLAST × failure rate, M-ITER, M-CONF)
+  does not erase H2's throughput gain at budget B — concretely, **Z:** the
+  combined co-location overhead (extra reviewer iterations + fan-in conflict
+  rework) must not consume **> 100%** of H2's measured token gain.
+  *Falsifier:* if the tax exceeds the gain (Z breached) → the finding is the
+  **crossover point** (the budget/coupling regime where co-location stops paying),
+  itself a design result.
+  *Calibration note:* Z is set conservatively (a full-erasure ceiling) because no
+  reviewer-inclusive run exists yet — M-ITER and M-BLAST are unmeasured. The first
+  confirmatory reps that run reviewers will provide the data to tighten Z via a
+  dated append-only amendment (§0).
 
 No result here is a failure of the program; each branch is a paper. What would
 be a failure is *spinning* a result post hoc — which the pre-committed branches
