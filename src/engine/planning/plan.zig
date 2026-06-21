@@ -721,7 +721,18 @@ pub fn recomputeStatus(d: *db.sqlite.Db, allocator: std.mem.Allocator, plan_id: 
 
     const target = target_opt.?;
 
-    // Apply the UPDATE — bypasses status transition validator (mirrors Go).
+    // Apply the UPDATE — INTENTIONAL bypass of policy.status.check.
+    //
+    // recomputeStatus is an engine-internal aggregate roll-up driven by
+    // computeTarget(), not an operator transition.  computeTarget() only
+    // emits edges that the aggregate matrix considers valid (e.g. active →
+    // done when all tasks are terminal, draft → active when the first task
+    // becomes active), so it cannot produce an illegal transition by
+    // construction.  Routing it through the operator-transition validator
+    // would add noise with no safety benefit — the validator is there to
+    // catch illegal operator inputs, not internal engine moves.
+    //
+    // Mirrors Go's recompute.go apply path (plan 692 decision: bypass stays).
     _ = d.execParams(
         "update plans set status = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') where id = ?",
         &.{ .{ .text = @tagName(target) }, .{ .int = plan_id } },

@@ -17,11 +17,19 @@
 //!     identity (from == to) → no-op early return
 //!     force=true → bypasses the matrix (records task_reopens at the call site)
 //!
+//!   plan  {draft, active, paused, done, abandoned}
+//!     draft    → active
+//!     active   → {paused, done, abandoned}
+//!     paused   → active
+//!     done, abandoned → terminal
+//!     identity (from == to) → no-op early return
+//!     NOTE: plan.recomputeStatus deliberately bypasses this check (see plan.zig).
+//!
 //!   question  {open, answered, wontfix}
 //!     open → {answered, wontfix}; answered, wontfix → terminal
 //!
-//!   All other arms are permissive stubs; each entity adds its rows here
-//!   as it lands (or in a sibling file `policy/status_<kind>.zig`).
+//!   All other arms remain permissive stubs; each entity adds its rows
+//!   here as it lands (or in a sibling file `policy/status_<kind>.zig`).
 //!   The signature is locked now so callers can wire it from day one.
 
 const std = @import("std");
@@ -49,8 +57,9 @@ pub const Error = error{
 /// `true` (caller-level override) or when `from == to` (identity
 /// no-op).
 ///
-/// The `.task` arm is fully enforced.  All other arms remain
-/// permissive stubs until their respective milestone lands.
+/// The `.task` and `.plan` arms are fully enforced.  The `.question`
+/// arm is also fully enforced.  All other arms remain permissive stubs
+/// until their respective milestone lands.
 pub fn check(
     kind: EntityKind,
     from: []const u8,
@@ -62,8 +71,41 @@ pub fn check(
 
     switch (kind) {
         .plan => {
-            // TODO(status-matrix:plan): draft → active → {paused, done, abandoned}
-            //   active → paused → active, etc.
+            // Real enforcement.  See module docstring for the full matrix.
+            //
+            // Status set: {draft, active, paused, done, abandoned}.
+            //   draft    → active
+            //   active   → {paused, done, abandoned}
+            //   paused   → active
+            //   done, abandoned → terminal (no outgoing operator edges)
+            //
+            // plan.recomputeStatus (plan.zig) deliberately bypasses this
+            // check — it is an engine-internal aggregate roll-up whose
+            // target is computed by computeTarget() and can only emit
+            // transitions the aggregate matrix considers valid.  It is not
+            // an operator transition and does not go through this validator.
+            //
+            // `plan update` has no --force flag, so force is always false
+            // at the plan call site.
+            const legal: bool = blk: {
+                if (std.mem.eql(u8, from, "draft")) {
+                    break :blk std.mem.eql(u8, to, "active");
+                } else if (std.mem.eql(u8, from, "active")) {
+                    break :blk std.mem.eql(u8, to, "paused") or
+                        std.mem.eql(u8, to, "done") or
+                        std.mem.eql(u8, to, "abandoned");
+                } else if (std.mem.eql(u8, from, "paused")) {
+                    break :blk std.mem.eql(u8, to, "active");
+                } else if (std.mem.eql(u8, from, "done") or
+                    std.mem.eql(u8, from, "abandoned"))
+                {
+                    // Terminal for operator transitions.
+                    break :blk false;
+                } else {
+                    return Error.UnknownStatus;
+                }
+            };
+            if (!legal) return Error.IllegalTransition;
         },
         .task => {
             // Real enforcement.  See module docstring for the full matrix.
@@ -202,6 +244,46 @@ test "task arm: force=true also bypasses non-terminal illegal moves" {
 
 test "task arm: unknown status returns UnknownStatus" {
     try std.testing.expectError(error.UnknownStatus, check(.task, "inbox", "doing", false));
+}
+
+test "plan arm: legal edges are accepted" {
+    // draft → active
+    try check(.plan, "draft", "active", false);
+    // active → {paused, done, abandoned}
+    try check(.plan, "active", "paused", false);
+    try check(.plan, "active", "done", false);
+    try check(.plan, "active", "abandoned", false);
+    // paused → active
+    try check(.plan, "paused", "active", false);
+}
+
+test "plan arm: skip-ahead moves are refused" {
+    // draft → done/abandoned/paused (skipping active) are all illegal.
+    try std.testing.expectError(error.IllegalTransition, check(.plan, "draft", "done", false));
+    try std.testing.expectError(error.IllegalTransition, check(.plan, "draft", "abandoned", false));
+    try std.testing.expectError(error.IllegalTransition, check(.plan, "draft", "paused", false));
+}
+
+test "plan arm: terminal sources are refused" {
+    // done → anything is illegal.
+    try std.testing.expectError(error.IllegalTransition, check(.plan, "done", "draft", false));
+    try std.testing.expectError(error.IllegalTransition, check(.plan, "done", "active", false));
+    try std.testing.expectError(error.IllegalTransition, check(.plan, "done", "paused", false));
+    // abandoned → anything is illegal.
+    try std.testing.expectError(error.IllegalTransition, check(.plan, "abandoned", "draft", false));
+    try std.testing.expectError(error.IllegalTransition, check(.plan, "abandoned", "active", false));
+}
+
+test "plan arm: identity transition is a no-op" {
+    try check(.plan, "draft", "draft", false);
+    try check(.plan, "active", "active", false);
+    try check(.plan, "paused", "paused", false);
+    try check(.plan, "done", "done", false);
+    try check(.plan, "abandoned", "abandoned", false);
+}
+
+test "plan arm: unknown status returns UnknownStatus" {
+    try std.testing.expectError(error.UnknownStatus, check(.plan, "cancelled", "active", false));
 }
 
 test "question arm: open to answered/wontfix accepted" {
