@@ -207,19 +207,16 @@ test "scenario: annotations — bulk-resolve filter, bulk-archive any-status, sw
     try std.testing.expectEqualStrings("archived", ba.action);
     try std.testing.expectEqual(@as(i64, 2), ba.count);
 
-    // sweep with since-days=0 captures the 3 still-resolved noise
-    // rows from the earlier bulk-resolve and archives them. The
-    // archive transition is allowed from resolved/dismissed when
-    // routed through the sweep path (which queries the DB directly
-    // and then calls archive — engine-level status check still
-    // applies; resolved→archived is intentionally legal here).
+    // sweep with since-days=0 selects the 3 still-resolved noise rows
+    // from the earlier bulk-resolve and attempts to archive them. The
+    // .annotation policy arm refuses resolved→archived and
+    // dismissed→archived (terminal source → refused), so every
+    // candidate row is rejected and the verb archives 0 rows.
+    // TODO(plan:692, task:4348): dead-verb consequence tracked; a
+    // force-route-vs-deprecate decision is pending for annotate sweep.
     const sw = suite.mustRunJSON(SweepResult, arena, &.{
         "annotate", "sweep", "--json", "--since-days", "0",
     });
     try std.testing.expect(sw.ok);
-    // Tolerant assertion: sweep may archive any of the 3 resolved
-    // rows depending on whether resolved → archived is permitted by
-    // the status policy. Lock the ok flag + presence of the action;
-    // exact count is implementation-defined.
-    _ = sw.swept;
+    try std.testing.expectEqual(@as(i64, 0), sw.swept);
 }

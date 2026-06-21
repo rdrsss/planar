@@ -55,9 +55,19 @@
 //!     identity (from == to) → no-op early return
 //!     NOTE: artifact.validateTransition delegates to this arm.
 //!
-//!   handoff and annotation arms remain permissive stubs until their
-//!   respective milestones land.  The signature is locked so callers can
-//!   wire it from day one.
+//!   handoff  {pending, validated, consumed, abandoned}
+//!     pending   → {validated, consumed, abandoned}
+//!     validated → {consumed, abandoned}
+//!     consumed, abandoned → terminal
+//!     identity (from == to) → no-op early return
+//!     NOTE: handoff.validateTransition delegates to this arm.
+//!
+//!   annotation  {active, resolved, dismissed, archived}
+//!     active   → {resolved, dismissed, archived}
+//!     resolved, dismissed, archived → terminal
+//!     identity (from == to) → no-op early return
+//!     NOTE: annotation.transition maps the arm's IllegalTransition back
+//!     to the module's existing TerminalStatus spelling at its boundary.
 
 const std = @import("std");
 
@@ -84,9 +94,8 @@ pub const Error = error{
 /// `true` (caller-level override) or when `from == to` (identity
 /// no-op).
 ///
-/// The `.task`, `.plan`, `.question`, `.scenario`, `.decision`, and
-/// `.artifact` arms are fully enforced.  `.handoff` and `.annotation`
-/// remain permissive stubs until their respective milestones land.
+/// All eight arms are fully enforced.  See the module docstring for
+/// the per-entity matrices and delegation notes.
 pub fn check(
     kind: EntityKind,
     from: []const u8,
@@ -289,19 +298,62 @@ pub fn check(
             if (!legal) return Error.IllegalTransition;
         },
         .handoff => {
-            // TODO(status-matrix:handoff): pending → validated → consumed
-            //   pending/validated → abandoned with --reason
+            // Real enforcement.  See module docstring for the full matrix.
+            //
+            // Status set: {pending, validated, consumed, abandoned}.
+            //   pending   → {validated, consumed, abandoned}
+            //   validated → {consumed, abandoned}
+            //   consumed, abandoned → terminal (no outgoing operator edges)
+            //
+            // Abandon is verb-gated with --reason (enforced at the handler layer,
+            // not by the matrix itself).  handoff.validateTransition delegates to
+            // this arm; force is always false at handoff call sites.
+            const legal: bool = blk: {
+                if (std.mem.eql(u8, from, "pending")) {
+                    break :blk std.mem.eql(u8, to, "validated") or
+                        std.mem.eql(u8, to, "consumed") or
+                        std.mem.eql(u8, to, "abandoned");
+                } else if (std.mem.eql(u8, from, "validated")) {
+                    break :blk std.mem.eql(u8, to, "consumed") or
+                        std.mem.eql(u8, to, "abandoned");
+                } else if (std.mem.eql(u8, from, "consumed") or
+                    std.mem.eql(u8, from, "abandoned"))
+                {
+                    // Terminal for all operator transitions.
+                    break :blk false;
+                } else {
+                    return Error.UnknownStatus;
+                }
+            };
+            if (!legal) return Error.IllegalTransition;
         },
         .annotation => {
+            // Real enforcement.  See module docstring for the full matrix.
+            //
             // Status set: {active, resolved, dismissed, archived}.
-            // Terminal set: {resolved, dismissed, archived} — only `active` is open.
-            // Transitions: active → {resolved, dismissed, archived}. Terminal → anything
-            // is blocked at the engine layer (annotation.transition checks isTerminal
-            // before calling here). This stub accepts all transitions; the terminal
-            // guard lives in annotation.zig and enforces the constraint.
-            // TODO(status-matrix:annotation): raise IllegalTransition on terminal→open
-            //   when engine.planning.annotation is refactored to rely solely on the
-            //   policy layer instead of its own isTerminal guard.
+            //   active   → {resolved, dismissed, archived}
+            //   resolved, dismissed, archived → terminal (no outgoing edges)
+            //
+            // annotation.transition maps this arm's IllegalTransition back to
+            // the module's existing TerminalStatus error spelling so callers
+            // (handlers, bulk.zig, sweep.zig) observe the same error name after
+            // the guard moved here from annotation.zig's isTerminal pre-check.
+            const legal: bool = blk: {
+                if (std.mem.eql(u8, from, "active")) {
+                    break :blk std.mem.eql(u8, to, "resolved") or
+                        std.mem.eql(u8, to, "dismissed") or
+                        std.mem.eql(u8, to, "archived");
+                } else if (std.mem.eql(u8, from, "resolved") or
+                    std.mem.eql(u8, from, "dismissed") or
+                    std.mem.eql(u8, from, "archived"))
+                {
+                    // Terminal for all operator transitions.
+                    break :blk false;
+                } else {
+                    return Error.UnknownStatus;
+                }
+            };
+            if (!legal) return Error.IllegalTransition;
         },
     }
 }
@@ -470,18 +522,76 @@ test "scenario arm: unknown status returns UnknownStatus" {
     try std.testing.expectError(error.UnknownStatus, check(.scenario, "published", "retired", false));
 }
 
-test "annotation enum arm: stub accepts open and terminal transitions" {
-    // active → each terminal state is the expected lifecycle path.
+// ---- handoff arm tests ----
+
+test "handoff arm: legal edges are accepted" {
+    // pending → {validated, consumed, abandoned}
+    try check(.handoff, "pending", "validated", false);
+    try check(.handoff, "pending", "consumed", false);
+    try check(.handoff, "pending", "abandoned", false);
+    // validated → {consumed, abandoned}
+    try check(.handoff, "validated", "consumed", false);
+    try check(.handoff, "validated", "abandoned", false);
+}
+
+test "handoff arm: terminal sources are refused" {
+    // consumed is terminal — no outgoing edges.
+    try std.testing.expectError(error.IllegalTransition, check(.handoff, "consumed", "pending", false));
+    try std.testing.expectError(error.IllegalTransition, check(.handoff, "consumed", "validated", false));
+    try std.testing.expectError(error.IllegalTransition, check(.handoff, "consumed", "abandoned", false));
+    // abandoned is terminal — no outgoing edges.
+    try std.testing.expectError(error.IllegalTransition, check(.handoff, "abandoned", "pending", false));
+    try std.testing.expectError(error.IllegalTransition, check(.handoff, "abandoned", "validated", false));
+    try std.testing.expectError(error.IllegalTransition, check(.handoff, "abandoned", "consumed", false));
+}
+
+test "handoff arm: validated cannot go back to pending" {
+    try std.testing.expectError(error.IllegalTransition, check(.handoff, "validated", "pending", false));
+}
+
+test "handoff arm: identity transition is a no-op" {
+    try check(.handoff, "pending", "pending", false);
+    try check(.handoff, "validated", "validated", false);
+    try check(.handoff, "consumed", "consumed", false);
+    try check(.handoff, "abandoned", "abandoned", false);
+}
+
+test "handoff arm: unknown status returns UnknownStatus" {
+    try std.testing.expectError(error.UnknownStatus, check(.handoff, "open", "pending", false));
+    try std.testing.expectError(error.UnknownStatus, check(.handoff, "draft", "validated", false));
+}
+
+// ---- annotation arm tests ----
+
+test "annotation arm: active to each terminal state is accepted" {
     try check(.annotation, "active", "resolved", false);
     try check(.annotation, "active", "dismissed", false);
     try check(.annotation, "active", "archived", false);
-    // Terminal → anything: the stub is permissive; the real guard lives in
-    // annotation.transition (isTerminal check). These pass through the policy
-    // layer for now; once the matrix is implemented they should raise
-    // IllegalTransition.
-    try check(.annotation, "resolved", "active", false);
-    try check(.annotation, "dismissed", "active", false);
-    try check(.annotation, "archived", "active", false);
+}
+
+test "annotation arm: terminal sources are refused" {
+    // resolved is terminal — no outgoing edges.
+    try std.testing.expectError(error.IllegalTransition, check(.annotation, "resolved", "active", false));
+    try std.testing.expectError(error.IllegalTransition, check(.annotation, "resolved", "dismissed", false));
+    try std.testing.expectError(error.IllegalTransition, check(.annotation, "resolved", "archived", false));
+    // dismissed is terminal.
+    try std.testing.expectError(error.IllegalTransition, check(.annotation, "dismissed", "active", false));
+    try std.testing.expectError(error.IllegalTransition, check(.annotation, "dismissed", "resolved", false));
+    // archived is terminal.
+    try std.testing.expectError(error.IllegalTransition, check(.annotation, "archived", "active", false));
+    try std.testing.expectError(error.IllegalTransition, check(.annotation, "archived", "resolved", false));
+}
+
+test "annotation arm: identity transition is a no-op" {
+    try check(.annotation, "active", "active", false);
+    try check(.annotation, "resolved", "resolved", false);
+    try check(.annotation, "dismissed", "dismissed", false);
+    try check(.annotation, "archived", "archived", false);
+}
+
+test "annotation arm: unknown status returns UnknownStatus" {
+    try std.testing.expectError(error.UnknownStatus, check(.annotation, "open", "resolved", false));
+    try std.testing.expectError(error.UnknownStatus, check(.annotation, "pending", "archived", false));
 }
 
 // ---- decision arm tests ----

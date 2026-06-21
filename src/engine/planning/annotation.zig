@@ -535,9 +535,15 @@ fn transition(
 ) Error!Annotation {
     const current = try show(d, allocator, id);
     defer deinit(current, allocator);
-    if (current.status.isTerminal()) return Error.TerminalStatus;
     try policy.scope_guard.check(null, null);
-    try policy.status.check(.annotation, @tagName(current.status), @tagName(new_status), false);
+    // The .annotation arm in policy.status is now authoritative for the
+    // terminal guard.  Map its IllegalTransition back to TerminalStatus so
+    // callers (handlers, bulk.zig, sweep.zig) observe the same error name
+    // as before this consolidation.
+    policy.status.check(.annotation, @tagName(current.status), @tagName(new_status), false) catch |e| switch (e) {
+        error.IllegalTransition => return Error.TerminalStatus,
+        error.UnknownStatus => return Error.TerminalStatus,
+    };
 
     _ = d.execParams(
         \\update annotations

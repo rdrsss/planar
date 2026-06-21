@@ -99,21 +99,23 @@ pub const Error = error{
     QueryFailed,
 } || std.mem.Allocator.Error || policy.audit.Error;
 
-/// Validate a transition. Mirrors handoff.ValidateTransition in Go.
+/// Validate a transition.  Delegates to policy.status.check(.handoff, …)
+/// so the transition matrix is the single source of truth.
+///
+/// Error mapping: policy.IllegalTransition → Error.IllegalTransition (same
+/// name; no observable change for callers). policy.UnknownStatus cannot
+/// occur when called with valid Status enum tag names, so it is mapped to
+/// Error.IllegalTransition defensively.
 pub fn validateTransition(current: Status, next: Status) Error!void {
-    if (current == next) return;
-    if (current.isTerminal()) return Error.IllegalTransition;
-    switch (current) {
-        .pending => switch (next) {
-            .validated, .consumed, .abandoned => return,
-            else => return Error.IllegalTransition,
-        },
-        .validated => switch (next) {
-            .consumed, .abandoned => return,
-            else => return Error.IllegalTransition,
-        },
-        else => return Error.IllegalTransition,
-    }
+    policy.status.check(
+        .handoff,
+        @tagName(current),
+        @tagName(next),
+        false,
+    ) catch |e| switch (e) {
+        error.IllegalTransition => return Error.IllegalTransition,
+        error.UnknownStatus => return Error.IllegalTransition,
+    };
 }
 
 // =========================================================================

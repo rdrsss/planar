@@ -46,6 +46,7 @@ comptime {
     _ = @import("task_transitions_test.zig");
     _ = @import("scenario_transitions_test.zig");
     _ = @import("decision_artifact_transitions_test.zig");
+    _ = @import("handoff_annotation_transitions_test.zig");
     _ = @import("entity_view_test.zig");
     _ = @import("handoff_resume_validate_test.zig");
     _ = @import("link_lifecycle_test.zig");
