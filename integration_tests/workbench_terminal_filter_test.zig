@@ -157,8 +157,11 @@ test "workbench push --filter-mode all also filters done tasks" {
     const active = suite.mustRunJSON(IDJSON, arena, &.{ "task", "add", "--json", "--plan", plan_id, "Active task" });
     const done = suite.mustRunJSON(IDJSON, arena, &.{ "task", "add", "--json", "--plan", plan_id, "Done task" });
 
-    // Transition the task to done (no explicit `start` verb).
+    // Transition the task to done via doing (todo → done is not in the matrix).
     const done_id = std.fmt.allocPrint(arena, "{d}", .{done.id}) catch @panic("OOM");
+    const start = suite.execWith(&.{ "task", "update", done_id, "--status", "doing" }, env);
+    defer start.deinit(gpa);
+    try std.testing.expect(start.term == .exited and start.term.exited == 0);
     const finish = suite.execWith(&.{ "task", "done", done_id }, env);
     defer finish.deinit(gpa);
     try std.testing.expect(finish.term == .exited and finish.term.exited == 0);

@@ -114,6 +114,14 @@ fn extractString(gpa: std.mem.Allocator, json: []const u8, prefix: []const u8) [
     return gpa.dupe(u8, json[i..end]) catch @panic("OOM");
 }
 
+/// Advance a task to doing then mark it done.
+/// The matrix requires todo → doing before done (todo → done is not a legal edge).
+fn startAndDone(suite: *const harness.Suite, task_id: []const u8) void {
+    const gpa = suite.allocator;
+    gpa.free(suite.mustRun(&.{ "task", "update", task_id, "--status", "doing" }));
+    gpa.free(suite.mustRun(&.{ "task", "done", task_id }));
+}
+
 // ---- Seed helpers -----------------------------------------------------------
 
 /// Seed an init + anchor plan + child milestone plan + N todo tasks on the
@@ -233,9 +241,9 @@ test "closeout-recompute: operator task done baseline also flips plan to done" {
     const child_id = seeded.child_id;
     const task_ids = seeded.task_ids;
 
-    // Mark both tasks done via operator verb.
-    gpa.free(suite.mustRun(&.{ "task", "done", task_ids[0] }));
-    gpa.free(suite.mustRun(&.{ "task", "done", task_ids[1] }));
+    // Mark both tasks done via operator verb (via doing: todo → done is not in the matrix).
+    startAndDone(&suite, task_ids[0]);
+    startAndDone(&suite, task_ids[1]);
 
     const after_buf = suite.mustRun(&.{ "plan", "show", "--json", child_id });
     defer gpa.free(after_buf);

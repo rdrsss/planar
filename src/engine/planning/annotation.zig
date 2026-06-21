@@ -390,7 +390,7 @@ pub fn update(
     try policy.scope_guard.check(null, null);
 
     if (patch.status) |new_status| {
-        try policy.status.check(.annotation, @tagName(current.status), @tagName(new_status));
+        try policy.status.check(.annotation, @tagName(current.status), @tagName(new_status), false);
     }
 
     var sql_buf: std.ArrayList(u8) = .empty;
@@ -537,7 +537,7 @@ fn transition(
     defer deinit(current, allocator);
     if (current.status.isTerminal()) return Error.TerminalStatus;
     try policy.scope_guard.check(null, null);
-    try policy.status.check(.annotation, @tagName(current.status), @tagName(new_status));
+    try policy.status.check(.annotation, @tagName(current.status), @tagName(new_status), false);
 
     _ = d.execParams(
         \\update annotations

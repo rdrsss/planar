@@ -181,6 +181,8 @@ fn seedActiveAnchorPlan(
         defer gpa.free(t_buf);
         const t = parseJSON(TaskJSON, arena, t_buf);
         task_ids[idx] = std.fmt.allocPrint(arena, "{d}", .{t.id}) catch @panic("OOM");
+        // Advance to doing so task done is legal (todo → done is not in the matrix).
+        gpa.free(suite.mustRun(&.{ "task", "update", task_ids[idx], "--status", "doing" }));
     }
     return .{ .plan_id = plan_id, .task_ids = task_ids };
 }

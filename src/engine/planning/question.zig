@@ -426,7 +426,7 @@ pub fn answer(
     const current = try show(d, allocator, id);
     defer deinit(current, allocator);
     try policy.scope_guard.check(null, null);
-    try policy.status.check(.question, @tagName(current.status), "answered");
+    try policy.status.check(.question, @tagName(current.status), "answered", false);
 
     _ = d.execParams(
         \\update questions
@@ -459,7 +459,7 @@ pub fn wontfix(
     const current = try show(d, allocator, id);
     defer deinit(current, allocator);
     try policy.scope_guard.check(null, null);
-    try policy.status.check(.question, @tagName(current.status), "wontfix");
+    try policy.status.check(.question, @tagName(current.status), "wontfix", false);
 
     _ = d.execParams(
         \\update questions

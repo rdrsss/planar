@@ -54,6 +54,10 @@ test "workbench gc removes failure-terminal files; keeps active and success-term
     // Transition done and cancelled into their respective terminal states.
     const done_id = std.fmt.allocPrint(arena, "{d}", .{done_t.id}) catch @panic("OOM");
     const cancelled_id = std.fmt.allocPrint(arena, "{d}", .{cancelled_t.id}) catch @panic("OOM");
+    // Advance to doing first (todo → done is not in the matrix).
+    const start_done = suite.execWith(&.{ "task", "update", done_id, "--status", "doing" }, env);
+    defer start_done.deinit(gpa);
+    try std.testing.expect(start_done.term == .exited and start_done.term.exited == 0);
     const finish_done = suite.execWith(&.{ "task", "done", done_id }, env);
     defer finish_done.deinit(gpa);
     try std.testing.expect(finish_done.term == .exited and finish_done.term.exited == 0);

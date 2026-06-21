@@ -429,7 +429,7 @@ pub fn update(
     try policy.scope_guard.check(null, null);
 
     if (patch.status) |new_status| {
-        try policy.status.check(.plan, @tagName(current.status), @tagName(new_status));
+        try policy.status.check(.plan, @tagName(current.status), @tagName(new_status), false);
     }
 
     // Build the SET clause dynamically so untouched columns keep their

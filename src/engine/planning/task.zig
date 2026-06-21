@@ -640,7 +640,7 @@ pub fn update(
     if (patch.due_at) |due| _ = try parseDueAt(due);
 
     if (patch.status) |new_status| {
-        try policy.status.check(.task, @tagName(current.status), @tagName(new_status));
+        try policy.status.check(.task, @tagName(current.status), @tagName(new_status), patch.force);
     }
 
     var sql_buf: std.ArrayList(u8) = .empty;
@@ -820,7 +820,7 @@ pub fn markBlocked(
     const current = try show(d, allocator, id);
     defer deinit(current, allocator);
     try policy.scope_guard.check(null, null);
-    try policy.status.check(.task, @tagName(current.status), "blocked");
+    try policy.status.check(.task, @tagName(current.status), "blocked", false);
 
     try beginSavepoint(d, allocator, "task_block");
     var savepoint_released = false;
@@ -883,7 +883,10 @@ pub fn reopen(
     const current = try show(d, allocator, id);
     defer deinit(current, allocator);
     try policy.scope_guard.check(null, null);
-    try policy.status.check(.task, @tagName(current.status), @tagName(new_status));
+    // `reopen` is the verb-gated escape from terminal status; it bypasses the
+    // bare-update matrix (force=true) because the dedicated verb already
+    // carries its own authorization and records the task_reopens audit row.
+    try policy.status.check(.task, @tagName(current.status), @tagName(new_status), true);
 
     try beginSavepoint(d, allocator, "task_reopen");
     var savepoint_released = false;
@@ -955,7 +958,7 @@ fn transitionWithSummary(
     const current = try show(d, allocator, id);
     defer deinit(current, allocator);
     try policy.scope_guard.check(null, null);
-    try policy.status.check(.task, @tagName(current.status), @tagName(new_status));
+    try policy.status.check(.task, @tagName(current.status), @tagName(new_status), false);
 
     try beginSavepoint(d, allocator, "task_transition");
     var savepoint_released = false;
@@ -1219,13 +1222,17 @@ test "list defaults to todo/doing/blocked statuses" {
     }
 }
 
-test "markDone transitions todo → done and records status_change audit" {
+test "markDone transitions doing → done and records status_change audit" {
+    // The matrix requires todo → doing before done; markDone from todo is now illegal.
     const a = std.testing.allocator;
     var d = try setupTestDb(a);
     defer d.close();
 
     const t = try create(&d, a, .{ .title = "finish it" });
     defer deinit(t, a);
+    // Advance to doing first (todo → doing is legal).
+    const doing_task = try update(&d, a, t.id, .{ .status = .doing });
+    defer deinit(doing_task, a);
     const done_task = try markDone(&d, a, t.id);
     defer deinit(done_task, a);
 
@@ -1280,6 +1287,9 @@ test "reopen returns done task to todo with reason in audit" {
 
     const t = try create(&d, a, .{ .title = "redo this" });
     defer deinit(t, a);
+    // Advance to doing first so markDone is legal (todo → doing → done).
+    const doing_t = try update(&d, a, t.id, .{ .status = .doing });
+    defer deinit(doing_t, a);
     const done_t = try markDone(&d, a, t.id);
     defer deinit(done_t, a);
 
@@ -1302,6 +1312,9 @@ test "reopen from done writes exactly one task_reopens row with source task-reop
 
     const t = try create(&d, a, .{ .title = "reopen audit" });
     defer deinit(t, a);
+    // Advance through doing so markDone is legal (todo → doing → done).
+    const doing_t = try update(&d, a, t.id, .{ .status = .doing });
+    defer deinit(doing_t, a);
     const done_t = try markDone(&d, a, t.id);
     defer deinit(done_t, a);
 
@@ -1337,6 +1350,9 @@ test "update with force from done writes task_reopens row with source task-updat
 
     const t = try create(&d, a, .{ .title = "force reopen" });
     defer deinit(t, a);
+    // Advance through doing so markDone is legal (todo → doing → done).
+    const doing_t = try update(&d, a, t.id, .{ .status = .doing });
+    defer deinit(doing_t, a);
     const done_t = try markDone(&d, a, t.id);
     defer deinit(done_t, a);
 
@@ -1365,7 +1381,10 @@ test "normal non-reopen transition does not write task_reopens" {
 
     const t = try create(&d, a, .{ .title = "normal transition" });
     defer deinit(t, a);
-    // todo → done is a normal terminal transition, not a reopen.
+    // Advance through doing so markDone is legal (todo → doing → done).
+    // doing → done is a normal terminal transition, not a reopen.
+    const doing_t = try update(&d, a, t.id, .{ .status = .doing });
+    defer deinit(doing_t, a);
     const done_t = try markDone(&d, a, t.id);
     defer deinit(done_t, a);
 

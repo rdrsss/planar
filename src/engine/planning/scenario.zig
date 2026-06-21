@@ -416,7 +416,7 @@ pub fn verify(
     };
 
     if (outcome == .pass) {
-        try policy.status.check(.scenario, @tagName(current.status), "verified");
+        try policy.status.check(.scenario, @tagName(current.status), "verified", false);
         _ = d.execParams(
             \\update test_scenarios
             \\set status = 'verified',
@@ -464,7 +464,7 @@ pub fn retire(
     const current = try show(d, allocator, id);
     defer deinit(current, allocator);
     try policy.scope_guard.check(null, null);
-    try policy.status.check(.scenario, @tagName(current.status), "retired");
+    try policy.status.check(.scenario, @tagName(current.status), "retired", false);
 
     _ = d.execParams(
         \\update test_scenarios
