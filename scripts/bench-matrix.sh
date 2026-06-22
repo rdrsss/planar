@@ -37,10 +37,17 @@
 # onto a per-arm integration branch off base_sha; a merge failure emits a
 # `conflict` event (M-CONF). The arm shapes share one `run_slice` worker.
 #
-# Still deliberately NOT implemented (M3): the matrix loop, arm interleaving
-# per (rep,plan), N reps, paired config_hash sweeps, spend-ceiling stop, and
-# resume-via-run_uid. The code is structured (cell-level setup/finish brackets
-# a `dispatch_<arm>` call) so M3 wraps run_cell in an outer loop.
+# SCOPE (M3): the matrix loop wrapping run_cell — the (rep,plan,arm) schedule
+# with per-(rep,plan) RANDOMIZED arm interleaving (§4), N reps, paired
+# config_hash per (plan,rep) so the 3 arms join as paired comparisons (§4
+# blocking), DETERMINISTIC run_uids for additive resume (skip completed, abort +
+# retry crashed; §4 idempotency), and a spend-ceiling stop (§9). --dry-run over
+# the matrix prints the full interleaved schedule + per-plan base_sha + run_uids
+# + estimated total spend — the operator pre-approval surface.
+#
+# Still deliberately NOT implemented (M4): trap-based worktree cleanup, per-cell
+# timeout/kill, and structured logging. The seams are left clean: dispatch_cell
+# is the single per-cell wrapper M4 can decorate.
 #
 # ISOLATION INVARIANT: every `planar`, `planar-execute`, and agent subprocess
 # runs against an ISOLATED experiment PLANAR_DB + PLANAR_CONFIG_PATH. The real
@@ -52,10 +59,17 @@
 # read-only against the live DB by virtue of never naming it.
 #
 # Usage
-#   scripts/bench-matrix.sh --plan <id> [--arm strict|eligibility|grouped] [--rep 1] [--dry-run]
-#   scripts/bench-matrix.sh --plan <id> --arm grouped --solver mtkahypar --dry-run
-#   scripts/bench-matrix.sh --plan <id> --tasks 101,102 --dry-run
-#   scripts/bench-matrix.sh --help
+#   Single cell (M1/M2):
+#     scripts/bench-matrix.sh --plan <id> [--arm strict|eligibility|grouped] [--rep 1] [--dry-run]
+#     scripts/bench-matrix.sh --plan <id> --arm grouped --solver mtkahypar --dry-run
+#     scripts/bench-matrix.sh --plan <id> --tasks 101,102 --dry-run
+#   Matrix (M3): sweep plans x arms x reps, interleaved, paired, resumable.
+#     scripts/bench-matrix.sh --matrix --plans 635,699 --reps 3 --dry-run
+#     scripts/bench-matrix.sh --matrix --plans 635,699 --reps 3 --ceiling 50.00
+#   --matrix flags: --plans <ids>  --reps <N>  --ceiling <USD>  (also honors
+#     BENCH_CORPUS_PLANS / BENCH_N_REPS / BENCH_CEILING). Re-running --matrix
+#     resumes additively: completed cells SKIP, crashed cells abort + retry.
+#     scripts/bench-matrix.sh --help
 
 set -euo pipefail
 
@@ -116,12 +130,48 @@ PLANAR_EXECUTE_BIN="${PLANAR_EXECUTE_BIN:-planar-execute}"
 # --- the deterministic A/C ritual the harness brackets the B-phase with ---
 RITUAL_LUA="${BENCH_RITUAL_LUA:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/workflows/bench_run_ritual.lua}"
 
+# ---------------------------------------------------------------------------
+# M3 matrix config (operator-editable; frozen into config_hash where noted).
+# ---------------------------------------------------------------------------
+# --- the corpus plan-list the matrix sweeps. Space- or comma-separated plan
+#     ids. Empty in single-cell mode (--plan drives one cell instead). ---
+CORPUS_PLANS="${BENCH_CORPUS_PLANS:-}"
+
+# --- repetitions per cell (preregistration §4: N = 3–5; default 3). Every
+#     (plan,arm) pair runs N times; medians + spread are reported, never a
+#     single run. ---
+N_REPS="${BENCH_N_REPS:-3}"
+
+# --- the three experimental arms, in canonical order. The schedule RANDOMIZES
+#     the per-(rep,plan) order to randomize model drift over calendar time
+#     (§4); this is just the membership list. ---
+ARMS="strict eligibility grouped"
+
+# --- spend ceiling (USD, preregistration §9). Cumulative spend is the SUM of
+#     the `usd` field over every token_sample payload in the experiment DB
+#     (excluding aborted runs). Before each cell the driver checks
+#     cumulative + estimated_cell_cost <= CEILING; on breach it STOPS cleanly,
+#     dispatching nothing new and leaving completed runs intact. Frozen into
+#     config_hash (a different budget is a different experiment). ---
+CEILING="${BENCH_CEILING:-50.00}"
+
+# --- first-cell cost estimate (USD). Once cells complete, the driver estimates
+#     the next cell's cost from the observed per-cell average; this default
+#     seeds the estimate before any cell has run. ---
+CELL_COST_DEFAULT="${BENCH_CELL_COST_DEFAULT:-2.00}"
+
 # --- runtime state (parsed from argv) ---
 ARG_PLAN=""
 ARG_REP=1
 ARG_TASKS=""        # optional comma-list; empty = all plan tasks
 ARG_ARM="strict"    # strict | eligibility | grouped (M2: the three arm shapes)
+ARG_MATRIX=0        # 1 = M3 matrix mode (sweep CORPUS_PLANS x ARMS x N_REPS)
 DRY_RUN=0
+
+# --- M3 cell-identity injection (set per-cell by the matrix driver; empty in
+#     single-cell M1/M2 mode so run_cell falls back to its own minting). ---
+CELL_RUN_UID_OVERRIDE=""
+CELL_CHASH_OVERRIDE=""
 
 # ===========================================================================
 # helpers (match parity-audit.sh logging style)
@@ -320,20 +370,42 @@ verify_feature_absent() {
 # run_uid minting + config_hash  (D8 / run-record-schema §2)
 # ===========================================================================
 #
-# mint_run_uid <plan> <arm> <rep> — harness-minted stable id. Encodes the cell
-# coordinates + a timestamp for human readability and uniqueness. (M3 mints
-# -retryN suffixes on resume; never reuses a partial — out of scope here.)
+# mint_run_uid <plan> <arm> <rep> — harness-minted stable id. M1/M2 single-cell
+# mode appends a timestamp for uniqueness; M3 mints a DETERMINISTIC id (no
+# timestamp) so resume can recompute the same uid and find the prior record (see
+# deterministic_run_uid). The cell honors an injected CELL_RUN_UID_OVERRIDE
+# (set by the matrix driver) ahead of this fallback.
 mint_run_uid() {
   printf 'bench-%s-%s-rep%s-%s' "$1" "$2" "$3" "$(date -u +%Y%m%dT%H%M%SZ)"
 }
 
-# config_hash <arm> — the GROUP BY key. Hashes the frozen nuisance vars
-# (models, iteration cap, brief-template version) PLUS the arm. Paired cells
-# differ only in arm (D-HARNESS). sha256, first 16 hex chars.
+# deterministic_run_uid <plan> <arm> <rep> — the M3 stable cell id. NO
+# timestamp: re-running the harness recomputes the identical uid so `bench show`
+# can detect a prior completed/running record (resume/idempotency, §4). Retry
+# suffixes (-retryN) are minted by the driver when a crashed run is aborted.
+deterministic_run_uid() {
+  printf 'm-%s-%s-r%s' "$1" "$2" "$3"
+}
+
+# config_hash_base — the arm-EXCLUDED frozen-config fingerprint. This is the
+# paired-blocking key (§4): the 3 arms of a given (plan,rep) share an identical
+# config_hash differing ONLY in arm, so they join as paired comparisons
+# (run-record-schema §2: comparable iff config_hash identical except arm). It
+# hashes the frozen nuisance vars — models, iteration cap, brief-template
+# version, solver, budget ceiling — but NOT the arm. sha256, first 16 hex.
+config_hash_base() {
+  printf '%s|%s|%s|%s|%s|%s' \
+    "$CODER_MODEL" "$REVIEWER_MODEL" "$ITER_CAP" \
+    "$BRIEF_TEMPLATE_VERSION" "$SOLVER" "$CEILING" \
+    | shasum -a 256 | awk '{print substr($1,1,16)}'
+}
+
+# config_hash <arm> — the GROUP BY key. The arm-excluded base PLUS the arm.
+# Paired cells differ only in arm (D-HARNESS): config_hash(plan,rep,armA) and
+# config_hash(plan,rep,armB) share the same base segment. sha256, first 16 hex.
 config_hash() {
   local arm="$1"
-  printf '%s|%s|%s|%s|%s' \
-    "$CODER_MODEL" "$REVIEWER_MODEL" "$ITER_CAP" "$BRIEF_TEMPLATE_VERSION" "$arm" \
+  printf '%s|%s' "$(config_hash_base)" "$arm" \
     | shasum -a 256 | awk '{print substr($1,1,16)}'
 }
 
@@ -379,6 +451,16 @@ define done):
   3. The test suite is green.
 
 Implement the change, then run the gate. Report the gate outcome.
+
+COMMIT DISCIPLINE (load-bearing — the harness reads your committed work):
+When you are done, you MUST commit everything you changed in this worktree
+with a plain git commit:
+  git add -A && git commit -m "${plan}: <one-line summary of the task>"
+Both the conflict-detection instrument (which merges your committed tip) and
+the actual-touch harvest (which diffs your committed range) read ONLY committed
+state. Uncommitted work is invisible to the measurement. If you genuinely
+changed nothing, do not fabricate a commit — a no-change task is a valid
+outcome and the harness records zero touches for it.
 EOF
 }
 
@@ -530,10 +612,13 @@ fanin_conflict_check() {
   local slice_head
   # The slice's tip. The coder works detached; capture whatever it committed.
   slice_head="$(git -C "$worktree" rev-parse HEAD 2>/dev/null || true)"
-  # A slice that committed nothing (HEAD still == base) integrates trivially.
+  # A slice that committed nothing (HEAD still == base) integrates trivially:
+  # there is literally nothing to merge, so this is a clean no-op. Do NOT run a
+  # git merge here — the previous code ran `git merge` in $CORPUS_REPO_PATH (the
+  # corpus's OWN checkout), masked by `|| true`, which could mutate the corpus
+  # working tree. Just return: zero committed work == clean integration.
   if [ -z "$slice_head" ] || [ "$slice_head" = "$CELL_BASE_SHA" ]; then
-    git -C "$CORPUS_REPO_PATH" merge --no-edit --no-ff "$slice_head" \
-      "$CELL_INTEG_BRANCH" >/dev/null 2>&1 || true  # no-op; nothing to merge
+    log "fan-in: slice ${tasks_json} committed nothing (HEAD==base) -> clean no-op"
     return 0
   fi
   # Replay the slice's commits onto the integration branch. Operate in the
@@ -576,14 +661,30 @@ emit_slice_events() {
 }
 
 # harvest_slice <worktree> <tasks_json> — per-task actual-touch harvest for one
-# slice. `bench harvest` diffs the slice's worktree and writes kind=actual rows.
-# Per-task even for a grouped (multi-task) slice, so per-task touch
-# precision/recall stays computable (the co-located tasks share the slice diff,
-# which is the documented grouped trade-off, decision D1).
+# slice. `bench harvest` diffs the slice's COMMITTED range (base..committed-HEAD)
+# and writes kind=actual rows. Range mode (not working-tree mode) is what makes
+# harvest agree with fanin_conflict_check: both read ONLY committed state, so an
+# agent that commits its work is recorded consistently by both instruments, and
+# an agent that committed nothing yields zero actual touches here AND a clean
+# no-op at fan-in (a real "task touched nothing" outcome, not a mis-record).
+# Range mode also correctly includes created files that were committed (a
+# working-tree `git diff` vs HEAD would miss them once committed). Per-task even
+# for a grouped (multi-task) slice, so per-task touch precision/recall stays
+# computable (the co-located tasks share the slice's committed diff, which is the
+# documented grouped trade-off, decision D1).
 harvest_slice() {
-  local worktree="$1" tasks_json="$2" tid
+  local worktree="$1" tasks_json="$2" tid head_sha
+  head_sha="$(git -C "$worktree" rev-parse HEAD 2>/dev/null || true)"
+  # No commit (HEAD still == base, or unreadable): nothing was committed, so the
+  # slice touched nothing. Skip the range harvest entirely — recording zero
+  # actual touches is the correct, consistent outcome (matches fan-in's no-op).
+  if [ -z "$head_sha" ] || [ "$head_sha" = "$CELL_BASE_SHA" ]; then
+    log "harvest: slice ${tasks_json} committed nothing (HEAD==base) -> 0 actual touches"
+    return 0
+  fi
   for tid in $(printf '%s' "$tasks_json" | jq -r '.[]'); do
-    pl bench harvest "$CELL_RUN_UID" --task "$tid" --worktree "$worktree" >&2 || true
+    pl bench harvest "$CELL_RUN_UID" --task "$tid" --worktree "$worktree" \
+      --base "$CELL_BASE_SHA" --head "$head_sha" >&2 || true
   done
 }
 
@@ -747,9 +848,13 @@ run_cell() {
     log "base_sha (no declared paths; using corpus HEAD): ${base_sha}"
   fi
 
-  # --- cell identity ---
-  run_uid="$(mint_run_uid "$plan" "$arm" "$rep")"
-  chash="$(config_hash "$arm")"
+  # --- cell identity. The matrix driver (M3) injects a DETERMINISTIC run_uid
+  #     and the PAIRED config_hash via CELL_RUN_UID_OVERRIDE / CELL_CHASH_OVERRIDE
+  #     so the 3 arms of a (plan,rep) share a hash differing only in arm and so
+  #     resume can recompute the uid. Single-cell M1/M2 mode leaves them empty
+  #     and falls back to the timestamped uid + locally-computed hash. ---
+  run_uid="${CELL_RUN_UID_OVERRIDE:-$(mint_run_uid "$plan" "$arm" "$rep")}"
+  chash="${CELL_CHASH_OVERRIDE:-$(config_hash "$arm")}"
   cjson="$(config_json "$arm" "$base_sha")"
   log "run_uid:     ${run_uid}"
   log "config_hash: ${chash}"
@@ -907,31 +1012,350 @@ EOF
 }
 
 # ===========================================================================
+# 8. THE MATRIX LOOP  (M3: schedule + interleave + pairing + resume + ceiling)
+# ===========================================================================
+#
+# The driver that wraps run_cell into the full confirmatory matrix:
+# CORPUS_PLANS x ARMS x N_REPS, arm order RANDOMIZED per (rep,plan) so model
+# drift over calendar time is randomized (§4), paired config_hash per (plan,rep)
+# so the 3 arms join as paired comparisons (§4 blocking), DETERMINISTIC run_uids
+# so a re-run resumes additively (skip completed, retry crashed), and a
+# spend-ceiling stop (§9). --dry-run prints the whole interleaved schedule + the
+# estimated total spend without dispatching — the operator pre-approval surface.
+#
+# M4 SEAMS (out of scope here, left clean): trap-based worktree cleanup,
+# per-cell timeout/kill, and structured logging hook around dispatch_cell.
+
+# corpus_plan_list — the resolved plan-list as whitespace-separated ids. Accepts
+# comma- or space-separated CORPUS_PLANS; in single-cell-promoted matrix mode
+# (operator passed --plan but --matrix) it falls back to that one plan.
+corpus_plan_list() {
+  if [ -n "$CORPUS_PLANS" ]; then
+    printf '%s' "$CORPUS_PLANS" | tr ',' ' '
+  else
+    printf '%s' "$ARG_PLAN"
+  fi
+}
+
+# shuffled_arms <seed> — the 3 arms in a DETERMINISTIC, seed-derived order. The
+# seed is rep*1000+plan so the order is reproducible across re-runs (resume must
+# recompute the identical schedule) yet varies per (rep,plan) — never all-of-one-
+# arm-then-the-next (§4). A tiny Fisher-Yates over the fixed ARMS list using a
+# splitmix-ish LCG seeded from the integer; pure bash 3.2, no external rng.
+shuffled_arms() {
+  local seed="$1"
+  # Load the arms into an indexed array.
+  local arr=() a
+  for a in $ARMS; do arr[${#arr[@]}]="$a"; done
+  local n=${#arr[@]} i j tmp
+  # LCG state. Knuth MMIX constants, masked to 31 bits for bash arithmetic.
+  local state=$(( (seed * 2654435761 + 1013904223) & 0x7fffffff ))
+  for (( i = n - 1; i > 0; i-- )); do
+    state=$(( (state * 1103515245 + 12345) & 0x7fffffff ))
+    j=$(( state % (i + 1) ))
+    tmp="${arr[$i]}"; arr[$i]="${arr[$j]}"; arr[$j]="$tmp"
+  done
+  printf '%s\n' "${arr[@]}"
+}
+
+# build_schedule — emit the full interleaved (rep, plan, arm) schedule, one
+# "rep plan arm" triple per line. Outer loop is rep, then plan, then the
+# seed-shuffled arms for that (rep,plan). Printing rep-major keeps the arms of a
+# pair adjacent (so a pair completes before the next) while the per-pair shuffle
+# randomizes which arm leads — the interleaving §4 asks for.
+build_schedule() {
+  local rep plan arm seed
+  for rep in $(seq 1 "$N_REPS"); do
+    for plan in $(corpus_plan_list); do
+      seed=$(( rep * 1000 + plan ))
+      while IFS= read -r arm; do
+        printf '%s %s %s\n' "$rep" "$plan" "$arm"
+      done <<EOF
+$(shuffled_arms "$seed")
+EOF
+    done
+  done
+}
+
+# cumulative_spend — the experiment-level spend ledger (§9). SUM of the `usd`
+# field over EVERY token_sample payload across all NON-ABORTED runs in the
+# isolated experiment DB. Modeled on metrics/tokens_per_plan.sql (same
+# json_extract over run_events kind='token_sample'); aborted runs are excluded
+# so a crashed-then-retried cell is not double-counted in the ledger. Prints a
+# bare decimal on stdout. Returns 0.00 against an empty DB.
+cumulative_spend() {
+  # The DB file may not exist yet (first invocation, no cell run). Guard it so
+  # the ledger query never aborts the driver under `set -e`.
+  [ -f "$PLANAR_DB" ] || { printf '0.00'; return 0; }
+  sqlite3 "$PLANAR_DB" "
+    select coalesce(printf('%.4f', sum(json_extract(e.payload, '\$.usd'))), '0.00')
+    from runs r
+    join run_events e on e.run_id = r.id
+    where e.kind = 'token_sample'
+      and r.status <> 'aborted';" 2>/dev/null || printf '0.00'
+}
+
+# estimate_cell_cost — the next cell's projected USD cost. Once any completed
+# cell exists, estimate from the observed per-cell average (cumulative spend /
+# completed-cell count); before then, fall back to CELL_COST_DEFAULT. This feeds
+# the ceiling pre-check and the dry-run total estimate.
+estimate_cell_cost() {
+  [ -f "$PLANAR_DB" ] || { printf '%s' "$CELL_COST_DEFAULT"; return 0; }
+  local completed cum
+  completed="$(sqlite3 "$PLANAR_DB" \
+    "select count(*) from runs where status = 'completed';" 2>/dev/null || printf '0')"
+  if [ -z "$completed" ] || [ "$completed" -eq 0 ]; then
+    printf '%s' "$CELL_COST_DEFAULT"
+    return 0
+  fi
+  cum="$(cumulative_spend)"
+  awk -v c="$cum" -v n="$completed" 'BEGIN{ printf "%.4f", c / n }'
+}
+
+# usd_le <a> <b> — float a <= b (bash has no float compare). awk returns the
+# boolean as an exit code: 0 (true) when a <= b.
+usd_le() { awk -v a="$1" -v b="$2" 'BEGIN{ exit !(a <= b) }'; }
+# usd_add <a> <b> — print a + b.
+usd_add() { awk -v a="$1" -v b="$2" 'BEGIN{ printf "%.4f", a + b }'; }
+
+# cell_status <run_uid> — the resume probe (§4 idempotency). Reads
+# `bench show --json`:
+#   absent     -> prints "absent"   (no record; dispatch fresh)
+#   running    -> prints "running"  (crashed mid-cell; abort + retry)
+#   completed  -> prints "completed" (skip, no double-count)
+#   <other>    -> prints the raw status (aborted/error; dispatch fresh retry)
+# `bench show` exits non-zero with "not found" for an absent run; that is the
+# absent signal (distinguished from a real DB error by the run not existing).
+cell_status() {
+  local run_uid="$1" js
+  if js="$(pl bench show "$run_uid" --json 2>/dev/null)"; then
+    printf '%s' "$js" | jq -r '.status'
+  else
+    printf 'absent'
+  fi
+}
+
+# resolve_cell_uid <plan> <arm> <rep> — the deterministic cell uid AFTER resume
+# reconciliation. Returns (on stdout) the uid the driver should use for this
+# cell, and (on stderr, via log) what it decided:
+#   completed              -> prints "SKIP" — the caller skips dispatch entirely.
+#   running (crashed)      -> aborts the stale record (bench finish --status
+#                             aborted; left as audit, excluded from metrics) and
+#                             mints a fresh <base>-retryN uid (next free N).
+#   absent / aborted / err -> the base deterministic uid (fresh dispatch).
+# Resume is strictly ADDITIVE: re-running never reuses a partial uid and never
+# double-counts a completed one.
+resolve_cell_uid() {
+  local plan="$1" arm="$2" rep="$3"
+  local base status
+  base="$(deterministic_run_uid "$plan" "$arm" "$rep")"
+  status="$(cell_status "$base")"
+  case "$status" in
+    completed)
+      log "resume: ${base} already completed -> SKIP (no double-count)"
+      printf 'SKIP'
+      return 0
+      ;;
+    running)
+      # A crashed mid-cell run. Abort it (audit trail) and mint a fresh retry.
+      log "resume: ${base} left RUNNING (crashed mid-cell) -> abort + retry"
+      pl bench finish "$base" --status aborted >/dev/null 2>&1 || true
+      # Find the next free -retryN suffix so repeated crashes never collide.
+      local n=1 candidate
+      while :; do
+        candidate="${base}-retry${n}"
+        [ "$(cell_status "$candidate")" = "absent" ] && break
+        # A completed retry means this cell is actually done under the retry uid.
+        if [ "$(cell_status "$candidate")" = "completed" ]; then
+          log "resume: ${candidate} already completed -> SKIP"
+          printf 'SKIP'
+          return 0
+        fi
+        n=$(( n + 1 ))
+      done
+      log "resume: minting fresh retry uid ${candidate}"
+      printf '%s' "$candidate"
+      ;;
+    absent)
+      printf '%s' "$base"
+      ;;
+    *)
+      # aborted / error from a prior run: dispatch fresh under a retry uid so the
+      # aborted record stays as audit and is not overwritten.
+      log "resume: ${base} status=${status} -> fresh retry"
+      local n=1 candidate
+      while :; do
+        candidate="${base}-retry${n}"
+        [ "$(cell_status "$candidate")" = "absent" ] && break
+        [ "$(cell_status "$candidate")" = "completed" ] && { printf 'SKIP'; return 0; }
+        n=$(( n + 1 ))
+      done
+      printf '%s' "$candidate"
+      ;;
+  esac
+}
+
+# dispatch_cell <plan> <arm> <rep> — wrap one run_cell with the resume probe,
+# the paired config_hash injection, and the deterministic uid. Returns 0 on
+# dispatch (or skip); the ceiling check happens in the caller BEFORE this.
+dispatch_cell() {
+  local plan="$1" arm="$2" rep="$3"
+  local uid chash
+  chash="$(config_hash "$arm")"   # base-derived; paired across the (plan,rep) arms
+  uid="$(resolve_cell_uid "$plan" "$arm" "$rep")"
+  if [ "$uid" = "SKIP" ]; then
+    log "cell (plan=${plan} arm=${arm} rep=${rep}) -> SKIPPED (already completed)"
+    return 0
+  fi
+  # Inject the deterministic uid + paired hash; run_cell honors the overrides.
+  CELL_RUN_UID_OVERRIDE="$uid"
+  CELL_CHASH_OVERRIDE="$chash"
+  ARG_REP="$rep"
+  run_cell "$plan" "$arm" "$rep"
+  CELL_RUN_UID_OVERRIDE=""
+  CELL_CHASH_OVERRIDE=""
+}
+
+# run_matrix — the M3 entry point. Build + print the schedule, then walk it
+# cell-by-cell: ceiling pre-check (stop cleanly on breach), resume reconcile,
+# dispatch. --dry-run prints the schedule, each cell's resolved run_uid +
+# base_sha + paired config_hash, and the ESTIMATED total spend, dispatching
+# nothing.
+run_matrix() {
+  local schedule rep plan arm uid chash
+  schedule="$(build_schedule)"
+
+  title "M3 matrix schedule (interleaved; arm order shuffled per rep,plan)"
+  log "plans:   $(corpus_plan_list)"
+  log "reps:    ${N_REPS}"
+  log "arms:    ${ARMS}"
+  log "ceiling: \$${CEILING} USD"
+  printf '%s\n' "$schedule" | while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    set -- $line; rep="$1"; plan="$2"; arm="$3"
+    log "  rep=${rep} plan=${plan} arm=${arm}  config_hash=$(config_hash "$arm")  uid=$(deterministic_run_uid "$plan" "$arm" "$rep")"
+  done
+
+  # =====================================================================
+  # DRY-RUN: print the full plan (schedule + per-plan base_sha + run_uids +
+  # estimated total spend), dispatch nothing.
+  # =====================================================================
+  if [ "$DRY_RUN" -eq 1 ]; then
+    title "DRY-RUN: resolved base_sha per plan"
+    local p base paths
+    for p in $(corpus_plan_list); do
+      paths="$(declared_paths "$p")"
+      if [ -n "$paths" ]; then
+        # shellcheck disable=SC2046
+        base="$(pick_base_sha "$CORPUS_REPO_PATH" $paths 2>/dev/null || printf 'UNRESOLVED')"
+      else
+        base="$(git -C "$CORPUS_REPO_PATH" rev-parse HEAD 2>/dev/null || printf 'UNRESOLVED')"
+      fi
+      log "  plan ${p}: base_sha=${base}  paired_config_hash_base=$(config_hash_base)"
+    done
+
+    title "DRY-RUN: cell run_uids (deterministic) + paired config_hash"
+    printf '%s\n' "$schedule" | while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      set -- $line; rep="$1"; plan="$2"; arm="$3"
+      printf '  uid=%-22s arm=%-12s config_hash=%s\n' \
+        "$(deterministic_run_uid "$plan" "$arm" "$rep")" "$arm" "$(config_hash "$arm")" >&2
+    done
+
+    local n_cells est_cell est_total cum
+    n_cells="$(printf '%s\n' "$schedule" | grep -c . || printf '0')"
+    est_cell="$(estimate_cell_cost)"
+    cum="$(cumulative_spend)"
+    est_total="$(awk -v n="$n_cells" -v c="$est_cell" 'BEGIN{ printf "%.2f", n * c }')"
+    title "DRY-RUN: estimated spend"
+    log "  cells:                 ${n_cells}"
+    log "  est. per-cell cost:    \$${est_cell} USD"
+    log "  est. total (new):      \$${est_total} USD"
+    log "  already spent (ledger):\$${cum} USD"
+    log "  ceiling:               \$${CEILING} USD"
+    if usd_le "$(usd_add "$cum" "$est_total")" "$CEILING"; then
+      log "  -> projected total within ceiling."
+    else
+      log "  -> WARNING: projected total EXCEEDS ceiling; the live run will stop early."
+    fi
+    title "DRY-RUN complete (no spawns, no mutations)"
+    return 0
+  fi
+
+  # =====================================================================
+  # LIVE matrix walk: per-cell ceiling pre-check, resume reconcile, dispatch.
+  # =====================================================================
+  title "M3 matrix: live walk"
+  # NOTE: piping the schedule into a while-loop would subshell the loop body,
+  # losing the dispatch side effects we need to observe between cells. Drive the
+  # loop from a here-string so the body runs in the current shell.
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    set -- $line; rep="$1"; plan="$2"; arm="$3"
+
+    # --- spend-ceiling pre-check (§9): stop BEFORE dispatching a cell that
+    #     would breach. Completed runs are left intact; nothing new is spawned. ---
+    local cum est projected
+    cum="$(cumulative_spend)"
+    est="$(estimate_cell_cost)"
+    projected="$(usd_add "$cum" "$est")"
+    if ! usd_le "$projected" "$CEILING"; then
+      title "SPEND CEILING REACHED"
+      log "cumulative \$${cum} + est. cell \$${est} = \$${projected} > ceiling \$${CEILING}"
+      log "stopping cleanly: dispatching nothing new. completed runs are intact."
+      log "ceiling reached — analyze what exists"
+      return 0
+    fi
+
+    title "matrix cell rep=${rep} plan=${plan} arm=${arm} (spent \$${cum}, est cell \$${est})"
+    dispatch_cell "$plan" "$arm" "$rep"
+  done <<EOF
+$schedule
+EOF
+
+  title "M3 matrix: schedule exhausted (all cells dispatched or skipped)"
+  log "final cumulative spend: \$$(cumulative_spend) USD (ceiling \$${CEILING})"
+}
+
+# ===========================================================================
 # argv + main
 # ===========================================================================
 
 usage() {
-  sed -n '2,59p' "$0" | sed 's/^# \?//'
+  sed -n '2,72p' "$0" | sed 's/^# \?//'
 }
 
 parse_args() {
   while [ $# -gt 0 ]; do
     case "$1" in
       --plan)     ARG_PLAN="$2"; shift 2 ;;
+      --plans)    CORPUS_PLANS="$2"; shift 2 ;;
       --rep)      ARG_REP="$2"; shift 2 ;;
+      --reps)     N_REPS="$2"; shift 2 ;;
       --tasks)    ARG_TASKS="$2"; shift 2 ;;
       --arm)      ARG_ARM="$2"; shift 2 ;;
       --solver)   SOLVER="$2"; shift 2 ;;
+      --ceiling)  CEILING="$2"; shift 2 ;;
+      --matrix)   ARG_MATRIX=1; shift ;;
       --dry-run)  DRY_RUN=1; shift ;;
       -h|--help)  usage; exit 0 ;;
       *) err "unknown flag: $1 (try --help)" ;;
     esac
   done
-  [ -n "$ARG_PLAN" ] || err "--plan <id> is required (try --help)"
-  case "$ARG_ARM" in
-    strict|eligibility|grouped) : ;;
-    *) err "--arm must be one of: strict | eligibility | grouped (got '$ARG_ARM')" ;;
-  esac
+  if [ "$ARG_MATRIX" -eq 1 ]; then
+    # Matrix mode sweeps a plan-list; it needs --plans OR a single --plan.
+    [ -n "$CORPUS_PLANS" ] || [ -n "$ARG_PLAN" ] \
+      || err "--matrix needs --plans <ids> (or a single --plan <id>) (try --help)"
+    case "$N_REPS" in
+      ''|*[!0-9]*) err "--reps must be a positive integer (got '$N_REPS')" ;;
+    esac
+  else
+    [ -n "$ARG_PLAN" ] || err "--plan <id> is required (try --help)"
+    case "$ARG_ARM" in
+      strict|eligibility|grouped) : ;;
+      *) err "--arm must be one of: strict | eligibility | grouped (got '$ARG_ARM')" ;;
+    esac
+  fi
 }
 
 main() {
@@ -940,20 +1364,27 @@ main() {
   require_tool shasum
   parse_args "$@"
 
-  title "bench-matrix: M2 arm-shape driver"
+  if [ "$ARG_MATRIX" -eq 1 ]; then require_tool sqlite3; fi
+
+  title "bench-matrix: $([ "$ARG_MATRIX" -eq 1 ] && echo 'M3 matrix driver' || echo 'M2 arm-shape driver')"
   log "PLANAR_DB:          $PLANAR_DB"
   log "PLANAR_CONFIG_PATH: $PLANAR_CONFIG_PATH"
   log "corpus repo:        $CORPUS_REPO_PATH ($CORPUS_REPO_NAME)"
   log "coder/reviewer:     $CODER_MODEL / $REVIEWER_MODEL"
   log "iteration cap:      $ITER_CAP"
-  log "arm:                $ARG_ARM"
-  [ "$ARG_ARM" = "grouped" ] && log "solver:             $SOLVER"
   [ "$DRY_RUN" -eq 1 ] && log "MODE:               --dry-run (no spawns, no mutations)"
 
-  # SCOPE: M2 drives exactly ONE cell of the requested arm, rep as given. The
-  # matrix loop (arms x plans x reps with interleaving + spend ceiling +
-  # resume) is M3 and wraps run_cell in an outer loop here.
-  run_cell "$ARG_PLAN" "$ARG_ARM" "$ARG_REP"
+  if [ "$ARG_MATRIX" -eq 1 ]; then
+    # M3: sweep CORPUS_PLANS x ARMS x N_REPS (interleaved, paired, resumable,
+    # ceiling-bounded). run_matrix wraps run_cell in the outer loop.
+    run_matrix
+  else
+    # SCOPE: single-cell mode drives exactly ONE cell of the requested arm, rep
+    # as given (M1/M2). The matrix loop is --matrix.
+    log "arm:                $ARG_ARM"
+    [ "$ARG_ARM" = "grouped" ] && log "solver:             $SOLVER"
+    run_cell "$ARG_PLAN" "$ARG_ARM" "$ARG_REP"
+  fi
 }
 
 main "$@"
