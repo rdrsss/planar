@@ -198,28 +198,76 @@ test "scenario: annotations — bulk-resolve filter, bulk-archive any-status, sw
     try std.testing.expect(std.mem.containsAtLeast(u8, active_after, 1, "keeper 0"));
     try std.testing.expect(std.mem.containsAtLeast(u8, active_after, 1, "keeper 1"));
 
-    // bulk-archive across active rows. The engine's status guard
-    // refuses resolved → archived (only active → archived is
-    // permitted), so the 3 previously-resolved noise rows stay put.
-    // 2 keeper rows (still active) move to archived.
+    // bulk-archive across ALL annotations. Under the retention-tier model
+    // (plan 692), resolved → archived is legal, so the 3 previously-resolved
+    // noise rows ARE included. Together with the 2 still-active keeper rows,
+    // bulk-archive archives all 5 rows. (The noise rows go resolved→archived;
+    // the keeper rows go active→archived.)
     const ba = suite.mustRunJSON(BulkResult, arena, &.{ "annotate", "bulk-archive", "--json" });
     try std.testing.expect(ba.ok);
     try std.testing.expectEqualStrings("archived", ba.action);
-    try std.testing.expectEqual(@as(i64, 2), ba.count);
+    try std.testing.expectEqual(@as(i64, 5), ba.count);
 
-    // sweep with since-days=0 captures the 3 still-resolved noise
-    // rows from the earlier bulk-resolve and archives them. The
-    // archive transition is allowed from resolved/dismissed when
-    // routed through the sweep path (which queries the DB directly
-    // and then calls archive — engine-level status check still
-    // applies; resolved→archived is intentionally legal here).
+    // sweep with since-days=0: all resolved/dismissed rows are now archived
+    // (we just bulk-archived them above), so the WHERE clause selects 0 rows
+    // and swept=0. This confirms sweep is harmlessly idempotent when there is
+    // nothing left to archive.
     const sw = suite.mustRunJSON(SweepResult, arena, &.{
         "annotate", "sweep", "--json", "--since-days", "0",
     });
     try std.testing.expect(sw.ok);
-    // Tolerant assertion: sweep may archive any of the 3 resolved
-    // rows depending on whether resolved → archived is permitted by
-    // the status policy. Lock the ok flag + presence of the action;
-    // exact count is implementation-defined.
-    _ = sw.swept;
+    try std.testing.expectEqual(@as(i64, 0), sw.swept);
+}
+
+// Retention-tier model (plan 692): sweep archives resolved + dismissed rows.
+//
+// `archived` is the single final retention state.  `resolved` and `dismissed`
+// are outcome states that may progress to `archived`.  This test seeds a
+// resolved row and a dismissed row, then confirms sweep (since-days=0)
+// archives both and leaves them in the `archived` state.
+test "scenario: annotate sweep archives resolved and dismissed rows (retention-tier)" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    _ = suite.registerProject("ann-sweep-retention");
+
+    // Seed one resolved annotation and one dismissed annotation.
+    const a1 = suite.mustRunJSON(AnnotationJSON, arena, &.{
+        "annotate", "add", "--json", "--anchor-path", "src/r.zig", "--body", "resolved note",
+    });
+    const a2 = suite.mustRunJSON(AnnotationJSON, arena, &.{
+        "annotate", "add", "--json", "--anchor-path", "src/d.zig", "--body", "dismissed note",
+    });
+    const id1 = std.fmt.allocPrint(arena, "{d}", .{a1.id}) catch unreachable;
+    const id2 = std.fmt.allocPrint(arena, "{d}", .{a2.id}) catch unreachable;
+
+    gpa.free(suite.mustRun(&.{ "annotate", "resolve", id1 }));
+    gpa.free(suite.mustRun(&.{ "annotate", "dismiss", id2 }));
+
+    // Confirm pre-state.
+    const pre1 = suite.mustRunJSON(AnnotationJSON, arena, &.{ "annotate", "show", id1, "--json" });
+    try std.testing.expectEqualStrings("resolved", pre1.status);
+    const pre2 = suite.mustRunJSON(AnnotationJSON, arena, &.{ "annotate", "show", id2, "--json" });
+    try std.testing.expectEqualStrings("dismissed", pre2.status);
+
+    // Sweep with since-days=0: both rows qualify (resolved + dismissed,
+    // updated_at is 0 days old which satisfies > 0 — use 0 to select all).
+    // Under the retention-tier model, resolved→archived and dismissed→archived
+    // are legal, so sweep should archive both rows (swept=2).
+    const sw = suite.mustRunJSON(SweepResult, arena, &.{
+        "annotate", "sweep", "--json", "--since-days", "0",
+    });
+    try std.testing.expect(sw.ok);
+    try std.testing.expectEqual(@as(i64, 2), sw.swept);
+
+    // Confirm post-state: both rows are now archived.
+    const post1 = suite.mustRunJSON(AnnotationJSON, arena, &.{ "annotate", "show", id1, "--json" });
+    try std.testing.expectEqualStrings("archived", post1.status);
+    const post2 = suite.mustRunJSON(AnnotationJSON, arena, &.{ "annotate", "show", id2, "--json" });
+    try std.testing.expectEqualStrings("archived", post2.status);
 }

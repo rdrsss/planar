@@ -685,6 +685,10 @@ pub fn update(
 
     if (patch.due_at) |due| _ = try parseDueAt(due);
 
+    if (patch.status) |new_status| {
+        try policy.status.check(.task, @tagName(current.status), @tagName(new_status), patch.force);
+    }
+
     var sql_buf: std.ArrayList(u8) = .empty;
     defer sql_buf.deinit(allocator);
     try sql_buf.appendSlice(allocator, "update tasks set ");
@@ -772,7 +776,6 @@ pub fn update(
     // use an ordinary savepoint — no claim guard applies.
     const has_status_change = patch.status != null;
     if (has_status_change) {
-        try policy.status.check(.task, @tagName(current.status), @tagName(patch.status.?));
         try beginImmediate(d);
     } else {
         try beginSavepoint(d, allocator, "task_update");
@@ -882,7 +885,7 @@ pub fn markDone(d: *db.sqlite.Db, allocator: std.mem.Allocator, id: i64, force: 
     const current = try show(d, allocator, id);
     defer deinit(current, allocator);
     try policy.scope_guard.check(null, null);
-    try policy.status.check(.task, @tagName(current.status), "done");
+    try policy.status.check(.task, @tagName(current.status), "done", force);
 
     _ = d.execParams(
         "update tasks set status = 'done', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') where id = ?",
@@ -958,7 +961,7 @@ pub fn markBlocked(
     const current = try show(d, allocator, id);
     defer deinit(current, allocator);
     try policy.scope_guard.check(null, null);
-    try policy.status.check(.task, @tagName(current.status), "blocked");
+    try policy.status.check(.task, @tagName(current.status), "blocked", false);
 
     _ = d.execParams(
         "update tasks set status = 'blocked', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') where id = ?",
@@ -1033,7 +1036,10 @@ pub fn reopen(
     const current = try show(d, allocator, id);
     defer deinit(current, allocator);
     try policy.scope_guard.check(null, null);
-    try policy.status.check(.task, @tagName(current.status), @tagName(new_status));
+    // `reopen` is the verb-gated escape from terminal status; it bypasses the
+    // bare-update matrix (force=true) because the dedicated verb already
+    // carries its own authorization and records the task_reopens audit row.
+    try policy.status.check(.task, @tagName(current.status), @tagName(new_status), true);
 
     _ = d.execParams(
         "update tasks set status = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') where id = ?",
@@ -1096,7 +1102,7 @@ fn transitionWithSummary(
     const current = try show(d, allocator, id);
     defer deinit(current, allocator);
     try policy.scope_guard.check(null, null);
-    try policy.status.check(.task, @tagName(current.status), @tagName(new_status));
+    try policy.status.check(.task, @tagName(current.status), @tagName(new_status), false);
 
     try beginSavepoint(d, allocator, "task_transition");
     var savepoint_released = false;
@@ -1360,13 +1366,17 @@ test "list defaults to todo/doing/blocked statuses" {
     }
 }
 
-test "markDone transitions todo → done and records status_change audit" {
+test "markDone transitions doing → done and records status_change audit" {
+    // The matrix requires todo → doing before done; markDone from todo is now illegal.
     const a = std.testing.allocator;
     var d = try setupTestDb(a);
     defer d.close();
 
     const t = try create(&d, a, .{ .title = "finish it" });
     defer deinit(t, a);
+    // Advance to doing first (todo → doing is legal per the matrix).
+    const doing_task = try update(&d, a, t.id, .{ .status = .doing });
+    defer deinit(doing_task, a);
     const done_task = try markDone(&d, a, t.id, false);
     defer deinit(done_task, a);
 
@@ -1421,6 +1431,9 @@ test "reopen returns done task to todo with reason in audit" {
 
     const t = try create(&d, a, .{ .title = "redo this" });
     defer deinit(t, a);
+    // Advance to doing first so markDone is legal (todo → doing → done).
+    const doing_t = try update(&d, a, t.id, .{ .status = .doing });
+    defer deinit(doing_t, a);
     const done_t = try markDone(&d, a, t.id, false);
     defer deinit(done_t, a);
 
@@ -1443,6 +1456,9 @@ test "reopen from done writes exactly one task_reopens row with source task-reop
 
     const t = try create(&d, a, .{ .title = "reopen audit" });
     defer deinit(t, a);
+    // Advance through doing so markDone is legal (todo → doing → done).
+    const doing_t = try update(&d, a, t.id, .{ .status = .doing });
+    defer deinit(doing_t, a);
     const done_t = try markDone(&d, a, t.id, false);
     defer deinit(done_t, a);
 
@@ -1478,6 +1494,9 @@ test "update with force from done writes task_reopens row with source task-updat
 
     const t = try create(&d, a, .{ .title = "force reopen" });
     defer deinit(t, a);
+    // Advance through doing so markDone is legal (todo → doing → done).
+    const doing_t = try update(&d, a, t.id, .{ .status = .doing });
+    defer deinit(doing_t, a);
     const done_t = try markDone(&d, a, t.id, false);
     defer deinit(done_t, a);
 
@@ -1506,7 +1525,10 @@ test "normal non-reopen transition does not write task_reopens" {
 
     const t = try create(&d, a, .{ .title = "normal transition" });
     defer deinit(t, a);
-    // todo → done is a normal terminal transition, not a reopen.
+    // Advance through doing so markDone is legal (todo → doing → done).
+    // doing → done is a normal terminal transition, not a reopen.
+    const doing_t = try update(&d, a, t.id, .{ .status = .doing });
+    defer deinit(doing_t, a);
     const done_t = try markDone(&d, a, t.id, false);
     defer deinit(done_t, a);
 

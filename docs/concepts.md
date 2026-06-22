@@ -429,18 +429,30 @@ A plan is the anchor unit of work. It is a structured intent — a named body of
 ### Status lifecycle
 
 ```
-draft → active → done
-          ↕
-        paused
+draft → active ⇄ paused
           ↓
-       abandoned
+        done  (terminal)
+          |
+       abandoned  (terminal)
 ```
+
+Legal transitions (enforced by `policy.status.check`):
+
+| From | To |
+|------|----|
+| `draft` | `active` |
+| `active` | `paused`, `done`, `abandoned` |
+| `paused` | `active` |
+| `done` | — terminal; no operator escape path |
+| `abandoned` | — terminal; no operator escape path |
 
 - `draft`: planning documents are being authored. The workbench tree exists but tasks may not yet be created.
 - `active`: tasks are being executed.
-- `paused`: work is interrupted; resumable.
-- `done`: all tasks complete.
-- `abandoned`: work stopped without completion.
+- `paused`: work is interrupted; resumable via `plan update --status active`.
+- `done`: all tasks complete. Terminal for operator transitions.
+- `abandoned`: work stopped without completion. Terminal for operator transitions.
+
+`plan.recomputeStatus` (triggered by task writes) deliberately bypasses this check — it is an engine-internal aggregate roll-up whose target is computed by `computeTarget` and can only emit transitions the matrix considers valid. Operator overrides go through `plan update --status <s>`.
 
 A plan has a filesystem-safe `slug` unique within its parent scope, used in workbench directory names.
 
@@ -489,12 +501,32 @@ A task is the leaf unit of work. It is attached to a plan via `plan_id` and opti
 ### Status lifecycle
 
 ```
-todo → doing → done
-              → cancelled
-              → blocked
+        ┌──────────────────────┐
+        ↓                      |
+todo ⇄ doing ⇄ blocked → done  (terminal)
+  ↘     ↓                ↓
+cancelled (terminal)  cancelled (terminal)
 ```
 
-A task in `blocked` status requires `next_action` to be set — `planar resume validate` refuses a resume packet without it. `doing` tasks are the ones currently being worked on by an agent session.
+Legal transitions (enforced by `policy.status.check`):
+
+| From | To | Notes |
+|------|----|-------|
+| `todo` | `doing`, `blocked`, `cancelled` | |
+| `doing` | `todo`, `blocked`, `done`, `cancelled` | |
+| `blocked` | `doing`, `done`, `cancelled` | |
+| `done` | `todo`, `doing`, `blocked` | Only via `task reopen --reason` or `task update --force` |
+| `cancelled` | `todo`, `doing`, `blocked` | Only via `task reopen --reason` or `task update --force` |
+
+- `todo`: task is queued, not yet started.
+- `doing`: an agent is actively working on it.
+- `blocked`: work is stalled; requires `next_action` — `planar resume validate` refuses a resume packet without it.
+- `done`: task is complete. Terminal for bare `task update`; escape via `task reopen --reason <why>`.
+- `cancelled`: task was deliberately dropped. Terminal for bare `task update`; escape via `task reopen --reason <why>`.
+
+**Verb-gated escape from terminal status.** `planar task reopen <id> [--status todo|doing|blocked] --reason <why>` performs the terminal → open move that bare `task update --status` refuses, and records a `task_reopens` audit row. `task update --force` is the operator override that also performs the move and records a `task_reopens` row with `source='task-update-force'`. Both paths bypass the matrix explicitly; the bypass is the documented exception, not the default.
+
+**Identity transition** (`from == to`) is accepted silently by all arms — a redundant `--status doing` on a `doing` task is a no-op, not a refusal.
 
 Tasks carry a `title`, an optional `body` (Markdown), a `next_action` field for handoff continuity, and a `scope_kind`/`scope_id` pair that records which scope they belong to.
 
@@ -502,11 +534,11 @@ Tasks carry a `title`, an optional `body` (Markdown), a `next_action` field for 
 
 Operator-driven status transitions (`task done`, `task block`, `task reopen`, `task update --status`) are **claim-atomic**: when the task has an active work claim (`agent_work_claims.status = 'active'` and `lease_expires_at >= now()`), the operator verb refuses the status flip and exits non-zero with a message identifying the active claim.
 
-This closes the TOCTOU window where an operator `task done` would strand a live agent lease mid-flight. The correct closure path for a claimed task is the agent terminal verb (`planar-agent complete | fail | release`). The operator override is `--force`, which bypasses the guard — use it only when the agent is known to be no longer active (e.g. the process crashed without releasing its claim).
+This closes the TOCTOU window where an operator `task done` would strand a live agent lease mid-flight. The correct closure path for a claimed task is the agent terminal verb (`planar-agent complete | fail | release`). The operator override is `--force`, which bypasses the claim guard AND the status-transition matrix — use it only when the agent is known to be no longer active (e.g. the process crashed without releasing its claim).
 
 Expired claims (`lease_expires_at < now()`) are NOT active and do not trigger the guard. The check is real-time on every operator status-flip.
 
-**SQLite table:** `tasks`. **Primary verbs:** `planar task add`, `planar task list`, `planar task show`, `planar task doing`, `planar task done`, `planar task block`, `planar task cancel`.
+**SQLite table:** `tasks`. **Primary verbs:** `planar task add`, `planar task list`, `planar task show`, `planar task doing`, `planar task done`, `planar task block`, `planar task cancel`, `planar task reopen`.
 
 ---
 
@@ -656,11 +688,11 @@ A question is an open inquiry attached to a scope, plan, or task. Agents record 
 ### Status lifecycle
 
 ```
-open → answered
-     → wontfix
+open → answered  (terminal)
+     → wontfix   (terminal)
 ```
 
-The `answered` status requires both `answer_body` and `answered_at` to be set — the schema enforces this with a CHECK constraint.
+Legal transitions: `open → {answered, wontfix}` only. Both `answered` and `wontfix` are terminal — there is no `question reopen` verb. The `answered` status requires both `answer_body` and `answered_at` — the schema enforces this with a CHECK constraint.
 
 ### Sources
 
@@ -676,7 +708,27 @@ A scenario is a verification test case attached to a spec, plan, or task. Scenar
 
 The ingestor imports scenario sections from `tech-spec.md` into `test_scenarios` rows. The coder agent runs scenarios after implementation and records pass/fail outcomes.
 
-**SQLite table:** `test_scenarios`. **Primary verbs:** `planar scenario add`, `planar scenario list`, `planar scenario pass`, `planar scenario fail`.
+### Status lifecycle
+
+```
+draft → ready → verified  ⇄  failing
+    ↘     ↓        ↓             ↓
+      retired (terminal, from any non-terminal state)
+```
+
+Legal transitions (enforced by `policy.status.check`):
+
+| From | To |
+|------|----|
+| `draft` | `ready`, `retired` |
+| `ready` | `verified`, `failing`, `retired` |
+| `verified` | `failing`, `retired` |
+| `failing` | `verified`, `retired` |
+| `retired` | — terminal |
+
+Note: `scenario verify --outcome pass` on a `draft` scenario auto-walks `draft → ready → verified` internally (two policy-checked hops), so the operator workflow `scenario add → scenario verify` works without an explicit `scenario ready` step. There is no `scenario ready` CLI verb.
+
+**SQLite table:** `test_scenarios`. **Primary verbs:** `planar scenario add`, `planar scenario list`, `planar scenario pass`, `planar scenario fail`, `planar scenario retire`.
 
 ---
 
@@ -686,9 +738,21 @@ A decision is a recorded design choice. Decisions have a `kind` (`design`, `tech
 
 ```
 proposed → accepted
-         → superseded
-         → withdrawn
+         → superseded  (terminal)
+         → withdrawn   (terminal)
+
+accepted → superseded  (terminal)
+         → withdrawn   (terminal)
 ```
+
+Legal transitions (enforced by `policy.status.check`):
+
+| From | To |
+|------|----|
+| `proposed` | `accepted`, `superseded`, `withdrawn` |
+| `accepted` | `superseded`, `withdrawn` |
+| `superseded` | — terminal |
+| `withdrawn` | — terminal |
 
 Architecture decision records (ADRs) are artifacts of `kind=adr`, not decision rows — the `decisions` table is for in-flight design choices made during feature work. A decision row points to the session in which it was made and optionally to a plan.
 
@@ -720,7 +784,54 @@ An artifact is a long-form prose document attached to a plan. Artifacts are the 
 
 Artifacts are stored as Markdown in the `body` column and mirrored to the workbench filesystem as `.md` files under the plan's workbench directory.
 
+### Status lifecycle
+
+```
+draft ⇄ active → superseded  (terminal)
+                → retired     (terminal)
+```
+
+Legal transitions (enforced by `policy.status.check`):
+
+| From | To |
+|------|----|
+| `draft` | `active` |
+| `active` | `draft`, `superseded`, `retired` |
+| `superseded` | — terminal |
+| `retired` | — terminal |
+
 **SQLite table:** `artifacts`. **Primary verbs:** `planar artifact add`, `planar artifact show`, `planar artifact list`, `planar artifact update`.
+
+---
+
+## Annotation
+
+An annotation is a line-anchored review note attached to a file path (and optional line range), captured during a code review or agent pass. Annotations carry optional `commit_sha` and `text_hash` fields so the anchor can be verified against current workspace state via `annotate verify`.
+
+### Status lifecycle (retention-tier model)
+
+```
+active → resolved  → archived  (sole final state)
+       → dismissed → archived  (sole final state)
+       → archived             (direct)
+```
+
+`archived` is the **single final retention state** (plan 692). `resolved` and `dismissed` are *outcome states*: they record how an annotation was disposed of, but they are not final — both may still progress to `archived` via the retention tier. `archived` has no outgoing edges.
+
+Legal transitions (enforced by `policy.status.check(.annotation, …)`):
+
+| From | To |
+|------|----|
+| `active` | `resolved`, `dismissed`, `archived` |
+| `resolved` | `archived` (retention-tier progression) |
+| `dismissed` | `archived` (retention-tier progression) |
+| `archived` | — sole final state |
+
+All other moves are illegal: `resolved → dismissed`, `dismissed → resolved`, `resolved → active`, `dismissed → active`, `archived → anything`. Identity (`from == to`) is a no-op.
+
+`annotate sweep --since-days <n>` selects `resolved`/`dismissed` rows older than the cutoff and archives them (resolved→archived and dismissed→archived are both legal), making sweep the primary housekeeping path for outcome rows that have aged past their review window.
+
+**SQLite tables:** `annotations`, `annotation_tags`. **Primary verbs:** `planar annotate add`, `planar annotate resolve|dismiss|archive`, `planar annotate bulk-resolve|bulk-dismiss|bulk-archive`, `planar annotate sweep`, `planar annotate verify`.
 
 ---
 

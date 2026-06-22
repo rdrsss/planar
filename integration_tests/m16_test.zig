@@ -257,11 +257,13 @@ test "M16 recompute-status: task writes auto-promote; explicit recompute remains
     const before = parseJSON(PlanJSON, arena, before_buf);
     try std.testing.expectEqualStrings("active", before.status);
 
-    // Mark both tasks done.
+    // Mark both tasks done (via doing: todo → done is not in the matrix).
     const t1_id_str = std.fmt.allocPrint(arena, "{d}", .{t1.id}) catch unreachable;
     const t2_id_str = std.fmt.allocPrint(arena, "{d}", .{t2.id}) catch unreachable;
+    gpa.free(suite.mustRun(&.{ "task", "update", t1_id_str, "--status", "doing" }));
     const done1 = suite.mustRun(&.{ "task", "done", t1_id_str });
     gpa.free(done1);
+    gpa.free(suite.mustRun(&.{ "task", "update", t2_id_str, "--status", "doing" }));
     const done2 = suite.mustRun(&.{ "task", "done", t2_id_str });
     gpa.free(done2);
 

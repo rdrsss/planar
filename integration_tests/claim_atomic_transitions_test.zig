@@ -255,6 +255,11 @@ test "claim-atomic: unclaimed task done transitions normally (unchanged contract
     const tid_arg = std.fmt.allocPrint(gpa, "{d}", .{task_id}) catch @panic("OOM");
     defer gpa.free(tid_arg);
 
+    // Advance to doing first — the status matrix requires todo → doing → done.
+    const doing_out = suite.mustRun(&.{ "task", "update", tid_arg, "--status", "doing", "--json" });
+    defer gpa.free(doing_out);
+    try std.testing.expect(std.mem.indexOf(u8, doing_out, "\"status\":\"doing\"") != null);
+
     // No claim → done should succeed without --force.
     const out = suite.mustRun(&.{ "task", "done", tid_arg, "--json" });
     defer gpa.free(out);

@@ -125,7 +125,7 @@ pub fn pullNext(
     };
 
     // Status guard: todo → doing. Refusal rolls back.
-    policy.status.check(.task, "todo", "doing") catch |e| {
+    policy.status.check(.task, "todo", "doing", false) catch |e| {
         rollback(d);
         committed = true;
         return e;
@@ -278,7 +278,7 @@ pub fn blockWork(
     // Status guard: must allow * → blocked. Read current then check.
     const current_status = currentTaskStatus(d, allocator, claim.entity_id) catch |e| return e;
     defer allocator.free(current_status);
-    policy.status.check(.task, current_status, "blocked") catch |e| {
+    policy.status.check(.task, current_status, "blocked", false) catch |e| {
         rollback(d);
         committed = true;
         return e;
@@ -372,7 +372,7 @@ fn terminalTransition(
     // guard matches the actual database state.
     const current_status = currentTaskStatus(d, allocator, claim.entity_id) catch |e| return e;
     defer allocator.free(current_status);
-    policy.status.check(.task, current_status, targs.task_to) catch |e| {
+    policy.status.check(.task, current_status, targs.task_to, false) catch |e| {
         rollback(d);
         committed = true;
         return e;

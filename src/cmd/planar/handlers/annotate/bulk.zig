@@ -22,8 +22,10 @@ pub fn apply(
 
     var count: usize = 0;
     for (items) |a| {
-        // Skip rows already in the target terminal state — calling
-        // resolve/dismiss/archive on them would return TerminalStatus.
+        // Skip rows already in the target state — calling
+        // resolve/dismiss/archive on them would return TerminalStatus
+        // (identity transitions are no-ops per the policy arm, but
+        // the engine raises TerminalStatus for the same-state case).
         const already_done = switch (action) {
             .resolve => a.status == .resolved,
             .dismiss => a.status == .dismissed,
@@ -31,10 +33,12 @@ pub fn apply(
         };
         if (already_done) continue;
 
-        // Skip already-terminal rows (different terminal than ours)
-        // for resolve/dismiss — they can't transition from another
-        // terminal state. For archive, allow archiving from any
-        // status (operator intent: clear the desk).
+        // For resolve/dismiss: skip rows that are already at or past
+        // an outcome state (resolved, dismissed, archived) — those
+        // statuses cannot accept a resolve/dismiss transition.
+        // For archive: do NOT pre-skip; under the retention-tier model
+        // (plan 692) resolved and dismissed may legally progress to
+        // archived, so bulk-archive correctly attempts those rows.
         if (action != .archive and a.status.isTerminal()) continue;
 
         const updated = switch (action) {

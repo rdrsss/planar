@@ -61,20 +61,29 @@ pub const Status = enum {
     }
 };
 
+/// validateTransition delegates to policy.status.check(.decision, …) and maps
+/// the policy module's error vocabulary back to this module's public error set:
+///   policy.IllegalTransition from a terminal source → Error.TerminalStatus
+///   policy.IllegalTransition from a non-terminal source → Error.InvalidStatus
+///   policy.UnknownStatus → Error.InvalidStatus
+/// This preserves the module's existing public error spelling so all callers
+/// (decision.accept, decision.withdraw, decision.supersede, decision.transition)
+/// and their unit tests observe the same error names after delegation.
 fn validateTransition(current: Status, next: Status) Error!void {
-    if (current == next) return;
-    if (current.isTerminal()) return Error.TerminalStatus;
-    switch (current) {
-        .proposed => switch (next) {
-            .accepted, .superseded, .withdrawn => return,
-            else => return Error.InvalidStatus,
+    policy.status.check(
+        .decision,
+        @tagName(current),
+        @tagName(next),
+        false,
+    ) catch |e| switch (e) {
+        error.IllegalTransition => {
+            // Preserve the original two-code spelling: terminal source →
+            // TerminalStatus, non-terminal illegal move → InvalidStatus.
+            if (current.isTerminal()) return Error.TerminalStatus;
+            return Error.InvalidStatus;
         },
-        .accepted => switch (next) {
-            .superseded, .withdrawn => return,
-            else => return Error.InvalidStatus,
-        },
-        .superseded, .withdrawn => return Error.TerminalStatus,
-    }
+        error.UnknownStatus => return Error.InvalidStatus,
+    };
 }
 
 pub const Decision = struct {

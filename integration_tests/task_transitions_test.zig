@@ -65,6 +65,8 @@ test "scenario: task block then reopen — status transitions round-trip" {
     try std.testing.expectEqualStrings("blocked", after_block.status);
 
     // ---- 3. Drive the blocker to done, then reopen it.
+    // The matrix requires todo → doing before done (todo → done is now illegal).
+    gpa.free(suite.mustRun(&.{ "task", "update", blocker_id, "--status", "doing" }));
     gpa.free(suite.mustRun(&.{ "task", "done", blocker_id }));
     const after_done = suite.mustRunJSON(TaskJSON, arena, &.{ "task", "show", blocker_id, "--json" });
     try std.testing.expectEqualStrings("done", after_done.status);

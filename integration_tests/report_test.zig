@@ -851,6 +851,8 @@ test "report-aggregates: agent_actions, sync_events, and task reopens produce no
         });
         const task_id_str = std.fmt.allocPrint(arena, "{d}", .{task.id}) catch unreachable;
 
+        // Advance to doing first (todo → done is not in the matrix).
+        gpa.free(suite.mustRun(&.{ "task", "update", task_id_str, "--status", "doing" }));
         gpa.free(suite.mustRun(&.{ "task", "done", task_id_str }));
         gpa.free(suite.mustRun(&.{
             "task", "reopen", task_id_str, "--reason", "integration test",

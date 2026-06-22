@@ -185,6 +185,14 @@ fn seedPlan(
     return .{ .plan_id = plan_id, .task_ids = task_ids };
 }
 
+/// Advance a task to doing then mark it done.
+/// The matrix requires todo → doing before done (todo → done is not a legal edge).
+fn startAndDone(suite: *const harness.Suite, task_id: []const u8) void {
+    const gpa = suite.allocator;
+    gpa.free(suite.mustRun(&.{ "task", "update", task_id, "--status", "doing" }));
+    gpa.free(suite.mustRun(&.{ "task", "done", task_id }));
+}
+
 fn parseJSON(comptime T: type, arena: std.mem.Allocator, buf: []const u8) T {
     const trimmed = std.mem.trim(u8, buf, " \n");
     const parsed = std.json.parseFromSlice(T, arena, trimmed, .{
@@ -213,14 +221,14 @@ test "closeout-gate: dry-run on a ready plan → ready, not applied, plan unchan
 
     const seeded = seedPlan(&suite, arena, "closeout-dryrun-ready", 2, "active", null);
     // Mark both tasks done to verify the plan reaches terminal state.
-    gpa.free(suite.mustRun(&.{ "task", "done", seeded.task_ids[0] }));
-    gpa.free(suite.mustRun(&.{ "task", "done", seeded.task_ids[1] }));
+    startAndDone(&suite, seeded.task_ids[0]);
+    startAndDone(&suite, seeded.task_ids[1]);
 
     // Plan should be done (auto-recomputed). But closeout can still be run on it.
     // Use a fresh active plan for the dry-run test.
     const seeded2 = seedPlan(&suite, arena, "closeout-dryrun-ready2", 1, "active", null);
     const plan_id2 = seeded2.plan_id;
-    gpa.free(suite.mustRun(&.{ "task", "done", seeded2.task_ids[0] }));
+    startAndDone(&suite, seeded2.task_ids[0]);
 
     // Dry-run via --json.
     const out_buf = suite.mustRun(&.{ "plan", "closeout", "--dry-run", "--json", plan_id2 });
@@ -255,8 +263,8 @@ test "closeout-gate: dry-run on a blocked plan → blocked, blocked_by has reaso
 
     const seeded = seedPlan(&suite, arena, "closeout-blocked", 2, "active", null);
     const plan_id = seeded.plan_id;
-    // Leave one task open (todo), mark the other done.
-    gpa.free(suite.mustRun(&.{ "task", "done", seeded.task_ids[0] }));
+    // Leave one task open (todo), mark the other done (via doing: todo → done is not in the matrix).
+    startAndDone(&suite, seeded.task_ids[0]);
 
     // Dry-run on blocked plan — should exit non-zero.
     const res = suite.exec(&.{ "plan", "closeout", "--dry-run", "--json", plan_id });
@@ -304,7 +312,7 @@ test "closeout-gate: apply on a ready plan → plan becomes done, applied=true" 
 
     // Put plan in a state where auto-recompute DIDN'T fire (paused).
     gpa.free(suite.mustRun(&.{ "plan", "update", child_id, "--status", "paused" }));
-    gpa.free(suite.mustRun(&.{ "task", "done", child.task_ids[0] }));
+    startAndDone(&suite, child.task_ids[0]);
     // Plan is paused + all tasks done → recompute would be a no-op (paused is protected).
 
     // Apply closeout — should mark done.
@@ -338,8 +346,8 @@ test "closeout-gate: apply on a blocked plan → non-zero exit, plan unchanged" 
 
     const seeded = seedPlan(&suite, arena, "closeout-apply-blocked", 2, "active", null);
     const plan_id = seeded.plan_id;
-    // Leave one task open.
-    gpa.free(suite.mustRun(&.{ "task", "done", seeded.task_ids[0] }));
+    // Leave one task open (todo); mark the other done (via doing: todo → done is not in the matrix).
+    startAndDone(&suite, seeded.task_ids[0]);
 
     // Apply (no --dry-run) on a blocked plan — non-zero exit.
     const res = suite.exec(&.{ "plan", "closeout", "--json", plan_id });
@@ -370,9 +378,9 @@ test "closeout-gate: cancelled tasks are terminal — plan with done+cancelled t
 
     const seeded = seedPlan(&suite, arena, "closeout-cancelled-ok", 3, "active", null);
     const plan_id = seeded.plan_id;
-    // Done + cancelled = all terminal.
-    gpa.free(suite.mustRun(&.{ "task", "done", seeded.task_ids[0] }));
-    gpa.free(suite.mustRun(&.{ "task", "done", seeded.task_ids[1] }));
+    // Done + cancelled = all terminal (via doing for done: todo → done is not in the matrix).
+    startAndDone(&suite, seeded.task_ids[0]);
+    startAndDone(&suite, seeded.task_ids[1]);
     gpa.free(suite.mustRun(&.{ "task", "cancel", seeded.task_ids[2] }));
 
     // Plan is auto-recomputed done at this point. Closeout dry-run should see ready.
@@ -447,7 +455,8 @@ test "closeout-gate: live claim blocks closeout; stale claim is advisory warning
     defer gpa.free(token);
 
     // Mark task 2 done (so the only remaining blocker is the live claim on task 1).
-    gpa.free(suite.mustRun(&.{ "task", "done", seeded.task_ids[1] }));
+    // Task 2 is still todo (agent only pulled task 1); advance via doing first.
+    startAndDone(&suite, seeded.task_ids[1]);
 
     // Closeout dry-run — should be blocked due to live claim.
     const res = suite.exec(&.{ "plan", "closeout", "--dry-run", "--json", plan_id });
@@ -482,7 +491,7 @@ test "closeout-gate: git evidence with no attribution is inconclusive — hard g
 
     const seeded = seedPlan(&suite, arena, "closeout-gitevidence", 1, "active", null);
     const plan_id = seeded.plan_id;
-    gpa.free(suite.mustRun(&.{ "task", "done", seeded.task_ids[0] }));
+    startAndDone(&suite, seeded.task_ids[0]);
 
     // Closeout — no claims with locality data were ever created.
     const out_buf = suite.mustRun(&.{ "plan", "closeout", "--dry-run", "--json", plan_id });
@@ -520,7 +529,7 @@ test "closeout-gate: anchor plan can be closed by operator verb when ready" {
     const anchor_id = anchor.plan_id;
 
     // recompute-status would cap anchor at active — but operator closeout is unbounded.
-    gpa.free(suite.mustRun(&.{ "task", "done", anchor.task_ids[0] }));
+    startAndDone(&suite, anchor.task_ids[0]);
 
     // After task done, anchor is still "active" (recompute caps anchors).
     const before = suite.mustRunJSON(PlanJSON, arena, &.{ "plan", "show", "--json", anchor_id });
@@ -558,7 +567,7 @@ test "closeout-gate: already-terminal plan is a no-op (applied=false)" {
     const anchor = seedPlan(&suite, arena, "closeout-noop-anchor", 0, "active", null);
     const child = seedPlan(&suite, arena, "closeout-terminal-noop", 1, "active", anchor.plan_id);
     const plan_id = child.plan_id;
-    gpa.free(suite.mustRun(&.{ "task", "done", child.task_ids[0] }));
+    startAndDone(&suite, child.task_ids[0]);
 
     // Child plan auto-recomputes to done when its last task is marked done.
     const before = suite.mustRunJSON(PlanJSON, arena, &.{ "plan", "show", "--json", plan_id });
@@ -632,10 +641,10 @@ test "closeout-gate: finalization_tasks count reflects slug-prefixed tasks in --
     const t3 = parseJSON(TaskJSON, arena, t3_buf);
     const t3_id = std.fmt.allocPrint(arena, "{d}", .{t3.id}) catch @panic("OOM");
 
-    // Mark all tasks done so the hard gate passes.
-    gpa.free(suite.mustRun(&.{ "task", "done", t1_id }));
-    gpa.free(suite.mustRun(&.{ "task", "done", t2_id }));
-    gpa.free(suite.mustRun(&.{ "task", "done", t3_id }));
+    // Mark all tasks done so the hard gate passes (via doing: todo → done is not in the matrix).
+    startAndDone(&suite, t1_id);
+    startAndDone(&suite, t2_id);
+    startAndDone(&suite, t3_id);
 
     // Closeout dry-run with --json.
     const out_buf = suite.mustRun(&.{ "plan", "closeout", "--dry-run", "--json", anchor_id });
@@ -668,8 +677,8 @@ test "closeout-gate: finalization_tasks is 0 when no slug-prefixed tasks exist" 
     gpa.free(suite.mustRun(&.{ "init", "--skip-project" }));
 
     const seeded = seedPlan(&suite, arena, "closeout-no-fintask", 2, "active", null);
-    gpa.free(suite.mustRun(&.{ "task", "done", seeded.task_ids[0] }));
-    gpa.free(suite.mustRun(&.{ "task", "done", seeded.task_ids[1] }));
+    startAndDone(&suite, seeded.task_ids[0]);
+    startAndDone(&suite, seeded.task_ids[1]);
 
     const out_buf = suite.mustRun(&.{ "plan", "closeout", "--dry-run", "--json", seeded.plan_id });
     defer gpa.free(out_buf);
@@ -695,7 +704,7 @@ test "closeout-gate: epic_merge is null in JSON when --check-merge not passed" {
     gpa.free(suite.mustRun(&.{ "init", "--skip-project" }));
 
     const seeded = seedPlan(&suite, arena, "closeout-no-checkmerge", 1, "active", null);
-    gpa.free(suite.mustRun(&.{ "task", "done", seeded.task_ids[0] }));
+    startAndDone(&suite, seeded.task_ids[0]);
 
     const out_buf = suite.mustRun(&.{ "plan", "closeout", "--dry-run", "--json", seeded.plan_id });
     defer gpa.free(out_buf);
@@ -723,7 +732,7 @@ test "closeout-gate: --check-merge with no locality data → epic_merge absent (
     gpa.free(suite.mustRun(&.{ "init", "--skip-project" }));
 
     const seeded = seedPlan(&suite, arena, "closeout-checkmerge-nodata", 1, "active", null);
-    gpa.free(suite.mustRun(&.{ "task", "done", seeded.task_ids[0] }));
+    startAndDone(&suite, seeded.task_ids[0]);
 
     // --check-merge requested but no claims with locality exist.
     // The engine returns null when no locality rows are found.

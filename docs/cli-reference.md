@@ -681,7 +681,9 @@ The `scope` column shows where the plan lives: `global`, `repo:<slug>`, or `asso
 planar plan update <plan-id> [--title <text>] [--slug <slug>] [--summary <text>] [--status <status>]
 ```
 
-**Description:** Update mutable fields on a plan.
+**Description:** Update mutable fields on a plan. Status changes are validated against the plan transition matrix: `draft → active`, `active → {paused, done, abandoned}`, `paused → active`; `done` and `abandoned` are terminal. Illegal moves exit non-zero and leave the plan unchanged. There is no `--force` flag for plans — terminal plans have no operator escape path via this verb.
+
+Note: `plan recompute-status` deliberately bypasses this matrix (it is an engine-internal aggregate roll-up, not an operator transition). Direct operator status changes always go through this verb and are matrix-checked.
 
 **Scope guard:** Refuses when the operator's resolved write scope disagrees with the plan's stored scope. See [Cross-scope guard](#cross-scope-guard).
 
@@ -692,7 +694,7 @@ planar plan update <plan-id> [--title <text>] [--slug <slug>] [--summary <text>]
 | `--title <text>` | New title. | unchanged |
 | `--slug <slug>` | New slug. Must remain unique within the plan's slug namespace. | unchanged |
 | `--summary <text>` | New summary. May be `@<file>`. | unchanged |
-| `--status <status>` | New status: `draft`, `active`, `paused`, `done`, `abandoned`. | unchanged |
+| `--status <status>` | New status. Must be a legal transition from the current status per the matrix: `draft → active`, `active → {paused, done, abandoned}`, `paused → active`. | unchanged |
 
 **Schema effects:** Updates `plans(title, slug, summary, status, updated_at)`.
 
@@ -700,7 +702,7 @@ planar plan update <plan-id> [--title <text>] [--slug <slug>] [--summary <text>]
 
 **Exit codes:**
 - `1` — plan id not found.
-- `1` — invalid status value.
+- `1` — invalid status value or illegal transition.
 
 ---
 
@@ -1267,7 +1269,7 @@ The `scope` column shows where the task lives: `global`, `repo:<slug>`, or `asso
 planar task update <task-id> [--title <text>] [--body <text>] [--status <status>] [--priority <n>] [--next-action <text>] [--due <date>] [--plan <plan-id>] [--force] [--reason <text>] [--editor]
 ```
 
-**Description:** Update mutable fields on a task.
+**Description:** Update mutable fields on a task. Status changes are validated against the per-entity transition matrix in `policy.status.check`; illegal moves exit non-zero and leave the task unchanged. Legal status moves: `todo → {doing, blocked, cancelled}`, `doing → {todo, blocked, done, cancelled}`, `blocked → {doing, done, cancelled}`. The terminal statuses `done` and `cancelled` block bare `--status` updates; use `task reopen --reason` (the preferred verb-gated path) or `--force` (operator override, records audit row).
 
 **Scope guard:** Refuses when the operator's resolved write scope disagrees with the task's stored scope. See [Cross-scope guard](#cross-scope-guard).
 
@@ -1277,12 +1279,12 @@ planar task update <task-id> [--title <text>] [--body <text>] [--status <status>
 |------|-------------|---------|
 | `--title <text>` | New title. | unchanged |
 | `--body <text>` | New body. May be `@<file>`. | unchanged |
-| `--status <status>` | New status: `todo`, `doing`, `blocked`, `done`, `cancelled`. | unchanged |
+| `--status <status>` | New status: `todo`, `doing`, `blocked`, `done`, `cancelled`. Must be a legal transition from the current status per the matrix (see description). | unchanged |
 | `--priority <n>` | New priority integer. | unchanged |
 | `--next-action <text>` | Update the next concrete action. | unchanged |
 | `--due <date>` | Update due date. | unchanged |
 | `--plan <plan-id>` | Move task to a different plan (or `none` to detach). | unchanged |
-| `--force` | Bypass the active-claim guard (see **Claim-atomic guard** below) AND the terminal-status guard. Required to move a `done` / `cancelled` task back to a non-terminal status (transition recorded in `task_reopens` with `source='task-update-force'`). Prefer `task reopen <id>` for the documented recovery path. | off |
+| `--force` | Bypass the active-claim guard (see **Claim-atomic guard** below) AND the status-transition matrix. Required to move a `done` / `cancelled` task back to a non-terminal status without going through `task reopen`; the transition is recorded in `task_reopens` with `source='task-update-force'`. Prefer `task reopen <id>` for the documented recovery path. | off |
 | `--reason <text>` | Operator-supplied rationale recorded on the `task_reopens` audit row when `--force` triggers a terminal → non-terminal transition. | empty |
 | `--no-auto-promote` | Skip the [plan-status auto-promotion invariant](concepts.md#plan) (plan 304) for this operation. Escape hatch for scripted migrations that don't intend the plan-level transition. | off |
 | `--editor` | Accepted as a no-op. The editor-driven path is `task edit`; this flag exists so scripts that pass `--editor=false` alongside other flags (e.g. copied from `task add` invocations) are not rejected with `UnknownFlag`. | off |
@@ -1308,7 +1310,7 @@ planar task update <task-id> [--title <text>] [--body <text>] [--status <status>
 planar task done <task-id> [--force]
 ```
 
-**Description:** Mark a task as done. Shorthand for `task update --status done`.
+**Description:** Mark a task as done. Legal from `doing` or `blocked` — not from `todo` (the matrix requires `todo → doing` first) or from a terminal status (`done`/`cancelled`). Equivalent to `task update --status done` but spelled explicitly for the common case.
 
 **Scope guard:** Refuses when the operator's resolved write scope disagrees with the task's stored scope. See [Cross-scope guard](#cross-scope-guard).
 
@@ -1326,6 +1328,7 @@ planar task done <task-id> [--force]
 
 **Exit codes:**
 - `1` — task not found.
+- `1` — task is not in a legal pre-done status (e.g. `todo` or already `done`/`cancelled`).
 - `1` — task has an active work claim; re-run with `--force` to override.
 
 ---
@@ -1731,14 +1734,18 @@ scenario 9: "Stripe webhook idempotency"  [draft]  (scope: association:3 [from c
 
 ---
 
-### `planar scenario verify <scenario-id> --outcome <outcome>`
+### `planar scenario verify <scenario-id>`
 
 **Synopsis:**
 ```
-planar scenario verify <scenario-id> --outcome <outcome> [--summary <text>]
+planar scenario verify <scenario-id> [--outcome <outcome>] [--summary <text>] [--json]
 ```
 
-**Description:** Record the outcome of running a scenario. Transitions status to `verified` (on pass) or `failing` (on fail). Does not execute the scenario — execution is the agent's job.
+**Description:** Record the outcome of running a scenario. When `--outcome pass` (the default), transitions status to `verified`. Non-passing outcomes (`fail`, `error`, `skipped`) record `last_outcome` and `last_run_at` but leave the status unchanged. Does not execute the scenario — execution is the agent's job.
+
+**Auto-transition from draft:** When the scenario is in `draft` status and `--outcome pass`, `verify` internally walks `draft → ready → verified` (two policy-checked hops) so the operator workflow `scenario add → scenario verify` works with no intermediate step required. There is no `scenario ready` CLI verb.
+
+**Status matrix:** `ready → verified` (on pass). When source is `draft`, auto-walks `draft → ready → verified` first. Non-passing outcomes leave status unchanged regardless of source status.
 
 **Arguments:**
 
@@ -1750,18 +1757,20 @@ planar scenario verify <scenario-id> --outcome <outcome> [--summary <text>]
 
 | Flag | Description | Required |
 |------|-------------|----------|
-| `--outcome <outcome>` | One of `pass`, `fail`, `error`, `skipped`. | yes |
-| `--notes <text>` | Optional notes on the run. May be `@<file>`. | no |
+| `--outcome <outcome>` | One of `pass`, `fail`, `error`, `skipped`. Defaults to `pass`. | no |
+| `--summary <text>` | Optional summary of the run. Included in the audit row. | no |
+| `--json` | Emit the updated scenario as JSON. | no |
 
 **Schema effects:**
 - Updates `test_scenarios(last_run_at=now(), last_outcome=<outcome>, updated_at)`.
-- Status transitions: `pass` → `verified`; `fail` → `failing`; `error` stays at current status; `skipped` stays at current status.
+- On `pass`: additionally sets `status='verified'`.
 
 **Capture:** Appends `session_entries` row with `prefix='observation'`.
 
 **Exit codes:**
 - `1` — scenario not found.
 - `1` — outcome not in allowed values.
+- `1` — illegal transition (source status does not permit `→ verified`; e.g. calling `verify` from `retired`).
 
 ---
 
@@ -1822,10 +1831,12 @@ planar scenario show <scenario-id>
 
 **Synopsis:**
 ```
-planar scenario retire <scenario-id>
+planar scenario retire <scenario-id> [--reason <text>] [--json]
 ```
 
-**Description:** Mark a scenario as retired (no longer relevant).
+**Description:** Mark a scenario as retired (no longer relevant). Legal from any non-terminal status (`draft`, `ready`, `verified`, `failing`). `retired` is terminal — there is no reopen verb.
+
+**Status matrix:** any `{draft, ready, verified, failing} → retired`.
 
 **Schema effects:** Updates `test_scenarios(status='retired', updated_at)`.
 
@@ -2134,7 +2145,7 @@ planar artifact link <artifact-id> <to-kind:to-id> --relationship <kind>
 
 ## Domain: `annotate`
 
-Annotations are anchored review notes — a short note attached to a file path and optional line range, captured during a code review or agent pass. Each annotation can carry a `commit_sha` and `text_hash` so its anchor can later be **verified** against the current workspace state (the anchored lines may have moved or changed). Annotations have a lifecycle (`open` → `resolved` / `dismissed` / `archived`), free-form tags, and bulk operations over a filter. They are scope-aware like every other planning entity.
+Annotations are anchored review notes — a short note attached to a file path and optional line range, captured during a code review or agent pass. Each annotation can carry a `commit_sha` and `text_hash` so its anchor can later be **verified** against the current workspace state (the anchored lines may have moved or changed). Annotations have a lifecycle (`active` → `resolved` / `dismissed` → `archived`; or `active` → `archived` directly), free-form tags, and bulk operations over a filter. They are scope-aware like every other planning entity. `archived` is the single final retention state (plan 692): `resolved` and `dismissed` are outcome states that may still progress to `archived` via `annotate sweep` or `annotate archive`.
 
 ---
 
@@ -2200,7 +2211,7 @@ Lifecycle transitions on a single annotation: `resolve` marks it handled, `dismi
 planar annotate bulk-resolve [--anchor-path <path>] [--plan <id>] [--task <id>] [--vendor <v>] [--tag <tag>] [--scope <scope>] [--json]
 ```
 
-**Description:** Apply the lifecycle transition to **every** annotation matching the filter. `bulk-resolve` and `bulk-dismiss` act on active annotations; `bulk-archive` includes already-terminal ones. The filter flags mirror `annotate list`. Use these to clear a whole review pass at once.
+**Description:** Apply the lifecycle transition to **every** annotation matching the filter. `bulk-resolve` and `bulk-dismiss` act on `active` annotations only. `bulk-archive` includes `active`, `resolved`, and `dismissed` annotations (under the retention-tier model, resolved→archived and dismissed→archived are legal; already-`archived` rows are skipped as idempotent). The filter flags mirror `annotate list`. Use these to clear a whole review pass at once.
 
 ---
 
@@ -2212,7 +2223,7 @@ planar annotate bulk-resolve [--anchor-path <path>] [--plan <id>] [--task <id>] 
 
 ### `planar annotate sweep [--since-days <n>] [--scope <scope>] [--json]`
 
-**Description:** Sweep stale annotations — archive `resolved` / `dismissed` annotations older than `--since-days`. Housekeeping for a scope whose review notes have accumulated.
+**Description:** Sweep stale annotations — archive `resolved` / `dismissed` annotations older than `--since-days`. Under the retention-tier model (plan 692), resolved→archived and dismissed→archived are legal, so sweep successfully archives all qualifying rows. Housekeeping for a scope whose review notes have accumulated over time.
 
 ---
 

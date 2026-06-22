@@ -542,18 +542,24 @@ fn retirePlanForSpecRemoval(
     const stale_slug = try std.fmt.allocPrint(allocator, "stale-{d}-{s}", .{ id, current.slug });
     defer allocator.free(stale_slug);
 
-    const abandoned: plan_mod.Status = .abandoned;
-    const updated = plan_mod.update(d, allocator, id, .{
-        .slug = stale_slug,
-        .status = abandoned,
-    }) catch |e| switch (e) {
-        error.IllegalTransition => blk: {
-            const renamed = plan_mod.update(d, allocator, id, .{ .slug = stale_slug }) catch |rename_err| return mapPlanErr(rename_err);
-            break :blk renamed;
-        },
-        else => return mapPlanErr(e),
-    };
-    plan_mod.deinit(updated, allocator);
+    // Rename the slug first (frees it for slug-reuse of an incoming replacement
+    // with the same derived slug). This uses plan_mod.update so the audit
+    // record lands; it does NOT set status here because plan_mod.update routes
+    // through policy.status.check.
+    const renamed = plan_mod.update(d, allocator, id, .{ .slug = stale_slug }) catch |e| return mapPlanErr(e);
+    plan_mod.deinit(renamed, allocator);
+
+    // INTENTIONAL bypass of policy.status.check: spec-ingest retirement is an
+    // engine-internal operation, not an operator transition. The plan may be in
+    // any lifecycle state (draft, active, done, etc.) when its spec milestone is
+    // removed, and in all cases it must become `abandoned`. The operator
+    // transition matrix correctly refuses `done → abandoned` and `draft →
+    // abandoned`, but those rules apply to operator-driven moves, not engine
+    // retirements. This mirrors the recomputeStatus and closeout apply paths.
+    _ = d.execParams(
+        "update plans set status = 'abandoned', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') where id = ?",
+        &.{.{ .int = id }},
+    ) catch return Error.QueryFailed;
 
     d.releaseSavepoint(allocator, "spec_retire_plan") catch return Error.QueryFailed;
     released = true;
