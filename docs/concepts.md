@@ -796,6 +796,37 @@ Legal transitions (enforced by `policy.status.check`):
 
 ---
 
+## Annotation
+
+An annotation is a line-anchored review note attached to a file path (and optional line range), captured during a code review or agent pass. Annotations carry optional `commit_sha` and `text_hash` fields so the anchor can be verified against current workspace state via `annotate verify`.
+
+### Status lifecycle (retention-tier model)
+
+```
+active → resolved  → archived  (sole final state)
+       → dismissed → archived  (sole final state)
+       → archived             (direct)
+```
+
+`archived` is the **single final retention state** (plan 692). `resolved` and `dismissed` are *outcome states*: they record how an annotation was disposed of, but they are not final — both may still progress to `archived` via the retention tier. `archived` has no outgoing edges.
+
+Legal transitions (enforced by `policy.status.check(.annotation, …)`):
+
+| From | To |
+|------|----|
+| `active` | `resolved`, `dismissed`, `archived` |
+| `resolved` | `archived` (retention-tier progression) |
+| `dismissed` | `archived` (retention-tier progression) |
+| `archived` | — sole final state |
+
+All other moves are illegal: `resolved → dismissed`, `dismissed → resolved`, `resolved → active`, `dismissed → active`, `archived → anything`. Identity (`from == to`) is a no-op.
+
+`annotate sweep --since-days <n>` selects `resolved`/`dismissed` rows older than the cutoff and archives them (resolved→archived and dismissed→archived are both legal), making sweep the primary housekeeping path for outcome rows that have aged past their review window.
+
+**SQLite tables:** `annotations`, `annotation_tags`. **Primary verbs:** `planar annotate add`, `planar annotate resolve|dismiss|archive`, `planar annotate bulk-resolve|bulk-dismiss|bulk-archive`, `planar annotate sweep`, `planar annotate verify`.
+
+---
+
 ## Workbench
 
 The workbench is the bidirectionally synced filesystem view of an anchor plan and all its entities. Each anchor plan gets a directory at `$PLANAR_WORKBENCH_ROOT/<assoc-slug>/p<id>-<slug>/` (default root: `~/.planar/workbench/`).

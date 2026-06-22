@@ -54,6 +54,11 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
 
     var count: usize = 0;
     for (ids.items) |id| {
+        // Under the retention-tier model (plan 692), resolved → archived
+        // and dismissed → archived are legal, so archive() for rows
+        // selected by the WHERE clause above will succeed.  The
+        // TerminalStatus catch is kept as a defensive guard in case a
+        // row was concurrently archived between the SELECT and this loop.
         const arc = engine.planning.annotation.archive(d, ctx.allocator, id) catch |e| switch (e) {
             error.TerminalStatus => continue,
             else => exit.die(ctx, e, "annotate sweep archive {d}: {s}", .{ id, @errorName(e) }),

@@ -63,9 +63,13 @@
 //!     NOTE: handoff.validateTransition delegates to this arm.
 //!
 //!   annotation  {active, resolved, dismissed, archived}
-//!     active   → {resolved, dismissed, archived}
-//!     resolved, dismissed, archived → terminal
+//!     active    → {resolved, dismissed, archived}
+//!     resolved  → {archived}          (retention-tier progression)
+//!     dismissed → {archived}          (retention-tier progression)
+//!     archived  → terminal (sole final state; no outgoing edges)
 //!     identity (from == to) → no-op early return
+//!     NOTE: `archived` is the single final retention state.  `resolved` and
+//!     `dismissed` are outcome states that may still progress to `archived`.
 //!     NOTE: annotation.transition maps the arm's IllegalTransition back
 //!     to the module's existing TerminalStatus spelling at its boundary.
 
@@ -330,8 +334,15 @@ pub fn check(
             // Real enforcement.  See module docstring for the full matrix.
             //
             // Status set: {active, resolved, dismissed, archived}.
-            //   active   → {resolved, dismissed, archived}
-            //   resolved, dismissed, archived → terminal (no outgoing edges)
+            //   active    → {resolved, dismissed, archived}
+            //   resolved  → {archived}   (retention-tier: outcome → final state)
+            //   dismissed → {archived}   (retention-tier: outcome → final state)
+            //   archived  → terminal (sole final state; no outgoing edges)
+            //
+            // `archived` is the single final retention state.  `resolved` and
+            // `dismissed` are outcome states that may progress to `archived`
+            // (e.g. via `annotate sweep`), but NOT back to `active` and NOT
+            // across to each other.
             //
             // annotation.transition maps this arm's IllegalTransition back to
             // the module's existing TerminalStatus error spelling so callers
@@ -343,10 +354,12 @@ pub fn check(
                         std.mem.eql(u8, to, "dismissed") or
                         std.mem.eql(u8, to, "archived");
                 } else if (std.mem.eql(u8, from, "resolved") or
-                    std.mem.eql(u8, from, "dismissed") or
-                    std.mem.eql(u8, from, "archived"))
+                    std.mem.eql(u8, from, "dismissed"))
                 {
-                    // Terminal for all operator transitions.
+                    // Outcome states: only progression to archived is legal.
+                    break :blk std.mem.eql(u8, to, "archived");
+                } else if (std.mem.eql(u8, from, "archived")) {
+                    // Sole final retention state — no outgoing edges.
                     break :blk false;
                 } else {
                     return Error.UnknownStatus;
@@ -561,24 +574,41 @@ test "handoff arm: unknown status returns UnknownStatus" {
 }
 
 // ---- annotation arm tests ----
+//
+// Matrix under the retention-tier model (plan 692):
+//   active    → {resolved, dismissed, archived}
+//   resolved  → {archived}   (retention-tier progression)
+//   dismissed → {archived}   (retention-tier progression)
+//   archived  → terminal (sole final state; no outgoing edges)
+//   identity (from == to) → no-op at the top of check()
 
-test "annotation arm: active to each terminal state is accepted" {
+test "annotation arm: active to each outcome/final state is accepted" {
     try check(.annotation, "active", "resolved", false);
     try check(.annotation, "active", "dismissed", false);
     try check(.annotation, "active", "archived", false);
 }
 
-test "annotation arm: terminal sources are refused" {
-    // resolved is terminal — no outgoing edges.
+test "annotation arm: resolved and dismissed may progress to archived (retention-tier)" {
+    // resolved → archived: legal (retention-tier progression).
+    try check(.annotation, "resolved", "archived", false);
+    // dismissed → archived: legal (retention-tier progression).
+    try check(.annotation, "dismissed", "archived", false);
+}
+
+test "annotation arm: illegal moves from outcome states are refused" {
+    // resolved cannot go back to active or across to dismissed.
     try std.testing.expectError(error.IllegalTransition, check(.annotation, "resolved", "active", false));
     try std.testing.expectError(error.IllegalTransition, check(.annotation, "resolved", "dismissed", false));
-    try std.testing.expectError(error.IllegalTransition, check(.annotation, "resolved", "archived", false));
-    // dismissed is terminal.
+    // dismissed cannot go back to active or across to resolved.
     try std.testing.expectError(error.IllegalTransition, check(.annotation, "dismissed", "active", false));
     try std.testing.expectError(error.IllegalTransition, check(.annotation, "dismissed", "resolved", false));
-    // archived is terminal.
+}
+
+test "annotation arm: archived is terminal — no outgoing edges" {
+    // archived is the sole final retention state; all moves from it are refused.
     try std.testing.expectError(error.IllegalTransition, check(.annotation, "archived", "active", false));
     try std.testing.expectError(error.IllegalTransition, check(.annotation, "archived", "resolved", false));
+    try std.testing.expectError(error.IllegalTransition, check(.annotation, "archived", "dismissed", false));
 }
 
 test "annotation arm: identity transition is a no-op" {

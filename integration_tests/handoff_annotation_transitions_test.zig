@@ -23,9 +23,12 @@
 //!   consumed, abandoned → terminal
 //!   identity (from == to) → no-op (handled at policy layer)
 //!
-//! Annotation matrix:
-//!   active   → {resolved, dismissed, archived}
-//!   terminal (resolved / dismissed / archived) → anything refused
+//! Annotation matrix (retention-tier model, plan 692):
+//!   active    → {resolved, dismissed, archived}
+//!   resolved  → {archived}   (retention-tier progression)
+//!   dismissed → {archived}   (retention-tier progression)
+//!   archived  → terminal (sole final state; no outgoing edges)
+//!   resolved/dismissed → active/lateral-cross: refused
 //!   identity (from == to) → no-op (handled at policy layer)
 //!
 //! Verifies (test-spec slugs from artifact 382):
@@ -322,10 +325,40 @@ test "annotation arm: active → archived is legal (annotation-consolidate)" {
     try std.testing.expectEqualStrings("archived", after.status);
 }
 
-test "annotation arm: resolved → active is refused (terminal guard, annotation-consolidate)" {
-    // After consolidation the policy arm is the sole guard.  The old
-    // annotation.transition isTerminal pre-check is gone; this test
-    // confirms the arm still refuses the move.
+test "annotation arm: resolved → archived is legal (retention-tier, annotation-consolidate)" {
+    // Under the retention-tier model (plan 692), resolved → archived is a
+    // legal retention-tier progression.  archive() from resolved must SUCCEED.
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    _ = suite.registerProject("ann-resolved-to-archived");
+
+    const ann = suite.mustRunJSON(AnnotationJSON, arena, &.{
+        "annotate", "add", "--json", "--anchor-path", "src/a.zig", "--body", "retention test",
+    });
+    const id = std.fmt.allocPrint(arena, "{d}", .{ann.id}) catch unreachable;
+
+    // Drive to resolved.
+    gpa.free(suite.mustRun(&.{ "annotate", "resolve", id }));
+    const at_resolved = suite.mustRunJSON(AnnotationJSON, arena, &.{ "annotate", "show", id, "--json" });
+    try std.testing.expectEqualStrings("resolved", at_resolved.status);
+
+    // Archive from resolved — must succeed (retention-tier progression).
+    gpa.free(suite.mustRun(&.{ "annotate", "archive", id }));
+
+    // Post-state must be archived.
+    const after = suite.mustRunJSON(AnnotationJSON, arena, &.{ "annotate", "show", id, "--json" });
+    try std.testing.expectEqualStrings("archived", after.status);
+}
+
+test "annotation arm: resolved → dismiss is refused (no lateral move, annotation-consolidate)" {
+    // After consolidation the policy arm is the sole guard.  Under the
+    // retention-tier model, resolved can only progress to archived.
+    // Lateral moves (resolved → dismissed) remain illegal.
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
@@ -336,7 +369,7 @@ test "annotation arm: resolved → active is refused (terminal guard, annotation
     _ = suite.registerProject("ann-resolved-refused");
 
     const ann = suite.mustRunJSON(AnnotationJSON, arena, &.{
-        "annotate", "add", "--json", "--anchor-path", "src/a.zig", "--body", "terminal test",
+        "annotate", "add", "--json", "--anchor-path", "src/a.zig", "--body", "lateral test",
     });
     const id = std.fmt.allocPrint(arena, "{d}", .{ann.id}) catch unreachable;
 
@@ -345,7 +378,7 @@ test "annotation arm: resolved → active is refused (terminal guard, annotation
     const at_resolved = suite.mustRunJSON(AnnotationJSON, arena, &.{ "annotate", "show", id, "--json" });
     try std.testing.expectEqualStrings("resolved", at_resolved.status);
 
-    // Attempt to re-dismiss from resolved — must fail.
+    // Attempt to dismiss from resolved — must fail (lateral move).
     const stderr = suite.expectFailure(&.{ "annotate", "dismiss", id });
     defer gpa.free(stderr);
     // The error should mention terminal or TerminalStatus.
@@ -354,7 +387,7 @@ test "annotation arm: resolved → active is refused (terminal guard, annotation
         std.mem.containsAtLeast(u8, stderr, 1, "TerminalStatus") or
         std.mem.containsAtLeast(u8, stderr, 1, "cannot");
     if (!refusal_ok) {
-        std.debug.print("\nannotation terminal-guard stderr lacked expected wording; got:\n{s}\n", .{stderr});
+        std.debug.print("\nannotation lateral-guard stderr lacked expected wording; got:\n{s}\n", .{stderr});
         try std.testing.expect(false);
     }
 
@@ -363,7 +396,9 @@ test "annotation arm: resolved → active is refused (terminal guard, annotation
     try std.testing.expectEqualStrings("resolved", after.status);
 }
 
-test "annotation arm: dismissed → archived is refused (terminal guard, annotation-consolidate)" {
+test "annotation arm: dismissed → archived is legal (retention-tier, annotation-consolidate)" {
+    // Under the retention-tier model (plan 692), dismissed → archived is a
+    // legal retention-tier progression.  archive() from dismissed must SUCCEED.
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
@@ -371,7 +406,7 @@ test "annotation arm: dismissed → archived is refused (terminal guard, annotat
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    _ = suite.registerProject("ann-dismissed-refused");
+    _ = suite.registerProject("ann-dismissed-to-archived");
 
     const ann = suite.mustRunJSON(AnnotationJSON, arena, &.{
         "annotate", "add", "--json", "--anchor-path", "src/b.zig", "--body", "dismiss test",
@@ -380,9 +415,37 @@ test "annotation arm: dismissed → archived is refused (terminal guard, annotat
 
     // Drive to dismissed.
     gpa.free(suite.mustRun(&.{ "annotate", "dismiss", id }));
+    const at_dismissed = suite.mustRunJSON(AnnotationJSON, arena, &.{ "annotate", "show", id, "--json" });
+    try std.testing.expectEqualStrings("dismissed", at_dismissed.status);
 
-    // Attempt to archive from dismissed — must fail.
-    const stderr = suite.expectFailure(&.{ "annotate", "archive", id });
+    // Archive from dismissed — must succeed (retention-tier progression).
+    gpa.free(suite.mustRun(&.{ "annotate", "archive", id }));
+
+    // Post-state must be archived.
+    const after = suite.mustRunJSON(AnnotationJSON, arena, &.{ "annotate", "show", id, "--json" });
+    try std.testing.expectEqualStrings("archived", after.status);
+}
+
+test "annotation arm: dismissed → resolved is still refused (no lateral move)" {
+    // dismissed cannot cross to resolved; only → archived is legal.
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    _ = suite.registerProject("ann-dismissed-no-lateral");
+
+    const ann = suite.mustRunJSON(AnnotationJSON, arena, &.{
+        "annotate", "add", "--json", "--anchor-path", "src/c.zig", "--body", "lateral test",
+    });
+    const id = std.fmt.allocPrint(arena, "{d}", .{ann.id}) catch unreachable;
+
+    gpa.free(suite.mustRun(&.{ "annotate", "dismiss", id }));
+
+    // Attempt to resolve from dismissed — must fail.
+    const stderr = suite.expectFailure(&.{ "annotate", "resolve", id });
     defer gpa.free(stderr);
 
     // Post-state must be unchanged (still dismissed).

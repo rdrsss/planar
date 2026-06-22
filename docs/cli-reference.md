@@ -2125,7 +2125,7 @@ planar artifact link <artifact-id> <to-kind:to-id> --relationship <kind>
 
 ## Domain: `annotate`
 
-Annotations are anchored review notes — a short note attached to a file path and optional line range, captured during a code review or agent pass. Each annotation can carry a `commit_sha` and `text_hash` so its anchor can later be **verified** against the current workspace state (the anchored lines may have moved or changed). Annotations have a lifecycle (`open` → `resolved` / `dismissed` / `archived`), free-form tags, and bulk operations over a filter. They are scope-aware like every other planning entity.
+Annotations are anchored review notes — a short note attached to a file path and optional line range, captured during a code review or agent pass. Each annotation can carry a `commit_sha` and `text_hash` so its anchor can later be **verified** against the current workspace state (the anchored lines may have moved or changed). Annotations have a lifecycle (`active` → `resolved` / `dismissed` → `archived`; or `active` → `archived` directly), free-form tags, and bulk operations over a filter. They are scope-aware like every other planning entity. `archived` is the single final retention state (plan 692): `resolved` and `dismissed` are outcome states that may still progress to `archived` via `annotate sweep` or `annotate archive`.
 
 ---
 
@@ -2191,7 +2191,7 @@ Lifecycle transitions on a single annotation: `resolve` marks it handled, `dismi
 planar annotate bulk-resolve [--anchor-path <path>] [--plan <id>] [--task <id>] [--vendor <v>] [--tag <tag>] [--scope <scope>] [--json]
 ```
 
-**Description:** Apply the lifecycle transition to **every** annotation matching the filter. `bulk-resolve` and `bulk-dismiss` act on active annotations; `bulk-archive` includes already-terminal ones. The filter flags mirror `annotate list`. Use these to clear a whole review pass at once.
+**Description:** Apply the lifecycle transition to **every** annotation matching the filter. `bulk-resolve` and `bulk-dismiss` act on `active` annotations only. `bulk-archive` includes `active`, `resolved`, and `dismissed` annotations (under the retention-tier model, resolved→archived and dismissed→archived are legal; already-`archived` rows are skipped as idempotent). The filter flags mirror `annotate list`. Use these to clear a whole review pass at once.
 
 ---
 
@@ -2203,7 +2203,7 @@ planar annotate bulk-resolve [--anchor-path <path>] [--plan <id>] [--task <id>] 
 
 ### `planar annotate sweep [--since-days <n>] [--scope <scope>] [--json]`
 
-**Description:** Sweep stale annotations — archive `resolved` / `dismissed` annotations older than `--since-days`. Housekeeping for a scope whose review notes have accumulated.
+**Description:** Sweep stale annotations — archive `resolved` / `dismissed` annotations older than `--since-days`. Under the retention-tier model (plan 692), resolved→archived and dismissed→archived are legal, so sweep successfully archives all qualifying rows. Housekeeping for a scope whose review notes have accumulated over time.
 
 ---
 

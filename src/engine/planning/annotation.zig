@@ -1,11 +1,20 @@
 //! engine/planning/annotation — Annotation entity: line-anchored notes
 //! on code with anchor-drift fields, optional slug, tags, FTS5 indexing.
 //!
-//! Status set: {active, resolved, dismissed, archived}. Terminal set is
-//! {resolved, dismissed, archived} — only `active` is open. Lifecycle
-//! transitions go through `resolve` / `dismiss` / `archive` verbs (or
-//! via `update --status …` for symmetry with the Go side, which permits
-//! both shapes).
+//! Status set: {active, resolved, dismissed, archived}.
+//!
+//! `archived` is the single final retention state (plan 692 decision).
+//! `resolved` and `dismissed` are outcome states — they are NOT final:
+//! both may still progress to `archived` (the retention-tier model).
+//! The full lifecycle matrix:
+//!   active    → {resolved, dismissed, archived}
+//!   resolved  → {archived}   (retention-tier progression)
+//!   dismissed → {archived}   (retention-tier progression)
+//!   archived  → terminal (no outgoing edges)
+//!
+//! Lifecycle transitions go through `resolve` / `dismiss` / `archive`
+//! verbs (or via `update --status …` for symmetry with the Go side,
+//! which permits both shapes).
 //!
 //! Anchor fields (path required; line range, commit sha, text hash,
 //! text snippet all optional) describe WHERE in the source tree the
@@ -65,6 +74,18 @@ pub const Status = enum {
         return null;
     }
 
+    /// Returns true when this status cannot accept a `resolve` or `dismiss`
+    /// transition — i.e. the row is already at or past an outcome state.
+    ///
+    /// Under the retention-tier model (plan 692): `resolved` and `dismissed`
+    /// are outcome states that may still progress to `archived`, but they
+    /// cannot go back to `active` or across to each other.  `archived` is
+    /// the sole final state with no outgoing edges.  All three are equally
+    /// ineligible as targets for `resolve`/`dismiss` bulk operations, which
+    /// is the only call-site meaning of this predicate (bulk.zig).
+    ///
+    /// Do NOT use this to mean "no outgoing edges" — `archived` is the only
+    /// status with no outgoing edges.  Use `self == .archived` for that test.
     pub fn isTerminal(self: Status) bool {
         return self == .resolved or self == .dismissed or self == .archived;
     }
@@ -898,7 +919,9 @@ test "resolve / dismiss / archive each set status and record audit row" {
     );
 }
 
-test "transition refuses terminal-status source" {
+test "transition: resolved → archived is legal (retention-tier model)" {
+    // Under plan 692: resolved and dismissed are outcome states that may
+    // still progress to archived.  archive() from resolved must SUCCEED.
     const a = std.testing.allocator;
     var d = try setupTestDb(a);
     defer d.close();
@@ -906,8 +929,51 @@ test "transition refuses terminal-status source" {
     defer deinit(ann, a);
     const r = try resolve(&d, a, ann.id);
     defer deinit(r, a);
+    try std.testing.expectEqual(Status.resolved, r.status);
+    // resolve → archive is now legal.
+    const ar = try archive(&d, a, ann.id);
+    defer deinit(ar, a);
+    try std.testing.expectEqual(Status.archived, ar.status);
+}
+
+test "transition: dismissed → archived is legal (retention-tier model)" {
+    // Under plan 692: dismissed may progress to archived.
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const ann = try create(&d, a, .{ .anchor = .{ .path = "y.zig" } });
+    defer deinit(ann, a);
+    const dm = try dismiss(&d, a, ann.id);
+    defer deinit(dm, a);
+    try std.testing.expectEqual(Status.dismissed, dm.status);
+    const ar = try archive(&d, a, ann.id);
+    defer deinit(ar, a);
+    try std.testing.expectEqual(Status.archived, ar.status);
+}
+
+test "transition: archived is the sole final state — no outgoing edges" {
+    // archived → anything must be refused (TerminalStatus).
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const ann = try create(&d, a, .{ .anchor = .{ .path = "z.zig" } });
+    defer deinit(ann, a);
+    const ar = try archive(&d, a, ann.id);
+    defer deinit(ar, a);
+    try std.testing.expectError(Error.TerminalStatus, resolve(&d, a, ann.id));
     try std.testing.expectError(Error.TerminalStatus, dismiss(&d, a, ann.id));
-    try std.testing.expectError(Error.TerminalStatus, archive(&d, a, ann.id));
+}
+
+test "transition: resolved → dismiss is still refused (no lateral move)" {
+    // resolved cannot cross to dismissed — only → archived is legal.
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const ann = try create(&d, a, .{ .anchor = .{ .path = "w.zig" } });
+    defer deinit(ann, a);
+    const r = try resolve(&d, a, ann.id);
+    defer deinit(r, a);
+    try std.testing.expectError(Error.TerminalStatus, dismiss(&d, a, ann.id));
 }
 
 test "list filters by anchor_path, status, vendor" {
