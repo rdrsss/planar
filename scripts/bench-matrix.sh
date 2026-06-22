@@ -45,9 +45,9 @@
 # the matrix prints the full interleaved schedule + per-plan base_sha + run_uids
 # + estimated total spend — the operator pre-approval surface.
 #
-# Still deliberately NOT implemented (M4): trap-based worktree cleanup, per-cell
-# timeout/kill, and structured logging. The seams are left clean: dispatch_cell
-# is the single per-cell wrapper M4 can decorate.
+# M4 IMPLEMENTED: trap-based worktree cleanup, per-cell timeout/kill, structured
+# per-cell JSONL logging, and a per-cell retry cap. dispatch_cell is the decorated
+# entry point; spawn_agent wraps every claude invocation with a watchdog.
 #
 # ISOLATION INVARIANT: every `planar`, `planar-execute`, and agent subprocess
 # runs against an ISOLATED experiment PLANAR_DB + PLANAR_CONFIG_PATH. The real
@@ -69,6 +69,16 @@
 #   --matrix flags: --plans <ids>  --reps <N>  --ceiling <USD>  (also honors
 #     BENCH_CORPUS_PLANS / BENCH_N_REPS / BENCH_CEILING). Re-running --matrix
 #     resumes additively: completed cells SKIP, crashed cells abort + retry.
+#
+# M4 env vars (all optional; follow BENCH_* convention):
+#   BENCH_AGENT_TIMEOUT   — per-agent wall-clock deadline in seconds; the watchdog
+#                           kills the entire agent process group on breach.
+#                           Default: 600 (10 min). Set to 0 to disable.
+#   BENCH_CELL_RETRY_CAP  — max crash-retries per cell before it is marked
+#                           permanently failed and skipped. Default: 2.
+#   BENCH_LOG_ROOT        — directory for per-cell JSONL structured logs.
+#                           Default: $BENCH_HOME/cell-logs
+#
 #     scripts/bench-matrix.sh --help
 
 set -euo pipefail
@@ -160,6 +170,20 @@ CEILING="${BENCH_CEILING:-50.00}"
 #     seeds the estimate before any cell has run. ---
 CELL_COST_DEFAULT="${BENCH_CELL_COST_DEFAULT:-2.00}"
 
+# ---------------------------------------------------------------------------
+# M4 config (operator-editable via env).
+# ---------------------------------------------------------------------------
+# --- per-agent timeout in seconds. The watchdog kills the entire claude process
+#     group after this deadline. 0 = disabled. ---
+AGENT_TIMEOUT="${BENCH_AGENT_TIMEOUT:-600}"
+
+# --- per-cell crash retry cap. After this many abort+retry cycles the cell is
+#     marked permanently failed and skipped, not retried again. ---
+CELL_RETRY_CAP="${BENCH_CELL_RETRY_CAP:-2}"
+
+# --- per-cell JSONL structured log directory (created on first write). ---
+LOG_ROOT="${BENCH_LOG_ROOT:-}"   # resolved lazily below after BENCH_HOME is stable
+
 # --- runtime state (parsed from argv) ---
 ARG_PLAN=""
 ARG_REP=1
@@ -172,6 +196,15 @@ DRY_RUN=0
 #     single-cell M1/M2 mode so run_cell falls back to its own minting). ---
 CELL_RUN_UID_OVERRIDE=""
 CELL_CHASH_OVERRIDE=""
+
+# --- M4 runtime: the in-flight agent process group (tracked for trap + watchdog).
+#     Set by spawn_agent_watchdog; cleared on return. 0 = none in flight. ---
+_INFLIGHT_AGENT_PGID=0
+
+# --- M4 runtime: the in-flight cell's slice/integration/scratch dir list for the
+#     trap cleanup. Populated by run_cell; cleared on clean completion. ---
+_INFLIGHT_CELL_UID=""
+_INFLIGHT_CELL_DIRS=()   # bash indexed array (bash 3.2 ok; NOT associative)
 
 # ===========================================================================
 # helpers (match parity-audit.sh logging style)
@@ -203,6 +236,247 @@ pl_json() { command "$PLANAR_BIN" "$@"; }
 # PLANNING_CWD (the corpus repo's primary checkout) so the cwd-derive guard is
 # satisfied even when CORPUS_REPO_PATH is a worktree. Read-only by construction.
 pl_plan_json() { ( cd "$PLANNING_CWD" && command "$PLANAR_BIN" "$@" ); }
+
+# ===========================================================================
+# M4 helpers: watchdog, trap cleanup, structured cell logging
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# cell_log <event_type> <json_fields_fragment>
+#   Appends one JSONL record to $LOG_ROOT/<cell_uid>.jsonl (creates the file and
+#   directory on first write). Each record carries a timestamp, the cell identity
+#   globals, the event_type, and any caller-supplied fields merged in.
+#   No-ops when DRY_RUN=1 or when LOG_ROOT is empty (should never be, but guard).
+#   Safe to call under set -e: errors are swallowed (logging must never abort a
+#   cell; it is additive / best-effort).
+# ---------------------------------------------------------------------------
+cell_log() {
+  local event_type="$1" extra_fields="${2:-}"
+  [ "$DRY_RUN" -eq 1 ] && return 0
+  # Resolve LOG_ROOT lazily (needs BENCH_HOME to be stable, which it is by now).
+  [ -n "$LOG_ROOT" ] || LOG_ROOT="$BENCH_HOME/cell-logs"
+  local uid="${_INFLIGHT_CELL_UID:-${CELL_RUN_UID:-unknown}}"
+  local ts; ts="$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || printf 'unknown')"
+  local logfile="$LOG_ROOT/${uid}.jsonl"
+  mkdir -p "$LOG_ROOT" 2>/dev/null || true
+  # Build record: merge base fields + extra_fields (if valid JSON object fragment).
+  local base; base="$(jq -nc \
+    --arg ts "$ts" \
+    --arg ev "$event_type" \
+    --arg uid "$uid" \
+    --arg plan "${CELL_PLAN:-}" \
+    --arg arm "${CELL_ARM:-}" \
+    '{ts:$ts, event:$ev, run_uid:$uid, plan:$plan, arm:$arm}')" 2>/dev/null || return 0
+  if [ -n "$extra_fields" ]; then
+    printf '%s\n' "$base" | jq -c --argjson ex "$extra_fields" '. + $ex' \
+      >>"$logfile" 2>/dev/null || true
+  else
+    printf '%s\n' "$base" >>"$logfile" 2>/dev/null || true
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# _cleanup_inflight — kill the in-flight agent process group (if any) and
+# remove the current cell's worktree directories. Called by the EXIT trap and
+# on explicit interrupt. Idempotent: guards every step; never exits non-zero.
+# ---------------------------------------------------------------------------
+_cleanup_inflight() {
+  # Kill in-flight agent process group (SIGTERM then SIGKILL after 3s).
+  # Safety: never kill our own process group.
+  if [ "${_INFLIGHT_AGENT_PGID:-0}" -ne 0 ] 2>/dev/null; then
+    local pgid="$_INFLIGHT_AGENT_PGID"
+    local our_pgid; our_pgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')" || our_pgid="$$"
+    _INFLIGHT_AGENT_PGID=0
+    if [ "$pgid" != "$our_pgid" ] && [ "$pgid" != "$$" ]; then
+      kill -- "-$pgid" 2>/dev/null || true
+      # Brief grace period then escalate.
+      local i=0
+      while kill -0 -- "-$pgid" 2>/dev/null && [ "$i" -lt 3 ]; do
+        sleep 1; i=$((i + 1))
+      done
+      kill -9 -- "-$pgid" 2>/dev/null || true
+    fi
+  fi
+  # Prune stale worktree registrations then rm -rf in-flight slice dirs.
+  if [ -n "${_INFLIGHT_CELL_UID:-}" ] && [ -n "${CORPUS_REPO_PATH:-}" ]; then
+    git -C "$CORPUS_REPO_PATH" worktree prune >/dev/null 2>&1 || true
+  fi
+  local d
+  for d in "${_INFLIGHT_CELL_DIRS[@]+"${_INFLIGHT_CELL_DIRS[@]}"}"; do
+    [ -n "$d" ] && rm -rf "$d" 2>/dev/null || true
+  done
+  _INFLIGHT_CELL_DIRS=()
+  _INFLIGHT_CELL_UID=""
+}
+
+# _on_exit — EXIT trap. Only runs cleanup when there IS an in-flight cell (i.e.
+# an interrupted/crashed run). On the normal success path run_cell clears
+# _INFLIGHT_CELL_UID before returning so this is a guaranteed no-op.
+_on_exit() {
+  _cleanup_inflight
+}
+
+# _on_interrupt — SIGINT/SIGTERM: run cleanup then re-raise so the shell exits
+# with the right signal semantics (exit code 130 for INT, 143 for TERM).
+_on_interrupt() {
+  local sig="${1:-INT}"
+  log "M4 trap: ${sig} received — cleaning up in-flight agent and worktrees"
+  cell_log "interrupted" "{\"signal\":\"${sig}\"}" 2>/dev/null || true
+  _cleanup_inflight
+  trap - INT TERM EXIT
+  kill -"$sig" "$$" 2>/dev/null || exit 1
+}
+
+# Install the trap handlers. They are installed here (top of script, after
+# helpers are defined) and remain active for the entire process lifetime.
+# shellcheck disable=SC2064  # intentional: trap strings are expanded at install time
+trap '_on_exit' EXIT
+trap '_on_interrupt INT'  INT
+trap '_on_interrupt TERM' TERM
+
+# ---------------------------------------------------------------------------
+# spawn_agent_watchdog <model> <worktree> <brief>
+#   Wraps the claude invocation with a pure-bash process-group watchdog.
+#   * Spawns claude in its OWN process group (perl setpgid or setsid).
+#   * Starts a background sleeper; if the sleeper fires first, kills the group.
+#   * On deadline breach: writes a flag file (_AGENT_TIMEOUT_FLAG) so the
+#     CALLER (spawn_agent) can detect timeout without a subshell variable.
+#   * AGENT_TIMEOUT=0 disables the watchdog entirely (plain blocking call).
+#   Called from spawn_agent; prints claude's JSON stdout on success.
+#
+# Timeout communication: spawn_agent_watchdog cannot set a global inside a
+# $(…) command substitution (subshell). Instead it touches a flag file
+# (_AGENT_TIMEOUT_FLAG) that spawn_agent checks after the call returns.
+# ---------------------------------------------------------------------------
+# Path to the per-invocation timeout flag file (set fresh each call).
+_AGENT_TIMEOUT_FLAG=""
+# Global set by spawn_agent (NOT in a subshell) after reading the flag.
+AGENT_TIMED_OUT=0
+
+spawn_agent_watchdog() {
+  local model="$1" worktree="$2" brief="$3" extra_flags="${4:-}"
+  # Reset flag (we are called from $(…) but the flag file persists on disk).
+  [ -n "${_AGENT_TIMEOUT_FLAG:-}" ] && rm -f "$_AGENT_TIMEOUT_FLAG" 2>/dev/null || true
+
+  if [ "${AGENT_TIMEOUT:-0}" -le 0 ] || [ "$DRY_RUN" -eq 1 ]; then
+    # Watchdog disabled; delegate to the raw invocation.
+    # shellcheck disable=SC2086
+    cd "$worktree" && printf '%s' "$brief" | claude -p \
+      --output-format=json \
+      --model "$model" \
+      $extra_flags \
+      --add-dir "$worktree"
+    return $?
+  fi
+
+  # Launch claude in its own process group so we can kill -<pgid> cleanly.
+  # A temp file carries stdout from the agent (we cannot use a pipe here
+  # because we need the pgid before we can wait; a subshell complicates the
+  # pgid capture).
+  local out_tmp; out_tmp="$(mktemp "${TMPDIR:-/tmp}/spawn-agent.XXXXXX")"
+  # Start agent as a new process GROUP LEADER so kill -<pgid> kills only the
+  # agent subtree (not the harness process).
+  # On Linux: use setsid if available; fall back to perl setpgid.
+  # On macOS: bash -c "set -m" does NOT create a new pgid in non-interactive
+  #   mode, so we use "perl -e 'use POSIX; setpgid(0,0); exec @ARGV'" which
+  #   is available on both macOS (system perl) and Linux.
+  # The _pgid_launcher wrapper sets the new pgid and then execs the agent.
+  # Choose the pgid isolation launcher.
+  local use_setsid=0 use_perl=0
+  command -v setsid >/dev/null 2>&1 && use_setsid=1
+  command -v perl   >/dev/null 2>&1 && use_perl=1
+
+  # The agent command as a bash -c invocation.
+  # $1=$worktree $2=$brief $3=$model $4=$out_tmp $5=$extra_flags
+  # extra_flags is passed as a single argument and word-split inside the
+  # subshell (bash -c) deliberately — it carries zero or one flag token pair
+  # like "--permission-mode acceptEdits" for the coder, or "" for the reviewer.
+  local agent_cmd="cd \"\$1\" && printf '%s' \"\$2\" | claude -p \
+    --output-format=json \
+    --model \"\$3\" \
+    \$5 \
+    --add-dir \"\$1\" >\"\$4\" 2>/dev/null"
+
+  if [ "$use_setsid" -eq 1 ]; then
+    # Linux: setsid creates a new session → new pgid.
+    setsid bash -c "$agent_cmd" -- "$worktree" "$brief" "$model" "$out_tmp" "$extra_flags" &
+  elif [ "$use_perl" -eq 1 ]; then
+    # macOS + Linux fallback: perl setpgid then exec bash.
+    perl -e 'use POSIX; setpgid(0,0); exec @ARGV' -- \
+      bash -c "$agent_cmd" -- "$worktree" "$brief" "$model" "$out_tmp" "$extra_flags" &
+  else
+    # No isolation: watchdog kills by PID, may miss deep descendants.
+    bash -c "$agent_cmd" -- "$worktree" "$brief" "$model" "$out_tmp" "$extra_flags" &
+  fi
+  local agent_pid=$!
+  # Capture the DISTINCT process group id of the background child.
+  # Retry briefly: pgid may not be set instantly for the launched process.
+  local pgid="" i=0
+  while [ "$i" -lt 20 ]; do
+    pgid="$(ps -o pgid= -p "$agent_pid" 2>/dev/null | tr -d ' ')" || pgid=""
+    if [ -n "$pgid" ] && [ "$pgid" != "$$" ] && [ "$pgid" != "$(ps -o pgid= -p $$ | tr -d ' ')" ]; then
+      break
+    fi
+    pgid=""
+    sleep 0.1 2>/dev/null || true
+    i=$((i + 1))
+  done
+  # Fall back: if we couldn't isolate the pgid, track by PID only. The kill
+  # will still kill the agent but may not reach all descendants.
+  [ -n "$pgid" ] || pgid="$agent_pid"
+  _INFLIGHT_AGENT_PGID="$pgid"
+
+  # Background sleeper: fires after AGENT_TIMEOUT seconds, sends SIGTERM to
+  # the watchdog function's subshell which the main shell reaps. We use a
+  # flag file rather than a signal so the pure-bash path is portable.
+  local flag_tmp; flag_tmp="$(mktemp "${TMPDIR:-/tmp}/spawn-timeout.XXXXXX")"
+  rm -f "$flag_tmp"  # will be re-created when sleeper fires
+  ( sleep "$AGENT_TIMEOUT" && touch "$flag_tmp" ) &
+  local sleeper_pid=$!
+
+  # Poll: wait for either the agent (agent_pid gone) or the flag file.
+  local rc=0
+  while kill -0 "$agent_pid" 2>/dev/null; do
+    if [ -f "$flag_tmp" ]; then
+      # Deadline breached — kill the process group (safety: guard our own pgid).
+      log "M4 watchdog: agent TIMED OUT after ${AGENT_TIMEOUT}s (pgid=${pgid}) — killing group"
+      local our_pgid_w; our_pgid_w="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')" || our_pgid_w="$$"
+      if [ "$pgid" != "$our_pgid_w" ] && [ "$pgid" != "$$" ]; then
+        kill -- "-$pgid" 2>/dev/null || true
+        sleep 1
+        kill -9 -- "-$pgid" 2>/dev/null || true
+      else
+        # Could not isolate pgid; kill by direct PID.
+        kill "$agent_pid" 2>/dev/null || true
+        sleep 1
+        kill -9 "$agent_pid" 2>/dev/null || true
+      fi
+      wait "$agent_pid" 2>/dev/null || true
+      # Signal timeout to the caller via a flag file (global won't survive subshell).
+      [ -n "${_AGENT_TIMEOUT_FLAG:-}" ] && touch "$_AGENT_TIMEOUT_FLAG" 2>/dev/null || true
+      _INFLIGHT_AGENT_PGID=0
+      kill "$sleeper_pid" 2>/dev/null || true
+      rm -f "$flag_tmp" "$out_tmp" 2>/dev/null || true
+      return 1
+    fi
+    sleep 0.5 2>/dev/null || true
+  done
+  wait "$agent_pid" 2>/dev/null || rc=$?
+  _INFLIGHT_AGENT_PGID=0
+
+  # Kill the sleeper (it may or may not have fired).
+  kill "$sleeper_pid" 2>/dev/null || true
+  wait "$sleeper_pid" 2>/dev/null || true
+  rm -f "$flag_tmp" 2>/dev/null || true
+
+  if [ "$rc" -ne 0 ]; then
+    rm -f "$out_tmp" 2>/dev/null || true
+    return "$rc"
+  fi
+  cat "$out_tmp" 2>/dev/null || true
+  rm -f "$out_tmp" 2>/dev/null || true
+  return 0
+}
 
 # execute_phase <phase> <worktree> <args-json> — run one deterministic ritual
 # phase via planar-execute. Returns the flow.result JSON on stdout.
@@ -248,11 +522,21 @@ spawn_agent() {
   # from stdin and ignores any positional, erroring "Input must be provided
   # ... when using --print". Piping the brief in is the portable headless
   # shape; it also avoids argv-length limits on large briefs.
-  raw="$(cd "$worktree" && printf '%s' "$brief" | claude -p \
-    --output-format=json \
-    --model "$model" \
-    --permission-mode acceptEdits \
-    --add-dir "$worktree")"
+  #
+  # M4: spawn_agent_watchdog wraps the invocation with a per-process-group
+  # watchdog. spawn_agent_watchdog is called inside $(…) so it cannot set a
+  # global directly. Instead it writes a flag file (_AGENT_TIMEOUT_FLAG) on
+  # timeout; we check the file after the call and set AGENT_TIMED_OUT here in
+  # the parent shell where globals are preserved.
+  local _timeout_flag; _timeout_flag="$(mktemp "${TMPDIR:-/tmp}/agent-toflag.XXXXXX")"
+  rm -f "$_timeout_flag"  # watchdog touches it on timeout; absence = no timeout
+  _AGENT_TIMEOUT_FLAG="$_timeout_flag"
+  AGENT_TIMED_OUT=0
+  # Coder gets --permission-mode acceptEdits (isolated throwaway worktree).
+  raw="$(spawn_agent_watchdog "$model" "$worktree" "$brief" "--permission-mode acceptEdits")"
+  if [ -f "$_timeout_flag" ]; then AGENT_TIMED_OUT=1; fi
+  rm -f "$_timeout_flag" 2>/dev/null || true
+  _AGENT_TIMEOUT_FLAG=""
 
   # Map the M0-confirmed fields into the frozen token_sample payload shape.
   # Missing fields coerce to 0 (// 0) so a partial usage object never aborts
@@ -264,6 +548,40 @@ spawn_agent() {
     cache_out: (.usage.cache_creation_input_tokens   // 0),
     usd:       (.total_cost_usd                       // 0)
   }'
+}
+
+# spawn_agent_raw <model> <worktree> <brief>  ->  prints the full raw claude JSON
+#
+# Like spawn_agent but WITHOUT --permission-mode acceptEdits (reviewer does not
+# need to edit files) and returns the FULL result JSON, not the token_sample
+# projection.  The caller is responsible for extracting the token_sample and
+# the verdict from the raw JSON independently.
+#
+# Shares spawn_agent_watchdog with the coder: process-group isolation,
+# _INFLIGHT_AGENT_PGID registration, timeout, and flag-file timeout signalling
+# are all identical.  Only the extra_flags argument differs (empty string =
+# no --permission-mode flag).
+spawn_agent_raw() {
+  local model="$1" worktree="$2" brief="$3"
+  local raw _wd_rc=0
+
+  local _timeout_flag; _timeout_flag="$(mktemp "${TMPDIR:-/tmp}/agent-toflag.XXXXXX")"
+  rm -f "$_timeout_flag"
+  _AGENT_TIMEOUT_FLAG="$_timeout_flag"
+  AGENT_TIMED_OUT=0
+  # Reviewer does not edit files → no --permission-mode acceptEdits.
+  raw="$(spawn_agent_watchdog "$model" "$worktree" "$brief" "")" || _wd_rc=$?
+  if [ -f "$_timeout_flag" ]; then AGENT_TIMED_OUT=1; fi
+  rm -f "$_timeout_flag" 2>/dev/null || true
+  _AGENT_TIMEOUT_FLAG=""
+
+  if [ "$_wd_rc" -ne 0 ]; then
+    # Propagate the watchdog's non-zero exit (timeout or agent failure) so the
+    # caller can distinguish a timed-out/failed run from an empty-result run.
+    return "$_wd_rc"
+  fi
+  # Emit the full raw JSON; the caller projects to token_sample and verdict.
+  printf '%s' "$raw"
 }
 
 # emit_token_sample <run_uid> <seq> <role> <sample-json>
@@ -583,9 +901,13 @@ run_agents() {
   spawn_agent "$CODER_MODEL" "$worktree" \
     "$(coder_brief "$CELL_PLAN" "$CELL_PROBLEM")" >"$out/coder.json" 2>/dev/null \
     || printf '{"in":0,"out":0,"cache_in":0,"cache_out":0,"usd":0}' >"$out/coder.json"
+  # M4 fix: route the reviewer through spawn_agent_raw (watchdog + process-group
+  # isolation + _INFLIGHT_AGENT_PGID registration) instead of a raw `claude -p`.
+  # spawn_agent_raw returns the FULL result JSON (needed for reviewer_verdict);
+  # the token_sample projection is applied here, matching the coder's shape.
   local reviewer_raw
-  reviewer_raw="$(cd "$worktree" && reviewer_brief "$CELL_PLAN" "$CELL_PROBLEM" \
-    | claude -p --output-format=json --model "$REVIEWER_MODEL" --add-dir "$worktree" 2>/dev/null || true)"
+  reviewer_raw="$(spawn_agent_raw "$REVIEWER_MODEL" "$worktree" \
+    "$(reviewer_brief "$CELL_PLAN" "$CELL_PROBLEM")" 2>/dev/null || true)"
   printf '%s' "$reviewer_raw" | jq -c '{
     in:(.usage.input_tokens // 0), out:(.usage.output_tokens // 0),
     cache_in:(.usage.cache_read_input_tokens // 0),
@@ -897,6 +1219,17 @@ run_cell() {
   SEQ=0; S=0
   mkdir -p "$WORKTREE_ROOT/$run_uid" "$TRANSCRIPT_ROOT/$run_uid"
 
+  # M4: register the in-flight cell so the trap handler can clean up if we are
+  # interrupted before completion. _INFLIGHT_CELL_DIRS tracks the worktrees this
+  # cell owns; they are added as they are created below.
+  _INFLIGHT_CELL_UID="$run_uid"
+  _INFLIGHT_CELL_DIRS=()
+
+  # M4: structured log — cell_start event.
+  cell_log "cell_start" \
+    "$(jq -nc --arg rep "$rep" --arg base "$base_sha" --argjson tasks "$tasks_json" \
+       '{rep:$rep, base_sha:$base, tasks:$tasks}')" || true
+
   # --- self-heal stale worktree registrations from a crashed prior run. The
   #     dispatchers rm -rf each slice dir before `git worktree add`; without a
   #     prune, git still has the deleted path REGISTERED and refuses to re-add.
@@ -908,6 +1241,7 @@ run_cell() {
   rm -rf "$INTEG_WORKTREE"
   git -C "$CORPUS_REPO_PATH" branch -f "$CELL_INTEG_BRANCH" "$base_sha" >&2
   git -C "$CORPUS_REPO_PATH" worktree add "$INTEG_WORKTREE" "$CELL_INTEG_BRANCH" >&2
+  _INFLIGHT_CELL_DIRS+=("$INTEG_WORKTREE")
 
   # --- phase A: setup (reset + bench start + declared snapshot). Run against a
   #     throwaway scratch worktree off base_sha (the ritual resets it; the real
@@ -916,6 +1250,7 @@ run_cell() {
   local scratch_wt="$WORKTREE_ROOT/$run_uid/_setup"
   rm -rf "$scratch_wt"
   git -C "$CORPUS_REPO_PATH" worktree add --detach "$scratch_wt" "$base_sha" >&2
+  _INFLIGHT_CELL_DIRS+=("$scratch_wt")
   execute_phase setup "$scratch_wt" "$setup_args" >&2
 
   # --- phase B + fan-in: dispatch the arm's characteristic slice shape ---
@@ -932,6 +1267,13 @@ run_cell() {
   #     touches (harvested per slice) + the full event journal. ---
   title "phase C: finish"
   pl bench finish "$run_uid" --status completed >&2
+
+  # M4: structured log — cell_complete event (disposition = completed).
+  cell_log "cell_complete" '{"disposition":"completed"}' || true
+
+  # M4: cell completed cleanly — clear in-flight state so the EXIT trap no-ops.
+  _INFLIGHT_CELL_UID=""
+  _INFLIGHT_CELL_DIRS=()
 
   # --- clean joinable run: print the final record on stdout ---
   title "cell complete: ${run_uid}"
@@ -1141,10 +1483,14 @@ cell_status() {
 #   completed              -> prints "SKIP" — the caller skips dispatch entirely.
 #   running (crashed)      -> aborts the stale record (bench finish --status
 #                             aborted; left as audit, excluded from metrics) and
-#                             mints a fresh <base>-retryN uid (next free N).
-#   absent / aborted / err -> the base deterministic uid (fresh dispatch).
+#                             mints a fresh <base>-retryN uid (next free N),
+#                             UNLESS the retry cap is reached.
+#   absent / aborted / err -> the base deterministic uid (fresh dispatch),
+#                             UNLESS the retry cap is reached (SKIP + PERM_FAIL).
 # Resume is strictly ADDITIVE: re-running never reuses a partial uid and never
 # double-counts a completed one.
+# M4: CELL_RETRY_CAP — once a cell has been aborted+retried that many times,
+# prints "PERM_FAIL" so the caller logs loudly and skips the cell permanently.
 resolve_cell_uid() {
   local plan="$1" arm="$2" rep="$3"
   local base status
@@ -1173,6 +1519,13 @@ resolve_cell_uid() {
         fi
         n=$(( n + 1 ))
       done
+      # M4 retry cap: if we have already retried >= CELL_RETRY_CAP times, mark
+      # the cell permanently failed and skip it.
+      if [ "$((n - 1))" -ge "${CELL_RETRY_CAP:-2}" ]; then
+        log "M4 retry cap: cell ${base} has crashed ${CELL_RETRY_CAP} time(s) -> PERM_FAIL (skip)"
+        printf 'PERM_FAIL'
+        return 0
+      fi
       log "resume: minting fresh retry uid ${candidate}"
       printf '%s' "$candidate"
       ;;
@@ -1190,6 +1543,13 @@ resolve_cell_uid() {
         [ "$(cell_status "$candidate")" = "completed" ] && { printf 'SKIP'; return 0; }
         n=$(( n + 1 ))
       done
+      # M4 retry cap: count prior aborted runs for this base uid.
+      local prior_retries; prior_retries=$(( n - 1 ))
+      if [ "$prior_retries" -ge "${CELL_RETRY_CAP:-2}" ]; then
+        log "M4 retry cap: cell ${base} has ${prior_retries} aborted prior run(s) >= cap ${CELL_RETRY_CAP} -> PERM_FAIL"
+        printf 'PERM_FAIL'
+        return 0
+      fi
       printf '%s' "$candidate"
       ;;
   esac
@@ -1198,6 +1558,9 @@ resolve_cell_uid() {
 # dispatch_cell <plan> <arm> <rep> — wrap one run_cell with the resume probe,
 # the paired config_hash injection, and the deterministic uid. Returns 0 on
 # dispatch (or skip); the ceiling check happens in the caller BEFORE this.
+# M4: handles PERM_FAIL (retry cap exhausted), timeout (run_cell crashes the
+# cell but lets the matrix continue), and emits structured log records per
+# cell disposition.
 dispatch_cell() {
   local plan="$1" arm="$2" rep="$3"
   local uid chash
@@ -1205,13 +1568,61 @@ dispatch_cell() {
   uid="$(resolve_cell_uid "$plan" "$arm" "$rep")"
   if [ "$uid" = "SKIP" ]; then
     log "cell (plan=${plan} arm=${arm} rep=${rep}) -> SKIPPED (already completed)"
+    # M4: structured log for skipped cell (need temp CELL_* for cell_log context).
+    local _save_uid="$CELL_RUN_UID" _save_plan="$CELL_PLAN" _save_arm="$CELL_ARM"
+    CELL_RUN_UID="$(deterministic_run_uid "$plan" "$arm" "$rep")"
+    CELL_PLAN="$plan"; CELL_ARM="$arm"; _INFLIGHT_CELL_UID="$CELL_RUN_UID"
+    cell_log "cell_skipped" '{"disposition":"skipped","reason":"already_completed"}' || true
+    CELL_RUN_UID="$_save_uid"; CELL_PLAN="$_save_plan"; CELL_ARM="$_save_arm"
+    _INFLIGHT_CELL_UID=""
+    return 0
+  fi
+  if [ "$uid" = "PERM_FAIL" ]; then
+    log "M4 retry cap: cell (plan=${plan} arm=${arm} rep=${rep}) -> PERMANENTLY FAILED (retry cap=${CELL_RETRY_CAP}); skipping"
+    # M4: structured log for permanently failed cell.
+    local _base_uid; _base_uid="$(deterministic_run_uid "$plan" "$arm" "$rep")"
+    local _save_uid="$CELL_RUN_UID" _save_plan="$CELL_PLAN" _save_arm="$CELL_ARM"
+    CELL_RUN_UID="$_base_uid"; CELL_PLAN="$plan"; CELL_ARM="$arm"
+    _INFLIGHT_CELL_UID="$_base_uid"
+    cell_log "cell_perm_failed" \
+      "$(jq -nc --argjson cap "${CELL_RETRY_CAP:-2}" \
+         '{disposition:"perm_failed",reason:"retry_cap_exhausted",retry_cap:$cap}')" || true
+    CELL_RUN_UID="$_save_uid"; CELL_PLAN="$_save_plan"; CELL_ARM="$_save_arm"
+    _INFLIGHT_CELL_UID=""
     return 0
   fi
   # Inject the deterministic uid + paired hash; run_cell honors the overrides.
   CELL_RUN_UID_OVERRIDE="$uid"
   CELL_CHASH_OVERRIDE="$chash"
   ARG_REP="$rep"
-  run_cell "$plan" "$arm" "$rep"
+  # M4: run_cell is allowed to crash (set -e would abort the script); wrap with
+  # || true + check AGENT_TIMED_OUT to log the disposition and continue the matrix.
+  local cell_rc=0
+  run_cell "$plan" "$arm" "$rep" || cell_rc=$?
+  if [ "$cell_rc" -ne 0 ]; then
+    if [ "${AGENT_TIMED_OUT:-0}" -eq 1 ]; then
+      log "M4: cell (plan=${plan} arm=${arm} rep=${rep} uid=${uid}) TIMED OUT — marked crashed; matrix continues"
+      # Temporarily restore cell context so cell_log has the right uid/plan/arm.
+      local _save_uid="$CELL_RUN_UID" _save_plan="$CELL_PLAN" _save_arm="$CELL_ARM"
+      CELL_RUN_UID="$uid"; CELL_PLAN="$plan"; CELL_ARM="$arm"
+      _INFLIGHT_CELL_UID="$uid"
+      cell_log "cell_complete" \
+        "$(jq -nc --argjson timeout "${AGENT_TIMEOUT:-600}" \
+           '{disposition:"timed_out",timeout_secs:$timeout}')" || true
+      CELL_RUN_UID="$_save_uid"; CELL_PLAN="$_save_plan"; CELL_ARM="$_save_arm"
+      _INFLIGHT_CELL_UID=""
+      AGENT_TIMED_OUT=0
+    else
+      log "M4: cell (plan=${plan} arm=${arm} rep=${rep} uid=${uid}) CRASHED (rc=${cell_rc}) — marked crashed; matrix continues"
+      local _save_uid="$CELL_RUN_UID" _save_plan="$CELL_PLAN" _save_arm="$CELL_ARM"
+      CELL_RUN_UID="$uid"; CELL_PLAN="$plan"; CELL_ARM="$arm"
+      _INFLIGHT_CELL_UID="$uid"
+      cell_log "cell_complete" \
+        "$(jq -nc --argjson rc "$cell_rc" '{disposition:"crashed",exit_code:$rc}')" || true
+      CELL_RUN_UID="$_save_uid"; CELL_PLAN="$_save_plan"; CELL_ARM="$_save_arm"
+      _INFLIGHT_CELL_UID=""
+    fi
+  fi
   CELL_RUN_UID_OVERRIDE=""
   CELL_CHASH_OVERRIDE=""
 }
@@ -1366,12 +1777,18 @@ main() {
 
   if [ "$ARG_MATRIX" -eq 1 ]; then require_tool sqlite3; fi
 
+  # M4: resolve LOG_ROOT now that BENCH_HOME is stable.
+  [ -n "$LOG_ROOT" ] || LOG_ROOT="$BENCH_HOME/cell-logs"
+
   title "bench-matrix: $([ "$ARG_MATRIX" -eq 1 ] && echo 'M3 matrix driver' || echo 'M2 arm-shape driver')"
   log "PLANAR_DB:          $PLANAR_DB"
   log "PLANAR_CONFIG_PATH: $PLANAR_CONFIG_PATH"
   log "corpus repo:        $CORPUS_REPO_PATH ($CORPUS_REPO_NAME)"
   log "coder/reviewer:     $CODER_MODEL / $REVIEWER_MODEL"
   log "iteration cap:      $ITER_CAP"
+  log "agent timeout:      ${AGENT_TIMEOUT}s (0=disabled)"
+  log "cell retry cap:     ${CELL_RETRY_CAP}"
+  log "log root:           $LOG_ROOT"
   [ "$DRY_RUN" -eq 1 ] && log "MODE:               --dry-run (no spawns, no mutations)"
 
   if [ "$ARG_MATRIX" -eq 1 ]; then
