@@ -125,6 +125,7 @@ pub const verb: cli.Cmd = .{
             .desc = "Mark a task as done (single-arg form; Go supports variadic).",
             .flags = &.{
                 .{ .long = "--scope", .kind = .string },
+                .{ .long = "--force", .kind = .bool, .default = .{ .bool = false }, .desc = "Override active-claim guard and flip status anyway." },
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },
             .positionals = &.{.{ .name = "task-id", .kind = .string, .required = true }},
@@ -147,6 +148,7 @@ pub const verb: cli.Cmd = .{
                 .{ .long = "--on", .kind = .int, .required = true, .desc = "Blocking task id" },
                 .{ .long = "--reason", .kind = .string },
                 .{ .long = "--scope", .kind = .string },
+                .{ .long = "--force", .kind = .bool, .default = .{ .bool = false }, .desc = "Override active-claim guard and flip status anyway." },
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },
             .positionals = &.{.{ .name = "task-id", .kind = .string, .required = true }},
@@ -173,6 +175,7 @@ pub const verb: cli.Cmd = .{
                 .{ .long = "--status", .kind = .string },
                 .{ .long = "--reason", .kind = .string },
                 .{ .long = "--scope", .kind = .string },
+                .{ .long = "--force", .kind = .bool, .default = .{ .bool = false }, .desc = "Override active-claim guard and flip status anyway." },
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },
             .positionals = &.{.{ .name = "task-id", .kind = .string, .required = true }},

@@ -1,8 +1,8 @@
 //! handlers/ext/propagate-one — `planar ext propagate-one <system> --from <kind:id> [--strategy] --json`
 //!
 //! Render one entity's template, POST the counterpart, and record the
-//! `external_links` row (and `sync_events` audit) in ONE transaction;
-//! idempotent (skip with a clear result if a link already exists).
+//! `external_links` row; idempotent (skip with a clear result if a
+//! link already exists).
 //!
 //! This is the per-entity body of `ext propagate`'s tracking-issue path
 //! surfaced as a thin primitive verb. Both `propagate-one` and the main

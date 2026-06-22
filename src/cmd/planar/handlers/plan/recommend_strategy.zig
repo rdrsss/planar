@@ -6,8 +6,8 @@
 //! open (todo) tasks by applying the six parallel-eligibility rules and
 //! emits the eligible subset + the serialized remainder with per-task
 //! exclusion reasons. This is the single source of truth consumed by
-//! centurion's fan-out gate (M5 task 3185) and the orchestrator
-//! skill — the rules are NOT re-derived in centurion.
+//! the fan-out gate and the orchestrator
+//! skill — the rules are NOT re-derived externally.
 //!
 //! JSON shape:
 //!   { "plan_id": int,

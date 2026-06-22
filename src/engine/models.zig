@@ -18,10 +18,9 @@
 //! ## Tier model (plan 541)
 //!
 //! Roles map to tiers, tiers map to per-vendor models. The default routing here
-//! (coder→medium, reviewer→large, the rest→medium) mirrors the centurion
-//! harness defaults (sonnet coder, opus reviewer). These two tables
-//! agree by construction today; the plan-540 shared resolver (phase 2) is the
-//! eventual single source — until then, keep them in sync.
+//! (coder→medium, reviewer→large, the rest→medium). The plan-540 shared resolver
+//! (phase 2) is the eventual single source of truth for external harnesses and
+//! skills render.
 //!
 //! No DB handle is required; discovery is filesystem/PATH + subprocess only.
 
@@ -32,7 +31,7 @@ const config = @import("config.zig");
 // Shared model resolver (plan 540 phase 2) — the single authority that maps
 // (vendor, role|tier) to a concrete model, reading the effective config
 // (models.<vendor>.<tier> tier maps + roles.<role> role→tier) produced by
-// engine.config.resolve(). Consumers (centurion, skills render,
+// engine.config.resolve(). Consumers (external harnesses, skills render,
 // `planar models`) resolve through this instead of carrying their own tables.
 // ---------------------------------------------------------------------------
 
@@ -106,7 +105,7 @@ pub fn vendorForRole(eff: *const config.EffectiveMap, role: []const u8) []const 
 
 /// Resolve a role to a concrete model deriving the vendor from config
 /// (`role_vendors.<role>` → `[defaults].vendor`). This is what `planar models
-/// routing` and centurion consume — the full role→(vendor, tier, model)
+/// routing` and external harnesses consume — the full role→(vendor, tier, model)
 /// path with no caller-supplied vendor.
 pub fn resolveRoleAuto(eff: *const config.EffectiveMap, role: []const u8) ResolveError!Resolution {
     return resolveRole(eff, vendorForRole(eff, role), role);
@@ -209,7 +208,7 @@ pub const CatalogModel = struct {
 pub const VendorCatalog = struct {
     vendor: []const u8,
     /// The CLI binary discovery probes on PATH (also the spawn name in
-    /// centurion's spawn argument builder).
+    /// an external harness's spawn argument builder).
     bin: []const u8,
     models: []const CatalogModel,
 };
@@ -238,8 +237,7 @@ pub const catalog: []const VendorCatalog = &.{
     },
 };
 
-/// The default role→tier routing (plan 541). Mirrors centurion's
-/// defaults via the tier indirection.
+/// The default role→tier routing (plan 541).
 pub const RoleTier = struct { role: []const u8, tier: Tier };
 pub const default_role_tiers: []const RoleTier = &.{
     .{ .role = "coder", .tier = .medium },

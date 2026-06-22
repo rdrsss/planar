@@ -28,7 +28,7 @@ Planar ships five executables. Four are planning-state binaries, each with a dis
 - `planar-doc` — doc-state binary. Owns manifest-driven documentation verbs (`build`, `verify`, `diff`, `cover`, `nodoc`, `lint`, `schema`) and never opens SQLite.
 - `planar-execute` — deterministic, spawn-free Lua workflow engine (plan 633). A caller invokes `planar-execute run <wf.lua> --phase <name>` to run a deterministic workflow over an allowlisted host surface (`cli`/`git`/`fs`/`flow`/`ctx`) and collect its JSON result. It holds **no** DB handle (it shells the planning-state binaries for state) and exposes **no** model-spawning host function, so it is a workflow runner, not a harness. It is outside the claim ritual.
 
-The Lua-based **harness** `centurion` (a **separate external repo**, distinct from `planar-execute`) is a pure CLI driver that shells these binaries to orchestrate LLM calls; it holds no DB handle and is not part of the Planar binary set.
+An external Lua-based **harness** (a **separate external project**, distinct from `planar-execute`) is a pure CLI driver that shells these binaries to orchestrate LLM calls; it holds no DB handle and is not part of the Planar binary set.
 
 Every skill in this document routes its writes through the binary that owns them. Skills that schedule agent work (`/orchestrator`, `/pl-coder`) drive the `planar-agent pull → heartbeat → complete|fail|release|block` ritual; skills that surface live operator views (status, dashboard, audit trail) read through `planar` and `planar-watch`.
 

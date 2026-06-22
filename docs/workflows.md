@@ -2099,7 +2099,7 @@ The orchestrator records the choice and moves on to the parallel-fanout per-cycl
 
 ## Recipe 22 — Orchestrate a multi-task plan with parallel coders
 
-> **Ownership note.** The `parallel-fanout` and `isolated-sequential` lifecycles — worktree creation, the epic/cycle branch model, fan-in merge, and cleanup — are **owned by the external `centurion` harness**, not the model-driven `/orchestrator` skill. `/orchestrator` runs `classic` (in-pwd) only; when a plan is a fit for parallel fan-out it recommends handing the plan to `centurion`. The walkthrough below is retained as **the specification of that lifecycle** (what the harness automates) and as the manual git procedure an operator can run by hand. The `$ /orchestrator …` transcripts illustrate the flow; in live use, the driver is `centurion`, not the model orchestrator. The six eligibility rules and the path/branch conventions live in `centurion`'s design documentation.
+> **Ownership note.** The `parallel-fanout` and `isolated-sequential` lifecycles — worktree creation, the epic/cycle branch model, fan-in merge, and cleanup — are **owned by an external workflow harness**, not the model-driven `/orchestrator` skill. `/orchestrator` runs `classic` (in-pwd) only; when a plan is a fit for parallel fan-out the strategy gate surfaces that. The walkthrough below is retained as **the specification of that lifecycle** (what the harness automates) and as the manual git procedure an operator can run by hand. The `$ /orchestrator …` transcripts illustrate the flow; in live use, the driver is an external workflow harness, not the model orchestrator. The six eligibility rules and the path/branch conventions live in the harness design documentation.
 
 The full `parallel-fanout` lifecycle, from strategy confirmation through fan-in and reviewer to cleanup. Use this when you have a plan in `active` status with ≥3 tasks, at least 2 of which are parallel-eligible (disjoint `task_touches`, no migration, no singleton-file touch, no blocking open question or proposed-decision dependency).
 
@@ -2374,7 +2374,7 @@ For the persistence-on-claim contract see [`docs/concepts.md §Worktree`](concep
 
 ## Recipe 25 — Review and configure per-role model routing
 
-Inspect which models your agent roles will spawn, and re-route them — across Claude and Codex — through the unified config (plan 540). All model routing (skills render, `agents/models.md`, and the external `centurion` harness) resolves from one source via the shared resolver.
+Inspect which models your agent roles will spawn, and re-route them — across Claude and Codex — through the unified config (plan 540). All model routing (skills render, `agents/models.md`, and external workflow harnesses) resolves from one source via the shared resolver.
 
 **1. Discover installed providers + their catalogs.**
 
@@ -2399,7 +2399,7 @@ planar models routing
 #   reviewer   → claude claude-opus-4-8        (large)  [embedded default]
 ```
 
-`planar models routing --json` is the machine form `centurion` (the external workflow harness) shells to pick its worker model per role.
+`planar models routing --json` is the machine form an external workflow harness shells to pick its worker model per role.
 
 **3. Override routing in `~/.planar/config.toml`.** Optionally scaffold an editable block first:
 

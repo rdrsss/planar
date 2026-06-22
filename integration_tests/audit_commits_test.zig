@@ -44,7 +44,10 @@ test "audit commits supports default, json, shas, task filtering, empty sessions
 
     // `claim --entity` does not flip task status (unlike `pull`). Advance to doing
     // so `complete` (doing → done) is legal under the real status matrix.
-    const start_out = suite.mustRunInDir(root, &.{ "task", "update", task_id_arg, "--status", "doing" });
+    // Pass --force because the claim is active; the claim guard blocks operator
+    // status flips on claimed tasks (decision 533 / task 4165). We own the claim
+    // in this test so --force is appropriate here.
+    const start_out = suite.mustRunInDir(root, &.{ "task", "update", task_id_arg, "--status", "doing", "--force" });
     defer gpa.free(start_out);
 
     const sha_a = try createCommit(repo_root, "audit-a.txt", "a\n", "audit alpha");

@@ -1284,10 +1284,12 @@ planar task update <task-id> [--title <text>] [--body <text>] [--status <status>
 | `--next-action <text>` | Update the next concrete action. | unchanged |
 | `--due <date>` | Update due date. | unchanged |
 | `--plan <plan-id>` | Move task to a different plan (or `none` to detach). | unchanged |
-| `--force` | Bypass the status-transition matrix. Required to move a `done` / `cancelled` task back to a non-terminal status without going through `task reopen`; the transition is recorded in `task_reopens` with `source='task-update-force'`. Prefer `task reopen <id>` for the documented recovery path. | off |
+| `--force` | Bypass the active-claim guard (see **Claim-atomic guard** below) AND the status-transition matrix. Required to move a `done` / `cancelled` task back to a non-terminal status without going through `task reopen`; the transition is recorded in `task_reopens` with `source='task-update-force'`. Prefer `task reopen <id>` for the documented recovery path. | off |
 | `--reason <text>` | Operator-supplied rationale recorded on the `task_reopens` audit row when `--force` triggers a terminal → non-terminal transition. | empty |
 | `--no-auto-promote` | Skip the [plan-status auto-promotion invariant](concepts.md#plan) (plan 304) for this operation. Escape hatch for scripted migrations that don't intend the plan-level transition. | off |
 | `--editor` | Accepted as a no-op. The editor-driven path is `task edit`; this flag exists so scripts that pass `--editor=false` alongside other flags (e.g. copied from `task add` invocations) are not rejected with `UnknownFlag`. | off |
+
+**Claim-atomic guard:** When `--status` is supplied and the task has an active work claim (`agent_work_claims.status='active'` and lease not yet expired), the status flip is refused with exit code `1` and a message identifying the active claim. This prevents an operator `task update --status done` from stranding a live agent lease. Pass `--force` to override and flip the status anyway — use this only when you know the agent is no longer working the task (e.g. it crashed without releasing the claim).
 
 **Schema effects:** Updates `tasks(title, body, status, priority, next_action, due_at, plan_id, updated_at)`. When `--force` triggers a terminal → non-terminal transition, also inserts into `task_reopens(task_id, from_status, to_status, source='task-update-force', reason)`.
 
@@ -1297,6 +1299,7 @@ planar task update <task-id> [--title <text>] [--body <text>] [--status <status>
 - `1` — task not found.
 - `1` — invalid status value.
 - `1` — terminal-status transition attempted without `--force`.
+- `1` — task has an active work claim; re-run with `--force` to override.
 
 ---
 
@@ -1304,12 +1307,20 @@ planar task update <task-id> [--title <text>] [--body <text>] [--status <status>
 
 **Synopsis:**
 ```
-planar task done <task-id>
+planar task done <task-id> [--force]
 ```
 
 **Description:** Mark a task as done. Legal from `doing` or `blocked` — not from `todo` (the matrix requires `todo → doing` first) or from a terminal status (`done`/`cancelled`). Equivalent to `task update --status done` but spelled explicitly for the common case.
 
 **Scope guard:** Refuses when the operator's resolved write scope disagrees with the task's stored scope. See [Cross-scope guard](#cross-scope-guard).
+
+**Claim-atomic guard:** Refuses if the task has an active work claim. The agent path (`planar-agent complete`) is the correct way to close out a claimed task. Pass `--force` to override and mark done anyway — use this only when the agent is known to be no longer active.
+
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--force` | Override the active-claim guard and mark the task done regardless of any live claim. | off |
 
 **Schema effects:** Updates `tasks(status='done', updated_at)`.
 
@@ -1318,6 +1329,7 @@ planar task done <task-id>
 **Exit codes:**
 - `1` — task not found.
 - `1` — task is not in a legal pre-done status (e.g. `todo` or already `done`/`cancelled`).
+- `1` — task has an active work claim; re-run with `--force` to override.
 
 ---
 
@@ -1325,12 +1337,14 @@ planar task done <task-id>
 
 **Synopsis:**
 ```
-planar task reopen <task-id> [--status todo|doing|blocked] [--reason <text>] [--scope <slug>]
+planar task reopen <task-id> [--status todo|doing|blocked] [--reason <text>] [--scope <slug>] [--force]
 ```
 
 **Description:** Reopen a task currently in a terminal status (`done` or `cancelled`). The dedicated recovery path for wrongly-marked tasks — see [`import`](#planar-import-repo-root) for the producer of the most common false-done case. Refuses if the task is not in a terminal status; use `task update --status <s>` for ordinary transitions.
 
 **Scope guard:** Refuses when the operator's resolved write scope disagrees with the task's stored scope. See [Cross-scope guard](#cross-scope-guard).
+
+**Claim-atomic guard:** Refuses if the task has an active work claim. Pass `--force` to override.
 
 **Options:**
 
@@ -1339,6 +1353,7 @@ planar task reopen <task-id> [--status todo|doing|blocked] [--reason <text>] [--
 | `--status <status>` | Non-terminal status to move the task to: `todo`, `doing`, `blocked`. | `todo` |
 | `--reason <text>` | Operator-supplied rationale recorded on the `task_reopens` audit row. | empty |
 | `--scope <slug>` | Scope override for the cross-scope guard. | cwd-derived |
+| `--force` | Override the active-claim guard. | off |
 
 **Schema effects:**
 - Updates `tasks(status, updated_at)`.
@@ -1349,6 +1364,7 @@ planar task reopen <task-id> [--status todo|doing|blocked] [--reason <text>] [--
 **Exit codes:**
 - `1` — task not found.
 - `1` — task is not currently in a terminal status.
+- `1` — task has an active work claim; re-run with `--force` to override.
 
 ---
 
@@ -1356,18 +1372,21 @@ planar task reopen <task-id> [--status todo|doing|blocked] [--reason <text>] [--
 
 **Synopsis:**
 ```
-planar task block <task-id> --on <task-id>
+planar task block <task-id> --on <task-id> [--force]
 ```
 
 **Description:** Mark a task as blocked and record the blocking relationship in `entity_links`. Sets the blocked task's status to `blocked`.
 
 **Scope guard:** Refuses when either the blocked task or the blocking task is in a scope that disagrees with the operator's resolved write scope. Both endpoints are guarded. See [Cross-scope guard](#cross-scope-guard).
 
+**Claim-atomic guard:** Refuses if the task being blocked has an active work claim. Pass `--force` to override.
+
 **Options:**
 
 | Flag | Description | Required |
 |------|-------------|----------|
 | `--on <task-id>` | The task that is blocking. | yes |
+| `--force` | Override the active-claim guard. | no |
 
 **Schema effects:**
 - Updates `tasks(status='blocked', updated_at)` for the blocked task.
@@ -1377,6 +1396,7 @@ planar task block <task-id> --on <task-id>
 
 **Exit codes:**
 - `1` — either task id not found.
+- `1` — task has an active work claim; re-run with `--force` to override.
 
 ---
 
@@ -4138,7 +4158,7 @@ overall: DEGRADED  (2 tasks not resumable)
 
 Provider + model capability discovery (plan 540/543). Reports which supported provider CLIs are installed on the local machine and the curated model catalog each exposes, classified into the canonical `small`/`medium`/`large` tiers, plus the default role→tier→model routing. **No database handle** is used — discovery is PATH + subprocess + a curated in-repo catalog.
 
-> The provider CLIs (`claude`, `codex`) do **not** expose a machine-readable "list models" command, so the per-vendor model list is curated in-repo (`src/engine/models.zig`); discovery confirms which CLIs are *callable* by invoking `<bin> --version` (instant, auth-free). This is the interim discovery surface; the plan-540 shared resolver and main-config tier maps (phases 1–2/4) supersede it, and the role→tier defaults here are kept in sync with centurion's defaults.
+> The provider CLIs (`claude`, `codex`) do **not** expose a machine-readable "list models" command, so the per-vendor model list is curated in-repo (`src/engine/models.zig`); discovery confirms which CLIs are *callable* by invoking `<bin> --version` (instant, auth-free). This is the interim discovery surface; the plan-540 shared resolver and main-config tier maps (phases 1–2/4) supersede it, and the role→tier defaults here reflect the shared resolver defaults.
 
 ---
 
@@ -4874,7 +4894,7 @@ override-only) routes individual roles to a different vendor; unset roles use
 provenance; `planar models routing` prints the resolved role→vendor/model
 table; `planar models` reports which provider CLIs are installed. This is the
 **single authoritative routing source** — the skill-render Tier Table
-(`agents/models.md`) and centurion (the external workflow harness) both resolve
+(`agents/models.md`) and external workflow harnesses resolve
 through it (plan 540); there is no separate `execute-config.toml`.
 
 ---
@@ -5553,7 +5573,7 @@ planar-agent ingest     --vendor claude --event @<file|-> [--json]
 planar-agent reconcile  [--dry-run] [--stale-after <duration>] [--plan <id>] [--json]
 planar-agent abort      --claim <token> [--reason <text>] [--vendor <s>] [--vendor-session <vendor:id>] [--json]
 
-# Workflow run lifecycle — used by centurion (external harness) to manage
+# Workflow run lifecycle — used by an external workflow harness to manage
 # workflow_runs rows while staying DB-handle-free (decision 444). The caller
 # supplies the harness pid (not getpid()) so crash reconciliation probes the
 # right process. `abandoned` status is reserved for `reconcile`; `run end`
@@ -5648,9 +5668,9 @@ Per-action-kind defaults: planner / coder / reviewer / test_coder probe; heartbe
 
 ### Workflow run correlation flags (`pull` and `claim`)
 
-`pull` and `claim` accept two optional flags for associating a claim with a centurion (or another external harness) workflow run (decision 450):
+`pull` and `claim` accept two optional flags for associating a claim with an external workflow harness run (decision 450):
 
-- `--run <run-id>` — integer id of the `workflow_runs` row to link on the claim. Set by the external harness (e.g. centurion) when dispatching a worker inside a run. Omit for interactive operator claims (leaves `run_id` NULL on the row).
+- `--run <run-id>` — integer id of the `workflow_runs` row to link on the claim. Set by the external harness when dispatching a worker inside a run. Omit for interactive operator claims (leaves `run_id` NULL on the row).
 - `--stage <stage>` — free-text stage name (e.g. `code`, `review`, `plan`) recorded on the claim. Requires `--run`; omitting `--stage` while passing `--run` leaves `stage` NULL. The `context add --claim <token>` verb (task 3901) stamps `run_id` and `stage` server-side from the claim row — the worker passes only `--claim` (decision 447).
 
 Claims acquired without `--run`/`--stage` behave byte-for-byte as before (no behavior change, no default values). The columns are nullable; existing callers and tools that do not pass these flags are unaffected.
@@ -6019,7 +6039,7 @@ Operational run-record surface for Planar-native workflow execution. Run records
 
 Both `planar run` and `planar bench` write to the same `runs` + `run_events` tables (migration `00025_runs`). The read surface is shared: `planar-watch run list` / `planar-watch run show` display records from both. The `run` domain does NOT manage claims — claim lifecycle is `planar-agent pull` / `complete` / `fail` / `release`. Use `planar run` to bracket the outer workflow trace; claims inside the workflow use `planar-agent`.
 
-Note: `runs`/`run_events`/`run_touches` are distinct from the centurion context-plane tables `workflow_runs`/`context_records` (migration `00022`), which are written by `planar-agent run start/end` and `planar-agent context` — not by `planar run`/`bench`.
+Note: `runs`/`run_events`/`run_touches` are distinct from the context-plane tables `workflow_runs`/`context_records` (migration `00022`), which are written by `planar-agent run start/end` and `planar-agent context` — not by `planar run`/`bench`.
 
 ---
 

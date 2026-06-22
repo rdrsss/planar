@@ -125,7 +125,7 @@ pub const ALLOWED_HOST_FNS = [_]HostFn{
 
 /// DENIED_HOST_FNS — names that MUST NOT appear in the registered set. These
 /// are the spawn / general-exec primitives that grew planar-execute into a
-/// harness (the reason it was extracted to centurion). P0.3 asserts the
+/// harness (the reason it was extracted to a separate project). P0.3 asserts the
 /// intersection with the registered set is empty; this module asserts the same
 /// at comptime so a regression cannot even compile.
 pub const DENIED_HOST_FNS = [_][]const u8{
@@ -530,9 +530,10 @@ fn pushArgsTable(L: ?*c.lua_State, hs: *HostState) void {
 // Subprocess shells (allowlisted binaries only — NO general exec)
 // ---------------------------------------------------------------------------
 
-/// ALLOWED_CLI_BINS — the only binaries `cli.planar` may shell. The binary is
-/// hardcoded per-fn (cli.planar always shells "planar"); this constant documents
-/// the boundary and is the allowlist a future cli.planar_agent/etc. would join.
+/// ALLOWED_CLI_BINS — the only binaries the cli.* fns may shell. Each fn
+/// hardcodes its binary (cli.planar → "planar", cli.planar_agent →
+/// "planar-agent", cli.planar_watch → "planar-watch"); this constant
+/// documents the full allowlist and is the guard runAllowlisted checks.
 const ALLOWED_CLI_BINS = [_][]const u8{ "planar", "planar-agent", "planar-watch" };
 
 /// runAllowlisted shells `<bin> <argv...>` (bin MUST be in ALLOWED_CLI_BINS)

@@ -47,6 +47,7 @@ comptime {
     _ = @import("scenario_transitions_test.zig");
     _ = @import("decision_artifact_transitions_test.zig");
     _ = @import("handoff_annotation_transitions_test.zig");
+    _ = @import("claim_atomic_transitions_test.zig");
     _ = @import("entity_view_test.zig");
     _ = @import("handoff_resume_validate_test.zig");
     _ = @import("link_lifecycle_test.zig");
@@ -97,6 +98,7 @@ comptime {
     _ = @import("m5_readcomp_workflow_test.zig");
     _ = @import("introspect_workflow_test.zig");
     _ = @import("workflow_authoring_test.zig");
+    _ = @import("workflow_run_test.zig");
     _ = @import("dispatch_workflow_test.zig");
 
     _ = @import("scenarios/scenario_cockpit_entry_test.zig");

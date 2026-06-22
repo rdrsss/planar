@@ -44,11 +44,10 @@ pub const verb: cli.Cmd = .{
         },
         .{
             .name = "propagate-one",
-            .desc = "Render + POST + record one entity counterpart in one transaction, idempotent skip on existing link.",
+            .desc = "Render + POST + record one entity counterpart; idempotent skip on existing link.",
             .long_desc = "Render one entity's template, POST the counterpart to the external system, and\n" ++
-                "  record the external_links row in one transaction. Idempotent: if a mirror link\n" ++
-                "  already exists for this entity+system pair, the call is a no-op and returns\n" ++
-                "  op=skipped.\n\n" ++
+                "  record the external_links row. Idempotent: if a mirror link already exists\n" ++
+                "  for this entity+system pair, the call is a no-op and returns op=skipped.\n\n" ++
                 "  --from <kind:id>  Source local entity ref (plan:N or task:N)\n" ++
                 "  --strategy        Override GitHub strategy: parent-issue, projects-v2, tracking-issue",
             .flags = &.{

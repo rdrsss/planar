@@ -42,14 +42,18 @@ pub const HarvestArgs = struct {
     spec: DiffSpec = .working_tree,
 };
 
-/// Run `git diff --name-only` against `args.worktree` per `args.spec`,
-/// then insert one `run_touches kind='actual'` row per distinct path.
-/// Returns the number of touch rows written.
+/// Run `git diff --name-only` (plus `git ls-files --others
+/// --exclude-standard` for working-tree mode) against `args.worktree`
+/// per `args.spec`, then insert one `run_touches kind='actual'` row per
+/// distinct path.
 ///
-/// Paths are de-duplicated before insertion so a path that appears once
-/// in the diff yields exactly one row (the UNIQUE constraint on
-/// (run, task, path, kind) would otherwise reject a repeat). Empty diff
-/// → zero rows, no error.
+/// Idempotent: re-harvesting the same (run, task) is a safe no-op — rows
+/// already present for this (run_id, task_id, path, kind) tuple are
+/// silently skipped via `INSERT OR IGNORE`. The returned count reflects
+/// the total distinct paths in the diff (including paths whose row
+/// already existed), not the number of newly-inserted rows.
+///
+/// Empty diff → zero rows, no error.
 pub fn harvest(
     d: *db.sqlite.Db,
     allocator: std.mem.Allocator,
@@ -63,15 +67,28 @@ pub fn harvest(
     }
 
     for (paths) |p| {
-        _ = try runs.touch(d, args.run_id, args.task_id, p, .actual);
+        try runs.touchIdempotent(d, args.run_id, args.task_id, p, .actual);
     }
     return paths.len;
 }
 
-/// Run `git diff --name-only` and return the de-duplicated, order-stable
-/// set of changed paths (each an owned slice). Exposed separately so a
-/// caller can inspect the path set without writing rows (and so tests can
-/// assert the parse independently of the DB insert).
+/// Run `git diff --name-only` (plus `git ls-files --others
+/// --exclude-standard` for working-tree mode) and return the
+/// de-duplicated, order-stable set of changed paths (each an owned
+/// slice). Exposed separately so a caller can inspect the path set
+/// without writing rows (and so tests can assert the parse independently
+/// of the DB insert).
+///
+/// Working-tree mode combines two git queries:
+///   1. `git diff --name-only HEAD` — staged and unstaged edits to
+///      TRACKED files (modifications, deletions, renames).
+///   2. `git ls-files --others --exclude-standard` — UNTRACKED files
+///      that are not git-ignored (i.e. newly-created files a task added
+///      but has not yet committed).
+///
+/// Range mode uses only `git diff --name-only base..head`, which already
+/// includes newly-created files that were committed in the range — no
+/// ls-files pass is needed.
 pub fn diffPaths(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -103,6 +120,26 @@ pub fn diffPaths(
     const raw = try runGit(allocator, io, argv.items);
     defer allocator.free(raw);
 
+    // For working-tree mode we must also collect untracked (newly-created)
+    // files. `git diff --name-only HEAD` only shows files that git is already
+    // tracking; a brand-new file that has never been committed is invisible to
+    // it even when staged. `git ls-files --others --exclude-standard` lists
+    // exactly those files — the set that is not-ignored and not-tracked. The
+    // two outputs are merged into a single de-duplicated list below.
+    if (spec == .working_tree) {
+        const untracked_raw = try runGit(allocator, io, &.{
+            "git",
+            "-C",
+            worktree,
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+        });
+        defer allocator.free(untracked_raw);
+
+        return mergePathOutputs(allocator, raw, untracked_raw);
+    }
+
     return parsePaths(allocator, raw);
 }
 
@@ -127,6 +164,41 @@ fn runGit(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8) Er
         },
     }
     return result.stdout;
+}
+
+/// Merge two newline-delimited path lists (e.g. from `git diff
+/// --name-only` and `git ls-files --others`) into a single
+/// de-duplicated, order-stable slice of owned path strings.  Paths from
+/// `first` appear before paths from `second`; duplicates across the two
+/// inputs are dropped (the first occurrence wins).
+fn mergePathOutputs(
+    allocator: std.mem.Allocator,
+    first: []const u8,
+    second: []const u8,
+) Error![][]const u8 {
+    var seen: std.StringHashMapUnmanaged(void) = .{};
+    defer seen.deinit(allocator);
+
+    var out: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (out.items) |p| allocator.free(p);
+        out.deinit(allocator);
+    }
+
+    for ([_][]const u8{ first, second }) |raw| {
+        var it = std.mem.splitScalar(u8, raw, '\n');
+        while (it.next()) |line| {
+            const path = std.mem.trim(u8, line, " \t\r");
+            if (path.len == 0) continue;
+            if (seen.contains(path)) continue;
+            const owned = try allocator.dupe(u8, path);
+            errdefer allocator.free(owned);
+            try seen.put(allocator, owned, {});
+            try out.append(allocator, owned);
+        }
+    }
+
+    return out.toOwnedSlice(allocator);
 }
 
 /// Split newline-delimited `git diff --name-only` output into a
@@ -474,4 +546,126 @@ test "harvest against a nonexistent worktree returns GitFailed" {
         .task_id = 1,
         .spec = .working_tree,
     }));
+}
+
+// Task 4289: working-tree harvest includes untracked (newly-created) files.
+//
+// This test sets up a repo, commits a base file, then:
+//   - modifies the committed file (tracked, unstaged change)
+//   - creates a brand-new file but does NOT stage it (untracked)
+//
+// Before the fix, `git diff --name-only HEAD` omitted the untracked file.
+// With the fix (`git ls-files --others --exclude-standard` merged in),
+// both the modified tracked file and the untracked new file appear.
+test "harvest captures untracked (unstaged, newly-created) files in working-tree mode" {
+    const a = std.testing.allocator;
+    const repo = initFixtureRepo(a) catch |e| switch (e) {
+        error.SkipZigTest => return error.SkipZigTest,
+        else => return e,
+    };
+    defer a.free(repo);
+
+    // Commit one file to establish a HEAD.
+    try writeFile(a, repo, "tracked.txt", "v1\n");
+    {
+        const add = try gitMust(a, repo, &.{ "add", "." });
+        a.free(add);
+        const commit = try gitMust(a, repo, &.{ "commit", "-m", "base" });
+        a.free(commit);
+    }
+
+    // Modify the tracked file (shows up in `git diff HEAD`).
+    try writeFile(a, repo, "tracked.txt", "v2\n");
+
+    // Write a brand-new file WITHOUT staging it — this is the untracked case
+    // that `git diff --name-only HEAD` silently omits (Task 4289 bug).
+    try writeFile(a, repo, "untracked_new.txt", "brand new\n");
+
+    // Assert via diffPaths first (pure path resolution, no DB).
+    const paths = try diffPaths(a, std.testing.io, repo, .working_tree);
+    defer {
+        for (paths) |p| a.free(p);
+        a.free(paths);
+    }
+
+    // Both the modified tracked file and the untracked new file must appear.
+    try std.testing.expectEqual(@as(usize, 2), paths.len);
+    var saw_tracked = false;
+    var saw_untracked = false;
+    for (paths) |p| {
+        if (std.mem.eql(u8, p, "tracked.txt")) saw_tracked = true;
+        if (std.mem.eql(u8, p, "untracked_new.txt")) saw_untracked = true;
+    }
+    try std.testing.expect(saw_tracked);
+    try std.testing.expect(saw_untracked);
+
+    // Also assert via harvest (DB write path).
+    var d = try setupTestDb(a);
+    defer d.close();
+    const run_id = try seedRun(&d, a, "uid-untracked");
+
+    const n = try harvest(&d, a, std.testing.io, .{
+        .worktree = repo,
+        .run_id = run_id,
+        .task_id = 55,
+        .spec = .working_tree,
+    });
+    try std.testing.expectEqual(@as(usize, 2), n);
+
+    const actual = try runs.touches(&d, a, run_id, .actual);
+    defer runs.deinitTouches(actual, a);
+    try std.testing.expectEqual(@as(usize, 2), actual.len);
+}
+
+// Task 4290: harvest is idempotent — running it twice for the same
+// (run, task) does not fail and does not duplicate rows.
+//
+// Before the fix, the second harvest would hit the UNIQUE(run_id,
+// task_id, path, kind) constraint and return Error.QueryFailed
+// (StepFailed). With INSERT OR IGNORE the second call is a no-op.
+test "harvest is idempotent: second call succeeds and does not duplicate rows" {
+    const a = std.testing.allocator;
+    const repo = initFixtureRepo(a) catch |e| switch (e) {
+        error.SkipZigTest => return error.SkipZigTest,
+        else => return e,
+    };
+    defer a.free(repo);
+
+    try writeFile(a, repo, "idem.txt", "v1\n");
+    {
+        const add = try gitMust(a, repo, &.{ "add", "." });
+        a.free(add);
+        const commit = try gitMust(a, repo, &.{ "commit", "-m", "base" });
+        a.free(commit);
+    }
+    // One uncommitted edit for the harvest to pick up.
+    try writeFile(a, repo, "idem.txt", "v2\n");
+
+    var d = try setupTestDb(a);
+    defer d.close();
+    const run_id = try seedRun(&d, a, "uid-idem");
+
+    // First harvest — inserts rows.
+    const n1 = try harvest(&d, a, std.testing.io, .{
+        .worktree = repo,
+        .run_id = run_id,
+        .task_id = 99,
+        .spec = .working_tree,
+    });
+    try std.testing.expectEqual(@as(usize, 1), n1);
+
+    // Second harvest — must NOT return an error (was QueryFailed before the fix).
+    const n2 = try harvest(&d, a, std.testing.io, .{
+        .worktree = repo,
+        .run_id = run_id,
+        .task_id = 99,
+        .spec = .working_tree,
+    });
+    try std.testing.expectEqual(@as(usize, 1), n2);
+
+    // Row count must be stable — exactly one row, not two.
+    const actual = try runs.touches(&d, a, run_id, .actual);
+    defer runs.deinitTouches(actual, a);
+    try std.testing.expectEqual(@as(usize, 1), actual.len);
+    try std.testing.expectEqualStrings("idem.txt", actual[0].path);
 }

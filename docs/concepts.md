@@ -8,7 +8,7 @@ This document explains the core concepts in Planar. Read it after `planar init` 
 
 Planar ships as five executables. Four are **planning-state executables**, each with a disjoint capability boundary over the shared SQLite DB enforced **by the verb set the binary registers** (not by runtime ACLs). The boundary is a compile-time and install-time property: the binary on PATH literally has no verb for the work it is not allowed to do. This makes vendor-hook blast radius bounded — a hook configured with only `planar-agent` on its PATH cannot mutate planning state regardless of how it is invoked.
 
-The fifth, `planar-execute`, is **not** a planning-state executable: it is the deterministic, spawn-free Lua workflow engine (plan 633) and holds no DB handle at all. A caller invokes `planar-execute run <wf.lua> --phase <name>` to run a deterministic workflow over an allowlisted host surface (`cli`/`git`/`fs`/`flow`/`ctx`) and collect its JSON result; it reaches Planar state only by shelling the planning-state binaries. It exposes no model-spawning host function, so it is a workflow *runner*, not a harness. See [the workflow-engine section](#deterministic-workflow-engine) below; do not conflate it with `centurion`, the separate external full-harness project described under [External workflow harness control plane](#external-workflow-harness-control-plane).
+The fifth, `planar-execute`, is **not** a planning-state executable: it is the deterministic, spawn-free Lua workflow engine (plan 633) and holds no DB handle at all. A caller invokes `planar-execute run <wf.lua> --phase <name>` to run a deterministic workflow over an allowlisted host surface (`cli`/`git`/`fs`/`flow`/`ctx`) and collect its JSON result; it reaches Planar state only by shelling the planning-state binaries. It exposes no model-spawning host function, so it is a workflow *runner*, not a harness. See [the workflow-engine section](#deterministic-workflow-engine) below; do not conflate it with an external full-harness project described under [External workflow harness control plane](#external-workflow-harness-control-plane).
 
 | Binary | Audience | Writes to |
 |---|---|---|
@@ -33,11 +33,11 @@ The ritual every code-writing agent dispatch follows is `planar-agent pull → h
 
 ## Deterministic workflow engine
 
-`planar-execute` (revived in plan 633) is a deterministic, spawn-free Lua workflow engine — the fifth binary. An LLM caller (or any script) invokes `planar-execute run <wf.lua> --phase <name> [--args <json>]`; the engine loads the workflow in a Lua sandbox, registers an allowlisted, deterministic host surface, runs the named phase, and prints the workflow's `flow.result(table)` payload as JSON on stdout. It is the deterministic counterpart to the external `centurion` harness: where `centurion` orchestrates LLM calls, `planar-execute` runs only deterministic work and hands control back to its caller for any model step.
+`planar-execute` (revived in plan 633) is a deterministic, spawn-free Lua workflow engine — the fifth binary. An LLM caller (or any script) invokes `planar-execute run <wf.lua> --phase <name> [--args <json>]`; the engine loads the workflow in a Lua sandbox, registers an allowlisted, deterministic host surface, runs the named phase, and prints the workflow's `flow.result(table)` payload as JSON on stdout. It is the deterministic, spawn-free complement to a full external workflow harness: `planar-execute` runs only deterministic work and hands control back to its caller for any model step.
 
 ### No DB handle, no model spawn
 
-`planar-execute` holds **no SQLite handle**. It reaches Planar state only by shelling the planning-state binaries via the `cli` host function (`cli.planar` / `cli.planar_json` — binary hardcoded to `planar`/`planar-agent`/`planar-watch`, the script supplies only args). It exposes **no** model-spawning primitive — no `agent`, `parallel`, `pipeline`, `dispatch`, `exec`, or any process-spawn function. This is the load-bearing invariant: an earlier `planar-execute` grew re-entrant headless LLM spawning and became a harness in its own right, which is why it was extracted to `centurion`; the revival reigns that scope back in by construction. A unit test asserts the registered host-fn set equals a frozen allowlist and contains none of the denied spawn-surface names.
+`planar-execute` holds **no SQLite handle**. It reaches Planar state only by shelling the planning-state binaries via the `cli` host function (`cli.planar` / `cli.planar_json` — binary hardcoded to `planar`/`planar-agent`/`planar-watch`, the script supplies only args). It exposes **no** model-spawning primitive — no `agent`, `parallel`, `pipeline`, `dispatch`, `exec`, or any process-spawn function. This is the load-bearing invariant: an earlier `planar-execute` grew re-entrant headless LLM spawning and became a harness in its own right, which is why it was extracted to a separate external project; the revival reigns that scope back in by construction. A unit test asserts the registered host-fn set equals a frozen allowlist and contains none of the denied spawn-surface names.
 
 ### Confined host surface
 
@@ -51,17 +51,17 @@ Phases are discrete entrypoints — one clean process per deterministic segment.
 
 ## External workflow harness control plane
 
-`centurion` (the external Lua-based workflow harness, extracted from plan 492) drives `claude -p` agent workers through a `ctx` host-function surface. It is a **separate external project**, not part of the Planar binary set, and must not be confused with the in-repo deterministic `planar-execute` engine described above: `centurion` orchestrates LLM calls (it *is* a harness, with `ctx.agent` / `ctx.parallel` / `ctx.pipeline` spawn surfaces), whereas `planar-execute` runs only deterministic work and exposes no model-spawn function. `centurion` is architecturally distinct from the four planning-state binaries: it holds **no DB handle** and never opens SQLite. All state reads go through `planar` / `planar-agent` subprocesses; the workflow script cannot write directly to any database or planning entity.
+An external Lua-based workflow harness drives agent workers through a host-function surface. It is a **separate external project**, not part of the Planar binary set, and must not be confused with the in-repo deterministic `planar-execute` engine described above: an external harness orchestrates LLM calls (it *is* a harness, with spawn surfaces), whereas `planar-execute` runs only deterministic work and exposes no model-spawn function. An external harness is architecturally distinct from the four planning-state binaries: it holds **no DB handle** and never opens SQLite. All state reads go through `planar` / `planar-agent` subprocesses; the workflow script cannot write directly to any database or planning entity.
 
 ### No-DB-handle stance
 
-`centurion` is a **pure CLI driver**. Every read operation shells `planar` or `planar-agent`, parses their JSON stdout, and returns the result to the Lua layer. Every write operation is similarly mediated: the workflow script calls `ctx.agent(brief, opts)`, which shells `claude -p` inside a constrained environment; the worker calls `planar-agent` verbs (claim, heartbeat, complete/fail/release/block) — never `planar` directly.
+An external harness is a **pure CLI driver**. Every read operation shells `planar` or `planar-agent`, parses their JSON stdout, and returns the result to the Lua layer. Every write operation is similarly mediated: the workflow script calls a spawn primitive, which shells `claude -p` inside a constrained environment; the worker calls `planar-agent` verbs (claim, heartbeat, complete/fail/release/block) — never `planar` directly.
 
-This makes the capability boundary physical, not just policy: the `centurion` process cannot edit files, write DB rows, or call planning-entity mutations. Only the binaries it shells can, and only along the verbs those binaries expose. The Lua sandbox additionally strips `os`, `io`, and dangerous `math` functions so that workflow scripts cannot perform filesystem or network I/O from Lua itself.
+This makes the capability boundary physical, not just policy: the harness process cannot edit files, write DB rows, or call planning-entity mutations. Only the binaries it shells can, and only along the verbs those binaries expose. The Lua sandbox additionally strips `os`, `io`, and dangerous `math` functions so that workflow scripts cannot perform filesystem or network I/O from Lua itself.
 
 ### Constrained worker PATH
 
-The `claude -p` workers spawned by `centurion` run with a PATH restricted to:
+Agent workers run with a PATH restricted to:
 
 - `planar-agent` — agent-table writes and coordination.
 - `git` — source-tree reads and commits.
@@ -71,7 +71,7 @@ The `claude -p` workers spawned by `centurion` run with a PATH restricted to:
 
 ### Lua control-plane internals
 
-Inside `centurion`:
+Inside the harness:
 
 - A single `lua_State` is created per invocation and reused for the workflow's lifetime.
 - A cooperative scheduler drives `ctx.parallel` (N-way barrier) and `ctx.pipeline` (per-item stage chains).
@@ -137,7 +137,7 @@ The cockpit offers three editing tiers. All edits route through `planar`'s exist
 | Tier | Key | What it does | Guard |
 |------|-----|--------------|-------|
 | Entity-field editing | `e` | Edit a planning entity's title, body, or field (e.g. answer a question, update a task body) | Strict scope resolver — cross-scope edit refused without explicit scope; confirm-on-overwrite for destructive changes |
-| Task lifecycle editing | `L` | Move a task through its status lifecycle (open → doing → done, block, reopen, reprioritize) | Claim-aware: reads the task's live claim/heartbeat state and refuses or safely routes any transition that would strand an active claim — never a raw flip under a live claim |
+| Task lifecycle editing | `L` | Move a task through its status lifecycle (open → doing → done, block, reopen, reprioritize) | Claim-atomic: when the engine returns `ActiveClaimRefused`, the cockpit enters `force_confirm` mode — the overlay shows the active claim and prompts `f` to force-override or Esc to cancel. Never a silent raw flip under a live claim. |
 | External / workbench actions | `S` | Trigger a sync/propagate or workbench push/pull/status | Confirmation-gated before executing |
 
 Agent-claim mutation (releasing, reassigning claims) stays on `planar-agent` and is not available from the cockpit.
@@ -158,7 +158,7 @@ The context plane is the durable working-memory layer that lets one workflow sta
 
 ### Tables
 
-**`workflow_runs`** is the identity and audit record for one `centurion` (external workflow harness) invocation. A row is opened by `planar-agent run start` before the Lua `run()` function is entered, and closed by `planar-agent run end` after it returns. The harness itself holds no DB handle (decision 444) — it shells those verbs exactly as it shells the coordination verbs (`pull`, `complete`, etc.). The row carries `plan_id`, `workflow_name`, a unique `run_identifier` (`run-<pid>-<nanos>`), `pid`, `repo_root`, and a `status` in `running | completed | failed | interrupted | abandoned`. `abandoned` is written only by `planar-agent reconcile`, which pid-probes stalled rows whose process is no longer alive. Dry-run (`--dry-run`) creates no run row.
+**`workflow_runs`** is the identity and audit record for one external workflow harness invocation. A row is opened by `planar-agent run start` before the Lua `run()` function is entered, and closed by `planar-agent run end` after it returns. The harness itself holds no DB handle (decision 444) — it shells those verbs exactly as it shells the coordination verbs (`pull`, `complete`, etc.). The row carries `plan_id`, `workflow_name`, a unique `run_identifier` (`run-<pid>-<nanos>`), `pid`, `repo_root`, and a `status` in `running | completed | failed | interrupted | abandoned`. `abandoned` is written only by `planar-agent reconcile`, which pid-probes stalled rows whose process is no longer alive. Dry-run (`--dry-run`) creates no run row.
 
 **`context_records`** is run-scoped working memory. Every record is keyed `(run_id, stage, session_id, claim_id)` and carries a `kind` (`finding`, `risk`, `artifact`, `followup`, `summary`, `capsule`) plus a free-text `body`. The `status` column (`active | consumed | superseded`) is the lifecycle signal. A nullable `compiled_from` column on `capsule` records stores the integer ids of the raw records the capsule distilled — full provenance without deletion.
 
@@ -166,7 +166,7 @@ The context plane is the durable working-memory layer that lets one workflow sta
 
 **Accumulate.** A worker writes records via `planar-agent context add --claim <token> --kind <kind> --body <text>`. The claim token is the only envelope the worker needs to thread (decision 447): `planar-agent` stamps `run_id`, `stage`, `session_id`, and `task_id` server-side from the claim row. The claim row gains nullable `run_id` and `stage` columns (migration 00023), populated at `pull`/`claim` time when the orchestrator passes `--run <id> --stage <name>` (decision 450). Interactive claims leave these null; the context verb is a no-op for claims without a run row.
 
-**Read.** A workflow script reads accumulated records from a prior stage via `ctx.context([stage])`. With no argument it returns all records for the current run; with a stage name it returns only that stage's records. The Lua return value is a 1-based sequence of tables, each carrying `id`, `run_id`, `stage`, `kind`, `body`, `status`, `compiled_from` (nil when absent), and `created_at`. Under the hood `centurion` shells `planar-agent context list --run <run_db_id> [--stage <s>] --json` and maps the parsed JSON into the Lua table — no DB handle is opened.
+**Read.** A workflow script reads accumulated records from a prior stage via `ctx.context([stage])`. With no argument it returns all records for the current run; with a stage name it returns only that stage's records. The Lua return value is a 1-based sequence of tables, each carrying `id`, `run_id`, `stage`, `kind`, `body`, `status`, `compiled_from` (nil when absent), and `created_at`. Under the hood the external harness shells `planar-agent context list --run <run_db_id> [--stage <s>] --json` and maps the parsed JSON into the Lua table — no DB handle is opened.
 
 **Compose.** `ctx.brief({...})` assembles a methodology-compliant coder brief and automatically injects the current run's context records into the "Prior-stage context" section. Any `capsule`-kind record is promoted to a compiled-capsule sub-section; remaining records render as a `kind: body` bullet list. The caller supplies the `problem_statement`, `claim_token`, `gates`, and optional `spec_citations`/`locked_decisions`; the context injection is automatic when `active_run` is non-null.
 
@@ -178,7 +178,7 @@ Raw records start life as `active`. Stage close marks them `consumed` (records i
 
 `planar-watch run list [--plan <id>] [--status <s>]` lists runs. `planar-watch run show <id> [--json]` returns the full run row plus all `context_records`, grouped and ordered by stage then `created_at`. The JSON shape is `{run: RunRow, context_records: [...]}`.
 
-**SQLite tables:** `workflow_runs` (migration 00022), `context_records` (migration 00022), `agent_work_claims.run_id/stage` (migration 00023). **Primary verbs:** `planar-agent run start/end`, `planar-agent context add/list/resolve`, `ctx.context([stage])`, `ctx.brief({...})` (host functions on `centurion`, the external workflow harness), `planar-watch run list/show`. **Decisions:** 444 (run row owned by `planar-agent`; harness is DB-handle-free), 445 (separate table — timeline vs working memory), 446 (lifecycle not deletion; capsule provenance), 447 (claim is the correlation key), 450 (claims carry run/stage).
+**SQLite tables:** `workflow_runs` (migration 00022), `context_records` (migration 00022), `agent_work_claims.run_id/stage` (migration 00023). **Primary verbs:** `planar-agent run start/end`, `planar-agent context add/list/resolve`, `ctx.context([stage])`, `ctx.brief({...})` (host functions on the external workflow harness), `planar-watch run list/show`. **Decisions:** 444 (run row owned by `planar-agent`; harness is DB-handle-free), 445 (separate table — timeline vs working memory), 446 (lifecycle not deletion; capsule provenance), 447 (claim is the correlation key), 450 (claims carry run/stage).
 
 ---
 
@@ -530,6 +530,14 @@ Legal transitions (enforced by `policy.status.check`):
 
 Tasks carry a `title`, an optional `body` (Markdown), a `next_action` field for handoff continuity, and a `scope_kind`/`scope_id` pair that records which scope they belong to.
 
+### Claim-atomic operator transitions
+
+Operator-driven status transitions (`task done`, `task block`, `task reopen`, `task update --status`) are **claim-atomic**: when the task has an active work claim (`agent_work_claims.status = 'active'` and `lease_expires_at >= now()`), the operator verb refuses the status flip and exits non-zero with a message identifying the active claim.
+
+This closes the TOCTOU window where an operator `task done` would strand a live agent lease mid-flight. The correct closure path for a claimed task is the agent terminal verb (`planar-agent complete | fail | release`). The operator override is `--force`, which bypasses the claim guard AND the status-transition matrix — use it only when the agent is known to be no longer active (e.g. the process crashed without releasing its claim).
+
+Expired claims (`lease_expires_at < now()`) are NOT active and do not trigger the guard. The check is real-time on every operator status-flip.
+
 **SQLite table:** `tasks`. **Primary verbs:** `planar task add`, `planar task list`, `planar task show`, `planar task doing`, `planar task done`, `planar task block`, `planar task cancel`, `planar task reopen`.
 
 ---
@@ -581,12 +589,12 @@ An orchestration strategy is the operator-facing dispatch frame for a plan. It b
 | Strategy | One-line description |
 |----------|----------------------|
 | `classic` | Coder runs in the operator's pwd on the current branch. Sequential cycles, reviewer per cycle. No worktrees, no epic branch, no parallelism. The explicit continuity default — today's behavior bit-for-bit. |
-| `isolated-sequential` | Coder runs in a dedicated [worktree](#worktree) on a `cycle/<plan-slug>/<task-slug>` branch off an `epic/<plan-slug>` branch. Sequential cycles, reviewer per cycle. Operator pwd stays clean. *(harness-owned — the external `centurion` harness)* |
-| `parallel-fanout` | Fan out to N parallel coders on the parallel-eligible subset of the plan's open tasks; each in its own worktree off the shared epic branch; one consolidated reviewer pass at fan-in. *(harness-owned — the external `centurion` harness)* |
+| `isolated-sequential` | Coder runs in a dedicated [worktree](#worktree) on a `cycle/<plan-slug>/<task-slug>` branch off an `epic/<plan-slug>` branch. Sequential cycles, reviewer per cycle. Operator pwd stays clean. *(harness-owned — an external workflow harness)* |
+| `parallel-fanout` | Fan out to N parallel coders on the parallel-eligible subset of the plan's open tasks; each in its own worktree off the shared epic branch; one consolidated reviewer pass at fan-in. *(harness-owned — an external workflow harness)* |
 | `barrel-deferred` | Coder cycles run back-to-back in pwd; reviewer fires once at a milestone or plan boundary on the union diff. The existing `barrel-deferred` dispatch shape promoted to a named strategy. |
 | `barrel-bypass` | No reviewer dispatch at all. Quality gates (`make fmt-check` + `make build` + `make test` + `make test-integration` twice + render check + remaining validators) are the entire signal. Sequential, in-pwd. |
 
-The model-driven `/pl-orchestrator` skill runs only the three **in-pwd** strategies (`classic`, `barrel-deferred`, `barrel-bypass`). The two **worktree** strategies (`isolated-sequential`, `parallel-fanout`) are owned by the external **`centurion`** harness; when a plan is a fit, `/pl-orchestrator` recommends handing it to `centurion` rather than running it itself.
+The model-driven `/pl-orchestrator` skill runs only the three **in-pwd** strategies (`classic`, `barrel-deferred`, `barrel-bypass`). The two **worktree** strategies (`isolated-sequential`, `parallel-fanout`) are owned by an **external workflow harness**; when a plan is a fit, `/pl-orchestrator` surfaces that and recommends using an external harness rather than running it itself.
 
 ### The five underlying axes
 
@@ -625,7 +633,7 @@ For the canonical axis table, named bundles, invalid-combination list, and recom
 
 A Planar worktree is a git working tree created for an isolated coder cycle. It is a real `git worktree add` checkout — Planar does not reinvent the git primitive, it just owns the path convention and the persistence of which claim owns which worktree.
 
-**Worktree lifecycle — creation, the epic/cycle branch model, fan-in merge, cleanup — is owned by the external `centurion` harness, not the model-driven orchestrator.** The model orchestrator runs `classic` (in-pwd) only. The concept, the claim-attached persistence, and the scope-inside-worktree rules below survive regardless of who creates the worktree.
+**Worktree lifecycle — creation, the epic/cycle branch model, fan-in merge, cleanup — is owned by an external workflow harness, not the model-driven orchestrator.** The model orchestrator runs `classic` (in-pwd) only. The concept, the claim-attached persistence, and the scope-inside-worktree rules below survive regardless of who creates the worktree.
 
 ### Topology — epic + child, main checkout stays on master
 
@@ -950,9 +958,9 @@ Which model an agent role spawns is **config-driven and unified** (plan 540). Th
 
 A single **shared resolver** (`src/engine/models.zig`: `resolveTier`, `resolveRoleAuto`) composes these into a concrete `(vendor, model)` per role, with provenance. Every consumer resolves through it — there are no parallel per-tool model tables:
 
-- **`planar models`** — `list` (discover installed provider CLIs + curated catalog), `routing` (effective role→vendor/model with provenance; `--json` is what the external `centurion` harness shells), `refresh` (write the `~/.planar/models/catalog.json` cache), `apply` (scaffold the config block).
+- **`planar models`** — `list` (discover installed provider CLIs + curated catalog), `routing` (effective role→vendor/model with provenance; `--json` is what an external workflow harness shells to build its per-role dispatch table), `refresh` (write the `~/.planar/models/catalog.json` cache), `apply` (scaffold the config block).
 - **`agents/models.md`** Tier Table + rendered skill/agent `model:` fields — generated from the resolver at `planar skills render`.
-- **`centurion`** (the external workflow harness) — shells `planar models routing --json` to build its per-role dispatch table (it holds no engine handle), falling back to compiled defaults when `planar` is unreachable.
+- **External workflow harnesses** — shell `planar models routing --json` to build a per-role dispatch table (no engine handle), falling back to compiled defaults when `planar` is unreachable.
 
 The provider CLIs (`claude`, `codex`) do not expose a machine-readable model list, so the per-vendor catalog is curated in the binary; discovery confirms which CLIs are installed by invoking `<bin> --version`. See `docs/cli-reference.md` § Domain `config` (Model routing) and § Domain `models`, and the `pl-models-config` skill.
 
