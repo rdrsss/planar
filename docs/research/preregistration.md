@@ -45,6 +45,14 @@ Amendments (append-only):
     M-BLAST unmeasured); first confirmatory reps that include reviewers may
     refine Z via an explicit, dated amendment. Thresholds frozen now to unblock
     confirmatory runs per the operator's decision.
+  - 2026-06-22: Confirmatory run parameters committed. Spend ceiling = $300
+    (§9); corpus = plans 659/668/678 × 3 arms × N=5 = 45 cells. Declaration
+    provenance reset: gold git-fleet originals (659/668) + blind declarer (678,
+    agent-predicted); hindsight-contaminated pre-existing declarations replaced
+    (see §8). Per-plan bases pinned (659=fcb167a, 668=274b6f6, 678=32061f7);
+    base fidelity operator-asserted for modify-features; 659/668 milestone-span
+    noted exploratory (§8). Harness gains a per-plan base override + softened
+    base-existence gate to support modify-feature corpora.
 ```
 
 Anything discovered after a freeze is **exploratory** (§8), labeled as such,
@@ -252,6 +260,22 @@ why the corpus must *vary* in coupling: RQ4's finding is the slope, not a point.
 - **Disclosure — self-hosting.** Planar evaluated partly on its own backlog.
   Accepted in systems work; disclosed explicitly; `git-fleet` carries the
   primary claim to keep self-hosting from being load-bearing.
+- **Construct — declaration provenance.** Confirmatory declared touches use the
+  corpus features' *original* git-fleet `task_touch_paths` (plans 659, 668) —
+  genuine predictions authored during git-fleet's own planning, independent of
+  the corpus implementation. Plan 678's three tasks had no recoverable original
+  declaration and use a *blind declarer-agent* prediction made at the feature's
+  base commit with no access to the implementing commits (labeled
+  agent-predicted). Pre-existing corpus declarations that were hindsight-derived
+  (declared == actual diff) were discarded before any confirmatory run.
+- **Internal — base fidelity for modify-features.** The corpus features modify
+  long-lived files, so the file-existence base gate does not apply; each plan's
+  base is pinned to the parent of its earliest task commit (659=fcb167a,
+  668=274b6f6, 678=32061f7) and base fidelity is operator-asserted. Plans 659
+  and 668 bundle tasks spanning more than one milestone, so their pinned base
+  precedes all of the plan's tasks; later tasks are therefore re-implemented
+  from an earlier-than-natural base. The magnitude of RQ2/RQ3 effects on those
+  two plans is treated as exploratory; RQ1 (declared-vs-actual) is unaffected.
 
 ---
 
@@ -262,3 +286,8 @@ experiment-level spend ledger (cumulative by arm) is queryable, and a spend
 ceiling is committed at Stage-2. On reaching the ceiling, stop and analyze what
 exists rather than extending. The pilot (M1.7) is the cheap go/no-go before any
 corpus spend.
+
+**Committed at Stage-2 (2026-06-22):** ceiling = **$300 USD**; confirmatory
+matrix = plans 659 (m7-polish), 668 (Plan-475, coupled), 678 (Plan-388, mixed)
+× 3 arms × **N=5** reps = 45 cells. On reaching $300 cumulative spend the
+harness stops cleanly (no new cell dispatched) and we analyze what exists.
