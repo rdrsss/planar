@@ -36,9 +36,13 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         try emitText(ctx, result, dry_run);
     }
 
-    // Non-zero exit when blocked (apply or dry-run — blocked is a hard failure
-    // in both modes so the operator sees a non-zero exit they can act on).
-    if (!result.ready) {
+    // Non-zero exit when blocked — but ONLY on the apply path.
+    // --dry-run is a preview: it exits 0 regardless of readiness so
+    // callers (e.g. planar-execute workflows) can read the structured
+    // {ready, blocked_by} JSON before deciding whether to proceed.
+    // The apply path (no --dry-run) keeps the gated non-zero exit so
+    // the operator sees a clear failure when the plan cannot be closed.
+    if (!result.ready and apply) {
         // Flush before exit.
         exit.die(ctx, error.Conflict, "plan {d} is not ready to close ({d} reason(s))", .{
             plan_id,

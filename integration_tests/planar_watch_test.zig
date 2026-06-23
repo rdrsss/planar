@@ -1877,3 +1877,120 @@ test "planar-agent reconcile --plan --dry-run previews only plan-scoped stale cl
         return error.DryRunMutated;
     }
 }
+
+// =========================================================================
+// Task 4349 — planar-watch run list includes op-arm (workflow-driven) runs.
+//
+// `planar run start` writes to the `runs` table (op-arm). Pre-fix,
+// `planar-watch run list` only queried `workflow_runs` and returned []
+// for these entries. With the --arm flag (default: all), both sources
+// appear.
+// =========================================================================
+
+test "planar-watch run list --json includes op-arm run seeded via planar run start" {
+    // RED-THEN-GREEN: this test asserts the contract fixed by task 4349.
+    // Before the fix: run list returned runs:[] for op-arm entries (which live
+    // in the `runs` table, not `workflow_runs`). After the fix: they appear
+    // under source:"op" in the combined output.
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    // Seed plan with a task.
+    const pid_str = seedPlanWithTask(&suite, "watch-run-list-op", "op-task");
+    defer gpa.free(pid_str);
+
+    // Seed an op-arm run via `planar run start` (writes to `runs` table).
+    // This is the workflow-driven path used by finalize_closeout.lua and
+    // other planar-execute workflows.
+    const start_out = suite.mustRun(&.{
+        "run",        "start",
+        "--plan",     pid_str,
+        "--workflow", "finalize",
+        "--json",
+    });
+    defer gpa.free(start_out);
+
+    // Verify the run was created (run_uid in JSON).
+    try std.testing.expect(std.mem.indexOf(u8, start_out, "\"run_uid\":\"") != null);
+
+    // Extract run_uid for the assertion below.
+    const run_uid = extractStringField(gpa, start_out, "\"run_uid\":\"") catch @panic("no run_uid");
+    defer gpa.free(run_uid);
+    try std.testing.expect(run_uid.len > 0);
+
+    // planar-watch run list --json (default --arm all) must include the op-arm run.
+    const out = mustRunWatch(&suite, &.{ "run", "list", "--json" });
+    defer gpa.free(out);
+
+    // Top-level shape.
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"generated_at\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"runs\":[") != null);
+
+    // The op-arm run must appear (run_uid is the run_identifier for op-source rows).
+    if (std.mem.indexOf(u8, out, run_uid) == null) {
+        std.debug.print(
+            "run list --json did not include op-arm run '{s}':\n{s}\n",
+            .{ run_uid, out },
+        );
+        return error.OpArmRunMissing;
+    }
+
+    // The source field must be "op" to distinguish from wf-source rows.
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"source\":\"op\"") != null);
+
+    // The workflow name must appear as workflow_name (arm = "finalize").
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"finalize\"") != null);
+}
+
+test "planar-watch run list --arm op returns only op-arm runs; --arm wf returns only wf-arm" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    // Seed plan with two tasks so both agents and run start have targets.
+    const pid_str = seedPlanWithTask(&suite, "watch-arm-filter", "arm-task");
+    defer gpa.free(pid_str);
+
+    // Seed a wf-arm run via planar-agent run start.
+    const self_pid = std.fmt.allocPrint(gpa, "{d}", .{std.c.getpid()}) catch @panic("OOM");
+    defer gpa.free(self_pid);
+    const wf_run_label = std.fmt.allocPrint(gpa, "arm-wf-{d}", .{std.c.getpid()}) catch @panic("OOM");
+    defer gpa.free(wf_run_label);
+    const wf_start = mustRunAgent(&suite, &.{
+        "run",        "start",    "--plan",      pid_str,
+        "--workflow", "wf-agent", "--run-id",    wf_run_label,
+        "--pid",      self_pid,   "--repo-root", "/tmp",
+        "--json",
+    });
+    defer gpa.free(wf_start);
+
+    // Seed an op-arm run via planar run start.
+    const op_start = suite.mustRun(&.{
+        "run",        "start",
+        "--plan",     pid_str,
+        "--workflow", "finalize-arm",
+        "--json",
+    });
+    defer gpa.free(op_start);
+    const op_uid = extractStringField(gpa, op_start, "\"run_uid\":\"") catch @panic("no run_uid");
+    defer gpa.free(op_uid);
+
+    // --arm wf: only wf-source rows; op-arm run must NOT appear.
+    const wf_out = mustRunWatch(&suite, &.{ "run", "list", "--arm", "wf", "--json" });
+    defer gpa.free(wf_out);
+    try std.testing.expect(std.mem.indexOf(u8, wf_out, "\"source\":\"wf\"") != null);
+    if (std.mem.indexOf(u8, wf_out, op_uid) != null) {
+        std.debug.print("--arm wf leaked op-arm run '{s}':\n{s}\n", .{ op_uid, wf_out });
+        return error.WfArmLeakedOpRun;
+    }
+
+    // --arm op: only op-source rows; wf-arm run must NOT appear.
+    const op_out = mustRunWatch(&suite, &.{ "run", "list", "--arm", "op", "--json" });
+    defer gpa.free(op_out);
+    try std.testing.expect(std.mem.indexOf(u8, op_out, "\"source\":\"op\"") != null);
+    if (std.mem.indexOf(u8, op_out, wf_run_label) != null) {
+        std.debug.print("--arm op leaked wf-arm run '{s}':\n{s}\n", .{ wf_run_label, op_out });
+        return error.OpArmLeakedWfRun;
+    }
+}

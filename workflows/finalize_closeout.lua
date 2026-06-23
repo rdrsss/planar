@@ -102,47 +102,53 @@ function closeout()
 
   -- 3. Evaluate the gate in dry-run mode.
   --
-  --    FINAL DESIGN: pcall cli.planar_json on the dry-run.
-  --    (a) Success  → gate.ready=true (ready plans exit 0). Proceed with apply.
-  --    (b) Failure  → plan is not ready (non-zero exit). The host's raiseError
-  --        embeds stderr in the Lua error string, which carries the diagnostic
-  --        reason. runAllowlisted raises before returning stdout, so the JSON
-  --        blocked_by array is not directly accessible on the error path. We
-  --        surface the error string as the blocked_by content — it contains the
-  --        actual "plan N is not ready: …" message from stderr.
+  --    DESIGN: cli.planar_json on the dry-run exits 0 in BOTH ready and
+  --    not-ready cases (--dry-run is a preview, not a gate). The structured
+  --    {ready, blocked_by, ...} JSON is always available on stdout regardless
+  --    of readiness. Read gate.ready to branch — no pcall needed.
 
-  local gate_ok, gate_or_err = pcall(function()
-    return cli.planar_json({
-      "plan", "closeout", plan_id,
-      "--dry-run", "--json",
-    })
-  end)
+  local gate = cli.planar_json({
+    "plan", "closeout", plan_id,
+    "--dry-run", "--json",
+  })
 
-  -- Emit the closeout-eval event with the verdict.
-  if gate_ok then
-    -- gate_or_err is the parsed gate table (ready=true, blocked_by=[]).
+  -- Emit the closeout-eval event with the structured verdict.
+  if gate.ready then
     local payload = '{"ready":true,"blocked_by":[]}'
     run_event(run_uid, "closeout-eval", payload)
   else
-    -- gate_or_err is the Lua error string from the host (contains stderr).
-    -- The plan is not ready.
-    local err_msg = tostring(gate_or_err or "plan not ready")
-    -- Sanitize the error message for use inside a JSON string: escape
-    -- backslashes and double-quotes, strip newlines.
-    err_msg = err_msg:gsub("\\", "\\\\"):gsub('"', '\\"'):gsub("\n", " "):gsub("\r", "")
-    local payload = '{"ready":false,"blocked_by":["' .. err_msg .. '"]}'
+    -- Build blocked_by array string from the structured gate response.
+    -- Each element is a plain string; encode as JSON array of strings.
+    local parts = {}
+    if gate.blocked_by and #gate.blocked_by > 0 then
+      for _, reason in ipairs(gate.blocked_by) do
+        local r = tostring(reason or "unknown")
+        r = r:gsub("\\", "\\\\"):gsub('"', '\\"'):gsub("\n", " "):gsub("\r", "")
+        parts[#parts + 1] = '"' .. r .. '"'
+      end
+    end
+    local blocked_arr = "[" .. table.concat(parts, ",") .. "]"
+    local payload = '{"ready":false,"blocked_by":' .. blocked_arr .. '}'
     run_event(run_uid, "closeout-eval", payload)
   end
 
   -- -------------------------------------------------------------------------
   -- Rule 7 branch: NOT ready → aborted; NEVER call apply on this path.
   -- -------------------------------------------------------------------------
-  if not gate_ok then
-    local err_msg = tostring(gate_or_err or "plan not ready")
-    err_msg = err_msg:gsub("\\", "\\\\"):gsub('"', '\\"'):gsub("\n", " "):gsub("\r", "")
+  if not gate.ready then
+    -- Summarize the blockers for the event payload and the flow.result.
+    local blockers = {}
+    if gate.blocked_by then
+      for _, reason in ipairs(gate.blocked_by) do
+        local r = tostring(reason or "unknown")
+        r = r:gsub("\\", "\\\\"):gsub('"', '\\"'):gsub("\n", " "):gsub("\r", "")
+        blockers[#blockers + 1] = r
+      end
+    end
+    local first_reason = blockers[1] or "plan not ready"
 
     -- Emit blocked event.
-    local blocked_payload = '{"plan_id":' .. plan_id .. ',"reason":"' .. err_msg .. '"}'
+    local blocked_payload = '{"plan_id":' .. plan_id .. ',"reason":"' .. first_reason .. '"}'
     run_event(run_uid, "blocked", blocked_payload)
 
     -- Finish the run as aborted.
@@ -152,11 +158,11 @@ function closeout()
 
     -- Return the not-ready result. The plan is UNCHANGED; closeout was NEVER
     -- applied. This is the structural Rule-7 guarantee.
-    -- blocked_by carries the real diagnostic from stderr (embedded by
-    -- raiseError as "{bin} exited non-zero: {stderr}").
+    -- blocked_by now carries the real structured blocker list from the dry-run
+    -- JSON (not the stderr fallback string).
     flow.result({
       ready       = false,
-      blocked_by  = {err_msg},
+      blocked_by  = blockers,
       run_uid     = run_uid,
     })
     return
@@ -164,7 +170,7 @@ function closeout()
 
   -- -------------------------------------------------------------------------
   -- Ready path: apply the closeout.
-  -- The apply call is reachable ONLY from this branch (gate_ok == true).
+  -- The apply call is reachable ONLY from this branch (gate.ready == true).
   -- -------------------------------------------------------------------------
   flow.log("finalize_closeout: plan " .. plan_id .. " is READY — applying closeout")
 

@@ -1,19 +1,25 @@
 //! handlers/run — `planar-watch run list` / `planar-watch run show <id>`
 //!
 //! Read-only observability for the `workflow_runs` and `context_records`
-//! tables introduced in migration 00022 (workflow context plane).
+//! tables introduced in migration 00022 (workflow context plane), AND for
+//! the `runs` table (op/bench-arm runs from `planar run start`).
 //!
 //! Verb group: `run`
-//!   - `list [--plan <id>] [--status <s>] [--json]`
-//!       Lists workflow_runs rows, newest-first. Optional filters:
+//!   - `list [--plan <id>] [--status <s>] [--arm wf|op|all] [--json]`
+//!       Lists runs, newest-first. --arm selects the source table:
+//!         wf  — workflow_runs only (context-plane, written by planar-agent
+//!               run start; these have context_records in planar-watch run show).
+//!         op  — runs table only (op/workflow-arm, written by planar run start;
+//!               detail via planar run show <run_uid>).
+//!         all — (default) both sources combined; each row carries a "source"
+//!               field ("wf" | "op") so callers can route to the right show verb.
 //!       --plan <id>   restrict to runs for a given plan.
-//!       --status <s>  restrict by run status (running | completed | failed |
-//!                     interrupted | abandoned); default: all.
+//!       --status <s>  restrict by run status; default: all.
 //!       JSON shape: { generated_at: ISO8601, runs: [RunRow] }
 //!
 //!   - `show <id> [--json]`
-//!       Shows one run's full row PLUS its context_records, grouped by
-//!       stage then ordered by created_at. Drill-down view.
+//!       Shows one CONTEXT-PLANE (wf-source) run's full row PLUS its
+//!       context_records. For op-source runs use `planar run show <run_uid>`.
 //!       JSON shape: { run: RunRow, context_records: [ContextRecord] }
 //!
 //! Strict read-only: this module never opens a writable DB handle.
@@ -39,15 +45,18 @@ const ps = @import("ps.zig");
 
 const list_verb: cli.Cmd = .{
     .name = "list",
-    .desc = "List workflow runs (filterable by plan and/or status).",
-    .long_desc = "Returns workflow_runs rows ordered by started_at descending.\n\n" ++
+    .desc = "List workflow runs (filterable by plan, status, and source arm).",
+    .long_desc = "Returns runs ordered by started_at descending.\n\n" ++
         "  --plan <id>    restrict to runs for the given plan.\n" ++
         "  --status <s>   restrict by status: running | completed | failed |\n" ++
         "                 interrupted | abandoned. Default: all.\n" ++
+        "  --arm <a>      source table: wf (workflow_runs / context-plane),\n" ++
+        "                 op (runs / op-arm), or all (default, both).\n" ++
         "  --json         emit a single JSON object instead of human text.",
     .flags = &.{
         .{ .long = "--plan", .kind = .int, .desc = "Filter by plan id" },
         .{ .long = "--status", .kind = .string, .desc = "Filter by status (default: all)" },
+        .{ .long = "--arm", .kind = .string, .desc = "Source arm: wf | op | all (default: all)" },
         .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
     },
     .run = cli.handler(handleList),
@@ -72,9 +81,10 @@ const show_verb: cli.Cmd = .{
 pub const verb: cli.Cmd = .{
     .name = "run",
     .desc = "Observe workflow runs and their context records.",
-    .long_desc = "Read-only view of the workflow_runs and context_records tables.\n\n" ++
-        "  list  — list runs (optional --plan / --status filters).\n" ++
-        "  show  — drill into one run's records, grouped by stage.",
+    .long_desc = "Read-only view of run tables. `list` covers both workflow_runs (wf)\n" ++
+        "and the runs table (op-arm); `show` drills into wf-source runs only.\n\n" ++
+        "  list  — list runs (--plan / --status / --arm filters).\n" ++
+        "  show  — drill into one wf-source run's context records.",
     .cmds = &.{ list_verb, show_verb },
 };
 
@@ -82,7 +92,10 @@ pub const verb: cli.Cmd = .{
 // Row types
 // ---------------------------------------------------------------------------
 
-/// One workflow_runs row.
+/// One run row (from workflow_runs or runs). The `source` field indicates
+/// which underlying table the row came from: "wf" for workflow_runs (context-
+/// plane; use `planar-watch run show <id>` for detail) or "op" for the runs
+/// table (op/workflow-arm; use `planar run show <run_identifier>` for detail).
 const RunRow = struct {
     id: i64,
     plan_id: i64,
@@ -93,6 +106,8 @@ const RunRow = struct {
     started_at: []const u8,
     ended_at: ?[]const u8,
     status: []const u8,
+    /// "wf" (workflow_runs table) or "op" (runs table).
+    source: []const u8,
 
     fn deinit(self: RunRow, allocator: std.mem.Allocator) void {
         allocator.free(self.workflow_name);
@@ -101,6 +116,8 @@ const RunRow = struct {
         allocator.free(self.started_at);
         if (self.ended_at) |s| allocator.free(s);
         allocator.free(self.status);
+        // source is a string literal — do NOT free it.
+        _ = self.source;
     }
 
     fn deinitMany(rows: []const RunRow, allocator: std.mem.Allocator) void {
@@ -144,9 +161,55 @@ fn handleList(args_ptr: *const anyopaque) anyerror!void {
     const ctx = runtime.current();
     const d = runtime.ensureDbStrictReadOnly() catch |e| exit.die(ctx, e, "{s}", .{@errorName(e)});
 
-    const rows = listRuns(d, ctx.allocator, args.plan, args.status) catch |e|
-        exit.die(ctx, e, "run list: {s}", .{@errorName(e)});
-    defer RunRow.deinitMany(rows, ctx.allocator);
+    // Validate --arm: wf | op | all (default all).
+    const arm_filter = args.arm orelse "all";
+    if (!std.mem.eql(u8, arm_filter, "wf") and
+        !std.mem.eql(u8, arm_filter, "op") and
+        !std.mem.eql(u8, arm_filter, "all"))
+    {
+        exit.die(ctx, error.InvalidValue, "run list: --arm must be wf, op, or all (got '{s}')", .{arm_filter});
+    }
+
+    var all_rows = std.ArrayList(RunRow).empty;
+    defer {
+        RunRow.deinitMany(all_rows.items, ctx.allocator);
+        all_rows.deinit(ctx.allocator);
+    }
+
+    // workflow_runs source (wf arm).
+    // The returned slice's backing array is freed here; the row VALUE copies
+    // (and their heap-allocated string fields) are owned by all_rows.
+    if (std.mem.eql(u8, arm_filter, "wf") or std.mem.eql(u8, arm_filter, "all")) {
+        const wf_rows = listWorkflowRuns(d, ctx.allocator, args.plan, args.status) catch |e|
+            exit.die(ctx, e, "run list: {s}", .{@errorName(e)});
+        for (wf_rows) |r| all_rows.append(ctx.allocator, r) catch |e|
+            exit.die(ctx, e, "run list: append wf row: {s}", .{@errorName(e)});
+        ctx.allocator.free(wf_rows);
+    }
+
+    // runs table source (op arm).
+    if (std.mem.eql(u8, arm_filter, "op") or std.mem.eql(u8, arm_filter, "all")) {
+        const op_rows = listOpRuns(d, ctx.allocator, args.plan, args.status) catch |e|
+            exit.die(ctx, e, "run list (op): {s}", .{@errorName(e)});
+        for (op_rows) |r| all_rows.append(ctx.allocator, r) catch |e|
+            exit.die(ctx, e, "run list: append op row: {s}", .{@errorName(e)});
+        ctx.allocator.free(op_rows);
+    }
+
+    // Sort combined results by started_at descending (newest first).
+    // Simple insertion sort is fine for the small counts expected here.
+    const rows = all_rows.items;
+    if (rows.len > 1) {
+        var i: usize = 1;
+        while (i < rows.len) : (i += 1) {
+            const key = rows[i];
+            var j: usize = i;
+            while (j > 0 and std.mem.lessThan(u8, rows[j - 1].started_at, key.started_at)) : (j -= 1) {
+                rows[j] = rows[j - 1];
+            }
+            rows[j] = key;
+        }
+    }
 
     if (args.json) {
         try ctx.stdout.print("{{\"generated_at\":", .{});
@@ -164,8 +227,8 @@ fn handleList(args_ptr: *const anyopaque) anyerror!void {
         for (rows) |r| {
             const ended = r.ended_at orelse "-";
             try ctx.stdout.print(
-                "  run:{d}  plan:{d}  status:{s}  started:{s}  ended:{s}  workflow:{s}\n",
-                .{ r.id, r.plan_id, r.status, r.started_at, ended, r.workflow_name },
+                "  run:{d}  plan:{d}  status:{s}  source:{s}  started:{s}  ended:{s}  workflow:{s}\n",
+                .{ r.id, r.plan_id, r.status, r.source, r.started_at, ended, r.workflow_name },
             );
         }
     }
@@ -253,16 +316,14 @@ fn handleShow(args_ptr: *const anyopaque) anyerror!void {
 // SQL helpers
 // ---------------------------------------------------------------------------
 
-fn listRuns(
+/// Query workflow_runs (context-plane / wf-arm rows).
+fn listWorkflowRuns(
     d: *db.sqlite.Db,
     allocator: std.mem.Allocator,
     plan_filter: ?i64,
     status_filter: ?[]const u8,
 ) ![]RunRow {
     // Build the SQL dynamically based on which filters are set.
-    // Accumulate the WHERE clause into where_buf and record the length.
-    // We do NOT @memcpy the bufPrint result back into where_buf —
-    // the returned slice IS already a view into where_buf.
     var sql_buf: [768]u8 = undefined;
     var where_buf: [256]u8 = undefined;
     var where_len: usize = 0;
@@ -292,7 +353,6 @@ fn listRuns(
     var stmt = d.prepare(sql) catch return error.QueryFailed;
     defer stmt.finalize();
 
-    // Bind parameters in the same order as the WHERE clause.
     if (plan_filter != null and status_filter != null) {
         stmt.bind(&.{ .{ .int = plan_filter.? }, .{ .text = status_filter.? } }) catch return error.QueryFailed;
     } else if (plan_filter != null) {
@@ -309,7 +369,86 @@ fn listRuns(
     while (true) {
         switch (stmt.step() catch return error.QueryFailed) {
             .done => break,
-            .row => try out.append(allocator, try readRunRow(&stmt, allocator)),
+            .row => try out.append(allocator, try readWorkflowRunRow(&stmt, allocator)),
+        }
+    }
+    return try out.toOwnedSlice(allocator);
+}
+
+/// Query the runs table (op/workflow-arm rows written by `planar run start`).
+/// Maps runs columns to RunRow: arm→workflow_name, run_uid→run_identifier,
+/// pid=0 (sentinel), repo_root="" (not stored). source="op".
+fn listOpRuns(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    plan_filter: ?i64,
+    status_filter: ?[]const u8,
+) ![]RunRow {
+    var sql_buf: [768]u8 = undefined;
+    var where_buf: [256]u8 = undefined;
+    var where_len: usize = 0;
+
+    if (plan_filter != null and status_filter != null) {
+        const clause = "where plan_id = ? and status = ?";
+        @memcpy(where_buf[0..clause.len], clause);
+        where_len = clause.len;
+    } else if (plan_filter != null) {
+        const clause = "where plan_id = ?";
+        @memcpy(where_buf[0..clause.len], clause);
+        where_len = clause.len;
+    } else if (status_filter != null) {
+        const clause = "where status = ?";
+        @memcpy(where_buf[0..clause.len], clause);
+        where_len = clause.len;
+    }
+
+    const sql = try std.fmt.bufPrintZ(&sql_buf,
+        \\select id, plan_id, arm, run_uid,
+        \\       started_at, ended_at, status
+        \\from runs
+        \\{s}
+        \\order by started_at desc, id desc
+    , .{where_buf[0..where_len]});
+
+    var stmt = d.prepare(sql) catch return error.QueryFailed;
+    defer stmt.finalize();
+
+    if (plan_filter != null and status_filter != null) {
+        stmt.bind(&.{ .{ .int = plan_filter.? }, .{ .text = status_filter.? } }) catch return error.QueryFailed;
+    } else if (plan_filter != null) {
+        stmt.bind(&.{.{ .int = plan_filter.? }}) catch return error.QueryFailed;
+    } else if (status_filter != null) {
+        stmt.bind(&.{.{ .text = status_filter.? }}) catch return error.QueryFailed;
+    }
+
+    var out: std.ArrayList(RunRow) = .empty;
+    errdefer {
+        RunRow.deinitMany(out.items, allocator);
+        out.deinit(allocator);
+    }
+    while (true) {
+        switch (stmt.step() catch return error.QueryFailed) {
+            .done => break,
+            .row => {
+                const workflow_name = try stmt.columnTextAlloc(2, allocator);
+                const run_uid = try stmt.columnTextAlloc(3, allocator);
+                const started_at = try stmt.columnTextAlloc(4, allocator);
+                const ended_at = try stmt.columnTextOpt(5, allocator);
+                const status = try stmt.columnTextAlloc(6, allocator);
+                const repo_root = try allocator.dupe(u8, "");
+                try out.append(allocator, .{
+                    .id = stmt.columnInt(0),
+                    .plan_id = stmt.columnInt(1),
+                    .workflow_name = workflow_name,
+                    .run_identifier = run_uid,
+                    .pid = 0,
+                    .repo_root = repo_root,
+                    .started_at = started_at,
+                    .ended_at = ended_at,
+                    .status = status,
+                    .source = "op",
+                });
+            },
         }
     }
     return try out.toOwnedSlice(allocator);
@@ -330,11 +469,11 @@ fn fetchRun(
     stmt.bind(&.{.{ .int = run_id }}) catch return error.QueryFailed;
     switch (stmt.step() catch return error.QueryFailed) {
         .done => return error.NotFound,
-        .row => return try readRunRow(&stmt, allocator),
+        .row => return try readWorkflowRunRow(&stmt, allocator),
     }
 }
 
-fn readRunRow(stmt: *db.sqlite.Stmt, allocator: std.mem.Allocator) !RunRow {
+fn readWorkflowRunRow(stmt: *db.sqlite.Stmt, allocator: std.mem.Allocator) !RunRow {
     return .{
         .id = stmt.columnInt(0),
         .plan_id = stmt.columnInt(1),
@@ -345,6 +484,7 @@ fn readRunRow(stmt: *db.sqlite.Stmt, allocator: std.mem.Allocator) !RunRow {
         .started_at = try stmt.columnTextAlloc(6, allocator),
         .ended_at = try stmt.columnTextOpt(7, allocator),
         .status = try stmt.columnTextAlloc(8, allocator),
+        .source = "wf",
     };
 }
 
@@ -416,6 +556,8 @@ fn writeRunJson(w: *std.Io.Writer, r: RunRow) !void {
     }
     try w.print(",\"status\":", .{});
     try std.json.Stringify.encodeJsonString(r.status, .{}, w);
+    try w.print(",\"source\":", .{});
+    try std.json.Stringify.encodeJsonString(r.source, .{}, w);
     try w.print("}}", .{});
 }
 
