@@ -649,3 +649,108 @@ test "4115 terminal-atomicity: loop-back leaves task doing, terminal_verb is nul
     defer gpa.free(task_after);
     try std.testing.expect(std.mem.indexOf(u8, task_after, "\"doing\"") != null);
 }
+
+// ---------------------------------------------------------------------------
+// 4288: open-question → block path
+//
+// The route phase handles verdict=open-question by invoking exactly one
+// atomic terminal verb: `planar-agent block --claim <token> --blocker <id>`.
+// This transitions the task → blocked and releases the claim.
+//
+// Post-state asserted:
+//   - route result: action="block", terminal_verb="block", verdict="open-question"
+//   - task status: "blocked" (not "doing")
+//   - blocker entity_links edge: `links list task:<id>` contains the blocker ref
+// ---------------------------------------------------------------------------
+
+test "4288 dispatch open-question: block path → task blocked + blocker edge created" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    const root = suite.registerProject("dispatch-4288");
+    suite.addAssoc("dispatch-4288", null);
+
+    const seed = seedDispatchPlan(&suite, "dispatch-4288");
+    defer gpa.free(seed.plan_id_str);
+
+    // Seed a second task to serve as the blocker entity.
+    const blocker_json = suite.mustRun(&.{ "task", "add", "--plan", seed.plan_id_str, "--json", "Blocker task for 4288" });
+    defer gpa.free(blocker_json);
+    const blocker_id = extractIntField(blocker_json, "\"id\"") orelse @panic("no blocker task id");
+    const blocker_id_str = try std.fmt.allocPrint(gpa, "{d}", .{blocker_id});
+    defer gpa.free(blocker_id_str);
+
+    const repo_root = try repoRootFromBin(gpa);
+    defer gpa.free(repo_root);
+    const wf_path = try std.fs.path.join(gpa, &.{ repo_root, "workflows", "dispatch.lua" });
+    defer gpa.free(wf_path);
+
+    // --- Phase: prep (claim the first task) ---
+    const prep_args_json = try std.fmt.allocPrint(gpa, "{{\"plan_id\":{s}}}", .{seed.plan_id_str});
+    defer gpa.free(prep_args_json);
+
+    const prep_res = try mustExecute(gpa, root, suite.absDbPath(), &.{
+        "run", wf_path, "--phase", "prep", "--args", prep_args_json,
+    });
+    defer prep_res.deinit();
+
+    const prep_out = std.mem.trim(u8, prep_res.stdout, " \t\r\n");
+    const prep_fields = parsePrepFields(prep_out);
+    try std.testing.expect(prep_fields.available);
+    try std.testing.expectEqual(seed.task_id, prep_fields.task_id);
+    const claim_token = prep_fields.claim_token;
+
+    const task_id_str = try std.fmt.allocPrint(gpa, "{d}", .{seed.task_id});
+    defer gpa.free(task_id_str);
+
+    // Assert task is 'doing' before route.
+    const task_before = suite.mustRun(&.{ "task", "show", "--json", task_id_str });
+    defer gpa.free(task_before);
+    try std.testing.expect(std.mem.indexOf(u8, task_before, "\"doing\"") != null);
+
+    // --- Phase: route(open-question) with blocker ---
+    // blocker must be the entity reference accepted by `planar-agent block --blocker`.
+    const route_args_json = try std.fmt.allocPrint(
+        gpa,
+        "{{\"claim_token\":\"{s}\",\"verdict\":\"open-question\",\"iteration\":1,\"blocker\":\"{s}\"}}",
+        .{ claim_token, blocker_id_str },
+    );
+    defer gpa.free(route_args_json);
+
+    const route_res = try mustExecute(gpa, root, suite.absDbPath(), &.{
+        "run", wf_path, "--phase", "route", "--args", route_args_json,
+    });
+    defer route_res.deinit();
+
+    const route_out = std.mem.trim(u8, route_res.stdout, " \t\r\n");
+    const route_parsed = try std.json.parseFromSlice(
+        RouteResult,
+        gpa,
+        route_out,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer route_parsed.deinit();
+
+    // Assert route returned action=block, terminal_verb=block, verdict=open-question.
+    try std.testing.expectEqualStrings("block", route_parsed.value.action);
+    try std.testing.expect(route_parsed.value.terminal_verb != null);
+    try std.testing.expectEqualStrings("block", route_parsed.value.terminal_verb.?);
+    try std.testing.expectEqualStrings("open-question", route_parsed.value.verdict);
+    try std.testing.expect(!route_parsed.value.cap_fired);
+
+    // Assert task is now 'blocked' (atomic terminal verb flipped it).
+    const task_after = suite.mustRun(&.{ "task", "show", "--json", task_id_str });
+    defer gpa.free(task_after);
+    try std.testing.expect(std.mem.indexOf(u8, task_after, "\"blocked\"") != null);
+    // NOT still 'doing'.
+    try std.testing.expect(std.mem.indexOf(u8, task_after, "\"doing\"") == null);
+
+    // Assert the blocker entity_links edge was created.
+    // `links list task:<id>` surfaces all edges on the task (with or without --json).
+    const task_ref = try std.fmt.allocPrint(gpa, "task:{s}", .{task_id_str});
+    defer gpa.free(task_ref);
+    const links_out = suite.mustRun(&.{ "links", "list", task_ref });
+    defer gpa.free(links_out);
+    // The edge must reference the blocker task id.
+    try std.testing.expect(std.mem.indexOf(u8, links_out, blocker_id_str) != null);
+}
