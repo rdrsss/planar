@@ -63,12 +63,23 @@
 #     scripts/bench-matrix.sh --plan <id> [--arm strict|eligibility|grouped] [--rep 1] [--dry-run]
 #     scripts/bench-matrix.sh --plan <id> --arm grouped --solver mtkahypar --dry-run
 #     scripts/bench-matrix.sh --plan <id> --tasks 101,102 --dry-run
+#     scripts/bench-matrix.sh --plan <id> --base <sha> --dry-run   # override base for modify-features
 #   Matrix (M3): sweep plans x arms x reps, interleaved, paired, resumable.
 #     scripts/bench-matrix.sh --matrix --plans 635,699 --reps 3 --dry-run
 #     scripts/bench-matrix.sh --matrix --plans 635,699 --reps 3 --ceiling 50.00
+#     scripts/bench-matrix.sh --matrix --plans 659,668,678 --reps 5 \
+#       --bases 659:fcb167a,668:274b6f6,678:32061f7   # per-plan base overrides
 #   --matrix flags: --plans <ids>  --reps <N>  --ceiling <USD>  (also honors
 #     BENCH_CORPUS_PLANS / BENCH_N_REPS / BENCH_CEILING). Re-running --matrix
 #     resumes additively: completed cells SKIP, crashed cells abort + retry.
+#   Base override flags (for modify-feature corpora where paths pre-exist):
+#     --base <sha>             single-cell: use <sha> as base, skip pick_base_sha.
+#     --bases <plan:sha,...>   matrix: per-plan base map; mirrors --plans convention.
+#     BENCH_BASES env var      same as --bases; honoured before flag parsing.
+#   When an override base is in effect the file-existence base-fidelity gate is
+#   softened: pre-existing declared paths are LOGGED (not aborted) because the
+#   operator asserts base fidelity by construction (base = parent of earliest
+#   task commit, not a pick_base_sha walk).
 #
 # M4 env vars (all optional; follow BENCH_* convention):
 #   BENCH_AGENT_TIMEOUT   — per-agent wall-clock deadline in seconds; the watchdog
@@ -184,12 +195,24 @@ CELL_RETRY_CAP="${BENCH_CELL_RETRY_CAP:-2}"
 # --- per-cell JSONL structured log directory (created on first write). ---
 LOG_ROOT="${BENCH_LOG_ROOT:-}"   # resolved lazily below after BENCH_HOME is stable
 
+# ---------------------------------------------------------------------------
+# Base-override config (operator-supplied per-plan bases for modify-features).
+# ---------------------------------------------------------------------------
+# --- per-plan base SHA overrides. Format: "plan_id:sha,plan_id:sha,...". The
+#     matrix driver reads this to skip pick_base_sha for plans whose real base
+#     is known (modify-feature corpus where path-existence walk would go back to
+#     genesis). The override base is validated as a real commit; the file-
+#     existence base-fidelity gate is SOFTENED (logged, not hard-fail) when an
+#     override is in effect. Mirrors the --plans/BENCH_CORPUS_PLANS convention. ---
+BENCH_BASES="${BENCH_BASES:-}"   # env var; also settable via --bases flag
+
 # --- runtime state (parsed from argv) ---
 ARG_PLAN=""
 ARG_REP=1
 ARG_TASKS=""        # optional comma-list; empty = all plan tasks
 ARG_ARM="strict"    # strict | eligibility | grouped (M2: the three arm shapes)
 ARG_MATRIX=0        # 1 = M3 matrix mode (sweep CORPUS_PLANS x ARMS x N_REPS)
+ARG_BASE=""         # single-cell: explicit base SHA (skips pick_base_sha)
 DRY_RUN=0
 
 # --- M3 cell-identity injection (set per-cell by the matrix driver; empty in
@@ -658,18 +681,24 @@ pick_base_sha() {
     || err "pick_base_sha: first touching commit $first is a root commit; no pre-feature base exists"
 }
 
-# verify_feature_absent <repo> <base_sha> <path...> — the BASE-FIDELITY GATE.
-# Asserts the feature does NOT already exist at base_sha. The check: the
-# declared paths must be ABSENT (or empty of the acceptance signal) at base —
-# if the file the plan claims to create already exists at base, the cell is
-# measuring a no-op and the base is wrong. Refuse the cell with a clear error.
+# verify_feature_absent <repo> <base_sha> <override:0|1> <path...> — the
+# BASE-FIDELITY GATE. Asserts the feature does NOT already exist at base_sha.
+# The check: declared paths must be ABSENT at base — if the file the plan
+# claims to create already exists at base, the cell would measure a no-op.
+#
+# When <override> is 1 (operator-supplied base), the hard-fail is SUPPRESSED:
+# the operator asserts base fidelity by construction (base = parent of earliest
+# task commit), and the corpus features are modify-features whose paths
+# legitimately pre-exist. Instead we log each pre-existing path as INFO and
+# emit the operator-asserted message — no abort. The pick_base_sha hard-fail
+# path (override=0) is unchanged.
 #
 # M1 uses path-existence as the absence signal (path-level harvest is the MVP,
 # decision D1). A path that already exists at base is the pre-existence bug
 # this gate fixes. Later milestones can tighten this to symbol/acceptance-
 # signal absence; the seam is this function.
 verify_feature_absent() {
-  local repo="$1" base="$2"; shift 2
+  local repo="$1" base="$2" override="$3"; shift 3
   local p preexisting=""
   for p in "$@"; do
     # `git cat-file -e <sha>:<path>` exits 0 iff the path exists in that tree.
@@ -678,10 +707,49 @@ verify_feature_absent() {
     fi
   done
   if [ -n "$preexisting" ]; then
-    err "base-fidelity gate FAILED: declared path(s) already exist at base_sha ${base}: ${preexisting}
+    if [ "$override" -eq 1 ]; then
+      # Override in effect: base fidelity is operator-asserted. Log, do not abort.
+      log "base-fidelity: operator-asserted (override base ${base}); existence gate skipped for modify-feature corpus"
+      log "base-fidelity: the following declared path(s) pre-exist at base (INFO — expected for modify-features): ${preexisting}"
+    else
+      err "base-fidelity gate FAILED: declared path(s) already exist at base_sha ${base}: ${preexisting}
        the feature pre-exists at base; this cell would measure a no-op. Refusing."
+    fi
+  else
+    log "base-fidelity gate OK: no declared path pre-exists at base ${base}"
   fi
-  log "base-fidelity gate OK: no declared path pre-exists at base ${base}"
+}
+
+# lookup_base_override <plan> — check whether an operator-supplied base SHA
+# exists for the given plan in BENCH_BASES. BENCH_BASES is a comma-separated
+# list of "plan_id:sha" pairs (e.g. "659:fcb167a,668:274b6f6"). Prints the
+# override SHA on stdout if found; prints nothing if absent. Validates the SHA
+# is a real commit (git rev-parse --verify <sha>^{commit}) and err()s if not.
+lookup_base_override() {
+  local plan="$1" entry sha
+  # Also accept a single-cell --base override (ARG_BASE), which has priority.
+  if [ -n "$ARG_BASE" ]; then
+    sha="$ARG_BASE"
+    git -C "$CORPUS_REPO_PATH" rev-parse --verify "${sha}^{commit}" >/dev/null 2>&1 \
+      || err "base override: --base '${sha}' is not a valid commit in ${CORPUS_REPO_PATH}"
+    printf '%s' "$sha"
+    return 0
+  fi
+  [ -n "$BENCH_BASES" ] || return 0
+  # Parse "plan:sha,plan:sha,..." — accept comma or space separation.
+  local bases_normalized; bases_normalized="$(printf '%s' "$BENCH_BASES" | tr ',' ' ')"
+  for entry in $bases_normalized; do
+    local eid; eid="${entry%%:*}"
+    local esha; esha="${entry#*:}"
+    if [ "$eid" = "$plan" ]; then
+      git -C "$CORPUS_REPO_PATH" rev-parse --verify "${esha}^{commit}" >/dev/null 2>&1 \
+        || err "base override: BENCH_BASES entry '${entry}' for plan ${plan} is not a valid commit in ${CORPUS_REPO_PATH}"
+      printf '%s' "$esha"
+      return 0
+    fi
+  done
+  # No override for this plan.
+  return 0
 }
 
 # ===========================================================================
@@ -1159,12 +1227,21 @@ run_cell() {
   fi
 
   # --- base-SHA selection + base-fidelity verification gate (M1, reused) ---
-  if [ -n "$paths_list" ]; then
+  local base_override; base_override="$(lookup_base_override "$plan")"
+  if [ -n "$base_override" ]; then
+    base_sha="$base_override"
+    log "base_sha (operator-supplied override): ${base_sha}"
+    if [ -n "$paths_list" ]; then
+      # Gate softened: override base; existence check logs but does not abort.
+      # shellcheck disable=SC2046
+      verify_feature_absent "$CORPUS_REPO_PATH" "$base_sha" 1 $paths_list
+    fi
+  elif [ -n "$paths_list" ]; then
     # shellcheck disable=SC2046  # intentional word-split of the path list into argv
     base_sha="$(pick_base_sha "$CORPUS_REPO_PATH" $paths_list)"
     log "base_sha (parent of first touching commit): ${base_sha}"
     # shellcheck disable=SC2046
-    verify_feature_absent "$CORPUS_REPO_PATH" "$base_sha" $paths_list
+    verify_feature_absent "$CORPUS_REPO_PATH" "$base_sha" 0 $paths_list
   else
     base_sha="$(git -C "$CORPUS_REPO_PATH" rev-parse HEAD)"
     log "base_sha (no declared paths; using corpus HEAD): ${base_sha}"
@@ -1653,16 +1730,22 @@ run_matrix() {
   # =====================================================================
   if [ "$DRY_RUN" -eq 1 ]; then
     title "DRY-RUN: resolved base_sha per plan"
-    local p base paths
+    local p base paths ovr
     for p in $(corpus_plan_list); do
-      paths="$(declared_paths "$p")"
-      if [ -n "$paths" ]; then
-        # shellcheck disable=SC2046
-        base="$(pick_base_sha "$CORPUS_REPO_PATH" $paths 2>/dev/null || printf 'UNRESOLVED')"
+      ovr="$(lookup_base_override "$p" 2>/dev/null || true)"
+      if [ -n "$ovr" ]; then
+        base="$ovr"
+        log "  plan ${p}: base_sha=${base}  (operator-supplied override)  paired_config_hash_base=$(config_hash_base)"
       else
-        base="$(git -C "$CORPUS_REPO_PATH" rev-parse HEAD 2>/dev/null || printf 'UNRESOLVED')"
+        paths="$(declared_paths "$p")"
+        if [ -n "$paths" ]; then
+          # shellcheck disable=SC2046
+          base="$(pick_base_sha "$CORPUS_REPO_PATH" $paths 2>/dev/null || printf 'UNRESOLVED')"
+        else
+          base="$(git -C "$CORPUS_REPO_PATH" rev-parse HEAD 2>/dev/null || printf 'UNRESOLVED')"
+        fi
+        log "  plan ${p}: base_sha=${base}  paired_config_hash_base=$(config_hash_base)"
       fi
-      log "  plan ${p}: base_sha=${base}  paired_config_hash_base=$(config_hash_base)"
     done
 
     title "DRY-RUN: cell run_uids (deterministic) + paired config_hash"
@@ -1749,6 +1832,10 @@ parse_args() {
       --ceiling)  CEILING="$2"; shift 2 ;;
       --matrix)   ARG_MATRIX=1; shift ;;
       --dry-run)  DRY_RUN=1; shift ;;
+      # Base overrides: --base <sha> for single-cell; --bases <plan:sha,...> for matrix.
+      # Both mirror BENCH_BASES / ARG_BASE env conventions (see config section above).
+      --base)     ARG_BASE="$2"; shift 2 ;;
+      --bases)    BENCH_BASES="$2"; shift 2 ;;
       -h|--help)  usage; exit 0 ;;
       *) err "unknown flag: $1 (try --help)" ;;
     esac
