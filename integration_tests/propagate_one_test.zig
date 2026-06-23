@@ -150,3 +150,76 @@ test "[error] propagate-one with no registered systems rejects" {
     defer gpa.free(stderr);
     try std.testing.expect(stderr.len > 0);
 }
+
+// =========================================================================
+// Task 4168 (BUG): propagate-one must reject --strategy parent-issue /
+// projects-v2 with a clear error directing the caller to use
+// `ext propagate --github-strategy`.
+//
+// Regression: before the fix, passing parent-issue or projects-v2 fell
+// through to the generic per-entity path, producing a mislabeled mirror
+// link and silently caching the strategy on the anchor plan.
+// =========================================================================
+
+test "[error] propagate-one --strategy parent-issue is rejected (task 4168)" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_backing = std.heap.ArenaAllocator.init(gpa);
+    defer arena_backing.deinit();
+    const arena = arena_backing.allocator();
+
+    // Register a jira system (closest we can get without GitHub—strategy
+    // validation fires before the system kind check, so jira is fine here
+    // to isolate the strategy guard).
+    _ = suite.mustRunJSON(RegisterJSON, arena, &.{
+        "ext",                    "register",   "jira",
+        "jira-strat-pi",          "--base-url", "https://test.atlassian.net",
+        "--project",              "TEST",       "--auth-env",
+        "PLANAR_TEST_JIRA_TOKEN", "--json",
+    });
+
+    const plan = suite.mustRunJSON(PlanJSON, arena, &.{
+        "plan", "create", "--json", "Strategy reject test plan",
+    });
+    const from_ref = try std.fmt.allocPrint(arena, "plan:{d}", .{plan.id});
+
+    // --strategy parent-issue must be rejected with a clear error message.
+    const stderr_pi = suite.expectFailure(&.{
+        "ext",          "propagate-one", "jira-strat-pi",
+        "--from",       from_ref,        "--strategy",
+        "parent-issue",
+    });
+    defer gpa.free(stderr_pi);
+    // Error message must direct the caller to `ext propagate --github-strategy`.
+    try std.testing.expect(
+        std.mem.indexOf(u8, stderr_pi, "not supported by propagate-one") != null or
+            std.mem.indexOf(u8, stderr_pi, "ext propagate --github-strategy") != null,
+    );
+
+    // --strategy projects-v2 must also be rejected.
+    const stderr_pv2 = suite.expectFailure(&.{
+        "ext",         "propagate-one", "jira-strat-pi",
+        "--from",      from_ref,        "--strategy",
+        "projects-v2",
+    });
+    defer gpa.free(stderr_pv2);
+    try std.testing.expect(
+        std.mem.indexOf(u8, stderr_pv2, "not supported by propagate-one") != null or
+            std.mem.indexOf(u8, stderr_pv2, "ext propagate --github-strategy") != null,
+    );
+
+    // --strategy tracking-issue must still be ACCEPTED (not rejected).
+    // Verify it doesn't error on the strategy validation step (it will
+    // error later when trying to build the adapter for a real run, but
+    // under --dry-run it should succeed since no HTTP is needed).
+    const result = suite.mustRunJSON(PropagateOneJSON, arena, &.{
+        "ext",            "propagate-one", "jira-strat-pi",
+        "--from",         from_ref,        "--strategy",
+        "tracking-issue", "--dry-run",     "--json",
+    });
+    // tracking-issue is the only valid value for propagate-one; dry-run succeeds.
+    try std.testing.expect(result.ok);
+    try std.testing.expectEqualStrings("planned", result.op);
+}

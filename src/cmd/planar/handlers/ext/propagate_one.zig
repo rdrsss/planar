@@ -208,13 +208,22 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         exit.die(ctx, error.InvalidInput, "unsupported entity kind '{s}'; accepted: plan, task", .{ref.kind});
     }
 
-    // Validate --strategy if provided
+    // Validate --strategy if provided.
+    // parent-issue and projects-v2 require the full feature-tree walk performed
+    // by `ext propagate --github-strategy`; they are NOT supported by the
+    // per-entity `propagate-one` primitive and must be rejected early so the
+    // caller gets a clear error instead of a mislabeled mirror link.
     if (args.strategy) |strat| {
-        const ok = std.mem.eql(u8, strat, "parent-issue") or
-            std.mem.eql(u8, strat, "projects-v2") or
-            std.mem.eql(u8, strat, "tracking-issue");
-        if (!ok) {
-            exit.die(ctx, error.InvalidInput, "invalid --strategy '{s}'; accepted: parent-issue, projects-v2, tracking-issue", .{strat});
+        if (std.mem.eql(u8, strat, "parent-issue") or std.mem.eql(u8, strat, "projects-v2")) {
+            exit.die(
+                ctx,
+                error.InvalidInput,
+                "strategy '{s}' is not supported by propagate-one; use ext propagate --github-strategy {s}",
+                .{ strat, strat },
+            );
+        }
+        if (!std.mem.eql(u8, strat, "tracking-issue")) {
+            exit.die(ctx, error.InvalidInput, "invalid --strategy '{s}'; accepted: tracking-issue", .{strat});
         }
     }
 

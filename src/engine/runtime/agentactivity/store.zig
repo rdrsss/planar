@@ -785,10 +785,55 @@ pub fn reconcileStale(
 
     // Orphaned actions: ended_at IS NULL and the owning session has
     // ended. Close them with outcome='aborted' and the session's
-    // ended_at as the ended_at timestamp. When scoped, only close
-    // actions belonging to the target session.
-    var act_upd_buf: [512]u8 = undefined;
-    const act_upd_sql = if (policy.session_id) |sid|
+    // ended_at as the ended_at timestamp. When scoped to a plan_id,
+    // only close actions whose claim references an entity belonging to
+    // that plan (claim_id → agent_work_claims → entity). Actions with
+    // no claim_id are session-level housekeeping and are not swept in
+    // a plan-scoped reconcile. When scoped to a session_id, scope
+    // similarly. Both scopes are independent and may both be set.
+    var act_upd_buf: [1024]u8 = undefined;
+    const act_upd_sql = if (policy.plan_id) |pid|
+        // Plan-scoped: close only actions linked to claims belonging to
+        // the target plan. The claim entity must be either:
+        //   entity_kind='plan' and entity_id=<pid>
+        //   entity_kind='task'  and tasks.plan_id=<pid>
+        // Actions without claim_id are excluded (no entity affiliation).
+        if (policy.session_id) |sid|
+            std.fmt.bufPrintZ(&act_upd_buf,
+                \\update agent_actions
+                \\set ended_at = (select ended_at from sessions where id = agent_actions.session_id),
+                \\    outcome = 'aborted'
+                \\where ended_at is null
+                \\  and session_id = {d}
+                \\  and exists (select 1 from sessions s where s.id = agent_actions.session_id and s.ended_at is not null)
+                \\  and claim_id is not null
+                \\  and exists (
+                \\    select 1 from agent_work_claims c
+                \\    where c.id = agent_actions.claim_id
+                \\      and (
+                \\        (c.entity_kind = 'plan' and c.entity_id = {d})
+                \\        or (c.entity_kind = 'task' and exists (select 1 from tasks t where t.id = c.entity_id and t.plan_id = {d}))
+                \\      )
+                \\  )
+            , .{ sid, pid, pid }) catch return Error.QueryFailed
+        else
+            std.fmt.bufPrintZ(&act_upd_buf,
+                \\update agent_actions
+                \\set ended_at = (select ended_at from sessions where id = agent_actions.session_id),
+                \\    outcome = 'aborted'
+                \\where ended_at is null
+                \\  and exists (select 1 from sessions s where s.id = agent_actions.session_id and s.ended_at is not null)
+                \\  and claim_id is not null
+                \\  and exists (
+                \\    select 1 from agent_work_claims c
+                \\    where c.id = agent_actions.claim_id
+                \\      and (
+                \\        (c.entity_kind = 'plan' and c.entity_id = {d})
+                \\        or (c.entity_kind = 'task' and exists (select 1 from tasks t where t.id = c.entity_id and t.plan_id = {d}))
+                \\      )
+                \\  )
+            , .{ pid, pid }) catch return Error.QueryFailed
+    else if (policy.session_id) |sid|
         std.fmt.bufPrintZ(&act_upd_buf,
             \\update agent_actions
             \\set ended_at = (select ended_at from sessions where id = agent_actions.session_id),
@@ -814,8 +859,42 @@ pub fn reconcileStale(
     // ended_at is now non-null and outcome='aborted'; we lack a per-update
     // count from execParams. Approximate via a separate count query that
     // matches the set we just touched.
-    var act_cnt_buf: [512]u8 = undefined;
-    const act_cnt_sql = if (policy.session_id) |sid|
+    var act_cnt_buf: [1024]u8 = undefined;
+    const act_cnt_sql = if (policy.plan_id) |pid|
+        if (policy.session_id) |sid|
+            std.fmt.bufPrintZ(&act_cnt_buf,
+                \\select count(*) from agent_actions
+                \\where outcome = 'aborted'
+                \\  and ended_at is not null
+                \\  and session_id = {d}
+                \\  and exists (select 1 from sessions s where s.id = agent_actions.session_id and s.ended_at is not null)
+                \\  and claim_id is not null
+                \\  and exists (
+                \\    select 1 from agent_work_claims c
+                \\    where c.id = agent_actions.claim_id
+                \\      and (
+                \\        (c.entity_kind = 'plan' and c.entity_id = {d})
+                \\        or (c.entity_kind = 'task' and exists (select 1 from tasks t where t.id = c.entity_id and t.plan_id = {d}))
+                \\      )
+                \\  )
+            , .{ sid, pid, pid }) catch return Error.QueryFailed
+        else
+            std.fmt.bufPrintZ(&act_cnt_buf,
+                \\select count(*) from agent_actions
+                \\where outcome = 'aborted'
+                \\  and ended_at is not null
+                \\  and exists (select 1 from sessions s where s.id = agent_actions.session_id and s.ended_at is not null)
+                \\  and claim_id is not null
+                \\  and exists (
+                \\    select 1 from agent_work_claims c
+                \\    where c.id = agent_actions.claim_id
+                \\      and (
+                \\        (c.entity_kind = 'plan' and c.entity_id = {d})
+                \\        or (c.entity_kind = 'task' and exists (select 1 from tasks t where t.id = c.entity_id and t.plan_id = {d}))
+                \\      )
+                \\  )
+            , .{ pid, pid }) catch return Error.QueryFailed
+    else if (policy.session_id) |sid|
         std.fmt.bufPrintZ(&act_cnt_buf,
             \\select count(*) from agent_actions
             \\where outcome = 'aborted'
@@ -1757,6 +1836,218 @@ test "reconcileStale --session dry-run scopes candidates to the session" {
     const rb = try getClaimByToken(&d, a, c_b.claim_token);
     defer rb.deinit(a);
     try std.testing.expectEqual(types.ClaimStatus.active, rb.status);
+}
+
+// =========================================================================
+// Task 4172: reconcileStale --plan exclusivity tests
+//
+// Proves that:
+//   1. dry-run with --plan returns only claims from the target plan;
+//      claims from other plans are absent from the candidate set.
+//   2. non-dry-run (execute) with --plan only marks the target plan's
+//      claims stale and leaves the other plan's claims active
+//      (regression test for the bug fixed in task 4171).
+//   3. The orphaned-actions UPDATE is also plan-scoped: an orphaned
+//      action linked to a claim on plan B is NOT closed when reconciling
+//      plan A.
+// =========================================================================
+
+fn insertTestPlan(d: *db.sqlite.Db, slug: []const u8) !i64 {
+    return try d.execParams(
+        "insert into plans (scope_kind, title, slug, status) values ('global', ?, ?, 'active')",
+        &.{ .{ .text = slug }, .{ .text = slug } },
+    );
+}
+
+fn insertTestTaskForPlan(d: *db.sqlite.Db, plan_id: i64) !i64 {
+    return try d.execParams(
+        "insert into tasks (scope_kind, plan_id, title, status) values ('global', ?, 'tk', 'todo')",
+        &.{.{ .int = plan_id }},
+    );
+}
+
+test "reconcileStale --plan dry-run: only target plan's claim in candidate set; other plan absent" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const sid_a = try insertTestSession(&d);
+    const sid_b = try insertTestSession(&d);
+    const plan_a = try insertTestPlan(&d, "plan-a");
+    const plan_b = try insertTestPlan(&d, "plan-b");
+    const tid_a = try insertTestTaskForPlan(&d, plan_a);
+    const tid_b = try insertTestTaskForPlan(&d, plan_b);
+
+    // Expire both claims immediately (ttl_secs = -10).
+    const c_a = try acquireClaim(&d, a, .{
+        .session_id = sid_a,
+        .entity_kind = .task,
+        .entity_id = tid_a,
+        .vendor = "test",
+        .ttl_secs = -10,
+    });
+    defer c_a.deinit(a);
+
+    const c_b = try acquireClaim(&d, a, .{
+        .session_id = sid_b,
+        .entity_kind = .task,
+        .entity_id = tid_b,
+        .vendor = "test",
+        .ttl_secs = -10,
+    });
+    defer c_b.deinit(a);
+
+    // Dry-run scoped to plan_a: must return exactly 1 candidate (plan_a's claim).
+    const r = try reconcileStale(&d, a, .{ .plan_id = plan_a, .dry_run = true });
+    defer r.deinit(a);
+
+    // Exactly one candidate: plan_a's task claim.
+    try std.testing.expectEqual(@as(usize, 1), r.candidates.len);
+    try std.testing.expectEqual(tid_a, r.candidates[0].entity_id);
+
+    // Plan_b's claim must NOT appear in the candidate set.
+    for (r.candidates) |c| {
+        try std.testing.expect(c.entity_id != tid_b);
+    }
+
+    // Both claims still active (dry-run must not write).
+    const ra = try getClaimByToken(&d, a, c_a.claim_token);
+    defer ra.deinit(a);
+    try std.testing.expectEqual(types.ClaimStatus.active, ra.status);
+
+    const rb = try getClaimByToken(&d, a, c_b.claim_token);
+    defer rb.deinit(a);
+    try std.testing.expectEqual(types.ClaimStatus.active, rb.status);
+}
+
+test "reconcileStale --plan execute: marks target plan's claim stale; other plan's claim untouched" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const sid_a = try insertTestSession(&d);
+    const sid_b = try insertTestSession(&d);
+    const plan_a = try insertTestPlan(&d, "plan-ax");
+    const plan_b = try insertTestPlan(&d, "plan-bx");
+    const tid_a = try insertTestTaskForPlan(&d, plan_a);
+    const tid_b = try insertTestTaskForPlan(&d, plan_b);
+
+    const c_a = try acquireClaim(&d, a, .{
+        .session_id = sid_a,
+        .entity_kind = .task,
+        .entity_id = tid_a,
+        .vendor = "test",
+        .ttl_secs = -10,
+    });
+    defer c_a.deinit(a);
+
+    const c_b = try acquireClaim(&d, a, .{
+        .session_id = sid_b,
+        .entity_kind = .task,
+        .entity_id = tid_b,
+        .vendor = "test",
+        .ttl_secs = -10,
+    });
+    defer c_b.deinit(a);
+
+    // Execute scoped to plan_a: only plan_a's claim should be marked stale.
+    const r = try reconcileStale(&d, a, .{ .plan_id = plan_a });
+    defer r.deinit(a);
+
+    try std.testing.expectEqual(@as(i64, 1), r.claims_marked_stale);
+
+    const ra = try getClaimByToken(&d, a, c_a.claim_token);
+    defer ra.deinit(a);
+    // Plan_a's claim must be stale.
+    try std.testing.expectEqual(types.ClaimStatus.stale, ra.status);
+
+    const rb = try getClaimByToken(&d, a, c_b.claim_token);
+    defer rb.deinit(a);
+    // Plan_b's claim must still be active — the bug was that this went stale too.
+    try std.testing.expectEqual(types.ClaimStatus.active, rb.status);
+}
+
+test "reconcileStale --plan execute: orphaned action on other plan's claim is NOT closed" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    // Two plans, each with a task, a session, a claim, and one open action.
+    // End both sessions so both actions become "orphaned".
+    // Reconcile plan_a only and assert only plan_a's action is closed.
+
+    const plan_a = try insertTestPlan(&d, "plan-oa");
+    const plan_b = try insertTestPlan(&d, "plan-ob");
+    const tid_a = try insertTestTaskForPlan(&d, plan_a);
+    const tid_b = try insertTestTaskForPlan(&d, plan_b);
+
+    const sid_a = try insertTestSession(&d);
+    const sid_b = try insertTestSession(&d);
+
+    const c_a = try acquireClaim(&d, a, .{
+        .session_id = sid_a,
+        .entity_kind = .task,
+        .entity_id = tid_a,
+        .vendor = "test",
+        .ttl_secs = -10,
+    });
+    defer c_a.deinit(a);
+
+    const c_b = try acquireClaim(&d, a, .{
+        .session_id = sid_b,
+        .entity_kind = .task,
+        .entity_id = tid_b,
+        .vendor = "test",
+        .ttl_secs = -10,
+    });
+    defer c_b.deinit(a);
+
+    // Insert open actions linked to their respective claims.
+    const act_a = try startAction(&d, a, .{
+        .session_id = sid_a,
+        .action_kind = .coder,
+        .vendor = "test",
+        .claim_id = c_a.id,
+    });
+    _ = act_a;
+    const act_b = try startAction(&d, a, .{
+        .session_id = sid_b,
+        .action_kind = .coder,
+        .vendor = "test",
+        .claim_id = c_b.id,
+    });
+    _ = act_b;
+
+    // End both sessions so their actions become orphaned.
+    _ = try d.execParams(
+        "update sessions set ended_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') where id = ?",
+        &.{.{ .int = sid_a }},
+    );
+    _ = try d.execParams(
+        "update sessions set ended_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') where id = ?",
+        &.{.{ .int = sid_b }},
+    );
+
+    // Reconcile plan_a only.
+    const r = try reconcileStale(&d, a, .{ .plan_id = plan_a });
+    defer r.deinit(a);
+
+    // Plan_a's claim was stale + its action should be closed.
+    try std.testing.expectEqual(@as(i64, 1), r.claims_marked_stale);
+    try std.testing.expectEqual(@as(i64, 1), r.actions_closed);
+
+    // Plan_b's action must NOT be closed (it belongs to a different plan).
+    // session_b's action should still be open because we only swept plan_a.
+    {
+        var stmt_b = try d.prepare(
+            "select count(*) from agent_actions where session_id = ? and ended_at is null",
+        );
+        defer stmt_b.finalize();
+        try stmt_b.bind(&.{.{ .int = sid_b }});
+        try std.testing.expect(try stmt_b.step() == .row);
+        const open_b = stmt_b.columnInt(0);
+        try std.testing.expectEqual(@as(i64, 1), open_b);
+    }
 }
 
 test "startAction inserts and getActionById round-trips" {
