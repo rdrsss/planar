@@ -130,7 +130,7 @@ CORPUS_REPO_NAME="${BENCH_CORPUS_REPO_NAME:-planar}"
 #     which `git worktree list --porcelain` always lists first. Override with
 #     BENCH_PLANNING_CWD for an unusual layout. ---
 PLANNING_CWD="${BENCH_PLANNING_CWD:-$(git -C "$CORPUS_REPO_PATH" worktree list --porcelain 2>/dev/null \
-  | awk '/^worktree /{print $2; exit}')}"
+  | awk '/^worktree /{if(!f){print $2; f=1}}')}"
 [ -n "$PLANNING_CWD" ] || PLANNING_CWD="$CORPUS_REPO_PATH"
 
 # --- ISOLATED experiment plane. NEVER ~/.planar. A temp DB + config dir,
@@ -686,7 +686,11 @@ plan_scope() {
 # walks oldest-first; head -1 takes the earliest.
 first_touching_commit() {
   local repo="$1"; shift
-  git -C "$repo" log --reverse --format=%H -- "$@" 2>/dev/null | head -n 1
+  # Read the FULL git log output and print only the first record — no early
+  # `head -n 1` exit so the pipe is never closed while git is still writing
+  # (avoids SIGPIPE under set -o pipefail on repos with many qualifying commits).
+  git -C "$repo" log --reverse --format=%H -- "$@" 2>/dev/null \
+    | awk 'NR==1{print}'
 }
 
 # pick_base_sha <repo> <path...> — base_sha = PARENT of the first commit in
@@ -1268,6 +1272,47 @@ EOF
 # 7. THE CELL FLOW
 # ===========================================================================
 #
+# cleanup_cell_worktrees <run_uid> — remove all worktrees this cell created
+# (slice worktrees under $WORKTREE_ROOT/<run_uid>/ plus _setup and _integration)
+# after all harvest + fan-in + zero-touch-guard steps have completed and nothing
+# downstream still reads the worktree state.
+#
+# Ordering contract: called at the VERY END of the successful cell path, after
+# phase C (bench finish) and after structured-log emission, but BEFORE clearing
+# _INFLIGHT_CELL_UID so the trap handler can still run cleanup_inflight if we
+# crash inside this function.
+#
+# BENCH_KEEP_WORKTREES=1 (env, default unset) — skip cleanup for debugging.
+# Idempotent and set-euo-pipefail-safe: every removal step uses `|| true`; a
+# worktree already gone does not abort the run.
+# --dry-run: the function is a no-op (DRY_RUN=1 means nothing was created).
+cleanup_cell_worktrees() {
+  local uid="$1"
+  if [ "${BENCH_KEEP_WORKTREES:-}" = "1" ]; then
+    log "cleanup: BENCH_KEEP_WORKTREES=1 — skipping worktree removal for cell ${uid}"
+    return 0
+  fi
+  if [ "$DRY_RUN" -eq 1 ]; then return 0; fi
+  local cell_wt_root="$WORKTREE_ROOT/$uid"
+  if [ ! -d "$cell_wt_root" ]; then return 0; fi
+  # Enumerate all subdirectories under $cell_wt_root (each is a registered
+  # worktree: _setup, _integration, and every slice tag). Remove them one by
+  # one via `git worktree remove --force` so git's internal index stays clean,
+  # falling back to plain `rm -rf` in case the path was already deregistered.
+  local wt_path
+  for wt_path in "$cell_wt_root"/*/; do
+    [ -d "$wt_path" ] || continue
+    git -C "$CORPUS_REPO_PATH" worktree remove --force "$wt_path" \
+      >/dev/null 2>&1 || true
+    rm -rf "$wt_path" 2>/dev/null || true
+  done
+  # Prune stale registrations left by any already-deleted worktrees.
+  git -C "$CORPUS_REPO_PATH" worktree prune >/dev/null 2>&1 || true
+  # Remove the now-empty cell root directory.
+  rmdir "$cell_wt_root" 2>/dev/null || true
+  log "cleanup: removed slice worktrees for cell ${uid} (BENCH_KEEP_WORKTREES unset)"
+}
+
 # run_cell <plan> <arm> <rep> — drive ONE cell end-to-end: resolve metadata +
 # base_sha, open the run (ritual phase A), dispatch the arm shape, finish. In
 # --dry-run it prints each arm's DISTINCT slice/worktree/dispatch shape and
@@ -1430,6 +1475,12 @@ run_cell() {
 
   # M4: structured log — cell_complete event (disposition = completed).
   cell_log "cell_complete" '{"disposition":"completed"}' || true
+
+  # Remove all slice worktrees for this cell now that harvest + fan-in +
+  # zero-touch guard are done and nothing downstream reads them.  Must happen
+  # BEFORE clearing _INFLIGHT_CELL_UID so a crash inside cleanup_cell_worktrees
+  # still lets the trap call _cleanup_inflight.  BENCH_KEEP_WORKTREES=1 skips.
+  cleanup_cell_worktrees "$run_uid"
 
   # M4: cell completed cleanly — clear in-flight state so the EXIT trap no-ops.
   _INFLIGHT_CELL_UID=""
