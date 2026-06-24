@@ -195,6 +195,16 @@ CELL_RETRY_CAP="${BENCH_CELL_RETRY_CAP:-2}"
 # --- per-cell JSONL structured log directory (created on first write). ---
 LOG_ROOT="${BENCH_LOG_ROOT:-}"   # resolved lazily below after BENCH_HOME is stable
 
+# --- harvest noise filter: colon-separated GLOB patterns applied to
+#     run_touches.path (kind='actual') after all slices harvest and before the
+#     zero-touch guard. Paths matching any pattern are deleted from the DB.
+#     SQLite GLOB is case-sensitive; default patterns cover lowercase names.
+#     Set BENCH_HARVEST_EXCLUDE="" (export) to disable filtering entirely.
+#     Uses ${VAR-default} (no colon) so empty-string export disables the filter. ---
+# Use ${VAR-default} (no colon) so an explicit BENCH_HARVEST_EXCLUDE=""
+# disables the filter entirely; unset uses the default; empty-but-set = off.
+BENCH_HARVEST_EXCLUDE="${BENCH_HARVEST_EXCLUDE-*.bak:*.orig:vendor/*:zig-cache/*:.zig-cache/*:zig-out/*:*.o:*.a}"
+
 # ---------------------------------------------------------------------------
 # Base-override config (operator-supplied per-plan bases for modify-features).
 # ---------------------------------------------------------------------------
@@ -918,6 +928,13 @@ When the gate passes, commit everything you changed:
 Both the conflict-detection instrument (which merges your committed tip) and
 the actual-touch harvest (which diffs your committed range) read ONLY committed
 state. Uncommitted work is invisible to the measurement.
+
+SCOPE DISCIPLINE (load-bearing — the measurement counts every file you touch):
+Do NOT create backup files (no .bak copies, no file.orig). Edit source files
+in place. Stay within the subsystem of the named files; do not modify vendored
+dependencies under vendor/ or build outputs (zig-out/, zig-cache/). Touches
+outside the declared subsystem inflate the actual-touch set and corrupt the
+precision/recall measurement.
 EOF
 }
 
@@ -1158,6 +1175,65 @@ commit_agent_work() {
     && log "commit_agent_work: committed agent work in ${worktree} (label: ${label})" \
     || log "commit_agent_work: git commit failed in ${worktree} — continuing (harvest will record 0 touches)"
   return 0
+}
+
+# filter_noise_touches <run_uid> — delete kind='actual' run_touches rows whose
+# path matches a known-noise glob (backup files, vendor/, build outputs). Runs
+# AFTER all slices in the cell have been harvested (so the DELETE sees the full
+# set) and BEFORE the zero-touch guard (so the guard counts only real touches).
+#
+# Patterns come from BENCH_HARVEST_EXCLUDE (colon-separated GLOB strings).
+# SQLite GLOB is case-sensitive; our default patterns are lowercase. Each token
+# is turned into a "path GLOB '<pattern>'" predicate in the DELETE. The join
+# through `runs` scopes the delete to the current run_uid only.
+#
+# Safe under set -euo pipefail: the sqlite3 call is guarded; a missing DB or
+# unset PLANAR_DB skips cleanly. --dry-run never calls this (no harvest happened).
+# Idempotent: deleting already-absent rows is a no-op. Never touches kind='declared'.
+filter_noise_touches() {
+  local run_uid="$1"
+  # Skip if DB is absent or PLANAR_DB is unset/empty.
+  [ -n "${PLANAR_DB:-}" ] && [ -f "$PLANAR_DB" ] || return 0
+  [ -n "${BENCH_HARVEST_EXCLUDE:-}" ] || return 0
+
+  # Build the WHERE clause: one "path GLOB '<pat>'" per colon-separated token,
+  # OR-joined. tr converts the colon-separated list into newlines so we can
+  # iterate with a while-read loop (avoids IFS manipulation under set -euo pipefail).
+  local pat where_clause=""
+  while IFS= read -r pat; do
+    [ -n "$pat" ] || continue
+    # Escape single quotes in the pattern (defensive; default patterns have none).
+    local safe_pat; safe_pat="$(printf '%s' "$pat" | sed "s/'/''/g")"
+    if [ -n "$where_clause" ]; then
+      where_clause="${where_clause} OR t.path GLOB '${safe_pat}'"
+    else
+      where_clause="t.path GLOB '${safe_pat}'"
+    fi
+  done <<NOISE_PATS
+$(printf '%s' "$BENCH_HARVEST_EXCLUDE" | tr ':' '\n')
+NOISE_PATS
+  [ -n "$where_clause" ] || return 0
+
+  # Run DELETE then SELECT changes() in one sqlite3 session. Two statements
+  # separated by ';' are both executed; changes() returns the row count from
+  # the immediately preceding DELETE.
+  local n_removed
+  n_removed="$(sqlite3 "$PLANAR_DB" \
+    "DELETE FROM run_touches
+     WHERE id IN (
+       SELECT t.id FROM run_touches t
+       JOIN runs r ON r.id = t.run_id
+       WHERE r.run_uid = '${run_uid}'
+         AND t.kind = 'actual'
+         AND (${where_clause})
+     );
+     SELECT changes();" 2>/dev/null || printf '0')"
+  # sqlite3 prints one line per result; changes() is the only SELECT so the
+  # entire output is the count (no stripping needed).
+  n_removed="${n_removed:-0}"
+  if [ "${n_removed:-0}" -gt 0 ]; then
+    log "harvest filter: removed ${n_removed} noise touch(es) (.bak/vendor/build) from ${run_uid}"
+  fi
 }
 
 # harvest_slice <worktree> <tasks_json> — per-task actual-touch harvest for one
@@ -1543,6 +1619,11 @@ run_cell() {
     grouped)     dispatch_grouped "$plan" ;;
     *) err "run_cell: unknown arm '${arm}'" ;;
   esac
+
+  # --- harvest noise filter: remove known-noise actual touches (backup files,
+  #     vendor/, build outputs) AFTER all slices harvested and BEFORE the
+  #     zero-touch guard, so the guard counts only real touches. ---
+  filter_noise_touches "$run_uid"
 
   # --- zero-touch guard: if ALL slices produced 0 actual touches emit a loud
   #     WARNING so no future run can silently look like success while carrying no
