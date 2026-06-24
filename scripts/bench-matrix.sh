@@ -412,8 +412,8 @@ spawn_agent_watchdog() {
   # The agent command as a bash -c invocation.
   # $1=$worktree $2=$brief $3=$model $4=$out_tmp $5=$extra_flags
   # extra_flags is passed as a single argument and word-split inside the
-  # subshell (bash -c) deliberately — it carries zero or one flag token pair
-  # like "--permission-mode acceptEdits" for the coder, or "" for the reviewer.
+  # subshell (bash -c) deliberately — it carries zero or one flag token like
+  # "--dangerously-skip-permissions" for the coder, or "" for the reviewer.
   local agent_cmd="cd \"\$1\" && printf '%s' \"\$2\" | claude -p \
     --output-format=json \
     --model \"\$3\" \
@@ -540,9 +540,11 @@ spawn_agent() {
 
   # Headless, non-interactive, single JSON result object. --add-dir grants the
   # agent the cycle worktree; cwd is the worktree so relative paths resolve.
-  # --permission-mode acceptEdits lets the coder edit files unattended (the
-  # worktree is an isolated, throwaway, internet-free sandbox — the documented
-  # use case for skipping the interactive permission prompt).
+  # --dangerously-skip-permissions bypasses ALL permission prompts (file edits
+  # AND bash commands). The worktree is an isolated, throwaway, internet-free
+  # sandbox — the coder MUST be able to run zig build / zig fmt / git without
+  # interactive approval, otherwise it cannot verify the objective gate and will
+  # self-classify as "no work needed" rather than actually implementing the task.
   #
   # The brief is fed on STDIN (not as a positional). Empirically, claude
   # 2.1.x `--print` with a redirected stdin (`< /dev/null`) reads the prompt
@@ -559,8 +561,9 @@ spawn_agent() {
   rm -f "$_timeout_flag"  # watchdog touches it on timeout; absence = no timeout
   _AGENT_TIMEOUT_FLAG="$_timeout_flag"
   AGENT_TIMED_OUT=0
-  # Coder gets --permission-mode acceptEdits (isolated throwaway worktree).
-  raw="$(spawn_agent_watchdog "$model" "$worktree" "$brief" "--permission-mode acceptEdits")"
+  # Coder gets --dangerously-skip-permissions: full bash + edit access in the
+  # isolated throwaway worktree so it can run zig build / zig fmt / git.
+  raw="$(spawn_agent_watchdog "$model" "$worktree" "$brief" "--dangerously-skip-permissions")"
   if [ -f "$_timeout_flag" ]; then AGENT_TIMED_OUT=1; fi
   rm -f "$_timeout_flag" 2>/dev/null || true
   _AGENT_TIMEOUT_FLAG=""
@@ -587,15 +590,16 @@ spawn_agent() {
 
 # spawn_agent_raw <model> <worktree> <brief> [out_dir]  ->  prints the full raw claude JSON
 #
-# Like spawn_agent but WITHOUT --permission-mode acceptEdits (reviewer does not
-# need to edit files) and returns the FULL result JSON, not the token_sample
-# projection.  The caller is responsible for extracting the token_sample and
-# the verdict from the raw JSON independently.
+# Like spawn_agent but WITHOUT --dangerously-skip-permissions (the reviewer
+# must not edit files — it runs AFTER the coder and BEFORE commit_agent_work,
+# so reviewer edits would pollute the actual-touch measurement) and returns the
+# FULL result JSON, not the token_sample projection.  The caller is responsible
+# for extracting the token_sample and the verdict from the raw JSON.
 #
 # Shares spawn_agent_watchdog with the coder: process-group isolation,
 # _INFLIGHT_AGENT_PGID registration, timeout, and flag-file timeout signalling
 # are all identical.  Only the extra_flags argument differs (empty string =
-# no --permission-mode flag).
+# no bypass flag for the reviewer).
 #
 # When out_dir is provided the RAW claude JSON is also written to
 # $out_dir/reviewer.raw.json before the caller applies any projection.
@@ -607,7 +611,7 @@ spawn_agent_raw() {
   rm -f "$_timeout_flag"
   _AGENT_TIMEOUT_FLAG="$_timeout_flag"
   AGENT_TIMED_OUT=0
-  # Reviewer does not edit files → no --permission-mode acceptEdits.
+  # Reviewer does not edit files → no --dangerously-skip-permissions.
   raw="$(spawn_agent_watchdog "$model" "$worktree" "$brief" "")" || _wd_rc=$?
   if [ -f "$_timeout_flag" ]; then AGENT_TIMED_OUT=1; fi
   rm -f "$_timeout_flag" 2>/dev/null || true
@@ -852,6 +856,10 @@ coder_brief() {
   cat <<EOF
 You are an implementation agent in an isolated benchmark worktree.
 
+This is a REAL IMPLEMENTATION TASK. The worktree starts at a pre-feature base
+commit. Your job is to write the code that implements the feature described
+below. You have full bash access (zig build, zig fmt, git, etc.) — use it.
+
 PROBLEM STATEMENT (plan ${plan}):
 ${problem}
 
@@ -862,17 +870,18 @@ define done):
   2. \`zig fmt\` reports no changes.
   3. The test suite is green.
 
-Implement the change, then run the gate. Report the gate outcome.
+Implement the change, run the gate, and report the gate outcome verbatim.
+
+If you produce no file changes, the task is UNIMPLEMENTED — not "complete."
+Zero edits for a feature task means the feature was not built. Do not treat
+the absence of work as a valid benchmark outcome.
 
 COMMIT DISCIPLINE (load-bearing — the harness reads your committed work):
-When you are done, you MUST commit everything you changed in this worktree
-with a plain git commit:
+When the gate passes, commit everything you changed:
   git add -A && git commit -m "${plan}: <one-line summary of the task>"
 Both the conflict-detection instrument (which merges your committed tip) and
 the actual-touch harvest (which diffs your committed range) read ONLY committed
-state. Uncommitted work is invisible to the measurement. If you genuinely
-changed nothing, do not fabricate a commit — a no-change task is a valid
-outcome and the harness records zero touches for it.
+state. Uncommitted work is invisible to the measurement.
 EOF
 }
 
