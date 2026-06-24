@@ -412,29 +412,282 @@ WRAP4
 }
 
 # ===========================================================================
-# TEST 5 — No regression: existing test suites still pass.
+# TEST 5 — filter_noise_touches: noise rows deleted, real + declared rows kept.
+#
+# Strategy: seed run_touches with a mix of real actual rows, noise actual rows,
+# and declared rows; call filter_noise_touches; assert noise actuals gone, real
+# actual kept, declared rows untouched.
+# ===========================================================================
+test_filter_noise_touches() {
+  printf '\n=== HARVEST TEST 5: filter_noise_touches removes noise, keeps real ===\n'
+  local home db cfg corpus base pid tid
+  home="$(mktemp -d "${TMPDIR:-/tmp}/harvest-test.XXXXXX")"
+  db="$home/exp.db"; cfg="$home/config.toml"
+  corpus="$(new_corpus "$home")"
+  base="$(git -C "$corpus" rev-parse HEAD)"
+  pid="$(seed_plan "$db" "$cfg" "$corpus")"
+  tid="$(seed_task "$db" "$cfg" "$corpus" "$pid")"
+
+  # Open a run record.
+  local run_uid="fn-t5-filter"
+  ( cd "$corpus" && PLANAR_DB="$db" PLANAR_CONFIG_PATH="$cfg" \
+      command "$PLANAR_BIN" bench start "$run_uid" --plan "$pid" --arm strict \
+        --base-sha "$base" --config-hash fn5 >/dev/null 2>&1 )
+
+  # Seed run_touches: real actual, noise actuals, declared.
+  sqlite3 "$db" "
+    INSERT INTO run_touches (run_id, task_id, kind, path)
+    SELECT r.id, $tid, 'actual', 'src/foo.zig'       FROM runs r WHERE r.run_uid='$run_uid';
+    INSERT INTO run_touches (run_id, task_id, kind, path)
+    SELECT r.id, $tid, 'actual', 'src/x.zig.bak'     FROM runs r WHERE r.run_uid='$run_uid';
+    INSERT INTO run_touches (run_id, task_id, kind, path)
+    SELECT r.id, $tid, 'actual', 'vendor/lib/y.zig'  FROM runs r WHERE r.run_uid='$run_uid';
+    INSERT INTO run_touches (run_id, task_id, kind, path)
+    SELECT r.id, $tid, 'actual', 'zig-out/bin/z'     FROM runs r WHERE r.run_uid='$run_uid';
+    INSERT INTO run_touches (run_id, task_id, kind, path)
+    SELECT r.id, $tid, 'actual', 'helper.o'           FROM runs r WHERE r.run_uid='$run_uid';
+    INSERT INTO run_touches (run_id, task_id, kind, path)
+    SELECT r.id, $tid, 'declared', 'src/foo.zig'     FROM runs r WHERE r.run_uid='$run_uid';
+  " 2>/dev/null
+
+  # Source the matrix and call filter_noise_touches.
+  local trimmed="$db.matrix-nomain.sh"
+  sed '$ s/^main "$@"$//' "$MATRIX" >"$trimmed"
+
+  local wrap="$home/t5-wrap.sh"
+  cat >"$wrap" <<WRAP5
+#!/usr/bin/env bash
+set -euo pipefail
+export PLANAR_DB_OVERRIDE="$db"
+export PLANAR_CONFIG_PATH_OVERRIDE="$cfg"
+export BENCH_HOME="$home"
+export BENCH_CORPUS_REPO="$corpus"
+# shellcheck disable=SC1090
+source "$trimmed"
+filter_noise_touches "$run_uid"
+WRAP5
+  chmod +x "$wrap"
+  bash "$wrap" 2>/dev/null || true
+
+  # Assert: noise actual rows deleted.
+  local n_bak n_vendor n_zigout n_dotO
+  n_bak="$(sqlite3 "$db" "SELECT count(*) FROM run_touches t JOIN runs r ON r.id=t.run_id
+    WHERE r.run_uid='$run_uid' AND t.kind='actual' AND t.path='src/x.zig.bak';")"
+  n_vendor="$(sqlite3 "$db" "SELECT count(*) FROM run_touches t JOIN runs r ON r.id=t.run_id
+    WHERE r.run_uid='$run_uid' AND t.kind='actual' AND t.path='vendor/lib/y.zig';")"
+  n_zigout="$(sqlite3 "$db" "SELECT count(*) FROM run_touches t JOIN runs r ON r.id=t.run_id
+    WHERE r.run_uid='$run_uid' AND t.kind='actual' AND t.path='zig-out/bin/z';")"
+  n_dotO="$(sqlite3 "$db" "SELECT count(*) FROM run_touches t JOIN runs r ON r.id=t.run_id
+    WHERE r.run_uid='$run_uid' AND t.kind='actual' AND t.path='helper.o';")"
+
+  [ "${n_bak:-1}" -eq 0 ] \
+    && ok "T5a: .bak actual touch deleted by filter_noise_touches" \
+    || bad "T5a: .bak actual touch NOT deleted (count=$n_bak)"
+  [ "${n_vendor:-1}" -eq 0 ] \
+    && ok "T5b: vendor/ actual touch deleted by filter_noise_touches" \
+    || bad "T5b: vendor/ actual touch NOT deleted (count=$n_vendor)"
+  [ "${n_zigout:-1}" -eq 0 ] \
+    && ok "T5c: zig-out/ actual touch deleted by filter_noise_touches" \
+    || bad "T5c: zig-out/ actual touch NOT deleted (count=$n_zigout)"
+  [ "${n_dotO:-1}" -eq 0 ] \
+    && ok "T5d: .o actual touch deleted by filter_noise_touches" \
+    || bad "T5d: .o actual touch NOT deleted (count=$n_dotO)"
+
+  # Assert: real actual row kept.
+  local n_real
+  n_real="$(sqlite3 "$db" "SELECT count(*) FROM run_touches t JOIN runs r ON r.id=t.run_id
+    WHERE r.run_uid='$run_uid' AND t.kind='actual' AND t.path='src/foo.zig';")"
+  [ "${n_real:-0}" -eq 1 ] \
+    && ok "T5e: src/foo.zig real actual touch preserved" \
+    || bad "T5e: src/foo.zig actual touch was unexpectedly removed (count=$n_real)"
+
+  # Assert: declared row untouched.
+  local n_decl
+  n_decl="$(sqlite3 "$db" "SELECT count(*) FROM run_touches t JOIN runs r ON r.id=t.run_id
+    WHERE r.run_uid='$run_uid' AND t.kind='declared' AND t.path='src/foo.zig';")"
+  [ "${n_decl:-0}" -eq 1 ] \
+    && ok "T5f: declared row untouched by filter_noise_touches" \
+    || bad "T5f: declared row was deleted (count=$n_decl)"
+
+  rm -rf "$home"
+}
+
+# ===========================================================================
+# TEST 6 — BENCH_HARVEST_EXCLUDE override changes what's filtered.
+#
+# Seed actual rows for .bak and src/real.zig. Run with an override that only
+# excludes *.bak. Assert .bak deleted and src/real.zig kept.
+# Then re-seed and run with BENCH_HARVEST_EXCLUDE="" (disabled). Assert nothing
+# deleted.
+# ===========================================================================
+test_filter_exclude_override() {
+  printf '\n=== HARVEST TEST 6: BENCH_HARVEST_EXCLUDE override changes filter ===\n'
+
+  # Sub-case A: override to only *.bak — vendor/ row is NOT filtered.
+  local homeA dbA cfgA corpusA baseA pidA tidA run_uidA
+  homeA="$(mktemp -d "${TMPDIR:-/tmp}/harvest-test.XXXXXX")"
+  dbA="$homeA/exp.db"; cfgA="$homeA/config.toml"
+  corpusA="$(new_corpus "$homeA")"
+  baseA="$(git -C "$corpusA" rev-parse HEAD)"
+  pidA="$(seed_plan "$dbA" "$cfgA" "$corpusA")"
+  tidA="$(seed_task "$dbA" "$cfgA" "$corpusA" "$pidA")"
+  run_uidA="fn-t6a-override"
+  ( cd "$corpusA" && PLANAR_DB="$dbA" PLANAR_CONFIG_PATH="$cfgA" \
+      command "$PLANAR_BIN" bench start "$run_uidA" --plan "$pidA" --arm strict \
+        --base-sha "$baseA" --config-hash fn6a >/dev/null 2>&1 )
+  sqlite3 "$dbA" "
+    INSERT INTO run_touches (run_id, task_id, kind, path)
+    SELECT r.id, $tidA, 'actual', 'src/x.zig.bak'    FROM runs r WHERE r.run_uid='$run_uidA';
+    INSERT INTO run_touches (run_id, task_id, kind, path)
+    SELECT r.id, $tidA, 'actual', 'vendor/lib/y.zig'  FROM runs r WHERE r.run_uid='$run_uidA';
+  " 2>/dev/null
+
+  local trimmedA="$dbA.matrix-nomain.sh"
+  sed '$ s/^main "$@"$//' "$MATRIX" >"$trimmedA"
+  local wrapA="$homeA/t6a-wrap.sh"
+  cat >"$wrapA" <<WRAP6A
+#!/usr/bin/env bash
+set -euo pipefail
+export PLANAR_DB_OVERRIDE="$dbA"
+export PLANAR_CONFIG_PATH_OVERRIDE="$cfgA"
+export BENCH_HOME="$homeA"
+export BENCH_CORPUS_REPO="$corpusA"
+export BENCH_HARVEST_EXCLUDE="*.bak"
+# shellcheck disable=SC1090
+source "$trimmedA"
+filter_noise_touches "$run_uidA"
+WRAP6A
+  chmod +x "$wrapA"
+  bash "$wrapA" 2>/dev/null || true
+
+  local n_bak n_vendor
+  n_bak="$(sqlite3 "$dbA" "SELECT count(*) FROM run_touches t JOIN runs r ON r.id=t.run_id
+    WHERE r.run_uid='$run_uidA' AND t.kind='actual' AND t.path='src/x.zig.bak';")"
+  n_vendor="$(sqlite3 "$dbA" "SELECT count(*) FROM run_touches t JOIN runs r ON r.id=t.run_id
+    WHERE r.run_uid='$run_uidA' AND t.kind='actual' AND t.path='vendor/lib/y.zig';")"
+  [ "${n_bak:-1}" -eq 0 ] \
+    && ok "T6a: *.bak deleted when BENCH_HARVEST_EXCLUDE=*.bak" \
+    || bad "T6a: *.bak NOT deleted with override (count=$n_bak)"
+  [ "${n_vendor:-0}" -eq 1 ] \
+    && ok "T6b: vendor/ NOT deleted when override only lists *.bak" \
+    || bad "T6b: vendor/ unexpectedly deleted with *.bak-only override (count=$n_vendor)"
+  rm -rf "$homeA"
+
+  # Sub-case B: BENCH_HARVEST_EXCLUDE="" — nothing filtered.
+  local homeB dbB cfgB corpusB baseB pidB tidB run_uidB
+  homeB="$(mktemp -d "${TMPDIR:-/tmp}/harvest-test.XXXXXX")"
+  dbB="$homeB/exp.db"; cfgB="$homeB/config.toml"
+  corpusB="$(new_corpus "$homeB")"
+  baseB="$(git -C "$corpusB" rev-parse HEAD)"
+  pidB="$(seed_plan "$dbB" "$cfgB" "$corpusB")"
+  tidB="$(seed_task "$dbB" "$cfgB" "$corpusB" "$pidB")"
+  run_uidB="fn-t6b-disabled"
+  ( cd "$corpusB" && PLANAR_DB="$dbB" PLANAR_CONFIG_PATH="$cfgB" \
+      command "$PLANAR_BIN" bench start "$run_uidB" --plan "$pidB" --arm strict \
+        --base-sha "$baseB" --config-hash fn6b >/dev/null 2>&1 )
+  sqlite3 "$dbB" "
+    INSERT INTO run_touches (run_id, task_id, kind, path)
+    SELECT r.id, $tidB, 'actual', 'src/x.zig.bak'    FROM runs r WHERE r.run_uid='$run_uidB';
+    INSERT INTO run_touches (run_id, task_id, kind, path)
+    SELECT r.id, $tidB, 'actual', 'vendor/lib/y.zig'  FROM runs r WHERE r.run_uid='$run_uidB';
+  " 2>/dev/null
+
+  local trimmedB="$dbB.matrix-nomain.sh"
+  sed '$ s/^main "$@"$//' "$MATRIX" >"$trimmedB"
+  local wrapB="$homeB/t6b-wrap.sh"
+  cat >"$wrapB" <<WRAP6B
+#!/usr/bin/env bash
+set -euo pipefail
+export PLANAR_DB_OVERRIDE="$dbB"
+export PLANAR_CONFIG_PATH_OVERRIDE="$cfgB"
+export BENCH_HOME="$homeB"
+export BENCH_CORPUS_REPO="$corpusB"
+export BENCH_HARVEST_EXCLUDE=""
+# shellcheck disable=SC1090
+source "$trimmedB"
+filter_noise_touches "$run_uidB"
+WRAP6B
+  chmod +x "$wrapB"
+  bash "$wrapB" 2>/dev/null || true
+
+  local n_total
+  n_total="$(sqlite3 "$dbB" "SELECT count(*) FROM run_touches t JOIN runs r ON r.id=t.run_id
+    WHERE r.run_uid='$run_uidB' AND t.kind='actual';")"
+  [ "${n_total:-0}" -eq 2 ] \
+    && ok "T6c: BENCH_HARVEST_EXCLUDE='' disables filter — all actual rows preserved" \
+    || bad "T6c: BENCH_HARVEST_EXCLUDE='' did not disable filter (remaining actual count=$n_total)"
+  rm -rf "$homeB"
+}
+
+# ===========================================================================
+# TEST 7 — coder_brief contains the no-backup / stay-in-subsystem directive.
+# ===========================================================================
+test_coder_brief_directive() {
+  printf '\n=== HARVEST TEST 7: coder_brief no-backup scope directive ===\n'
+  local home db cfg corpus
+  home="$(mktemp -d "${TMPDIR:-/tmp}/harvest-test.XXXXXX")"
+  db="$home/exp.db"; cfg="$home/config.toml"
+  corpus="$(new_corpus "$home")"
+
+  local trimmed="$db.matrix-nomain.sh"
+  sed '$ s/^main "$@"$//' "$MATRIX" >"$trimmed"
+  local wrap="$home/t7-wrap.sh"
+  cat >"$wrap" <<WRAP7
+#!/usr/bin/env bash
+set -euo pipefail
+export PLANAR_DB_OVERRIDE="$db"
+export PLANAR_CONFIG_PATH_OVERRIDE="$cfg"
+export BENCH_HOME="$home"
+export BENCH_CORPUS_REPO="$corpus"
+# shellcheck disable=SC1090
+source "$trimmed"
+# Emit coder_brief on stdout so the test can grep it.
+coder_brief 699 "test problem statement" '[42]'
+WRAP7
+  chmod +x "$wrap"
+  local brief_out
+  brief_out="$(bash "$wrap" 2>/dev/null || true)"
+
+  printf '%s\n' "$brief_out" | grep -qF ".bak" \
+    && ok "T7a: coder_brief mentions .bak (backup file prohibition)" \
+    || bad "T7a: coder_brief does NOT mention .bak"
+  printf '%s\n' "$brief_out" | grep -qiF "backup" \
+    && ok "T7b: coder_brief mentions backup (the no-backup directive)" \
+    || bad "T7b: coder_brief does NOT contain 'backup'"
+  printf '%s\n' "$brief_out" | grep -qF "vendor/" \
+    && ok "T7c: coder_brief mentions vendor/ (scope discipline)" \
+    || bad "T7c: coder_brief does NOT mention vendor/"
+  printf '%s\n' "$brief_out" | grep -qi "SCOPE DISCIPLINE" \
+    && ok "T7d: coder_brief contains SCOPE DISCIPLINE section header" \
+    || bad "T7d: coder_brief missing SCOPE DISCIPLINE header"
+
+  rm -rf "$home"
+}
+
+# ===========================================================================
+# TEST 8 — No regression: existing test suites still pass.
 # ===========================================================================
 test_regression() {
   local rc
-  printf '\n=== HARVEST TEST 5a: base-test regression ===\n'
+  printf '\n=== HARVEST TEST 8a: base-test regression ===\n'
   rc=0; bash "$SCRIPT_DIR/bench-matrix-base-test.sh" || rc=$?
   [ "$rc" -eq 0 ] \
     && ok "regression: base-test passes" \
     || bad "regression: base-test FAILED (rc=$rc)"
 
-  printf '\n=== HARVEST TEST 5b: m3-test regression ===\n'
+  printf '\n=== HARVEST TEST 8b: m3-test regression ===\n'
   rc=0; bash "$SCRIPT_DIR/bench-matrix-m3-test.sh" || rc=$?
   [ "$rc" -eq 0 ] \
     && ok "regression: m3-test passes" \
     || bad "regression: m3-test FAILED (rc=$rc)"
 
-  printf '\n=== HARVEST TEST 5c: m4-test regression ===\n'
+  printf '\n=== HARVEST TEST 8c: m4-test regression ===\n'
   rc=0; bash "$SCRIPT_DIR/bench-matrix-m4-test.sh" || rc=$?
   [ "$rc" -eq 0 ] \
     && ok "regression: m4-test passes" \
     || bad "regression: m4-test FAILED (rc=$rc)"
 
-  printf '\n=== HARVEST TEST 5d: b1-test regression ===\n'
+  printf '\n=== HARVEST TEST 8d: b1-test regression ===\n'
   rc=0; bash "$SCRIPT_DIR/bench-matrix-b1-test.sh" || rc=$?
   [ "$rc" -eq 0 ] \
     && ok "regression: b1-test passes" \
@@ -453,6 +706,9 @@ main() {
   test_empty_slice_is_clean
   test_zero_touch_guard
   test_raw_transcript_preserved
+  test_filter_noise_touches
+  test_filter_exclude_override
+  test_coder_brief_directive
   test_regression
 
   printf '\n=== RESULTS: %d passed, %d failed ===\n' "$pass" "$fail"
