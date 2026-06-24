@@ -845,23 +845,59 @@ config_json() {
 # brief construction  (the B-phase prompts)
 # ===========================================================================
 #
-# coder_brief <plan> <problem-statement> — the strict-arm coder prompt.
-#   = problem statement + the FROZEN objective gate (preregistration §3:
-#     `zig build` clean AND `zig fmt` clean AND tests green).
+# coder_brief <plan> <problem-statement> <task_ids_json> — the slice-scoped
+# coder prompt. The brief includes a TASKS TO IMPLEMENT section listing each
+# task's title + body (fetched from the isolated DB via pl_plan_json task show
+# <id> --json). The agent is instructed to implement ONLY those tasks.
+#
+# task_ids_json is a JSON array of integer task IDs (the slice's task list),
+# e.g. '[4207]' (strict) or '[4207,4208]' (grouped). The plan-level problem
+# statement is kept as one line of context, but the tasks section is the
+# authoritative scope.
+#
+# Safe interpolation: each task's title and body are captured into shell
+# variables (never eval'd) and expanded into the heredoc as quoted text. A
+# body containing newlines, quotes, or dollar signs is expanded safely because
+# the heredoc delimiter (EOF) is unquoted (so the shell expands $var references
+# inside), and the body variable is a plain parameter expansion that the shell
+# does NOT re-parse for commands. Markdown content in the body does not break
+# the heredoc.
+#
 # SCOPE: M1 builds only the strict arm. M2 adds eligibility/grouped arm shapes
 # by varying which slice of the closure the brief dispatches; the seam is this
 # function plus the arm parameter on run_cell.
 coder_brief() {
-  local plan="$1" problem="$2"
+  local plan="$1" problem="$2" task_ids_json="${3:-[]}"
+
+  # Build the TASKS TO IMPLEMENT section by fetching each task's title+body.
+  # Capture into a variable (not a subshell that could swallow set -e exits).
+  local tasks_section="" tid task_json task_title task_body
+  for tid in $(printf '%s' "$task_ids_json" | jq -r '.[]' 2>/dev/null); do
+    task_json="$(pl_plan_json task show "$tid" --json 2>/dev/null || printf '{}')"
+    # Use jq -r to extract; if fields are absent, fall back to empty string.
+    task_title="$(printf '%s' "$task_json" | jq -r '.title // ""' 2>/dev/null || true)"
+    task_body="$(printf '%s' "$task_json" | jq -r '.body // ""' 2>/dev/null || true)"
+    tasks_section="${tasks_section}
+### Task ${tid}: ${task_title}
+${task_body}
+"
+  done
+
   cat <<EOF
 You are an implementation agent in an isolated benchmark worktree.
 
 This is a REAL IMPLEMENTATION TASK. The worktree starts at a pre-feature base
-commit. Your job is to write the code that implements the feature described
-below. You have full bash access (zig build, zig fmt, git, etc.) — use it.
+commit. Your job is to write the code that implements the specific task(s)
+listed below. You have full bash access (zig build, zig fmt, git, etc.) — use it.
 
-PROBLEM STATEMENT (plan ${plan}):
+PLAN CONTEXT (plan ${plan}):
 ${problem}
+
+TASKS TO IMPLEMENT (implement ONLY these — do NOT implement other features from
+the plan; other tasks are handled by other agents in separate worktrees):
+${tasks_section}
+Implement ONLY the task(s) listed above. Do not implement other plan features
+even if you notice them — other tasks are handled by other agents.
 
 OBJECTIVE GATE (frozen, identical across all experimental arms — this is the
 definition of "done"; reviewer approval is measured separately and does NOT
@@ -988,15 +1024,19 @@ slice_worktree() {
   printf '%s' "$wt"
 }
 
-# run_agents <worktree> <out_dir> — the B-phase for one slice: spawn the coder
-# (capturing its session-cumulative token sample) then the reviewer (capturing
-# its sample + parsed verdict). Writes three files into <out_dir>: coder.json,
-# reviewer.json, verdict.txt. NO bench writes happen here — this is the part
-# eligibility runs CONCURRENTLY as a background job, so it must touch only its
-# own out_dir (the isolated SQLite is written serially by the parent at fan-in,
-# never by a backgrounded cohort member).
+# run_agents <worktree> <out_dir> <task_ids_json> — the B-phase for one slice:
+# spawn the coder (capturing its session-cumulative token sample) then the
+# reviewer (capturing its sample + parsed verdict). Writes three files into
+# <out_dir>: coder.json, reviewer.json, verdict.txt. NO bench writes happen
+# here — this is the part eligibility runs CONCURRENTLY as a background job,
+# so it must touch only its own out_dir (the isolated SQLite is written serially
+# by the parent at fan-in, never by a backgrounded cohort member).
+#
+# task_ids_json is threaded into coder_brief so the agent's brief lists ONLY
+# the slice's assigned task(s), preventing agents from implementing the whole
+# plan regardless of arm shape.
 run_agents() {
-  local worktree="$1" out="$2"
+  local worktree="$1" out="$2" task_ids_json="${3:-[]}"
   mkdir -p "$out"
   # A failed/empty agent result is a recorded MEASUREMENT, not a harness crash:
   # `|| true` on each step keeps `set -e` from aborting (and, when this runs as a
@@ -1004,7 +1044,7 @@ run_agents() {
   # Pass $out so spawn_agent writes coder.raw.json alongside coder.json —
   # the raw transcript is preserved for diagnosability (see Change 3).
   spawn_agent "$CODER_MODEL" "$worktree" \
-    "$(coder_brief "$CELL_PLAN" "$CELL_PROBLEM")" "$out" >"$out/coder.json" 2>/dev/null \
+    "$(coder_brief "$CELL_PLAN" "$CELL_PROBLEM" "$task_ids_json")" "$out" >"$out/coder.json" 2>/dev/null \
     || printf '{"in":0,"out":0,"cache_in":0,"cache_out":0,"usd":0}' >"$out/coder.json"
   # M4 fix: route the reviewer through spawn_agent_raw (watchdog + process-group
   # isolation + _INFLIGHT_AGENT_PGID registration) instead of a raw `claude -p`.
@@ -1152,22 +1192,41 @@ harvest_slice() {
 # worktree -> B-phase agents -> harness commit -> fan-in (events + conflict
 # check) -> harvest.
 # strict, grouped, and the eligibility serial-remainder all call this.
+#
+# Post-commit hardening (Fix 2): each step in the post-commit fan-in path
+# (emit_slice_events, fanin_conflict_check, slice_fanin event, harvest_slice)
+# is guarded with per-step error trapping so a failure in one step is logged
+# loudly but does NOT propagate through run_slice as a non-zero exit that
+# aborts the caller's set -euo pipefail loop. The slice itself fails cleanly
+# (with a clear log message), and the cell continues to the next slice.
 run_slice() {
-  local tag="$1" tasks_json="$2" worktree out
+  local tag="$1" tasks_json="$2" worktree out _rs_rc
   title "slice ${tag} tasks=${tasks_json} (serial)"
   worktree="$(slice_worktree "$tag")"
   out="$TRANSCRIPT_ROOT/$CELL_RUN_UID/$tag"
-  run_agents "$worktree" "$out"
+  # Thread the slice's task IDs into the agent brief (Fix 1: slice-scoped brief).
+  run_agents "$worktree" "$out" "$tasks_json"
   # Harness commits whatever the agent left uncommitted. This must happen BEFORE
   # harvest_slice and fanin_conflict_check, both of which read committed state.
   commit_agent_work "$worktree" "${CELL_PLAN}: slice ${tag}"
-  emit_slice_events "$tasks_json" "$out"
-  fanin_conflict_check "$worktree" "$tasks_json"
+  # --- post-commit fan-in path: harden each step so a single slice's failure
+  #     is logged and the cell continues (Fix 2). ---
+  _rs_rc=0
+  emit_slice_events "$tasks_json" "$out" || { _rs_rc=$?; log "run_slice [${tag}]: emit_slice_events failed (rc=${_rs_rc}); continuing"; }
+  fanin_conflict_check "$worktree" "$tasks_json" || { _rs_rc=$?; log "run_slice [${tag}]: fanin_conflict_check failed (rc=${_rs_rc}); continuing"; }
   next_seq
   pl bench event "$CELL_RUN_UID" --kind slice_fanin --seq "$S" \
     --payload "$(jq -nc --arg arm "$CELL_ARM" --argjson tasks "$tasks_json" \
-      '{arm:$arm, tasks:$tasks}')" >&2
-  harvest_slice "$worktree" "$tasks_json"
+      '{arm:$arm, tasks:$tasks}')" >&2 \
+    || { _rs_rc=$?; log "run_slice [${tag}]: slice_fanin event failed (rc=${_rs_rc}); continuing"; }
+  harvest_slice "$worktree" "$tasks_json" || { _rs_rc=$?; log "run_slice [${tag}]: harvest_slice failed (rc=${_rs_rc}); continuing"; }
+  if [ "$_rs_rc" -ne 0 ]; then
+    log "run_slice [${tag}]: fan-in completed with errors (last rc=${_rs_rc}); slice data may be partial"
+    cell_log "slice_error" \
+      "$(jq -nc --arg tag "$tag" --argjson tasks "$tasks_json" --argjson rc "$_rs_rc" \
+         '{slice_tag:$tag, tasks:$tasks, last_rc:$rc, note:"post-commit fan-in partial"}')" || true
+  fi
+  return 0
 }
 
 # ===========================================================================
@@ -1180,11 +1239,20 @@ run_slice() {
 
 # dispatch_strict <plan> <tasks_json> — N singleton slices, serial. With one
 # task this is byte-for-byte M1's flow (one dispatch/agents/fanin/harvest).
+# Per-slice error trapping (Fix 2): run_slice always returns 0 (it catches its
+# own fan-in failures internally); this loop therefore never trips set -e.
 dispatch_strict() {
-  local plan="$1" tasks_json="$2" tslice i=0
+  local plan="$1" tasks_json="$2" tslice i=0 _slice_rc
   while IFS= read -r tslice; do
     [ -n "$tslice" ] || continue
-    run_slice "t$(printf '%s' "$tslice" | jq -r '.[0]')" "$tslice"
+    _slice_rc=0
+    run_slice "t$(printf '%s' "$tslice" | jq -r '.[0]')" "$tslice" || {
+      _slice_rc=$?
+      log "dispatch_strict: slice ${tslice} returned rc=${_slice_rc}; cell continues"
+      cell_log "slice_error" \
+        "$(jq -nc --argjson tasks "$tslice" --argjson rc "$_slice_rc" \
+           '{tasks:$tasks, last_rc:$rc, note:"strict slice aborted"}')" || true
+    }
     i=$((i + 1))
   done <<EOF
 $(plan_slices_strict "$plan" "$tasks_json")
@@ -1215,7 +1283,8 @@ dispatch_eligibility() {
       wt="$(slice_worktree "$tag")"
       out="$TRANSCRIPT_ROOT/$CELL_RUN_UID/$tag"
       title "cohort member ${tag} tasks=${line} (concurrent B-phase)"
-      ( run_agents "$wt" "$out" ) &
+      # Pass task IDs so the agent brief lists ONLY this cohort member's task(s).
+      ( run_agents "$wt" "$out" "$line" ) &
       pids[$n]="$!"
       cohort_slices[$n]="$line"
       cohort_tags[$n]="$tag"
@@ -1238,7 +1307,7 @@ EOF
     # agent is a recorded measurement) does not abort the cell under `set -e`.
     local _p
     for _p in "${pids[@]}"; do wait "$_p" || true; done
-    local i ttasks
+    local i ttasks _fi_rc
     for ((i = 0; i < n; i++)); do
       ttasks="${cohort_slices[$i]}"
       tag="${cohort_tags[$i]}"
@@ -1247,13 +1316,22 @@ EOF
       # Harness commits whatever the concurrent agent left uncommitted. Must run
       # before harvest_slice and fanin_conflict_check (both read committed state).
       commit_agent_work "$wt" "${CELL_PLAN}: slice ${tag}"
-      emit_slice_events "$ttasks" "$out"
-      fanin_conflict_check "$wt" "$ttasks"
+      # Post-commit fan-in hardening: log failures but continue (Fix 2).
+      _fi_rc=0
+      emit_slice_events "$ttasks" "$out" || { _fi_rc=$?; log "eligibility cohort [${tag}]: emit_slice_events failed (rc=${_fi_rc}); continuing"; }
+      fanin_conflict_check "$wt" "$ttasks" || { _fi_rc=$?; log "eligibility cohort [${tag}]: fanin_conflict_check failed (rc=${_fi_rc}); continuing"; }
       next_seq
       pl bench event "$CELL_RUN_UID" --kind slice_fanin --seq "$S" \
         --payload "$(jq -nc --arg arm "$CELL_ARM" --argjson tasks "$ttasks" \
-          '{arm:$arm, tasks:$tasks, cohort:true}')" >&2
-      harvest_slice "$wt" "$ttasks"
+          '{arm:$arm, tasks:$tasks, cohort:true}')" >&2 \
+        || { _fi_rc=$?; log "eligibility cohort [${tag}]: slice_fanin event failed (rc=${_fi_rc}); continuing"; }
+      harvest_slice "$wt" "$ttasks" || { _fi_rc=$?; log "eligibility cohort [${tag}]: harvest_slice failed (rc=${_fi_rc}); continuing"; }
+      if [ "$_fi_rc" -ne 0 ]; then
+        log "eligibility cohort [${tag}]: fan-in completed with errors; slice data may be partial"
+        cell_log "slice_error" \
+          "$(jq -nc --arg tag "$tag" --argjson tasks "$ttasks" --argjson rc "$_fi_rc" \
+             '{slice_tag:$tag, tasks:$tasks, last_rc:$rc, note:"eligibility cohort fan-in partial"}')" || true
+      fi
     done
     log "eligibility: ${n} eligible task(s) ran CONCURRENTLY then fanned in"
   else
@@ -1264,12 +1342,21 @@ EOF
 # dispatch_grouped <plan> — the solver's co-located slices, serial. One coder
 # works each whole slice in ONE shared worktree; one slice_dispatch/slice_fanin
 # per SLICE; harvest is per-task-in-slice (M-BLAST = slice size).
+# Per-slice error trapping (Fix 2): run_slice always returns 0 (it catches its
+# own fan-in failures internally); this loop therefore never trips set -e.
 dispatch_grouped() {
-  local plan="$1" tslice i=0 n
+  local plan="$1" tslice i=0 n _slice_rc
   while IFS= read -r tslice; do
     [ -n "$tslice" ] || continue
     n="$(printf '%s' "$tslice" | jq 'length')"
-    run_slice "g${i}-n${n}" "$tslice"
+    _slice_rc=0
+    run_slice "g${i}-n${n}" "$tslice" || {
+      _slice_rc=$?
+      log "dispatch_grouped: slice ${tslice} returned rc=${_slice_rc}; cell continues"
+      cell_log "slice_error" \
+        "$(jq -nc --argjson tasks "$tslice" --argjson rc "$_slice_rc" \
+           '{tasks:$tasks, last_rc:$rc, note:"grouped slice aborted"}')" || true
+    }
     i=$((i + 1))
   done <<EOF
 $(plan_slices_grouped "$plan")
