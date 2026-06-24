@@ -5930,7 +5930,8 @@ planar-watch run list --json:
     runs: [RunRow] }
   RunRow: { id, plan_id, workflow_name, run_identifier, pid,
             repo_root, started_at, ended_at: ISO8601|null,
-            status: "running"|"completed"|"failed"|"interrupted"|"abandoned" }
+            status: "running"|"completed"|"failed"|"interrupted"|"abandoned",
+            source: "wf"|"op" }
 
 planar-watch run show <id> --json:
   { run: RunRow,
