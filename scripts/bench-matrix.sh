@@ -512,7 +512,7 @@ execute_phase() {
 # 2. TELEMETRY CAPTURE  (M0-proven field mapping)
 # ===========================================================================
 #
-# spawn_agent <model> <worktree> <brief>  ->  prints a token_sample JSON object
+# spawn_agent <model> <worktree> <brief> [out_dir]  ->  prints a token_sample JSON object
 #
 # Runs a headless agent and captures the TERMINAL session-cumulative usage
 # object. M0 confirmed these fields exist on the result JSON:
@@ -530,8 +530,12 @@ execute_phase() {
 # stdin is /dev/null so the headless agent never blocks waiting for input.
 # The raw result JSON is archived under $TRANSCRIPT_ROOT keyed by run_uid+role
 # so a recorded measurement survives independently of the parsed sample.
+#
+# When out_dir is provided the RAW claude JSON is also written to
+# $out_dir/coder.raw.json (before the jq projection) so failed runs remain
+# diagnosable from saved artifacts.
 spawn_agent() {
-  local model="$1" worktree="$2" brief="$3"
+  local model="$1" worktree="$2" brief="$3" out_dir="${4:-}"
   local raw
 
   # Headless, non-interactive, single JSON result object. --add-dir grants the
@@ -561,6 +565,14 @@ spawn_agent() {
   rm -f "$_timeout_flag" 2>/dev/null || true
   _AGENT_TIMEOUT_FLAG=""
 
+  # Preserve the raw claude JSON alongside the token projection so failure runs
+  # are diagnosable from saved artifacts (the projection discards everything
+  # except the five usage fields, making silent failures undiagnosable).
+  if [ -n "$out_dir" ]; then
+    mkdir -p "$out_dir"
+    printf '%s' "$raw" >"$out_dir/coder.raw.json" 2>/dev/null || true
+  fi
+
   # Map the M0-confirmed fields into the frozen token_sample payload shape.
   # Missing fields coerce to 0 (// 0) so a partial usage object never aborts
   # the cell — the absence is itself recorded (a 0 sample is a measurement).
@@ -573,7 +585,7 @@ spawn_agent() {
   }'
 }
 
-# spawn_agent_raw <model> <worktree> <brief>  ->  prints the full raw claude JSON
+# spawn_agent_raw <model> <worktree> <brief> [out_dir]  ->  prints the full raw claude JSON
 #
 # Like spawn_agent but WITHOUT --permission-mode acceptEdits (reviewer does not
 # need to edit files) and returns the FULL result JSON, not the token_sample
@@ -584,8 +596,11 @@ spawn_agent() {
 # _INFLIGHT_AGENT_PGID registration, timeout, and flag-file timeout signalling
 # are all identical.  Only the extra_flags argument differs (empty string =
 # no --permission-mode flag).
+#
+# When out_dir is provided the RAW claude JSON is also written to
+# $out_dir/reviewer.raw.json before the caller applies any projection.
 spawn_agent_raw() {
-  local model="$1" worktree="$2" brief="$3"
+  local model="$1" worktree="$2" brief="$3" out_dir="${4:-}"
   local raw _wd_rc=0
 
   local _timeout_flag; _timeout_flag="$(mktemp "${TMPDIR:-/tmp}/agent-toflag.XXXXXX")"
@@ -597,6 +612,13 @@ spawn_agent_raw() {
   if [ -f "$_timeout_flag" ]; then AGENT_TIMED_OUT=1; fi
   rm -f "$_timeout_flag" 2>/dev/null || true
   _AGENT_TIMEOUT_FLAG=""
+
+  # Preserve the raw reviewer JSON for diagnosability (the verdict + full result
+  # text would otherwise be lost once the caller projects only the token fields).
+  if [ -n "$out_dir" ]; then
+    mkdir -p "$out_dir"
+    printf '%s' "$raw" >"$out_dir/reviewer.raw.json" 2>/dev/null || true
+  fi
 
   if [ "$_wd_rc" -ne 0 ]; then
     # Propagate the watchdog's non-zero exit (timeout or agent failure) so the
@@ -966,16 +988,19 @@ run_agents() {
   # A failed/empty agent result is a recorded MEASUREMENT, not a harness crash:
   # `|| true` on each step keeps `set -e` from aborting (and, when this runs as a
   # backgrounded cohort member, keeps `wait` from seeing a nonzero member exit).
+  # Pass $out so spawn_agent writes coder.raw.json alongside coder.json —
+  # the raw transcript is preserved for diagnosability (see Change 3).
   spawn_agent "$CODER_MODEL" "$worktree" \
-    "$(coder_brief "$CELL_PLAN" "$CELL_PROBLEM")" >"$out/coder.json" 2>/dev/null \
+    "$(coder_brief "$CELL_PLAN" "$CELL_PROBLEM")" "$out" >"$out/coder.json" 2>/dev/null \
     || printf '{"in":0,"out":0,"cache_in":0,"cache_out":0,"usd":0}' >"$out/coder.json"
   # M4 fix: route the reviewer through spawn_agent_raw (watchdog + process-group
   # isolation + _INFLIGHT_AGENT_PGID registration) instead of a raw `claude -p`.
   # spawn_agent_raw returns the FULL result JSON (needed for reviewer_verdict);
   # the token_sample projection is applied here, matching the coder's shape.
+  # Pass $out so spawn_agent_raw writes reviewer.raw.json alongside reviewer.json.
   local reviewer_raw
   reviewer_raw="$(spawn_agent_raw "$REVIEWER_MODEL" "$worktree" \
-    "$(reviewer_brief "$CELL_PLAN" "$CELL_PROBLEM")" 2>/dev/null || true)"
+    "$(reviewer_brief "$CELL_PLAN" "$CELL_PROBLEM")" "$out" 2>/dev/null || true)"
   printf '%s' "$reviewer_raw" | jq -c '{
     in:(.usage.input_tokens // 0), out:(.usage.output_tokens // 0),
     cache_in:(.usage.cache_read_input_tokens // 0),
@@ -1050,6 +1075,38 @@ emit_slice_events() {
   log "slice ${tasks_json}: reviewer verdict (measured) = ${verdict}"
 }
 
+# commit_agent_work <worktree> <label> — commit any work the agent left
+# UNCOMMITTED in the slice worktree. This is the authoritative commit step:
+# agents proved unreliable at committing (a 45-cell campaign completed with 375
+# declared touches and ZERO actual touches because agents left edits staged but
+# not committed — the harness now owns the commit so harvest_slice always sees a
+# committed range). The coder_brief still instructs the agent to commit as a
+# backstop, but the harness commit is authoritative.
+#
+# Uses `git diff --cached --quiet && git diff --quiet` to detect "nothing to
+# stage/commit" and skips the commit cleanly in that case (a genuinely-empty
+# slice is valid — it yields zero actual touches, correctly). Safe under
+# set -euo pipefail: the "nothing staged" guard prevents `git commit` from
+# exiting non-zero on an empty index.
+commit_agent_work() {
+  local worktree="$1" label="$2"
+  # Stage everything the agent touched (mirrors the coder_brief instruction).
+  git -C "$worktree" add -A 2>/dev/null || true
+  # Only commit if there is something in the index. `git diff --cached --quiet`
+  # exits 0 when the index is empty (nothing staged); exit 1 = staged changes.
+  if git -C "$worktree" diff --cached --quiet 2>/dev/null; then
+    log "commit_agent_work: nothing staged in worktree ${worktree} — no commit (clean empty slice)"
+    return 0
+  fi
+  git -C "$worktree" \
+    -c user.email="bench-harness@planar.local" \
+    -c user.name="bench-harness" \
+    commit -m "$label" >/dev/null 2>&1 \
+    && log "commit_agent_work: committed agent work in ${worktree} (label: ${label})" \
+    || log "commit_agent_work: git commit failed in ${worktree} — continuing (harvest will record 0 touches)"
+  return 0
+}
+
 # harvest_slice <worktree> <tasks_json> — per-task actual-touch harvest for one
 # slice. `bench harvest` diffs the slice's COMMITTED range (base..committed-HEAD)
 # and writes kind=actual rows. Range mode (not working-tree mode) is what makes
@@ -1079,7 +1136,8 @@ harvest_slice() {
 }
 
 # run_slice <slice_tag> <tasks_json> — drive ONE serial slice end-to-end:
-# worktree -> B-phase agents -> fan-in (events + conflict check) -> harvest.
+# worktree -> B-phase agents -> harness commit -> fan-in (events + conflict
+# check) -> harvest.
 # strict, grouped, and the eligibility serial-remainder all call this.
 run_slice() {
   local tag="$1" tasks_json="$2" worktree out
@@ -1087,6 +1145,9 @@ run_slice() {
   worktree="$(slice_worktree "$tag")"
   out="$TRANSCRIPT_ROOT/$CELL_RUN_UID/$tag"
   run_agents "$worktree" "$out"
+  # Harness commits whatever the agent left uncommitted. This must happen BEFORE
+  # harvest_slice and fanin_conflict_check, both of which read committed state.
+  commit_agent_work "$worktree" "${CELL_PLAN}: slice ${tag}"
   emit_slice_events "$tasks_json" "$out"
   fanin_conflict_check "$worktree" "$tasks_json"
   next_seq
@@ -1170,6 +1231,9 @@ EOF
       tag="${cohort_tags[$i]}"
       wt="$WORKTREE_ROOT/${CELL_RUN_UID}/${tag}"
       out="$TRANSCRIPT_ROOT/$CELL_RUN_UID/$tag"
+      # Harness commits whatever the concurrent agent left uncommitted. Must run
+      # before harvest_slice and fanin_conflict_check (both read committed state).
+      commit_agent_work "$wt" "${CELL_PLAN}: slice ${tag}"
       emit_slice_events "$ttasks" "$out"
       fanin_conflict_check "$wt" "$ttasks"
       next_seq
@@ -1338,6 +1402,25 @@ run_cell() {
     grouped)     dispatch_grouped "$plan" ;;
     *) err "run_cell: unknown arm '${arm}'" ;;
   esac
+
+  # --- zero-touch guard: if ALL slices produced 0 actual touches emit a loud
+  #     WARNING so no future run can silently look like success while carrying no
+  #     RQ1 data. A 45-cell campaign once completed exit-0 with $165 spent and
+  #     ZERO actual touches because agents left edits uncommitted; this guard
+  #     makes that class of failure immediately visible in the run log. ---
+  if [ -f "$PLANAR_DB" ]; then
+    local _n_actual
+    _n_actual="$(sqlite3 "$PLANAR_DB" \
+      "select count(*) from run_touches t
+       join runs r on r.id = t.run_id
+       where r.run_uid = '${run_uid}' and t.kind = 'actual';" \
+      2>/dev/null || printf '0')"
+    if [ "${_n_actual:-0}" -eq 0 ]; then
+      log "WARNING: cell ${run_uid} harvested 0 actual touches — agent produced no committed changes; RQ1 data for this cell is empty"
+    else
+      log "zero-touch guard: cell ${run_uid} has ${_n_actual} actual touch(es) — OK"
+    fi
+  fi
 
   # --- phase C: finish the run (harvest already happened per-slice). The run is
   #     joinable: declared touches (snapshotted at start) + per-task actual
