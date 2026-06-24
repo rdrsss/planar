@@ -308,3 +308,15 @@ test "classify: ext propagate is planning, ext status is read" {
     try std.testing.expectEqual(Class.planning, classify(&.{ "ext", "propagate" }));
     try std.testing.expectEqual(Class.execution_or_read, classify(&.{ "ext", "status" }));
 }
+
+test "classify: workflow verb is execution_or_read (worktree access guard)" {
+    // Regression guard: `workflow` is a read-only filesystem scan with no
+    // SQLite handle. It must be allowed from a coder's worktree so agents
+    // can discover and inspect workflows without leaving the worktree.
+    // All subverbs (list, show, validate, ...) fall under the same top-level
+    // execution_or_read classification.
+    try std.testing.expectEqual(Class.execution_or_read, classify(&.{"workflow"}));
+    try std.testing.expectEqual(Class.execution_or_read, classify(&.{ "workflow", "list" }));
+    try std.testing.expectEqual(Class.execution_or_read, classify(&.{ "workflow", "show" }));
+    try std.testing.expectEqual(Class.execution_or_read, classify(&.{ "workflow", "validate" }));
+}

@@ -230,3 +230,14 @@ test "simple test" {
     try list.append(gpa, 42);
     try std.testing.expectEqual(@as(i32, 42), list.pop());
 }
+
+// Pull gate modules into the test graph. Without these, Zig's lazy analysis
+// skips verb_classification.zig and worktree_gate.zig even though they are
+// reachable at runtime via worktree_gate.check — their test blocks would
+// never execute under `zig build test`. This is the same idiom used by
+// `cockpit/app.zig` for its lazy-imported spine modules.
+test "gate modules compile and their tests run" {
+    const verb_classification = @import("verb_classification.zig");
+    std.testing.refAllDecls(verb_classification);
+    std.testing.refAllDecls(worktree_gate);
+}

@@ -250,7 +250,10 @@ test "closeout-gate: dry-run on a ready plan → ready, not applied, plan unchan
 // Test 2: dry-run on a blocked plan (open task)
 // =========================================================================
 
-test "closeout-gate: dry-run on a blocked plan → blocked, blocked_by has reason, exit non-zero" {
+test "closeout-gate: dry-run on a blocked plan → blocked, blocked_by has reason, exit ZERO (preview)" {
+    // Contract change (task 4292): --dry-run is a preview — exits 0 regardless
+    // of readiness so callers can read the structured {ready, blocked_by} JSON.
+    // The non-zero exit is reserved for the apply path (no --dry-run).
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
@@ -266,16 +269,12 @@ test "closeout-gate: dry-run on a blocked plan → blocked, blocked_by has reaso
     // Leave one task open (todo), mark the other done (via doing: todo → done is not in the matrix).
     startAndDone(&suite, seeded.task_ids[0]);
 
-    // Dry-run on blocked plan — should exit non-zero.
-    const res = suite.exec(&.{ "plan", "closeout", "--dry-run", "--json", plan_id });
-    defer gpa.free(res.stdout);
-    defer gpa.free(res.stderr);
+    // Dry-run on blocked plan — NOW exits 0 (preview contract).
+    const out_buf = suite.mustRun(&.{ "plan", "closeout", "--dry-run", "--json", plan_id });
+    defer gpa.free(out_buf);
 
-    // Non-zero exit because hard gate is blocked.
-    try std.testing.expect(res.term == .exited and res.term.exited != 0);
-
-    // Parse the JSON output (written to stdout before the non-zero exit).
-    const result = parseJSON(CloseoutResultJSON, arena, res.stdout);
+    // Parse the JSON output — always available on stdout with exit 0.
+    const result = parseJSON(CloseoutResultJSON, arena, out_buf);
     try std.testing.expect(!result.ready);
     try std.testing.expect(!result.applied);
     try std.testing.expect(result.blocked_by.len > 0);
@@ -283,7 +282,7 @@ test "closeout-gate: dry-run on a blocked plan → blocked, blocked_by has reaso
     // hard_evidence.tasks.open > 0.
     try std.testing.expect(result.hard_evidence.tasks.open > 0);
 
-    // Plan unchanged.
+    // Plan unchanged — dry-run never writes.
     const plan_after = suite.mustRunJSON(PlanJSON, arena, &.{ "plan", "show", "--json", plan_id });
     try std.testing.expectEqualStrings("active", plan_after.status);
 }
@@ -401,6 +400,7 @@ test "closeout-gate: cancelled tasks are terminal — plan with done+cancelled t
 // =========================================================================
 
 test "closeout-gate: open descendant plan blocks closeout" {
+    // --dry-run exits 0 (preview); ready=false + descendants.open > 0 in JSON.
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
@@ -417,14 +417,11 @@ test "closeout-gate: open descendant plan blocks closeout" {
     const _child = seedPlan(&suite, arena, "closeout-desc-child", 1, "active", anchor_id);
     _ = _child;
 
-    // Dry-run on ancestor — descendant is open → blocked.
-    const res = suite.exec(&.{ "plan", "closeout", "--dry-run", "--json", anchor_id });
-    defer gpa.free(res.stdout);
-    defer gpa.free(res.stderr);
+    // Dry-run on ancestor — descendant is open → blocked, but exits 0 (preview).
+    const out_buf = suite.mustRun(&.{ "plan", "closeout", "--dry-run", "--json", anchor_id });
+    defer gpa.free(out_buf);
 
-    try std.testing.expect(res.term == .exited and res.term.exited != 0);
-
-    const result = parseJSON(CloseoutResultJSON, arena, res.stdout);
+    const result = parseJSON(CloseoutResultJSON, arena, out_buf);
     try std.testing.expect(!result.ready);
     // descendants.open > 0.
     try std.testing.expect(result.hard_evidence.descendants.open > 0);
@@ -435,6 +432,7 @@ test "closeout-gate: open descendant plan blocks closeout" {
 // =========================================================================
 
 test "closeout-gate: live claim blocks closeout; stale claim is advisory warning" {
+    // --dry-run exits 0 (preview); ready=false + claims.live > 0 in JSON.
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
@@ -458,14 +456,11 @@ test "closeout-gate: live claim blocks closeout; stale claim is advisory warning
     // Task 2 is still todo (agent only pulled task 1); advance via doing first.
     startAndDone(&suite, seeded.task_ids[1]);
 
-    // Closeout dry-run — should be blocked due to live claim.
-    const res = suite.exec(&.{ "plan", "closeout", "--dry-run", "--json", plan_id });
-    defer gpa.free(res.stdout);
-    defer gpa.free(res.stderr);
+    // Closeout dry-run — blocked due to live claim, but exits 0 (preview).
+    const out_buf = suite.mustRun(&.{ "plan", "closeout", "--dry-run", "--json", plan_id });
+    defer gpa.free(out_buf);
 
-    try std.testing.expect(res.term == .exited and res.term.exited != 0);
-
-    const result = parseJSON(CloseoutResultJSON, arena, res.stdout);
+    const result = parseJSON(CloseoutResultJSON, arena, out_buf);
     try std.testing.expect(!result.ready);
     // claims.live > 0.
     try std.testing.expect(result.hard_evidence.claims.live > 0);

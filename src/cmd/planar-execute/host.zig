@@ -343,15 +343,19 @@ fn raiseError(L: ?*c.lua_State, comptime fmt: []const u8, args: anytype) noretur
 
 /// argvFromLuaTable reads a Lua array-table at `idx` into an allocator-owned
 /// `[][]const u8`. Non-string elements are rejected with a Lua error.
+/// `idx` is absolutized at entry so callers may safely pass a relative
+/// (negative) stack index — subsequent pushes during element reads will not
+/// shift the table reference.
 fn argvFromLuaTable(L: ?*c.lua_State, hs: *HostState, idx: c_int) [][]const u8 {
-    if (c.lua_type(L, idx) != c.LUA_TTABLE) {
+    const abs = c.lua_absindex(L, idx);
+    if (c.lua_type(L, abs) != c.LUA_TTABLE) {
         raiseError(L, "expected an argv table (array of strings)", .{});
     }
-    const n: usize = @intCast(c.lua_rawlen(L, idx));
+    const n: usize = @intCast(c.lua_rawlen(L, abs));
     const out = hs.arena.alloc([]const u8, n) catch raiseError(L, "out of memory building argv", .{});
     var i: usize = 0;
     while (i < n) : (i += 1) {
-        _ = c.lua_rawgeti(L, idx, @intCast(i + 1)); // 1-based
+        _ = c.lua_rawgeti(L, abs, @intCast(i + 1)); // 1-based
         if (c.lua_type(L, -1) != c.LUA_TSTRING) {
             raiseError(L, "argv element {d} is not a string", .{i + 1});
         }
@@ -1270,4 +1274,44 @@ test "manifest: cli.planar_watch is present and shells only planar-watch" {
     for (ALLOWED_CLI_BINS) |b| {
         try std.testing.expect(!std.mem.eql(u8, b, "planar-execute"));
     }
+}
+
+test "argvFromLuaTable: relative (negative) index is safe" {
+    // Regression guard for task-4209 hardening: argvFromLuaTable absolutizes
+    // `idx` at entry so a negative/relative index (e.g. -1) stays valid
+    // after elements are pushed onto the stack during the read loop.
+    //
+    // Setup: push a sentinel string then the argv table {"foo","bar"} so the
+    // table sits at -1 (top) and at absolute index 2.  Pass -1 (relative).
+    // Before the fix, lua_rawlen(L, -1) and lua_rawgeti(L, -1, ...) would
+    // address the wrong slot after the first element push; with lua_absindex
+    // the slot is pinned to 2 for the lifetime of the call.
+    const gpa = std.testing.allocator;
+
+    const L = c.luaL_newstate();
+    defer c.lua_close(L);
+
+    // Push a sentinel so the table is NOT at absolute index 1.
+    _ = c.lua_pushstring(L, "sentinel");
+
+    // Build table {"foo", "bar"} on top.
+    c.lua_createtable(L, 2, 0);
+    _ = c.lua_pushstring(L, "foo");
+    c.lua_rawseti(L, -2, 1);
+    _ = c.lua_pushstring(L, "bar");
+    c.lua_rawseti(L, -2, 2);
+    // Stack: [sentinel, {foo,bar}]  — table is at idx -1 (relative) or 2 (absolute).
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    var hs: HostState = .{
+        .arena = arena_state.allocator(),
+        .io = std.testing.io,
+    };
+
+    // Pass -1: the relative index.  Must produce {"foo","bar"} without panic.
+    const argv = argvFromLuaTable(L, &hs, -1);
+    try std.testing.expectEqual(@as(usize, 2), argv.len);
+    try std.testing.expectEqualStrings("foo", argv[0]);
+    try std.testing.expectEqualStrings("bar", argv[1]);
 }
