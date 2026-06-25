@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # bench-matrix-agent-flags-test.sh — tests for the coder/reviewer spawn-flag
-# split and the coder_brief "real implementation task" framing.
+# split and the coder_brief implementation-task framing.
 #
 # Test plan:
 #   T1: Coder spawn path uses --dangerously-skip-permissions (grep
@@ -10,8 +10,9 @@
 #       and does NOT contain --permission-mode (no bypass flag).
 #   T3: coder_brief output does NOT contain the abused "no-change task is a
 #       valid outcome" phrasing.
-#   T4: coder_brief output DOES contain "real implementation task" or
-#       equivalent "REAL IMPLEMENTATION TASK" framing.
+#   T4: coder_brief output DOES contain "implement only the task" (or
+#       equivalent isolated-corpus framing) — confirms brief frames this as
+#       a genuine, scoped implementation task, not a no-op.
 #   T5: coder_brief output DOES contain "UNIMPLEMENTED" (the replacement for
 #       the no-op escape hatch).
 #   T6: Regression — all existing suites still pass (harvest, resume, m3,
@@ -159,20 +160,22 @@ test_coder_brief_no_noop_escape() {
 }
 
 # ===========================================================================
-# TEST 4 — coder_brief DOES contain "REAL IMPLEMENTATION TASK" framing
+# TEST 4 — coder_brief DOES contain isolated-corpus implementation framing
 # ===========================================================================
 test_coder_brief_real_implementation_framing() {
-  printf '\n=== AGENT-FLAGS TEST 4: coder_brief has "real implementation task" framing ===\n'
+  printf '\n=== AGENT-FLAGS TEST 4: coder_brief has implementation-task framing ===\n'
   local home; home="$(mktemp -d "${TMPDIR:-/tmp}/agent-flags-test.XXXXXX")"
   local trimmed; trimmed="$(trimmed_matrix "$home/matrix-nomain.sh")"
 
   local brief_out
   brief_out="$(run_coder_brief "$home" "$trimmed")"
 
-  if printf '%s\n' "$brief_out" | grep -qiF "real implementation task"; then
-    ok "T4: coder_brief contains 'real implementation task' framing"
+  # Check for "implement only the task" (case-insensitive) — the anti-sprawl
+  # brief uses "Implement ONLY the task specified below — nothing else."
+  if printf '%s\n' "$brief_out" | grep -qi "implement only the task"; then
+    ok "T4: coder_brief contains implementation-task framing ('Implement ONLY the task')"
   else
-    bad "T4: coder_brief does NOT contain 'real implementation task' framing; first 5 lines: $(printf '%s\n' "$brief_out" | head -5)"
+    bad "T4: coder_brief does NOT contain 'implement only the task' framing; first 5 lines: $(printf '%s\n' "$brief_out" | head -5)"
   fi
 
   rm -rf "$home"

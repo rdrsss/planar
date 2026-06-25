@@ -861,9 +861,10 @@ config_json() {
 # <id> --json). The agent is instructed to implement ONLY those tasks.
 #
 # task_ids_json is a JSON array of integer task IDs (the slice's task list),
-# e.g. '[4207]' (strict) or '[4207,4208]' (grouped). The plan-level problem
-# statement is kept as one line of context, but the tasks section is the
-# authoritative scope.
+# e.g. '[4207]' (strict) or '[4207,4208]' (grouped). The $problem parameter is
+# accepted for caller compatibility but NOT injected into the brief — the full
+# plan-level problem statement is the primary sprawl driver (it tempts the agent
+# to implement the whole milestone). Only the per-task title+body drives scope.
 #
 # Safe interpolation: each task's title and body are captured into shell
 # variables (never eval'd) and expanded into the heredoc as quoted text. A
@@ -878,6 +879,10 @@ config_json() {
 # function plus the arm parameter on run_cell.
 coder_brief() {
   local plan="$1" problem="$2" task_ids_json="${3:-[]}"
+  # $problem is intentionally unused: injecting the full plan-level problem
+  # statement tempts agents to implement the whole milestone (recall drops
+  # without a precision gain). The per-task body is the authoritative scope.
+  : "$problem"
 
   # Build the TASKS TO IMPLEMENT section by fetching each task's title+body.
   # Capture into a variable (not a subshell that could swallow set -e exits).
@@ -896,27 +901,28 @@ ${task_body}
   cat <<EOF
 You are an implementation agent in an isolated benchmark worktree.
 
-This is a REAL IMPLEMENTATION TASK. The worktree starts at a pre-feature base
-commit. Your job is to write the code that implements the specific task(s)
-listed below. You have full bash access (zig build, zig fmt, git, etc.) — use it.
+This is ONE isolated task from a benchmark corpus. Implement ONLY the task
+specified below — nothing else.
 
-PLAN CONTEXT (plan ${plan}):
-${problem}
-
-TASKS TO IMPLEMENT (implement ONLY these — do NOT implement other features from
-the plan; other tasks are handled by other agents in separate worktrees):
+TASKS TO IMPLEMENT (implement ONLY these — do NOT implement other tasks,
+milestones, or features, even if the code or these notes reference them;
+other tasks are built by other agents in separate worktrees):
 ${tasks_section}
-Implement ONLY the task(s) listed above. Do not implement other plan features
-even if you notice them — other tasks are handled by other agents.
+ANTI-SPRAWL CONSTRAINTS (violation corrupts the precision/recall measurement):
+  - Touch the MINIMUM set of files needed for THIS task's described change.
+  - Do NOT implement other tasks, milestones, or features — even if the code or
+    this task's notes reference them. Other tasks are built by other agents.
+  - If you find yourself editing files unrelated to this task's described
+    change, STOP — you are out of scope. Breadth is penalized, not rewarded.
 
-OBJECTIVE GATE (frozen, identical across all experimental arms — this is the
-definition of "done"; reviewer approval is measured separately and does NOT
-define done):
-  1. \`zig build\` is clean (warnings are errors).
-  2. \`zig fmt\` reports no changes.
-  3. The test suite is green.
+OBJECTIVE GATE — verify YOUR change builds; do not repair unrelated code:
+  1. Run \`zig build\` to confirm YOUR change compiles (warnings are errors).
+  2. Run \`zig fmt\` to confirm YOUR change is formatted.
+  3. Run the test suite to confirm YOUR change does not regress existing tests.
+  If the pre-existing base fails to build for reasons UNRELATED to your task,
+  note it and proceed — do NOT repair unrelated code to make other things pass.
 
-Implement the change, run the gate, and report the gate outcome verbatim.
+Report the gate outcome verbatim.
 
 If you produce no file changes, the task is UNIMPLEMENTED — not "complete."
 Zero edits for a feature task means the feature was not built. Do not treat
