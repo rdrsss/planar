@@ -282,47 +282,174 @@ test_body_with_special_chars() {
 }
 
 # ===========================================================================
-# TEST 4 — No regression: all existing suites still pass.
+# TEST 4 — Anti-sprawl: plan-problem sentinel is ABSENT; anti-sprawl language
+#           and per-task content are PRESENT.
+# ===========================================================================
+#
+# T4a: The full plan-level problem statement is NOT injected into the brief.
+#      Seed a unique sentinel string as the problem; assert it is absent from
+#      the rendered brief (the primary sprawl driver must be suppressed).
+# T4b: Anti-sprawl constraint language IS present ("minimum set of files",
+#      "out of scope", "Do NOT implement other tasks").
+# T4c: The gate reframing IS present ("UNRELATED to your task" / "do NOT repair
+#      unrelated code").
+# T4d: Single-task and two-task shapes both pass T4a/T4b (no regression on
+#      existing T1/T2 content assertions either).
+# ===========================================================================
+test_antisprawl_brief() {
+  printf '\n=== SLICE-BRIEF TEST 4: anti-sprawl — sentinel absent, constraint language present ===\n'
+  local home db cfg corpus pid tid brief_out
+
+  home="$(mktemp -d "${TMPDIR:-/tmp}/slice-brief-test.XXXXXX")"
+  db="$home/exp.db"; cfg="$home/config.toml"
+  corpus="$(new_corpus "$home")"
+  pid="$(seed_plan "$db" "$cfg" "$corpus")"
+  tid="$(seed_task "$db" "$cfg" "$corpus" "$pid" \
+    "Add migration for observed_settings table" \
+    "Create migrations/00020_observed_settings.up.sql and .down.sql. No application code changes.")"
+
+  # The problem string contains a unique sentinel that MUST NOT appear in the brief.
+  local sentinel="SENTINEL_PLAN_PROBLEM_XK7Q9R"
+  local problem_str="This plan adds full observability for settings changes. ${sentinel} Multi-milestone epic."
+
+  # Render the brief via a wrapper that passes the sentinel as the problem arg.
+  local trimmed="$home/matrix-nomain-antisprawl.sh"
+  sed '$ s/^main "$@"$//' "$MATRIX" >"$trimmed"
+  local wrapper="$home/antisprawl-wrapper-$$.sh"
+  cat >"$wrapper" <<WRAP
+#!/usr/bin/env bash
+set -euo pipefail
+export PLANAR_DB_OVERRIDE="$db"
+export PLANAR_CONFIG_PATH_OVERRIDE="$cfg"
+export BENCH_HOME="$home"
+export BENCH_CORPUS_REPO="$corpus"
+# shellcheck disable=SC1090
+source "$trimmed"
+PLANNING_CWD="$corpus"
+coder_brief "$pid" "$problem_str" "[${tid}]"
+WRAP
+  chmod +x "$wrapper"
+  brief_out="$(bash "$wrapper")"
+
+  # T4a: sentinel must be ABSENT (plan-problem dump suppressed).
+  if printf '%s\n' "$brief_out" | grep -qF "$sentinel"; then
+    bad "T4a: brief CONTAINS the plan-problem sentinel '${sentinel}' — plan-problem dump not suppressed"
+  else
+    ok "T4a: plan-problem sentinel is ABSENT from brief (plan-problem dump suppressed)"
+  fi
+
+  # T4b: anti-sprawl constraint language must be PRESENT.
+  if printf '%s\n' "$brief_out" | grep -qi "minimum set of files"; then
+    ok "T4b: brief contains 'minimum set of files' anti-sprawl constraint"
+  else
+    bad "T4b: brief does NOT contain 'minimum set of files' constraint"
+  fi
+
+  if printf '%s\n' "$brief_out" | grep -qF "out of scope"; then
+    ok "T4c: brief contains 'out of scope' anti-sprawl warning"
+  else
+    bad "T4c: brief does NOT contain 'out of scope' warning"
+  fi
+
+  if printf '%s\n' "$brief_out" | grep -qF "Do NOT implement other tasks"; then
+    ok "T4d: brief contains 'Do NOT implement other tasks' constraint"
+  else
+    bad "T4d: brief does NOT contain 'Do NOT implement other tasks' constraint"
+  fi
+
+  # T4e: gate reframing must be present.
+  if printf '%s\n' "$brief_out" | grep -qF "do NOT repair unrelated code"; then
+    ok "T4e: brief contains 'do NOT repair unrelated code' gate reframing"
+  else
+    bad "T4e: brief does NOT contain gate reframing text"
+  fi
+
+  # T4f: the per-task title+body is still present (not suppressed along with problem).
+  if printf '%s\n' "$brief_out" | grep -qF "Add migration for observed_settings table"; then
+    ok "T4f: brief still contains the task title (task content not accidentally stripped)"
+  else
+    bad "T4f: brief does NOT contain task title — task content was stripped"
+  fi
+
+  # T4g: two-task shape — sentinel still absent when two tasks are sliced together.
+  local tid2
+  tid2="$(seed_task "$db" "$cfg" "$corpus" "$pid" \
+    "Wire observed_settings into the config reload path" \
+    "Update src/engine/config.zig to read from observed_settings on reload.")"
+  local wrapper2="$home/antisprawl-wrapper2-$$.sh"
+  cat >"$wrapper2" <<WRAP2
+#!/usr/bin/env bash
+set -euo pipefail
+export PLANAR_DB_OVERRIDE="$db"
+export PLANAR_CONFIG_PATH_OVERRIDE="$cfg"
+export BENCH_HOME="$home"
+export BENCH_CORPUS_REPO="$corpus"
+# shellcheck disable=SC1090
+source "$trimmed"
+PLANNING_CWD="$corpus"
+coder_brief "$pid" "$problem_str" "[${tid},${tid2}]"
+WRAP2
+  chmod +x "$wrapper2"
+  local brief_out2
+  brief_out2="$(bash "$wrapper2")"
+
+  if printf '%s\n' "$brief_out2" | grep -qF "$sentinel"; then
+    bad "T4g: two-task brief CONTAINS the plan-problem sentinel — dump not suppressed in two-task shape"
+  else
+    ok "T4g: sentinel absent from two-task brief (plan-problem dump suppressed in two-task shape)"
+  fi
+
+  if printf '%s\n' "$brief_out2" | grep -qF "Wire observed_settings into the config reload path"; then
+    ok "T4h: two-task brief contains second task title"
+  else
+    bad "T4h: two-task brief does NOT contain second task title"
+  fi
+
+  rm -rf "$home"
+}
+
+# ===========================================================================
+# TEST 5 — No regression: all existing suites still pass.
 # ===========================================================================
 test_regression() {
   local rc
-  printf '\n=== SLICE-BRIEF TEST 4a: harvest regression ===\n'
+  printf '\n=== SLICE-BRIEF TEST 5a: harvest regression ===\n'
   rc=0; bash "$SCRIPT_DIR/bench-matrix-harvest-test.sh" || rc=$?
   [ "$rc" -eq 0 ] \
     && ok "regression: harvest-test passes" \
     || bad "regression: harvest-test FAILED (rc=$rc)"
 
-  printf '\n=== SLICE-BRIEF TEST 4b: resume regression ===\n'
+  printf '\n=== SLICE-BRIEF TEST 5b: resume regression ===\n'
   rc=0; bash "$SCRIPT_DIR/bench-matrix-resume-test.sh" || rc=$?
   [ "$rc" -eq 0 ] \
     && ok "regression: resume-test passes" \
     || bad "regression: resume-test FAILED (rc=$rc)"
 
-  printf '\n=== SLICE-BRIEF TEST 4c: m3 regression ===\n'
+  printf '\n=== SLICE-BRIEF TEST 5c: m3 regression ===\n'
   rc=0; bash "$SCRIPT_DIR/bench-matrix-m3-test.sh" || rc=$?
   [ "$rc" -eq 0 ] \
     && ok "regression: m3-test passes" \
     || bad "regression: m3-test FAILED (rc=$rc)"
 
-  printf '\n=== SLICE-BRIEF TEST 4d: m4 regression ===\n'
+  printf '\n=== SLICE-BRIEF TEST 5d: m4 regression ===\n'
   rc=0; bash "$SCRIPT_DIR/bench-matrix-m4-test.sh" || rc=$?
   [ "$rc" -eq 0 ] \
     && ok "regression: m4-test passes" \
     || bad "regression: m4-test FAILED (rc=$rc)"
 
-  printf '\n=== SLICE-BRIEF TEST 4e: b1 regression ===\n'
+  printf '\n=== SLICE-BRIEF TEST 5e: b1 regression ===\n'
   rc=0; bash "$SCRIPT_DIR/bench-matrix-b1-test.sh" || rc=$?
   [ "$rc" -eq 0 ] \
     && ok "regression: b1-test passes" \
     || bad "regression: b1-test FAILED (rc=$rc)"
 
-  printf '\n=== SLICE-BRIEF TEST 4f: base regression ===\n'
+  printf '\n=== SLICE-BRIEF TEST 5f: base regression ===\n'
   rc=0; bash "$SCRIPT_DIR/bench-matrix-base-test.sh" || rc=$?
   [ "$rc" -eq 0 ] \
     && ok "regression: base-test passes" \
     || bad "regression: base-test FAILED (rc=$rc)"
 
-  printf '\n=== SLICE-BRIEF TEST 4g: agent-flags regression ===\n'
+  printf '\n=== SLICE-BRIEF TEST 5g: agent-flags regression ===\n'
   rc=0; bash "$SCRIPT_DIR/bench-matrix-agent-flags-test.sh" || rc=$?
   [ "$rc" -eq 0 ] \
     && ok "regression: agent-flags-test passes" \
@@ -340,6 +467,7 @@ main() {
   test_single_task_brief
   test_two_task_brief
   test_body_with_special_chars
+  test_antisprawl_brief
   test_regression
 
   printf '\n=== RESULTS: %d passed, %d failed ===\n' "$pass" "$fail"
