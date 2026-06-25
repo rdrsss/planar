@@ -759,10 +759,477 @@ FWRAP
 }
 
 # ===========================================================================
-# TEST 6 — Regression: M3 and B1 tests still pass
+# TEST 6 — Inline agent retry: empty-then-valid stub retries and succeeds
+#
+# Verifies Fix 1: spawn_agent_watchdog retries on a failed/empty result and
+# ultimately returns the success from the Nth attempt.
+# ===========================================================================
+test_inline_retry_succeeds() {
+  printf '\n=== M4 TEST 6: inline agent retry — empty then valid (Fix 1) ===\n'
+  local home db cfg
+  home="$(new_iso_home)"; db="$home/exp.db"; cfg="$home/config.toml"
+
+  # Build a minimal corpus git repo for the worktree.
+  local corpus="$home/corpus"
+  mkdir -p "$corpus"
+  git -C "$corpus" init -q
+  git -C "$corpus" config user.email t6@test.local
+  git -C "$corpus" config user.name m4t6
+  printf 'base\n' >"$corpus/seed.txt"
+  git -C "$corpus" add -A
+  git -C "$corpus" commit -qm base
+  local wt="$home/slice-t6"
+  git -C "$corpus" worktree add -q --detach "$wt" HEAD
+
+  # Stub claude: fails (exits 1 and produces no output) on calls 1 and 2,
+  # then succeeds on call 3 with a valid JSON response with .usage.
+  local stub_dir="$home/stub-dir-retry"
+  local call_count_file="$home/call-count"
+  printf '0' >"$call_count_file"
+  mkdir -p "$stub_dir"
+  cat >"$stub_dir/claude" <<STUB
+#!/usr/bin/env bash
+count=\$(cat "${call_count_file}" 2>/dev/null || printf '0')
+count=\$((count + 1))
+printf '%d' "\$count" >"${call_count_file}"
+# Fail on calls 1 and 2; succeed on call 3.
+if [ "\$count" -le 2 ]; then
+  # Empty output + nonzero exit (simulates API overload / limit).
+  exit 1
+fi
+printf '%s\n' '{"usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},"total_cost_usd":0.003,"result":"done","is_error":false}'
+STUB
+  chmod +x "$stub_dir/claude"
+
+  local trimmed; trimmed="$(trimmed_matrix "$home/matrix-nomain.sh")"
+  local state_file="$home/retry-state"
+
+  # Wrapper: sources matrix, calls spawn_agent_watchdog with BENCH_AGENT_RETRIES=3.
+  # Uses the flag-file mechanism (same as spawn_agent) for timeout detection.
+  # Retry log messages are written with `log` (stderr) — we capture them to a
+  # file by NOT suppressing stderr inside the wrapper (leave 2>&1 open so they
+  # reach $log_file). The spawn_agent_watchdog call must NOT redirect its own
+  # stderr to /dev/null — the test relies on seeing the retry log lines.
+  local log_file="$home/retry-stderr.log"
+  local wrapper="$home/retry-wrapper.sh"
+  cat >"$wrapper" <<WRAP
+#!/usr/bin/env bash
+set -euo pipefail
+export PLANAR_DB_OVERRIDE="$db"
+export PLANAR_CONFIG_PATH_OVERRIDE="$cfg"
+export BENCH_HOME="$home"
+export BENCH_CORPUS_REPO="$corpus"
+export PATH="${stub_dir}:\${PATH}"
+# shellcheck disable=SC1090
+source "$trimmed"
+LOG_ROOT="$home/cell-logs"
+# Watchdog disabled; use the simple retry path. Retry up to 3 times; 0s backoff.
+AGENT_TIMEOUT=0
+DRY_RUN=0
+AGENT_RETRIES=3
+AGENT_RETRY_BACKOFF=0
+_toflag="\$(mktemp "\${TMPDIR:-/tmp}/toflag.XXXXXX")"
+rm -f "\$_toflag"
+_AGENT_TIMEOUT_FLAG="\$_toflag"
+AGENT_TIMED_OUT=0
+rc=0
+# stderr goes to "$log_file" via the outer redirect so retry messages are captured.
+out="\$(spawn_agent_watchdog "stub-model" "$wt" "test brief")" || rc=\$?
+[ -f "\$_toflag" ] && AGENT_TIMED_OUT=1
+rm -f "\$_toflag" 2>/dev/null || true
+_AGENT_TIMEOUT_FLAG=""
+printf 'rc=%s\n'  "\$rc"  >"$state_file"
+# Capture any output so we can verify it has .usage.
+printf 'out=%s\n' "\$out" >>"$state_file"
+WRAP
+  chmod +x "$wrapper"
+
+  # Redirect wrapper stderr to a log so we can verify retry messages.
+  bash "$wrapper" 2>"$log_file" || true
+
+  local wrc=0 wout=""
+  if [ -f "$state_file" ]; then
+    wrc="$(grep '^rc=' "$state_file" | cut -d= -f2)"
+    wout="$(grep '^out=' "$state_file" | cut -d= -f2-)"
+  fi
+
+  # 6a. spawn_agent_watchdog must return 0 after retrying.
+  [ "${wrc:-1}" -eq 0 ] \
+    && ok "inline retry: spawn_agent_watchdog returned 0 after retrying (rc=$wrc)" \
+    || bad "inline retry: spawn_agent_watchdog returned rc=${wrc:-?} (expected 0)"
+
+  # 6b. The returned output must have .usage (it's the success JSON).
+  local has_usage
+  has_usage="$(printf '%s' "$wout" | jq -e '.usage' >/dev/null 2>&1 && printf 'yes' || printf 'no')"
+  [ "$has_usage" = "yes" ] \
+    && ok "inline retry: returned output has .usage (valid agent result, not empty)" \
+    || bad "inline retry: output missing .usage (got: '${wout}')"
+
+  # 6c. The stub was called 3 times (fail, fail, succeed).
+  local calls; calls="$(cat "$home/call-count" 2>/dev/null || printf '0')"
+  [ "$calls" -eq 3 ] \
+    && ok "inline retry: stub called 3 times (2 failures then 1 success)" \
+    || bad "inline retry: stub called ${calls} time(s) (expected 3)"
+
+  # 6d. Retry messages must appear in stderr log.
+  local retry_msgs; retry_msgs="$(grep -c "retrying after" "$log_file" 2>/dev/null | tr -d '[:space:]' || printf '0')"
+  [ "${retry_msgs:-0}" -ge 2 ] \
+    && ok "inline retry: found ${retry_msgs} retry log message(s) (expected >=2)" \
+    || bad "inline retry: found ${retry_msgs} retry log message(s) (expected >=2)"
+
+  # 6e. BENCH_AGENT_RETRIES=0 disables retry; an always-failing stub should
+  #     return rc=2 on the FIRST attempt without retrying.
+  printf '0' >"$home/call-count-noretry"
+  local stub_noretry="$home/stub-noretry"
+  mkdir -p "$stub_noretry"
+  local cnt_file_nr="$home/call-count-noretry"
+  cat >"$stub_noretry/claude" <<STUB2
+#!/usr/bin/env bash
+c=\$(cat "${cnt_file_nr}" 2>/dev/null || printf '0')
+c=\$((c + 1))
+printf '%d' "\$c" >"${cnt_file_nr}"
+exit 1
+STUB2
+  chmod +x "$stub_noretry/claude"
+  local state_nr="$home/state-noretry"
+  local wrapper_nr="$home/wrapper-noretry.sh"
+  cat >"$wrapper_nr" <<WNR
+#!/usr/bin/env bash
+set -euo pipefail
+export PLANAR_DB_OVERRIDE="$db"
+export PLANAR_CONFIG_PATH_OVERRIDE="$cfg"
+export BENCH_HOME="$home"
+export BENCH_CORPUS_REPO="$corpus"
+export PATH="${stub_noretry}:\${PATH}"
+# shellcheck disable=SC1090
+source "$trimmed"
+AGENT_TIMEOUT=0
+DRY_RUN=0
+AGENT_RETRIES=0
+AGENT_RETRY_BACKOFF=0
+rc=0
+out="\$(spawn_agent_watchdog "stub-model" "$wt" "brief" 2>/dev/null)" || rc=\$?
+printf 'rc=%s\n' "\$rc" >"$state_nr"
+WNR
+  chmod +x "$wrapper_nr"
+  bash "$wrapper_nr" >/dev/null 2>&1 || true
+  local nr_rc=0
+  [ -f "$state_nr" ] && nr_rc="$(grep '^rc=' "$state_nr" | cut -d= -f2)"
+  [ "${nr_rc:-0}" -eq 2 ] \
+    && ok "inline retry: BENCH_AGENT_RETRIES=0 returns rc=2 immediately (no retry)" \
+    || bad "inline retry: BENCH_AGENT_RETRIES=0 returned rc=${nr_rc:-?} (expected 2)"
+  local nr_calls; nr_calls="$(cat "$cnt_file_nr" 2>/dev/null || printf '0')"
+  [ "${nr_calls:-0}" -eq 1 ] \
+    && ok "inline retry: BENCH_AGENT_RETRIES=0 called stub exactly once (no retry)" \
+    || bad "inline retry: BENCH_AGENT_RETRIES=0 called stub ${nr_calls:-?} time(s) (expected 1)"
+
+  rm -rf "$home"
+}
+
+# ===========================================================================
+# TEST 7 — All retries exhausted: slice treated as crashed, not clean-empty
+#
+# Verifies Fix 2: when spawn_agent returns rc=2 (exhausted), run_slice returns
+# non-zero and the dispatch_strict caller logs a crash (not a clean no-op).
+# ===========================================================================
+test_exhausted_retry_crashes_slice() {
+  printf '\n=== M4 TEST 7: exhausted retries -> slice crashed (Fix 2) ===\n'
+  local home db cfg
+  home="$(new_iso_home)"; db="$home/exp.db"; cfg="$home/config.toml"
+
+  local corpus="$home/corpus"
+  mkdir -p "$corpus"
+  git -C "$corpus" init -q
+  git -C "$corpus" config user.email t7@test.local
+  git -C "$corpus" config user.name m4t7
+  printf 'base\n' >"$corpus/seed.txt"
+  git -C "$corpus" add -A
+  git -C "$corpus" commit -qm base
+
+  local trimmed; trimmed="$(trimmed_matrix "$home/matrix-nomain.sh")"
+
+  # Stub claude: always fails (empty output + exit 1).
+  local stub_dir="$home/stub-always-fail"
+  mkdir -p "$stub_dir"
+  cat >"$stub_dir/claude" <<STUB
+#!/usr/bin/env bash
+exit 1
+STUB
+  chmod +x "$stub_dir/claude"
+
+  # Wrapper that exercises the run_slice path end-to-end with an always-failing
+  # coder stub. We use a minimal slice_worktree environment (no real bench DB;
+  # we just test the rc propagation path).
+  local state_file="$home/exhausted-state"
+  local wrapper="$home/exhausted-wrapper.sh"
+  cat >"$wrapper" <<WRAP
+#!/usr/bin/env bash
+set -euo pipefail
+export PLANAR_DB_OVERRIDE="$db"
+export PLANAR_CONFIG_PATH_OVERRIDE="$cfg"
+export BENCH_HOME="$home"
+export BENCH_CORPUS_REPO="$corpus"
+export PATH="${stub_dir}:\${PATH}"
+# shellcheck disable=SC1090
+source "$trimmed"
+LOG_ROOT="$home/cell-logs"
+AGENT_TIMEOUT=0
+DRY_RUN=0
+# 1 retry = 2 total attempts, both fail.
+AGENT_RETRIES=1
+AGENT_RETRY_BACKOFF=0
+
+# Minimal cell globals needed by run_agents.
+CELL_PLAN="42"
+CELL_PROBLEM="test problem"
+CELL_RUN_UID="test-run"
+CELL_BASE_SHA="\$(git -C "$corpus" rev-parse HEAD)"
+WORKTREE_ROOT="$home/worktrees"
+TRANSCRIPT_ROOT="$home/transcripts"
+CORPUS_REPO_PATH="$corpus"
+
+# Call run_agents directly (bypass run_slice worktree creation).
+wt="$corpus"
+out="$home/out-dir"
+mkdir -p "\$out"
+_ra_rc=0
+run_agents "\$wt" "\$out" '[1]' 2>/dev/null || _ra_rc=\$?
+printf 'run_agents_rc=%s\n' "\$_ra_rc" >"$state_file"
+# Check coder.failed sentinel.
+[ -f "\$out/coder.failed" ] && printf 'coder_failed=1\n' >>"$state_file" || printf 'coder_failed=0\n' >>"$state_file"
+WRAP
+  chmod +x "$wrapper"
+  bash "$wrapper" >/dev/null 2>&1 || true
+
+  local ra_rc=0 coder_failed=0
+  if [ -f "$state_file" ]; then
+    ra_rc="$(grep '^run_agents_rc=' "$state_file" | cut -d= -f2)"
+    coder_failed="$(grep '^coder_failed=' "$state_file" | cut -d= -f2)"
+  fi
+
+  # 7a. run_agents must return rc=2 when all retries are exhausted.
+  [ "${ra_rc:-0}" -eq 2 ] \
+    && ok "exhausted retry: run_agents returns rc=2 (coder exhausted retries)" \
+    || bad "exhausted retry: run_agents returned rc=${ra_rc:-?} (expected 2)"
+
+  # 7b. The coder.failed sentinel file must be written.
+  [ "${coder_failed:-0}" -eq 1 ] \
+    && ok "exhausted retry: coder.failed sentinel written by run_agents" \
+    || bad "exhausted retry: coder.failed sentinel NOT written (expected it)"
+
+  rm -rf "$home"
+}
+
+# ===========================================================================
+# TEST 8 — Genuine no-op is NOT retried
+#
+# Verifies the crux: an agent that returns valid JSON WITH .usage but makes
+# no file edits is a real result (it ran, burnt tokens, chose not to edit).
+# It must NOT be retried and must count as a success.
+# ===========================================================================
+test_genuine_noop_not_retried() {
+  printf '\n=== M4 TEST 8: genuine no-op not retried (Fix 1 crux) ===\n'
+  local home db cfg
+  home="$(new_iso_home)"; db="$home/exp.db"; cfg="$home/config.toml"
+
+  local corpus="$home/corpus"
+  mkdir -p "$corpus"
+  git -C "$corpus" init -q
+  git -C "$corpus" config user.email t8@test.local
+  git -C "$corpus" config user.name m4t8
+  printf 'base\n' >"$corpus/seed.txt"
+  git -C "$corpus" add -A
+  git -C "$corpus" commit -qm base
+  local wt="$home/slice-t8"
+  git -C "$corpus" worktree add -q --detach "$wt" HEAD
+
+  local call_count_file="$home/noop-call-count"
+  printf '0' >"$call_count_file"
+
+  # Stub claude: ALWAYS returns valid JSON with .usage but no file edits.
+  # This is a genuine "I reviewed the code and nothing needed to change" response.
+  local stub_dir="$home/stub-noop"
+  mkdir -p "$stub_dir"
+  cat >"$stub_dir/claude" <<STUB
+#!/usr/bin/env bash
+count=\$(cat "${call_count_file}" 2>/dev/null || printf '0')
+count=\$((count + 1))
+printf '%d' "\$count" >"${call_count_file}"
+# Valid JSON WITH .usage — a real agent no-op result.
+printf '%s\n' '{"usage":{"input_tokens":20,"output_tokens":8,"cache_read_input_tokens":100,"cache_creation_input_tokens":0},"total_cost_usd":0.005,"result":"No changes needed","is_error":false}'
+STUB
+  chmod +x "$stub_dir/claude"
+
+  local trimmed; trimmed="$(trimmed_matrix "$home/matrix-nomain.sh")"
+  local state_file="$home/noop-state"
+
+  local wrapper="$home/noop-wrapper.sh"
+  cat >"$wrapper" <<WRAP
+#!/usr/bin/env bash
+set -euo pipefail
+export PLANAR_DB_OVERRIDE="$db"
+export PLANAR_CONFIG_PATH_OVERRIDE="$cfg"
+export BENCH_HOME="$home"
+export BENCH_CORPUS_REPO="$corpus"
+export PATH="${stub_dir}:\${PATH}"
+# shellcheck disable=SC1090
+source "$trimmed"
+LOG_ROOT="$home/cell-logs"
+AGENT_TIMEOUT=0
+DRY_RUN=0
+AGENT_RETRIES=3
+AGENT_RETRY_BACKOFF=0
+_toflag="\$(mktemp "\${TMPDIR:-/tmp}/toflag.XXXXXX")"
+rm -f "\$_toflag"
+_AGENT_TIMEOUT_FLAG="\$_toflag"
+AGENT_TIMED_OUT=0
+rc=0
+out="\$(spawn_agent_watchdog "stub-model" "$wt" "brief" 2>/dev/null)" || rc=\$?
+[ -f "\$_toflag" ] && AGENT_TIMED_OUT=1
+rm -f "\$_toflag" 2>/dev/null || true
+_AGENT_TIMEOUT_FLAG=""
+printf 'rc=%s\n' "\$rc"   >"$state_file"
+printf 'out=%s\n' "\$out" >>"$state_file"
+WRAP
+  chmod +x "$wrapper"
+  bash "$wrapper" >/dev/null 2>&1 || true
+
+  local wrc=0 wout=""
+  if [ -f "$state_file" ]; then
+    wrc="$(grep '^rc=' "$state_file" | cut -d= -f2)"
+    wout="$(grep '^out=' "$state_file" | cut -d= -f2-)"
+  fi
+  local calls; calls="$(cat "$call_count_file" 2>/dev/null || printf '0')"
+
+  # 8a. Must return 0 (success) — not retried.
+  [ "${wrc:-1}" -eq 0 ] \
+    && ok "no-op not retried: spawn_agent_watchdog returns 0 for genuine no-op" \
+    || bad "no-op not retried: returned rc=${wrc:-?} (expected 0)"
+
+  # 8b. Stub called exactly ONCE — no unnecessary retries.
+  [ "$calls" -eq 1 ] \
+    && ok "no-op not retried: stub called exactly 1 time (no retry for valid JSON+usage)" \
+    || bad "no-op not retried: stub called ${calls} time(s) (expected 1 — genuine no-op was retried)"
+
+  # 8c. Output has .usage (the no-op is a kept, token-bearing result).
+  local has_usage
+  has_usage="$(printf '%s' "$wout" | jq -e '.usage' >/dev/null 2>&1 && printf 'yes' || printf 'no')"
+  [ "$has_usage" = "yes" ] \
+    && ok "no-op not retried: output has .usage (genuine result, not discarded)" \
+    || bad "no-op not retried: output missing .usage (got: '${wout}')"
+
+  rm -rf "$home"
+}
+
+# ===========================================================================
+# TEST 9 — Cohort trap: background cohort pids killed on SIGTERM
+#
+# Verifies Fix 3: _INFLIGHT_COHORT_PIDS / _INFLIGHT_COHORT_PGIDS are
+# populated when eligibility cohort members are launched, and _cleanup_inflight
+# kills them when a SIGTERM arrives during the concurrent B-phase.
+# ===========================================================================
+test_cohort_trap_cleanup() {
+  printf '\n=== M4 TEST 9: cohort trap cleanup on SIGTERM (Fix 3) ===\n'
+  local home db cfg
+  home="$(new_iso_home)"; db="$home/exp.db"; cfg="$home/config.toml"
+
+  # Build a minimal git repo for BENCH_CORPUS_REPO (the matrix source requires it).
+  local corpus="$home/corpus"
+  mkdir -p "$corpus"
+  git -C "$corpus" init -q
+  git -C "$corpus" config user.email t9@test.local
+  git -C "$corpus" config user.name m4t9
+  printf 'base\n' >"$corpus/seed.txt"
+  git -C "$corpus" add -A
+  git -C "$corpus" commit -qm base
+
+  local trimmed; trimmed="$(trimmed_matrix "$home/matrix-nomain.sh")"
+  local pids_file="$home/cohort-pids"
+
+  # Wrapper: sources matrix, populates _INFLIGHT_COHORT_PIDS with a few
+  # background sleep processes (simulating cohort members), then calls
+  # _cleanup_inflight and verifies they are dead.
+  local wrapper="$home/cohort-trap-wrapper.sh"
+  cat >"$wrapper" <<WRAP
+#!/usr/bin/env bash
+set -euo pipefail
+export PLANAR_DB_OVERRIDE="$db"
+export PLANAR_CONFIG_PATH_OVERRIDE="$cfg"
+export BENCH_HOME="$home"
+export BENCH_CORPUS_REPO="$corpus"
+# shellcheck disable=SC1090
+source "$trimmed"
+LOG_ROOT="$home/cell-logs"
+DRY_RUN=0
+CELL_RUN_UID="cohort-trap-test"
+
+# Simulate 3 cohort background jobs.
+sleep 9999 & p1=\$!
+sleep 9999 & p2=\$!
+sleep 9999 & p3=\$!
+
+# Record pids to file for the test to check.
+printf '%s\n%s\n%s\n' "\$p1" "\$p2" "\$p3" >"$pids_file"
+
+# Register them as inflight cohort pids (same as dispatch_eligibility does).
+_INFLIGHT_COHORT_PIDS=( "\$p1" "\$p2" "\$p3" )
+_INFLIGHT_COHORT_PGIDS=()   # pgid isolation not available in plain subshell
+
+# Call the cleanup function (simulates SIGTERM trap firing).
+_cleanup_inflight 2>/dev/null || true
+
+# Allow OS scheduling to process the kills before checking.
+sleep 1
+
+# All three sleep processes should be dead now.
+all_dead=1
+for p in "\$p1" "\$p2" "\$p3"; do
+  kill -0 "\$p" 2>/dev/null && all_dead=0 || true
+done
+printf 'all_dead=%s\n' "\$all_dead" >>"$pids_file"
+WRAP
+  chmod +x "$wrapper"
+  bash "$wrapper" 2>/dev/null || true
+
+  # Brief settle time after wrapper exits.
+  sleep 1
+
+  local all_dead=0
+  if [ -f "$pids_file" ]; then
+    all_dead="$(grep '^all_dead=' "$pids_file" | cut -d= -f2)"
+  fi
+
+  # 9a. All cohort members must be dead after _cleanup_inflight.
+  [ "${all_dead:-0}" -eq 1 ] \
+    && ok "cohort trap: _cleanup_inflight killed all cohort background pids" \
+    || bad "cohort trap: not all cohort pids were killed by _cleanup_inflight"
+
+  # 9b. Double-check from this process (belt-and-suspenders).
+  local survivors=0
+  if [ -f "$pids_file" ]; then
+    local _pid
+    # Read the first 3 pids from the file (one per line, stop before all_dead= line).
+    while IFS= read -r _pid; do
+      # Skip the all_dead= line.
+      printf '%s' "$_pid" | grep -q '^[0-9]' || continue
+      if kill -0 "$_pid" 2>/dev/null; then
+        survivors=$((survivors + 1))
+        kill "$_pid" 2>/dev/null || true
+      fi
+    done <"$pids_file"
+  fi
+  [ "$survivors" -eq 0 ] \
+    && ok "cohort trap: no surviving cohort pids observed from test process (survivors=$survivors)" \
+    || bad "cohort trap: $survivors surviving cohort pid(s) not killed by _cleanup_inflight"
+
+  rm -rf "$home"
+}
+
+# ===========================================================================
+# TEST 10 — Regression: M3 and B1 tests still pass
 # ===========================================================================
 test_regression_m3() {
-  printf '\n=== M4 TEST 6a: M3 regression ===\n'
+  printf '\n=== M4 TEST 10a: M3 regression ===\n'
   local rc=0
   bash "$SCRIPT_DIR/bench-matrix-m3-test.sh" || rc=$?
   [ "$rc" -eq 0 ] \
@@ -771,7 +1238,7 @@ test_regression_m3() {
 }
 
 test_regression_b1() {
-  printf '\n=== M4 TEST 6b: B1 regression ===\n'
+  printf '\n=== M4 TEST 10b: B1 regression ===\n'
   local rc=0
   bash "$SCRIPT_DIR/bench-matrix-b1-test.sh" || rc=$?
   [ "$rc" -eq 0 ] \
@@ -792,6 +1259,10 @@ main() {
   test_retry_cap
   test_structured_log
   test_reviewer_watchdog
+  test_inline_retry_succeeds
+  test_exhausted_retry_crashes_slice
+  test_genuine_noop_not_retried
+  test_cohort_trap_cleanup
   test_regression_m3
   test_regression_b1
 

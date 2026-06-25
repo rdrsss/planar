@@ -85,6 +85,12 @@
 #   BENCH_AGENT_TIMEOUT   — per-agent wall-clock deadline in seconds; the watchdog
 #                           kills the entire agent process group on breach.
 #                           Default: 600 (10 min). Set to 0 to disable.
+#   BENCH_AGENT_RETRIES   — inline retry count for a failed/empty agent invocation
+#                           (transient API limit / overload). 0 = disabled.
+#                           Default: 3. Backoff between retries: BENCH_AGENT_RETRY_BACKOFF
+#                           seconds (default 5). Exhausted retries return exit code 2.
+#   BENCH_AGENT_RETRY_BACKOFF — seconds to sleep between inline agent retries.
+#                           Default: 5.
 #   BENCH_CELL_RETRY_CAP  — max crash-retries per cell before it is marked
 #                           permanently failed and skipped. Default: 2.
 #   BENCH_LOG_ROOT        — directory for per-cell JSONL structured logs.
@@ -192,6 +198,15 @@ AGENT_TIMEOUT="${BENCH_AGENT_TIMEOUT:-600}"
 #     marked permanently failed and skipped, not retried again. ---
 CELL_RETRY_CAP="${BENCH_CELL_RETRY_CAP:-2}"
 
+# --- inline agent-invocation retry count for transient API failures. 0 = off.
+#     When the claude call returns empty / non-JSON / non-zero / is_error, the
+#     watchdog retries up to AGENT_RETRIES additional times before giving up.
+#     Exhaustion returns exit code 2 (distinct from timeout=1, success=0). ---
+AGENT_RETRIES="${BENCH_AGENT_RETRIES:-3}"
+
+# --- seconds to sleep between inline agent retries. ---
+AGENT_RETRY_BACKOFF="${BENCH_AGENT_RETRY_BACKOFF:-5}"
+
 # --- per-cell JSONL structured log directory (created on first write). ---
 LOG_ROOT="${BENCH_LOG_ROOT:-}"   # resolved lazily below after BENCH_HOME is stable
 
@@ -238,6 +253,15 @@ _INFLIGHT_AGENT_PGID=0
 #     trap cleanup. Populated by run_cell; cleared on clean completion. ---
 _INFLIGHT_CELL_UID=""
 _INFLIGHT_CELL_DIRS=()   # bash indexed array (bash 3.2 ok; NOT associative)
+
+# --- eligibility cohort background pids + pgids: tracked so the trap can kill
+#     them if a SIGINT/SIGTERM arrives while the cohort is running concurrently.
+#     _INFLIGHT_COHORT_PIDS holds the shell `&` pids; _INFLIGHT_COHORT_PGIDS holds
+#     their isolated process group ids (for kill -- -<pgid>). Both are indexed
+#     arrays kept in lock-step (same index = same cohort member). Cleared at the
+#     cohort fan-in barrier once all members have been wait'd. ---
+_INFLIGHT_COHORT_PIDS=()
+_INFLIGHT_COHORT_PGIDS=()
 
 # ===========================================================================
 # helpers (match parity-audit.sh logging style)
@@ -309,16 +333,41 @@ cell_log() {
 }
 
 # ---------------------------------------------------------------------------
-# _cleanup_inflight — kill the in-flight agent process group (if any) and
-# remove the current cell's worktree directories. Called by the EXIT trap and
-# on explicit interrupt. Idempotent: guards every step; never exits non-zero.
+# _cleanup_inflight — kill the in-flight agent process group (if any), kill
+# any live eligibility cohort background agents, and remove the current cell's
+# worktree directories. Called by the EXIT trap and on explicit interrupt.
+# Idempotent: guards every step; never exits non-zero.
 # ---------------------------------------------------------------------------
 _cleanup_inflight() {
+  local our_pgid; our_pgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')" || our_pgid="$$"
+
+  # Kill eligibility cohort background jobs (SIGTERM; no grace period needed —
+  # these are shell subshells wrapping run_agents, not long-lived processes).
+  # Guard the array access with the "${arr[@]+"${arr[@]}"}" pattern to handle
+  # an empty array safely under set -u.
+  if [ "${#_INFLIGHT_COHORT_PGIDS[@]}" -gt 0 ] 2>/dev/null; then
+    local _cpgid
+    for _cpgid in "${_INFLIGHT_COHORT_PGIDS[@]+"${_INFLIGHT_COHORT_PGIDS[@]}"}"; do
+      [ -n "$_cpgid" ] && [ "$_cpgid" != "$our_pgid" ] && [ "$_cpgid" != "$$" ] || continue
+      kill -- "-$_cpgid" 2>/dev/null || true
+      kill -9 -- "-$_cpgid" 2>/dev/null || true
+    done
+    _INFLIGHT_COHORT_PGIDS=()
+  fi
+  if [ "${#_INFLIGHT_COHORT_PIDS[@]}" -gt 0 ] 2>/dev/null; then
+    local _cpid
+    for _cpid in "${_INFLIGHT_COHORT_PIDS[@]+"${_INFLIGHT_COHORT_PIDS[@]}"}"; do
+      [ -n "$_cpid" ] || continue
+      kill "$_cpid" 2>/dev/null || true
+      wait "$_cpid" 2>/dev/null || true
+    done
+    _INFLIGHT_COHORT_PIDS=()
+  fi
+
   # Kill in-flight agent process group (SIGTERM then SIGKILL after 3s).
   # Safety: never kill our own process group.
   if [ "${_INFLIGHT_AGENT_PGID:-0}" -ne 0 ] 2>/dev/null; then
     local pgid="$_INFLIGHT_AGENT_PGID"
-    local our_pgid; our_pgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')" || our_pgid="$$"
     _INFLIGHT_AGENT_PGID=0
     if [ "$pgid" != "$our_pgid" ] && [ "$pgid" != "$$" ]; then
       kill -- "-$pgid" 2>/dev/null || true
@@ -391,30 +440,80 @@ spawn_agent_watchdog() {
   # Reset flag (we are called from $(…) but the flag file persists on disk).
   [ -n "${_AGENT_TIMEOUT_FLAG:-}" ] && rm -f "$_AGENT_TIMEOUT_FLAG" 2>/dev/null || true
 
+  # ---------------------------------------------------------------------------
+  # _wd_classify_result <output> <exit_rc>
+  #   Classify one agent invocation result as "success" or "failed".
+  #
+  #   SUCCESS: exit 0, non-empty output, parses as JSON, has .usage object,
+  #            and .is_error is not true. A genuine no-op agent produces valid
+  #            JSON WITH .usage (it ran, burned tokens, chose no edits) — that
+  #            is a SUCCESS and must NOT be retried.
+  #
+  #   FAILED:  any of — empty output, non-zero exit, JSON parse error, missing
+  #            .usage, or .is_error == true.  These are transient API failures,
+  #            not meaningful agent results.
+  #
+  #   Prints "success" or "failed" on stdout.
+  # ---------------------------------------------------------------------------
+  _wd_classify_result() {
+    local _out="$1" _rc="$2"
+    # Non-zero exit is always a failure.
+    if [ "$_rc" -ne 0 ]; then printf 'failed'; return 0; fi
+    # Empty output is always a failure.
+    if [ -z "$_out" ]; then printf 'failed'; return 0; fi
+    # Must parse as JSON with a .usage object.
+    if ! printf '%s' "$_out" | jq -e '.usage' >/dev/null 2>&1; then
+      printf 'failed'; return 0
+    fi
+    # .is_error == true is an API-level error response.
+    local _is_err
+    _is_err="$(printf '%s' "$_out" | jq -r '.is_error // false' 2>/dev/null || printf 'false')"
+    if [ "$_is_err" = "true" ]; then printf 'failed'; return 0; fi
+    printf 'success'
+  }
+
+  # ---------------------------------------------------------------------------
+  # Fast path: watchdog disabled (AGENT_TIMEOUT=0) or dry-run.
+  # Retry loop still applies on failure so the retry path is uniformly tested.
+  # ---------------------------------------------------------------------------
+  local _max_retries="${AGENT_RETRIES:-3}"
+  local _backoff="${AGENT_RETRY_BACKOFF:-5}"
+
   if [ "${AGENT_TIMEOUT:-0}" -le 0 ] || [ "$DRY_RUN" -eq 1 ]; then
-    # Watchdog disabled; delegate to the raw invocation.
-    # shellcheck disable=SC2086
-    cd "$worktree" && printf '%s' "$brief" | claude -p \
-      --output-format=json \
-      --model "$model" \
-      $extra_flags \
-      --add-dir "$worktree"
-    return $?
+    # Watchdog disabled; plain blocking call with inline retry on failure.
+    local _attempt=0 _raw="" _raw_rc=0 _class
+    while true; do
+      _raw="" ; _raw_rc=0
+      # shellcheck disable=SC2086
+      _raw="$(cd "$worktree" && printf '%s' "$brief" | claude -p \
+        --output-format=json \
+        --model "$model" \
+        $extra_flags \
+        --add-dir "$worktree" 2>/dev/null)" || _raw_rc=$?
+      _class="$(_wd_classify_result "$_raw" "$_raw_rc")"
+      if [ "$_class" = "success" ]; then
+        printf '%s' "$_raw"
+        return 0
+      fi
+      # Failed invocation.
+      if [ "$_max_retries" -le 0 ] || [ "$_attempt" -ge "$_max_retries" ]; then
+        log "agent call exhausted all retries (no-watchdog path, attempt=$_attempt) — returning failure"
+        return 2
+      fi
+      _attempt=$((_attempt + 1))
+      log "agent call returned empty/failed (no-watchdog path, attempt ${_attempt}/${_max_retries}) — retrying after ${_backoff}s backoff"
+      sleep "$_backoff" 2>/dev/null || true
+    done
   fi
 
-  # Launch claude in its own process group so we can kill -<pgid> cleanly.
-  # A temp file carries stdout from the agent (we cannot use a pipe here
-  # because we need the pgid before we can wait; a subshell complicates the
-  # pgid capture).
-  local out_tmp; out_tmp="$(mktemp "${TMPDIR:-/tmp}/spawn-agent.XXXXXX")"
-  # Start agent as a new process GROUP LEADER so kill -<pgid> kills only the
-  # agent subtree (not the harness process).
-  # On Linux: use setsid if available; fall back to perl setpgid.
-  # On macOS: bash -c "set -m" does NOT create a new pgid in non-interactive
-  #   mode, so we use "perl -e 'use POSIX; setpgid(0,0); exec @ARGV'" which
-  #   is available on both macOS (system perl) and Linux.
-  # The _pgid_launcher wrapper sets the new pgid and then execs the agent.
-  # Choose the pgid isolation launcher.
+  # ---------------------------------------------------------------------------
+  # Watchdog path: launch claude in its own process group with a deadline.
+  # Inline retry loop wraps the launch+wait+classify cycle.
+  # Exit codes:
+  #   0  — success (valid JSON with .usage)
+  #   1  — watchdog TIMEOUT (caller detects via _AGENT_TIMEOUT_FLAG)
+  #   2  — all retries exhausted (transient API failure / empty result)
+  # ---------------------------------------------------------------------------
   local use_setsid=0 use_perl=0
   command -v setsid >/dev/null 2>&1 && use_setsid=1
   command -v perl   >/dev/null 2>&1 && use_perl=1
@@ -430,85 +529,97 @@ spawn_agent_watchdog() {
     \$5 \
     --add-dir \"\$1\" >\"\$4\" 2>/dev/null"
 
-  if [ "$use_setsid" -eq 1 ]; then
-    # Linux: setsid creates a new session → new pgid.
-    setsid bash -c "$agent_cmd" -- "$worktree" "$brief" "$model" "$out_tmp" "$extra_flags" &
-  elif [ "$use_perl" -eq 1 ]; then
-    # macOS + Linux fallback: perl setpgid then exec bash.
-    perl -e 'use POSIX; setpgid(0,0); exec @ARGV' -- \
+  local _attempt=0
+  while true; do
+    # A temp file carries stdout from the agent (we cannot use a pipe here
+    # because we need the pgid before we can wait; a subshell complicates the
+    # pgid capture).
+    local out_tmp; out_tmp="$(mktemp "${TMPDIR:-/tmp}/spawn-agent.XXXXXX")"
+
+    # Start agent as a new process GROUP LEADER so kill -<pgid> kills only the
+    # agent subtree (not the harness process).
+    if [ "$use_setsid" -eq 1 ]; then
+      setsid bash -c "$agent_cmd" -- "$worktree" "$brief" "$model" "$out_tmp" "$extra_flags" &
+    elif [ "$use_perl" -eq 1 ]; then
+      perl -e 'use POSIX; setpgid(0,0); exec @ARGV' -- \
+        bash -c "$agent_cmd" -- "$worktree" "$brief" "$model" "$out_tmp" "$extra_flags" &
+    else
       bash -c "$agent_cmd" -- "$worktree" "$brief" "$model" "$out_tmp" "$extra_flags" &
-  else
-    # No isolation: watchdog kills by PID, may miss deep descendants.
-    bash -c "$agent_cmd" -- "$worktree" "$brief" "$model" "$out_tmp" "$extra_flags" &
-  fi
-  local agent_pid=$!
-  # Capture the DISTINCT process group id of the background child.
-  # Retry briefly: pgid may not be set instantly for the launched process.
-  local pgid="" i=0
-  while [ "$i" -lt 20 ]; do
-    pgid="$(ps -o pgid= -p "$agent_pid" 2>/dev/null | tr -d ' ')" || pgid=""
-    if [ -n "$pgid" ] && [ "$pgid" != "$$" ] && [ "$pgid" != "$(ps -o pgid= -p $$ | tr -d ' ')" ]; then
-      break
     fi
-    pgid=""
-    sleep 0.1 2>/dev/null || true
-    i=$((i + 1))
-  done
-  # Fall back: if we couldn't isolate the pgid, track by PID only. The kill
-  # will still kill the agent but may not reach all descendants.
-  [ -n "$pgid" ] || pgid="$agent_pid"
-  _INFLIGHT_AGENT_PGID="$pgid"
-
-  # Background sleeper: fires after AGENT_TIMEOUT seconds, sends SIGTERM to
-  # the watchdog function's subshell which the main shell reaps. We use a
-  # flag file rather than a signal so the pure-bash path is portable.
-  local flag_tmp; flag_tmp="$(mktemp "${TMPDIR:-/tmp}/spawn-timeout.XXXXXX")"
-  rm -f "$flag_tmp"  # will be re-created when sleeper fires
-  ( sleep "$AGENT_TIMEOUT" && touch "$flag_tmp" ) &
-  local sleeper_pid=$!
-
-  # Poll: wait for either the agent (agent_pid gone) or the flag file.
-  local rc=0
-  while kill -0 "$agent_pid" 2>/dev/null; do
-    if [ -f "$flag_tmp" ]; then
-      # Deadline breached — kill the process group (safety: guard our own pgid).
-      log "M4 watchdog: agent TIMED OUT after ${AGENT_TIMEOUT}s (pgid=${pgid}) — killing group"
-      local our_pgid_w; our_pgid_w="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')" || our_pgid_w="$$"
-      if [ "$pgid" != "$our_pgid_w" ] && [ "$pgid" != "$$" ]; then
-        kill -- "-$pgid" 2>/dev/null || true
-        sleep 1
-        kill -9 -- "-$pgid" 2>/dev/null || true
-      else
-        # Could not isolate pgid; kill by direct PID.
-        kill "$agent_pid" 2>/dev/null || true
-        sleep 1
-        kill -9 "$agent_pid" 2>/dev/null || true
+    local agent_pid=$!
+    # Capture the DISTINCT process group id of the background child.
+    local pgid="" _pi=0
+    while [ "$_pi" -lt 20 ]; do
+      pgid="$(ps -o pgid= -p "$agent_pid" 2>/dev/null | tr -d ' ')" || pgid=""
+      if [ -n "$pgid" ] && [ "$pgid" != "$$" ] && [ "$pgid" != "$(ps -o pgid= -p $$ | tr -d ' ')" ]; then
+        break
       fi
-      wait "$agent_pid" 2>/dev/null || true
-      # Signal timeout to the caller via a flag file (global won't survive subshell).
-      [ -n "${_AGENT_TIMEOUT_FLAG:-}" ] && touch "$_AGENT_TIMEOUT_FLAG" 2>/dev/null || true
-      _INFLIGHT_AGENT_PGID=0
-      kill "$sleeper_pid" 2>/dev/null || true
-      rm -f "$flag_tmp" "$out_tmp" 2>/dev/null || true
-      return 1
-    fi
-    sleep 0.5 2>/dev/null || true
-  done
-  wait "$agent_pid" 2>/dev/null || rc=$?
-  _INFLIGHT_AGENT_PGID=0
+      pgid=""
+      sleep 0.1 2>/dev/null || true
+      _pi=$((_pi + 1))
+    done
+    [ -n "$pgid" ] || pgid="$agent_pid"
+    _INFLIGHT_AGENT_PGID="$pgid"
 
-  # Kill the sleeper (it may or may not have fired).
-  kill "$sleeper_pid" 2>/dev/null || true
-  wait "$sleeper_pid" 2>/dev/null || true
-  rm -f "$flag_tmp" 2>/dev/null || true
+    # Background sleeper: fires after AGENT_TIMEOUT seconds.
+    local flag_tmp; flag_tmp="$(mktemp "${TMPDIR:-/tmp}/spawn-timeout.XXXXXX")"
+    rm -f "$flag_tmp"
+    ( sleep "$AGENT_TIMEOUT" && touch "$flag_tmp" ) &
+    local sleeper_pid=$!
 
-  if [ "$rc" -ne 0 ]; then
+    # Poll: wait for either the agent (agent_pid gone) or the flag file.
+    local rc=0
+    while kill -0 "$agent_pid" 2>/dev/null; do
+      if [ -f "$flag_tmp" ]; then
+        # Deadline breached — kill the process group.
+        log "M4 watchdog: agent TIMED OUT after ${AGENT_TIMEOUT}s (pgid=${pgid}) — killing group"
+        local our_pgid_w; our_pgid_w="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')" || our_pgid_w="$$"
+        if [ "$pgid" != "$our_pgid_w" ] && [ "$pgid" != "$$" ]; then
+          kill -- "-$pgid" 2>/dev/null || true
+          sleep 1
+          kill -9 -- "-$pgid" 2>/dev/null || true
+        else
+          kill "$agent_pid" 2>/dev/null || true
+          sleep 1
+          kill -9 "$agent_pid" 2>/dev/null || true
+        fi
+        wait "$agent_pid" 2>/dev/null || true
+        # Signal timeout to the caller via a flag file (global won't survive subshell).
+        [ -n "${_AGENT_TIMEOUT_FLAG:-}" ] && touch "$_AGENT_TIMEOUT_FLAG" 2>/dev/null || true
+        _INFLIGHT_AGENT_PGID=0
+        kill "$sleeper_pid" 2>/dev/null || true
+        rm -f "$flag_tmp" "$out_tmp" 2>/dev/null || true
+        return 1
+      fi
+      sleep 0.5 2>/dev/null || true
+    done
+    wait "$agent_pid" 2>/dev/null || rc=$?
+    _INFLIGHT_AGENT_PGID=0
+
+    # Kill the sleeper.
+    kill "$sleeper_pid" 2>/dev/null || true
+    wait "$sleeper_pid" 2>/dev/null || true
+    rm -f "$flag_tmp" 2>/dev/null || true
+
+    # Classify the result.
+    local _raw; _raw="$(cat "$out_tmp" 2>/dev/null || true)"
     rm -f "$out_tmp" 2>/dev/null || true
-    return "$rc"
-  fi
-  cat "$out_tmp" 2>/dev/null || true
-  rm -f "$out_tmp" 2>/dev/null || true
-  return 0
+    local _class; _class="$(_wd_classify_result "$_raw" "$rc")"
+
+    if [ "$_class" = "success" ]; then
+      printf '%s' "$_raw"
+      return 0
+    fi
+
+    # Failed (non-timeout) invocation: maybe retry.
+    if [ "$_max_retries" -le 0 ] || [ "$_attempt" -ge "$_max_retries" ]; then
+      log "agent call exhausted all retries (attempt=${_attempt}) — returning failure (rc=2)"
+      return 2
+    fi
+    _attempt=$((_attempt + 1))
+    log "agent call returned empty/failed (attempt ${_attempt}/${_max_retries}) — retrying after ${_backoff}s backoff"
+    sleep "$_backoff" 2>/dev/null || true
+  done
 }
 
 # execute_phase <phase> <worktree> <args-json> — run one deterministic ritual
@@ -546,7 +657,7 @@ execute_phase() {
 # diagnosable from saved artifacts.
 spawn_agent() {
   local model="$1" worktree="$2" brief="$3" out_dir="${4:-}"
-  local raw
+  local raw _wd_rc=0
 
   # Headless, non-interactive, single JSON result object. --add-dir grants the
   # agent the cycle worktree; cwd is the worktree so relative paths resolve.
@@ -567,13 +678,20 @@ spawn_agent() {
   # global directly. Instead it writes a flag file (_AGENT_TIMEOUT_FLAG) on
   # timeout; we check the file after the call and set AGENT_TIMED_OUT here in
   # the parent shell where globals are preserved.
+  #
+  # Exit-code contract from spawn_agent_watchdog:
+  #   0 — success (valid JSON with .usage); raw output on stdout
+  #   1 — watchdog timeout; caller checks _AGENT_TIMEOUT_FLAG
+  #   2 — all inline retries exhausted (transient API failure)
+  # spawn_agent propagates rc=2 to the caller (run_agents) as its own exit code;
+  # rc=1 (timeout) is already handled via AGENT_TIMED_OUT flag.
   local _timeout_flag; _timeout_flag="$(mktemp "${TMPDIR:-/tmp}/agent-toflag.XXXXXX")"
   rm -f "$_timeout_flag"  # watchdog touches it on timeout; absence = no timeout
   _AGENT_TIMEOUT_FLAG="$_timeout_flag"
   AGENT_TIMED_OUT=0
   # Coder gets --dangerously-skip-permissions: full bash + edit access in the
   # isolated throwaway worktree so it can run zig build / zig fmt / git.
-  raw="$(spawn_agent_watchdog "$model" "$worktree" "$brief" "--dangerously-skip-permissions")"
+  raw="$(spawn_agent_watchdog "$model" "$worktree" "$brief" "--dangerously-skip-permissions")" || _wd_rc=$?
   if [ -f "$_timeout_flag" ]; then AGENT_TIMED_OUT=1; fi
   rm -f "$_timeout_flag" 2>/dev/null || true
   _AGENT_TIMEOUT_FLAG=""
@@ -584,6 +702,13 @@ spawn_agent() {
   if [ -n "$out_dir" ]; then
     mkdir -p "$out_dir"
     printf '%s' "$raw" >"$out_dir/coder.raw.json" 2>/dev/null || true
+  fi
+
+  # Propagate exhausted-retry failure (rc=2) to caller without printing a JSON
+  # token-sample; the caller (run_agents) treats rc=2 as a crashed invocation
+  # and must NOT fabricate a zero-token result or commit a "clean empty slice".
+  if [ "$_wd_rc" -eq 2 ]; then
+    return 2
   fi
 
   # Map the M0-confirmed fields into the frozen token_sample payload shape.
@@ -1061,14 +1186,33 @@ slice_worktree() {
 run_agents() {
   local worktree="$1" out="$2" task_ids_json="${3:-[]}"
   mkdir -p "$out"
-  # A failed/empty agent result is a recorded MEASUREMENT, not a harness crash:
-  # `|| true` on each step keeps `set -e` from aborting (and, when this runs as a
-  # backgrounded cohort member, keeps `wait` from seeing a nonzero member exit).
-  # Pass $out so spawn_agent writes coder.raw.json alongside coder.json —
-  # the raw transcript is preserved for diagnosability (see Change 3).
+
+  # Invoke the coder agent. spawn_agent exit codes:
+  #   0  — success; token_sample JSON written to coder.json
+  #   1  — watchdog timeout; AGENT_TIMED_OUT flag is set
+  #   2  — all inline retries exhausted (transient API failure)
+  # For rc=2 we write a sentinel file (coder.failed) so the caller (run_slice)
+  # can distinguish an exhausted-retry failure from a genuine empty-result no-op.
+  # For rc=0/1 we fall through to the existing paths.
+  local _coder_rc=0
   spawn_agent "$CODER_MODEL" "$worktree" \
     "$(coder_brief "$CELL_PLAN" "$CELL_PROBLEM" "$task_ids_json")" "$out" >"$out/coder.json" 2>/dev/null \
-    || printf '{"in":0,"out":0,"cache_in":0,"cache_out":0,"usd":0}' >"$out/coder.json"
+    || _coder_rc=$?
+  if [ "$_coder_rc" -eq 2 ]; then
+    # Exhausted all inline retries: mark this slice as agent-crashed so run_slice
+    # propagates a non-zero exit and the cell-level retry loop (resolve_cell_uid)
+    # can abort+retry the whole cell. Do NOT write a zero-token coder.json — that
+    # would make commit_agent_work treat it as a valid "clean empty" slice.
+    log "run_agents: coder exhausted all inline retries (rc=2) — marking slice crashed"
+    touch "$out/coder.failed" 2>/dev/null || true
+    printf '{"in":0,"out":0,"cache_in":0,"cache_out":0,"usd":0}' >"$out/coder.json"
+    return 2
+  elif [ "$_coder_rc" -ne 0 ]; then
+    # rc=1 (timeout) or other failure: fall back to zero-token sample (existing
+    # behavior); AGENT_TIMED_OUT already set by spawn_agent's flag-file check.
+    printf '{"in":0,"out":0,"cache_in":0,"cache_out":0,"usd":0}' >"$out/coder.json"
+  fi
+
   # M4 fix: route the reviewer through spawn_agent_raw (watchdog + process-group
   # isolation + _INFLIGHT_AGENT_PGID registration) instead of a raw `claude -p`.
   # spawn_agent_raw returns the FULL result JSON (needed for reviewer_verdict);
@@ -1287,7 +1431,19 @@ run_slice() {
   worktree="$(slice_worktree "$tag")"
   out="$TRANSCRIPT_ROOT/$CELL_RUN_UID/$tag"
   # Thread the slice's task IDs into the agent brief (Fix 1: slice-scoped brief).
-  run_agents "$worktree" "$out" "$tasks_json"
+  local _ra_rc=0
+  run_agents "$worktree" "$out" "$tasks_json" || _ra_rc=$?
+  # rc=2 from run_agents = coder exhausted inline retries (transient API failure).
+  # This is NOT a "clean empty slice" — it is a crashed invocation. Propagate it
+  # upward so dispatch_strict/dispatch_grouped record it as a crashed slice and the
+  # cell-level retry cap (resolve_cell_uid) can abort+retry the whole cell.
+  if [ "$_ra_rc" -eq 2 ] || [ -f "$out/coder.failed" ]; then
+    log "run_slice [${tag}]: coder invocation exhausted inline retries — treating slice as crashed"
+    cell_log "slice_error" \
+      "$(jq -nc --arg tag "$tag" --argjson tasks "$tasks_json" \
+         '{slice_tag:$tag, tasks:$tasks, note:"coder exhausted inline retries (agent API failure)"}')" || true
+    return 2
+  fi
   # Harness commits whatever the agent left uncommitted. This must happen BEFORE
   # harvest_slice and fanin_conflict_check, both of which read committed state.
   commit_agent_work "$worktree" "${CELL_PLAN}: slice ${tag}"
@@ -1356,6 +1512,10 @@ dispatch_eligibility() {
   local cohort_slices=() cohort_tags=() pids=()
   local n=0 tag wt out tslice
 
+  # Reset the global cohort-tracking arrays used by the trap handler.
+  _INFLIGHT_COHORT_PIDS=()
+  _INFLIGHT_COHORT_PGIDS=()
+
   while IFS= read -r line; do
     if [ "$line" = "--" ]; then in_serial=1; continue; fi
     [ -n "$line" ] || continue
@@ -1367,9 +1527,24 @@ dispatch_eligibility() {
       title "cohort member ${tag} tasks=${line} (concurrent B-phase)"
       # Pass task IDs so the agent brief lists ONLY this cohort member's task(s).
       ( run_agents "$wt" "$out" "$line" ) &
-      pids[$n]="$!"
+      local _cpid=$!
+      pids[$n]="$_cpid"
       cohort_slices[$n]="$line"
       cohort_tags[$n]="$tag"
+      # Register pid in the global inflight arrays so the trap can kill them on
+      # SIGINT/SIGTERM while the cohort is running. The subshell pid IS the pgid
+      # when it was started via ( ... ) & in a shell without job control — use
+      # the pid as pgid fallback since we cannot guarantee a new session here.
+      _INFLIGHT_COHORT_PIDS[$n]="$_cpid"
+      # Capture the background subshell's pgid (if it differs from ours).
+      local _coh_pgid=""
+      _coh_pgid="$(ps -o pgid= -p "$_cpid" 2>/dev/null | tr -d ' ')" || _coh_pgid=""
+      local _our_coh_pgid; _our_coh_pgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')" || _our_coh_pgid="$$"
+      if [ -n "$_coh_pgid" ] && [ "$_coh_pgid" != "$_our_coh_pgid" ] && [ "$_coh_pgid" != "$$" ]; then
+        _INFLIGHT_COHORT_PGIDS[$n]="$_coh_pgid"
+      else
+        _INFLIGHT_COHORT_PGIDS[$n]=""
+      fi
       n=$((n + 1))
     else
       # serialized remainder -> ordinary serial slice (runs after the barrier
@@ -1389,12 +1564,31 @@ EOF
     # agent is a recorded measurement) does not abort the cell under `set -e`.
     local _p
     for _p in "${pids[@]}"; do wait "$_p" || true; done
+    # All pids have been waited: clear the trap arrays so a subsequent SIGTERM
+    # does not attempt to kill already-dead processes.
+    _INFLIGHT_COHORT_PIDS=()
+    _INFLIGHT_COHORT_PGIDS=()
+
     local i ttasks _fi_rc
     for ((i = 0; i < n; i++)); do
       ttasks="${cohort_slices[$i]}"
       tag="${cohort_tags[$i]}"
       wt="$WORKTREE_ROOT/${CELL_RUN_UID}/${tag}"
       out="$TRANSCRIPT_ROOT/$CELL_RUN_UID/$tag"
+      # Check for exhausted-retry sentinel from the backgrounded run_agents call.
+      # A sentinel means the coder failed all inline retries; do NOT commit or
+      # harvest — record this cohort member as crashed so the cell gets the
+      # non-zero slice rc and the cell-level retry loop sees a crash.
+      if [ -f "$out/coder.failed" ]; then
+        log "eligibility cohort [${tag}]: coder exhausted inline retries — marking member crashed"
+        cell_log "slice_error" \
+          "$(jq -nc --arg tag "$tag" --argjson tasks "$ttasks" \
+             '{slice_tag:$tag, tasks:$tasks, note:"coder exhausted inline retries (agent API failure)"}')" || true
+        # Continue to remaining cohort members (do not abort the whole cell here;
+        # the partial cohort still gets fanned in; the zero-touch guard later catches
+        # a fully empty cell if all members failed).
+        continue
+      fi
       # Harness commits whatever the concurrent agent left uncommitted. Must run
       # before harvest_slice and fanin_conflict_check (both read committed state).
       commit_agent_work "$wt" "${CELL_PLAN}: slice ${tag}"
