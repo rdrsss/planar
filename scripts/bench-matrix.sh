@@ -254,6 +254,21 @@ _INFLIGHT_AGENT_PGID=0
 _INFLIGHT_CELL_UID=""
 _INFLIGHT_CELL_DIRS=()   # bash indexed array (bash 3.2 ok; NOT associative)
 
+# --- crash propagation: slice-level crash counters threaded up to run_cell.
+#     Reset at the start of each live cell; incremented by the three arm
+#     dispatchers (dispatch_strict, dispatch_grouped, dispatch_eligibility).
+#     _CELL_TOTAL_SLICES counts every slice the arm dispatched (crashed or not).
+#     _CELL_CRASHED_SLICES counts slices that returned rc=2 (coder exhausted all
+#     inline retries — a "coder.failed" crash, NOT a genuine empty-result no-op).
+#     run_cell reads these after phase B to decide the finish status:
+#       all crashed (crashed==total, total>0) -> bench finish --status aborted
+#       otherwise                             -> bench finish --status completed
+#     A token-bearing 0-edit agent has crashed==0 even with 0 touches; it is NOT
+#     re-run (valid "declared-but-not-touched" data). The distinction is the crash
+#     count, not the touch count. ---
+_CELL_TOTAL_SLICES=0
+_CELL_CRASHED_SLICES=0
+
 # --- eligibility cohort background pids + pgids: tracked so the trap can kill
 #     them if a SIGINT/SIGTERM arrives while the cohort is running concurrently.
 #     _INFLIGHT_COHORT_PIDS holds the shell `&` pids; _INFLIGHT_COHORT_PGIDS holds
@@ -1483,6 +1498,7 @@ dispatch_strict() {
   local plan="$1" tasks_json="$2" tslice i=0 _slice_rc
   while IFS= read -r tslice; do
     [ -n "$tslice" ] || continue
+    _CELL_TOTAL_SLICES=$((_CELL_TOTAL_SLICES + 1))
     _slice_rc=0
     run_slice "t$(printf '%s' "$tslice" | jq -r '.[0]')" "$tslice" || {
       _slice_rc=$?
@@ -1490,6 +1506,9 @@ dispatch_strict() {
       cell_log "slice_error" \
         "$(jq -nc --argjson tasks "$tslice" --argjson rc "$_slice_rc" \
            '{tasks:$tasks, last_rc:$rc, note:"strict slice aborted"}')" || true
+      if [ "$_slice_rc" -eq 2 ]; then
+        _CELL_CRASHED_SLICES=$((_CELL_CRASHED_SLICES + 1))
+      fi
     }
     i=$((i + 1))
   done <<EOF
@@ -1551,7 +1570,12 @@ dispatch_eligibility() {
       # because the read loop only reaches these lines after the "--" marker,
       # which the recommend output always prints after the eligible subset).
       tslice="$line"
-      run_slice "ser-$(printf '%s' "$tslice" | jq -r '.[0]')" "$tslice"
+      _CELL_TOTAL_SLICES=$((_CELL_TOTAL_SLICES + 1))
+      local _ser_rc=0
+      run_slice "ser-$(printf '%s' "$tslice" | jq -r '.[0]')" "$tslice" || _ser_rc=$?
+      if [ "$_ser_rc" -eq 2 ]; then
+        _CELL_CRASHED_SLICES=$((_CELL_CRASHED_SLICES + 1))
+      fi
     fi
   done <<EOF
 $(plan_slices_eligibility "$plan")
@@ -1575,6 +1599,11 @@ EOF
       tag="${cohort_tags[$i]}"
       wt="$WORKTREE_ROOT/${CELL_RUN_UID}/${tag}"
       out="$TRANSCRIPT_ROOT/$CELL_RUN_UID/$tag"
+      # Count this cohort member toward the cell's total slice tally. The total
+      # is incremented here (at fan-in) rather than at launch because the slice
+      # list may have varied between launch and fan-in on a crash restart, and
+      # we need the count to reflect slices actually dispatched.
+      _CELL_TOTAL_SLICES=$((_CELL_TOTAL_SLICES + 1))
       # Check for exhausted-retry sentinel from the backgrounded run_agents call.
       # A sentinel means the coder failed all inline retries; do NOT commit or
       # harvest — record this cohort member as crashed so the cell gets the
@@ -1584,6 +1613,7 @@ EOF
         cell_log "slice_error" \
           "$(jq -nc --arg tag "$tag" --argjson tasks "$ttasks" \
              '{slice_tag:$tag, tasks:$tasks, note:"coder exhausted inline retries (agent API failure)"}')" || true
+        _CELL_CRASHED_SLICES=$((_CELL_CRASHED_SLICES + 1))
         # Continue to remaining cohort members (do not abort the whole cell here;
         # the partial cohort still gets fanned in; the zero-touch guard later catches
         # a fully empty cell if all members failed).
@@ -1625,6 +1655,7 @@ dispatch_grouped() {
   while IFS= read -r tslice; do
     [ -n "$tslice" ] || continue
     n="$(printf '%s' "$tslice" | jq 'length')"
+    _CELL_TOTAL_SLICES=$((_CELL_TOTAL_SLICES + 1))
     _slice_rc=0
     run_slice "g${i}-n${n}" "$tslice" || {
       _slice_rc=$?
@@ -1632,6 +1663,9 @@ dispatch_grouped() {
       cell_log "slice_error" \
         "$(jq -nc --argjson tasks "$tslice" --argjson rc "$_slice_rc" \
            '{tasks:$tasks, last_rc:$rc, note:"grouped slice aborted"}')" || true
+      if [ "$_slice_rc" -eq 2 ]; then
+        _CELL_CRASHED_SLICES=$((_CELL_CRASHED_SLICES + 1))
+      fi
     }
     i=$((i + 1))
   done <<EOF
@@ -1775,6 +1809,11 @@ run_cell() {
   CELL_BASE_SHA="$base_sha"; CELL_PROBLEM="$problem"
   CELL_INTEG_BRANCH="bench-integ/${run_uid}"
   SEQ=0; S=0
+  # Reset per-cell crash counters. The three arm dispatchers increment these as
+  # they dispatch and observe each slice outcome. run_cell reads them after
+  # phase B to choose the finish status (completed vs aborted-for-retry).
+  _CELL_TOTAL_SLICES=0
+  _CELL_CRASHED_SLICES=0
   mkdir -p "$WORKTREE_ROOT/$run_uid" "$TRANSCRIPT_ROOT/$run_uid"
 
   # M4: register the in-flight cell so the trap handler can clean up if we are
@@ -1846,12 +1885,41 @@ run_cell() {
 
   # --- phase C: finish the run (harvest already happened per-slice). The run is
   #     joinable: declared touches (snapshotted at start) + per-task actual
-  #     touches (harvested per slice) + the full event journal. ---
+  #     touches (harvested per slice) + the full event journal.
+  #
+  #     Crash-propagation: if EVERY slice in this cell crashed (all coder calls
+  #     exhausted their inline retries), mark the run aborted so resume treats it
+  #     as a retryable failure instead of completed (which resume would skip).
+  #     `bench finish --status aborted` is accepted by the CLI, excluded from the
+  #     spend ledger (cumulative_spend filters status<>'aborted'), and causes
+  #     resolve_cell_uid to mint a fresh retry uid on the next run.
+  #
+  #     CRITICAL DISTINCTION — token-bearing no-ops are NOT crashes:
+  #     An agent that ran successfully (rc=0, valid JSON with .usage) and chose
+  #     to make zero edits has _CELL_CRASHED_SLICES=0 even if _n_actual=0.
+  #     That is valid "declared-but-not-touched" RQ1 data; it must stay completed
+  #     so resume skips it (re-running would waste spend and distort the metric).
+  #     The crash signal is exclusively _CELL_CRASHED_SLICES > 0, NOT touch count. ---
   title "phase C: finish"
-  pl bench finish "$run_uid" --status completed >&2
+  local _finish_status="completed"
+  if [ "${_CELL_TOTAL_SLICES:-0}" -gt 0 ] \
+     && [ "${_CELL_CRASHED_SLICES:-0}" -ge "${_CELL_TOTAL_SLICES:-0}" ]; then
+    _finish_status="aborted"
+    log "cell ${run_uid}: ALL slices crashed (${_CELL_CRASHED_SLICES}/${_CELL_TOTAL_SLICES}) — marking aborted for resume retry, NOT completed"
+    cell_log "slice_all_crashed" \
+      "$(jq -nc \
+         --argjson crashed "${_CELL_CRASHED_SLICES}" \
+         --argjson total "${_CELL_TOTAL_SLICES}" \
+         '{crashed:$crashed, total:$total, note:"all slices crashed; cell marked aborted for resume retry"}')" || true
+  fi
+  pl bench finish "$run_uid" --status "$_finish_status" >&2
 
-  # M4: structured log — cell_complete event (disposition = completed).
-  cell_log "cell_complete" '{"disposition":"completed"}' || true
+  # M4: structured log — cell_complete event.
+  cell_log "cell_complete" \
+    "$(jq -nc --arg disp "$_finish_status" \
+       --argjson crashed "${_CELL_CRASHED_SLICES:-0}" \
+       --argjson total "${_CELL_TOTAL_SLICES:-0}" \
+       '{disposition:$disp, crashed_slices:$crashed, total_slices:$total}')" || true
 
   # Remove all slice worktrees for this cell now that harvest + fan-in +
   # zero-touch guard are done and nothing downstream reads them.  Must happen
@@ -1859,9 +1927,19 @@ run_cell() {
   # still lets the trap call _cleanup_inflight.  BENCH_KEEP_WORKTREES=1 skips.
   cleanup_cell_worktrees "$run_uid"
 
-  # M4: cell completed cleanly — clear in-flight state so the EXIT trap no-ops.
+  # M4: cell completed (or aborted) — clear in-flight state so the EXIT trap no-ops.
   _INFLIGHT_CELL_UID=""
   _INFLIGHT_CELL_DIRS=()
+
+  if [ "$_finish_status" = "aborted" ]; then
+    # All slices crashed: the run is aborted. run_cell returns non-zero so the
+    # matrix driver (dispatch_cell) logs it as a crashed cell and resolve_cell_uid
+    # will abort+retry on the next matrix pass. Do NOT print bench show (the run
+    # is aborted, not joinable); do NOT exit non-zero from run_cell itself so the
+    # EXIT trap does not fire cleanup a second time.
+    title "cell aborted (all slices crashed): ${run_uid}"
+    return 1
+  fi
 
   # --- clean joinable run: print the final record on stdout ---
   title "cell complete: ${run_uid}"
