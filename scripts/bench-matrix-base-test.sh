@@ -69,37 +69,55 @@ seed_plan() {
 #          and run_cell dry-run logs "operator-supplied override" not "parent
 #          of first touching commit".
 # ===========================================================================
-# Strategy: build a stub corpus repo with a multi-commit history. Use --base
-# to pin a mid-commit as override. Run --dry-run and confirm:
-#   (a) the override SHA is logged as "operator-supplied override"
-#   (b) "parent of first touching commit" (pick_base_sha path) is NOT logged
-# Since we use a plan with NO declared touches (seed_plan), paths_list will be
-# empty — the override is still validated and logged before the else-branch.
-# We also directly test lookup_base_override to confirm it returns the SHA.
+# Strategy: build a stub corpus repo with a multi-commit history. The plan has
+# a DECLARED TOUCH PATH (feature.zig) — without the override, run_cell would
+# call pick_base_sha on that path (the no-override path that logs "parent of
+# first touching commit"). With --base override, run_cell must bypass
+# pick_base_sha entirely and log "operator-supplied override" instead.
+# T1d is thereby non-vacuous: the declared path ensures pick_base_sha WOULD
+# fire without the override, making the "override wins" assertion meaningful.
 test_single_cell_base_override() {
   printf '\n=== BASE TEST 1: single-cell --base override wins over pick_base_sha ===\n'
   local home db cfg
   home="$(new_iso_home)"; db="$home/exp.db"; cfg="$home/config.toml"
 
-  # Build a stub corpus repo.
+  # Build a stub corpus repo with a file that simulates the declared touch.
   local corpus="$home/corpus"
   mkdir -p "$corpus"
   git -C "$corpus" init -q
   git -C "$corpus" config user.email t1@base-test.local
   git -C "$corpus" config user.name btest1
+  # Root commit: bootstrap file (no declared path yet).
+  printf 'bootstrap\n' >"$corpus/bootstrap.txt"
+  git -C "$corpus" add bootstrap.txt
+  git -C "$corpus" commit -qm "root: bootstrap"
+  # Second commit: creates the declared touch path (feature.zig).
   printf 'v1\n' >"$corpus/feature.zig"
   git -C "$corpus" add feature.zig
-  git -C "$corpus" commit -qm "root: create feature.zig"
+  git -C "$corpus" commit -qm "add feature.zig"
+  # Third commit: modifies feature.zig; override_sha points here.
   printf 'v2\n' >"$corpus/feature.zig"
   git -C "$corpus" add feature.zig
   git -C "$corpus" commit -qm "modify feature.zig"
   local override_sha; override_sha="$(git -C "$corpus" rev-parse HEAD)"
+  # Fourth commit: another file (not the declared path).
   printf 'other\n' >"$corpus/other.txt"
   git -C "$corpus" add other.txt
   git -C "$corpus" commit -qm "add other"
 
-  # Plan with no declared touches (declared_paths will be empty).
+  # Plan with a declared touch on feature.zig. Without the override, run_cell
+  # would call pick_base_sha("feature.zig") which returns the bootstrap commit
+  # and logs "parent of first touching commit". The override must bypass this.
   local pid; pid="$(seed_plan "$db" "$cfg" "override test")"
+  # Retrieve the task id that seed_plan created, then declare a touch on it.
+  local tid
+  tid="$(cd "$PLANNING_CWD" && PLANAR_DB="$db" PLANAR_CONFIG_PATH="$cfg" \
+    command "$PLANAR_BIN" task list --plan "$pid" --scope global --json 2>/dev/null \
+    | jq -r '.[0].id')"
+  if [ -n "$tid" ] && [ "$tid" != "null" ]; then
+    ( cd "$PLANNING_CWD" && PLANAR_DB="$db" PLANAR_CONFIG_PATH="$cfg" \
+        command "$PLANAR_BIN" task touches add "$tid" "feature.zig" >/dev/null 2>&1 ) || true
+  fi
 
   local trimmed; trimmed="$(trimmed_matrix "$home/matrix-nomain.sh")"
 
@@ -152,10 +170,14 @@ WRAP
     && ok "T1c: override SHA '${override_sha}' present in dry-run output" \
     || bad "T1c: override SHA '${override_sha}' NOT in output"
 
+  # T1d: the pick_base_sha log line must be absent — the declared touch path
+  # (feature.zig) means the no-override path WOULD call pick_base_sha and log
+  # "parent of first touching commit". The override must bypass that entirely.
+  # This makes the assertion non-vacuous (unlike the old plan-with-no-touches).
   if printf '%s\n' "$out" | grep -qF "base_sha (parent of first touching commit)"; then
-    bad "T1d: pick_base_sha log line appeared — override did NOT bypass it"
+    bad "T1d: pick_base_sha log line appeared — override did NOT bypass pick_base_sha (non-vacuous: plan has declared touches)"
   else
-    ok "T1d: pick_base_sha log NOT emitted (override bypassed it)"
+    ok "T1d: pick_base_sha log NOT emitted (override bypassed pick_base_sha even with declared-touch plan)"
   fi
 
   rm -rf "$home"
@@ -488,6 +510,109 @@ WRAPB
 }
 
 # ===========================================================================
+# TEST 5b — Task 4359.1: bad --bases SHA in --dry-run exits non-zero.
+# Previously run_matrix's dry-run wrapped lookup_base_override in || true so an
+# invalid SHA silently fell through. The fix lets err() propagate. This test
+# asserts that --dry-run with a bad BENCH_BASES SHA exits non-zero.
+# ===========================================================================
+test_bad_bases_sha_dry_run_fails() {
+  printf '\n=== BASE TEST 5b: bad --bases SHA in --dry-run exits non-zero (task 4359.1) ===\n'
+  local home db cfg
+  home="$(new_iso_home)"; db="$home/exp.db"; cfg="$home/config.toml"
+
+  local corpus="$home/corpus"
+  mkdir -p "$corpus"
+  git -C "$corpus" init -q
+  git -C "$corpus" config user.email t5b@base-test.local
+  git -C "$corpus" config user.name btest5b
+  printf 'seed\n' >"$corpus/seed.txt"
+  git -C "$corpus" add seed.txt
+  git -C "$corpus" commit -qm base
+
+  local pid; pid="$(seed_plan "$db" "$cfg" "bad-bases-dry-run test")"
+
+  local trimmed; trimmed="$(trimmed_matrix "$home/matrix-nomain.sh")"
+
+  # Run matrix --dry-run with an invalid --bases SHA; must exit non-zero.
+  local wrap="$home/t5b-wrap.sh"
+  cat >"$wrap" <<WRAP5B
+#!/usr/bin/env bash
+set -euo pipefail
+export PLANAR_DB_OVERRIDE="$db"
+export PLANAR_CONFIG_PATH_OVERRIDE="$cfg"
+export BENCH_HOME="$home"
+export BENCH_CORPUS_REPO="$corpus"
+export BENCH_PLANNING_CWD="$PLANNING_CWD"
+# shellcheck disable=SC1090
+source "$trimmed"
+PLANNING_CWD="$PLANNING_CWD"
+LOG_ROOT="$home/cell-logs"
+require_tool sqlite3
+parse_args --matrix --plans "$pid" --reps 1 \
+  --bases "${pid}:deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" --dry-run
+run_matrix
+WRAP5B
+  chmod +x "$wrap"
+  local rc=0
+  bash "$wrap" 2>/dev/null || rc=$?
+  [ "$rc" -ne 0 ] \
+    && ok "T5b: bad --bases SHA in --dry-run exits non-zero (pre-flight catches it, rc=$rc)" \
+    || bad "T5b: bad --bases SHA in --dry-run did NOT fail — invalid SHA silently falls through"
+
+  rm -rf "$home"
+}
+
+# ===========================================================================
+# TEST 5c — Task 4359.3: --base + --matrix is rejected by parse_args.
+# --base is a single-cell affordance; combining it with --matrix would pin all
+# plans to one SHA (a foot-gun). parse_args must err() on this combination.
+# ===========================================================================
+test_base_with_matrix_rejected() {
+  printf '\n=== BASE TEST 5c: --base + --matrix rejected (task 4359.3) ===\n'
+  local home db cfg
+  home="$(new_iso_home)"; db="$home/exp.db"; cfg="$home/config.toml"
+
+  local corpus="$home/corpus"
+  mkdir -p "$corpus"
+  git -C "$corpus" init -q
+  git -C "$corpus" config user.email t5c@base-test.local
+  git -C "$corpus" config user.name btest5c
+  printf 'seed\n' >"$corpus/seed.txt"
+  git -C "$corpus" add seed.txt
+  git -C "$corpus" commit -qm base
+  local sha; sha="$(git -C "$corpus" rev-parse HEAD)"
+
+  local pid; pid="$(seed_plan "$db" "$cfg" "base-matrix-reject test")"
+
+  local trimmed; trimmed="$(trimmed_matrix "$home/matrix-nomain.sh")"
+
+  local wrap="$home/t5c-wrap.sh"
+  cat >"$wrap" <<WRAP5C
+#!/usr/bin/env bash
+set -euo pipefail
+export PLANAR_DB_OVERRIDE="$db"
+export PLANAR_CONFIG_PATH_OVERRIDE="$cfg"
+export BENCH_HOME="$home"
+export BENCH_CORPUS_REPO="$corpus"
+# shellcheck disable=SC1090
+source "$trimmed"
+# Combining --base and --matrix must be rejected.
+parse_args --matrix --plans "$pid" --reps 1 --base "$sha"
+WRAP5C
+  chmod +x "$wrap"
+  local rc=0 out
+  out="$(bash "$wrap" 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] \
+    && ok "T5c: --base + --matrix is rejected by parse_args (rc=$rc)" \
+    || bad "T5c: --base + --matrix was NOT rejected (rc=$rc)"
+  printf '%s\n' "$out" | grep -qiF "cannot be combined" \
+    && ok "T5c-msg: rejection message mentions 'cannot be combined'" \
+    || bad "T5c-msg: rejection message does not explain the conflict; out: $out"
+
+  rm -rf "$home"
+}
+
+# ===========================================================================
 # TEST 6 — Regression: M3, M4, B1 still pass
 # ===========================================================================
 test_regression_m3() {
@@ -530,6 +655,8 @@ main() {
   test_gate_softened_for_override
   test_no_override_unchanged
   test_bad_override_sha
+  test_bad_bases_sha_dry_run_fails
+  test_base_with_matrix_rejected
   test_regression_m3
   test_regression_m4
   test_regression_b1

@@ -129,6 +129,16 @@ function setup()
 
   -- 2. Open the run record (which snapshots declared touches in-transaction).
   --    run_uid is the harness-minted positional (D8).
+  --
+  --    Task scoping: when the harness dispatches only a SUBSET of plan tasks
+  --    (--tasks flag on bench-matrix.sh), ctx.args.tasks carries exactly those
+  --    ids. We forward them as --task <id> flags so `bench start` scopes the
+  --    declared-touch snapshot to the subset — otherwise the snapshot would
+  --    include all plan tasks and inflate M-RQ1 recall for subset runs.
+  --    For full-plan runs ctx.args.tasks contains all task ids (the harness
+  --    always populates the field), so --task flags are always present and
+  --    always correct; the subset vs full-plan distinction is purely which ids.
+  local tasks_for_start = task_id_list()   -- required; non-empty guaranteed above
   local start_argv = {
     "bench", "start", tostr(run_uid),
     "--plan", tostr(plan_id),
@@ -136,6 +146,11 @@ function setup()
     "--base-sha", tostr(base_sha),
     "--config-hash", tostr(config_hash),
   }
+  -- Append one --task flag per task id to scope the declared-touch snapshot.
+  for _, tid in ipairs(tasks_for_start) do
+    start_argv[#start_argv + 1] = "--task"
+    start_argv[#start_argv + 1] = tostr(tid)
+  end
   if ctx.args.config_json ~= nil then
     start_argv[#start_argv + 1] = "--config-json"
     start_argv[#start_argv + 1] = tostr(ctx.args.config_json)
