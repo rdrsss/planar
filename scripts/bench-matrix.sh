@@ -13,7 +13,8 @@
 #     -> planar-execute run bench_run_ritual.lua --phase setup   (A: reset + bench start)
 #     -> emit slice_dispatch event
 #     -> spawn_agent coder    (B: headless `claude -p --output-format=json`)
-#     -> spawn_agent reviewer (B: verdict gates, iteration cap 5)
+#     -> spawn_agent reviewer (B: records verdict as M-ITER measurement; single-
+#                               verdict model — no request-changes retry loop)
 #     -> emit token_sample per agent
 #     -> emit slice_fanin event
 #     -> planar-execute run bench_run_ritual.lua --phase measure  (C: harvest + finish)
@@ -116,7 +117,13 @@ set -euo pipefail
 CODER_MODEL="${BENCH_CODER_MODEL:-claude-sonnet-4-5}"
 REVIEWER_MODEL="${BENCH_REVIEWER_MODEL:-claude-sonnet-4-5}"
 
-# --- iteration cap (preregistration §3: the objective gate may need retries) ---
+# --- iteration cap (preregistration §3 frozen run-config identity element).
+#     ITER_CAP is retained in config_hash for hash stability / reproducibility:
+#     a pending N=4→5 top-up must reproduce the same config_hash as earlier cells
+#     so the paired comparison stays valid. There is NO request-changes retry loop
+#     in this harness: run_agents spawns the coder once and the reviewer once per
+#     slice; the reviewer verdict is MEASURED (M-ITER), not used to gate retries.
+#     The value is frozen into the hash; never consumed by a retry counter here. ---
 ITER_CAP="${BENCH_ITER_CAP:-5}"
 
 # --- the brief-template version, part of config_hash (frozen nuisance var) ---
@@ -977,6 +984,12 @@ deterministic_run_uid() {
 # (run-record-schema §2: comparable iff config_hash identical except arm). It
 # hashes the frozen nuisance vars — models, iteration cap, brief-template
 # version, solver, budget ceiling — but NOT the arm. sha256, first 16 hex.
+#
+# NOTE: ITER_CAP is included purely for hash stability / frozen-config identity.
+# There is NO retry loop that consumes it: run_agents dispatches coder once and
+# reviewer once per slice; the reviewer verdict is M-ITER (a measurement), not
+# an enforced retry gate. Removing ITER_CAP from the hash would break pairing
+# with prior cells (a N=4→5 top-up must recompute the identical hash).
 config_hash_base() {
   printf '%s|%s|%s|%s|%s|%s' \
     "$CODER_MODEL" "$REVIEWER_MODEL" "$ITER_CAP" \
@@ -1737,6 +1750,28 @@ cleanup_cell_worktrees() {
   log "cleanup: removed slice worktrees for cell ${uid} (BENCH_KEEP_WORKTREES unset)"
 }
 
+# zero_touch_guard <run_uid> — query the experiment DB for actual touches on the
+# given run_uid. If the count is 0, emit a loud WARNING so the operator can
+# detect a cell where agents produced no committed changes (RQ1 data is empty).
+# If >0, log the count as an OK confirmation. No-ops when PLANAR_DB is absent.
+# This function is the canonical implementation of the guard; both run_cell and
+# the test suite invoke it — a change here is automatically covered by the tests.
+zero_touch_guard() {
+  local run_uid="$1"
+  [ -f "${PLANAR_DB:-}" ] || return 0
+  local _n_actual
+  _n_actual="$(sqlite3 "$PLANAR_DB" \
+    "select count(*) from run_touches t
+     join runs r on r.id = t.run_id
+     where r.run_uid = '${run_uid}' and t.kind = 'actual';" \
+    2>/dev/null || printf '0')"
+  if [ "${_n_actual:-0}" -eq 0 ]; then
+    log "WARNING: cell ${run_uid} harvested 0 actual touches — agent produced no committed changes; RQ1 data for this cell is empty"
+  else
+    log "zero-touch guard: cell ${run_uid} has ${_n_actual} actual touch(es) — OK"
+  fi
+}
+
 # run_cell <plan> <arm> <rep> — drive ONE cell end-to-end: resolve metadata +
 # base_sha, open the run (ritual phase A), dispatch the arm shape, finish. In
 # --dry-run it prints each arm's DISTINCT slice/worktree/dispatch shape and
@@ -1882,24 +1917,11 @@ run_cell() {
   #     zero-touch guard, so the guard counts only real touches. ---
   filter_noise_touches "$run_uid"
 
-  # --- zero-touch guard: if ALL slices produced 0 actual touches emit a loud
-  #     WARNING so no future run can silently look like success while carrying no
-  #     RQ1 data. A 45-cell campaign once completed exit-0 with $165 spent and
-  #     ZERO actual touches because agents left edits uncommitted; this guard
-  #     makes that class of failure immediately visible in the run log. ---
-  if [ -f "$PLANAR_DB" ]; then
-    local _n_actual
-    _n_actual="$(sqlite3 "$PLANAR_DB" \
-      "select count(*) from run_touches t
-       join runs r on r.id = t.run_id
-       where r.run_uid = '${run_uid}' and t.kind = 'actual';" \
-      2>/dev/null || printf '0')"
-    if [ "${_n_actual:-0}" -eq 0 ]; then
-      log "WARNING: cell ${run_uid} harvested 0 actual touches — agent produced no committed changes; RQ1 data for this cell is empty"
-    else
-      log "zero-touch guard: cell ${run_uid} has ${_n_actual} actual touch(es) — OK"
-    fi
-  fi
+  # --- zero-touch guard: delegated to the canonical zero_touch_guard function
+  #     (defined above run_cell). If ALL slices produced 0 actual touches it emits
+  #     a loud WARNING. Tests invoke the same function — a wording/SQL change here
+  #     is automatically caught by the test suite. ---
+  zero_touch_guard "$run_uid"
 
   # --- phase C: finish the run (harvest already happened per-slice). The run is
   #     joinable: declared touches (snapshotted at start) + per-task actual
@@ -2450,7 +2472,12 @@ run_matrix() {
     title "DRY-RUN: resolved base_sha per plan"
     local p base paths ovr
     for p in $(corpus_plan_list); do
-      ovr="$(lookup_base_override "$p" 2>/dev/null || true)"
+      # Do NOT suppress errors from lookup_base_override here: an invalid SHA
+      # must err() loudly even in --dry-run so the operator catches it in the
+      # pre-flight rather than discovering it only when the live run starts.
+      # "no override" is signalled by empty stdout (rc=0); "invalid SHA" is err()
+      # which calls exit — the two cases are deliberately distinct.
+      ovr="$(lookup_base_override "$p")"
       if [ -n "$ovr" ]; then
         base="$ovr"
         log "  plan ${p}: base_sha=${base}  (operator-supplied override)  paired_config_hash_base=$(config_hash_base)"
@@ -2562,6 +2589,12 @@ parse_args() {
     # Matrix mode sweeps a plan-list; it needs --plans OR a single --plan.
     [ -n "$CORPUS_PLANS" ] || [ -n "$ARG_PLAN" ] \
       || err "--matrix needs --plans <ids> (or a single --plan <id>) (try --help)"
+    # --base is a single-cell affordance and must not be combined with --matrix:
+    # it would pin EVERY plan in the sweep to one SHA — a silent foot-gun that
+    # would make all plans share a base that belongs to only one of them. Use
+    # --bases plan:sha,... for per-plan overrides in matrix mode.
+    [ -z "$ARG_BASE" ] \
+      || err "--base cannot be combined with --matrix (use --bases plan:sha,... for per-plan overrides)"
     case "$N_REPS" in
       ''|*[!0-9]*) err "--reps must be a positive integer (got '$N_REPS')" ;;
     esac

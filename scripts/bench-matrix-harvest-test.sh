@@ -218,13 +218,15 @@ test_empty_slice_is_clean() {
 # ===========================================================================
 # TEST 3 — Zero-touch guard fires when cell has 0 actual touches, does NOT
 #           fire when cell has >0 actual touches.
-# The guard is in run_cell's live path; we test it by calling it directly via
-# a wrapper that sources the matrix and reproduces the guard's sqlite query.
+# Task 4362: T3 now calls the real zero_touch_guard function (factored out of
+# run_cell) instead of reproducing the guard's SQL+message in a heredoc. This
+# means wording or SQL drift in the real guard would cause this test to fail —
+# the test pins the real implementation, not a copy.
 # ===========================================================================
 test_zero_touch_guard() {
-  printf '\n=== HARVEST TEST 3: zero-touch guard fires / does not fire ===\n'
+  printf '\n=== HARVEST TEST 3: zero-touch guard fires / does not fire (calls real zero_touch_guard) ===\n'
 
-  # Sub-case A: cell with 0 actual touches emits WARNING.
+  # Sub-case A: cell with 0 actual touches — zero_touch_guard must emit WARNING.
   local homeA dbA cfgA corpusA baseA pidA
   homeA="$(mktemp -d "${TMPDIR:-/tmp}/harvest-test.XXXXXX")"
   dbA="$homeA/exp.db"; cfgA="$homeA/config.toml"
@@ -237,7 +239,9 @@ test_zero_touch_guard() {
       command "$PLANAR_BIN" bench start "hv-t3-zero" --plan "$pidA" --arm strict \
         --base-sha "$baseA" --config-hash hv3 >/dev/null 2>&1 )
 
-  # Build a wrapper that sources the matrix and runs just the zero-touch guard.
+  # Build a wrapper that sources the matrix and calls zero_touch_guard directly.
+  # This is the key difference from the old T3: we call the REAL function,
+  # not a heredoc copy — so a SQL or message change in bench-matrix.sh is caught.
   local trimmedA="$homeA/matrix-nomain.sh"
   sed '$ s/^main "$@"$//' "$MATRIX" >"$trimmedA"
   local wrapA="$homeA/t3a.sh"
@@ -250,29 +254,17 @@ export BENCH_HOME="$homeA"
 export BENCH_CORPUS_REPO="$corpusA"
 # shellcheck disable=SC1090
 source "$trimmedA"
-# Reproduce the guard from run_cell verbatim.
-run_uid="hv-t3-zero"
-if [ -f "\$PLANAR_DB" ]; then
-  _n_actual="\$(sqlite3 "\$PLANAR_DB" \
-    "select count(*) from run_touches t
-     join runs r on r.id = t.run_id
-     where r.run_uid = '\${run_uid}' and t.kind = 'actual';" \
-    2>/dev/null || printf '0')"
-  if [ "\${_n_actual:-0}" -eq 0 ]; then
-    log "WARNING: cell \${run_uid} harvested 0 actual touches — agent produced no committed changes; RQ1 data for this cell is empty"
-  else
-    log "zero-touch guard: cell \${run_uid} has \${_n_actual} actual touch(es) — OK"
-  fi
-fi
+# Call the real zero_touch_guard function (not a copy of its SQL/message).
+zero_touch_guard "hv-t3-zero"
 WRAP3A
   chmod +x "$wrapA"
   local outA; outA="$(bash "$wrapA" 2>&1 || true)"
   printf '%s\n' "$outA" | grep -qF "WARNING: cell hv-t3-zero harvested 0 actual touches" \
-    && ok "T3a: zero-touch guard emits WARNING for cell with 0 actual touches" \
+    && ok "T3a: zero_touch_guard emits WARNING for cell with 0 actual touches" \
     || bad "T3a: WARNING not emitted for 0-touch cell; output: $outA"
   rm -rf "$homeA"
 
-  # Sub-case B: cell with >0 actual touches does NOT emit WARNING.
+  # Sub-case B: cell with >0 actual touches — zero_touch_guard must NOT emit WARNING.
   local homeB dbB cfgB corpusB baseB pidB tidB
   homeB="$(mktemp -d "${TMPDIR:-/tmp}/harvest-test.XXXXXX")"
   dbB="$homeB/exp.db"; cfgB="$homeB/config.toml"
@@ -303,26 +295,15 @@ export BENCH_HOME="$homeB"
 export BENCH_CORPUS_REPO="$corpusB"
 # shellcheck disable=SC1090
 source "$trimmedB"
-run_uid="hv-t3-ok"
-if [ -f "\$PLANAR_DB" ]; then
-  _n_actual="\$(sqlite3 "\$PLANAR_DB" \
-    "select count(*) from run_touches t
-     join runs r on r.id = t.run_id
-     where r.run_uid = '\${run_uid}' and t.kind = 'actual';" \
-    2>/dev/null || printf '0')"
-  if [ "\${_n_actual:-0}" -eq 0 ]; then
-    log "WARNING: cell \${run_uid} harvested 0 actual touches — agent produced no committed changes; RQ1 data for this cell is empty"
-  else
-    log "zero-touch guard: cell \${run_uid} has \${_n_actual} actual touch(es) — OK"
-  fi
-fi
+# Call the real zero_touch_guard function.
+zero_touch_guard "hv-t3-ok"
 WRAP3B
   chmod +x "$wrapB"
   local outB; outB="$(bash "$wrapB" 2>&1 || true)"
   if printf '%s\n' "$outB" | grep -qF "WARNING: cell hv-t3-ok harvested 0 actual touches"; then
-    bad "T3b: zero-touch guard emitted WARNING for cell with actual touches (false positive)"
+    bad "T3b: zero_touch_guard emitted WARNING for cell with actual touches (false positive)"
   else
-    ok "T3b: zero-touch guard correctly silent for cell with actual touches"
+    ok "T3b: zero_touch_guard correctly silent for cell with actual touches"
   fi
   printf '%s\n' "$outB" | grep -qF "zero-touch guard: cell hv-t3-ok has" \
     && ok "T3c: guard logged the OK status for non-zero touch cell" \
@@ -665,29 +646,162 @@ WRAP7
 }
 
 # ===========================================================================
-# TEST 8 — No regression: existing test suites still pass.
+# TEST 8 — Task 4355: ITER_CAP / config_hash comment accuracy.
+# Asserts that:
+#   (a) the header and comments no longer claim a request-changes retry loop
+#       (the single-verdict model is correctly documented)
+#   (b) ITER_CAP is still included in the config_hash input (hash stability)
+# ===========================================================================
+test_iter_cap_comment_accuracy() {
+  printf '\n=== HARVEST TEST 8: task 4355 — ITER_CAP comment accuracy ===\n'
+
+  # (a) The header should NOT claim "retry loop" in the context of ITER_CAP /
+  # iteration cap / reviewer. The old phrasing said "verdict gates, iteration
+  # cap 5" implying the reviewer enforced retries. Check the reviewer spawn line.
+  local reviewer_spawn_line
+  reviewer_spawn_line="$(grep -n 'spawn_agent reviewer' "$MATRIX" || true)"
+  if printf '%s\n' "$reviewer_spawn_line" | grep -qF "iteration cap 5"; then
+    bad "T8a: header still says 'iteration cap 5' on reviewer spawn line — misleading retry-loop claim"
+  else
+    ok "T8a: header does NOT claim 'iteration cap 5' on reviewer spawn line"
+  fi
+
+  # (b) ITER_CAP must still appear in the config_hash_base input string (hash
+  # stability: removing it would break pairing with prior cells).
+  grep -A5 'config_hash_base()' "$MATRIX" | grep -qF 'ITER_CAP' \
+    && ok "T8b: ITER_CAP still in config_hash_base input (hash stability preserved)" \
+    || bad "T8b: ITER_CAP NOT found in config_hash_base — hash stability broken"
+
+  # (c) The ITER_CAP comment block must mention that there is no retry loop.
+  # The phrase appears across comment lines (not on a single line with ITER_CAP),
+  # so search the whole file for the phrase rather than anchoring to ITER_CAP.
+  grep -qiF "no request-changes retry loop" "$MATRIX" \
+    && ok "T8c: ITER_CAP comment documents 'no request-changes retry loop'" \
+    || bad "T8c: ITER_CAP comment does not document single-verdict model (missing 'no request-changes retry loop')"
+
+  # (d) The config_hash_base site must have a code comment explaining ITER_CAP
+  # is kept for hash stability (not for a retry counter).
+  grep -B2 'config_hash_base()' "$MATRIX" | grep -qiF "hash stability" \
+    || grep -A15 '# config_hash_base' "$MATRIX" | grep -qiF "hash stability" \
+    && ok "T8d: config_hash_base has 'hash stability' comment explaining ITER_CAP retention" \
+    || bad "T8d: config_hash_base missing 'hash stability' explanation for ITER_CAP"
+}
+
+# ===========================================================================
+# TEST 9 — Task 4356: --tasks subset scopes bench start declared snapshot.
+# Asserts that when the ritual's bench start is called with --task <id> flags
+# (the fix in bench_run_ritual.lua), only the subset-task declared touches are
+# snapshotted. We test this by:
+#   (a) Initializing a real project (planar init) to get a valid projects.id.
+#   (b) Seeding task_touch_paths directly for two tasks using projects.id FK.
+#   (c) Running bench start with --task scoped to only ONE task.
+#   (d) Asserting the declared snapshot contains only that task's rows.
+#   (e) Baseline: bench start without --task includes both tasks' declared rows.
+# ===========================================================================
+test_tasks_subset_scopes_declared_snapshot() {
+  printf '\n=== HARVEST TEST 9: task 4356 — --tasks subset scopes declared snapshot ===\n'
+  local home db cfg corpus base pid t1 t2
+  home="$(mktemp -d "${TMPDIR:-/tmp}/harvest-test.XXXXXX")"
+  db="$home/exp.db"; cfg="$home/config.toml"
+  corpus="$(new_corpus "$home")"
+  base="$(git -C "$corpus" rev-parse HEAD)"
+
+  # Register the corpus as a project (creates a projects.id for FK use).
+  ( cd "$corpus" && PLANAR_DB="$db" PLANAR_CONFIG_PATH="$cfg" \
+      command "$PLANAR_BIN" init --json >/dev/null 2>&1 ) || true
+
+  pid="$(seed_plan "$db" "$cfg" "$corpus")"
+  t1="$(seed_task "$db" "$cfg" "$corpus" "$pid")"
+  t2="$(seed_task "$db" "$cfg" "$corpus" "$pid")"
+
+  # Seed task_touch_paths via direct SQL (task touches add requires assoc/scope
+  # plumbing that is out of scope for this isolation test). We use the project
+  # row that `planar init` just created to satisfy the repo_id FK.
+  sqlite3 "$db" "
+    INSERT INTO task_touch_paths (task_id, repo_id, path)
+    SELECT $t1, p.id, 'src/task1.zig' FROM projects p LIMIT 1;
+    INSERT INTO task_touch_paths (task_id, repo_id, path)
+    SELECT $t2, p.id, 'src/task2.zig' FROM projects p LIMIT 1;
+  " 2>/dev/null
+
+  # Open a run scoped to ONLY task t1 via --task (the 4356 fix: ritual passes
+  # --task for each id in ctx.args.tasks). Only t1's declared path should appear.
+  local run_uid="hv-t9-subset"
+  ( cd "$corpus" && PLANAR_DB="$db" PLANAR_CONFIG_PATH="$cfg" \
+      command "$PLANAR_BIN" bench start "$run_uid" \
+        --plan "$pid" --arm strict \
+        --base-sha "$base" --config-hash hv9 \
+        --task "$t1" >/dev/null 2>&1 )
+
+  # Assert: declared touches for the run include ONLY t1's path.
+  local n_t1_decl n_t2_decl
+  n_t1_decl="$(sqlite3 "$db" "
+    SELECT count(*) FROM run_touches t JOIN runs r ON r.id=t.run_id
+    WHERE r.run_uid='$run_uid' AND t.kind='declared' AND t.task_id=$t1;")"
+  n_t2_decl="$(sqlite3 "$db" "
+    SELECT count(*) FROM run_touches t JOIN runs r ON r.id=t.run_id
+    WHERE r.run_uid='$run_uid' AND t.kind='declared' AND t.task_id=$t2;")"
+
+  [ "${n_t1_decl:-0}" -ge 1 ] \
+    && ok "T9a: declared snapshot includes task ${t1}'s touch (${n_t1_decl} row(s))" \
+    || bad "T9a: declared snapshot missing task ${t1}'s touch (got ${n_t1_decl})"
+
+  [ "${n_t2_decl:-0}" -eq 0 ] \
+    && ok "T9b: declared snapshot correctly excludes task ${t2}'s touch (subset scoping works)" \
+    || bad "T9b: declared snapshot wrongly includes task ${t2}'s touch (${n_t2_decl} row(s)) — subset not scoped"
+
+  # Baseline: bench start WITHOUT --task must snapshot BOTH tasks' declared touches.
+  local run_uid_full="hv-t9-full"
+  ( cd "$corpus" && PLANAR_DB="$db" PLANAR_CONFIG_PATH="$cfg" \
+      command "$PLANAR_BIN" bench start "$run_uid_full" \
+        --plan "$pid" --arm strict \
+        --base-sha "$base" --config-hash hv9f >/dev/null 2>&1 )
+
+  local n_full_decl
+  n_full_decl="$(sqlite3 "$db" "
+    SELECT count(*) FROM run_touches t JOIN runs r ON r.id=t.run_id
+    WHERE r.run_uid='$run_uid_full' AND t.kind='declared';")"
+  [ "${n_full_decl:-0}" -ge 2 ] \
+    && ok "T9c: full-plan bench start snapshots both tasks' touches (${n_full_decl} declared rows — baseline)" \
+    || bad "T9c: full-plan bench start only snapshotted ${n_full_decl} declared rows (expected >=2)"
+
+  # Source-level: the ritual Lua file must now pass --task flags.
+  local ritual_lua; ritual_lua="$(cd "$(dirname "$MATRIX")/.." && pwd)/workflows/bench_run_ritual.lua"
+  if [ -f "$ritual_lua" ]; then
+    grep -qF '"--task"' "$ritual_lua" \
+      && ok "T9d: bench_run_ritual.lua passes --task flags to bench start (4356 fix present)" \
+      || bad "T9d: bench_run_ritual.lua does NOT pass --task flags — 4356 fix missing"
+  else
+    ok "T9d: bench_run_ritual.lua not found at expected path — skipping source check"
+  fi
+
+  rm -rf "$home"
+}
+
+# ===========================================================================
+# TEST 10 — No regression: existing test suites still pass.
 # ===========================================================================
 test_regression() {
   local rc
-  printf '\n=== HARVEST TEST 8a: base-test regression ===\n'
+  printf '\n=== HARVEST TEST 10a: base-test regression ===\n'
   rc=0; bash "$SCRIPT_DIR/bench-matrix-base-test.sh" || rc=$?
   [ "$rc" -eq 0 ] \
     && ok "regression: base-test passes" \
     || bad "regression: base-test FAILED (rc=$rc)"
 
-  printf '\n=== HARVEST TEST 8b: m3-test regression ===\n'
+  printf '\n=== HARVEST TEST 10b: m3-test regression ===\n'
   rc=0; bash "$SCRIPT_DIR/bench-matrix-m3-test.sh" || rc=$?
   [ "$rc" -eq 0 ] \
     && ok "regression: m3-test passes" \
     || bad "regression: m3-test FAILED (rc=$rc)"
 
-  printf '\n=== HARVEST TEST 8c: m4-test regression ===\n'
+  printf '\n=== HARVEST TEST 10c: m4-test regression ===\n'
   rc=0; bash "$SCRIPT_DIR/bench-matrix-m4-test.sh" || rc=$?
   [ "$rc" -eq 0 ] \
     && ok "regression: m4-test passes" \
     || bad "regression: m4-test FAILED (rc=$rc)"
 
-  printf '\n=== HARVEST TEST 8d: b1-test regression ===\n'
+  printf '\n=== HARVEST TEST 10d: b1-test regression ===\n'
   rc=0; bash "$SCRIPT_DIR/bench-matrix-b1-test.sh" || rc=$?
   [ "$rc" -eq 0 ] \
     && ok "regression: b1-test passes" \
@@ -709,6 +823,8 @@ main() {
   test_filter_noise_touches
   test_filter_exclude_override
   test_coder_brief_directive
+  test_iter_cap_comment_accuracy
+  test_tasks_subset_scopes_declared_snapshot
   test_regression
 
   printf '\n=== RESULTS: %d passed, %d failed ===\n' "$pass" "$fail"
