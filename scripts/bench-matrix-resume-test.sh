@@ -53,11 +53,14 @@ new_corpus() {
   printf '%s' "$repo"
 }
 
-# seed_plan <db> <cfg> <corpus> — create a global-scope plan; prints plan id.
+# seed_plan <db> <cfg> <corpus> [label] — create a global-scope plan; prints plan id.
+# The optional label is appended to the plan title to avoid slug conflicts when
+# multiple plans are created in the same DB (e.g. within T9).
 seed_plan() {
-  local db="$1" cfg="$2" corpus="$3"
+  local db="$1" cfg="$2" corpus="$3" label="${4:-}"
+  local title="resume fixture${label:+ $label}"
   ( cd "$corpus" && PLANAR_DB="$db" PLANAR_CONFIG_PATH="$cfg" \
-      command "$PLANAR_BIN" plan create "resume fixture" --scope global --json 2>/dev/null \
+      command "$PLANAR_BIN" plan create "$title" --scope global --json 2>/dev/null \
     | jq -r '.id' )
 }
 
@@ -731,6 +734,337 @@ WRAP
 }
 
 # ===========================================================================
+# TEST 9 (4357) — Staleness guard + structured orphan logging.
+#
+# T9a: Stale orphan running row (started_at well in the past, age >= threshold).
+#       resolve_cell_uid must: reconcile (abort+retry uid), AND emit an
+#       orphan_reconcile cell_log record with prior_status=running,
+#       action=abort-retry, and an age_sec field. The JSONL line must be valid.
+#
+# T9b: Recent running row (started_at just now, age < threshold).
+#       resolve_cell_uid must: emit a loud WARNING (grep in stderr) AND still
+#       reconcile (returns a retry uid, not SKIP/hang). The orphan_reconcile log
+#       record must have is_stale=0.
+#
+# T9c: BENCH_STALE_RUNNING_SEC override changes the stale/recent boundary.
+#       A row that is "stale" under the default threshold becomes "recent" when
+#       the threshold is raised, and vice versa.
+#
+# T9d: Worktree sweep coverage — git worktree prune at run_cell start (and
+#       cleanup_cell_worktrees) clears worktrees left by a hard-killed prior
+#       cell. This is already covered by T2/T3 (cleanup_cell_worktrees) and the
+#       `git worktree prune` call at the top of run_cell's live path. We verify
+#       the prune call exists in the script and that cleanup_cell_worktrees
+#       removes a freshly-created worktree for the being-(re)run uid.
+# ===========================================================================
+
+# _make_running_row <db> <cfg> <corpus> <plan_id> <arm> <rep> — open a bench
+# run record in the isolated DB using `bench start`. Returns the run_uid on
+# stdout. The run is left in `running` status (no bench finish called).
+_make_running_row() {
+  local db="$1" cfg="$2" corpus="$3" plan_id="$4" arm="${5:-strict}" rep="${6:-1}"
+  # Deterministic uid formula from bench-matrix.sh: m-<plan>-<arm>-r<rep>
+  local uid="m-${plan_id}-${arm}-r${rep}"
+  ( cd "$corpus" && PLANAR_DB="$db" PLANAR_CONFIG_PATH="$cfg" \
+      command "$PLANAR_BIN" bench start "$uid" \
+        --plan "$plan_id" --arm "$arm" \
+        --base-sha "deadbeef" --config-hash "testhash" \
+        >/dev/null 2>&1 ) || true
+  printf '%s' "$uid"
+}
+
+test_staleness_guard_and_orphan_logging() {
+  printf '\n=== RESUME TEST 9 (4357): staleness guard + structured orphan logging ===\n'
+  local home db cfg corpus
+  home="$(mktemp -d "${TMPDIR:-/tmp}/resume-test.XXXXXX")"
+  db="$home/exp.db"; cfg="$home/config.toml"
+  corpus="$(new_corpus "$home")"
+
+  local plan_id task_id
+  plan_id="$(seed_plan "$db" "$cfg" "$corpus" "t9a")"
+  task_id="$(seed_task "$db" "$cfg" "$corpus" "$plan_id")"
+
+  local trimmed="$home/matrix-nomain.sh"
+  sed '$ s/^main "$@"$//' "$MATRIX" >"$trimmed"
+
+  # ---------------------------------------------------------------------------
+  # T9a: Stale orphan running row (started_at well in the past >= threshold).
+  #
+  # Strategy: create a `running` row then backdate its started_at to 2 hours
+  # ago via sqlite3. Then call resolve_cell_uid with a very small threshold
+  # (BENCH_STALE_RUNNING_SEC=10) — the row's age (7200s) >> threshold (10s)
+  # so it is definitively stale. Assert:
+  #   (a) resolve returns a retry uid (not SKIP, not PERM_FAIL)
+  #   (b) an orphan_reconcile JSONL record exists for the base uid in LOG_ROOT
+  #   (c) the record is valid JSON (jq parses it)
+  #   (d) the record has prior_status=running, action=abort-retry, and age_sec field
+  # ---------------------------------------------------------------------------
+  printf '\n--- T9a: stale orphan running row ---\n'
+  local uid_stale; uid_stale="$(_make_running_row "$db" "$cfg" "$corpus" "$plan_id" "strict" "1")"
+  # Backdate started_at to 2 hours ago via sqlite3 using strftime so the format
+  # matches the ISO 8601 form bench-matrix.sh expects (T separator, Z suffix).
+  sqlite3 "$db" "update runs set started_at = strftime('%Y-%m-%dT%H:%M:%SZ','now','-7200 seconds') where run_uid = '${uid_stale}';" 2>/dev/null || true
+
+  local log_root="$home/cell-logs"
+  mkdir -p "$log_root"
+
+  local resolve_out_stale
+  resolve_out_stale="$(
+    bash -c "
+      export PLANAR_DB_OVERRIDE='$db'
+      export PLANAR_CONFIG_PATH_OVERRIDE='$cfg'
+      export BENCH_HOME='$home'
+      export BENCH_CORPUS_REPO='$corpus'
+      source '$trimmed'
+      LOG_ROOT='$log_root'
+      DRY_RUN=0
+      BENCH_STALE_RUNNING_SEC=10
+      resolve_cell_uid '$plan_id' 'strict' '1' 2>/dev/null
+    " 2>/dev/null || true
+  )"
+
+  # (a) Returns a retry uid (not SKIP, not PERM_FAIL, not empty).
+  local t9a_ok=0
+  [ -n "$resolve_out_stale" ] \
+    && [ "$resolve_out_stale" != "SKIP" ] \
+    && [ "$resolve_out_stale" != "PERM_FAIL" ] \
+    && t9a_ok=1
+  [ "$t9a_ok" -eq 1 ] \
+    && ok "T9a-1: stale running row -> resolve returns retry uid ('${resolve_out_stale}')" \
+    || bad "T9a-1: stale running row -> resolve returned '${resolve_out_stale}' (expected retry uid)"
+
+  # (b/c/d) An orphan_reconcile JSONL record must exist in LOG_ROOT.
+  local jsonl_file="$log_root/${uid_stale}.jsonl"
+  if [ -f "$jsonl_file" ]; then
+    ok "T9a-2: orphan_reconcile JSONL log file created at ${jsonl_file}"
+  else
+    bad "T9a-2: no JSONL log file found at ${jsonl_file}"
+  fi
+
+  # Find the orphan_reconcile record (there may be other records in the file).
+  local reconcile_rec=""
+  if [ -f "$jsonl_file" ]; then
+    reconcile_rec="$(grep -m1 '"orphan_reconcile"' "$jsonl_file" 2>/dev/null || true)"
+  fi
+  if [ -n "$reconcile_rec" ]; then
+    ok "T9a-3: orphan_reconcile event record found in JSONL"
+  else
+    bad "T9a-3: no orphan_reconcile event record found in JSONL (file contents: $(cat "$jsonl_file" 2>/dev/null || echo 'missing'))"
+  fi
+
+  # Validate the record is parseable JSON.
+  if [ -n "$reconcile_rec" ] && printf '%s' "$reconcile_rec" | jq -e '.' >/dev/null 2>&1; then
+    ok "T9a-4: orphan_reconcile record is valid JSON"
+  else
+    bad "T9a-4: orphan_reconcile record is NOT valid JSON (got: '${reconcile_rec}')"
+  fi
+
+  # Check required fields: prior_status=running, action=abort-retry, age_sec present.
+  if [ -n "$reconcile_rec" ]; then
+    local f_prior f_action f_age
+    f_prior="$(printf '%s' "$reconcile_rec" | jq -r '.prior_status // empty' 2>/dev/null || true)"
+    f_action="$(printf '%s' "$reconcile_rec" | jq -r '.action // empty' 2>/dev/null || true)"
+    f_age="$(printf '%s' "$reconcile_rec" | jq -r '.age_sec // empty' 2>/dev/null || true)"
+
+    [ "$f_prior" = "running" ] \
+      && ok "T9a-5: orphan_reconcile record has prior_status=running" \
+      || bad "T9a-5: orphan_reconcile prior_status='${f_prior}' (expected 'running')"
+
+    [ "$f_action" = "abort-retry" ] \
+      && ok "T9a-6: orphan_reconcile record has action=abort-retry" \
+      || bad "T9a-6: orphan_reconcile action='${f_action}' (expected 'abort-retry')"
+
+    [ -n "$f_age" ] \
+      && ok "T9a-7: orphan_reconcile record has age_sec field ('${f_age}')" \
+      || bad "T9a-7: orphan_reconcile record missing age_sec field"
+  else
+    bad "T9a-5: cannot check fields — no orphan_reconcile record"
+    bad "T9a-6: cannot check fields — no orphan_reconcile record"
+    bad "T9a-7: cannot check fields — no orphan_reconcile record"
+  fi
+
+  # ---------------------------------------------------------------------------
+  # T9b: Recent running row (started_at = now, age < threshold).
+  #
+  # Strategy: create a NEW running row (started_at defaults to now — it is fresh).
+  # Use BENCH_STALE_RUNNING_SEC=99999 so the row is definitely "recent" (age <<
+  # threshold). Assert:
+  #   (a) A WARNING message is emitted to stderr (grep the wrapper's stderr)
+  #   (b) resolve still returns a retry uid (not SKIP/hang) — reconciles anyway
+  #   (c) The orphan_reconcile log record has is_stale=0
+  # ---------------------------------------------------------------------------
+  printf '\n--- T9b: recent running row (WARNING + reconcile proceeds) ---\n'
+  # We need a fresh plan+rep to get a different base uid (plan 2, strict, rep 1).
+  local plan_id2
+  plan_id2="$(seed_plan "$db" "$cfg" "$corpus" "t9b")"
+  local uid_fresh; uid_fresh="$(_make_running_row "$db" "$cfg" "$corpus" "$plan_id2" "strict" "1")"
+  # Do NOT backdate — started_at is as fresh as possible.
+
+  local log_root2="$home/cell-logs-t9b"
+  mkdir -p "$log_root2"
+  local stderr_file="$home/t9b-stderr.txt"
+
+  local resolve_out_fresh
+  resolve_out_fresh="$(
+    bash -c "
+      export PLANAR_DB_OVERRIDE='$db'
+      export PLANAR_CONFIG_PATH_OVERRIDE='$cfg'
+      export BENCH_HOME='$home'
+      export BENCH_CORPUS_REPO='$corpus'
+      source '$trimmed'
+      LOG_ROOT='$log_root2'
+      DRY_RUN=0
+      BENCH_STALE_RUNNING_SEC=99999
+      resolve_cell_uid '$plan_id2' 'strict' '1' 2>'$stderr_file'
+    " 2>/dev/null || true
+  )"
+
+  # (a) WARNING must be in stderr.
+  if grep -qi "WARNING" "$stderr_file" 2>/dev/null; then
+    ok "T9b-1: WARNING emitted for recent running row (age < threshold)"
+  else
+    bad "T9b-1: no WARNING found in stderr for recent running row (stderr: $(cat "$stderr_file" 2>/dev/null || echo 'missing'))"
+  fi
+
+  # (b) Still reconciles — returns a retry uid.
+  local t9b_ok=0
+  [ -n "$resolve_out_fresh" ] \
+    && [ "$resolve_out_fresh" != "SKIP" ] \
+    && [ "$resolve_out_fresh" != "PERM_FAIL" ] \
+    && t9b_ok=1
+  [ "$t9b_ok" -eq 1 ] \
+    && ok "T9b-2: recent running row -> still reconciles, returns retry uid ('${resolve_out_fresh}')" \
+    || bad "T9b-2: recent running row -> resolve returned '${resolve_out_fresh}' (expected retry uid — should still reconcile)"
+
+  # (c) orphan_reconcile record has is_stale=0 (false).
+  local jsonl2="$log_root2/${uid_fresh}.jsonl"
+  local rec2=""
+  if [ -f "$jsonl2" ]; then
+    rec2="$(grep -m1 '"orphan_reconcile"' "$jsonl2" 2>/dev/null || true)"
+  fi
+  if [ -n "$rec2" ]; then
+    local f_is_stale
+    f_is_stale="$(printf '%s' "$rec2" | jq -r '.is_stale // empty' 2>/dev/null || true)"
+    [ "$f_is_stale" = "0" ] \
+      && ok "T9b-3: orphan_reconcile record has is_stale=0 for recent row" \
+      || bad "T9b-3: orphan_reconcile is_stale='${f_is_stale}' (expected 0 for recent row)"
+  else
+    bad "T9b-3: no orphan_reconcile record found in ${jsonl2} for recent-row test"
+  fi
+
+  # ---------------------------------------------------------------------------
+  # T9c: BENCH_STALE_RUNNING_SEC override changes the stale/recent boundary.
+  #
+  # Strategy: use a new row (started_at = now). With threshold=0, the row is
+  # always treated as stale (is_stale=1, no WARNING). With threshold=99999,
+  # the same row is recent (is_stale=0, WARNING emitted). Both paths already
+  # tested above; here we verify is_stale=1 when threshold=0.
+  # ---------------------------------------------------------------------------
+  printf '\n--- T9c: BENCH_STALE_RUNNING_SEC=0 treats every row as stale ---\n'
+  local plan_id3
+  plan_id3="$(seed_plan "$db" "$cfg" "$corpus" "t9c")"
+  local uid_thresh; uid_thresh="$(_make_running_row "$db" "$cfg" "$corpus" "$plan_id3" "strict" "1")"
+
+  local log_root3="$home/cell-logs-t9c"
+  mkdir -p "$log_root3"
+  local stderr3="$home/t9c-stderr.txt"
+
+  local resolve_out_thresh
+  resolve_out_thresh="$(
+    bash -c "
+      export PLANAR_DB_OVERRIDE='$db'
+      export PLANAR_CONFIG_PATH_OVERRIDE='$cfg'
+      export BENCH_HOME='$home'
+      export BENCH_CORPUS_REPO='$corpus'
+      source '$trimmed'
+      LOG_ROOT='$log_root3'
+      DRY_RUN=0
+      BENCH_STALE_RUNNING_SEC=0
+      resolve_cell_uid '$plan_id3' 'strict' '1' 2>'$stderr3'
+    " 2>/dev/null || true
+  )"
+
+  # Should return a retry uid (reconcile proceeds as stale).
+  local t9c_ok=0
+  [ -n "$resolve_out_thresh" ] \
+    && [ "$resolve_out_thresh" != "SKIP" ] \
+    && [ "$resolve_out_thresh" != "PERM_FAIL" ] \
+    && t9c_ok=1
+  [ "$t9c_ok" -eq 1 ] \
+    && ok "T9c-1: BENCH_STALE_RUNNING_SEC=0 -> row always stale, returns retry uid ('${resolve_out_thresh}')" \
+    || bad "T9c-1: BENCH_STALE_RUNNING_SEC=0 -> got '${resolve_out_thresh}' (expected retry uid)"
+
+  # No WARNING should be emitted when threshold=0 (stale path, not recent path).
+  if grep -qi "WARNING" "$stderr3" 2>/dev/null; then
+    bad "T9c-2: unexpected WARNING with BENCH_STALE_RUNNING_SEC=0 (should be stale path, not recent)"
+  else
+    ok "T9c-2: BENCH_STALE_RUNNING_SEC=0 -> no WARNING (correctly treated as stale)"
+  fi
+
+  # is_stale=1 in the log record.
+  local jsonl3="$log_root3/${uid_thresh}.jsonl"
+  local rec3=""
+  if [ -f "$jsonl3" ]; then
+    rec3="$(grep -m1 '"orphan_reconcile"' "$jsonl3" 2>/dev/null || true)"
+  fi
+  if [ -n "$rec3" ]; then
+    local f_is_stale3
+    f_is_stale3="$(printf '%s' "$rec3" | jq -r '.is_stale // empty' 2>/dev/null || true)"
+    [ "$f_is_stale3" = "1" ] \
+      && ok "T9c-3: BENCH_STALE_RUNNING_SEC=0 -> orphan_reconcile is_stale=1" \
+      || bad "T9c-3: is_stale='${f_is_stale3}' (expected 1 when threshold=0)"
+  else
+    bad "T9c-3: no orphan_reconcile record in ${jsonl3} for threshold=0 test"
+  fi
+
+  # ---------------------------------------------------------------------------
+  # T9d: Worktree sweep coverage (verification-only).
+  #
+  # The brief asks: confirm that `git worktree prune` at run_cell start (and
+  # cleanup_cell_worktrees) actually clears worktrees from a hard-killed prior
+  # cell on the next run. Verify the startup prune call exists in the script.
+  # Also verify cleanup_cell_worktrees removes the exact uid's worktree dir.
+  # ---------------------------------------------------------------------------
+  printf '\n--- T9d: worktree prune coverage (startup prune + per-uid cleanup) ---\n'
+
+  # Verify the run_cell startup `git worktree prune` call exists in bench-matrix.sh.
+  # It appears just before the integration branch creation.
+  if grep -q "worktree prune" "$MATRIX" 2>/dev/null; then
+    ok "T9d-1: bench-matrix.sh contains 'git worktree prune' for startup self-heal"
+  else
+    bad "T9d-1: bench-matrix.sh missing 'git worktree prune' — startup prune not present"
+  fi
+
+  # Verify that a cell-uid worktree dir IS removed by cleanup_cell_worktrees
+  # (exercises the prune path for the being-(re)run uid specifically).
+  local uid_wt="rr-t9d-wt-prune"
+  source_matrix "$db" "$cfg" "$corpus"
+  CELL_RUN_UID="$uid_wt"
+  CELL_BASE_SHA="$(git -C "$corpus" rev-parse HEAD)"
+  DRY_RUN=0
+  unset BENCH_KEEP_WORKTREES 2>/dev/null || true
+  local base_wt_count
+  base_wt_count="$(git -C "$corpus" worktree list 2>/dev/null | wc -l | tr -d ' ')"
+  mkdir -p "$WORKTREE_ROOT/$uid_wt"
+  local kill9_wt="$WORKTREE_ROOT/$uid_wt/slice-after-kill9"
+  git -C "$corpus" worktree add -q --detach "$kill9_wt" "$CELL_BASE_SHA" 2>/dev/null
+  local wt_before
+  wt_before="$(git -C "$corpus" worktree list 2>/dev/null | wc -l | tr -d ' ')"
+  [ "$wt_before" -gt "$base_wt_count" ] \
+    && ok "T9d-2: kill-9 orphan worktree registered before cleanup (count=${wt_before})" \
+    || bad "T9d-2: worktree was NOT registered before cleanup (count=${wt_before}, base=${base_wt_count})"
+
+  cleanup_cell_worktrees "$uid_wt"
+  local wt_after
+  wt_after="$(git -C "$corpus" worktree list 2>/dev/null | wc -l | tr -d ' ')"
+  [ "$wt_after" -eq "$base_wt_count" ] \
+    && ok "T9d-3: kill-9 orphan worktree removed by cleanup_cell_worktrees (count back to ${base_wt_count})" \
+    || bad "T9d-3: worktree NOT removed: count=${wt_after}, expected=${base_wt_count}"
+
+  rm -rf "$home"
+}
+
+# ===========================================================================
 # TEST 4 — No regression: all five existing test suites still pass.
 # ===========================================================================
 test_regression() {
@@ -782,6 +1116,7 @@ main() {
   test_genuine_noop_stays_completed
   test_normal_cell_completed
   test_partial_crash_stays_completed
+  test_staleness_guard_and_orphan_logging
   test_regression
 
   printf '\n=== RESULTS: %d passed, %d failed ===\n' "$pass" "$fail"

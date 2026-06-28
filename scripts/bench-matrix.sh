@@ -93,6 +93,14 @@
 #                           Default: 5.
 #   BENCH_CELL_RETRY_CAP  — max crash-retries per cell before it is marked
 #                           permanently failed and skipped. Default: 2.
+#   BENCH_STALE_RUNNING_SEC — age threshold (seconds) for orphan `running` row
+#                           reconciliation on resume. A running row older than
+#                           this is treated as a definitive stale orphan from a
+#                           hard-killed prior cell (kill -9, power loss). A row
+#                           younger than the threshold is still reconciled (the
+#                           harness is single-launcher) but a loud WARNING is
+#                           emitted. Default: 1200 (2× the 600s agent timeout).
+#                           Set to 0 to treat every running row as stale.
 #   BENCH_LOG_ROOT        — directory for per-cell JSONL structured logs.
 #                           Default: $BENCH_HOME/cell-logs
 #
@@ -206,6 +214,16 @@ AGENT_RETRIES="${BENCH_AGENT_RETRIES:-3}"
 
 # --- seconds to sleep between inline agent retries. ---
 AGENT_RETRY_BACKOFF="${BENCH_AGENT_RETRY_BACKOFF:-5}"
+
+# --- staleness threshold for orphan `running` row reconciliation. A `running`
+#     row whose age (now − started_at) is >= this threshold is definitively a
+#     stale orphan from a hard-killed prior cell (kill -9, power loss) and is
+#     reconciled unconditionally. A row younger than this threshold might belong
+#     to a genuinely-live concurrent run; reconciliation still proceeds (the
+#     harness is single-launcher by design), but a loud WARNING is emitted so
+#     the operator has visibility. Default: 1200s (2× the 600s agent timeout).
+#     Set to 0 to treat every `running` row as stale (no warning ever). ---
+BENCH_STALE_RUNNING_SEC="${BENCH_STALE_RUNNING_SEC:-1200}"
 
 # --- per-cell JSONL structured log directory (created on first write). ---
 LOG_ROOT="${BENCH_LOG_ROOT:-}"   # resolved lazily below after BENCH_HOME is stable
@@ -2143,6 +2161,41 @@ cell_status() {
   fi
 }
 
+# _orphan_row_age_sec <run_uid> — compute the age in seconds of a run record's
+# started_at. Reads `bench show --json` for the uid and computes
+# (now - started_at) using date arithmetic. Prints the age as an integer on
+# stdout. Prints "unknown" when started_at is absent, unparseable, or the
+# bench show call fails. Never exits non-zero (safe under set -euo pipefail).
+_orphan_row_age_sec() {
+  local uid="$1"
+  local js started_at age
+  # Fetch the run record; fall back gracefully on any error.
+  js="$(pl bench show "$uid" --json 2>/dev/null)" || { printf 'unknown'; return 0; }
+  started_at="$(printf '%s' "$js" | jq -r '.started_at // empty' 2>/dev/null)" || true
+  if [ -z "$started_at" ]; then
+    printf 'unknown'; return 0
+  fi
+  # Convert the ISO 8601 UTC timestamp to epoch seconds, then subtract from now.
+  # Normalise the timestamp: strip any fractional seconds and the trailing Z,
+  # then replace a space separator (SQLite datetime() form) with T so both the
+  # "2024-01-15T10:30:00.123Z" and "2024-01-15 10:30:00" forms parse uniformly.
+  local ts_norm; ts_norm="${started_at%%.*}"         # strip .millis (and trailing Z if present after)
+  ts_norm="${ts_norm%Z}"                              # strip trailing Z if no millis
+  ts_norm="${ts_norm/ /T}"                            # space separator → T (SQLite datetime() form)
+  # date -d (GNU/Linux) vs date -j -f (BSD/macOS). Both callers must treat the
+  # timestamp as UTC — the stored started_at is always UTC. Use TZ=UTC so BSD
+  # date -j does not interpret the input as local time.
+  local epoch_start now
+  epoch_start="$(date -d "${ts_norm}Z" '+%s' 2>/dev/null)" \
+    || epoch_start="$(TZ=UTC date -j -f '%Y-%m-%dT%H:%M:%S' "$ts_norm" '+%s' 2>/dev/null)" \
+    || { printf 'unknown'; return 0; }
+  now="$(date -u '+%s' 2>/dev/null)" || { printf 'unknown'; return 0; }
+  age=$(( now - epoch_start ))
+  # Guard against clock skew (negative age) — treat as age 0.
+  [ "$age" -lt 0 ] && age=0
+  printf '%d' "$age"
+}
+
 # resolve_cell_uid <plan> <arm> <rep> — the deterministic cell uid AFTER resume
 # reconciliation. Returns (on stdout) the uid the driver should use for this
 # cell, and (on stderr, via log) what it decided:
@@ -2157,6 +2210,12 @@ cell_status() {
 # double-counts a completed one.
 # M4: CELL_RETRY_CAP — once a cell has been aborted+retried that many times,
 # prints "PERM_FAIL" so the caller logs loudly and skips the cell permanently.
+# Staleness guard: before aborting a `running` row, compute its age and compare
+# against BENCH_STALE_RUNNING_SEC. If the row is younger than the threshold, a
+# loud WARNING is emitted (the operator can see it) but reconciliation proceeds
+# (the harness is single-launcher by design, so a running row on resume is
+# almost always a dead orphan). Structured cell_log records are emitted for
+# every non-terminal reconciliation action so unattended runs are auditable.
 resolve_cell_uid() {
   local plan="$1" arm="$2" rep="$3"
   local base status
@@ -2165,12 +2224,57 @@ resolve_cell_uid() {
   case "$status" in
     completed)
       log "resume: ${base} already completed -> SKIP (no double-count)"
+      # Structured log: skip-completed (no retry needed).
+      local _save_uid="$CELL_RUN_UID" _save_plan="$CELL_PLAN" _save_arm="$CELL_ARM"
+      CELL_RUN_UID="$base"; CELL_PLAN="$plan"; CELL_ARM="$arm"; _INFLIGHT_CELL_UID="$base"
+      cell_log "orphan_reconcile" \
+        "$(jq -nc --arg uid "$base" --arg prior_status "completed" \
+             --arg action "skip-completed-retry" \
+           '{run_uid:$uid, prior_status:$prior_status, action:$action}')" || true
+      CELL_RUN_UID="$_save_uid"; CELL_PLAN="$_save_plan"; CELL_ARM="$_save_arm"
+      _INFLIGHT_CELL_UID=""
       printf 'SKIP'
       return 0
       ;;
     running)
-      # A crashed mid-cell run. Abort it (audit trail) and mint a fresh retry.
-      log "resume: ${base} left RUNNING (crashed mid-cell) -> abort + retry"
+      # A running row on resume means the prior cell was hard-killed (kill -9,
+      # power loss) without the graceful trap cleanup. Staleness guard: compute
+      # the row's age and compare to BENCH_STALE_RUNNING_SEC. Either way we
+      # reconcile (single-launcher invariant), but a young row triggers a loud
+      # WARNING so the operator knows a concurrent run may be affected.
+      local _age; _age="$(_orphan_row_age_sec "$base")"
+      local _stale_thresh="${BENCH_STALE_RUNNING_SEC:-1200}"
+      local _is_stale=1   # assume stale (age unknown → treat as stale)
+      if [ "$_age" != "unknown" ] && [ "$_stale_thresh" -gt 0 ] \
+         && [ "$_age" -lt "$_stale_thresh" ]; then
+        _is_stale=0
+      fi
+
+      if [ "$_is_stale" -eq 1 ]; then
+        log "resume: ${base} left RUNNING (crashed mid-cell, age=${_age}s >= threshold=${_stale_thresh}s) -> abort + retry"
+      else
+        log "WARNING: resume: ${base} is RUNNING but only ${_age}s old (threshold=${_stale_thresh}s) — if a concurrent matrix run is active, abort this resume"
+        log "resume: ${base} RUNNING row age ${_age}s < threshold — proceeding with reconcile (single-launcher assumed)"
+      fi
+
+      # Structured log: orphan_reconcile with age field.
+      local _save_uid="$CELL_RUN_UID" _save_plan="$CELL_PLAN" _save_arm="$CELL_ARM"
+      CELL_RUN_UID="$base"; CELL_PLAN="$plan"; CELL_ARM="$arm"; _INFLIGHT_CELL_UID="$base"
+      cell_log "orphan_reconcile" \
+        "$(jq -nc \
+             --arg uid "$base" \
+             --arg prior_status "running" \
+             --arg age_sec "$_age" \
+             --argjson stale_thresh "$_stale_thresh" \
+             --argjson is_stale "$_is_stale" \
+             --arg action "abort-retry" \
+           '{run_uid:$uid, prior_status:$prior_status,
+             age_sec:$age_sec, stale_threshold_sec:$stale_thresh,
+             is_stale:$is_stale, action:$action}')" || true
+      CELL_RUN_UID="$_save_uid"; CELL_PLAN="$_save_plan"; CELL_ARM="$_save_arm"
+      _INFLIGHT_CELL_UID=""
+
+      # Abort the stale/orphan running row (audit trail entry, excluded from metrics).
       pl bench finish "$base" --status aborted >/dev/null 2>&1 || true
       # Find the next free -retryN suffix so repeated crashes never collide.
       local n=1 candidate
@@ -2180,6 +2284,13 @@ resolve_cell_uid() {
         # A completed retry means this cell is actually done under the retry uid.
         if [ "$(cell_status "$candidate")" = "completed" ]; then
           log "resume: ${candidate} already completed -> SKIP"
+          local _su="$CELL_RUN_UID" _sp="$CELL_PLAN" _sa="$CELL_ARM"
+          CELL_RUN_UID="$candidate"; CELL_PLAN="$plan"; CELL_ARM="$arm"; _INFLIGHT_CELL_UID="$candidate"
+          cell_log "orphan_reconcile" \
+            "$(jq -nc --arg uid "$candidate" --arg prior_status "completed" \
+                 --arg action "skip-completed-retry" \
+               '{run_uid:$uid, prior_status:$prior_status, action:$action}')" || true
+          CELL_RUN_UID="$_su"; CELL_PLAN="$_sp"; CELL_ARM="$_sa"; _INFLIGHT_CELL_UID=""
           printf 'SKIP'
           return 0
         fi
@@ -2189,6 +2300,13 @@ resolve_cell_uid() {
       # the cell permanently failed and skip it.
       if [ "$((n - 1))" -ge "${CELL_RETRY_CAP:-2}" ]; then
         log "M4 retry cap: cell ${base} has crashed ${CELL_RETRY_CAP} time(s) -> PERM_FAIL (skip)"
+        local _su="$CELL_RUN_UID" _sp="$CELL_PLAN" _sa="$CELL_ARM"
+        CELL_RUN_UID="$base"; CELL_PLAN="$plan"; CELL_ARM="$arm"; _INFLIGHT_CELL_UID="$base"
+        cell_log "orphan_reconcile" \
+          "$(jq -nc --arg uid "$base" --arg prior_status "running" \
+               --arg age_sec "$_age" --arg action "perm-fail" \
+             '{run_uid:$uid, prior_status:$prior_status, age_sec:$age_sec, action:$action}')" || true
+        CELL_RUN_UID="$_su"; CELL_PLAN="$_sp"; CELL_ARM="$_sa"; _INFLIGHT_CELL_UID=""
         printf 'PERM_FAIL'
         return 0
       fi
@@ -2200,7 +2318,8 @@ resolve_cell_uid() {
       ;;
     *)
       # aborted / error from a prior run: dispatch fresh under a retry uid so the
-      # aborted record stays as audit and is not overwritten.
+      # aborted record stays as audit and is not overwritten. Emit a structured
+      # log for auditability of unattended runs.
       log "resume: ${base} status=${status} -> fresh retry"
       local n=1 candidate
       while :; do
@@ -2209,6 +2328,16 @@ resolve_cell_uid() {
         [ "$(cell_status "$candidate")" = "completed" ] && { printf 'SKIP'; return 0; }
         n=$(( n + 1 ))
       done
+      # Structured log: orphan_reconcile for aborted/error prior row.
+      local _save_uid="$CELL_RUN_UID" _save_plan="$CELL_PLAN" _save_arm="$CELL_ARM"
+      CELL_RUN_UID="$base"; CELL_PLAN="$plan"; CELL_ARM="$arm"; _INFLIGHT_CELL_UID="$base"
+      cell_log "orphan_reconcile" \
+        "$(jq -nc --arg uid "$base" --arg prior_status "$status" \
+             --arg retry_uid "$candidate" --arg action "abort-retry" \
+           '{run_uid:$uid, prior_status:$prior_status,
+             retry_uid:$retry_uid, action:$action}')" || true
+      CELL_RUN_UID="$_save_uid"; CELL_PLAN="$_save_plan"; CELL_ARM="$_save_arm"
+      _INFLIGHT_CELL_UID=""
       # M4 retry cap: count prior aborted runs for this base uid.
       local prior_retries; prior_retries=$(( n - 1 ))
       if [ "$prior_retries" -ge "${CELL_RETRY_CAP:-2}" ]; then
