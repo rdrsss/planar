@@ -25,7 +25,7 @@ flowchart TD
         B5["<b>planar-execute</b><br/>spawn-free Lua engine<br/>no DB handle · shells planar"]
     end
 
-    DB[("SQLite database<br/>~/.planar/planar.db<br/>23 migrations · embedded at build time")]
+    DB[("SQLite database<br/>~/.planar/planar.db<br/>26 migrations · embedded at build time")]
     MF[(".planar-manifest<br/>repo-state merkle index")]
 
     Surface -->|invoke| Binaries

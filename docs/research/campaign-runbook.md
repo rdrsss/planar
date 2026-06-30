@@ -53,7 +53,8 @@ modify-features."
 - `planar`, `planar-agent`, `planar-execute` on `PATH` (a current build that
   opens the bench-schema DB).
 - `claude` CLI on `PATH`, authenticated (`claude -p` headless must work).
-- `git`, `jq`, `sqlite3` on `PATH`.
+- `git`, `jq`, `sqlite3`, `perl` on `PATH` (`perl` is used by the per-agent
+  watchdog for process-group control — see §6/§7 self-healing; macOS ships it).
 - The corpus repo present at `~/projects/github/rdrsss/git-fleet-corpus`.
 - For the `grouped` arm with the real partitioner: the `mtkahypar` shim on
   `PATH` and `BENCH_SOLVER=mtkahypar` (default solver is `greedy`, which needs
@@ -138,6 +139,17 @@ scripts/bench-matrix.sh --plan 659 --arm strict --rep 1 --base fcb167a
 - **Retry cap (M4):** `BENCH_CELL_RETRY_CAP` (default 2) — a cell that crashes
   deterministically is marked permanently failed and skipped, not retried
   forever.
+- **Self-healing on API failure:** a `claude` call that returns empty / errors
+  (e.g. a rate-limit/overload hiccup — distinguished from a genuine
+  token-bearing no-op) is retried inline up to `BENCH_AGENT_RETRIES` (default 3,
+  `BENCH_AGENT_RETRY_BACKOFF`s between). If a slice still fails it is marked
+  *crashed*; if **every** slice of a cell crashes (sustained outage) the cell is
+  finished `--status aborted` (not silently `completed`-empty) so a later resume
+  re-runs it. A real "agent ran, made no edits" no-op stays `completed` (valid
+  0-touch data) — the signal is the failed-call/crash, not 0 touches.
+- **Noise filter:** build artifacts / backups / vendored paths (`*.bak`,
+  `vendor/`, `zig-cache/`, `*.o`, …; configurable via `BENCH_HARVEST_EXCLUDE`)
+  are stripped from the harvested `actual` touches before the zero-touch guard.
 - **Ceiling (§9):** before each cell the harness checks cumulative spend; on
   breach it stops cleanly (dispatches nothing new, completed cells intact).
 - **Interrupt (M4):** Ctrl-C / SIGTERM kills the in-flight agent group and prunes
@@ -146,11 +158,23 @@ scripts/bench-matrix.sh --plan 659 --arm strict --rep 1 --base fcb167a
 ## 7. Resume & recovery
 
 - **Resume:** re-run the *identical* command (same `BENCH_HOME` + same
-  `PLANAR_DB_OVERRIDE`). Completed cells `SKIP`; crashed/`running` cells abort +
-  retry. Resume is additive — it never reuses a partial uid.
-- **Inspect orphans:** `sqlite3 ~/.planar/planar.db "select run_uid,arm,status from runs where status='running';"`
-- **Reconcile:** a stale `running` row is aborted automatically on the next
-  resume; no manual surgery needed.
+  `PLANAR_DB_OVERRIDE`). `completed` cells `SKIP`; `aborted` (all-slices-crashed)
+  and `running` (orphaned) cells abort + retry up to `BENCH_CELL_RETRY_CAP`, then
+  `PERM_FAIL`. Resume is additive — it never reuses a partial uid. **No manual
+  `delete` is needed** — an outage-emptied cell self-marks `aborted` and the next
+  resume re-runs exactly it.
+- **Orphaned `running` rows (hard kill / power loss):** reconciled automatically
+  on resume. A staleness guard (`BENCH_STALE_RUNNING_SEC`, default 1200) treats a
+  row older than the threshold as a definite orphan; a *recent* running row logs
+  a loud WARNING (possible live concurrent run on the shared DB) but still
+  proceeds (the harness is single-launcher by design). Each reconciliation writes
+  a structured `orphan_reconcile` record to the cell-log JSONL.
+- **Inspect:** `sqlite3 ~/.planar/planar.db "select run_uid,arm,status from runs where status in ('running','aborted');"`
+- **Watch the retry budget:** every failed resume attempt during a flapping
+  outage consumes a `CELL_RETRY_CAP` slot → eventual `PERM_FAIL`. Don't re-run
+  repeatedly while limits flap; wait for a stable window (or raise the cap).
+- **Debug a cell's output:** `BENCH_KEEP_WORKTREES=1` keeps the per-cell slice
+  worktrees instead of pruning them after harvest.
 
 ## 8. Reading results
 
@@ -186,6 +210,11 @@ to falsify against are frozen in prereg §6 (X=0.70, Y=50%, Z).
 | `BENCH_CODER_MODEL` / `BENCH_REVIEWER_MODEL` | `claude-sonnet-4-5` | agent model tier |
 | `BENCH_SOLVER` | `greedy` | grouped-arm partitioner (`greedy` \| `mtkahypar`) |
 | `BENCH_AGENT_TIMEOUT` | 600 | per-agent wall-clock kill (s); 0 disables |
-| `BENCH_CELL_RETRY_CAP` | 2 | max crash-retries per cell |
+| `BENCH_AGENT_RETRIES` | 3 | inline retries of a failed/empty agent call (API hiccup); 0 disables |
+| `BENCH_AGENT_RETRY_BACKOFF` | 5 | seconds between inline agent retries |
+| `BENCH_CELL_RETRY_CAP` | 2 | max crash-retries per cell (across resumes) before `PERM_FAIL` |
+| `BENCH_STALE_RUNNING_SEC` | 1200 | age past which a `running` row is treated as a definite orphan (no WARNING); below it, reconcile-with-warning |
+| `BENCH_HARVEST_EXCLUDE` | `*.bak,*.orig,vendor/*,zig-cache/*,.zig-cache/*,zig-out/*,*.o,*.a` | GLOB paths stripped from `actual` touches; empty disables |
+| `BENCH_KEEP_WORKTREES` | unset | when set, keep per-cell slice worktrees after harvest (debug) |
 | `BENCH_LOG_ROOT` | `$BENCH_HOME/cell-logs` | per-cell JSONL structured logs |
-| `BENCH_ITER_CAP` | 5 | reviewer iterations within a cell |
+| `BENCH_ITER_CAP` | 5 | frozen-config identity element; reviewer verdict is *measured* (M-ITER), not an enforced retry loop |

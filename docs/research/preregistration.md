@@ -53,6 +53,12 @@ Amendments (append-only):
     base fidelity operator-asserted for modify-features; 659/668 milestone-span
     noted exploratory (§8). Harness gains a per-plan base override + softened
     base-existence gate to support modify-feature corpora.
+  - 2026-06-30: Confirmatory run COMPLETE — results in [`results.md`](results.md).
+    41 cells analysed (N=5 except 659-all + 678-eligibility at N=4 — API-limit
+    casualties excluded as failed invocations, within §4 N=3–5). Outcome lands in
+    the pre-committed branches: H1 precision 0.765 ✓ / recall 0.644 < 0.70 →
+    §7.2 (M2 = headline); H2 + H3 supported. No definitions changed — analysis
+    only. Raw dataset archived at [`data/`](data/) for reproducibility.
 ```
 
 Anything discovered after a freeze is **exploratory** (§8), labeled as such,
