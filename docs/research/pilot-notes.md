@@ -4,6 +4,8 @@
 **Pre-registration:** Stage-1 frozen 2026-06-15 (tag `prereg-stage1`) — this pilot ran *after* the freeze.
 **Status:** **GATE — go/no-go decision pending (human).** RQ1 has a number; the pipeline is validated end-to-end.
 
+> **Update (2026-06-30):** the gate was passed and the confirmatory run is complete — see [`results.md`](results.md). This document is retained as the historical M1.7 pilot record.
+
 ## What this pilot is (and is not)
 
 - **Purpose (per build-spec M1.7 + preregistration §9):** the cheap go/no-go before any corpus spend — produce the first RQ1 (touch-prediction accuracy) and prove the measurement pipeline produces clean, joinable records.
