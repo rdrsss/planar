@@ -5,6 +5,11 @@
 [`pilot-notes.md`](pilot-notes.md) (M1.7 gate), and
 [`campaign-runbook.md`](campaign-runbook.md) (how to run it).
 
+> **For the full self-contained narrative** — motivation, methodology, the
+> execution story (including the measurement-validity bugs found and fixed), and
+> the interpretation — see [`closure-measurement-report.md`](closure-measurement-report.md).
+> This file is the terse results tables that report references.
+
 > Every hypothesis below lands in a **pre-committed branch** of the
 > preregistration (§6/§7). Per §6: "No result here is a failure of the program;
 > each branch is a paper." The headline outcome (RQ1 recall below threshold →
