@@ -1018,3 +1018,170 @@ test "parseTestSpec: malformed verifies entries silently dropped" {
     try testing.expectEqualStrings("good-slug", scs[0].verifies[1].slug);
     try testing.expectEqual(@as(i64, 5), scs[0].verifies[2].id);
 }
+
+// =========================================================================
+// Red tests (GitHub #87 + #30): must FAIL against the unfixed parser.
+// These pin the contract after the fix lands.
+// =========================================================================
+
+// (a) Bulleted `## Decisions` fallback: when there are no H3 headings but
+// there are bullet items, each bullet becomes a Decision.
+test "parseTechSpecDecisions: bulleted fallback when no H3 headings" {
+    const body =
+        \\## Decisions
+        \\
+        \\- **Use SQLite.** Chosen for embedded simplicity and zero deps.
+        \\- **Avoid cgo.** Pure-Go driver keeps cross-compilation easy.
+        \\
+        \\## Open Questions
+        \\
+        \\### Some question
+    ;
+    const decs = try parseTechSpecDecisions(testing.allocator, body);
+    defer deinitDecisions(decs, testing.allocator);
+
+    // Expect 2 decisions parsed from bullets, NOT 0.
+    try testing.expectEqual(@as(usize, 2), decs.len);
+    try testing.expectEqualStrings("Use SQLite.", decs[0].title);
+    try testing.expectEqualStrings("Avoid cgo.", decs[1].title);
+}
+
+// (b) When both H3 headings AND bullets are present in `## Decisions`,
+// the H3 path is preferred (H3 wins).
+test "parseTechSpecDecisions: H3 preferred over bullets when both present" {
+    const body =
+        \\## Decisions
+        \\
+        \\- **Bullet decision.** Should be ignored when H3 present.
+        \\
+        \\### Proper H3 Decision
+        \\
+        \\Body text here.
+    ;
+    const decs = try parseTechSpecDecisions(testing.allocator, body);
+    defer deinitDecisions(decs, testing.allocator);
+
+    // H3 path: exactly 1 decision from the H3, not from the bullet.
+    try testing.expectEqual(@as(usize, 1), decs.len);
+    try testing.expectEqualStrings("Proper H3 Decision", decs[0].title);
+}
+
+// (c) `#### Scenario:` H4 items nested under a `### <bucket>` H3 group
+// header must be extracted as scenarios. The bucket H3 itself must NOT
+// appear as a scenario.
+test "parseTestSpec: H4 scenarios under bucket H3 group header" {
+    const body =
+        \\## Scenarios
+        \\
+        \\### Happy paths
+        \\
+        \\#### Scenario: add item succeeds
+        \\
+        \\**Verifies:** task:add-item
+        \\**Kind:** integration
+        \\**Acceptance:** exit 0
+        \\
+        \\#### Scenario: list items returns all
+        \\
+        \\**Verifies:** task:list-items
+        \\**Kind:** integration
+        \\**Acceptance:** JSON array with expected count
+        \\
+        \\### Errors
+        \\
+        \\#### Scenario: invalid input rejected
+        \\
+        \\**Verifies:** task:validate-input
+        \\**Kind:** unit
+        \\**Acceptance:** exit 1
+    ;
+    const scs = try parseTestSpec(testing.allocator, body);
+    defer deinitScenarios(scs, testing.allocator);
+
+    // Expect 3 real scenarios (from H4), NOT 2 bucket headers + 0 H4 scenarios.
+    try testing.expectEqual(@as(usize, 3), scs.len);
+
+    // Verify none of the scenarios have bucket-header names.
+    for (scs) |s| {
+        try testing.expect(!std.mem.eql(u8, s.title, "Happy paths"));
+        try testing.expect(!std.mem.eql(u8, s.title, "Errors"));
+    }
+
+    try testing.expectEqualStrings("add item succeeds", scs[0].title);
+    try testing.expectEqual(@as(usize, 1), scs[0].verifies.len);
+    try testing.expectEqualStrings("add-item", scs[0].verifies[0].slug);
+
+    try testing.expectEqualStrings("list items returns all", scs[1].title);
+    try testing.expectEqualStrings("invalid input rejected", scs[2].title);
+}
+
+// (d) Canonical flat `### Scenario: <title>` H3 still extracts correctly
+// (backward-compat: existing valid scenarios are unaffected).
+test "parseTestSpec: canonical flat H3 Scenario prefix still extracts" {
+    const body =
+        \\## Scenarios
+        \\
+        \\### Scenario: happy path
+        \\
+        \\**Verifies:** task:do-thing
+        \\**Kind:** integration
+        \\**Acceptance:** exit 0
+        \\
+        \\### Scenario: error path
+        \\
+        \\**Verifies:** task:do-thing
+        \\**Kind:** unit
+        \\**Acceptance:** exit 1
+    ;
+    const scs = try parseTestSpec(testing.allocator, body);
+    defer deinitScenarios(scs, testing.allocator);
+
+    try testing.expectEqual(@as(usize, 2), scs.len);
+    try testing.expectEqualStrings("happy path", scs[0].title);
+    try testing.expectEqualStrings("error path", scs[1].title);
+}
+
+// (e) An H3 without `Scenario:` prefix that carries `**Verifies:**` is
+// treated as a scenario (prefix-optional backward-compat path).
+test "parseTestSpec: H3 without Scenario prefix but with Verifies is a scenario" {
+    const body =
+        \\## Scenarios
+        \\
+        \\### plain title no prefix
+        \\
+        \\**Verifies:** task:foo-bar
+        \\**Kind:** unit
+        \\**Acceptance:** passes
+    ;
+    const scs = try parseTestSpec(testing.allocator, body);
+    defer deinitScenarios(scs, testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), scs.len);
+    try testing.expectEqualStrings("plain title no prefix", scs[0].title);
+    try testing.expectEqual(@as(usize, 1), scs[0].verifies.len);
+}
+
+// (f) A bucket-group H3 that has NO Scenario: prefix AND no **Verifies:**
+// line, but contains H4 Scenario: children, must NOT appear as a scenario.
+test "parseTestSpec: bucket H3 without Scenario prefix and no Verifies is skipped" {
+    const body =
+        \\## Scenarios
+        \\
+        \\### Error cases
+        \\
+        \\Some descriptive text about this group.
+        \\
+        \\#### Scenario: network failure
+        \\
+        \\**Verifies:** task:handle-network-error
+        \\**Kind:** integration
+        \\**Acceptance:** graceful degradation
+    ;
+    const scs = try parseTestSpec(testing.allocator, body);
+    defer deinitScenarios(scs, testing.allocator);
+
+    // Only the H4 scenario should be extracted; the H3 "Error cases" must be skipped.
+    try testing.expectEqual(@as(usize, 1), scs.len);
+    try testing.expect(!std.mem.eql(u8, scs[0].title, "Error cases"));
+    try testing.expectEqualStrings("network failure", scs[0].title);
+}
