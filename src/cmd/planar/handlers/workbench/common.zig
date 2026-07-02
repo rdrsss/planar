@@ -47,21 +47,8 @@ pub fn resolveFeatureDirForPlan(
     );
 }
 
-pub fn resolveWorkbenchRoot(allocator: std.mem.Allocator) ![]const u8 {
-    if (getEnv("PLANAR_WORKBENCH_ROOT")) |root| {
-        if (std.mem.startsWith(u8, root, "~/")) {
-            const home = getEnv("HOME") orelse return error.HomeNotSet;
-            return std.fs.path.join(allocator, &.{ home, root[2..] });
-        }
-        return allocator.dupe(u8, root);
-    }
-
-    const home = getEnv("HOME") orelse return error.HomeNotSet;
-    return std.fs.path.join(allocator, &.{ home, ".planar", "workbench" });
-}
-
-pub fn resolveAndEnsureWorkbenchRoot(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
-    const root = try resolveWorkbenchRoot(allocator);
+pub fn resolveAndEnsureWorkbenchRoot(allocator: std.mem.Allocator, environ: std.process.Environ, io: std.Io) ![]const u8 {
+    const root = try engine.workbench.resolveRoot(allocator, environ);
     errdefer allocator.free(root);
     try std.Io.Dir.cwd().createDirPath(io, root);
     return root;
@@ -94,21 +81,6 @@ fn fetchPlanByID(d: *db.sqlite.Db, allocator: std.mem.Allocator, plan_id: i64) !
             .slug = try stmt.columnTextAlloc(1, allocator),
         },
     };
-}
-
-fn getEnv(key: []const u8) ?[]const u8 {
-    const raw: [*:null]?[*:0]u8 = std.c.environ;
-    var i: usize = 0;
-    while (raw[i]) |entry| : (i += 1) {
-        const s = std.mem.span(entry);
-        if (s.len <= key.len + 1) continue;
-        if (s[key.len] != '=') continue;
-        if (!std.mem.eql(u8, s[0..key.len], key)) continue;
-        const value = s[key.len + 1 ..];
-        if (value.len == 0) return null;
-        return value;
-    }
-    return null;
 }
 
 fn fetchAnchorPathInfo(d: *db.sqlite.Db, allocator: std.mem.Allocator, plan_id: i64) !AnchorPathInfo {

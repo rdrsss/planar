@@ -19,6 +19,13 @@ pub const sync = @import("workbench/sync.zig");
 pub const terminal = @import("workbench/terminal.zig");
 pub const gc = @import("workbench/gc.zig");
 
+/// resolveRoot is the single-source workbench-root resolver.
+/// Resolution order: $PLANAR_WORKBENCH_ROOT env var →
+/// config file workbench.root ($PLANAR_CONFIG_PATH or $HOME/.planar/config.toml) →
+/// $HOME/.planar/workbench default. A leading `~/` is expanded to $HOME.
+/// Returns error.WorkbenchRootUnresolved when no layer produces a path.
+pub const resolveRoot = sync.resolveRoot;
+
 test {
     _ = parse;
     _ = render;

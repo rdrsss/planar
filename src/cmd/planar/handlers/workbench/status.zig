@@ -11,7 +11,7 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     const ctx = runtime.current();
     const d = try runtime.ensureDb();
     if (args.plan == null) {
-        const root = try resolveWorkbenchRoot(ctx.allocator);
+        const root = try engine.workbench.resolveRoot(ctx.allocator, ctx.environ);
         defer ctx.allocator.free(root);
         const items = engine.workbench.sync.listActive(d, ctx.allocator, root) catch |e|
             exit.die(ctx, e, "workbench status failed: {s}", .{@errorName(e)});
@@ -59,23 +59,4 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         return;
     }
     try common.printSyncResult(ctx.stdout, plan.id, plan.slug, .status, "status", summary, args.verbose);
-}
-
-fn resolveWorkbenchRoot(allocator: std.mem.Allocator) ![]const u8 {
-    const raw: [*:null]?[*:0]u8 = std.c.environ;
-    var i: usize = 0;
-    while (raw[i]) |entry| : (i += 1) {
-        const s = std.mem.span(entry);
-        if (std.mem.startsWith(u8, s, "PLANAR_WORKBENCH_ROOT=")) {
-            return allocator.dupe(u8, s["PLANAR_WORKBENCH_ROOT=".len..]);
-        }
-    }
-    var j: usize = 0;
-    while (raw[j]) |entry| : (j += 1) {
-        const s = std.mem.span(entry);
-        if (std.mem.startsWith(u8, s, "HOME=")) {
-            return std.fs.path.join(allocator, &.{ s["HOME=".len..], ".planar", "workbench" });
-        }
-    }
-    return allocator.dupe(u8, ".");
 }

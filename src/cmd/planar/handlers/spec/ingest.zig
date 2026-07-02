@@ -135,7 +135,7 @@ fn runOnePlan(
     };
 
     // ---- locate workbench feature dir -------------------------------
-    const wb_root = resolveWorkbenchRoot(ctx.allocator, ctx.environ) catch |e| {
+    const wb_root = engine.workbench.resolveRoot(ctx.allocator, ctx.environ) catch |e| {
         try ctx.stderr.print("resolving workbench root: {s}\n", .{@errorName(e)});
         return e;
     };
@@ -435,15 +435,6 @@ fn extractContentSection(allocator: std.mem.Allocator, body: []const u8) ![]cons
         return try allocator.dupe(u8, section);
     }
     return try allocator.dupe(u8, body);
-}
-
-/// resolveWorkbenchRoot honors `$PLANAR_WORKBENCH_ROOT`, falling back to
-/// `$HOME/.planar/workbench` and ultimately CWD. Mirrors Go's
-/// `workbench.Root` resolution.
-fn resolveWorkbenchRoot(allocator: std.mem.Allocator, environ: std.process.Environ) ![]const u8 {
-    if (environ.getPosix("PLANAR_WORKBENCH_ROOT")) |raw| return try allocator.dupe(u8, raw);
-    if (environ.getPosix("HOME")) |home| return try std.fs.path.join(allocator, &.{ home, ".planar", "workbench" });
-    return try allocator.dupe(u8, ".");
 }
 
 // =========================================================================

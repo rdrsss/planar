@@ -1548,44 +1548,83 @@ fn writeFileAtomic(allocator: std.mem.Allocator, abs_path: []const u8, content: 
 }
 
 fn resolveWorkbenchRoot(allocator: std.mem.Allocator) ![]const u8 {
-    const env: [*:null]?[*:0]u8 = std.c.environ;
-    var i: usize = 0;
-    while (env[i]) |entry| : (i += 1) {
-        const s = std.mem.span(entry);
-        if (std.mem.startsWith(u8, s, "PLANAR_WORKBENCH_ROOT=")) return allocator.dupe(u8, s["PLANAR_WORKBENCH_ROOT=".len..]);
-    }
-    i = 0;
-    while (env[i]) |entry| : (i += 1) {
-        const s = std.mem.span(entry);
-        if (std.mem.startsWith(u8, s, "HOME=")) return std.fs.path.join(allocator, &.{ s["HOME=".len..], ".planar", "workbench" });
-    }
-    return allocator.dupe(u8, ".");
+    return resolveRoot(allocator, processEnviron());
+}
+
+/// Wrap std.c.environ into a std.process.Environ for use in engine-internal
+/// callers that do not have an injected environ (e.g. sync.run()).
+fn processEnviron() std.process.Environ {
+    const raw: [*:null]?[*:0]u8 = std.c.environ;
+    var count: usize = 0;
+    while (raw[count] != null) : (count += 1) {}
+    const slice: [:null]const ?[*:0]const u8 = @ptrCast(raw[0..count :null]);
+    return .{ .block = .{ .slice = slice } };
 }
 
 /// resolveRoot resolves the workbench root directory using the canonical
-/// three-layer precedence: (1) $PLANAR_WORKBENCH_ROOT env var, (2) the
-/// `workbench.root` key in the config file located at $PLANAR_CONFIG_PATH or
-/// $HOME/.planar/config.toml, (3) $HOME/.planar/workbench as the built-in
-/// default. A leading `~/` in any layer is expanded to $HOME. Returns
-/// error.WorkbenchRootUnresolved when none of the three layers resolve
-/// (no env var, no readable config with a non-empty root key, and no HOME).
+/// three-layer precedence:
+///   1. $PLANAR_WORKBENCH_ROOT env var (with `~/` expansion)
+///   2. `workbench.root` in the config file at $PLANAR_CONFIG_PATH or
+///      $HOME/.planar/config.toml (with `~/` expansion)
+///   3. $HOME/.planar/workbench (built-in default)
 ///
-/// NOTE: this is a stub implementation that exhibits the current bugs:
-/// it silently returns "." when HOME is not set and does not read the
-/// config file. The red tests below document the invariants the correct
-/// implementation must satisfy.
+/// Returns error.WorkbenchRootUnresolved when none of the three layers
+/// can produce a path (no env var, no readable/non-empty config root,
+/// and no HOME in the environment). Never returns "." or any cwd.
+///
+/// This is the single-source resolver; all call sites in the codebase
+/// must use this function rather than maintaining local copies.
 pub fn resolveRoot(allocator: std.mem.Allocator, environ: std.process.Environ) ![]const u8 {
+    const config_parse = @import("../config/parse.zig");
+
     // Layer 1: env var.
     if (environ.getPosix("PLANAR_WORKBENCH_ROOT")) |raw| {
         if (raw.len > 0) return try expandTildeRoot(allocator, raw, environ);
     }
-    // Layer 2: config file (NOT YET IMPLEMENTED — bug: skipped entirely).
+
+    // Layer 2: config file workbench.root.
+    // Resolve the config file path ($PLANAR_CONFIG_PATH or $HOME/.planar/config.toml).
+    const cfg_path_opt: ?[]const u8 = blk: {
+        if (environ.getPosix("PLANAR_CONFIG_PATH")) |raw| {
+            if (raw.len > 0) {
+                break :blk try expandTildeRoot(allocator, raw, environ);
+            }
+        }
+        if (environ.getPosix("HOME")) |home| {
+            break :blk try std.fs.path.join(allocator, &.{ home, ".planar", "config.toml" });
+        }
+        break :blk null;
+    };
+    defer if (cfg_path_opt) |p| allocator.free(p);
+
+    if (cfg_path_opt) |cfg_path| {
+        // Attempt to read and parse the config file; silently skip if absent/unreadable.
+        const content = readFileAlloc(allocator, cfg_path) catch null;
+        if (content) |fc| {
+            defer allocator.free(fc);
+            var pe: config_parse.ParseError = undefined;
+            var map = config_parse.parse(allocator, fc, &pe) catch null;
+            if (map) |*m| {
+                defer config_parse.deinitMap(m, allocator);
+                if (m.get("workbench.root")) |val| {
+                    const raw: []const u8 = switch (val) {
+                        .string => |s| s,
+                        else => "",
+                    };
+                    if (raw.len > 0) {
+                        return try expandTildeRoot(allocator, raw, environ);
+                    }
+                }
+            }
+        }
+    }
+
     // Layer 3: $HOME default.
     if (environ.getPosix("HOME")) |home| {
         return try std.fs.path.join(allocator, &.{ home, ".planar", "workbench" });
     }
-    // Bug: should return error.WorkbenchRootUnresolved; instead falls back to ".".
-    return try allocator.dupe(u8, ".");
+
+    return error.WorkbenchRootUnresolved;
 }
 
 fn expandTildeRoot(allocator: std.mem.Allocator, path: []const u8, environ: std.process.Environ) ![]const u8 {

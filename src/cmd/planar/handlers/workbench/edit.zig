@@ -36,7 +36,7 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         exit.die(ctx, error.Conflict, "{d} conflict(s) require 'workbench resolve <event-id> --prefer fs|db'", .{push_result.conflicts});
     }
 
-    const root = common.resolveAndEnsureWorkbenchRoot(ctx.allocator, ctx.io) catch |e|
+    const root = common.resolveAndEnsureWorkbenchRoot(ctx.allocator, ctx.environ, ctx.io) catch |e|
         exit.die(ctx, e, "resolving workbench root failed: {s}", .{@errorName(e)});
     defer ctx.allocator.free(root);
 

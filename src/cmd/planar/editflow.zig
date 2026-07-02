@@ -137,7 +137,7 @@ pub fn view(
     };
 
     // 2. Build canonical workbench file path.
-    const abs_path = try buildWorkbenchPath(d, allocator, kind, entity_id, anchor_id);
+    const abs_path = try buildWorkbenchPath(d, allocator, ctx.environ, kind, entity_id, anchor_id);
     defer allocator.free(abs_path);
 
     // 3. Render entity to markdown.
@@ -188,7 +188,7 @@ pub fn edit(
     };
 
     // 2. Build canonical workbench file path.
-    const abs_path = try buildWorkbenchPath(d, allocator, kind, entity_id, anchor_id);
+    const abs_path = try buildWorkbenchPath(d, allocator, ctx.environ, kind, entity_id, anchor_id);
     defer allocator.free(abs_path);
 
     // 3. Render entity to markdown.
@@ -380,7 +380,7 @@ fn loadDiffSnapshot(
     );
     defer canonical.deinit(allocator);
 
-    const abs_path = try buildWorkbenchPathFromRel(d, allocator, anchor_id, canonical.rel_path);
+    const abs_path = try buildWorkbenchPathFromRel(d, allocator, ctx.environ, anchor_id, canonical.rel_path);
     errdefer allocator.free(abs_path);
     const db_content = try allocator.dupe(u8, canonical.content);
     errdefer allocator.free(db_content);
@@ -838,22 +838,12 @@ fn getPosixEnv(key: []const u8) ?[]const u8 {
     return null;
 }
 
-/// resolveWorkbenchRoot returns the workbench root from $PLANAR_WORKBENCH_ROOT
-/// or the default ~/.planar/workbench/.
-fn resolveWorkbenchRoot(allocator: std.mem.Allocator) ![]u8 {
-    if (getPosixEnv("PLANAR_WORKBENCH_ROOT")) |root| {
-        return try allocator.dupe(u8, root);
-    }
-
-    const home = getPosixEnv("HOME") orelse return error.HomeNotSet;
-    return try std.fs.path.join(allocator, &.{ home, ".planar", "workbench" });
-}
-
 /// buildWorkbenchPath returns the absolute path for the entity's workbench file.
 /// The path is computed from: root / featureDir(anchor) / relPath(entity).
 fn buildWorkbenchPath(
     d: *db.sqlite.Db,
     allocator: std.mem.Allocator,
+    environ: std.process.Environ,
     kind: EntityKind,
     entity_id: i64,
     anchor_id: i64,
@@ -861,7 +851,7 @@ fn buildWorkbenchPath(
     const anchor = try fetchAnchorInfo(d, allocator, anchor_id);
     defer anchor.deinit(allocator);
 
-    const root = try resolveWorkbenchRoot(allocator);
+    const root = try engine.workbench.resolveRoot(allocator, environ);
     defer allocator.free(root);
 
     const feat_dir = try engine.workbench.feature.featureDir(
@@ -882,13 +872,14 @@ fn buildWorkbenchPath(
 fn buildWorkbenchPathFromRel(
     d: *db.sqlite.Db,
     allocator: std.mem.Allocator,
+    environ: std.process.Environ,
     anchor_id: i64,
     rel_path: []const u8,
 ) ![]u8 {
     const anchor = try fetchAnchorInfo(d, allocator, anchor_id);
     defer anchor.deinit(allocator);
 
-    const root = try resolveWorkbenchRoot(allocator);
+    const root = try engine.workbench.resolveRoot(allocator, environ);
     defer allocator.free(root);
 
     const feat_dir = try engine.workbench.feature.featureDir(

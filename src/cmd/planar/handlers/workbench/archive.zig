@@ -18,7 +18,7 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     };
     defer plan.deinit(ctx.allocator);
 
-    const root = common.resolveAndEnsureWorkbenchRoot(ctx.allocator, ctx.io) catch |e|
+    const root = common.resolveAndEnsureWorkbenchRoot(ctx.allocator, ctx.environ, ctx.io) catch |e|
         exit.die(ctx, e, "resolving workbench root failed: {s}", .{@errorName(e)});
     defer ctx.allocator.free(root);
 
