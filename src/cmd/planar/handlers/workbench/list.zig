@@ -11,7 +11,7 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     const ctx = runtime.current();
     const d = try runtime.ensureDb();
 
-    const root = common.resolveAndEnsureWorkbenchRoot(ctx.allocator, ctx.io) catch |e|
+    const root = common.resolveAndEnsureWorkbenchRoot(ctx.allocator, ctx.environ, ctx.io) catch |e|
         exit.die(ctx, e, "resolving workbench root failed: {s}", .{@errorName(e)});
     defer ctx.allocator.free(root);
     const items = engine.workbench.sync.listActive(d, ctx.allocator, root) catch |e|

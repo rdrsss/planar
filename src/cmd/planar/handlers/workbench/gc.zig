@@ -14,7 +14,7 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     const filter_mode = common.parseFilterMode(args.filter_mode) catch
         exit.die(ctx, error.InvalidInput, "invalid --filter-mode '{s}' (expected 'failures' or 'all')", .{args.filter_mode orelse ""});
 
-    const root = common.resolveAndEnsureWorkbenchRoot(ctx.allocator, ctx.io) catch |e|
+    const root = common.resolveAndEnsureWorkbenchRoot(ctx.allocator, ctx.environ, ctx.io) catch |e|
         exit.die(ctx, e, "resolving workbench root failed: {s}", .{@errorName(e)});
     defer ctx.allocator.free(root);
 

@@ -19,7 +19,7 @@ const gc = @import("gc.zig");
 pub const verb: cli.Cmd = .{
     .name = "workbench",
     .desc = "Manage workbench sync for plan feature directories.",
-    .long_desc = "Manage the bidirectional sync surface between the workbench\n  filesystem and the Planar database.\n\n  The workbench root defaults to ~/.planar/workbench/ and can be\n  overridden with the PLANAR_WORKBENCH_ROOT environment variable.",
+    .long_desc = "Manage the bidirectional sync surface between the workbench\n  filesystem and the Planar database.\n\n  The workbench root resolution order (highest to lowest priority):\n    1. $PLANAR_WORKBENCH_ROOT env var\n    2. workbench.root in $PLANAR_CONFIG_PATH or ~/.planar/config.toml\n    3. Default: ~/.planar/workbench/",
     .cmds = &.{
         .{
             .name = "pull",
