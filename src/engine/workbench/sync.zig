@@ -1562,6 +1562,106 @@ fn resolveWorkbenchRoot(allocator: std.mem.Allocator) ![]const u8 {
     return allocator.dupe(u8, ".");
 }
 
+/// resolveRoot resolves the workbench root directory using the canonical
+/// three-layer precedence: (1) $PLANAR_WORKBENCH_ROOT env var, (2) the
+/// `workbench.root` key in the config file located at $PLANAR_CONFIG_PATH or
+/// $HOME/.planar/config.toml, (3) $HOME/.planar/workbench as the built-in
+/// default. A leading `~/` in any layer is expanded to $HOME. Returns
+/// error.WorkbenchRootUnresolved when none of the three layers resolve
+/// (no env var, no readable config with a non-empty root key, and no HOME).
+///
+/// NOTE: this is a stub implementation that exhibits the current bugs:
+/// it silently returns "." when HOME is not set and does not read the
+/// config file. The red tests below document the invariants the correct
+/// implementation must satisfy.
+pub fn resolveRoot(allocator: std.mem.Allocator, environ: std.process.Environ) ![]const u8 {
+    // Layer 1: env var.
+    if (environ.getPosix("PLANAR_WORKBENCH_ROOT")) |raw| {
+        if (raw.len > 0) return try expandTildeRoot(allocator, raw, environ);
+    }
+    // Layer 2: config file (NOT YET IMPLEMENTED — bug: skipped entirely).
+    // Layer 3: $HOME default.
+    if (environ.getPosix("HOME")) |home| {
+        return try std.fs.path.join(allocator, &.{ home, ".planar", "workbench" });
+    }
+    // Bug: should return error.WorkbenchRootUnresolved; instead falls back to ".".
+    return try allocator.dupe(u8, ".");
+}
+
+fn expandTildeRoot(allocator: std.mem.Allocator, path: []const u8, environ: std.process.Environ) ![]const u8 {
+    if (std.mem.eql(u8, path, "~")) {
+        const home = environ.getPosix("HOME") orelse return error.WorkbenchRootUnresolved;
+        return allocator.dupe(u8, home);
+    }
+    if (std.mem.startsWith(u8, path, "~/")) {
+        const home = environ.getPosix("HOME") orelse return error.WorkbenchRootUnresolved;
+        return std.fs.path.join(allocator, &.{ home, path[2..] });
+    }
+    return allocator.dupe(u8, path);
+}
+
+// =========================================================================
+// Tests for resolveRoot invariants (red before fix).
+// =========================================================================
+
+fn testEnvironFrom(allocator: std.mem.Allocator, entries: []const []const u8) !struct {
+    environ: std.process.Environ,
+    owned: [][:0]const u8,
+    envp: [:null]?[*:0]u8,
+} {
+    const envp = try allocator.allocSentinel(?[*:0]u8, entries.len, null);
+    errdefer allocator.free(envp);
+    const owned = try allocator.alloc([:0]const u8, entries.len);
+    errdefer allocator.free(owned);
+    for (entries, 0..) |entry, i| {
+        const z = try allocator.dupeZ(u8, entry);
+        owned[i] = z;
+        envp[i] = @constCast(z.ptr);
+    }
+    const block = std.process.Environ.PosixBlock{ .slice = envp };
+    return .{ .environ = std.process.Environ{ .block = block }, .owned = owned, .envp = envp };
+}
+
+fn freeTestEnviron(allocator: std.mem.Allocator, owned: [][:0]const u8, envp: [:null]?[*:0]u8) void {
+    for (owned) |s| allocator.free(s);
+    allocator.free(owned);
+    allocator.free(envp);
+}
+
+test "resolveRoot: no env, no HOME → error.WorkbenchRootUnresolved (not cwd)" {
+    const a = std.testing.allocator;
+    // Empty environment: no PLANAR_WORKBENCH_ROOT, no PLANAR_CONFIG_PATH, no HOME.
+    const te = try testEnvironFrom(a, &.{});
+    defer freeTestEnviron(a, te.owned, te.envp);
+
+    const result = resolveRoot(a, te.environ);
+    // Must error — never return ".".
+    try std.testing.expectError(error.WorkbenchRootUnresolved, result);
+}
+
+test "resolveRoot: config file workbench.root wins when no env var set" {
+    const a = std.testing.allocator;
+    // Write a config file using the C write helper already available in this module.
+    const cfg_path = "/tmp/planar-test-resolveRoot-config.toml";
+    const cfg_content =
+        \\[workbench]
+        \\root = "/tmp/wb-from-config"
+        \\
+    ;
+    try writeFile(cfg_path, cfg_content);
+
+    // Inject PLANAR_CONFIG_PATH pointing at our file; no PLANAR_WORKBENCH_ROOT.
+    const entry = try std.fmt.allocPrint(a, "PLANAR_CONFIG_PATH={s}", .{cfg_path});
+    defer a.free(entry);
+    const te = try testEnvironFrom(a, &.{entry});
+    defer freeTestEnviron(a, te.owned, te.envp);
+
+    const root = try resolveRoot(a, te.environ);
+    defer a.free(root);
+    // Must use the value from the config file.
+    try std.testing.expectEqualStrings("/tmp/wb-from-config", root);
+}
+
 fn pathExists(path: []const u8) bool {
     const z = std.heap.page_allocator.dupeZ(u8, path) catch return false;
     defer std.heap.page_allocator.free(z);
