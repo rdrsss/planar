@@ -151,10 +151,17 @@ pub fn deinitScenarios(items: []const Scenario, allocator: std.mem.Allocator) vo
 // Public parsers
 // =========================================================================
 
-/// Parse the `## Decisions` H2 section of a tech-spec body. Each H3
-/// under that section becomes one Decision. Returns an empty slice
-/// when no `## Decisions` section exists. Body text is trimmed of
-/// surrounding blank lines.
+/// Parse the `## Decisions` H2 section of a tech-spec body.
+///
+/// Two grammars are recognized (H3 preferred):
+///   * `### <title>` H3 headings — each H3 block becomes one Decision.
+///   * `- **Title.** body` or `* **Title.** body` bullets — used as a
+///     fallback when the section has NO H3 headings at all. The title is
+///     the bolded lead (first `**…**` run or, absent that, the first
+///     sentence up to `.`/`?`/`!`); the body is the full bullet text.
+///
+/// Returns an empty slice when no `## Decisions` section exists.
+/// Body text is trimmed of surrounding blank lines.
 pub fn parseTechSpecDecisions(
     allocator: std.mem.Allocator,
     body: []const u8,
@@ -164,40 +171,107 @@ pub fn parseTechSpecDecisions(
 
     const section = sliceSection(lines, "## Decisions") orelse return &.{};
 
+    // First pass: check whether any H3 headings exist in the section.
+    // If so, the H3 path takes precedence and bullets are ignored.
+    var has_h3 = false;
+    for (section) |line| {
+        if (std.mem.startsWith(u8, trimRight(line), "### ")) {
+            has_h3 = true;
+            break;
+        }
+    }
+
     var out: std.ArrayList(Decision) = .empty;
     errdefer {
         for (out.items) |d| deinitDecision(d, allocator);
         out.deinit(allocator);
     }
 
-    var current_title: ?[]const u8 = null;
-    var body_lines: std.ArrayList([]const u8) = .empty;
-    defer body_lines.deinit(allocator);
+    if (has_h3) {
+        // --- H3 path (original behavior) ---
+        var current_title: ?[]const u8 = null;
+        var body_lines: std.ArrayList([]const u8) = .empty;
+        defer body_lines.deinit(allocator);
 
-    for (section) |line| {
-        const trimmed = trimRight(line);
-        if (std.mem.startsWith(u8, trimmed, "### ")) {
-            // Flush prior block.
-            if (current_title) |t| {
-                const decided_body = try joinTrimmedBody(allocator, body_lines.items);
-                try out.append(allocator, .{ .title = t, .body = decided_body });
-                current_title = null;
+        for (section) |line| {
+            const trimmed = trimRight(line);
+            if (std.mem.startsWith(u8, trimmed, "### ")) {
+                // Flush prior block.
+                if (current_title) |t| {
+                    const decided_body = try joinTrimmedBody(allocator, body_lines.items);
+                    try out.append(allocator, .{ .title = t, .body = decided_body });
+                    current_title = null;
+                }
+                const title = std.mem.trim(u8, trimmed[4..], " \t");
+                current_title = try allocator.dupe(u8, title);
+                body_lines.clearRetainingCapacity();
+                continue;
             }
-            const title = std.mem.trim(u8, trimmed[4..], " \t");
-            current_title = try allocator.dupe(u8, title);
-            body_lines.clearRetainingCapacity();
-            continue;
+            if (current_title != null) {
+                try body_lines.append(allocator, line);
+            }
         }
-        if (current_title != null) {
-            try body_lines.append(allocator, line);
+        if (current_title) |t| {
+            const decided_body = try joinTrimmedBody(allocator, body_lines.items);
+            try out.append(allocator, .{ .title = t, .body = decided_body });
         }
-    }
-    if (current_title) |t| {
-        const decided_body = try joinTrimmedBody(allocator, body_lines.items);
-        try out.append(allocator, .{ .title = t, .body = decided_body });
+    } else {
+        // --- Bullet fallback path ---
+        // Each `- ` or `* ` bullet becomes one Decision. The title is
+        // extracted from the bolded lead (`**Title.**`) when present;
+        // otherwise the first sentence (up to the first `.`, `?`, or `!`
+        // in the bullet text). The body is the full bullet text after
+        // stripping the leading `- ` / `* ` marker.
+        for (section) |line| {
+            const trimmed = trimRight(line);
+            if (!isBullet(trimmed)) continue;
+
+            // Strip the bullet marker.
+            var raw = std.mem.trimStart(u8, trimmed, " \t");
+            if (std.mem.startsWith(u8, raw, "- ")) {
+                raw = raw[2..];
+            } else if (std.mem.startsWith(u8, raw, "* ")) {
+                raw = raw[2..];
+            }
+            raw = std.mem.trim(u8, raw, " \t");
+            if (raw.len == 0) continue;
+
+            const title = try extractBulletDecisionTitle(allocator, raw);
+            const body_text = try allocator.dupe(u8, raw);
+            try out.append(allocator, .{ .title = title, .body = body_text });
+        }
     }
 
     return try out.toOwnedSlice(allocator);
+}
+
+/// extractBulletDecisionTitle extracts a short title from a decision bullet.
+///
+/// Priority:
+///   1. First `**…**` bold run (the Markdown convention for bolded leads).
+///   2. First sentence ending with `.`, `?`, or `!`.
+///   3. The full bullet text (trimmed) as a fallback.
+fn extractBulletDecisionTitle(
+    allocator: std.mem.Allocator,
+    bullet_text: []const u8,
+) std.mem.Allocator.Error![]const u8 {
+    // Look for **bold** lead.
+    if (std.mem.startsWith(u8, bullet_text, "**")) {
+        if (std.mem.indexOfPos(u8, bullet_text, 2, "**")) |close| {
+            const inner = bullet_text[2..close];
+            const t = std.mem.trim(u8, inner, " \t");
+            if (t.len > 0) return try allocator.dupe(u8, t);
+        }
+    }
+    // First sentence heuristic: up to (and including) the first `.`, `?`, `!`.
+    for (bullet_text, 0..) |c, i| {
+        if (c == '.' or c == '?' or c == '!') {
+            const sentence = std.mem.trim(u8, bullet_text[0 .. i + 1], " \t");
+            if (sentence.len > 0) return try allocator.dupe(u8, sentence);
+        }
+    }
+    // Full text fallback.
+    return try allocator.dupe(u8, std.mem.trim(u8, bullet_text, " \t"));
 }
 
 /// Parse the `## Open Questions` H2 section of a tech-spec body. Each
@@ -381,10 +455,26 @@ pub fn parseRoadmap(
     return try out.toOwnedSlice(allocator);
 }
 
-/// Parse the `## Scenarios` H2 section of a test-spec body. Each H3
-/// becomes a Scenario with Kind / Acceptance / Verifies field lines
-/// lifted out of the body. Returns an empty slice when no `## Scenarios`
-/// section exists.
+/// Parse the `## Scenarios` H2 section of a test-spec body.
+///
+/// Two grammars are recognized:
+///   * **Flat H3** — `### Scenario: <title>` or `### <title>` (with or
+///     without `**Verifies:**`). Always emitted as scenarios (backward-compat
+///     with all existing specs). The `Scenario: ` prefix is optional.
+///   * **Bucketed H4** — when a `### <group>` H3 (no `Scenario:` prefix,
+///     no `**Verifies:**` line) is immediately followed by at least one
+///     `#### Scenario: <title>` (or `#### <title>` with `**Verifies:**`)
+///     child H4, the H3 is treated as a bucket-group header and SKIPPED;
+///     its H4 children are emitted as scenarios instead.
+///
+/// The distinguishing rule: an H3 is a **bucket** only when it has H4
+/// children AND neither the `Scenario:` prefix nor `**Verifies:**`. An H3
+/// with no H4 children is always emitted as a scenario (backward-compat).
+///
+/// Kind / Acceptance / Verifies field lines are lifted from the body of
+/// whichever heading (H3 or H4) owns the scenario.
+///
+/// Returns an empty slice when no `## Scenarios` section exists.
 pub fn parseTestSpec(
     allocator: std.mem.Allocator,
     body: []const u8,
@@ -400,9 +490,28 @@ pub fn parseTestSpec(
         out.deinit(allocator);
     }
 
-    var current_title: ?[]const u8 = null;
-    var current_kind: []const u8 = &.{};
-    var current_acceptance: []const u8 = &.{};
+    // State machine overview:
+    //
+    // We process the section in one forward pass. The pending-slot holds
+    // the tentative state for one open heading (H3 or H4). When we hit the
+    // next H3/H4 we decide whether to emit or discard the pending slot:
+    //
+    //   • An H3 slot is emitted unconditionally UNLESS:
+    //       - it has no `Scenario:` prefix, AND
+    //       - it has no `**Verifies:**`, AND
+    //       - we encountered at least one H4 child while open (= it is a
+    //         bucket header).
+    //     In the bucket case the H3 slot is discarded and `in_bucket_h3`
+    //     stays true so subsequent H4 children know they are top-level
+    //     scenarios for the output.
+    //
+    //   • An H4 slot is emitted if it has the `Scenario:` prefix OR has
+    //     `**Verifies:**`; otherwise discarded (bare H4 with no signal is
+    //     an unrecognized sub-item, not a scenario).
+
+    var current_title: ?[]const u8 = null; // owned
+    var current_kind: []const u8 = &.{}; // owned
+    var current_acceptance: []const u8 = &.{}; // owned
     var current_verifies: std.ArrayList(TaskRef) = .empty;
     errdefer {
         for (current_verifies.items) |r| deinitTaskRef(r, allocator);
@@ -411,62 +520,158 @@ pub fn parseTestSpec(
     var body_lines: std.ArrayList([]const u8) = .empty;
     defer body_lines.deinit(allocator);
 
-    const flush = struct {
-        fn call(
-            list: *std.ArrayList(Scenario),
-            alloc: std.mem.Allocator,
-            title_p: *?[]const u8,
-            kind_p: *[]const u8,
-            acceptance_p: *[]const u8,
-            verifies_p: *std.ArrayList(TaskRef),
-            blines: *std.ArrayList([]const u8),
-        ) std.mem.Allocator.Error!void {
-            if (title_p.*) |t| {
-                const body_text = try joinTrimmedBody(alloc, blines.items);
-                const verifies_slice = try verifies_p.toOwnedSlice(alloc);
-                try list.append(alloc, .{
-                    .title = t,
-                    .kind = kind_p.*,
-                    .acceptance = acceptance_p.*,
-                    .verifies = verifies_slice,
-                    .body = body_text,
-                });
-                title_p.* = null;
-                kind_p.* = &.{};
-                acceptance_p.* = &.{};
+    // Whether the currently-open heading carried the `Scenario: ` prefix.
+    var current_has_scenario_prefix: bool = false;
+    // Whether the currently-open slot is an H3 (true) or H4 (false).
+    var current_is_h3: bool = false;
+    // Whether any H4 child has been seen inside the current H3 slot (used
+    // to decide bucket vs. plain scenario on flush).
+    var current_h3_has_h4_child: bool = false;
+    // Whether we are inside a bucket-group H3 body. H4 items encountered
+    // here open their own tentative slot.
+    var in_bucket_h3: bool = false;
+
+    // flushPending: emit the pending slot if it qualifies, otherwise discard.
+    // `triggered_by_h4` is true when the flush was triggered because we
+    // encountered an H4 child — this is needed to correctly decide whether
+    // the pending H3 is a bucket.
+    const FlushCtx = struct {
+        list: *std.ArrayList(Scenario),
+        alloc: std.mem.Allocator,
+        title_p: *?[]const u8,
+        kind_p: *[]const u8,
+        acceptance_p: *[]const u8,
+        verifies_p: *std.ArrayList(TaskRef),
+        blines: *std.ArrayList([]const u8),
+        has_prefix_p: *bool,
+        is_h3_p: *bool,
+        h3_has_h4_p: *bool,
+        in_bucket_p: *bool,
+
+        fn flush(ctx: @This(), triggered_by_h4: bool) std.mem.Allocator.Error!void {
+            if (ctx.title_p.*) |t| {
+                // Determine whether the pending slot should be emitted.
+                // For H3: emit always, EXCEPT when it is a bucket (no prefix,
+                // no Verifies, AND has H4 children — i.e., flush was triggered
+                // by the first H4 child).
+                // For H4: emit when it has prefix OR Verifies.
+                const emit = blk: {
+                    if (ctx.is_h3_p.*) {
+                        const is_bucket = triggered_by_h4 and
+                            !ctx.has_prefix_p.* and
+                            ctx.verifies_p.items.len == 0;
+                        break :blk !is_bucket;
+                    } else {
+                        break :blk ctx.has_prefix_p.* or ctx.verifies_p.items.len > 0;
+                    }
+                };
+
+                if (emit) {
+                    const body_text = try joinTrimmedBody(ctx.alloc, ctx.blines.items);
+                    const verifies_slice = try ctx.verifies_p.toOwnedSlice(ctx.alloc);
+                    try ctx.list.append(ctx.alloc, .{
+                        .title = t,
+                        .kind = ctx.kind_p.*,
+                        .acceptance = ctx.acceptance_p.*,
+                        .verifies = verifies_slice,
+                        .body = body_text,
+                    });
+                    ctx.title_p.* = null;
+                    ctx.kind_p.* = &.{};
+                    ctx.acceptance_p.* = &.{};
+                    // If this was a bucket H3 being emitted (shouldn't happen
+                    // but guard anyway), clear bucket flag.
+                    ctx.in_bucket_p.* = false;
+                } else {
+                    // Discard the slot — either a bucket H3 or bare H4.
+                    ctx.alloc.free(t);
+                    ctx.title_p.* = null;
+                    ctx.alloc.free(ctx.kind_p.*);
+                    ctx.kind_p.* = &.{};
+                    ctx.alloc.free(ctx.acceptance_p.*);
+                    ctx.acceptance_p.* = &.{};
+                    for (ctx.verifies_p.items) |r| deinitTaskRef(r, ctx.alloc);
+                    ctx.verifies_p.clearRetainingCapacity();
+                    // When an H3 is discarded as a bucket, mark that state.
+                    if (ctx.is_h3_p.* and triggered_by_h4) {
+                        ctx.in_bucket_p.* = true;
+                    }
+                }
             }
-            blines.clearRetainingCapacity();
+            ctx.has_prefix_p.* = false;
+            ctx.is_h3_p.* = false;
+            ctx.h3_has_h4_p.* = false;
+            ctx.blines.clearRetainingCapacity();
         }
-    }.call;
+    };
+
+    var fctx: FlushCtx = .{
+        .list = &out,
+        .alloc = allocator,
+        .title_p = &current_title,
+        .kind_p = &current_kind,
+        .acceptance_p = &current_acceptance,
+        .verifies_p = &current_verifies,
+        .blines = &body_lines,
+        .has_prefix_p = &current_has_scenario_prefix,
+        .is_h3_p = &current_is_h3,
+        .h3_has_h4_p = &current_h3_has_h4_child,
+        .in_bucket_p = &in_bucket_h3,
+    };
 
     for (section) |line| {
         const trimmed = trimRight(line);
-        if (std.mem.startsWith(u8, trimmed, "### ")) {
-            try flush(
-                &out,
-                allocator,
-                &current_title,
-                &current_kind,
-                &current_acceptance,
-                &current_verifies,
-                &body_lines,
-            );
-            var title = std.mem.trim(u8, trimmed[4..], " \t");
-            // Optional `Scenario: ` prefix per template convention.
+
+        if (std.mem.startsWith(u8, trimmed, "#### ")) {
+            // H4 heading. If there's an open H3 slot, flush it with
+            // `triggered_by_h4 = true` so the bucket check fires.
+            // If there's an open H4 slot, flush it with triggered_by_h4 = false
+            // (H4→H4 handoff is a plain peer flush).
+            const trig = current_is_h3;
+            try fctx.flush(trig);
+
+            var title = std.mem.trim(u8, trimmed[5..], " \t");
+            var has_prefix = false;
             if (std.mem.startsWith(u8, title, "Scenario: ")) {
                 title = std.mem.trim(u8, title[10..], " \t");
+                has_prefix = true;
             }
             current_title = try allocator.dupe(u8, title);
             current_kind = try allocator.dupe(u8, "");
             current_acceptance = try allocator.dupe(u8, "");
+            current_has_scenario_prefix = has_prefix;
+            current_is_h3 = false;
+            current_h3_has_h4_child = false;
             continue;
         }
-        if (current_title == null) continue;
+
+        if (std.mem.startsWith(u8, trimmed, "### ")) {
+            // H3 heading — flush whatever is pending without H4 trigger.
+            try fctx.flush(false);
+            in_bucket_h3 = false;
+
+            var title = std.mem.trim(u8, trimmed[4..], " \t");
+            var has_prefix = false;
+            if (std.mem.startsWith(u8, title, "Scenario: ")) {
+                title = std.mem.trim(u8, title[10..], " \t");
+                has_prefix = true;
+            }
+            current_title = try allocator.dupe(u8, title);
+            current_kind = try allocator.dupe(u8, "");
+            current_acceptance = try allocator.dupe(u8, "");
+            current_has_scenario_prefix = has_prefix;
+            current_is_h3 = true;
+            current_h3_has_h4_child = false;
+            continue;
+        }
+
+        // If we have no open slot and we're not in a bucket body, skip.
+        if (current_title == null and !in_bucket_h3) continue;
+        if (current_title == null) continue; // in bucket but no H4 open yet
 
         // Field-line extraction; consumed lines do not appear in body.
         if (try stripFieldLine(allocator, trimmed, "**Verifies:**")) |val| {
             defer allocator.free(val);
-            // Replace prior verifies (rare second occurrence) — free first.
             for (current_verifies.items) |r| deinitTaskRef(r, allocator);
             current_verifies.clearRetainingCapacity();
             try parseTaskRefs(allocator, val, &current_verifies);
@@ -484,15 +689,8 @@ pub fn parseTestSpec(
         }
         try body_lines.append(allocator, line);
     }
-    try flush(
-        &out,
-        allocator,
-        &current_title,
-        &current_kind,
-        &current_acceptance,
-        &current_verifies,
-        &body_lines,
-    );
+    // Final flush — not triggered by H4.
+    try fctx.flush(false);
 
     return try out.toOwnedSlice(allocator);
 }
@@ -536,6 +734,45 @@ fn sliceSection(lines: [][]const u8, header: []const u8) ?[]const []const u8 {
     }
     if (start) |s| return lines[s..end];
     return null;
+}
+
+/// sectionHasContent returns true when the named H2 section exists AND
+/// contains at least one non-blank line (i.e., has bullet or paragraph
+/// content beyond the section header itself). Used by the ingest layer
+/// to detect populated sections that nonetheless produced 0 parsed entities,
+/// so it can emit a loud warning instead of silently discarding content.
+pub fn sectionHasContent(body: []const u8, header: []const u8) bool {
+    // Fast path: section doesn't exist at all.
+    if (std.mem.indexOf(u8, body, header) == null) return false;
+
+    // Walk line-by-line to find the section boundary and check for content.
+    var in_section = false;
+    var start: usize = 0;
+    var i: usize = 0;
+    while (i <= body.len) : (i += 1) {
+        const at_newline = (i == body.len or body[i] == '\n');
+        if (!at_newline) continue;
+
+        const line = body[start..i];
+        const t = std.mem.trimEnd(u8, line, " \t");
+        start = i + 1;
+
+        if (!in_section) {
+            if (std.mem.eql(u8, t, header)) {
+                in_section = true;
+            }
+            continue;
+        }
+
+        // End of our section when another H2 (but not H3+) starts.
+        if (std.mem.startsWith(u8, t, "## ") and !std.mem.startsWith(u8, t, "### ")) {
+            return false;
+        }
+
+        // Any non-blank line in the section counts as content.
+        if (t.len > 0) return true;
+    }
+    return false;
 }
 
 fn joinTrimmedBody(allocator: std.mem.Allocator, lines: []const []const u8) std.mem.Allocator.Error![]const u8 {
