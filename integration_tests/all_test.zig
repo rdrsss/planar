@@ -118,4 +118,6 @@ comptime {
     _ = @import("scenarios/scenario_workbench_sync_test.zig");
     _ = @import("scenarios/scenario_usage_introspection_test.zig");
     _ = @import("scenarios/scenario_doctor_reconcile_test.zig");
+
+    _ = @import("ui_driver_agentfiles_test.zig");
 }
