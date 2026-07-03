@@ -601,16 +601,26 @@ spawn_agent_watchdog() {
     [ -n "$pgid" ] || pgid="$agent_pid"
     _INFLIGHT_AGENT_PGID="$pgid"
 
-    # Background sleeper: fires after AGENT_TIMEOUT seconds.
-    local flag_tmp; flag_tmp="$(mktemp "${TMPDIR:-/tmp}/spawn-timeout.XXXXXX")"
-    rm -f "$flag_tmp"
-    ( sleep "$AGENT_TIMEOUT" && touch "$flag_tmp" ) &
+    # Watchdog sleeper: background sleep that we kill when the agent finishes.
+    # IMPORTANT: the sleeper must NOT be started as "( sleep N && touch flag ) &"
+    # because $() (command substitution) implicitly waits for ALL background
+    # children before returning — killing the bash subshell leaves the sleep
+    # grandchild as an orphan that $() still tracks, causing a full AGENT_TIMEOUT
+    # block on every successful invocation.  Instead we start the sleep directly
+    # (no intermediate bash subshell) so kill terminates it in one step.
+    #
+    # Timeout detection: we use elapsed wall-clock time rather than a flag file
+    # produced by the sleeper.  This keeps the sleeper as a plain `sleep` process
+    # and avoids the "touch flag" compound that forces a bash intermediate.
+    local _wd_start; _wd_start=$(date +%s)
+    sleep "$AGENT_TIMEOUT" &
     local sleeper_pid=$!
 
-    # Poll: wait for either the agent (agent_pid gone) or the flag file.
+    # Poll: wait for either the agent (agent_pid gone) or the deadline.
     local rc=0
     while kill -0 "$agent_pid" 2>/dev/null; do
-      if [ -f "$flag_tmp" ]; then
+      local _wd_now; _wd_now=$(date +%s)
+      if [ $(( _wd_now - _wd_start )) -ge "$AGENT_TIMEOUT" ]; then
         # Deadline breached — kill the process group.
         log "M4 watchdog: agent TIMED OUT after ${AGENT_TIMEOUT}s (pgid=${pgid}) — killing group"
         local our_pgid_w; our_pgid_w="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')" || our_pgid_w="$$"
@@ -627,19 +637,22 @@ spawn_agent_watchdog() {
         # Signal timeout to the caller via a flag file (global won't survive subshell).
         [ -n "${_AGENT_TIMEOUT_FLAG:-}" ] && touch "$_AGENT_TIMEOUT_FLAG" 2>/dev/null || true
         _INFLIGHT_AGENT_PGID=0
+        # Reap the sleeper (kill first in case it is still running; wait is then instant).
         kill "$sleeper_pid" 2>/dev/null || true
-        rm -f "$flag_tmp" "$out_tmp" 2>/dev/null || true
+        wait "$sleeper_pid" 2>/dev/null || true
+        rm -f "$out_tmp" 2>/dev/null || true
         return 1
       fi
-      sleep 0.5 2>/dev/null || true
+      sleep 1 2>/dev/null || true
     done
     wait "$agent_pid" 2>/dev/null || rc=$?
     _INFLIGHT_AGENT_PGID=0
 
-    # Kill the sleeper.
+    # Agent exited before the deadline: kill the sleeper and reap it immediately.
+    # kill terminates the plain `sleep` process; wait reaps the zombie in one step
+    # with no blocking (the process is already dead).
     kill "$sleeper_pid" 2>/dev/null || true
     wait "$sleeper_pid" 2>/dev/null || true
-    rm -f "$flag_tmp" 2>/dev/null || true
 
     # Classify the result.
     local _raw; _raw="$(cat "$out_tmp" 2>/dev/null || true)"
