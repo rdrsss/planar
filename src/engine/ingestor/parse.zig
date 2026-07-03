@@ -524,9 +524,6 @@ pub fn parseTestSpec(
     var current_has_scenario_prefix: bool = false;
     // Whether the currently-open slot is an H3 (true) or H4 (false).
     var current_is_h3: bool = false;
-    // Whether any H4 child has been seen inside the current H3 slot (used
-    // to decide bucket vs. plain scenario on flush).
-    var current_h3_has_h4_child: bool = false;
     // Whether we are inside a bucket-group H3 body. H4 items encountered
     // here open their own tentative slot.
     var in_bucket_h3: bool = false;
@@ -545,7 +542,6 @@ pub fn parseTestSpec(
         blines: *std.ArrayList([]const u8),
         has_prefix_p: *bool,
         is_h3_p: *bool,
-        h3_has_h4_p: *bool,
         in_bucket_p: *bool,
 
         fn flush(ctx: @This(), triggered_by_h4: bool) std.mem.Allocator.Error!void {
@@ -600,7 +596,6 @@ pub fn parseTestSpec(
             }
             ctx.has_prefix_p.* = false;
             ctx.is_h3_p.* = false;
-            ctx.h3_has_h4_p.* = false;
             ctx.blines.clearRetainingCapacity();
         }
     };
@@ -615,7 +610,6 @@ pub fn parseTestSpec(
         .blines = &body_lines,
         .has_prefix_p = &current_has_scenario_prefix,
         .is_h3_p = &current_is_h3,
-        .h3_has_h4_p = &current_h3_has_h4_child,
         .in_bucket_p = &in_bucket_h3,
     };
 
@@ -641,7 +635,6 @@ pub fn parseTestSpec(
             current_acceptance = try allocator.dupe(u8, "");
             current_has_scenario_prefix = has_prefix;
             current_is_h3 = false;
-            current_h3_has_h4_child = false;
             continue;
         }
 
@@ -661,7 +654,6 @@ pub fn parseTestSpec(
             current_acceptance = try allocator.dupe(u8, "");
             current_has_scenario_prefix = has_prefix;
             current_is_h3 = true;
-            current_h3_has_h4_child = false;
             continue;
         }
 
