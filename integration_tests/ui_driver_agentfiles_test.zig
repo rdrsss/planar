@@ -89,3 +89,30 @@ test "ui-driver skill template exists and contains required substrings" {
     try assertContains(content, "run.mjs", rel);
     try assertContains(content, "synthesize.mjs", rel);
 }
+
+test "orchestrator + methodology document the Phase 3.6 ui-driver dispatch (P3c)" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const root = try repoRootFromBin(gpa, suite.bin);
+    defer gpa.free(root);
+
+    // The orchestrator must document the phase, the role it dispatches, the
+    // detection hook, and that a FAIL routes like a reviewer request-changes.
+    const orch_rel = "agents/orchestrator.md";
+    const orch = try readRepoFile(gpa, root, orch_rel);
+    defer gpa.free(orch);
+    try assertContains(orch, "Phase 3.6", orch_rel);
+    try assertContains(orch, "ui-driver", orch_rel);
+    try assertContains(orch, "pl-ui-driver-hook", orch_rel);
+    try assertContains(orch, "request-changes", orch_rel);
+
+    // The methodology carries the full-rules section the orchestrator links to.
+    const meth_rel = "agents/methodology.md";
+    const meth = try readRepoFile(gpa, root, meth_rel);
+    defer gpa.free(meth);
+    try assertContains(meth, "Phase 3.6", meth_rel);
+    try assertContains(meth, "ui-driver", meth_rel);
+    try assertContains(meth, "request-changes", meth_rel);
+}

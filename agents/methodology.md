@@ -510,6 +510,25 @@ Tasks without a `[slug:]` annotation are out of scope for the test-coder by cons
 
 **Diff base.** The orchestrator records HEAD at coder dispatch (`<coder-cycle-base>`) and passes it to the test-coder as the diff base for `git diff <coder-cycle-base>..HEAD`. The DB-driven gating decision (above) uses the post-coder-apply DB state, not the git ref — the ref is only the test-coder's reading material.
 
+### Phase 3.6 — UI-driver dispatch
+
+Between the coder/test-coder report-done and the reviewer's dispatch, when the cycle's claimed tasks have a design attached, the orchestrator dispatches a [`ui-driver`](ui-driver.md) worker that drives a live preview and returns a schema-conforming evidence manifest plus a gate verdict. Detection and the cross-repo safety gate are delegated to the `pl-ui-driver-hook` skill — the orchestrator does NOT inline the design-detection join.
+
+**Gating condition.** Invoke `pl-ui-driver-hook` over the cycle's claimed task ids. It returns `dispatch_ui_driver:true` only when BOTH:
+- The driver scripts (`scripts/ui-driver/run.mjs` + `scripts/ui-verify/synthesize.mjs`) exist in the target worktree — the Bash presence-gate, which keeps the harness a clean no-op on non-Sill targets that happen to carry a `design_note`; AND
+- `planar ui-driver-query --task-ids <ids> --json` finds a `design_note` artifact linked to a claimed task (the polymorphic-safe `from_kind='artifact'` join over the P3a-registered rows).
+
+When either is false, skip Phase 3.6 and dispatch the reviewer directly.
+
+**Context capsule (headless rule).** The dispatched worker starts with zero conversational context, so its brief MUST carry the design_note CONTENT — re-read from each returned `design_artifacts[].source_path` — not just the path, plus the surface (`frontend/pro` → `pro`, else `consumer`) and the scenario contract. A capsule with only a path verifies against nothing.
+
+**Outcomes.**
+- `pass` — the gate exits zero; dispatch the reviewer normally (it sees the manifest + verdict alongside the diff).
+- `fail` — applied through the SAME `route` phase as a reviewer `request-changes` (`verdict:"request-changes"`): loop back to a coder within the iteration-5 cap, the failing scenarios as the fix list. No new control flow — `workflows/dispatch.lua` `route` already maps `request-changes` → `loop-back`.
+- **advisory** — visual-fidelity findings that are not gate failures attach to the PR as human-judged evidence and do NOT loop. Only demonstrable failures consume iterations.
+
+**Single source of the gate.** The worker never re-implements the gate — `scripts/ui-verify/synthesize.mjs` owns the gate/advisory split (exit 1 = gating FAIL). Phase 3.6 only routes its verdict.
+
 ## Reviewer dispatch profile
 
 The reviewer is load-bearing for some cycle shapes and pure overhead for
