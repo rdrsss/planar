@@ -1247,6 +1247,236 @@ test_regression_b1() {
 }
 
 # ===========================================================================
+# TEST 11 — Lower-bound wall-clock guard: fast agent returns promptly even
+#            when AGENT_TIMEOUT is very large.
+#
+# This is the regression test that WOULD HAVE CAUGHT the original bug.
+# The bug: "( sleep $AGENT_TIMEOUT && touch flag ) &" started the sleeper as a
+# bash subshell inside $() (command substitution). $() implicitly waits for all
+# background children before returning. kill "$sleeper_pid" terminated the bash
+# wrapper but left the "sleep $AGENT_TIMEOUT" grandchild orphaned, still tracked
+# by the $() subshell — so every successful invocation blocked for the full
+# AGENT_TIMEOUT regardless of when the agent actually finished.
+#
+# 11a. Fast stub (~1s) with AGENT_TIMEOUT=600: spawn_agent_watchdog must return
+#      in < 15s. On the buggy code this would block for ~600s.
+# 11b. After return, no "sleep 600" orphan from this invocation survives (pgrep).
+# 11c. Timeout path unchanged: slow stub (20s) with AGENT_TIMEOUT=2 fires correctly
+#      (guard: wall-clock <= 12s, rc=1). This is already covered by TEST 1 (2s
+#      timeout) but we exercise the path with the fixed sleeper here too.
+# ===========================================================================
+test_watchdog_lower_bound() {
+  printf '\n=== M4 TEST 11: lower-bound wall-clock guard (regression for N*AGENT_TIMEOUT bug) ===\n'
+  local home db cfg
+  home="$(new_iso_home)"; db="$home/exp.db"; cfg="$home/config.toml"
+
+  # Build a minimal corpus git repo.
+  local corpus="$home/corpus"
+  mkdir -p "$corpus"
+  git -C "$corpus" init -q
+  git -C "$corpus" config user.email t11@test.local
+  git -C "$corpus" config user.name m4t11
+  printf 'base\n' >"$corpus/seed.txt"
+  git -C "$corpus" add -A
+  git -C "$corpus" commit -qm base
+
+  local wt="$home/slice-t11"
+  git -C "$corpus" worktree add -q --detach "$wt" HEAD
+
+  # ---------------------------------------------------------------------------
+  # 11a: fast stub (~1s) with AGENT_TIMEOUT=600 — must return in < 15s
+  # ---------------------------------------------------------------------------
+  local fast_dir="$home/fast-dir"
+  mkdir -p "$fast_dir"
+  cat >"$fast_dir/claude" <<'STUB'
+#!/usr/bin/env bash
+sleep 1
+printf '%s\n' '{"usage":{"input_tokens":5,"output_tokens":3,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},"total_cost_usd":0.001,"result":"done"}'
+STUB
+  chmod +x "$fast_dir/claude"
+
+  local trimmed; trimmed="$(trimmed_matrix "$home/matrix-nomain.sh")"
+  local state_file="$home/lb-state"
+
+  # sleeper_pid_file: the wrapper records the sleeper PID here so the test can
+  # check that specific PID (not a system-wide scan, which is flaky when
+  # concurrent m4-test instances both use "sleep 600").
+  local sleeper_pid_file="$home/lb-sleeper-pid"
+
+  local wrapper="$home/lb-wrapper.sh"
+  cat >"$wrapper" <<WRAPPER
+#!/usr/bin/env bash
+set -euo pipefail
+export PLANAR_DB_OVERRIDE="$db"
+export PLANAR_CONFIG_PATH_OVERRIDE="$cfg"
+export BENCH_HOME="$home"
+export BENCH_CORPUS_REPO="$corpus"
+export PATH="${fast_dir}:\${PATH}"
+# shellcheck disable=SC1090
+source "$trimmed"
+LOG_ROOT="$home/cell-logs"
+# Large timeout: the bug caused the call to block for the FULL timeout value.
+AGENT_TIMEOUT=600
+DRY_RUN=0
+_toflag="\$(mktemp "\${TMPDIR:-/tmp}/toflag.XXXXXX")"
+rm -f "\$_toflag"
+_AGENT_TIMEOUT_FLAG="\$_toflag"
+AGENT_TIMED_OUT=0
+# Intercept the sleeper PID by overriding the sleep binary: our wrapper prints
+# its own PID to the pid-file before exec-ing the real sleep so the outer test
+# can check if THAT process survived.  We only need to capture the first call
+# (the watchdog sleeper); the stub's own "sleep 1" also goes through this
+# shim, so we record the LAST sleep pid (the watchdog sleeper starts AFTER the
+# agent, so it is always the last one written).  Both pids should be dead after
+# a clean return; if either survives it is an orphan.
+_sleeper_shim_dir="\$(mktemp -d "\${TMPDIR:-/tmp}/sleeper-shim.XXXXXX")"
+cat >"\${_sleeper_shim_dir}/sleep" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "\$\$" >>"${sleeper_pid_file}"
+exec /bin/sleep "\$@"
+SH
+chmod +x "\${_sleeper_shim_dir}/sleep"
+export PATH="\${_sleeper_shim_dir}:\${PATH}"
+before=\$(date +%s)
+rc=0
+out="\$(spawn_agent_watchdog "stub-model" "$wt" "brief" 2>/dev/null)" || rc=\$?
+after=\$(date +%s)
+elapsed=\$(( after - before ))
+[ -f "\$_toflag" ] && AGENT_TIMED_OUT=1
+rm -f "\$_toflag" 2>/dev/null || true
+_AGENT_TIMEOUT_FLAG=""
+rm -rf "\${_sleeper_shim_dir}"
+printf 'rc=%s\n'      "\$rc"               >"$state_file"
+printf 'elapsed=%s\n' "\$elapsed"          >>"$state_file"
+printf 'timed_out=%s\n' "\${AGENT_TIMED_OUT}" >>"$state_file"
+WRAPPER
+  chmod +x "$wrapper"
+
+  local before_ts; before_ts="$(date +%s)"
+  bash "$wrapper" 2>/dev/null || true
+  local after_ts; after_ts="$(date +%s)"
+  local wall=$(( after_ts - before_ts ))
+
+  local wrc=0 welapsed=0 wtimed_out=0
+  if [ -f "$state_file" ]; then
+    wrc="$(grep '^rc=' "$state_file" | cut -d= -f2)"
+    welapsed="$(grep '^elapsed=' "$state_file" | cut -d= -f2)"
+    wtimed_out="$(grep '^timed_out=' "$state_file" | cut -d= -f2)"
+  fi
+
+  # 11a-i. Must return 0 (success).
+  [ "${wrc:-1}" -eq 0 ] \
+    && ok "lower-bound: fast stub succeeded (rc=0)" \
+    || bad "lower-bound: fast stub returned rc=${wrc:-?} (expected 0)"
+
+  # 11a-ii. Must NOT have timed out.
+  [ "${wtimed_out:-1}" -eq 0 ] \
+    && ok "lower-bound: AGENT_TIMED_OUT=0 (no spurious timeout)" \
+    || bad "lower-bound: AGENT_TIMED_OUT=${wtimed_out:-?} (spurious timeout on fast stub)"
+
+  # 11a-iii. THE CRITICAL ASSERTION: wall-clock must be << AGENT_TIMEOUT.
+  #   On buggy code: wall ≈ 600s. On fixed code: wall ≈ 1-3s (stub runtime).
+  #   Budget: < 15s (very generous; actual should be ~1-3s).
+  [ "$wall" -le 15 ] \
+    && ok "lower-bound: wall-clock ${wall}s <= 15s with AGENT_TIMEOUT=600 (fast return confirmed)" \
+    || bad "lower-bound: wall-clock ${wall}s > 15s with AGENT_TIMEOUT=600 — watchdog blocks for full timeout (THE BUG)"
+
+  # ---------------------------------------------------------------------------
+  # 11b: no orphaned sleeper processes survive the call
+  # Check by PID (not by process-name scan) to avoid false positives when
+  # concurrent m4-test instances each spawn their own "sleep 600" watchdog.
+  # ---------------------------------------------------------------------------
+  sleep 1
+  local orphan_count=0
+  if [ -f "$sleeper_pid_file" ]; then
+    local _spid
+    while IFS= read -r _spid; do
+      [ -n "$_spid" ] || continue
+      if kill -0 "$_spid" 2>/dev/null; then
+        orphan_count=$(( orphan_count + 1 ))
+        kill "$_spid" 2>/dev/null || true  # clean up so the test environment stays tidy
+      fi
+    done <"$sleeper_pid_file"
+  fi
+  [ "$orphan_count" -eq 0 ] \
+    && ok "lower-bound: no orphaned sleeper processes after fast-agent return (pid-checked)" \
+    || bad "lower-bound: ${orphan_count} orphaned sleeper process(es) survived (pid-checked orphan leak)"
+
+  # ---------------------------------------------------------------------------
+  # 11c: timeout path still works with the fixed sleeper (AGENT_TIMEOUT=2, slow stub)
+  # ---------------------------------------------------------------------------
+  local slow_dir="$home/slow-dir"
+  mkdir -p "$slow_dir"
+  cat >"$slow_dir/claude" <<'SLOWSTUB'
+#!/usr/bin/env bash
+sleep 20
+printf '%s\n' '{"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},"total_cost_usd":0.001,"result":"done"}'
+SLOWSTUB
+  chmod +x "$slow_dir/claude"
+
+  local timeout_state="$home/lb-timeout-state"
+  local timeout_wrapper="$home/lb-timeout-wrapper.sh"
+  cat >"$timeout_wrapper" <<TWRAP
+#!/usr/bin/env bash
+set -euo pipefail
+export PLANAR_DB_OVERRIDE="$db"
+export PLANAR_CONFIG_PATH_OVERRIDE="$cfg"
+export BENCH_HOME="$home"
+export BENCH_CORPUS_REPO="$corpus"
+export PATH="${slow_dir}:\${PATH}"
+# shellcheck disable=SC1090
+source "$trimmed"
+LOG_ROOT="$home/cell-logs"
+AGENT_TIMEOUT=2
+DRY_RUN=0
+_toflag="\$(mktemp "\${TMPDIR:-/tmp}/toflag.XXXXXX")"
+rm -f "\$_toflag"
+_AGENT_TIMEOUT_FLAG="\$_toflag"
+AGENT_TIMED_OUT=0
+before=\$(date +%s)
+rc=0
+out="\$(spawn_agent_watchdog "stub-model" "$wt" "brief" 2>/dev/null)" || rc=\$?
+after=\$(date +%s)
+elapsed=\$(( after - before ))
+[ -f "\$_toflag" ] && AGENT_TIMED_OUT=1
+rm -f "\$_toflag" 2>/dev/null || true
+_AGENT_TIMEOUT_FLAG=""
+printf 'rc=%s\n'        "\$rc"               >"$timeout_state"
+printf 'elapsed=%s\n'   "\$elapsed"          >>"$timeout_state"
+printf 'timed_out=%s\n' "\${AGENT_TIMED_OUT}" >>"$timeout_state"
+TWRAP
+  chmod +x "$timeout_wrapper"
+
+  local tw_before; tw_before="$(date +%s)"
+  bash "$timeout_wrapper" 2>/dev/null || true
+  local tw_after; tw_after="$(date +%s)"
+  local tw_wall=$(( tw_after - tw_before ))
+
+  local tw_rc=0 tw_timed_out=0
+  if [ -f "$timeout_state" ]; then
+    tw_rc="$(grep '^rc=' "$timeout_state" | cut -d= -f2)"
+    tw_timed_out="$(grep '^timed_out=' "$timeout_state" | cut -d= -f2)"
+  fi
+
+  # 11c-i. Timeout path: rc must be non-zero.
+  [ "${tw_rc:-0}" -ne 0 ] \
+    && ok "lower-bound: timeout path still fires with fixed sleeper (rc=${tw_rc})" \
+    || bad "lower-bound: timeout path returned rc=0 — timeout NOT detected (rc=${tw_rc:-?})"
+
+  # 11c-ii. AGENT_TIMED_OUT flag set.
+  [ "${tw_timed_out:-0}" -eq 1 ] \
+    && ok "lower-bound: AGENT_TIMED_OUT=1 on timeout path (flag-file channel works)" \
+    || bad "lower-bound: AGENT_TIMED_OUT=${tw_timed_out:-0} on timeout path (expected 1)"
+
+  # 11c-iii. Wall-clock close to deadline (< 12s with 2s deadline + 1s kill grace).
+  [ "$tw_wall" -le 12 ] \
+    && ok "lower-bound: timeout path returns in ${tw_wall}s <= 12s (deadline=2s)" \
+    || bad "lower-bound: timeout path took ${tw_wall}s > 12s — too slow (deadline=2s)"
+
+  rm -rf "$home"
+}
+
+# ===========================================================================
 # main
 # ===========================================================================
 main() {
@@ -1263,6 +1493,7 @@ main() {
   test_exhausted_retry_crashes_slice
   test_genuine_noop_not_retried
   test_cohort_trap_cleanup
+  test_watchdog_lower_bound
   test_regression_m3
   test_regression_b1
 
