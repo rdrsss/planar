@@ -72,7 +72,7 @@ they miss is the incidental periphery.
 
 ---
 
-## Study 2 — Does the derived closure recover what declarations miss?
+## Study 2a — Does the derived closure recover what declarations miss? (head-state — **superseded by Study 2b**)
 
 ### Method
 
@@ -131,37 +131,117 @@ the static closure fails on *non-code* build/CI/migration/fixture artifacts
 directories, build manifests, CI workflows) as concrete future work rather
 than an open-ended limitation.
 
+### Caveat flagged at time of writing (now resolved — see Study 2b)
+
+The analysis above (call it **Study 2a**) used closures computed 2026-06-16→20
+against the corpus repo at **post-implementation state**, and was flagged as a
+look-ahead-risk **upper bound**. Study 2b below recomputed the closures
+honestly and the bound turned out to be the entire effect.
+
+---
+
+## Study 2b — Look-ahead eliminated: the payoff reverses (same day)
+
+### Method
+
+Each task's closure was recomputed (`planar closure compute`, same extractor
+`m2-closure-0.1`) with the corpus repo checked out at that plan's
+**pre-feature base SHA** (659 @ `fcb167a`, 668 @ `274b6f6`, 678 @ `32061f7`) —
+the state a real forward prediction would be made from. Head-state closures
+archived first ([`data/closures-headstate-m2-0.1.csv`](data/closures-headstate-m2-0.1.csv));
+base-state in [`data/closures-basestate-m2-0.1.csv`](data/closures-basestate-m2-0.1.csv);
+per-task comparison in [`data/derived-vs-declared-basestate.csv`](data/derived-vs-declared-basestate.csv).
+
+### Results: the head-state gain was entirely look-ahead
+
+| predictor | macro recall (n=9) |
+|---|---:|
+| declared | **0.852** |
+| derived-effective, **head-state** (Study 2a) | 0.880 |
+| derived-effective, **base-state** (honest) | **0.574** |
+
+- Of the 8 files declarations missed, the base-state closure catches **0**
+  (head-state caught 6 — all six "recoveries" were edges the implementations
+  themselves had created).
+- The under-declared showcase tasks collapse back: 4206 head 0.75 → base
+  **0.25** (= declared); 4242 head 1.00 → base **0.50** (below declared 0.58).
+- Decomposition (per task): the pre-state symbol walk contributes **zero**
+  actual files beyond the declared seeds on *every one of the 9 tasks*.
+  `(seeds ∪ base-walk)` recall = 0.852 = declared exactly.
+- Part of the raw drop below declared (0.574 < 0.852) is an extractor gap,
+  not analysis: it silently **drops seed files that don't exist** at the
+  analyzed state (task 4241: 5 seeds, 1 existing at base → 4 vanish; task
+  4278's single new-file seed → empty closure). Fixable (closure ⊇ seeds),
+  but even fixed, derived = declared: **the walk adds nothing**.
+
+### Interpretation — a genuine negative result, and the mechanism
+
+**The incidental footprint of a change consists overwhelmingly of files the
+change itself will newly couple to.** The migration that will be referenced,
+the registration point that will gain a line, the sibling verb that will call
+the new function — none of these edges exist at prediction time, so forward
+static reachability from the seeds cannot see them, *definitionally*. They are
+invisible to the author (Study 1: recall 0.56 on multi-file tasks) **and** to
+pre-state static analysis (Study 2b: +0 files, n=9). The head-state result is
+the cautionary tale: compute the "prediction" after the fact and it looks like
+static analysis solves under-declaration (0.88, 6/8 recovered) — a **look-ahead
+trap** that this pair of studies now demonstrates and quantifies precisely.
+
+What *could* see future edges: signals that already encode convention and
+history rather than current reachability — **co-change mining** (files that
+historically change together), **convention detectors** (migrations
+directories, registration barrels, CI workflows, build manifests), or
+model-predicted footprints. That is now the evidence-backed redefinition of
+the extractor's future work.
+
+### Knock-on: the confirmatory grouped arm used look-ahead-informed input
+
+The campaign's grouped-arm slices were computed from the head-state closures.
+Re-running `groups recommend` with base-state closures changes the composition
+on **2 of 3 plans**: 668 merges to a single 3-task slice (honest closures are
+smaller → fits the 128K budget that head-state closures overflowed); 678
+splits (the new-file task's empty base closure isolates it); 659 unchanged.
+Directionally mixed — 668 would have co-located *more* (likely favoring
+grouped further), 678 less. Disclosed as an input-sensitivity caveat on RQ2:
+the token win held across both compositions that actually ran (all-in-one
+*and* split slices each beat eligibility), but grouped-arm results are
+conditional on the closure input, which was oracle-tinged.
+
 ### Caveats
 
-1. **Look-ahead risk (the important one):** the closures were computed
-   2026-06-16→20 against the corpus repo at post-implementation state — the
-   symbol graph the extractor walked may contain edges created by the very
-   implementations being predicted. The clean version recomputes each task's
-   closure at its pre-feature base SHA (static and free; queued as follow-up).
-   Until then, Study 2's derived-closure recall is an **upper bound**.
-2. **n = 9** (6 with original author declarations, 3 blind-agent-declared —
-   including the pathological release task).
-3. Ground truth for the three Plan-388 tasks via merge-first-parent fallback
-   (their ids appear only on fan-in merges).
-4. File-level projection of a symbol-level object; token costs (8K–229K per
-   task) are the context-budget axis the grouping objective optimizes,
-   reported in the CSV.
+1. **n = 9** (6 with original author declarations, 3 blind-agent-declared).
+2. Ground truth for the three Plan-388 tasks via merge-first-parent fallback.
+3. File-level projection of a symbol-level object; the closure remains a
+   *context* predictor — Study 2b judges it only in the role Study 2a claimed
+   for it (recovering unpredicted footprint), which it does not fill.
+4. One extractor version (`m2-closure-0.1`), one language. A stronger walker
+   (type-directed, build-graph-aware) could in principle do better; the
+   *future-edge* argument suggests the ceiling is structural, but that is an
+   argument, not yet a measurement across extractors.
 
 ---
 
 ## What this changes for the paper
 
-1. **RQ1 now has a real evidence base:** precision ~0.96 everywhere; recall
-   1.0 on trivial tasks but **0.56 on the multi-file tasks that matter** —
-   35 external + 6 pilot tasks, construct-valid, two repos, two author
+1. **RQ1 has a real evidence base:** precision ~0.96 everywhere; recall 1.0 on
+   trivial tasks but **0.56 on the multi-file tasks that matter** — 35
+   external + 6 pilot tasks, construct-valid, two repos, two author
    populations, convergent numbers.
-2. **The headline claim is now measured, with honest structure:** the derived
-   closure recovers **6/8 of declared misses** (0.25→0.75, 0.58→1.00 on the
-   under-declared tasks), at a quantified context cost, with a
-   *characterized* blind spot (non-code artifacts) and one adversarial case
-   (release scaffolding) reported rather than hidden.
-3. **Remaining evidence work, in priority order:** (a) recompute closures at
-   pre-feature bases to eliminate the look-ahead bound; (b) extend Study 1's
-   method to Planar's own history as the disclosed self-hosted secondary
-   corpus; (c) optional: artifact-coupling extension to the extractor, which
-   Study 2's error structure now specifies exactly.
+2. **The headline reframes from "derived closure fixes under-declaration" to a
+   sharper, more defensible pair:** (a) under-declaration is real and
+   concentrated in multi-file work; (b) it is **not fixable by pre-state
+   static reachability** — the missing footprint is *future-edge* coupling
+   (+0 files from the walk, n=9), and the apparent fix under post-hoc
+   computation is a quantified **look-ahead trap** (0.88 vs 0.57). The
+   negative result and the trap demonstration are contributions; the
+   co-change/convention direction is the evidence-backed future work.
+3. **The grouping win (RQ2/RQ3) stands on its own** — its mechanism is context
+   co-location, not footprint prediction — with the new input-sensitivity
+   disclosure (slice compositions change under honest closures on 2/3 plans;
+   the direction of bias is mixed and the win held across both observed
+   compositions).
+4. **Remaining evidence work:** (a) extend Study 1 to Planar's own history
+   (self-hosted secondary corpus); (b) prototype the co-change predictor and
+   score it against the same 8 declared-miss files — the table is already
+   built; (c) optional live re-runs (timing with the fixed watchdog, gate
+   recording) only if a venue demands them.

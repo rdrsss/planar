@@ -113,9 +113,11 @@ exactly or missed substantially — the mean is not a typical value.
 ([`pilot-notes.md`](pilot-notes.md)): declared predictions vs *real human
 implementation history*, no agent in the loop — **precision 1.00, recall
 0.58.** **Scaled up post-hoc** (2026-07-03) to all 37 declared git-fleet tasks
-— precision 0.957, recall 0.722 overall but **0.558 on multi-file tasks** —
-and the derived-closure payoff measured (6/8 declared misses recovered):
-see [`retrospective-studies.md`](retrospective-studies.md).
+— precision 0.957, recall 0.722 overall but **0.558 on multi-file tasks**.
+The derived-closure payoff was then measured and **reversed under look-ahead
+control**: computed honestly at pre-feature state, the closure walk adds zero
+recall beyond the seeds (the post-hoc 6/8 "recovery" was look-ahead artifact) —
+see [`retrospective-studies.md`](retrospective-studies.md) Study 2b.
 
 **H1 verdict (v2):** precision confirmed high everywhere (≥ 0.67 live in every
 arm; 1.00 retrospective). The recall bound is **unresolved by the live
@@ -185,14 +187,23 @@ compresses.
   grouped degenerates to one-agent-whole-plan, so grouping-vs-monolith is only
   distinguished on the coupled plan (668's 2-slice partition).
 - **Path-level harvest** (decision D1); symbol-level deferred.
+- **Grouped-arm input sensitivity (post-hoc finding):** the campaign's grouped
+  slices were computed from closures extracted at post-implementation state;
+  with honest pre-state closures the composition changes on 2/3 plans
+  (mixed direction; the token win held across both observed compositions).
+  See `retrospective-studies.md` Study 2b.
 
 ## 8. Bottom line (v2)
 
 Declared touches are **precise everywhere**, but their completeness could not
 be certified by this live design — the under-declaration claim (recall 0.58)
-rests on the construct-valid retrospective pilot, which still supports the
-pre-committed §7.2 pivot: **the derived closure is the headline contribution,
-argued honestly.** The robust experimental win is **closure-aware grouping**:
+rests on the construct-valid retrospective evidence (pilot 0.58; 35-task
+study 0.56 on multi-file tasks). The §7.2 pivot **evolved under further
+scrutiny**: pre-state static reachability does *not* recover the missing
+footprint (retrospective-studies.md Study 2b — the missing files are
+future-edge coupling; the post-hoc "fix" was a quantified look-ahead trap), so
+the headline is the sharper pair: under-declaration is real **and** structurally
+resistant to static closure — pointing to co-change/convention predictors. The robust experimental win is **closure-aware grouping**:
 the same corpus at **half to one-third the tokens** (13/13 paired wins,
 p = 0.0002, vs a null control contrast between the other two arms), **75% of
 serialized parallelism recovered on the frozen M-PAR**, the best review
