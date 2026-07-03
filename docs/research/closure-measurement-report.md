@@ -24,20 +24,35 @@ Appendix A; terms are also explained inline on first use.
 
 ---
 
+> **REVISION NOTICE (v2, 2026-07-03).** A pre-paper instrument review
+> ([`log/2026-07-03-instrument-review.md`](log/2026-07-03-instrument-review.md))
+> found that this report's original §5 contained one invalid metric (M-WALL —
+> a watchdog-padding artifact) and one unsupported verdict (the pooled-RQ1
+> "H1 fails on recall"). §0 and §5 below have been corrected in place;
+> [`results.md`](results.md) v2 is the results of record, and the review log
+> entry preserves what was originally claimed and why it changed.
+
 ## 0. One-paragraph summary
 
 We measured whether an LLM coding-agent orchestrator can parallelize a multi-task
 plan using only *declared* file touches (what a task author predicts it will
 edit), and whether **co-locating tasks by their context closure** beats naive
 parallelism. Across a 3-plan × 3-strategy × 5-repetition matrix (41 valid cells)
-over a real external codebase, we found: declared touches are **precise but
-systematically under-complete** (precision 0.77, recall 0.64) — so they cannot be
-trusted as the closure, which *promotes the derived (static-analysis) closure from
-a refinement to the central contribution*. And **closure-aware grouping is a clear
-win**: it implemented the same work in **one-third the tokens**, faster, with
-fewer review cycles and zero integration conflicts, and its advantage is largest
-when tasks are file-disjoint and shrinks as coupling rises. Both outcomes were
-*pre-registered as expected branches*, not surprises.
+over a real external codebase, we found: declared touches are **precise
+everywhere** (≥ 0.67 live, 1.00 retrospective) but their completeness could not
+be certified by the live design (the accuracy construct was compromised by our
+own arm-scoping interventions — disclosed in full); the construct-valid
+retrospective pilot (recall **0.58** against real human implementation history)
+remains the evidence that declarations are **systematically under-complete** —
+which *promotes the derived (static-analysis) closure from a refinement to the
+central contribution*. And **closure-aware grouping is a clear, statistically
+supported win**: the same corpus at half to one-third the tokens (13/13 paired
+wins vs naive eligibility, exact sign test p = 0.0002, with a null control
+contrast between the two non-grouped arms), **75% of eligibility-serialized
+parallelism recovered on the frozen M-PAR metric**, the fewest review cycles and
+zero integration conflicts — and the advantage is monotone-decreasing in
+measured coupling density (13.8× at density 0.05 → 1.9× at 0.45). Both
+outcomes land in *pre-registered branches*, not post-hoc stories.
 
 ---
 
@@ -309,81 +324,88 @@ no API hiccup contaminated a recorded measurement.
 observations. All numbers are reproducible from `data/` via the `metrics/*.sql`
 queries.
 
-### 5.1 RQ1 — declared-touch accuracy (the gate)
+*(This section is the v2-corrected analysis; [`results.md`](results.md) is the
+results of record with the full tables.)*
 
-| | precision | recall |
-|---|---:|---:|
-| **Overall (macro)** | **0.765** | **0.644** |
-| 659 (low coupling) | 1.000 | 0.476 |
-| 668 (high coupling) | 0.641 | 0.663 |
-| 678 (mixed) | 0.695 | 0.767 |
+### 5.1 RQ1 — declared-touch accuracy (the gate) — v2
 
-**Precision 0.77, recall 0.64.** Recall is below the X = 0.70 threshold →
-**H1 fails on recall**, landing in the pre-committed §7.2 branch: *declared touches
-are precise but systematically under-complete.* Authors predict files that do get
-touched (high precision), but the work pulls in **incidental** files they didn't
-predict — module barrels, registration points, tests, migrations (low recall).
-This is exactly the signal that **justifies the derived closure as the headline
-contribution**: if a human/planner's declared touches miss a third of what the work
-reaches, you cannot schedule parallel agents safely on the declared set alone — you
-need the computed closure.
+Per-arm (v1 pooled across arms, which hid two opposing artifacts):
 
-### 5.2 RQ2 / RQ3 — the arm comparison (the headline)
+| arm | precision | recall | attribution validity |
+|---|---:|---:|---|
+| strict | 0.736 | 0.796 | clean attribution, but recall **inflated** by the anti-sprawl brief steering agents toward declared files (partial circularity) |
+| eligibility | 0.675 | 0.749 | same steering caveat |
+| grouped | 0.679 | 0.394 | recall **deflated** by slice-level attribution (slice files attribute to every task in the slice) |
 
-Arm totals (mean per cell):
+The v1 pooled figure (0.765/0.644) and its "H1 fails on recall" verdict are
+**withdrawn** — the pooled number averaged the two artifacts. Strict-only
+clears the X = 0.70 threshold, but its recall is upward-biased by our own
+intervention, so **the live run neither confirms nor refutes H1's recall
+bound.** The construct-valid evidence for under-declaration remains the
+**retrospective pilot** (precision 1.00 / recall 0.58 against real *human*
+implementation history, no agent in the loop). That pilot result still
+supports the pre-committed §7.2 branch — **the derived closure as the headline
+contribution** — now argued from the pilot, with the live data as
+corroborating-but-compromised (the robust live signal is precision: ≥ 0.67 in
+every arm; the per-task distribution is strongly bimodal — predictions are
+either exact or substantially incomplete).
+
+### 5.2 RQ2 / RQ3 — the arm comparison (the headline) — v2
+
+Arm medians (IQR in `results.md`); M-WALL **withdrawn** (watchdog-padding
+artifact — every agent invocation blocked the full 600 s slot, so wall-clock
+measured arm structure, not work):
 
 | metric | strict | eligibility | grouped |
 |---|---:|---:|---:|
-| **M-TOK** (tokens) | 34,578 | 36,759 | **12,319** |
-| **M-WALL** (min) | 60 | 34 | **27** |
-| **M-ITER** (request-changes) | 16 | 12 | **4** |
+| **M-TOK** (median tokens) | 35,434 | 37,266 | **15,567** |
+| **M-PAR** (serialized tasks recovered) | — | — | **3/4 = 75%** |
+| **M-ITER** (request-changes; measured, no rework loop) | 16 | 12 | **4** |
 | **M-CONF** (conflicts) | 0 | 1 | **0** |
-| **M-BLAST** (tasks/slice) | 1.00 | 1.00 | 2.21 |
+| **M-BLAST** (structural tasks/slice) | 1.00 | 1.00 | 2.21 |
 
-**RQ2 / H2 — supported.** Grouped implemented the same work in **one-third the
-tokens** of either other arm (the H2 "tokens ≤ eligibility" condition met with a 3×
-margin) and in the **least wall-clock** (27 vs 34 vs 60 min). Against the serial
-baseline, grouped recovers 55% of the wall-clock; eligibility 43%. Grouping doesn't
-just match naive parallelism — it dominates it on both cost and speed.
+**RQ2 / H2 — supported, on the frozen metrics.** Token condition: grouped
+cheaper than eligibility in **13/13** paired cells (exact sign test
+**p = 0.0002**); the strict-vs-eligibility control contrast is null (6/13,
+p = 1.0), so the savings are specific to grouping. Parallelism condition: on
+the frozen **M-PAR**, grouped co-located **75%** of the tasks eligibility
+serialized (668: 50%, 678: 100%; 659 undefined — eligibility serialized
+nothing on the fully disjoint plan), clearing Y = 50%.
 
-**RQ3 / H3 — supported; no co-location tax.** The hypothesized tax was that
-co-locating tasks makes failures blast wider (M-BLAST 2.21 for grouped vs 1.00) and
-churnier. In practice grouped had the **fewest review cycles** (M-ITER 4) and **zero
-conflicts**, so the realized tax was a small fraction of the large token gain — Z
-(tax < 100% of gain) is not breached, and there is **no crossover regime** within
-this corpus/budget where co-location stops paying.
+**RQ3 / H3 — not falsified, but weakly tested.** Grouped had the fewest
+request-changes verdicts and zero conflicts, so Z (tax < 100% of gain) is
+formally satisfied with wide margin — but the harness executes **no rework
+loop**, so no failure tax could actually be *paid* in any arm: M-ITER is
+measured-hypothetical, M-BLAST structural. Testing H3 seriously requires a
+rework-enforcing harness (future work).
 
-*(Caveat: M-PAR — the exact count of "tasks eligibility serialized but grouped
-co-located" — was not computed for this run; wall-clock + slice composition are the
-parallelism evidence reported here. Computing M-PAR precisely from the per-cell
-dispatch trace is a clean follow-up.)*
+### 5.3 RQ4 — scaling with coupling — v2 (numeric x-axis)
 
-### 5.3 RQ4 — scaling with coupling
+| plan | coupling density | grouped median M-TOK | strict median M-TOK | advantage |
+|---|---:|---:|---:|---:|
+| 659 | 0.051 | 1,749 | 24,216 | **13.8×** |
+| 678 | 0.323 | 20,544 | 45,280 | 2.2× |
+| 668 | 0.445 | 16,861 | 32,878 | 1.9× |
 
-| plan | grouped M-TOK | strict M-TOK | grouped advantage |
-|---|---:|---:|---:|
-| 659 (low coupling) | 1,640 | 24,680 | **15×** cheaper |
-| 668 (high coupling) | 16,609 | 30,639 | 1.8× cheaper |
-| 678 (mixed) | 16,573 | 46,436 | 2.8× cheaper |
-
-The grouping advantage is **largest when tasks are file-disjoint and compresses as
-coupling rises.** When tasks are independent, one co-located agent handles several
-cheaply; as they share more files, each slice's combined work grows and the gap to
-strict narrows. The *slope* (RQ4's exploratory finding) is the takeaway: closure-
-aware grouping pays off most exactly where naive eligibility would *also* have
-parallelized — but it does so far more cheaply.
+Coupling density is now the protocol's numeric definition (shared effective-
+closure units / total, from the derived-closure table) rather than qualitative
+labels. The grouping advantage is **monotone-decreasing in measured density**.
+Mechanism: with disjoint closures one co-located agent handles several tasks on
+full context reuse; as closures overlap, per-slice work grows and the gap to
+strict compresses.
 
 ---
 
 ## 6. Discussion
 
-**The two findings reinforce each other.** RQ1 says you *can't* trust declared
-touches as the closure (recall 0.64) — which is the argument for computing the
-derived closure. RQ2/RQ3 say that once you *have* a good closure, scheduling tasks
-by it (grouping) is dramatically more efficient than the declared-touch-based naive
+**The two findings reinforce each other.** RQ1 — resting on the retrospective
+pilot (recall 0.58 against real human history; the live measurement is
+construct-compromised, §5.1) — says you *can't* trust declared touches as the
+closure. RQ2/RQ3 say that once you *have* a good closure, scheduling tasks by it
+(grouping) is dramatically more efficient than the declared-touch-based naive
 eligibility. Together they make the program's case: the derived closure is both
-*necessary* (declared touches under-predict) and *valuable* (closure-aware grouping
-wins decisively).
+*necessary* (declarations under-predict, per the pilot) and *valuable*
+(closure-aware grouping wins decisively, with inferential support).
 
 **For an orchestrator of parallel LLM agents**, the practical implication is: don't
 parallelize on author-declared touches alone; compute the closure, and prefer
@@ -410,7 +432,15 @@ divergence (RQ1) as its motivation and the grouping win (RQ2/RQ3) as its payoff.
   single-language one.
 - **N=4 on four cells** (API-limit casualties), N=5 elsewhere — within the
   pre-registered N=3–5, treated as missing-at-random (failures were API-side).
-- **M-PAR reported via proxy** (wall-clock + slice composition), not the exact count.
+- **M-PAR** computed post-hoc from recorded dispatch/fan-in events (v2); slice
+  shapes are structural, so it carries no rep-level variance.
+- **M-WALL withdrawn** (watchdog-padding artifact; see the revision notice and
+  `log/2026-07-03-instrument-review.md`). No timing claims are made.
+- **No functional-quality verification**: objective-gate outcomes were not
+  recorded per cell; "same work" across arms rests on declared-coverage and
+  reviewer-verdict proxies.
+- **Pseudoreplication**: the declared side is identical across cells; effective
+  n for declaration-quality claims is 9 tasks.
 - **Path-level harvest** — touches are measured at file granularity; per-task
   attribution within a co-located grouped slice is necessarily coarse (a slice's
   files attribute to every task in it).
@@ -426,7 +456,7 @@ divergence (RQ1) as its motivation and the grouping win (RQ2/RQ3) as its payoff.
 Everything needed to recompute the results is committed:
 - **`data/closure-run-2026-06.sql`** — the 41 cells' raw `runs`/`run_events`/
   `run_touches` rows, reloadable into any SQLite DB (round-trip verified to
-  reproduce RQ1's 0.765/0.644).
+  reproduce the per-arm RQ1 tables in `results.md` v2).
 - **`data/*.csv`** — human-readable per-cell + per-touch summaries.
 - **`metrics/*.sql`** — the frozen metric queries.
 - **`preregistration.md`** — the frozen contract (git-tagged `prereg-stage1`,
