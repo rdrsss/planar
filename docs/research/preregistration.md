@@ -59,6 +59,26 @@ Amendments (append-only):
     the pre-committed branches: H1 precision 0.765 ✓ / recall 0.644 < 0.70 →
     §7.2 (M2 = headline); H2 + H3 supported. No definitions changed — analysis
     only. Raw dataset archived at [`data/`](data/) for reproducibility.
+  - 2026-07-03: ANALYSIS v2 (instrument review; no definitions changed; see
+    log/2026-07-03-instrument-review.md). (a) M-WALL results WITHDRAWN — a
+    harness defect held every agent invocation open for the full 600s watchdog
+    slot, so wall-clock measured arm structure (39/41 cells at exact 20/40/60
+    min), not work. (b) The 06-30 H1 verdict is RETRACTED as stated: the pooled
+    recall 0.644 averaged a downward artifact (grouped slice-level attribution,
+    recall 0.394) and an upward bias (anti-sprawl briefs steering agents toward
+    declared files; strict-arm recall 0.796 clears X). The live run is ruled
+    inconclusive on H1's recall bound; the §7.2 pivot now rests on the
+    construct-valid retrospective pilot (recall 0.58). (c) M-PAR computed per
+    the frozen §2 definition from recorded dispatch events: 75% pooled ≥ Y=50%
+    → H2's parallelism leg passes on the frozen metric (token leg: 13/13
+    paired wins vs eligibility, exact sign test p=0.0002; strict-vs-eligibility
+    control contrast null). (d) Coupling density computed per §7.1 from the
+    closures table (659=0.051, 668=0.445, 678=0.323); RQ4 slope monotone.
+    (e) The four frozen queries named in §7.1 but never authored are now in
+    metrics/ (parallelism_recovered, coupling_density, reviewer_iters,
+    blast_radius). (f) H3 re-graded "not falsified, weakly tested" — no rework
+    loop exists, so the tax could not be paid in any arm. §5-compliant
+    medians/IQR/sign tests replace v1 means throughout results.md v2.
 ```
 
 Anything discovered after a freeze is **exploratory** (§8), labeled as such,
