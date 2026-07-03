@@ -36,7 +36,7 @@ Vendor-neutral. Vendor-specific surfaces are under `commands/claude/pl-spec-draf
   - `product-spec.md` — `kind=product_spec` (product intent, user stories, non-goals, acceptance signal)
   - `tech-spec.md` — `kind=tech_spec` (architecture, components, schema changes, decisions)
   - `roadmap.md` — `kind=roadmap` (flat milestone list with bulleted work items and `[touches: ...]` annotations)
-  - `test-spec.md` — `kind=test_spec` (test strategy with scenarios in four return-path buckets — happy / empty-null / error / edge — plus a coverage-gap checklist and test-surface-allocation table). Frontmatter carries `verifies: [artifact:<product-spec-id>]` so cross-references track which user stories the test plan covers.
+  - `test-spec.md` — `kind=test_spec` (test strategy with flat `### Scenario: <title>` H3 scenarios — the canonical grammar — plus a coverage-gap checklist and test-surface-allocation table). Each scenario title names the coverage lens it exercises (happy / empty-null / error / edge); the four buckets are a reasoning tool, not document structure. Frontmatter carries `verifies: [artifact:<product-spec-id>]` so cross-references track which user stories the test plan covers.
 
   Every produced `.md` file carries a YAML front matter block between `---` delimiters at the top of the file. The canonical schema is the `FrontMatter` struct in `src/internal/workbench/parse.go`. Required fields for planner-written artifact files:
 
@@ -148,11 +148,13 @@ You are authoring `test-spec.md`. The other three docs are locked. Your job is p
 
 - Propose implementations of the tests (the test-coder writes the code; you describe the scenarios as observable behavior).
 - Re-litigate features in product-spec or architecture in tech-spec.
-- Collapse the four return-path buckets. Reason about each bucket explicitly per public function or user-visible flow:
+- Skip any of the four return-path buckets without justification. Reason about each bucket explicitly per public function or user-visible flow — they are a **coverage-reasoning lens**, not document structure:
   1. **Happy path** — valid input, meaningful output.
   2. **Empty / null return** — valid input, legitimately empty output (not an error).
   3. **Error return** — operation cannot proceed.
   4. **Edge case** — boundary conditions (zero/one/max inputs, off-by-one, concurrent access).
+
+  Author each scenario as a **flat `### Scenario: <title>` H3** (one H3 per scenario) naming the bucket in the title, e.g. `### Scenario: Happy path — foo returns bar`. Do NOT create `### <bucket>` group headers with nested `#### Scenario:` H4 children — that form is a parser-tolerated fallback, not the canonical grammar.
 
 The coverage-gap checklist at the bottom of `test-spec.md` is the reviewer's structured surface for confirming each bucket is addressed (or marked N/A with justification) per function/flow.
 

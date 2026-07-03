@@ -177,6 +177,40 @@ fn runOnePlan(
         &.{};
     defer if (test_body_opt != null) ingestor.parse.deinitScenarios(scenarios, ctx.allocator);
 
+    // ---- loud 0-entity validation -----------------------------------
+    // Warn on stderr (and include in text preview) when a non-empty section
+    // produced 0 parsed entities. This fires for both preview and --apply so
+    // the preview doubles as a grammar linter.
+    if (decisions.len == 0 and
+        ingestor.parse.sectionHasContent(tech_body, "## Decisions"))
+    {
+        try ctx.stderr.print(
+            "warning: '## Decisions' has content but 0 decisions extracted — " ++
+                "decisions need '### <title>' H3 headings or '- **Title.** body' bullets. " ++
+                "Nothing was written.\n",
+            .{},
+        );
+    }
+    if (questions.len == 0 and
+        ingestor.parse.sectionHasContent(tech_body, "## Open Questions"))
+    {
+        try ctx.stderr.print(
+            "warning: '## Open Questions' has content but 0 questions extracted — " ++
+                "questions need '### <title>' H3 headings. Nothing was written.\n",
+            .{},
+        );
+    }
+    if (test_body_opt != null and scenarios.len == 0 and
+        ingestor.parse.sectionHasContent(test_body_opt.?, "## Scenarios"))
+    {
+        try ctx.stderr.print(
+            "warning: '## Scenarios' has content but 0 scenarios extracted — " ++
+                "scenarios need '### Scenario: <title>' H3 headings, '### <title>' H3 with '**Verifies:**', " ++
+                "or '#### Scenario: <title>' H4 items under a bucket H3. Nothing was written.\n",
+            .{},
+        );
+    }
+
     const diff = ingestor.diff.compute(d, ctx.allocator, anchor.id, milestones, decisions, questions, scenarios) catch |e| {
         try ctx.stderr.print("plan {d} ({s}): computing diff: {s}\n", .{ anchor.id, anchor.slug, @errorName(e) });
         return e;

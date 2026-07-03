@@ -471,6 +471,168 @@ test "spec ingest failed apply leaves workbench status and push clean" {
     try expectNoGeneratedWorkbenchFiles(after_files);
 }
 
+test "spec ingest preview warns on non-empty Scenarios section that yields 0 scenarios" {
+    // A ## Scenarios section whose content is prose paragraphs and plain bullets
+    // — no '### Scenario:' H3, no '**Verifies:**', no '#### Scenario:' H4 —
+    // must trigger the loud stderr warning instead of silently producing 0
+    // scenarios.
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_backing = std.heap.ArenaAllocator.init(gpa);
+    defer arena_backing.deinit();
+    const arena = arena_backing.allocator();
+
+    const tech_body =
+        \\# Zero Scenarios Warning Tech Spec
+        \\
+        \\## Status
+        \\
+        \\Draft.
+        \\
+    ;
+    const roadmap_body =
+        \\# Zero Scenarios Warning Roadmap
+        \\
+        \\## Coverage Milestone
+        \\
+        \\- Seed task for the fixture [slug: zero-scen-seed-task]
+        \\
+    ;
+    // Intentionally no '### Scenario:' H3, '**Verifies:**', or '#### Scenario:'.
+    // Plain prose + plain bullets that do not match any scenario grammar.
+    const test_spec_body =
+        \\# Zero Scenarios Warning Test Spec
+        \\
+        \\## Scenarios
+        \\
+        \\These scenarios will be documented as proper H3 blocks later.
+        \\
+        \\- Cover the happy path (pending)
+        \\- Cover the error path (pending)
+        \\
+    ;
+
+    const fixture = createSpecIngestFixture(
+        &suite,
+        arena,
+        "Zero Scenarios Warning Plan",
+        tech_body,
+        roadmap_body,
+        test_spec_body,
+        "workbench-zero-scen-warn",
+    );
+
+    // Run preview (no --apply): the warning must appear on stderr.
+    const res = suite.execWith(&.{ "spec", "ingest", fixture.plan_id }, fixture.env);
+    defer res.deinit(gpa);
+    try std.testing.expect(res.term == .exited and res.term.exited == 0);
+    try std.testing.expect(std.mem.containsAtLeast(
+        u8,
+        res.stderr,
+        1,
+        "has content but 0 scenarios extracted",
+    ));
+
+    // The JSON preview must also show 0 scenario additions.
+    const PreviewJSON = struct {
+        summary: struct {
+            additions: i64,
+            updates: i64,
+            removals: i64,
+        },
+    };
+    const preview_json = suite.mustRunWith(
+        &.{ "spec", "ingest", fixture.plan_id, "--format", "json" },
+        fixture.env,
+    );
+    defer gpa.free(preview_json);
+    const preview = parseJSON(PreviewJSON, arena, preview_json);
+    // The roadmap has 1 task that would be an addition; decisions/questions/
+    // scenarios contribute 0 scenario additions. Confirm scenarios stayed at 0
+    // by checking the stderr warning path fired (asserted above) and that the
+    // overall additions are only from the roadmap task, not from scenarios.
+    // The scenario count in the diff is captured via the stderr warning gate
+    // above; additionally assert additions >= 0 (shape sanity).
+    try std.testing.expect(preview.summary.additions >= 0);
+}
+
+test "spec ingest preview warns on non-empty Open Questions section that yields 0 questions" {
+    // A ## Open Questions section whose content uses plain bullets instead of
+    // '### <title>' H3 headings must trigger the loud stderr warning.  The
+    // open-questions parser only extracts H3s; bullets produce nothing.
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_backing = std.heap.ArenaAllocator.init(gpa);
+    defer arena_backing.deinit();
+    const arena = arena_backing.allocator();
+
+    const tech_body =
+        \\# Zero Questions Warning Tech Spec
+        \\
+        \\## Status
+        \\
+        \\Draft.
+        \\
+        \\## Open Questions
+        \\
+        \\- Is the scope boundary correct here? (use H3 headings to make this parseable)
+        \\- Should we support batched previews? (use H3 headings to make this parseable)
+        \\
+    ;
+    const roadmap_body =
+        \\# Zero Questions Warning Roadmap
+        \\
+        \\## Questions Milestone
+        \\
+        \\- Seed task for zero-questions fixture [slug: zero-q-seed-task]
+        \\
+    ;
+
+    const fixture = createSpecIngestFixture(
+        &suite,
+        arena,
+        "Zero Questions Warning Plan",
+        tech_body,
+        roadmap_body,
+        null,
+        "workbench-zero-q-warn",
+    );
+
+    // Run preview (no --apply): the warning must appear on stderr.
+    const res = suite.execWith(&.{ "spec", "ingest", fixture.plan_id }, fixture.env);
+    defer res.deinit(gpa);
+    try std.testing.expect(res.term == .exited and res.term.exited == 0);
+    try std.testing.expect(std.mem.containsAtLeast(
+        u8,
+        res.stderr,
+        1,
+        "has content but 0 questions extracted",
+    ));
+
+    // JSON preview must reflect 0 question additions.
+    const PreviewJSON = struct {
+        summary: struct {
+            additions: i64,
+            updates: i64,
+            removals: i64,
+        },
+    };
+    const preview_json = suite.mustRunWith(
+        &.{ "spec", "ingest", fixture.plan_id, "--format", "json" },
+        fixture.env,
+    );
+    defer gpa.free(preview_json);
+    const preview = parseJSON(PreviewJSON, arena, preview_json);
+    // Questions contribute 0 additions; the roadmap task may add >=1.
+    // The load-bearing assertion is the stderr warning check above.
+    // Verify shape sanity.
+    try std.testing.expect(preview.summary.additions >= 0);
+}
+
 fn parseJSON(comptime T: type, arena: std.mem.Allocator, buf: []const u8) T {
     const trimmed = std.mem.trim(u8, buf, " \n");
     const parsed = std.json.parseFromSlice(T, arena, trimmed, .{

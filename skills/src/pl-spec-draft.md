@@ -25,7 +25,7 @@ shared_notes:
 
 # Spec Draft ({{.VendorTitle}})
 
-{{.VendorTitle}} skill surface for the vendor-neutral `planner` agent. See [`agents/planner.md`](../../agents/planner.md) for the full role spec, input/output contract, doc shape conventions, and the **four-phase authoring discipline** (product → tech → roadmap → test). The phase-specific "do NOT" lists are load-bearing: they keep product-spec out of implementation, keep test-spec out of code, and keep the four return-path buckets (happy / empty-null / error / edge) explicit.
+{{.VendorTitle}} skill surface for the vendor-neutral `planner` agent. See [`agents/planner.md`](../../agents/planner.md) for the full role spec, input/output contract, doc shape conventions, and the **four-phase authoring discipline** (product → tech → roadmap → test). The phase-specific "do NOT" lists are load-bearing: they keep product-spec out of implementation, keep test-spec out of code, and ensure the four return-path buckets (happy / empty-null / error / edge) are reasoned through explicitly as a coverage lens — not collapsed into document structure.
 
 Phase 4 has a self-check before final emission (see [`agents/planner.md` §Phase 4 self-check](../../agents/planner.md#phase-4-self-check-before-final-emission)): every scenario has a non-empty `**Verifies:**`, every cited slug exists as a `[slug: …]` annotation on a roadmap bullet, and every testable bullet carries a `[slug: …]`. Run `planar spec ingest <plan> --strict` and `planar test-spec status <plan>` locally to catch the same failure modes before handoff.
 
@@ -42,7 +42,7 @@ Do **not** invoke this skill to create tasks. Task creation belongs to `pl-spec-
 - `product-spec.md` — product intent, user stories, non-goals, acceptance signal (registered as `kind=product_spec`).
 - `tech-spec.md` — architecture, components, schema changes, and a `## Decisions` section (registered as `kind=tech_spec`).
 - `roadmap.md` — flat milestone list with bulleted work items; cross-repo items carry `[touches: acme/protos, acme/service]` annotations (registered as `kind=roadmap`).
-- `test-spec.md` — test strategy with scenarios grouped into four return-path buckets (happy / empty-null / error / edge), a coverage-gap checklist, and a test-surface-allocation section (unit / integration / scenario rows). Registered as `kind=test_spec`. Frontmatter carries `verifies: [artifact:<product-spec-id>]` so the cross-reference machinery tracks which user stories the test plan covers.
+- `test-spec.md` — test strategy with scenarios authored as **flat `### Scenario: <title>` H3** (one H3 per scenario; name the coverage lens in the title, e.g. `### Scenario: Happy path — foo returns bar`), a coverage-gap checklist, and a test-surface-allocation section (unit / integration / scenario rows). The four return-path buckets (happy / empty-null / error / edge) are a **coverage-reasoning lens**, not document structure — do not use `### <bucket>` group headers with nested `#### Scenario:` H4 items. Registered as `kind=test_spec`. Frontmatter carries `verifies: [artifact:<product-spec-id>]` so the cross-reference machinery tracks which user stories the test plan covers.
 - Optional initial test scenarios under `scenarios/`.
 - Workbench manifest seeded via `planar workbench push`.
 
