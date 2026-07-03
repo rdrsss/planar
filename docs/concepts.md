@@ -1057,7 +1057,9 @@ The dir-symlink shape for Codex and Copilot is load-bearing. Empirically their d
 
 The fourth planning document, alongside product-spec, tech-spec, and roadmap. The planner emits a `test-spec.md` for every new feature; the ingestor decomposes its `## Scenarios` section into `test_scenarios` rows with `verifies` edges to the tasks each scenario covers.
 
-**Authoring shape.** Scenarios are grouped into four return-path buckets, each asking a different question:
+**Authoring shape.** Each scenario is a **flat `### Scenario: <title>` H3** — one H3 per scenario. The four return-path buckets (happy / empty-null / error / edge) are a **coverage-reasoning lens**, not document structure: name the bucket in the scenario title, e.g. `### Scenario: Happy path — export returns CSV rows` or `### Scenario: Error return — export fails on missing header`. Do NOT use `### <bucket>` H3 group headers containing `#### Scenario:` H4 children — that layout is silently ambiguous and was the root cause of #87.
+
+The four lenses, each asking a different question:
 
 - **Happy path** — valid input, meaningful output. The function does the thing.
 - **Empty / null return** — valid input, legitimately empty output (no rows, nil pointer, "not found"). A correctness path, not an error path. Easy to skip; often hides the subtlest bugs (conflating "no results" with "error").
@@ -1065,6 +1067,14 @@ The fourth planning document, alongside product-spec, tech-spec, and roadmap. Th
 - **Edge case** — boundary conditions (zero / one / max inputs, off-by-one, concurrent access).
 
 Each `### Scenario: …` H3 carries leading `**Verifies:** task:N, task:M` / `**Kind:** unit|integration` / `**Acceptance:** <observable result>` lines. The ingestor extracts these into structured fields on the `test_scenarios` row.
+
+**Accepted lenience.** `planar spec ingest` (preview and apply) also tolerates two non-canonical forms so older specs do not require a rewrite: (a) `#### Scenario:` H4 items nested under `### <bucket>` H3 group headers, and (b) bulleted `## Decisions` entries (`- **Title.** body`). Both are parsed and imported correctly, but the canonical/preferred forms — flat `### Scenario:` H3 scenarios and `### <title>` H3 decisions — should be used for new authoring.
+
+**Preview warning.** `planar spec ingest <plan>` (preview mode, no `--apply`) now emits a stderr warning when a non-empty `## Decisions`, `## Open Questions`, or `## Scenarios` section produces zero extracted entities. Run the preview before `--apply` to catch parsing mismatches early:
+
+```
+planar spec ingest <plan>
+```
 
 **Coverage-gap checklist.** Below the scenarios, the operator confirms per-function compliance with each bucket via Markdown checkboxes. Gaps marked N/A require a one-line justification so the reviewer can confirm the absence is deliberate.
 
