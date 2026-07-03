@@ -34,3 +34,4 @@ found, what it cost, and what we'd do differently. Three uses:
 |---|---|---|
 | 2026-07-03 | [`2026-06-closure-campaign.md`](2026-06-closure-campaign.md) | The confirmatory-run saga: a $165 silent measurement failure, six layered instrument bugs, API-limit perturbation, and the self-healing arc. |
 | 2026-07-03 | [`2026-07-03-instrument-review.md`](2026-07-03-instrument-review.md) | Post-hoc critical review: M-WALL is a structural artifact; live RQ1 is contaminated in both directions; the pooled H1 verdict was wrong; what survives. |
+| 2026-07-03 | [`2026-07-03-lookahead-reversal.md`](2026-07-03-lookahead-reversal.md) | The derived-closure payoff (6/8 recovered) evaporated under look-ahead control (0/8; walk adds +0 beyond seeds) — the negative result, the trap, and the sharper paper. |

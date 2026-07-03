@@ -1,0 +1,1801 @@
+task_id,repo_id,path,symbol,role,token_weight,extractor_version,created_at
+4206,43,cache,"cache.test:0002->0003 migration: existing rows survive with NULL op_kind",modify,0,m2-closure-0.1,2026-07-03T17:08:43.223Z
+4206,43,cache,"cache.test:S-E2: open fresh in-memory DB migrates to latest version, audit_log has 0 rows",modify,0,m2-closure-0.1,2026-07-03T17:08:43.223Z
+4206,43,cache,"cache.test:S-G7: N->N+1 migration preserves existing audit_log rows",modify,0,m2-closure-0.1,2026-07-03T17:08:43.223Z
+4206,43,cache,"cache.test:atomicity: a broken migration leaves DB at prior version",modify,0,m2-closure-0.1,2026-07-03T17:08:43.223Z
+4206,43,cache,"cache.test:countObservedRepos: multi-provider counts are independent",modify,0,m2-closure-0.1,2026-07-03T17:08:43.223Z
+4206,43,cache,"cache.test:fetchExtrasAndObservedAt: returns empty extras for missing row (soft-fail)",modify,0,m2-closure-0.1,2026-07-03T17:08:43.222Z
+4206,43,cache,"cache.test:fetchExtrasAndObservedAt: returns extras and observed_at for existing row",modify,0,m2-closure-0.1,2026-07-03T17:08:43.223Z
+4206,43,cache,"cache.test:listObservedReposWithExtras: empty table returns empty slice",modify,0,m2-closure-0.1,2026-07-03T17:08:43.223Z
+4206,43,cache,"cache.test:listObservedReposWithExtras: returns rows including extras column",modify,0,m2-closure-0.1,2026-07-03T17:08:43.223Z
+4206,43,cache,"cache.test:new rows after migration 0003 have op_kind populated",modify,0,m2-closure-0.1,2026-07-03T17:08:43.223Z
+4206,43,cache,"cache.test:schema version 4 on fresh cache",modify,0,m2-closure-0.1,2026-07-03T17:08:43.223Z
+4206,43,cache,"cache.test:updateRepoExtras: no-op for non-existent row (0 rows affected, no error)",modify,0,m2-closure-0.1,2026-07-03T17:08:43.223Z
+4206,43,cache,"cache.test:updateRepoExtras: updates the extras column for an existing row",modify,0,m2-closure-0.1,2026-07-03T17:08:43.223Z
+4206,43,cache,"cache.test:upsertObservedRepo: UPSERT idempotency — second upsert updates observed_at, count stays 1",modify,0,m2-closure-0.1,2026-07-03T17:08:43.222Z
+4206,43,cache,"cache.test:upsertObservedRepo: inserts a new row",modify,0,m2-closure-0.1,2026-07-03T17:08:43.223Z
+4206,43,cache,"cache.test:writeAuditLog: inserts a row readable back",modify,0,m2-closure-0.1,2026-07-03T17:08:43.223Z
+4206,43,cache,"cache.test:writeAuditLog: multiple rows accumulate",modify,0,m2-closure-0.1,2026-07-03T17:08:43.223Z
+4206,43,src/cache.zig,cache.Cache,modify,4373,m2-closure-0.1,2026-07-03T17:08:43.223Z
+4206,43,src/cache.zig,cache.Cache,reference,4373,m2-closure-0.1,2026-07-03T17:08:43.223Z
+4206,43,src/cache.zig,cache.Cache.ObservedRepo,reference,4373,m2-closure-0.1,2026-07-03T17:08:43.223Z
+4206,43,src/cache.zig,cache.Cache.applyMigration,reference,4373,m2-closure-0.1,2026-07-03T17:08:43.223Z
+4206,43,src/cache.zig,cache.Cache.db,reference,4373,m2-closure-0.1,2026-07-03T17:08:43.223Z
+4206,43,src/cache.zig,cache.Cache.open,reference,4373,m2-closure-0.1,2026-07-03T17:08:43.223Z
+4206,43,src/cache.zig,cache.Cache.runMigrations,reference,4373,m2-closure-0.1,2026-07-03T17:08:43.223Z
+4206,43,src/cache.zig,cache.Cache.schemaVersion,reference,4373,m2-closure-0.1,2026-07-03T17:08:43.223Z
+4206,43,src/cache.zig,cache.CacheError,modify,26,m2-closure-0.1,2026-07-03T17:08:43.223Z
+4206,43,src/cache.zig,cache.CacheError,reference,26,m2-closure-0.1,2026-07-03T17:08:43.223Z
+4206,43,src/cache.zig,cache.Migration,modify,18,m2-closure-0.1,2026-07-03T17:08:43.223Z
+4206,43,src/cache.zig,cache.Migration,reference,18,m2-closure-0.1,2026-07-03T17:08:43.223Z
+4206,43,src/cache.zig,cache.c,modify,10,m2-closure-0.1,2026-07-03T17:08:43.223Z
+4206,43,src/cache.zig,cache.c,reference,10,m2-closure-0.1,2026-07-03T17:08:43.223Z
+4206,43,src/cache.zig,cache.migrations,modify,84,m2-closure-0.1,2026-07-03T17:08:43.223Z
+4206,43,src/cache.zig,cache.migrations,reference,84,m2-closure-0.1,2026-07-03T17:08:43.222Z
+4206,43,src/cache.zig,cache.openEmptyDb,modify,77,m2-closure-0.1,2026-07-03T17:08:43.222Z
+4206,43,src/cache.zig,cache.openEmptyDb,reference,77,m2-closure-0.1,2026-07-03T17:08:43.223Z
+4206,43,src/cache.zig,cache.sqliteVersion,modify,27,m2-closure-0.1,2026-07-03T17:08:43.223Z
+4206,43,src/cache.zig,cache.std,modify,8,m2-closure-0.1,2026-07-03T17:08:43.223Z
+4206,43,src/cache.zig,cache.std,reference,8,m2-closure-0.1,2026-07-03T17:08:43.223Z
+4206,43,src/cache.zig,cache.translateRc,modify,80,m2-closure-0.1,2026-07-03T17:08:43.223Z
+4206,43,src/cache.zig,cache.translateRc,reference,80,m2-closure-0.1,2026-07-03T17:08:43.223Z
+4207,43,apply_policy,"apply_policy.test:S-G5: apply-policy dry-run plan equals real-run execution set",modify,0,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,apply_policy,"apply_policy.test:apply-policy: ci_set_enabled called via fake CIVTable (M6 path, D-AP-2)",modify,0,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,apply_policy,"apply_policy.test:apply-policy: dry-run writes no audit rows",modify,0,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,apply_policy,"apply_policy.test:apply-policy: filter expression rejects all repos → nothing_to_do",modify,0,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,apply_policy,"apply_policy.test:apply-policy: filter selects only matching repos (dry-run)",modify,0,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,apply_policy,"apply_policy.test:apply-policy: per-repo best-effort — failure on repo-a does not skip repo-b",modify,0,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,apply_policy,"apply_policy.test:apply-policy: policy_not_found when policy name not in manifest",modify,0,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,apply_policy,"apply_policy.test:apply-policy: ssh-bare unsupported field → UnsupportedField warning, not error",modify,0,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,apply_policy,"apply_policy.test:parsePolicy: empty policy section returns bundle with zero extension_keys",modify,0,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,apply_policy,"apply_policy.test:parsePolicy: finds policy with branch_protection and ci keys",modify,0,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,apply_policy,"apply_policy.test:parsePolicy: ignores non-extension keys, collects webhooks and collaborators",modify,0,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,apply_policy,"apply_policy.test:parsePolicy: returns null for missing policy name",modify,0,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,manifest,"manifest.test:S-E1 empty-repos: empty [[repos]] is valid, repos.len == 0",modify,0,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,manifest,"manifest.test:S-H1 happy-path: 3 repos parse into expected Fleet",modify,0,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,manifest,"manifest.test:S-X2 missing-var: unset env var returns UnsetEnvVar error with var name",modify,0,m2-closure-0.1,2026-07-03T17:08:44.236Z
+4207,43,manifest,"manifest.test:TOML syntax error: unterminated section header",modify,0,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,manifest,"manifest.test:array: bare-integer element is rejected (heterogeneous / non-string)",modify,0,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,manifest,"manifest.test:array: empty tags = [] produces zero-length tags slice",modify,0,m2-closure-0.1,2026-07-03T17:08:44.236Z
+4207,43,manifest,"manifest.test:array: env-var interpolation inside element resolves correctly",modify,0,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,manifest,"manifest.test:array: missing env var inside element raises UnsetEnvVar",modify,0,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,manifest,"manifest.test:array: multi-element single-line tags = [",modify,0,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,manifest,"manifest.test:array: multi-line no trailing comma (TOML 1.0 valid)",modify,0,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,manifest,"manifest.test:array: multi-line with trailing comma",modify,0,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,manifest,"manifest.test:array: repo without tags field gets empty slice (default)",modify,0,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,manifest,"manifest.test:array: single-element tags = [",modify,0,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,manifest,"manifest.test:array: unclosed bracket is InvalidToml",modify,0,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,manifest,"manifest.test:env-interpolation happy-path: ${TEST_ORG}-prod resolves correctly",modify,0,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,manifest,"manifest.test:fleet sentinel: project = [...] is rejected with InvalidToml at fleet.project",modify,0,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,manifest,"manifest.test:literal string value: single-quoted strings have no escape processing",modify,0,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,manifest,"manifest.test:missing [fleet] table returns MissingFleetTable error",modify,0,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,manifest,"manifest.test:multi-provider: two providers parse correctly",modify,0,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,manifest,"manifest.test:optional template field: repo without template has null template",modify,0,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,manifest,"manifest.test:parseWithArena: happy path returns arena-managed FleetManifest",modify,0,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,manifest,"manifest.test:parseWithArena: parse error still returns valid arena (safe to deinit)",modify,0,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/apply.zig,apply.Allocator,transitive,9,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/apply.zig,apply.cache_mod,transitive,8,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/apply.zig,apply.dispatchExtensionOps,reference,1407,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/apply.zig,apply.emitExtensionWarnings,transitive,288,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/apply.zig,apply.gitlab_mod,transitive,8,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/apply.zig,apply.parseBranchProtectionPayload,transitive,126,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/apply.zig,apply.parseCollaboratorPayload,transitive,226,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/apply.zig,apply.planner_mod,transitive,8,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/apply.zig,apply.provider_mod,transitive,8,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/apply.zig,apply.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/apply.zig,apply.writeExtensionAuditLog,transitive,118,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/apply_policy.zig,apply_policy.Allocator,modify,9,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/apply_policy.zig,apply_policy.Allocator,reference,9,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/apply_policy.zig,apply_policy.ApplyPolicyArgs,modify,50,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/apply_policy.zig,apply_policy.ApplyPolicyArgs,reference,50,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/apply_policy.zig,apply_policy.ApplyPolicyOutput,modify,41,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/apply_policy.zig,apply_policy.ApplyPolicyOutput,reference,41,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/apply_policy.zig,apply_policy.ApplyPolicyResult,modify,26,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/apply_policy.zig,apply_policy.ApplyPolicyResult,reference,26,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/apply_policy.zig,apply_policy.ApplyPolicyResult.nothing_to_do,reference,26,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/apply_policy.zig,apply_policy.ApplyPolicyResult.policy_not_found,reference,26,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/apply_policy.zig,apply_policy.ApplyPolicySummary,modify,24,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/apply_policy.zig,apply_policy.ApplyPolicySummary,reference,24,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/apply_policy.zig,apply_policy.Io,modify,7,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/apply_policy.zig,apply_policy.Io,reference,7,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/apply_policy.zig,apply_policy.PolicyBundle,modify,26,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/apply_policy.zig,apply_policy.PolicyBundle,reference,26,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/apply_policy.zig,apply_policy.PolicyRepoOutcome,modify,34,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/apply_policy.zig,apply_policy.PolicyRepoOutcome,reference,34,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/apply_policy.zig,apply_policy.applyPolicyToRepo,modify,1104,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/apply_policy.zig,apply_policy.applyPolicyToRepo,reference,1104,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/apply_policy.zig,apply_policy.apply_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/apply_policy.zig,apply_policy.apply_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/apply_policy.zig,apply_policy.c,modify,10,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/apply_policy.zig,apply_policy.c,reference,10,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/apply_policy.zig,apply_policy.cache_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/apply_policy.zig,apply_policy.cache_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/apply_policy.zig,apply_policy.capabilityMatrixFor,modify,428,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/apply_policy.zig,apply_policy.capabilityMatrixFor,reference,428,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/apply_policy.zig,apply_policy.countAuditRows,modify,199,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/apply_policy.zig,apply_policy.countAuditRows,reference,199,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/apply_policy.zig,apply_policy.deriveOwner,modify,163,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/apply_policy.zig,apply_policy.deriveOwner,reference,163,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/apply_policy.zig,apply_policy.filter_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/apply_policy.zig,apply_policy.filter_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/apply_policy.zig,apply_policy.known_policy_extension_keys,modify,21,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/apply_policy.zig,apply_policy.known_policy_extension_keys,reference,21,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/apply_policy.zig,apply_policy.log,modify,8,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/apply_policy.zig,apply_policy.log,reference,8,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/apply_policy.zig,apply_policy.makeManifestWithPolicy,modify,214,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/apply_policy.zig,apply_policy.makeManifestWithPolicy,reference,214,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/apply_policy.zig,apply_policy.manifest_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/apply_policy.zig,apply_policy.manifest_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/apply_policy.zig,apply_policy.output_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/apply_policy.zig,apply_policy.output_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/apply_policy.zig,apply_policy.parsePolicy,modify,471,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/apply_policy.zig,apply_policy.parsePolicy,reference,471,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/apply_policy.zig,apply_policy.planner_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/apply_policy.zig,apply_policy.planner_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:44.236Z
+4207,43,src/apply_policy.zig,apply_policy.provider_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/apply_policy.zig,apply_policy.provider_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/apply_policy.zig,apply_policy.runApplyPolicy,modify,226,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/apply_policy.zig,apply_policy.runApplyPolicyWithCache,modify,2044,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/apply_policy.zig,apply_policy.runApplyPolicyWithCache,reference,2044,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/apply_policy.zig,apply_policy.std,modify,8,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/apply_policy.zig,apply_policy.std,reference,8,m2-closure-0.1,2026-07-03T17:08:44.236Z
+4207,43,src/apply_policy.zig,apply_policy.testing,modify,7,m2-closure-0.1,2026-07-03T17:08:44.236Z
+4207,43,src/apply_policy.zig,apply_policy.testing,reference,7,m2-closure-0.1,2026-07-03T17:08:44.236Z
+4207,43,src/apply_policy.zig,apply_policy.writeManifestToTmpDirAp,modify,127,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/apply_policy.zig,apply_policy.writeManifestToTmpDirAp,reference,127,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/cache.zig,cache.Cache,reference,4373,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/cache.zig,cache.Cache.applyMigration,transitive,4373,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/cache.zig,cache.Cache.db,transitive,4373,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/cache.zig,cache.Cache.runMigrations,transitive,4373,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/cache.zig,cache.Cache.schemaVersion,transitive,4373,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/cache.zig,cache.CacheError,transitive,26,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/cache.zig,cache.Migration,transitive,18,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/cache.zig,cache.c,transitive,10,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/cache.zig,cache.migrations,transitive,84,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/cache.zig,cache.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/cache.zig,cache.translateRc,transitive,80,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/filter.zig,filter.FilterRow,transitive,78,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/filter.zig,filter.ParseResult,transitive,19,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/filter.zig,filter.Parser,transitive,1450,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/filter.zig,filter.Parser.init,transitive,1450,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/filter.zig,filter.buildFilterRow,reference,811,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/filter.zig,filter.cache,transitive,8,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/filter.zig,filter.manifest,transitive,8,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/filter.zig,filter.parse,reference,46,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/filter.zig,filter.parseSqliteDateTime,transitive,458,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/filter.zig,filter.planner,transitive,8,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/filter.zig,filter.provider,transitive,8,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/filter.zig,filter.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/gitlab.zig,gitlab.encodeProjectPath,transitive,49,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/gitlab/provider.zig,provider.CapabilityMatrix,reference,7,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/gitlab/provider.zig,provider.OpKind,transitive,7,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/gitlab/provider.zig,provider.OpOutcome,reference,7,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/gitlab/provider.zig,provider.Provider,reference,7,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/gitlab/provider.zig,provider.VTable,reference,7,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/gitlab/provider.zig,provider.provider,transitive,8,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/log.zig,log.emitKvToStderr,transitive,145,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/log.zig,log.errKv,reference,28,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/manifest.zig,manifest.FleetManifest,modify,40,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/manifest.zig,manifest.FleetManifest,reference,40,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/manifest.zig,manifest.FleetMeta,modify,22,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/manifest.zig,manifest.FleetMeta,reference,22,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/manifest.zig,manifest.FleetMeta,transitive,22,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/manifest.zig,manifest.ParseErrorInfo,modify,35,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/manifest.zig,manifest.ParseErrorInfo,reference,35,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/manifest.zig,manifest.ParseErrorKind,modify,22,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/manifest.zig,manifest.ParseErrorKind,reference,22,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/manifest.zig,manifest.ParseResult,modify,19,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/manifest.zig,manifest.ParseResult,reference,19,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/manifest.zig,manifest.ParseResult,transitive,19,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/manifest.zig,manifest.ParseWithArenaResult,modify,24,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/manifest.zig,manifest.ParseWithArenaResult,reference,24,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/manifest.zig,manifest.Policies,modify,8,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/manifest.zig,manifest.Policies,reference,8,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/manifest.zig,manifest.Policies,transitive,8,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/manifest.zig,manifest.ProviderConfig,modify,27,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/manifest.zig,manifest.ProviderConfig,reference,27,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/manifest.zig,manifest.RawPair,modify,41,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/manifest.zig,manifest.RawPair,reference,41,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/manifest.zig,manifest.Repo,modify,95,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/manifest.zig,manifest.Repo,reference,95,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/manifest.zig,manifest.Section,modify,40,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/manifest.zig,manifest.Section,reference,40,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/manifest.zig,manifest.SourceLocation,modify,34,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/manifest.zig,manifest.SourceLocation,reference,34,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/manifest.zig,manifest.Template,modify,15,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/manifest.zig,manifest.Template,reference,15,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/manifest.zig,manifest.Template,transitive,15,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/manifest.zig,manifest.appendUtf8,modify,71,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/manifest.zig,manifest.appendUtf8,reference,71,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/manifest.zig,manifest.buildInterpolationError,modify,204,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/manifest.zig,manifest.buildInterpolationError,reference,204,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/manifest.zig,manifest.interpolate,modify,383,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/manifest.zig,manifest.interpolate,reference,383,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/manifest.zig,manifest.interpolateArray,modify,123,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/manifest.zig,manifest.interpolateArray,reference,123,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/manifest.zig,manifest.parse,modify,106,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/manifest.zig,manifest.parse,reference,106,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/manifest.zig,manifest.parseArray,modify,379,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/manifest.zig,manifest.parseArray,reference,379,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/manifest.zig,manifest.parseBasicString,modify,366,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/manifest.zig,manifest.parseBasicString,reference,366,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/manifest.zig,manifest.parseDottedKey,modify,165,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/manifest.zig,manifest.parseDottedKey,reference,165,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/manifest.zig,manifest.parseHexEscape,modify,129,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/manifest.zig,manifest.parseHexEscape,reference,129,m2-closure-0.1,2026-07-03T17:08:44.236Z
+4207,43,src/manifest.zig,manifest.parseImpl,modify,2142,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/manifest.zig,manifest.parseImpl,reference,2142,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/manifest.zig,manifest.parseImpl,transitive,2142,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/manifest.zig,manifest.parseKey,modify,186,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/manifest.zig,manifest.parseKey,reference,186,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/manifest.zig,manifest.parseLiteralString,modify,151,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/manifest.zig,manifest.parseLiteralString,reference,151,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/manifest.zig,manifest.parseScalarString,modify,178,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/manifest.zig,manifest.parseScalarString,reference,178,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/manifest.zig,manifest.parseWithArena,modify,73,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/manifest.zig,manifest.parseWithArena,reference,73,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/manifest.zig,manifest.scanSections,modify,664,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/manifest.zig,manifest.scanSections,reference,664,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/manifest.zig,manifest.setenv,modify,31,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/manifest.zig,manifest.setenv,reference,31,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/manifest.zig,manifest.skipHorizWs,modify,54,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/manifest.zig,manifest.skipHorizWs,reference,54,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/manifest.zig,manifest.skipLine,modify,58,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/manifest.zig,manifest.skipLine,reference,58,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/manifest.zig,manifest.std,modify,8,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/manifest.zig,manifest.std,reference,8,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/manifest.zig,manifest.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/manifest.zig,manifest.unsetenv,modify,17,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/manifest.zig,manifest.unsetenv,reference,17,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/output.zig,output.Io,transitive,7,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/output.zig,output.printJson,reference,45,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/output.zig,output.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/planner.zig,planner.ActionKind,transitive,15,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/planner.zig,planner.ExtensionOp,reference,46,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/planner.zig,planner.ExtensionOpKind,transitive,33,m2-closure-0.1,2026-07-03T17:08:44.236Z
+4207,43,src/planner.zig,planner.ObservedExtensionSettings,transitive,47,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/planner.zig,planner.Plan,transitive,46,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/planner.zig,planner.PlanAction,reference,74,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/planner.zig,planner.cache_mod,transitive,8,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/planner.zig,planner.capabilityMatrixFor,transitive,428,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/planner.zig,planner.deriveOwner,transitive,163,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/planner.zig,planner.manifest,transitive,8,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/planner.zig,planner.op_kind_create,transitive,11,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/planner.zig,planner.op_kind_delete,transitive,11,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/planner.zig,planner.op_kind_no_op,transitive,11,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/planner.zig,planner.op_kind_update,transitive,11,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/planner.zig,planner.planExtensionField,transitive,465,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/planner.zig,planner.planWithExtensions,reference,1094,m2-closure-0.1,2026-07-03T17:08:44.235Z
+4207,43,src/planner.zig,planner.provider_mod,transitive,8,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/planner.zig,planner.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:44.236Z
+4207,43,src/provider.zig,provider.BranchProtectionRule,transitive,57,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/provider.zig,provider.CIVTable,reference,63,m2-closure-0.1,2026-07-03T17:08:44.234Z
+4207,43,src/provider.zig,provider.GetCIEnabledParams,reference,16,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4207,43,src/provider.zig,provider.PushInitialCommitParams,reference,41,m2-closure-0.1,2026-07-03T17:08:44.232Z
+4207,43,src/provider.zig,provider.SetCIEnabledParams,reference,21,m2-closure-0.1,2026-07-03T17:08:44.233Z
+4208,43,query,"query.test:--sql and non-empty expr together returns .invalid_args (mutual exclusion)",modify,0,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,query,"query.test:--sql with invalid SQL returns .err (no crash)",modify,0,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,query,"query.test:--sql with populated cache returns rows as JSON",modify,0,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,query,"query.test:--sql with populated cache returns rows as human table",modify,0,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,query,"query.test:S-E4: query matching zero repos returns empty result deterministically (JSON: [])",modify,0,m2-closure-0.1,2026-07-03T17:08:44.845Z
+4208,43,query,"query.test:query 'archived' filter: only archived repos (extras JSON) match",modify,0,m2-closure-0.1,2026-07-03T17:08:44.844Z
+4208,43,query,"query.test:query 'private' filter: only private repos match",modify,0,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,query,"query.test:query human table output: matched repos printed as a table",modify,0,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,query,"query.test:query human table output: no matches prints informational message",modify,0,m2-closure-0.1,2026-07-03T17:08:44.844Z
+4208,43,query,"query.test:query matching repos: JSON output with deterministic (provider_kind, name) ordering",modify,0,m2-closure-0.1,2026-07-03T17:08:44.844Z
+4208,43,query,"query.test:query on empty cache returns [] JSON",modify,0,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,query,"query.test:query with empty expression returns .invalid_args",modify,0,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,query,"query.test:query with invalid filter expression returns .invalid_args (no crash)",modify,0,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/cache.zig,cache.Cache,reference,4373,m2-closure-0.1,2026-07-03T17:08:44.844Z
+4208,43,src/cache.zig,cache.Cache.applyMigration,transitive,4373,m2-closure-0.1,2026-07-03T17:08:44.844Z
+4208,43,src/cache.zig,cache.Cache.db,transitive,4373,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/cache.zig,cache.Cache.runMigrations,transitive,4373,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/cache.zig,cache.Cache.schemaVersion,transitive,4373,m2-closure-0.1,2026-07-03T17:08:44.844Z
+4208,43,src/cache.zig,cache.CacheError,transitive,26,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/cache.zig,cache.Migration,transitive,18,m2-closure-0.1,2026-07-03T17:08:44.844Z
+4208,43,src/cache.zig,cache.c,transitive,10,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/cache.zig,cache.migrations,transitive,84,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/cache.zig,cache.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/cache.zig,cache.translateRc,transitive,80,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/filter.zig,filter.FilterExpr,transitive,57,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/filter.zig,filter.FilterRow,transitive,78,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/filter.zig,filter.ParseResult,transitive,19,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/filter.zig,filter.Parser,transitive,1450,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/filter.zig,filter.Parser.init,transitive,1450,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/filter.zig,filter.buildFilterRow,reference,811,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/filter.zig,filter.cache,transitive,8,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/filter.zig,filter.eval,reference,23,m2-closure-0.1,2026-07-03T17:08:44.844Z
+4208,43,src/filter.zig,filter.evalExpr,transitive,288,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/filter.zig,filter.manifest,transitive,8,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/filter.zig,filter.parse,reference,46,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/filter.zig,filter.parseSqliteDateTime,transitive,458,m2-closure-0.1,2026-07-03T17:08:44.844Z
+4208,43,src/filter.zig,filter.planner,transitive,8,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/filter.zig,filter.provider,transitive,8,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/filter.zig,filter.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/github/provider.zig,provider.github_matrix,reference,130,m2-closure-0.1,2026-07-03T17:08:44.844Z
+4208,43,src/gitlab/provider.zig,provider.CapabilityMatrix,reference,7,m2-closure-0.1,2026-07-03T17:08:44.844Z
+4208,43,src/gitlab/provider.zig,provider.gitlab_matrix,reference,130,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/gitlab/provider.zig,provider.provider,transitive,8,m2-closure-0.1,2026-07-03T17:08:44.845Z
+4208,43,src/manifest.zig,manifest.ParseResult,transitive,19,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/manifest.zig,manifest.parse,reference,106,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/manifest.zig,manifest.parseImpl,transitive,2142,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/manifest.zig,manifest.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/output.zig,output.Io,transitive,7,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/output.zig,output.printJson,reference,45,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/output.zig,output.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:44.844Z
+4208,43,src/planner.zig,planner.ObservedExtensionSettings,reference,47,m2-closure-0.1,2026-07-03T17:08:44.844Z
+4208,43,src/provider/fake.zig,fake.CapabilityMatrix,transitive,7,m2-closure-0.1,2026-07-03T17:08:44.844Z
+4208,43,src/provider/fake.zig,fake.kernel_only_matrix,reference,130,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.Allocator,modify,9,m2-closure-0.1,2026-07-03T17:08:44.844Z
+4208,43,src/query.zig,query.Allocator,reference,9,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.COL_BRANCH,modify,5,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.COL_BRANCH,reference,5,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.COL_NAME,modify,5,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.COL_NAME,reference,5,m2-closure-0.1,2026-07-03T17:08:44.845Z
+4208,43,src/query.zig,query.COL_OWNER,modify,5,m2-closure-0.1,2026-07-03T17:08:44.844Z
+4208,43,src/query.zig,query.COL_OWNER,reference,5,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.COL_PROVIDER,modify,5,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.COL_PROVIDER,reference,5,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.Io,modify,7,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.Io,reference,7,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.QueryArgs,modify,52,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.QueryArgs,reference,52,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.QueryResult,modify,14,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.QueryResult,reference,14,m2-closure-0.1,2026-07-03T17:08:44.844Z
+4208,43,src/query.zig,query.QueryResult.err,reference,14,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.QueryResult.invalid_args,reference,14,m2-closure-0.1,2026-07-03T17:08:44.844Z
+4208,43,src/query.zig,query.QueryResult.ok,reference,14,m2-closure-0.1,2026-07-03T17:08:44.844Z
+4208,43,src/query.zig,query.QueryRow,modify,50,m2-closure-0.1,2026-07-03T17:08:44.845Z
+4208,43,src/query.zig,query.QueryRow,reference,50,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.c,modify,10,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.c,reference,10,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.cache_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.cache_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.capabilityMatrixForKind,modify,80,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.capabilityMatrixForKind,reference,80,m2-closure-0.1,2026-07-03T17:08:44.844Z
+4208,43,src/query.zig,query.collectRepoSettings,modify,134,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.collectRepoSettings,reference,134,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.emitHuman,modify,225,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.emitHuman,reference,225,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.fake_provider,modify,8,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.fake_provider,reference,8,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.filter,modify,8,m2-closure-0.1,2026-07-03T17:08:44.844Z
+4208,43,src/query.zig,query.filter,reference,8,m2-closure-0.1,2026-07-03T17:08:44.844Z
+4208,43,src/query.zig,query.github_provider,modify,8,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.github_provider,reference,8,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.gitlab_provider,modify,8,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.gitlab_provider,reference,8,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.insertRepo,modify,103,m2-closure-0.1,2026-07-03T17:08:44.844Z
+4208,43,src/query.zig,query.insertRepo,reference,103,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.manifest_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:44.844Z
+4208,43,src/query.zig,query.manifest_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:44.845Z
+4208,43,src/query.zig,query.output_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.output_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:44.845Z
+4208,43,src/query.zig,query.planner_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:44.844Z
+4208,43,src/query.zig,query.planner_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.provider_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.provider_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:44.845Z
+4208,43,src/query.zig,query.runQuery,modify,226,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.runQueryWithCache,modify,882,m2-closure-0.1,2026-07-03T17:08:44.844Z
+4208,43,src/query.zig,query.runQueryWithCache,reference,882,m2-closure-0.1,2026-07-03T17:08:44.844Z
+4208,43,src/query.zig,query.runSqlEscapeHatch,modify,985,m2-closure-0.1,2026-07-03T17:08:44.844Z
+4208,43,src/query.zig,query.runSqlEscapeHatch,reference,985,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.sshbare_provider,modify,8,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.sshbare_provider,reference,8,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.std,modify,8,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.std,reference,8,m2-closure-0.1,2026-07-03T17:08:44.845Z
+4208,43,src/query.zig,query.testing,modify,7,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.testing,reference,7,m2-closure-0.1,2026-07-03T17:08:44.843Z
+4208,43,src/query.zig,query.writeJsonString,modify,146,m2-closure-0.1,2026-07-03T17:08:44.844Z
+4208,43,src/query.zig,query.writeJsonString,reference,146,m2-closure-0.1,2026-07-03T17:08:44.845Z
+4208,43,src/sshbare/provider.zig,provider.ssh_bare_matrix,reference,130,m2-closure-0.1,2026-07-03T17:08:44.844Z
+4240,43,apply,"apply.test:--json output schema: typed parse into ApplyOutput round-trips plan/outcomes/summary",modify,0,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,apply,"apply.test:--json: dry-run output parses as JSON with expected schema",modify,0,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,apply,"apply.test:--resume classification: 2 done + 1 retried after first apply with 1 failure",modify,0,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,apply,"apply.test:--resume flag: output includes resume summary (2 skipped done / 1 retried / 0 fresh)",modify,0,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,apply,"apply.test:--resume on fresh cache: all 3 repos classified fresh",modify,0,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,apply,"apply.test:S-E1 --json: empty manifest produces valid JSON nothing-to-do",modify,0,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,apply,"apply.test:S-E1: empty [[repos]] → nothing to do, zero audit rows",modify,0,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,apply,"apply.test:S-G1: branch_protection on ssh-bare → UnsupportedField warning, audit_log extension_skip, exit 0",modify,0,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,apply,"apply.test:S-H1: 3-repo manifest + stub REST + bare push target → all 3 succeed, 3 audit rows",modify,0,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,apply,"apply.test:S-H2: mixed-provider fleet apply — 2 GitHub + 2 GitLab, all 4 succeed",modify,0,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,apply,"apply.test:audit_log quoting safety: extension_skip repo+field with quotes and backslashes survives JSON round-trip",modify,0,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,apply,"apply.test:audit_log quoting safety: repo name with quotes and backslashes survives JSON round-trip",modify,0,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,apply,"apply.test:cross-provider isolation: gitlab 422 does not prevent github repo from succeeding",modify,0,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,apply,"apply.test:dispatchExtensionOps: branch_protection_set calls BranchProtectionVTable.set",modify,0,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,apply,"apply.test:dry-run: prints plan, exits 0, zero API calls, zero audit rows",modify,0,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,apply,"apply.test:extension on github warns: capability-driven, not provider-hardcoded",modify,0,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,apply,"apply.test:findCompletedScaffold: true when matching row exists, false otherwise",modify,0,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,apply,"apply.test:idempotency: second apply skips repos with prior successful push_initial_commit",modify,0,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,apply,"apply.test:no-extensions ssh-bare: scaffold succeeds, zero extension_skip rows",modify,0,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,apply,"apply.test:op_kind: backward-compat NULL row is readable after migration 0003",modify,0,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,apply,"apply.test:op_kind: writeAuditLog writes and reads back op_kind correctly",modify,0,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,apply,"apply.test:op_kind: writeAuditLogForScaffold derives op_kind via @tagName(opKind(op))",modify,0,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,apply,"apply.test:per-repo best-effort: stub returns 422 → all repos fail, exit non-zero, 3 failure rows",modify,0,m2-closure-0.1,2026-07-03T17:08:46.626Z
+4240,43,apply,"apply.test:per-repo isolation: 201/422/201 sequence → 2 succeeded, 1 failed, all 3 in stdout",modify,0,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,apply,"apply.test:writeAuditLog: inserts rows with correct fields",modify,0,m2-closure-0.1,2026-07-03T17:08:46.626Z
+4240,43,src/apply.zig,apply.Allocator,modify,9,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.Allocator,reference,9,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.ApplyArgs,modify,40,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.ApplyArgs,reference,40,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.ApplyOutput,modify,26,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.ApplyOutput,reference,26,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.ApplyOutputWithResume,modify,29,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.ApplyOutputWithResume,reference,29,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.ApplyResult,modify,16,m2-closure-0.1,2026-07-03T17:08:46.626Z
+4240,43,src/apply.zig,apply.ApplyResult,reference,16,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.ApplyResult.nothing_to_do,reference,16,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.ApplyResult.ok,reference,16,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.ApplyResult.some_failed,reference,16,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.ApplySummary,modify,24,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.ApplySummary,reference,24,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.AuditDetails,modify,28,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.AuditDetails,reference,28,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.CollaboratorPayload,modify,20,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.CollaboratorPayload,reference,20,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.ExtensionSkipDetails,modify,28,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.ExtensionSkipDetails,reference,28,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.Io,modify,7,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.Io,reference,7,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.MultiSeqStubCtx,modify,57,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.MultiSeqStubCtx,reference,57,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.PlanEntry,modify,29,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.PlanEntry,reference,29,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.RepoOutcome,modify,33,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.RepoOutcome,reference,33,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.RepoStatus,modify,13,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.RepoStatus,reference,13,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.ResumeClass,modify,13,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.ResumeClass,reference,13,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.ResumeClass.done,reference,13,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.ResumeClass.fresh,reference,13,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.ResumeClass.retried,reference,13,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.ResumeSummary,modify,20,m2-closure-0.1,2026-07-03T17:08:46.626Z
+4240,43,src/apply.zig,apply.ResumeSummary,reference,20,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.StubCtx,modify,62,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.StubCtx,reference,62,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.buildScaffoldExtensionAction,modify,538,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.buildScaffoldExtensionAction,reference,538,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.c,modify,10,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.c,reference,10,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.cache_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.cache_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.classifyForResume,modify,63,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.classifyForResume,reference,63,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.countAuditRows,modify,105,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.countAuditRows,reference,105,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.countAuditRowsByDetails,modify,256,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.countAuditRowsByDetails,reference,256,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.countAuditRowsByProvider,modify,291,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.countAuditRowsByProvider,reference,291,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.countAuditRowsWhere,modify,208,m2-closure-0.1,2026-07-03T17:08:46.626Z
+4240,43,src/apply.zig,apply.countAuditRowsWhere,reference,208,m2-closure-0.1,2026-07-03T17:08:46.626Z
+4240,43,src/apply.zig,apply.credentials_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.credentials_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:46.626Z
+4240,43,src/apply.zig,apply.dispatchExtensionOps,modify,1317,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.dispatchExtensionOps,reference,1317,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.emitExtensionWarnings,modify,288,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.emitExtensionWarnings,reference,288,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.executeDryRun,modify,251,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.executeDryRun,reference,251,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.executeLive,modify,1369,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.executeLive,reference,1369,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.findAnyScaffoldAttempt,modify,270,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.findAnyScaffoldAttempt,reference,270,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.findCompletedScaffold,modify,271,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.findCompletedScaffold,reference,271,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.github_provider_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.github_provider_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.gitlab_provider_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.gitlab_provider_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.log,modify,8,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.log,reference,8,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.makeBareRepo,modify,256,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.makeTempDir,modify,170,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.makeTempDir,reference,170,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.makeTestManifestSource,modify,148,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.makeTestManifestSource,reference,148,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.manifest_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.manifest_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:46.626Z
+4240,43,src/apply.zig,apply.mkdir,modify,21,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.mkdir,reference,21,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.multiSeqServer,modify,475,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.multiSeqServer,reference,475,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.multiShotServer,modify,485,m2-closure-0.1,2026-07-03T17:08:46.626Z
+4240,43,src/apply.zig,apply.multiShotServer,reference,485,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.output_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.output_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.parseBranchProtectionPayload,modify,126,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.parseBranchProtectionPayload,reference,126,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.parseCollaboratorPayload,modify,226,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.parseCollaboratorPayload,reference,226,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.planner_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.planner_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.printApplyJson,modify,72,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.printApplyJson,reference,72,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.printApplyJsonWithResume,modify,82,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.printApplyJsonWithResume,reference,82,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.provider_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.provider_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.readOpKind,modify,261,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.readOpKind,reference,261,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.runApply,modify,226,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.runApplyWithCache,modify,497,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.runApplyWithCache,reference,497,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.scaffoldOneRepo,modify,2376,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.scaffoldOneRepo,reference,2376,m2-closure-0.1,2026-07-03T17:08:46.626Z
+4240,43,src/apply.zig,apply.scaffoldSshBareRepo,modify,1398,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.scaffoldSshBareRepo,reference,1398,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.setenv,modify,31,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.setenv,reference,31,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.sshbare_provider_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.sshbare_provider_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.std,modify,8,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.std,reference,8,m2-closure-0.1,2026-07-03T17:08:46.626Z
+4240,43,src/apply.zig,apply.stubSleepNs,modify,89,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.stubSleepNs,reference,89,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.template_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.template_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.unsetenv,modify,17,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.unsetenv,reference,17,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.validate_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.validate_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.writeAuditLog,modify,290,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.writeAuditLog,reference,290,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.writeAuditLogForScaffold,modify,139,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.writeAuditLogForScaffold,reference,139,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/apply.zig,apply.writeAuditLogForScaffoldApply,modify,111,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.writeAuditLogForScaffoldApply,reference,111,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.writeExtensionAuditLog,modify,118,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.writeExtensionAuditLog,reference,118,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/apply.zig,apply.writeManifestToTmpDir,modify,127,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/apply.zig,apply.writeManifestToTmpDir,reference,127,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/cache.zig,cache.Cache,reference,2678,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/cache.zig,cache.Cache.applyMigration,transitive,2678,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/cache.zig,cache.Cache.db,transitive,2678,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/cache.zig,cache.Cache.runMigrations,transitive,2678,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/cache.zig,cache.Cache.schemaVersion,transitive,2678,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/cache.zig,cache.CacheError,transitive,26,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/cache.zig,cache.Migration,transitive,18,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/cache.zig,cache.c,transitive,10,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/cache.zig,cache.migrations,transitive,84,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/cache.zig,cache.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/cache.zig,cache.translateRc,transitive,80,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/credentials.zig,credentials.Allocator,transitive,9,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/credentials.zig,credentials.CredentialError,transitive,17,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/credentials.zig,credentials.CredentialResolver,reference,1012,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/credentials.zig,credentials.CredentialResolver.allocator,transitive,1012,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/credentials.zig,credentials.GitLabResolverOpts,transitive,19,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/credentials.zig,credentials.Io,transitive,7,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/credentials.zig,credentials.ResolutionAttempt,transitive,40,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/credentials.zig,credentials.ResolvedToken,transitive,31,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/credentials.zig,credentials.ResolverOpts,transitive,44,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/credentials.zig,credentials.log,transitive,8,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/credentials.zig,credentials.resolveGitLab,reference,358,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/credentials.zig,credentials.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/github/provider.zig,provider.GitHubProvider,reference,2443,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/github/provider.zig,provider.OrgOrUser,reference,25,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/gitlab.zig,gitlab.Client,transitive,1702,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/gitlab/extensions.zig,extensions.GitLabExtContext,transitive,25,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/gitlab/extensions.zig,extensions.gitlab_branch_protection_vtable,transitive,20,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/gitlab/extensions.zig,extensions.gitlab_ci_vtable,transitive,20,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/gitlab/extensions.zig,extensions.gitlab_collaborator_vtable,transitive,25,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/gitlab/extensions.zig,extensions.gitlab_webhook_vtable,transitive,30,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/gitlab/provider.zig,provider.Allocator,transitive,9,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/gitlab/provider.zig,provider.CapabilityMatrix,reference,7,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/gitlab/provider.zig,provider.GitLabProvider,reference,2422,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/gitlab/provider.zig,provider.GitLabProvider.allocator,transitive,2422,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/gitlab/provider.zig,provider.GitLabProvider.ext_ctx,transitive,2422,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/gitlab/provider.zig,provider.GitLabProvider.gl_client,transitive,2422,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/gitlab/provider.zig,provider.GitLabProvider.group_or_user,transitive,2422,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/gitlab/provider.zig,provider.GitLabProvider.http_client,transitive,2422,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/gitlab/provider.zig,provider.GitLabProvider.pending_branch,transitive,2422,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/gitlab/provider.zig,provider.GitLabProvider.pending_create_spec,transitive,2422,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/gitlab/provider.zig,provider.GitLabProvider.pending_project_id,transitive,2422,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/gitlab/provider.zig,provider.GitLabProvider.token,transitive,2422,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/gitlab/provider.zig,provider.GitLabProviderOpts,transitive,36,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/gitlab/provider.zig,provider.GroupOrUser,reference,25,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/gitlab/provider.zig,provider.OpKind,transitive,7,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/gitlab/provider.zig,provider.OpKinds,transitive,7,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/gitlab/provider.zig,provider.OpOutcome,reference,7,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/gitlab/provider.zig,provider.Provider,reference,7,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/gitlab/provider.zig,provider.VTable,reference,7,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/gitlab/provider.zig,provider.c,transitive,10,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/gitlab/provider.zig,provider.credentials,transitive,8,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/gitlab/provider.zig,provider.extensions,transitive,8,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/gitlab/provider.zig,provider.gitlab,transitive,8,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/gitlab/provider.zig,provider.gitlab_matrix,transitive,124,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/gitlab/provider.zig,provider.http_mod,transitive,8,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/gitlab/provider.zig,provider.mapClientError,transitive,400,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/gitlab/provider.zig,provider.opKind,reference,7,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/gitlab/provider.zig,provider.provider,transitive,8,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/gitlab/provider.zig,provider.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/http.zig,http.Client,transitive,940,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/log.zig,log.emitKvToStderr,transitive,145,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/log.zig,log.errKv,reference,28,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/log.zig,log.info,transitive,29,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/manifest.zig,manifest.FleetManifest,reference,40,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/manifest.zig,manifest.FleetMeta,transitive,22,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/manifest.zig,manifest.ParseResult,transitive,19,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/manifest.zig,manifest.Policies,transitive,8,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/manifest.zig,manifest.ProviderConfig,reference,27,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/manifest.zig,manifest.Repo,reference,95,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/manifest.zig,manifest.Template,transitive,15,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/manifest.zig,manifest.parse,reference,106,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/manifest.zig,manifest.parseImpl,transitive,2142,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/manifest.zig,manifest.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/output.zig,output.Io,transitive,7,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/output.zig,output.printJson,reference,45,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/output.zig,output.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/planner.zig,planner.ActionKind,transitive,15,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/planner.zig,planner.ExtensionOp,reference,46,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/planner.zig,planner.ExtensionOpKind,transitive,33,m2-closure-0.1,2026-07-03T17:08:46.626Z
+4240,43,src/planner.zig,planner.PlanAction,reference,74,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/planner.zig,planner.provider_mod,transitive,8,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/provider.zig,provider.BranchProtectionRule,reference,57,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/provider.zig,provider.BranchProtectionVTable,reference,63,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/provider.zig,provider.CapabilityKey,reference,48,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/provider.zig,provider.CollaboratorRole,reference,23,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/provider.zig,provider.GetBranchProtectionParams,reference,24,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/provider.zig,provider.KernelOp,reference,18,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/provider.zig,provider.OpKinds.create_repo,transitive,68,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/provider.zig,provider.OpKinds.delete_repo,transitive,68,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/provider.zig,provider.OpKinds.list_repos,transitive,68,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/provider.zig,provider.OpKinds.push_initial_commit,transitive,68,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/provider.zig,provider.OpKinds.set_default_branch,transitive,68,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/provider.zig,provider.Provider.matrix,reference,221,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/provider.zig,provider.Provider.pushInitialCommit,reference,221,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/provider.zig,provider.PushInitialCommitParams,reference,41,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/provider.zig,provider.SetBranchProtectionParams,reference,23,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/sshbare/provider.zig,provider.SshBareProvider,reference,797,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/template.zig,template.Allocator,transitive,9,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/template.zig,template.CredCallbackPayload,transitive,17,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/template.zig,template.Io,transitive,7,m2-closure-0.1,2026-07-03T17:08:46.626Z
+4240,43,src/template.zig,template.RenderOpts,transitive,74,m2-closure-0.1,2026-07-03T17:08:46.624Z
+4240,43,src/template.zig,template.RenderResult,transitive,101,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/template.zig,template.RenderStats,transitive,25,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/template.zig,template.TemplateError,transitive,16,m2-closure-0.1,2026-07-03T17:08:46.626Z
+4240,43,src/template.zig,template.TemplateRenderer,reference,439,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,src/template.zig,template.TemplateRenderer.allocator,transitive,439,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/template.zig,template.TemplateRenderer.libgit2_initialized,transitive,439,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/template.zig,template.buildTreeFromGitTree,transitive,203,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/template.zig,template.c,transitive,10,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/template.zig,template.makeTempDir,transitive,70,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,src/template.zig,template.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,vendor/etc-cli/src/cli/cmd.zig,cmd.Cmd,transitive,180,m2-closure-0.1,2026-07-03T17:08:46.623Z
+4240,43,vendor/etc-cli/src/cli/validate.zig,validate.cmd_mod,transitive,8,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,vendor/etc-cli/src/cli/validate.zig,validate.validate,reference,32,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4240,43,vendor/etc-cli/src/cli/validate.zig,validate.validateNode,transitive,1084,m2-closure-0.1,2026-07-03T17:08:46.625Z
+4241,43,cache,"cache.test:0002->0003 migration: existing rows survive with NULL op_kind",modify,0,m2-closure-0.1,2026-07-03T17:08:47.132Z
+4241,43,cache,"cache.test:S-E2: open fresh in-memory DB migrates to latest version, audit_log has 0 rows",modify,0,m2-closure-0.1,2026-07-03T17:08:47.133Z
+4241,43,cache,"cache.test:S-G7: N->N+1 migration preserves existing audit_log rows",modify,0,m2-closure-0.1,2026-07-03T17:08:47.133Z
+4241,43,cache,"cache.test:atomicity: a broken migration leaves DB at prior version",modify,0,m2-closure-0.1,2026-07-03T17:08:47.132Z
+4241,43,cache,"cache.test:countObservedRepos: multi-provider counts are independent",modify,0,m2-closure-0.1,2026-07-03T17:08:47.133Z
+4241,43,cache,"cache.test:new rows after migration 0003 have op_kind populated",modify,0,m2-closure-0.1,2026-07-03T17:08:47.132Z
+4241,43,cache,"cache.test:schema version 4 on fresh cache",modify,0,m2-closure-0.1,2026-07-03T17:08:47.133Z
+4241,43,cache,"cache.test:upsertObservedRepo: UPSERT idempotency — second upsert updates observed_at, count stays 1",modify,0,m2-closure-0.1,2026-07-03T17:08:47.132Z
+4241,43,cache,"cache.test:upsertObservedRepo: inserts a new row",modify,0,m2-closure-0.1,2026-07-03T17:08:47.133Z
+4241,43,src/cache.zig,cache.Cache,modify,2678,m2-closure-0.1,2026-07-03T17:08:47.133Z
+4241,43,src/cache.zig,cache.Cache,reference,2678,m2-closure-0.1,2026-07-03T17:08:47.132Z
+4241,43,src/cache.zig,cache.Cache.ObservedRepo,reference,2678,m2-closure-0.1,2026-07-03T17:08:47.132Z
+4241,43,src/cache.zig,cache.Cache.applyMigration,reference,2678,m2-closure-0.1,2026-07-03T17:08:47.133Z
+4241,43,src/cache.zig,cache.Cache.db,reference,2678,m2-closure-0.1,2026-07-03T17:08:47.133Z
+4241,43,src/cache.zig,cache.Cache.open,reference,2678,m2-closure-0.1,2026-07-03T17:08:47.133Z
+4241,43,src/cache.zig,cache.Cache.runMigrations,reference,2678,m2-closure-0.1,2026-07-03T17:08:47.133Z
+4241,43,src/cache.zig,cache.Cache.schemaVersion,reference,2678,m2-closure-0.1,2026-07-03T17:08:47.132Z
+4241,43,src/cache.zig,cache.CacheError,modify,26,m2-closure-0.1,2026-07-03T17:08:47.132Z
+4241,43,src/cache.zig,cache.CacheError,reference,26,m2-closure-0.1,2026-07-03T17:08:47.132Z
+4241,43,src/cache.zig,cache.Migration,modify,18,m2-closure-0.1,2026-07-03T17:08:47.133Z
+4241,43,src/cache.zig,cache.Migration,reference,18,m2-closure-0.1,2026-07-03T17:08:47.132Z
+4241,43,src/cache.zig,cache.c,modify,10,m2-closure-0.1,2026-07-03T17:08:47.132Z
+4241,43,src/cache.zig,cache.c,reference,10,m2-closure-0.1,2026-07-03T17:08:47.133Z
+4241,43,src/cache.zig,cache.migrations,modify,84,m2-closure-0.1,2026-07-03T17:08:47.132Z
+4241,43,src/cache.zig,cache.migrations,reference,84,m2-closure-0.1,2026-07-03T17:08:47.132Z
+4241,43,src/cache.zig,cache.openEmptyDb,modify,77,m2-closure-0.1,2026-07-03T17:08:47.132Z
+4241,43,src/cache.zig,cache.openEmptyDb,reference,77,m2-closure-0.1,2026-07-03T17:08:47.132Z
+4241,43,src/cache.zig,cache.sqliteVersion,modify,27,m2-closure-0.1,2026-07-03T17:08:47.133Z
+4241,43,src/cache.zig,cache.std,modify,8,m2-closure-0.1,2026-07-03T17:08:47.132Z
+4241,43,src/cache.zig,cache.std,reference,8,m2-closure-0.1,2026-07-03T17:08:47.132Z
+4241,43,src/cache.zig,cache.translateRc,modify,80,m2-closure-0.1,2026-07-03T17:08:47.133Z
+4241,43,src/cache.zig,cache.translateRc,reference,80,m2-closure-0.1,2026-07-03T17:08:47.132Z
+4242,43,capabilities,"capabilities.test:S-E3 verb-level: capabilities JSON for kernel-only provider",modify,0,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,capabilities,"capabilities.test:availableKindNames: returns fake, github, gitlab, and ssh-bare (M4)",modify,0,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,capabilities,"capabilities.test:buildCapabilitiesOutput: kernel-only matrix produces correct output struct",modify,0,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,capabilities,"capabilities.test:capabilities JSON schema-shape: top-level keys and child key sets",modify,0,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,capabilities,"capabilities.test:human format: group headers, sorted capability names, correct levels",modify,0,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,capabilities,"capabilities.test:lookupProviderKind: 'fake' returns non-null",modify,0,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,capabilities,"capabilities.test:lookupProviderKind: 'github' is now available (M2 registry flip)",modify,0,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,capabilities,"capabilities.test:lookupProviderKind: 'gitlab' is now available (M3 registry flip)",modify,0,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,capabilities,"capabilities.test:lookupProviderKind: 'nonexistent' returns null",modify,0,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,capabilities,"capabilities.test:lookupProviderKind: ssh-bare is now available (M4 registry flip)",modify,0,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,capabilities,"capabilities.test:unknown provider kind: JSON error shape",modify,0,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,capabilities,"capabilities.test:unknown provider kind: human mode error goes to stderr",modify,0,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,fake,"fake.test:FakeProvider: CapabilityMatrix.entries covers all keys with valid SupportLevel",modify,0,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,fake,"fake.test:FakeProvider: call recording - each kernel op is logged once",modify,0,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,fake,"fake.test:FakeProvider: failure injection returns err outcome and still records call",modify,0,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,fake,"fake.test:FakeProvider: host_mgmt slot is null — v1 forward-compat contract (D12)",modify,0,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,fake,"fake.test:FakeProvider: irreversible ops return .irreversible kind in OpOutcome",modify,0,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,fake,"fake.test:FakeProvider: multiple calls to same op accumulate in log",modify,0,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,fake,"fake.test:FakeProvider: partial SupportLevel is representable in matrix",modify,0,m2-closure-0.1,2026-07-03T17:08:49.585Z
+4242,43,fake,"fake.test:FakeProvider: reversible ops return .reversible kind in OpOutcome",modify,0,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,fake,"fake.test:S-E3: kernel-only provider - extensions are unsupported and null (no panic)",modify,0,m2-closure-0.1,2026-07-03T17:08:49.585Z
+4242,43,fake,"fake.test:kernel_only_matrix: field_count is 19 (5 kernel + 14 extension per-field keys)",modify,0,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,provider,provider.test:,modify,0,m2-closure-0.1,2026-07-03T17:08:49.585Z
+4242,43,provider,"provider.test:CapabilityKey enum has host_mgmt tag",modify,0,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,provider,"provider.test:CapabilityMatrix.entries fills all field_count entries",modify,0,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,provider,"provider.test:CapabilityMatrix.get returns correct level for each key",modify,0,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,provider,"provider.test:GitHubProvider: host_mgmt slot is null — v1 forward-compat contract (D12)",modify,0,m2-closure-0.1,2026-07-03T17:08:49.593Z
+4242,43,provider,"provider.test:GitLabProvider: host_mgmt slot is null — v1 forward-compat contract (D12)",modify,0,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,provider,"provider.test:OpKind enum has exactly two tags",modify,0,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,provider,"provider.test:OpKinds comptime declarations are correct",modify,0,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,provider,"provider.test:OpKinds linkage: comptime assertions are satisfied (would be compile error otherwise)",modify,0,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,provider,"provider.test:OpKinds linkage: comptime assertions satisfied for ssh-bare",modify,0,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,provider,"provider.test:OpOutcome err result carries OpError fields",modify,0,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,provider,"provider.test:OpOutcome ok result carries declared op kind",modify,0,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,provider,"provider.test:SshBareProvider: host_mgmt slot is null — v1 forward-compat contract (D12)",modify,0,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,provider,"provider.test:SupportLevel enum has exactly three tags",modify,0,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,provider,"provider.test:create_repo kernel op: returns .irreversible kind, dispatches through REST client",modify,0,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,provider,"provider.test:create_repo: returns .irreversible kind and .err{unsupported} (D12 dumb target)",modify,0,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,provider,"provider.test:delete_repo kernel op: returns .irreversible kind, dispatches through REST client",modify,0,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,provider,"provider.test:delete_repo: returns .irreversible kind and .err{unsupported} (D12 dumb target)",modify,0,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,provider,"provider.test:error propagation: stub returns 422 → OpOutcome.result == .err with api_error kind",modify,0,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,provider,"provider.test:github_matrix: all 19 per-field capability keys have expected support levels",modify,0,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,provider,"provider.test:github_matrix: entries covers all 19 keys",modify,0,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,provider,"provider.test:gitlab_matrix: all 19 per-field capability keys have expected support levels (M6 flip)",modify,0,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,provider,"provider.test:gitlab_matrix: entries covers all 19 keys",modify,0,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,provider,"provider.test:list_repos kernel op: returns .reversible kind, dispatches through REST client",modify,0,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,provider,"provider.test:list_repos user scope: returns .reversible kind and .err with not-implemented message",modify,0,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,provider,"provider.test:list_repos: returns .reversible kind and .err{unsupported} (D12 dumb target)",modify,0,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,provider,"provider.test:live SSH integration: push_initial_commit + set_default_branch via ssh:// (env-gated)",modify,0,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,provider,"provider.test:parseSshUrl: empty user → null",modify,0,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,provider,"provider.test:parseSshUrl: https scheme → null",modify,0,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,provider,"provider.test:parseSshUrl: missing @ → null",modify,0,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,provider,"provider.test:parseSshUrl: no scheme → null",modify,0,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,provider,"provider.test:parseSshUrl: port 22 with explicit port in URL",modify,0,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,provider,"provider.test:parseSshUrl: ssh://user@host:2222/path (custom port)",modify,0,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,provider,"provider.test:parseSshUrl: standard ssh://user@host/path",modify,0,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,provider,"provider.test:push_initial_commit vtable: pushes commit to file:// bare repo via Provider vtable",modify,0,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,provider,"provider.test:push_initial_commit vtable: wiring test via file:// (ssh push deferred to m4-sshbare-ci-sshd)",modify,0,m2-closure-0.1,2026-07-03T17:08:49.585Z
+4242,43,provider,"provider.test:registry flip: github factory returns capabilities-only Provider (matrix is correct)",modify,0,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,provider,"provider.test:registry flip: gitlab factory returns capabilities-only Provider (matrix is correct)",modify,0,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,provider,"provider.test:registry flip: lookupProviderKind('github') returns non-null with .available status",modify,0,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,provider,"provider.test:registry flip: lookupProviderKind('gitlab') returns non-null with .available status",modify,0,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,provider,"provider.test:registry flip: lookupProviderKind('ssh-bare') returns non-null with .available status",modify,0,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,provider,"provider.test:registry flip: ssh-bare factory returns capabilities-only Provider with correct matrix",modify,0,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,provider,"provider.test:set_default_branch kernel op: returns .reversible kind, dispatches through REST client",modify,0,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,provider,"provider.test:set_default_branch: invalid URL returns .err with helpful message",modify,0,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,provider,"provider.test:set_default_branch: missing URL returns .err with helpful message",modify,0,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,provider,"provider.test:shellQuoteSingle: empty string → empty single-quoted ''",modify,0,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,provider,"provider.test:shellQuoteSingle: path with spaces and special chars",modify,0,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,provider,"provider.test:shellQuoteSingle: simple string → single-quoted",modify,0,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,provider,"provider.test:shellQuoteSingle: string with newline → null (unsafe)",modify,0,m2-closure-0.1,2026-07-03T17:08:49.593Z
+4242,43,provider,"provider.test:shellQuoteSingle: string with null byte → null (unsafe)",modify,0,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,provider,"provider.test:shellQuoteSingle: string with single quote → escaped",modify,0,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,provider,"provider.test:ssh_bare_matrix: 2 kernel supported, 3 kernel unsupported, all ext unsupported",modify,0,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,provider,"provider.test:ssh_bare_matrix: entries covers all 19 keys",modify,0,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,provider,"provider.test:token resolution at init: env var set → credentials resolved",modify,0,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,provider,"provider.test:token resolution at init: env var unset → CredentialError.NotFound",modify,0,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/capabilities.zig,capabilities.BranchProtectionCapabilities,modify,36,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/capabilities.zig,capabilities.BranchProtectionCapabilities,reference,36,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/capabilities.zig,capabilities.CICapabilities,modify,22,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/capabilities.zig,capabilities.CICapabilities,reference,22,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/capabilities.zig,capabilities.CapabilitiesErrorOutput,modify,32,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/capabilities.zig,capabilities.CapabilitiesErrorOutput,reference,32,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/capabilities.zig,capabilities.CapabilitiesOutput,modify,23,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/capabilities.zig,capabilities.CapabilitiesOutput,reference,23,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/capabilities.zig,capabilities.CapabilitiesResult,modify,15,m2-closure-0.1,2026-07-03T17:08:49.593Z
+4242,43,src/capabilities.zig,capabilities.CapabilitiesResult,reference,15,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/capabilities.zig,capabilities.CapabilitiesResult.unknown_kind,reference,15,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/capabilities.zig,capabilities.CapabilityMatrix,modify,7,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/capabilities.zig,capabilities.CapabilityMatrix,reference,7,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/capabilities.zig,capabilities.CollaboratorCapabilities,modify,29,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/capabilities.zig,capabilities.CollaboratorCapabilities,reference,29,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/capabilities.zig,capabilities.ExtensionCapabilities,modify,33,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/capabilities.zig,capabilities.ExtensionCapabilities,reference,33,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/capabilities.zig,capabilities.Io,modify,7,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/capabilities.zig,capabilities.Io,reference,7,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/capabilities.zig,capabilities.KernelCapabilities,modify,43,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/capabilities.zig,capabilities.KernelCapabilities,reference,43,m2-closure-0.1,2026-07-03T17:08:49.593Z
+4242,43,src/capabilities.zig,capabilities.NAME_COL_WIDTH,modify,5,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/capabilities.zig,capabilities.NAME_COL_WIDTH,reference,5,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/capabilities.zig,capabilities.PROVIDER_KINDS,modify,93,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/capabilities.zig,capabilities.PROVIDER_KINDS,reference,93,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/capabilities.zig,capabilities.Provider,modify,7,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/capabilities.zig,capabilities.Provider,reference,7,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/capabilities.zig,capabilities.ProviderKindEntry,modify,41,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/capabilities.zig,capabilities.ProviderKindEntry,reference,41,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/capabilities.zig,capabilities.RegistryStatus,modify,12,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/capabilities.zig,capabilities.RegistryStatus,reference,12,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/capabilities.zig,capabilities.RegistryStatus.available,reference,12,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/capabilities.zig,capabilities.SupportLevel,modify,7,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/capabilities.zig,capabilities.WebhookCapabilities,modify,36,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/capabilities.zig,capabilities.WebhookCapabilities,reference,36,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/capabilities.zig,capabilities.availableKindNames,modify,82,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/capabilities.zig,capabilities.availableKindNames,reference,82,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/capabilities.zig,capabilities.buildCapabilitiesOutput,modify,260,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/capabilities.zig,capabilities.buildCapabilitiesOutput,reference,260,m2-closure-0.1,2026-07-03T17:08:49.585Z
+4242,43,src/capabilities.zig,capabilities.extLevelByName,modify,328,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/capabilities.zig,capabilities.fakeProviderFactory,modify,56,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/capabilities.zig,capabilities.fakeProviderFactory,reference,56,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/capabilities.zig,capabilities.fake_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/capabilities.zig,capabilities.fake_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/capabilities.zig,capabilities.githubProviderFactory,modify,24,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/capabilities.zig,capabilities.githubProviderFactory,reference,24,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/capabilities.zig,capabilities.github_provider_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/capabilities.zig,capabilities.github_provider_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/capabilities.zig,capabilities.gitlabProviderFactory,modify,24,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/capabilities.zig,capabilities.gitlabProviderFactory,reference,24,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/capabilities.zig,capabilities.gitlab_provider_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/capabilities.zig,capabilities.gitlab_provider_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/capabilities.zig,capabilities.kernelLevelByName,modify,122,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/capabilities.zig,capabilities.kernelLevelByName,reference,122,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/capabilities.zig,capabilities.lessThanStr,modify,38,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/capabilities.zig,capabilities.lessThanStr,reference,38,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/capabilities.zig,capabilities.log,modify,8,m2-closure-0.1,2026-07-03T17:08:49.593Z
+4242,43,src/capabilities.zig,capabilities.log,reference,8,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/capabilities.zig,capabilities.lookupProviderKind,modify,59,m2-closure-0.1,2026-07-03T17:08:49.585Z
+4242,43,src/capabilities.zig,capabilities.lookupProviderKind,reference,59,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/capabilities.zig,capabilities.output_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/capabilities.zig,capabilities.output_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/capabilities.zig,capabilities.printCapabilitiesErrorJson,modify,65,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/capabilities.zig,capabilities.printCapabilitiesErrorJson,reference,65,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/capabilities.zig,capabilities.printCapabilitiesHuman,modify,374,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/capabilities.zig,capabilities.printCapabilitiesHuman,reference,374,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/capabilities.zig,capabilities.printCapabilitiesJson,modify,29,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/capabilities.zig,capabilities.printCapabilitiesJson,reference,29,m2-closure-0.1,2026-07-03T17:08:49.593Z
+4242,43,src/capabilities.zig,capabilities.provider,modify,8,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/capabilities.zig,capabilities.provider,reference,8,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/capabilities.zig,capabilities.runCapabilities,modify,255,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/capabilities.zig,capabilities.runCapabilities,reference,255,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/capabilities.zig,capabilities.sshBareProviderFactory,modify,24,m2-closure-0.1,2026-07-03T17:08:49.593Z
+4242,43,src/capabilities.zig,capabilities.sshBareProviderFactory,reference,24,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/capabilities.zig,capabilities.sshbare_provider_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/capabilities.zig,capabilities.sshbare_provider_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/capabilities.zig,capabilities.std,modify,8,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/capabilities.zig,capabilities.std,reference,8,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/capabilities.zig,capabilities.stubGitHubFactory,modify,21,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/capabilities.zig,capabilities.writeCapRow,modify,102,m2-closure-0.1,2026-07-03T17:08:49.593Z
+4242,43,src/capabilities.zig,capabilities.writeCapRow,reference,102,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/credentials.zig,credentials.Allocator,transitive,9,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/credentials.zig,credentials.CredentialError,reference,17,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/credentials.zig,credentials.CredentialResolver,reference,1012,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/credentials.zig,credentials.CredentialResolver.allocator,transitive,1012,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/credentials.zig,credentials.GitLabResolverOpts,reference,19,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/credentials.zig,credentials.Io,transitive,7,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/credentials.zig,credentials.ResolutionAttempt,transitive,40,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/credentials.zig,credentials.ResolvedToken,transitive,31,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/credentials.zig,credentials.ResolverOpts,reference,44,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/credentials.zig,credentials.log,transitive,8,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/credentials.zig,credentials.resolveGitLab,reference,358,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/credentials.zig,credentials.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/github.zig,github.Allocator,transitive,9,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/github.zig,github.Client,reference,1957,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/github.zig,github.Client.allocator,transitive,1957,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/github.zig,github.Client.api_base,transitive,1957,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/github.zig,github.Client.authHeader,transitive,1957,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/github.zig,github.Client.delete,transitive,1957,m2-closure-0.1,2026-07-03T17:08:49.593Z
+4242,43,src/github.zig,github.Client.get,transitive,1957,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/github.zig,github.Client.http_client,transitive,1957,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/github.zig,github.Client.patchReq,transitive,1957,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/github.zig,github.Client.post,transitive,1957,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/github.zig,github.Client.token,transitive,1957,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/github.zig,github.CreateRepoSpec,transitive,48,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/github.zig,github.GITHUB_ACCEPT,transitive,5,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/github.zig,github.GITHUB_API_VERSION,transitive,5,m2-closure-0.1,2026-07-03T17:08:49.585Z
+4242,43,src/github.zig,github.GitHubError,transitive,37,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/github.zig,github.RateLimit,transitive,20,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/github.zig,github.Repo,transitive,61,m2-closure-0.1,2026-07-03T17:08:49.585Z
+4242,43,src/github.zig,github.RepoIterator,transitive,83,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/github.zig,github.RepoPage,transitive,21,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/github.zig,github.RepoPatch,transitive,52,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/github.zig,github.User,transitive,46,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/github.zig,github.assertCreated,transitive,37,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/github.zig,github.assertOk,transitive,43,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/github.zig,github.http,transitive,8,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/github.zig,github.last_github_error,reference,10,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/github.zig,github.parseJson,transitive,52,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/github.zig,github.parseJsonArray,transitive,56,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/github.zig,github.parseLinkNext,transitive,78,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/github.zig,github.serializeCreateSpec,transitive,78,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/github.zig,github.serializePatch,transitive,82,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/github.zig,github.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/github/extensions.zig,extensions.github_branch_protection_vtable,reference,20,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/github/extensions.zig,extensions.github_ci_vtable,reference,20,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/github/extensions.zig,extensions.github_collaborator_vtable,reference,25,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/github/extensions.zig,extensions.github_webhook_vtable,reference,30,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/github/provider.zig,provider.GitHubProvider,modify,2443,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/github/provider.zig,provider.GitHubProvider,reference,2443,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/github/provider.zig,provider.GitHubProvider.allocator,reference,2443,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/github/provider.zig,provider.GitHubProvider.gh_client,reference,2443,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/github/provider.zig,provider.GitHubProvider.http_client,reference,2443,m2-closure-0.1,2026-07-03T17:08:49.585Z
+4242,43,src/github/provider.zig,provider.GitHubProvider.init,reference,2443,m2-closure-0.1,2026-07-03T17:08:49.585Z
+4242,43,src/github/provider.zig,provider.GitHubProvider.org_or_user,reference,2443,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/github/provider.zig,provider.GitHubProvider.pending_branch,reference,2443,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/github/provider.zig,provider.GitHubProvider.pending_create_spec,reference,2443,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/github/provider.zig,provider.GitHubProvider.pending_name,reference,2443,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/github/provider.zig,provider.GitHubProvider.pending_owner,reference,2443,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/github/provider.zig,provider.GitHubProvider.token,reference,2443,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/github/provider.zig,provider.GitHubProviderOpts,modify,36,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/github/provider.zig,provider.GitHubProviderOpts,reference,36,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/github/provider.zig,provider.Io,modify,7,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/github/provider.zig,provider.Io,reference,7,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/github/provider.zig,provider.OrgOrUser,modify,25,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/github/provider.zig,provider.OrgOrUser,reference,25,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/github/provider.zig,provider.REPO_JSON,modify,7,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/github/provider.zig,provider.REPO_JSON,reference,7,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/github/provider.zig,provider.github,modify,8,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/github/provider.zig,provider.github,reference,8,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/github/provider.zig,provider.githubRegistryFactory,modify,63,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/github/provider.zig,provider.githubRegistryFactory,reference,63,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/github/provider.zig,provider.github_matrix,modify,124,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/github/provider.zig,provider.github_matrix,reference,124,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/gitlab.zig,gitlab.Allocator,transitive,9,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/gitlab.zig,gitlab.Client,reference,1702,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/gitlab.zig,gitlab.Client.allocator,transitive,1702,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/gitlab.zig,gitlab.Client.api_base,transitive,1702,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/gitlab.zig,gitlab.Client.delete,transitive,1702,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/gitlab.zig,gitlab.Client.get,transitive,1702,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/gitlab.zig,gitlab.Client.http_client,transitive,1702,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/gitlab.zig,gitlab.Client.post,transitive,1702,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/gitlab.zig,gitlab.Client.putReq,transitive,1702,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/gitlab.zig,gitlab.Client.token,transitive,1702,m2-closure-0.1,2026-07-03T17:08:49.593Z
+4242,43,src/gitlab.zig,gitlab.Client.user_agent,transitive,1702,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/gitlab.zig,gitlab.CreateProjectSpec,transitive,71,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/gitlab.zig,gitlab.GITLAB_ACCEPT,transitive,5,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/gitlab.zig,gitlab.GitLabError,transitive,37,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/gitlab.zig,gitlab.Project,transitive,67,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/gitlab.zig,gitlab.ProjectIterator,transitive,83,m2-closure-0.1,2026-07-03T17:08:49.585Z
+4242,43,src/gitlab.zig,gitlab.ProjectPage,transitive,21,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/gitlab.zig,gitlab.ProjectPatch,transitive,55,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/gitlab.zig,gitlab.RateLimit,transitive,20,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/gitlab.zig,gitlab.User,transitive,46,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/gitlab.zig,gitlab.assertCreated,transitive,37,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/gitlab.zig,gitlab.assertOk,transitive,43,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/gitlab.zig,gitlab.http,transitive,8,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/gitlab.zig,gitlab.last_gitlab_error,reference,10,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/gitlab.zig,gitlab.last_gitlab_error,transitive,10,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/gitlab.zig,gitlab.parseJson,transitive,52,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/gitlab.zig,gitlab.parseJsonArray,transitive,56,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/gitlab.zig,gitlab.parseXNextPage,transitive,155,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/gitlab.zig,gitlab.serializeCreateSpec,transitive,96,m2-closure-0.1,2026-07-03T17:08:49.593Z
+4242,43,src/gitlab.zig,gitlab.serializePatch,transitive,82,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/gitlab.zig,gitlab.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/gitlab/extensions.zig,extensions.Allocator,transitive,9,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/gitlab/extensions.zig,extensions.BranchProtectionVTable,transitive,7,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/gitlab/extensions.zig,extensions.CIVTable,transitive,7,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/gitlab/extensions.zig,extensions.CollaboratorVTable,transitive,7,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/gitlab/extensions.zig,extensions.GitLabExtContext,reference,25,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/gitlab/extensions.zig,extensions.WebhookVTable,transitive,7,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/gitlab/extensions.zig,extensions.branchProtectionGet,transitive,473,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/gitlab/extensions.zig,extensions.branchProtectionSet,transitive,708,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/gitlab/extensions.zig,extensions.ciGetEnabled,transitive,307,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/gitlab/extensions.zig,extensions.ciSetEnabled,transitive,248,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/gitlab/extensions.zig,extensions.collaboratorsAdd,transitive,368,m2-closure-0.1,2026-07-03T17:08:49.593Z
+4242,43,src/gitlab/extensions.zig,extensions.collaboratorsList,transitive,441,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/gitlab/extensions.zig,extensions.collaboratorsRemove,transitive,326,m2-closure-0.1,2026-07-03T17:08:49.585Z
+4242,43,src/gitlab/extensions.zig,extensions.gitlab,transitive,8,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/gitlab/extensions.zig,extensions.gitlab_branch_protection_vtable,reference,20,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/gitlab/extensions.zig,extensions.gitlab_ci_vtable,reference,20,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/gitlab/extensions.zig,extensions.gitlab_collaborator_vtable,reference,25,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/gitlab/extensions.zig,extensions.gitlab_webhook_vtable,reference,30,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/gitlab/extensions.zig,extensions.http_mod,transitive,8,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/gitlab/extensions.zig,extensions.webhooksCreate,transitive,394,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/gitlab/extensions.zig,extensions.webhooksDelete,transitive,219,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/gitlab/extensions.zig,extensions.webhooksList,transitive,478,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/gitlab/extensions.zig,extensions.webhooksUpdate,transitive,497,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/gitlab/provider.zig,provider.Allocator,modify,9,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/gitlab/provider.zig,provider.Allocator,reference,9,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/gitlab/provider.zig,provider.Allocator,transitive,9,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/gitlab/provider.zig,provider.CapabilityMatrix,modify,7,m2-closure-0.1,2026-07-03T17:08:49.593Z
+4242,43,src/gitlab/provider.zig,provider.CapabilityMatrix,reference,7,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/gitlab/provider.zig,provider.GitLabProvider,modify,2422,m2-closure-0.1,2026-07-03T17:08:49.585Z
+4242,43,src/gitlab/provider.zig,provider.GitLabProvider,reference,2422,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/gitlab/provider.zig,provider.GitLabProvider.allocator,reference,2422,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/gitlab/provider.zig,provider.GitLabProvider.ext_ctx,reference,2422,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/gitlab/provider.zig,provider.GitLabProvider.gl_client,reference,2422,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/gitlab/provider.zig,provider.GitLabProvider.group_or_user,reference,2422,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/gitlab/provider.zig,provider.GitLabProvider.http_client,reference,2422,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/gitlab/provider.zig,provider.GitLabProvider.init,reference,2422,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/gitlab/provider.zig,provider.GitLabProvider.pending_branch,reference,2422,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/gitlab/provider.zig,provider.GitLabProvider.pending_create_spec,reference,2422,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/gitlab/provider.zig,provider.GitLabProvider.pending_project_id,reference,2422,m2-closure-0.1,2026-07-03T17:08:49.585Z
+4242,43,src/gitlab/provider.zig,provider.GitLabProvider.token,reference,2422,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/gitlab/provider.zig,provider.GitLabProviderOpts,modify,36,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/gitlab/provider.zig,provider.GitLabProviderOpts,reference,36,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/gitlab/provider.zig,provider.GroupOrUser,modify,25,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/gitlab/provider.zig,provider.GroupOrUser,reference,25,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/gitlab/provider.zig,provider.OpError,modify,7,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/gitlab/provider.zig,provider.OpError,reference,7,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/gitlab/provider.zig,provider.OpErrorKind,modify,7,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/gitlab/provider.zig,provider.OpErrorKind,reference,7,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/gitlab/provider.zig,provider.OpKind,modify,7,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/gitlab/provider.zig,provider.OpKind,reference,7,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/gitlab/provider.zig,provider.OpKinds,modify,7,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/gitlab/provider.zig,provider.OpKinds,reference,7,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/gitlab/provider.zig,provider.OpOutcome,modify,7,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/gitlab/provider.zig,provider.OpOutcome,reference,7,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/gitlab/provider.zig,provider.PROJECT_JSON,modify,7,m2-closure-0.1,2026-07-03T17:08:49.585Z
+4242,43,src/gitlab/provider.zig,provider.PROJECT_JSON,reference,7,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/gitlab/provider.zig,provider.Provider,modify,7,m2-closure-0.1,2026-07-03T17:08:49.593Z
+4242,43,src/gitlab/provider.zig,provider.Provider,reference,7,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/gitlab/provider.zig,provider.SingleShotCtx,modify,33,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/gitlab/provider.zig,provider.SingleShotCtx,reference,33,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/gitlab/provider.zig,provider.StubServer,modify,79,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/gitlab/provider.zig,provider.StubServer,reference,79,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/gitlab/provider.zig,provider.StubServer.init,reference,79,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/gitlab/provider.zig,provider.SupportLevel,modify,7,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/gitlab/provider.zig,provider.SupportLevel,reference,7,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/gitlab/provider.zig,provider.VTable,modify,7,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/gitlab/provider.zig,provider.VTable,reference,7,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/gitlab/provider.zig,provider.c,modify,10,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/gitlab/provider.zig,provider.c,reference,10,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/gitlab/provider.zig,provider.capabilities_only_ctx,modify,7,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/gitlab/provider.zig,provider.capabilities_only_ctx,reference,7,m2-closure-0.1,2026-07-03T17:08:49.593Z
+4242,43,src/gitlab/provider.zig,provider.capabilities_only_ctx,transitive,7,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/gitlab/provider.zig,provider.capabilities_only_vtable,modify,34,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/gitlab/provider.zig,provider.capabilities_only_vtable,reference,34,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/gitlab/provider.zig,provider.capabilities_only_vtable,transitive,34,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/gitlab/provider.zig,provider.createProvider,modify,45,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/gitlab/provider.zig,provider.credentials,modify,8,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/gitlab/provider.zig,provider.credentials,reference,8,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/gitlab/provider.zig,provider.extensions,modify,8,m2-closure-0.1,2026-07-03T17:08:49.585Z
+4242,43,src/gitlab/provider.zig,provider.extensions,reference,8,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/gitlab/provider.zig,provider.extractContentLength,modify,122,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/gitlab/provider.zig,provider.extractContentLength,reference,122,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/gitlab/provider.zig,provider.git_libgit2_init,modify,8,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/gitlab/provider.zig,provider.git_libgit2_init,reference,8,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/gitlab/provider.zig,provider.git_libgit2_shutdown,modify,8,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/gitlab/provider.zig,provider.git_libgit2_shutdown,reference,8,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/gitlab/provider.zig,provider.gitlab,modify,8,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/gitlab/provider.zig,provider.gitlab,reference,8,m2-closure-0.1,2026-07-03T17:08:49.585Z
+4242,43,src/gitlab/provider.zig,provider.gitlab,transitive,8,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/gitlab/provider.zig,provider.gitlabRegistryFactory,modify,63,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/gitlab/provider.zig,provider.gitlabRegistryFactory,reference,63,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/gitlab/provider.zig,provider.gitlab_matrix,modify,124,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/gitlab/provider.zig,provider.gitlab_matrix,reference,124,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/gitlab/provider.zig,provider.gitlab_matrix,transitive,124,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/gitlab/provider.zig,provider.http_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/gitlab/provider.zig,provider.http_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/gitlab/provider.zig,provider.mapClientError,modify,400,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/gitlab/provider.zig,provider.mapClientError,reference,400,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/gitlab/provider.zig,provider.mkdir,modify,21,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/gitlab/provider.zig,provider.mkdir,reference,21,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/gitlab/provider.zig,provider.notImplementedPushVtable,modify,25,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/gitlab/provider.zig,provider.notImplementedPushVtable,reference,25,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/gitlab/provider.zig,provider.notImplementedVtable,modify,16,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/gitlab/provider.zig,provider.notImplementedVtable,reference,16,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/gitlab/provider.zig,provider.opKind,modify,7,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/gitlab/provider.zig,provider.opKind,reference,7,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/gitlab/provider.zig,provider.provider,modify,8,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/gitlab/provider.zig,provider.provider,reference,8,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/gitlab/provider.zig,provider.provider,transitive,8,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/gitlab/provider.zig,provider.setenv,modify,31,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/gitlab/provider.zig,provider.setenv,reference,31,m2-closure-0.1,2026-07-03T17:08:49.585Z
+4242,43,src/gitlab/provider.zig,provider.singleShotServer,modify,404,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/gitlab/provider.zig,provider.singleShotServer,reference,404,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/gitlab/provider.zig,provider.std,modify,8,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/gitlab/provider.zig,provider.std,reference,8,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/gitlab/provider.zig,provider.stubSleepNs,modify,94,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/gitlab/provider.zig,provider.stubSleepNs,reference,94,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/gitlab/provider.zig,provider.testHttpClient,modify,45,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/gitlab/provider.zig,provider.testHttpClient,reference,45,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/gitlab/provider.zig,provider.unsetenv,modify,17,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/gitlab/provider.zig,provider.unsetenv,reference,17,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/http.zig,http.Allocator,transitive,9,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/http.zig,http.Client,reference,940,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/http.zig,http.Client.allocator,transitive,940,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/http.zig,http.Client.bucket,transitive,940,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/http.zig,http.Client.doRequest,transitive,940,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/http.zig,http.Client.inner,transitive,940,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/http.zig,http.Client.io,transitive,940,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/http.zig,http.Client.opts,transitive,940,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/http.zig,http.Client.sendWithRetry,transitive,940,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/http.zig,http.ClientOpts,transitive,44,m2-closure-0.1,2026-07-03T17:08:49.585Z
+4242,43,src/http.zig,http.Header,transitive,22,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/http.zig,http.Io,transitive,7,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/http.zig,http.Request,transitive,41,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/http.zig,http.Response,transitive,107,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/http.zig,http.TokenBucket,transitive,318,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/http.zig,http.TokenBucket.init,transitive,318,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/http.zig,http.retryAfterNs,transitive,51,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/http.zig,http.sleepNs,transitive,94,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/http.zig,http.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/log.zig,log.emitKvToStderr,transitive,145,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/log.zig,log.errKv,reference,28,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/log.zig,log.info,transitive,29,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/output.zig,output.Io,transitive,7,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/output.zig,output.printJson,reference,45,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/output.zig,output.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/provider.zig,provider.AddCollaboratorParams,modify,29,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/provider.zig,provider.AddCollaboratorParams,reference,29,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/provider.zig,provider.BranchProtectionRule,modify,57,m2-closure-0.1,2026-07-03T17:08:49.593Z
+4242,43,src/provider.zig,provider.BranchProtectionRule,reference,57,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/provider.zig,provider.BranchProtectionVTable,modify,63,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/provider.zig,provider.BranchProtectionVTable,reference,63,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/provider.zig,provider.BranchRestrictions,modify,36,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/provider.zig,provider.BranchRestrictions,reference,36,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/provider.zig,provider.CIVTable,modify,63,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/provider.zig,provider.CIVTable,reference,63,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/provider.zig,provider.CapabilityKey,modify,48,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/provider.zig,provider.CapabilityKey,reference,48,m2-closure-0.1,2026-07-03T17:08:49.593Z
+4242,43,src/provider.zig,provider.CapabilityMatrix.branch_protection_enforce_admins,reference,368,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/provider.zig,provider.CapabilityMatrix.branch_protection_required_reviews,reference,368,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/provider.zig,provider.CapabilityMatrix.branch_protection_required_status_checks,reference,368,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/provider.zig,provider.CapabilityMatrix.branch_protection_restrictions,reference,368,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/provider.zig,provider.CapabilityMatrix.ci_get_enabled,reference,368,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/provider.zig,provider.CapabilityMatrix.ci_set_enabled,reference,368,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/provider.zig,provider.CapabilityMatrix.collaborators_add,reference,368,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/provider.zig,provider.CapabilityMatrix.collaborators_list,reference,368,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/provider.zig,provider.CapabilityMatrix.collaborators_remove,reference,368,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/provider.zig,provider.CapabilityMatrix.create_repo,reference,368,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/provider.zig,provider.CapabilityMatrix.delete_repo,reference,368,m2-closure-0.1,2026-07-03T17:08:49.585Z
+4242,43,src/provider.zig,provider.CapabilityMatrix.entries,reference,368,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/provider.zig,provider.CapabilityMatrix.field_count,reference,368,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/provider.zig,provider.CapabilityMatrix.get,reference,368,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/provider.zig,provider.CapabilityMatrix.host_mgmt,reference,368,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/provider.zig,provider.CapabilityMatrix.list_repos,reference,368,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/provider.zig,provider.CapabilityMatrix.push_initial_commit,reference,368,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/provider.zig,provider.CapabilityMatrix.set_default_branch,reference,368,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/provider.zig,provider.CapabilityMatrix.webhooks_create,reference,368,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/provider.zig,provider.CapabilityMatrix.webhooks_delete,reference,368,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/provider.zig,provider.CapabilityMatrix.webhooks_list,reference,368,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/provider.zig,provider.CapabilityMatrix.webhooks_update,reference,368,m2-closure-0.1,2026-07-03T17:08:49.585Z
+4242,43,src/provider.zig,provider.CollaboratorRole,modify,23,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/provider.zig,provider.CollaboratorRole,reference,23,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/provider.zig,provider.CollaboratorVTable,modify,91,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/provider.zig,provider.CollaboratorVTable,reference,91,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/provider.zig,provider.CreateWebhookParams,modify,63,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/provider.zig,provider.CreateWebhookParams,reference,63,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/provider.zig,provider.DeleteWebhookParams,modify,24,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/provider.zig,provider.DeleteWebhookParams,reference,24,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/provider.zig,provider.GetBranchProtectionParams,modify,24,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/provider.zig,provider.GetBranchProtectionParams,reference,24,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/provider.zig,provider.GetCIEnabledParams,modify,16,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/provider.zig,provider.GetCIEnabledParams,reference,16,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/provider.zig,provider.HostMgmtVTable,modify,83,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/provider.zig,provider.HostMgmtVTable,reference,83,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/provider.zig,provider.KernelOp,modify,18,m2-closure-0.1,2026-07-03T17:08:49.585Z
+4242,43,src/provider.zig,provider.KernelOp,reference,18,m2-closure-0.1,2026-07-03T17:08:49.585Z
+4242,43,src/provider.zig,provider.ListCollaboratorsParams,modify,16,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/provider.zig,provider.ListCollaboratorsParams,reference,16,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/provider.zig,provider.ListWebhooksParams,modify,16,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/provider.zig,provider.ListWebhooksParams,reference,16,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/provider.zig,provider.ObservedCollaborator,modify,21,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/provider.zig,provider.ObservedWebhook,modify,51,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/provider.zig,provider.OpErrorKind.api_error,reference,27,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/provider.zig,provider.OpErrorKind.not_found,reference,27,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/provider.zig,provider.OpErrorKind.other,reference,27,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/provider.zig,provider.OpErrorKind.unsupported,reference,27,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/provider.zig,provider.OpKind.irreversible,reference,12,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/provider.zig,provider.OpKind.reversible,reference,12,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/provider.zig,provider.OpKinds.create_repo,reference,68,m2-closure-0.1,2026-07-03T17:08:49.593Z
+4242,43,src/provider.zig,provider.OpKinds.delete_repo,reference,68,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/provider.zig,provider.OpKinds.list_repos,reference,68,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/provider.zig,provider.OpKinds.push_initial_commit,reference,68,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/provider.zig,provider.OpKinds.set_default_branch,reference,68,m2-closure-0.1,2026-07-03T17:08:49.585Z
+4242,43,src/provider.zig,provider.Provider.ctx,reference,221,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/provider.zig,provider.Provider.matrix,reference,221,m2-closure-0.1,2026-07-03T17:08:49.585Z
+4242,43,src/provider.zig,provider.Provider.vtable,reference,221,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/provider.zig,provider.PushInitialCommitParams,modify,41,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/provider.zig,provider.PushInitialCommitParams,reference,41,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/provider.zig,provider.RemoveCollaboratorParams,modify,24,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/provider.zig,provider.RemoveCollaboratorParams,reference,24,m2-closure-0.1,2026-07-03T17:08:49.593Z
+4242,43,src/provider.zig,provider.SetBranchProtectionParams,modify,23,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/provider.zig,provider.SetBranchProtectionParams,reference,23,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/provider.zig,provider.SetCIEnabledParams,modify,21,m2-closure-0.1,2026-07-03T17:08:49.593Z
+4242,43,src/provider.zig,provider.SetCIEnabledParams,reference,21,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/provider.zig,provider.SupportLevel.supported,reference,20,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/provider.zig,provider.SupportLevel.unsupported,reference,20,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/provider.zig,provider.UpdateWebhookParams,modify,68,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/provider.zig,provider.UpdateWebhookParams,reference,68,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/provider.zig,provider.WebhookVTable,modify,119,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/provider.zig,provider.WebhookVTable,reference,119,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/provider/fake.zig,fake.CallEntry,modify,12,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/provider/fake.zig,fake.CallEntry,reference,12,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/provider/fake.zig,fake.CallEntry,transitive,12,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/provider/fake.zig,fake.CapabilityMatrix,modify,7,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/provider/fake.zig,fake.CapabilityMatrix,reference,7,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/provider/fake.zig,fake.CapabilityMatrix,transitive,7,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/provider/fake.zig,fake.FailConfig,modify,38,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/provider/fake.zig,fake.FailConfig,reference,38,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/provider/fake.zig,fake.FailConfig,transitive,38,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/provider/fake.zig,fake.FakeProvider,modify,735,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/provider/fake.zig,fake.FakeProvider,reference,735,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/provider/fake.zig,fake.FakeProvider.allocator,reference,735,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/provider/fake.zig,fake.FakeProvider.allocator,transitive,735,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/provider/fake.zig,fake.FakeProvider.call_log,reference,735,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/provider/fake.zig,fake.FakeProvider.call_log,transitive,735,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/provider/fake.zig,fake.FakeProvider.fail_config,reference,735,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/provider/fake.zig,fake.FakeProvider.fail_config,transitive,735,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/provider/fake.zig,fake.FakeProvider.fleet_toml_repos,reference,735,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/provider/fake.zig,fake.FakeProvider.fleet_toml_repos,transitive,735,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/provider/fake.zig,fake.FakeProvider.init,reference,735,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/provider/fake.zig,fake.FakeProvider.matrix,reference,735,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/provider/fake.zig,fake.FakeProvider.matrix,transitive,735,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/provider/fake.zig,fake.KernelOp,modify,18,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/provider/fake.zig,fake.KernelOp,reference,18,m2-closure-0.1,2026-07-03T17:08:49.593Z
+4242,43,src/provider/fake.zig,fake.KernelOp,transitive,18,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/provider/fake.zig,fake.OpError,modify,7,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/provider/fake.zig,fake.OpErrorKind,modify,7,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/provider/fake.zig,fake.OpErrorKind,reference,7,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/provider/fake.zig,fake.OpKind,modify,7,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/provider/fake.zig,fake.OpKind,reference,7,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/provider/fake.zig,fake.OpKind,transitive,7,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/provider/fake.zig,fake.OpOutcome,modify,7,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/provider/fake.zig,fake.OpOutcome,reference,7,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/provider/fake.zig,fake.OpOutcome,transitive,7,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/provider/fake.zig,fake.Provider,modify,7,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/provider/fake.zig,fake.Provider,reference,7,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/provider/fake.zig,fake.Provider,transitive,7,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/provider/fake.zig,fake.VTable,modify,7,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/provider/fake.zig,fake.VTable,reference,7,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/provider/fake.zig,fake.VTable,transitive,7,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/provider/fake.zig,fake.kernel_only_matrix,modify,124,m2-closure-0.1,2026-07-03T17:08:49.585Z
+4242,43,src/provider/fake.zig,fake.kernel_only_matrix,reference,124,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/provider/fake.zig,fake.opKind,modify,7,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/provider/fake.zig,fake.opKind,reference,7,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/provider/fake.zig,fake.opKind,transitive,7,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/provider/fake.zig,fake.provider,modify,8,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/provider/fake.zig,fake.provider,reference,8,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/provider/fake.zig,fake.std,modify,8,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/provider/fake.zig,fake.std,reference,8,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/provider/fake.zig,fake.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/ssh_credentials.zig,ssh_credentials.SshCredentialOpts,reference,48,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/ssh_credentials.zig,ssh_credentials.SshCredentialOpts.agent_socket,transitive,48,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/ssh_credentials.zig,ssh_credentials.SshCredentialOpts.allowed_types,transitive,48,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/ssh_credentials.zig,ssh_credentials.SshCredentialOpts.keyfile_path,transitive,48,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/ssh_credentials.zig,ssh_credentials.SshCredentialSource,transitive,20,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/ssh_credentials.zig,ssh_credentials.c,transitive,10,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/ssh_credentials.zig,ssh_credentials.credentialCallback,reference,417,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/ssh_credentials.zig,ssh_credentials.resolveUsername,transitive,125,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/ssh_credentials.zig,ssh_credentials.selectSource,reference,236,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/ssh_credentials.zig,ssh_credentials.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/sshbare/provider.zig,provider.AF_INET,modify,7,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/sshbare/provider.zig,provider.AddrInfo,modify,50,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/sshbare/provider.zig,provider.AddrInfo,reference,50,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/sshbare/provider.zig,provider.IPPROTO_TCP,modify,7,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/sshbare/provider.zig,provider.SOCK_STREAM,modify,7,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/sshbare/provider.zig,provider.SshBareProvider,modify,797,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/sshbare/provider.zig,provider.SshBareProvider,reference,797,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/sshbare/provider.zig,provider.SshBareProvider.cred_opts,reference,797,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/sshbare/provider.zig,provider.SshBareProvider.pending_branch,reference,797,m2-closure-0.1,2026-07-03T17:08:49.586Z
+4242,43,src/sshbare/provider.zig,provider.SshBareProvider.pending_sdb_url,reference,797,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/sshbare/provider.zig,provider.SshBareProviderOpts,modify,24,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/sshbare/provider.zig,provider.SshBareProviderOpts,reference,24,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/sshbare/provider.zig,provider.SshUrl,modify,35,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/sshbare/provider.zig,provider.SshUrl,reference,35,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/sshbare/provider.zig,provider.authenticateLibssh2,modify,454,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/sshbare/provider.zig,provider.authenticateLibssh2,reference,454,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/sshbare/provider.zig,provider.close,modify,11,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/sshbare/provider.zig,provider.close,reference,11,m2-closure-0.1,2026-07-03T17:08:49.585Z
+4242,43,src/sshbare/provider.zig,provider.closeSock,modify,17,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/sshbare/provider.zig,provider.closeSock,reference,17,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/sshbare/provider.zig,provider.connect,modify,21,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/sshbare/provider.zig,provider.connect,reference,21,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/sshbare/provider.zig,provider.execPushInitialCommit,modify,677,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/sshbare/provider.zig,provider.execPushInitialCommit,reference,677,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/sshbare/provider.zig,provider.execSetDefaultBranch,modify,1019,m2-closure-0.1,2026-07-03T17:08:49.593Z
+4242,43,src/sshbare/provider.zig,provider.execSetDefaultBranch,reference,1019,m2-closure-0.1,2026-07-03T17:08:49.590Z
+4242,43,src/sshbare/provider.zig,provider.freeaddrinfo,modify,13,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/sshbare/provider.zig,provider.freeaddrinfo,reference,13,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/sshbare/provider.zig,provider.gai_strerror,modify,17,m2-closure-0.1,2026-07-03T17:08:49.585Z
+4242,43,src/sshbare/provider.zig,provider.getaddrinfo,modify,43,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/sshbare/provider.zig,provider.getaddrinfo,reference,43,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/sshbare/provider.zig,provider.openTcpSocket,modify,242,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/sshbare/provider.zig,provider.openTcpSocket,reference,242,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/sshbare/provider.zig,provider.parseSshUrl,modify,290,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/sshbare/provider.zig,provider.parseSshUrl,reference,290,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/sshbare/provider.zig,provider.shellQuoteSingle,modify,193,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/sshbare/provider.zig,provider.shellQuoteSingle,reference,193,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/sshbare/provider.zig,provider.socket,modify,19,m2-closure-0.1,2026-07-03T17:08:49.593Z
+4242,43,src/sshbare/provider.zig,provider.socket,reference,19,m2-closure-0.1,2026-07-03T17:08:49.587Z
+4242,43,src/sshbare/provider.zig,provider.sshBareRegistryFactory,modify,63,m2-closure-0.1,2026-07-03T17:08:49.591Z
+4242,43,src/sshbare/provider.zig,provider.sshBareRegistryFactory,reference,63,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/sshbare/provider.zig,provider.ssh_bare_matrix,modify,124,m2-closure-0.1,2026-07-03T17:08:49.592Z
+4242,43,src/sshbare/provider.zig,provider.ssh_bare_matrix,reference,124,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4242,43,src/sshbare/provider.zig,provider.ssh_cred,modify,8,m2-closure-0.1,2026-07-03T17:08:49.588Z
+4242,43,src/sshbare/provider.zig,provider.ssh_cred,reference,8,m2-closure-0.1,2026-07-03T17:08:49.589Z
+4277,43,main,"main.test:FTS5 absent: fts5 virtual table returns error",modify,0,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,main,"main.test:libgit2 SSH feature bit is set",modify,0,m2-closure-0.1,2026-07-03T17:08:50.026Z
+4277,43,main,"main.test:libgit2 in-memory SSH credentials are enabled",modify,0,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,main,"main.test:libgit2 version is callable and non-zero",modify,0,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,main,"main.test:libssh2 version string is non-empty",modify,0,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,main,"main.test:parseArgs: --json sets json flag",modify,0,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,main,"main.test:parseArgs: --verbose increments counter",modify,0,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,main,"main.test:parseArgs: --version and capabilities are independent",modify,0,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,main,"main.test:parseArgs: --version sets version flag",modify,0,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,main,"main.test:parseArgs: apply --dry-run --manifest --json all set",modify,0,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,main,"main.test:parseArgs: apply --dry-run sets both flags",modify,0,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,main,"main.test:parseArgs: apply --manifest <path> sets manifest_path",modify,0,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,main,"main.test:parseArgs: apply sets apply flag",modify,0,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,main,"main.test:parseArgs: capabilities <kind> --json sets both fields",modify,0,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,main,"main.test:parseArgs: capabilities <kind> sets capabilities field",modify,0,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,main,"main.test:parseArgs: capabilities with no kind arg sets empty string",modify,0,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,main,"main.test:parseArgs: discover --json sets both flags",modify,0,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,main,"main.test:parseArgs: discover --org --project sets both",modify,0,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,main,"main.test:parseArgs: discover --org github:acme parses org",modify,0,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,main,"main.test:parseArgs: discover --ssh-dir parses ssh-dir",modify,0,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,main,"main.test:parseArgs: discover --user fake:me parses user",modify,0,m2-closure-0.1,2026-07-03T17:08:50.026Z
+4277,43,main,"main.test:parseArgs: discover sets discover flag",modify,0,m2-closure-0.1,2026-07-03T17:08:50.026Z
+4277,43,main,"main.test:parseArgs: empty argv produces zero-value Args",modify,0,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,main,"main.test:parseArgs: plan --json sets do_plan and json",modify,0,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,main,"main.test:parseArgs: plan --manifest sets manifest_path and do_plan",modify,0,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,main,"main.test:parseArgs: plan sets do_plan flag",modify,0,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,main,"main.test:parseArgs: refresh --manifest sets manifest_path",modify,0,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,main,"main.test:parseArgs: refresh sets do_refresh flag",modify,0,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,main,"main.test:parseArgs: status --json sets both flags",modify,0,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,main,"main.test:parseArgs: status --manifest sets manifest_path",modify,0,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,main,"main.test:parseArgs: status sets do_status flag",modify,0,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,main,"main.test:version string has expected prefix",modify,0,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,main,"main.test:version string is non-empty",modify,0,m2-closure-0.1,2026-07-03T17:08:50.026Z
+4277,43,src/apply.zig,apply.Allocator,transitive,9,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/apply.zig,apply.ApplyArgs,transitive,29,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,src/apply.zig,apply.ApplyResult,transitive,16,m2-closure-0.1,2026-07-03T17:08:50.026Z
+4277,43,src/apply.zig,apply.Io,transitive,7,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/apply.zig,apply.cache_mod,transitive,8,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,src/apply.zig,apply.runApply,reference,226,m2-closure-0.1,2026-07-03T17:08:50.026Z
+4277,43,src/apply.zig,apply.runApplyWithCache,transitive,497,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,src/apply.zig,apply.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,src/cache.zig,cache.Cache,transitive,2051,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,src/cache.zig,cache.c,transitive,10,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,src/cache.zig,cache.sqliteVersion,reference,27,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/cache.zig,cache.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/capabilities.zig,capabilities.CapabilitiesResult,transitive,15,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/capabilities.zig,capabilities.Io,transitive,7,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/capabilities.zig,capabilities.PROVIDER_KINDS,transitive,93,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/capabilities.zig,capabilities.availableKindNames,transitive,82,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,src/capabilities.zig,capabilities.buildCapabilitiesOutput,transitive,142,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/capabilities.zig,capabilities.log,transitive,8,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/capabilities.zig,capabilities.lookupProviderKind,transitive,59,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,src/capabilities.zig,capabilities.printCapabilitiesErrorJson,transitive,65,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/capabilities.zig,capabilities.printCapabilitiesHuman,transitive,226,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/capabilities.zig,capabilities.printCapabilitiesJson,transitive,29,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/capabilities.zig,capabilities.runCapabilities,reference,255,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,src/capabilities.zig,capabilities.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,src/discovery.zig,discovery.DiscoverArgs,reference,52,m2-closure-0.1,2026-07-03T17:08:50.026Z
+4277,43,src/discovery.zig,discovery.DiscoverResult,transitive,16,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/discovery.zig,discovery.DiscoveryResult,transitive,18,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/discovery.zig,discovery.DiscoverySource,transitive,14,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/discovery.zig,discovery.FakeProvider,transitive,7,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/discovery.zig,discovery.Io,transitive,7,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,src/discovery.zig,discovery.buildDiscoveryOutput,transitive,148,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,src/discovery.zig,discovery.discoverFromOrg,transitive,160,m2-closure-0.1,2026-07-03T17:08:50.026Z
+4277,43,src/discovery.zig,discovery.fake_mod,transitive,8,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/discovery.zig,discovery.log,transitive,8,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/discovery.zig,discovery.parseOrgQuery,transitive,101,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,src/discovery.zig,discovery.parseSshDirQuery,transitive,161,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,src/discovery.zig,discovery.printDiscoveryHuman,transitive,136,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/discovery.zig,discovery.printDiscoveryJson,transitive,29,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/discovery.zig,discovery.runDiscover,reference,536,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/discovery.zig,discovery.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/log.zig,log.Verbosity,reference,26,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,src/log.zig,log.current_verbosity,transitive,31,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/log.zig,log.err,transitive,29,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/log.zig,log.errKv,transitive,28,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,src/log.zig,log.info,transitive,29,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/log.zig,log.setVerbosity,reference,24,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/log.zig,log.warn,transitive,29,m2-closure-0.1,2026-07-03T17:08:50.026Z
+4277,43,src/main.zig,main.Args,modify,144,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/main.zig,main.Args,reference,144,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/main.zig,main.BINARY_NAME,modify,5,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/main.zig,main.BINARY_NAME,reference,5,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,src/main.zig,main.BINARY_VERSION,modify,5,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/main.zig,main.BINARY_VERSION,reference,5,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,src/main.zig,main.Io,modify,7,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/main.zig,main.Io,reference,7,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/main.zig,main.apply,modify,8,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,src/main.zig,main.apply,reference,8,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/main.zig,main.buildVersionOutput,modify,152,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,src/main.zig,main.buildVersionOutput,reference,152,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/main.zig,main.c,modify,10,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,src/main.zig,main.c,reference,10,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/main.zig,main.cache,modify,8,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,src/main.zig,main.cache,reference,8,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/main.zig,main.capabilities,modify,8,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/main.zig,main.capabilities,reference,8,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/main.zig,main.discovery,modify,8,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/main.zig,main.discovery,reference,8,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/main.zig,main.features_h,modify,5,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/main.zig,main.features_h,reference,5,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/main.zig,main.log,modify,8,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,src/main.zig,main.log,reference,8,m2-closure-0.1,2026-07-03T17:08:50.026Z
+4277,43,src/main.zig,main.main,modify,1181,m2-closure-0.1,2026-07-03T17:08:50.026Z
+4277,43,src/main.zig,main.output,modify,8,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,src/main.zig,main.output,reference,8,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/main.zig,main.parseArgs,modify,597,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,src/main.zig,main.parseArgs,reference,597,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/main.zig,main.refresh,modify,8,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/main.zig,main.refresh,reference,8,m2-closure-0.1,2026-07-03T17:08:50.026Z
+4277,43,src/main.zig,main.sqlite_c,modify,5,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,src/main.zig,main.sqlite_c,reference,5,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/main.zig,main.status,modify,8,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/main.zig,main.status,reference,8,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,src/main.zig,main.std,modify,8,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,src/main.zig,main.std,reference,8,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/main.zig,main.version,modify,9,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/main.zig,main.version,reference,9,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,src/output.zig,output.Io,transitive,7,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/output.zig,output.VersionOutput,reference,43,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/output.zig,output.printJson,transitive,45,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/output.zig,output.printVersionHuman,reference,51,m2-closure-0.1,2026-07-03T17:08:50.026Z
+4277,43,src/output.zig,output.printVersionJson,reference,27,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/provider/fake.zig,fake.kernel_only_matrix,transitive,70,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/refresh.zig,refresh.Allocator,transitive,9,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/refresh.zig,refresh.Io,transitive,7,m2-closure-0.1,2026-07-03T17:08:50.026Z
+4277,43,src/refresh.zig,refresh.RefreshArgs,transitive,23,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,src/refresh.zig,refresh.RefreshResult,transitive,14,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/refresh.zig,refresh.cache_mod,transitive,8,m2-closure-0.1,2026-07-03T17:08:50.026Z
+4277,43,src/refresh.zig,refresh.runRefresh,reference,226,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/refresh.zig,refresh.runRefreshWithCache,transitive,1001,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/refresh.zig,refresh.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,src/status.zig,status.Allocator,transitive,9,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,src/status.zig,status.Io,transitive,7,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,src/status.zig,status.StatusArgs,transitive,23,m2-closure-0.1,2026-07-03T17:08:50.026Z
+4277,43,src/status.zig,status.StatusResult,transitive,16,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/status.zig,status.cache_mod,transitive,8,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4277,43,src/status.zig,status.runStatus,reference,226,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/status.zig,status.runStatusWithCache,transitive,707,m2-closure-0.1,2026-07-03T17:08:50.025Z
+4277,43,src/status.zig,status.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:50.024Z
+4279,43,apply,"apply.test:--json output schema: typed parse into ApplyOutput round-trips plan/outcomes/summary",modify,0,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,apply,"apply.test:--json: dry-run output parses as JSON with expected schema",modify,0,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,apply,"apply.test:S-E1 --json: empty manifest produces valid JSON nothing-to-do",modify,0,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,apply,"apply.test:S-E1: empty [[repos]] → nothing to do, zero audit rows",modify,0,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,apply,"apply.test:S-G1: branch_protection on ssh-bare → UnsupportedField warning, audit_log extension_skip, exit 0",modify,0,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,apply,"apply.test:S-H1: 3-repo manifest + stub REST + bare push target → all 3 succeed, 3 audit rows",modify,0,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,apply,"apply.test:S-H2: mixed-provider fleet apply — 2 GitHub + 2 GitLab, all 4 succeed",modify,0,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,apply,"apply.test:audit_log quoting safety: extension_skip repo+field with quotes and backslashes survives JSON round-trip",modify,0,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,apply,"apply.test:audit_log quoting safety: repo name with quotes and backslashes survives JSON round-trip",modify,0,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,apply,"apply.test:cross-provider isolation: gitlab 422 does not prevent github repo from succeeding",modify,0,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,apply,"apply.test:dry-run: prints plan, exits 0, zero API calls, zero audit rows",modify,0,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,apply,"apply.test:extension on github warns: capability-driven, not provider-hardcoded",modify,0,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,apply,"apply.test:findCompletedScaffold: true when matching row exists, false otherwise",modify,0,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,apply,"apply.test:idempotency: second apply skips repos with prior successful push_initial_commit",modify,0,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,apply,"apply.test:no-extensions ssh-bare: scaffold succeeds, zero extension_skip rows",modify,0,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,apply,"apply.test:op_kind: backward-compat NULL row is readable after migration 0003",modify,0,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,apply,"apply.test:op_kind: writeAuditLog writes and reads back op_kind correctly",modify,0,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,apply,"apply.test:op_kind: writeAuditLogForScaffold derives op_kind via @tagName(opKind(op))",modify,0,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,apply,"apply.test:per-repo best-effort: stub returns 422 → all repos fail, exit non-zero, 3 failure rows",modify,0,m2-closure-0.1,2026-07-03T17:08:51.128Z
+4279,43,apply,"apply.test:per-repo isolation: 201/422/201 sequence → 2 succeeded, 1 failed, all 3 in stdout",modify,0,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,apply,"apply.test:writeAuditLog: inserts rows with correct fields",modify,0,m2-closure-0.1,2026-07-03T17:08:51.128Z
+4279,43,main,"main.test:FTS5 absent: fts5 virtual table returns error",modify,0,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,main,"main.test:libgit2 SSH feature bit is set",modify,0,m2-closure-0.1,2026-07-03T17:08:51.128Z
+4279,43,main,"main.test:libgit2 in-memory SSH credentials are enabled",modify,0,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,main,"main.test:libgit2 version is callable and non-zero",modify,0,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,main,"main.test:libssh2 version string is non-empty",modify,0,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,main,"main.test:parseArgs: --json sets json flag",modify,0,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,main,"main.test:parseArgs: --verbose increments counter",modify,0,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,main,"main.test:parseArgs: --version and capabilities are independent",modify,0,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,main,"main.test:parseArgs: --version sets version flag",modify,0,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,main,"main.test:parseArgs: apply --dry-run --manifest --json all set",modify,0,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,main,"main.test:parseArgs: apply --dry-run sets both flags",modify,0,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,main,"main.test:parseArgs: apply --manifest <path> sets manifest_path",modify,0,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,main,"main.test:parseArgs: apply sets apply flag",modify,0,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,main,"main.test:parseArgs: capabilities <kind> --json sets both fields",modify,0,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,main,"main.test:parseArgs: capabilities <kind> sets capabilities field",modify,0,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,main,"main.test:parseArgs: capabilities with no kind arg sets empty string",modify,0,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,main,"main.test:parseArgs: discover --json sets both flags",modify,0,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,main,"main.test:parseArgs: discover --org --project sets both",modify,0,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,main,"main.test:parseArgs: discover --org github:acme parses org",modify,0,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,main,"main.test:parseArgs: discover --ssh-dir parses ssh-dir",modify,0,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,main,"main.test:parseArgs: discover --user fake:me parses user",modify,0,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,main,"main.test:parseArgs: discover sets discover flag",modify,0,m2-closure-0.1,2026-07-03T17:08:51.128Z
+4279,43,main,"main.test:parseArgs: empty argv produces zero-value Args",modify,0,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,main,"main.test:parseArgs: plan --json sets do_plan and json",modify,0,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,main,"main.test:parseArgs: plan --manifest sets manifest_path and do_plan",modify,0,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,main,"main.test:parseArgs: plan sets do_plan flag",modify,0,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,main,"main.test:parseArgs: refresh --manifest sets manifest_path",modify,0,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,main,"main.test:parseArgs: refresh sets do_refresh flag",modify,0,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,main,"main.test:parseArgs: status --json sets both flags",modify,0,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,main,"main.test:parseArgs: status --manifest sets manifest_path",modify,0,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,main,"main.test:parseArgs: status sets do_status flag",modify,0,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,main,"main.test:version string has expected prefix",modify,0,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,main,"main.test:version string is non-empty",modify,0,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/apply.zig,apply.Allocator,modify,9,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/apply.zig,apply.Allocator,reference,9,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/apply.zig,apply.Allocator,transitive,9,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/apply.zig,apply.ApplyArgs,modify,29,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/apply.zig,apply.ApplyArgs,reference,29,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/apply.zig,apply.ApplyArgs,transitive,29,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/apply.zig,apply.ApplyOutput,modify,26,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/apply.zig,apply.ApplyOutput,reference,26,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/apply.zig,apply.ApplyResult,modify,16,m2-closure-0.1,2026-07-03T17:08:51.128Z
+4279,43,src/apply.zig,apply.ApplyResult,reference,16,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/apply.zig,apply.ApplyResult,transitive,16,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/apply.zig,apply.ApplyResult.nothing_to_do,reference,16,m2-closure-0.1,2026-07-03T17:08:51.128Z
+4279,43,src/apply.zig,apply.ApplyResult.ok,reference,16,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/apply.zig,apply.ApplyResult.some_failed,reference,16,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/apply.zig,apply.ApplySummary,modify,24,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/apply.zig,apply.ApplySummary,reference,24,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/apply.zig,apply.AuditDetails,modify,28,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/apply.zig,apply.AuditDetails,reference,28,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/apply.zig,apply.ExtensionSkipDetails,modify,28,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/apply.zig,apply.ExtensionSkipDetails,reference,28,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/apply.zig,apply.Io,modify,7,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/apply.zig,apply.Io,reference,7,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/apply.zig,apply.Io,transitive,7,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/apply.zig,apply.MultiSeqStubCtx,modify,57,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/apply.zig,apply.MultiSeqStubCtx,reference,57,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/apply.zig,apply.PlanEntry,modify,29,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/apply.zig,apply.PlanEntry,reference,29,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/apply.zig,apply.RepoOutcome,modify,33,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/apply.zig,apply.RepoOutcome,reference,33,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/apply.zig,apply.RepoStatus,modify,13,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/apply.zig,apply.RepoStatus,reference,13,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/apply.zig,apply.StubCtx,modify,62,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/apply.zig,apply.StubCtx,reference,62,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/apply.zig,apply.c,modify,10,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/apply.zig,apply.c,reference,10,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/apply.zig,apply.cache_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/apply.zig,apply.cache_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/apply.zig,apply.cache_mod,transitive,8,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/apply.zig,apply.countAuditRows,modify,105,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/apply.zig,apply.countAuditRows,reference,105,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/apply.zig,apply.countAuditRowsByDetails,modify,256,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/apply.zig,apply.countAuditRowsByDetails,reference,256,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/apply.zig,apply.countAuditRowsByProvider,modify,291,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/apply.zig,apply.countAuditRowsByProvider,reference,291,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/apply.zig,apply.countAuditRowsWhere,modify,208,m2-closure-0.1,2026-07-03T17:08:51.128Z
+4279,43,src/apply.zig,apply.countAuditRowsWhere,reference,208,m2-closure-0.1,2026-07-03T17:08:51.128Z
+4279,43,src/apply.zig,apply.credentials_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/apply.zig,apply.credentials_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:51.128Z
+4279,43,src/apply.zig,apply.emitExtensionWarnings,modify,288,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/apply.zig,apply.emitExtensionWarnings,reference,288,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/apply.zig,apply.executeDryRun,modify,251,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/apply.zig,apply.executeDryRun,reference,251,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/apply.zig,apply.executeLive,modify,1040,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/apply.zig,apply.executeLive,reference,1040,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/apply.zig,apply.findCompletedScaffold,modify,271,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/apply.zig,apply.findCompletedScaffold,reference,271,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/apply.zig,apply.github_provider_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/apply.zig,apply.github_provider_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/apply.zig,apply.gitlab_provider_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/apply.zig,apply.gitlab_provider_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/apply.zig,apply.log,modify,8,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/apply.zig,apply.log,reference,8,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/apply.zig,apply.makeBareRepo,modify,256,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/apply.zig,apply.makeTempDir,modify,170,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/apply.zig,apply.makeTempDir,reference,170,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/apply.zig,apply.makeTestManifestSource,modify,148,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/apply.zig,apply.makeTestManifestSource,reference,148,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/apply.zig,apply.manifest_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/apply.zig,apply.manifest_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:51.128Z
+4279,43,src/apply.zig,apply.mkdir,modify,21,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/apply.zig,apply.mkdir,reference,21,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/apply.zig,apply.multiSeqServer,modify,475,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/apply.zig,apply.multiSeqServer,reference,475,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/apply.zig,apply.multiShotServer,modify,485,m2-closure-0.1,2026-07-03T17:08:51.128Z
+4279,43,src/apply.zig,apply.multiShotServer,reference,485,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/apply.zig,apply.output_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/apply.zig,apply.output_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/apply.zig,apply.printApplyJson,modify,72,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/apply.zig,apply.printApplyJson,reference,72,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/apply.zig,apply.provider_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/apply.zig,apply.provider_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/apply.zig,apply.readOpKind,modify,261,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/apply.zig,apply.readOpKind,reference,261,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/apply.zig,apply.runApply,modify,226,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/apply.zig,apply.runApply,reference,226,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/apply.zig,apply.runApplyWithCache,modify,497,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/apply.zig,apply.runApplyWithCache,reference,497,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/apply.zig,apply.runApplyWithCache,transitive,497,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/apply.zig,apply.scaffoldOneRepo,modify,2290,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/apply.zig,apply.scaffoldOneRepo,reference,2290,m2-closure-0.1,2026-07-03T17:08:51.128Z
+4279,43,src/apply.zig,apply.scaffoldSshBareRepo,modify,1312,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/apply.zig,apply.scaffoldSshBareRepo,reference,1312,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/apply.zig,apply.setenv,modify,31,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/apply.zig,apply.setenv,reference,31,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/apply.zig,apply.sshbare_provider_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/apply.zig,apply.sshbare_provider_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/apply.zig,apply.std,modify,8,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/apply.zig,apply.std,reference,8,m2-closure-0.1,2026-07-03T17:08:51.128Z
+4279,43,src/apply.zig,apply.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/apply.zig,apply.stubSleepNs,modify,89,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/apply.zig,apply.stubSleepNs,reference,89,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/apply.zig,apply.template_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/apply.zig,apply.template_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/apply.zig,apply.unsetenv,modify,17,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/apply.zig,apply.unsetenv,reference,17,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/apply.zig,apply.validate_mod,modify,8,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/apply.zig,apply.validate_mod,reference,8,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/apply.zig,apply.writeAuditLog,modify,290,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/apply.zig,apply.writeAuditLog,reference,290,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/apply.zig,apply.writeAuditLogForScaffold,modify,139,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/apply.zig,apply.writeAuditLogForScaffold,reference,139,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/apply.zig,apply.writeAuditLogForScaffoldApply,modify,111,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/apply.zig,apply.writeAuditLogForScaffoldApply,reference,111,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/apply.zig,apply.writeManifestToTmpDir,modify,127,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/apply.zig,apply.writeManifestToTmpDir,reference,127,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/cache.zig,cache.Cache,reference,2051,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/cache.zig,cache.Cache,transitive,2051,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/cache.zig,cache.Cache.applyMigration,transitive,2051,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/cache.zig,cache.Cache.db,transitive,2051,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/cache.zig,cache.Cache.runMigrations,transitive,2051,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/cache.zig,cache.Cache.schemaVersion,transitive,2051,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/cache.zig,cache.CacheError,transitive,26,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/cache.zig,cache.Migration,transitive,18,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/cache.zig,cache.c,transitive,10,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/cache.zig,cache.migrations,transitive,84,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/cache.zig,cache.sqliteVersion,reference,27,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/cache.zig,cache.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/cache.zig,cache.translateRc,transitive,80,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/capabilities.zig,capabilities.CapabilitiesResult,transitive,15,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/capabilities.zig,capabilities.Io,transitive,7,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/capabilities.zig,capabilities.PROVIDER_KINDS,transitive,93,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/capabilities.zig,capabilities.availableKindNames,transitive,82,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/capabilities.zig,capabilities.buildCapabilitiesOutput,transitive,142,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/capabilities.zig,capabilities.log,transitive,8,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/capabilities.zig,capabilities.lookupProviderKind,transitive,59,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/capabilities.zig,capabilities.printCapabilitiesErrorJson,transitive,65,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/capabilities.zig,capabilities.printCapabilitiesHuman,transitive,226,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/capabilities.zig,capabilities.printCapabilitiesJson,transitive,29,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/capabilities.zig,capabilities.runCapabilities,reference,255,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/capabilities.zig,capabilities.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/credentials.zig,credentials.Allocator,transitive,9,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/credentials.zig,credentials.CredentialError,transitive,17,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/credentials.zig,credentials.CredentialResolver,reference,1012,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/credentials.zig,credentials.CredentialResolver.allocator,transitive,1012,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/credentials.zig,credentials.GitLabResolverOpts,transitive,19,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/credentials.zig,credentials.Io,transitive,7,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/credentials.zig,credentials.ResolutionAttempt,transitive,40,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/credentials.zig,credentials.ResolvedToken,transitive,31,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/credentials.zig,credentials.ResolverOpts,transitive,44,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/credentials.zig,credentials.log,transitive,8,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/credentials.zig,credentials.resolveGitLab,reference,358,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/credentials.zig,credentials.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/discovery.zig,discovery.DiscoverArgs,reference,52,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/discovery.zig,discovery.DiscoverResult,transitive,16,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/discovery.zig,discovery.DiscoveryResult,transitive,18,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/discovery.zig,discovery.DiscoverySource,transitive,14,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/discovery.zig,discovery.FakeProvider,transitive,7,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/discovery.zig,discovery.Io,transitive,7,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/discovery.zig,discovery.buildDiscoveryOutput,transitive,148,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/discovery.zig,discovery.discoverFromOrg,transitive,160,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/discovery.zig,discovery.fake_mod,transitive,8,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/discovery.zig,discovery.log,transitive,8,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/discovery.zig,discovery.parseOrgQuery,transitive,101,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/discovery.zig,discovery.parseSshDirQuery,transitive,161,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/discovery.zig,discovery.printDiscoveryHuman,transitive,136,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/discovery.zig,discovery.printDiscoveryJson,transitive,29,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/discovery.zig,discovery.runDiscover,reference,536,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/discovery.zig,discovery.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/github/provider.zig,provider.GitHubProvider,reference,2431,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/github/provider.zig,provider.OrgOrUser,reference,25,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/gitlab.zig,gitlab.Client,transitive,1698,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/gitlab/provider.zig,provider.Allocator,transitive,9,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/gitlab/provider.zig,provider.CapabilityMatrix,reference,7,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/gitlab/provider.zig,provider.GitLabProvider,reference,2291,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/gitlab/provider.zig,provider.GitLabProvider.allocator,transitive,2291,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/gitlab/provider.zig,provider.GitLabProvider.gl_client,transitive,2291,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/gitlab/provider.zig,provider.GitLabProvider.group_or_user,transitive,2291,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/gitlab/provider.zig,provider.GitLabProvider.http_client,transitive,2291,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/gitlab/provider.zig,provider.GitLabProvider.pending_branch,transitive,2291,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/gitlab/provider.zig,provider.GitLabProvider.pending_create_spec,transitive,2291,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/gitlab/provider.zig,provider.GitLabProvider.pending_project_id,transitive,2291,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/gitlab/provider.zig,provider.GitLabProvider.token,transitive,2291,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/gitlab/provider.zig,provider.GitLabProviderOpts,transitive,36,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/gitlab/provider.zig,provider.GroupOrUser,reference,25,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/gitlab/provider.zig,provider.OpKinds,transitive,7,m2-closure-0.1,2026-07-03T17:08:51.128Z
+4279,43,src/gitlab/provider.zig,provider.OpOutcome,transitive,7,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/gitlab/provider.zig,provider.Provider,reference,7,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/gitlab/provider.zig,provider.VTable,transitive,7,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/gitlab/provider.zig,provider.c,transitive,10,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/gitlab/provider.zig,provider.credentials,transitive,8,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/gitlab/provider.zig,provider.gitlab,transitive,8,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/gitlab/provider.zig,provider.gitlab_matrix,transitive,70,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/gitlab/provider.zig,provider.http_mod,transitive,8,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/gitlab/provider.zig,provider.mapClientError,transitive,400,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/gitlab/provider.zig,provider.opKind,reference,7,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/gitlab/provider.zig,provider.provider,transitive,8,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/gitlab/provider.zig,provider.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/http.zig,http.Client,transitive,940,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/log.zig,log.Verbosity,reference,26,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/log.zig,log.current_verbosity,transitive,31,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/log.zig,log.emitKvToStderr,transitive,145,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/log.zig,log.err,transitive,29,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/log.zig,log.errKv,reference,28,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/log.zig,log.errKv,transitive,28,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/log.zig,log.info,transitive,29,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/log.zig,log.setVerbosity,reference,24,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/log.zig,log.warn,transitive,29,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/main.zig,main.Args,modify,144,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/main.zig,main.Args,reference,144,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/main.zig,main.BINARY_NAME,modify,5,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/main.zig,main.BINARY_NAME,reference,5,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/main.zig,main.BINARY_VERSION,modify,5,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/main.zig,main.BINARY_VERSION,reference,5,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/main.zig,main.Io,modify,7,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/main.zig,main.Io,reference,7,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/main.zig,main.apply,modify,8,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/main.zig,main.apply,reference,8,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/main.zig,main.buildVersionOutput,modify,152,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/main.zig,main.buildVersionOutput,reference,152,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/main.zig,main.c,modify,10,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/main.zig,main.c,reference,10,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/main.zig,main.cache,modify,8,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/main.zig,main.cache,reference,8,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/main.zig,main.capabilities,modify,8,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/main.zig,main.capabilities,reference,8,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/main.zig,main.discovery,modify,8,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/main.zig,main.discovery,reference,8,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/main.zig,main.features_h,modify,5,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/main.zig,main.features_h,reference,5,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/main.zig,main.log,modify,8,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/main.zig,main.log,reference,8,m2-closure-0.1,2026-07-03T17:08:51.128Z
+4279,43,src/main.zig,main.main,modify,1181,m2-closure-0.1,2026-07-03T17:08:51.128Z
+4279,43,src/main.zig,main.output,modify,8,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/main.zig,main.output,reference,8,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/main.zig,main.parseArgs,modify,597,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/main.zig,main.parseArgs,reference,597,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/main.zig,main.refresh,modify,8,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/main.zig,main.refresh,reference,8,m2-closure-0.1,2026-07-03T17:08:51.128Z
+4279,43,src/main.zig,main.sqlite_c,modify,5,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/main.zig,main.sqlite_c,reference,5,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/main.zig,main.status,modify,8,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/main.zig,main.status,reference,8,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/main.zig,main.std,modify,8,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/main.zig,main.std,reference,8,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/main.zig,main.version,modify,9,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/main.zig,main.version,reference,9,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/manifest.zig,manifest.FleetManifest,reference,40,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/manifest.zig,manifest.FleetMeta,transitive,22,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/manifest.zig,manifest.ParseResult,transitive,19,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/manifest.zig,manifest.Policies,transitive,8,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/manifest.zig,manifest.ProviderConfig,reference,27,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/manifest.zig,manifest.Repo,reference,95,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/manifest.zig,manifest.Template,transitive,15,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/manifest.zig,manifest.parse,reference,106,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/manifest.zig,manifest.parseImpl,transitive,2142,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/manifest.zig,manifest.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/output.zig,output.Io,transitive,7,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/output.zig,output.VersionOutput,reference,43,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/output.zig,output.printJson,reference,45,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/output.zig,output.printJson,transitive,45,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/output.zig,output.printVersionHuman,reference,51,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/output.zig,output.printVersionJson,reference,27,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/output.zig,output.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/provider.zig,provider.CapabilityKey,reference,30,m2-closure-0.1,2026-07-03T17:08:51.128Z
+4279,43,src/provider.zig,provider.KernelOp,reference,18,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/provider.zig,provider.OpKinds.create_repo,transitive,68,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/provider.zig,provider.OpKinds.delete_repo,transitive,68,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/provider.zig,provider.OpKinds.list_repos,transitive,68,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/provider.zig,provider.OpKinds.push_initial_commit,transitive,68,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/provider.zig,provider.OpKinds.set_default_branch,transitive,68,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/provider.zig,provider.Provider.matrix,reference,221,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/provider.zig,provider.Provider.pushInitialCommit,reference,221,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/provider/fake.zig,fake.kernel_only_matrix,transitive,70,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/refresh.zig,refresh.Allocator,transitive,9,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/refresh.zig,refresh.Io,transitive,7,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/refresh.zig,refresh.RefreshArgs,transitive,23,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/refresh.zig,refresh.RefreshResult,transitive,14,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/refresh.zig,refresh.cache_mod,transitive,8,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/refresh.zig,refresh.runRefresh,reference,226,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/refresh.zig,refresh.runRefreshWithCache,transitive,1001,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/refresh.zig,refresh.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/sshbare/provider.zig,provider.SshBareProvider,reference,797,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/status.zig,status.Allocator,transitive,9,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/status.zig,status.Io,transitive,7,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/status.zig,status.StatusArgs,transitive,23,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/status.zig,status.StatusResult,transitive,16,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/status.zig,status.cache_mod,transitive,8,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/status.zig,status.runStatus,reference,226,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/status.zig,status.runStatusWithCache,transitive,707,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/status.zig,status.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/template.zig,template.Allocator,transitive,9,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/template.zig,template.CredCallbackPayload,transitive,17,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/template.zig,template.Io,transitive,7,m2-closure-0.1,2026-07-03T17:08:51.128Z
+4279,43,src/template.zig,template.RenderOpts,transitive,74,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/template.zig,template.RenderResult,transitive,101,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/template.zig,template.RenderStats,transitive,25,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/template.zig,template.TemplateError,transitive,16,m2-closure-0.1,2026-07-03T17:08:51.128Z
+4279,43,src/template.zig,template.TemplateRenderer,reference,439,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/template.zig,template.TemplateRenderer.allocator,transitive,439,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/template.zig,template.TemplateRenderer.libgit2_initialized,transitive,439,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/template.zig,template.buildTreeFromGitTree,transitive,203,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/template.zig,template.c,transitive,10,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/template.zig,template.makeTempDir,transitive,70,m2-closure-0.1,2026-07-03T17:08:51.124Z
+4279,43,src/template.zig,template.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/validate.zig,validate.FleetManifest,transitive,8,m2-closure-0.1,2026-07-03T17:08:51.126Z
+4279,43,src/validate.zig,validate.ValidationError,transitive,29,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/validate.zig,validate.ValidationResult,transitive,19,m2-closure-0.1,2026-07-03T17:08:51.127Z
+4279,43,src/validate.zig,validate.std,transitive,8,m2-closure-0.1,2026-07-03T17:08:51.125Z
+4279,43,src/validate.zig,validate.validate,reference,571,m2-closure-0.1,2026-07-03T17:08:51.127Z
