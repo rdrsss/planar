@@ -27,6 +27,7 @@ const task_mod = @import("../planning/task.zig");
 const decision_mod = @import("../planning/decision.zig");
 const question_mod = @import("../planning/question.zig");
 const scenario_mod = @import("../planning/scenario.zig");
+const artifact_mod = @import("../planning/artifact.zig");
 const session_mod = @import("../runtime/session.zig");
 
 // =========================================================================
@@ -53,6 +54,7 @@ pub const Result = struct {
     scenarios_added: usize = 0,
     questions_added: usize = 0,
     questions_answered: usize = 0,
+    design_notes_registered: usize = 0,
     anchor_activated: bool = false,
 };
 
@@ -72,6 +74,7 @@ pub const Error =
     decision_mod.Error ||
     question_mod.Error ||
     scenario_mod.Error ||
+    artifact_mod.Error ||
     entitylink.Error ||
     scenarios_mod.Error ||
     std.mem.Allocator.Error;
@@ -126,6 +129,12 @@ fn applyWithinSavepoint(
     opts: Options,
 ) Error!Result {
     var res: Result = .{};
+
+    // Task ids touched (created or updated) in this cycle. A design_note
+    // with no explicit task marker falls back to linking every one of these
+    // (P3a fallback mapping — see the design_note section below).
+    var cycle_task_ids: std.ArrayList(i64) = .empty;
+    defer cycle_task_ids.deinit(allocator);
 
     // Anchor scope. Threaded from the handler via opts.scope so child
     // plans, tasks, decisions, and scenarios land in the operator's
@@ -196,6 +205,7 @@ fn applyWithinSavepoint(
                         scenarios_mod.draftScenario(d, allocator, t.id, te.title, scope_slug) catch |e| return e;
                         res.scenarios_added += 1;
                     }
+                    try cycle_task_ids.append(allocator, t.id);
                     res.tasks_created += 1;
                 },
                 .update => {
@@ -231,6 +241,7 @@ fn applyWithinSavepoint(
                         }
                     }
 
+                    try cycle_task_ids.append(allocator, te.existing_id);
                     res.tasks_updated += 1;
                 },
                 .remove => continue,
@@ -301,6 +312,22 @@ fn applyWithinSavepoint(
             },
             .remove => continue,
         }
+    }
+
+    // ---- design_note artifacts (P3a) ----------------------------------
+    // Register each design reference as a `design_note` artifact — reconcile
+    // by (kind, source_path) so re-ingesting an unchanged design is a no-op —
+    // and link it to the plan's UI tasks. Task mapping is the fallback form:
+    // link every task touched in this cycle. (The precise `[design: …]`
+    // per-task marker + stale-link removal are deferred; see
+    // agents/ingestor.md.) `ensureLink` swallows LinkExists, so re-apply adds
+    // no duplicate links.
+    for (diff.design_notes) |dn| {
+        const art_id = try upsertDesignNote(d, allocator, dn);
+        for (cycle_task_ids.items) |tid| {
+            ensureLink(d, allocator, .artifact, art_id, .task, tid, .addresses) catch |e| return e;
+        }
+        res.design_notes_registered += 1;
     }
 
     // ---- new questions ------------------------------------------------
@@ -432,6 +459,34 @@ fn resolveSlugRefs(
 
 /// ensureLink adds an entity_links row; existing rows are tolerated as
 /// idempotent no-ops. Other errors propagate.
+/// upsertDesignNote reconciles a design reference to a single `design_note`
+/// artifact by (kind, source_path): returns the existing row's id when one is
+/// already registered for this path, otherwise creates it. Idempotent across
+/// re-ingest (matches the ingestor's reconcile-before-insert discipline).
+fn upsertDesignNote(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    dn: diff_mod.DesignNoteEntry,
+) Error!i64 {
+    var stmt = d.prepare(
+        "select id from artifacts where kind = 'design_note' and source_path = ? limit 1",
+    ) catch return Error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .text = dn.source_path }}) catch return Error.QueryFailed;
+    switch (stmt.step() catch return Error.QueryFailed) {
+        .row => return stmt.columnInt(0),
+        .done => {},
+    }
+
+    const created = try artifact_mod.create(d, allocator, .{
+        .title = dn.title,
+        .kind = .design_note,
+        .source_path = dn.source_path,
+    });
+    defer artifact_mod.deinit(created, allocator);
+    return created.id;
+}
+
 fn ensureLink(
     d: *db.sqlite.Db,
     allocator: std.mem.Allocator,

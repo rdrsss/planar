@@ -177,11 +177,20 @@ fn runOnePlan(
         &.{};
     defer if (test_body_opt != null) ingestor.parse.deinitScenarios(scenarios, ctx.allocator);
 
-    const diff = ingestor.diff.compute(d, ctx.allocator, anchor.id, milestones, decisions, questions, scenarios) catch |e| {
+    var diff = ingestor.diff.compute(d, ctx.allocator, anchor.id, milestones, decisions, questions, scenarios) catch |e| {
         try ctx.stderr.print("plan {d} ({s}): computing diff: {s}\n", .{ anchor.id, anchor.slug, @errorName(e) });
         return e;
     };
     defer ingestor.diff.deinitDiff(diff, ctx.allocator);
+
+    // ---- register design references (P3a) ---------------------------
+    // Glob `<feature_dir>/design/*.html`; each becomes a `design_note`
+    // artifact linked to the plan's UI tasks at apply time. A missing
+    // `design/` dir (the common case) yields no design notes.
+    diff.design_notes = collectDesignNotes(ctx.allocator, ctx.io, feature_dir) catch |e| {
+        try ctx.stderr.print("plan {d} ({s}): scanning design dir: {s}\n", .{ anchor.id, anchor.slug, @errorName(e) });
+        return e;
+    };
 
     // ---- render preview ---------------------------------------------
     if (json_out) {
@@ -444,6 +453,46 @@ fn resolveWorkbenchRoot(allocator: std.mem.Allocator, environ: std.process.Envir
     if (environ.getPosix("PLANAR_WORKBENCH_ROOT")) |raw| return try allocator.dupe(u8, raw);
     if (environ.getPosix("HOME")) |home| return try std.fs.path.join(allocator, &.{ home, ".planar", "workbench" });
     return try allocator.dupe(u8, ".");
+}
+
+/// collectDesignNotes globs `<feature_dir>/design/*.html` and returns one
+/// `DesignNoteEntry` per file with a workbench-relative `source_path`
+/// (`design/<file>`) — the reconcile key apply.zig registers on. A missing
+/// or unreadable `design/` dir (the common, non-UI case) yields an empty
+/// slice, never an error. The returned slice + its strings are owned by the
+/// caller (freed via `deinitDiff`).
+fn collectDesignNotes(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    feature_dir: []const u8,
+) ![]const ingestor.diff.DesignNoteEntry {
+    var out: std.ArrayList(ingestor.diff.DesignNoteEntry) = .empty;
+    errdefer {
+        for (out.items) |dn| {
+            allocator.free(dn.source_path);
+            allocator.free(dn.title);
+        }
+        out.deinit(allocator);
+    }
+
+    const design_dir = try std.fs.path.join(allocator, &.{ feature_dir, "design" });
+    defer allocator.free(design_dir);
+
+    var dir = std.Io.Dir.cwd().openDir(io, design_dir, .{ .iterate = true }) catch {
+        return try out.toOwnedSlice(allocator);
+    };
+    defer dir.close(io);
+
+    var it = dir.iterate();
+    while (try it.next(io)) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.name, ".html")) continue;
+        const source_path = try std.fmt.allocPrint(allocator, "design/{s}", .{entry.name});
+        errdefer allocator.free(source_path);
+        const title = try allocator.dupe(u8, entry.name);
+        try out.append(allocator, .{ .source_path = source_path, .title = title });
+    }
+    return try out.toOwnedSlice(allocator);
 }
 
 // =========================================================================

@@ -89,6 +89,17 @@ pub const ScenarioEntry = struct {
     existing_id: i64 = 0,
 };
 
+/// A design reference discovered under the feature workbench's `design/`
+/// directory (P3a). Registered as a `design_note` artifact and linked to the
+/// plan's UI tasks by `apply.zig`. Task linkage is resolved at apply time
+/// (newly-added tasks have no id until then), so this entry carries only the
+/// artifact-side fields; `source_path` is workbench-relative (e.g.
+/// `design/flow.html`) and is the reconcile key.
+pub const DesignNoteEntry = struct {
+    source_path: []const u8,
+    title: []const u8,
+};
+
 /// Full proposed change set for one ingestion pass.
 pub const Diff = struct {
     anchor_plan_id: i64,
@@ -103,6 +114,7 @@ pub const Diff = struct {
     orphan_tasks: []const TaskEntry = &.{},
     orphan_plans: []const PlanEntry = &.{},
     scenarios: []const ScenarioEntry = &.{},
+    design_notes: []const DesignNoteEntry = &.{},
 
     pub fn totalAdditions(self: Diff) usize {
         var n: usize = 0;
@@ -161,6 +173,11 @@ pub fn deinitDiff(d: Diff, allocator: std.mem.Allocator) void {
     allocator.free(d.orphan_plans);
     for (d.scenarios) |s| deinitScenarioEntry(s, allocator);
     allocator.free(d.scenarios);
+    for (d.design_notes) |dn| {
+        allocator.free(dn.source_path);
+        allocator.free(dn.title);
+    }
+    allocator.free(d.design_notes);
 }
 
 fn deinitPlanEntry(p: PlanEntry, allocator: std.mem.Allocator) void {

@@ -120,4 +120,5 @@ comptime {
     _ = @import("scenarios/scenario_doctor_reconcile_test.zig");
 
     _ = @import("ui_driver_agentfiles_test.zig");
+    _ = @import("ui_driver_test.zig");
 }

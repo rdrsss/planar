@@ -28,6 +28,9 @@ Vendor-neutral. Vendor-specific surfaces are under `commands/claude/pl-spec-inge
 - A feature anchor plan id (or slug). Required.
 - The workbench filesystem: reads `tech-spec.md` and `roadmap.md` from
   `$PLANAR_WORKBENCH_ROOT/<assoc-slug>/<plan-key>-<plan-slug>/`.
+- Design references: any `*.html` under that feature dir's `design/`
+  subdirectory (`<feature-dir>/design/*.html`) — the one location scanned
+  for designs (see Outputs → Design references).
 - The current DB state for the anchor plan (to compute the diff).
 
 ## Outputs
@@ -37,6 +40,7 @@ Vendor-neutral. Vendor-specific surfaces are under `commands/claude/pl-spec-inge
 - **Decisions**: one per H3 heading in the `## Decisions` section of `tech-spec.md`, each linked via `entity_links(relationship='derives-from')` to the anchor plan.
 - **Test scenarios** (draft): auto-drafted for non-trivial tasks (tasks whose body contains ≥2 bullet lines), linked via `entity_links(relationship='verifies')`.
 - **Touches links**: `entity_links(relationship='touches', from=task, to=repo)` rows derived from `[touches: slug1, slug2]` annotations in roadmap bullets.
+- **Design references** (P3a): one `design_note` artifact per `design/*.html` file (`kind='design_note'`, `source_path='design/<file>'`), linked to the plan's UI tasks via `entity_links(relationship='addresses', from=artifact, to=task)`. This is the prerequisite the UI-driver hook (`pl-ui-driver-hook`) queries to decide whether a claimed task has a design attached. **Task mapping (v1 = fallback only):** every design file links to **every task touched in the cycle** (created or updated) — the zero-config "one design, whole feature" case. *Deferred:* the precise per-task `[design: design/<file>]` marker (would narrow the link set) and stale-link removal when a design file is deleted. The `frontend/**`-scope narrowing named in the design spec is not representable — `touches` carries repo slugs, not path globs — so the fallback links all cycle tasks.
 - **Anchor plan status flip**: from `draft` → `active` on the first successful `--apply` run. Idempotent on subsequent runs (status already `active`).
 
 ## Preview-first execution
@@ -84,6 +88,7 @@ Re-running the ingestor on an unchanged workbench tree is a no-op: preview repor
 | Child plan  | Title + parent anchor plan id |
 | Task        | Title + parent child plan id (matched by title) |
 | Decision    | Title + parent anchor plan id |
+| Design note | `(kind='design_note', source_path)` — SELECT-before-INSERT; links reconcile via the `entity_links` UNIQUE key (`ensureLink` swallows `LinkExists`) |
 
 ## Boundaries
 
