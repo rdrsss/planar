@@ -51,6 +51,7 @@ const local_h = @import("handlers/local/cmd.zig");
 const skills_h = @import("handlers/skills/cmd.zig");
 const import_h = @import("handlers/import.zig");
 const synthesize_h = @import("handlers/synthesize.zig");
+const ui_driver_query_h = @import("handlers/ui_driver_query.zig");
 const version_h = @import("handlers/version.zig");
 const completion_h = @import("handlers/completion.zig");
 const schema_h = @import("handlers/schema.zig");
@@ -109,6 +110,7 @@ pub const root: cli.Cmd = .{
         skills_h.verb,
         import_h.verb,
         synthesize_h.verb,
+        ui_driver_query_h.verb,
         version_h.verb,
         completion_h.verb,
         schema_h.verb,

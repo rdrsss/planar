@@ -142,7 +142,6 @@ test "spec ingest registers a design_note artifact + task link and is idempotent
     };
 
     // ---- seed anchor plan + tech-spec + roadmap ----------------------
-    const IDJSON = struct { id: i64 };
     const plan = suite.mustRunJSON(IDJSON, arena, &.{ "plan", "create", "--json", "UI Driver P3a Plan" });
     const plan_id = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch @panic("OOM");
 
@@ -212,4 +211,112 @@ test "spec ingest registers a design_note artifact + task link and is idempotent
     try std.testing.expectEqual(@as(usize, 1), notes2.len);
     const links2 = addressesLinkCount(&suite, arena, env, notes2[0].id);
     try std.testing.expectEqual(links1, links2);
+}
+
+// -------------------------------------------------------------------------
+// P3b — the detection query (`planar ui-driver-query`)
+// -------------------------------------------------------------------------
+
+const UiArtifact = struct { id: i64, source_path: []const u8 = "" };
+const UiQueryResult = struct {
+    dispatch_ui_driver: bool,
+    design_artifacts: []const UiArtifact = &.{},
+    reason: []const u8 = "",
+};
+
+const IDJSON = struct { id: i64 };
+
+fn uiDriverQuery(
+    suite: *const harness.Suite,
+    arena: std.mem.Allocator,
+    task_ids_csv: []const u8,
+) UiQueryResult {
+    const json = suite.mustRun(&.{ "ui-driver-query", "--task-ids", task_ids_csv, "--json" });
+    defer suite.allocator.free(json);
+    return parseJSON(UiQueryResult, arena, json);
+}
+
+test "ui-driver-query detects a linked design_note; a task without one does not (P3b)" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_backing = std.heap.ArenaAllocator.init(gpa);
+    defer arena_backing.deinit();
+    const arena = arena_backing.allocator();
+
+    const plan = suite.mustRunJSON(IDJSON, arena, &.{ "plan", "create", "--json", "UI Driver Query Plan" });
+    const plan_id = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch @panic("OOM");
+
+    // A task with a design, and a task without.
+    const task_with = suite.mustRunJSON(IDJSON, arena, &.{ "task", "add", "--json", "--plan", plan_id, "--body", "b", "Task With Design" });
+    const task_without = suite.mustRunJSON(IDJSON, arena, &.{ "task", "add", "--json", "--plan", plan_id, "--body", "b", "Task Without Design" });
+
+    const art = suite.mustRunJSON(IDJSON, arena, &.{ "artifact", "add", "--json", "--kind", "design_note", "--source-path", "design/a.html", "--body", "b", "Flow A" });
+
+    const art_ref = std.fmt.allocPrint(arena, "artifact:{d}", .{art.id}) catch @panic("OOM");
+    const task_with_ref = std.fmt.allocPrint(arena, "task:{d}", .{task_with.id}) catch @panic("OOM");
+    const add_out = suite.mustRun(&.{ "links", "add", "--relationship", "addresses", art_ref, task_with_ref });
+    gpa.free(add_out);
+
+    // Task WITH the design → dispatch true, the artifact returned.
+    const with_id_csv = std.fmt.allocPrint(arena, "{d}", .{task_with.id}) catch @panic("OOM");
+    const hit = uiDriverQuery(&suite, arena, with_id_csv);
+    try std.testing.expect(hit.dispatch_ui_driver);
+    try std.testing.expectEqual(@as(usize, 1), hit.design_artifacts.len);
+    try std.testing.expectEqual(art.id, hit.design_artifacts[0].id);
+    try std.testing.expectEqualStrings("design/a.html", hit.design_artifacts[0].source_path);
+
+    // Task WITHOUT the design → dispatch false, empty set.
+    const without_id_csv = std.fmt.allocPrint(arena, "{d}", .{task_without.id}) catch @panic("OOM");
+    const miss = uiDriverQuery(&suite, arena, without_id_csv);
+    try std.testing.expect(!miss.dispatch_ui_driver);
+    try std.testing.expectEqual(@as(usize, 0), miss.design_artifacts.len);
+}
+
+test "ui-driver-query enforces from_kind='artifact' against a polymorphic id collision (P3b)" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_backing = std.heap.ArenaAllocator.init(gpa);
+    defer arena_backing.deinit();
+    const arena = arena_backing.allocator();
+
+    const plan = suite.mustRunJSON(IDJSON, arena, &.{ "plan", "create", "--json", "Collision Plan" });
+    const plan_id = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch @panic("OOM");
+
+    // task_x will carry the real design; task_y will carry only a question
+    // whose id collides with the design artifact's id.
+    const task_x = suite.mustRunJSON(IDJSON, arena, &.{ "task", "add", "--json", "--plan", plan_id, "--body", "b", "Has Design" });
+    const task_y = suite.mustRunJSON(IDJSON, arena, &.{ "task", "add", "--json", "--plan", plan_id, "--body", "b", "Has Question Only" });
+
+    // First artifact + first question in a fresh DB both get id 1 (separate
+    // per-table sequences) — that shared integer is the collision.
+    const art = suite.mustRunJSON(IDJSON, arena, &.{ "artifact", "add", "--json", "--kind", "design_note", "--source-path", "design/x.html", "--body", "b", "Flow X" });
+    const q = suite.mustRunJSON(IDJSON, arena, &.{ "question", "add", "--json", "--plan", plan_id, "--body", "b", "An open question" });
+    try std.testing.expectEqual(art.id, q.id); // precondition: ids collide
+
+    const art_ref = std.fmt.allocPrint(arena, "artifact:{d}", .{art.id}) catch @panic("OOM");
+    const q_ref = std.fmt.allocPrint(arena, "question:{d}", .{q.id}) catch @panic("OOM");
+    const task_x_ref = std.fmt.allocPrint(arena, "task:{d}", .{task_x.id}) catch @panic("OOM");
+    const task_y_ref = std.fmt.allocPrint(arena, "task:{d}", .{task_y.id}) catch @panic("OOM");
+
+    // design → task_x (addresses); question → task_y (cites, a query-match
+    // relationship). Only `from_kind='artifact'` distinguishes them.
+    gpa.free(suite.mustRun(&.{ "links", "add", "--relationship", "addresses", art_ref, task_x_ref }));
+    gpa.free(suite.mustRun(&.{ "links", "add", "--relationship", "cites", q_ref, task_y_ref }));
+
+    // task_y has ONLY the colliding question link → must NOT dispatch.
+    const y_csv = std.fmt.allocPrint(arena, "{d}", .{task_y.id}) catch @panic("OOM");
+    const y_res = uiDriverQuery(&suite, arena, y_csv);
+    try std.testing.expect(!y_res.dispatch_ui_driver);
+    try std.testing.expectEqual(@as(usize, 0), y_res.design_artifacts.len);
+
+    // task_x has the real artifact link → dispatches.
+    const x_csv = std.fmt.allocPrint(arena, "{d}", .{task_x.id}) catch @panic("OOM");
+    const x_res = uiDriverQuery(&suite, arena, x_csv);
+    try std.testing.expect(x_res.dispatch_ui_driver);
+    try std.testing.expectEqual(@as(usize, 1), x_res.design_artifacts.len);
+    try std.testing.expectEqual(art.id, x_res.design_artifacts[0].id);
 }
