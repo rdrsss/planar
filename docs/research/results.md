@@ -112,7 +112,10 @@ exactly or missed substantially — the mean is not a typical value.
 **The construct-valid RQ1 evidence remains the retrospective pilot**
 ([`pilot-notes.md`](pilot-notes.md)): declared predictions vs *real human
 implementation history*, no agent in the loop — **precision 1.00, recall
-0.58.**
+0.58.** **Scaled up post-hoc** (2026-07-03) to all 37 declared git-fleet tasks
+— precision 0.957, recall 0.722 overall but **0.558 on multi-file tasks** —
+and the derived-closure payoff measured (6/8 declared misses recovered):
+see [`retrospective-studies.md`](retrospective-studies.md).
 
 **H1 verdict (v2):** precision confirmed high everywhere (≥ 0.67 live in every
 arm; 1.00 retrospective). The recall bound is **unresolved by the live
