@@ -250,7 +250,7 @@ The orchestrator proposes a strategy per plan based on plan shape, with status-q
 
 1. If the plan is tagged as mechanical, docs-only, or single-verb → recommend `barrel-bypass`.
 2. Else if the plan has a multi-milestone roadmap and at most one parallel-eligible task per milestone → recommend `barrel-deferred`.
-3. Else if the plan has ≥3 tasks with ≥2 parallel-eligible, or 2–3 tasks where worktree isolation would help → surface that the plan is a fit for the worktree strategies (`isolated-sequential` / `parallel-fanout`) owned by an external workflow harness and recommend using one; the model orchestrator itself recommends `classic` for the in-pwd path.
+3. Else if the plan has ≥3 tasks with ≥2 parallel-eligible, or 2–3 tasks where worktree isolation would help → surface that the plan's best architectural fit is a harness-owned worktree strategy (`isolated-sequential` / `parallel-fanout`) as informational context, noting that those strategies are not runnable from this skill; the model orchestrator recommends the best in-pwd strategy (`classic` or `barrel-deferred`) as the actionable choice.
 4. Else if the plan has exactly 1 task → recommend `classic`.
 5. Else if the most recent dispatch on this plan used a non-default strategy `S` → recommend `S` (stickiness — the operator already made a choice for this plan).
 6. Otherwise → recommend `classic` (status-quo bias).
