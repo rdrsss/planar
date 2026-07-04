@@ -633,6 +633,120 @@ test "spec ingest preview warns on non-empty Open Questions section that yields 
     try std.testing.expect(preview.summary.additions >= 0);
 }
 
+test "spec ingest preview detects global slug collision before apply" {
+    // Red test: task slug 'global-slug-collision-x' already exists on a
+    // different plan. The preview (no --apply) must surface the collision,
+    // --strict must refuse (non-zero exit), and the stderr warning must name
+    // the colliding slug and the existing task. Today (pre-fix) the preview
+    // reports clean and the test asserts the WRONG behaviour — so this test
+    // FAILS against current code (correctly red).
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_backing = std.heap.ArenaAllocator.init(gpa);
+    defer arena_backing.deinit();
+    const arena = arena_backing.allocator();
+
+    // ---- plan A: seed an existing task that owns the colliding slug -------
+    const IDJSON = struct { id: i64 };
+
+    const plan_a = suite.mustRunJSON(IDJSON, arena, &.{ "plan", "create", "--json", "Global Slug Collision Plan A" });
+    const plan_a_id = std.fmt.allocPrint(arena, "{d}", .{plan_a.id}) catch @panic("OOM");
+
+    // Create a child plan under A manually so we can add a task to it.
+    const plan_a_child = suite.mustRunJSON(IDJSON, arena, &.{
+        "plan", "create", "--json", "--parent", plan_a_id, "Global Slug Collision Child Plan",
+    });
+    const plan_a_child_id = std.fmt.allocPrint(arena, "{d}", .{plan_a_child.id}) catch @panic("OOM");
+
+    // Add a task with slug 'global-slug-collision-x' to plan A's child.
+    const TaskJSON = struct { id: i64 };
+    const existing_task = suite.mustRunJSON(TaskJSON, arena, &.{
+        "task",                    "add",                              "--json",
+        "--plan",                  plan_a_child_id,                    "--slug",
+        "global-slug-collision-x", "Existing task that owns the slug",
+    });
+    const existing_task_id_s = std.fmt.allocPrint(arena, "{d}", .{existing_task.id}) catch @panic("OOM");
+    _ = existing_task_id_s; // used in assertion comment; the id surfaces in stderr
+
+    // ---- plan B: set up its spec artifacts with the colliding slug --------
+    const wb = createWorkbenchEnv(&suite, arena, "workbench-slug-collision-detect");
+
+    const plan_b_tech_body =
+        \\# Global Slug Collision Tech Spec
+        \\
+        \\## Status
+        \\
+        \\Draft.
+        \\
+    ;
+    // Roadmap uses `[slug: global-slug-collision-x]` — same slug, different plan.
+    const plan_b_roadmap_body =
+        \\# Global Slug Collision Roadmap
+        \\
+        \\## Collision Milestone
+        \\
+        \\- New task that collides [slug: global-slug-collision-x]
+        \\
+    ;
+
+    const fixture = createSpecIngestFixtureWithEnv(
+        &suite,
+        arena,
+        "Global Slug Collision Plan B",
+        plan_b_tech_body,
+        plan_b_roadmap_body,
+        null,
+        wb.env,
+        wb.wb_root,
+    );
+
+    // ---- (a) Non-apply preview must surface the collision ----------------
+    // Pre-fix: preview exits 0 and reports 0 collisions (bug).
+    // Post-fix: preview must print the collision in stderr/stdout.
+    const preview = suite.execWith(&.{ "spec", "ingest", fixture.plan_id }, fixture.env);
+    defer preview.deinit(gpa);
+    // After the fix the preview must warn about the collision on stderr.
+    try std.testing.expect(std.mem.containsAtLeast(
+        u8,
+        preview.stderr,
+        1,
+        "global-slug-collision-x",
+    ));
+
+    // ---- (b) --strict must refuse (non-zero exit) -------------------------
+    const strict = suite.execWith(&.{ "spec", "ingest", fixture.plan_id, "--strict" }, fixture.env);
+    defer strict.deinit(gpa);
+    // After the fix --strict must exit non-zero and name the collision.
+    try std.testing.expect(strict.term == .exited and strict.term.exited != 0);
+    try std.testing.expect(std.mem.containsAtLeast(
+        u8,
+        strict.stderr,
+        1,
+        "global-slug-collision-x",
+    ));
+
+    // ---- (c) JSON preview must include slug_collisions field  -------------
+    const PreviewJSON = struct {
+        slug_collisions: []const struct {
+            slug: []const u8,
+            existing_task_id: i64,
+            existing_plan_id: i64,
+        } = &.{},
+    };
+    const json_out = suite.mustRunWith(
+        &.{ "spec", "ingest", fixture.plan_id, "--format", "json" },
+        fixture.env,
+    );
+    defer gpa.free(json_out);
+    const parsed = parseJSON(PreviewJSON, arena, json_out);
+    try std.testing.expect(parsed.slug_collisions.len >= 1);
+    try std.testing.expectEqualStrings("global-slug-collision-x", parsed.slug_collisions[0].slug);
+    try std.testing.expect(parsed.slug_collisions[0].existing_task_id > 0);
+    try std.testing.expect(parsed.slug_collisions[0].existing_plan_id > 0);
+}
+
 fn parseJSON(comptime T: type, arena: std.mem.Allocator, buf: []const u8) T {
     const trimmed = std.mem.trim(u8, buf, " \n");
     const parsed = std.json.parseFromSlice(T, arena, trimmed, .{
