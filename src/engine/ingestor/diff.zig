@@ -1008,14 +1008,19 @@ fn findGlobalSlugCollision(
     slug: []const u8,
     excluded_task_ids: *const std.AutoHashMap(i64, void),
 ) Error!?SlugCollision {
-    // Find any task with this slug that is still live (not cancelled).
-    // We exclude cancelled tasks because their slugs are cleared on
-    // cancellation by the apply-removals path (nulled out), so they won't
-    // hold the index slot.
+    // Find any task with this slug. The unique index is:
+    //   ux_tasks_slug on tasks(slug) where slug is not null  (migration 00011)
+    // The index is status-agnostic: a cancelled task retains its slug when
+    // cancelled via `planar task cancel` (markCancelled only flips status;
+    // it does NOT null the slug). Only the spec-removal path
+    // (retireTaskForSpecRemoval in apply.zig) explicitly nulls the slug after
+    // cancelling. So a cancelled-but-slugged task still holds the index slot
+    // and a proposed slug matching it would fail at apply with SlugConflict.
+    // No status filter here — match exactly what the unique index enforces.
     var stmt = d.prepare(
         \\select id, coalesce(plan_id, 0)
         \\from tasks
-        \\where slug = ? and status != 'cancelled'
+        \\where slug = ?
         \\order by id limit 1
     ) catch return Error.QueryFailed;
     defer stmt.finalize();
