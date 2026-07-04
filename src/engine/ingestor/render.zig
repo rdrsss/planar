@@ -84,6 +84,16 @@ pub fn renderText(
     defer coverage_mod.deinitCoverage(cov, allocator);
     try renderCoverage(writer, cov);
 
+    // Slug-collision summary — rendered after coverage so operators see it.
+    if (d.slug_collisions.len > 0) {
+        try writer.print("slug-collisions: {d} task slug(s) already exist globally:\n", .{d.slug_collisions.len});
+        for (d.slug_collisions) |sc| {
+            try writer.print("  conflict: slug '{s}' already held by task {d} (plan {d}) — apply will fail with SlugConflict\n", .{
+                sc.slug, sc.existing_task_id, sc.existing_plan_id,
+            });
+        }
+    }
+
     if (applied) {
         // Suppressed — caller prints stats line.
     } else if (adds > 0 or updates > 0 or removals > 0) {
@@ -263,7 +273,19 @@ pub fn renderJson(
         if (i > 0) try writer.print(", ", .{});
         try writeJsonString(writer, s);
     }
-    try writer.print("]\n  }}\n}}\n", .{});
+    try writer.print("]\n  }},\n", .{});
+
+    // slug_collisions: task slug ADD proposals that already exist globally.
+    try writer.print("  \"slug_collisions\": [", .{});
+    for (d.slug_collisions, 0..) |sc, i| {
+        if (i > 0) try writer.print(", ", .{});
+        try writer.print("{{\"slug\": ", .{});
+        try writeJsonString(writer, sc.slug);
+        try writer.print(", \"existing_task_id\": {d}, \"existing_plan_id\": {d}}}", .{
+            sc.existing_task_id, sc.existing_plan_id,
+        });
+    }
+    try writer.print("]\n}}\n", .{});
 }
 
 fn opName(op: diff_mod.Op) []const u8 {

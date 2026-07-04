@@ -649,26 +649,74 @@ test "spec ingest preview detects global slug collision before apply" {
     const arena = arena_backing.allocator();
 
     // ---- plan A: seed an existing task that owns the colliding slug -------
+    // Use the spec ingest path for plan A so the task gets a proper
+    // plan_id linkage (same code path as the real bug scenario).
     const IDJSON = struct { id: i64 };
 
     const plan_a = suite.mustRunJSON(IDJSON, arena, &.{ "plan", "create", "--json", "Global Slug Collision Plan A" });
     const plan_a_id = std.fmt.allocPrint(arena, "{d}", .{plan_a.id}) catch @panic("OOM");
 
-    // Create a child plan under A manually so we can add a task to it.
-    const plan_a_child = suite.mustRunJSON(IDJSON, arena, &.{
-        "plan", "create", "--json", "--parent", plan_a_id, "Global Slug Collision Child Plan",
+    const wb_a = createWorkbenchEnv(&suite, arena, "workbench-slug-collision-plan-a");
+    const plan_a_tech =
+        \\# Slug Collision Plan A Tech Spec
+        \\
+        \\## Status
+        \\
+        \\Draft.
+        \\
+    ;
+    // Plan A's roadmap owns the slug that plan B will collide with.
+    const plan_a_roadmap =
+        \\# Slug Collision Plan A Roadmap
+        \\
+        \\## Plan A Milestone
+        \\
+        \\- The existing task [slug: global-slug-collision-x]
+        \\
+    ;
+    const tech_a_out = suite.mustRun(&.{
+        "artifact",  "add",
+        "--json",    "--kind",
+        "tech_spec", "--plan",
+        plan_a_id,   "--body",
+        plan_a_tech, "Slug Collision Plan A Tech Spec",
     });
-    const plan_a_child_id = std.fmt.allocPrint(arena, "{d}", .{plan_a_child.id}) catch @panic("OOM");
+    defer gpa.free(tech_a_out);
+    const roadmap_a_out = suite.mustRun(&.{
+        "artifact",     "add",
+        "--json",       "--kind",
+        "roadmap",      "--plan",
+        plan_a_id,      "--body",
+        plan_a_roadmap, "Slug Collision Plan A Roadmap",
+    });
+    defer gpa.free(roadmap_a_out);
+    const push_a = suite.mustRunWith(&.{ "workbench", "push", "--json", plan_a_id }, wb_a.env);
+    defer gpa.free(push_a);
+    // Apply plan A to create the existing task with slug 'global-slug-collision-x'.
+    const apply_a = suite.execWith(&.{ "spec", "ingest", plan_a_id, "--apply" }, wb_a.env);
+    defer apply_a.deinit(gpa);
+    try std.testing.expect(apply_a.term == .exited and apply_a.term.exited == 0);
 
-    // Add a task with slug 'global-slug-collision-x' to plan A's child.
-    const TaskJSON = struct { id: i64 };
-    const existing_task = suite.mustRunJSON(TaskJSON, arena, &.{
-        "task",                    "add",                              "--json",
-        "--plan",                  plan_a_child_id,                    "--slug",
-        "global-slug-collision-x", "Existing task that owns the slug",
-    });
-    const existing_task_id_s = std.fmt.allocPrint(arena, "{d}", .{existing_task.id}) catch @panic("OOM");
-    _ = existing_task_id_s; // used in assertion comment; the id surfaces in stderr
+    // Find the task_id and plan_id for the existing task.
+    const TaskPlanJSON = struct { id: i64, plan_id: ?i64 = null };
+    const TaskListJSON = struct { id: i64 };
+    // Get the child plan created by plan A's ingest.
+    const child_plans_a_json = suite.mustRunWith(&.{
+        "plan", "list", "--json", "--scope", "global", "--parent", plan_a_id,
+    }, wb_a.env);
+    defer gpa.free(child_plans_a_json);
+    const child_plans_a = parseJSON([]const IDJSON, arena, child_plans_a_json);
+    try std.testing.expect(child_plans_a.len >= 1);
+    const plan_a_child_id_s = std.fmt.allocPrint(arena, "{d}", .{child_plans_a[0].id}) catch @panic("OOM");
+    const plan_a_child_id_int = child_plans_a[0].id;
+
+    const tasks_a_json = suite.mustRunWith(&.{
+        "task", "list", "--json", "--scope", "global", "--plan", plan_a_child_id_s,
+    }, wb_a.env);
+    defer gpa.free(tasks_a_json);
+    const tasks_a = parseJSON([]const TaskPlanJSON, arena, tasks_a_json);
+    try std.testing.expect(tasks_a.len >= 1);
+    _ = TaskListJSON; // silence unused
 
     // ---- plan B: set up its spec artifacts with the colliding slug --------
     const wb = createWorkbenchEnv(&suite, arena, "workbench-slug-collision-detect");
@@ -744,7 +792,9 @@ test "spec ingest preview detects global slug collision before apply" {
     try std.testing.expect(parsed.slug_collisions.len >= 1);
     try std.testing.expectEqualStrings("global-slug-collision-x", parsed.slug_collisions[0].slug);
     try std.testing.expect(parsed.slug_collisions[0].existing_task_id > 0);
-    try std.testing.expect(parsed.slug_collisions[0].existing_plan_id > 0);
+    // existing_plan_id is the tasks.plan_id column (the child plan created
+    // by plan A's ingest). Verify it matches the child plan we saw.
+    try std.testing.expect(parsed.slug_collisions[0].existing_plan_id == plan_a_child_id_int);
 }
 
 fn parseJSON(comptime T: type, arena: std.mem.Allocator, buf: []const u8) T {
