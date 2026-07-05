@@ -243,21 +243,66 @@ The named strategies are bundles of the five underlying axes (`isolation`, `bran
 
 The promise: introducing the strategy menu does not require existing operators to learn a new flow to keep working as they do. Pick `classic`, get today's behavior. See [`agents/methodology.md` § Continuity guarantee: `classic`](../../agents/methodology.md#continuity-guarantee-classic) for the framing.
 
-### Worktree strategies (`isolated-sequential`, `parallel-fanout`) — harness-owned
+### Worktree strategies (`isolated-sequential`, `parallel-fanout`)
 
-These two strategies require deterministic worktree creation, epic/cycle branch
-management, fan-in merging, and (for `parallel-fanout`) parallel-eligibility
-analysis and conflict isolation. That machinery is **owned by an
-external workflow harness**, not this model-driven orchestrator
-skill. This skill does not create worktrees, cut epic branches, run fan-in
-merges, or fan out coders — it runs `classic` and the barrel strategies in the
-operator's pwd.
+`isolated-sequential` still requires deterministic worktree creation, epic/cycle
+branch management, and fan-in merging owned by an external workflow harness — it
+is not runnable from this skill.
 
-When a plan is a fit for worktree isolation or parallel fan-out (≥3 tasks with
-≥2 parallel-eligible, or a multi-task plan where pwd hygiene matters), the
-strategy recommendation surfaces that fit. The full worktree lifecycle, the branch/path naming
-scheme, the six parallel-eligibility rules, and the fan-in conflict protocol
-live in the external harness design documentation.
+`parallel-fanout` has a **runnable single-wave path** (plan 760 M1): the
+deterministic wave/lane computation lives in the spawn-free
+`workflows/parallel-dispatch.lua` seam, and this skill drives it. The seam
+COMPUTES (wave, per-lane worktree paths, lane branch names, epic branch name,
+fan-in merge order) and HANDS BACK; the model runs the git worktree/branch/merge
+ops and spawns the coders. The seam never spawns and never touches
+`git worktree`/`git merge` — re-adding a model-spawning primitive is the exact
+scope creep that got the old `planar-execute` extracted.
+
+#### Runnable single-wave fan-out (M1)
+
+1. **Compute the wave.** Run the seam's `plan` phase:
+   `planar-execute run workflows/parallel-dispatch.lua --phase plan --args '{"plan_id":<id>}'`.
+   It reads `planar plan recommend-strategy <id> --json` (the SINGLE eligibility
+   gate — the six parallel-eligibility rules are never re-derived here) and emits
+   byte-stable JSON: `{ fan_out, epic_branch, base, lanes:[{task_id, slug,
+   branch, worktree}], serialized:[…] }`. The currently-eligible tasks ARE the
+   current wave (pairwise-disjoint by construction). Fewer than two eligible
+   tasks ⇒ `fan_out:false` with an empty lane list — fall back to the in-pwd
+   path (do NOT cut an epic branch for a single lane).
+2. **Present at the strategy gate.** Show the operator the epic branch, each
+   lane's task + branch + worktree path, and the serialized tasks with their
+   exclusion reasons. Wait for explicit confirmation before creating anything.
+3. **Epic-cut precondition.** Before cutting the epic branch, verify the working
+   tree is clean. If it is dirty, FAIL FAST with an error naming the dirty paths
+   rather than cutting `epic/p<plan>-<slug>` over uncommitted work (a dirty base
+   silently folds local changes into every lane). Then cut the epic branch once
+   from the base ref.
+4. **Create per-lane worktrees.** For each lane, `git worktree add <worktree>
+   -b <branch> <epic-branch>` on the seam-computed `cycle/p<plan>/<task-slug>`
+   branch.
+5. **Fan out N coders concurrently.** In ONE turn, spawn N `coder` subagents via
+   the harness Agent tool, each with `isolation: worktree` pointing at its lane
+   worktree, each acquiring its own claim with `planar-agent pull <plan> --role
+   coder --worktree <path>`. Each coder heartbeats and RETURNS its diff on its
+   lane branch — it does NOT fire a terminal verb. (Axis A isolation is
+   non-negotiable: each coder is still a separately spawned subagent.)
+6. **Manual fan-in.** After all lanes report done, run the seam's `fan_in` phase
+   (`--phase fan_in --args '{"plan_id":<id>,"lanes":[…]}'`) to get the stable
+   (task-id-ordered) merge order and teardown list. Merge each lane branch into
+   the epic branch in that order with `git merge --no-ff <lane-branch>`, then
+   `git worktree remove <worktree>` for each succeeded lane. The orchestrator
+   owns the per-lane terminal verb: fire exactly one `planar-agent complete` per
+   landed lane at fan-in (a lane counts as landed only once its branch is fanned
+   in AND its terminal verb fired).
+
+Naming is locked (tech-spec §Decisions): epic `epic/p<plan>-<plan-slug>`, lane
+`cycle/p<plan>/<task-slug>`. Do not invent alternate names — the seam computes
+them and the existing worktree-cleanup backstop keys off the convention.
+
+Staged multi-wave ordering, the fan-in conflict protocol, and partial-wave
+failure/resume are later milestones (M2–M4); M1 is the single wave with manual
+fan-in only. The multi-wave `blocks`-graph ordering and conflict escalation are
+NOT yet runnable from this skill.
 
 ## Dispatch shape options
 
