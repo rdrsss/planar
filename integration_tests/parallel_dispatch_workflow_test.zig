@@ -1,5 +1,26 @@
 //! integration_tests/parallel_dispatch_workflow_test.zig — black-box tests for
-//! `workflows/parallel-dispatch.lua` (plan 760 M1, tasks 4620–4624).
+//! `workflows/parallel-dispatch.lua` (plan 760 M1, tasks 4620–4624; plan 760
+//! M2, tasks 4625–4627 — staged waves, wave barrier).
+//!
+//! M2 coverage (test-spec artifact 429):
+//!
+//!   wave-ordering / staged waves (Happy): the plan-753 shape (proto blocks
+//!     identity + web) yields proto in wave 1 and identity + web in wave 2,
+//!     each labeled blocked_by proto. The `blocks` graph orders/labels; the
+//!     engine's recommend-strategy still gates eligibility.
+//!
+//!   wave-ordering (Edge): a strict A→B→C blocks-chain collapses to three
+//!     sequential one-lane waves.
+//!
+//!   wave-ordering (Error): a task the engine serialized for a NON-blocks
+//!     reason (rule 3 migration) is never placed in a wave — carried in the
+//!     serialized set instead.
+//!
+//!   wave-ordering (Determinism): the `waves` phase is byte-stable across runs.
+//!
+//!   wave-barrier (Edge): the barrier holds when a lane completed but its
+//!     fan-in has not run — barrier_check proceeds only when every lane is BOTH
+//!     landed AND fanned in; a landed-but-not-fanned lane blocks the barrier.
 //!
 //! These tests exercise the deterministic, spawn-free wave/lane computation
 //! seam through the planar-execute engine against a seeded isolated PLANAR_DB.
@@ -194,6 +215,122 @@ const FanInResult = struct {
 };
 
 // ---------------------------------------------------------------------------
+// M2 shapes: the `waves` (wave-ordering) and `barrier_check` (wave-barrier)
+// phase result payloads.
+// ---------------------------------------------------------------------------
+
+const WaveLane = struct {
+    task_id: i64,
+    slug: []const u8,
+    title: []const u8,
+    branch: []const u8,
+    worktree: []const u8,
+    // `blocked_by` is parsed as a raw JSON value because the planar-execute
+    // serializer emits an EMPTY Lua table as `{}` (a JSON object) and a
+    // NON-empty one as `[…]` (a JSON array) — the same established empty-table
+    // policy the M1 `serialized:{}` payload relies on. A typed `[]const i64`
+    // slice cannot parse the `{}` form, so we take the Value and normalize via
+    // blockedByIds below.
+    blocked_by: std.json.Value = .null,
+};
+
+/// blockedByIds normalizes a WaveLane.blocked_by Value into a list of blocker
+/// task ids. An empty blocked-by serializes as `{}` (object) → no ids; a
+/// non-empty one serializes as an array of integers.
+fn blockedByIds(gpa: std.mem.Allocator, v: std.json.Value) []i64 {
+    switch (v) {
+        .array => |arr| {
+            var out = gpa.alloc(i64, arr.items.len) catch @panic("oom");
+            for (arr.items, 0..) |item, i| {
+                out[i] = switch (item) {
+                    .integer => |n| n,
+                    else => std.debug.panic("blocked_by element is not an integer", .{}),
+                };
+            }
+            return out;
+        },
+        // `{}` (empty object) or null → no blockers.
+        .object, .null => return &.{},
+        else => std.debug.panic("blocked_by is neither an array nor an empty object", .{}),
+    }
+}
+
+const Wave = struct {
+    wave: i64,
+    lane_count: i64,
+    lanes: []WaveLane = &.{},
+};
+
+const WavesResult = struct {
+    plan_id: i64,
+    epic_branch: []const u8,
+    base: []const u8,
+    wave_count: i64,
+    waves: []Wave = &.{},
+};
+
+const BlockingLane = struct {
+    task_id: i64,
+    reason: []const u8,
+};
+
+const BarrierResult = struct {
+    plan_id: i64,
+    proceed: bool,
+    // Parsed as a raw Value for the same empty-table reason as WaveLane.blocked_by:
+    // an empty `blocking` serializes as `{}` (object), a non-empty one as an
+    // array of objects. Normalize via blockingLanes below.
+    blocking: std.json.Value = .null,
+};
+
+/// blockingLanes normalizes a BarrierResult.blocking Value into a list of
+/// BlockingLane. Empty `{}`/null → no blocking lanes.
+fn blockingLanes(gpa: std.mem.Allocator, v: std.json.Value) []BlockingLane {
+    switch (v) {
+        .array => |arr| {
+            var out = gpa.alloc(BlockingLane, arr.items.len) catch @panic("oom");
+            for (arr.items, 0..) |item, i| {
+                const obj = switch (item) {
+                    .object => |o| o,
+                    else => std.debug.panic("blocking element is not an object", .{}),
+                };
+                const tid = obj.get("task_id") orelse std.debug.panic("blocking element missing task_id", .{});
+                const reason = obj.get("reason") orelse std.debug.panic("blocking element missing reason", .{});
+                out[i] = .{
+                    .task_id = switch (tid) {
+                        .integer => |n| n,
+                        else => std.debug.panic("task_id is not an integer", .{}),
+                    },
+                    .reason = switch (reason) {
+                        .string => |s| s,
+                        else => std.debug.panic("reason is not a string", .{}),
+                    },
+                };
+            }
+            return out;
+        },
+        .object, .null => return &.{},
+        else => std.debug.panic("blocking is neither an array nor an empty object", .{}),
+    }
+}
+
+/// waveByNumber finds a wave by its 1-based number (panics if absent).
+fn waveByNumber(res: WavesResult, n: i64) Wave {
+    for (res.waves) |w| {
+        if (w.wave == n) return w;
+    }
+    std.debug.panic("wave {d} not present in seam result", .{n});
+}
+
+/// waveContainsTask reports whether the given wave has a lane for task_id.
+fn waveContainsTask(w: Wave, task_id: i64) bool {
+    for (w.lanes) |l| {
+        if (l.task_id == task_id) return true;
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------------------
 // Seeding: register a project + org assoc, read the repo slug back, and add
 // disjoint-touch tasks. Mirrors plan_recommend_strategy_test.zig's approach so
 // the tasks flow through the SAME eligibility engine the seam consumes.
@@ -235,6 +372,19 @@ fn touchPath(suite: *harness.Suite, repo_slug: []const u8, task_id: i64, path: [
     const tid = std.fmt.allocPrint(gpa, "{d}", .{task_id}) catch unreachable;
     defer gpa.free(tid);
     gpa.free(suite.mustRun(&.{ "task", "touches", "add", tid, repo_slug, "--path", path }));
+}
+
+/// linkBlocks records a `blocks` edge `blocked -[blocks]-> blocker`, i.e.
+/// `blocked` is blocked BY `blocker` (matches strategy.zig rule-1 semantics:
+/// from_id is blocked BY to_id). This is the dependency edge the M2 `waves`
+/// phase walks to ORDER and LABEL waves.
+fn linkBlocks(suite: *harness.Suite, blocked_id: i64, blocker_id: i64) void {
+    const gpa = suite.allocator;
+    const from_ref = std.fmt.allocPrint(gpa, "task:{d}", .{blocked_id}) catch unreachable;
+    defer gpa.free(from_ref);
+    const to_ref = std.fmt.allocPrint(gpa, "task:{d}", .{blocker_id}) catch unreachable;
+    defer gpa.free(to_ref);
+    gpa.free(suite.mustRun(&.{ "links", "add", from_ref, to_ref, "--relationship", "blocks" }));
 }
 
 /// laneByTaskId finds a lane by task id in a PlanResult (panics if absent).
@@ -552,4 +702,354 @@ test "parallel-dispatch source is spawn-free and computes only (no git worktree/
         std.debug.print("parallel-dispatch.lua runs a git op the seam must hand back to the model\n", .{});
         return error.SeamRunsGitOp;
     }
+}
+
+// ===========================================================================
+// M2 (plan 760, tasks 4625–4627): staged waves.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// wave-ordering (4625): staged waves land the contract lane before dependent
+// lanes (plan-753 shape — proto blocks identity + web).
+//
+// The engine's recommend-strategy gates eligibility (proto is the only
+// currently-eligible task; identity/web are rule-1 serialized because proto is
+// not done). The seam walks the `blocks` graph ONLY to ORDER and LABEL: it must
+// place proto in wave 1 and identity + web in wave 2, each labeled `blocked_by`
+// proto. The seam never decides eligibility.
+// ---------------------------------------------------------------------------
+
+test "parallel-dispatch waves: staged waves land contract lane before dependent lanes" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const repo = registerRepoSlug(&suite, arena);
+    const plan = suite.mustRunJSON(PlanJSON, arena, &.{
+        "plan", "create", "--slug", "pd-staged", "--json", "PD_STAGED",
+    });
+    const pid = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch unreachable;
+
+    // proto (contract lane) blocks identity + web.
+    const t_proto = addTaskSlug(&suite, arena, pid, "proto", "Proto contract");
+    touchPath(&suite, repo, t_proto, "proto/schema.zig");
+    const t_ident = addTaskSlug(&suite, arena, pid, "identity", "Identity");
+    touchPath(&suite, repo, t_ident, "identity/user.zig");
+    const t_web = addTaskSlug(&suite, arena, pid, "web", "Web");
+    touchPath(&suite, repo, t_web, "web/handler.zig");
+    linkBlocks(&suite, t_ident, t_proto); // identity blocked_by proto
+    linkBlocks(&suite, t_web, t_proto); // web blocked_by proto
+    suite.allocator.free(suite.mustRun(&.{ "plan", "update", pid, "--status", "active" }));
+
+    const wf_path = try workflowPath(gpa);
+    defer gpa.free(wf_path);
+    const args_json = try std.fmt.allocPrint(gpa, "{{\"plan_id\":{s}}}", .{pid});
+    defer gpa.free(args_json);
+
+    const res = try mustExecute(gpa, suite.tmpAbsPath(), suite.absDbPath(), &.{
+        "run", wf_path, "--phase", "waves", "--args", args_json,
+    });
+    defer res.deinit();
+    const out = std.mem.trim(u8, res.stdout, " \t\r\n");
+
+    const parsed = try std.json.parseFromSlice(WavesResult, arena, out, .{ .ignore_unknown_fields = true });
+    try std.testing.expectEqual(plan.id, parsed.value.plan_id);
+    try std.testing.expectEqual(@as(i64, 2), parsed.value.wave_count);
+
+    // Epic branch name is the locked convention.
+    const want_epic = try std.fmt.allocPrint(arena, "epic/p{d}-pd-staged", .{plan.id});
+    try std.testing.expectEqualStrings(want_epic, parsed.value.epic_branch);
+
+    // Wave 1 = proto only (the contract lane), unblocked.
+    const w1 = waveByNumber(parsed.value, 1);
+    try std.testing.expectEqual(@as(i64, 1), w1.lane_count);
+    try std.testing.expect(waveContainsTask(w1, t_proto));
+    const w1_blk = blockedByIds(arena, w1.lanes[0].blocked_by);
+    try std.testing.expectEqual(@as(usize, 0), w1_blk.len);
+
+    // Wave 2 = identity + web, each labeled blocked_by proto.
+    const w2 = waveByNumber(parsed.value, 2);
+    try std.testing.expectEqual(@as(i64, 2), w2.lane_count);
+    try std.testing.expect(waveContainsTask(w2, t_ident));
+    try std.testing.expect(waveContainsTask(w2, t_web));
+    for (w2.lanes) |l| {
+        const blk = blockedByIds(arena, l.blocked_by);
+        try std.testing.expectEqual(@as(usize, 1), blk.len);
+        try std.testing.expectEqual(t_proto, blk[0]);
+        // Lane branch/worktree follow the locked naming convention.
+        const want_branch = try std.fmt.allocPrint(arena, "cycle/p{d}/{s}", .{ plan.id, l.slug });
+        try std.testing.expectEqualStrings(want_branch, l.branch);
+    }
+
+    // Wave 2 lanes are sorted by task id (byte-stable ordering).
+    try std.testing.expect(w2.lanes[0].task_id < w2.lanes[1].task_id);
+}
+
+// ---------------------------------------------------------------------------
+// wave-ordering (4625) — Edge: a strict blocks-chain (A blocks B blocks C)
+// collapses to three sequential one-lane waves rather than one three-lane wave.
+// ---------------------------------------------------------------------------
+
+test "parallel-dispatch waves: strict blocks-chain collapses to sequential one-lane waves" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const repo = registerRepoSlug(&suite, arena);
+    const plan = suite.mustRunJSON(PlanJSON, arena, &.{
+        "plan", "create", "--slug", "pd-chain", "--json", "PD_CHAIN",
+    });
+    const pid = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch unreachable;
+
+    const t_a = addTaskSlug(&suite, arena, pid, "chain-a", "A");
+    touchPath(&suite, repo, t_a, "a.zig");
+    const t_b = addTaskSlug(&suite, arena, pid, "chain-b", "B");
+    touchPath(&suite, repo, t_b, "b.zig");
+    const t_c = addTaskSlug(&suite, arena, pid, "chain-c", "C");
+    touchPath(&suite, repo, t_c, "c.zig");
+    linkBlocks(&suite, t_b, t_a); // B blocked_by A
+    linkBlocks(&suite, t_c, t_b); // C blocked_by B
+    suite.allocator.free(suite.mustRun(&.{ "plan", "update", pid, "--status", "active" }));
+
+    const wf_path = try workflowPath(gpa);
+    defer gpa.free(wf_path);
+    const args_json = try std.fmt.allocPrint(gpa, "{{\"plan_id\":{s}}}", .{pid});
+    defer gpa.free(args_json);
+
+    const res = try mustExecute(gpa, suite.tmpAbsPath(), suite.absDbPath(), &.{
+        "run", wf_path, "--phase", "waves", "--args", args_json,
+    });
+    defer res.deinit();
+    const out = std.mem.trim(u8, res.stdout, " \t\r\n");
+
+    const parsed = try std.json.parseFromSlice(WavesResult, arena, out, .{ .ignore_unknown_fields = true });
+    // Three single-lane waves in dependency order.
+    try std.testing.expectEqual(@as(i64, 3), parsed.value.wave_count);
+    const w1 = waveByNumber(parsed.value, 1);
+    const w2 = waveByNumber(parsed.value, 2);
+    const w3 = waveByNumber(parsed.value, 3);
+    try std.testing.expectEqual(@as(i64, 1), w1.lane_count);
+    try std.testing.expectEqual(@as(i64, 1), w2.lane_count);
+    try std.testing.expectEqual(@as(i64, 1), w3.lane_count);
+    try std.testing.expect(waveContainsTask(w1, t_a));
+    try std.testing.expect(waveContainsTask(w2, t_b));
+    try std.testing.expect(waveContainsTask(w3, t_c));
+    // Each dependent wave labels its gating blocker.
+    const w2_blk = blockedByIds(arena, w2.lanes[0].blocked_by);
+    const w3_blk = blockedByIds(arena, w3.lanes[0].blocked_by);
+    try std.testing.expectEqual(@as(usize, 1), w2_blk.len);
+    try std.testing.expectEqual(t_a, w2_blk[0]);
+    try std.testing.expectEqual(@as(usize, 1), w3_blk.len);
+    try std.testing.expectEqual(t_b, w3_blk[0]);
+}
+
+// ---------------------------------------------------------------------------
+// wave-ordering (4625) — Error: a task the engine serialized for a NON-blocks
+// reason (rule 3 migration) is never placed in a wave; it is carried in the
+// serialized set with its excluded_by reason. The seam does NOT override the
+// engine's eligibility decision even though the task has no blocks edge.
+// ---------------------------------------------------------------------------
+
+test "parallel-dispatch waves: engine-serialized non-blocks task is never placed in a wave" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const repo = registerRepoSlug(&suite, arena);
+    const plan = suite.mustRunJSON(PlanJSON, arena, &.{
+        "plan", "create", "--slug", "pd-wmix", "--json", "PD_WMIX",
+    });
+    const pid = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch unreachable;
+
+    const t_proto = addTaskSlug(&suite, arena, pid, "wproto", "Proto");
+    touchPath(&suite, repo, t_proto, "proto.zig");
+    const t_dep = addTaskSlug(&suite, arena, pid, "wdep", "Dep");
+    touchPath(&suite, repo, t_dep, "dep.zig");
+    const t_mig = addTaskSlug(&suite, arena, pid, "wmig", "Migrator");
+    touchPath(&suite, repo, t_mig, "migrations/00099_widget.sql");
+    linkBlocks(&suite, t_dep, t_proto); // dep blocked_by proto
+    suite.allocator.free(suite.mustRun(&.{ "plan", "update", pid, "--status", "active" }));
+
+    const wf_path = try workflowPath(gpa);
+    defer gpa.free(wf_path);
+    const args_json = try std.fmt.allocPrint(gpa, "{{\"plan_id\":{s}}}", .{pid});
+    defer gpa.free(args_json);
+
+    const res = try mustExecute(gpa, suite.tmpAbsPath(), suite.absDbPath(), &.{
+        "run", wf_path, "--phase", "waves", "--args", args_json,
+    });
+    defer res.deinit();
+    const out = std.mem.trim(u8, res.stdout, " \t\r\n");
+
+    const parsed = try std.json.parseFromSlice(WavesResult, arena, out, .{ .ignore_unknown_fields = true });
+    // Two waves: proto (w1), dep (w2). The migrator is in NEITHER wave.
+    try std.testing.expectEqual(@as(i64, 2), parsed.value.wave_count);
+    for (parsed.value.waves) |w| {
+        try std.testing.expect(!waveContainsTask(w, t_mig));
+    }
+    // The migrator surfaces in the serialized set with its excluded_by reason.
+    const mig_ref = try std.fmt.allocPrint(arena, "\"task_id\":{d}", .{t_mig});
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"serialized\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, mig_ref) != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"excluded_by\"") != null);
+}
+
+// ---------------------------------------------------------------------------
+// wave-ordering (4625) — Determinism: the `waves` phase is byte-stable across
+// runs (a resume must recompute an identical wave ordering).
+// ---------------------------------------------------------------------------
+
+test "parallel-dispatch waves: output is byte-stable across repeated runs" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const repo = registerRepoSlug(&suite, arena);
+    const plan = suite.mustRunJSON(PlanJSON, arena, &.{
+        "plan", "create", "--slug", "pd-wstable", "--json", "PD_WSTABLE",
+    });
+    const pid = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch unreachable;
+
+    const t_proto = addTaskSlug(&suite, arena, pid, "sproto", "Proto");
+    touchPath(&suite, repo, t_proto, "proto.zig");
+    const t_x = addTaskSlug(&suite, arena, pid, "sx", "X");
+    touchPath(&suite, repo, t_x, "x.zig");
+    const t_y = addTaskSlug(&suite, arena, pid, "sy", "Y");
+    touchPath(&suite, repo, t_y, "y.zig");
+    linkBlocks(&suite, t_x, t_proto);
+    linkBlocks(&suite, t_y, t_proto);
+    suite.allocator.free(suite.mustRun(&.{ "plan", "update", pid, "--status", "active" }));
+
+    const wf_path = try workflowPath(gpa);
+    defer gpa.free(wf_path);
+    const args_json = try std.fmt.allocPrint(gpa, "{{\"plan_id\":{s}}}", .{pid});
+    defer gpa.free(args_json);
+
+    const r1 = try mustExecute(gpa, suite.tmpAbsPath(), suite.absDbPath(), &.{
+        "run", wf_path, "--phase", "waves", "--args", args_json,
+    });
+    defer r1.deinit();
+    const r2 = try mustExecute(gpa, suite.tmpAbsPath(), suite.absDbPath(), &.{
+        "run", wf_path, "--phase", "waves", "--args", args_json,
+    });
+    defer r2.deinit();
+
+    try std.testing.expectEqualStrings(r1.stdout, r2.stdout);
+    try std.testing.expect(std.mem.indexOf(u8, r1.stdout, "\"wave_count\":2") != null);
+}
+
+// ---------------------------------------------------------------------------
+// wave-barrier (4626): the barrier holds when a lane completes but its fan-in
+// has NOT run. barrier_check(proceed) is true only when every lane is BOTH
+// landed AND fanned_in; a landed-but-not-fanned lane holds the barrier.
+// ---------------------------------------------------------------------------
+
+test "parallel-dispatch barrier_check: barrier holds when a lane is landed but not fanned in" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    _ = suite.registerProject("pd-barrier");
+    suite.addAssoc("pd-barrier", null);
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const wf_path = try workflowPath(gpa);
+    defer gpa.free(wf_path);
+
+    // Lane 5 landed but NOT fanned in; lane 2 landed AND fanned in. The barrier
+    // must NOT proceed, and lane 5 is named as blocking (not_fanned_in).
+    const args_json =
+        \\{"plan_id":9,"lanes":[
+        \\{"task_id":5,"landed":true,"fanned_in":false},
+        \\{"task_id":2,"landed":true,"fanned_in":true}
+        \\]}
+    ;
+
+    const res = try mustExecute(gpa, suite.tmpAbsPath(), suite.absDbPath(), &.{
+        "run", wf_path, "--phase", "barrier_check", "--args", args_json,
+    });
+    defer res.deinit();
+    const out = std.mem.trim(u8, res.stdout, " \t\r\n");
+
+    const parsed = try std.json.parseFromSlice(BarrierResult, arena, out, .{ .ignore_unknown_fields = true });
+    try std.testing.expectEqual(@as(i64, 9), parsed.value.plan_id);
+    try std.testing.expect(!parsed.value.proceed);
+    const blk = blockingLanes(arena, parsed.value.blocking);
+    try std.testing.expectEqual(@as(usize, 1), blk.len);
+    try std.testing.expectEqual(@as(i64, 5), blk[0].task_id);
+    try std.testing.expectEqualStrings("not_fanned_in", blk[0].reason);
+}
+
+// ---------------------------------------------------------------------------
+// wave-barrier (4626): the barrier proceeds only when every lane is landed AND
+// fanned in; a not-yet-landed lane blocks with reason `not_landed`.
+// ---------------------------------------------------------------------------
+
+test "parallel-dispatch barrier_check: proceeds iff every lane is landed and fanned in" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    _ = suite.registerProject("pd-barrier2");
+    suite.addAssoc("pd-barrier2", null);
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const wf_path = try workflowPath(gpa);
+    defer gpa.free(wf_path);
+
+    // All lanes landed AND fanned in → proceed.
+    const ok_args =
+        \\{"plan_id":1,"lanes":[
+        \\{"task_id":3,"landed":true,"fanned_in":true},
+        \\{"task_id":1,"landed":true,"fanned_in":true}
+        \\]}
+    ;
+    const ok = try mustExecute(gpa, suite.tmpAbsPath(), suite.absDbPath(), &.{
+        "run", wf_path, "--phase", "barrier_check", "--args", ok_args,
+    });
+    defer ok.deinit();
+    const ok_out = std.mem.trim(u8, ok.stdout, " \t\r\n");
+    const ok_parsed = try std.json.parseFromSlice(BarrierResult, arena, ok_out, .{ .ignore_unknown_fields = true });
+    try std.testing.expect(ok_parsed.value.proceed);
+    try std.testing.expectEqual(@as(usize, 0), blockingLanes(arena, ok_parsed.value.blocking).len);
+
+    // A not-yet-landed lane holds the barrier with reason not_landed; blocking
+    // is sorted by task id.
+    const blocked_args =
+        \\{"plan_id":1,"lanes":[
+        \\{"task_id":7,"landed":false,"fanned_in":false},
+        \\{"task_id":4,"landed":true,"fanned_in":true}
+        \\]}
+    ;
+    const bl = try mustExecute(gpa, suite.tmpAbsPath(), suite.absDbPath(), &.{
+        "run", wf_path, "--phase", "barrier_check", "--args", blocked_args,
+    });
+    defer bl.deinit();
+    const bl_out = std.mem.trim(u8, bl.stdout, " \t\r\n");
+    const bl_parsed = try std.json.parseFromSlice(BarrierResult, arena, bl_out, .{ .ignore_unknown_fields = true });
+    try std.testing.expect(!bl_parsed.value.proceed);
+    const bl_blk = blockingLanes(arena, bl_parsed.value.blocking);
+    try std.testing.expectEqual(@as(usize, 1), bl_blk.len);
+    try std.testing.expectEqual(@as(i64, 7), bl_blk[0].task_id);
+    try std.testing.expectEqualStrings("not_landed", bl_blk[0].reason);
 }

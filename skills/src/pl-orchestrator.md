@@ -299,10 +299,49 @@ Naming is locked (tech-spec §Decisions): epic `epic/p<plan>-<plan-slug>`, lane
 `cycle/p<plan>/<task-slug>`. Do not invent alternate names — the seam computes
 them and the existing worktree-cleanup backstop keys off the convention.
 
-Staged multi-wave ordering, the fan-in conflict protocol, and partial-wave
-failure/resume are later milestones (M2–M4); M1 is the single wave with manual
-fan-in only. The multi-wave `blocks`-graph ordering and conflict escalation are
-NOT yet runnable from this skill.
+#### Runnable staged waves (M2)
+
+For a plan whose lanes have `blocks` dependencies, present the FULL ordered wave
+plan at the strategy gate and enforce the wave barrier between waves. Waves are
+NOT partitioned up front to gate eligibility — the engine's `recommend-strategy`
+stays the single eligibility gate. The seam walks the plan's `blocks` graph ONLY
+to ORDER and LABEL the waves for the operator; waves EMERGE by iterative
+recompute across barriers (each barrier re-runs `recommend-strategy`, and a
+downstream lane becomes eligible only once its `blocks`-blocker is `done`).
+
+1. **Present the ordered wave plan at the gate.** Run the seam's `waves` phase:
+   `planar-execute run workflows/parallel-dispatch.lua --phase waves --args '{"plan_id":<id>}'`.
+   It emits byte-stable JSON `{ epic_branch, base, wave_count, waves:[{ wave,
+   lane_count, lanes:[{task_id, slug, branch, worktree, blocked_by:[…]}] }],
+   serialized:[…] }`. Show the operator the FULL ordered picture — each wave's
+   lanes with their per-lane branch + worktree path, the `blocked_by` blocker
+   task ids that gate each later wave (so they see "wave 2 unblocks once proto
+   lands"), and the serialized tasks with their exclusion reasons. Wait for
+   explicit confirmation before creating any worktree. A strict blocks-chain
+   collapses to sequential one-lane waves; a fully-parallel set is one wave.
+   A task the engine serialized for a NON-blocks reason (migration / singleton /
+   empty-touches / open-question / proposed-decision) is carried in `serialized`
+   and NEVER placed in a wave, regardless of its blocks-depth.
+2. **Drive ONE barrier at a time.** The `waves` output is the projection for the
+   gate, not a schedule the seam executes. For the CURRENT wave, run the `plan`
+   phase (which returns exactly the currently-eligible lanes), create its
+   worktrees, and fan out its coders as in the single-wave path above.
+3. **Enforce the wave barrier before the next wave.** After fanning the current
+   wave in, run the seam's `barrier_check` phase
+   (`--phase barrier_check --args '{"plan_id":<id>,"lanes":[{"task_id":…,"landed":…,"fanned_in":…}]}'`).
+   It emits `{ proceed, blocking:[{task_id, reason}] }`. Do NOT create any
+   wave-N+1 worktree until `proceed:true`. The barrier is on FAN-IN completion,
+   not coder completion: a lane whose coder reported done (`landed:true`) but
+   whose branch has not been merged into the epic (`fanned_in:false`) does NOT
+   satisfy the barrier — `barrier_check` names it as blocking with reason
+   `not_fanned_in`. Once `proceed:true`, re-run the `plan` phase (the just-landed
+   lanes have dropped out of `recommend-strategy` and their dependents are now
+   eligible) and repeat for the next wave.
+
+The fan-in conflict protocol and partial-wave failure/resume are later
+milestones (M3–M4); M2 adds staged wave ordering + the wave barrier on top of
+M1's single-wave manual fan-in. The fan-in conflict escalation and reconcile-on-
+resume paths are NOT yet runnable from this skill.
 
 ## Dispatch shape options
 
