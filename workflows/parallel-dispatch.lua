@@ -1,7 +1,7 @@
 --[[ @meta
 name: parallel-dispatch
-description: Deterministic, spawn-free wave/lane computation for the model orchestrator's parallel fan-out path. Computes the current wave (from recommend-strategy eligibility), the FULL ordered wave list (from recommend-strategy eligibility + the plan's `blocks` graph, for ordering/labeling only), each lane's worktree path + branch name, the epic branch name, the wave-barrier gate, and the stable fan-in merge order — then HANDS BACK. The model creates the worktrees, spawns the coders, and runs the git merges; this seam never spawns and never touches git worktree/branch/merge.
-phases: plan, waves, barrier_check, fan_in
+description: Deterministic, spawn-free wave/lane computation for the model orchestrator's parallel fan-out path. Computes the current wave (from recommend-strategy eligibility), the FULL ordered wave list (from recommend-strategy eligibility + the plan's `blocks` graph, for ordering/labeling only, with the terminal cross-lane integration pass marked), each lane's worktree path + branch name, the epic branch name, the wave-barrier gate, the wave-aware (contract-lanes-first) fan-in merge order, the boundary-conflict escalation payload, and the partial-wave reconcile plan — then HANDS BACK. The model creates the worktrees, spawns the coders, and runs the git merges/reconciles; this seam never spawns and never touches git worktree/branch/merge.
+phases: plan, waves, barrier_check, fan_in, conflict_escalation, reconcile_plan
 seam: planar plan recommend-strategy --json (via ctx.recommend_strategy), planar plan show --json (via ctx.plan_show), planar links list task:<id> --json (via cli.planar, for `blocks`-edge ordering only)
 --]]
 
@@ -58,10 +58,42 @@ seam: planar plan recommend-strategy --json (via ctx.recommend_strategy), planar
 --                   the blocking lanes named. Pure computation; the model
 --                   enforces the gate. HANDS BACK.
 --
---   fan_in        — given the landed lanes, emit the stable fan-in merge order
---                   (stable by task id) and the per-lane worktree paths to tear
---                   down. Pure computation; the model runs the actual
---                   `git merge --no-ff` and `git worktree remove`. HANDS BACK.
+--   fan_in        — given the landed lanes, emit the WAVE-AWARE fan-in merge
+--                   order (contract-lanes-first: earlier-wave lanes before
+--                   later-wave lanes; within a wave, stable by task id) and the
+--                   per-lane worktree paths to tear down. Each input lane MAY
+--                   carry a `wave` number (from the `waves` phase); lanes without
+--                   one collapse to a single wave (M1 behavior). Pure
+--                   computation; the model runs the actual `git merge --no-ff`
+--                   (into the epic branch, in this order) and `git worktree
+--                   remove`. HANDS BACK.
+--
+--   conflict_escalation
+--                 — (M3, boundary-conflict) given the conflict INFO the model
+--                   observed when a `git merge --no-ff <lane>` failed
+--                   (conflicting paths + the two lane branches), format the
+--                   deterministic escalation payload for the operator. The seam
+--                   NEVER auto-resolves: it does not run the merge and does not
+--                   run `git merge --abort` — the confined `git` host group
+--                   exposes no merge verb by design. The model runs the merge,
+--                   observes the conflict, aborts it, and calls this phase ONLY
+--                   to format the surfaced payload (paths sorted, branches named,
+--                   auto_resolved=false always). HANDS BACK.
+--
+--   reconcile_plan
+--                 — (M3, partial-wave failure) given the just-run wave's lane
+--                   outcomes, emit the deterministic reconcile plan for a resume.
+--                   A CLEAN lane failure (the coder fired its atomic
+--                   `planar-agent fail`, task flipped back to `todo`, claim
+--                   released) needs NO reconcile — nothing is stranded. A
+--                   DEAD-CODER abandonment (coder process died with no terminal
+--                   verb, claim still live-but-stranded) is reclaimed on resume
+--                   via `planar-agent reconcile --stale-after 0` (immediate,
+--                   surfaced, not waiting out the lease TTL). This phase reads
+--                   each lane's `outcome` (landed | failed_clean | abandoned) and
+--                   emits the set of lanes that need `reconcile` plus the ones
+--                   that do not. Pure computation; the model runs the actual
+--                   `planar-agent reconcile`. HANDS BACK.
 --
 -- ## Eligibility is the engine's, never the seam's
 --
@@ -121,8 +153,20 @@ seam: planar plan recommend-strategy --json (via ctx.recommend_strategy), planar
 --
 --   fan_in: { plan_id (int, required),
 --             lanes (array, required; each { task_id (int), branch (str),
---                    worktree (str) } as emitted by `plan`),
+--                    worktree (str), wave (int, optional; from `waves` — omit for
+--                    a single-wave fan-in) } as emitted by `plan`/`waves`),
 --             worktree_root (str, optional; only used for defaults) }
+--
+--   conflict_escalation: { plan_id (int, required),
+--             ours (str, required; the epic-side lane branch already merged),
+--             theirs (str, required; the lane branch whose merge conflicted),
+--             paths (array of str, required; the conflicting paths the model
+--                    observed from the failed `git merge --no-ff`) }
+--
+--   reconcile_plan: { plan_id (int, required),
+--             lanes (array, required; each { task_id (int),
+--                    outcome (str: "landed" | "failed_clean" | "abandoned"),
+--                    branch (str, optional), worktree (str, optional) }) }
 
 -- ---------------------------------------------------------------------------
 -- helpers
@@ -550,18 +594,43 @@ function waves()
         wave = d + 1,
         lane_count = #lanes,
         lanes = lanes,
+        -- Functional (lane-bearing) waves are never the integration pass; the
+        -- integration pass is a synthetic terminal wave appended below.
+        integration_pass = false,
       }
     end
   end
 
+  -- Terminal cross-lane integration pass (M3, integration-pass). The final wave
+  -- is ALWAYS a cross-lane integration pass that runs AFTER every functional
+  -- lane has fanned in: it builds + tests the fully-merged epic branch, catching
+  -- "passes locally but disagrees at the boundary" defects that no single lane's
+  -- local build would surface. The seam only MARKS/EMITS this terminal wave; the
+  -- build+test itself is the model's runtime op against the epic branch. It
+  -- carries no lanes (it is not a fan-out wave) and is emitted only when at least
+  -- one functional wave exists (nothing to integrate otherwise).
+  local integration_pass_wave = 0
+  if #wave_list > 0 then
+    integration_pass_wave = #wave_list + 1
+    wave_list[#wave_list + 1] = {
+      wave = integration_pass_wave,
+      lane_count = 0,
+      lanes = {},
+      integration_pass = true,
+      target_branch = epic,
+    }
+  end
+
   flow.log("parallel-dispatch.lua/waves: computed " .. tostr(#wave_list)
-    .. " wave(s) on epic " .. epic)
+    .. " wave(s) on epic " .. epic
+    .. " (integration_pass_wave=" .. tostr(integration_pass_wave) .. ")")
   flow.result({
     plan_id = plan_id,
     epic_branch = epic,
     base = base,
     worktree_root = worktree_root,
     wave_count = #wave_list,
+    integration_pass_wave = integration_pass_wave,
     waves = wave_list,
     serialized = serialized,
   })
@@ -629,9 +698,13 @@ end
 -- `git merge --no-ff <lane-branch>` into the epic branch (in this order) and
 -- `git worktree remove <worktree>` for each succeeded lane. HAND BACK.
 --
--- Merge order is stable by task id (M1 single wave; M3 generalizes to
--- contract-lanes-first across waves). Emitting the order deterministically here
--- keeps the model from having to re-derive it.
+-- Merge order is WAVE-AWARE and contract-lanes-first (M3, fan-in-merge-order):
+-- an earlier-wave lane merges before a later-wave lane; within a wave, order is
+-- stable by task id. Each input lane MAY carry a `wave` number (as emitted by
+-- the `waves` phase). Lanes with no `wave` collapse to a single implicit wave
+-- (wave 0), which reproduces the M1 single-wave task-id order exactly. Emitting
+-- the order deterministically here keeps the model from re-deriving it and keeps
+-- a resume byte-stable (identical inputs ⇒ identical order).
 -- ---------------------------------------------------------------------------
 function fan_in()
   flow.phase("fan_in")
@@ -644,24 +717,38 @@ function fan_in()
     return
   end
 
-  -- Normalize + validate each lane, then sort by task id for the stable
-  -- merge order.
+  -- Normalize + validate each lane. A lane's `wave` defaults to 0 so lanes
+  -- without a wave collapse to a single wave (M1 behavior preserved exactly).
   local lanes = {}
   for _, l in ipairs(in_lanes) do
     if l.task_id == nil or l.branch == nil then
       flow.fail("parallel-dispatch.lua/fan_in: each lane requires task_id and branch")
       return
     end
+    local wave = l.wave
+    if type(wave) ~= "number" then
+      wave = 0
+    end
     lanes[#lanes + 1] = {
       task_id = l.task_id,
       branch = l.branch,
       worktree = l.worktree,
+      wave = wave,
     }
   end
-  sort_by_task_id(lanes)
+
+  -- Contract-lanes-first total order: primary key = wave (ascending), secondary
+  -- key = task id (ascending). Task ids are unique per plan, so (wave, task_id)
+  -- is a total order and the sort is deterministic + byte-stable.
+  table.sort(lanes, function(a, b)
+    if a.wave ~= b.wave then
+      return a.wave < b.wave
+    end
+    return a.task_id < b.task_id
+  end)
 
   -- Emit the merge order (branch list) and the teardown list (worktree paths),
-  -- both in the same stable task-id order.
+  -- both in the same wave-aware, contract-lanes-first order.
   local merge_order = {}
   local teardown = {}
   for _, l in ipairs(lanes) do
@@ -671,12 +758,154 @@ function fan_in()
     end
   end
 
-  flow.log("parallel-dispatch.lua/fan_in: merge order computed for "
+  flow.log("parallel-dispatch.lua/fan_in: wave-aware merge order computed for "
     .. tostr(#merge_order) .. " lanes")
   flow.result({
     plan_id = plan_id,
     lane_count = #lanes,
     merge_order = merge_order,
     teardown_worktrees = teardown,
+  })
+end
+
+-- ---------------------------------------------------------------------------
+-- Phase: conflict_escalation (M3 — boundary-conflict-escalation)
+--
+-- Format the deterministic escalation payload for a fan-in boundary conflict.
+-- The seam NEVER auto-resolves and NEVER merges: the confined `git` host group
+-- exposes no merge verb by design (host.zig ALLOWED_HOST_FNS: only checkout /
+-- clean / diff_name_only / head_sha / reset_hard). The MODEL runs the actual
+-- `git merge --no-ff <lane>`, observes the conflict, runs `git merge --abort`,
+-- and calls THIS phase only to format the surfaced payload the operator sees.
+--
+-- Given { ours, theirs, paths }, emit { conflict=true, auto_resolved=false,
+-- branches=[ours, theirs], conflicting_paths=<sorted paths>, action="abort" }.
+-- Paths are sorted for byte-stable output; auto_resolved is ALWAYS false (the
+-- no-auto-resolution invariant is structural, not conditional). HAND BACK — the
+-- model pauses for the operator.
+-- ---------------------------------------------------------------------------
+function conflict_escalation()
+  flow.phase("conflict_escalation")
+  flow.log("parallel-dispatch.lua/conflict_escalation: starting")
+
+  local plan_id = require_arg("plan_id")
+  local ours = require_arg("ours")
+  local theirs = require_arg("theirs")
+  local in_paths = require_arg("paths")
+  if type(in_paths) ~= "table" then
+    flow.fail("parallel-dispatch.lua/conflict_escalation: paths must be an array")
+    return
+  end
+
+  -- Copy + sort the conflicting paths for byte-stable output.
+  local paths = {}
+  for _, p in ipairs(in_paths) do
+    paths[#paths + 1] = tostr(p)
+  end
+  table.sort(paths)
+
+  flow.log("parallel-dispatch.lua/conflict_escalation: escalating "
+    .. tostr(#paths) .. " conflicting path(s) between " .. tostr(ours)
+    .. " and " .. tostr(theirs))
+  flow.result({
+    plan_id = plan_id,
+    conflict = true,
+    -- The no-auto-resolution invariant is STRUCTURAL: the seam has no merge verb
+    -- and never resolves. This is always false, surfaced so the operator (and a
+    -- test) sees the guarantee explicitly.
+    auto_resolved = false,
+    action = "abort",
+    -- The two lane branches involved: `ours` is the epic-side branch already
+    -- merged, `theirs` is the lane branch whose merge conflicted.
+    branches = { ours = ours, theirs = theirs },
+    conflicting_paths = paths,
+  })
+end
+
+-- ---------------------------------------------------------------------------
+-- Phase: reconcile_plan (M3 — partial-wave-failure)
+--
+-- Emit the deterministic reconcile plan for a resume after a partial-wave
+-- failure. Two failure shapes are distinguished (tech-spec §Reconcile hook):
+--
+--   * CLEAN lane failure  (outcome="failed_clean"): the coder ran to a decision
+--     and fired its atomic `planar-agent fail`, which flipped the task back to
+--     `todo` and released the claim in ONE transaction. Nothing is stranded, so
+--     it needs NO reconcile — it is simply available again on the next
+--     recompute. Carried in `available` (no reconcile).
+--
+--   * DEAD-CODER abandonment (outcome="abandoned"): the coder process died with
+--     no terminal verb, leaving a live-but-stranded claim. On resume the
+--     orchestrator reclaims it IMMEDIATELY via `planar-agent reconcile
+--     --stale-after 0` (surfaced, not silent) so a dead lane does not block the
+--     barrier for the remainder of its lease. Carried in `reconcile` with the
+--     exact argv the model runs.
+--
+--   * landed lanes (outcome="landed"): already done, drop out of the recompute;
+--     nothing to reconcile.
+--
+-- This is PURE computation: the seam emits WHICH lanes need `reconcile` and
+-- WHICH are already available; the MODEL runs the actual `planar-agent
+-- reconcile`. HAND BACK.
+-- ---------------------------------------------------------------------------
+function reconcile_plan()
+  flow.phase("reconcile_plan")
+  flow.log("parallel-dispatch.lua/reconcile_plan: starting")
+
+  local plan_id = require_arg("plan_id")
+  local in_lanes = require_arg("lanes")
+  if type(in_lanes) ~= "table" then
+    flow.fail("parallel-dispatch.lua/reconcile_plan: lanes must be an array")
+    return
+  end
+
+  local reconcile = {} -- dead-coder lanes needing `reconcile --stale-after 0`
+  local available = {} -- clean-fail lanes; already available, no reconcile
+  local landed = {} -- already-done lanes; drop out of the recompute
+  for _, l in ipairs(in_lanes) do
+    if l.task_id == nil or l.outcome == nil then
+      flow.fail("parallel-dispatch.lua/reconcile_plan: each lane requires task_id and outcome")
+      return
+    end
+    local o = tostr(l.outcome)
+    if o == "abandoned" then
+      -- Immediate reclaim: surfaced, not waiting out the lease TTL.
+      reconcile[#reconcile + 1] = {
+        task_id = l.task_id,
+        reason = "dead_coder_stranded_claim",
+        reconcile_args = { "reconcile", "--stale-after", "0" },
+      }
+    elseif o == "failed_clean" then
+      available[#available + 1] = {
+        task_id = l.task_id,
+        reason = "atomic_fail_released_claim",
+      }
+    elseif o == "landed" then
+      landed[#landed + 1] = { task_id = l.task_id }
+    else
+      flow.fail("parallel-dispatch.lua/reconcile_plan: unknown outcome '" .. o
+        .. "' for task " .. tostr(l.task_id))
+      return
+    end
+  end
+  sort_by_task_id(reconcile)
+  sort_by_task_id(available)
+  sort_by_task_id(landed)
+
+  -- needs_reconcile is true iff any dead-coder lane must be reclaimed before the
+  -- resume recompute. The barrier does NOT advance while any lane is unlanded
+  -- (M2 barrier_check already enforces this); this phase only tells the model
+  -- WHICH stranded claims to reclaim first.
+  local needs_reconcile = #reconcile > 0
+  flow.log("parallel-dispatch.lua/reconcile_plan: needs_reconcile="
+    .. tostr(needs_reconcile) .. " (" .. tostr(#reconcile)
+    .. " abandoned, " .. tostr(#available) .. " clean-fail, "
+    .. tostr(#landed) .. " landed)")
+  flow.result({
+    plan_id = plan_id,
+    needs_reconcile = needs_reconcile,
+    reconcile = reconcile,
+    available = available,
+    landed = landed,
   })
 end

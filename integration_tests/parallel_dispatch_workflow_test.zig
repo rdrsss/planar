@@ -258,14 +258,61 @@ fn blockedByIds(gpa: std.mem.Allocator, v: std.json.Value) []i64 {
 const Wave = struct {
     wave: i64,
     lane_count: i64,
-    lanes: []WaveLane = &.{},
+    integration_pass: bool = false,
+    // Raw Value: a functional wave's lanes serialize as an array of objects, but
+    // the M3 terminal integration-pass wave carries NO lanes, which serializes as
+    // `{}` (empty object) — a `[]WaveLane` slice cannot parse the `{}` form.
+    // Normalize functional-wave lanes via waveLanes below.
+    lanes: std.json.Value = .null,
 };
+
+/// waveLanes normalizes a Wave.lanes Value into a typed `[]WaveLane`. An empty
+/// `{}` (integration-pass wave) or null → no lanes. Functional-wave lanes are
+/// parsed field-by-field from the raw object.
+fn waveLanes(gpa: std.mem.Allocator, v: std.json.Value) []WaveLane {
+    switch (v) {
+        .array => |arr| {
+            var out = gpa.alloc(WaveLane, arr.items.len) catch @panic("oom");
+            for (arr.items, 0..) |item, i| {
+                const obj = switch (item) {
+                    .object => |o| o,
+                    else => std.debug.panic("wave lane is not an object", .{}),
+                };
+                out[i] = .{
+                    .task_id = switch (obj.get("task_id") orelse std.debug.panic("lane missing task_id", .{})) {
+                        .integer => |n| n,
+                        else => std.debug.panic("lane task_id is not an integer", .{}),
+                    },
+                    .slug = strField(obj, "slug"),
+                    .title = strField(obj, "title"),
+                    .branch = strField(obj, "branch"),
+                    .worktree = strField(obj, "worktree"),
+                    .blocked_by = obj.get("blocked_by") orelse .null,
+                };
+            }
+            return out;
+        },
+        .object, .null => return &.{},
+        else => std.debug.panic("wave lanes is neither an array nor an empty object", .{}),
+    }
+}
+
+/// strField reads a string field from a JSON object map (panics if missing or
+/// not a string).
+fn strField(obj: std.json.ObjectMap, key: []const u8) []const u8 {
+    const v = obj.get(key) orelse std.debug.panic("object missing string field {s}", .{key});
+    return switch (v) {
+        .string => |s| s,
+        else => std.debug.panic("field {s} is not a string", .{key}),
+    };
+}
 
 const WavesResult = struct {
     plan_id: i64,
     epic_branch: []const u8,
     base: []const u8,
     wave_count: i64,
+    integration_pass_wave: i64 = 0,
     waves: []Wave = &.{},
 };
 
@@ -322,9 +369,10 @@ fn waveByNumber(res: WavesResult, n: i64) Wave {
     std.debug.panic("wave {d} not present in seam result", .{n});
 }
 
-/// waveContainsTask reports whether the given wave has a lane for task_id.
-fn waveContainsTask(w: Wave, task_id: i64) bool {
-    for (w.lanes) |l| {
+/// waveContainsTask reports whether the given normalized lane set has a lane
+/// for task_id.
+fn waveContainsTask(lanes: []const WaveLane, task_id: i64) bool {
+    for (lanes) |l| {
         if (l.task_id == task_id) return true;
     }
     return false;
@@ -758,7 +806,9 @@ test "parallel-dispatch waves: staged waves land contract lane before dependent 
 
     const parsed = try std.json.parseFromSlice(WavesResult, arena, out, .{ .ignore_unknown_fields = true });
     try std.testing.expectEqual(plan.id, parsed.value.plan_id);
-    try std.testing.expectEqual(@as(i64, 2), parsed.value.wave_count);
+    // Two functional waves + the M3 terminal integration pass = 3 total.
+    try std.testing.expectEqual(@as(i64, 3), parsed.value.wave_count);
+    try std.testing.expectEqual(@as(i64, 3), parsed.value.integration_pass_wave);
 
     // Epic branch name is the locked convention.
     const want_epic = try std.fmt.allocPrint(arena, "epic/p{d}-pd-staged", .{plan.id});
@@ -766,17 +816,19 @@ test "parallel-dispatch waves: staged waves land contract lane before dependent 
 
     // Wave 1 = proto only (the contract lane), unblocked.
     const w1 = waveByNumber(parsed.value, 1);
+    const w1_lanes = waveLanes(arena, w1.lanes);
     try std.testing.expectEqual(@as(i64, 1), w1.lane_count);
-    try std.testing.expect(waveContainsTask(w1, t_proto));
-    const w1_blk = blockedByIds(arena, w1.lanes[0].blocked_by);
+    try std.testing.expect(waveContainsTask(w1_lanes, t_proto));
+    const w1_blk = blockedByIds(arena, w1_lanes[0].blocked_by);
     try std.testing.expectEqual(@as(usize, 0), w1_blk.len);
 
     // Wave 2 = identity + web, each labeled blocked_by proto.
     const w2 = waveByNumber(parsed.value, 2);
+    const w2_lanes = waveLanes(arena, w2.lanes);
     try std.testing.expectEqual(@as(i64, 2), w2.lane_count);
-    try std.testing.expect(waveContainsTask(w2, t_ident));
-    try std.testing.expect(waveContainsTask(w2, t_web));
-    for (w2.lanes) |l| {
+    try std.testing.expect(waveContainsTask(w2_lanes, t_ident));
+    try std.testing.expect(waveContainsTask(w2_lanes, t_web));
+    for (w2_lanes) |l| {
         const blk = blockedByIds(arena, l.blocked_by);
         try std.testing.expectEqual(@as(usize, 1), blk.len);
         try std.testing.expectEqual(t_proto, blk[0]);
@@ -786,7 +838,12 @@ test "parallel-dispatch waves: staged waves land contract lane before dependent 
     }
 
     // Wave 2 lanes are sorted by task id (byte-stable ordering).
-    try std.testing.expect(w2.lanes[0].task_id < w2.lanes[1].task_id);
+    try std.testing.expect(w2_lanes[0].task_id < w2_lanes[1].task_id);
+
+    // The M3 terminal wave is a cross-lane integration pass carrying no lanes.
+    const w3 = waveByNumber(parsed.value, 3);
+    try std.testing.expect(w3.integration_pass);
+    try std.testing.expectEqual(@as(usize, 0), waveLanes(arena, w3.lanes).len);
 }
 
 // ---------------------------------------------------------------------------
@@ -831,24 +888,31 @@ test "parallel-dispatch waves: strict blocks-chain collapses to sequential one-l
     const out = std.mem.trim(u8, res.stdout, " \t\r\n");
 
     const parsed = try std.json.parseFromSlice(WavesResult, arena, out, .{ .ignore_unknown_fields = true });
-    // Three single-lane waves in dependency order.
-    try std.testing.expectEqual(@as(i64, 3), parsed.value.wave_count);
+    // Three single-lane functional waves in dependency order + the M3 terminal
+    // integration pass = 4 total waves.
+    try std.testing.expectEqual(@as(i64, 4), parsed.value.wave_count);
+    try std.testing.expectEqual(@as(i64, 4), parsed.value.integration_pass_wave);
     const w1 = waveByNumber(parsed.value, 1);
     const w2 = waveByNumber(parsed.value, 2);
     const w3 = waveByNumber(parsed.value, 3);
     try std.testing.expectEqual(@as(i64, 1), w1.lane_count);
     try std.testing.expectEqual(@as(i64, 1), w2.lane_count);
     try std.testing.expectEqual(@as(i64, 1), w3.lane_count);
-    try std.testing.expect(waveContainsTask(w1, t_a));
-    try std.testing.expect(waveContainsTask(w2, t_b));
-    try std.testing.expect(waveContainsTask(w3, t_c));
+    const w1_lanes = waveLanes(arena, w1.lanes);
+    const w2_lanes = waveLanes(arena, w2.lanes);
+    const w3_lanes = waveLanes(arena, w3.lanes);
+    try std.testing.expect(waveContainsTask(w1_lanes, t_a));
+    try std.testing.expect(waveContainsTask(w2_lanes, t_b));
+    try std.testing.expect(waveContainsTask(w3_lanes, t_c));
     // Each dependent wave labels its gating blocker.
-    const w2_blk = blockedByIds(arena, w2.lanes[0].blocked_by);
-    const w3_blk = blockedByIds(arena, w3.lanes[0].blocked_by);
+    const w2_blk = blockedByIds(arena, w2_lanes[0].blocked_by);
+    const w3_blk = blockedByIds(arena, w3_lanes[0].blocked_by);
     try std.testing.expectEqual(@as(usize, 1), w2_blk.len);
     try std.testing.expectEqual(t_a, w2_blk[0]);
     try std.testing.expectEqual(@as(usize, 1), w3_blk.len);
     try std.testing.expectEqual(t_b, w3_blk[0]);
+    // The terminal wave (4) is the integration pass.
+    try std.testing.expect(waveByNumber(parsed.value, 4).integration_pass);
 }
 
 // ---------------------------------------------------------------------------
@@ -894,10 +958,12 @@ test "parallel-dispatch waves: engine-serialized non-blocks task is never placed
     const out = std.mem.trim(u8, res.stdout, " \t\r\n");
 
     const parsed = try std.json.parseFromSlice(WavesResult, arena, out, .{ .ignore_unknown_fields = true });
-    // Two waves: proto (w1), dep (w2). The migrator is in NEITHER wave.
-    try std.testing.expectEqual(@as(i64, 2), parsed.value.wave_count);
+    // Two functional waves (proto w1, dep w2) + the M3 terminal integration
+    // pass = 3 total. The migrator is in NEITHER functional wave.
+    try std.testing.expectEqual(@as(i64, 3), parsed.value.wave_count);
+    try std.testing.expectEqual(@as(i64, 3), parsed.value.integration_pass_wave);
     for (parsed.value.waves) |w| {
-        try std.testing.expect(!waveContainsTask(w, t_mig));
+        try std.testing.expect(!waveContainsTask(waveLanes(arena, w.lanes), t_mig));
     }
     // The migrator surfaces in the serialized set with its excluded_by reason.
     const mig_ref = try std.fmt.allocPrint(arena, "\"task_id\":{d}", .{t_mig});
@@ -951,7 +1017,8 @@ test "parallel-dispatch waves: output is byte-stable across repeated runs" {
     defer r2.deinit();
 
     try std.testing.expectEqualStrings(r1.stdout, r2.stdout);
-    try std.testing.expect(std.mem.indexOf(u8, r1.stdout, "\"wave_count\":2") != null);
+    // Two functional waves + the M3 terminal integration pass = 3.
+    try std.testing.expect(std.mem.indexOf(u8, r1.stdout, "\"wave_count\":3") != null);
 }
 
 // ---------------------------------------------------------------------------
@@ -1052,4 +1119,627 @@ test "parallel-dispatch barrier_check: proceeds iff every lane is landed and fan
     try std.testing.expectEqual(@as(usize, 1), bl_blk.len);
     try std.testing.expectEqual(@as(i64, 7), bl_blk[0].task_id);
     try std.testing.expectEqualStrings("not_landed", bl_blk[0].reason);
+}
+
+// ===========================================================================
+// M3 (plan 763, tasks 4628–4632): fan-in conflict protocol + partial-wave
+// failure hardening.
+//
+// M3 coverage (test-spec artifact 429):
+//
+//   fan-in-merge-order (Happy): the wave-aware fan_in phase orders lane merges
+//     contract-lanes-first — an earlier-wave lane before a later-wave lane;
+//     within a wave, stable by task id — across the FULL ordered wave list, not
+//     just one wave. Seam-testable: it computes the merge order from the input
+//     lanes' `wave` + `task_id`. The actual `git merge --no-ff` is the model's
+//     runtime op (the confined git host group exposes no merge verb).
+//
+//   integration-pass (Happy): the `waves` phase marks a terminal cross-lane
+//     integration pass as the last wave (integration_pass=true, no lanes),
+//     running AFTER every functional lane fans in. Seam-testable: it emits the
+//     terminal wave marker + integration_pass_wave number. The build+test of the
+//     merged epic branch is the model's runtime op.
+//
+//   boundary-conflict-escalation (Error): the conflict_escalation phase formats
+//     the escalation payload (sorted conflicting paths + the two lane branches,
+//     auto_resolved=false always) given the conflict info. Seam-testable: it is
+//     pure formatting. The actual merge + `git merge --abort` is the model's
+//     runtime op — the seam never auto-resolves (structural: no merge host verb).
+//
+//   partial-wave-failure (Error): the reconcile_plan phase distinguishes a CLEAN
+//     lane failure (atomic `planar-agent fail` → no reconcile, available again)
+//     from a DEAD-CODER abandonment (stranded claim → `planar-agent reconcile
+//     --stale-after 0`). Seam-testable: it partitions lane outcomes and emits the
+//     reconcile argv. The actual `planar-agent reconcile` is the model's runtime
+//     op; the barrier-hold is M2's already-tested barrier_check.
+//
+//   resume-recompute (Empty-null + Error): resume RECOMPUTES waves from CURRENT
+//     task state — landed lanes are `done`, drop out of recommend-strategy, and
+//     only the remainder re-fans-out. This is a property of the STATELESS seam
+//     (it reads current state on each call). Proven by seeding lanes `done` and
+//     asserting they are absent from `waves`/`plan` output, incl. the all-landed
+//     ⇒ empty-remainder case.
+// ===========================================================================
+
+// M3 result shapes.
+
+const MergeOrderFanIn = struct {
+    plan_id: i64,
+    lane_count: i64,
+    merge_order: []const []const u8,
+    teardown_worktrees: []const []const u8,
+};
+
+const WaveM3 = struct {
+    wave: i64,
+    lane_count: i64,
+    integration_pass: bool = false,
+    // Raw Value: a functional wave's lanes serialize as an array of objects, but
+    // the terminal integration-pass wave carries NO lanes, which serializes as
+    // `{}` (empty object) under the established empty-table policy — a `[]WaveLane`
+    // slice cannot parse the `{}` form. Normalize via m3WaveLanes below.
+    lanes: std.json.Value = .null,
+};
+
+/// M3WaveLane is the normalized per-lane view used by the M3 tests (task id +
+/// blocked_by only — the fields the M3 assertions actually touch).
+const M3WaveLane = struct {
+    task_id: i64,
+    blocked_by: std.json.Value = .null,
+};
+
+/// m3WaveLanes normalizes a WaveM3.lanes Value into a list of M3WaveLane. An
+/// empty `{}` (integration-pass wave) or null → no lanes.
+fn m3WaveLanes(gpa: std.mem.Allocator, v: std.json.Value) []M3WaveLane {
+    switch (v) {
+        .array => |arr| {
+            var out = gpa.alloc(M3WaveLane, arr.items.len) catch @panic("oom");
+            for (arr.items, 0..) |item, i| {
+                const obj = switch (item) {
+                    .object => |o| o,
+                    else => std.debug.panic("lane element is not an object", .{}),
+                };
+                const tid = obj.get("task_id") orelse std.debug.panic("lane missing task_id", .{});
+                out[i] = .{
+                    .task_id = switch (tid) {
+                        .integer => |n| n,
+                        else => std.debug.panic("lane task_id is not an integer", .{}),
+                    },
+                    .blocked_by = obj.get("blocked_by") orelse .null,
+                };
+            }
+            return out;
+        },
+        .object, .null => return &.{},
+        else => std.debug.panic("lanes is neither an array nor an empty object", .{}),
+    }
+}
+
+const WavesResultM3 = struct {
+    plan_id: i64,
+    epic_branch: []const u8,
+    wave_count: i64,
+    integration_pass_wave: i64 = 0,
+    waves: []WaveM3 = &.{},
+};
+
+const ConflictBranches = struct {
+    ours: []const u8,
+    theirs: []const u8,
+};
+
+const ConflictResult = struct {
+    plan_id: i64,
+    conflict: bool,
+    auto_resolved: bool,
+    action: []const u8,
+    branches: ConflictBranches,
+    conflicting_paths: []const []const u8,
+};
+
+const ReconcileLane = struct {
+    task_id: i64,
+    reason: []const u8 = "",
+};
+
+const ReconcileResult = struct {
+    plan_id: i64,
+    needs_reconcile: bool,
+    // Empty tables serialize as `{}` (object); non-empty as arrays. Parse as raw
+    // Value and normalize, same policy as blocked_by / blocking above.
+    reconcile: std.json.Value = .null,
+    available: std.json.Value = .null,
+    landed: std.json.Value = .null,
+};
+
+/// reconcileLaneIds normalizes a reconcile-list Value into task ids.
+fn reconcileLaneIds(gpa: std.mem.Allocator, v: std.json.Value) []i64 {
+    switch (v) {
+        .array => |arr| {
+            var out = gpa.alloc(i64, arr.items.len) catch @panic("oom");
+            for (arr.items, 0..) |item, i| {
+                const obj = switch (item) {
+                    .object => |o| o,
+                    else => std.debug.panic("reconcile element is not an object", .{}),
+                };
+                const tid = obj.get("task_id") orelse std.debug.panic("reconcile element missing task_id", .{});
+                out[i] = switch (tid) {
+                    .integer => |n| n,
+                    else => std.debug.panic("task_id is not an integer", .{}),
+                };
+            }
+            return out;
+        },
+        .object, .null => return &.{},
+        else => std.debug.panic("reconcile list is neither array nor empty object", .{}),
+    }
+}
+
+/// m3WaveByNumber finds a WaveM3 by its 1-based number (panics if absent).
+fn m3WaveByNumber(res: WavesResultM3, n: i64) WaveM3 {
+    for (res.waves) |w| {
+        if (w.wave == n) return w;
+    }
+    std.debug.panic("wave {d} not present in m3 seam result", .{n});
+}
+
+// ---------------------------------------------------------------------------
+// fan-in-merge-order (4628) — Happy: the wave-aware fan_in orders lane merges
+// contract-lanes-first (earlier wave first; task id within a wave). A wave-2
+// lane with a LOWER task id than a wave-1 lane still merges AFTER it, proving
+// the order is wave-first, not task-id-first.
+// ---------------------------------------------------------------------------
+
+test "parallel-dispatch fan_in: merge order is wave-aware, contract-lanes-first" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    _ = suite.registerProject("pd-m3-order");
+    suite.addAssoc("pd-m3-order", null);
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const wf_path = try workflowPath(gpa);
+    defer gpa.free(wf_path);
+
+    // Wave 1 has a HIGH-task-id lane (99); wave 2 has a LOW-task-id lane (10).
+    // Contract-lanes-first: wave 1 (task 99) MUST merge before wave 2 (task 10),
+    // even though 10 < 99. Within wave 1, tasks sort by id (30 before 99). Input
+    // is deliberately out of order to prove the seam sorts.
+    const args_json =
+        \\{"plan_id":77,"lanes":[
+        \\{"task_id":10,"wave":2,"branch":"cycle/p77/w2-low","worktree":".worktrees/cycle/p77/w2-low"},
+        \\{"task_id":99,"wave":1,"branch":"cycle/p77/w1-high","worktree":".worktrees/cycle/p77/w1-high"},
+        \\{"task_id":30,"wave":1,"branch":"cycle/p77/w1-mid","worktree":".worktrees/cycle/p77/w1-mid"}
+        \\]}
+    ;
+
+    const res = try mustExecute(gpa, suite.tmpAbsPath(), suite.absDbPath(), &.{
+        "run", wf_path, "--phase", "fan_in", "--args", args_json,
+    });
+    defer res.deinit();
+    const out = std.mem.trim(u8, res.stdout, " \t\r\n");
+
+    const parsed = try std.json.parseFromSlice(MergeOrderFanIn, arena, out, .{ .ignore_unknown_fields = true });
+    try std.testing.expectEqual(@as(i64, 77), parsed.value.plan_id);
+    try std.testing.expectEqual(@as(i64, 3), parsed.value.lane_count);
+
+    // Order: wave 1 (task 30, then 99), then wave 2 (task 10). Contract lanes
+    // (earlier wave) first; task-id secondary within a wave.
+    try std.testing.expectEqual(@as(usize, 3), parsed.value.merge_order.len);
+    try std.testing.expectEqualStrings("cycle/p77/w1-mid", parsed.value.merge_order[0]);
+    try std.testing.expectEqualStrings("cycle/p77/w1-high", parsed.value.merge_order[1]);
+    try std.testing.expectEqualStrings("cycle/p77/w2-low", parsed.value.merge_order[2]);
+
+    // Teardown follows the same wave-aware order.
+    try std.testing.expectEqualStrings(".worktrees/cycle/p77/w1-mid", parsed.value.teardown_worktrees[0]);
+    try std.testing.expectEqualStrings(".worktrees/cycle/p77/w2-low", parsed.value.teardown_worktrees[2]);
+}
+
+// ---------------------------------------------------------------------------
+// fan-in-merge-order (4628) — Regression: lanes with NO `wave` field collapse
+// to a single wave and reproduce the M1 task-id order exactly (backward compat).
+// ---------------------------------------------------------------------------
+
+test "parallel-dispatch fan_in: lanes without a wave field collapse to single-wave task-id order" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    _ = suite.registerProject("pd-m3-nowave");
+    suite.addAssoc("pd-m3-nowave", null);
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const wf_path = try workflowPath(gpa);
+    defer gpa.free(wf_path);
+
+    const args_json =
+        \\{"plan_id":8,"lanes":[
+        \\{"task_id":7,"branch":"cycle/p8/lane-g","worktree":".worktrees/cycle/p8/lane-g"},
+        \\{"task_id":3,"branch":"cycle/p8/lane-c","worktree":".worktrees/cycle/p8/lane-c"}
+        \\]}
+    ;
+
+    const res = try mustExecute(gpa, suite.tmpAbsPath(), suite.absDbPath(), &.{
+        "run", wf_path, "--phase", "fan_in", "--args", args_json,
+    });
+    defer res.deinit();
+    const out = std.mem.trim(u8, res.stdout, " \t\r\n");
+
+    const parsed = try std.json.parseFromSlice(MergeOrderFanIn, arena, out, .{ .ignore_unknown_fields = true });
+    // No `wave` field ⇒ single wave, stable by task id (3 before 7): identical
+    // to the M1 manual-fan-in contract.
+    try std.testing.expectEqualStrings("cycle/p8/lane-c", parsed.value.merge_order[0]);
+    try std.testing.expectEqualStrings("cycle/p8/lane-g", parsed.value.merge_order[1]);
+}
+
+// ---------------------------------------------------------------------------
+// integration-pass (4630) — Happy: the `waves` phase marks a terminal
+// cross-lane integration pass as the last wave (integration_pass=true, no
+// lanes), running AFTER every functional lane.
+// ---------------------------------------------------------------------------
+
+test "parallel-dispatch waves: terminal wave is a cross-lane integration pass" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const repo = registerRepoSlug(&suite, arena);
+    const plan = suite.mustRunJSON(PlanJSON, arena, &.{
+        "plan", "create", "--slug", "pd-m3-intpass", "--json", "PD_INTPASS",
+    });
+    const pid = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch unreachable;
+
+    // proto blocks identity + web → two functional waves, so the integration
+    // pass is wave 3.
+    const t_proto = addTaskSlug(&suite, arena, pid, "ip-proto", "Proto");
+    touchPath(&suite, repo, t_proto, "proto.zig");
+    const t_ident = addTaskSlug(&suite, arena, pid, "ip-identity", "Identity");
+    touchPath(&suite, repo, t_ident, "identity.zig");
+    const t_web = addTaskSlug(&suite, arena, pid, "ip-web", "Web");
+    touchPath(&suite, repo, t_web, "web.zig");
+    linkBlocks(&suite, t_ident, t_proto);
+    linkBlocks(&suite, t_web, t_proto);
+    suite.allocator.free(suite.mustRun(&.{ "plan", "update", pid, "--status", "active" }));
+
+    const wf_path = try workflowPath(gpa);
+    defer gpa.free(wf_path);
+    const args_json = try std.fmt.allocPrint(gpa, "{{\"plan_id\":{s}}}", .{pid});
+    defer gpa.free(args_json);
+
+    const res = try mustExecute(gpa, suite.tmpAbsPath(), suite.absDbPath(), &.{
+        "run", wf_path, "--phase", "waves", "--args", args_json,
+    });
+    defer res.deinit();
+    const out = std.mem.trim(u8, res.stdout, " \t\r\n");
+
+    const parsed = try std.json.parseFromSlice(WavesResultM3, arena, out, .{ .ignore_unknown_fields = true });
+    // Two functional waves + one integration pass = 3 total; the integration
+    // pass is the LAST wave.
+    try std.testing.expectEqual(@as(i64, 3), parsed.value.wave_count);
+    try std.testing.expectEqual(@as(i64, 3), parsed.value.integration_pass_wave);
+
+    // The two functional waves are NOT integration passes.
+    const w1 = m3WaveByNumber(parsed.value, 1);
+    const w2 = m3WaveByNumber(parsed.value, 2);
+    try std.testing.expect(!w1.integration_pass);
+    try std.testing.expect(!w2.integration_pass);
+    try std.testing.expect(w1.lane_count > 0);
+
+    // The terminal wave IS the integration pass, and carries no lanes (it is not
+    // a fan-out wave; the model builds + tests the merged epic branch).
+    const w3 = m3WaveByNumber(parsed.value, 3);
+    try std.testing.expect(w3.integration_pass);
+    try std.testing.expectEqual(@as(i64, 0), w3.lane_count);
+    try std.testing.expectEqual(@as(usize, 0), m3WaveLanes(arena, w3.lanes).len);
+}
+
+// ---------------------------------------------------------------------------
+// boundary-conflict-escalation (4629) — Error: the conflict_escalation phase
+// formats the escalation payload (sorted conflicting paths + the two lane
+// branches) and NEVER auto-resolves (auto_resolved=false, action=abort). The
+// seam does no merge — that (and the abort) is the model's runtime op.
+// ---------------------------------------------------------------------------
+
+test "parallel-dispatch conflict_escalation: surfaces conflict without auto-resolving" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    _ = suite.registerProject("pd-m3-conflict");
+    suite.addAssoc("pd-m3-conflict", null);
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const wf_path = try workflowPath(gpa);
+    defer gpa.free(wf_path);
+
+    // Conflicting paths deliberately OUT of sorted order to prove the seam sorts
+    // for byte-stable output.
+    const args_json =
+        \\{"plan_id":55,"ours":"cycle/p55/lane-a","theirs":"cycle/p55/lane-b",
+        \\"paths":["src/zeta.zig","src/alpha.zig","docs/shared.md"]}
+    ;
+
+    const res = try mustExecute(gpa, suite.tmpAbsPath(), suite.absDbPath(), &.{
+        "run", wf_path, "--phase", "conflict_escalation", "--args", args_json,
+    });
+    defer res.deinit();
+    const out = std.mem.trim(u8, res.stdout, " \t\r\n");
+
+    const parsed = try std.json.parseFromSlice(ConflictResult, arena, out, .{ .ignore_unknown_fields = true });
+    try std.testing.expectEqual(@as(i64, 55), parsed.value.plan_id);
+    try std.testing.expect(parsed.value.conflict);
+    // The load-bearing invariant: NEVER auto-resolved, action is abort.
+    try std.testing.expect(!parsed.value.auto_resolved);
+    try std.testing.expectEqualStrings("abort", parsed.value.action);
+
+    // Both lane branches are named.
+    try std.testing.expectEqualStrings("cycle/p55/lane-a", parsed.value.branches.ours);
+    try std.testing.expectEqualStrings("cycle/p55/lane-b", parsed.value.branches.theirs);
+
+    // Conflicting paths are surfaced, SORTED for byte-stability.
+    try std.testing.expectEqual(@as(usize, 3), parsed.value.conflicting_paths.len);
+    try std.testing.expectEqualStrings("docs/shared.md", parsed.value.conflicting_paths[0]);
+    try std.testing.expectEqualStrings("src/alpha.zig", parsed.value.conflicting_paths[1]);
+    try std.testing.expectEqualStrings("src/zeta.zig", parsed.value.conflicting_paths[2]);
+
+    // Seam confinement tripwire: the escalation phase must NOT itself have run a
+    // merge. The confined git host group exposes no merge verb; assert the seam
+    // source never names one (belt-and-suspenders alongside the spawn-free test).
+    const source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, wf_path, gpa, .limited(256 * 1024)) catch
+        @panic("failed to read parallel-dispatch.lua");
+    defer gpa.free(source);
+    try std.testing.expect(std.mem.indexOf(u8, source, "git.merge") == null);
+}
+
+// ---------------------------------------------------------------------------
+// partial-wave-failure (4631) — Error: the reconcile_plan phase distinguishes a
+// CLEAN lane failure (no reconcile) from a DEAD-CODER abandonment (reconcile
+// --stale-after 0), and drops landed lanes.
+// ---------------------------------------------------------------------------
+
+test "parallel-dispatch reconcile_plan: clean-fail needs no reconcile, abandoned needs immediate reclaim" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    _ = suite.registerProject("pd-m3-reconcile");
+    suite.addAssoc("pd-m3-reconcile", null);
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const wf_path = try workflowPath(gpa);
+    defer gpa.free(wf_path);
+
+    // Lane 4 landed; lane 2 failed cleanly (atomic fail); lane 6 abandoned (dead
+    // coder, stranded claim).
+    const args_json =
+        \\{"plan_id":12,"lanes":[
+        \\{"task_id":4,"outcome":"landed"},
+        \\{"task_id":6,"outcome":"abandoned","worktree":".worktrees/cycle/p12/lane-dead"},
+        \\{"task_id":2,"outcome":"failed_clean"}
+        \\]}
+    ;
+
+    const res = try mustExecute(gpa, suite.tmpAbsPath(), suite.absDbPath(), &.{
+        "run", wf_path, "--phase", "reconcile_plan", "--args", args_json,
+    });
+    defer res.deinit();
+    const out = std.mem.trim(u8, res.stdout, " \t\r\n");
+
+    const parsed = try std.json.parseFromSlice(ReconcileResult, arena, out, .{ .ignore_unknown_fields = true });
+    try std.testing.expectEqual(@as(i64, 12), parsed.value.plan_id);
+
+    // The abandoned lane needs reconcile; the clean-fail lane does not.
+    try std.testing.expect(parsed.value.needs_reconcile);
+    const recon = reconcileLaneIds(arena, parsed.value.reconcile);
+    try std.testing.expectEqual(@as(usize, 1), recon.len);
+    try std.testing.expectEqual(@as(i64, 6), recon[0]);
+
+    const avail = reconcileLaneIds(arena, parsed.value.available);
+    try std.testing.expectEqual(@as(usize, 1), avail.len);
+    try std.testing.expectEqual(@as(i64, 2), avail[0]);
+
+    const landed = reconcileLaneIds(arena, parsed.value.landed);
+    try std.testing.expectEqual(@as(usize, 1), landed.len);
+    try std.testing.expectEqual(@as(i64, 4), landed[0]);
+
+    // The exact reclaim argv the model runs is surfaced: `reconcile
+    // --stale-after 0` (immediate, not waiting out the lease TTL).
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"--stale-after\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "dead_coder_stranded_claim") != null);
+}
+
+// ---------------------------------------------------------------------------
+// partial-wave-failure (4631) — Edge: an all-clean-failure wave needs NO
+// reconcile (every failed lane fired its atomic `planar-agent fail`).
+// ---------------------------------------------------------------------------
+
+test "parallel-dispatch reconcile_plan: all-clean-failure wave needs no reconcile" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    _ = suite.registerProject("pd-m3-clean");
+    suite.addAssoc("pd-m3-clean", null);
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const wf_path = try workflowPath(gpa);
+    defer gpa.free(wf_path);
+
+    const args_json =
+        \\{"plan_id":13,"lanes":[
+        \\{"task_id":1,"outcome":"failed_clean"},
+        \\{"task_id":2,"outcome":"failed_clean"}
+        \\]}
+    ;
+
+    const res = try mustExecute(gpa, suite.tmpAbsPath(), suite.absDbPath(), &.{
+        "run", wf_path, "--phase", "reconcile_plan", "--args", args_json,
+    });
+    defer res.deinit();
+    const out = std.mem.trim(u8, res.stdout, " \t\r\n");
+
+    const parsed = try std.json.parseFromSlice(ReconcileResult, arena, out, .{ .ignore_unknown_fields = true });
+    try std.testing.expect(!parsed.value.needs_reconcile);
+    try std.testing.expectEqual(@as(usize, 0), reconcileLaneIds(arena, parsed.value.reconcile).len);
+    try std.testing.expectEqual(@as(usize, 2), reconcileLaneIds(arena, parsed.value.available).len);
+}
+
+// ---------------------------------------------------------------------------
+// resume-recompute (4632) — Error: resume recomputes waves from CURRENT state.
+// After the contract lane (proto) lands (done), a resume `waves` run drops proto
+// and re-fans only the remainder (identity + web), which are now eligible in
+// wave 1. Resume does NOT restart from the original wave 1.
+// ---------------------------------------------------------------------------
+
+test "parallel-dispatch waves: resume recomputes and re-fans only the remainder after a lane lands" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const repo = registerRepoSlug(&suite, arena);
+    const plan = suite.mustRunJSON(PlanJSON, arena, &.{
+        "plan", "create", "--slug", "pd-m3-resume", "--json", "PD_RESUME",
+    });
+    const pid = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch unreachable;
+
+    const t_proto = addTaskSlug(&suite, arena, pid, "rc-proto", "Proto");
+    touchPath(&suite, repo, t_proto, "proto.zig");
+    const t_ident = addTaskSlug(&suite, arena, pid, "rc-identity", "Identity");
+    touchPath(&suite, repo, t_ident, "identity.zig");
+    const t_web = addTaskSlug(&suite, arena, pid, "rc-web", "Web");
+    touchPath(&suite, repo, t_web, "web.zig");
+    linkBlocks(&suite, t_ident, t_proto);
+    linkBlocks(&suite, t_web, t_proto);
+    suite.allocator.free(suite.mustRun(&.{ "plan", "update", pid, "--status", "active" }));
+
+    const wf_path = try workflowPath(gpa);
+    defer gpa.free(wf_path);
+    const args_json = try std.fmt.allocPrint(gpa, "{{\"plan_id\":{s}}}", .{pid});
+    defer gpa.free(args_json);
+
+    // Simulate the contract lane landing: mark proto done. A resume recompute
+    // must drop proto and re-fan only identity + web. The status matrix requires
+    // todo → doing → done, so advance through `doing` first.
+    const proto_id = std.fmt.allocPrint(arena, "{d}", .{t_proto}) catch unreachable;
+    suite.allocator.free(suite.mustRun(&.{ "task", "update", proto_id, "--status", "doing" }));
+    suite.allocator.free(suite.mustRun(&.{ "task", "done", proto_id }));
+
+    const res = try mustExecute(gpa, suite.tmpAbsPath(), suite.absDbPath(), &.{
+        "run", wf_path, "--phase", "waves", "--args", args_json,
+    });
+    defer res.deinit();
+    const out = std.mem.trim(u8, res.stdout, " \t\r\n");
+
+    const parsed = try std.json.parseFromSlice(WavesResultM3, arena, out, .{ .ignore_unknown_fields = true });
+
+    // proto (landed) is absent from EVERY functional wave.
+    for (parsed.value.waves) |w| {
+        for (m3WaveLanes(arena, w.lanes)) |l| {
+            try std.testing.expect(l.task_id != t_proto);
+        }
+    }
+
+    // identity + web are now the remainder — both eligible in wave 1 (their
+    // blocker proto is done, so they are unblocked now), NOT restarted behind
+    // proto. Wave 1 is a single functional wave of the two remainder lanes.
+    const w1 = m3WaveByNumber(parsed.value, 1);
+    try std.testing.expect(!w1.integration_pass);
+    try std.testing.expectEqual(@as(i64, 2), w1.lane_count);
+    var saw_ident = false;
+    var saw_web = false;
+    for (m3WaveLanes(arena, w1.lanes)) |l| {
+        if (l.task_id == t_ident) saw_ident = true;
+        if (l.task_id == t_web) saw_web = true;
+        // The remainder lanes are unblocked now (blocked_by proto is gone).
+        const blk = blockedByIds(arena, l.blocked_by);
+        try std.testing.expectEqual(@as(usize, 0), blk.len);
+    }
+    try std.testing.expect(saw_ident and saw_web);
+}
+
+// ---------------------------------------------------------------------------
+// resume-recompute (4632) — Empty-null: after EVERY lane lands (all done), a
+// resume recompute yields an empty remainder. The `plan` phase reports
+// fan_out=false (fewer than two eligible tasks — zero) and the `waves` phase
+// reports zero waves (no candidates, so no integration pass either). The
+// orchestrator reports the plan complete rather than re-fanning-out.
+// ---------------------------------------------------------------------------
+
+test "parallel-dispatch resume: all lanes landed yields an empty remainder" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const repo = registerRepoSlug(&suite, arena);
+    const plan = suite.mustRunJSON(PlanJSON, arena, &.{
+        "plan", "create", "--slug", "pd-m3-alldone", "--json", "PD_ALLDONE",
+    });
+    const pid = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch unreachable;
+
+    const t_a = addTaskSlug(&suite, arena, pid, "ad-a", "A");
+    touchPath(&suite, repo, t_a, "a.zig");
+    const t_b = addTaskSlug(&suite, arena, pid, "ad-b", "B");
+    touchPath(&suite, repo, t_b, "b.zig");
+    suite.allocator.free(suite.mustRun(&.{ "plan", "update", pid, "--status", "active" }));
+
+    // Land BOTH lanes. The status matrix requires todo → doing → done.
+    const a_id = std.fmt.allocPrint(arena, "{d}", .{t_a}) catch unreachable;
+    const b_id = std.fmt.allocPrint(arena, "{d}", .{t_b}) catch unreachable;
+    suite.allocator.free(suite.mustRun(&.{ "task", "update", a_id, "--status", "doing" }));
+    suite.allocator.free(suite.mustRun(&.{ "task", "done", a_id }));
+    suite.allocator.free(suite.mustRun(&.{ "task", "update", b_id, "--status", "doing" }));
+    suite.allocator.free(suite.mustRun(&.{ "task", "done", b_id }));
+
+    const wf_path = try workflowPath(gpa);
+    defer gpa.free(wf_path);
+    const args_json = try std.fmt.allocPrint(gpa, "{{\"plan_id\":{s}}}", .{pid});
+    defer gpa.free(args_json);
+
+    // `plan` phase: no eligible tasks ⇒ fan_out=false (empty remainder).
+    const pres = try mustExecute(gpa, suite.tmpAbsPath(), suite.absDbPath(), &.{
+        "run", wf_path, "--phase", "plan", "--args", args_json,
+    });
+    defer pres.deinit();
+    const pout = std.mem.trim(u8, pres.stdout, " \t\r\n");
+    const pparsed = try std.json.parseFromSlice(EmptyPlanResult, arena, pout, .{ .ignore_unknown_fields = true });
+    try std.testing.expect(!pparsed.value.fan_out);
+    try std.testing.expectEqual(@as(i64, 0), pparsed.value.lane_count);
+
+    // `waves` phase: no candidates ⇒ zero waves, and NO integration pass (there
+    // is nothing to integrate). integration_pass_wave stays 0. With zero waves
+    // the empty `waves` table serializes as `{}` (the established empty-table
+    // policy), which will not parse into a `[]WaveM3` slice — so assert on the
+    // raw payload for wave_count/integration_pass_wave here.
+    const wres = try mustExecute(gpa, suite.tmpAbsPath(), suite.absDbPath(), &.{
+        "run", wf_path, "--phase", "waves", "--args", args_json,
+    });
+    defer wres.deinit();
+    const wout = std.mem.trim(u8, wres.stdout, " \t\r\n");
+    try std.testing.expect(std.mem.indexOf(u8, wout, "\"wave_count\":0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wout, "\"integration_pass_wave\":0") != null);
+    // An empty remainder means no functional waves AND no integration pass.
+    try std.testing.expect(std.mem.indexOf(u8, wout, "\"integration_pass\":true") == null);
 }
