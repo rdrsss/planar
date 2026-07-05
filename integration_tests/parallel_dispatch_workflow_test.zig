@@ -1743,3 +1743,325 @@ test "parallel-dispatch resume: all lanes landed yields an empty remainder" {
     // An empty remainder means no functional waves AND no integration pass.
     try std.testing.expect(std.mem.indexOf(u8, wout, "\"integration_pass\":true") == null);
 }
+
+// ===========================================================================
+// M4 (plan 760, tasks 4633–4634): eligibility-guard + cleanup-teardown.
+//
+// M4 coverage (test-spec artifact 429):
+//
+//   eligibility-guard (Error): a task the engine serialized (rule 3 migration,
+//     rule 4 singleton) is NEVER placed in a wave. The seam carries it in the
+//     serialized set and — as a defensive tripwire against a self-contradicting
+//     recommend-strategy — asserts before wave construction. Seam-testable via
+//     the serialized-task-never-a-lane property across BOTH `plan` and `waves`,
+//     plus a source-level check that the guard exists and never re-derives
+//     eligibility.
+//
+//   cleanup-teardown (Edge): on a fan-in with one success + one failure, the
+//     SUCCEEDED lane's worktree is in the teardown list (torn down eagerly)
+//     while the FAILED lane's worktree is RETAINED (never torn down, surfaced in
+//     retained_worktrees). On plan completion the `teardown` phase computes the
+//     full sweep — ALL lane worktrees removed + ALL lane branches deleted — with
+//     the epic branch RETAINED until its PR merges. Seam-testable: it computes
+//     the two lists; the model runs `git worktree remove` / `git branch -D`.
+// ===========================================================================
+
+// M4 result shapes.
+
+const FanInRetainResult = struct {
+    plan_id: i64,
+    lane_count: i64,
+    merge_order: []const []const u8,
+    teardown_worktrees: []const []const u8,
+    // Empty tables serialize as `{}` (object); non-empty as arrays. Parse as raw
+    // Value and normalize, same empty-table policy as the M2/M3 shapes above.
+    retained_worktrees: std.json.Value = .null,
+};
+
+const TeardownResult = struct {
+    plan_id: i64,
+    remove_worktrees: std.json.Value = .null,
+    delete_branches: std.json.Value = .null,
+    retained_branch: []const u8 = "",
+};
+
+/// strList normalizes a JSON Value into a list of strings. An empty `{}`/null →
+/// no entries; a non-empty array of strings → the list.
+fn strList(gpa: std.mem.Allocator, v: std.json.Value) []const []const u8 {
+    switch (v) {
+        .array => |arr| {
+            var out = gpa.alloc([]const u8, arr.items.len) catch @panic("oom");
+            for (arr.items, 0..) |item, i| {
+                out[i] = switch (item) {
+                    .string => |s| s,
+                    else => std.debug.panic("strList element is not a string", .{}),
+                };
+            }
+            return out;
+        },
+        .object, .null => return &.{},
+        else => std.debug.panic("strList is neither an array nor an empty object", .{}),
+    }
+}
+
+fn strListContains(list: []const []const u8, want: []const u8) bool {
+    for (list) |s| {
+        if (std.mem.eql(u8, s, want)) return true;
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// eligibility-guard (4633) — Error: a task the engine serialized (rule 3
+// migration + rule 4 singleton) is NEVER placed in a wave through EITHER the
+// `plan` or `waves` phase — it is carried in the serialized set with its
+// excluded_by reason. This is the conservative eligibility floor: the six rules
+// stay authoritative and the seam never fans a serialized task out.
+// ---------------------------------------------------------------------------
+
+test "parallel-dispatch eligibility-guard: migration and singleton tasks are never placed in a wave" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const repo = registerRepoSlug(&suite, arena);
+    const plan = suite.mustRunJSON(PlanJSON, arena, &.{
+        "plan", "create", "--slug", "pd-m4-guard", "--json", "PD_GUARD",
+    });
+    const pid = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch unreachable;
+
+    // Two eligible + a migration task (rule 3) + a singleton-file task (rule 4).
+    // docs/architecture.md is a singleton authoritative file in the eligibility
+    // engine (strategy.zig singleton_files).
+    const t_a = addTaskSlug(&suite, arena, pid, "g-a", "Eligible A");
+    touchPath(&suite, repo, t_a, "src/ga.zig");
+    const t_b = addTaskSlug(&suite, arena, pid, "g-b", "Eligible B");
+    touchPath(&suite, repo, t_b, "src/gb.zig");
+    const t_mig = addTaskSlug(&suite, arena, pid, "g-mig", "Migrator");
+    touchPath(&suite, repo, t_mig, "migrations/00099_widget.sql");
+    const t_single = addTaskSlug(&suite, arena, pid, "g-single", "Singleton");
+    touchPath(&suite, repo, t_single, "docs/architecture.md");
+    suite.allocator.free(suite.mustRun(&.{ "plan", "update", pid, "--status", "active" }));
+
+    const wf_path = try workflowPath(gpa);
+    defer gpa.free(wf_path);
+    const args_json = try std.fmt.allocPrint(gpa, "{{\"plan_id\":{s}}}", .{pid});
+    defer gpa.free(args_json);
+
+    // `plan` phase: neither the migration nor the singleton is a lane.
+    const pres = try mustExecute(gpa, suite.tmpAbsPath(), suite.absDbPath(), &.{
+        "run", wf_path, "--phase", "plan", "--args", args_json,
+    });
+    defer pres.deinit();
+    const pout = std.mem.trim(u8, pres.stdout, " \t\r\n");
+    const pparsed = try std.json.parseFromSlice(PlanResult, arena, pout, .{ .ignore_unknown_fields = true });
+    for (pparsed.value.lanes) |l| {
+        try std.testing.expect(l.task_id != t_mig);
+        try std.testing.expect(l.task_id != t_single);
+    }
+    // Both serialized tasks surface with their excluded_by reason.
+    const mig_ref = try std.fmt.allocPrint(arena, "\"task_id\":{d}", .{t_mig});
+    const single_ref = try std.fmt.allocPrint(arena, "\"task_id\":{d}", .{t_single});
+    try std.testing.expect(std.mem.indexOf(u8, pout, "\"serialized\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, pout, mig_ref) != null);
+    try std.testing.expect(std.mem.indexOf(u8, pout, single_ref) != null);
+
+    // `waves` phase: neither serialized task appears in ANY functional wave.
+    const wres = try mustExecute(gpa, suite.tmpAbsPath(), suite.absDbPath(), &.{
+        "run", wf_path, "--phase", "waves", "--args", args_json,
+    });
+    defer wres.deinit();
+    const wout = std.mem.trim(u8, wres.stdout, " \t\r\n");
+    const wparsed = try std.json.parseFromSlice(WavesResult, arena, wout, .{ .ignore_unknown_fields = true });
+    for (wparsed.value.waves) |w| {
+        const lanes = waveLanes(arena, w.lanes);
+        try std.testing.expect(!waveContainsTask(lanes, t_mig));
+        try std.testing.expect(!waveContainsTask(lanes, t_single));
+    }
+    try std.testing.expect(std.mem.indexOf(u8, wout, mig_ref) != null);
+    try std.testing.expect(std.mem.indexOf(u8, wout, single_ref) != null);
+}
+
+// ---------------------------------------------------------------------------
+// eligibility-guard (4633) — Source: the seam carries the guard and NEVER
+// re-derives eligibility. The guard reads recommend-strategy's serialized set
+// (the single gate) and asserts against it; it never re-implements the six
+// rules. The tripwire message names the invariant.
+// ---------------------------------------------------------------------------
+
+test "parallel-dispatch eligibility-guard: seam asserts against recommend-strategy, never re-derives" {
+    const gpa = std.testing.allocator;
+    const wf_path = try workflowPath(gpa);
+    defer gpa.free(wf_path);
+
+    const source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, wf_path, gpa, .limited(256 * 1024)) catch
+        @panic("failed to read parallel-dispatch.lua");
+    defer gpa.free(source);
+
+    // The guard exists and is named.
+    try std.testing.expect(std.mem.indexOf(u8, source, "assert_not_serialized") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "eligibility-guard violation") != null);
+    // It reads the engine's serialized set — it does not re-derive eligibility.
+    try std.testing.expect(std.mem.indexOf(u8, source, "serialized_id_set") != null);
+    // The seam never re-implements the six rules: no rule-name derivation lives
+    // here (belt-and-suspenders — recommend-strategy is the single gate).
+    try std.testing.expect(std.mem.indexOf(u8, source, "singleton authoritative") == null);
+}
+
+// ---------------------------------------------------------------------------
+// cleanup-teardown (4634) — Edge: on a fan-in with one succeeded + one failed
+// lane, the succeeded lane's worktree is torn down eagerly (in teardown list)
+// and its branch merged; the failed lane's worktree is RETAINED (in
+// retained_worktrees, NOT in teardown) and its branch is NOT merged.
+// ---------------------------------------------------------------------------
+
+test "parallel-dispatch fan_in: succeeded lane torn down eagerly, failed lane retained" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    _ = suite.registerProject("pd-m4-retain");
+    suite.addAssoc("pd-m4-retain", null);
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const wf_path = try workflowPath(gpa);
+    defer gpa.free(wf_path);
+
+    // Lane 3 succeeded; lane 5 failed. Only lane 3 merges + tears down; lane 5's
+    // worktree is retained for inspection.
+    const args_json =
+        \\{"plan_id":21,"lanes":[
+        \\{"task_id":5,"outcome":"failed","branch":"cycle/p21/lane-fail","worktree":".worktrees/cycle/p21/lane-fail"},
+        \\{"task_id":3,"outcome":"succeeded","branch":"cycle/p21/lane-ok","worktree":".worktrees/cycle/p21/lane-ok"}
+        \\]}
+    ;
+
+    const res = try mustExecute(gpa, suite.tmpAbsPath(), suite.absDbPath(), &.{
+        "run", wf_path, "--phase", "fan_in", "--args", args_json,
+    });
+    defer res.deinit();
+    const out = std.mem.trim(u8, res.stdout, " \t\r\n");
+
+    const parsed = try std.json.parseFromSlice(FanInRetainResult, arena, out, .{ .ignore_unknown_fields = true });
+    try std.testing.expectEqual(@as(i64, 21), parsed.value.plan_id);
+    // Only the succeeded lane is a lane (merged + torn down).
+    try std.testing.expectEqual(@as(i64, 1), parsed.value.lane_count);
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.merge_order.len);
+    try std.testing.expectEqualStrings("cycle/p21/lane-ok", parsed.value.merge_order[0]);
+    // The failed lane's branch is NOT in the merge order.
+    try std.testing.expect(!strListContains(parsed.value.merge_order, "cycle/p21/lane-fail"));
+
+    // Teardown holds ONLY the succeeded lane's worktree.
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.teardown_worktrees.len);
+    try std.testing.expectEqualStrings(".worktrees/cycle/p21/lane-ok", parsed.value.teardown_worktrees[0]);
+
+    // The failed lane's worktree is RETAINED, never torn down.
+    const retained = strList(arena, parsed.value.retained_worktrees);
+    try std.testing.expectEqual(@as(usize, 1), retained.len);
+    try std.testing.expectEqualStrings(".worktrees/cycle/p21/lane-fail", retained[0]);
+    try std.testing.expect(!strListContains(parsed.value.teardown_worktrees, ".worktrees/cycle/p21/lane-fail"));
+}
+
+// ---------------------------------------------------------------------------
+// cleanup-teardown (4634) — Regression: a fan-in with NO outcome field on any
+// lane preserves the M1/M3 contract exactly (all lanes merged + torn down, no
+// retained worktrees).
+// ---------------------------------------------------------------------------
+
+test "parallel-dispatch fan_in: no outcome field tears down all lanes (M1/M3 compat)" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    _ = suite.registerProject("pd-m4-compat");
+    suite.addAssoc("pd-m4-compat", null);
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const wf_path = try workflowPath(gpa);
+    defer gpa.free(wf_path);
+
+    const args_json =
+        \\{"plan_id":22,"lanes":[
+        \\{"task_id":7,"branch":"cycle/p22/lane-g","worktree":".worktrees/cycle/p22/lane-g"},
+        \\{"task_id":3,"branch":"cycle/p22/lane-c","worktree":".worktrees/cycle/p22/lane-c"}
+        \\]}
+    ;
+
+    const res = try mustExecute(gpa, suite.tmpAbsPath(), suite.absDbPath(), &.{
+        "run", wf_path, "--phase", "fan_in", "--args", args_json,
+    });
+    defer res.deinit();
+    const out = std.mem.trim(u8, res.stdout, " \t\r\n");
+
+    const parsed = try std.json.parseFromSlice(FanInRetainResult, arena, out, .{ .ignore_unknown_fields = true });
+    // Both lanes merged + torn down; nothing retained.
+    try std.testing.expectEqual(@as(i64, 2), parsed.value.lane_count);
+    try std.testing.expectEqualStrings("cycle/p22/lane-c", parsed.value.merge_order[0]);
+    try std.testing.expectEqualStrings("cycle/p22/lane-g", parsed.value.merge_order[1]);
+    try std.testing.expectEqual(@as(usize, 2), parsed.value.teardown_worktrees.len);
+    try std.testing.expectEqual(@as(usize, 0), strList(arena, parsed.value.retained_worktrees).len);
+}
+
+// ---------------------------------------------------------------------------
+// cleanup-teardown (4634) — Edge: on plan completion the `teardown` phase
+// computes the FULL sweep — ALL lane worktrees removed + ALL lane branches
+// deleted — with the epic branch RETAINED (never in the removal lists).
+// ---------------------------------------------------------------------------
+
+test "parallel-dispatch teardown: full sweep removes all lane worktrees and branches, retains epic" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    _ = suite.registerProject("pd-m4-teardown");
+    suite.addAssoc("pd-m4-teardown", null);
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const wf_path = try workflowPath(gpa);
+    defer gpa.free(wf_path);
+
+    // Two lanes remain on disk at plan completion (input deliberately out of
+    // task-id order to prove the seam sorts).
+    const args_json =
+        \\{"plan_id":30,"epic_branch":"epic/p30-pd-teardown","lanes":[
+        \\{"task_id":9,"branch":"cycle/p30/lane-i","worktree":".worktrees/cycle/p30/lane-i"},
+        \\{"task_id":4,"branch":"cycle/p30/lane-d","worktree":".worktrees/cycle/p30/lane-d"}
+        \\]}
+    ;
+
+    const res = try mustExecute(gpa, suite.tmpAbsPath(), suite.absDbPath(), &.{
+        "run", wf_path, "--phase", "teardown", "--args", args_json,
+    });
+    defer res.deinit();
+    const out = std.mem.trim(u8, res.stdout, " \t\r\n");
+
+    const parsed = try std.json.parseFromSlice(TeardownResult, arena, out, .{ .ignore_unknown_fields = true });
+    try std.testing.expectEqual(@as(i64, 30), parsed.value.plan_id);
+
+    // ALL lane worktrees removed, in stable task-id order.
+    const rm = strList(arena, parsed.value.remove_worktrees);
+    try std.testing.expectEqual(@as(usize, 2), rm.len);
+    try std.testing.expectEqualStrings(".worktrees/cycle/p30/lane-d", rm[0]);
+    try std.testing.expectEqualStrings(".worktrees/cycle/p30/lane-i", rm[1]);
+
+    // ALL lane branches deleted, in stable task-id order.
+    const br = strList(arena, parsed.value.delete_branches);
+    try std.testing.expectEqual(@as(usize, 2), br.len);
+    try std.testing.expectEqualStrings("cycle/p30/lane-d", br[0]);
+    try std.testing.expectEqualStrings("cycle/p30/lane-i", br[1]);
+
+    // The epic branch is RETAINED (never in the removal lists).
+    try std.testing.expectEqualStrings("epic/p30-pd-teardown", parsed.value.retained_branch);
+    try std.testing.expect(!strListContains(br, "epic/p30-pd-teardown"));
+    try std.testing.expect(!strListContains(rm, "epic/p30-pd-teardown"));
+}

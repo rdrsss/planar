@@ -1,7 +1,7 @@
 --[[ @meta
 name: parallel-dispatch
 description: Deterministic, spawn-free wave/lane computation for the model orchestrator's parallel fan-out path. Computes the current wave (from recommend-strategy eligibility), the FULL ordered wave list (from recommend-strategy eligibility + the plan's `blocks` graph, for ordering/labeling only, with the terminal cross-lane integration pass marked), each lane's worktree path + branch name, the epic branch name, the wave-barrier gate, the wave-aware (contract-lanes-first) fan-in merge order, the boundary-conflict escalation payload, and the partial-wave reconcile plan — then HANDS BACK. The model creates the worktrees, spawns the coders, and runs the git merges/reconciles; this seam never spawns and never touches git worktree/branch/merge.
-phases: plan, waves, barrier_check, fan_in, conflict_escalation, reconcile_plan
+phases: plan, waves, barrier_check, fan_in, conflict_escalation, reconcile_plan, teardown
 seam: planar plan recommend-strategy --json (via ctx.recommend_strategy), planar plan show --json (via ctx.plan_show), planar links list task:<id> --json (via cli.planar, for `blocks`-edge ordering only)
 --]]
 
@@ -95,6 +95,14 @@ seam: planar plan recommend-strategy --json (via ctx.recommend_strategy), planar
 --                   that do not. Pure computation; the model runs the actual
 --                   `planar-agent reconcile`. HANDS BACK.
 --
+--   teardown      — (M4, cleanup-teardown) on plan completion, compute the FULL
+--                   teardown list: ALL lane worktrees to `git worktree remove`
+--                   and ALL lane branches to `git branch -D`. The EPIC branch is
+--                   RETAINED until its PR merges (emitted as `retained_branch`,
+--                   never removed). Complements `fan_in`'s EAGER per-lane
+--                   teardown of a succeeded lane; this is the end-of-plan sweep.
+--                   Pure computation; the model runs the git ops. HANDS BACK.
+--
 -- ## Eligibility is the engine's, never the seam's
 --
 -- recommend-strategy is the SINGLE eligibility gate (tech-spec §Decisions "The
@@ -154,7 +162,11 @@ seam: planar plan recommend-strategy --json (via ctx.recommend_strategy), planar
 --   fan_in: { plan_id (int, required),
 --             lanes (array, required; each { task_id (int), branch (str),
 --                    worktree (str), wave (int, optional; from `waves` — omit for
---                    a single-wave fan-in) } as emitted by `plan`/`waves`),
+--                    a single-wave fan-in),
+--                    outcome (str, optional: "succeeded" (default) | "failed";
+--                    a "failed" lane is NOT merged and its worktree is RETAINED,
+--                    surfaced in `retained_worktrees`) } as emitted by
+--                    `plan`/`waves`),
 --             worktree_root (str, optional; only used for defaults) }
 --
 --   conflict_escalation: { plan_id (int, required),
@@ -167,6 +179,11 @@ seam: planar plan recommend-strategy --json (via ctx.recommend_strategy), planar
 --             lanes (array, required; each { task_id (int),
 --                    outcome (str: "landed" | "failed_clean" | "abandoned"),
 --                    branch (str, optional), worktree (str, optional) }) }
+--
+--   teardown: { plan_id (int, required),
+--             lanes (array, required; each { task_id (int),
+--                    branch (str, optional), worktree (str, optional) }),
+--             epic_branch (str, optional; RETAINED — never removed) }
 
 -- ---------------------------------------------------------------------------
 -- helpers
@@ -237,6 +254,44 @@ local function sort_by_task_id(lanes)
   table.sort(lanes, function(a, b)
     return a.task_id < b.task_id
   end)
+end
+
+--- serialized_id_set(rec) — build a set { [task_id]=true } of every task the
+-- engine serialized (rec.serialized), for the eligibility guard below.
+-- recommend-strategy is the SINGLE eligibility gate (tech-spec §Decisions "The
+-- six eligibility rules stay authoritative"): a task in rec.serialized was
+-- excluded by one of the six rules (migration / singleton / empty-touches /
+-- blocked / open-question / proposed-decision) and MUST NEVER appear in a wave.
+local function serialized_id_set(rec)
+  local set = {}
+  if type(rec) == "table" and type(rec.serialized) == "table" then
+    for _, t in ipairs(rec.serialized) do
+      if t.id ~= nil then
+        set[t.id] = true
+      end
+    end
+  end
+  return set
+end
+
+--- assert_not_serialized(task_id, serialized_set, phase) — the eligibility
+-- guard (plan 760 M4, slug eligibility-guard). A DEFENSIVE assertion, run
+-- BEFORE wave construction, that no task the engine serialized is about to be
+-- placed in a lane. This never fires against a correct recommend-strategy
+-- output — a task is in EITHER parallel_eligible OR serialized, never both. If
+-- it fires, recommend-strategy contradicted itself (a task both eligible and
+-- serialized); that is a HARD error, not a silent skip, because a serialized
+-- task fanned into a lane would violate the conservative eligibility floor
+-- (e.g. two coders racing a schema migration). The seam NEVER re-derives
+-- eligibility; it only refuses to contradict the engine.
+local function assert_not_serialized(task_id, serialized_set, phase)
+  if serialized_set[task_id] then
+    flow.fail("parallel-dispatch.lua/" .. phase
+      .. ": eligibility-guard violation — task " .. tostr(task_id)
+      .. " is BOTH parallel_eligible and serialized in recommend-strategy output;"
+      .. " a serialized task must never be placed in a wave (the six eligibility"
+      .. " rules stay authoritative). Refusing to construct a wave over it.")
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -413,9 +468,14 @@ function plan()
     return
   end
 
-  -- 5. Compute one lane per eligible task.
+  -- 5. Compute one lane per eligible task. Guard first: assert against the
+  --    recommend-strategy output that no serialized task slips into a lane
+  --    (eligibility-guard, M4). recommend-strategy is the single gate; this is a
+  --    defensive tripwire, not a re-derivation.
+  local serialized_set = serialized_id_set(rec)
   local lanes = {}
   for _, t in ipairs(eligible) do
+    assert_not_serialized(t.id, serialized_set, "plan")
     local tslug = task_slug(t)
     lanes[#lanes + 1] = {
       task_id = t.id,
@@ -543,10 +603,22 @@ function waves()
     end
   end
 
+  -- Eligibility guard (M4): assert no candidate is ALSO in the never-in-a-wave
+  -- serialized output. A task serialized by any NON-blocks rule went into
+  -- `serialized` above and must NOT also be a wave candidate. This never fires
+  -- against a correct partition (the branches are mutually exclusive); if it
+  -- does, the seam refuses to build a wave over an engine-serialized task rather
+  -- than silently fan it out.
+  local never_in_wave = {}
+  for _, s in ipairs(serialized) do
+    never_in_wave[s.task_id] = true
+  end
+
   -- 3. Read `blocks` blockers for each candidate (in-plan only) and compute
   --    wave depth over the candidate DAG.
   local candidate_ids = {}
   for _, c in ipairs(candidates) do
+    assert_not_serialized(c.id, never_in_wave, "waves")
     candidate_ids[#candidate_ids + 1] = c.id
   end
   table.sort(candidate_ids)
@@ -705,6 +777,15 @@ end
 -- (wave 0), which reproduces the M1 single-wave task-id order exactly. Emitting
 -- the order deterministically here keeps the model from re-deriving it and keeps
 -- a resume byte-stable (identical inputs ⇒ identical order).
+--
+-- Retention discipline (M4, cleanup-teardown; tech-spec §Components "Worktree
+-- lifecycle" Retention rule). A lane MAY carry `outcome` ("succeeded" |
+-- "failed"; default "succeeded" — the M1/M3 fan-in contract). Only a SUCCEEDED
+-- lane's branch is in the merge order and its worktree in `teardown_worktrees`
+-- (torn down eagerly once fanned in). A FAILED lane is NOT merged and its
+-- worktree is RETAINED for inspection — surfaced in `retained_worktrees`, never
+-- in the teardown list. The seam computes the two lists; the model runs the
+-- actual `git worktree remove` for the teardown set only.
 -- ---------------------------------------------------------------------------
 function fan_in()
   flow.phase("fan_in")
@@ -719,7 +800,10 @@ function fan_in()
 
   -- Normalize + validate each lane. A lane's `wave` defaults to 0 so lanes
   -- without a wave collapse to a single wave (M1 behavior preserved exactly).
+  -- `outcome` defaults to "succeeded" so the M1/M3 fan-in contract (no outcome
+  -- field ⇒ all lanes merged + torn down) is preserved byte-for-byte.
   local lanes = {}
+  local retained = {}
   for _, l in ipairs(in_lanes) do
     if l.task_id == nil or l.branch == nil then
       flow.fail("parallel-dispatch.lua/fan_in: each lane requires task_id and branch")
@@ -729,13 +813,30 @@ function fan_in()
     if type(wave) ~= "number" then
       wave = 0
     end
-    lanes[#lanes + 1] = {
-      task_id = l.task_id,
-      branch = l.branch,
-      worktree = l.worktree,
-      wave = wave,
-    }
+    local outcome = l.outcome
+    if outcome == nil then
+      outcome = "succeeded"
+    end
+    outcome = tostr(outcome)
+    if outcome == "failed" then
+      -- Failed lane: NOT merged, worktree RETAINED for inspection.
+      if l.worktree ~= nil then
+        retained[#retained + 1] = { task_id = l.task_id, worktree = l.worktree }
+      end
+    elseif outcome == "succeeded" then
+      lanes[#lanes + 1] = {
+        task_id = l.task_id,
+        branch = l.branch,
+        worktree = l.worktree,
+        wave = wave,
+      }
+    else
+      flow.fail("parallel-dispatch.lua/fan_in: unknown lane outcome '" .. outcome
+        .. "' for task " .. tostr(l.task_id) .. " (expected succeeded | failed)")
+      return
+    end
   end
+  sort_by_task_id(retained)
 
   -- Contract-lanes-first total order: primary key = wave (ascending), secondary
   -- key = task id (ascending). Task ids are unique per plan, so (wave, task_id)
@@ -748,7 +849,8 @@ function fan_in()
   end)
 
   -- Emit the merge order (branch list) and the teardown list (worktree paths),
-  -- both in the same wave-aware, contract-lanes-first order.
+  -- both in the same wave-aware, contract-lanes-first order. Only SUCCEEDED
+  -- lanes appear here; failed lanes are in `retained_worktrees`.
   local merge_order = {}
   local teardown = {}
   for _, l in ipairs(lanes) do
@@ -758,13 +860,22 @@ function fan_in()
     end
   end
 
+  -- Retained (failed-lane) worktree paths, in stable task-id order — kept for
+  -- inspection, never torn down at fan-in.
+  local retained_worktrees = {}
+  for _, r in ipairs(retained) do
+    retained_worktrees[#retained_worktrees + 1] = r.worktree
+  end
+
   flow.log("parallel-dispatch.lua/fan_in: wave-aware merge order computed for "
-    .. tostr(#merge_order) .. " lanes")
+    .. tostr(#merge_order) .. " lanes (" .. tostr(#retained_worktrees)
+    .. " failed-lane worktree(s) retained)")
   flow.result({
     plan_id = plan_id,
     lane_count = #lanes,
     merge_order = merge_order,
     teardown_worktrees = teardown,
+    retained_worktrees = retained_worktrees,
   })
 end
 
@@ -907,5 +1018,77 @@ function reconcile_plan()
     reconcile = reconcile,
     available = available,
     landed = landed,
+  })
+end
+
+-- ---------------------------------------------------------------------------
+-- Phase: teardown (M4 — cleanup-teardown, full-teardown-on-plan-completion)
+--
+-- Compute the FULL teardown list for a completed plan (tech-spec §Components
+-- "Worktree lifecycle" Retention rule): on plan completion, ALL lane worktrees
+-- plus ALL lane branches are removed. The epic branch is RETAINED until its PR
+-- merges (it is emitted as `retained_branch`, never in the teardown lists).
+--
+-- This is the counterpart to `fan_in`'s EAGER teardown of a single succeeded
+-- lane: `teardown` is the sweep at the end of the whole plan, covering any
+-- lane worktree still on disk (a failed lane's retained worktree, or a lane the
+-- eager path missed). It is PURE computation — the seam emits WHICH worktrees to
+-- `git worktree remove` and WHICH branches to `git branch -D`; the model runs
+-- the actual git ops. The epic branch is deliberately excluded so a still-open
+-- PR is not orphaned.
+--
+--   teardown: { plan_id (int, required),
+--               lanes (array, required; each { task_id (int),
+--                      branch (str, optional), worktree (str, optional) }),
+--               epic_branch (str, optional; retained, never removed) }
+-- ---------------------------------------------------------------------------
+function teardown()
+  flow.phase("teardown")
+  flow.log("parallel-dispatch.lua/teardown: starting")
+
+  local plan_id = require_arg("plan_id")
+  local in_lanes = require_arg("lanes")
+  if type(in_lanes) ~= "table" then
+    flow.fail("parallel-dispatch.lua/teardown: lanes must be an array")
+    return
+  end
+  local epic = ctx.args["epic_branch"]
+
+  -- Collect every lane's worktree + branch in stable task-id order.
+  local lanes = {}
+  for _, l in ipairs(in_lanes) do
+    if l.task_id == nil then
+      flow.fail("parallel-dispatch.lua/teardown: each lane requires task_id")
+      return
+    end
+    lanes[#lanes + 1] = {
+      task_id = l.task_id,
+      worktree = l.worktree,
+      branch = l.branch,
+    }
+  end
+  sort_by_task_id(lanes)
+
+  local remove_worktrees = {}
+  local delete_branches = {}
+  for _, l in ipairs(lanes) do
+    if l.worktree ~= nil then
+      remove_worktrees[#remove_worktrees + 1] = l.worktree
+    end
+    if l.branch ~= nil then
+      delete_branches[#delete_branches + 1] = l.branch
+    end
+  end
+
+  flow.log("parallel-dispatch.lua/teardown: full teardown of "
+    .. tostr(#remove_worktrees) .. " worktree(s) + " .. tostr(#delete_branches)
+    .. " lane branch(es); epic branch retained")
+  flow.result({
+    plan_id = plan_id,
+    remove_worktrees = remove_worktrees,
+    delete_branches = delete_branches,
+    -- The epic branch is RETAINED until its PR merges — never in the removal
+    -- lists. Surfaced so the operator (and a test) sees it is deliberately kept.
+    retained_branch = epic,
   })
 end
