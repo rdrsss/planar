@@ -89,6 +89,23 @@ pub const ScenarioEntry = struct {
     existing_id: i64 = 0,
 };
 
+/// A proposed ADD task slug that already exists on a task NOT part of this
+/// ingest. `tasks.slug` carries a global partial-unique index (migration
+/// 00011 `ux_tasks_slug`), so this collision would cause `SlugConflict` at
+/// apply time. The preview surfaces it before --apply is attempted.
+///
+/// Note: child-plan slugs use per-parent uniqueness and are not globally
+/// unique, so they are not checked here. Decisions/questions/scenarios
+/// created by ingest have null slugs and are also not checked.
+pub const SlugCollision = struct {
+    /// The slug string that collides.
+    slug: []const u8,
+    /// ID of the existing task that holds the slug.
+    existing_task_id: i64,
+    /// Plan ID the existing task belongs to (via derives-from link).
+    existing_plan_id: i64,
+};
+
 /// Full proposed change set for one ingestion pass.
 pub const Diff = struct {
     anchor_plan_id: i64,
@@ -103,6 +120,10 @@ pub const Diff = struct {
     orphan_tasks: []const TaskEntry = &.{},
     orphan_plans: []const PlanEntry = &.{},
     scenarios: []const ScenarioEntry = &.{},
+    /// Task slugs proposed as ADD that already exist globally on a task
+    /// outside this ingest's anchor subtree. Non-empty means --apply would
+    /// fail with SlugConflict; the preview surfaces these ahead of time.
+    slug_collisions: []const SlugCollision = &.{},
 
     pub fn totalAdditions(self: Diff) usize {
         var n: usize = 0;
@@ -161,6 +182,12 @@ pub fn deinitDiff(d: Diff, allocator: std.mem.Allocator) void {
     allocator.free(d.orphan_plans);
     for (d.scenarios) |s| deinitScenarioEntry(s, allocator);
     allocator.free(d.scenarios);
+    for (d.slug_collisions) |sc| allocator.free(sc.slug);
+    allocator.free(d.slug_collisions);
+}
+
+fn deinitSlugCollision(sc: SlugCollision, allocator: std.mem.Allocator) void {
+    allocator.free(sc.slug);
 }
 
 fn deinitPlanEntry(p: PlanEntry, allocator: std.mem.Allocator) void {
@@ -536,6 +563,40 @@ pub fn compute(
         }
     }
 
+    // ---- global slug-collision check ------------------------------------
+    // For each proposed ADD task that carries a non-null slug, query whether
+    // that slug is already held by a task outside the current anchor subtree.
+    // A hit means --apply would blow up with SlugConflict; we surface it
+    // here so the preview tells the operator before --apply is attempted.
+    var slug_collisions_out: std.ArrayList(SlugCollision) = .empty;
+    errdefer {
+        for (slug_collisions_out.items) |sc| deinitSlugCollision(sc, allocator);
+        slug_collisions_out.deinit(allocator);
+    }
+    // Collect the set of task IDs that ARE part of this ingest (existing
+    // tasks that will be updated) so we can exclude them from the collision
+    // check. A slug held by a task being updated in this very ingest is NOT
+    // a collision — the update path back-fills the slug only when the DB row
+    // has slug = NULL, so it won't touch an already-set slug.
+    var ingest_task_ids: std.AutoHashMap(i64, void) = .init(allocator);
+    defer ingest_task_ids.deinit();
+    for (child_plans_out.items) |cp| {
+        for (cp.tasks) |t| {
+            if (t.op == .update and t.existing_id > 0) {
+                try ingest_task_ids.put(t.existing_id, {});
+            }
+        }
+    }
+    for (child_plans_out.items) |cp| {
+        for (cp.tasks) |t| {
+            if (t.op != .add) continue;
+            if (t.slug.len == 0) continue;
+            if (try findGlobalSlugCollision(d, allocator, t.slug, &ingest_task_ids)) |collision| {
+                try slug_collisions_out.append(allocator, collision);
+            }
+        }
+    }
+
     result.child_plans = try child_plans_out.toOwnedSlice(allocator);
     result.orphan_tasks = try orphan_tasks_out.toOwnedSlice(allocator);
     result.orphan_plans = try orphan_plans_out.toOwnedSlice(allocator);
@@ -543,6 +604,7 @@ pub fn compute(
     result.new_questions = try new_questions_out.toOwnedSlice(allocator);
     result.updated_question_status = try status_changes_out.toOwnedSlice(allocator);
     result.scenarios = try scenarios_out.toOwnedSlice(allocator);
+    result.slug_collisions = try slug_collisions_out.toOwnedSlice(allocator);
 
     return result;
 }
@@ -928,6 +990,55 @@ fn loadScenariosForAnchor(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor
         }
     }
     return try out.toOwnedSlice(allocator);
+}
+
+/// findGlobalSlugCollision checks whether `slug` is already held by a task
+/// NOT in `excluded_task_ids`. Returns the collision descriptor when found,
+/// null otherwise. Only non-null task slugs are globally unique (index
+/// `ux_tasks_slug on tasks(slug) where slug is not null`, migration 00011).
+///
+/// The `existing_plan_id` in the returned collision is the task's `plan_id`
+/// column (the direct plan association stored on the tasks row). Tasks
+/// created via `spec ingest --apply` also get a `derives-from` entity_link,
+/// but tasks created via `task add --plan` only set the column — so we read
+/// `plan_id` from the tasks table directly for broadest coverage.
+fn findGlobalSlugCollision(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    slug: []const u8,
+    excluded_task_ids: *const std.AutoHashMap(i64, void),
+) Error!?SlugCollision {
+    // Find any task with this slug. The unique index is:
+    //   ux_tasks_slug on tasks(slug) where slug is not null  (migration 00011)
+    // The index is status-agnostic: a cancelled task retains its slug when
+    // cancelled via `planar task cancel` (markCancelled only flips status;
+    // it does NOT null the slug). Only the spec-removal path
+    // (retireTaskForSpecRemoval in apply.zig) explicitly nulls the slug after
+    // cancelling. So a cancelled-but-slugged task still holds the index slot
+    // and a proposed slug matching it would fail at apply with SlugConflict.
+    // No status filter here — match exactly what the unique index enforces.
+    var stmt = d.prepare(
+        \\select id, coalesce(plan_id, 0)
+        \\from tasks
+        \\where slug = ?
+        \\order by id limit 1
+    ) catch return Error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .text = slug }}) catch return Error.QueryFailed;
+    switch (stmt.step() catch return Error.QueryFailed) {
+        .done => return null,
+        .row => {
+            const task_id = stmt.columnInt(0);
+            const plan_id = stmt.columnInt(1);
+            // Not a collision if this task is part of the current ingest.
+            if (excluded_task_ids.contains(task_id)) return null;
+            return .{
+                .slug = try allocator.dupe(u8, slug),
+                .existing_task_id = task_id,
+                .existing_plan_id = plan_id,
+            };
+        },
+    }
 }
 
 // =========================================================================

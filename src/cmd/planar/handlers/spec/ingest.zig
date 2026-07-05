@@ -239,25 +239,51 @@ fn runOnePlan(
         try ingestor.render.renderText(ctx.allocator, ctx.stdout, diff, apply_flag);
     }
 
+    // ---- global slug-collision warnings (always, even without --strict) -
+    // Each proposed ADD task slug that already exists on a different task
+    // outside this ingest will cause SlugConflict at apply time. Warn
+    // loudly before the operator tries --apply.
+    for (diff.slug_collisions) |sc| {
+        try ctx.stderr.print(
+            "warning: task slug '{s}' already exists (task {d} on plan {d})" ++
+                " — apply will fail with SlugConflict." ++
+                " Rename it to a unique (feature-prefixed) slug.\n",
+            .{ sc.slug, sc.existing_task_id, sc.existing_plan_id },
+        );
+    }
+
     // ---- strict gate (after rendering so operator sees gaps) --------
     if (strict) {
         const cov = try ingestor.coverage.compute(ctx.allocator, diff);
         defer ingestor.coverage.deinitCoverage(cov, ctx.allocator);
-        if (cov.hasGaps()) {
+        const has_coverage_gaps = cov.hasGaps();
+        const has_slug_collisions = diff.slug_collisions.len > 0;
+        if (has_coverage_gaps or has_slug_collisions) {
             try ctx.stderr.print("plan {d}: --strict refused: ", .{anchor.id});
+            var printed_something = false;
             if (cov.uncovered_task_slugs.len > 0) {
                 try ctx.stderr.print("{d} uncovered task slug(s): ", .{cov.uncovered_task_slugs.len});
                 for (cov.uncovered_task_slugs, 0..) |s, i| {
                     if (i > 0) try ctx.stderr.print(", ", .{});
                     try ctx.stderr.print("{s}", .{s});
                 }
+                printed_something = true;
             }
             if (cov.orphan_scenarios.len > 0) {
-                if (cov.uncovered_task_slugs.len > 0) try ctx.stderr.print("; ", .{});
+                if (printed_something) try ctx.stderr.print("; ", .{});
                 try ctx.stderr.print("{d} orphan scenario(s): ", .{cov.orphan_scenarios.len});
                 for (cov.orphan_scenarios, 0..) |s, i| {
                     if (i > 0) try ctx.stderr.print("; ", .{});
                     try ctx.stderr.print("{s}", .{s});
+                }
+                printed_something = true;
+            }
+            if (has_slug_collisions) {
+                if (printed_something) try ctx.stderr.print("; ", .{});
+                try ctx.stderr.print("{d} global slug collision(s): ", .{diff.slug_collisions.len});
+                for (diff.slug_collisions, 0..) |sc, i| {
+                    if (i > 0) try ctx.stderr.print(", ", .{});
+                    try ctx.stderr.print("{s}", .{sc.slug});
                 }
             }
             try ctx.stderr.print("\n", .{});

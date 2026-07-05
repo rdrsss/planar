@@ -633,6 +633,297 @@ test "spec ingest preview warns on non-empty Open Questions section that yields 
     try std.testing.expect(preview.summary.additions >= 0);
 }
 
+test "spec ingest preview detects global slug collision before apply" {
+    // Red test: task slug 'global-slug-collision-x' already exists on a
+    // different plan. The preview (no --apply) must surface the collision,
+    // --strict must refuse (non-zero exit), and the stderr warning must name
+    // the colliding slug and the existing task. Today (pre-fix) the preview
+    // reports clean and the test asserts the WRONG behaviour — so this test
+    // FAILS against current code (correctly red).
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_backing = std.heap.ArenaAllocator.init(gpa);
+    defer arena_backing.deinit();
+    const arena = arena_backing.allocator();
+
+    // ---- plan A: seed an existing task that owns the colliding slug -------
+    // Use the spec ingest path for plan A so the task gets a proper
+    // plan_id linkage (same code path as the real bug scenario).
+    const IDJSON = struct { id: i64 };
+
+    const plan_a = suite.mustRunJSON(IDJSON, arena, &.{ "plan", "create", "--json", "Global Slug Collision Plan A" });
+    const plan_a_id = std.fmt.allocPrint(arena, "{d}", .{plan_a.id}) catch @panic("OOM");
+
+    const wb_a = createWorkbenchEnv(&suite, arena, "workbench-slug-collision-plan-a");
+    const plan_a_tech =
+        \\# Slug Collision Plan A Tech Spec
+        \\
+        \\## Status
+        \\
+        \\Draft.
+        \\
+    ;
+    // Plan A's roadmap owns the slug that plan B will collide with.
+    const plan_a_roadmap =
+        \\# Slug Collision Plan A Roadmap
+        \\
+        \\## Plan A Milestone
+        \\
+        \\- The existing task [slug: global-slug-collision-x]
+        \\
+    ;
+    const tech_a_out = suite.mustRun(&.{
+        "artifact",  "add",
+        "--json",    "--kind",
+        "tech_spec", "--plan",
+        plan_a_id,   "--body",
+        plan_a_tech, "Slug Collision Plan A Tech Spec",
+    });
+    defer gpa.free(tech_a_out);
+    const roadmap_a_out = suite.mustRun(&.{
+        "artifact",     "add",
+        "--json",       "--kind",
+        "roadmap",      "--plan",
+        plan_a_id,      "--body",
+        plan_a_roadmap, "Slug Collision Plan A Roadmap",
+    });
+    defer gpa.free(roadmap_a_out);
+    const push_a = suite.mustRunWith(&.{ "workbench", "push", "--json", plan_a_id }, wb_a.env);
+    defer gpa.free(push_a);
+    // Apply plan A to create the existing task with slug 'global-slug-collision-x'.
+    const apply_a = suite.execWith(&.{ "spec", "ingest", plan_a_id, "--apply" }, wb_a.env);
+    defer apply_a.deinit(gpa);
+    try std.testing.expect(apply_a.term == .exited and apply_a.term.exited == 0);
+
+    // Find the task_id and plan_id for the existing task.
+    const TaskPlanJSON = struct { id: i64, plan_id: ?i64 = null };
+    const TaskListJSON = struct { id: i64 };
+    // Get the child plan created by plan A's ingest.
+    const child_plans_a_json = suite.mustRunWith(&.{
+        "plan", "list", "--json", "--scope", "global", "--parent", plan_a_id,
+    }, wb_a.env);
+    defer gpa.free(child_plans_a_json);
+    const child_plans_a = parseJSON([]const IDJSON, arena, child_plans_a_json);
+    try std.testing.expect(child_plans_a.len >= 1);
+    const plan_a_child_id_s = std.fmt.allocPrint(arena, "{d}", .{child_plans_a[0].id}) catch @panic("OOM");
+    const plan_a_child_id_int = child_plans_a[0].id;
+
+    const tasks_a_json = suite.mustRunWith(&.{
+        "task", "list", "--json", "--scope", "global", "--plan", plan_a_child_id_s,
+    }, wb_a.env);
+    defer gpa.free(tasks_a_json);
+    const tasks_a = parseJSON([]const TaskPlanJSON, arena, tasks_a_json);
+    try std.testing.expect(tasks_a.len >= 1);
+    _ = TaskListJSON; // silence unused
+
+    // ---- plan B: set up its spec artifacts with the colliding slug --------
+    const wb = createWorkbenchEnv(&suite, arena, "workbench-slug-collision-detect");
+
+    const plan_b_tech_body =
+        \\# Global Slug Collision Tech Spec
+        \\
+        \\## Status
+        \\
+        \\Draft.
+        \\
+    ;
+    // Roadmap uses `[slug: global-slug-collision-x]` — same slug, different plan.
+    const plan_b_roadmap_body =
+        \\# Global Slug Collision Roadmap
+        \\
+        \\## Collision Milestone
+        \\
+        \\- New task that collides [slug: global-slug-collision-x]
+        \\
+    ;
+
+    const fixture = createSpecIngestFixtureWithEnv(
+        &suite,
+        arena,
+        "Global Slug Collision Plan B",
+        plan_b_tech_body,
+        plan_b_roadmap_body,
+        null,
+        wb.env,
+        wb.wb_root,
+    );
+
+    // ---- (a) Non-apply preview must surface the collision ----------------
+    // Pre-fix: preview exits 0 and reports 0 collisions (bug).
+    // Post-fix: preview must print the collision in stderr/stdout.
+    const preview = suite.execWith(&.{ "spec", "ingest", fixture.plan_id }, fixture.env);
+    defer preview.deinit(gpa);
+    // After the fix the preview must warn about the collision on stderr.
+    try std.testing.expect(std.mem.containsAtLeast(
+        u8,
+        preview.stderr,
+        1,
+        "global-slug-collision-x",
+    ));
+
+    // ---- (b) --strict must refuse (non-zero exit) -------------------------
+    const strict = suite.execWith(&.{ "spec", "ingest", fixture.plan_id, "--strict" }, fixture.env);
+    defer strict.deinit(gpa);
+    // After the fix --strict must exit non-zero and name the collision.
+    try std.testing.expect(strict.term == .exited and strict.term.exited != 0);
+    try std.testing.expect(std.mem.containsAtLeast(
+        u8,
+        strict.stderr,
+        1,
+        "global-slug-collision-x",
+    ));
+
+    // ---- (c) JSON preview must include slug_collisions field  -------------
+    const PreviewJSON = struct {
+        slug_collisions: []const struct {
+            slug: []const u8,
+            existing_task_id: i64,
+            existing_plan_id: i64,
+        } = &.{},
+    };
+    const json_out = suite.mustRunWith(
+        &.{ "spec", "ingest", fixture.plan_id, "--format", "json" },
+        fixture.env,
+    );
+    defer gpa.free(json_out);
+    const parsed = parseJSON(PreviewJSON, arena, json_out);
+    try std.testing.expect(parsed.slug_collisions.len >= 1);
+    try std.testing.expectEqualStrings("global-slug-collision-x", parsed.slug_collisions[0].slug);
+    try std.testing.expect(parsed.slug_collisions[0].existing_task_id > 0);
+    // existing_plan_id is the tasks.plan_id column (the child plan created
+    // by plan A's ingest). Verify it matches the child plan we saw.
+    try std.testing.expect(parsed.slug_collisions[0].existing_plan_id == plan_a_child_id_int);
+}
+
+test "spec ingest preview detects collision with cancelled-but-slugged task" {
+    // Regression test: a task that was cancelled via `planar task cancel`
+    // retains its slug (markCancelled does NOT null it — only the spec-removal
+    // path does). The global unique index ux_tasks_slug is status-agnostic, so
+    // the cancelled task still holds the index slot. Before the fix,
+    // findGlobalSlugCollision filtered `status != 'cancelled'`, so it missed
+    // the cancelled-but-slugged holder and the collision went unreported by
+    // preview — only to blow up at apply time with SlugConflict.
+    //
+    // Load-bearing: this test FAILS against `where slug = ? and status != 'cancelled'`
+    // and PASSES with `where slug = ?`.
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_backing = std.heap.ArenaAllocator.init(gpa);
+    defer arena_backing.deinit();
+    const arena = arena_backing.allocator();
+
+    const IDJSON = struct { id: i64 };
+
+    // ---- Step 1: seed a task with slug 'cancelled-slug-holder' via task add --
+    // We add the task directly via `task add --slug` so we control its slug
+    // without going through a full spec ingest for the seed plan.
+    const seed_plan = suite.mustRunJSON(IDJSON, arena, &.{ "plan", "create", "--json", "Cancelled Slug Holder Plan" });
+    const seed_plan_id = std.fmt.allocPrint(arena, "{d}", .{seed_plan.id}) catch @panic("OOM");
+
+    const seed_task = suite.mustRunJSON(IDJSON, arena, &.{
+        "task",                    "add",                                       "--json",
+        "--plan",                  seed_plan_id,                                "--slug",
+        "cancelled-slug-holder-x", "Holder task for cancelled slug regression",
+    });
+    const seed_task_id = std.fmt.allocPrint(arena, "{d}", .{seed_task.id}) catch @panic("OOM");
+
+    // ---- Step 2: cancel the task via `planar task cancel` -------------------
+    // Confirm `task cancel` retains the slug (does NOT null it).
+    gpa.free(suite.mustRun(&.{ "task", "cancel", seed_task_id }));
+
+    const TaskRow = struct {
+        id: i64,
+        status: []const u8 = "",
+        slug: ?[]const u8 = null,
+    };
+    const after_cancel_json = suite.mustRun(&.{ "task", "show", "--json", seed_task_id });
+    defer gpa.free(after_cancel_json);
+    const after_cancel = parseJSON(TaskRow, arena, after_cancel_json);
+    // Cancelled status confirmed.
+    try std.testing.expectEqualStrings("cancelled", after_cancel.status);
+    // Slug is NOT nulled — this is the correctness invariant being tested.
+    try std.testing.expect(after_cancel.slug != null);
+    try std.testing.expectEqualStrings("cancelled-slug-holder-x", after_cancel.slug.?);
+
+    // ---- Step 3: create a new plan whose roadmap proposes the same slug -----
+    const wb = createWorkbenchEnv(&suite, arena, "workbench-cancelled-slug-collision");
+
+    const tech_body =
+        \\# Cancelled Slug Collision Tech Spec
+        \\
+        \\## Status
+        \\
+        \\Draft.
+        \\
+    ;
+    const roadmap_body =
+        \\# Cancelled Slug Collision Roadmap
+        \\
+        \\## Collision Milestone
+        \\
+        \\- Task proposing the cancelled slug [slug: cancelled-slug-holder-x]
+        \\
+    ;
+    const fixture = createSpecIngestFixtureWithEnv(
+        &suite,
+        arena,
+        "Cancelled Slug Collision Plan",
+        tech_body,
+        roadmap_body,
+        null,
+        wb.env,
+        wb.wb_root,
+    );
+
+    // ---- Step 4: preview must surface the collision --------------------------
+    // Pre-fix (status != 'cancelled' filter): preview exits 0, reports no
+    // collisions (wrong — the slug is still live in the index).
+    // Post-fix (no status filter): preview warns about the collision.
+    const preview = suite.execWith(&.{ "spec", "ingest", fixture.plan_id }, fixture.env);
+    defer preview.deinit(gpa);
+    try std.testing.expect(std.mem.containsAtLeast(
+        u8,
+        preview.stderr,
+        1,
+        "cancelled-slug-holder-x",
+    ));
+
+    // --strict must refuse (non-zero exit) when the collision involves a
+    // cancelled-but-slugged task.
+    const strict = suite.execWith(&.{ "spec", "ingest", fixture.plan_id, "--strict" }, fixture.env);
+    defer strict.deinit(gpa);
+    try std.testing.expect(strict.term == .exited and strict.term.exited != 0);
+    try std.testing.expect(std.mem.containsAtLeast(
+        u8,
+        strict.stderr,
+        1,
+        "cancelled-slug-holder-x",
+    ));
+
+    // JSON preview must include the cancelled task in slug_collisions.
+    const PreviewJSON = struct {
+        slug_collisions: []const struct {
+            slug: []const u8,
+            existing_task_id: i64,
+            existing_plan_id: i64,
+        } = &.{},
+    };
+    const json_out = suite.mustRunWith(
+        &.{ "spec", "ingest", fixture.plan_id, "--format", "json" },
+        fixture.env,
+    );
+    defer gpa.free(json_out);
+    const parsed = parseJSON(PreviewJSON, arena, json_out);
+    try std.testing.expect(parsed.slug_collisions.len >= 1);
+    try std.testing.expectEqualStrings("cancelled-slug-holder-x", parsed.slug_collisions[0].slug);
+    // The collision's existing_task_id must match the cancelled task we seeded.
+    try std.testing.expect(parsed.slug_collisions[0].existing_task_id == seed_task.id);
+}
+
 fn parseJSON(comptime T: type, arena: std.mem.Allocator, buf: []const u8) T {
     const trimmed = std.mem.trim(u8, buf, " \n");
     const parsed = std.json.parseFromSlice(T, arena, trimmed, .{
