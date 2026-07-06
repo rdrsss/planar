@@ -5,7 +5,7 @@ source: agents/orchestrator.md
 model_tier: large
 vendor:
   claude:
-    argument_hint: "<goal|plan-id|task-id> [<task-id>...] [--finalize] [--propagate] [--archive] [--strategy <name>] [--no-docs] [--strict | --grouped | --batch <ids>]"
+    argument_hint: "<goal|plan-id|task-id> [<task-id>...] [--finalize] [--propagate] [--archive] [--strategy <name>] [--isolation <pwd|worktree>] [--no-docs] [--strict | --grouped | --batch <ids>]"
     invocation_examples: |
       /orchestrator <goal>                          # start from scratch: plan → wait → ingest → wait → execute
       /orchestrator <anchor-plan-id>                # resume from current anchor plan status
@@ -15,7 +15,9 @@ vendor:
       /orchestrator <anchor-plan-id> --finalize --archive  # execute → finalize → archive FS tree
       /orchestrator <anchor-plan-id> --archive      # execute → mark done → archive FS tree
       /orchestrator <plan-id> --strategy classic              # explicit continuity — coder in pwd, current branch, sequential
+      /orchestrator <plan-id> --strategy classic --isolation worktree  # sequential cycle worktrees; reviewer per cycle
       /orchestrator <plan-id> --strategy barrel-deferred      # back-to-back coder cycles in pwd; reviewer at boundary
+      /orchestrator <plan-id> --strategy barrel-deferred --isolation worktree  # back-to-back cycle worktrees; reviewer at boundary
       /orchestrator <plan-id> --strategy barrel-bypass        # no reviewer; gates are the entire signal
       /orchestrator <plan-id> --strict              # one coder cycle per task (skip the dispatch-shape gate)
       /orchestrator <plan-id> --grouped             # orchestrator picks groupings (skip the dispatch-shape gate)
@@ -51,19 +53,20 @@ The orchestrator selects phases based on the anchor plan's current `status`:
 
 2. **Ingestion (Phase 2)** — anchor plan in `draft` with workbench artifacts present: invokes `pl-spec-ingest <plan>` in preview mode (no `--apply`), presents the diff to the user, and **waits for explicit confirmation** before running `--apply`. Never auto-applies.
 
-3. **Execution (Phase 3)** — anchor plan `active` or `paused`: first reads claim-aware state with `planar plan next <plan>` (operator-side) or `planar-agent peek <plan>` (agent-side dry-run for explicit task IDs), excludes active unexpired claims, and surfaces stale claims before dispatch. Phase 3 then runs **two gates in order** before any coder runs: the **strategy gate** (new — see below), which picks the overall methodology for the plan (the three in-pwd strategies `classic` / `barrel-deferred` / `barrel-bypass`, plus the model-runnable worktree strategy `parallel-fanout` driven via the `workflows/parallel-dispatch.lua` seam; `isolated-sequential` remains owned by an external workflow harness), followed by the **dispatch-shape gate** (existing — `strict` / `grouped` / `single`), which picks the per-cycle batching nested under the chosen strategy. Both gates wait for explicit operator confirmation; both can be pre-committed via flags (`--strategy <name>` / `--strict` / `--grouped` / `--batch`). Before dispatching each cycle the orchestrator acquires the lease atomically via `planar-agent pull <plan>` (or `planar-agent claim --entity task:<id>` for hand-picked targets) and records the returned `claim_token` in the dispatch entry. The in-pwd strategies run cycles **sequentially in pwd**. Under `parallel-fanout` the orchestrator drives staged worktree fan-out **itself** — the deterministic wave/lane/merge computation lives in the spawn-free `workflows/parallel-dispatch.lua` seam (which consults `recommend-strategy` + the `blocks` graph and HANDS BACK), and the model runs the git worktree/branch/merge ops and spawns N coders concurrently via the harness Agent tool. There is NO external harness for this (product-spec §Non-Goals "Not reviving centurion or any external harness"). After the coder reports done, the orchestrator runs **Phase 3.5 — test-coder dispatch** (see below): consults `planar test-spec status <plan> --json` and, when the cycle's dispatched slugs intersect the JSON's `uncovered_task_slugs`, dispatches `pl-test-coder`. The output (coder diff alone or the union of coder + test-coder diffs) is routed through `pl-reviewer`. The cycle terminates via one of `planar-agent complete` / `fail` / `release` / `block` (atomic — flips both claim status and task status in a single transaction). Enforces the 5-iteration cap per coder/reviewer cycle (the test-coder cycle has its own cap, default 2), and surfaces escalations (open questions, aborts, ship-with-caveats, failure-surfaced).
+3. **Execution (Phase 3)** — anchor plan `active` or `paused`: first reads claim-aware state with `planar plan next <plan>` (operator-side) or `planar-agent peek <plan>` (agent-side dry-run for explicit task IDs), excludes active unexpired claims, and surfaces stale claims before dispatch. Phase 3 then runs **two gates in order** before any coder runs: the **strategy + isolation gate** (new — see below), which picks the overall methodology for the plan (`classic` / `barrel-deferred` / `barrel-bypass` / `parallel-fanout`) and, for sequential strategies, whether it runs in `pwd` or `worktree`; followed by the **dispatch-shape gate** (existing — `strict` / `grouped` / `single`), which picks the per-cycle batching nested under the chosen strategy. Both gates wait for explicit operator confirmation; both can be pre-committed via flags (`--strategy <name>` / `--isolation <pwd|worktree>` / `--strict` / `--grouped` / `--batch`). Before dispatching each cycle the orchestrator acquires the lease atomically via `planar-agent pull <plan>` (or `planar-agent claim --entity task:<id>` for hand-picked targets) and records the returned `claim_token` in the dispatch entry. With `pwd` isolation, sequential strategies run in the operator checkout. With `worktree` isolation, the orchestrator drives a single sequential lane itself via `workflows/parallel-dispatch.lua --phase cycle_plan`: the seam computes the epic branch, cycle branch, and worktree path, then the model runs the git worktree/branch/merge ops and spawns the coder in that worktree. Under `parallel-fanout`, the orchestrator drives staged worktree fan-out itself via the same seam's `plan`/`waves` phases and spawns N coders concurrently via the harness Agent tool. There is NO external harness for either path. After the coder reports done, the orchestrator runs **Phase 3.5 — test-coder dispatch** (see below): consults `planar test-spec status <plan> --json` and, when the cycle's dispatched slugs intersect the JSON's `uncovered_task_slugs`, dispatches `pl-test-coder`. The output (coder diff alone or the union of coder + test-coder diffs) is routed through `pl-reviewer` at the cadence chosen by the strategy. The cycle terminates via one of `planar-agent complete` / `fail` / `release` / `block` (atomic — flips both claim status and task status in a single transaction). Enforces the 5-iteration cap per reviewer cycle (the test-coder cycle has its own cap, default 2), and surfaces escalations (open questions, aborts, ship-with-caveats, failure-surfaced).
 
-   **Strategy gate (first thing Phase 3 does, after reading claim state).** The orchestrator runs the recommendation algorithm against the plan — see [`agents/methodology.md` § Recommendation algorithm](../../agents/methodology.md#recommendation-algorithm) for the rules (mechanical/docs/single-verb → `barrel-bypass`; multi-milestone roadmap with ≤1 parallel-eligible per milestone → `barrel-deferred`; ≥3 tasks with ≥2 parallel-eligible → recommend the model-runnable `parallel-fanout`; single-task → `classic`; otherwise stickiness then `classic`). It then surfaces:
+   **Strategy + isolation gate (first thing Phase 3 does, after reading claim state).** The orchestrator runs the recommendation algorithm against the plan — see [`agents/methodology.md` § Recommendation algorithm](../../agents/methodology.md#recommendation-algorithm) for the rules (mechanical/docs/single-verb → `barrel-bypass`; multi-milestone roadmap with ≤1 parallel-eligible per milestone → `barrel-deferred`; ≥3 tasks with ≥2 parallel-eligible → recommend the model-runnable `parallel-fanout`; single-task → `classic`; otherwise stickiness then `classic`). It then surfaces:
 
    - the recommended strategy (one of `classic`, `barrel-deferred`, `barrel-bypass`, or `parallel-fanout` — all four are runnable from this skill),
+   - the recommended isolation (`pwd` or `worktree`); `pwd` is the continuity default for sequential strategies, `worktree` is selectable for `classic` / `barrel-deferred` / `barrel-bypass`, and `parallel-fanout` always uses worktrees,
    - a one-line rationale (e.g. "2-task plan, neither parallel-eligible" or "4 tasks, 3 parallel-eligible — fan out"),
-   - when the plan is a best architectural fit for `parallel-fanout`, that strategy is **selectable** (it is model-runnable via the `workflows/parallel-dispatch.lua` seam — no external harness); when the best fit is `isolated-sequential`, a note that it is not runnable from this skill (still harness-owned) and the best in-pwd strategy is the actionable choice,
-   - the menu of the runnable strategies with one-line trade-offs (see [Strategy menu](#strategy-menu) below), plus an informational pointer to the still-harness-owned `isolated-sequential`,
+   - when the plan is a best architectural fit for `parallel-fanout`, that strategy is **selectable** (it is model-runnable via the `workflows/parallel-dispatch.lua` seam — no external harness); when the operator asks for worktree-backed sequential/deferred execution, confirm the same strategy with `worktree` isolation rather than refusing,
+   - the menu of runnable strategies and isolation choices with one-line trade-offs (see [Strategy menu](#strategy-menu) below),
    - the `--strategy custom` escape hatch for axis-by-axis overrides.
 
    The orchestrator **waits for explicit operator confirmation** before doing any further Phase 3 work (no claim acquisition, no dispatch-shape proposal, no coder dispatch). Auto-defaulting without confirmation is not supported: the recommendation never silently turns into an action.
 
-   The strategy gate is skipped only when `--strategy <name>` (or `--strategy custom --isolation X --branch-model Y ...`) was supplied at invocation. `--strategy parallel-fanout` is **accepted and runnable** — it drives the staged worktree fan-out via the seam (see [Runnable staged waves](#runnable-staged-waves-m2) below). `--strategy isolated-sequential` is still **refused** with: *"Strategy `isolated-sequential` requires the external worktree harness, which is not runnable from this skill. Select `classic`, `barrel-deferred`, `barrel-bypass`, or `parallel-fanout` instead."* The dispatch-shape gate then runs nested under the chosen strategy, constrained by it: `barrel-bypass` forces the barrel-bypass shape; `barrel-deferred` forces the barrel-deferred shape; `parallel-fanout` forces the `fan-out` shape; `classic` keeps the full strict / grouped / single menu. The dispatch-shape gate is itself bypassed only when `--strict`, `--grouped`, `--batch`, or a `--barrel-*` standalone flag was supplied (the standalone barrel-* flags are soft-deprecated — see [Aliases and deprecations](#aliases-and-deprecations)).
+   The strategy gate is skipped only when `--strategy <name>` (or `--strategy custom --isolation X --branch-model Y ...`) was supplied at invocation. For sequential strategies, `--isolation worktree` is accepted and runnable; if omitted, isolation defaults to `pwd`. `--strategy isolated-sequential` is accepted as an alias for `--strategy classic --isolation worktree`. `--strategy parallel-fanout` is accepted and runnable — it drives staged worktree fan-out via the seam (see [Runnable staged waves](#runnable-staged-waves-m2) below). The dispatch-shape gate then runs nested under the chosen strategy, constrained by it: `barrel-bypass` forces the barrel-bypass shape; `barrel-deferred` forces the barrel-deferred shape; `parallel-fanout` forces the `fan-out` shape; `classic` keeps the full strict / grouped / single menu. The dispatch-shape gate is itself bypassed only when `--strict`, `--grouped`, `--batch`, or a `--barrel-*` standalone flag was supplied (the standalone barrel-* flags are soft-deprecated — see [Aliases and deprecations](#aliases-and-deprecations)).
 
    **Strategy persistence (live as of migration 00016).** The recommendation algorithm's rule 6 ("if the last dispatch used non-default strategy S, recommend S") rides on the `agent_actions.metadata` JSON column. When the orchestrator confirms a strategy for a cycle, it persists the choice on the dispatch action row by passing `--metadata` to the lease-acquire verb:
 
@@ -113,7 +116,7 @@ The orchestrator selects phases based on the anchor plan's current `status`:
 
 - Between Phase 1 and Phase 2: user must review artifacts.
 - Between Phase 2 preview and `--apply`: user must confirm the diff.
-- Phase 3 **strategy**: user picks (or confirms the recommendation of) one of the four runnable strategies (`classic` / `barrel-deferred` / `barrel-bypass` / `parallel-fanout`) that this skill drives, or supplies `--strategy custom` with per-axis flags. `parallel-fanout` is model-runnable via the `workflows/parallel-dispatch.lua` seam (staged waves, per-lane worktrees, fan-in merge) with NO external harness. `isolated-sequential` is surfaced as informational context only — it is still harness-owned and not selectable here; if supplied via `--strategy`, the skill refuses with a clear "not runnable in this skill — requires the external worktree harness" message. This gate runs **first** in Phase 3, before claim acquisition or dispatch-shape selection. Skipped only when a valid `--strategy <name>` was supplied at invocation.
+- Phase 3 **strategy + isolation**: user picks (or confirms the recommendation of) one of the four runnable strategies (`classic` / `barrel-deferred` / `barrel-bypass` / `parallel-fanout`) and the isolation mode (`pwd` / `worktree`) where applicable, or supplies `--strategy custom` with per-axis flags. Sequential worktree isolation and `parallel-fanout` are both model-runnable via `workflows/parallel-dispatch.lua` with NO external harness. This gate runs **first** in Phase 3, before claim acquisition or dispatch-shape selection. Skipped only when a valid `--strategy <name>` plus any desired axis overrides was supplied at invocation.
 - Phase 3 **dispatch shape**: user picks one of the dispatch shapes (strict/grouped/single — or the legacy six-shape menu when a standalone barrel-* flag is in play) before any coder runs. Runs nested under the chosen strategy and is constrained by it (`barrel-deferred`/`barrel-bypass` force the corresponding shape; `classic` keeps the full strict / grouped / single menu). Skipped when `--strict`/`--grouped`/`--batch`/`--barrel-grouped`/`--barrel-deferred`/`--barrel-bypass` was supplied.
 - Phase 3 claim conflicts: active unexpired claims are not silently bypassed. Stale claims require reconciliation or explicit force-takeover before the work is considered available.
 - Phase 3.5 `failure-surfaced` outcome: when a test the test-coder authored fails on first run, user must resolve (fix the test or fix the code) before the reviewer is dispatched. The orchestrator never decides which side is wrong.
@@ -186,13 +189,12 @@ When dispatching the reviewer, the orchestrator composes a fresh brief — it MU
 
 ## Strategy menu
 
-Before asking the operator to confirm the strategy gate, the orchestrator surfaces the four strategies it runs — the three in-pwd strategies plus the model-runnable `parallel-fanout` — with a one-line trade-off each, plus a pointer to the still-harness-owned `isolated-sequential` and the `--strategy custom` escape hatch. Strategy answers "what is the overall methodology for this plan?" — dispatch shape (next section) answers "within that strategy, how do I batch *this cycle's* work?"
+Before asking the operator to confirm the strategy gate, the orchestrator surfaces the four strategies it runs and, for sequential strategies, the isolation choice (`pwd` / `worktree`). Strategy answers "what is the overall methodology for this plan?" Isolation answers "where does the coder run?" Dispatch shape (next section) answers "within that strategy, how do I batch *this cycle's* work?"
 
 ```
-  classic                Coder runs in operator's pwd on the current
-                         branch. Sequential cycles, reviewer per cycle,
-                         test-coder per cycle. No worktrees, no epic
-                         branch, no parallelism.
+  classic                Sequential cycles, reviewer per cycle,
+                         test-coder per cycle. Isolation choice:
+                         pwd (continuity default) or worktree.
                          [continuity guarantee — today's behavior bit-for-bit]
                          Recommended for: single-task changes, small plans,
                          high-stakes invariant-touching work.
@@ -208,14 +210,14 @@ Before asking the operator to confirm the strategy gate, the orchestrator surfac
                          Recommended for: multi-lane plans (≥3 tasks, ≥2
                          parallel-eligible) where lanes touch disjoint files.
 
-  isolated-sequential    Worktree on an epic-child branch; sequential.
-                         [still OWNED BY an external workflow harness, NOT
-                         run by this model orchestrator — use an external
-                         harness for single-lane worktree isolation.]
+  isolated-sequential    Alias for classic + worktree. Sequential cycle
+                         worktrees off an epic branch; reviewer per cycle.
+                         [MODEL-RUNNABLE via workflows/parallel-dispatch.lua
+                         cycle_plan.]
 
-  barrel-deferred        Coder cycles run back-to-back in pwd; reviewer
+  barrel-deferred        Coder cycles run back-to-back; reviewer
                          dispatched once at a milestone or plan boundary
-                         on the union diff. No isolation.
+                         on the union diff. Isolation choice: pwd or worktree.
                          [throughput + late review safety net] —
                          Recommended for: long sequential plans where
                          per-cycle reviewer overhead exceeds the value.
@@ -225,7 +227,7 @@ Before asking the operator to confirm the strategy gate, the orchestrator surfac
                          twice, planar skills render --check against an
                          out-of-tree staging dir, and any remaining
                          relevant validators) ARE the entire signal.
-                         Sequential, in-pwd.
+                         Sequential. Isolation choice: pwd or worktree.
                          [maximum throughput; trust the gates] —
                          Recommended for: mechanical sweeps, docs-polish,
                          single-verb additions where the contract is
@@ -239,7 +241,7 @@ Before asking the operator to confirm the strategy gate, the orchestrator surfac
   When in doubt: take the recommendation, or use --strategy classic.
 ```
 
-The named strategies are bundles of the five underlying axes (`isolation`, `branch_model`, `concurrency`, `reviewer_cadence`, `test_coder_cadence`); the axes and the named-bundle table live in [`agents/methodology.md` § Orchestration strategies](../../agents/methodology.md#orchestration-strategies). The orchestrator refuses the invalid axis combinations listed there (e.g. `concurrency=fan-out` with `isolation=in-pwd`) with a diagnostic before any dispatch runs.
+The named strategies are bundles of the five underlying axes (`isolation`, `branch_model`, `concurrency`, `reviewer_cadence`, `test_coder_cadence`); the axes and the named-bundle table live in [`agents/methodology.md` § Orchestration strategies](../../agents/methodology.md#orchestration-strategies). The orchestrator refuses invalid axis combinations before any dispatch runs: fan-out requires worktree isolation, sequential worktree requires epic-child branches, and in-pwd requires the current branch.
 
 ### `classic` — the continuity guarantee
 
@@ -252,29 +254,63 @@ The named strategies are bundles of the five underlying axes (`isolation`, `bran
 
 The promise: introducing the strategy menu does not require existing operators to learn a new flow to keep working as they do. Pick `classic`, get today's behavior. See [`agents/methodology.md` § Continuity guarantee: `classic`](../../agents/methodology.md#continuity-guarantee-classic) for the framing.
 
-### Worktree strategies (`parallel-fanout` runnable, `isolated-sequential` harness-owned)
+### Worktree Isolation (`cycle_plan` and `parallel-fanout`)
 
-`isolated-sequential` still requires deterministic worktree creation, epic/cycle
-branch management, and fan-in merging owned by an external workflow harness — it
-is not runnable from this skill.
+Worktree isolation is **fully model-runnable**. The deterministic branch/path
+bookkeeping lives in the spawn-free `workflows/parallel-dispatch.lua` seam, and
+this skill drives it:
 
-`parallel-fanout` is **fully model-runnable** (plan 760, M1–M4): the
-deterministic wave/lane/merge/teardown computation lives in the spawn-free
-`workflows/parallel-dispatch.lua` seam, and this skill drives it. The seam
-COMPUTES (staged waves, per-lane worktree paths, lane branch names, epic branch
-name, wave barrier, contract-lanes-first fan-in merge order, retention/teardown
-lists, boundary-conflict escalation, and the reconcile plan) and HANDS BACK; the
-model runs the git worktree/branch/merge ops and spawns the coders concurrently
-via the harness Agent tool. The seam never spawns and never touches
-`git worktree`/`git merge` — re-adding a model-spawning primitive is the exact
-scope creep that got the old `planar-execute` extracted. There is **no external
-harness** in this path (product-spec §Non-Goals "Not reviving centurion or any
-external harness"); the runner IS the model orchestrator plus existing Planar
-primitives.
+- `cycle_plan` computes one sequential lane for `classic --isolation worktree`,
+  `barrel-deferred --isolation worktree`, `barrel-bypass --isolation worktree`,
+  and the `isolated-sequential` alias. It does not consult parallel eligibility
+  and does not require `task_touches`.
+- `plan` / `waves` compute staged multi-lane fan-out for `parallel-fanout`.
 
-In-flight fan-out is watched through the existing `planar-watch ps --plan <id>`
-surface (the N concurrent lane claims with each claim's `worktree_path`, live vs.
-stale) — there is no dedicated wave/barrier view (a recorded non-goal).
+The seam COMPUTES (epic branch, lane branch, worktree path, staged waves,
+contract-lanes-first fan-in merge order, retention/teardown lists,
+boundary-conflict escalation, and the reconcile plan) and HANDS BACK; the model
+runs the git worktree/branch/merge ops and spawns coders via the harness Agent
+tool. The seam never spawns and never touches `git worktree`/`git merge` —
+re-adding a model-spawning primitive is the exact scope creep that got the old
+`planar-execute` extracted. There is **no external harness** in this path
+(product-spec §Non-Goals "Not reviving centurion or any external harness"); the
+runner IS the model orchestrator plus existing Planar primitives.
+
+#### Runnable sequential worktree cycle
+
+Use this path whenever the confirmed strategy is `classic`, `barrel-deferred`,
+or `barrel-bypass` with `--isolation worktree`.
+
+1. **Select the task normally.** Use `planar plan next <plan> --json` /
+   `planar-agent peek <plan>` to identify the next task. Sequential worktree
+   isolation does not require parallel eligibility and does not require
+   `task_touches`.
+2. **Compute the lane.** Run:
+   `planar-execute run workflows/parallel-dispatch.lua --phase cycle_plan --args '{"plan_id":<id>,"task_id":<task>}'`.
+   The seam emits `epic_branch`, `lane.branch`, and `lane.worktree`.
+3. **Epic-cut precondition.** Before cutting the epic branch, verify the main
+   checkout is clean. If dirty, fail fast with the dirty paths.
+4. **Create or reuse the epic worktree.** Create `epic/p<plan>-<slug>` from the
+   clean base once per plan; reuse it for later sequential cycles.
+5. **Create the cycle worktree.** `git worktree add <lane.worktree> -b
+   <lane.branch> <epic_branch>`.
+6. **Claim with the worktree path.** Use `planar-agent pull <plan> --role coder
+   --worktree <lane.worktree> --json` (or `claim --entity task:<id> --worktree
+   <lane.worktree>` for hand-picked targets). The persisted worktree path is the
+   resume/recovery key.
+7. **Spawn the coder in the cycle worktree.** The coder inherits cwd and must not
+   create, move, or remove worktrees.
+8. **Fan-in after terminal success.** Merge the cycle branch into the epic
+   worktree. For `classic`, run reviewer/test-coder per cycle. For
+   `barrel-deferred`, keep merging successful cycles into epic and dispatch the
+   reviewer/test-coder once at the milestone/plan boundary on the union diff. For
+   `barrel-bypass`, gates are the review signal.
+9. **Cleanup.** Remove succeeded cycle worktrees eagerly; retain failed lanes for
+   inspection; retain the epic branch/worktree until finalization/PR merge.
+
+In-flight worktree execution is watched through the existing `planar-watch ps --plan <id>`
+surface (lane claims with each claim's `worktree_path`, live vs. stale) — there
+is no dedicated wave/barrier view (a recorded non-goal).
 
 #### Runnable single-wave fan-out (M1)
 

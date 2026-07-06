@@ -1,7 +1,7 @@
 --[[ @meta
 name: parallel-dispatch
-description: Deterministic, spawn-free wave/lane computation for the model orchestrator's parallel fan-out path. Computes the current wave (from recommend-strategy eligibility), the FULL ordered wave list (from recommend-strategy eligibility + the plan's `blocks` graph, for ordering/labeling only, with the terminal cross-lane integration pass marked), each lane's worktree path + branch name, the epic branch name, the wave-barrier gate, the wave-aware (contract-lanes-first) fan-in merge order, the boundary-conflict escalation payload, and the partial-wave reconcile plan — then HANDS BACK. The model creates the worktrees, spawns the coders, and runs the git merges/reconciles; this seam never spawns and never touches git worktree/branch/merge.
-phases: plan, waves, barrier_check, fan_in, conflict_escalation, reconcile_plan, teardown
+description: Deterministic, spawn-free wave/lane computation for the model orchestrator's worktree paths. Computes the current parallel wave (from recommend-strategy eligibility), a single sequential cycle lane for worktree-deferred execution, the FULL ordered wave list (from recommend-strategy eligibility + the plan's `blocks` graph, for ordering/labeling only, with the terminal cross-lane integration pass marked), each lane's worktree path + branch name, the epic branch name, the wave-barrier gate, the wave-aware (contract-lanes-first) fan-in merge order, the boundary-conflict escalation payload, and the partial-wave reconcile plan — then HANDS BACK. The model creates the worktrees, spawns the coders, and runs the git merges/reconciles; this seam never spawns and never touches git worktree/branch/merge.
+phases: plan, cycle_plan, waves, barrier_check, fan_in, conflict_escalation, reconcile_plan, teardown
 seam: planar plan recommend-strategy --json (via ctx.recommend_strategy), planar plan show --json (via ctx.plan_show), planar links list task:<id> --json (via cli.planar, for `blocks`-edge ordering only)
 --]]
 
@@ -33,6 +33,16 @@ seam: planar plan recommend-strategy --json (via ctx.recommend_strategy), planar
 --                   lanes, fan_out=false); the caller falls back to the in-pwd
 --                   path. HANDS BACK: the model creates worktrees + spawns N
 --                   coders. This is the CURRENT wave only (M1).
+--
+--   cycle_plan    — compute exactly one sequential worktree lane for an already
+--                   selected/claimed task. This is the deterministic bookkeeping
+--                   used by the model-runnable worktree-deferred strategy
+--                   ("barrel-deferred in worktrees"). It does NOT consult
+--                   parallel eligibility and therefore does NOT require
+--                   task_touches; sequential isolation has no disjoint-lane
+--                   safety precondition. HANDS BACK: the model creates the
+--                   epic/cycle worktree, dispatches one coder, and later merges
+--                   that lane into the epic branch.
 --
 --   waves         — (M2, wave-ordering) emit the FULL ordered wave list for the
 --                   plan by combining recommend-strategy eligibility with the
@@ -148,6 +158,11 @@ seam: planar plan recommend-strategy --json (via ctx.recommend_strategy), planar
 -- ## --args contracts
 --
 --   plan:   { plan_id (int, required),
+--             base (str, optional; epic-branch base ref, default "HEAD"),
+--             worktree_root (str, optional; default ".worktrees") }
+--
+--   cycle_plan: { plan_id (int, required),
+--             task_id (int, required; already selected/claimed by caller),
 --             base (str, optional; epic-branch base ref, default "HEAD"),
 --             worktree_root (str, optional; default ".worktrees") }
 --
@@ -500,6 +515,66 @@ function plan()
     lane_count = #lanes,
     lanes = lanes,
     serialized = serialized,
+  })
+end
+
+-- ---------------------------------------------------------------------------
+-- Phase: cycle_plan
+--
+-- Compute exactly one sequential worktree lane for a caller-selected task.
+-- This is the deterministic bookkeeping for "run this sequential strategy in a
+-- worktree" (classic/worktree or barrel-deferred/worktree). Unlike the fan-out
+-- `plan` phase, it does NOT consult recommend-strategy and does NOT require
+-- task_touches: a single lane has no cross-lane conflict surface. The caller
+-- still owns task selection/claiming, dirty-tree checks, git worktree creation,
+-- coder spawning, fan-in merge, and cleanup.
+-- ---------------------------------------------------------------------------
+function cycle_plan()
+  flow.phase("cycle_plan")
+  flow.log("parallel-dispatch.lua/cycle_plan: starting")
+
+  local plan_id = require_arg("plan_id")
+  local task_id = require_arg("task_id")
+  local base = opt_arg("base", "HEAD")
+  local worktree_root = opt_arg("worktree_root", ".worktrees")
+
+  local plan_info = ctx.plan_show(plan_id)
+  local task_info = ctx.task_show(task_id)
+  if type(task_info) ~= "table" then
+    flow.fail("parallel-dispatch.lua/cycle_plan: task_show returned no table for task " .. tostr(task_id))
+    return
+  end
+  if task_info.plan_id ~= nil and task_info.plan_id ~= plan_id then
+    flow.fail("parallel-dispatch.lua/cycle_plan: task " .. tostr(task_id)
+      .. " belongs to plan " .. tostr(task_info.plan_id)
+      .. ", not requested plan " .. tostr(plan_id))
+    return
+  end
+
+  local pslug = plan_slug(plan_info, plan_id)
+  local epic = epic_branch(plan_id, pslug)
+  local tslug = task_slug(task_info)
+  local lane = {
+    task_id = task_id,
+    slug = tslug,
+    title = task_info.title,
+    branch = lane_branch(plan_id, tslug),
+    worktree = lane_worktree(worktree_root, plan_id, tslug),
+  }
+
+  flow.log("parallel-dispatch.lua/cycle_plan: lane computed for task "
+    .. tostr(task_id) .. " on epic " .. epic)
+  flow.result({
+    plan_id = plan_id,
+    fan_out = false,
+    sequential = true,
+    reason = "single sequential worktree lane; parallel eligibility not required",
+    epic_branch = epic,
+    base = base,
+    worktree_root = worktree_root,
+    lane_count = 1,
+    lane = lane,
+    lanes = { lane },
   })
 end
 

@@ -2029,22 +2029,25 @@ Recommended strategy: parallel-fanout
 Rationale: ≥3 tasks and ≥2 parallel-eligible (rule 3 of the recommendation algorithm)
 
 Alternatives:
-  classic                Coder in pwd on current branch; sequential cycles, reviewer per cycle.
+  classic                Sequential cycles, reviewer per cycle. Isolation: pwd or worktree.
                          [continuity guarantee — today's behavior bit-for-bit]
   parallel-fanout        Fan out to N coders on the parallel-eligible subset, staged by the
                          `blocks` graph; reviewer at fan-in. Model-runnable via
                          workflows/parallel-dispatch.lua — no external harness.
                          [throughput + integrated review]                                 ← recommended
-  barrel-deferred        Back-to-back coder cycles in pwd; reviewer at boundary on union diff.
+  barrel-deferred        Back-to-back coder cycles; reviewer at boundary on union diff.
+                         Isolation: pwd or worktree.
                          [throughput + late review safety net]
-  barrel-bypass          No reviewer; gates are the entire signal. Sequential, in-pwd.
+  barrel-bypass          No reviewer; gates are the entire signal. Isolation: pwd or worktree.
                          [maximum throughput; trust the gates]
-  isolated-sequential    Coder in a worktree on an epic-child branch; sequential, reviewer per cycle.
-                         [pwd hygiene + per-task rollback — still harness-owned, not runnable here]
+  isolated-sequential    Alias for classic + worktree.
+                         [pwd hygiene + per-task rollback]
 
   --strategy custom      Per-axis flags for advanced operators.
 
-Confirm strategy? [parallel-fanout / classic / barrel-deferred / barrel-bypass / custom]
+Confirm strategy and isolation? [parallel-fanout / classic pwd / classic worktree /
+  barrel-deferred pwd / barrel-deferred worktree / barrel-bypass pwd /
+  barrel-bypass worktree / custom]
 ```
 
 This is a hard operator gate identical in strength to the Phase 2 ingestion gate. Auto-defaulting without confirmation is **not** supported — the recommendation never silently becomes an action.
@@ -2061,11 +2064,13 @@ Operators who already know which strategy fits — typically because they always
 /orchestrator 297 --strategy parallel-fanout
 /orchestrator 297 --strategy isolated-sequential
 /orchestrator 297 --strategy classic                # explicit continuity
+/orchestrator 297 --strategy classic --isolation worktree
 /orchestrator 297 --strategy barrel-deferred
+/orchestrator 297 --strategy barrel-deferred --isolation worktree
 /orchestrator 297 --strategy barrel-bypass
 ```
 
-The strategy gate is skipped; the dispatch-shape gate still runs (unless it also has a pre-committed answer via `--strict` / `--grouped` / `--batch`, or is forced by the strategy — `parallel-fanout` forces `fan-out`, the barrel strategies force their matching shape).
+The strategy gate is skipped; for sequential strategies isolation defaults to `pwd` unless `--isolation worktree` is supplied. The dispatch-shape gate still runs (unless it also has a pre-committed answer via `--strict` / `--grouped` / `--batch`, or is forced by the strategy — `parallel-fanout` forces `fan-out`, the barrel strategies force their matching shape).
 
 ### Custom axis escape hatch
 
@@ -2101,7 +2106,7 @@ The orchestrator records the choice and moves on to the parallel-fanout per-cycl
 
 ## Recipe 22 — Orchestrate a multi-task plan with parallel coders
 
-> **Ownership note.** The `parallel-fanout` lifecycle — epic-branch cut, per-lane worktree creation, staged-wave fan-out, fan-in merge, failed-lane retention, and full teardown — is **model-runnable via the spawn-free `workflows/parallel-dispatch.lua` seam** (plan 760): the seam computes the waves, per-lane worktree paths, contract-lanes-first merge order, and teardown lists and HANDS BACK; the model orchestrator runs the git worktree/branch/merge ops and spawns the N coders concurrently via the harness Agent tool. There is **no external harness** in this path (and no revival of centurion). The six eligibility rules are the engine's (`recommend-strategy`, `src/engine/planning/strategy.zig`), consumed by the seam and never re-derived. Only single-lane `isolated-sequential` remains harness-owned. For the staged-wave (dependency-respecting) variant — proto lands first, then identity + web in parallel — see [Step 11 — Staged waves](#step-11--staged-waves-contract-lane-first) below. In-flight fan-out is watched through `planar-watch ps --plan <id>` (the N concurrent lane claims + each claim's `worktree_path`) — there is no separate wave/barrier view.
+> **Ownership note.** The worktree lifecycle — epic-branch cut, per-lane worktree creation, fan-in merge, failed-lane retention, and full teardown — is **model-runnable via the spawn-free `workflows/parallel-dispatch.lua` seam** (plan 760): `cycle_plan` computes one sequential lane, while `plan`/`waves` compute parallel lanes. The seam computes worktree paths, branch names, merge order, and teardown lists and HANDS BACK; the model orchestrator runs the git worktree/branch/merge ops and spawns coders via the harness Agent tool. There is **no external harness** in this path (and no revival of centurion). The six eligibility rules are the engine's (`recommend-strategy`, `src/engine/planning/strategy.zig`), consumed by the fan-out phases and never re-derived. They apply to `parallel-fanout`, not to a single sequential worktree lane. For the staged-wave (dependency-respecting) variant — proto lands first, then identity + web in parallel — see [Step 11 — Staged waves](#step-11--staged-waves-contract-lane-first) below. In-flight worktree execution is watched through `planar-watch ps --plan <id>` (claims + each claim's `worktree_path`) — there is no separate wave/barrier view.
 
 The full `parallel-fanout` lifecycle, from strategy confirmation through fan-in and reviewer to cleanup. Use this when you have a plan in `active` status with ≥3 tasks, at least 2 of which are parallel-eligible (disjoint `task_touches`, no migration, no singleton-file touch, no blocking open question or proposed-decision dependency).
 
@@ -2284,13 +2289,13 @@ The steps above fan out a **single wave** of mutually-disjoint lanes. When the p
 
 4. **Fan-in retention + resume.** At each wave's `fan_in`, a lane may carry `"outcome":"succeeded"|"failed"`: a succeeded lane's worktree is torn down eagerly (in `teardown_worktrees`); a **failed lane's worktree is RETAINED** for inspection (in `retained_worktrees`). On a mid-wave failure, resume via the `reconcile_plan` phase — a `failed_clean` lane needs no reconcile (available on the next recompute); an `abandoned` lane is reclaimed immediately with `planar-agent reconcile --stale-after 0` — then recompute and re-fan only the remainder (never restart from wave 1). On plan completion, the `teardown` phase computes the full sweep (every lane worktree + branch removed; the epic branch retained until its PR merges).
 
-For the per-step orchestrator behavior under `parallel-fanout` see [`skills/src/pl-orchestrator.md §Worktree strategies`](../skills/src/pl-orchestrator.md). `isolated-sequential` (the same per-cycle ritual, minus the fan-out) is still harness-owned and not runnable from the model orchestrator.
+For the per-step orchestrator behavior under `parallel-fanout` and sequential worktree isolation, see [`skills/src/pl-orchestrator.md §Worktree Isolation`](../skills/src/pl-orchestrator.md).
 
 ---
 
 ## Recipe 23 — Recover a dead coder from its worktree
 
-A coder dispatched into a worktree (under the model-runnable `parallel-fanout` strategy — plan 760 — or the harness-owned `isolated-sequential` — plan 492) died mid-cycle — its heartbeat lapsed past TTL, its claim is now stale, and the cycle worktree on disk holds whatever partial state the coder committed before dying. This recipe recovers it; it applies to any worktree-isolated coder regardless of who dispatched it. The persisted `agent_work_claims.worktree_path` is the recovery key.
+A coder dispatched into a worktree (under sequential worktree isolation or `parallel-fanout`) died mid-cycle — its heartbeat lapsed past TTL, its claim is now stale, and the cycle worktree on disk holds whatever partial state the coder committed before dying. This recipe recovers it; it applies to any worktree-isolated coder. The persisted `agent_work_claims.worktree_path` is the recovery key.
 
 ### Step 1 — Surface the stale claim
 

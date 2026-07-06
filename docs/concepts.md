@@ -584,17 +584,17 @@ For the canonical contract see [`agents/methodology.md` §Barrel modes](../agent
 
 An orchestration strategy is the operator-facing dispatch frame for a plan. It bundles five underlying axes into one named choice the operator confirms at the strategy gate — Phase 3's first sub-step, run **before** the existing dispatch-shape gate. Strategy answers "what is the overall methodology for this plan?" Dispatch shape (the next gate, nested under it) answers "within that strategy, how do I batch *this cycle's* work?"
 
-### The five named strategies
+### The named strategies and isolation choice
 
 | Strategy | One-line description |
 |----------|----------------------|
-| `classic` | Coder runs in the operator's pwd on the current branch. Sequential cycles, reviewer per cycle. No worktrees, no epic branch, no parallelism. The explicit continuity default — today's behavior bit-for-bit. |
+| `classic` | Sequential cycles, reviewer per cycle. Default isolation is `pwd` on the current branch; `worktree` isolation is selectable when rollback or pwd hygiene matters. |
 | `parallel-fanout` | Fan out to N parallel coders on the parallel-eligible subset of the plan's open tasks; each in its own worktree off the shared epic branch; staged into dependency-respecting waves; one consolidated reviewer pass at fan-in. **Model-runnable** via the spawn-free `workflows/parallel-dispatch.lua` seam (plan 760) — no external harness. |
-| `isolated-sequential` | Coder runs in a dedicated [worktree](#worktree) on a `cycle/<plan-slug>/<task-slug>` branch off an `epic/<plan-slug>` branch. Sequential cycles, reviewer per cycle. Operator pwd stays clean. *(harness-owned — an external workflow harness)* |
-| `barrel-deferred` | Coder cycles run back-to-back in pwd; reviewer fires once at a milestone or plan boundary on the union diff. The existing `barrel-deferred` dispatch shape promoted to a named strategy. |
-| `barrel-bypass` | No reviewer dispatch at all. Quality gates (`make fmt-check` + `make build` + `make test` + `make test-integration` twice + render check + remaining validators) are the entire signal. Sequential, in-pwd. |
+| `isolated-sequential` | Descriptive alias for `classic` + `worktree` isolation: one cycle worktree per task, reviewer per cycle. |
+| `barrel-deferred` | Coder cycles run back-to-back; reviewer fires once at a milestone or plan boundary on the union diff. Supports both `pwd` and `worktree` isolation. |
+| `barrel-bypass` | No reviewer dispatch at all. Quality gates (`make fmt-check` + `make build` + `make test` + `make test-integration` twice + render check + remaining validators) are the entire signal. Supports both `pwd` and `worktree` isolation. |
 
-The model-driven `/pl-orchestrator` skill runs four strategies: the three **in-pwd** strategies (`classic`, `barrel-deferred`, `barrel-bypass`) plus the **model-runnable** worktree strategy `parallel-fanout` (driven via the `workflows/parallel-dispatch.lua` seam — the model runs the git worktree/branch/merge ops and spawns the coders; the seam only computes and hands back; **no external harness**). Only `isolated-sequential` remains **harness-owned**; when a plan is a fit for it, `/pl-orchestrator` surfaces that and recommends the best runnable strategy rather than running it itself. In-flight fan-out is watched through the existing `planar-watch ps --plan <id>` surface (the N concurrent lane claims + each claim's `worktree_path`); there is no dedicated wave/barrier view (a recorded non-goal).
+The model-driven `/pl-orchestrator` skill runs the sequential strategies in either `pwd` or `worktree` isolation and runs `parallel-fanout` in worktrees. Worktree bookkeeping is driven via the spawn-free `workflows/parallel-dispatch.lua` seam: `cycle_plan` computes one sequential lane; `plan`/`waves` compute fan-out lanes. The model runs the git worktree/branch/merge ops and spawns the coders; the seam only computes and hands back. There is **no external harness**. In-flight worktree execution is watched through the existing `planar-watch ps --plan <id>` surface (claims + each claim's `worktree_path`); there is no dedicated wave/barrier view (a recorded non-goal).
 
 ### The five underlying axes
 
@@ -614,8 +614,8 @@ Advanced operators can compose a custom strategy with `--strategy custom` plus p
 
 Phase 3 runs the strategy gate first, then the dispatch-shape gate nested under the chosen strategy:
 
-1. **Strategy gate.** The model orchestrator surfaces its recommendation + a one-line rationale + the runnable strategy menu (`classic` / `barrel-deferred` / `barrel-bypass` / `parallel-fanout`), plus a pointer to the still-harness-owned `isolated-sequential` when the plan is a fit for it. Operator confirms or overrides. Skipped only when `--strategy <name>` (or `--strategy custom --isolation X ...`) was passed at invocation. The recommendation algorithm is plan-shape-driven with status-quo bias — see [`agents/methodology.md` §Recommendation algorithm](../agents/methodology.md#recommendation-algorithm).
-2. **Dispatch-shape gate.** Constrained by the strategy: `parallel-fanout` forces the `fan-out` shape; `barrel-deferred` and `barrel-bypass` force their matching shapes; `classic` and `isolated-sequential` keep the full strict / grouped / single menu.
+1. **Strategy + isolation gate.** The model orchestrator surfaces its recommendation + a one-line rationale + the runnable strategy menu (`classic` / `barrel-deferred` / `barrel-bypass` / `parallel-fanout`) and the isolation choice (`pwd` / `worktree`) where applicable. Operator confirms or overrides. Skipped only when `--strategy <name>` plus any needed axis flags was passed at invocation. The recommendation algorithm is plan-shape-driven with status-quo bias — see [`agents/methodology.md` §Recommendation algorithm](../agents/methodology.md#recommendation-algorithm).
+2. **Dispatch-shape gate.** Constrained by the strategy: `parallel-fanout` forces the `fan-out` shape; `barrel-deferred` and `barrel-bypass` force their matching shapes; `classic` keeps the full strict / grouped / single menu.
 
 Neither gate has an auto-default — the recommendation never silently turns into an action. `classic` is the continuity guarantee: an operator who always picks (or accepts the recommendation of) `classic` sees no behavioral change relative to today.
 
@@ -633,7 +633,7 @@ For the canonical axis table, named bundles, invalid-combination list, and recom
 
 A Planar worktree is a git working tree created for an isolated coder cycle. It is a real `git worktree add` checkout — Planar does not reinvent the git primitive, it just owns the path convention and the persistence of which claim owns which worktree.
 
-**Worktree lifecycle — creation, the epic/cycle branch model, staged-wave fan-out, fan-in merge, failed-lane retention, and full teardown on plan completion — is model-driven under `parallel-fanout`** (plan 760): the deterministic wave/lane/merge/teardown computation lives in the spawn-free `workflows/parallel-dispatch.lua` seam, and the model runs the git ops and spawns the coders. Only single-lane `isolated-sequential` worktree management remains harness-owned; `classic` and the barrel strategies use no worktrees. The concept, the claim-attached persistence, and the scope-inside-worktree rules below survive regardless of who creates the worktree.
+**Worktree lifecycle — creation, the epic/cycle branch model, fan-in merge, failed-lane retention, and full teardown on plan completion — is model-driven for both sequential worktree isolation and `parallel-fanout`**. The deterministic wave/lane/merge/teardown computation lives in the spawn-free `workflows/parallel-dispatch.lua` seam: `cycle_plan` computes one sequential lane, and `plan`/`waves` compute fan-out lanes. The model runs the git ops and spawns the coders. Parallel eligibility applies only to `parallel-fanout`; a single sequential worktree lane does not require `task_touches`.
 
 ### Topology — epic + child, main checkout stays on master
 
@@ -644,7 +644,7 @@ Worktrees come in two shapes, both rooted at the task's owning repo (not the ope
 | Epic (integration) | `<repo>/.worktrees/epic/<plan-slug>/` | `epic/<plan-slug>` | Created on first dispatch of any task in the plan; persists for the plan's duration; removed after the operator merges the epic into master. |
 | Cycle (per-cycle working tree) | `<repo>/.worktrees/cycle/<plan-slug>/<task-slug>/` | `cycle/<plan-slug>/<task-slug>` | Created at cycle dispatch; removed after reviewer approval. |
 
-**Topology invariant: the main checkout stays on master throughout the entire orchestration.** Both the epic branch and each cycle's child branch live in their own worktrees off the main checkout. The fan-in merge runs inside the *epic* worktree (`cd <repo>/.worktrees/epic/<plan-slug>/`), never in the main checkout — driven by the model under `parallel-fanout`, or by the harness under `isolated-sequential`. This is what preserves the "operator pwd stays clean" promise that motivates the worktree strategies.
+**Topology invariant: the main checkout stays on master throughout worktree-isolated orchestration.** Both the epic branch and each cycle's child branch live in their own worktrees off the main checkout. The fan-in merge runs inside the *epic* worktree (`cd <repo>/.worktrees/epic/<plan-slug>/`), never in the main checkout. This is what preserves the "operator pwd stays clean" promise that motivates the worktree strategies.
 
 The `epic/` and `cycle/` prefixes are **disjoint top-level branch namespaces** by design: git refuses any ref whose path is a strict prefix of another existing ref, so the older bare `<plan-slug>` + `<plan-slug>/<task-slug>` pairing would collide on plans whose slug appears in a task slug. The prefixes guarantee no ref-hierarchy collision.
 
@@ -662,11 +662,11 @@ The standalone-entity alternative remains available — the forward-compat `vali
 
 | Strategy | Worktree? |
 |----------|-----------|
-| `classic` | No — coder runs in pwd on the current branch. |
+| `classic` | Operator choice: `pwd` by default, or one cycle worktree per task. |
 | `parallel-fanout` | Yes — N cycle worktrees per wave off the persistent epic worktree, dispatched concurrently. *(model-runnable via `workflows/parallel-dispatch.lua`, plan 760)* |
-| `isolated-sequential` | Yes — one cycle worktree per cycle off the persistent epic worktree. *(harness-owned, plan 492)* |
-| `barrel-deferred` | No — coder cycles run back-to-back in pwd. |
-| `barrel-bypass` | No — coder cycles run back-to-back in pwd. |
+| `isolated-sequential` | Yes — alias for `classic` + `worktree`. |
+| `barrel-deferred` | Operator choice: `pwd` by default, or sequential cycle worktrees with reviewer at boundary. |
+| `barrel-bypass` | Operator choice: `pwd` by default, or sequential cycle worktrees with gates-only review. |
 
 ### Scope inside a worktree
 
@@ -675,7 +675,7 @@ Two invariants govern scope behavior when cwd is inside a worktree:
 1. **The parent repo dictates the scope.** A worktree at `<repo>/.worktrees/{epic,cycle}/...` resolves to the same association as `<repo>`. Worktrees are not separately scoped; they inherit. Reads (`planar plan list`, `planar task show`, `planar-watch *`) work transparently from inside a worktree.
 2. **Planning verbs are refused from inside worktrees.** Verbs that mutate planning state (`plan add/update/done`, `task add/update/done/touches`, `question`, `decision`, `artifact add/update`, `scenario`, `spec draft/ingest`, `link/unlink/links`, `assoc`, `promote`, `demote`, `init`) refuse with a distinct exit code and a message pointing at the parent repo's cwd. `task done` is refused on purpose — coders use `planar-agent complete --claim <token>`, the atomic terminal verb. `--scope <slug>` does NOT override the refusal; the rule is about *where the verb runs*, not which scope it targets.
 
-For the canonical path scheme, branch scheme, lifecycle, the six parallelizability rules, and the conflict-resolution taxonomy see plan 492's tech spec — these moved out of `agents/methodology.md` when the model orchestrator was reduced to `classic`. For the recovery recipe when a coder dies mid-cycle see [`docs/workflows.md` §Recipe 23](workflows.md#recipe-23--recover-a-dead-coder-from-its-worktree).
+For the canonical path scheme, branch scheme, lifecycle, the six parallelizability rules, and the conflict-resolution taxonomy see [`agents/methodology.md` §Worktrees](../agents/methodology.md#worktrees). For the recovery recipe when a coder dies mid-cycle see [`docs/workflows.md` §Recipe 23](workflows.md#recipe-23--recover-a-dead-coder-from-its-worktree).
 
 **SQLite tables:** `agent_work_claims` (`worktree_path` column, migration 00015). **Primary entry points:** `planar-agent pull --worktree <path>`, `planar resume <task>`, `planar-watch claims`, `planar dashboard --agents`.
 

@@ -204,22 +204,22 @@ Storage is path-of-least-resistance: **no schema delta.** The strategy choice fo
 
 ### Named strategies
 
-Four named strategies run in the **model-driven orchestrator** — three in-pwd plus the model-runnable `parallel-fanout`. Each is one row in the bundle table below; an operator who wants something outside the menu can assemble a custom combination via axis-by-axis flags (see [Strategy gate](#strategy-gate) below).
+Four named strategies run in the **model-driven orchestrator**. The three sequential strategies (`classic`, `barrel-deferred`, `barrel-bypass`) can run in either isolation mode: `pwd` (default continuity path) or `worktree` (dedicated epic/cycle worktree). `parallel-fanout` always runs in worktrees because fan-out without isolation is invalid. An operator who wants something outside the menu can assemble a custom combination via axis-by-axis flags (see [Strategy gate](#strategy-gate) below).
 
-- **`classic`** — Coder runs in the operator's cwd on whatever branch is currently checked out. Sequential cycles, reviewer per cycle, test-coder per cycle. No worktrees, no epic branch, no parallelism. Recommended for: single-task changes, small plans, high-stakes invariant-touching work where the operator wants to watch the diff land in their own checkout.
-- **`barrel-deferred`** — Coder cycles run back-to-back in pwd; reviewer dispatched once at a milestone or plan boundary on the union diff. No isolation. Recommended for: long sequential plans where per-cycle reviewer overhead exceeds the value.
-- **`barrel-bypass`** — No reviewer at all; quality gates (`make fmt-check`, `make build`, `make test`, `make test-integration` twice, `planar skills render --check` against an out-of-tree staging dir, and any remaining relevant validators) are the entire signal. Sequential, in-pwd. Recommended for: mechanical sweeps, docs-polish, single-verb additions where the contract is fully gated.
+- **`classic`** — Sequential cycles, reviewer per cycle, test-coder per cycle. Default isolation is `pwd` on the current branch; selectable worktree isolation runs each cycle in a `cycle/p<plan>/<task-slug>` worktree off the plan's epic branch. Recommended for: single-task changes, small plans, high-stakes invariant-touching work.
+- **`barrel-deferred`** — Coder cycles run back-to-back; reviewer dispatched once at a milestone or plan boundary on the union diff. Default isolation is `pwd`; selectable worktree isolation keeps the operator checkout clean while preserving the deferred-review cadence. Recommended for: long sequential plans where per-cycle reviewer overhead exceeds the value.
+- **`barrel-bypass`** — No reviewer at all; quality gates (`make fmt-check`, `make build`, `make test`, `make test-integration` twice, `planar skills render --check` against an out-of-tree staging dir, and any remaining relevant validators) are the entire signal. Default isolation is `pwd`; selectable worktree isolation is allowed when rollback/pwd hygiene matters and the operator accepts gates-only risk. Recommended for: mechanical sweeps, docs-polish, single-verb additions where the contract is fully gated.
 - **`parallel-fanout`** — N coders fanned out across the parallel-eligible subset, each in its own worktree off a shared epic branch, staged into dependency-respecting waves and consolidated at fan-in. **Model-runnable** (plan 760): the model orchestrator drives the worktree/branch/merge git ops and spawns the N coders concurrently via the harness Agent tool, while the deterministic wave/lane/merge/teardown computation lives in the spawn-free `workflows/parallel-dispatch.lua` seam (which reads `recommend-strategy` + the `blocks` graph and HANDS BACK). There is **no external harness** in this path — the runner is the model orchestrator plus existing Planar primitives (`recommend-strategy`, `planar-agent pull --worktree`, `planar-agent reconcile`, the atomic terminal verbs). Recommended for: multi-lane plans (≥3 tasks, ≥2 parallel-eligible) whose lanes touch disjoint files.
 
-One further strategy — **`isolated-sequential`** (coder in a dedicated worktree on an epic-child branch; sequential) — still requires deterministic single-lane worktree and branch management and is therefore **owned by an external workflow harness**, not the model-driven orchestrator. Its axis bundle lives in the harness design documentation. The six parallel-eligibility rules that gate `parallel-fanout` are the engine's (`src/engine/planning/strategy.zig`, decision 370), consumed via `recommend-strategy` and never re-derived by the seam.
+`isolated-sequential` is retained only as a descriptive alias for `classic` + `worktree` isolation. It is no longer an external-harness-only escape hatch. The same spawn-free seam that powers `parallel-fanout` exposes a `cycle_plan` phase for single-lane worktree bookkeeping; the model still performs the git worktree/branch/merge operations and spawns the coder.
 
 ### Continuity guarantee: `classic`
 
-`classic` is the explicit continuity default, not a legacy or deprecated mode. It matches today's operator behavior bit-for-bit: coder in pwd, current branch, sequential cycles, reviewer per cycle. An operator who picks (or accepts the recommendation of) `classic` sees no behavioral change relative to today — no worktree is created, no epic branch is cut, no parallel dispatch happens. This is a first-class supported strategy and a design promise: introducing the strategy menu must not require existing operators to learn a new flow to keep working as they do.
+`classic` with `pwd` isolation is the explicit continuity default, not a legacy or deprecated mode. It matches today's operator behavior bit-for-bit: coder in pwd, current branch, sequential cycles, reviewer per cycle. An operator who picks (or accepts the recommendation of) `classic` + `pwd` sees no behavioral change relative to today — no worktree is created, no epic branch is cut, no parallel dispatch happens. This is a first-class supported strategy and a design promise: introducing the strategy menu must not require existing operators to learn a new flow to keep working as they do.
 
 ### Axes
 
-The five axes underlying every strategy. The model-driven orchestrator reaches the in-pwd subset for `classic` / barrel strategies AND the `worktree` / `epic-child` / `fan-out` / `per-fanin` values for the model-runnable `parallel-fanout` (via the `workflows/parallel-dispatch.lua` seam). Only the `isolated-sequential` bundle — single-lane `worktree` + `epic-child` + `sequential` — remains harness-owned. A custom strategy (`--strategy custom` with per-axis flags) is the escape hatch for advanced operators outside the named menu.
+The five axes underlying every strategy. The model-driven orchestrator reaches both isolation values for sequential strategies (`pwd`/`worktree`) and the `fan-out` bundle for `parallel-fanout` via the `workflows/parallel-dispatch.lua` seam. A custom strategy (`--strategy custom` with per-axis flags) is the escape hatch for advanced operators outside the named menu.
 
 | Axis | Values | `classic` default |
 |------|--------|-------------------|
@@ -231,20 +231,20 @@ The five axes underlying every strategy. The model-driven orchestrator reaches t
 
 ### Named bundles
 
-Each strategy locks in one value per axis:
+Each strategy locks in concurrency and review cadence. Sequential strategies default to `in-pwd`/`current-branch` but may be confirmed with `worktree`/`epic-child` isolation. `parallel-fanout` forces `worktree`/`epic-child`.
 
 | Strategy | `isolation` | `branch_model` | `concurrency` | `reviewer_cadence` | `test_coder_cadence` |
 |----------|-------------|----------------|---------------|--------------------|----------------------|
-| `classic`             | in-pwd   | current-branch | sequential | per-cycle    | per-cycle    |
-| `barrel-deferred`     | in-pwd   | current-branch | sequential | at-boundary  | at-boundary  |
-| `barrel-bypass`       | in-pwd   | current-branch | sequential | gates-only   | none         |
+| `classic`             | in-pwd default; worktree optional | current-branch default; epic-child with worktree | sequential | per-cycle    | per-cycle    |
+| `barrel-deferred`     | in-pwd default; worktree optional | current-branch default; epic-child with worktree | sequential | at-boundary  | at-boundary  |
+| `barrel-bypass`       | in-pwd default; worktree optional | current-branch default; epic-child with worktree | sequential | gates-only   | none         |
 | `parallel-fanout`     | worktree | epic-child     | fan-out    | per-fanin    | per-fanin    |
 
-The `parallel-fanout` bundle is model-runnable via the `workflows/parallel-dispatch.lua` seam (plan 760). The remaining worktree bundle (`isolated-sequential`) is documented in external harness design documentation; the model orchestrator does not run it.
+Both worktree shapes are model-runnable via `workflows/parallel-dispatch.lua`: `cycle_plan` computes one sequential lane, while `plan`/`waves` compute fan-out lanes.
 
 ### Invalid combinations
 
-The model orchestrator reaches the in-pwd axis subset (for `classic` / barrel strategies) and the full `worktree` + `epic-child` + `fan-out` + `per-fanin` bundle (for `parallel-fanout`). The fan-out invalid-combination guards (`fan-out` + `in-pwd`, `fan-out` + `current-branch`, `per-cycle` + `fan-out`) still hold — a `--strategy custom` request selecting `fan-out` with `in-pwd`/`current-branch`/`per-cycle` is an incoherent bundle and is refused with a diagnostic. A `--strategy custom` request selecting single-lane `worktree` + `sequential` (the `isolated-sequential` shape) is refused with a pointer to an external harness, since that bundle is not model-runnable.
+Invalid-combination guards still hold. `fan-out` requires `worktree` + `epic-child` and a fan-in review/test cadence; `fan-out` + `in-pwd`, `fan-out` + `current-branch`, or `per-cycle` + `fan-out` is refused. Sequential `worktree` requires `epic-child`; `worktree` + `current-branch` is refused because commits would land on the operator branch from an isolated checkout. `in-pwd` + `epic-child` is refused because there is no separate checkout to hold the child branch.
 
 ### Recommendation algorithm
 
@@ -252,24 +252,24 @@ The orchestrator proposes a strategy per plan based on plan shape, with status-q
 
 1. If the plan is tagged as mechanical, docs-only, or single-verb → recommend `barrel-bypass`.
 2. Else if the plan has a multi-milestone roadmap and at most one parallel-eligible task per milestone → recommend `barrel-deferred`.
-3. Else if the plan has ≥3 tasks with ≥2 parallel-eligible → recommend `parallel-fanout` (model-runnable via the `workflows/parallel-dispatch.lua` seam — staged worktree waves, per-lane coders fanned out concurrently, fan-in merge, no external harness). If instead the plan has 2–3 tasks where single-lane worktree isolation would help but there is no fan-out parallelism, surface that the best architectural fit is the harness-owned `isolated-sequential` (not runnable from this skill) and recommend the best in-pwd strategy (`classic` or `barrel-deferred`) as the actionable choice.
+3. Else if the plan has ≥3 tasks with ≥2 parallel-eligible → recommend `parallel-fanout` (model-runnable via the `workflows/parallel-dispatch.lua` seam — staged worktree waves, per-lane coders fanned out concurrently, fan-in merge, no external harness).
 4. Else if the plan has exactly 1 task → recommend `classic`.
 5. Else if the most recent dispatch on this plan used a non-default strategy `S` → recommend `S` (stickiness — the operator already made a choice for this plan).
 6. Otherwise → recommend `classic` (status-quo bias).
 
-The recommendation is a proposal, never an action. The strategy gate (below) is what turns it into a chosen strategy.
+The recommendation is a proposal, never an action. The strategy gate (below) is what turns it into a chosen strategy. Isolation is confirmed alongside the strategy: recommend `pwd` unless the operator requested worktrees, the prior cycle used worktrees, or the plan shape makes pwd hygiene materially valuable; in those cases surface `worktree` as the recommended isolation. `parallel-fanout` always sets isolation to `worktree`.
 
 ### Strategy gate
 
 Phase 3 of the orchestrator now runs **two** gates in order before dispatch:
 
-1. **Strategy gate** (new). "Which strategy for this plan?" The orchestrator surfaces its recommended strategy + a one-line rationale + the named alternatives. The operator confirms or overrides.
+1. **Strategy + isolation gate** (new). "Which strategy, and should it run in pwd or worktrees?" The orchestrator surfaces its recommended strategy + recommended isolation + a one-line rationale + the named alternatives. The operator confirms or overrides both axes.
 2. **Dispatch-shape gate** (existing — see [Dispatch Granularity](#dispatch-granularity)). "Within that strategy, which shape for this cycle?" Constrained by the strategy: `barrel-bypass` forces the `barrel-bypass` shape; `barrel-deferred` forces the `barrel-deferred` shape; `parallel-fanout` forces the `fan-out` shape; `classic` keeps the full strict / grouped / single menu.
-3. **Dispatch.** For the in-pwd strategies the orchestrator claims tasks and dispatches coders in pwd. For `parallel-fanout` the orchestrator drives staged worktree fan-out itself — the seam computes the current wave / per-lane worktree paths / merge order, the model cuts the epic branch, creates the per-lane worktrees, spawns N coders concurrently (each `isolation: worktree`, each with its own `planar-agent pull --worktree` claim), and runs the fan-in merge. (Single-lane `isolated-sequential` worktree management belongs to an external workflow harness, not this loop.)
+3. **Dispatch.** For `pwd` isolation the orchestrator claims tasks and dispatches coders in the operator checkout. For sequential `worktree` isolation, the orchestrator drives one cycle lane at a time: call `planar-execute run workflows/parallel-dispatch.lua --phase cycle_plan`, cut/create the epic and cycle worktrees from the seam output, claim with `planar-agent pull --worktree <path>` (or `claim --entity ... --worktree <path>`), spawn the coder in that worktree, then merge the completed cycle branch into the epic worktree. For `parallel-fanout`, the orchestrator drives staged worktree fan-out itself — the seam computes the current wave / per-lane worktree paths / merge order, the model cuts the epic branch, creates the per-lane worktrees, spawns N coders concurrently (each `isolation: worktree`, each with its own `planar-agent pull --worktree` claim), and runs the fan-in merge.
 
 The strategy gate is operator-confirmed by default. Skip flags:
 
-- `--strategy <name>` — pre-commit to a named strategy. Skips the gate; the dispatch-shape gate still runs (unless that gate also has a pre-committed answer).
+- `--strategy <name>` — pre-commit to a named strategy. Skips the strategy part of the gate; isolation still defaults to `pwd` for sequential strategies unless `--isolation worktree` is supplied. The dispatch-shape gate still runs unless that gate also has a pre-committed answer.
 - `--strategy custom --isolation <X> --branch-model <Y> --concurrency <Z> --reviewer-cadence <W> --test-coder-cadence <V>` — pre-commit to a custom axis combination. The per-axis flags are hidden from default `--help`; advanced operators discover them via docs or `--help-advanced`.
 
 Auto-defaulting without confirmation is **not** a supported mode — the recommendation engine never silently picks a strategy. If the operator wants zero-friction repetition, `--strategy <name>` is the explicit opt-in.
@@ -279,7 +279,7 @@ Auto-defaulting without confirmation is **not** a supported mode — the recomme
 ```json
 {
   "strategy": "barrel-deferred",
-  "axes": {"isolation": "in-pwd", "branch_model": "current-branch", "concurrency": "sequential", "reviewer_cadence": "at-boundary", "test_coder_cadence": "at-boundary"},
+  "axes": {"isolation": "worktree", "branch_model": "epic-child", "concurrency": "sequential", "reviewer_cadence": "at-boundary", "test_coder_cadence": "at-boundary"},
   "dispatch_shape": "grouped",
   "rationale": "multi-milestone plan, low per-cycle review value"
 }
@@ -291,27 +291,25 @@ The "last-used strategy for this plan" lookup that drives rule 6 of the recommen
 
 The dispatch-shape gate's six shapes (`strict`, `grouped`, `single`, `barrel-grouped`, `barrel-deferred`, `barrel-bypass`) map onto the strategy axes as follows:
 
-- `strict`, `grouped`, `single` — apply within any in-pwd strategy. They describe per-cycle batching, not overall methodology. Under `classic` the operator picks freely; under the barrel strategies they are subsumed; under `parallel-fanout` the shape is forced to `fan-out` (each wave's lanes are batched one coder per lane).
+- `strict`, `grouped`, `single` — apply within `classic` regardless of isolation. They describe per-cycle batching, not overall methodology. Under the barrel strategies they are subsumed; under `parallel-fanout` the shape is forced to `fan-out` (each wave's lanes are batched one coder per lane).
 - `barrel-grouped`, `barrel-deferred`, `barrel-bypass` — these conflate "dispatch shape" with "reviewer cadence." Under the strategy model, the latter two are subsumed by the `barrel-deferred` and `barrel-bypass` named strategies. Whether the standalone flags get deprecated, kept for backward compatibility, or treated as aliases is an open question deferred until operators have used both paths for a cycle or two.
 
 ## Worktrees
 
 Worktree lifecycle — the `epic/` integration branch and per-task `cycle/`
-working branches, their creation, staged-wave fan-out, fan-in merge, retention
-of failed lanes, and full teardown on plan completion — is **model-driven under
-`parallel-fanout`** (plan 760): the deterministic wave/lane/merge/teardown
-computation lives in the spawn-free `workflows/parallel-dispatch.lua` seam
-(reading `recommend-strategy` + the `blocks` graph and handing back), and the
-model runs the git ops and spawns the coders. There is no external harness in
-this path. The branch/path naming scheme is locked in the tech spec (epic
+working branches, their creation, fan-in merge, retention of failed lanes, and
+full teardown on plan completion — is **model-driven** for both sequential
+worktree isolation and `parallel-fanout`. The deterministic bookkeeping lives in
+the spawn-free `workflows/parallel-dispatch.lua` seam: `cycle_plan` computes one
+sequential lane, while `plan`/`waves` compute parallel lanes. The model runs the
+git ops and spawns the coders. There is no external harness in this path. The
+branch/path naming scheme is locked in the tech spec (epic
 `epic/p<plan>-<slug>`, lane `cycle/p<plan>/<task-slug>`); the six
-parallel-eligibility rules are the engine's (`recommend-strategy`), never
-re-derived by the seam. Only single-lane `isolated-sequential` worktree
-management remains owned by an external workflow harness.
+parallel-eligibility rules are the engine's (`recommend-strategy`) and apply
+only to `parallel-fanout`, never to a single sequential worktree lane.
 
-`classic` and the barrel strategies never use worktrees. The runtime invariant
-below still governs scope whenever a process (a fanned-out or harness-spawned
-coder) runs with cwd inside a worktree, regardless of who created it.
+The runtime invariant below governs scope whenever a process runs with cwd
+inside a worktree.
 
 ## Scope inside worktrees — parent repo dictates, planning verbs refused
 
@@ -631,8 +629,8 @@ and the reviewer cannot recover the loss after the fact.
 
 ## Concurrency
 
-- Parallel coder dispatch is **model-driven under `parallel-fanout`** (plan 760): the model spawns N coders concurrently via the harness Agent tool, each in its own worktree, against the parallel-eligible subset. The codified eligibility test (six parallelizability rules) is the engine's, consumed via `recommend-strategy` and never re-derived. The three in-pwd strategies (`classic` and the barrel modes) run one coder at a time in pwd.
-- The substrate that lets parallel coders run without clobbering each other — per-task worktrees on epic-child branches, staged waves with a fan-in barrier, and the fan-in merge — is computed by the spawn-free `workflows/parallel-dispatch.lua` seam and executed by the model. See [Worktrees](#worktrees) for the ownership boundary. Single-lane `isolated-sequential` worktree management remains harness-owned.
+- Parallel coder dispatch is **model-driven under `parallel-fanout`** (plan 760): the model spawns N coders concurrently via the harness Agent tool, each in its own worktree, against the parallel-eligible subset. The codified eligibility test (six parallelizability rules) is the engine's, consumed via `recommend-strategy` and never re-derived. Sequential strategies (`classic` and the barrel modes) run one coder at a time in the confirmed isolation mode: `pwd` or `worktree`.
+- The substrate that lets worktree-isolated coders run without clobbering the operator checkout — per-task worktrees on epic-child branches, staged waves with a fan-in barrier for `parallel-fanout`, and the fan-in merge — is computed by the spawn-free `workflows/parallel-dispatch.lua` seam and executed by the model. See [Worktrees](#worktrees) for the ownership boundary.
 - Reviewers may run in parallel against independent coder outputs. Under `parallel-fanout` a single reviewer cycle runs against the integrated diff on the epic, not per child.
 - A single task is always coder→reviewer sequential — never two coders on the same task simultaneously.
 - Stale claims are not ignored silently. The operator or orchestrator must reconcile or force-takeover them before treating the work as available.

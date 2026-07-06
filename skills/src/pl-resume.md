@@ -38,14 +38,14 @@ At the start of any new agent session when picking up work from a prior session.
 
 ## Worktree-Aware Resume
 
-When a prior agent session pulled the task with `planar-agent pull <plan> --worktree <path>` under a worktree-isolated strategy (`parallel-fanout`, model-runnable via the `workflows/parallel-dispatch.lua` seam, or harness-owned `isolated-sequential`), the active `agent_work_claims` row carries the `worktree_path`. The resume packet surfaces that path in two places:
+When a prior agent session pulled the task with `planar-agent pull <plan> --worktree <path>` under a worktree-isolated strategy (sequential worktree isolation or `parallel-fanout`, both model-runnable via the `workflows/parallel-dispatch.lua` seam), the active `agent_work_claims` row carries the `worktree_path`. The resume packet surfaces that path in two places:
 
 - `--json`: `active_claim.worktree_path` (string; empty when no path was captured).
 - Text: a `worktree:` and `cd:` line under section 8 (Audit Footer).
 
 When the field is non-empty, the resumer MUST prepend a `cd <path>` directive to the resume flow before invoking the next-action commands. This keeps the resumer aligned with the prior session's isolated checkout (epic worktree, cycle worktree, feature branch worktree, etc.) rather than spawning planning commands from the canonical repo root and tripping the worktree-planning gate. When `active_claim` is null or `worktree_path` is empty, no `cd` is required.
 
-For the canonical worktree path/branch/topology conventions (`epic/<plan-slug>` + `cycle/<plan-slug>/<task-slug>`, main checkout stays on master, etc.) see [`docs/concepts.md` §Worktree](../../docs/concepts.md#worktree). Under `parallel-fanout`, the model orchestrator owns that lifecycle through the deterministic seam; under `isolated-sequential`, the external harness owns it. For the recovery recipe when the prior coder died and the claim is stale, see [`docs/workflows.md` §Recipe 23](../../docs/workflows.md#recipe-23--recover-a-dead-coder-from-its-worktree).
+For the canonical worktree path/branch/topology conventions (`epic/<plan-slug>` + `cycle/<plan-slug>/<task-slug>`, main checkout stays on master, etc.) see [`docs/concepts.md` §Worktree](../../docs/concepts.md#worktree). The model orchestrator owns that lifecycle through the deterministic seam. For the recovery recipe when the prior coder died and the claim is stale, see [`docs/workflows.md` §Recipe 23](../../docs/workflows.md#recipe-23--recover-a-dead-coder-from-its-worktree).
 
 ## Vendor Notes
 

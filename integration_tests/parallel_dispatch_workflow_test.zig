@@ -42,6 +42,10 @@
 //!     tasks (fan_out_available:false) yields NO fan-out wave — an empty lane
 //!     list with fan_out=false, not an error.
 //!
+//!   sequential-worktree-cycle: cycle_plan computes one deterministic worktree
+//!     lane for an explicitly selected task without consulting parallel
+//!     eligibility and without requiring task_touches.
+//!
 //!   manual-fan-in: the fan_in phase emits the stable (task-id-ordered) merge
 //!     order and teardown list even when the input lanes are out of order.
 //!
@@ -204,6 +208,18 @@ const EmptyPlanResult = struct {
     plan_id: i64,
     fan_out: bool,
     lane_count: i64,
+    reason: []const u8 = "",
+};
+
+const CyclePlanResult = struct {
+    plan_id: i64,
+    fan_out: bool,
+    sequential: bool,
+    epic_branch: []const u8,
+    base: []const u8,
+    lane_count: i64,
+    lane: Lane,
+    lanes: []Lane = &.{},
     reason: []const u8 = "",
 };
 
@@ -608,6 +624,67 @@ test "parallel-dispatch plan: fewer than two eligible tasks yields no fan-out wa
     // fan_out=false, lane_count=0, with a human reason.
     try std.testing.expect(!parsed.value.fan_out);
     try std.testing.expectEqual(@as(i64, 0), parsed.value.lane_count);
+    try std.testing.expect(parsed.value.reason.len > 0);
+}
+
+// ---------------------------------------------------------------------------
+// sequential-worktree-cycle: cycle_plan computes one deterministic worktree
+// lane for a selected task. It does not require task_touches, because a
+// sequential worktree lane has no cross-lane conflict surface.
+// ---------------------------------------------------------------------------
+
+test "parallel-dispatch cycle_plan: selected task computes one sequential worktree lane without task touches" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const plan = suite.mustRunJSON(PlanJSON, arena, &.{
+        "plan", "create", "--slug", "pd-seq", "--json", "PD_SEQ",
+    });
+    const pid = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch unreachable;
+
+    // No task_touches on purpose: parallel fan-out would serialize this task,
+    // but sequential worktree isolation must still be runnable.
+    const task_id = addTaskSlug(&suite, arena, pid, "seq-lane", "Sequential lane");
+    suite.allocator.free(suite.mustRun(&.{ "plan", "update", pid, "--status", "active" }));
+
+    const wf_path = try workflowPath(gpa);
+    defer gpa.free(wf_path);
+    const args_json = try std.fmt.allocPrint(
+        gpa,
+        "{{\"plan_id\":{s},\"task_id\":{d},\"worktree_root\":\".wt\"}}",
+        .{ pid, task_id },
+    );
+    defer gpa.free(args_json);
+
+    const res = try mustExecute(gpa, suite.tmpAbsPath(), suite.absDbPath(), &.{
+        "run", wf_path, "--phase", "cycle_plan", "--args", args_json,
+    });
+    defer res.deinit();
+    const out = std.mem.trim(u8, res.stdout, " \t\r\n");
+
+    const parsed = try std.json.parseFromSlice(CyclePlanResult, arena, out, .{ .ignore_unknown_fields = true });
+    try std.testing.expectEqual(plan.id, parsed.value.plan_id);
+    try std.testing.expect(!parsed.value.fan_out);
+    try std.testing.expect(parsed.value.sequential);
+    try std.testing.expectEqual(@as(i64, 1), parsed.value.lane_count);
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.lanes.len);
+    try std.testing.expectEqual(task_id, parsed.value.lane.task_id);
+    try std.testing.expectEqual(task_id, parsed.value.lanes[0].task_id);
+
+    const want_epic = try std.fmt.allocPrint(arena, "epic/p{d}-pd-seq", .{plan.id});
+    const want_branch = try std.fmt.allocPrint(arena, "cycle/p{d}/seq-lane", .{plan.id});
+    const want_wt = try std.fmt.allocPrint(arena, ".wt/cycle/p{d}/seq-lane", .{plan.id});
+    try std.testing.expectEqualStrings(want_epic, parsed.value.epic_branch);
+    try std.testing.expectEqualStrings("HEAD", parsed.value.base);
+    try std.testing.expectEqualStrings("seq-lane", parsed.value.lane.slug);
+    try std.testing.expectEqualStrings("Sequential lane", parsed.value.lane.title);
+    try std.testing.expectEqualStrings(want_branch, parsed.value.lane.branch);
+    try std.testing.expectEqualStrings(want_wt, parsed.value.lane.worktree);
     try std.testing.expect(parsed.value.reason.len > 0);
 }
 
