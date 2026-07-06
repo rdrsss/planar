@@ -589,12 +589,12 @@ An orchestration strategy is the operator-facing dispatch frame for a plan. It b
 | Strategy | One-line description |
 |----------|----------------------|
 | `classic` | Coder runs in the operator's pwd on the current branch. Sequential cycles, reviewer per cycle. No worktrees, no epic branch, no parallelism. The explicit continuity default — today's behavior bit-for-bit. |
+| `parallel-fanout` | Fan out to N parallel coders on the parallel-eligible subset of the plan's open tasks; each in its own worktree off the shared epic branch; staged into dependency-respecting waves; one consolidated reviewer pass at fan-in. **Model-runnable** via the spawn-free `workflows/parallel-dispatch.lua` seam (plan 760) — no external harness. |
 | `isolated-sequential` | Coder runs in a dedicated [worktree](#worktree) on a `cycle/<plan-slug>/<task-slug>` branch off an `epic/<plan-slug>` branch. Sequential cycles, reviewer per cycle. Operator pwd stays clean. *(harness-owned — an external workflow harness)* |
-| `parallel-fanout` | Fan out to N parallel coders on the parallel-eligible subset of the plan's open tasks; each in its own worktree off the shared epic branch; one consolidated reviewer pass at fan-in. *(harness-owned — an external workflow harness)* |
 | `barrel-deferred` | Coder cycles run back-to-back in pwd; reviewer fires once at a milestone or plan boundary on the union diff. The existing `barrel-deferred` dispatch shape promoted to a named strategy. |
 | `barrel-bypass` | No reviewer dispatch at all. Quality gates (`make fmt-check` + `make build` + `make test` + `make test-integration` twice + render check + remaining validators) are the entire signal. Sequential, in-pwd. |
 
-The model-driven `/pl-orchestrator` skill runs only the three **in-pwd** strategies (`classic`, `barrel-deferred`, `barrel-bypass`). The two **worktree** strategies (`isolated-sequential`, `parallel-fanout`) are owned by an **external workflow harness**; when a plan is a fit, `/pl-orchestrator` surfaces that and recommends using an external harness rather than running it itself.
+The model-driven `/pl-orchestrator` skill runs four strategies: the three **in-pwd** strategies (`classic`, `barrel-deferred`, `barrel-bypass`) plus the **model-runnable** worktree strategy `parallel-fanout` (driven via the `workflows/parallel-dispatch.lua` seam — the model runs the git worktree/branch/merge ops and spawns the coders; the seam only computes and hands back; **no external harness**). Only `isolated-sequential` remains **harness-owned**; when a plan is a fit for it, `/pl-orchestrator` surfaces that and recommends the best runnable strategy rather than running it itself. In-flight fan-out is watched through the existing `planar-watch ps --plan <id>` surface (the N concurrent lane claims + each claim's `worktree_path`); there is no dedicated wave/barrier view (a recorded non-goal).
 
 ### The five underlying axes
 
@@ -614,7 +614,7 @@ Advanced operators can compose a custom strategy with `--strategy custom` plus p
 
 Phase 3 runs the strategy gate first, then the dispatch-shape gate nested under the chosen strategy:
 
-1. **Strategy gate.** The model orchestrator surfaces its recommendation + a one-line rationale + the in-pwd strategy menu (and flags a fit for the harness-owned worktree strategies). Operator confirms or overrides. Skipped only when `--strategy <name>` (or `--strategy custom --isolation X ...`) was passed at invocation. The recommendation algorithm is plan-shape-driven with status-quo bias — see [`agents/methodology.md` §Recommendation algorithm](../agents/methodology.md#recommendation-algorithm).
+1. **Strategy gate.** The model orchestrator surfaces its recommendation + a one-line rationale + the runnable strategy menu (`classic` / `barrel-deferred` / `barrel-bypass` / `parallel-fanout`), plus a pointer to the still-harness-owned `isolated-sequential` when the plan is a fit for it. Operator confirms or overrides. Skipped only when `--strategy <name>` (or `--strategy custom --isolation X ...`) was passed at invocation. The recommendation algorithm is plan-shape-driven with status-quo bias — see [`agents/methodology.md` §Recommendation algorithm](../agents/methodology.md#recommendation-algorithm).
 2. **Dispatch-shape gate.** Constrained by the strategy: `parallel-fanout` forces the `fan-out` shape; `barrel-deferred` and `barrel-bypass` force their matching shapes; `classic` and `isolated-sequential` keep the full strict / grouped / single menu.
 
 Neither gate has an auto-default — the recommendation never silently turns into an action. `classic` is the continuity guarantee: an operator who always picks (or accepts the recommendation of) `classic` sees no behavioral change relative to today.
@@ -633,7 +633,7 @@ For the canonical axis table, named bundles, invalid-combination list, and recom
 
 A Planar worktree is a git working tree created for an isolated coder cycle. It is a real `git worktree add` checkout — Planar does not reinvent the git primitive, it just owns the path convention and the persistence of which claim owns which worktree.
 
-**Worktree lifecycle — creation, the epic/cycle branch model, fan-in merge, cleanup — is owned by an external workflow harness, not the model-driven orchestrator.** The model orchestrator runs `classic` (in-pwd) only. The concept, the claim-attached persistence, and the scope-inside-worktree rules below survive regardless of who creates the worktree.
+**Worktree lifecycle — creation, the epic/cycle branch model, staged-wave fan-out, fan-in merge, failed-lane retention, and full teardown on plan completion — is model-driven under `parallel-fanout`** (plan 760): the deterministic wave/lane/merge/teardown computation lives in the spawn-free `workflows/parallel-dispatch.lua` seam, and the model runs the git ops and spawns the coders. Only single-lane `isolated-sequential` worktree management remains harness-owned; `classic` and the barrel strategies use no worktrees. The concept, the claim-attached persistence, and the scope-inside-worktree rules below survive regardless of who creates the worktree.
 
 ### Topology — epic + child, main checkout stays on master
 
@@ -644,13 +644,13 @@ Worktrees come in two shapes, both rooted at the task's owning repo (not the ope
 | Epic (integration) | `<repo>/.worktrees/epic/<plan-slug>/` | `epic/<plan-slug>` | Created on first dispatch of any task in the plan; persists for the plan's duration; removed after the operator merges the epic into master. |
 | Cycle (per-cycle working tree) | `<repo>/.worktrees/cycle/<plan-slug>/<task-slug>/` | `cycle/<plan-slug>/<task-slug>` | Created at cycle dispatch; removed after reviewer approval. |
 
-**Topology invariant: the main checkout stays on master throughout the entire orchestration.** Both the epic branch and each cycle's child branch live in their own worktrees off the main checkout. The harness's fan-in merge runs inside the *epic* worktree (`cd <repo>/.worktrees/epic/<plan-slug>/`), never in the main checkout. This is what preserves the "operator pwd stays clean" promise that motivates the worktree strategies.
+**Topology invariant: the main checkout stays on master throughout the entire orchestration.** Both the epic branch and each cycle's child branch live in their own worktrees off the main checkout. The fan-in merge runs inside the *epic* worktree (`cd <repo>/.worktrees/epic/<plan-slug>/`), never in the main checkout — driven by the model under `parallel-fanout`, or by the harness under `isolated-sequential`. This is what preserves the "operator pwd stays clean" promise that motivates the worktree strategies.
 
 The `epic/` and `cycle/` prefixes are **disjoint top-level branch namespaces** by design: git refuses any ref whose path is a strict prefix of another existing ref, so the older bare `<plan-slug>` + `<plan-slug>/<task-slug>` pairing would collide on plans whose slug appears in a task slug. The prefixes guarantee no ref-hierarchy collision.
 
 ### Persistence on `agent_work_claims.worktree_path`
 
-When the harness dispatches into a worktree, it persists the absolute path on the claim row's `worktree_path` column (introduced in migration 00015 — see [`docs/architecture.md` §Application tables](architecture.md#application-tables)). The persistence model is deliberately claim-attached, not a standalone `worktrees` table:
+When the orchestrator (or harness) dispatches into a worktree, it persists the absolute path on the claim row's `worktree_path` column (introduced in migration 00015 — see [`docs/architecture.md` §Application tables](architecture.md#application-tables)). Under `parallel-fanout` each fanned-out coder acquires its own claim with `planar-agent pull --worktree <path>`, so the N concurrent lanes are each observable through the persisted path. The persistence model is deliberately claim-attached, not a standalone `worktrees` table:
 
 - **Resume reads it.** `planar resume <task>` surfaces `active_claim.worktree_path` in its JSON output and as a `cd:` line in the text packet so a cold-start resumer can `cd` into the same checkout the prior session was running in.
 - **`planar-watch` surfaces it.** Every claim-bearing view (`claims`, `log`, `feed`, `ps`) and `planar dashboard --agents` include the column.
@@ -663,8 +663,8 @@ The standalone-entity alternative remains available — the forward-compat `vali
 | Strategy | Worktree? |
 |----------|-----------|
 | `classic` | No — coder runs in pwd on the current branch. |
+| `parallel-fanout` | Yes — N cycle worktrees per wave off the persistent epic worktree, dispatched concurrently. *(model-runnable via `workflows/parallel-dispatch.lua`, plan 760)* |
 | `isolated-sequential` | Yes — one cycle worktree per cycle off the persistent epic worktree. *(harness-owned, plan 492)* |
-| `parallel-fanout` | Yes — N cycle worktrees per cycle off the persistent epic worktree, dispatched concurrently. *(harness-owned, plan 492)* |
 | `barrel-deferred` | No — coder cycles run back-to-back in pwd. |
 | `barrel-bypass` | No — coder cycles run back-to-back in pwd. |
 

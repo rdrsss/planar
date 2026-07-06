@@ -488,28 +488,53 @@ fn writeLuaTableJson(L: ?*c.lua_State, hs: *HostState, idx: c_int, w: *std.Io.Wr
         try w.writeByte(']');
         return;
     }
-    // Object (or empty table): iterate all key/value pairs. Use abs_idx
-    // throughout so that lua_pushnil (the first-key seed) and subsequent
-    // lua_next pushes do not invalidate the table reference.
-    try w.writeByte('{');
-    var first = true;
+    // Object (or empty table): emit key/value pairs with keys in ASCENDING
+    // BYTEWISE ORDER so the serialization is byte-stable across runs.
+    //
+    // DETERMINISM CONTRACT (plan 760 M1): Lua's `lua_next` traversal order over
+    // a string-keyed table depends on the table's hash layout, which depends on
+    // the per-state hash seed. `luaL_newstate` seeds that from time + ASLR
+    // address (see vendor/lua lauxlib.c luai_makeseed), so raw `lua_next` order
+    // is NOT reproducible run-to-run. A workflow whose `flow.result` payload
+    // must be byte-stable (the parallel-dispatch seam recomputing identical
+    // waves on resume) needs a canonical order. We collect the string keys,
+    // sort them bytewise, then emit values by re-fetching each key. This makes
+    // ALL planar-execute object output deterministic, not just the fan-out seam.
+    var keys: std.ArrayList([]const u8) = .empty;
     c.lua_pushnil(L); // first key — must come AFTER abs_idx is captured
     while (c.lua_next(L, abs_idx) != 0) {
         // key at -2, value at -1.
         if (c.lua_type(L, -2) != c.LUA_TSTRING) {
-            // Non-string keys in an object table: coerce via tostring of a
-            // COPY so we never mutate the original key (which would confuse
-            // lua_next). Skip booleans/tables silently is wrong; reject.
+            // Non-string keys in an object table: reject (JSON object keys must
+            // be strings). Coercing would confuse lua_next's key iteration.
             raiseError(L, "JSON object key must be a string", .{});
         }
-        if (!first) try w.writeByte(',');
-        first = false;
         var klen: usize = 0;
         const kraw = c.lua_tolstring(L, -2, &klen);
-        try std.json.Stringify.encodeJsonString(kraw[0..klen], .{}, w);
-        try w.writeByte(':');
-        try writeLuaJson(L, hs, -1, w);
+        // Dupe the key onto the arena: the raw pointer is owned by the interned
+        // Lua string, which stays live for this table, but duping keeps the
+        // slice valid independent of any later stack churn and lets us sort a
+        // stable, self-owned list.
+        const key_copy = hs.arena.dupe(u8, kraw[0..klen]) catch raiseError(L, "out of memory collecting object keys", .{});
+        keys.append(hs.arena, key_copy) catch raiseError(L, "out of memory collecting object keys", .{});
         c.lua_settop(L, -2); // pop value, keep key for next
+    }
+    std.mem.sort([]const u8, keys.items, {}, struct {
+        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.order(u8, a, b) == .lt;
+        }
+    }.lessThan);
+    try w.writeByte('{');
+    for (keys.items, 0..) |key, i| {
+        if (i != 0) try w.writeByte(',');
+        try std.json.Stringify.encodeJsonString(key, .{}, w);
+        try w.writeByte(':');
+        // Re-fetch the value by key. lua_getfield needs a NUL-terminated key;
+        // dupeZ on the arena.
+        const key_z = hs.arena.dupeZ(u8, key) catch raiseError(L, "out of memory fetching object value", .{});
+        _ = c.lua_getfield(L, abs_idx, key_z.ptr);
+        try writeLuaJson(L, hs, -1, w);
+        c.lua_settop(L, -2); // pop the fetched value
     }
     try w.writeByte('}');
 }

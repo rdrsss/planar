@@ -2031,18 +2031,20 @@ Rationale: ≥3 tasks and ≥2 parallel-eligible (rule 3 of the recommendation a
 Alternatives:
   classic                Coder in pwd on current branch; sequential cycles, reviewer per cycle.
                          [continuity guarantee — today's behavior bit-for-bit]
-  isolated-sequential    Coder in a worktree on an epic-child branch; sequential, reviewer per cycle.
-                         [pwd hygiene + per-task rollback]
-  parallel-fanout        Fan out to N coders on the parallel-eligible subset; reviewer at fan-in.
+  parallel-fanout        Fan out to N coders on the parallel-eligible subset, staged by the
+                         `blocks` graph; reviewer at fan-in. Model-runnable via
+                         workflows/parallel-dispatch.lua — no external harness.
                          [throughput + integrated review]                                 ← recommended
   barrel-deferred        Back-to-back coder cycles in pwd; reviewer at boundary on union diff.
                          [throughput + late review safety net]
   barrel-bypass          No reviewer; gates are the entire signal. Sequential, in-pwd.
                          [maximum throughput; trust the gates]
+  isolated-sequential    Coder in a worktree on an epic-child branch; sequential, reviewer per cycle.
+                         [pwd hygiene + per-task rollback — still harness-owned, not runnable here]
 
   --strategy custom      Per-axis flags for advanced operators.
 
-Confirm strategy? [parallel-fanout / classic / isolated-sequential / barrel-deferred / barrel-bypass / custom]
+Confirm strategy? [parallel-fanout / classic / barrel-deferred / barrel-bypass / custom]
 ```
 
 This is a hard operator gate identical in strength to the Phase 2 ingestion gate. Auto-defaulting without confirmation is **not** supported — the recommendation never silently becomes an action.
@@ -2099,7 +2101,7 @@ The orchestrator records the choice and moves on to the parallel-fanout per-cycl
 
 ## Recipe 22 — Orchestrate a multi-task plan with parallel coders
 
-> **Ownership note.** The `parallel-fanout` and `isolated-sequential` lifecycles — worktree creation, the epic/cycle branch model, fan-in merge, and cleanup — are **owned by an external workflow harness**, not the model-driven `/orchestrator` skill. `/orchestrator` runs `classic` (in-pwd) only; when a plan is a fit for parallel fan-out the strategy gate surfaces that. The walkthrough below is retained as **the specification of that lifecycle** (what the harness automates) and as the manual git procedure an operator can run by hand. The `$ /orchestrator …` transcripts illustrate the flow; in live use, the driver is an external workflow harness, not the model orchestrator. The six eligibility rules and the path/branch conventions live in the harness design documentation.
+> **Ownership note.** The `parallel-fanout` lifecycle — epic-branch cut, per-lane worktree creation, staged-wave fan-out, fan-in merge, failed-lane retention, and full teardown — is **model-runnable via the spawn-free `workflows/parallel-dispatch.lua` seam** (plan 760): the seam computes the waves, per-lane worktree paths, contract-lanes-first merge order, and teardown lists and HANDS BACK; the model orchestrator runs the git worktree/branch/merge ops and spawns the N coders concurrently via the harness Agent tool. There is **no external harness** in this path (and no revival of centurion). The six eligibility rules are the engine's (`recommend-strategy`, `src/engine/planning/strategy.zig`), consumed by the seam and never re-derived. Only single-lane `isolated-sequential` remains harness-owned. For the staged-wave (dependency-respecting) variant — proto lands first, then identity + web in parallel — see [Step 11 — Staged waves](#step-11--staged-waves-contract-lane-first) below. In-flight fan-out is watched through `planar-watch ps --plan <id>` (the N concurrent lane claims + each claim's `worktree_path`) — there is no separate wave/barrier view.
 
 The full `parallel-fanout` lifecycle, from strategy confirmation through fan-in and reviewer to cleanup. Use this when you have a plan in `active` status with ≥3 tasks, at least 2 of which are parallel-eligible (disjoint `task_touches`, no migration, no singleton-file touch, no blocking open question or proposed-decision dependency).
 
@@ -2256,13 +2258,39 @@ git -C /repo worktree remove /repo/.worktrees/epic/worktree-management/
 git -C /repo branch -D epic/worktree-management
 ```
 
-For the per-step orchestrator behavior under `parallel-fanout` see [`skills/src/pl-orchestrator.md §parallel-fanout`](../skills/src/pl-orchestrator.md). For the per-coder shape under `isolated-sequential` (which is the same per-cycle ritual, minus the fan-out) see the same skill's `isolated-sequential` section.
+### Step 11 — Staged waves (contract lane first)
+
+The steps above fan out a **single wave** of mutually-disjoint lanes. When the plan's lanes have `blocks` dependencies — the plan-753 shape, where a `proto` contract lane must land before `identity` and `web` build against its generated stubs — the orchestrator drives **staged waves** so downstream lanes never build against a moving API. Eligibility gating stays the engine's (`recommend-strategy`); the seam walks the `blocks` graph only to ORDER and LABEL the waves.
+
+1. **Present the ordered wave plan at the gate.** Run the seam's `waves` phase:
+
+   ```bash
+   planar-execute run workflows/parallel-dispatch.lua --phase waves \
+       --args '{"plan_id":753}'
+   ```
+
+   It emits byte-stable JSON: `{ epic_branch, wave_count, integration_pass_wave, waves:[…], serialized:[…] }`. Each wave carries `{ wave, lane_count, lanes:[{task_id, slug, branch, worktree, blocked_by:[…]}], integration_pass }`. On the plan-753 shape, `proto` is wave 1; `identity` + `web` are wave 2 (each labeled `blocked_by: [proto]`); and a terminal **cross-lane integration pass** is the last wave (`integration_pass: true`, no lanes, named by `integration_pass_wave`). A task the engine serialized for a NON-blocks reason (migration / singleton / empty-touches / open-question / proposed-decision) is carried in `serialized` and NEVER placed in a wave. Present the full ordered picture to the operator and wait for confirmation before creating any worktree.
+
+2. **Drive one barrier at a time.** The `waves` output is the projection for the gate, not a schedule. For the CURRENT wave, run the `plan` phase (it returns exactly the currently-eligible lanes), create its worktrees, and fan out its coders (Steps 4–6 above).
+
+3. **Enforce the wave barrier before the next wave.** After fanning the current wave in, run the `barrier_check` phase:
+
+   ```bash
+   planar-execute run workflows/parallel-dispatch.lua --phase barrier_check \
+       --args '{"plan_id":753,"lanes":[{"task_id":…,"landed":true,"fanned_in":true}]}'
+   ```
+
+   It emits `{ proceed, blocking:[{task_id, reason}] }`. Do NOT create any wave-N+1 worktree until `proceed:true`. The barrier is on FAN-IN completion, not coder completion: a lane whose coder reported done (`landed:true`) but whose branch has not been merged (`fanned_in:false`) does NOT satisfy the barrier (`reason: not_fanned_in`). Once `proceed:true`, re-run `plan` — the just-landed lanes have dropped out of `recommend-strategy` and their dependents are now eligible — and repeat for the next wave.
+
+4. **Fan-in retention + resume.** At each wave's `fan_in`, a lane may carry `"outcome":"succeeded"|"failed"`: a succeeded lane's worktree is torn down eagerly (in `teardown_worktrees`); a **failed lane's worktree is RETAINED** for inspection (in `retained_worktrees`). On a mid-wave failure, resume via the `reconcile_plan` phase — a `failed_clean` lane needs no reconcile (available on the next recompute); an `abandoned` lane is reclaimed immediately with `planar-agent reconcile --stale-after 0` — then recompute and re-fan only the remainder (never restart from wave 1). On plan completion, the `teardown` phase computes the full sweep (every lane worktree + branch removed; the epic branch retained until its PR merges).
+
+For the per-step orchestrator behavior under `parallel-fanout` see [`skills/src/pl-orchestrator.md §Worktree strategies`](../skills/src/pl-orchestrator.md). `isolated-sequential` (the same per-cycle ritual, minus the fan-out) is still harness-owned and not runnable from the model orchestrator.
 
 ---
 
 ## Recipe 23 — Recover a dead coder from its worktree
 
-A coder dispatched into a worktree (under the harness-owned `isolated-sequential` or `parallel-fanout` strategies — plan 492) died mid-cycle — its heartbeat lapsed past TTL, its claim is now stale, and the cycle worktree on disk holds whatever partial state the coder committed before dying. This recipe recovers it; it applies to any worktree-isolated coder regardless of who dispatched it. The persisted `agent_work_claims.worktree_path` is the recovery key.
+A coder dispatched into a worktree (under the model-runnable `parallel-fanout` strategy — plan 760 — or the harness-owned `isolated-sequential` — plan 492) died mid-cycle — its heartbeat lapsed past TTL, its claim is now stale, and the cycle worktree on disk holds whatever partial state the coder committed before dying. This recipe recovers it; it applies to any worktree-isolated coder regardless of who dispatched it. The persisted `agent_work_claims.worktree_path` is the recovery key.
 
 ### Step 1 — Surface the stale claim
 
