@@ -25,7 +25,7 @@ Captures a context snapshot for the current or named task, creates a `handoffs` 
 
 ## Worktree State And Handoffs
 
-`planar handoff` automatically captures the active claim's worktree context onto the handoff row at create time. The fields persisted — `worktree_path`, `repo_root`, `branch` — mirror the worktree convention owned by an external workflow harness (`epic/<plan-slug>` + `cycle/<plan-slug>/<task-slug>` topology, main checkout stays on master). When no claim is held on the target task at handoff time, the columns are left NULL and no fallback path is created — that's the legacy / no-isolation flow.
+`planar handoff` automatically captures the active claim's worktree context onto the handoff row at create time. The fields persisted — `worktree_path`, `repo_root`, `branch` — mirror the worktree-isolated topology (`epic/<plan-slug>` + `cycle/<plan-slug>/<task-slug>`, main checkout stays on master), whether the worktree was created by the model-driven `parallel-fanout` orchestrator path or the harness-owned `isolated-sequential` path. When no claim is held on the target task at handoff time, the columns are left NULL and no fallback path is created — that's the legacy / no-isolation flow.
 
 `planar resume <task>` reads the worktree context from two sources, in priority order:
 

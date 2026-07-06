@@ -51,10 +51,10 @@ These six things are load-bearing. The blind-read reviewer cannot recover them a
 
 ## Worktrees: inherit the cwd, don't manage them
 
-Under the harness-owned worktree strategies (`isolated-sequential` / `parallel-fanout`, run by an external workflow harness), the harness dispatches the coder into a pre-created worktree on a pre-created child branch. The coder's contract there is narrow:
+Under worktree-isolated strategies, the dispatcher sends the coder into a pre-created worktree on a pre-created child branch. That dispatcher may be the model-driven orchestrator under `parallel-fanout` (via the `workflows/parallel-dispatch.lua` seam) or an external workflow harness under `isolated-sequential`. The coder's contract there is narrow:
 
 - **Inherit the dispatched cwd.** That cwd is the worktree path. Stay in it. Do not `cd` out to the main checkout or another worktree to do work.
-- **Do not create, destroy, or relocate worktrees.** `git worktree add/remove/move` are the harness's verbs, not the coder's. If the worktree looks wrong, stop and return to the dispatcher rather than reshaping it.
+- **Do not create, destroy, or relocate worktrees.** `git worktree add/remove/move` are dispatcher/orchestrator verbs, not coder verbs. If the worktree looks wrong, stop and return to the dispatcher rather than reshaping it.
 - **Commit to the child branch the orchestrator created.** Do not cut a new branch, do not switch branches, do not push to other branches. The orchestrator handles fan-in merge to the epic branch after terminal-complete.
 
 Under the [`classic`](../../agents/methodology.md#orchestration-strategies) strategy there is no worktree: the coder runs in the operator's pwd on the operator's current branch and commits there as it always has.
