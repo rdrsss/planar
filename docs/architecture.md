@@ -601,6 +601,30 @@ The orchestrator gates Phases 2 and 3 on explicit user confirmation. Ingestion n
 
 Agent role specs (vendor-neutral) live under `agents/`. The key files are `agents/methodology.md`, `agents/orchestrator.md`, `agents/planner.md`, `agents/ingestor.md`, `agents/extsync.md`, `agents/importer.md`, `agents/synthesizer.md`, `agents/coder.md`, `agents/reviewer.md`, and `agents/models.md` (tier-to-model resolution).
 
+### Authored-surface validation
+
+`tools/surface_lint.zig` deterministically scans canonical Markdown under
+`agents/`, `skills/src/`, and `docs/`. It reports repository-relative links
+whose targets are absent, pinned retired implementation references,
+contradictory four-artifact contracts, read-only roles containing write
+commands, invalid semantic command shapes, and (when
+`--require-feedback-contract` is selected) missing skill feedback/recovery
+headings. Generated vendor-projection links are assigned to renderer fixtures
+rather than resolved against directories that do not exist in a source tree.
+
+Run `make surface-lint` for stable text findings or
+`zig build surface-lint -- --json` for the versioned JSON envelope. Findings
+are ordered by file, line, code, and message and carry stable
+`surface-*` codes. An intentional match may be suppressed only by a comment on
+the preceding non-blank line naming one code and a non-empty rationale:
+
+```html
+<!-- surface-lint-ignore surface-legacy-reference: historical comparison required -->
+```
+
+Unknown, malformed, file-wide, and unused suppressions are errors. The
+semantic validator is read-only and does not invoke an LLM or open SQLite.
+
 ---
 
 ## Build and Test

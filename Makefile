@@ -87,6 +87,10 @@ parity-check: build ## Diff zig binary against Go archive binary (plan 351 Phase
 cli-usage-check: ## Validate authored CLI invocations (agents/, skills/src/, docs/) against the live command schema
 	$(ZIG) build cli-usage-check
 
+.PHONY: surface-lint
+surface-lint: ## Validate authored links, contracts, capabilities, commands, and retired references
+	$(ZIG) build surface-lint
+
 .PHONY: bench-verify
 bench-verify: build ## planar-doc verify latency tracker — prints cold + warm wall-clock
 	@echo "planar-doc verify: cold + warm wall-clock (rough; integration tests own the latency contract)"
