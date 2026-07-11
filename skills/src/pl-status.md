@@ -41,7 +41,7 @@ Presents the output as a single summary under approximately 40 lines. Blocked ta
 
 - Does not modify state. Read-only.
 - Does not query external systems (Jira, GitHub). For external status use `planar sync status`.
-- Does not produce a full audit trail. For entity-level audit history use `planar audit trail <entity-ref>`.
+- Does not produce a full audit trail. For entity-level audit history use `planar audit trail --kind <kind> <entity-id>`.
 
 ## Underlying CLI Verbs
 

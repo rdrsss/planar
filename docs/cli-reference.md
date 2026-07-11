@@ -4781,7 +4781,7 @@ planar synthesize <repo-root> [--apply] [--apply-removals] [--scope <slug>]
 
 Default mode is **preview**: prints a tree-shaped diff and exits 0 without writing. `--apply` is required to commit additions and updates; `--apply --apply-removals` additionally soft-cancels removed entities.
 
-The LLM never runs in Go. The Go side writes a `synthesis.Request` to `$PLANAR_HOME/cache/bootstrap-synthesis/<repo-slug>/_pending.json` and exits 0 with an "Awaiting LLM synthesis" notice. The vendor skill (`commands/claude/pl-synthesize.md`, `skills/codex/pl-synthesize.md`, `skills/copilot/pl-synthesize.md`) reads the Request, runs the LLM at temperature 0, and writes the Result to `<cache-dir>/<fingerprint>.json`. The operator re-runs `planar synthesize <repo-root>`; Go finds the cached Result, validates it, merges it with the deterministic baseline, and emits the preview.
+The LLM never runs in the CLI. The `planar` binary writes a synthesis Request to `$PLANAR_HOME/cache/bootstrap-synthesis/<repo-slug>/_pending.json` and exits 0 with an "Awaiting LLM synthesis" notice. The vendor skill reads the Request, runs the LLM at temperature 0, and writes the Result to `<cache-dir>/<fingerprint>.json`. The operator re-runs `planar synthesize <repo-root>`; the CLI finds the cached Result, validates it, merges it with the deterministic baseline, and emits the preview.
 
 **Arguments:**
 
@@ -4809,12 +4809,12 @@ The LLM never runs in Go. The Go side writes a `synthesis.Request` to `$PLANAR_H
 **Workflow:**
 
 1. Operator runs `planar synthesize <repo-root>`.
-2. Go side runs the deterministic floor (`adopter.Discover` + `adopter.ParseCorpus` + `codeprobe.Probe`).
-3. Go side writes the `synthesis.Request` to `$PLANAR_HOME/cache/bootstrap-synthesis/<repo-slug>/_pending.json`.
-4. Go side exits 0 with the "Awaiting LLM synthesis" message.
+2. The CLI runs deterministic artifact discovery, corpus parsing, and code-evidence probing.
+3. The CLI writes the synthesis Request to `$PLANAR_HOME/cache/bootstrap-synthesis/<repo-slug>/_pending.json`.
+4. The CLI exits 0 with the "Awaiting LLM synthesis" message.
 5. Vendor skill reads the Request, runs the LLM at temperature 0, and writes the Result to `<cache-dir>/<fingerprint>.json`.
 6. Operator re-runs `planar synthesize <repo-root>`.
-7. Go side reads the cached Result, runs `synthesis.Validate`, and merges it with the deterministic baseline.
+7. The CLI reads and validates the cached Result, then merges it with the deterministic baseline.
 8. Operator reviews the preview; `--apply` commits.
 
 **Schema effects:**

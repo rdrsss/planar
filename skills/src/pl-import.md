@@ -22,7 +22,7 @@ shared_notes:
 
 {{.VendorTitle}} skill surface for the vendor-neutral `importer` agent. See [`agents/importer.md`](../../agents/importer.md) for the full role spec, input/output contract, and workflow steps.
 
-Vendor-neutral skill that imports an existing repo's planning content into Planar. Combines a deterministic Go-side classifier with an opt-in LLM interpretation pass.
+Vendor-neutral skill that imports an existing repo's planning content into Planar. Combines the CLI's deterministic classifier with an opt-in LLM interpretation pass.
 
 ## What It Does
 
@@ -105,18 +105,18 @@ If an earlier import landed wrong done marks before this safety net existed, use
 
 ## --interpret Pass
 
-`pl-import . --interpret` opts into the LLM interpretation pass on top of the deterministic floor. The skill body is the LLM engine; the Go side validates whatever the skill produces. Workflow:
+`pl-import . --interpret` opts into the LLM interpretation pass on top of the deterministic floor. The skill body is the LLM engine; the CLI validates whatever the skill produces. Workflow:
 
-1. Go runs the deterministic classifier, builds an interpretation Request from the resulting Corpus, and computes the Request's sha256 `fingerprint`.
-2. On a cache miss, Go writes the Request to `$PLANAR_HOME/cache/import-interpretation/<repo-slug>/_pending.json`, prints an "Awaiting LLM interpretation" notice naming the pending and target paths, and exits 0.
+1. The CLI runs the deterministic classifier, builds an interpretation Request from the resulting Corpus, and computes the Request's sha256 `fingerprint`.
+2. On a cache miss, the CLI writes the Request to `$PLANAR_HOME/cache/import-interpretation/<repo-slug>/_pending.json`, prints an "Awaiting LLM interpretation" notice naming the pending and target paths, and exits 0.
 3. The vendor skill (this skill body) reads the Request, runs the LLM at temperature 0, and writes a Result to `$PLANAR_HOME/cache/import-interpretation/<repo-slug>/<fingerprint>.json`.
-4. The operator re-runs `planar import <repo> --interpret`. Go finds the cached Result, validates it via the Validate rules below, and merges it with the deterministic Corpus per the four merge rules below.
+4. The operator re-runs `planar import <repo> --interpret`. The CLI finds the cached Result, validates it via the rules below, and merges it with the deterministic Corpus per the four merge rules below.
 
 The Request payload carries: README + each `docs/*` body + git log (last ~500 commits) + guide files (CLAUDE.md as CONTEXT, never backlog) + a tree summary + the detected_artifacts produced by the classifier. The skill must NOT mine guide files for tasks.
 
 ## LLM Result Contract
 
-The skill writes a JSON Result matching this schema. The canonical Go types live in [`src/internal/adopter/interpretation/result.go`](../../src/internal/adopter/interpretation/result.go); the schema below mirrors the field set.
+The skill writes a JSON Result matching this schema. The canonical result types and validation live in [`src/engine/import.zig`](../../src/engine/import.zig); the schema below mirrors the field set.
 
 ```json
 {

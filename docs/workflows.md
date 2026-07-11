@@ -1605,7 +1605,7 @@ planar question list --plan 85         # open questions
 ### Step 4 — Inspect the audit trail for one entity
 
 ```
-planar audit trail task:541
+planar audit trail --kind task 541
 ```
 
 The `audit_trail` read surface stitches together `audit_log` (the operator-write log) with `entity_links` and now joins against `agent_actions` for any actions taken on the entity. You see each role's `started_at` / `ended_at` / `outcome` plus the operator-side decisions that ran around them.
@@ -1628,7 +1628,7 @@ planar plan next <plan> --include-claimed --include-stale
                                         # one plan's queue, every bucket
 planar plan show <plan>                # plan + steps + child plans
 planar task list --plan <plan>         # tasks under the plan
-planar audit trail <kind:id>           # one entity's history
+planar audit trail --kind <kind> <id> # one entity's history
 planar health                          # is the database itself OK
 ```
 
@@ -2106,7 +2106,7 @@ The orchestrator records the choice and moves on to the parallel-fanout per-cycl
 
 ## Recipe 22 — Orchestrate a multi-task plan with parallel coders
 
-> **Ownership note.** The worktree lifecycle — epic-branch cut, per-lane worktree creation, fan-in merge, failed-lane retention, and full teardown — is **model-runnable via the spawn-free `workflows/parallel-dispatch.lua` seam** (plan 760): `cycle_plan` computes one sequential lane, while `plan`/`waves` compute parallel lanes. The seam computes worktree paths, branch names, merge order, and teardown lists and HANDS BACK; the model orchestrator runs the git worktree/branch/merge ops and spawns coders via the harness Agent tool. There is **no external harness** in this path (and no revival of centurion). The six eligibility rules are the engine's (`recommend-strategy`, `src/engine/planning/strategy.zig`), consumed by the fan-out phases and never re-derived. They apply to `parallel-fanout`, not to a single sequential worktree lane. For the staged-wave (dependency-respecting) variant — proto lands first, then identity + web in parallel — see [Step 11 — Staged waves](#step-11--staged-waves-contract-lane-first) below. In-flight worktree execution is watched through `planar-watch ps --plan <id>` (claims + each claim's `worktree_path`) — there is no separate wave/barrier view.
+> **Ownership note.** The worktree lifecycle — epic-branch cut, per-lane worktree creation, fan-in merge, failed-lane retention, and full teardown — is **model-runnable via the spawn-free `workflows/parallel-dispatch.lua` seam** (plan 760): `cycle_plan` computes one sequential lane, while `plan`/`waves` compute parallel lanes. The seam computes worktree paths, branch names, merge order, and teardown lists and HANDS BACK; the model orchestrator runs the git worktree/branch/merge ops and spawns coders through the host's subagent dispatch surface. There is **no external harness** in this path (and no revival of centurion). The six eligibility rules are the engine's (`recommend-strategy`, `src/engine/planning/strategy.zig`), consumed by the fan-out phases and never re-derived. They apply to `parallel-fanout`, not to a single sequential worktree lane. For the staged-wave (dependency-respecting) variant — proto lands first, then identity + web in parallel — see [Step 11 — Staged waves](#step-11--staged-waves-contract-lane-first) below. In-flight worktree execution is watched through `planar-watch ps --plan <id>` (claims + each claim's `worktree_path`) — there is no separate wave/barrier view.
 
 The full `parallel-fanout` lifecycle, from strategy confirmation through fan-in and reviewer to cleanup. Use this when you have a plan in `active` status with ≥3 tasks, at least 2 of which are parallel-eligible (disjoint `task_touches`, no migration, no singleton-file touch, no blocking open question or proposed-decision dependency).
 
@@ -2540,7 +2540,7 @@ No propagation, no sync subscription. The link makes the upstream issue
 visible to `pl-audit-trail`:
 
 ```bash
-planar audit trail 42 --kind question
+planar audit trail --kind question 42
 # → shows the create event and the external link row
 ```
 

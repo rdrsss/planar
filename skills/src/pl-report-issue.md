@@ -80,7 +80,7 @@ Reads:
 planar report --json --days <n>
 planar question show --json <id>
 planar task show --json <id>
-planar audit trail <entity-id> --kind <kind>
+planar audit trail --kind <kind> <entity-id>
 ```
 
 Posts (only after operator confirmation):
