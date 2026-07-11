@@ -12,6 +12,7 @@ const runtime = @import("runtime");
 const exit = @import("../../exit.zig");
 const output = @import("../../output.zig");
 const sync_common = @import("common.zig");
+const scope_mod = @import("../../scope.zig");
 
 pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     const args = cli.castArgs(main.root, &.{ "sync", "push" }, args_ptr);
@@ -28,6 +29,18 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         else => exit.die(ctx, e, "sync push: resolve target: {s}", .{@errorName(e)}),
     };
     defer engine.external.link.deinitMany(links, ctx.allocator);
+
+    if (!args.all) {
+        const resolution = scope_mod.resolveForWrite(ctx, args.scope) catch |e|
+            exit.die(ctx, e, "sync push: resolving write scope: {s}", .{@errorName(e)});
+        for (links) |link| {
+            const entity_scope = sync_common.entityScopeSlug(d, ctx.allocator, link) catch |e|
+                exit.die(ctx, e, "sync push: resolving entity scope: {s}", .{@errorName(e)});
+            defer if (entity_scope) |s| ctx.allocator.free(s);
+            scope_mod.guardWithMembership(d, entity_scope, resolution.scope) catch
+                exit.die(ctx, error.ScopeMismatch, "sync push target is outside the operator write scope", .{});
+        }
+    }
 
     if (args.system) |sys_slug| {
         const sys = engine.external.system.showBySlug(d, ctx.allocator, sys_slug) catch |e|
@@ -137,10 +150,9 @@ fn filterLinksBySystemId(
     for (links) |lnk| {
         if (lnk.system_id == system_id) {
             try kept.append(allocator, lnk);
-        } else {
-            engine.external.link.deinit(lnk, allocator);
         }
     }
+    for (links) |lnk| if (lnk.system_id != system_id) engine.external.link.deinit(lnk, allocator);
     allocator.free(links);
     return kept.toOwnedSlice(allocator);
 }

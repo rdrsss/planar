@@ -423,6 +423,10 @@ pub fn answer(
 ) Error!Question {
     if (answer_text.len == 0) return Error.AnswerRequired;
 
+    try beginMutation(d, allocator, "question_answer");
+    var committed = false;
+    defer if (!committed) rollbackMutation(d, allocator, "question_answer");
+
     const current = try show(d, allocator, id);
     defer deinit(current, allocator);
     try policy.scope_guard.check(null, null);
@@ -445,7 +449,11 @@ pub fn answer(
         .summary = summary,
     });
 
-    return try show(d, allocator, id);
+    const updated = try show(d, allocator, id);
+    errdefer deinit(updated, allocator);
+    try finishMutation(d, allocator, "question_answer");
+    committed = true;
+    return updated;
 }
 
 /// Mark a question wontfix. Optional `reason` lands in the audit
@@ -456,6 +464,10 @@ pub fn wontfix(
     id: i64,
     reason: ?[]const u8,
 ) Error!Question {
+    try beginMutation(d, allocator, "question_wontfix");
+    var committed = false;
+    defer if (!committed) rollbackMutation(d, allocator, "question_wontfix");
+
     const current = try show(d, allocator, id);
     defer deinit(current, allocator);
     try policy.scope_guard.check(null, null);
@@ -479,7 +491,30 @@ pub fn wontfix(
         .summary = summary,
     });
 
-    return try show(d, allocator, id);
+    const updated = try show(d, allocator, id);
+    errdefer deinit(updated, allocator);
+    try finishMutation(d, allocator, "question_wontfix");
+    committed = true;
+    return updated;
+}
+
+fn beginMutation(d: *db.sqlite.Db, allocator: std.mem.Allocator, name: []const u8) Error!void {
+    d.savepoint(allocator, name) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return Error.QueryFailed,
+    };
+}
+
+fn finishMutation(d: *db.sqlite.Db, allocator: std.mem.Allocator, name: []const u8) Error!void {
+    d.releaseSavepoint(allocator, name) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return Error.QueryFailed,
+    };
+}
+
+fn rollbackMutation(d: *db.sqlite.Db, allocator: std.mem.Allocator, name: []const u8) void {
+    d.rollbackToSavepoint(allocator, name) catch {};
+    d.releaseSavepoint(allocator, name) catch {};
 }
 
 // =========================================================================

@@ -248,7 +248,7 @@ fn freeAnchor(allocator: std.mem.Allocator, a: Anchor) void {
 /// when linked, else the `p{d}` fallback. Mirrors
 /// `sync.zig:resolvePlanKey` so gc and sync agree on the feature path.
 fn resolvePlanKey(d: *db.sqlite.Db, allocator: std.mem.Allocator, plan_id: i64) ![]const u8 {
-    var stmt = d.prepare("select external_id from external_links where entity_kind='plan' and entity_id=? limit 1") catch return std.fmt.allocPrint(allocator, "p{d}", .{plan_id});
+    var stmt = d.prepare("select external_id from external_links where entity_kind='plan' and entity_id=? order by id limit 1") catch return std.fmt.allocPrint(allocator, "p{d}", .{plan_id});
     defer stmt.finalize();
     stmt.bind(&.{.{ .int = plan_id }}) catch return std.fmt.allocPrint(allocator, "p{d}", .{plan_id});
     switch (stmt.step() catch .done) {

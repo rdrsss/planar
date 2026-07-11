@@ -168,26 +168,18 @@ pub fn render(
         // We use node.label's bytes as subslices (node.label is heap-allocated
         // and long-lived) so the grapheme pointer is stable across the flush.
         //
-        // Iterate by UTF-8 codepoint so that multi-byte characters (accented
-        // letters, arrows, bullets, etc.) are emitted as a single cell.
-        // The old loop gated on `byte < 0x80` and silently DROPPED every high
-        // byte — non-ASCII labels appeared truncated.
-        var li: usize = 0;
-        while (li < node.label.len and col < w) {
-            const byte = node.label[li];
-            const seq_len: usize = std.unicode.utf8ByteSequenceLength(byte) catch {
-                // Stray continuation or invalid byte — skip 1, stay in sync.
-                li += 1;
-                continue;
-            };
-            if (li + seq_len > node.label.len) break;
-            // Slice into the heap-allocated label string — pointer is stable.
+        var graphemes = vaxis.unicode.graphemeIterator(node.label);
+        while (graphemes.next()) |item| {
+            const grapheme = item.bytes(node.label);
+            const width = win.gwidth(grapheme);
+            if (width == 0) continue;
+            const cell_width: usize = width;
+            if (col + cell_width > w) break;
             win.writeCell(@intCast(col), @intCast(row), .{
-                .char = .{ .grapheme = node.label[li .. li + seq_len], .width = 1 },
+                .char = .{ .grapheme = grapheme, .width = @intCast(width) },
                 .style = sel_style,
             });
-            col += 1;
-            li += seq_len;
+            col += cell_width;
         }
 
         // ---- Count badge "[n]" at the end, right-aligned if space --

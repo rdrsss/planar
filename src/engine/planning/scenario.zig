@@ -411,6 +411,10 @@ pub fn verify(
     outcome: Outcome,
     summary_text: ?[]const u8,
 ) Error!Scenario {
+    try beginMutation(d, allocator, "scenario_verify");
+    var committed = false;
+    defer if (!committed) rollbackMutation(d, allocator, "scenario_verify");
+
     const current = try show(d, allocator, id);
     defer deinit(current, allocator);
     try policy.scope_guard.check(null, null);
@@ -475,7 +479,11 @@ pub fn verify(
         .summary = audit_summary,
     });
 
-    return try show(d, allocator, id);
+    const updated = try show(d, allocator, id);
+    errdefer deinit(updated, allocator);
+    try finishMutation(d, allocator, "scenario_verify");
+    committed = true;
+    return updated;
 }
 
 /// Advance a scenario from draft to ready.  Only `draft → ready` is
@@ -487,6 +495,10 @@ pub fn ready(
     id: i64,
     reason: ?[]const u8,
 ) Error!Scenario {
+    try beginMutation(d, allocator, "scenario_ready");
+    var committed = false;
+    defer if (!committed) rollbackMutation(d, allocator, "scenario_ready");
+
     const current = try show(d, allocator, id);
     defer deinit(current, allocator);
     try policy.scope_guard.check(null, null);
@@ -510,7 +522,11 @@ pub fn ready(
         .summary = summary,
     });
 
-    return try show(d, allocator, id);
+    const updated = try show(d, allocator, id);
+    errdefer deinit(updated, allocator);
+    try finishMutation(d, allocator, "scenario_ready");
+    committed = true;
+    return updated;
 }
 
 /// Mark a scenario retired. Optional `reason` lands in the audit
@@ -522,6 +538,10 @@ pub fn retire(
     id: i64,
     reason: ?[]const u8,
 ) Error!Scenario {
+    try beginMutation(d, allocator, "scenario_retire");
+    var committed = false;
+    defer if (!committed) rollbackMutation(d, allocator, "scenario_retire");
+
     const current = try show(d, allocator, id);
     defer deinit(current, allocator);
     try policy.scope_guard.check(null, null);
@@ -545,7 +565,30 @@ pub fn retire(
         .summary = summary,
     });
 
-    return try show(d, allocator, id);
+    const updated = try show(d, allocator, id);
+    errdefer deinit(updated, allocator);
+    try finishMutation(d, allocator, "scenario_retire");
+    committed = true;
+    return updated;
+}
+
+fn beginMutation(d: *db.sqlite.Db, allocator: std.mem.Allocator, name: []const u8) Error!void {
+    d.savepoint(allocator, name) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return Error.QueryFailed,
+    };
+}
+
+fn finishMutation(d: *db.sqlite.Db, allocator: std.mem.Allocator, name: []const u8) Error!void {
+    d.releaseSavepoint(allocator, name) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return Error.QueryFailed,
+    };
+}
+
+fn rollbackMutation(d: *db.sqlite.Db, allocator: std.mem.Allocator, name: []const u8) void {
+    d.rollbackToSavepoint(allocator, name) catch {};
+    d.releaseSavepoint(allocator, name) catch {};
 }
 
 // =========================================================================

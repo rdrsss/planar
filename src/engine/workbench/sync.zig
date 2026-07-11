@@ -434,7 +434,10 @@ fn run(
         const abs = try std.fs.path.join(allocator, &.{ feature_dir, rel_path });
         defer allocator.free(abs);
 
-        const fs_content = readFileAlloc(allocator, abs) catch null;
+        const fs_content = readFileAlloc(allocator, abs) catch |read_err| switch (read_err) {
+            error.FileNotFound => null,
+            else => return read_err,
+        };
         defer if (fs_content) |fc| allocator.free(fc);
         const db_hash = try manifest.hashContent(allocator, db_content);
         defer allocator.free(db_hash);
@@ -548,7 +551,10 @@ fn run(
         if (seen_files.contains(state.file_path)) continue;
         const abs = try std.fs.path.join(allocator, &.{ root, state.file_path });
         defer allocator.free(abs);
-        const fs_content = readFileAlloc(allocator, abs) catch null;
+        const fs_content = readFileAlloc(allocator, abs) catch |e| switch (e) {
+            error.FileNotFound => null,
+            else => return e,
+        };
         defer if (fs_content) |fc| allocator.free(fc);
         if (fs_content != null) continue;
         if (mode == .pull or mode == .sync) {
@@ -565,7 +571,10 @@ fn run(
     }
 
     // New-on-FS detection for pull/sync: only task files are auto-created.
-    const fs_files = listMarkdownFiles(allocator, feature_dir) catch &[_][]const u8{};
+    const fs_files = listMarkdownFiles(allocator, feature_dir) catch |e| switch (e) {
+        error.FileNotFound => &[_][]const u8{},
+        else => return e,
+    };
     defer {
         for (fs_files) |p| allocator.free(p);
         if (fs_files.len > 0) allocator.free(fs_files);
@@ -575,7 +584,10 @@ fn run(
         defer allocator.free(stored);
         if (seen_files.contains(stored)) continue;
         if (findStateByFilePath(manifest_rows, stored) != null) continue;
-        const content = readFileAlloc(allocator, abs_path) catch continue;
+        const content = readFileAlloc(allocator, abs_path) catch |e| switch (e) {
+            error.FileNotFound => continue,
+            else => return e,
+        };
         defer allocator.free(content);
         const parsed = parse.parse(allocator, content) catch |parse_err| {
             summary.pending += 1;
@@ -774,6 +786,13 @@ fn parseConflictContext(raw: []const u8) !ConflictContext {
 }
 
 fn pullToDb(d: *db.sqlite.Db, kind: []const u8, id: i64, file_content: []const u8) !bool {
+    const a = std.heap.page_allocator;
+    d.savepoint(a, "workbench_pull_entity") catch return false;
+    var committed = false;
+    defer if (!committed) {
+        d.rollbackToSavepoint(a, "workbench_pull_entity") catch {};
+        d.releaseSavepoint(a, "workbench_pull_entity") catch {};
+    };
     const parsed = parse.parse(std.heap.page_allocator, file_content) catch return false;
     defer parse.deinit(parsed, std.heap.page_allocator);
     const body = extractBodyText(parsed.body);
@@ -790,6 +809,8 @@ fn pullToDb(d: *db.sqlite.Db, kind: []const u8, id: i64, file_content: []const u
             ) catch return false;
         }
         reconcileTouchesFromFM(d, id, parsed.frontmatter.touches) catch return false;
+        d.releaseSavepoint(a, "workbench_pull_entity") catch return false;
+        committed = true;
         return true;
     }
     if (std.mem.eql(u8, kind, "plan")) {
@@ -804,22 +825,32 @@ fn pullToDb(d: *db.sqlite.Db, kind: []const u8, id: i64, file_content: []const u
                 &.{ .{ .text = body }, .{ .text = parsed.frontmatter.status }, .{ .int = id } },
             ) catch return false;
         }
+        d.releaseSavepoint(a, "workbench_pull_entity") catch return false;
+        committed = true;
         return true;
     }
     if (std.mem.eql(u8, kind, "artifact")) {
         _ = d.execParams("update artifacts set body=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') where id=?", &.{ .{ .text = body }, .{ .int = id } }) catch return false;
+        d.releaseSavepoint(a, "workbench_pull_entity") catch return false;
+        committed = true;
         return true;
     }
     if (std.mem.eql(u8, kind, "decision")) {
         _ = d.execParams("update decisions set body=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') where id=?", &.{ .{ .text = body }, .{ .int = id } }) catch return false;
+        d.releaseSavepoint(a, "workbench_pull_entity") catch return false;
+        committed = true;
         return true;
     }
     if (std.mem.eql(u8, kind, "question")) {
         _ = d.execParams("update questions set body=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') where id=?", &.{ .{ .text = body }, .{ .int = id } }) catch return false;
+        d.releaseSavepoint(a, "workbench_pull_entity") catch return false;
+        committed = true;
         return true;
     }
     if (std.mem.eql(u8, kind, "scenario")) {
         _ = d.execParams("update test_scenarios set body=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') where id=?", &.{ .{ .text = body }, .{ .int = id } }) catch return false;
+        d.releaseSavepoint(a, "workbench_pull_entity") catch return false;
+        committed = true;
         return true;
     }
     return false;
@@ -1306,7 +1337,7 @@ fn freeAnchor(allocator: std.mem.Allocator, a: Anchor) void {
 }
 
 fn resolvePlanKey(d: *db.sqlite.Db, allocator: std.mem.Allocator, plan_id: i64) ![]const u8 {
-    var stmt = d.prepare("select external_id from external_links where entity_kind='plan' and entity_id=? limit 1") catch return std.fmt.allocPrint(allocator, "p{d}", .{plan_id});
+    var stmt = d.prepare("select external_id from external_links where entity_kind='plan' and entity_id=? order by id limit 1") catch return std.fmt.allocPrint(allocator, "p{d}", .{plan_id});
     defer stmt.finalize();
     stmt.bind(&.{.{ .int = plan_id }}) catch return std.fmt.allocPrint(allocator, "p{d}", .{plan_id});
     switch (stmt.step() catch .done) {
@@ -1725,7 +1756,9 @@ fn readFileAlloc(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     const z = try std.heap.page_allocator.dupeZ(u8, path);
     defer std.heap.page_allocator.free(z);
     const fd = c.open(z.ptr, c.O_RDONLY, @as(c_uint, 0));
-    if (fd < 0) return error.OpenFailed;
+    if (fd < 0) {
+        return if (std.c.errno(fd) == .NOENT) error.FileNotFound else error.OpenFailed;
+    }
     defer _ = c.close(fd);
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
@@ -1762,7 +1795,7 @@ fn listMarkdownFiles(allocator: std.mem.Allocator, dir: []const u8) ![]const []c
         for (out.items) |p| allocator.free(p);
         out.deinit(allocator);
     }
-    collectMarkdownRecursive(allocator, dir, &out) catch {};
+    try collectMarkdownRecursive(allocator, dir, &out);
     return try out.toOwnedSlice(allocator);
 }
 
@@ -1818,13 +1851,20 @@ fn fileMtime(abs_path: []const u8, allocator: std.mem.Allocator) ![]const u8 {
 
 fn deleteTreePortable(allocator: std.mem.Allocator, dir: []const u8) !void {
     if (!pathExists(dir)) return error.FileNotFound;
+    const dir_z = try allocator.dupeZ(u8, dir);
+    defer allocator.free(dir_z);
+    var st: c.struct_stat = undefined;
+    if (c.lstat(dir_z.ptr, &st) != 0) return error.FileNotFound;
+    if ((st.st_mode & c.S_IFMT) != c.S_IFDIR) return error.UnsafeArchivePath;
     try deleteTreeRecursive(allocator, dir);
 }
 
 fn collectMarkdownRecursive(allocator: std.mem.Allocator, dir: []const u8, out: *std.ArrayList([]const u8)) !void {
     const dir_z = try allocator.dupeZ(u8, dir);
     defer allocator.free(dir_z);
-    const dp = c.opendir(dir_z.ptr) orelse return;
+    const dp = c.opendir(dir_z.ptr) orelse {
+        return if (std.c.errno(-1) == .NOENT) error.FileNotFound else error.OpenFailed;
+    };
     defer _ = c.closedir(dp);
     while (c.readdir(dp)) |ent| {
         const name = std.mem.span(@as([*:0]const u8, @ptrCast(&ent.*.d_name)));
@@ -1834,7 +1874,7 @@ fn collectMarkdownRecursive(allocator: std.mem.Allocator, dir: []const u8, out: 
         var st: c.struct_stat = undefined;
         const child_z = try allocator.dupeZ(u8, child);
         defer allocator.free(child_z);
-        if (c.stat(child_z.ptr, &st) != 0) continue;
+        if (c.lstat(child_z.ptr, &st) != 0) return error.ReadFailed;
         if ((st.st_mode & c.S_IFMT) == c.S_IFDIR) {
             try collectMarkdownRecursive(allocator, child, out);
         } else if (std.mem.endsWith(u8, name, ".md")) {

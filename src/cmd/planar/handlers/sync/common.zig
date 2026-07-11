@@ -11,6 +11,36 @@ const adapter_factory = @import("../ext/adapter_factory.zig");
 
 pub const Op = enum { pull, push };
 
+pub fn entityScopeSlug(d: anytype, allocator: std.mem.Allocator, link: engine.external.link.ExtLink) !?[]const u8 {
+    if (link.entity_kind == .session) return null;
+    const table: [:0]const u8 = switch (link.entity_kind) {
+        .plan => "plans",
+        .task => "tasks",
+        .question => "questions",
+        .test_scenario => "test_scenarios",
+        .artifact => "artifacts",
+        .decision => "decisions",
+        .session => unreachable,
+    };
+    var sql_buf: [128]u8 = undefined;
+    const sql = try std.fmt.bufPrintZ(&sql_buf, "select scope_kind, scope_id from {s} where id = ?", .{table});
+    var stmt = try d.prepare(sql);
+    defer stmt.finalize();
+    try stmt.bind(&.{.{ .int = link.entity_id }});
+    if ((try stmt.step()) != .row) return error.NotFound;
+    const kind_text = try stmt.columnTextAlloc(0, allocator);
+    defer allocator.free(kind_text);
+    const kind: engine.identity.scope.ScopeKind = if (std.mem.eql(u8, kind_text, "global"))
+        .global
+    else if (std.mem.eql(u8, kind_text, "association"))
+        .association
+    else if (std.mem.eql(u8, kind_text, "repo"))
+        .repo
+    else
+        return error.UnsupportedScope;
+    return try engine.identity.scope.slugFromRef(d, allocator, kind, stmt.columnIntOpt(1));
+}
+
 /// A parsed `<kind>:<id>` external-entity reference (e.g. `task:42`). Uses
 /// the narrower `ExternalEntityKind` (the kinds an external link can point
 /// at), NOT the wider entity-link `EntityKind` — so kinds like `plan_step`

@@ -54,6 +54,7 @@ const Io = std.Io;
 /// into. Marshalled to a non-zero exit with a clear message.
 const EngineError = error{
     BadUsage,
+    InitFailed,
     LoadFailed,
     PhaseMissing,
     PhaseFailed,
@@ -75,8 +76,8 @@ fn errWrite(io: Io, bytes: []const u8) void {
 }
 
 /// outWrite writes `bytes` to stdout through `io`.
-fn outWrite(io: Io, bytes: []const u8) void {
-    Io.File.stdout().writeStreamingAll(io, bytes) catch {};
+fn outWrite(io: Io, bytes: []const u8) !void {
+    try Io.File.stdout().writeStreamingAll(io, bytes);
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -213,9 +214,11 @@ fn runWorkflow(arena: std.mem.Allocator, io: Io, args: Args) !void {
     // reproducible by default; the caller injects concrete values via --args
     // when a workflow needs a real clock/seed. Keeping the wall clock OUT of
     // the engine is the deterministic-by-default posture D5/D7 want.
+    const bin_dir = std.process.executableDirPathAlloc(io, arena) catch return EngineError.InitFailed;
     var hs = host.HostState{
         .arena = arena,
         .io = io,
+        .bin_dir = bin_dir,
         .worktree = args.worktree,
         .sandbox_root = args.sandbox_root,
         .now = 0,
@@ -262,11 +265,11 @@ fn runWorkflow(arena: std.mem.Allocator, io: Io, args: Args) !void {
 
     // Marshal the result payload to stdout (clean JSON channel).
     if (hs.result_json) |rj| {
-        outWrite(io, rj);
-        outWrite(io, "\n");
+        try outWrite(io, rj);
+        try outWrite(io, "\n");
     } else {
         // No explicit result — emit an empty object so callers always get JSON.
-        outWrite(io, "{}\n");
+        try outWrite(io, "{}\n");
     }
 }
 

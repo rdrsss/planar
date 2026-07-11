@@ -67,27 +67,21 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
     }) catch |e| exit.die(ctx, e, "insert workflow_runs: {s}", .{@errorName(e)});
 
     if (args.json) {
-        const w = ctx.stdout;
-        try w.print(
-            "{{\"ok\":true,\"run_id\":{d},\"run\":{{" ++
-                "\"id\":{d}," ++
-                "\"plan_id\":{d}," ++
-                "\"workflow_name\":\"{s}\"," ++
-                "\"run_identifier\":\"{s}\"," ++
-                "\"pid\":{d}," ++
-                "\"repo_root\":\"{s}\"," ++
-                "\"status\":\"running\"" ++
-                "}}}}\n",
-            .{
-                run_db_id,
-                run_db_id,
-                plan_id,
-                args.workflow,
-                args.run_id,
-                pid,
-                args.repo_root,
+        const payload = .{
+            .ok = true,
+            .run_id = run_db_id,
+            .run = .{
+                .id = run_db_id,
+                .plan_id = plan_id,
+                .workflow_name = args.workflow,
+                .run_identifier = args.run_id,
+                .pid = pid,
+                .repo_root = args.repo_root,
+                .status = "running",
             },
-        );
+        };
+        try std.json.Stringify.value(payload, .{}, ctx.stdout);
+        try ctx.stdout.writeByte('\n');
     } else {
         try ctx.stdout.print(
             "run:{d} plan:{d} workflow:{s} pid:{d} status:running\n",

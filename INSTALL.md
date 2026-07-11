@@ -122,7 +122,7 @@ After install, create the local database:
 planar init --name "my-project"
 ```
 
-The default database lives at `~/.planar/planar.db`. Override per-invocation with the persistent `--db <path>` flag (available on every subcommand).
+The default database lives at `~/.planar/planar.db`. Override it with the `PLANAR_DB` environment variable; there is no global `--db` flag.
 
 ## Build from source
 
@@ -134,8 +134,8 @@ The Zig package root IS the repo root (`build.zig` and `build.zig.zon` sit at th
 git clone https://github.com/rdrsss/planar.git
 cd planar
 zig build                          # writes zig-out/bin/planar
-zig build test                     # 608+ unit tests
-zig build test-integration         # 64+ integration tests
+zig build test                     # 1,700+ unit tests
+zig build test-integration         # 570+ integration tests
 zig fmt --check build.zig src tools integration_tests
 ```
 

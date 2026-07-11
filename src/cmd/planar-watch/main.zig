@@ -1,22 +1,12 @@
 //! planar-watch — human-facing read-only viewer for agent activity.
 //!
-//! Third binary in the three-binary architecture (plan 85). Opens the
+//! Read-only planning-state binary in the five-binary architecture. Opens the
 //! SQLite database via `runtime.ensureDbStrictReadOnly`, which uses
 //! `sqlite3_open_v2(..., SQLITE_OPEN_READONLY, ...)` so the SQLite
 //! driver itself refuses every write SQL string. That is the SECOND
-//! line of defense behind the capability boundary; the FIRST is that
-//! the command tree below registers exactly six read verbs (feed, ps,
-//! claims, actions, plans, log) plus the conventional `version` and
-//! `completion` helpers. There is no write verb anywhere in this
-//! binary.
-//!
-//! Three-binary architecture:
-//!   - `planar`         : operator surface; runs migrations; writes
-//!                        planning + tasks.status.
-//!   - `planar-agent`   : agent-callable coordination; writes
-//!                        agent_* + tasks.status only as part of
-//!                        atomic coordinated operations.
-//!   - `planar-watch`   : THIS binary; read-only viewer.
+//! line of defense behind the capability boundary; the FIRST is that every
+//! registered operational verb is read-only. There is no write verb anywhere
+//! in this binary.
 //!
 //! Verb set (plan 585 addition): `run` group (list / show) provides
 //! read-only observability for `workflow_runs` + `context_records`.

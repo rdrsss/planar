@@ -75,6 +75,12 @@ pub const DbOpenError = error{
     DbOpenFailed,
 };
 
+pub const RunOptions = struct {
+    plan_id: ?i64 = null,
+    task_id: ?i64 = null,
+    scope: ?[]const u8 = null,
+};
+
 /// Attempt to open the Planar DB at `db_path`. Returns a clean-failure
 /// error (never a half-rendered TUI) when:
 ///   - The file does not exist (DbMissing).
@@ -180,6 +186,7 @@ pub fn run(
     environ: std.process.Environ,
     db_path: []const u8,
     db_handle: *db.sqlite.Db,
+    options: RunOptions,
 ) !void {
     // 4 KiB write buffer for the TTY.
     var tty_buf: [4096]u8 = undefined;
@@ -276,45 +283,27 @@ pub fn run(
             explorer.filter_is_cwd = true;
         }
     }
+    if (options.scope) |scope_slug| {
+        const scope_ref = try engine.identity.scope.resolveSlug(db_handle, alloc, scope_slug);
+        explorer.filter = switch (scope_ref.kind) {
+            .repo => .{ .repo = scope_ref.id.? },
+            .global, .association => .all,
+        };
+        explorer.filter_is_cwd = false;
+    }
 
-    // Initial load of the Scope Explorer tree.
-    try explorer.reload(db_handle);
+    // Load only the initial view. Other views are refreshed when the operator
+    // first switches to them, avoiding twelve unnecessary startup queries and
+    // making a view-specific load failure visible at the action that caused it.
+    if (options.task_id != null) {
+        try board.reload(db_handle);
+        if (options.plan_id != null) try explorer.reload(db_handle);
+    } else {
+        try explorer.reload(db_handle);
+    }
 
-    // Initial load of the Agent Monitor.
-    try monitor.reload(db_handle);
-
-    // Initial load of the Task Board.
-    try board.reload(db_handle);
-
-    // Initial load of the Decision Log.
-    try declog.reload(db_handle);
-
-    // Initial load of the Open Questions view.
-    try questions.reload(db_handle);
-
-    // Initial load of the Coverage view.
-    try coverage.reload(db_handle);
-
-    // Initial load of the Entity-Link Graph (default entity heuristic).
-    entity_graph.reloadDefault(db_handle) catch {};
-
-    // Initial load of the External / Ops Plane.
-    ext_ops.reload(db_handle) catch {};
-
-    // Initial load of the Sessions & Handoff view.
-    sessions.reload(db_handle) catch {};
-
-    // Initial load of the Audit Log view.
-    audit.reload(db_handle) catch {};
-
-    // Initial load of the CLI Invocation History view.
-    cli_history.reload(db_handle) catch {};
-
-    // Initial load of the Topology view.
-    topology.reload(db_handle) catch {};
-
-    // Initial load of the Utility view.
-    utility.reload(db_handle) catch {};
+    if (options.plan_id) |plan_id| _ = try explorer.focusPlan(db_handle, plan_id);
+    if (options.task_id) |task_id| _ = try board.focusTask(db_handle, task_id);
 
     // ---- Per-frame arena (UAF fix: task 4174) ---------------------------
     // Allocates a per-frame arena backed by the long-lived `alloc`. The
@@ -353,6 +342,7 @@ pub fn run(
     // M15: Utility view is the 13th view (config/annotations/workbench-sync).
     // Reachable via Tab/Shift-Tab only. Key 'u' is display-only.
     try vs.register(.{ .id = .utility_view, .name = "Utility", .key = 'u' });
+    if (options.task_id != null) _ = vs.switchTo(.task_board);
 
     var sl: split_layout.SplitLayout = .{};
 
@@ -374,8 +364,12 @@ pub fn run(
                     break;
                 }
                 // View-switcher keys (Tab/Shift-Tab/1-9).
+                const previous_view = vs.active().?.id;
                 if (vs.handleKey(key)) {
-                    // View switched — render.
+                    const active_view = vs.active().?.id;
+                    if (active_view != previous_view) {
+                        try reloadCockpitView(active_view, db_handle, &explorer, &monitor, &board, &declog, &questions, &coverage, &entity_graph, &ext_ops, &sessions, &audit, &cli_history, &topology, &utility);
+                    }
                 } else if (key.matches(Key.tab, .{})) {
                     sl.toggleFocus();
                 } else {
@@ -497,31 +491,31 @@ pub fn run(
                 // wake thread — no second wake thread is spawned.
                 const active = vs.active();
                 if (active != null and active.?.id == .scope_explorer) {
-                    explorer.reload(db_handle) catch {};
+                    try explorer.reload(db_handle);
                 } else if (active != null and active.?.id == .agent_monitor) {
-                    monitor.reload(db_handle) catch {};
+                    try monitor.reload(db_handle);
                 } else if (active != null and active.?.id == .task_board) {
-                    board.reload(db_handle) catch {};
+                    try board.reload(db_handle);
                 } else if (active != null and active.?.id == .decision_log) {
-                    declog.reload(db_handle) catch {};
+                    try declog.reload(db_handle);
                 } else if (active != null and active.?.id == .open_questions) {
-                    questions.reload(db_handle) catch {};
+                    try questions.reload(db_handle);
                 } else if (active != null and active.?.id == .coverage_view) {
-                    coverage.reload(db_handle) catch {};
+                    try coverage.reload(db_handle);
                 } else if (active != null and active.?.id == .entity_link_graph) {
-                    entity_graph.reload(db_handle) catch {};
+                    try entity_graph.reload(db_handle);
                 } else if (active != null and active.?.id == .external_ops_plane) {
-                    ext_ops.reload(db_handle) catch {};
+                    try ext_ops.reload(db_handle);
                 } else if (active != null and active.?.id == .sessions_handoff) {
-                    sessions.reload(db_handle) catch {};
+                    try sessions.reload(db_handle);
                 } else if (active != null and active.?.id == .audit_log) {
-                    audit.reload(db_handle) catch {};
+                    try audit.reload(db_handle);
                 } else if (active != null and active.?.id == .cli_history) {
-                    cli_history.reload(db_handle) catch {};
+                    try cli_history.reload(db_handle);
                 } else if (active != null and active.?.id == .topology) {
-                    topology.reload(db_handle) catch {};
+                    try topology.reload(db_handle);
                 } else if (active != null and active.?.id == .utility_view) {
-                    utility.reload(db_handle) catch {};
+                    try utility.reload(db_handle);
                 }
             },
         }
@@ -591,6 +585,40 @@ pub fn runWithoutDb(
 /// On OOM falls back to "?" so render never panics.
 pub fn fmtFrame(arena: std.mem.Allocator, comptime fmt: []const u8, args: anytype) []const u8 {
     return std.fmt.allocPrint(arena, fmt, args) catch "?";
+}
+
+fn reloadCockpitView(
+    id: view_model.ViewId,
+    d: *db.sqlite.Db,
+    explorer: *scope_explorer.ExplorerState,
+    monitor: *agent_monitor.MonitorState,
+    board: *task_board.BoardState,
+    declog: *decision_log.DecisionLogState,
+    questions: *open_questions.OpenQuestionsState,
+    coverage: *coverage_view.CoverageState,
+    entity_graph: *entity_link_graph.EntityLinkState,
+    ext_ops: *external_ops_plane.ExtOpsState,
+    sessions: *sessions_handoff.SessionsHandoffState,
+    audit: *audit_log_view.AuditLogState,
+    cli_history: *cli_history_view.CliHistoryState,
+    topology: *topology_view.TopologyState,
+    utility: *utility_view.UtilityState,
+) !void {
+    switch (id) {
+        .scope_explorer => try explorer.reload(d),
+        .agent_monitor => try monitor.reload(d),
+        .task_board => try board.reload(d),
+        .decision_log => try declog.reload(d),
+        .open_questions => try questions.reload(d),
+        .coverage_view => try coverage.reload(d),
+        .entity_link_graph => try entity_graph.reloadDefault(d),
+        .external_ops_plane => try ext_ops.reload(d),
+        .sessions_handoff => try sessions.reload(d),
+        .audit_log => try audit.reload(d),
+        .cli_history => try cli_history.reload(d),
+        .topology => try topology.reload(d),
+        .utility_view => try utility.reload(d),
+    }
 }
 
 /// Render one frame of the cockpit UI with live Scope Explorer data.

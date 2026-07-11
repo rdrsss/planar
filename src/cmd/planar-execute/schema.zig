@@ -282,6 +282,7 @@ pub fn loadSchema(
     defer allocator.free(stdout);
 
     return std.json.parseFromSlice(RawSchema, allocator, stdout, .{
+        .allocate = .alloc_always,
         .ignore_unknown_fields = true,
     }) catch return SchemaError.ParseFailed;
 }

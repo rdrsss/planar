@@ -202,6 +202,7 @@ fn buildProject(
     const summary = firstParagraphInRoot(allocator, member.root_path) catch "";
     defer if (summary.len > 0) allocator.free(summary);
     const summary_source = if (summary.len > 0) "readme" else "";
+    const has_static_capabilities = capabilities.items.len > 0;
 
     return .{
         .slug = try allocator.dupe(u8, member.slug),
@@ -210,7 +211,7 @@ fn buildProject(
         .summary = if (summary.len > 0) try allocator.dupe(u8, summary) else try allocator.dupe(u8, ""),
         .summary_source = try allocator.dupe(u8, summary_source),
         .capabilities = try capabilities.toOwnedSlice(allocator),
-        .capabilities_source = try allocator.dupe(u8, if (capabilities.items.len > 0) "static" else ""),
+        .capabilities_source = try allocator.dupe(u8, if (has_static_capabilities) "static" else ""),
         .depends_on = try dep_result.toOwnedSlice(allocator),
         .depends_on_source = try allocator.dupe(u8, dep_result.source),
         .entry_points = entry_points,
@@ -771,9 +772,15 @@ fn walkLanguage(
                 if (visited.* > max_files) return;
                 const lang = languageForExt(std.fs.path.extension(entry.name)) orelse continue;
                 const key = try allocator.dupe(u8, lang);
-                errdefer allocator.free(key);
-                const gop = try counts.getOrPut(key);
-                if (!gop.found_existing) gop.value_ptr.* = 0;
+                const gop = counts.getOrPut(key) catch |err| {
+                    allocator.free(key);
+                    return err;
+                };
+                if (gop.found_existing) {
+                    allocator.free(key);
+                } else {
+                    gop.value_ptr.* = 0;
+                }
                 gop.value_ptr.* += 1;
             },
             else => {},

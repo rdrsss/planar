@@ -270,16 +270,21 @@ fn writeSyncEventJSON(w: *std.Io.Writer, row: SyncEventRow) !void {
     } else {
         try w.print(",\"link_id\":null", .{});
     }
-    try w.print(",\"scope\":\"{s}\"", .{row.scope});
-    try w.print(",\"direction\":\"{s}\"", .{row.direction});
-    try w.print(",\"outcome\":\"{s}\"", .{row.outcome});
+    try w.writeAll(",\"scope\":");
+    try writeJsonString(w, row.scope);
+    try w.writeAll(",\"direction\":");
+    try writeJsonString(w, row.direction);
+    try w.writeAll(",\"outcome\":");
+    try writeJsonString(w, row.outcome);
     if (row.fields_changed) |fc| {
-        try w.print(",\"fields_changed\":\"{s}\"", .{fc});
+        try w.writeAll(",\"fields_changed\":");
+        try writeJsonString(w, fc);
     } else {
         try w.print(",\"fields_changed\":null", .{});
     }
     if (row.detail) |det| {
-        try w.print(",\"detail\":\"{s}\"", .{det});
+        try w.writeAll(",\"detail\":");
+        try writeJsonString(w, det);
     } else {
         try w.print(",\"detail\":null", .{});
     }
@@ -289,6 +294,11 @@ fn writeSyncEventJSON(w: *std.Io.Writer, row: SyncEventRow) !void {
     } else {
         try w.print(",\"context_json\":null", .{});
     }
-    try w.print(",\"at\":\"{s}\"", .{row.at});
+    try w.writeAll(",\"at\":");
+    try writeJsonString(w, row.at);
     try w.print("}}", .{});
+}
+
+fn writeJsonString(w: *std.Io.Writer, value: []const u8) !void {
+    try std.json.Stringify.encodeJsonString(value, .{}, w);
 }

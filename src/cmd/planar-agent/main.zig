@@ -8,13 +8,14 @@
 //! entity-create provenance row to `agent_actions` when a planning
 //! entity is created under an active claim — plan 467 D2/D3.)
 //!
-//! Four-binary architecture:
+//! Five-binary architecture:
 //!   - `planar`         : operator surface; runs migrations; writes
 //!                        planning + tasks.status.
 //!   - `planar-agent`   : THIS binary; writes agent_* + tasks.status
 //!                        only as part of atomic coordinated operations.
 //!   - `planar-watch`   : read-only viewer; opens DB with `?mode=ro`.
 //!   - `planar-doc`     : doc-system manifest tool; no SQLite driver.
+//!   - `planar-execute` : deterministic Lua workflow engine; no DB handle.
 //!
 //! Schema-version handshake: planar-agent is a CONSUMER of the schema,
 //! not its owner. Startup queries `schema_migrations.max(version)` and
@@ -22,11 +23,8 @@
 //! embedded minimum. The remediation pointer ("run `planar init`")
 //! lives in `runtime.ensureDbConsumer`.
 //!
-//! M2 ships the full 13-verb agent surface: 6 atomic ops (pull / peek /
-//! complete / fail / release / block) + 2 claim primitives (claim /
-//! heartbeat) + 2 nested action verbs (action start / action end) +
-//! ingest (skeleton; full adapter routing in M4) + 2 operator-recovery
-//! verbs (reconcile / abort). See handlers/cmd.zig for the registry.
+//! The authoritative surface is the comptime registry in handlers/cmd.zig;
+//! schema output and capability-boundary integration tests lock it.
 
 const std = @import("std");
 const Io = std.Io;

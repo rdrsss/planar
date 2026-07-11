@@ -73,11 +73,11 @@ test: ## Run unit tests
 # worktree gate (plan 297 t#2937). The production binary (make build) is
 # compiled without this flag and ignores the env var entirely.
 test-integration: build ## Run the integration suite against the built binary
-	PLANAR_BIN=$(CURDIR)/$(BIN) PLANAR_AGENT_BIN=$(CURDIR)/$(AGENT_BIN) PLANAR_WATCH_BIN=$(CURDIR)/$(WATCH_BIN) PLANAR_DOC_BIN=$(CURDIR)/$(DOC_BIN) $(ZIG) build test-integration -Dtest-binary=true $(ARGS)
+	PLANAR_BIN=$(CURDIR)/$(BIN) PLANAR_AGENT_BIN=$(CURDIR)/$(AGENT_BIN) PLANAR_WATCH_BIN=$(CURDIR)/$(WATCH_BIN) PLANAR_DOC_BIN=$(CURDIR)/$(DOC_BIN) PLANAR_EXECUTE_BIN=$(CURDIR)/$(EXECUTE_BIN) $(ZIG) build test-integration -Dtest-binary=true $(ARGS)
 
 .PHONY: test-integration-files
 test-integration-files: build ## Run integration tests as one executable per test file
-	PLANAR_BIN=$(CURDIR)/$(BIN) PLANAR_AGENT_BIN=$(CURDIR)/$(AGENT_BIN) PLANAR_WATCH_BIN=$(CURDIR)/$(WATCH_BIN) PLANAR_DOC_BIN=$(CURDIR)/$(DOC_BIN) $(ZIG) build test-integration-files -Dtest-binary=true $(ARGS)
+	PLANAR_BIN=$(CURDIR)/$(BIN) PLANAR_AGENT_BIN=$(CURDIR)/$(AGENT_BIN) PLANAR_WATCH_BIN=$(CURDIR)/$(WATCH_BIN) PLANAR_DOC_BIN=$(CURDIR)/$(DOC_BIN) PLANAR_EXECUTE_BIN=$(CURDIR)/$(EXECUTE_BIN) $(ZIG) build test-integration-files -Dtest-binary=true $(ARGS)
 
 .PHONY: parity-check
 parity-check: build ## Diff zig binary against Go archive binary (plan 351 Phase 5; skips when Go binary unreachable)

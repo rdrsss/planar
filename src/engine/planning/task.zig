@@ -156,6 +156,7 @@ pub const Error =
         SlugConflict,
         InvalidStatus,
         InvalidDueAt,
+        InvalidParentCycle,
         QueryFailed,
         /// The task has an active, unexpired work claim. The operator must
         /// release/complete the claim via the agent path, or pass force=true
@@ -679,15 +680,7 @@ pub fn update(
     else
         null;
 
-    const current = try show(d, allocator, id);
-    defer deinit(current, allocator);
-    try policy.scope_guard.check(null, null);
-
     if (patch.due_at) |due| _ = try parseDueAt(due);
-
-    if (patch.status) |new_status| {
-        try policy.status.check(.task, @tagName(current.status), @tagName(new_status), patch.force);
-    }
 
     var sql_buf: std.ArrayList(u8) = .empty;
     defer sql_buf.deinit(allocator);
@@ -801,6 +794,15 @@ pub fn update(
         }
     }
 
+    // Read and validate after the writer lock is held. Otherwise a concurrent
+    // terminal transition can invalidate the status snapshot before UPDATE.
+    const current = try show(d, allocator, id);
+    defer deinit(current, allocator);
+    try policy.scope_guard.check(null, null);
+    if (patch.status) |new_status| {
+        try policy.status.check(.task, @tagName(current.status), @tagName(new_status), patch.force);
+    }
+
     _ = d.execParams(sql_z, params.items) catch |e| {
         if (d.lastWasUniqueViolation()) return Error.SlugConflict;
         std.log.err("task.update exec failed: {s}", .{@errorName(e)});
@@ -839,10 +841,14 @@ pub fn update(
     const updated = try show(d, allocator, id);
     errdefer deinit(updated, allocator);
     if (!patch.no_auto_promote) {
-        if (updated.plan_id) |pid| {
+        if (current.plan_id) |pid| {
             const recompute = try plan.recomputeStatus(d, allocator, pid);
             recompute.deinit(allocator);
         }
+        if (updated.plan_id) |pid| if (current.plan_id == null or current.plan_id.? != pid) {
+            const recompute = try plan.recomputeStatus(d, allocator, pid);
+            recompute.deinit(allocator);
+        };
     }
     if (has_status_change) {
         try commitTx(d);
@@ -912,7 +918,60 @@ pub fn markDone(d: *db.sqlite.Db, allocator: std.mem.Allocator, id: i64, force: 
 }
 
 pub fn markCancelled(d: *db.sqlite.Db, allocator: std.mem.Allocator, id: i64) Error!Task {
-    return try transition(d, allocator, id, .cancelled, "cancelled");
+    const nested = d.inTransaction();
+    if (nested) {
+        try beginSavepoint(d, allocator, "task_cancel");
+    } else {
+        try beginImmediate(d);
+    }
+    var committed = false;
+    errdefer if (!committed) {
+        if (nested) {
+            d.rollbackToSavepoint(allocator, "task_cancel") catch {};
+            d.releaseSavepoint(allocator, "task_cancel") catch {};
+        } else {
+            rollbackTx(d);
+        }
+    };
+
+    if (try hasActiveClaimOnTask(d, id)) {
+        if (nested) {
+            d.rollbackToSavepoint(allocator, "task_cancel") catch return Error.QueryFailed;
+            d.releaseSavepoint(allocator, "task_cancel") catch return Error.QueryFailed;
+        } else {
+            rollbackTx(d);
+        }
+        committed = true;
+        return Error.TaskClaimed;
+    }
+
+    const current = try show(d, allocator, id);
+    defer deinit(current, allocator);
+    try policy.scope_guard.check(null, null);
+    try policy.status.check(.task, @tagName(current.status), "cancelled", false);
+    _ = d.execParams(
+        "update tasks set status = 'cancelled', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') where id = ?",
+        &.{.{ .int = id }},
+    ) catch return Error.QueryFailed;
+    try policy.audit.record(d, .{
+        .verb = .status_change,
+        .entity = .{ .kind = "task", .id = id },
+        .scope = null,
+        .summary = "cancelled",
+    });
+    const updated = try show(d, allocator, id);
+    errdefer deinit(updated, allocator);
+    if (updated.plan_id) |pid| {
+        const recompute = try plan.recomputeStatus(d, allocator, pid);
+        recompute.deinit(allocator);
+    }
+    if (nested) {
+        try finishSavepoint(d, allocator, "task_cancel");
+    } else {
+        try commitTx(d);
+    }
+    committed = true;
+    return updated;
 }
 
 /// Mark a task as blocked. `blocked_on_id` records which task is

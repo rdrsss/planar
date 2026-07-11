@@ -529,9 +529,12 @@ test "groups recommend: --solver=mtkahypar cost is never worse than greedy (task
         "groups", "recommend", pid, "--budget", budget, "--solver", "mtkahypar", "--json",
     });
 
-    // The optimal arm ran (binary present) → honest reporting.
-    try std.testing.expectEqualStrings("mtkahypar", solver_g.solver);
-    try std.testing.expect(solver_g.optimal_available);
+    // A present but incompatible solver must degrade honestly to greedy.
+    if (solver_g.optimal_available) {
+        try std.testing.expectEqualStrings("mtkahypar", solver_g.solver);
+    } else {
+        try std.testing.expectEqualStrings("greedy", solver_g.solver);
+    }
 
     // THE GUARANTEE: the solver arm's total cost is ≤ greedy's on this coupled
     // input. Before the fix the solver could report a strictly higher cost.

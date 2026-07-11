@@ -19,24 +19,43 @@ pub const Error = error{
     /// The database's `schema_migrations` max version exceeds the highest
     /// migration this binary knows about. The binary must be upgraded.
     SchemaVersionAhead,
+    SchemaVersionGap,
+    InvalidMigrationSet,
 };
 
 /// Apply every up migration that hasn't run yet, in version order. Each
-/// migration runs as its own `sqlite3_exec` call; SQLite wraps each call
-/// in an implicit transaction when no outer `begin` is open.
+/// migration runs in its own explicit transaction. `sqlite3_exec` does not
+/// make a multi-statement script atomic by itself.
 ///
 /// Idempotent: reads `max(version)` from `schema_migrations` to decide
 /// where to resume. The table is absent on a fresh DB — the query fails,
 /// we treat that as "nothing applied yet" and run from version 1.
 pub fn applyAll(db: *sqlite.Db, alloc: std.mem.Allocator) !void {
+    try validateEmbeddedMigrations();
     const max_applied: u32 = if (db.intQuery(
         "select coalesce(max(version), 0) from schema_migrations",
     )) |v| @intCast(v) else |_| 0;
 
     for (migrations.all) |m| {
         if (m.version <= max_applied) continue;
-        try db.execSlice(alloc, m.up);
+        try applyOne(db, alloc, m.up);
     }
+}
+
+fn validateEmbeddedMigrations() Error!void {
+    for (migrations.all, 0..) |m, i| {
+        const expected: u32 = @intCast(i + 1);
+        if (m.version != expected) return Error.InvalidMigrationSet;
+    }
+}
+
+fn applyOne(db: *sqlite.Db, alloc: std.mem.Allocator, sql: []const u8) !void {
+    try db.exec("begin immediate");
+    var committed = false;
+    defer if (!committed) db.exec("rollback") catch {};
+    try db.execSlice(alloc, sql);
+    try db.exec("commit");
+    committed = true;
 }
 
 /// Assert that the database's schema version does not exceed what this
@@ -55,6 +74,7 @@ pub fn assertSchemaCompatible(
     out_db_version: *u32,
     out_embedded_max: *u32,
 ) Error!void {
+    try validateEmbeddedMigrations();
     const db_version: u32 = if (db.intQuery(
         "select coalesce(max(version), 0) from schema_migrations",
     )) |v| @intCast(v) else |_| 0;
@@ -63,6 +83,12 @@ pub fn assertSchemaCompatible(
     out_embedded_max.* = embedded_max;
 
     if (db_version > embedded_max) return Error.SchemaVersionAhead;
+    if (db_version > 0) {
+        const applied_count: u32 = @intCast(db.intQuery(
+            "select count(*) from schema_migrations",
+        ) catch return Error.SchemaVersionGap);
+        if (applied_count != db_version) return Error.SchemaVersionGap;
+    }
 }
 
 /// Run every down migration in reverse version order. After completion

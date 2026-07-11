@@ -14,8 +14,8 @@
 //! comptime `ALLOWED_HOST_FNS` manifest below, which P0.3 locks against a
 //! frozen constant (and asserts none of `DENIED_HOST_FNS` appears).
 //!
-//!   cli.planar(argv)          — allowlisted shell of planar/planar-agent/
-//!   cli.planar_json(argv)       planar-watch ONLY; binary hardcoded.  No exec.
+//!   cli.planar(argv)          — exact command allowlist over trusted sibling
+//!   cli.planar_json(argv)       planar binaries; no general exec.
 //!   cli.planar_agent(argv)    — mutation shell of planar-agent (claim ritual:
 //!   cli.planar_agent_json(argv)  pull/complete/fail/release/block/heartbeat).
 //!   cli.planar_watch(argv)    — read-only shell of planar-watch (mode=ro).
@@ -25,8 +25,8 @@
 //!   git.diff_name_only(opts?)  dir.
 //!   git.head_sha()
 //!   git.clean(opts?)
-//!   fs.read(path)           — path-confined to the sandbox root; `..` and
-//!   fs.write(path, data)      absolute paths are rejected.
+//!   fs.read(path)           — handle-confined beneath the sandbox root;
+//!   fs.write(path, data)      absolute/dot/symlink paths are rejected.
 //!   fs.exists(path)
 //!   fs.mkdir(path)
 //!   flow.log(msg)           — pure: log / phase marker / fail / result.
@@ -161,6 +161,10 @@ comptime {
 pub const HostState = struct {
     arena: std.mem.Allocator,
     io: Io,
+
+    /// Directory containing this planar-execute binary. Planar subprocesses
+    /// are resolved as trusted sibling binaries rather than through PATH.
+    bin_dir: []const u8 = "",
 
     /// Working tree the confined `git.*` group operates in (host injects
     /// `-C <worktree>`).  Empty means "no worktree configured" — git.* then
@@ -477,6 +481,18 @@ fn writeLuaTableJson(L: ?*c.lua_State, hs: *HostState, idx: c_int, w: *std.Io.Wr
     // for any string keys, then decide) which adds complexity for no benefit
     // over the natural `{}` output.
     if (n > 0) {
+        var key_count: usize = 0;
+        c.lua_pushnil(L);
+        while (c.lua_next(L, abs_idx) != 0) {
+            key_count += 1;
+            if (c.lua_isinteger(L, -2) == 0) {
+                raiseError(L, "mixed Lua tables cannot be serialized as JSON arrays", .{});
+            }
+            const key = c.lua_tointegerx(L, -2, null);
+            if (key < 1 or key > n) raiseError(L, "sparse Lua arrays are not supported", .{});
+            c.lua_settop(L, -2);
+        }
+        if (key_count != n) raiseError(L, "sparse Lua arrays are not supported", .{});
         try w.writeByte('[');
         var i: usize = 1;
         while (i <= n) : (i += 1) {
@@ -546,12 +562,8 @@ fn pushArgsTable(L: ?*c.lua_State, hs: *HostState) void {
         c.lua_createtable(L, 0, 0);
         return;
     }
-    const parsed = std.json.parseFromSlice(std.json.Value, hs.arena, trimmed, .{ .allocate = .alloc_always }) catch {
-        // Bad --args is a configuration error, not a runtime one; surface a
-        // clear nil-safe empty table rather than crash before run() executes.
-        c.lua_createtable(L, 0, 0);
-        return;
-    };
+    const parsed = std.json.parseFromSlice(std.json.Value, hs.arena, trimmed, .{ .allocate = .alloc_always }) catch
+        raiseError(L, "--args must be valid JSON", .{});
     pushJsonValue(L, parsed.value);
 }
 
@@ -573,9 +585,14 @@ fn runAllowlisted(L: ?*c.lua_State, hs: *HostState, bin: []const u8, argv_tail: 
         if (std.mem.eql(u8, b, bin)) ok = true;
     }
     if (!ok) raiseError(L, "binary not allowlisted: {s}", .{bin});
+    if (!commandAllowed(bin, argv_tail)) raiseError(L, "command is outside the deterministic workflow capability set", .{});
+    if (hs.bin_dir.len == 0) raiseError(L, "trusted binary directory is unavailable", .{});
+
+    const binary_path = std.fs.path.join(hs.arena, &.{ hs.bin_dir, bin }) catch
+        raiseError(L, "out of memory resolving trusted binary", .{});
 
     const argv = hs.arena.alloc([]const u8, argv_tail.len + 1) catch raiseError(L, "out of memory building argv", .{});
-    argv[0] = bin;
+    argv[0] = binary_path;
     for (argv_tail, 0..) |a, i| argv[i + 1] = a;
 
     const result = std.process.run(hs.arena, hs.io, .{
@@ -589,6 +606,40 @@ fn runAllowlisted(L: ?*c.lua_State, hs: *HostState, bin: []const u8, argv_tail: 
         raiseError(L, "{s} exited non-zero: {s}", .{ bin, std.mem.trim(u8, result.stderr, " \t\r\n") });
     }
     return result.stdout;
+}
+
+fn commandAllowed(bin: []const u8, argv: []const []const u8) bool {
+    if (argv.len == 0) return false;
+    if (std.mem.eql(u8, bin, "planar-agent")) {
+        const allowed = [_][]const u8{ "pull", "claim", "heartbeat", "complete", "fail", "release", "block", "context", "run", "action", "schema" };
+        for (allowed) |verb| if (std.mem.eql(u8, argv[0], verb)) return true;
+        return false;
+    }
+    if (std.mem.eql(u8, bin, "planar-watch")) {
+        const allowed = [_][]const u8{ "feed", "ps", "claims", "actions", "plans", "log", "syncevents", "schema", "version" };
+        for (allowed) |verb| if (std.mem.eql(u8, argv[0], verb)) return true;
+        return false;
+    }
+    if (!std.mem.eql(u8, bin, "planar")) return false;
+    const single = [_][]const u8{ "schema", "health", "resume", "report" };
+    for (single) |verb| if (std.mem.eql(u8, argv[0], verb)) return true;
+    if (argv.len < 2) return false;
+    const Pair = struct { []const u8, []const u8 };
+    const allowed = [_]Pair{
+        .{ "scope", "show" },              .{ "plan", "show" },        .{ "plan", "list" },
+        .{ "plan", "descendants" },        .{ "plan", "next" },        .{ "plan", "closeout" },
+        .{ "plan", "recommend-strategy" }, .{ "task", "show" },        .{ "task", "list" },
+        .{ "task", "add" },                .{ "task", "touches" },     .{ "question", "list" },
+        .{ "question", "add" },            .{ "links", "list" },       .{ "run", "start" },
+        .{ "run", "event" },               .{ "run", "finish" },       .{ "bench", "start" },
+        .{ "bench", "show" },              .{ "bench", "harvest" },    .{ "bench", "finish" },
+        .{ "ext", "propagate-one" },       .{ "capture", "snapshot" }, .{ "handoff", "create" },
+        .{ "handoff", "validate" },
+    };
+    for (allowed) |pair| {
+        if (std.mem.eql(u8, argv[0], pair[0]) and std.mem.eql(u8, argv[1], pair[1])) return true;
+    }
+    return false;
 }
 
 /// runGit shells `git -C <worktree> <argv...>` and returns stdout on the arena.
@@ -619,19 +670,51 @@ fn runGit(L: ?*c.lua_State, hs: *HostState, git_args: []const []const u8) []cons
 // fs path confinement
 // ---------------------------------------------------------------------------
 
-/// confinePath rejects absolute paths and any `..` component, then joins the
-/// relative path onto the sandbox root.  Returns an arena-owned absolute path.
-fn confinePath(L: ?*c.lua_State, hs: *HostState, rel: []const u8) []const u8 {
-    if (hs.sandbox_root.len == 0) raiseError(L, "fs.* requires a configured sandbox root (--sandbox-root)", .{});
-    if (rel.len == 0) raiseError(L, "fs.* path is empty", .{});
-    if (std.fs.path.isAbsolute(rel)) raiseError(L, "fs.* rejects absolute path: {s}", .{rel});
-    // Reject any `..` path component (string-level; defense before normalization).
-    var it = std.mem.tokenizeAny(u8, rel, "/\\");
-    while (it.next()) |comp| {
-        if (std.mem.eql(u8, comp, "..")) raiseError(L, "fs.* rejects '..' in path: {s}", .{rel});
+const ConfinedParent = struct {
+    dir: std.Io.Dir,
+    leaf: []const u8,
+
+    fn close(self: ConfinedParent, io: Io) void {
+        self.dir.close(io);
     }
-    const joined = std.fs.path.join(hs.arena, &.{ hs.sandbox_root, rel }) catch raiseError(L, "out of memory joining path", .{});
-    return joined;
+};
+
+fn validateConfinedRel(rel: []const u8) !void {
+    if (rel.len == 0 or std.fs.path.isAbsolute(rel) or std.mem.indexOfScalar(u8, rel, '\\') != null)
+        return error.InvalidConfinedPath;
+    var components = std.mem.splitScalar(u8, rel, '/');
+    while (components.next()) |component| {
+        if (component.len == 0 or std.mem.eql(u8, component, ".") or std.mem.eql(u8, component, ".."))
+            return error.InvalidConfinedPath;
+    }
+}
+
+/// Open the parent directory of `rel` by walking from a stable sandbox-root
+/// handle. Every component is opened with no-follow semantics, so later path
+/// replacement cannot redirect the final operation outside the sandbox.
+fn openConfinedParent(io: Io, sandbox_root: []const u8, rel: []const u8, create_parents: bool) !ConfinedParent {
+    if (sandbox_root.len == 0) return error.SandboxRootMissing;
+    try validateConfinedRel(rel);
+
+    var current = try std.Io.Dir.cwd().openDir(io, sandbox_root, .{ .follow_symlinks = false });
+    errdefer current.close(io);
+
+    if (std.fs.path.dirname(rel)) |parent| {
+        var components = std.mem.splitScalar(u8, parent, '/');
+        while (components.next()) |component| {
+            const next = current.openDir(io, component, .{ .follow_symlinks = false }) catch |err| blk: {
+                if (!create_parents or err != error.FileNotFound) return err;
+                current.createDir(io, component, .default_dir) catch |create_err| switch (create_err) {
+                    error.PathAlreadyExists => {},
+                    else => return create_err,
+                };
+                break :blk try current.openDir(io, component, .{ .follow_symlinks = false });
+            };
+            current.close(io);
+            current = next;
+        }
+    }
+    return .{ .dir = current, .leaf = std.fs.path.basename(rel) };
 }
 
 // ===========================================================================
@@ -705,7 +788,7 @@ fn hostCliPlanarWatchJson(L: ?*c.lua_State) callconv(.c) c_int {
 fn hostGitResetHard(L: ?*c.lua_State) callconv(.c) c_int {
     const hs = hostStateUpvalue(L);
     const sha = luaArgString(L, 1);
-    if (sha.len == 0) raiseError(L, "git.reset_hard requires a sha", .{});
+    if (!isHexObjectId(sha)) raiseError(L, "git.reset_hard requires a hexadecimal object id", .{});
     _ = runGit(L, hs, &.{ "reset", "--hard", sha });
     return 0;
 }
@@ -713,7 +796,7 @@ fn hostGitResetHard(L: ?*c.lua_State) callconv(.c) c_int {
 fn hostGitCheckout(L: ?*c.lua_State) callconv(.c) c_int {
     const hs = hostStateUpvalue(L);
     const ref = luaArgString(L, 1);
-    if (ref.len == 0) raiseError(L, "git.checkout requires a ref", .{});
+    if (!safeGitRef(ref)) raiseError(L, "git.checkout received an unsafe ref", .{});
     _ = runGit(L, hs, &.{ "checkout", ref });
     return 0;
 }
@@ -728,8 +811,9 @@ fn hostGitDiffNameOnly(L: ?*c.lua_State) callconv(.c) c_int {
         base = luaArgString(L, -1);
         c.lua_settop(L, -2);
     }
+    if (base.len > 0 and !safeGitRef(base)) raiseError(L, "git.diff_name_only received an unsafe base", .{});
     const out = if (base.len > 0)
-        runGit(L, hs, &.{ "diff", "--name-only", base })
+        runGit(L, hs, &.{ "diff", "--name-only", base, "--" })
     else
         runGit(L, hs, &.{ "diff", "--name-only" });
     // Split lines into a Lua array.
@@ -744,6 +828,20 @@ fn hostGitDiffNameOnly(L: ?*c.lua_State) callconv(.c) c_int {
         i += 1;
     }
     return 1;
+}
+
+fn isHexObjectId(value: []const u8) bool {
+    if (value.len < 7 or value.len > 64) return false;
+    for (value) |ch| if (!std.ascii.isHex(ch)) return false;
+    return true;
+}
+
+fn safeGitRef(value: []const u8) bool {
+    if (value.len == 0 or value[0] == '-' or std.mem.indexOf(u8, value, "..") != null) return false;
+    for (value) |ch| {
+        if (!(std.ascii.isAlphanumeric(ch) or ch == '/' or ch == '_' or ch == '-' or ch == '.' or ch == '~' or ch == '^')) return false;
+    }
+    return true;
 }
 
 /// git.head_sha() → the worktree HEAD sha (trimmed).
@@ -779,39 +877,104 @@ fn hostGitClean(L: ?*c.lua_State) callconv(.c) c_int {
 
 fn hostFsRead(L: ?*c.lua_State) callconv(.c) c_int {
     const hs = hostStateUpvalue(L);
-    const path = confinePath(L, hs, luaArgString(L, 1));
-    const data = std.Io.Dir.cwd().readFileAlloc(hs.io, path, hs.arena, .limited(16 * 1024 * 1024)) catch raiseError(L, "fs.read failed: {s}", .{path});
+    const rel = luaArgString(L, 1);
+    const parent = openConfinedParent(hs.io, hs.sandbox_root, rel, false) catch
+        raiseError(L, "fs.read rejected or failed: {s}", .{rel});
+    var file = parent.dir.openFile(hs.io, parent.leaf, .{ .follow_symlinks = false, .resolve_beneath = true }) catch {
+        parent.close(hs.io);
+        raiseError(L, "fs.read rejected or failed: {s}", .{rel});
+    };
+    parent.close(hs.io);
+    var reader = file.reader(hs.io, &.{});
+    const data = reader.interface.allocRemaining(hs.arena, .limited(16 * 1024 * 1024)) catch {
+        file.close(hs.io);
+        raiseError(L, "fs.read failed: {s}", .{rel});
+    };
+    file.close(hs.io);
     _ = c.lua_pushlstring(L, data.ptr, data.len);
     return 1;
 }
 
 fn hostFsWrite(L: ?*c.lua_State) callconv(.c) c_int {
     const hs = hostStateUpvalue(L);
-    const path = confinePath(L, hs, luaArgString(L, 1));
+    const rel = luaArgString(L, 1);
     const data = luaArgString(L, 2);
-    // Ensure the parent dir exists (confined under sandbox root already).
-    if (std.fs.path.dirname(path)) |dir| {
-        std.Io.Dir.cwd().createDirPath(hs.io, dir) catch {};
-    }
-    std.Io.Dir.cwd().writeFile(hs.io, .{ .sub_path = path, .data = data }) catch raiseError(L, "fs.write failed: {s}", .{path});
+    const parent = openConfinedParent(hs.io, hs.sandbox_root, rel, true) catch
+        raiseError(L, "fs.write rejected or failed: {s}", .{rel});
+    var file = parent.dir.openFile(hs.io, parent.leaf, .{
+        .mode = .write_only,
+        .allow_directory = false,
+        .follow_symlinks = false,
+        .resolve_beneath = true,
+    }) catch |err| switch (err) {
+        error.FileNotFound => parent.dir.createFile(hs.io, parent.leaf, .{
+            .exclusive = true,
+            .resolve_beneath = true,
+        }) catch {
+            parent.close(hs.io);
+            raiseError(L, "fs.write rejected or failed: {s}", .{rel});
+        },
+        else => {
+            parent.close(hs.io);
+            raiseError(L, "fs.write rejected or failed: {s}", .{rel});
+        },
+    };
+    parent.close(hs.io);
+    file.writeStreamingAll(hs.io, data) catch {
+        file.close(hs.io);
+        raiseError(L, "fs.write failed: {s}", .{rel});
+    };
+    file.setLength(hs.io, data.len) catch {
+        file.close(hs.io);
+        raiseError(L, "fs.write failed: {s}", .{rel});
+    };
+    file.close(hs.io);
     return 0;
 }
 
 fn hostFsExists(L: ?*c.lua_State) callconv(.c) c_int {
     const hs = hostStateUpvalue(L);
-    const path = confinePath(L, hs, luaArgString(L, 1));
-    const exists = blk: {
-        std.Io.Dir.cwd().access(hs.io, path, .{}) catch break :blk false;
-        break :blk true;
+    const rel = luaArgString(L, 1);
+    const parent = openConfinedParent(hs.io, hs.sandbox_root, rel, false) catch |err| switch (err) {
+        error.FileNotFound => {
+            c.lua_pushboolean(L, 0);
+            return 1;
+        },
+        else => raiseError(L, "fs.exists rejected or failed: {s}", .{rel}),
     };
+    const exists = blk: {
+        const stat = parent.dir.statFile(hs.io, parent.leaf, .{ .follow_symlinks = false }) catch |err| switch (err) {
+            error.FileNotFound => break :blk false,
+            else => {
+                parent.close(hs.io);
+                raiseError(L, "fs.exists failed: {s}", .{rel});
+            },
+        };
+        break :blk stat.kind != .sym_link;
+    };
+    parent.close(hs.io);
     c.lua_pushboolean(L, if (exists) 1 else 0);
     return 1;
 }
 
 fn hostFsMkdir(L: ?*c.lua_State) callconv(.c) c_int {
     const hs = hostStateUpvalue(L);
-    const path = confinePath(L, hs, luaArgString(L, 1));
-    std.Io.Dir.cwd().createDirPath(hs.io, path) catch raiseError(L, "fs.mkdir failed: {s}", .{path});
+    const rel = luaArgString(L, 1);
+    const parent = openConfinedParent(hs.io, hs.sandbox_root, rel, true) catch
+        raiseError(L, "fs.mkdir rejected or failed: {s}", .{rel});
+    parent.dir.createDir(hs.io, parent.leaf, .default_dir) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => {
+            parent.close(hs.io);
+            raiseError(L, "fs.mkdir failed: {s}", .{rel});
+        },
+    };
+    const created = parent.dir.openDir(hs.io, parent.leaf, .{ .follow_symlinks = false }) catch {
+        parent.close(hs.io);
+        raiseError(L, "fs.mkdir rejected symlink: {s}", .{rel});
+    };
+    created.close(hs.io);
+    parent.close(hs.io);
     return 0;
 }
 
@@ -1219,6 +1382,45 @@ test "runtime lock: DENIED_HOST_FNS names are absent from every host table at ru
             }
         }
     }
+}
+
+test "command capability gate allows workflow reads and rejects operator-only mutations" {
+    try std.testing.expect(commandAllowed("planar", &.{ "plan", "recommend-strategy", "42", "--json" }));
+    try std.testing.expect(commandAllowed("planar", &.{ "task", "touches", "list", "42", "--json" }));
+    try std.testing.expect(commandAllowed("planar-agent", &.{ "heartbeat", "--claim", "token" }));
+    try std.testing.expect(!commandAllowed("planar", &.{ "config", "set", "key", "value" }));
+    try std.testing.expect(!commandAllowed("planar", &.{ "workspace", "init", "root" }));
+    try std.testing.expect(!commandAllowed("sh", &.{ "-c", "echo unsafe" }));
+}
+
+test "git argument validators reject option and revision injection" {
+    try std.testing.expect(isHexObjectId("0123456789abcdef"));
+    try std.testing.expect(!isHexObjectId("HEAD"));
+    try std.testing.expect(safeGitRef("feature/safe-ref"));
+    try std.testing.expect(!safeGitRef("--upload-pack=sh"));
+    try std.testing.expect(!safeGitRef("main..evil"));
+}
+
+test "confined parent traversal rejects dot segments, backslashes, and symlink parents" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buf);
+    const root = root_buf[0..root_len];
+
+    try tmp.dir.createDir(io, "safe", .default_dir);
+    const safe = try openConfinedParent(io, root, "safe/file.txt", false);
+    safe.close(io);
+
+    try std.testing.expectError(error.InvalidConfinedPath, openConfinedParent(io, root, "../escape", false));
+    try std.testing.expectError(error.InvalidConfinedPath, openConfinedParent(io, root, "safe\\escape", false));
+
+    try tmp.dir.symLink(io, "safe", "linked", .{ .is_directory = true });
+    if (openConfinedParent(io, root, "linked/file.txt", false)) |escaped| {
+        escaped.close(io);
+        return error.TestUnexpectedResult;
+    } else |_| {}
 }
 
 test "runtime lock: sandbox nils os, io, load, loadfile, loadstring, dofile, require, math.random, math.randomseed" {

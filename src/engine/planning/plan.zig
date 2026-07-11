@@ -117,6 +117,7 @@ pub const Error =
         UnsupportedScope,
         SlugNotFound,
         InvalidStatus,
+        InvalidParentCycle,
         QueryFailed,
     } ||
     std.mem.Allocator.Error ||
@@ -424,12 +425,22 @@ pub fn update(
     else
         null;
 
+    d.savepoint(allocator, "plan_update") catch return Error.QueryFailed;
+    var update_done = false;
+    defer if (!update_done) {
+        d.rollbackToSavepoint(allocator, "plan_update") catch {};
+        d.releaseSavepoint(allocator, "plan_update") catch {};
+    };
+
     const current = try show(d, allocator, id);
     defer deinit(current, allocator); // snapshot — not returned to caller.
     try policy.scope_guard.check(null, null);
 
     if (patch.status) |new_status| {
         try policy.status.check(.plan, @tagName(current.status), @tagName(new_status), false);
+    }
+    if (patch.parent_plan_id) |parent_id| {
+        if (try wouldCreateParentCycle(d, id, parent_id)) return Error.InvalidParentCycle;
     }
 
     // Build the SET clause dynamically so untouched columns keep their
@@ -495,7 +506,11 @@ pub fn update(
     // No-op update — `current` is already deferred-freed above, so
     // refetch a fresh snapshot for the caller rather than handing out
     // an about-to-be-dangling Plan.
-    if (first) return try show(d, allocator, id);
+    if (first) {
+        d.releaseSavepoint(allocator, "plan_update") catch return Error.QueryFailed;
+        update_done = true;
+        return try show(d, allocator, id);
+    }
 
     try appendSep(&sql_buf, &first, allocator);
     try sql_buf.appendSlice(allocator, "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') where id = ?");
@@ -517,8 +532,29 @@ pub fn update(
         .scope = null,
         .summary = null,
     });
+    const updated = try show(d, allocator, id);
+    errdefer deinit(updated, allocator);
+    d.releaseSavepoint(allocator, "plan_update") catch return Error.QueryFailed;
+    update_done = true;
+    return updated;
+}
 
-    return try show(d, allocator, id);
+fn wouldCreateParentCycle(d: *db.sqlite.Db, plan_id: i64, parent_id: i64) Error!bool {
+    var stmt = d.prepare(
+        \\with recursive ancestors(id, parent_plan_id) as (
+        \\  select id, parent_plan_id from plans where id = ?
+        \\  union
+        \\  select p.id, p.parent_plan_id from plans p
+        \\  join ancestors a on p.id = a.parent_plan_id
+        \\)
+        \\select count(*) from ancestors where id = ?
+    ) catch return Error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(&.{ .{ .int = parent_id }, .{ .int = plan_id } }) catch return Error.QueryFailed;
+    return switch (stmt.step() catch return Error.QueryFailed) {
+        .done => false,
+        .row => stmt.columnInt(0) > 0,
+    };
 }
 
 // =========================================================================
@@ -1364,4 +1400,23 @@ test "recomputeStatus: audit row text records the aggregate reason" {
             try std.testing.expect(std.mem.indexOf(u8, summary, "cancelled=") != null);
         },
     }
+}
+
+test "update rejects a parent cycle without mutating the plan" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const root = try create(&d, a, .{ .title = "Cycle root" });
+    defer deinit(root, a);
+    const child = try create(&d, a, .{ .title = "Cycle child", .parent_plan_id = root.id });
+    defer deinit(child, a);
+
+    try std.testing.expectError(
+        Error.InvalidParentCycle,
+        update(&d, a, root.id, .{ .parent_plan_id = child.id }),
+    );
+    const unchanged = try show(&d, a, root.id);
+    defer deinit(unchanged, a);
+    try std.testing.expectEqual(@as(?i64, null), unchanged.parent_plan_id);
 }

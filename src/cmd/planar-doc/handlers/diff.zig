@@ -13,10 +13,13 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     defer result.deinit();
     if (args.json) {
         for (result.records) |r| {
-            try ctx.stdout.print(
-                "{{\"signal\":\"{s}\",\"path\":\"{s}\",\"doc\":\"{s}\",\"detail\":\"{s}\"}}\n",
-                .{ r.signal.toString(), r.path, r.doc, r.detail },
-            );
+            try std.json.Stringify.value(.{
+                .signal = r.signal.toString(),
+                .path = r.path,
+                .doc = r.doc,
+                .detail = r.detail,
+            }, .{}, ctx.stdout);
+            try ctx.stdout.writeByte('\n');
         }
     } else {
         for (result.records) |r| {

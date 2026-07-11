@@ -3374,7 +3374,7 @@ Sync commands pull and push data between the local plane and registered external
 
 **Synopsis:**
 ```
-planar sync pull <link-id | kind:id | --all> [--system <slug>]
+planar sync pull <link-id | kind:id | --all> [--system <slug>] [--scope <slug>]
 ```
 
 **Description:** Pull remote state for one or more links. Updates `external_links.last_synced_at` and mirrors selected fields onto the local entity if `sync_direction` permits. Records a `sync_events` row per link touched.
@@ -3389,7 +3389,7 @@ planar sync pull <link-id | kind:id | --all> [--system <slug>]
 | `<kind:id>` | Pull all links for the given local entity. |
 | `--all` | Pull all links with `sync_direction` of `two-way` or `read-only`. |
 | `--system <slug>` | Filter to links via a specific system (when used with `--all` or `kind:id`). |
-| `--scope <slug>` | Filter to links within a specific scope. |
+| `--scope <slug>` | Explicit write-scope override for the target entity guard. |
 
 **Output (human):**
 ```
@@ -3423,12 +3423,14 @@ pulled 3 links
 
 **Synopsis:**
 ```
-planar sync push <link-id | kind:id | --all> [--system <slug>]
+planar sync push <link-id | kind:id | --all> [--system <slug>] [--scope <slug>]
 ```
 
 **Description:** Push selected local fields to the remote system for one or more links. For comment and decision posts, appends rather than replaces. Includes the correlation footer on every push.
 
 **Scope guard:** Single-target invocations (`<link-id>` or `<kind:id>`) refuse when the operator's resolved write scope disagrees with the local entity referenced by any resolved link. `--all` invocations are not guarded (bulk fan-out is opt-in). See [Cross-scope guard](#cross-scope-guard).
+
+`--scope <slug>` explicitly selects the write scope used by that guard.
 
 **Schema effects:**
 - Calls adapter `update(external_id, fields)` or `comment(external_id, body)`.
@@ -3472,7 +3474,7 @@ link  entity    external-id    system      last-sync           status
 
 **Synopsis:**
 ```
-planar sync resolve <event-id> --keep <side>
+planar sync resolve <event-id> --keep <side> [--scope <slug>]
 ```
 
 **Description:** Resolve a sync conflict recorded in `sync_events`. `--keep local` keeps the local value and pushes it to the remote. `--keep remote` overwrites the local value with the remote value. Resolution is whole-entity; per-field resolution is not supported.
@@ -3490,6 +3492,7 @@ planar sync resolve <event-id> --keep <side>
 | Flag | Description | Required |
 |------|-------------|----------|
 | `--keep <side>` | `local` or `remote`. | yes |
+| `--scope <slug>` | Explicit write-scope override for the target entity guard. | no |
 
 **Output (human):**
 ```

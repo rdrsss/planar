@@ -273,7 +273,16 @@ pub fn blockWork(
     var claim = store.getClaimByToken(d, allocator, claim_token) catch |e| return e;
     errdefer claim.deinit(allocator);
 
+    if (!try store.isClaimActiveUnexpired(d, claim_token)) {
+        rollback(d);
+        committed = true;
+        return store.Error.ClaimNotActive;
+    }
     if (claim.entity_kind != .task) return Error.ClaimNotOnTask;
+
+    // Refuse a dangling blocker id before changing either task or claim.
+    const blocker_status = currentTaskStatus(d, allocator, blocker_task_id) catch |e| return e;
+    allocator.free(blocker_status);
 
     // Status guard: must allow * → blocked. Read current then check.
     const current_status = currentTaskStatus(d, allocator, claim.entity_id) catch |e| return e;
@@ -290,7 +299,7 @@ pub fn blockWork(
     // entity_links blocker edge.
     _ = d.execParams(
         "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', ?, 'task', ?, 'blocks')",
-        &.{ .{ .int = blocker_task_id }, .{ .int = claim.entity_id } },
+        &.{ .{ .int = claim.entity_id }, .{ .int = blocker_task_id } },
     ) catch return store.Error.QueryFailed;
 
     _ = d.execParams(
@@ -361,7 +370,7 @@ fn terminalTransition(
     var claim = store.getClaimByToken(d, allocator, targs.claim_token) catch |e| return e;
     errdefer claim.deinit(allocator);
 
-    if (claim.status != .active) {
+    if (claim.status != .active or !try store.isClaimActiveUnexpired(d, targs.claim_token)) {
         rollback(d);
         committed = true;
         return store.Error.ClaimNotActive;

@@ -66,11 +66,6 @@ demote/json
 demote/no-args
 demote/real-cwd
 demote/real-cwd-json
-doc/help
-doc/json
-doc/no-args
-doc/real-cwd
-doc/real-cwd-json
 ext/help
 ext/json
 ext/no-args
@@ -203,3 +198,71 @@ models/json
 models/no-args
 models/real-cwd
 models/real-cwd-json
+
+# bench/* — Zig-only measurement surface added by plans 635/637. The
+# archived Go implementation predates closure-cost benchmarking and has
+# no corresponding run-record metrics contract. Bucket 3.
+bench/help
+bench/json
+bench/no-args
+bench/real-cwd
+bench/real-cwd-json
+
+# closure/* — Zig-only context-closure surface backed by migration 00026
+# (plan 636). The Go archive has neither the schema nor this verb.
+# Bucket 3.
+closure/help
+closure/json
+closure/no-args
+closure/real-cwd
+closure/real-cwd-json
+
+# explore/* — Zig-only interactive cockpit entry point added in M18.
+# The archived Go CLI has no terminal UI counterpart. Bucket 3.
+explore/help
+explore/json
+explore/no-args
+explore/real-cwd
+explore/real-cwd-json
+
+# groups/* — Zig-only context-grouping and solver surface from plan 637.
+# The Go archive predates task-closure grouping. Bucket 3.
+groups/help
+groups/json
+groups/no-args
+groups/real-cwd
+groups/real-cwd-json
+
+# report/* — Zig-only privacy-safe diagnostic bundle from the usage-
+# introspection work. The Go archive has no observability report verb.
+# Bucket 3.
+report/help
+report/json
+report/no-args
+report/real-cwd
+report/real-cwd-json
+
+# run/* — Zig-only operator surface over the shared run-record journal.
+# The Go archive predates workflow run records. Bucket 3.
+run/help
+run/json
+run/no-args
+run/real-cwd
+run/real-cwd-json
+
+# schema/* — Zig-only machine-readable CLI catalog used by the CLI-usage
+# lint gate. The archived Go parser exposes no equivalent catalog.
+# Bucket 3.
+schema/help
+schema/json
+schema/no-args
+schema/real-cwd
+schema/real-cwd-json
+
+# workflow/* — Zig-only named deterministic-workflow launcher. The Go
+# archive predates the revived spawn-free workflow engine. Bucket 3.
+workflow/help
+workflow/json
+workflow/no-args
+workflow/real-cwd
+workflow/real-cwd-json

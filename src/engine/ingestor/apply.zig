@@ -465,7 +465,10 @@ fn applyTouchesLinks(
     slugs: []const []const u8,
 ) Error!void {
     for (slugs) |slug| {
-        const repo_id = repoIdBySlug(d, slug) catch null;
+        const repo_id = repoIdBySlug(d, slug) catch |err| switch (err) {
+            error.NotFound => null,
+            else => return error.QueryFailed,
+        };
         if (repo_id) |rid| {
             ensureLink(d, allocator, .task, task_id, .repo, rid, .touches) catch |e| return e;
         }

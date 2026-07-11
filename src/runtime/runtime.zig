@@ -175,6 +175,15 @@ pub fn ensureDb() !*db.sqlite.Db {
             db_storage = null;
             return e;
         },
+        error.SchemaVersionGap, error.InvalidMigrationSet => {
+            ctx.stderr.print(
+                "error: invalid schema migration history in {s}: {s}\n",
+                .{ ctx.db_path, @errorName(e) },
+            ) catch {};
+            db_storage.?.close();
+            db_storage = null;
+            return e;
+        },
     };
 
     return &db_storage.?;
@@ -276,6 +285,14 @@ pub fn ensureDbConsumer() !*db.sqlite.Db {
         db_storage = null;
         return error.SchemaVersionAhead;
     }
+    var checked_version: u32 = 0;
+    var checked_max: u32 = 0;
+    db.migrate.assertSchemaCompatible(&db_storage.?, &checked_version, &checked_max) catch |e| {
+        ctx.stderr.print("error: invalid schema migration history in {s}: {s}\n", .{ ctx.db_path, @errorName(e) }) catch {};
+        db_storage.?.close();
+        db_storage = null;
+        return e;
+    };
 
     return &db_storage.?;
 }
@@ -357,6 +374,14 @@ pub fn ensureDbStrictReadOnly() !*db.sqlite.Db {
         db_storage = null;
         return error.SchemaVersionAhead;
     }
+    var checked_version: u32 = 0;
+    var checked_max: u32 = 0;
+    db.migrate.assertSchemaCompatible(&db_storage.?, &checked_version, &checked_max) catch |e| {
+        ctx.stderr.print("error: invalid schema migration history in {s}: {s}\n", .{ ctx.db_path, @errorName(e) }) catch {};
+        db_storage.?.close();
+        db_storage = null;
+        return e;
+    };
 
     return &db_storage.?;
 }

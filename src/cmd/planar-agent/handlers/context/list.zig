@@ -129,31 +129,24 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
         if (!first) try w.writeAll(",");
         first = false;
 
-        try w.print(
-            "{{\"id\":{d}," ++
-                "\"run_id\":{d}," ++
-                "\"stage\":\"{s}\"," ++
-                "\"session_id\":{d}," ++
-                "\"claim_id\":{d}," ++
-                "\"kind\":\"{s}\"," ++
-                "\"body\":",
-            .{ rec_id, rec_run_id, rec_stage, rec_session_id, rec_claim_id, rec_kind },
-        );
+        try w.print("{{\"id\":{d},\"run_id\":{d},\"stage\":", .{ rec_id, rec_run_id });
+        try writeJsonString(w, rec_stage);
+        try w.print(",\"session_id\":{d},\"claim_id\":{d},\"kind\":", .{ rec_session_id, rec_claim_id });
+        try writeJsonString(w, rec_kind);
+        try w.writeAll(",\"body\":");
         // body may contain arbitrary text -- use JSON string encoding.
         try writeJsonString(w, rec_body);
-        try w.print(
-            ",\"status\":\"{s}\"" ++
-                ",\"compiled_from\":",
-            .{rec_status},
-        );
+        try w.writeAll(",\"status\":");
+        try writeJsonString(w, rec_status);
+        try w.writeAll(",\"compiled_from\":");
         if (rec_compiled_from) |cf| {
-            try w.writeAll("\"");
-            try w.writeAll(cf);
-            try w.writeAll("\"");
+            try writeJsonString(w, cf);
         } else {
             try w.writeAll("null");
         }
-        try w.print(",\"created_at\":\"{s}\"}}", .{rec_created_at});
+        try w.writeAll(",\"created_at\":");
+        try writeJsonString(w, rec_created_at);
+        try w.writeByte('}');
     }
 
     try w.writeAll("]}\n");

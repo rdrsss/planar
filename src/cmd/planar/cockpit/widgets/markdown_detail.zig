@@ -275,38 +275,18 @@ fn renderPlain(
     const max_col: usize = @intCast(win.width);
     var col: usize = 0;
 
-    var i: usize = 0;
-    while (i < text.len and col < max_col) {
-        const byte = text[i];
-        if (byte & 0x80 == 0) {
-            // ASCII: slice into `text` so the grapheme pointer is stable
-            // (valid for the lifetime of the text parameter, which is either
-            // a static literal, a slice of the heap-allocated body, or an
-            // arena-allocated parts buffer).
-            // `const ch: [1]u8 = .{byte}` would be a loop-iteration stack
-            // local that dies before vaxis.render() — a UAF.
-            win.writeCell(@intCast(col), @intCast(row), .{
-                .char = .{ .grapheme = text[i .. i + 1], .width = 1 },
-                .style = style,
-            });
-            col += 1;
-            i += 1;
-        } else {
-            // Multi-byte UTF-8: find the full codepoint sequence.
-            const seq_len = cpSeqLen(byte) catch {
-                // Stray continuation byte or invalid lead byte — skip 1 safely.
-                i += 1;
-                continue;
-            };
-            if (i + seq_len <= text.len) {
-                win.writeCell(@intCast(col), @intCast(row), .{
-                    .char = .{ .grapheme = text[i .. i + seq_len], .width = 1 },
-                    .style = style,
-                });
-                col += 1;
-            }
-            i += seq_len;
-        }
+    var graphemes = vaxis.unicode.graphemeIterator(text);
+    while (graphemes.next()) |item| {
+        const grapheme = item.bytes(text);
+        const width = win.gwidth(grapheme);
+        if (width == 0) continue;
+        const cell_width: usize = width;
+        if (col + cell_width > max_col) break;
+        win.writeCell(@intCast(col), @intCast(row), .{
+            .char = .{ .grapheme = grapheme, .width = @intCast(width) },
+            .style = style,
+        });
+        col += cell_width;
     }
 }
 
@@ -348,31 +328,18 @@ fn renderInline(
                 // heap-allocated body or the arena parts buffer), so
                 // label[j..j+1] gives a stable pointer — no stack-local ch needed.
                 const label = parsed.label;
-                var j: usize = 0;
-                while (j < label.len) {
-                    if (col >= max_col) break;
-                    const lbyte = label[j];
-                    if (lbyte & 0x80 == 0) {
-                        win.writeCell(@intCast(col), @intCast(row), .{
-                            .char = .{ .grapheme = label[j .. j + 1], .width = 1 },
-                            .style = .{ .ul_style = .single },
-                        });
-                        col += 1;
-                        j += 1;
-                    } else {
-                        const seq = cpSeqLen(lbyte) catch {
-                            j += 1;
-                            continue;
-                        };
-                        if (j + seq <= label.len) {
-                            win.writeCell(@intCast(col), @intCast(row), .{
-                                .char = .{ .grapheme = label[j .. j + seq], .width = 1 },
-                                .style = .{ .ul_style = .single },
-                            });
-                            col += 1;
-                        }
-                        j += seq;
-                    }
+                var label_graphemes = vaxis.unicode.graphemeIterator(label);
+                while (label_graphemes.next()) |item| {
+                    const grapheme = item.bytes(label);
+                    const width = win.gwidth(grapheme);
+                    if (width == 0) continue;
+                    const cell_width: usize = width;
+                    if (col + cell_width > max_col) break;
+                    win.writeCell(@intCast(col), @intCast(row), .{
+                        .char = .{ .grapheme = grapheme, .width = @intCast(width) },
+                        .style = .{ .ul_style = .single },
+                    });
+                    col += cell_width;
                 }
                 i += parsed.consumed;
                 continue;
@@ -409,31 +376,19 @@ fn renderInline(
             base_kind;
 
         const style = kindStyle(effective_kind);
-        const byte = text[i];
-        if (byte & 0x80 == 0) {
-            // Slice into `text` for a stable grapheme pointer.  A stack-local
-            // `const ch: [1]u8 = .{byte}` dies at end of the loop iteration —
-            // the back-buffer cell would hold a dangling pointer (UAF).
-            win.writeCell(@intCast(col), @intCast(row), .{
-                .char = .{ .grapheme = text[i .. i + 1], .width = 1 },
-                .style = style,
-            });
-            col += 1;
-            i += 1;
-        } else {
-            const seq_len = cpSeqLen(byte) catch {
-                i += 1;
-                continue;
-            };
-            if (i + seq_len <= text.len) {
-                win.writeCell(@intCast(col), @intCast(row), .{
-                    .char = .{ .grapheme = text[i .. i + seq_len], .width = 1 },
-                    .style = style,
-                });
-                col += 1;
-            }
-            i += seq_len;
-        }
+        var current_graphemes = vaxis.unicode.graphemeIterator(text[i..]);
+        const item = current_graphemes.next() orelse break;
+        const grapheme = item.bytes(text[i..]);
+        const width = win.gwidth(grapheme);
+        i += grapheme.len;
+        if (width == 0) continue;
+        const cell_width: usize = width;
+        if (col + cell_width > max_col) break;
+        win.writeCell(@intCast(col), @intCast(row), .{
+            .char = .{ .grapheme = grapheme, .width = @intCast(width) },
+            .style = style,
+        });
+        col += cell_width;
     }
 }
 
@@ -718,6 +673,28 @@ test "markdown_detail: non-ASCII title/body rendered without dropped chars (task
 
     // λ (U+03BB, 0xCE 0xBB) must appear — 2-byte sequence.
     try std.testing.expect(std.mem.indexOf(u8, text, "\xce\xbb") != null);
+}
+
+test "markdown_detail uses grapheme display widths for CJK and combining text" {
+    const a = std.testing.allocator;
+    var screen = try vaxis.Screen.init(a, .{ .cols = 8, .rows = 2, .x_pixel = 0, .y_pixel = 0 });
+    defer screen.deinit(a);
+    const win: Window = .{
+        .x_off = 0,
+        .y_off = 0,
+        .parent_x_off = 0,
+        .parent_y_off = 0,
+        .width = 8,
+        .height = 2,
+        .screen = &screen,
+    };
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+
+    try render(win, arena.allocator(), "界e\xcc\x81X");
+    try std.testing.expectEqual(@as(u2, 2), screen.readCell(0, 0).?.char.width);
+    try std.testing.expectEqualStrings("e\xcc\x81", screen.readCell(2, 0).?.char.grapheme);
+    try std.testing.expectEqualStrings("X", screen.readCell(3, 0).?.char.grapheme);
 }
 
 test "markdown_detail compiles" {

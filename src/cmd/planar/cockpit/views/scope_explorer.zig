@@ -253,11 +253,6 @@ pub const ExplorerState = struct {
         self: *ExplorerState,
         d: *db.sqlite.Db,
     ) !void {
-        // Free old data.
-        self.freeNodes();
-        if (self.detail) |det| det.deinit(self.allocator);
-        self.detail = null;
-
         // Build the new flat node list.
         var new_nodes: std.ArrayList(ExplorerNode) = .empty;
         errdefer {
@@ -267,8 +262,12 @@ pub const ExplorerState = struct {
 
         try self.buildPlanTree(d, &new_nodes);
 
+        const replacement = try new_nodes.toOwnedSlice(self.allocator);
         const prev_count = self.nodes.len;
-        self.nodes = try new_nodes.toOwnedSlice(self.allocator);
+        self.freeNodes();
+        if (self.detail) |det| det.deinit(self.allocator);
+        self.detail = null;
+        self.nodes = replacement;
 
         // Reset selection when the list shrinks below current selection.
         if (self.nodes.len != prev_count) {
@@ -447,6 +446,20 @@ pub const ExplorerState = struct {
             visible += 1;
         }
         return null;
+    }
+
+    pub fn focusPlan(self: *ExplorerState, d: *db.sqlite.Db, plan_id: i64) !bool {
+        var visible: usize = 0;
+        for (self.nodes) |node| {
+            if (node.hidden) continue;
+            if (node.kind == .plan and node.entity_id == plan_id) {
+                self.nav.selected_idx = visible;
+                try self.refreshDetail(d);
+                return true;
+            }
+            visible += 1;
+        }
+        return false;
     }
 
     /// Derive the write scope for use with lifecycle transitions (same
@@ -1019,28 +1032,18 @@ pub fn render(
         if (det.title.len > 0 and detail_win.height > 0) {
             const title_style: Style = .{ .bold = true };
             var col: usize = 0;
-            // Iterate by UTF-8 codepoint so that multi-byte characters (accented
-            // letters, arrows, bullets, etc.) are emitted as a single cell.
-            // The old byte-by-byte loop gated on `byte & 0x80 == 0` and silently
-            // DROPPED every high byte — non-ASCII titles appeared truncated.
-            var ti: usize = 0;
-            while (ti < det.title.len and col < detail_win.width) {
-                const byte = det.title[ti];
-                const seq_len = markdown_detail.cpSeqLen(byte) catch {
-                    // Stray continuation or invalid byte — skip 1 byte, stay in sync.
-                    ti += 1;
-                    continue;
-                };
-                if (ti + seq_len > det.title.len) {
-                    // Truncated sequence at end of string — skip remainder.
-                    break;
-                }
+            var graphemes = vaxis.unicode.graphemeIterator(det.title);
+            while (graphemes.next()) |item| {
+                const grapheme = item.bytes(det.title);
+                const width = detail_win.gwidth(grapheme);
+                if (width == 0) continue;
+                const cell_width: usize = width;
+                if (col + cell_width > detail_win.width) break;
                 detail_win.writeCell(@intCast(col), 0, .{
-                    .char = .{ .grapheme = det.title[ti .. ti + seq_len], .width = 1 },
+                    .char = .{ .grapheme = grapheme, .width = @intCast(width) },
                     .style = title_style,
                 });
-                col += 1;
-                ti += seq_len;
+                col += cell_width;
             }
         }
 

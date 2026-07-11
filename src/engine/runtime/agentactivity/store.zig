@@ -200,15 +200,6 @@ pub fn heartbeatClaim(
     claim_token: []const u8,
     ttl_secs: i64,
 ) Error!types.Claim {
-    const c = try getClaimByToken(d, allocator, claim_token);
-    // We hold the row briefly only to verify status; release ownership
-    // back so the caller gets a fresh snapshot at the end.
-    if (c.status != .active) {
-        c.deinit(allocator);
-        return Error.ClaimNotActive;
-    }
-    c.deinit(allocator);
-
     var sql_buf: [512]u8 = undefined;
     const sql = if (ttl_secs >= 0)
         std.fmt.bufPrintZ(&sql_buf,
@@ -216,6 +207,7 @@ pub fn heartbeatClaim(
             \\set last_heartbeat_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
             \\    lease_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ','now', '+{d} seconds')
             \\where claim_token = ? and status = 'active'
+            \\  and lease_expires_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now')
         , .{ttl_secs}) catch return Error.QueryFailed
     else
         std.fmt.bufPrintZ(&sql_buf,
@@ -223,9 +215,15 @@ pub fn heartbeatClaim(
             \\set last_heartbeat_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
             \\    lease_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ','now', '{d} seconds')
             \\where claim_token = ? and status = 'active'
+            \\  and lease_expires_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now')
         , .{ttl_secs}) catch return Error.QueryFailed;
 
     _ = d.execParams(sql, &.{.{ .text = claim_token }}) catch return Error.QueryFailed;
+    if (d.changes() == 0) {
+        const existing = getClaimByToken(d, allocator, claim_token) catch |e| return e;
+        existing.deinit(allocator);
+        return Error.ClaimNotActive;
+    }
     return try getClaimByToken(d, allocator, claim_token);
 }
 
@@ -250,11 +248,19 @@ pub fn releaseClaim(
         \\    released_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
         \\    release_reason = ?
         \\where claim_token = ?
+        \\  and status = 'active'
+        \\  and lease_expires_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now')
     , &.{
         .{ .text = new_status.toText() },
         textOrNull(reason),
         .{ .text = claim_token },
     }) catch return Error.QueryFailed;
+
+    if (d.changes() == 0) {
+        const existing = getClaimByToken(d, allocator, claim_token) catch |e| return e;
+        existing.deinit(allocator);
+        return Error.ClaimNotActive;
+    }
 
     return try getClaimByToken(d, allocator, claim_token);
 }
@@ -270,7 +276,29 @@ pub fn abortClaim(
     claim_token: []const u8,
     reason: ?[]const u8,
 ) Error!types.Claim {
-    return try releaseClaim(d, allocator, claim_token, .aborted, reason);
+    _ = d.execParams(
+        \\update agent_work_claims
+        \\set status = 'aborted',
+        \\    released_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+        \\    release_reason = ?
+        \\where claim_token = ?
+    , &.{ textOrNull(reason), .{ .text = claim_token } }) catch return Error.QueryFailed;
+    if (d.changes() == 0) return Error.ClaimNotFound;
+    return try getClaimByToken(d, allocator, claim_token);
+}
+
+pub fn isClaimActiveUnexpired(d: *db.sqlite.Db, claim_token: []const u8) Error!bool {
+    var stmt = d.prepare(
+        \\select 1 from agent_work_claims
+        \\where claim_token = ? and status = 'active'
+        \\  and lease_expires_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now')
+    ) catch return Error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .text = claim_token }}) catch return Error.QueryFailed;
+    return switch (stmt.step() catch return Error.QueryFailed) {
+        .done => false,
+        .row => true,
+    };
 }
 
 // =========================================================================
@@ -783,6 +811,23 @@ pub fn reconcileStale(
         result.claims_marked_stale = @intCast(candidates.items.len);
     }
 
+    // `pullNext` moves claimed tasks to doing. Once that claim is stale the
+    // task must become eligible again, but only when this claim actually had
+    // an action and no replacement claim currently owns the task.
+    for (candidates.items) |c| {
+        if (c.entity_kind != .task) continue;
+        _ = d.execParams(
+            \\update tasks set status = 'todo', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            \\where id = ? and status = 'doing'
+            \\  and exists (select 1 from agent_actions where claim_id = ?)
+            \\  and not exists (
+            \\    select 1 from agent_work_claims
+            \\    where entity_kind = 'task' and entity_id = ? and status = 'active'
+            \\      and lease_expires_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            \\  )
+        , &.{ .{ .int = c.entity_id }, .{ .int = c.id }, .{ .int = c.entity_id } }) catch return Error.QueryFailed;
+    }
+
     // Orphaned actions: ended_at IS NULL and the owning session has
     // ended. Close them with outcome='aborted' and the session's
     // ended_at as the ended_at timestamp. When scoped to a plan_id,
@@ -855,69 +900,7 @@ pub fn reconcileStale(
             "\n    where s.id = agent_actions.session_id and s.ended_at is not null" ++
             "\n  )";
     _ = d.execParams(act_upd_sql, &.{}) catch return Error.QueryFailed;
-    // Count via a follow-up SELECT against the same predicate post-update:
-    // ended_at is now non-null and outcome='aborted'; we lack a per-update
-    // count from execParams. Approximate via a separate count query that
-    // matches the set we just touched.
-    var act_cnt_buf: [1024]u8 = undefined;
-    const act_cnt_sql = if (policy.plan_id) |pid|
-        if (policy.session_id) |sid|
-            std.fmt.bufPrintZ(&act_cnt_buf,
-                \\select count(*) from agent_actions
-                \\where outcome = 'aborted'
-                \\  and ended_at is not null
-                \\  and session_id = {d}
-                \\  and exists (select 1 from sessions s where s.id = agent_actions.session_id and s.ended_at is not null)
-                \\  and claim_id is not null
-                \\  and exists (
-                \\    select 1 from agent_work_claims c
-                \\    where c.id = agent_actions.claim_id
-                \\      and (
-                \\        (c.entity_kind = 'plan' and c.entity_id = {d})
-                \\        or (c.entity_kind = 'task' and exists (select 1 from tasks t where t.id = c.entity_id and t.plan_id = {d}))
-                \\      )
-                \\  )
-            , .{ sid, pid, pid }) catch return Error.QueryFailed
-        else
-            std.fmt.bufPrintZ(&act_cnt_buf,
-                \\select count(*) from agent_actions
-                \\where outcome = 'aborted'
-                \\  and ended_at is not null
-                \\  and exists (select 1 from sessions s where s.id = agent_actions.session_id and s.ended_at is not null)
-                \\  and claim_id is not null
-                \\  and exists (
-                \\    select 1 from agent_work_claims c
-                \\    where c.id = agent_actions.claim_id
-                \\      and (
-                \\        (c.entity_kind = 'plan' and c.entity_id = {d})
-                \\        or (c.entity_kind = 'task' and exists (select 1 from tasks t where t.id = c.entity_id and t.plan_id = {d}))
-                \\      )
-                \\  )
-            , .{ pid, pid }) catch return Error.QueryFailed
-    else if (policy.session_id) |sid|
-        std.fmt.bufPrintZ(&act_cnt_buf,
-            \\select count(*) from agent_actions
-            \\where outcome = 'aborted'
-            \\  and ended_at is not null
-            \\  and session_id = {d}
-            \\  and exists (
-            \\    select 1 from sessions s
-            \\    where s.id = agent_actions.session_id and s.ended_at is not null
-            \\  )
-        , .{sid}) catch return Error.QueryFailed
-    else
-        "select count(*) from agent_actions" ++
-            "\nwhere outcome = 'aborted'" ++
-            "\n  and ended_at is not null" ++
-            "\n  and exists (" ++
-            "\n    select 1 from sessions s" ++
-            "\n    where s.id = agent_actions.session_id and s.ended_at is not null" ++
-            "\n  )";
-    if (d.intQuery(act_cnt_sql)) |n| {
-        result.actions_closed = n;
-    } else |_| {
-        result.actions_closed = 0;
-    }
+    result.actions_closed = d.changes();
 
     result.candidates = try candidates.toOwnedSlice(allocator);
     return result;
@@ -1646,6 +1629,28 @@ test "heartbeatClaim refuses released claim with ClaimNotActive" {
     r.deinit(a);
 
     try std.testing.expectError(Error.ClaimNotActive, heartbeatClaim(&d, a, c.claim_token, 600));
+}
+
+test "expired claim cannot be heartbeated or normally released" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const sid = try insertTestSession(&d);
+    const tid = try insertTestTask(&d);
+    const claim = try acquireClaim(&d, a, .{
+        .session_id = sid,
+        .entity_kind = .task,
+        .entity_id = tid,
+        .vendor = "test",
+    });
+    defer claim.deinit(a);
+
+    _ = try d.execParams(
+        "update agent_work_claims set lease_expires_at = '2000-01-01T00:00:00.000Z' where id = ?",
+        &.{.{ .int = claim.id }},
+    );
+    try std.testing.expectError(Error.ClaimNotActive, heartbeatClaim(&d, a, claim.claim_token, 600));
+    try std.testing.expectError(Error.ClaimNotActive, releaseClaim(&d, a, claim.claim_token, .released, "late"));
 }
 
 test "releaseClaim transitions status and records reason" {

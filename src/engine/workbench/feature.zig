@@ -38,8 +38,12 @@ pub fn featureDir(
 ) ![]u8 {
     const safe_assoc = try safeAssocSlug(allocator, assoc_slug);
     defer allocator.free(safe_assoc);
+    const safe_key = try safePathSegment(allocator, plan_key);
+    defer allocator.free(safe_key);
+    const safe_slug = try safePathSegment(allocator, plan_slug);
+    defer allocator.free(safe_slug);
 
-    const feature_name = try std.fmt.allocPrint(allocator, "{s}-{s}", .{ plan_key, plan_slug });
+    const feature_name = try std.fmt.allocPrint(allocator, "{s}-{s}", .{ safe_key, safe_slug });
     defer allocator.free(feature_name);
 
     return std.fs.path.join(allocator, &.{ root, safe_assoc, feature_name });
@@ -59,11 +63,26 @@ pub fn storedPath(
 ) ![]u8 {
     const safe_assoc = try safeAssocSlug(allocator, assoc_slug);
     defer allocator.free(safe_assoc);
+    const safe_key = try safePathSegment(allocator, plan_key);
+    defer allocator.free(safe_key);
+    const safe_slug = try safePathSegment(allocator, plan_slug);
+    defer allocator.free(safe_slug);
 
-    const feature_name = try std.fmt.allocPrint(allocator, "{s}-{s}", .{ plan_key, plan_slug });
+    const feature_name = try std.fmt.allocPrint(allocator, "{s}-{s}", .{ safe_key, safe_slug });
     defer allocator.free(feature_name);
 
     return std.fs.path.join(allocator, &.{ safe_assoc, feature_name, rel_path });
+}
+
+fn safePathSegment(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
+    if (raw.len == 0 or std.mem.eql(u8, raw, ".") or std.mem.eql(u8, raw, "..")) {
+        return allocator.dupe(u8, "_");
+    }
+    const out = try allocator.dupe(u8, raw);
+    for (out) |*ch| {
+        if (ch.* == '/' or ch.* == '\\' or ch.* == 0) ch.* = '_';
+    }
+    return out;
 }
 
 /// artifactFilename derives the workbench filename for an artifact:
@@ -101,9 +120,14 @@ pub fn canonicalEntityKind(kind: []const u8) []const u8 {
 // Internal helpers
 // =========================================================================
 
-/// safeAssocSlug replaces ':' with '_' in assoc_slug.
+/// safeAssocSlug encodes separators so an association cannot escape the root.
 fn safeAssocSlug(allocator: std.mem.Allocator, assoc_slug: []const u8) ![]u8 {
-    return replaceChar(allocator, assoc_slug, ':', '_');
+    const out = try allocator.dupe(u8, assoc_slug);
+    for (out) |*c| {
+        if (c.* == ':' or c.* == '/' or c.* == '\\' or c.* == 0) c.* = '_';
+    }
+    if (std.mem.eql(u8, out, ".") or std.mem.eql(u8, out, "..")) @memset(out, '_');
+    return out;
 }
 
 /// replaceChar returns a copy of s with every occurrence of from replaced by to.
@@ -192,6 +216,16 @@ test "featureDir: external key (JIRA-style)" {
     const result = try featureDir(testing.allocator, "/home/user/.planar/workbench", "org:eng", "JIRA-123", "add-auth");
     defer testing.allocator.free(result);
     try testing.expectEqualStrings("/home/user/.planar/workbench/org_eng/JIRA-123-add-auth", result);
+}
+
+test "featureDir confines traversal and hierarchical external keys" {
+    const traversal = try featureDir(testing.allocator, "/wb", "org", "../../target", "plan");
+    defer testing.allocator.free(traversal);
+    try testing.expectEqualStrings("/wb/org/.._.._target-plan", traversal);
+
+    const github = try featureDir(testing.allocator, "/wb", "org", "owner/repo#1", "plan");
+    defer testing.allocator.free(github);
+    try testing.expectEqualStrings("/wb/org/owner_repo#1-plan", github);
 }
 
 test "storedPath: basic" {

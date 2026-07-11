@@ -411,8 +411,8 @@ fn mustRunInDir(suite: *const harness.Suite, cwd: []const u8, args: []const []co
     if (res.term != .exited or res.term.exited != 0) {
         std.debug.print("\nmustRunInDir failed\nstdout: {s}\nstderr: {s}\n", .{ res.stdout, res.stderr });
         suite.allocator.free(res.stderr);
-        std.testing.expect(false) catch {};
-        return res.stdout;
+        suite.allocator.free(res.stdout);
+        @panic("mustRunInDir: non-zero exit");
     }
     suite.allocator.free(res.stderr);
     return res.stdout;
@@ -423,7 +423,8 @@ fn expectFailureInDir(suite: *const harness.Suite, cwd: []const u8, args: []cons
     if (res.term == .exited and res.term.exited == 0) {
         std.debug.print("\nexpectFailureInDir unexpectedly succeeded\nstdout: {s}\n", .{res.stdout});
         suite.allocator.free(res.stdout);
-        std.testing.expect(false) catch {};
+        suite.allocator.free(res.stderr);
+        @panic("expectFailureInDir: command exited zero");
     }
     suite.allocator.free(res.stdout);
     return res.stderr;

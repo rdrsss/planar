@@ -22,11 +22,16 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BASELINE="$REPO_ROOT/scripts/coverage-baseline.txt"
 
-# Expand test-file globs at runtime so a missing scenarios/ dir is not
-# fatal (the directory is added incrementally as workflows are scripted).
+# Scan only files registered by the default integration root. Crediting every
+# file on disk allowed an unimported scenario to inflate coverage.
 collect_test_files() {
-  ls "$REPO_ROOT"/integration_tests/*.zig 2>/dev/null || true
-  ls "$REPO_ROOT"/integration_tests/scenarios/*.zig 2>/dev/null || true
+  while IFS= read -r rel; do
+    local path="$REPO_ROOT/integration_tests/$rel"
+    if [[ -f "$path" ]]; then
+      printf '%s\n' "$path"
+    fi
+  done < <(sed -n 's/.*@import("\([^"]*_test\.zig\)").*/\1/p' \
+    "$REPO_ROOT/integration_tests/all_test.zig")
 }
 
 MODE="check"

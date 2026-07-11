@@ -118,16 +118,9 @@ pub const BoardState = struct {
 
     /// Reload all board data from the DB. Called on db_changed and on launch.
     pub fn reload(self: *BoardState, d: *db.sqlite.Db) !void {
-        // Free old data.
-        self.freeEntries();
-        if (self.snapshot) |s| s.deinit(self.allocator);
-        self.snapshot = null;
-        if (self.detail) |det| det.deinit(self.allocator);
-        self.detail = null;
-
-        // Query new snapshot.
         const snap = try view_model.queryTaskBoard(d, self.allocator, self.filter);
-        self.snapshot = snap;
+        var snap_owned = true;
+        errdefer if (snap_owned) snap.deinit(self.allocator);
 
         // Build the flat entry list.
         var out: std.ArrayList(ListEntry) = .empty;
@@ -146,7 +139,16 @@ pub const BoardState = struct {
         try appendSection(self.allocator, &out, "BLOCKED", snap.blocked);
         try appendSection(self.allocator, &out, "DONE", snap.done);
 
-        self.entries = try out.toOwnedSlice(self.allocator);
+        const new_entries = try out.toOwnedSlice(self.allocator);
+
+        // Swap only after the complete replacement snapshot is available.
+        self.freeEntries();
+        if (self.snapshot) |s| s.deinit(self.allocator);
+        if (self.detail) |det| det.deinit(self.allocator);
+        self.detail = null;
+        self.snapshot = snap;
+        snap_owned = false;
+        self.entries = new_entries;
 
         // Clamp selection.
         const selectable = self.selectableCount();
@@ -182,6 +184,22 @@ pub const BoardState = struct {
             }
         }
         return null;
+    }
+
+    pub fn focusTask(self: *BoardState, d: *db.sqlite.Db, task_id: i64) !bool {
+        var selectable: usize = 0;
+        for (self.entries) |entry| switch (entry) {
+            .task => |task| {
+                if (task.id == task_id) {
+                    self.selected_idx = selectable;
+                    try self.refreshDetail(d);
+                    return true;
+                }
+                selectable += 1;
+            },
+            .header => {},
+        };
+        return false;
     }
 
     /// Refresh the detail pane for the currently selected task.
@@ -396,24 +414,18 @@ fn renderDetail(state: *const BoardState, win: Window, arena: std.mem.Allocator)
     if (detail.title.len > 0 and row < win.height) {
         const title_style: Style = .{ .bold = true };
         var col: usize = 0;
-        // Iterate by UTF-8 codepoint so that multi-byte characters (accented
-        // letters, arrows, bullets, etc.) are emitted as a single cell.
-        // The old byte-by-byte loop gated on `byte & 0x80 == 0` and silently
-        // DROPPED every high byte — non-ASCII titles appeared truncated.
-        var ti: usize = 0;
-        while (ti < detail.title.len and col < win.width) {
-            const byte = detail.title[ti];
-            const seq_len = markdown_detail.cpSeqLen(byte) catch {
-                ti += 1;
-                continue;
-            };
-            if (ti + seq_len > detail.title.len) break;
+        var graphemes = vaxis.unicode.graphemeIterator(detail.title);
+        while (graphemes.next()) |item| {
+            const grapheme = item.bytes(detail.title);
+            const width = win.gwidth(grapheme);
+            if (width == 0) continue;
+            const cell_width: usize = width;
+            if (col + cell_width > win.width) break;
             win.writeCell(@intCast(col), row, .{
-                .char = .{ .grapheme = detail.title[ti .. ti + seq_len], .width = 1 },
+                .char = .{ .grapheme = grapheme, .width = @intCast(width) },
                 .style = title_style,
             });
-            col += 1;
-            ti += seq_len;
+            col += cell_width;
         }
         row += 1;
     }

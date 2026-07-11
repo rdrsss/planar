@@ -595,3 +595,26 @@ fn pathHasPrefix(target: []const u8, root: []const u8) bool {
 pub fn guard(entity_scope: Scope, write_scope: Scope) !void {
     try engine.policy.scope_guard.check(entity_scope, write_scope);
 }
+
+/// Membership-aware mutation guard: an association write scope covers member
+/// repository entities, while the reverse direction remains forbidden.
+pub fn guardWithMembership(d: anytype, entity_scope: Scope, write_scope: Scope) !void {
+    guard(entity_scope, write_scope) catch |e| {
+        if (e != error.ScopeMismatch or entity_scope == null or write_scope == null) return e;
+        const entity = entity_scope.?;
+        const write = write_scope.?;
+        if (!std.mem.startsWith(u8, entity, "repo:")) return e;
+        const assoc_slug = if (std.mem.startsWith(u8, write, "assoc:")) write["assoc:".len..] else write;
+        if (std.mem.startsWith(u8, assoc_slug, "repo:")) return e;
+        var stmt = try d.prepare(
+            \\select 1 from project_associations pa
+            \\join projects p on p.id = pa.project_id
+            \\join associations a on a.id = pa.association_id
+            \\where p.slug = ? and a.slug = ? limit 1
+        );
+        defer stmt.finalize();
+        try stmt.bind(&.{ .{ .text = entity["repo:".len..] }, .{ .text = assoc_slug } });
+        if ((try stmt.step()) == .row) return;
+        return e;
+    };
+}

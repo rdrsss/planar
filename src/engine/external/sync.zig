@@ -169,16 +169,62 @@ pub fn pullLink(d: *db.sqlite.Db, allocator: std.mem.Allocator, link: external_l
 
     var result = PullResult{ .link_id = link.id, .outcome = .noop };
     switch (link.sync_direction) {
-        .@"read-only", .@"write-back" => {
+        .@"write-back" => {
             result.outcome = .noop;
         },
-        .@"two-way" => {
-            const changed = try applyRemoteToLocal(d, allocator, link, remote, true, true);
-            if (changed.len > 0) {
-                result.outcome = .ok;
-                result.fields_changed = changed;
-            } else {
-                result.outcome = .noop;
+        .@"read-only", .@"two-way" => {
+            var allow_title = true;
+            var allow_status = true;
+            var baseline = try loadBaseline(d, allocator, link.id);
+            defer baseline.deinit(allocator);
+            var local: ?EntityFields = null;
+            defer if (local) |fields| deinitEntityFields(fields, allocator);
+
+            if (link.sync_direction == .@"two-way" and baseline.present()) {
+                local = localEntityFields(d, allocator, link.entity_kind, link.entity_id) catch |err| switch (err) {
+                    Error.NotFound => null,
+                    else => return err,
+                };
+                if (local) |fields| {
+                    const title_remote_changed = remote.title.len > 0 and !std.mem.eql(u8, remote.title, baseline.title.?);
+                    const title_local_changed = !std.mem.eql(u8, fields.title, baseline.title.?);
+                    const status_remote_changed = remote.status.len > 0 and !std.mem.eql(u8, remote.status, baseline.status.?);
+                    const status_local_changed = !std.mem.eql(u8, fields.status, baseline.status.?);
+                    const title_conflict = title_remote_changed and title_local_changed and !std.mem.eql(u8, remote.title, fields.title);
+                    const status_conflict = status_remote_changed and status_local_changed and !std.mem.eql(u8, remote.status, fields.status);
+                    if (title_conflict or status_conflict) {
+                        var conflicts: std.ArrayList([]const u8) = .empty;
+                        if (title_conflict) try conflicts.append(allocator, "title");
+                        if (status_conflict) try conflicts.append(allocator, "status");
+                        result.outcome = .conflict;
+                        result.fields_changed = try conflicts.toOwnedSlice(allocator);
+                        result.detail = try allocator.dupe(u8, "local and remote changed since the last successful sync");
+                    } else {
+                        allow_title = title_remote_changed;
+                        allow_status = status_remote_changed;
+                    }
+                }
+            }
+
+            if (result.outcome != .conflict) {
+                const changed = try applyRemoteToLocal(d, allocator, link, remote, true, true, allow_title, allow_status);
+                if (changed.len > 0) {
+                    result.outcome = .ok;
+                    result.fields_changed = changed;
+                } else {
+                    result.outcome = .noop;
+                }
+
+                const after = localEntityFields(d, allocator, link.entity_kind, link.entity_id) catch |err| switch (err) {
+                    Error.NotFound => null,
+                    else => return err,
+                };
+                if (after) |fields| {
+                    defer deinitEntityFields(fields, allocator);
+                    const baseline_title = if (allow_title or !baseline.present()) fields.title else baseline.title.?;
+                    const baseline_status = if (allow_status or !baseline.present()) fields.status else baseline.status.?;
+                    try storeBaseline(d, link.id, baseline_title, baseline_status);
+                }
             }
         },
     }
@@ -231,6 +277,7 @@ pub fn pushLink(d: *db.sqlite.Db, allocator: std.mem.Allocator, link: external_l
         error.NotFound => return Error.NotFound,
         else => return Error.QueryFailed,
     };
+    try storeBaseline(d, link.id, fields.title, fields.status);
     const changed_json = marshalFieldsChanged(allocator, update.fields_applied) catch return Error.QueryFailed;
     defer if (changed_json) |s| allocator.free(s);
     _ = try insertSyncEvent(d, link.id, "push", "ok", changed_json, null);
@@ -287,7 +334,7 @@ pub fn resolveConflict(d: *db.sqlite.Db, allocator: std.mem.Allocator, event_id:
     defer if (!committed) d.exec("rollback") catch {};
 
     if (keep == .remote and pulled_remote != null) {
-        const changed = try applyRemoteToLocal(d, allocator, link, pulled_remote.?, true, false);
+        const changed = try applyRemoteToLocal(d, allocator, link, pulled_remote.?, true, false, true, true);
         if (changed.len > 0) allocator.free(changed);
     }
 
@@ -295,6 +342,9 @@ pub fn resolveConflict(d: *db.sqlite.Db, allocator: std.mem.Allocator, event_id:
         error.NotFound => return Error.NotFound,
         else => return Error.QueryFailed,
     };
+    const resolved_fields = try localEntityFields(d, allocator, link.entity_kind, link.entity_id);
+    defer deinitEntityFields(resolved_fields, allocator);
+    try storeBaseline(d, link.id, resolved_fields.title, resolved_fields.status);
     const detail = try std.fmt.allocPrint(allocator, "resolved={s}; from sync_event={d}", .{ @tagName(keep), event_id });
     defer allocator.free(detail);
     const new_event_id = try insertSyncEvent(d, link.id, direction, "ok", null, detail);
@@ -357,6 +407,40 @@ const EntityFields = struct {
     status: []const u8,
 };
 
+const Baseline = struct {
+    title: ?[]const u8,
+    status: ?[]const u8,
+
+    fn present(self: Baseline) bool {
+        return self.title != null and self.status != null;
+    }
+
+    fn deinit(self: Baseline, allocator: std.mem.Allocator) void {
+        if (self.title) |s| allocator.free(s);
+        if (self.status) |s| allocator.free(s);
+    }
+};
+
+fn loadBaseline(d: *db.sqlite.Db, allocator: std.mem.Allocator, link_id: i64) Error!Baseline {
+    var stmt = d.prepare("select baseline_title, baseline_status from external_links where id = ?") catch return Error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .int = link_id }}) catch return Error.QueryFailed;
+    return switch (stmt.step() catch return Error.QueryFailed) {
+        .done => Error.NotFound,
+        .row => .{
+            .title = try stmt.columnTextOpt(0, allocator),
+            .status = try stmt.columnTextOpt(1, allocator),
+        },
+    };
+}
+
+fn storeBaseline(d: *db.sqlite.Db, link_id: i64, title: []const u8, status_value: []const u8) Error!void {
+    _ = d.execParams(
+        "update external_links set baseline_title = ?, baseline_status = ? where id = ?",
+        &.{ .{ .text = title }, .{ .text = status_value }, .{ .int = link_id } },
+    ) catch return Error.QueryFailed;
+}
+
 fn deinitEntityFields(fields: EntityFields, allocator: std.mem.Allocator) void {
     allocator.free(fields.title);
     allocator.free(fields.status);
@@ -389,6 +473,8 @@ fn applyRemoteToLocal(
     remote: extsync.RemoteState,
     skip_empty_remote_status: bool,
     allow_missing_local: bool,
+    allow_title: bool,
+    allow_status: bool,
 ) Error![]const []const u8 {
     const local = localEntityFields(d, allocator, link.entity_kind, link.entity_id) catch |e| switch (e) {
         Error.NotFound => if (allow_missing_local) return &.{} else return Error.NotFound,
@@ -397,8 +483,8 @@ fn applyRemoteToLocal(
     };
     defer deinitEntityFields(local, allocator);
 
-    const title_changed = remote.title.len > 0 and !std.mem.eql(u8, local.title, remote.title);
-    const status_changed = if (skip_empty_remote_status) (remote.status.len > 0 and !std.mem.eql(u8, local.status, remote.status)) else (!std.mem.eql(u8, local.status, remote.status));
+    const title_changed = allow_title and remote.title.len > 0 and !std.mem.eql(u8, local.title, remote.title);
+    const status_changed = allow_status and if (skip_empty_remote_status) (remote.status.len > 0 and !std.mem.eql(u8, local.status, remote.status)) else (!std.mem.eql(u8, local.status, remote.status));
     if (!title_changed and !status_changed) return &.{};
 
     const table: []const u8 = switch (link.entity_kind) {
@@ -579,7 +665,7 @@ test "pull two-way updates local mapped fields and writes sync_event" {
     try std.testing.expectEqual(@as(i64, 1), event_count);
 }
 
-test "pull read-only is noop and leaves local entity unchanged" {
+test "pull read-only applies remote state without enabling push" {
     const a = std.testing.allocator;
     var d = try setupTestDb(a);
     defer d.close();
@@ -598,7 +684,7 @@ test "pull read-only is noop and leaves local entity unchanged" {
     var adapter = FakeAdapter{ .remote_title = "Remote", .remote_status = "doing" };
     const result = try pullLink(&d, a, link, &adapter);
     defer deinitPullResult(result, a);
-    try std.testing.expectEqual(Outcome.noop, result.outcome);
+    try std.testing.expectEqual(Outcome.ok, result.outcome);
 
     var stmt = try d.prepare("select title from tasks where id = ?");
     defer stmt.finalize();
@@ -608,7 +694,48 @@ test "pull read-only is noop and leaves local entity unchanged" {
         .row => {
             const title = try stmt.columnTextAlloc(0, a);
             defer a.free(title);
-            try std.testing.expectEqualStrings("Keep", title);
+            try std.testing.expectEqualStrings("Remote", title);
+        },
+    }
+}
+
+test "two-way pull reports a conflict when local and remote diverge from baseline" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    const task_id = try mustInsertTask(&d, "Initial", "todo");
+    const system_id = try mustInsertSystem(&d, "sys-conflict");
+    const link = try external_link.create(&d, a, .{
+        .entity_kind = .task,
+        .entity_id = task_id,
+        .system_id = system_id,
+        .external_id = "PROJ-C",
+        .sync_direction = .@"two-way",
+    });
+    defer external_link.deinit(link, a);
+
+    var adapter = FakeAdapter{ .remote_title = "Baseline", .remote_status = "todo" };
+    const initial = try pullLink(&d, a, link, &adapter);
+    deinitPullResult(initial, a);
+    _ = try d.execParams("update tasks set title = 'Local edit' where id = ?", &.{.{ .int = task_id }});
+    adapter.remote_title = "Remote edit";
+
+    const conflicted = try pullLink(&d, a, link, &adapter);
+    defer deinitPullResult(conflicted, a);
+    try std.testing.expectEqual(Outcome.conflict, conflicted.outcome);
+    try std.testing.expectEqual(@as(usize, 1), conflicted.fields_changed.len);
+    try std.testing.expectEqualStrings("title", conflicted.fields_changed[0]);
+
+    var stmt = try d.prepare("select title from tasks where id = ?");
+    defer stmt.finalize();
+    try stmt.bind(&.{.{ .int = task_id }});
+    switch (try stmt.step()) {
+        .done => return error.TestUnexpectedResult,
+        .row => {
+            const title = try stmt.columnTextAlloc(0, a);
+            defer a.free(title);
+            try std.testing.expectEqualStrings("Local edit", title);
         },
     }
 }

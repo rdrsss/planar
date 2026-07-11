@@ -13,6 +13,7 @@ const exit = @import("../../exit.zig");
 const output = @import("../../output.zig");
 const adapter_factory = @import("../ext/adapter_factory.zig");
 const sync_common = @import("common.zig");
+const scope_mod = @import("../../scope.zig");
 
 const ResolveJSON = struct {
     ok: bool,
@@ -44,6 +45,14 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     const link = engine.external.link.show(d, ctx.allocator, link_id) catch |e|
         exit.die(ctx, e, "sync resolve: load link {d}: {s}", .{ link_id, @errorName(e) });
     defer engine.external.link.deinit(link, ctx.allocator);
+
+    const entity_scope = sync_common.entityScopeSlug(d, ctx.allocator, link) catch |e|
+        exit.die(ctx, e, "sync resolve: resolving entity scope: {s}", .{@errorName(e)});
+    defer if (entity_scope) |s| ctx.allocator.free(s);
+    const resolution = scope_mod.resolveForWrite(ctx, args.scope) catch |e|
+        exit.die(ctx, e, "sync resolve: resolving write scope: {s}", .{@errorName(e)});
+    scope_mod.guardWithMembership(d, entity_scope, resolution.scope) catch
+        exit.die(ctx, error.ScopeMismatch, "sync conflict target is outside the operator write scope", .{});
 
     const sys = engine.external.system.showById(d, ctx.allocator, link.system_id) catch |e|
         exit.die(ctx, e, "sync resolve: system {d}: {s}", .{ link.system_id, @errorName(e) });

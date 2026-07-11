@@ -148,8 +148,9 @@ fn httpSend(
 ) anyerror!extsync.common.Response {
     const client: *std.http.Client = @ptrCast(@alignCast(ctx));
 
-    var body_buf: std.Io.Writer.Allocating = .init(allocator);
-    defer body_buf.deinit();
+    const response_storage = try allocator.alloc(u8, 4 * 1024 * 1024);
+    defer allocator.free(response_storage);
+    var body_writer: std.Io.Writer = .fixed(response_storage);
 
     var extra_headers: std.ArrayList(std.http.Header) = .empty;
     defer extra_headers.deinit(allocator);
@@ -164,16 +165,92 @@ fn httpSend(
         .patch => .PATCH,
     };
 
-    const result = client.fetch(.{
-        .location = .{ .url = req.url },
+    var task = FetchTask{
+        .client = client,
+        .url = req.url,
         .method = method,
         .payload = req.body,
-        .extra_headers = extra_headers.items,
-        .response_writer = &body_buf.writer,
-    }) catch return error.HttpFetchFailed;
+        .headers = extra_headers.items,
+        .writer = &body_writer,
+    };
+    var group: std.Io.Group = .init;
+    group.concurrent(client.io, fetchTask, .{&task}) catch return error.HttpFetchFailed;
+
+    const duration = std.Io.Clock.Duration{ .raw = .fromSeconds(30), .clock = .awake };
+    waitForGroup(client.io, &group, &task.done, duration) catch |err| switch (err) {
+        error.HttpTimeout => return error.HttpTimeout,
+        else => return error.HttpFetchFailed,
+    };
+    if (task.failed or task.status == null) return error.HttpFetchFailed;
 
     return .{
-        .status = @intFromEnum(result.status),
-        .body = try allocator.dupe(u8, body_buf.written()),
+        .status = task.status.?,
+        .body = try allocator.dupe(u8, body_writer.buffered()),
     };
+}
+
+fn waitForGroup(io: std.Io, group: *std.Io.Group, done: *std.Io.Event, duration: std.Io.Clock.Duration) !void {
+    const deadline = std.Io.Clock.Timestamp.fromNow(io, duration);
+    while (!done.isSet()) {
+        done.waitTimeout(io, .{ .deadline = deadline }) catch |err| switch (err) {
+            error.Timeout => {
+                if (std.Io.Clock.Timestamp.now(io, duration.clock).compare(.gte, deadline)) {
+                    group.cancel(io);
+                    return error.HttpTimeout;
+                }
+            },
+            error.Canceled => {
+                group.cancel(io);
+                return error.Canceled;
+            },
+        };
+    }
+    try group.await(io);
+}
+
+const FetchTask = struct {
+    client: *std.http.Client,
+    url: []const u8,
+    method: std.http.Method,
+    payload: ?[]const u8,
+    headers: []const std.http.Header,
+    writer: *std.Io.Writer,
+    done: std.Io.Event = .unset,
+    status: ?u16 = null,
+    failed: bool = false,
+};
+
+fn fetchTask(task: *FetchTask) std.Io.Cancelable!void {
+    defer task.done.set(task.client.io);
+    const result = task.client.fetch(.{
+        .location = .{ .url = task.url },
+        .method = task.method,
+        .payload = task.payload,
+        .extra_headers = task.headers,
+        .response_writer = task.writer,
+    }) catch |err| switch (err) {
+        error.Canceled => return error.Canceled,
+        else => {
+            task.failed = true;
+            return;
+        },
+    };
+    task.status = @intFromEnum(result.status);
+}
+
+test "HTTP deadline cancels an unfinished I/O group" {
+    const Slow = struct {
+        fn run(io: std.Io, done: *std.Io.Event) std.Io.Cancelable!void {
+            defer done.set(io);
+            const delay = std.Io.Clock.Duration{ .raw = .fromSeconds(1), .clock = .awake };
+            try delay.sleep(io);
+        }
+    };
+
+    const io = std.testing.io;
+    var done: std.Io.Event = .unset;
+    var group: std.Io.Group = .init;
+    try group.concurrent(io, Slow.run, .{ io, &done });
+    const deadline = std.Io.Clock.Duration{ .raw = .fromMilliseconds(1), .clock = .awake };
+    try std.testing.expectError(error.HttpTimeout, waitForGroup(io, &group, &done, deadline));
 }

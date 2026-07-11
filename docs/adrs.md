@@ -162,7 +162,7 @@ maps to `src/cmd/<binary>/handlers/`. The Go-era `AddCommands`
 constructor is replaced by hand-rolled `cli.Cmd` registration in
 each binary's `main.zig`.
 
-**Operational properties.** 608+ unit tests via `zig build test`, 64+
+**Operational properties.** 1,700+ unit tests via `zig build test`, 570+
 integration tests via `zig build test-integration` (which exec the
 compiled `./bin/planar` through `integration_tests/harness.zig`), plus
 a `make parity-check` gate against the archived Go reference binary

@@ -357,6 +357,17 @@ pub fn build(b: *std.Build) void {
     engine_mod.addIncludePath(b.path(ts_core_dir ++ "/lib/include"));
     engine_mod.linkLibrary(treesitter_lib);
 
+    const docs_engine_mod = b.addModule("docs_engine", .{
+        .root_source_file = b.path("src/engine/docs_root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const doc_runtime_mod = b.addModule("doc_runtime", .{
+        .root_source_file = b.path("src/runtime/doc_runtime.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // -----------------------------------------------------------------
     // Library module (existing planar package surface).
     // -----------------------------------------------------------------
@@ -426,7 +437,7 @@ pub fn build(b: *std.Build) void {
 
     // -----------------------------------------------------------------
     // `planar-agent` executable (plan 85). Second binary in the
-    // three-binary architecture. M1 ships the scaffold (schema-version
+    // five-binary architecture. M1 ships the scaffold (schema-version
     // handshake + a single `version` verb); M2 wires the 13-verb
     // atomic / claim / action / reconcile / abort surface on top.
     //
@@ -457,13 +468,12 @@ pub fn build(b: *std.Build) void {
 
     // -----------------------------------------------------------------
     // `planar-watch` executable (plan 85 M8). Third binary in the
-    // three-binary architecture — the human-facing read-only viewer.
+    // five-binary architecture — the human-facing read-only viewer.
     // Opens the DB via `runtime.ensureDbStrictReadOnly`, which uses
     // `sqlite3_open_v2(..., SQLITE_OPEN_READONLY, ...)` so the SQLite
     // driver itself refuses any write SQL. That's the second line of
     // defense behind the capability boundary; the first is that the
-    // command tree registers exactly 6 read verbs (feed / ps / claims
-    // / actions / plans / log) plus `version` and `completion`.
+    // command tree registers only read verbs plus metadata/completion.
     //
     // Links runtime, db, cli, engine (read paths only), build_options.
     // Does NOT link the planar package (operator handlers); the binary
@@ -502,8 +512,8 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "cli", .module = cli_mod },
-                .{ .name = "engine", .module = engine_mod },
-                .{ .name = "runtime", .module = runtime_mod },
+                .{ .name = "engine", .module = docs_engine_mod },
+                .{ .name = "runtime", .module = doc_runtime_mod },
                 .{ .name = "build_options", .module = build_options_mod },
             },
         }),
@@ -814,6 +824,10 @@ fn registerIntegrationTestDir(
         run.setEnvironmentVariable(
             "PLANAR_DOC_BIN",
             b.getInstallPath(.bin, "planar-doc"),
+        );
+        run.setEnvironmentVariable(
+            "PLANAR_EXECUTE_BIN",
+            b.getInstallPath(.bin, "planar-execute"),
         );
         test_integration_step.dependOn(&run.step);
     }

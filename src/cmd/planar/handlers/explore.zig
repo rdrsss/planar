@@ -5,8 +5,7 @@
 //! forcing the cockpit where bare-invocation TTY detection might not apply
 //! (e.g. inside a tmux pane where argv[0] detection is indirect).
 //!
-//! M1: `--plan`, `--task`, and `--scope` flags parse correctly but seed
-//! behavior is a stub — focus seeding is implemented in M2+ when views land.
+//! `--plan`, `--task`, and `--scope` seed the initial view and selection.
 //! `--plain` falls back to help/usage unconditionally.
 //!
 //! Falls back to help/usage whenever the terminal capability gate refuses:
@@ -30,8 +29,7 @@ pub const verb: cli.Cmd = .{
     \\  `planar explore` when you want to force-launch the cockpit by name,
     \\  or from a context where bare-invocation detection may not fire.
     \\
-    \\  --plan, --task, and --scope seed the initial focus. Seeding is a
-    \\  stub in M1; the full view catalog lands in M2+.
+    \\  --plan, --task, and --scope seed the initial focus.
     \\
     \\  Falls back to this help text when stdout is not a TTY, when TERM=dumb,
     \\  when PLANAR_NO_TUI is set, or when --plain is passed.
@@ -52,11 +50,10 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
     const gate_result = cockpit_gate.check(ctx.io, ctx.environ, args.plain);
     switch (gate_result) {
         .launch_cockpit => {
-            // M1: stub seed — plan/task/scope flags are parsed but not yet wired.
-            // TODO(plan:609, task:4008): seed initial focus in M2+ when views land.
-            _ = args.plan;
-            _ = args.task;
-            _ = args.scope;
+            const plan_id = if (args.plan) |raw| std.fmt.parseInt(i64, raw, 10) catch
+                exit.die(ctx, error.InvalidInput, "--plan must be an integer", .{}) else null;
+            const task_id = if (args.task) |raw| std.fmt.parseInt(i64, raw, 10) catch
+                exit.die(ctx, error.InvalidInput, "--task must be an integer", .{}) else null;
 
             const env_map = ctx.environ_map orelse {
                 // environ_map is always set in the planar binary; this branch
@@ -78,7 +75,11 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
                 exit.die(ctx, e, "{s}", .{msg});
             };
             defer db_handle.close();
-            cockpit_app.run(ctx.io, ctx.allocator, env_map, ctx.environ, db_path_slice, &db_handle) catch |e| {
+            cockpit_app.run(ctx.io, ctx.allocator, env_map, ctx.environ, db_path_slice, &db_handle, .{
+                .plan_id = plan_id,
+                .task_id = task_id,
+                .scope = args.scope,
+            }) catch |e| {
                 exit.die(ctx, e, "cockpit error: {s}", .{@errorName(e)});
             };
         },

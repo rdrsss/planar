@@ -211,6 +211,16 @@ pub const Db = struct {
             code == c.SQLITE_CONSTRAINT_PRIMARYKEY;
     }
 
+    /// Number of rows changed by the most recent INSERT, UPDATE, or DELETE on
+    /// this connection. Call immediately after the statement being checked.
+    pub fn changes(self: *Db) i64 {
+        return @intCast(c.sqlite3_changes64(self.handle));
+    }
+
+    pub fn inTransaction(self: *Db) bool {
+        return c.sqlite3_get_autocommit(self.handle) == 0;
+    }
+
     /// Prepare `sql`, bind `params` positionally (1-indexed in SQL,
     /// 0-indexed in the slice), step once, return the last insert
     /// rowid. Use for parameterized INSERT/UPDATE/DELETE where you

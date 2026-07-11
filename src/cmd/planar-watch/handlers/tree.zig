@@ -20,7 +20,7 @@
 //!   Last child:    "└── "
 //!   Vertical guide prefix for descendants: "│   "
 //!
-//! DB: read-only (planar-watch three-binary boundary).
+//! DB: driver-enforced read-only (planar-watch capability boundary).
 
 const std = @import("std");
 const cli = @import("cli");
