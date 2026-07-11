@@ -169,7 +169,8 @@ Cockpit startup loads only the selected initial view. Other views load when the 
 |------|------|
 | `gate.zig` | Terminal-capability gate: checks TTY, `TERM`, `PLANAR_NO_TUI`, `--plain`; returns `launch_cockpit` or `fallback_help`. Called from `main.zig` (bare-invocation path) and from `handlers/explore.zig` (explicit alias). |
 | `app.zig` | Top-level cockpit shell: libvaxis `Loop(Event)`, wake-thread integration, view-switcher chrome, minimum-size guard. Entry points: `run(io, alloc, env_map, environ, db_path, db_handle)`. |
-| `view_model.zig` | Pure data layer: maps `agentactivity` + planning store reads into renderable row/tree/detail structs. Unit-testable without a real TTY. |
+| `view_model.zig` | Stable compatibility facade that re-exports the cockpit data-layer API and holds cross-domain regression tests. |
+| `view_model/` | Pure domain query modules and owned row/tree/detail structs (`agent_monitor`, `scope_explorer`, `task_board`, `decision_log`, `open_questions`, `coverage`, `entity_link_graph`, `external_ops`, `sessions`, `audit`, `cli_history`, `topology`, `utility`). Shared dependency-free contracts live in `common.zig`; shared entity-title lookup lives in `entity_title.zig`. Unit-testable without a real TTY. |
 | `views/` | Per-view modules (`scope_explorer.zig`, `agent_monitor.zig`, `task_board.zig`, `decision_log.zig`, `open_questions.zig`, `coverage_view.zig`, `entity_link_graph.zig`, `external_ops_plane.zig`, `sessions_handoff.zig`, `audit_log.zig`, `cli_history.zig`, `topology.zig`, `utility_view.zig`). |
 | `widgets/` | Spine widgets: tree-navigator, markdown detail pane, split layout, view-switcher. |
 | `edit/` | Edit-action modules: `actions.zig` (entity-field tier), `task_lifecycle.zig` (claim-aware task tier), `external_actions.zig` (sync/workbench tier). |
@@ -273,7 +274,7 @@ flowchart LR
 
 | Path | Role |
 |------|------|
-| `src/cmd/planar/` | Operator binary entry — `main.zig` plus runtime scaffolding (`runtime.zig`, `scope.zig`, `output.zig`, `editflow.zig`, `editor.zig`, `exit.zig`) and per-verb handlers under `handlers/`. Also contains the interactive cockpit under `cockpit/` (`gate.zig`, `app.zig`, `view_model.zig`, `views/`, `widgets/`, `edit/`). |
+| `src/cmd/planar/` | Operator binary entry — `main.zig` plus runtime scaffolding (`runtime.zig`, `scope.zig`, `output.zig`, `editflow.zig`, `editor.zig`, `exit.zig`) and per-verb handlers under `handlers/`. Also contains the interactive cockpit under `cockpit/` (`gate.zig`, `app.zig`, the `view_model.zig` facade plus `view_model/` domains, `views/`, `widgets/`, `edit/`). |
 | `src/cmd/planar-agent/` | Agent-callable coordination binary — `main.zig`, `exit.zig`, and its comptime-registered claim, action, run, context, recovery, and terminal-operation handlers. |
 | `src/cmd/planar-watch/` | Read-only viewer binary — `main.zig`, `exit.zig`, and per-verb handlers under `handlers/` (including the `--follow` wake loop). Unchanged by the cockpit addition; `planar-watch` remains the scriptable NDJSON viewer. |
 

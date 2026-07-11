@@ -146,7 +146,7 @@ Agent-claim mutation (releasing, reassigning claims) stays on `planar-agent` and
 
 Editing requires a read-write DB handle, which is structurally incompatible with `planar-watch`'s `SQLITE_OPEN_READONLY` driver (the driver rejects every write SQL string; this is load-bearing for its capability invariant). `planar-watch` is unchanged and remains the scriptable, NDJSON-streaming, read-only viewer for agents and monitoring pipelines. The cockpit is in `planar` — the operator binary that already owns mutation — so the read-only boundary of `planar-watch` is preserved in full.
 
-**SQLite tables:** projections of all existing application tables (no new tables or columns). **Primary entry points:** bare `planar` on a TTY, `planar explore [--plan <id>] [--task <id>] [--scope <s>] [--plain]`. **TUI framework:** libvaxis (vendored under `vendor/libvaxis/`). **Source:** `src/cmd/planar/cockpit/` (`gate.zig`, `app.zig`, `view_model.zig`, `views/`, `widgets/`, `edit/`).
+**SQLite tables:** projections of all existing application tables (no new tables or columns). **Primary entry points:** bare `planar` on a TTY, `planar explore [--plan <id>] [--task <id>] [--scope <s>] [--plain]`. **TUI framework:** libvaxis (vendored under `vendor/libvaxis/`). **Source:** `src/cmd/planar/cockpit/` (`gate.zig`, `app.zig`, the `view_model.zig` facade and `view_model/` query domains, `views/`, `widgets/`, `edit/`).
 
 See [`docs/cli-reference.md § Domain: explore`](cli-reference.md#domain-explore) for the full flag reference and fallback conditions.
 
