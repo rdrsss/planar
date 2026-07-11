@@ -107,7 +107,7 @@ fn scanFile(arena: std.mem.Allocator, io: Io, root: []const u8, rel_file: []cons
         try checkLinks(arena, io, root, rel_file, abs_file, line_no, line, findings, &suppressions);
         try checkLegacy(arena, rel_file, line_no, line, findings, &suppressions);
         try checkArtifactSet(arena, rel_file, line_no, line, findings, &suppressions);
-        if (in_fence and read_only) try checkCapability(arena, rel_file, role, line_no, line, findings, &suppressions);
+        if (read_only) try checkCapability(arena, rel_file, role, line_no, line, in_fence, findings, &suppressions);
         try checkCommand(arena, rel_file, line_no, line, findings, &suppressions);
     }
     if (opts.require_feedback_contract and std.mem.startsWith(u8, rel_file, "skills/src/") and
@@ -181,14 +181,22 @@ fn checkLinks(arena: std.mem.Allocator, io: Io, root: []const u8, file: []const 
         if (std.mem.indexOfScalar(u8, target, '#')) |hash| target = target[0..hash];
         if (std.mem.indexOfScalar(u8, target, '?')) |query| target = target[0..query];
         if (target.len == 0) continue;
-        // Generated vendor projections are absent from the source tree and
-        // are validated by renderer fixtures instead.
-        if (std.mem.indexOf(u8, target, "commands/claude/") != null or
-            std.mem.indexOf(u8, target, "skills/codex/") != null or
-            std.mem.indexOf(u8, target, "skills/copilot/") != null) continue;
+        // These two documentation links intentionally name install-time
+        // projections. Renderer integration tests resolve them against an
+        // out-of-tree render. No directory-substring exemption is allowed.
+        if (isProjectionOnlyLink(file, target)) continue;
         const resolved = if (std.fs.path.isAbsolute(target)) try std.fs.path.join(arena, &.{ root, target[1..] }) else try std.fs.path.join(arena, &.{ std.fs.path.dirname(abs_file) orelse root, target });
         Io.Dir.cwd().access(io, resolved, .{}) catch try emit(arena, findings, suppressions, Code.link, file, line_no, try std.fmt.allocPrint(arena, "repository-relative link target does not exist: {s}", .{target}));
     }
+}
+
+const projection_links = [_]struct { file: []const u8, target: []const u8 }{
+    .{ .file = "docs/cli-reference.md", .target = "../commands/claude/pl-synthesize.md" },
+    .{ .file = "docs/workflows.md", .target = "../commands/claude/pl-workspace-scan.md" },
+};
+fn isProjectionOnlyLink(file: []const u8, target: []const u8) bool {
+    for (projection_links) |link| if (std.mem.eql(u8, file, link.file) and std.mem.eql(u8, target, link.target)) return true;
+    return false;
 }
 
 const retired_patterns = [_][]const u8{ "src/internal/", "harness Agent/Task tool", "harness Agent tool", "Go side", "Phase 5.5" };
@@ -219,13 +227,87 @@ fn checkArtifactSet(arena: std.mem.Allocator, file: []const u8, line_no: usize, 
     if (present >= 3 and present != names.len) try emit(arena, findings, suppressions, Code.artifacts, file, line_no, "planning artifact set must contain product-spec, tech-spec, roadmap, and test-spec");
 }
 
-const write_shapes = [_][]const u8{ "planar plan create", "planar task add", "planar question add", "planar decision add", "planar artifact create", "planar annotation add", "planar links add", "planar-agent complete", "planar-agent fail", "planar-agent release", "planar-agent block" };
-fn checkCapability(arena: std.mem.Allocator, file: []const u8, role: []const u8, line_no: usize, line: []const u8, findings: *std.ArrayList(Finding), suppressions: *std.ArrayList(Suppression)) !void {
-    for (write_shapes) |shape| if (std.mem.indexOf(u8, line, shape) != null) {
-        if (std.mem.eql(u8, role, "introspector") and (std.mem.eql(u8, shape, "planar plan create") or std.mem.eql(u8, shape, "planar task add") or std.mem.eql(u8, shape, "planar question add"))) return;
+// Actual operator entity mutations and agent coordination mutations, derived
+// from the planar and planar-agent schema catalogs. Prefixes are token-boundary
+// matched, so e.g. `planar task list` cannot collide with `planar task link`.
+const write_shapes = [_][]const u8{
+    "planar init",                  "planar scope use",             "planar scope pop",             "planar scope clear",
+    "planar assoc create",          "planar assoc add",             "planar assoc remove",          "planar plan create",
+    "planar plan update",           "planar plan edit",             "planar plan review",           "planar plan link",
+    "planar plan recompute-status", "planar plan closeout",         "planar plan step add",         "planar plan step done",
+    "planar plan step skip",        "planar plan step link",        "planar task add",              "planar task update",
+    "planar task edit",             "planar task review",           "planar task done",             "planar task cancel",
+    "planar task block",            "planar task link",             "planar task reopen",           "planar task touches add",
+    "planar task touches remove",   "planar question add",          "planar question edit",         "planar question review",
+    "planar question answer",       "planar question wontfix",      "planar question link",         "planar scenario add",
+    "planar scenario edit",         "planar scenario review",       "planar scenario verify",       "planar scenario retire",
+    "planar scenario link",         "planar decision add",          "planar decision accept",       "planar decision supersede",
+    "planar decision withdraw",     "planar decision edit",         "planar decision review",       "planar decision link",
+    "planar artifact add",          "planar artifact update",       "planar artifact edit",         "planar artifact review",
+    "planar artifact link",         "planar annotate add",          "planar annotate update",       "planar annotate remove",
+    "planar annotate tag",          "planar annotate resolve",      "planar annotate dismiss",      "planar annotate archive",
+    "planar annotate bulk-resolve", "planar annotate bulk-dismiss", "planar annotate bulk-archive", "planar annotate sweep",
+    "planar promote",               "planar demote",                "planar ext register",          "planar ext create",
+    "planar ext propagate-one",     "planar ext propagate",         "planar link",                  "planar unlink",
+    "planar links add",             "planar links remove",          "planar sync pull",             "planar sync push",
+    "planar sync resolve",          "planar handoff create",        "planar handoff consume",       "planar handoff abandon",
+    "planar capture session",       "planar capture commits",       "planar capture end",           "planar capture note",
+    "planar capture command",       "planar capture file",          "planar capture snapshot",      "planar models refresh",
+    "planar models apply",          "planar spec ingest",           "planar import",                "planar synthesize",
+    "planar bench start",           "planar bench event",           "planar bench touch",           "planar bench harvest",
+    "planar bench finish",          "planar run start",             "planar run event",             "planar run finish",
+    "planar-agent pull",            "planar-agent claim",           "planar-agent complete",        "planar-agent fail",
+    "planar-agent release",         "planar-agent block",           "planar-agent heartbeat",       "planar-agent claim-associate",
+    "planar-agent action",          "planar-agent ingest",          "planar-agent reconcile",       "planar-agent abort",
+    "planar-agent run",             "planar-agent context",
+};
+
+fn checkCapability(arena: std.mem.Allocator, file: []const u8, role: []const u8, line_no: usize, line: []const u8, in_fence: bool, findings: *std.ArrayList(Finding), suppressions: *std.ArrayList(Suppression)) !void {
+    if (in_fence) return checkExecutableCapability(arena, file, role, line_no, line, findings, suppressions);
+    var cursor: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, line, cursor, '`')) |open| {
+        const close = std.mem.indexOfScalarPos(u8, line, open + 1, '`') orelse break;
+        try checkExecutableCapability(arena, file, role, line_no, line[open + 1 .. close], findings, suppressions);
+        cursor = close + 1;
+    }
+}
+
+fn checkExecutableCapability(arena: std.mem.Allocator, file: []const u8, role: []const u8, line_no: usize, executable: []const u8, findings: *std.ArrayList(Finding), suppressions: *std.ArrayList(Suppression)) !void {
+    for (write_shapes) |shape| if (containsCommandShape(executable, shape)) {
+        if (isCapabilityExemption(file, role, shape)) return;
         try emit(arena, findings, suppressions, Code.capability, file, line_no, try std.fmt.allocPrint(arena, "read-only role contains coordination or entity write: {s}", .{shape}));
         return;
     };
+}
+
+const capability_exemptions = [_]struct { file: []const u8, role: []const u8, shape: []const u8 }{
+    // Introspection is read-only until its explicit apply phase, whose
+    // bounded writes may only create the feedback plan and its findings.
+    .{ .file = "agents/introspector.md", .role = "introspector", .shape = "planar plan create" },
+    .{ .file = "agents/introspector.md", .role = "introspector", .shape = "planar task add" },
+    .{ .file = "agents/introspector.md", .role = "introspector", .shape = "planar question add" },
+    // Review is entity-read-only but participates in the claim lease ritual;
+    // terminal claim mutations remain deliberately absent from this list.
+    .{ .file = "agents/reviewer.md", .role = "reviewer", .shape = "planar-agent pull" },
+    .{ .file = "agents/reviewer.md", .role = "reviewer", .shape = "planar-agent claim" },
+    .{ .file = "agents/reviewer.md", .role = "reviewer", .shape = "planar-agent heartbeat" },
+};
+fn isCapabilityExemption(file: []const u8, role: []const u8, shape: []const u8) bool {
+    for (capability_exemptions) |exemption| if (std.mem.eql(u8, file, exemption.file) and
+        std.mem.eql(u8, role, exemption.role) and std.mem.eql(u8, shape, exemption.shape)) return true;
+    return false;
+}
+
+fn containsCommandShape(line: []const u8, shape: []const u8) bool {
+    var cursor: usize = 0;
+    while (std.mem.indexOfPos(u8, line, cursor, shape)) |at| {
+        const before_ok = at == 0 or std.ascii.isWhitespace(line[at - 1]) or line[at - 1] == '$' or line[at - 1] == '/';
+        const end = at + shape.len;
+        const after_ok = end == line.len or std.ascii.isWhitespace(line[end]) or std.mem.indexOfScalar(u8, "<[{(\"'`", line[end]) != null;
+        if (before_ok and after_ok) return true;
+        cursor = end;
+    }
+    return false;
 }
 
 const invalid_commands = [_][]const u8{
@@ -328,13 +410,16 @@ const FixtureResult = struct {
     }
 };
 fn scanFixture(content: []const u8, opts: Options) !FixtureResult {
+    return scanFixtureAt("skills/src/fixture.md", content, opts);
+}
+fn scanFixtureAt(file: []const u8, content: []const u8, opts: Options) !FixtureResult {
     var fixture = FixtureResult{
         .arena = std.heap.ArenaAllocator.init(testing.allocator),
         .result = .{ .files_scanned = 1 },
     };
     errdefer fixture.deinit();
     const arena = fixture.arena.allocator();
-    try scanFile(arena, std.testing.io, ".", "skills/src/fixture.md", "skills/src/fixture.md", content, opts, &fixture.result.findings);
+    try scanFile(arena, std.testing.io, ".", file, file, content, opts, &fixture.result.findings);
     std.mem.sort(Finding, fixture.result.findings.items, {}, findingLessThan);
     return fixture;
 }
@@ -379,7 +464,7 @@ test "suppression syntax shown inside a fence is illustrative" {
 }
 test "narrow introspector write exemption and internal-only contract exemption pass" {
     const agent = "---\nrole: introspector\ncapability: read-only\n---\n```\nplanar task add \"bounded finding\"\n```\n";
-    var agent_fixture = try scanFixture(agent, .{});
+    var agent_fixture = try scanFixtureAt("agents/introspector.md", agent, .{});
     defer agent_fixture.deinit();
     try testing.expectEqual(@as(usize, 0), agent_fixture.result.findings.items.len);
 
@@ -387,6 +472,47 @@ test "narrow introspector write exemption and internal-only contract exemption p
     var skill_fixture = try scanFixture(skill, .{ .require_feedback_contract = true });
     defer skill_fixture.deinit();
     try testing.expectEqual(@as(usize, 0), skill_fixture.result.findings.items.len);
+
+    const reviewer = "---\nrole: reviewer\ncapability: read-only\n---\nUse `planar-agent heartbeat --claim token`; never `planar-agent complete --claim token`.\n";
+    var reviewer_fixture = try scanFixtureAt("agents/reviewer.md", reviewer, .{});
+    defer reviewer_fixture.deinit();
+    try testing.expectEqual(@as(usize, 1), reviewer_fixture.result.findings.items.len);
+    try testing.expectEqualStrings(Code.capability, reviewer_fixture.result.findings.items[0].code);
+}
+test "capability drift scans fenced and inline executable writes without flagging reads or prose" {
+    const frontmatter = "---\nrole: fixture\ncapability: read-only\n---\n";
+    const writes = [_][]const u8{
+        "Run `planar artifact add \"spec\" --kind tech-spec`.\n",
+        "Run `planar artifact update 42 --body @spec.md`.\n",
+        "Run `planar scenario add \"acceptance\"`.\n",
+        "Run `planar links add task:1 plan:2 --relationship derives-from`.\n",
+        "```sh\nplanar-agent heartbeat --claim token\n```\n",
+    };
+    for (writes) |write| {
+        const content = try std.mem.concat(testing.allocator, u8, &.{ frontmatter, write });
+        defer testing.allocator.free(content);
+        var fixture = try scanFixture(content, .{});
+        defer fixture.deinit();
+        try testing.expectEqual(@as(usize, 1), fixture.result.findings.items.len);
+        try testing.expectEqualStrings(Code.capability, fixture.result.findings.items[0].code);
+    }
+
+    const clean = frontmatter ++
+        "Plain prose names planar artifact add but is not an executable example.\n" ++
+        "Run `planar artifact show 42` and `planar links list task:1`.\n";
+    var clean_fixture = try scanFixture(clean, .{});
+    defer clean_fixture.deinit();
+    try testing.expectEqual(@as(usize, 0), clean_fixture.result.findings.items.len);
+}
+test "only exact projection links are exempt from source-tree resolution" {
+    var exact = try scanFixtureAt("docs/cli-reference.md", "[projection](../commands/claude/pl-synthesize.md)\n", .{});
+    defer exact.deinit();
+    try testing.expectEqual(@as(usize, 0), exact.result.findings.items.len);
+
+    var substring = try scanFixtureAt("docs/other.md", "[missing](bogus/commands/claude/pl-synthesize.md)\n", .{});
+    defer substring.deinit();
+    try testing.expectEqual(@as(usize, 1), substring.result.findings.items.len);
+    try testing.expectEqualStrings(Code.link, substring.result.findings.items[0].code);
 }
 test "suppression edge cases fail" {
     const cases = [_][]const u8{

@@ -325,6 +325,8 @@ test "skills render real sources keep model tiers notes and invocation blocks" {
             "pl-orchestrator",
             "pl-spec-draft",
             "pl-introspect",
+            "pl-synthesize",
+            "pl-workspace-scan",
         });
         defer gpa.free(stdout);
     }
@@ -341,6 +343,17 @@ test "skills render real sources keep model tiers notes and invocation blocks" {
     defer gpa.free(claude_spec_draft);
     const codex_introspect = try readPath(gpa, root, "skills/codex/pl-introspect.md");
     defer gpa.free(codex_introspect);
+    // Canonical docs intentionally link these install-time projections. The
+    // semantic source lint exempts only these exact links, so renderer-side
+    // coverage must prove that both targets resolve out of tree.
+    for ([_][]const u8{
+        "commands/claude/pl-synthesize.md",
+        "commands/claude/pl-workspace-scan.md",
+    }) |projection| {
+        const target = try std.fs.path.join(gpa, &.{ root, projection });
+        defer gpa.free(target);
+        try std.Io.Dir.cwd().access(std.testing.io, target, .{});
+    }
 
     try std.testing.expect(std.mem.indexOf(u8, claude_coder, "model: claude-sonnet-4-6") != null);
     try std.testing.expect(std.mem.indexOf(u8, codex_coder, "model: gpt-5.4") != null);

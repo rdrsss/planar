@@ -734,6 +734,21 @@ pub fn build(b: *std.Build) void {
     // common local loop: one test executable, no duplicate smoke-root imports,
     // and the same per-test Suite isolation inside each test block.
     const test_integration_step = b.step("test-integration", "Run integration tests (requires compiled binary)");
+    const surface_lint_blackbox = b.addExecutable(.{
+        .name = "surface_lint_blackbox_test",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("integration_tests/surface_lint_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_surface_lint_blackbox = b.addRunArtifact(surface_lint_blackbox);
+    run_surface_lint_blackbox.addArtifactArg(surface_lint_exe);
+    run_surface_lint_blackbox.addDirectoryArg(b.path("integration_tests/fixtures/surface_lint"));
+    test_integration_step.dependOn(&run_surface_lint_blackbox.step);
+    const test_surface_lint_step = b.step("test-surface-lint", "Run standalone surface-lint black-box tests");
+    test_surface_lint_step.dependOn(&run_surface_lint_blackbox.step);
+
     const integration_all = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("integration_tests/all_test.zig"),
@@ -819,6 +834,9 @@ fn registerIntegrationTestDir(
     while (it.next(b.graph.io) catch |e| std.debug.panic("build.zig: iterate {s}: {s}", .{ dir_abs, @errorName(e) })) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.name, "_test.zig")) continue;
+        // Registered separately because this black-box test takes the emitted
+        // surface_lint executable and fixture-root paths as process arguments.
+        if (std.mem.eql(u8, entry.name, "surface_lint_test.zig")) continue;
 
         const test_rel = std.fs.path.join(b.allocator, &.{ dir_rel, entry.name }) catch @panic("OOM");
 
