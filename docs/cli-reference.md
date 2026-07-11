@@ -6032,7 +6032,7 @@ planar-watch schema
 planar-doc schema
 ```
 
-The catalog is built at comptime from the command tree, so the verb is a pure write with no DB access. It is intended for structured consumers — LLM tool routers, editor integrations, and the CLI-usage linter (`make cli-usage-check`) that validates authored agent/skill/doc surfaces never reference a flag a binary does not expose (implemented in `tools/cli_usage_lint.zig`).
+The catalog is built at comptime from the command tree, so the verb is a pure write with no DB access. It is intended for structured consumers — LLM tool routers, editor integrations, and the schema-driven first pass of `make cli-usage-check`, which validates that authored agent/skill/doc surfaces never reference a flag a binary does not expose (implemented in `tools/cli_usage_lint.zig`). The same target then runs the semantic authored-surface validator (`tools/surface_lint.zig`); use `make surface-lint` to run that semantic pass alone.
 
 ---
 

@@ -89,7 +89,7 @@ make build              # → ./bin/planar (ReleaseSafe)
 make test               # unit tests
 make test-integration   # builds ./bin/planar, sets PLANAR_BIN, runs the
                         # integration suite under integration_tests/
-make test-all           # unit + integration
+make test-all           # unit + integration + parity + coverage + authored-surface gates
 
 # Direct zig CLI from the repo root:
 zig build                                     # default install (zig-out/bin/planar)
@@ -128,25 +128,20 @@ distinction is load-bearing — never collapse them.
   suite remains the always-on parity guard. Pass `--strict` to
   `parity-check.sh` to fail when the Go binary is unreachable.
 
-- **CLI-usage lint gate** — `make cli-usage-check` (also `zig build
-  cli-usage-check`) dumps each binary's `schema` JSON catalog and
-  validates that the authored workflow surfaces (`agents/`,
-  `skills/src/`, `docs/`) never reference a flag a binary does not
-  expose. The four planning-state binaries (`planar`, `planar-agent`,
-  `planar-watch`, `planar-doc`) each expose a `schema` verb (a
-  comptime-built flat JSON catalog of commands + flags + aliases +
-  positionals) for this purpose, and the gate is wired against those
-  four. `planar-execute` is intentionally **not** in the check: it is a
-  minimal `run <wf.lua> --phase <name>` engine with no `schema` catalog
-  (the gate requires one), so wiring it in would break the gate; its
-  surface is the frozen Lua host-fn manifest, locked by its own unit
-  tests, not authored-prose flag references. The linter lives in
-  `tools/cli_usage_lint.zig`. A line
-  containing `cli-lint-ignore` is skipped — the escape hatch for
-  intentional references to not-yet-existing or removed flags.
-  `make test-all` wires the gate in. This is what catches drift like a
-  skill telling an operator to run `planar workbench list --plan` when
-  `workbench list` has no `--plan` flag.
+- **Authored-surface lint gate** — `make cli-usage-check` (also `zig build
+  cli-usage-check`) runs two ordered validators over `agents/`, `skills/src/`,
+  and `docs/`. First, `tools/cli_usage_lint.zig` dumps the four planning-state
+  binaries' `schema` JSON catalogs and preserves the existing check that
+  authored commands never reference an unexposed flag. `planar-execute` is
+  intentionally excluded because it has no `schema` catalog; its frozen Lua
+  host-function manifest is covered by unit tests. Lines containing
+  `cli-lint-ignore` remain the narrow schema-lint escape hatch. Second,
+  `tools/surface_lint.zig` checks repository-relative links, retired
+  references, artifact-set agreement, read-only capabilities, semantic
+  command shapes, and required feedback/recovery contracts. Run
+  `make surface-lint` when only the semantic pass is wanted. `make test-all`
+  depends on the composed `cli-usage-check` gate exactly once. This preserves
+  schema-only diagnostics while also rejecting semantic drift.
 
 #### Integration test methodology
 

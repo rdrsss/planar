@@ -624,6 +624,12 @@ the preceding non-blank line naming one code and a non-empty rationale:
 
 Unknown, malformed, file-wide, and unused suppressions are errors. The
 semantic validator is read-only and does not invoke an LLM or open SQLite.
+The normal authored-surface quality gate is `make cli-usage-check`: it runs the
+existing schema-driven CLI-usage validator first, then this semantic validator.
+The ordering preserves schema-lint diagnostics for unexposed flags instead of
+duplicating them as semantic findings. `make test-all` reaches both validators
+once through that composed target; it does not depend separately on
+`surface-lint`.
 
 ---
 
@@ -637,7 +643,7 @@ make build              # → ./bin/planar (ReleaseSafe)
 make test               # unit tests
 make test-integration   # builds ./bin/planar, sets PLANAR_BIN, runs the
                         # integration suite under integration_tests/
-make test-all           # unit + integration + cross-binary parity gate
+make test-all           # unit + integration + parity + coverage + authored-surface gates
 
 # Direct zig CLI from the repo root
 zig build                                # default install (zig-out/bin/planar)
@@ -651,6 +657,7 @@ Planar runs a two-tier test model plus a cross-binary parity gate:
 - **Unit tests** — `test "<name>" { ... }` blocks colocated with the code under test under `src/<module>/`. They exercise the module directly (plus the `db` module when they need a DB) and run under `zig build test`.
 - **CLI integration tests** — `integration_tests/` at the repo root exec the compiled `planar` binary via the `harness.zig` runner (`harness.smoke`, `harness.mustRun`, `harness.mustRunJSON`, `harness.expectFailure`). The suite imports nothing from the engine modules. These suites lock the user-visible contract — flag names, JSON shapes, exit codes, status-transition rules. Always invoke them via `make test-integration` so `PLANAR_BIN` points at the freshly-built `./bin/planar` rather than falling back to per-call rebuilds.
 - **Cross-binary parity gate** — `make parity-check` (wired into `make test-all`) runs `scripts/parity-check.sh`, which diffs the current zig binary against the archived Go reference across the full verb surface and fails on any gap not present in `scripts/parity-allowlist.txt`. When the Go reference binary is unreachable, the gate prints a skip notice and exits 0; the integration suite remains the always-on guard.
+- **Authored-surface lint gate** — `make cli-usage-check` runs the schema-driven CLI validator followed by the semantic authored-surface validator. `make surface-lint` runs only the semantic validator. The composed gate is wired into `make test-all` once.
 
 The binary produced by `make build` lands at `./bin/planar`. The installed binary (used by skills) is at `~/.planar/bin/planar`, built and staged by `install.sh`.
 
