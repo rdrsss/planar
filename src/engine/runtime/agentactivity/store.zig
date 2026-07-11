@@ -1101,30 +1101,59 @@ pub fn nextWork(
     allocator: std.mem.Allocator,
     plan_id: i64,
 ) Error!NextWork {
-    // Pull every task that hangs off the plan or any of its child
-    // plans. The schema lets us reach child plans via plans.parent_plan_id
-    // but the canonical "what work belongs to this plan" is just
-    // tasks.plan_id = ?. Multi-level recursion can land later.
+    // Resolve the full descendant plan tree and, for each task, its chain of
+    // ancestor plans. Claim precedence is task > plan_step > nearest plan.
+    // This lets a claim on a parent plan or one of its steps cover every
+    // descendant task without manufacturing per-task claim rows.
     var stmt = d.prepare(
+        \\with recursive
+        \\plan_tree(id) as (
+        \\  select id from plans where id = ?
+        \\  union all
+        \\  select p.id from plans p join plan_tree pt on p.parent_plan_id = pt.id
+        \\),
+        \\task_ancestors(task_id, plan_id, depth) as (
+        \\  select t.id, t.plan_id, 0
+        \\  from tasks t join plan_tree pt on pt.id = t.plan_id
+        \\  union all
+        \\  select ta.task_id, p.parent_plan_id, ta.depth + 1
+        \\  from task_ancestors ta
+        \\  join plans p on p.id = ta.plan_id
+        \\  where p.parent_plan_id is not null
+        \\)
         \\select t.id, t.title, t.status, t.priority,
         \\       (
-        \\         select id from agent_work_claims c
-        \\         where c.entity_kind = 'task'
-        \\           and c.entity_id = t.id
+        \\         select c.id
+        \\         from agent_work_claims c
+        \\         left join plan_steps ps on c.entity_kind = 'plan_step' and ps.id = c.entity_id
+        \\         left join task_ancestors ta on ta.task_id = t.id and ta.plan_id =
+        \\           case when c.entity_kind = 'plan' then c.entity_id
+        \\                when c.entity_kind = 'plan_step' then ps.plan_id end
+        \\         where ((c.entity_kind = 'task' and c.entity_id = t.id)
+        \\             or (c.entity_kind in ('plan','plan_step') and ta.task_id is not null))
         \\           and c.status = 'active'
         \\           and c.lease_expires_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now')
-        \\         order by c.id desc limit 1
+        \\         order by case c.entity_kind when 'task' then 0 when 'plan_step' then 1 else 2 end,
+        \\                  coalesce(ta.depth, 0), c.id desc
+        \\         limit 1
         \\       ) as active_claim_id,
         \\       (
-        \\         select id from agent_work_claims c
-        \\         where c.entity_kind = 'task'
-        \\           and c.entity_id = t.id
+        \\         select c.id
+        \\         from agent_work_claims c
+        \\         left join plan_steps ps on c.entity_kind = 'plan_step' and ps.id = c.entity_id
+        \\         left join task_ancestors ta on ta.task_id = t.id and ta.plan_id =
+        \\           case when c.entity_kind = 'plan' then c.entity_id
+        \\                when c.entity_kind = 'plan_step' then ps.plan_id end
+        \\         where ((c.entity_kind = 'task' and c.entity_id = t.id)
+        \\             or (c.entity_kind in ('plan','plan_step') and ta.task_id is not null))
         \\           and (c.status = 'stale'
         \\             or (c.status = 'active' and c.lease_expires_at < strftime('%Y-%m-%dT%H:%M:%fZ','now')))
-        \\         order by c.id desc limit 1
+        \\         order by case c.entity_kind when 'task' then 0 when 'plan_step' then 1 else 2 end,
+        \\                  coalesce(ta.depth, 0), c.id desc
+        \\         limit 1
         \\       ) as stale_claim_id
         \\from tasks t
-        \\where t.plan_id = ?
+        \\join plan_tree pt on pt.id = t.plan_id
         \\order by t.priority asc, t.id asc
     ) catch return Error.QueryFailed;
     defer stmt.finalize();

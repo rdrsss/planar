@@ -632,7 +632,7 @@ fn createOrSkipIssueForProject(
     const external_url = try std.fmt.allocPrint(allocator, "https://github.com/{s}/{s}/issues/{d}", .{ owner, repo, created.number });
     errdefer allocator.free(external_url);
 
-    try parent_issue.recordLink(d, entity_kind, entity_id, opts.sys_id, external_id, external_url, opts.sync_direction);
+    _ = try parent_issue.recordLink(d, entity_kind, entity_id, opts.sys_id, external_id, external_url, opts.sync_direction);
 
     // Add to project (best-effort; failure is non-fatal).
     var item_id: []const u8 = "";

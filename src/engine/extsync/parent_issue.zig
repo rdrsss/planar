@@ -535,7 +535,7 @@ fn createOrSkipGithubIssue(
     errdefer allocator.free(external_url);
 
     // Record the external_links row + paired sync_events 'ok' row atomically.
-    try recordLink(d, entity_kind, entity_id, opts.sys_id, external_id, external_url, opts.sync_direction);
+    _ = try recordLink(d, entity_kind, entity_id, opts.sys_id, external_id, external_url, opts.sync_direction);
 
     try results.append(allocator, .{
         .entity_kind = try allocator.dupe(u8, entity_kind),
@@ -873,7 +873,7 @@ pub fn recordLink(
     external_id: []const u8,
     external_url: []const u8,
     sync_direction: link_mod.SyncDirection,
-) Error!void {
+) Error!i64 {
     d.exec("begin immediate") catch return Error.QueryFailed;
     var committed = false;
     defer if (!committed) d.exec("rollback") catch {};
@@ -899,6 +899,7 @@ pub fn recordLink(
 
     d.exec("commit") catch return Error.QueryFailed;
     committed = true;
+    return link_id;
 }
 
 // -----------------------------------------------------------------------------
@@ -1020,7 +1021,7 @@ test "recordLink inserts external_links + sync_events 'ok' atomically" {
         &.{},
     );
     _ = try d.execParams("insert into plans (scope_kind, title, slug) values ('global','p','p')", &.{});
-    try recordLink(&d, "plan", 1, 1, "o/r#1", "https://github.com/o/r/issues/1", .@"two-way");
+    _ = try recordLink(&d, "plan", 1, 1, "o/r#1", "https://github.com/o/r/issues/1", .@"two-way");
     try testing.expectEqual(@as(i64, 1), try d.intQuery("select count(*) from external_links where entity_kind='plan'"));
     try testing.expectEqual(@as(i64, 1), try d.intQuery("select count(*) from sync_events where outcome='ok'"));
 }

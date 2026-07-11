@@ -25,16 +25,7 @@
 //!     stale:     [{ task: Task, claim: ClaimRow }],
 //!     blocked:   [Task],
 //!     summary: { available: int, claimed: int, stale: int,
-//!                blocked: int, done: int, note?: string } }
-//!
-//! TODO(plan:85, task:plan-next-selector): the underlying
-//! `store.nextWork` walks `tasks.plan_id = ?` only — multi-level claim
-//! precedence (a `plan_step` or parent `plan` claim covering every
-//! descendant task) is not yet computed. When a child-plan claim is
-//! present, the JSON `summary.note` surfaces a one-line warning so
-//! callers know the bucket counts are direct-task only. Full recursive
-//! precedence per tech-spec § "Multi-level claim precedence" lands in
-//! a follow-up cycle.
+//!                blocked: int, done: int } }
 
 const std = @import("std");
 const cli = @import("cli");
@@ -73,7 +64,7 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         exit.die(ctx, e, "plan next selector: {s}", .{@errorName(e)});
     defer nw.deinit(ctx.allocator);
 
-    // Tally + detect child-plan-claim precedence note.
+    // Tally the recursively selected tasks.
     var n_avail: usize = 0;
     var n_claimed: usize = 0;
     var n_stale: usize = 0;
@@ -92,7 +83,13 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     var done_count: i64 = 0;
     {
         var stmt = d.prepare(
-            "select count(*) from tasks where plan_id = ? and status = 'done'",
+            \\with recursive plan_tree(id) as (
+            \\  select id from plans where id = ?
+            \\  union all
+            \\  select p.id from plans p join plan_tree pt on p.parent_plan_id = pt.id
+            \\)
+            \\select count(*) from tasks
+            \\where plan_id in (select id from plan_tree) and status = 'done'
         ) catch |e| exit.die(ctx, e, "plan next done count prep: {s}", .{@errorName(e)});
         defer stmt.finalize();
         stmt.bind(&.{.{ .int = plan_id }}) catch |e|
@@ -103,12 +100,6 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         }
     }
 
-    // Detect a parent-level claim on the plan itself or any plan_step
-    // belonging to the plan. When present, surface the precedence note
-    // — operators reading the bucket counts should know they reflect
-    // direct-task claims only.
-    const has_parent_claim = hasParentClaim(d, plan_id) catch false;
-
     if (args.json) {
         try writeJson(ctx.stdout, d, ctx.allocator, plan_id, nw.rows, .{
             .avail = n_avail,
@@ -116,7 +107,6 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
             .stale = n_stale,
             .blocked = n_blocked,
             .done = done_count,
-            .note_parent_claim = has_parent_claim,
         });
     } else {
         try writeText(ctx.stdout, plan_id, nw.rows, .{
@@ -128,7 +118,6 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
             .stale = n_stale,
             .blocked = n_blocked,
             .done = done_count,
-            .note_parent_claim = has_parent_claim,
         });
     }
 }
@@ -139,7 +128,6 @@ const Summary = struct {
     stale: usize,
     blocked: usize,
     done: i64,
-    note_parent_claim: bool,
 };
 
 const TextOpts = struct {
@@ -158,12 +146,6 @@ fn writeText(
         "plan:{d}  available:{d}  claimed:{d}  stale:{d}  blocked:{d}  done:{d}\n",
         .{ plan_id, s.avail, s.claimed, s.stale, s.blocked, s.done },
     );
-    if (s.note_parent_claim) {
-        try w.print(
-            "  note: child-plan claim precedence not yet computed; see plan 85 plan_step precedence followup\n",
-            .{},
-        );
-    }
     for (rows) |r| {
         switch (r.bucket) {
             .available => try w.print(
@@ -278,41 +260,9 @@ fn writeJson(
         ",\"summary\":{{\"available\":{d},\"claimed\":{d},\"stale\":{d},\"blocked\":{d},\"done\":{d}",
         .{ s.avail, s.claimed, s.stale, s.blocked, s.done },
     );
-    if (s.note_parent_claim) {
-        try w.print(
-            ",\"note\":\"child-plan claim precedence not yet computed; see plan 85 plan_step precedence followup\"",
-            .{},
-        );
-    }
     try w.print("}}}}\n", .{});
 }
 
 fn mapTaskErr(e: anyerror) anyerror {
     return e;
-}
-
-/// Return true when an active claim exists at the plan or plan_step
-/// level (kind in ('plan','plan_step')) for the given plan or any
-/// plan_step belonging to it. Used to surface the precedence note
-/// while the multi-level recursive selector is followup work.
-fn hasParentClaim(d: *db.sqlite.Db, plan_id: i64) !bool {
-    var stmt = d.prepare(
-        \\select 1
-        \\from agent_work_claims c
-        \\where c.status = 'active'
-        \\  and c.lease_expires_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now')
-        \\  and (
-        \\    (c.entity_kind = 'plan' and c.entity_id = ?)
-        \\    or (c.entity_kind = 'plan_step' and c.entity_id in (
-        \\      select id from plan_steps where plan_id = ?
-        \\    ))
-        \\  )
-        \\limit 1
-    ) catch return false;
-    defer stmt.finalize();
-    stmt.bind(&.{ .{ .int = plan_id }, .{ .int = plan_id } }) catch return false;
-    return switch (stmt.step() catch return false) {
-        .done => false,
-        .row => true,
-    };
 }

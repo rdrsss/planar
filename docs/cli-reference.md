@@ -879,19 +879,16 @@ Same underlying selector as `planar-agent peek`, but returns the FULL bucket bre
   "stale":     [{"task": Task, "claim": ClaimRow}, ...],
   "blocked":   [Task, ...],
   "summary": {
-    "available": 3, "claimed": 1, "stale": 0, "blocked": 1, "done": 5,
-    "note": "child-plan claim precedence not yet computed; see plan 85 plan_step precedence followup"
+    "available": 3, "claimed": 1, "stale": 0, "blocked": 1, "done": 5
   }
 }
 ```
 
-`ClaimRow` is the canonical `agent_work_claims` row shape including the locality columns (`repo_root`, `branch`, `head_sha_at_claim`, `dirty_at_claim`) and worktree columns (`worktree_id`, `worktree_path`). The `summary.note` key is omitted when no parent (`plan` or `plan_step`) claim exists.
+`ClaimRow` is the canonical `agent_work_claims` row shape including the locality columns (`repo_root`, `branch`, `head_sha_at_claim`, `dirty_at_claim`) and worktree columns (`worktree_id`, `worktree_path`). The selector includes tasks from the plan and every descendant plan. An applicable claim is chosen with `task` claims taking precedence over `plan_step` claims, then the nearest ancestor `plan` claim.
 
 **Exit codes:**
 - `0` — success, including empty / all-done plans.
 - `1` — plan id not found, or invalid integer.
-
-**Known limitation (followup):** the underlying selector walks `tasks.plan_id = ?` only. Multi-level claim precedence (a parent `plan_step` or `plan` claim covering every descendant task) is detected and surfaces in `summary.note` but does not yet rewrite the per-task buckets. Full recursive precedence per the tech spec § "Multi-level claim precedence" is followup work tracked on plan 85.
 
 ---
 
@@ -2725,7 +2722,7 @@ For richer per-entity counterpart creation (epics, issues, sub-issues with paren
 | `--system <slug>` | _(required)_ | External system slug (must already be registered via `planar ext create`). |
 | `--json` | `false` | Emit a JSON result envelope on stdout. |
 
-**Schema effects:** None on the local database (other than recording the resulting external link via the adapter, if the adapter persists one). The destination is the external system.
+**Schema effects:** Renders the workbench tree, creates one remote mirror, then inserts the resulting `external_links` row and its initial successful `sync_events` row atomically. Refuses to publish when the plan already has a link on the named system.
 
 **Capture:** None.
 
@@ -4089,11 +4086,11 @@ SHA                                       session  claim  committed_at          
 
 ---
 
-### `planar audit publish-decision <decision-id> [--json]`
+### `planar audit publish-decision <decision-id> [--scope <slug>] [--json]`
 
 **Description:** Post a decision's body to every operational-plane target reachable from that decision's external links — the bridge that pushes a recorded local decision out to the linked Jira issue / GitHub issue as a comment. Subject to the cross-scope guard (the decision's scope must agree with the operator's, or pass `--scope`).
 
-**Schema effects:** Reads `decisions`, `external_links`, `external_systems`; inserts `sync_events`. Performs outbound HTTP to each linked system.
+**Schema effects:** Reads `decisions`, `entity_links`, `external_links`, and `external_systems`; updates each attempted link's last-sync state and inserts a `sync_events` row. Performs outbound HTTP to each linked system.
 
 ---
 

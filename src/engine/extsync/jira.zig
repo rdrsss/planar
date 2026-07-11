@@ -120,6 +120,46 @@ pub const JiraAdapter = struct {
         return .{ .fields_applied = try applied.toOwnedSlice(allocator) };
     }
 
+    /// Post an Atlassian Document Format comment to a Jira issue.
+    pub fn postComment(
+        self: *const JiraAdapter,
+        allocator: std.mem.Allocator,
+        external_id: []const u8,
+        comment: []const u8,
+    ) Error!void {
+        try self.validate(external_id);
+
+        const url = try std.fmt.allocPrint(
+            allocator,
+            "{s}/rest/api/3/issue/{s}/comment",
+            .{ self.base_url, external_id },
+        );
+        defer allocator.free(url);
+
+        var body: std.Io.Writer.Allocating = .init(allocator);
+        defer body.deinit();
+        const writer = &body.writer;
+        try writer.writeAll("{\"body\":{\"type\":\"doc\",\"version\":1,\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":");
+        try writeJSONString(writer, comment);
+        try writer.writeAll("}]}]}}");
+
+        const auth = try authHeader(allocator, self.cred);
+        defer allocator.free(auth);
+        const headers = [_]extsync.Header{
+            .{ .name = "Content-Type", .value = "application/json" },
+            .{ .name = "Accept", .value = "application/json" },
+            .{ .name = "Authorization", .value = auth },
+        };
+        const response = self.transport.send(allocator, .{
+            .method = .post,
+            .url = url,
+            .headers = &headers,
+            .body = body.written(),
+        }) catch return Error.TransportFailed;
+        defer response.deinit(allocator);
+        if (response.status != 201 and response.status != 200) return Error.UnexpectedStatus;
+    }
+
     pub fn render(_: *const JiraAdapter, allocator: std.mem.Allocator, local: extsync.LocalEntity, opts: extsync.CreateOptions) Error![]const u8 {
         const issue_type = opts.issue_type orelse "Story";
         const description = if (local.body.len == 0) "(no description)" else local.body;
@@ -324,6 +364,19 @@ test "push skips status-only update and sends title update" {
     try std.testing.expectEqual(@as(usize, 1), t.calls);
     try std.testing.expect(t.last_body != null);
     try std.testing.expect(std.mem.indexOf(u8, t.last_body.?, "\"summary\":\"Updated title\"") != null);
+}
+
+test "postComment POSTs escaped ADF text to the issue comment endpoint" {
+    const a = std.testing.allocator;
+    var t = FakeTransport.init(a, 201, "{\"id\":1}");
+    defer t.deinit();
+
+    const adapter = JiraAdapter.init("https://acme.atlassian.net", .{ .kind = .bearer, .token = "tok" }, t.transport());
+    try adapter.postComment(a, "PROJ-1", "Decision says \"ship\"\nnow");
+    try std.testing.expect(t.last_url != null);
+    try std.testing.expect(std.mem.endsWith(u8, t.last_url.?, "/rest/api/3/issue/PROJ-1/comment"));
+    try std.testing.expect(t.last_body != null);
+    try std.testing.expect(std.mem.indexOf(u8, t.last_body.?, "Decision says \\\"ship\\\"\\nnow") != null);
 }
 
 test "render applies default issue type and description placeholder" {

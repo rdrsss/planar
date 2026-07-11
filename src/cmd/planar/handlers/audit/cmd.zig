@@ -54,8 +54,11 @@ pub const verb: cli.Cmd = .{
         },
         .{
             .name = "publish-decision",
-            .desc = "Post the decision body to linked operational-plane targets (M8).",
-            .flags = &.{.{ .long = "--json", .kind = .bool, .default = .{ .bool = false } }},
+            .desc = "Post the decision body to linked operational-plane targets.",
+            .flags = &.{
+                .{ .long = "--scope", .kind = .string },
+                .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
+            },
             .positionals = &.{.{ .name = "decision-id", .kind = .string, .required = true }},
             .run = cli.handler(publish_decision.handle),
         },

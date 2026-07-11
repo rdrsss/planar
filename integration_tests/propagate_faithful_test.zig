@@ -301,9 +301,9 @@ const FakeJira = struct {
         var req_index: usize = 0;
         while (self.stop_flag.load(.acquire) == 0) {
             const stream = self.server.accept(self.io) catch break;
+            self.request_count.store(req_index + 1, .release);
             self.handleOne(stream, req_index) catch {};
             req_index += 1;
-            self.request_count.store(req_index, .release);
         }
     }
 
@@ -358,11 +358,9 @@ test "[happy] audit publish-decision comments on a direct external link and reco
         "--project", "AUDIT",    "--auth-env", "PLANAR_AUDIT_TOKEN", "--json",
     });
 
-    const link_raw = suite.mustRunWith(&.{
-        "ext", "create", "jira-decision", "--from", decision_ref, "--json",
-    }, &.{.{ .key = "PLANAR_AUDIT_TOKEN", .value = "test-token" }});
-    defer gpa.free(link_raw);
-    const linked = try std.json.parseFromSlice(CreateJSON, arena, link_raw, .{ .ignore_unknown_fields = true });
+    const linked = suite.mustRunJSON(struct { link_id: i64 }, arena, &.{
+        "link", decision_ref, "--to", "jira-decision:TEST-7", "--json",
+    });
 
     const publish_raw = suite.mustRunWith(&.{
         "audit", "publish-decision", decision_id, "--json",
@@ -376,9 +374,9 @@ test "[happy] audit publish-decision comments on a direct external link and reco
     try std.testing.expect(published.value.ok);
     try std.testing.expectEqual(decision.id, published.value.decision_id);
     try std.testing.expectEqual(@as(i64, 1), published.value.comments_posted);
-    try std.testing.expectEqual(@as(usize, 2), server.requestCount());
+    try std.testing.expectEqual(@as(usize, 1), server.requestCount());
 
-    const link_id = try std.fmt.allocPrint(arena, "{d}", .{linked.value.link_id});
+    const link_id = try std.fmt.allocPrint(arena, "{d}", .{linked.link_id});
     const trail = suite.mustRun(&.{ "audit", "trail", "--link", link_id, "--json" });
     defer gpa.free(trail);
     try std.testing.expect(std.mem.containsAtLeast(u8, trail, 1, "decision-comment"));
