@@ -66,7 +66,7 @@ The rule fires inside the transaction of every `task.Add`, `task.Update`, `task.
 Recover the per-transition record with:
 
 ```
-planar audit trail <plan> --grep "^plan_status:"
+planar audit trail --kind plan <plan-id> --grep "^plan_status:"
 ```
 
 The full body schema:
@@ -483,7 +483,7 @@ Operators who want to skip Phase 3.5 specifically can either (a) remove the `[sl
 
 ### Audit trail
 
-Every cycle the orchestrator dispatches MUST append a `session_entries` row with `prefix='note'` and a structured body that begins with the sentinel line `dispatch_shape: <shape>`. The body uses a stable line-oriented schema so `planar audit trail <plan> --grep "^dispatch_shape:"` recovers the per-cycle disposition reliably:
+Every cycle the orchestrator dispatches MUST append a `session_entries` row with `prefix='note'` and a structured body that begins with the sentinel line `dispatch_shape: <shape>`. The body uses a stable line-oriented schema so `planar audit trail --kind plan <plan-id> --grep "^dispatch_shape:"` recovers the per-cycle disposition reliably:
 
 ```
 dispatch_shape: <one of: strict|grouped|single|barrel-grouped|barrel-deferred|barrel-bypass>
@@ -495,7 +495,7 @@ claim_tokens: [<token>, <token>, ...]
 
 The `reviewer_disposition` field captures the precedence rule: `barrel-bypass` mode overrides the per-cycle reviewer-skip profile and records `bypassed` (not `skipped-by-profile`). This distinguishes "operator chose to bypass" from "this cycle shape had no review signal anyway."
 
-`planar audit trail <plan>` exposes the prefix and body for forensic recovery. No schema change; `session_entries.prefix` is CHECK-constrained to a fixed set (`action / observation / decision / question / file / command / note / error / read`), so the dispatch convention reuses `prefix='note'` with the sentinel body line as the grep-recoverable alternative.
+`planar audit trail --kind plan <plan-id>` exposes the prefix and body for forensic recovery. No schema change; `session_entries.prefix` is CHECK-constrained to a fixed set (`action / observation / decision / question / file / command / note / error / read`), so the dispatch convention reuses `prefix='note'` with the sentinel body line as the grep-recoverable alternative.
 
 ### Phase 3.5 — Test-coder dispatch
 

@@ -20,7 +20,7 @@ The introspector composes **read-only** CLI verbs exclusively:
 
 ```
 planar report --json [--days <n>] [--tail <n>]
-planar audit trail <plan-id>
+planar audit trail --kind plan <plan-id>
 planar health [--json]
 ```
 

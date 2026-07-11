@@ -96,18 +96,17 @@ fn scanFile(arena: std.mem.Allocator, io: Io, root: []const u8, rel_file: []cons
     try parseSuppressions(arena, rel_file, lines.items, findings, &suppressions);
     const read_only = std.mem.eql(u8, frontmatterValue(content, "capability") orelse "", "read-only");
     const role = frontmatterValue(content, "role") orelse "";
-    var in_fence = false;
+    var fence: ?Fence = null;
     for (lines.items, 0..) |line, idx| {
         const line_no = idx + 1;
         const trimmed = std.mem.trim(u8, line, " \t\r");
-        if (std.mem.startsWith(u8, trimmed, "```") or std.mem.startsWith(u8, trimmed, "~~~")) {
-            in_fence = !in_fence;
+        if (advanceFence(trimmed, &fence)) {
             continue;
         }
         try checkLinks(arena, io, root, rel_file, abs_file, line_no, line, findings, &suppressions);
         try checkLegacy(arena, rel_file, line_no, line, findings, &suppressions);
         try checkArtifactSet(arena, rel_file, line_no, line, findings, &suppressions);
-        if (read_only) try checkCapability(arena, rel_file, role, line_no, line, in_fence, findings, &suppressions);
+        if (read_only) try checkCapability(arena, rel_file, role, line_no, line, fence != null, findings, &suppressions);
         try checkCommand(arena, rel_file, line_no, line, findings, &suppressions);
     }
     if (opts.require_feedback_contract and std.mem.startsWith(u8, rel_file, "skills/src/") and
@@ -123,14 +122,11 @@ fn scanFile(arena: std.mem.Allocator, io: Io, root: []const u8, rel_file: []cons
 
 fn parseSuppressions(arena: std.mem.Allocator, file: []const u8, lines: []const []const u8, findings: *std.ArrayList(Finding), suppressions: *std.ArrayList(Suppression)) !void {
     const prefix = "<!-- surface-lint-ignore ";
-    var in_fence = false;
+    var fence: ?Fence = null;
     for (lines, 0..) |raw, idx| {
         const line = std.mem.trim(u8, raw, " \t\r");
-        if (std.mem.startsWith(u8, line, "```") or std.mem.startsWith(u8, line, "~~~")) {
-            in_fence = !in_fence;
-            continue;
-        }
-        if (in_fence) continue;
+        if (advanceFence(line, &fence)) continue;
+        if (fence != null) continue;
         if (std.mem.indexOf(u8, line, "surface-lint-ignore-file") != null) {
             try invalidSuppression(arena, findings, file, idx + 1, "file-wide suppressions are not allowed");
             continue;
@@ -163,6 +159,32 @@ fn parseSuppressions(arena: std.mem.Allocator, file: []const u8, lines: []const 
         }
         try suppressions.append(arena, .{ .code = try arena.dupe(u8, code), .declaration_line = idx + 1, .target_line = target + 1 });
     }
+}
+
+const Fence = struct {
+    marker: u8,
+    run_len: usize,
+};
+
+/// Update Markdown fenced-code state. An open fence closes only when the
+/// marker character matches and the closing run is at least as long as the
+/// opener. A different marker or a shorter run is content inside the fence.
+fn advanceFence(trimmed: []const u8, state: *?Fence) bool {
+    if (trimmed.len < 3 or (trimmed[0] != '`' and trimmed[0] != '~')) return false;
+    const marker = trimmed[0];
+    var run_len: usize = 1;
+    while (run_len < trimmed.len and trimmed[run_len] == marker) : (run_len += 1) {}
+    if (run_len < 3) return false;
+
+    if (state.*) |open| {
+        if (marker != open.marker or run_len < open.run_len) return false;
+        if (std.mem.trim(u8, trimmed[run_len..], " \t\r").len != 0) return false;
+        state.* = null;
+        return true;
+    }
+
+    state.* = .{ .marker = marker, .run_len = run_len };
+    return true;
 }
 
 fn invalidSuppression(arena: std.mem.Allocator, findings: *std.ArrayList(Finding), file: []const u8, line: usize, message: []const u8) !void {
@@ -227,55 +249,95 @@ fn checkArtifactSet(arena: std.mem.Allocator, file: []const u8, line_no: usize, 
     if (present >= 3 and present != names.len) try emit(arena, findings, suppressions, Code.artifacts, file, line_no, "planning artifact set must contain product-spec, tech-spec, roadmap, and test-spec");
 }
 
-// Actual operator entity mutations and agent coordination mutations, derived
-// from the planar and planar-agent schema catalogs. Prefixes are token-boundary
-// matched, so e.g. `planar task list` cannot collide with `planar task link`.
-const write_shapes = [_][]const u8{
-    "planar init",                  "planar scope use",             "planar scope pop",             "planar scope clear",
-    "planar assoc create",          "planar assoc add",             "planar assoc remove",          "planar plan create",
-    "planar plan update",           "planar plan edit",             "planar plan review",           "planar plan link",
-    "planar plan recompute-status", "planar plan closeout",         "planar plan step add",         "planar plan step done",
-    "planar plan step skip",        "planar plan step link",        "planar task add",              "planar task update",
-    "planar task edit",             "planar task review",           "planar task done",             "planar task cancel",
-    "planar task block",            "planar task link",             "planar task reopen",           "planar task touches add",
-    "planar task touches remove",   "planar question add",          "planar question edit",         "planar question review",
-    "planar question answer",       "planar question wontfix",      "planar question link",         "planar scenario add",
-    "planar scenario edit",         "planar scenario review",       "planar scenario verify",       "planar scenario retire",
-    "planar scenario link",         "planar decision add",          "planar decision accept",       "planar decision supersede",
-    "planar decision withdraw",     "planar decision edit",         "planar decision review",       "planar decision link",
-    "planar artifact add",          "planar artifact update",       "planar artifact edit",         "planar artifact review",
-    "planar artifact link",         "planar annotate add",          "planar annotate update",       "planar annotate remove",
-    "planar annotate tag",          "planar annotate resolve",      "planar annotate dismiss",      "planar annotate archive",
-    "planar annotate bulk-resolve", "planar annotate bulk-dismiss", "planar annotate bulk-archive", "planar annotate sweep",
-    "planar promote",               "planar demote",                "planar ext register",          "planar ext create",
-    "planar ext propagate-one",     "planar ext propagate",         "planar link",                  "planar unlink",
-    "planar links add",             "planar links remove",          "planar sync pull",             "planar sync push",
-    "planar sync resolve",          "planar handoff create",        "planar handoff consume",       "planar handoff abandon",
-    "planar capture session",       "planar capture commits",       "planar capture end",           "planar capture note",
-    "planar capture command",       "planar capture file",          "planar capture snapshot",      "planar models refresh",
-    "planar models apply",          "planar spec ingest",           "planar import",                "planar synthesize",
-    "planar bench start",           "planar bench event",           "planar bench touch",           "planar bench harvest",
-    "planar bench finish",          "planar run start",             "planar run event",             "planar run finish",
-    "planar-agent pull",            "planar-agent claim",           "planar-agent complete",        "planar-agent fail",
-    "planar-agent release",         "planar-agent block",           "planar-agent heartbeat",       "planar-agent claim-associate",
-    "planar-agent action",          "planar-agent ingest",          "planar-agent reconcile",       "planar-agent abort",
-    "planar-agent run",             "planar-agent context",
+const Access = enum { read, mutate };
+const CommandClass = struct { shape: []const u8, access: Access };
+fn r(comptime shape: []const u8) CommandClass {
+    return .{ .shape = shape, .access = .read };
+}
+fn m(comptime shape: []const u8) CommandClass {
+    return .{ .shape = shape, .access = .mutate };
+}
+
+// Exhaustive leaf classification from the four schema catalogs. A leaf is
+// `mutate` when any supported mode writes Planar state, coordination state,
+// the filesystem, or a remote system. Reads are explicit so a missing write
+// entry cannot silently become an implicit read.
+const command_classes = [_]CommandClass{
+    m("planar init"),                        r("planar scope show"),            r("planar scope suggest"),         r("planar scope use"),             r("planar scope pop"),               r("planar scope clear"),
+    r("planar assoc list"),                  m("planar assoc create"),          m("planar assoc add"),             m("planar assoc remove"),          r("planar assoc members"),           m("planar assoc detect"),
+    m("planar plan create"),                 r("planar plan show"),             r("planar plan list"),             m("planar plan update"),           m("planar plan edit"),               r("planar plan view"),
+    r("planar plan diff"),                   r("planar plan review"),           m("planar plan link"),             r("planar plan next"),             r("planar plan recommend-strategy"), r("planar plan divergence"),
+    m("planar plan recompute-status"),       m("planar plan closeout"),         m("planar plan step add"),         r("planar plan step list"),        m("planar plan step done"),          m("planar plan step skip"),
+    m("planar plan step link"),              r("planar plan descendants"),      m("planar task add"),              r("planar task show"),             r("planar task list"),               m("planar task update"),
+    m("planar task edit"),                   r("planar task view"),             r("planar task diff"),             r("planar task review"),           m("planar task done"),               m("planar task cancel"),
+    m("planar task block"),                  m("planar task link"),             m("planar task reopen"),           m("planar task touches add"),      r("planar task touches list"),       m("planar task touches remove"),
+    m("planar question add"),                m("planar question edit"),         r("planar question view"),         r("planar question diff"),         r("planar question review"),         m("planar question answer"),
+    m("planar question wontfix"),            r("planar question list"),         r("planar question show"),         m("planar question link"),         m("planar scenario add"),            m("planar scenario edit"),
+    r("planar scenario view"),               r("planar scenario diff"),         r("planar scenario review"),       m("planar scenario verify"),       m("planar scenario retire"),         r("planar scenario list"),
+    r("planar scenario show"),               m("planar scenario link"),         m("planar decision add"),          r("planar decision show"),         r("planar decision list"),           m("planar decision accept"),
+    m("planar decision supersede"),          m("planar decision withdraw"),     m("planar decision edit"),         r("planar decision view"),         r("planar decision diff"),           r("planar decision review"),
+    m("planar decision link"),               m("planar artifact add"),          r("planar artifact show"),         r("planar artifact list"),         m("planar artifact update"),         m("planar artifact edit"),
+    r("planar artifact view"),               r("planar artifact diff"),         r("planar artifact review"),       m("planar artifact link"),         m("planar annotate add"),            r("planar annotate show"),
+    r("planar annotate list"),               m("planar annotate update"),       m("planar annotate remove"),       m("planar annotate tag"),          m("planar annotate resolve"),        m("planar annotate dismiss"),
+    m("planar annotate archive"),            m("planar annotate bulk-resolve"), m("planar annotate bulk-dismiss"), m("planar annotate bulk-archive"), r("planar annotate verify"),         m("planar annotate sweep"),
+    m("planar promote"),                     m("planar demote"),                m("planar workbench pull"),        m("planar workbench push"),        r("planar workbench status"),        m("planar workbench resolve"),
+    m("planar workbench sync"),              m("planar workbench archive"),     m("planar workbench restore"),     m("planar workbench gc"),          r("planar workbench list"),          m("planar workbench publish"),
+    r("planar workbench extract-questions"), m("planar workbench edit"),        m("planar workspace init"),        m("planar workspace doctor"),      m("planar workspace routing build"), r("planar workspace routing show"),
+    m("planar workspace regenerate"),        m("planar ext register jira"),     m("planar ext register github"),   r("planar ext list"),              r("planar ext test"),                m("planar ext create"),
+    m("planar ext propagate-one"),           m("planar ext propagate"),         m("planar link"),                  m("planar unlink"),                m("planar links add"),               r("planar links list"),
+    m("planar links remove"),                r("planar links trail"),           m("planar sync pull"),             m("planar sync push"),             r("planar sync status"),             m("planar sync resolve"),
+    r("planar resume validate"),             m("planar handoff create"),        m("planar handoff validate"),      m("planar handoff consume"),       m("planar handoff abandon"),         r("planar handoff list"),
+    r("planar handoff show"),                m("planar capture session"),       m("planar capture commits"),       m("planar capture end"),           m("planar capture note"),            m("planar capture command"),
+    m("planar capture file"),                m("planar capture snapshot"),      r("planar audit trail"),           r("planar audit commits"),         r("planar audit session"),           m("planar audit publish-decision"),
+    r("planar audit handoff-readiness"),     r("planar health"),                r("planar models list"),           m("planar models refresh"),        r("planar models routing"),          m("planar models apply"),
+    r("planar dashboard"),                   m("planar spec ingest"),           r("planar test-spec status"),      r("planar config show"),           m("planar config edit"),             r("planar config validate"),
+    m("planar config init"),                 r("planar config path"),           r("planar templates list"),        r("planar templates show"),        r("planar templates render"),        r("planar templates validate"),
+    m("planar templates init"),              r("planar templates path"),        r("planar tree"),                  r("planar search"),                r("planar local list"),              m("planar local link"),
+    m("planar local unlink"),                m("planar local import"),          m("planar local migrate"),         m("planar skills render"),         m("planar import"),                  m("planar synthesize"),
+    r("planar version"),                     r("planar completion"),            r("planar schema"),                r("planar report"),                m("planar bench start"),             m("planar bench event"),
+    m("planar bench touch"),                 m("planar bench harvest"),         m("planar bench finish"),          r("planar bench show"),            m("planar closure compute"),         r("planar closure show"),
+    m("planar run start"),                   m("planar run event"),             m("planar run finish"),            r("planar run show"),              r("planar groups recommend"),        r("planar explore"),
+    r("planar workflow list"),               r("planar workflow show"),         m("planar workflow run"),          r("planar-agent version"),         m("planar-agent pull"),              r("planar-agent peek"),
+    m("planar-agent complete"),              m("planar-agent fail"),            m("planar-agent release"),         m("planar-agent block"),           m("planar-agent claim"),             m("planar-agent heartbeat"),
+    m("planar-agent claim-associate"),       m("planar-agent action start"),    m("planar-agent action end"),      m("planar-agent ingest"),          m("planar-agent reconcile"),         m("planar-agent abort"),
+    r("planar-agent schema"),                m("planar-agent run start"),       m("planar-agent run end"),         m("planar-agent context add"),     m("planar-agent context capsule"),   r("planar-agent context list"),
+    m("planar-agent context resolve"),       r("planar-watch feed"),            r("planar-watch ps"),              r("planar-watch claims"),          r("planar-watch actions"),           r("planar-watch plans"),
+    r("planar-watch log"),                   r("planar-watch tree"),            r("planar-watch run list"),        r("planar-watch run show"),        r("planar-watch sync-events"),       r("planar-watch version"),
+    r("planar-watch completion"),            r("planar-watch schema"),          m("planar-doc build"),             r("planar-doc verify"),            r("planar-doc diff"),                m("planar-doc cover"),
+    m("planar-doc nodoc"),                   r("planar-doc lint"),              r("planar-doc schema"),
 };
 
 fn checkCapability(arena: std.mem.Allocator, file: []const u8, role: []const u8, line_no: usize, line: []const u8, in_fence: bool, findings: *std.ArrayList(Finding), suppressions: *std.ArrayList(Suppression)) !void {
     if (in_fence) return checkExecutableCapability(arena, file, role, line_no, line, findings, suppressions);
     var cursor: usize = 0;
     while (std.mem.indexOfScalarPos(u8, line, cursor, '`')) |open| {
-        const close = std.mem.indexOfScalarPos(u8, line, open + 1, '`') orelse break;
-        try checkExecutableCapability(arena, file, role, line_no, line[open + 1 .. close], findings, suppressions);
-        cursor = close + 1;
+        const run_len = markerRunLength(line, open, '`');
+        var search = open + run_len;
+        var close: ?usize = null;
+        while (std.mem.indexOfScalarPos(u8, line, search, '`')) |candidate| {
+            const candidate_len = markerRunLength(line, candidate, '`');
+            if (candidate_len == run_len) {
+                close = candidate;
+                break;
+            }
+            search = candidate + candidate_len;
+        }
+        const close_at = close orelse break;
+        try checkExecutableCapability(arena, file, role, line_no, line[open + run_len .. close_at], findings, suppressions);
+        cursor = close_at + run_len;
     }
 }
 
+fn markerRunLength(text: []const u8, start: usize, marker: u8) usize {
+    var end = start;
+    while (end < text.len and text[end] == marker) : (end += 1) {}
+    return end - start;
+}
+
 fn checkExecutableCapability(arena: std.mem.Allocator, file: []const u8, role: []const u8, line_no: usize, executable: []const u8, findings: *std.ArrayList(Finding), suppressions: *std.ArrayList(Suppression)) !void {
-    for (write_shapes) |shape| if (containsCommandShape(executable, shape)) {
-        if (isCapabilityExemption(file, role, shape)) return;
-        try emit(arena, findings, suppressions, Code.capability, file, line_no, try std.fmt.allocPrint(arena, "read-only role contains coordination or entity write: {s}", .{shape}));
+    for (command_classes) |command| if (command.access == .mutate and containsCommandShape(executable, command.shape)) {
+        if (isCapabilityExemption(file, role, command.shape)) return;
+        try emit(arena, findings, suppressions, Code.capability, file, line_no, try std.fmt.allocPrint(arena, "read-only role contains coordination or entity write: {s}", .{command.shape}));
         return;
     };
 }
@@ -286,11 +348,19 @@ const capability_exemptions = [_]struct { file: []const u8, role: []const u8, sh
     .{ .file = "agents/introspector.md", .role = "introspector", .shape = "planar plan create" },
     .{ .file = "agents/introspector.md", .role = "introspector", .shape = "planar task add" },
     .{ .file = "agents/introspector.md", .role = "introspector", .shape = "planar question add" },
+    // The documenter returns these exact invocations as proposed worklist
+    // rows, but its boundary explicitly forbids invoking them itself.
+    .{ .file = "agents/documenter.md", .role = "documenter", .shape = "planar-doc build" },
+    .{ .file = "agents/documenter.md", .role = "documenter", .shape = "planar-doc cover" },
+    .{ .file = "agents/documenter.md", .role = "documenter", .shape = "planar-doc nodoc" },
     // Review is entity-read-only but participates in the claim lease ritual;
     // terminal claim mutations remain deliberately absent from this list.
     .{ .file = "agents/reviewer.md", .role = "reviewer", .shape = "planar-agent pull" },
     .{ .file = "agents/reviewer.md", .role = "reviewer", .shape = "planar-agent claim" },
     .{ .file = "agents/reviewer.md", .role = "reviewer", .shape = "planar-agent heartbeat" },
+    // Reviewer doctrine names this command only in its explicit do-not-run
+    // list; the coder report supplies the already-completed render result.
+    .{ .file = "agents/reviewer.md", .role = "reviewer", .shape = "planar skills render" },
 };
 fn isCapabilityExemption(file: []const u8, role: []const u8, shape: []const u8) bool {
     for (capability_exemptions) |exemption| if (std.mem.eql(u8, file, exemption.file) and
@@ -310,20 +380,35 @@ fn containsCommandShape(line: []const u8, shape: []const u8) bool {
     return false;
 }
 
-const invalid_commands = [_][]const u8{
-    "planar audit trail task:",
-    "planar audit trail question:",
-    "planar audit trail plan:",
-    "planar audit trail task ",
-    "planar audit trail question ",
-    "planar audit trail plan ",
-    "planar audit trail <kind:id>",
-};
 fn checkCommand(arena: std.mem.Allocator, file: []const u8, line_no: usize, line: []const u8, findings: *std.ArrayList(Finding), suppressions: *std.ArrayList(Suppression)) !void {
-    for (invalid_commands) |shape| if (std.mem.indexOf(u8, line, shape) != null) {
+    const shape = "planar audit trail";
+    var cursor: usize = 0;
+    while (std.mem.indexOfPos(u8, line, cursor, shape)) |at| {
+        const end = at + shape.len;
+        cursor = end;
+        if (at != 0 and !std.ascii.isWhitespace(line[at - 1]) and line[at - 1] != '`') continue;
+        if (end < line.len and !std.ascii.isWhitespace(line[end]) and line[end] != '`') continue;
+        const args = std.mem.trimStart(u8, line[end..], " \t");
+        if (args.len == 0 or args[0] == '`' or args[0] == '.' or args[0] == ',' or args[0] == ')' or
+            std.mem.startsWith(u8, args, "--kind") or std.mem.startsWith(u8, args, "--link") or
+            std.mem.startsWith(u8, args, "[--kind")) continue;
+        const token_end = std.mem.indexOfAny(u8, args, " \t`.,)") orelse args.len;
+        const token = args[0..token_end];
+        if (!isInvalidAuditSelector(token)) continue;
         try emit(arena, findings, suppressions, Code.command, file, line_no, "audit trail entity kind must use `--kind <kind> <entity-id>`");
         return;
-    };
+    }
+}
+
+fn isInvalidAuditSelector(token: []const u8) bool {
+    if (token.len == 0) return false;
+    const kinds = [_][]const u8{ "plan", "task", "question" };
+    for (kinds) |kind| {
+        if (std.mem.eql(u8, token, kind) or
+            (std.mem.startsWith(u8, token, kind) and token.len > kind.len and token[kind.len] == ':')) return true;
+        if ((token[0] == '<' or token[0] == '{') and std.mem.indexOf(u8, token, kind) != null) return true;
+    }
+    return (token[0] == '<' or token[0] == '{') and std.mem.indexOf(u8, token, "kind:") != null;
 }
 
 fn checkFeedbackContract(arena: std.mem.Allocator, file: []const u8, content: []const u8, findings: *std.ArrayList(Finding), suppressions: *std.ArrayList(Suppression)) !void {
@@ -503,6 +588,85 @@ test "capability drift scans fenced and inline executable writes without flaggin
     var clean_fixture = try scanFixture(clean, .{});
     defer clean_fixture.deinit();
     try testing.expectEqual(@as(usize, 0), clean_fixture.result.findings.items.len);
+}
+test "schema inventory has an explicit unique classification for every current leaf" {
+    // Generated from the four freshly built catalogs with:
+    //   for b in planar planar-agent planar-watch planar-doc; do
+    //     $b schema | jq -r '.commands[] | select((.subcommands|length)==0 and (.path|length)>0) | .command'
+    //   done
+    // The fingerprint pins names and order, while the counts identify which
+    // binary drifted when a catalog changes.
+    try testing.expectEqual(@as(usize, 249), command_classes.len);
+    var planar_count: usize = 0;
+    var agent_count: usize = 0;
+    var watch_count: usize = 0;
+    var doc_count: usize = 0;
+    var inventory: std.ArrayList(u8) = .empty;
+    defer inventory.deinit(testing.allocator);
+    for (command_classes, 0..) |command, idx| {
+        for (command_classes[0..idx]) |prior| try testing.expect(!std.mem.eql(u8, prior.shape, command.shape));
+        try inventory.appendSlice(testing.allocator, command.shape);
+        try inventory.append(testing.allocator, '\n');
+        if (std.mem.startsWith(u8, command.shape, "planar ")) planar_count += 1 else if (std.mem.startsWith(u8, command.shape, "planar-agent ")) agent_count += 1 else if (std.mem.startsWith(u8, command.shape, "planar-watch ")) watch_count += 1 else if (std.mem.startsWith(u8, command.shape, "planar-doc ")) doc_count += 1 else return error.InvalidCommandClassification;
+    }
+    try testing.expectEqual(@as(usize, 207), planar_count);
+    try testing.expectEqual(@as(usize, 22), agent_count);
+    try testing.expectEqual(@as(usize, 13), watch_count);
+    try testing.expectEqual(@as(usize, 7), doc_count);
+    var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(inventory.items, &digest, .{});
+    const hex = std.fmt.bytesToHex(digest, .lower);
+    try testing.expectEqualStrings("815f7f0708f62a0e861fa67b36e859695417cd0d0adc39ea727fac9c1aa50090", &hex);
+}
+test "every classified leaf enforces its declared capability" {
+    const frontmatter = "---\nrole: fixture\ncapability: read-only\n---\n```sh\n";
+    for (command_classes) |command| {
+        const content = try std.mem.concat(testing.allocator, u8, &.{ frontmatter, command.shape, " --json\n```\n" });
+        defer testing.allocator.free(content);
+        var fixture = try scanFixture(content, .{});
+        defer fixture.deinit();
+        const expected: usize = if (command.access == .mutate) 1 else 0;
+        try testing.expectEqual(expected, fixture.result.findings.items.len);
+        if (expected != 0) try testing.expectEqualStrings(Code.capability, fixture.result.findings.items[0].code);
+    }
+}
+test "Markdown executable delimiters require matching markers and run lengths" {
+    const frontmatter = "---\nrole: fixture\ncapability: read-only\n---\n";
+    const cases = [_][]const u8{
+        frontmatter ++ "Use ``planar task add `literal` --title x`` now.\n",
+        frontmatter ++ "```sh\n~~~\nplanar task add x\n```\n",
+        frontmatter ++ "````sh\n```\nplanar task add x\n````\n",
+    };
+    for (cases) |content| {
+        var fixture = try scanFixture(content, .{});
+        defer fixture.deinit();
+        try testing.expectEqual(@as(usize, 1), fixture.result.findings.items.len);
+        try testing.expectEqualStrings(Code.capability, fixture.result.findings.items[0].code);
+    }
+
+    const clean = frontmatter ++ "Use ``planar task show `literal` --json`` now.\n";
+    var clean_fixture = try scanFixture(clean, .{});
+    defer clean_fixture.deinit();
+    try testing.expectEqual(@as(usize, 0), clean_fixture.result.findings.items.len);
+}
+test "audit command drift catches plan and entity placeholder variants" {
+    const invalid = [_][]const u8{
+        "Run `planar audit trail <plan-id>`.\n",
+        "Run `planar audit trail <plan> --grep x`.\n",
+        "Run `planar audit trail plan:42`.\n",
+        "Run `planar audit trail plan 42`.\n",
+        "Run `planar audit trail <kind:id>`.\n",
+        "Run `planar audit trail {question-id}`.\n",
+    };
+    for (invalid) |content| {
+        var fixture = try scanFixture(content, .{});
+        defer fixture.deinit();
+        try testing.expectEqual(@as(usize, 1), fixture.result.findings.items.len);
+        try testing.expectEqualStrings(Code.command, fixture.result.findings.items[0].code);
+    }
+    var valid = try scanFixture("Run `planar audit trail --kind plan <plan-id>` or `planar audit trail --link <link-id>`.\n", .{});
+    defer valid.deinit();
+    try testing.expectEqual(@as(usize, 0), valid.result.findings.items.len);
 }
 test "only exact projection links are exempt from source-tree resolution" {
     var exact = try scanFixtureAt("docs/cli-reference.md", "[projection](../commands/claude/pl-synthesize.md)\n", .{});
