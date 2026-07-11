@@ -63,15 +63,30 @@ The `coverage:` line follows the totals. It reports how many of the tasks have a
 /pl-spec-ingest 42 --strict
 ```
 
-`--strict` exits non-zero on any uncovered task or orphan scenario, naming each gap so the operator can fix them in one pass — usually by adding the missing `[slug:]` to a roadmap bullet or filling in a scenario's `**Verifies:**` line.
+For the authoritative pre-ingest check, request the machine-readable preview:
 
-For a per-milestone view (with a four-bucket breakdown by scenario-title prefix) use the read-only inspector:
+```
+planar spec ingest 42 --strict --json
+```
+
+The draft is not ready when the command exits non-zero or when
+`coverage.uncovered_task_slugs`, `coverage.orphan_scenarios`, or the top-level
+`slug_collisions` array is non-empty. The first two usually mean adding a
+missing `[slug:]` to a roadmap bullet or filling in a scenario's
+`**Verifies:**` line; collisions require choosing a globally unique task slug.
+
+After `--apply` has created task, scenario, and verifies rows, use the read-only
+live-row inspector for a per-milestone view with a four-bucket breakdown by
+scenario-title prefix:
 
 ```
 planar test-spec status 42
 ```
 
-No changes are written by either preview or `test-spec status`.
+No changes are written by either preview or `test-spec status`. Do not use
+`test-spec status` before apply as proof of draft completeness: zero totals are
+legitimate when live rows do not exist yet. The strict preview's `coverage`
+object is the pre-ingest oracle; `test-spec status` is the post-ingest oracle.
 
 ### Step 4 — Apply
 

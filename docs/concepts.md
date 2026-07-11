@@ -1080,7 +1080,17 @@ planar spec ingest <plan>
 
 **Cross-references.** The test-spec carries `verifies: [artifact:<product-spec-id>]` in its frontmatter so the cross-reference machinery tracks which user stories the test plan covers. Scenarios cite tasks via `**Verifies:** task:<id>` *or* `**Verifies:** task:<slug>`. The slug form (plan 286) is the canonical citation chain: scenarios drafted before tasks exist still resolve at apply time, because the ingestor looks up `tasks.slug` against the `[slug: …]` annotations on the roadmap bullets. Unresolvable slugs are a hard error at apply — the operator either adds the missing `[slug:]` to the roadmap or removes the citation.
 
-**Coverage gate.** `planar spec ingest` prints a `coverage:` summary after the additions/updates/removals totals: how many tasks carry a `[slug:]`, how many slug-bearing tasks have a scenario verifying them, and any orphan scenarios (no parseable `**Verifies:**` line). Pass `--strict` to promote uncovered tasks and orphan scenarios from a printed warning into a non-zero exit; this is the gate test-coder cycles depend on. The read-only inspector `planar test-spec status <plan>` prints the same view per-milestone with a four-bucket breakdown (happy / empty / error / edge), classified by scenario-title prefix.
+**Coverage gate.** Before ingestion, `planar spec ingest <plan> --strict --json`
+is the authoritative workbench-draft oracle. Preview is the default because
+`--apply` is absent. Its `coverage` object reports task/slug totals,
+`uncovered_task_slugs`, and `orphan_scenarios` (no parseable `**Verifies:**`
+line); the top-level `slug_collisions` array reports slugs already held by live
+tasks. A non-zero exit or any uncovered, orphan, or collision finding blocks
+ingestion. `planar test-spec status <plan> --json` instead queries live
+`tasks`, `test_scenarios`, and `entity_links`; it becomes authoritative only
+after apply. Before apply, its legitimate zero totals do not prove draft
+coverage. After apply it provides the per-milestone four-bucket breakdown
+(happy / empty / error / edge) used by test-coder cycles and reviewers.
 
 **Planning loop integration.** The planner authors the test-spec in Phase 4 of its authoring pipeline (see [`agents/planner.md` §Authoring phases](../agents/planner.md#authoring-phases)). Phase 4 is purely adversarial: what could go wrong, what scenarios prove this works, what scenarios prove it doesn't. The planner explicitly does NOT propose implementations of the tests — that's the [test-coder](#test-coder)'s job (see below).
 

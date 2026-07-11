@@ -159,7 +159,7 @@ These skills cover the planning cycle from goal statement to operational-plane p
 
 ### `/pl-spec-draft`
 
-Draft planning documents (product spec, tech spec, roadmap, test spec) for a new feature from a goal statement. Creates a draft anchor plan, a workbench directory, and four artifact files. The user reviews and edits the documents before the next phase. The planner authors in four sequential phases — see [`agents/planner.md` §Authoring phases](../agents/planner.md#authoring-phases). Any `## Open questions` H3 items found in the drafted spec files are auto-registered as question entities via `planar question add` — see the "Reviewing open questions" recipe in `docs/workflows.md`.
+Draft planning documents (product spec, tech spec, roadmap, test spec) for a new feature from a goal statement. Creates a draft anchor plan, a workbench directory, and four artifact files. The user reviews and edits the documents before the next phase. The planner authors in four sequential phases — see [`agents/planner.md` §Authoring phases](../agents/planner.md#authoring-phases). Its final draft-coverage check is the read-only `planar spec ingest <plan> --strict --json` preview; `test-spec status` is reserved for live rows after ingestion. Any `## Open questions` H3 items found in the drafted spec files are auto-registered as question entities via `planar question add` — see the "Reviewing open questions" recipe in `docs/workflows.md`.
 
 **Example:**
 ```
@@ -176,7 +176,10 @@ Adversarially review draft planning specs before ingestion. Reconstructs what
 the feature is supposed to be, checks whether it matches the user's intent,
 classifies open questions, runs feature-gap and consistency analysis, and
 checks roadmap/test-scenario readiness. Default mode is read-only; `--write`
-only applies operator-approved artifact and question updates.
+only applies operator-approved artifact and question updates. For a draft plan,
+the reviewer treats strict preview coverage (including uncovered slugs, orphan
+scenarios, and slug collisions) as authoritative; after apply it switches to
+`planar test-spec status <plan> --json` over live rows.
 
 **Example:**
 ```

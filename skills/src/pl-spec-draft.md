@@ -27,7 +27,12 @@ shared_notes:
 
 {{.VendorTitle}} skill surface for the vendor-neutral `planner` agent. See [`agents/planner.md`](../../agents/planner.md) for the full role spec, input/output contract, doc shape conventions, and the **four-phase authoring discipline** (product → tech → roadmap → test). The phase-specific "do NOT" lists are load-bearing: they keep product-spec out of implementation, keep test-spec out of code, and ensure the four return-path buckets (happy / empty-null / error / edge) are reasoned through explicitly as a coverage lens — not collapsed into document structure.
 
-Phase 4 has a self-check before final emission (see [`agents/planner.md` §Phase 4 self-check](../../agents/planner.md#phase-4-self-check-before-final-emission)): every scenario has a non-empty `**Verifies:**`, every cited slug exists as a `[slug: …]` annotation on a roadmap bullet, and every testable bullet carries a `[slug: …]`. Run `planar spec ingest <plan> --strict` and `planar test-spec status <plan>` locally to catch the same failure modes before handoff.
+Phase 4 has a self-check before final emission (see [`agents/planner.md` §Phase 4 self-check](../../agents/planner.md#phase-4-self-check-before-final-emission)): every scenario has a non-empty `**Verifies:**`, every cited slug exists as a `[slug: …]` annotation on a roadmap bullet, and every testable bullet carries a `[slug: …]`. Run the read-only strict JSON preview, `planar spec ingest <plan> --strict --json`, before handoff. Its workbench-derived `coverage` object is authoritative while the plan is still a draft; `planar test-spec status` is reserved for post-ingest live rows.
+
+The draft fails self-check if the strict preview exits non-zero or reports a
+non-empty `coverage.uncovered_task_slugs`, `coverage.orphan_scenarios`, or
+top-level `slug_collisions` array. An empty pre-ingest `test-spec status` result
+is not evidence of coverage.
 
 ## When to use
 

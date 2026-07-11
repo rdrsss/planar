@@ -4479,7 +4479,7 @@ Planning pipeline spec commands for decomposing workbench planning documents int
 
 **Synopsis:**
 ```
-planar spec ingest <plan> [--apply] [--apply-removals] [--format text|json] [--strict]
+planar spec ingest <plan> [--apply] [--apply-removals] [--format text|json] [--json] [--strict]
 ```
 
 **Description:** Read `tech-spec.md`, `roadmap.md`, and (when present) `test-spec.md` from the anchor plan's workbench directory, compute the proposed diff against the current database state, and (optionally) commit additions and updates.
@@ -4488,7 +4488,7 @@ Default mode is **preview**: prints a tree-shaped diff and exits 0 without apply
 
 Apply mode is atomic per anchor plan. All derived rows for one anchor plan run inside one SQLite savepoint: child plans, tasks, decisions, test scenarios, links, optional removals, the anchor `draft` -> `active` flip, and the successful action audit either all commit or all roll back. A failed apply leaves no partial derived graph for that anchor and should not require workbench cleanup. When multiple `<plan>` arguments are supplied, each anchor has its own atomic boundary; one plan may apply successfully while another rolls back, and the command exits non-zero if any plan fails.
 
-A `coverage:` line follows the totals on every run. It reports how many tasks carry a `[slug:]`, how many slug-bearing tasks are verified by at least one test-spec scenario, and any orphan scenarios whose `**Verifies:**` line failed to parse. `--strict` promotes uncovered tasks and orphan scenarios from a printed warning into a non-zero exit.
+A `coverage:` line follows the totals on every run. It reports how many tasks carry a `[slug:]`, how many slug-bearing tasks are verified by at least one test-spec scenario, and any orphan scenarios whose `**Verifies:**` line failed to parse. Slug collisions are reported separately. `--strict` promotes uncovered tasks, orphan scenarios, and slug collisions into a non-zero exit.
 
 `<plan>` may be a numeric plan id or a plan slug.
 
@@ -4507,7 +4507,8 @@ A `coverage:` line follows the totals on every run. It reports how many tasks ca
 | `--apply` | Commit additions and updates to the database. | off |
 | `--apply-removals` | Also commit proposed removals (cancel orphan tasks, abandon orphan plans). Must be combined with `--apply`. | off |
 | `--format text\|json` | Output format. `text` prints a tree-shaped diff; `json` emits a machine-readable JSON object. The JSON object carries a `coverage` field with the same data the text mode prints. | `text` |
-| `--strict` | Reject the ingest (exit 1) when any slug-bearing task has no verifying scenario, or when any scenario has no parseable `**Verifies:**` line. | off |
+| `--json` | Shorthand for `--format json`. | off |
+| `--strict` | Reject the ingest (exit 1) when any slug-bearing task has no verifying scenario, any scenario has no parseable `**Verifies:**` line, or any proposed task slug collides with a live task. | off |
 
 **Output (human, `--format text`):**
 
@@ -4535,9 +4536,21 @@ Run with --apply to commit; add --apply-removals to cancel proposed removals.
     {"op": "add", "kind": "task", "title": "Define CheckoutRequest proto", "derives_from": "plan:Protos Changes", "touches": ["acme/protos"]},
     {"op": "add", "kind": "decision", "title": "Use Protocol Buffers", "derives_from": "plan:42"}
   ],
-  "summary": {"additions": 11, "updates": 0, "removals": 0}
+  "summary": {"additions": 11, "updates": 0, "removals": 0},
+  "coverage": {
+    "total_tasks": 5,
+    "tasks_with_slug": 5,
+    "tasks_without_slug": 0,
+    "uncovered_task_slugs": [],
+    "orphan_scenarios": []
+  },
+  "slug_collisions": []
 }
 ```
+
+For pre-ingest review, this JSON is authoritative even when no live task or
+scenario rows exist. A non-empty `uncovered_task_slugs`, `orphan_scenarios`, or
+`slug_collisions` array is an ingest-readiness failure.
 
 **Schema effects:**
 
@@ -4567,7 +4580,11 @@ Writes (only with `--apply`, atomically per anchor plan):
 
 ## Domain: `test-spec`
 
-Read-only inspectors for test-spec coverage. Where `spec ingest --strict` is the ingest-time gate that blocks an apply on a coverage gap, `test-spec status` is the human-facing view the planner runs during Phase 4 self-check.
+Read-only inspectors for post-ingest test-spec coverage. Before apply, the
+authoritative draft check is `spec ingest <plan> --strict --json`, whose
+workbench-derived `coverage` object exists even when there are no live task or
+scenario rows. After apply, `test-spec status` is the human-facing live-row
+oracle used by test-coder and reviewer cycles.
 
 ### `planar test-spec status <plan>`
 

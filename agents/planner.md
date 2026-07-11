@@ -162,16 +162,24 @@ The coverage-gap checklist at the bottom of `test-spec.md` is the reviewer's str
 
 Before emitting the test-spec as final, the planner walks every scenario it just wrote and confirms:
 
-1. **Every `### Scenario:` block has a non-empty `**Verifies:**` field.** A missing or empty `**Verifies:**` line is a draft failure — go back and decide what the scenario verifies. A scenario without a verifies edge cannot participate in the coverage gate (`planar spec ingest --strict`) or in the per-milestone breakdown (`planar test-spec status`).
+1. **Every `### Scenario:` block has a non-empty `**Verifies:**` field.** A missing or empty `**Verifies:**` line is a draft failure — go back and decide what the scenario verifies. A scenario without a verifies edge cannot participate in the strict ingest-preview coverage gate or, after ingestion, in the live per-milestone breakdown.
 2. **Every slug cited in `**Verifies:** task:<slug>` exists as a `[slug: <slug>]` annotation on a roadmap bullet under this plan.** Slugs not declared in the roadmap are an unresolvable citation and the ingestor will reject the apply. Either add the missing `[slug:]` annotation to the corresponding roadmap bullet, or change the citation to a slug that does exist.
 3. **Every roadmap bullet that names a testable behavior carries a `[slug: …]` annotation.** Bullets without slugs cannot be cited by stable name from the test-spec; pure-mechanical sweeps (mass renames, comment-only cleanups) are the only legitimate slug-free bullets.
 
-These three checks correspond to the failure modes the `--strict` coverage gate fires on. Running the gate locally before handoff catches them before the ingest pass:
+These checks are confirmed against the workbench drafts by the strict JSON
+preview. Preview is the default when `--apply` is absent, so this command does
+not create task or scenario rows:
 
 ```
-planar spec ingest <plan> --strict
-planar test-spec status <plan>
+planar spec ingest <plan> --strict --json
 ```
+
+Treat a non-zero exit, a non-empty `coverage.uncovered_task_slugs`, a non-empty
+`coverage.orphan_scenarios`, or a non-empty top-level `slug_collisions` array as
+a draft failure. Do not use `planar test-spec status` for this pre-ingest check:
+it queries live task/scenario rows, which legitimately do not exist yet. After
+ingestion has been applied, `planar test-spec status <plan> --json` becomes the
+authoritative live-row coverage oracle.
 
 ## Doc shape
 

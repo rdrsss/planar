@@ -45,8 +45,7 @@ planar scope show
 planar plan show <plan> --json
 planar artifact list --plan <plan-id> --json
 planar question list --plan <plan-id> --json
-planar spec ingest <plan> --format json --strict
-planar test-spec status <plan> --json
+planar spec ingest <plan> --strict --json
 ```
 
 Then load each core artifact with:
@@ -65,9 +64,10 @@ Required artifacts:
 If any core artifact is missing, stop with `needs-spec-work` and list the
 missing files.
 
-Treat failed `spec ingest --strict` or `test-spec status` output as evidence,
-not as a command failure. The point of the skill is to find those gaps before
-the operator applies ingestion.
+Treat a failed strict preview as evidence, not as a skill failure. The point of
+the skill is to find those gaps before the operator applies ingestion. Do not
+run `test-spec status` as a pre-ingest completeness check: it reads live rows,
+so a draft with no ingested task/scenario rows legitimately has zero totals.
 
 ## Review passes
 
@@ -119,7 +119,8 @@ the gap comes from a missing section.
 
 ### 4. Roadmap readiness
 
-Use `planar spec ingest <plan> --format json --strict` as the mechanical preview.
+Use `planar spec ingest <plan> --strict --json` as the mechanical preview. It is
+read-only because `--apply` is absent.
 
 Check that:
 
@@ -129,12 +130,16 @@ Check that:
 - cross-repo work carries `[touches: ...]` annotations when applicable
 - milestones can be reviewed independently
 - the previewed task graph matches the feature the specs describe
+- `coverage.uncovered_task_slugs`, `coverage.orphan_scenarios`, and top-level
+  `slug_collisions` are all empty
 
 Do not apply ingestion.
 
 ### 5. Test scenario coverage
 
-Use `planar test-spec status <plan> --json` as the coverage oracle.
+For a draft that has not been ingested, use the strict preview's `coverage`
+object as the authoritative coverage oracle. A non-zero strict-preview exit or
+any non-empty uncovered/orphan/collision array blocks `ready-for-ingest`.
 
 Check that:
 
@@ -143,6 +148,10 @@ Check that:
 - scenarios include happy, empty/null, error, and edge paths where applicable
 - scenario text is observable behavior, not implementation instructions
 - coverage gaps are converted into concrete scenario proposals
+
+For a plan whose ingestion has already been applied, switch to
+`planar test-spec status <plan> --json`; that command is the authoritative
+post-ingest oracle over live task, scenario, and verifies rows.
 
 ## Verdicts
 
@@ -201,9 +210,11 @@ planar question add "<title>" --body "<body>" --plan <plan-id>
 After writing, rerun:
 
 ```
-planar spec ingest <plan> --format json --strict
-planar test-spec status <plan> --json
+planar spec ingest <plan> --strict --json
 ```
+
+For an already-ingested plan, also rerun
+`planar test-spec status <plan> --json` against the live rows.
 
 Report whether the verdict changed. Do not run `planar spec ingest --apply`.
 

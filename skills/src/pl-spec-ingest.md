@@ -136,11 +136,25 @@ reconciled product-spec.md: 4 questions (2 new, 2 unchanged, 0 stale)
 |------|--------|
 | `--apply` | Persist the decomposition (without this flag, the run is a dry preview). |
 | `--apply-removals` | Apply removals for tasks/decisions/questions no longer present in the spec. |
-| `--strict` | Refuse to apply when any body-only question would be silently registered. |
+| `--strict` | Refuse when preview coverage has an uncovered task slug, orphan scenario, or task-slug collision. |
 | `--format text\|json` | Output shape (default `text`). `--json` is the shorthand for `--format json`. |
 | `--scope <slug>` | Override the cwd-derived scope. |
 
-> Per-question interactive prompting (`--interactive`, `--yes-all`) is a deferred enhancement on the ingest verb; current behavior is silent registration unless `--strict` refuses the run.
+> Per-question interactive prompting (`--interactive`, `--yes-all`) is a deferred enhancement on the ingest verb; current behavior is silent registration. The `--strict` flag governs coverage readiness, not question registration.
+
+### Coverage oracle by lifecycle phase
+
+Before `--apply`, run `planar spec ingest <plan> --strict --json`. Preview is
+the default, so this reads the workbench drafts without creating task or
+scenario rows. Its `coverage` object is the authoritative pre-ingest oracle:
+`coverage.uncovered_task_slugs` and `coverage.orphan_scenarios` must be empty,
+as must the top-level `slug_collisions` array. A non-zero exit or any finding in
+those arrays blocks apply.
+
+After ingestion has been applied, use `planar test-spec status <plan> --json`
+as the authoritative oracle over live task, scenario, and verifies rows. Do not
+interpret zero totals from that live-row command before apply as complete draft
+coverage.
 
 ## What it produces
 
@@ -168,7 +182,7 @@ reconciled product-spec.md: 4 questions (2 new, 2 unchanged, 0 stale)
 > escape (not for routine use). See [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard) for the full guarded/unguarded matrix.
 
 ```
-planar spec ingest <plan> [--apply] [--apply-removals] [--format text|json]
+planar spec ingest <plan> [--apply] [--apply-removals] [--format text|json] [--strict] [--json]
 ```
 
 ## Status reporting
