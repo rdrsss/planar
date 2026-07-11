@@ -92,12 +92,12 @@ Validate the LLM output as well-formed JSON matching this shape before writing. 
 
 <!--
 Note for maintainers: the fingerprint_hash field is load-bearing. The
-Go routing builder recomputes the same sha256 over (README excerpt +
+workspace routing builder recomputes the same sha256 over (README excerpt +
 sorted depth-2 listing) and uses it to key the cache lookup. If the
-skill writes a Result whose fingerprint_hash disagrees with the Go
-side's computation, the cache file is silently ignored on the next
+skill writes a Result whose fingerprint_hash disagrees with the engine's
+computation, the cache file is silently ignored on the next
 --enrich build (cache miss). Keep the inputs and hashing algorithm in
-sync with the Go implementation in src/internal/workspace/routing/.
+sync with [`src/engine/workspace/routing.zig`](../../src/engine/workspace/routing.zig).
 -->
 
 ## Output

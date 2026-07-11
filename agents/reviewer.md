@@ -31,7 +31,7 @@ cannot do for themselves. These are the job:
 3. **Verify claim scope.** The brief's claim token(s) — issued by the
    orchestrator via `planar-agent pull` or `planar-agent claim` — define
    the leased synchronization scope. Inspect each token's covered entity
-   via `planar audit trail <kind:id>` (or `planar dashboard --agents`)
+   via `planar audit trail --kind <kind> <entity-id>` (or `planar dashboard --agents`)
    and confirm `git diff HEAD` only touches files justified by tasks
    under those leases. If the diff modifies behavior outside the claimed
    tasks or child milestone, return `request-changes` unless the brief
