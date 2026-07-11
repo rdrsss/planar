@@ -572,6 +572,22 @@ pub fn build(b: *std.Build) void {
     cli_usage_check_run.addArg(b.getInstallPath(.bin, "planar-doc"));
     cli_usage_check_step.dependOn(&cli_usage_check_run.step);
 
+    // Standalone semantic authored-surface validator. Composition with the
+    // normal CLI-usage gate is deliberately owned by the next M1 task.
+    const surface_lint_exe = b.addExecutable(.{
+        .name = "surface_lint",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/surface_lint.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+    const surface_lint_step = b.step("surface-lint", "Validate authored agent, skill, and doc semantics");
+    const surface_lint_run = b.addRunArtifact(surface_lint_exe);
+    surface_lint_run.addArg(b.pathFromRoot("."));
+    if (b.args) |args| surface_lint_run.addArgs(args);
+    surface_lint_step.dependOn(&surface_lint_run.step);
+
     const run_step = b.step("run", "Run the app");
     const run_cmd = b.addRunArtifact(exe);
     run_step.dependOn(&run_cmd.step);
@@ -612,6 +628,9 @@ pub fn build(b: *std.Build) void {
 
     const cli_usage_lint_tests = b.addTest(.{ .root_module = cli_usage_lint_exe.root_module, .filters = test_filters_opt });
     const run_cli_usage_lint_tests = b.addRunArtifact(cli_usage_lint_tests);
+
+    const surface_lint_tests = b.addTest(.{ .root_module = surface_lint_exe.root_module, .filters = test_filters_opt });
+    const run_surface_lint_tests = b.addRunArtifact(surface_lint_tests);
 
     const db_tests = b.addTest(.{ .root_module = db_mod, .filters = test_filters_opt });
     const run_db_tests = b.addRunArtifact(db_tests);
@@ -677,6 +696,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_watch_exe_tests.step);
     test_step.dependOn(&run_doc_exe_tests.step);
     test_step.dependOn(&run_cli_usage_lint_tests.step);
+    test_step.dependOn(&run_surface_lint_tests.step);
     test_step.dependOn(&run_db_tests.step);
     test_step.dependOn(&run_cli_tests.step);
     test_step.dependOn(&run_engine_tests.step);
