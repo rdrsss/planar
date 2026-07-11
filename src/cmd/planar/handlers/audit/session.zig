@@ -22,21 +22,15 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     defer engine.runtime.audit_trail.deinitTimeline(t, ctx.allocator);
 
     if (args.json) {
-        try ctx.stdout.print(
-            "{{\"id\":{d},\"vendor\":\"{s}\",\"started_at\":\"{s}\"",
-            .{ t.session_id, t.vendor, t.started_at },
-        );
-        if (t.task_id) |tid| try ctx.stdout.print(",\"task_id\":{d}", .{tid});
-        if (t.ended_at) |e| try ctx.stdout.print(",\"ended_at\":\"{s}\"", .{e});
-        try ctx.stdout.print(",\"entries\":[", .{});
-        for (t.entries, 0..) |e, i| {
-            if (i > 0) try ctx.stdout.print(",", .{});
-            try ctx.stdout.print(
-                "{{\"ordinal\":{d},\"prefix\":\"{s}\",\"body\":\"{s}\"}}",
-                .{ e.ordinal, e.prefix, e.body },
-            );
-        }
-        try ctx.stdout.print("]}}\n", .{});
+        try std.json.Stringify.value(.{
+            .id = t.session_id,
+            .vendor = t.vendor,
+            .started_at = t.started_at,
+            .task_id = t.task_id,
+            .ended_at = t.ended_at,
+            .entries = t.entries,
+        }, .{ .emit_null_optional_fields = false }, ctx.stdout);
+        try ctx.stdout.print("\n", .{});
         return;
     }
 

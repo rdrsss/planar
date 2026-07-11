@@ -163,13 +163,15 @@ test "scenario: capture note command and file persist in the session timeline" {
     try std.testing.expectEqual(session.id, file.session_id);
 
     const timeline = suite.mustRunJSON(Timeline, arena, &.{ "audit", "session", sid, "--json" });
-    try std.testing.expectEqual(@as(usize, 3), timeline.entries.len);
-    try std.testing.expectEqualStrings("note", timeline.entries[0].prefix);
-    try std.testing.expectEqualStrings("reviewed migration ordering", timeline.entries[0].body);
-    try std.testing.expectEqualStrings("command", timeline.entries[1].prefix);
-    try std.testing.expectEqualStrings("zig build test\noutcome: passed", timeline.entries[1].body);
-    try std.testing.expectEqualStrings("file", timeline.entries[2].prefix);
-    try std.testing.expectEqualStrings("src/db/migrate.zig [implementation target]", timeline.entries[2].body);
+    try std.testing.expectEqual(@as(usize, 4), timeline.entries.len);
+    try std.testing.expectEqualStrings("action", timeline.entries[0].prefix);
+    try std.testing.expectEqualStrings("session opened", timeline.entries[0].body);
+    try std.testing.expectEqualStrings("note", timeline.entries[1].prefix);
+    try std.testing.expectEqualStrings("reviewed migration ordering", timeline.entries[1].body);
+    try std.testing.expectEqualStrings("command", timeline.entries[2].prefix);
+    try std.testing.expectEqualStrings("zig build test\noutcome: passed", timeline.entries[2].body);
+    try std.testing.expectEqualStrings("file", timeline.entries[3].prefix);
+    try std.testing.expectEqualStrings("src/db/migrate.zig [implementation target]", timeline.entries[3].body);
 }
 
 test "stub contracts fail loudly for audit publish-decision and workbench publish" {
