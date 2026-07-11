@@ -549,10 +549,10 @@ pub fn build(b: *std.Build) void {
     b.getInstallStep().dependOn(&vendor_check_run.step);
 
     // -----------------------------------------------------------------
-    // CLI-usage lint. Dumps each binary's `schema` JSON and validates
-    // that authored prose (agents/, skills/src/, docs/) never references
-    // a flag the binary does not expose. Wired into `make test-all` /
-    // CI via the `cli-usage-check` step.
+    // Authored-surface lint gate. The schema-driven CLI-usage lint remains
+    // the first pass; the semantic surface lint follows it so command-schema
+    // findings retain their existing diagnostics and are not duplicated.
+    // Wired into `make test-all` / CI via the `cli-usage-check` step.
     // -----------------------------------------------------------------
     const cli_usage_lint_exe = b.addExecutable(.{
         .name = "cli_usage_lint",
@@ -562,7 +562,7 @@ pub fn build(b: *std.Build) void {
             .optimize = .Debug,
         }),
     });
-    const cli_usage_check_step = b.step("cli-usage-check", "Validate authored CLI invocations against the live command schema");
+    const cli_usage_check_step = b.step("cli-usage-check", "Validate authored surfaces against the live CLI schema and semantic contracts");
     const cli_usage_check_run = b.addRunArtifact(cli_usage_lint_exe);
     cli_usage_check_run.step.dependOn(b.getInstallStep());
     cli_usage_check_run.addArg(b.pathFromRoot("."));
@@ -572,8 +572,7 @@ pub fn build(b: *std.Build) void {
     cli_usage_check_run.addArg(b.getInstallPath(.bin, "planar-doc"));
     cli_usage_check_step.dependOn(&cli_usage_check_run.step);
 
-    // Standalone semantic authored-surface validator. Composition with the
-    // normal CLI-usage gate is deliberately owned by the next M1 task.
+    // Standalone semantic authored-surface validator.
     const surface_lint_exe = b.addExecutable(.{
         .name = "surface_lint",
         .root_module = b.createModule(.{
@@ -587,6 +586,14 @@ pub fn build(b: *std.Build) void {
     surface_lint_run.addArg(b.pathFromRoot("."));
     if (b.args) |args| surface_lint_run.addArgs(args);
     surface_lint_step.dependOn(&surface_lint_run.step);
+
+    // Keep the direct surface-lint step independently runnable while making
+    // cli-usage-check the single composed quality gate. A distinct run step
+    // avoids forwarding surface-lint-only arguments into the normal gate.
+    const cli_usage_surface_lint_run = b.addRunArtifact(surface_lint_exe);
+    cli_usage_surface_lint_run.addArg(b.pathFromRoot("."));
+    cli_usage_surface_lint_run.step.dependOn(&cli_usage_check_run.step);
+    cli_usage_check_step.dependOn(&cli_usage_surface_lint_run.step);
 
     const run_step = b.step("run", "Run the app");
     const run_cmd = b.addRunArtifact(exe);
