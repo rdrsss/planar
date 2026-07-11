@@ -60,31 +60,32 @@ The orchestrator selects phases based on the anchor plan's current `status`:
    - the recommended strategy (one of `classic`, `barrel-deferred`, `barrel-bypass`, or `parallel-fanout` — all four are runnable from this skill),
    - the recommended isolation (`pwd` or `worktree`); `pwd` is the continuity default for sequential strategies, `worktree` is selectable for `classic` / `barrel-deferred` / `barrel-bypass`, and `parallel-fanout` always uses worktrees,
    - a one-line rationale (e.g. "2-task plan, neither parallel-eligible" or "4 tasks, 3 parallel-eligible — fan out"),
+   - the **dispatch preview** — the task breakdown for the dispatch scope rendered as the ordered `blocks`-subgraph (waves + serialized tasks with exclusion reasons) with the proposed Axis C model tier per task; see [Dispatch preview and model tiers (Axis C)](#dispatch-preview-and-model-tiers-axis-c) below,
    - when the plan is a best architectural fit for `parallel-fanout`, that strategy is **selectable** (it is model-runnable via the `workflows/parallel-dispatch.lua` seam — no external harness); when the operator asks for worktree-backed sequential/deferred execution, confirm the same strategy with `worktree` isolation rather than refusing,
    - the menu of runnable strategies and isolation choices with one-line trade-offs (see [Strategy menu](#strategy-menu) below),
    - the `--strategy custom` escape hatch for axis-by-axis overrides.
 
-   The orchestrator **waits for explicit operator confirmation** before doing any further Phase 3 work (no claim acquisition, no dispatch-shape proposal, no coder dispatch). Auto-defaulting without confirmation is not supported: the recommendation never silently turns into an action.
+   The orchestrator **waits for explicit operator confirmation** before doing any further Phase 3 work (no claim acquisition, no dispatch-shape proposal, no coder dispatch). Auto-defaulting without confirmation is not supported: the recommendation never silently turns into an action. The confirmation covers the dispatch preview's model-tier column too: the operator may override any task's tier inline (e.g. "task 14 → large") before confirming, and the confirmed assignment is binding for every subsequent dispatch in the plan.
 
-   The strategy gate is skipped only when `--strategy <name>` (or `--strategy custom --isolation X --branch-model Y ...`) was supplied at invocation. For sequential strategies, `--isolation worktree` is accepted and runnable; if omitted, isolation defaults to `pwd`. `--strategy isolated-sequential` is accepted as an alias for `--strategy classic --isolation worktree`. `--strategy parallel-fanout` is accepted and runnable — it drives staged worktree fan-out via the seam (see [Runnable staged waves](#runnable-staged-waves-m2) below). The dispatch-shape gate then runs nested under the chosen strategy, constrained by it: `barrel-bypass` forces the barrel-bypass shape; `barrel-deferred` forces the barrel-deferred shape; `parallel-fanout` forces the `fan-out` shape; `classic` keeps the full strict / grouped / single menu. The dispatch-shape gate is itself bypassed only when `--strict`, `--grouped`, `--batch`, or a `--barrel-*` standalone flag was supplied (the standalone barrel-* flags are soft-deprecated — see [Aliases and deprecations](#aliases-and-deprecations)).
+   The strategy gate is skipped only when `--strategy <name>` (or `--strategy custom --isolation X --branch-model Y ...`) was supplied at invocation. No flag pre-commits Axis C: when the gates are skipped via flags the orchestrator still prints the dispatch preview before the first dispatch, proceeds without prompting while every task sits at the default tier, but stops for explicit confirmation before dispatching any task it proposes to escalate to `large`. For sequential strategies, `--isolation worktree` is accepted and runnable; if omitted, isolation defaults to `pwd`. `--strategy isolated-sequential` is accepted as an alias for `--strategy classic --isolation worktree`. `--strategy parallel-fanout` is accepted and runnable — it drives staged worktree fan-out via the seam (see [Runnable staged waves](#runnable-staged-waves-m2) below). The dispatch-shape gate then runs nested under the chosen strategy, constrained by it: `barrel-bypass` forces the barrel-bypass shape; `barrel-deferred` forces the barrel-deferred shape; `parallel-fanout` forces the `fan-out` shape; `classic` keeps the full strict / grouped / single menu. The dispatch-shape gate is itself bypassed only when `--strict`, `--grouped`, `--batch`, or a `--barrel-*` standalone flag was supplied (the standalone barrel-* flags are soft-deprecated — see [Aliases and deprecations](#aliases-and-deprecations)).
 
    **Strategy persistence (live as of migration 00016).** The recommendation algorithm's rule 6 ("if the last dispatch used non-default strategy S, recommend S") rides on the `agent_actions.metadata` JSON column. When the orchestrator confirms a strategy for a cycle, it persists the choice on the dispatch action row by passing `--metadata` to the lease-acquire verb:
 
    ```sh
    # orchestrator → coder dispatch via plan-pull:
    planar-agent pull <plan-id> --role coder \
-     --metadata '{"strategy":"<name>","axes":{...},"dispatch_shape":"<shape>","rationale":"<text>"}' \
+     --metadata '{"strategy":"<name>","axes":{...},"dispatch_shape":"<shape>","model_tiers":{"<task-id>":"<tier>"},"rationale":"<text>"}' \
      --json
 
    # orchestrator → hand-picked task dispatch via direct claim + action start:
    token=$(planar-agent claim --entity task:<id> --role coder --json | jq -r .claim_token)
    planar-agent action start --claim "$token" --kind coder \
-     --metadata '{"strategy":"<name>","axes":{...},"rationale":"<text>"}' --json
+     --metadata '{"strategy":"<name>","axes":{...},"model_tiers":{"<task-id>":"<tier>"},"rationale":"<text>"}' --json
    ```
 
    `--metadata` is validated as well-formed JSON at the CLI parse layer; the engine stores it opaquely.
 
-   At the start of the next cycle's strategy gate the orchestrator reads the most recent dispatch entry for the plan via `planar-watch actions --plan <plan-id> --json` (or `--task <id>` for the hand-picked variant), parses the JSON `metadata` field of the latest non-null row, and applies the recommendation algorithm's rule 6: if the prior strategy is non-default and the plan shape still supports it, recommend the same strategy with a "sticky from prior cycle" rationale. The operator still confirms — stickiness only changes the *recommendation*, never the action.
+   At the start of the next cycle's strategy gate the orchestrator reads the most recent dispatch entry for the plan via `planar-watch actions --plan <plan-id> --json` (or `--task <id>` for the hand-picked variant), parses the JSON `metadata` field of the latest non-null row, and applies the recommendation algorithm's rule 6: if the prior strategy is non-default and the plan shape still supports it, recommend the same strategy with a "sticky from prior cycle" rationale. The same read recovers the confirmed `model_tiers` map: prior operator tier overrides are re-proposed in the next dispatch preview with a "sticky from prior cycle" annotation, never silently reverted to the default. The operator still confirms — stickiness only changes the *recommendation*, never the action.
 
    **Phase 3.5 outcomes:**
    - `expanded` → test-coder diff staged alongside coder's; reviewer sees the union.
@@ -116,7 +117,8 @@ The orchestrator selects phases based on the anchor plan's current `status`:
 
 - Between Phase 1 and Phase 2: user must review artifacts.
 - Between Phase 2 preview and `--apply`: user must confirm the diff.
-- Phase 3 **strategy + isolation**: user picks (or confirms the recommendation of) one of the four runnable strategies (`classic` / `barrel-deferred` / `barrel-bypass` / `parallel-fanout`) and the isolation mode (`pwd` / `worktree`) where applicable, or supplies `--strategy custom` with per-axis flags. Sequential worktree isolation and `parallel-fanout` are both model-runnable via `workflows/parallel-dispatch.lua` with NO external harness. This gate runs **first** in Phase 3, before claim acquisition or dispatch-shape selection. Skipped only when a valid `--strategy <name>` plus any desired axis overrides was supplied at invocation.
+- Phase 3 **strategy + isolation**: user picks (or confirms the recommendation of) one of the four runnable strategies (`classic` / `barrel-deferred` / `barrel-bypass` / `parallel-fanout`) and the isolation mode (`pwd` / `worktree`) where applicable, or supplies `--strategy custom` with per-axis flags. Sequential worktree isolation and `parallel-fanout` are both model-runnable via `workflows/parallel-dispatch.lua` with NO external harness. This gate runs **first** in Phase 3, before claim acquisition or dispatch-shape selection. Skipped only when a valid `--strategy <name>` plus any desired axis overrides was supplied at invocation. The gate includes the dispatch preview (task breakdown, `blocks`-subgraph, per-task tier).
+- Phase 3 **model tiers (Axis C)**: the dispatch preview's per-task tier column is confirmed at the strategy gate, with per-task operator override before confirming. No flag pre-commits Axis C — when both Phase 3 gates are skipped via flags, default-tier tasks proceed without prompting but any proposed `large` escalation still requires explicit confirmation before that dispatch.
 - Phase 3 **dispatch shape**: user picks one of the dispatch shapes (strict/grouped/single — or the legacy six-shape menu when a standalone barrel-* flag is in play) before any coder runs. Runs nested under the chosen strategy and is constrained by it (`barrel-deferred`/`barrel-bypass` force the corresponding shape; `classic` keeps the full strict / grouped / single menu). Skipped when `--strict`/`--grouped`/`--batch`/`--barrel-grouped`/`--barrel-deferred`/`--barrel-bypass` was supplied.
 - Phase 3 claim conflicts: active unexpired claims are not silently bypassed. Stale claims require reconciliation or explicit force-takeover before the work is considered available.
 - Phase 3.5 `failure-surfaced` outcome: when a test the test-coder authored fails on first run, user must resolve (fix the test or fix the code) before the reviewer is dispatched. The orchestrator never decides which side is wrong.
@@ -186,6 +188,38 @@ When skipping the reviewer, the orchestrator records the disposition (and the cy
 ## Blind-read contract
 
 When dispatching the reviewer, the orchestrator composes a fresh brief — it MUST NOT paste the coder's or test-coder's full report into the reviewer's context. The reviewer brief contains only: the task IDs, slugs, and claim tokens the coder claimed, the relevant spec/roadmap section paths (not bodies — the reviewer reads the files independently), a directive to run `git diff HEAD` and `git diff --stat HEAD` firsthand, and the coder's quality-gate output (test count, integration confirmation) since the reviewer is not re-running gates. When the test-coder ran successfully, the brief also instructs the reviewer to run `planar test-spec status <plan>` against the post-diff DB and treat any leftover uncovered slug claimed by the brief as a `request-changes` finding. This preserves the reviewer's independent read against the coder/test-coder framing.
+
+## Dispatch preview and model tiers (Axis C)
+
+The strategy gate is not just a strategy question — it is the operator's one look at *what* is about to be dispatched and *at what model tier* before any claim is acquired. The orchestrator renders a **dispatch preview** at the strategy gate, and re-renders it whenever the remaining task set changes shape (a barrel boundary, a wave barrier, a resume after partial failure).
+
+**Building the preview.** The claim-aware open set comes from `planar plan next <plan> --json`. The subgraph projection comes from the seam's `waves` phase — `planar-execute run workflows/parallel-dispatch.lua --phase waves --args '{"plan_id":<id>}'` — which is used here as a *presentation projection for every strategy*, not only `parallel-fanout`: under sequential strategies nothing is created from its output; it only orders and labels the picture. Tasks the engine serialized (migration / singleton / empty-touches / open-question / proposed-decision) are shown under `serialized` with their exclusion reasons, never hidden.
+
+**Rendering.** One row per task, grouped by wave, with the `blocks`/`blocked_by` edges and the proposed tier visible:
+
+```
+Phase 3 dispatch preview for plan <p> (<n> open tasks):
+
+  wave 1
+    #12  add-parity-gate       blocks: 14         tier: large   (schema)
+    #13  polish-cli-help       —                  tier: medium
+  wave 2 — unblocks when #12 is done
+    #14  wire-handler          blocked_by: 12     tier: medium
+  serialized — never waved
+    #15  backfill-migration    migration guard    tier: large   (engine)
+
+  Tiers resolve per agents/models.md §Tier Table. medium is the coder
+  default; large is proposed only for schema / engine-judgment /
+  architectural cycles (§Coder tier policy).
+
+Accept tier assignments? [yes / <task-id> → <tier> ...]
+```
+
+**Tier proposal rule (Axis C).** Per [`agents/models.md` §Coder tier policy](../../agents/models.md#coder-tier-policy): every task defaults to `medium`; propose `large` only for schema changes, engine-judgment calls, or large architectural diffs, and annotate the one-word reason in the row. Tiers are abstract (`small`/`medium`/`large`) — never name concrete model identifiers; resolution happens through the Tier Table at spawn time.
+
+**Confirmation and override.** The tier column is part of what the operator confirms at the gate. The operator may override any row (`task 14 → large`, `task 15 → medium`) before confirming; the confirmed map is **binding**. The orchestrator spawns each coder subagent at the confirmed tier and MUST NOT silently deviate in either direction — if mid-plan evidence suggests a different tier (a task turned out to touch a migration), the re-proposal is surfaced at the next preview render, never applied silently.
+
+**Persistence.** The confirmed map rides the dispatch entry's `--metadata` JSON as `"model_tiers":{"<task-id>":"<tier>", ...}` (see [Strategy persistence](#phase-behavior) above). The next gate reads it back through the same `planar-watch actions --plan <plan-id> --json` path as strategy stickiness and re-proposes prior overrides with a "sticky from prior cycle" annotation.
 
 ## Strategy menu
 

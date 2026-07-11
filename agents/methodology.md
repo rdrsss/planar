@@ -263,7 +263,7 @@ The recommendation is a proposal, never an action. The strategy gate (below) is 
 
 Phase 3 of the orchestrator now runs **two** gates in order before dispatch:
 
-1. **Strategy + isolation gate** (new). "Which strategy, and should it run in pwd or worktrees?" The orchestrator surfaces its recommended strategy + recommended isolation + a one-line rationale + the named alternatives. The operator confirms or overrides both axes.
+1. **Strategy + isolation gate** (new). "Which strategy, and should it run in pwd or worktrees?" The orchestrator surfaces its recommended strategy + recommended isolation + a one-line rationale + the named alternatives + the **dispatch preview** (the task breakdown rendered as the ordered `blocks`-subgraph via the seam's `waves` phase — a presentation projection under every strategy, not only `parallel-fanout` — with the proposed Axis C model tier per task). The operator confirms or overrides both axes and may override any task's tier before confirming; the confirmed tier map is binding for dispatch (see [`agents/models.md` §Coder tier policy](models.md#coder-tier-policy)).
 2. **Dispatch-shape gate** (existing — see [Dispatch Granularity](#dispatch-granularity)). "Within that strategy, which shape for this cycle?" Constrained by the strategy: `barrel-bypass` forces the `barrel-bypass` shape; `barrel-deferred` forces the `barrel-deferred` shape; `parallel-fanout` forces the `fan-out` shape; `classic` keeps the full strict / grouped / single menu.
 3. **Dispatch.** For `pwd` isolation the orchestrator claims tasks and dispatches coders in the operator checkout. For sequential `worktree` isolation, the orchestrator drives one cycle lane at a time: call `planar-execute run workflows/parallel-dispatch.lua --phase cycle_plan`, cut/create the epic and cycle worktrees from the seam output, claim with `planar-agent pull --worktree <path>` (or `claim --entity ... --worktree <path>`), spawn the coder in that worktree, then merge the completed cycle branch into the epic worktree. For `parallel-fanout`, the orchestrator drives staged worktree fan-out itself — the seam computes the current wave / per-lane worktree paths / merge order, the model cuts the epic branch, creates the per-lane worktrees, spawns N coders concurrently (each `isolation: worktree`, each with its own `planar-agent pull --worktree` claim), and runs the fan-in merge.
 
@@ -272,7 +272,7 @@ The strategy gate is operator-confirmed by default. Skip flags:
 - `--strategy <name>` — pre-commit to a named strategy. Skips the strategy part of the gate; isolation still defaults to `pwd` for sequential strategies unless `--isolation worktree` is supplied. The dispatch-shape gate still runs unless that gate also has a pre-committed answer.
 - `--strategy custom --isolation <X> --branch-model <Y> --concurrency <Z> --reviewer-cadence <W> --test-coder-cadence <V>` — pre-commit to a custom axis combination. The per-axis flags are hidden from default `--help`; advanced operators discover them via docs or `--help-advanced`.
 
-Auto-defaulting without confirmation is **not** a supported mode — the recommendation engine never silently picks a strategy. If the operator wants zero-friction repetition, `--strategy <name>` is the explicit opt-in.
+Auto-defaulting without confirmation is **not** a supported mode — the recommendation engine never silently picks a strategy. If the operator wants zero-friction repetition, `--strategy <name>` is the explicit opt-in. No flag pre-commits Axis C (model tier): under a fully-flagged invocation the dispatch preview is still printed, default-tier tasks proceed without prompting, and any proposed `large` escalation requires explicit confirmation before that dispatch.
 
 **Persistence.** No new schema. The orchestrator writes the chosen strategy into the dispatch entry's `agent_actions.metadata` JSON column on the dispatch row:
 
@@ -281,6 +281,7 @@ Auto-defaulting without confirmation is **not** a supported mode — the recomme
   "strategy": "barrel-deferred",
   "axes": {"isolation": "worktree", "branch_model": "epic-child", "concurrency": "sequential", "reviewer_cadence": "at-boundary", "test_coder_cadence": "at-boundary"},
   "dispatch_shape": "grouped",
+  "model_tiers": {"14": "medium", "15": "large"},
   "rationale": "multi-milestone plan, low per-cycle review value"
 }
 ```

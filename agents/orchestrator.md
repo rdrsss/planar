@@ -95,9 +95,22 @@ During long spawns, the orchestrator calls `dispatch.lua/heartbeat {claim_token}
 **What happens:**
 1. Intake: resolve tasks, confirm scope and acceptance signal. File `open-question` for ambiguous tasks.
 2. Read the claim-aware work queue with `planar plan next <anchor-plan>` (or an equivalent claim-aware selector for explicit task IDs). Exclude active unexpired claims from runnable work. Surface stale claims to the operator or reconcile/force-takeover only when explicitly directed.
-3. Propose dispatch shape per [Dispatch Granularity](methodology.md#dispatch-granularity). Analyze coupling (shared file scope, active claims, sequential dependencies, doc-only deltas) and surface a proposal naming one of the six shapes. The gate text presents all six with a one-line trade-off each:
+3. Propose dispatch shape per [Dispatch Granularity](methodology.md#dispatch-granularity). Analyze coupling (shared file scope, active claims, sequential dependencies, doc-only deltas) and surface a proposal naming one of the six shapes. The gate text opens with the **dispatch preview** — the task breakdown rendered as the ordered `blocks`-subgraph with the proposed Axis C model tier per task (see [`skills/src/pl-orchestrator.md` §Dispatch preview and model tiers](../skills/src/pl-orchestrator.md) for the build/render rules) — then presents all six shapes with a one-line trade-off each:
 
    ```
+   Phase 3 dispatch preview for plan <p> (<n> open tasks):
+
+     wave 1
+       #12  add-parity-gate       blocks: 14         tier: large   (schema)
+       #13  polish-cli-help       —                  tier: medium
+     wave 2 — unblocks when #12 is done
+       #14  wire-handler          blocked_by: 12     tier: medium
+     serialized — never waved
+       #15  backfill-migration    migration guard    tier: large   (engine)
+
+     Tiers resolve per agents/models.md §Tier Table; medium is the coder
+     default, large only for schema / engine-judgment / architectural cycles.
+
    Phase 3 dispatch shape for plan <p>:
 
      strict          — one coder cycle per task; reviewer per task.
@@ -113,16 +126,17 @@ During long spawns, the orchestrator calls `dispatch.lua/heartbeat {claim_token}
      barrel-bypass   — no reviewer; gates are the entire signal.
                        [maximum throughput; trust the gates]
 
-   Accept this shape? [yes / edit / strict / grouped / single /
-                       barrel-grouped / barrel-deferred / barrel-bypass]
+   Accept this shape and the tier assignments?
+   [yes / edit / strict / grouped / single / barrel-grouped /
+    barrel-deferred / barrel-bypass / task <id> → <tier> ...]
    ```
 
-   **Wait for explicit user confirmation** before dispatching. If the invocation already supplied `--strict`, `--grouped`, `--barrel-grouped`, `--barrel-deferred [--barrel-deferred-at milestone|plan]`, `--barrel-bypass`, or one or more `--batch <task-ids>` flags, honor that without prompting. The flags are mutually exclusive with each other and with `--strict` — passing more than one is a user error.
+   **Wait for explicit user confirmation** before dispatching. The confirmation covers the preview's tier column: the operator may override any task's tier (`task 14 → large`) before confirming, and the confirmed map is binding for dispatch. If the invocation already supplied `--strict`, `--grouped`, `--barrel-grouped`, `--barrel-deferred [--barrel-deferred-at milestone|plan]`, `--barrel-bypass`, or one or more `--batch <task-ids>` flags, honor that without prompting. The flags are mutually exclusive with each other and with `--strict` — passing more than one is a user error. No flag pre-commits Axis C: under a fully-flagged invocation, still print the dispatch preview, proceed without prompting while every task sits at the default tier, and stop for explicit confirmation before dispatching any task proposed at `large`.
 4. Plan dispatch: optionally run `planar-agent peek <plan>` to dry-run "what's next" without writing, validate against current claim state. Then invoke `planar-execute run workflows/dispatch.lua --phase prep --args '{"plan_id":<id>}'`. The `prep` phase atomically claims the next task via `planar-agent pull` and returns `{task_id, claim_token, brief, strategy, run_uid}`. If `{available:false}` is returned, the queue is empty — recompute or stop. The orchestrator then **spawns a fresh coder subagent via the harness Agent/Task tool** using the returned brief. **Worktree isolation** is model-runnable via the `workflows/parallel-dispatch.lua` seam: `cycle_plan` computes one sequential lane for `classic` / `barrel-deferred` / `barrel-bypass` with `--isolation worktree`, while `plan` / `waves` compute staged multi-lane fan-out under `--strategy parallel-fanout`. The seam computes branch names, worktree paths, merge order, and teardown and hands back; the model runs the git ops and spawns the coders. There is no external harness in this path. See [`skills/src/pl-orchestrator.md` §Worktree Isolation](../skills/src/pl-orchestrator.md) for the per-step ritual.
 
    **`--parent-action` for `planar-watch tree` hierarchy.** When the orchestrator dispatches a coder and wants the coder's action to appear as a child of the orchestrator's own action in `planar-watch tree`, it passes `--parent-action <its-own-action-id>` to `planar-agent pull`. The orchestrator's action id is the `action_id` field returned by its own `pull` call. Without this flag, each `pull` starts a new root action and the tree renders as flat disjoint chains. See [`agents/methodology.md` § Coordination claims](methodology.md#coordination-claims) for the full flag description and example.
 5. **Capture the cycle's diff base.** Before dispatching the coder, record `HEAD` as `<coder-cycle-base>`. This ref is the input the test-coder uses (`git diff <coder-cycle-base>..HEAD`) to read the coder's actual changes. The gating decision in step 7 below is DB-driven, not git-driven; this ref is purely the test-coder's reading material.
-6. Dispatch each claimed runnable cycle to a `coder` by **spawning a fresh coder subagent via the harness Agent/Task tool** (subagent type `coder`). Do NOT invoke `/pl-coder` inline — a slash command runs in the caller's context and is the defect this rule prevents. The spawned coder receives a blank context. Compose the coder brief per the [Brief composition discipline](methodology.md#brief-composition-discipline): cite spec section paths (do not paraphrase the spec into the brief), list task IDs, slugs, and claim tokens explicitly, note locked decisions inline, name the gates the coder must run (`make fmt-check` + `make build` + `make test` + two-run `make test-integration` + `planar skills render --check` against an out-of-tree staging dir and any remaining relevant validators), and specify the report shape (word ceiling + the required sections from [`agents/coder.md` §Work-complete report template](coder.md#work-complete-report-template)). When the dispatched tasks have `verifies` edges to test-spec scenarios, cite the relevant test-spec section paths alongside the tech-spec citations and list the cited slugs explicitly so the test-coder and reviewer can compare the diff against them. Pose the problem; do not include the solution. Capture the assignment via the CLI.
+6. Dispatch each claimed runnable cycle to a `coder` by **spawning a fresh coder subagent via the harness Agent/Task tool** (subagent type `coder`). Do NOT invoke `/pl-coder` inline — a slash command runs in the caller's context and is the defect this rule prevents. The spawned coder receives a blank context. Compose the coder brief per the [Brief composition discipline](methodology.md#brief-composition-discipline): cite spec section paths (do not paraphrase the spec into the brief), list task IDs, slugs, and claim tokens explicitly, note locked decisions inline, name the gates the coder must run (`make fmt-check` + `make build` + `make test` + two-run `make test-integration` + `planar skills render --check` against an out-of-tree staging dir and any remaining relevant validators), and specify the report shape (word ceiling + the required sections from [`agents/coder.md` §Work-complete report template](coder.md#work-complete-report-template)). When the dispatched tasks have `verifies` edges to test-spec scenarios, cite the relevant test-spec section paths alongside the tech-spec citations and list the cited slugs explicitly so the test-coder and reviewer can compare the diff against them. Pose the problem; do not include the solution. Capture the assignment via the CLI. Spawn each coder at the model tier confirmed at the gate (Axis C — [`agents/models.md` §Coder tier policy](models.md#coder-tier-policy)); never silently deviate from the confirmed assignment — a mid-plan tier re-proposal is surfaced at the next preview render, not applied unilaterally.
 7. **Phase 3.5 — Test-coder dispatch (optional).** After the coder reports done, decide whether to dispatch a [`test-coder`](test-coder.md) cycle. The gating oracle is `planar test-spec status <anchor-plan> --json` — the orchestrator does NOT re-implement coverage calculation. Dispatch test-coder when (a) the cycle's dispatched tasks carry `[slug: …]` annotations AND (b) the JSON's `uncovered_task_slugs` set has non-empty intersection with the cycle's slugs. Tasks without a slug are out of scope by construction. Branch on the test-coder's decision:
    - `expanded` → stage the test-coder's diff alongside the coder's; proceed to the reviewer with the union diff.
    - `no-expansion-needed` → proceed to the reviewer with the coder's diff alone.
@@ -146,6 +160,7 @@ During long spawns, the orchestrator calls `dispatch.lua/heartbeat {claim_token}
     cycle_scope: plan:<id> milestone:<id> | task:<id>...
     tasks: [<id>, <id>, ...]
     claim_tokens: [<token>, <token>, ...]
+    model_tiers: {<task-id>: <tier>, ...}
     ```
 
     See [`agents/methodology.md` §Audit trail](methodology.md#audit-trail) for the schema rationale. The entry is the load-bearing record that turns the implicit shortcut into a named contract. Recover with `planar audit trail <plan> --grep "^dispatch_shape:"`.
