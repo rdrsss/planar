@@ -3170,7 +3170,7 @@ planar ext propagate <plan> [--system <slug>] [--dry-run] [--restrategize [--yes
                             [--verify-counterparts [--unlink | --recreate]]
 ```
 
-**Description:** Push a feature tree to the operational plane. Creates external counterparts (Epic/Story/Sub-task on Jira; parent-issue/sub-issues on GitHub) for the anchor plan and all descendant child plans and tasks that do not yet have a `mirror` link. The propagation strategy is selected per [ADR-0006](adr/0006-github-feature-mapping.md): Jira always uses the epic hierarchy; GitHub uses parent-issue (single-repo), Projects v2 (multi-repo), or zero-repo fallback.
+**Description:** Push a feature tree to the operational plane. Creates external counterparts (Epic/Story/Sub-task on Jira; parent-issue/sub-issues on GitHub) for the anchor plan and all descendant child plans and tasks that do not yet have a `mirror` link. The propagation strategy is selected per [ADR-0006](adrs.md): Jira always uses the epic hierarchy; GitHub uses parent-issue (single-repo), Projects v2 (multi-repo), or zero-repo fallback.
 
 **Strategy stickiness (Phase C):** The chosen strategy is cached on `external_links.config_json` of the anchor plan at first propagation. Subsequent reruns honor the cached strategy even if the repo count later changes. Strategy is not re-evaluated automatically; use `--restrategize` to rebuild.
 
