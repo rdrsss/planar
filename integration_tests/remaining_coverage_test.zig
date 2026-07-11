@@ -174,7 +174,7 @@ test "scenario: capture note command and file persist in the session timeline" {
     try std.testing.expectEqualStrings("src/db/migrate.zig [implementation target]", timeline.entries[3].body);
 }
 
-test "stub contracts fail loudly for audit publish-decision and workbench publish" {
+test "audit publish-decision with no links succeeds as a zero-comment no-op" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
@@ -182,18 +182,17 @@ test "stub contracts fail loudly for audit publish-decision and workbench publis
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const plan = suite.mustRunJSON(Id, arena, &.{ "plan", "create", "--json", "Publish stub plan" });
+    const plan = suite.mustRunJSON(Id, arena, &.{ "plan", "create", "--json", "Publish no-op plan" });
     const pid = idStr(arena, plan.id);
-    const decision = suite.mustRunJSON(Id, arena, &.{ "decision", "add", "--json", "--plan", pid, "--body", "recorded rationale", "Publish stub decision" });
+    const decision = suite.mustRunJSON(Id, arena, &.{ "decision", "add", "--json", "--plan", pid, "--body", "recorded rationale", "Publish no-op decision" });
     const did = idStr(arena, decision.id);
 
-    const audit_res = suite.execWith(&.{ "audit", "publish-decision", did, "--json" }, &.{});
-    defer audit_res.deinit(gpa);
-    try std.testing.expect(audit_res.term == .exited and audit_res.term.exited != 0);
-    try std.testing.expect(std.mem.containsAtLeast(u8, audit_res.stderr, 1, "not available in this build"));
-
-    const publish_res = suite.execWith(&.{ "workbench", "publish", pid, "--system", "missing", "--json" }, &.{});
-    defer publish_res.deinit(gpa);
-    try std.testing.expect(publish_res.term == .exited and publish_res.term.exited != 0);
-    try std.testing.expect(std.mem.containsAtLeast(u8, publish_res.stderr, 1, "not implemented yet"));
+    const published = suite.mustRunJSON(struct {
+        ok: bool,
+        decision_id: i64,
+        comments_posted: i64,
+    }, arena, &.{ "audit", "publish-decision", did, "--json" });
+    try std.testing.expect(published.ok);
+    try std.testing.expectEqual(decision.id, published.decision_id);
+    try std.testing.expectEqual(@as(i64, 0), published.comments_posted);
 }

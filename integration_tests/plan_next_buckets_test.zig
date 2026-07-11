@@ -242,3 +242,65 @@ test "plan next --json on missing plan exits non-zero" {
     defer gpa.free(stderr);
     try std.testing.expect(std.mem.indexOf(u8, stderr, "9999") != null);
 }
+
+test "plan next recursively includes child-plan tasks and applies the nearest plan claim" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    gpa.free(suite.mustRun(&.{ "init", "--skip-project" }));
+    const root = suite.mustRunJSON(PlanJSON, arena, &.{ "plan", "create", "--json", "Recursive root" });
+    const root_id = std.fmt.allocPrint(arena, "{d}", .{root.id}) catch unreachable;
+    const child = suite.mustRunJSON(PlanJSON, arena, &.{
+        "plan", "create", "--json", "--parent", root_id, "Recursive child",
+    });
+    const child_id = std.fmt.allocPrint(arena, "{d}", .{child.id}) catch unreachable;
+    _ = suite.mustRunJSON(TaskAddJSON, arena, &.{ "task", "add", "--plan", root_id, "--json", "root task" });
+    const child_task = suite.mustRunJSON(TaskAddJSON, arena, &.{ "task", "add", "--plan", child_id, "--json", "child task" });
+
+    const child_ref = std.fmt.allocPrint(arena, "plan:{d}", .{child.id}) catch unreachable;
+    gpa.free(mustRunAgent(&suite, &.{ "claim", "--entity", child_ref, "--no-locality-probe", "--json" }));
+
+    const next = suite.mustRunJSON(PlanNextJSON, arena, &.{ "plan", "next", root_id, "--json" });
+    try std.testing.expectEqual(@as(usize, 1), next.available.len);
+    try std.testing.expectEqualStrings("root task", next.available[0].title);
+    try std.testing.expectEqual(@as(usize, 1), next.claimed.len);
+    try std.testing.expectEqual(child_task.id, next.claimed[0].task.id);
+    try std.testing.expectEqualStrings("plan", next.claimed[0].claim.entity_kind);
+    try std.testing.expectEqual(child.id, next.claimed[0].claim.entity_id);
+}
+
+test "plan next applies an ancestor plan-step claim to every descendant task" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    gpa.free(suite.mustRun(&.{ "init", "--skip-project" }));
+    const root = suite.mustRunJSON(PlanJSON, arena, &.{ "plan", "create", "--json", "Step precedence root" });
+    const root_id = std.fmt.allocPrint(arena, "{d}", .{root.id}) catch unreachable;
+    const child = suite.mustRunJSON(PlanJSON, arena, &.{
+        "plan", "create", "--json", "--parent", root_id, "Step precedence child",
+    });
+    const child_id = std.fmt.allocPrint(arena, "{d}", .{child.id}) catch unreachable;
+    _ = suite.mustRunJSON(TaskAddJSON, arena, &.{ "task", "add", "--plan", root_id, "--json", "root step task" });
+    _ = suite.mustRunJSON(TaskAddJSON, arena, &.{ "task", "add", "--plan", child_id, "--json", "child step task" });
+    const step = suite.mustRunJSON(struct { id: i64 }, arena, &.{
+        "plan", "step", "add", root_id, "claimed phase", "--json",
+    });
+    const step_ref = std.fmt.allocPrint(arena, "plan_step:{d}", .{step.id}) catch unreachable;
+    gpa.free(mustRunAgent(&suite, &.{ "claim", "--entity", step_ref, "--no-locality-probe", "--json" }));
+
+    const next = suite.mustRunJSON(PlanNextJSON, arena, &.{ "plan", "next", root_id, "--json" });
+    try std.testing.expectEqual(@as(usize, 0), next.available.len);
+    try std.testing.expectEqual(@as(usize, 2), next.claimed.len);
+    for (next.claimed) |entry| {
+        try std.testing.expectEqualStrings("plan_step", entry.claim.entity_kind);
+        try std.testing.expectEqual(step.id, entry.claim.entity_id);
+    }
+}

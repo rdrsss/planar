@@ -270,6 +270,7 @@ const FakeJira = struct {
     port: u16,
     thread: std.Thread,
     stop_flag: std.atomic.Value(u32),
+    request_count: std.atomic.Value(usize),
 
     fn init(gpa: std.mem.Allocator, io: std.Io) !*FakeJira {
         const self = try gpa.create(FakeJira);
@@ -280,6 +281,7 @@ const FakeJira = struct {
             .port = 0,
             .thread = undefined,
             .stop_flag = .init(0),
+            .request_count = .init(0),
         };
         var addr = std.Io.net.IpAddress{ .ip4 = std.Io.net.Ip4Address.loopback(0) };
         self.server = try std.Io.net.IpAddress.listen(&addr, io, .{});
@@ -301,7 +303,12 @@ const FakeJira = struct {
             const stream = self.server.accept(self.io) catch break;
             self.handleOne(stream, req_index) catch {};
             req_index += 1;
+            self.request_count.store(req_index, .release);
         }
+    }
+
+    fn requestCount(self: *const FakeJira) usize {
+        return self.request_count.load(.acquire);
     }
 
     fn handleOne(self: *FakeJira, stream: std.Io.net.Stream, req_index: usize) !void {
@@ -328,6 +335,112 @@ const FakeJira = struct {
         });
     }
 };
+
+test "[happy] audit publish-decision comments on a direct external link and records an event" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    var arena_backing = std.heap.ArenaAllocator.init(gpa);
+    defer arena_backing.deinit();
+    const arena = arena_backing.allocator();
+
+    const decision = suite.mustRunJSON(struct { id: i64 }, arena, &.{
+        "decision", "add", "--json", "--body", "Use the durable adapter path", "Publication decision",
+    });
+    const decision_ref = try std.fmt.allocPrint(arena, "decision:{d}", .{decision.id});
+    const decision_id = try std.fmt.allocPrint(arena, "{d}", .{decision.id});
+
+    const server = try FakeJira.init(gpa, std.testing.io);
+    defer server.deinit();
+    const base_url = try std.fmt.allocPrint(arena, "http://127.0.0.1:{d}", .{server.port});
+    _ = suite.mustRunJSON(RegisterJSON, arena, &.{
+        "ext",       "register", "jira",       "jira-decision",      "--base-url", base_url,
+        "--project", "AUDIT",    "--auth-env", "PLANAR_AUDIT_TOKEN", "--json",
+    });
+
+    const link_raw = suite.mustRunWith(&.{
+        "ext", "create", "jira-decision", "--from", decision_ref, "--json",
+    }, &.{.{ .key = "PLANAR_AUDIT_TOKEN", .value = "test-token" }});
+    defer gpa.free(link_raw);
+    const linked = try std.json.parseFromSlice(CreateJSON, arena, link_raw, .{ .ignore_unknown_fields = true });
+
+    const publish_raw = suite.mustRunWith(&.{
+        "audit", "publish-decision", decision_id, "--json",
+    }, &.{.{ .key = "PLANAR_AUDIT_TOKEN", .value = "test-token" }});
+    defer gpa.free(publish_raw);
+    const published = try std.json.parseFromSlice(struct {
+        ok: bool,
+        decision_id: i64,
+        comments_posted: i64,
+    }, arena, publish_raw, .{ .ignore_unknown_fields = true });
+    try std.testing.expect(published.value.ok);
+    try std.testing.expectEqual(decision.id, published.value.decision_id);
+    try std.testing.expectEqual(@as(i64, 1), published.value.comments_posted);
+    try std.testing.expectEqual(@as(usize, 2), server.requestCount());
+
+    const link_id = try std.fmt.allocPrint(arena, "{d}", .{linked.value.link_id});
+    const trail = suite.mustRun(&.{ "audit", "trail", "--link", link_id, "--json" });
+    defer gpa.free(trail);
+    try std.testing.expect(std.mem.containsAtLeast(u8, trail, 1, "decision-comment"));
+}
+
+test "[happy] workbench publish renders the feature and creates one external mirror" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    var arena_backing = std.heap.ArenaAllocator.init(gpa);
+    defer arena_backing.deinit();
+    const arena = arena_backing.allocator();
+
+    const plan = suite.mustRunJSON(PlanJSON, arena, &.{ "plan", "create", "--json", "Workbench publication" });
+    const plan_id = try std.fmt.allocPrint(arena, "{d}", .{plan.id});
+    const plan_ref = try std.fmt.allocPrint(arena, "plan:{d}", .{plan.id});
+    _ = suite.mustRunJSON(TaskJSON, arena, &.{
+        "task", "add", "--json", "--plan", plan_id, "Published task",
+    });
+
+    const server = try FakeJira.init(gpa, std.testing.io);
+    defer server.deinit();
+    const base_url = try std.fmt.allocPrint(arena, "http://127.0.0.1:{d}", .{server.port});
+    _ = suite.mustRunJSON(RegisterJSON, arena, &.{
+        "ext",       "register", "jira",       "jira-workbench",         "--base-url", base_url,
+        "--project", "WORK",     "--auth-env", "PLANAR_WORKBENCH_TOKEN", "--json",
+    });
+    const wb_root = try std.fs.path.join(arena, &.{ suite.tmpAbsPath(), "publish-workbench" });
+    const env = &[_]harness.Suite.ExtraEnvEntry{
+        .{ .key = "PLANAR_WORKBENCH_TOKEN", .value = "test-token" },
+        .{ .key = "PLANAR_WORKBENCH_ROOT", .value = wb_root },
+    };
+
+    const publish_raw = suite.mustRunWith(&.{
+        "workbench", "publish", plan_id, "--system", "jira-workbench", "--json",
+    }, env);
+    defer gpa.free(publish_raw);
+    const published = try std.json.parseFromSlice(struct {
+        ok: bool,
+        plan_id: i64,
+        system: []const u8,
+        link_id: i64,
+        external_id: []const u8,
+        files_published: i64,
+        bytes_published: i64,
+    }, arena, publish_raw, .{ .ignore_unknown_fields = true });
+    try std.testing.expect(published.value.ok);
+    try std.testing.expectEqual(plan.id, published.value.plan_id);
+    try std.testing.expectEqualStrings("jira-workbench", published.value.system);
+    try std.testing.expect(published.value.link_id > 0);
+    try std.testing.expect(published.value.files_published >= 2);
+    try std.testing.expect(published.value.bytes_published > 0);
+    try std.testing.expectEqual(@as(usize, 1), server.requestCount());
+
+    const probe_raw = suite.mustRunWith(&.{
+        "ext", "propagate-one", "jira-workbench", "--from", plan_ref, "--dry-run", "--json",
+    }, env);
+    defer gpa.free(probe_raw);
+    const probe = try std.json.parseFromSlice(PropagateOneSkippedJSON, arena, probe_raw, .{ .ignore_unknown_fields = true });
+    try std.testing.expectEqualStrings("skipped", probe.value.op);
+    try std.testing.expectEqualStrings(published.value.external_id, probe.value.external_id);
+}
 
 test "[happy] ext create posts one entity and records an idempotent mirror link" {
     const gpa = std.testing.allocator;
