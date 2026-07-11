@@ -1,5 +1,6 @@
 //! Deterministic semantic validator for authored agent, skill, and doc Markdown.
 //! Usage: surface_lint <repo-root> [--json] [--require-feedback-contract]
+//!        surface_lint --command-inventory-json
 
 const std = @import("std");
 const Io = std.Io;
@@ -26,6 +27,12 @@ pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const io = init.io;
     const args = try init.minimal.args.toSlice(arena);
+    if (args.len == 2 and std.mem.eql(u8, args[1], "--command-inventory-json")) {
+        var output: std.ArrayList(u8) = .empty;
+        try writeCommandInventory(arena, &output);
+        try Io.File.stdout().writeStreamingAll(io, output.items);
+        return;
+    }
     if (args.len < 2) usage(io);
     var root: ?[]const u8 = null;
     var json = false;
@@ -51,7 +58,7 @@ pub fn main(init: std.process.Init) !void {
 }
 
 fn usage(io: Io) noreturn {
-    Io.File.stderr().writeStreamingAll(io, "usage: surface_lint <repo-root> [--json] [--require-feedback-contract]\n") catch {};
+    Io.File.stderr().writeStreamingAll(io, "usage: surface_lint <repo-root> [--json] [--require-feedback-contract]\n       surface_lint --command-inventory-json\n") catch {};
     std.process.exit(2);
 }
 
@@ -108,6 +115,7 @@ fn scanFile(arena: std.mem.Allocator, io: Io, root: []const u8, rel_file: []cons
         try checkArtifactSet(arena, rel_file, line_no, line, findings, &suppressions);
         if (read_only) try checkCapability(arena, rel_file, role, line_no, line, fence != null, findings, &suppressions);
         try checkCommand(arena, rel_file, line_no, line, findings, &suppressions);
+        try checkDeferredCommand(arena, rel_file, line_no, line, fence != null, findings, &suppressions);
     }
     if (opts.require_feedback_contract and std.mem.startsWith(u8, rel_file, "skills/src/") and
         !std.mem.eql(u8, frontmatterValue(content, "internal_only") orelse "", "true"))
@@ -296,7 +304,7 @@ const command_classes = [_]CommandClass{
     m("planar local unlink"),                m("planar local import"),          m("planar local migrate"),         m("planar skills render"),         m("planar import"),                  m("planar synthesize"),
     r("planar version"),                     r("planar completion"),            r("planar schema"),                r("planar report"),                m("planar bench start"),             m("planar bench event"),
     m("planar bench touch"),                 m("planar bench harvest"),         m("planar bench finish"),          r("planar bench show"),            m("planar closure compute"),         r("planar closure show"),
-    m("planar run start"),                   m("planar run event"),             m("planar run finish"),            r("planar run show"),              r("planar groups recommend"),        r("planar explore"),
+    m("planar run start"),                   m("planar run event"),             m("planar run finish"),            r("planar run show"),              r("planar groups recommend"),        m("planar explore"),
     r("planar workflow list"),               r("planar workflow show"),         m("planar workflow run"),          r("planar-agent version"),         m("planar-agent pull"),              r("planar-agent peek"),
     m("planar-agent complete"),              m("planar-agent fail"),            m("planar-agent release"),         m("planar-agent block"),           m("planar-agent claim"),             m("planar-agent heartbeat"),
     m("planar-agent claim-associate"),       m("planar-agent action start"),    m("planar-agent action end"),      m("planar-agent ingest"),          m("planar-agent reconcile"),         m("planar-agent abort"),
@@ -371,9 +379,9 @@ fn isCapabilityExemption(file: []const u8, role: []const u8, shape: []const u8) 
 fn containsCommandShape(line: []const u8, shape: []const u8) bool {
     var cursor: usize = 0;
     while (std.mem.indexOfPos(u8, line, cursor, shape)) |at| {
-        const before_ok = at == 0 or std.ascii.isWhitespace(line[at - 1]) or line[at - 1] == '$' or line[at - 1] == '/';
+        const before_ok = at == 0 or std.ascii.isWhitespace(line[at - 1]) or std.mem.indexOfScalar(u8, "$(`/;|&{", line[at - 1]) != null;
         const end = at + shape.len;
-        const after_ok = end == line.len or std.ascii.isWhitespace(line[end]) or std.mem.indexOfScalar(u8, "<[{(\"'`", line[end]) != null;
+        const after_ok = end == line.len or std.ascii.isWhitespace(line[end]) or std.mem.indexOfScalar(u8, "<[{(\"'`;|&)$}", line[end]) != null;
         if (before_ok and after_ok) return true;
         cursor = end;
     }
@@ -386,18 +394,81 @@ fn checkCommand(arena: std.mem.Allocator, file: []const u8, line_no: usize, line
     while (std.mem.indexOfPos(u8, line, cursor, shape)) |at| {
         const end = at + shape.len;
         cursor = end;
-        if (at != 0 and !std.ascii.isWhitespace(line[at - 1]) and line[at - 1] != '`') continue;
-        if (end < line.len and !std.ascii.isWhitespace(line[end]) and line[end] != '`') continue;
+        if (!containsCommandAt(line, at, shape.len)) continue;
         const args = std.mem.trimStart(u8, line[end..], " \t");
         if (args.len == 0 or args[0] == '`' or args[0] == '.' or args[0] == ',' or args[0] == ')' or
-            std.mem.startsWith(u8, args, "--kind") or std.mem.startsWith(u8, args, "--link") or
             std.mem.startsWith(u8, args, "[--kind")) continue;
+        if (std.mem.startsWith(u8, args, "--kind") or std.mem.startsWith(u8, args, "--link")) {
+            if (validAuditSelectorArgs(args)) continue;
+            try emit(arena, findings, suppressions, Code.command, file, line_no, "audit trail selector requires `--kind <kind> <entity-id>` or `--link <link-id>`");
+            return;
+        }
         const token_end = std.mem.indexOfAny(u8, args, " \t`.,)") orelse args.len;
         const token = args[0..token_end];
         if (!isInvalidAuditSelector(token)) continue;
         try emit(arena, findings, suppressions, Code.command, file, line_no, "audit trail entity kind must use `--kind <kind> <entity-id>`");
         return;
     }
+}
+
+fn containsCommandAt(line: []const u8, at: usize, shape_len: usize) bool {
+    const before_ok = at == 0 or std.ascii.isWhitespace(line[at - 1]) or std.mem.indexOfScalar(u8, "$(`/;|&{", line[at - 1]) != null;
+    const end = at + shape_len;
+    const after_ok = end == line.len or std.ascii.isWhitespace(line[end]) or std.mem.indexOfScalar(u8, "<[{(\"'`;|&)$}", line[end]) != null;
+    return before_ok and after_ok;
+}
+
+fn nextCommandToken(args: []const u8, cursor: *usize) ?[]const u8 {
+    while (cursor.* < args.len and std.ascii.isWhitespace(args[cursor.*])) cursor.* += 1;
+    if (cursor.* >= args.len or std.mem.indexOfScalar(u8, "`;) |&", args[cursor.*]) != null) return null;
+    const start = cursor.*;
+    while (cursor.* < args.len and !std.ascii.isWhitespace(args[cursor.*]) and
+        std.mem.indexOfScalar(u8, "`,;)|&", args[cursor.*]) == null) cursor.* += 1;
+    return args[start..cursor.*];
+}
+
+fn validAuditSelectorArgs(args: []const u8) bool {
+    var cursor: usize = 0;
+    const selector = nextCommandToken(args, &cursor) orelse return false;
+    const value = nextCommandToken(args, &cursor) orelse return false;
+    if (std.mem.eql(u8, selector, "--link")) return value.len != 0 and value[0] != '-';
+    if (!std.mem.eql(u8, selector, "--kind") or !isValidAuditKind(value)) return false;
+    const entity_id = nextCommandToken(args, &cursor) orelse return false;
+    return entity_id.len != 0 and entity_id[0] != '-';
+}
+
+fn isValidAuditKind(token: []const u8) bool {
+    if (std.mem.eql(u8, token, "<kind>")) return true;
+    const kinds = [_][]const u8{ "plan", "task", "question", "scenario", "decision", "artifact" };
+    for (kinds) |kind| if (std.mem.eql(u8, token, kind)) return true;
+    return false;
+}
+
+fn checkDeferredCommand(arena: std.mem.Allocator, file: []const u8, line_no: usize, line: []const u8, in_fence: bool, findings: *std.ArrayList(Finding), suppressions: *std.ArrayList(Suppression)) !void {
+    if (!std.mem.startsWith(u8, file, "agents/") and !std.mem.startsWith(u8, file, "skills/src/")) return;
+    if (in_fence) return checkDeferredExecutable(arena, file, line_no, line, findings, suppressions);
+    var cursor: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, line, cursor, '`')) |open| {
+        const run_len = markerRunLength(line, open, '`');
+        var search = open + run_len;
+        var close: ?usize = null;
+        while (std.mem.indexOfScalarPos(u8, line, search, '`')) |candidate| {
+            const candidate_len = markerRunLength(line, candidate, '`');
+            if (candidate_len == run_len) {
+                close = candidate;
+                break;
+            }
+            search = candidate + candidate_len;
+        }
+        const close_at = close orelse break;
+        try checkDeferredExecutable(arena, file, line_no, line[open + run_len .. close_at], findings, suppressions);
+        cursor = close_at + run_len;
+    }
+}
+
+fn checkDeferredExecutable(arena: std.mem.Allocator, file: []const u8, line_no: usize, executable: []const u8, findings: *std.ArrayList(Finding), suppressions: *std.ArrayList(Suppression)) !void {
+    if (!containsCommandShape(executable, "planar links update")) return;
+    try emit(arena, findings, suppressions, Code.command, file, line_no, "deferred `planar links update` cannot be presented as an executable current workflow; use unlink/link recovery");
 }
 
 fn isInvalidAuditSelector(token: []const u8) bool {
@@ -468,6 +539,18 @@ fn writeJson(arena: std.mem.Allocator, out: *std.ArrayList(u8), result: *const R
         try appendJsonString(arena, out, f.file);
         try out.print(arena, ",\"line\":{d},\"message\":", .{f.line});
         try appendJsonString(arena, out, f.message);
+        try out.append(arena, '}');
+    }
+    try out.appendSlice(arena, "]}\n");
+}
+fn writeCommandInventory(arena: std.mem.Allocator, out: *std.ArrayList(u8)) !void {
+    try out.appendSlice(arena, "{\"version\":1,\"commands\":[");
+    for (command_classes, 0..) |command, idx| {
+        if (idx != 0) try out.append(arena, ',');
+        try out.appendSlice(arena, "{\"command\":");
+        try appendJsonString(arena, out, command.shape);
+        try out.appendSlice(arena, ",\"access\":");
+        try appendJsonString(arena, out, @tagName(command.access));
         try out.append(arena, '}');
     }
     try out.appendSlice(arena, "]}\n");
@@ -589,6 +672,35 @@ test "capability drift scans fenced and inline executable writes without flaggin
     defer clean_fixture.deinit();
     try testing.expectEqual(@as(usize, 0), clean_fixture.result.findings.items.len);
 }
+test "capability drift treats interactive explore as a conditional write surface" {
+    const content = "---\nrole: fixture\ncapability: read-only\n---\nRun `planar explore`; cockpit actions can mutate state.\n";
+    var fixture = try scanFixture(content, .{});
+    defer fixture.deinit();
+    try testing.expectEqual(@as(usize, 1), fixture.result.findings.items.len);
+    try testing.expectEqualStrings(Code.capability, fixture.result.findings.items[0].code);
+}
+test "shell command boundaries accept separators substitutions and groups but reject partial identifiers" {
+    const frontmatter = "---\nrole: fixture\ncapability: read-only\n---\n";
+    const writes = [_][]const u8{
+        "```sh\nplanar init; planar task show 1\n```\n",
+        "Run `value=$(planar task add title)` now.\n",
+        "Run `(planar task add title)` or `{ planar task add title; }`.\n",
+        "Run `true &&planar task add title|planar task show 1`.\n",
+    };
+    for (writes) |write| {
+        const content = try std.mem.concat(testing.allocator, u8, &.{ frontmatter, write });
+        defer testing.allocator.free(content);
+        var fixture = try scanFixture(content, .{});
+        defer fixture.deinit();
+        try testing.expect(fixture.result.findings.items.len >= 1);
+        for (fixture.result.findings.items) |finding| try testing.expectEqualStrings(Code.capability, finding.code);
+    }
+    const clean = frontmatter ++
+        "Run `myplanar task add title`, `planar-task add title`, or `planar task additive`.\n";
+    var clean_fixture = try scanFixture(clean, .{});
+    defer clean_fixture.deinit();
+    try testing.expectEqual(@as(usize, 0), clean_fixture.result.findings.items.len);
+}
 test "schema inventory has an explicit unique classification for every current leaf" {
     // Generated from the four freshly built catalogs with:
     //   for b in planar planar-agent planar-watch planar-doc; do
@@ -657,6 +769,10 @@ test "audit command drift catches plan and entity placeholder variants" {
         "Run `planar audit trail plan 42`.\n",
         "Run `planar audit trail <kind:id>`.\n",
         "Run `planar audit trail {question-id}`.\n",
+        "Run `planar audit trail --kind plan:42`.\n",
+        "Run `planar audit trail --kind plan`.\n",
+        "Run `planar audit trail --kind bogus 42`.\n",
+        "Run `planar audit trail --link`.\n",
     };
     for (invalid) |content| {
         var fixture = try scanFixture(content, .{});
@@ -664,9 +780,29 @@ test "audit command drift catches plan and entity placeholder variants" {
         try testing.expectEqual(@as(usize, 1), fixture.result.findings.items.len);
         try testing.expectEqualStrings(Code.command, fixture.result.findings.items[0].code);
     }
-    var valid = try scanFixture("Run `planar audit trail --kind plan <plan-id>` or `planar audit trail --link <link-id>`.\n", .{});
+    var valid = try scanFixture("Run `planar audit trail --kind plan <plan-id>`, `planar audit trail --kind <kind> <entity-id>`, or `planar audit trail --link <link-id>`.\n", .{});
     defer valid.deinit();
     try testing.expectEqual(@as(usize, 0), valid.result.findings.items.len);
+}
+test "deferred links update cannot be an executable current agent or skill workflow" {
+    const cases = [_][]const u8{
+        "Run `planar links update <link-id> --sync two-way`.\n",
+        "```sh\nplanar links update 7 --sync read-only\n```\n",
+    };
+    for (cases) |content| {
+        var fixture = try scanFixture(content, .{});
+        defer fixture.deinit();
+        try testing.expectEqual(@as(usize, 1), fixture.result.findings.items.len);
+        try testing.expectEqualStrings(Code.command, fixture.result.findings.items[0].code);
+    }
+
+    var documented_future = try scanFixtureAt("docs/cli-reference.md", "`planar links update <link-id>` is explicitly deferred and not executable current behavior.\n", .{});
+    defer documented_future.deinit();
+    try testing.expectEqual(@as(usize, 0), documented_future.result.findings.items.len);
+
+    var non_executable = try scanFixtureAt("agents/fixture.md", "The planar links update stub is deferred.\n", .{});
+    defer non_executable.deinit();
+    try testing.expectEqual(@as(usize, 0), non_executable.result.findings.items.len);
 }
 test "only exact projection links are exempt from source-tree resolution" {
     var exact = try scanFixtureAt("docs/cli-reference.md", "[projection](../commands/claude/pl-synthesize.md)\n", .{});

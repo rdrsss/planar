@@ -745,6 +745,10 @@ pub fn build(b: *std.Build) void {
     const run_surface_lint_blackbox = b.addRunArtifact(surface_lint_blackbox);
     run_surface_lint_blackbox.addArtifactArg(surface_lint_exe);
     run_surface_lint_blackbox.addDirectoryArg(b.path("integration_tests/fixtures/surface_lint"));
+    run_surface_lint_blackbox.addArtifactArg(exe);
+    run_surface_lint_blackbox.addArtifactArg(agent_exe);
+    run_surface_lint_blackbox.addArtifactArg(watch_exe);
+    run_surface_lint_blackbox.addArtifactArg(doc_exe);
     test_integration_step.dependOn(&run_surface_lint_blackbox.step);
     const test_surface_lint_step = b.step("test-surface-lint", "Run standalone surface-lint black-box tests");
     test_surface_lint_step.dependOn(&run_surface_lint_blackbox.step);
