@@ -27,6 +27,13 @@ const harness = @import("harness");
 const PlanJSON = struct { id: i64, title: []const u8, status: []const u8 };
 const TaskJSON = struct { id: i64, title: []const u8 };
 const RegisterJSON = struct { id: i64, slug: []const u8, kind: []const u8, ok: bool };
+const CreateJSON = struct {
+    ok: bool,
+    link_id: i64,
+    external_id: []const u8,
+    external_url: []const u8,
+    sync_direction: []const u8,
+};
 
 const PropagateResult = struct {
     ok: bool,
@@ -321,6 +328,44 @@ const FakeJira = struct {
         });
     }
 };
+
+test "[happy] ext create posts one entity and records an idempotent mirror link" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    var arena_backing = std.heap.ArenaAllocator.init(gpa);
+    defer arena_backing.deinit();
+    const arena = arena_backing.allocator();
+
+    const plan = suite.mustRunJSON(PlanJSON, arena, &.{ "plan", "create", "--json", "Ext create fixture" });
+    const plan_ref = try std.fmt.allocPrint(arena, "plan:{d}", .{plan.id});
+
+    const server = try FakeJira.init(gpa, std.testing.io);
+    defer server.deinit();
+    const base_url = try std.fmt.allocPrint(arena, "http://127.0.0.1:{d}", .{server.port});
+    _ = suite.mustRunJSON(RegisterJSON, arena, &.{
+        "ext",       "register", "jira",       "jira-create",         "--base-url", base_url,
+        "--project", "CREATE",   "--auth-env", "PLANAR_CREATE_TOKEN", "--json",
+    });
+
+    const created_raw = suite.mustRunWith(&.{
+        "ext", "create", "jira-create", "--from", plan_ref, "--json",
+    }, &.{.{ .key = "PLANAR_CREATE_TOKEN", .value = "test-token" }});
+    defer gpa.free(created_raw);
+    const created = try std.json.parseFromSlice(CreateJSON, arena, created_raw, .{ .ignore_unknown_fields = true });
+    try std.testing.expect(created.value.ok);
+    try std.testing.expect(created.value.link_id > 0);
+    try std.testing.expectEqualStrings("TEST-1", created.value.external_id);
+    try std.testing.expectEqualStrings("two-way", created.value.sync_direction);
+
+    const probe_raw = suite.mustRunWith(&.{
+        "ext", "propagate-one", "jira-create", "--from", plan_ref, "--dry-run", "--json",
+    }, &.{.{ .key = "PLANAR_CREATE_TOKEN", .value = "test-token" }});
+    defer gpa.free(probe_raw);
+    const probe = try std.json.parseFromSlice(PropagateOneSkippedJSON, arena, probe_raw, .{ .ignore_unknown_fields = true });
+    try std.testing.expectEqualStrings("skipped", probe.value.op);
+    try std.testing.expectEqualStrings(created.value.external_id, probe.value.external_id);
+}
 
 /// PropagateOneSkippedJSON is the shape of a propagate-one --dry-run response
 /// when the entity already has an external_links row (op="skipped").

@@ -26,6 +26,8 @@ const ReviewJSON = struct {
 const EntityCase = struct {
     kind: []const u8,
     id: i64,
+    diff_args: []const []const u8,
+    review_args: []const []const u8,
 };
 
 test "diff/review parity: all six entities emit unified diff and stable review verdict output" {
@@ -70,13 +72,21 @@ test "diff/review parity: all six entities emit unified diff and stable review v
     const a_link_out = suite.mustRun(&.{ "artifact", "link", std.fmt.allocPrint(arena, "{d}", .{artifact.id}) catch @panic("OOM"), plan_ref, "--relationship", "derives-from" });
     defer gpa.free(a_link_out);
 
+    const task_id = std.fmt.allocPrint(arena, "{d}", .{task.id}) catch @panic("OOM");
+    const question_id = std.fmt.allocPrint(arena, "{d}", .{question.id}) catch @panic("OOM");
+    const scenario_id = std.fmt.allocPrint(arena, "{d}", .{scenario.id}) catch @panic("OOM");
+    const decision_id = std.fmt.allocPrint(arena, "{d}", .{decision.id}) catch @panic("OOM");
+    const artifact_id = std.fmt.allocPrint(arena, "{d}", .{artifact.id}) catch @panic("OOM");
+
+    // Keep the verb/subcommand pairs literal so the leaf-coverage gate can
+    // recognize this table-driven test without weakening the shared loop.
     const cases = [_]EntityCase{
-        .{ .kind = "plan", .id = plan.id },
-        .{ .kind = "task", .id = task.id },
-        .{ .kind = "question", .id = question.id },
-        .{ .kind = "scenario", .id = scenario.id },
-        .{ .kind = "decision", .id = decision.id },
-        .{ .kind = "artifact", .id = artifact.id },
+        .{ .kind = "plan", .id = plan.id, .diff_args = &.{ "plan", "diff", plan_id }, .review_args = &.{ "plan", "review", plan_id } },
+        .{ .kind = "task", .id = task.id, .diff_args = &.{ "task", "diff", task_id }, .review_args = &.{ "task", "review", task_id } },
+        .{ .kind = "question", .id = question.id, .diff_args = &.{ "question", "diff", question_id }, .review_args = &.{ "question", "review", question_id } },
+        .{ .kind = "scenario", .id = scenario.id, .diff_args = &.{ "scenario", "diff", scenario_id }, .review_args = &.{ "scenario", "review", scenario_id } },
+        .{ .kind = "decision", .id = decision.id, .diff_args = &.{ "decision", "diff", decision_id }, .review_args = &.{ "decision", "review", decision_id } },
+        .{ .kind = "artifact", .id = artifact.id, .diff_args = &.{ "artifact", "diff", artifact_id }, .review_args = &.{ "artifact", "review", artifact_id } },
     };
 
     const pull_res = suite.execWith(&.{ "workbench", "pull", plan_id }, env);
@@ -90,7 +100,7 @@ test "diff/review parity: all six entities emit unified diff and stable review v
     for (cases) |tc| {
         const id_s = std.fmt.allocPrint(arena, "{d}", .{tc.id}) catch @panic("OOM");
 
-        const diff_res = suite.execWith(&.{ tc.kind, "diff", id_s }, env);
+        const diff_res = suite.execWith(tc.diff_args, env);
         defer diff_res.deinit(gpa);
         try std.testing.expect(diff_res.term == .exited and diff_res.term.exited == 0);
         try std.testing.expectEqual(@as(usize, 0), diff_res.stdout.len);
@@ -135,7 +145,7 @@ test "diff/review parity: all six entities emit unified diff and stable review v
         try std.testing.expect(!clean_verdict_json.value.persisted);
         try std.testing.expectEqualStrings("none", clean_verdict_json.value.persistence);
 
-        const clean_review_text = suite.execWith(&.{ tc.kind, "review", id_s }, env);
+        const clean_review_text = suite.execWith(tc.review_args, env);
         defer clean_review_text.deinit(gpa);
         try std.testing.expect(clean_review_text.term == .exited and clean_review_text.term.exited == 0);
         try std.testing.expectEqual(@as(usize, 0), clean_review_text.stdout.len);

@@ -9,11 +9,10 @@
 //!     (PLANAR_EDITOR=/usr/bin/true), mirroring editflow_edit_test;
 //!   - `annotate bulk-dismiss` and `annotate verify`.
 //!
-//! Still NOT covered here (genuinely infra-blocked, documented for the
-//! reader): `ext create` and `workbench publish` both POST to an external
-//! operational plane, and the integration suite has no in-process HTTP
-//! mock server; `capture command/end/file/note` is the intentionally
-//! accepted long-tail (docs/research/scenario-coverage-long-tail.md).
+//! Also locks the session-timeline behavior of `capture note` / `command` /
+//! `file`, plus the explicit NotImplemented contracts of the two remaining
+//! shipped stubs (`audit publish-decision`, `workbench publish`). `ext create`
+//! is covered against the in-process Jira server in propagate_faithful_test.
 //!
 //! Run via: zig build test-integration
 
@@ -21,6 +20,17 @@ const std = @import("std");
 const harness = @import("harness");
 
 const Id = struct { id: i64 };
+
+const SessionOpen = struct { id: i64 };
+const CaptureResult = struct { ok: bool, session_id: i64 };
+const Timeline = struct {
+    entries: []const Entry,
+
+    const Entry = struct {
+        prefix: []const u8,
+        body: []const u8,
+    };
+};
 
 fn idStr(arena: std.mem.Allocator, id: i64) []const u8 {
     return std.fmt.allocPrint(arena, "{d}", .{id}) catch unreachable;
@@ -131,4 +141,57 @@ test "scenario: annotate bulk-dismiss + verify" {
 
     // verify re-checks anchors against the workspace; exits 0 with a rows list.
     gpa.free(suite.mustRun(&.{ "annotate", "verify", "--json" }));
+}
+
+test "scenario: capture note command and file persist in the session timeline" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const session = suite.mustRunJSON(SessionOpen, arena, &.{ "capture", "session", "--json" });
+    const sid = idStr(arena, session.id);
+
+    const note = suite.mustRunJSON(CaptureResult, arena, &.{ "capture", "note", "reviewed migration ordering", "--session", sid, "--json" });
+    const command = suite.mustRunJSON(CaptureResult, arena, &.{ "capture", "command", "zig build test", "--outcome", "passed", "--session", sid, "--json" });
+    const file = suite.mustRunJSON(CaptureResult, arena, &.{ "capture", "file", "src/db/migrate.zig", "--role", "implementation target", "--session", sid, "--json" });
+    try std.testing.expect(note.ok and command.ok and file.ok);
+    try std.testing.expectEqual(session.id, note.session_id);
+    try std.testing.expectEqual(session.id, command.session_id);
+    try std.testing.expectEqual(session.id, file.session_id);
+
+    const timeline = suite.mustRunJSON(Timeline, arena, &.{ "audit", "session", sid, "--json" });
+    try std.testing.expectEqual(@as(usize, 3), timeline.entries.len);
+    try std.testing.expectEqualStrings("note", timeline.entries[0].prefix);
+    try std.testing.expectEqualStrings("reviewed migration ordering", timeline.entries[0].body);
+    try std.testing.expectEqualStrings("command", timeline.entries[1].prefix);
+    try std.testing.expectEqualStrings("zig build test\noutcome: passed", timeline.entries[1].body);
+    try std.testing.expectEqualStrings("file", timeline.entries[2].prefix);
+    try std.testing.expectEqualStrings("src/db/migrate.zig [implementation target]", timeline.entries[2].body);
+}
+
+test "stub contracts fail loudly for audit publish-decision and workbench publish" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const plan = suite.mustRunJSON(Id, arena, &.{ "plan", "create", "--json", "Publish stub plan" });
+    const pid = idStr(arena, plan.id);
+    const decision = suite.mustRunJSON(Id, arena, &.{ "decision", "add", "--json", "--plan", pid, "--body", "recorded rationale", "Publish stub decision" });
+    const did = idStr(arena, decision.id);
+
+    const audit_res = suite.execWith(&.{ "audit", "publish-decision", did, "--json" }, &.{});
+    defer audit_res.deinit(gpa);
+    try std.testing.expect(audit_res.term == .exited and audit_res.term.exited != 0);
+    try std.testing.expect(std.mem.containsAtLeast(u8, audit_res.stderr, 1, "not available in this build"));
+
+    const publish_res = suite.execWith(&.{ "workbench", "publish", pid, "--system", "missing", "--json" }, &.{});
+    defer publish_res.deinit(gpa);
+    try std.testing.expect(publish_res.term == .exited and publish_res.term.exited != 0);
+    try std.testing.expect(std.mem.containsAtLeast(u8, publish_res.stderr, 1, "not implemented yet"));
 }
