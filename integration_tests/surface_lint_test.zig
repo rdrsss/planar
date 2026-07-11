@@ -5,10 +5,51 @@ const std = @import("std");
 pub fn main(init: std.process.Init) !void {
     const allocator = init.arena.allocator();
     const args = try init.minimal.args.toSlice(allocator);
-    try expect(args.len == 3);
+    try expect(args.len == 7);
     try testDirtyCorpus(allocator, init.io, args[1], args[2]);
     try testCleanCorpus(allocator, init.io, args[1], args[2]);
-    try std.Io.File.stdout().writeStreamingAll(init.io, "All 2 surface-lint black-box tests passed.\n");
+    try testLiveSchemaInventory(allocator, init.io, args[1], args[3..7]);
+    try std.Io.File.stdout().writeStreamingAll(init.io, "All 3 surface-lint black-box tests passed.\n");
+}
+
+fn testLiveSchemaInventory(allocator: std.mem.Allocator, io: std.Io, surface_bin: []const u8, schema_bins: []const []const u8) !void {
+    const inventory_run = try run(allocator, io, surface_bin, &.{"--command-inventory-json"});
+    try expectExit(inventory_run.term, 0);
+    try expectEqual("", inventory_run.stderr);
+    const Inventory = struct {
+        version: u8,
+        commands: []const struct { command: []const u8, access: []const u8 },
+    };
+    const inventory = try std.json.parseFromSlice(Inventory, allocator, inventory_run.stdout, .{ .ignore_unknown_fields = false });
+    try expect(inventory.value.version == 1);
+
+    var classified: std.StringHashMapUnmanaged(void) = .empty;
+    for (inventory.value.commands) |entry| {
+        try expect(std.mem.eql(u8, entry.access, "read") or std.mem.eql(u8, entry.access, "mutate"));
+        const result = try classified.getOrPut(allocator, entry.command);
+        try expect(!result.found_existing);
+    }
+
+    const Command = struct { command: []const u8, subcommands: []const []const u8 = &.{} };
+    const Schema = struct { commands: []const Command };
+    var live: std.StringHashMapUnmanaged(void) = .empty;
+    for (schema_bins) |bin| {
+        const schema_run = try run(allocator, io, bin, &.{"schema"});
+        try expectExit(schema_run.term, 0);
+        try expectEqual("", schema_run.stderr);
+        const schema = try std.json.parseFromSlice(Schema, allocator, schema_run.stdout, .{ .ignore_unknown_fields = true });
+        for (schema.value.commands) |command| {
+            if (command.command.len == 0 or command.subcommands.len != 0) continue;
+            const result = try live.getOrPut(allocator, command.command);
+            try expect(!result.found_existing);
+        }
+    }
+
+    try expect(classified.count() == live.count());
+    var classified_it = classified.keyIterator();
+    while (classified_it.next()) |command| try expect(live.contains(command.*));
+    var live_it = live.keyIterator();
+    while (live_it.next()) |command| try expect(classified.contains(command.*));
 }
 
 fn testDirtyCorpus(allocator: std.mem.Allocator, io: std.Io, bin: []const u8, fixtures: []const u8) !void {

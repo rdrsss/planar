@@ -75,6 +75,10 @@ Entities that already have an `external_links(link_role='mirror')` row for the t
 
 ## Underlying CLI verbs
 
+To change the direction of an existing external link, first record its local
+entity, external target, and role. Then unlink and recreate it with the new
+direction; `unlink` removes the old link row and its sync-event history.
+
 > **Cross-scope guard.** This verb refuses with exit 1 when the
 > operator's resolved write scope disagrees with the target entity's
 > stored scope. Run from inside the entity's owning repo, pass
@@ -90,7 +94,8 @@ planar ext propagate <plan> --github-strategy parent-issue|projects-v2|tracking-
 planar ext propagate <plan> --sync read-only|write-back|two-way
 planar ext propagate <plan> --verify-counterparts [--unlink | --recreate]
 planar link <kind:id> --to <system-slug>:<external-id> --propagate
-planar links update <link-id> --sync read-only|write-back|two-way
+planar unlink <link-id>
+planar link <kind:id> --to <system-slug>:<external-id> --role <role> --sync read-only|write-back|two-way
 ```
 
 See [`docs/cli-reference.md`](../../docs/cli-reference.md) for the full command grammar.
