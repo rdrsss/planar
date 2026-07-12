@@ -332,9 +332,12 @@ Structured feedback triage is operator-plane planning state stored in
 question finding and records severity, disposition, reproduction status,
 optional duplicate target, and a redacted evidence summary. Partial unique
 indexes enforce one row per finding; duplicate targets must remain in the same
-feedback plan. The `planar feedback triage` read leaves are deterministic and
-`set` uses the normal entity scope guard. It never writes agent tables or
-external systems.
+`planar-feedback` plan. Unplanned findings, questions linked to multiple plans,
+and findings on other plans are rejected. Deleting a duplicate target cascades
+through dependent triage rows, returning their still-owned task or question
+findings to the implicit untriaged state. The `planar feedback triage` read
+leaves are deterministic and `set` uses the normal entity scope guard. It never
+writes agent tables or external systems.
 
 `planar` is a Zig executable with a thin `main` in `src/cmd/planar/main.zig` that builds a `cli.Cmd` tree against the [etcli](https://github.com/rdrsss/etcli) parser (vendored under `vendor/etcli/`). Each subcommand domain maps to one entity kind or system surface. Parsing, help rendering, shell completion, and validation are all in the etcli library — Planar does not vendor a CLI framework like cobra or clap.
 
