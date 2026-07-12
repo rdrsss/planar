@@ -22,6 +22,7 @@
 
 const std = @import("std");
 const db = @import("db");
+const adapters = @import("introspection_adapters.zig");
 
 // =========================================================================
 // Bundle types
@@ -110,6 +111,8 @@ pub const Bundle = struct {
     reopens: i64,
     /// Most-recent failed invocations tail (empty when logging disabled).
     failure_tail: []FailureTailRow,
+    /// Read-only normalized transcript/CLI preview populated by the report handler.
+    preview: ?adapters.Preview = null,
 
     pub fn deinit(self: *Bundle, allocator: std.mem.Allocator) void {
         allocator.free(self.version);
@@ -131,6 +134,7 @@ pub const Bundle = struct {
             allocator.free(r.recorded_at);
         }
         allocator.free(self.failure_tail);
+        if (self.preview) |*preview| preview.deinit(allocator);
     }
 };
 
@@ -244,6 +248,39 @@ pub fn build(
         .reopens = reopens,
         .failure_tail = failure_tail,
     };
+}
+
+/// Convert authoritative, structurally-redacted CLI rows into the adapter's
+/// private JSONL boundary. Only verb path, outcome category/code, and time are
+/// selected; argument shapes and entity-bearing tables are never read.
+pub fn cliPreviewJsonl(d: *db.sqlite.Db, allocator: std.mem.Allocator, window_days: i64, max_bytes: usize) !?[]u8 {
+    var sql_buf: [512]u8 = undefined;
+    const sql_text = try std.fmt.bufPrint(&sql_buf, "select verb_path, exit_code, coalesce(error_category,''), replace(recorded_at,' ','T') || 'Z' from cli_invocations where recorded_at >= datetime('now','-{d} days') order by recorded_at asc", .{window_days});
+    const sql = try allocator.dupeZ(u8, sql_text);
+    defer allocator.free(sql);
+    var stmt = try d.prepare(sql);
+    defer stmt.finalize();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    while (true) {
+        const row = try stmt.step();
+        if (row == .done) break;
+        const verb = try stmt.columnTextAlloc(0, allocator);
+        defer allocator.free(verb);
+        const category = try stmt.columnTextAlloc(2, allocator);
+        defer allocator.free(category);
+        const recorded = try stmt.columnTextAlloc(3, allocator);
+        defer allocator.free(recorded);
+        try out.writer.print("{{\"schema\":1,\"kind\":\"cli_invocation\",\"verb_path\":", .{});
+        try std.json.Stringify.encodeJsonString(verb, .{}, &out.writer);
+        try out.writer.print(",\"exit_code\":{d},\"error_category\":", .{stmt.columnInt(1)});
+        try std.json.Stringify.encodeJsonString(category, .{}, &out.writer);
+        try out.writer.print(",\"recorded_at\":", .{});
+        try std.json.Stringify.encodeJsonString(recorded, .{}, &out.writer);
+        try out.writer.print("}}\n", .{});
+        if (out.written().len > max_bytes) return error.StreamTooLong;
+    }
+    return try out.toOwnedSlice();
 }
 
 // =========================================================================
@@ -808,6 +845,35 @@ pub fn renderJson(bundle: Bundle, writer: *std.Io.Writer) !void {
 
     // reopens count (always-on)
     try writer.print(",\"reopens\":{d}", .{bundle.reopens});
+
+    try writer.print(",\"introspection_preview\":{{\"signals\":[", .{});
+    if (bundle.preview) |preview| {
+        for (preview.signals, 0..) |signal, i| {
+            if (i != 0) try writer.print(",", .{});
+            try writer.print("{{\"vendor\":\"{s}\",\"verb_path\":", .{@tagName(signal.vendor)});
+            try std.json.Stringify.encodeJsonString(signal.verb_path, .{}, writer);
+            try writer.print(",\"category\":\"{s}\",\"count\":{d},\"first_seen\":", .{ @tagName(signal.category), signal.count });
+            try std.json.Stringify.encodeJsonString(signal.first_seen, .{}, writer);
+            try writer.print(",\"last_seen\":", .{});
+            try std.json.Stringify.encodeJsonString(signal.last_seen, .{}, writer);
+            try writer.print("}}", .{});
+        }
+    }
+    try writer.print("],\"coverage\":[", .{});
+    if (bundle.preview) |preview| {
+        for (preview.coverage, 0..) |coverage, i| {
+            if (i != 0) try writer.print(",", .{});
+            try writer.print("{{\"vendor\":\"{s}\",\"state\":\"{s}\",\"scanned\":{d},\"malformed\":{d},\"normalized\":{d},\"capped\":{d}}}", .{ @tagName(coverage.vendor), @tagName(coverage.state), coverage.scanned, coverage.malformed, coverage.normalized, coverage.capped });
+        }
+    }
+    try writer.print("],\"warnings\":[", .{});
+    if (bundle.preview) |preview| {
+        for (preview.warnings, 0..) |warning, i| {
+            if (i != 0) try writer.print(",", .{});
+            try writer.print("{{\"vendor\":\"{s}\",\"kind\":\"{s}\",\"count\":{d}}}", .{ @tagName(warning.vendor), @tagName(warning.kind), warning.count });
+        }
+    }
+    try writer.print("]}}", .{});
 
     try writer.print("}}\n", .{});
 }

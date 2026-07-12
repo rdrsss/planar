@@ -111,8 +111,9 @@ Two contracts hold throughout the pass:
 
 ## Adapter Configuration
 
-Read configuration through `planar config show --effective --json`. Under
-`[introspection.transcripts]`, each vendor has `*_enabled` and `*_path` keys.
+Use the `introspection_preview` object returned by `planar report --json`; the
+executable resolves effective configuration and performs the bounded read-only
+collection. Under `[introspection.transcripts]`, each vendor has `*_enabled` and `*_path` keys.
 Disabled wins; then a non-empty override; then the built-in Claude
 `~/.claude/projects/**/*.jsonl`, Codex `~/.codex/sessions/**/*.jsonl`, or
 Copilot `~/.copilot/session-state/**` location. Never fall back after an
@@ -124,6 +125,11 @@ and malformed records increment `malformed` but never enter evidence or warning
 text. Deduplicate by vendor, verb path, category, and hour bucket; matching
 CLI-log invocations suppress transcript duplicates because CLI-log is
 authoritative for invocations it contains.
+
+An ordinary successful invocation contributes coverage and retry-adjacency
+context only; it never becomes a `gap`. Only structurally recognized
+invalid-flag or help-bounce evidence may produce that category. Treat an
+adapter warning/unavailable state as partial coverage rather than observed-zero.
 
 These contracts are described fully in the [privacy model](../../docs/concepts.md#usage-introspection-privacy-model).
 
