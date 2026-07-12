@@ -1282,8 +1282,10 @@ fn isAgentRoleFile(name: []const u8) bool {
 }
 
 /// listAgentSources enumerates renderable agent role files directly under
-/// `agents_dir` (the `<out_dir>/agents` directory). Returns an empty slice when
-/// the directory does not exist.
+/// `agents_dir` (the `<out_dir>/agents` directory). Link-mode installs stage
+/// canonical role sources as symlinks inside a real, prefix-owned agents
+/// directory, so both regular files and symlinks are valid inputs. Returns an
+/// empty slice when the directory does not exist.
 fn listAgentSources(allocator: std.mem.Allocator, agents_dir: []const u8) ![][]const u8 {
     var dir = std.Io.Dir.cwd().openDir(fsIo(), agents_dir, .{ .iterate = true }) catch |e| switch (e) {
         error.FileNotFound => return allocator.alloc([]const u8, 0),
@@ -1297,7 +1299,7 @@ fn listAgentSources(allocator: std.mem.Allocator, agents_dir: []const u8) ![][]c
     }
     var it = dir.iterate();
     while (try it.next(fsIo())) |entry| {
-        if (entry.kind != .file) continue;
+        if (entry.kind != .file and entry.kind != .sym_link) continue;
         if (!isAgentRoleFile(entry.name)) continue;
         const joined = try std.fs.path.join(allocator, &.{ agents_dir, entry.name });
         try out.append(allocator, joined);
