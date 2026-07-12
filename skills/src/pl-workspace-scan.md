@@ -121,6 +121,54 @@ This skill body adheres to the structured-authoring rules:
 5. Always double-quote `title:`-style values when this skill emits frontmatter elsewhere. This skill itself never writes workbench artifacts — it operates on the workspace state directory only.
 6. Workbench discipline: this skill MUST NOT read or write the workbench filesystem. It only touches `~/.planar/workspaces/<org_id>/` (canonical state) and `~/.planar/cache/workspace-enrichment/<org_id>/` (enrichment cache). Active scope and workspace state come from the CLI; the skill must not invent direct DB writes or repo-local context scaffolding.
 
+## Context
+
+Report the resolved workspace/org ID, root and state paths, project count,
+static or enrich mode, cache state, and dry-run or apply mode.
+
+## Intent
+
+State in one sentence which workspace routing and generated guidance will be
+previewed or refreshed.
+
+## Actions
+
+Report `attempted`, `applied` (the succeeded count), `skipped`, and `failed` for routing build,
+per-project enrichment, cache writes, and regeneration targets. Name every
+failed project by slug/root/fingerprint and every failed generated target with
+its evidence. Manual summaries, cache hits, and missing optional README inputs
+are skips.
+
+## Result
+
+Always report `outcome=ok|partial|error`. A dry run returns proposed project
+and generated-path changes with zero applied. After apply, verify with `planar
+workspace routing show <workspace> --json` and `planar workspace doctor`, and
+return the canonical routing and `AGENTS.md` paths plus per-project outcomes.
+An unchanged workspace is an informative no-op.
+
+## Warnings
+
+Preserve the dry-run preview and require operator intent before applying an
+enriched scan. Name malformed LLM results, fingerprint mismatch, unavailable
+post-state, doctor findings, and partial project results. Successfully updated
+projects and generated files are not rolled back when another project fails.
+
+## Next actions
+
+Give zero to three executable recommendations. A dry run leads with the exact
+approved scan invocation; partial results lead with `planar workspace routing
+show <workspace> --json` and target-specific retries before regeneration.
+
+## Recovery
+
+For each failed project, give the exact idempotent `/pl-workspace-scan
+--workspace <slug> [--enrich]` retry and its routing inspection. For generated
+state, give `planar workspace doctor`, `planar workspace routing build
+<workspace> [--enrich]`, or `planar workspace regenerate <workspace>` as
+appropriate. Completed targets remain applied; never claim cross-target
+rollback.
+
 ## Vendor Notes
 
 {{.VendorNotes}}

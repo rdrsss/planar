@@ -69,6 +69,54 @@ fixup-protos (skill)
   copilot  created [symlink]  →  /home/me/.copilot/skills/local-fixup-protos
 ```
 
+## Context
+
+Report the source path, resolved sandbox root, skill or agent kind, selected
+vendors, force/no-link flags, and dry-run or apply mode.
+
+## Intent
+
+State in one sentence which local extensions will be previewed or imported and
+whether vendor links will be created.
+
+## Actions
+
+Report `attempted`, `applied` (the succeeded count), `skipped`, and `failed` per source and per vendor
+link. Name every failed source or vendor target with its canonical local name,
+source path, destination, and failure evidence. Collisions without `--force`
+and ignored non-skill subdirectories are skips, not failures.
+
+## Result
+
+Always report `outcome=ok|partial|error`. A dry run returns proposed sandbox
+and vendor paths with zero applied. After apply, confirm each imported sandbox
+path and each requested symlink target, and return those identities. An
+idempotent collision-only run is `outcome=ok`, zero applied, with the collision
+reason.
+
+## Warnings
+
+Name invalid frontmatter, kind mismatches, unavailable link verification, and
+partial imports or vendor-link failures. Preserve the dry-run preview and do
+not use `--force` without explicit operator intent. Successful imports and
+links are not rolled back when another target fails.
+
+## Next actions
+
+Give zero to three executable recommendations. A preview leads with the exact
+approved import command; `--no-link` results may recommend the corresponding
+`planar local link` command only if that public verb is available in the
+current CLI schema.
+
+## Recovery
+
+For each failed source, give `planar local import <source> --kind <kind>
+[--force] [--no-link]` with the original safe flags. For a vendor-link failure,
+name the failed destination and retry through the exact CLI command surfaced
+by the import result; otherwise give the sandbox path to inspect and state
+that link retry is unavailable through this compatibility workflow. Never
+delete successful imports as fabricated rollback.
+
 ## Vendor Notes
 
 {{.VendorNotes}}
