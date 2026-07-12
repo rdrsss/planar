@@ -16,6 +16,18 @@ Planar authors each shared skill once at `skills/src/<name>.md` and renders vend
 
 Vendor profile data and model-tier resolution are embedded directly into the `planar` binary at compile time (the YAML literal lives in `src/engine/skillrender.zig`; see `agents/models.md` for the rendered tier table). Drift between `skills/src/` and generated vendor trees is gated by `planar skills render --check` against an out-of-tree staging directory.
 
+Rendered skills and vendor agent projections include
+`x-planar-source-digest` and `x-planar-projection-digest` metadata. Both are
+lowercase SHA-256 hex. The source value is shared by every vendor projection
+of the same parsed authored file; the projection value also covers only the
+vendor profile inputs that affect rendering and the rendered semantic payload.
+Neither value depends on checkout/output paths, install paths, timestamps,
+directory traversal, or local machine state. Skills and Claude/Copilot agents
+carry these keys in YAML frontmatter; Codex TOML agents carry them as leading
+comments to preserve its accepted key schema. Operators should treat the
+values as renderer-owned metadata and regenerate projections rather than edit
+them by hand.
+
 ---
 
 ## Binary architecture
