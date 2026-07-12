@@ -1,7 +1,7 @@
 # metrics/ — Primary Metric Queries
 
-These SQL queries implement the frozen metric definitions from
-`docs/research/preregistration.md §2`. They run against a `planar` SQLite
+These SQL queries implement the historical metric definitions from the
+[`closure-v1 protocol`](https://github.com/locumipsum/research/blob/main/projects/context-closure/experiments/closure-v1/protocol.md) §2. They run against a `planar` SQLite
 database via the `sqlite3` CLI; they are **not** embedded in the binary.
 
 Per preregistration §3 (§7.1 query→RQ mapping): no metric is stored in a

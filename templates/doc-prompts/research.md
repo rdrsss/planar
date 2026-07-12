@@ -4,7 +4,7 @@ template_version: 1
 synthesis_voice: academic
 required_sources: [research]
 optional_sources: [tech_spec, decision, adr]
-output_shape: A research note with the academic five-section structure (abstract, motivation, related work, method, findings) plus a citations footer, suitable for inclusion in docs/research/.
+output_shape: A research note with the academic five-section structure (abstract, motivation, related work, method, findings) plus a citations footer, suitable for export to the canonical research repository; do not place claim-bearing research in Planar's docs/research/ instrument directory.
 ---
 
 # Synthesis prompt — research note
