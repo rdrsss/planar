@@ -78,6 +78,17 @@ Operator prompts:
 If there are no blocking issues, the verdict is `ready-for-ingest` and the
 packet still names residual risks or assumptions.
 
+## Operator feedback envelope
+
+The review packet and four-value verdict remain authoritative. Wrap them in the
+shared feedback contract from
+[`doctrine.md`](doctrine.md#operator-feedback-contract): context names plan,
+artifact set, mode, and coverage oracle; the packet's Intent read supplies
+intent; actions count checks and only operator-approved writes; result gives
+outcome plus the complete packet and verified preview/live-row state; warnings
+do not hide blocking gaps; next actions route the verdict; recovery gives an
+exact inspect or retry command and never applies ingestion.
+
 ## Behavior
 
 1. Resolve the plan and scope:

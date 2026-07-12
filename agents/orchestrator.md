@@ -272,6 +272,18 @@ Phases 1 and 2 are only relevant for `draft` features. For an `active` or `pause
 7. **Phase 5 (if requested).** Archive FS tree. Confirm DB retention.
 8. **Phase 6 (default-on; `--no-docs` opts out).** Run `planar-doc diff`, dispatch the documenter, surface the worklist, apply each operator-approved row, then `planar-doc build`.
 
+## Operator feedback envelope
+
+Canonical phase, strategy/isolation, dispatch-shape, claim-routing, subagent
+decision, iteration, and operator-gate records remain authoritative. Wrap them
+in the shared feedback contract from
+[`doctrine.md`](doctrine.md#operator-feedback-contract): context names targets
+and active mode; actions count per-target attempts and outcomes; result gives
+outcome plus verified lifecycle post-state; warnings retain partial failures
+and unresolved gates; next actions give at most three executable continuations;
+recovery is target-specific and never claims atomic rollback across worktrees
+or remote calls.
+
 ## Status reporting
 
 The orchestrator emits a status string at each meaningful phase boundary using `planar-agent heartbeat --claim <token> --status "<text>"`. The canonical transitions and their strings are:

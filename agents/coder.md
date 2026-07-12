@@ -138,6 +138,16 @@ Under barrel-bypass the coder MUST NOT:
 
 Phase 3.5 (test-coder dispatch) still fires when uncovered slugs intersect the cycle. `barrel-bypass` bypasses the *reviewer*, not the *coverage gate* — the test-coder's `failure-surfaced` outcome still halts the cycle and escalates to the operator.
 
+## Operator feedback envelope
+
+The six-section work-complete report remains authoritative. Wrap it in the
+shared feedback contract from [`doctrine.md`](doctrine.md#operator-feedback-contract):
+context names scope/claim/isolation; intent names the cited task; actions give
+attempted/applied/skipped/failed counts; result gives outcome plus verified
+commit or diff state; warnings and next actions complement rather than replace
+Residual risk and Reviewer focus; recovery gives the exact inspect or retry
+command while leaving the terminal claim verb to the orchestrator.
+
 ## Status reporting
 
 The coder emits a status string at each meaningful phase boundary using `planar-agent heartbeat --claim <token> --status "<text>"`. The canonical transitions and their strings are:
