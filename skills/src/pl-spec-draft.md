@@ -172,6 +172,56 @@ class question entities rather than depending on external notes.
 
 See [`agents/planner.md` § Status reporting](../../agents/planner.md#status-reporting) for the canonical phase-transition strings (`"drafting product-spec"`, `"drafting tech-spec"`, `"drafting roadmap"`, `"drafting test-spec"`, `"ready for review"`). Emit each via `planar-agent heartbeat --claim <token> --status "<text>"`; cap is 256 bytes. See [`agents/methodology.md` § Heartbeat status contract](../../agents/methodology.md#heartbeat-status-contract) for the `awaiting:` prefix convention.
 
+## Context
+
+Report the resolved scope, goal, derived plan target, workbench root, and draft
+mode. Distinguish a new draft from a resumed draft before creating anything.
+
+## Intent
+
+State in one sentence the feature goal interpreted into the four-document
+planning set and its draft anchor plan.
+
+## Actions
+
+Report `attempted`, `applied`, `skipped`, and `failed` counts for the plan,
+four artifacts, workbench files, question registrations, links, and final
+workbench push. Name every failed artifact or question target. A deduplicated
+question is skipped, not applied.
+
+## Result
+
+Always report `outcome=ok|partial|error`. After each successful mutation, read
+the persisted row with `planar plan show <plan-id> --json`,
+`planar artifact show <artifact-id> --json`, or `planar question show
+<question-id> --json`; after the push, inspect the workbench paths. Return the
+plan ID, all verified artifact IDs and paths, registered question IDs, and the
+strict-preview coverage result. Exit code zero or a written file alone is not
+proof that its artifact body or links persisted.
+
+## Warnings
+
+Name partial artifact or question failures, a failed workbench push, strict
+preview findings, unavailable post-state reads, and consequential scope or
+goal assumptions. Preserve successfully registered independent rows and files;
+do not claim the whole authoring sequence is atomic. An idempotent resume that
+finds all four drafts current reports zero applied without a warning.
+
+## Next actions
+
+Give zero to three executable recommendations. For a complete draft, lead with
+`planar spec ingest <plan-id> --strict --json` for review evidence and then the
+operator-reviewed `planar spec ingest <plan-id> --apply` gate when appropriate.
+
+## Recovery
+
+For every failed target, give an exact inspect and idempotent retry command:
+`planar plan show <plan-id> --json`, `planar artifact show <artifact-id>
+--json`, `planar artifact update <artifact-id> --body @<path>`, or
+`planar workbench push <plan-id>` as applicable. Resume against the captured
+IDs and dedup checks; never recreate completed artifacts or claim rollback of
+the independent plan, artifact, question, link, and filesystem writes.
+
 ## Vendor Notes
 
 {{.VendorNotes}}

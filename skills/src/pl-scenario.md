@@ -39,6 +39,52 @@ planar scenario retire <scenario-id>
 
 When authoring a tech spec or design note and wanting to record what must be verified, or after running tests to commit the outcome to the local plane for handoff continuity.
 
+## Context
+
+Report the resolved scope, scenario target or filter, operation, related
+artifact when present, and read or mutation mode.
+
+## Intent
+
+State in one sentence whether the request creates, inspects, verifies, lists,
+or retires scenario evidence.
+
+## Actions
+
+Report `attempted`, `applied`, `skipped`, and `failed` counts for scenario rows,
+verification outcomes, and artifact relationships. For list operations,
+`applied` is zero and the result count is reported separately. Name every
+failed scenario target.
+
+## Result
+
+Always report `outcome=ok|partial|error`. After `add`, `verify`, or `retire`,
+read every affected row with `planar scenario show <scenario-id> --json` and
+return its stable ID, status, related artifact, and latest recorded outcome.
+List and show return the matching verified rows. A repeated operation that
+already has the requested post-state reports `outcome=ok`, zero applied, and
+the reason it was a no-op.
+
+## Warnings
+
+Name missing or ambiguous targets, unsupported transitions, unavailable
+post-state reads, and partial multi-scenario results. An empty list or expected
+idempotent no-op is not itself a warning.
+
+## Next actions
+
+Give zero to three executable recommendations, such as `planar scenario show
+<scenario-id> --json`, the next verification command, or a filtered `planar
+scenario list --status <status>`.
+
+## Recovery
+
+For each failed target, give its exact inspection command and idempotent retry:
+`planar scenario show <scenario-id> --json`, `planar scenario verify
+<scenario-id> --outcome <outcome> [--summary <text>]`, or `planar scenario
+retire <scenario-id>`. Completed independent scenarios remain changed; do not
+claim a cross-scenario rollback.
+
 ## Vendor Notes
 
 {{.VendorNotes}}

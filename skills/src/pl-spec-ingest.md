@@ -189,6 +189,59 @@ planar spec ingest <plan> [--apply] [--apply-removals] [--format text|json] [--s
 
 See [`agents/ingestor.md` § Status reporting](../../agents/ingestor.md#status-reporting) for the canonical phase-transition strings (`"reading workbench specs"`, `"decomposing tasks"`, `"writing preview"`, `"awaiting:operator-confirmation"`, `"applying"`). Emit each via `planar-agent heartbeat --claim <token> --status "<text>"`; cap is 256 bytes. The `awaiting:operator-confirmation` string uses the `awaiting:` prefix because the ingestor is genuinely blocked waiting for the explicit user gate before `--apply` may run. See [`agents/methodology.md` § Heartbeat status contract](../../agents/methodology.md#heartbeat-status-contract) for the full convention.
 
+## Context
+
+Report the resolved scope, anchor plan, workbench artifact paths, preview or
+apply mode, strictness, removal policy, and output format.
+
+## Intent
+
+State in one sentence which reviewed draft graph will be previewed or
+persisted and whether removals are authorized.
+
+## Actions
+
+Report `attempted`, `applied`, `skipped`, and `failed` counts for each anchor
+plan and its child plans, tasks, decisions, questions, scenarios, links, and
+removals. Preserve additions, updates, unchanged, and proposed-removals detail.
+Name every failed anchor or non-fatal question target rather than folding it
+into a single command exit.
+
+## Result
+
+Always report `outcome=ok|partial|error`. Preview reports the tree diff and
+coverage object with zero applied. After each successful anchor apply, read
+`planar plan show <plan-id> --json` and `planar test-spec status <plan-id>
+--json`; report the verified anchor status, derived identifiers and counts,
+and live coverage. When multiple anchors are processed, keep the per-anchor
+atomic result distinct. An unchanged preview or apply is `outcome=ok` with zero
+applied and an explicit reason.
+
+## Warnings
+
+Name uncovered task slugs, orphan scenarios, slug collisions, stale questions,
+non-fatal question registration/link failures, unavailable post-state reads,
+and failed anchors. A failed anchor's derived graph rolls back atomically; a
+successful independent anchor remains applied.
+
+## Next actions
+
+Give zero to three executable recommendations. A clean preview leads to the
+operator-gated `planar spec ingest <plan-id> --apply` command, adding
+`--apply-removals` only when removals were explicitly approved. A successful
+apply may recommend `planar workbench push <plan-id>`.
+
+## Recovery
+
+For a strict-preview failure, give `planar spec ingest <plan-id> --strict
+--json` after correcting the named source path. For an apply failure, give
+`planar plan show <plan-id> --json` to confirm the last persisted state and the
+exact idempotent retry `planar spec ingest <plan-id> --apply
+[--apply-removals]`. For non-fatal question failures, include the affected
+question title or ID and its exact `planar question show <id> --json`, add, or
+link retry. Never prescribe cleanup for a rolled-back anchor or roll back a
+successfully applied independent anchor.
+
 ## Vendor Notes
 
 {{.VendorNotes}}

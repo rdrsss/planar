@@ -286,6 +286,57 @@ Run with --apply to commit.
 
 Apply the structured-authoring rules: quoted titles, literal headings, no nested bullets, no `## Out of this plan` H2, workbench discipline, and only annotate skills with the guard note when the guarded verb literally appears in the body.
 
+## Context
+
+Report the resolved scope, repository root, selected roadmap, deterministic or
+interpret mode, preview or apply mode, removal policy, confidence threshold,
+status-inference policy, and forward-spec selection.
+
+## Intent
+
+State in one sentence which repository planning material will be transcribed
+and whether the request is a read-only preview or an approved application.
+
+## Actions
+
+Report `attempted`, `applied`, `skipped`, and `failed` counts across classified
+artifacts, plans, tasks, decisions, removals, and accepted forward specs. Keep
+the CLI's additions, updates, and proposed-removals counts, and name every
+failed target. Guide and unclassified files are skipped, not failed.
+
+## Result
+
+Always report `outcome=ok|partial|error`. A preview returns the stable proposed
+targets and zero applied. After apply, use the returned IDs to read each
+persisted anchor and accepted forward plan with `planar plan show <plan-id>
+--json`, and inspect affected entities from those verified plan results. Return
+completed and failed target identifiers plus workbench paths for accepted
+forward specs. A clean idempotent rerun reports `outcome=ok`, zero applied, and
+why the import already matches.
+
+## Warnings
+
+Name low-confidence items, roadmap ambiguity, unsafe status inference,
+interpretation cache or validation failures, unavailable post-state reads,
+and any partial per-target application. Do not describe independent completed
+plans as rolled back when another target fails.
+
+## Next actions
+
+Give zero to three executable recommendations. For preview, lead with the
+exact approved `planar import <repo-root> --apply ...` command. For accepted
+forward specs, recommend `planar spec ingest <plan-id> --strict --json` before
+their separate apply gate.
+
+## Recovery
+
+List each failed target with its exact inspection command and an idempotent
+retry preserving the original flags, for example `planar import <repo-root>
+--apply [--apply-removals] [--interpret] [--scope <slug>]` or `planar plan show
+<plan-id> --json`. If interpretation is pending, name the pending/result cache
+paths and rerun `planar import <repo-root> --interpret` after the result exists.
+Completed targets remain applied; never invent a cross-target undo.
+
 ## Vendor Notes
 
 {{.VendorNotes}}
