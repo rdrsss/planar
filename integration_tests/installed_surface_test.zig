@@ -58,6 +58,121 @@ fn writeFile(path: []const u8, body: []const u8) !void {
     try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = path, .data = body });
 }
 
+fn inheritedEnv(gpa: std.mem.Allocator) !std.process.Environ.Map {
+    const raw: [*:null]?[*:0]u8 = std.c.environ;
+    var count: usize = 0;
+    while (raw[count] != null) : (count += 1) {}
+    const env_slice: [:null]const ?[*:0]const u8 = @ptrCast(raw[0..count :null]);
+    const environ: std.process.Environ = .{ .block = .{ .slice = env_slice } };
+    return environ.createMap(gpa);
+}
+
+fn runInstaller(gpa: std.mem.Allocator, repo_root: []const u8, home: []const u8, prefix: []const u8, codex_home: []const u8, fake_bin: []const u8, link: bool) !std.process.RunResult {
+    const install = try std.fs.path.join(gpa, &.{ repo_root, "install.sh" });
+    defer gpa.free(install);
+    var env = try inheritedEnv(gpa);
+    defer env.deinit();
+    const path = try std.fmt.allocPrint(gpa, "{s}:{s}", .{ fake_bin, env.get("PATH") orelse "" });
+    defer gpa.free(path);
+    try env.put("HOME", home);
+    try env.put("PLANAR_HOME", prefix);
+    try env.put("CODEX_HOME", codex_home);
+    try env.put("PATH", path);
+    try env.put("NO_COLOR", "1");
+    const argv: []const []const u8 = if (link)
+        &.{ "bash", install, "--prefix", prefix, "--vendors", "codex", "--link", "--optimize", "Debug" }
+    else
+        &.{ "bash", install, "--prefix", prefix, "--vendors", "codex", "--optimize", "Debug" };
+    return std.process.run(gpa, std.testing.io, .{ .argv = argv, .environ_map = &env });
+}
+
+test "selected-vendor installer lifecycle writes a fresh manifest in copy and link modes" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    const home = suite.tmpAbsPath();
+    const prefix = try std.fs.path.join(gpa, &.{ home, ".planar-install" });
+    defer gpa.free(prefix);
+    const codex_home = try std.fs.path.join(gpa, &.{ home, ".codex-install" });
+    defer gpa.free(codex_home);
+    const fake_bin = try std.fs.path.join(gpa, &.{ home, "fake-bin" });
+    defer gpa.free(fake_bin);
+    const fake_zig = try std.fs.path.join(gpa, &.{ fake_bin, "zig" });
+    defer gpa.free(fake_zig);
+    const personal = try std.fs.path.join(gpa, &.{ codex_home, "skills", "personal", "SKILL.md" });
+    defer gpa.free(personal);
+    const unselected = try std.fs.path.join(gpa, &.{ home, ".claude", "commands", "operator.md" });
+    defer gpa.free(unselected);
+    try writeFile(personal, "personal extension\n");
+    try writeFile(unselected, "unselected vendor extension\n");
+
+    // The installer build step is orthogonal to this seam. Replace only `zig`
+    // with a fixture that installs the already-built black-box test binary;
+    // every subsequent render, vendor wiring, manifest, status, and health
+    // operation still runs through the public installer/CLI surfaces.
+    try writeFile(fake_zig,
+        \\#!/usr/bin/env bash
+        \\set -euo pipefail
+        \\if [[ "${1:-}" == version ]]; then printf '0.16.0\n'; exit 0; fi
+        \\[[ "${1:-}" == build ]]
+        \\prefix=""
+        \\while [[ $# -gt 0 ]]; do
+        \\  if [[ "$1" == --prefix ]]; then prefix="$2"; shift 2; else shift; fi
+        \\done
+        \\mkdir -p "$prefix/bin"
+        \\for name in planar planar-agent planar-watch planar-doc planar-execute; do
+        \\  cp "$PLANAR_BIN" "$prefix/bin/$name"
+        \\done
+    );
+    const chmod = try std.process.run(gpa, std.testing.io, .{ .argv = &.{ "chmod", "+x", fake_zig } });
+    defer gpa.free(chmod.stdout);
+    defer gpa.free(chmod.stderr);
+    try std.testing.expect(chmod.term == .exited and chmod.term.exited == 0);
+
+    const repo_root = try std.Io.Dir.realPathFileAlloc(.cwd(), std.testing.io, ".", gpa);
+    defer gpa.free(repo_root);
+    const env = envFor(home, prefix, codex_home);
+    inline for (.{ false, true }) |link| {
+        const installed = try runInstaller(gpa, repo_root, home, prefix, codex_home, fake_bin, link);
+        defer gpa.free(installed.stdout);
+        defer gpa.free(installed.stderr);
+        if (installed.term != .exited or installed.term.exited != 0) {
+            std.debug.print("\ninstaller stdout:\n{s}\ninstaller stderr:\n{s}\n", .{ installed.stdout, installed.stderr });
+        }
+        try std.testing.expect(installed.term == .exited and installed.term.exited == 0);
+
+        const manifest_path = try std.fs.path.join(gpa, &.{ prefix, "install-manifest.json" });
+        defer gpa.free(manifest_path);
+        const manifest = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, manifest_path, gpa, .limited(4 * 1024 * 1024));
+        defer gpa.free(manifest);
+        try std.testing.expect(std.mem.indexOf(u8, manifest, if (link) "\"install_mode\": \"link\"" else "\"install_mode\": \"copy\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, manifest, "\"vendors\": [\"codex\"]") != null);
+        try std.testing.expect(std.mem.indexOf(u8, manifest, "\"vendor\": \"claude\"") == null);
+        try std.testing.expect(std.mem.indexOf(u8, manifest, "\"vendor\": \"copilot\"") == null);
+        try std.testing.expect(std.mem.indexOf(u8, manifest, "\"install_kind\": \"copy\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, manifest, "\"install_kind\": \"link\"") != null);
+
+        const status = suite.mustRunWith(&.{ "skills", "status", "--json" }, &env);
+        defer gpa.free(status);
+        try std.testing.expect(std.mem.indexOf(u8, status, "\"manifest\":{\"status\":\"current\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, status, "\"stale\":0") != null);
+        try std.testing.expect(std.mem.indexOf(u8, status, "\"missing\":0") != null);
+        try std.testing.expect(std.mem.indexOf(u8, status, "\"vendor\":\"claude\",\"status\":\"unselected\"") != null);
+
+        const health = suite.mustRunWith(&.{ "health", "--json" }, &env);
+        defer gpa.free(health);
+        try std.testing.expect(std.mem.indexOf(u8, health, "\"projection_freshness\":{\"state\":\"fresh\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, health, "\"overall\":\"ok\"") != null);
+
+        const personal_after = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, personal, gpa, .limited(1024));
+        defer gpa.free(personal_after);
+        try std.testing.expectEqualStrings("personal extension\n", personal_after);
+        const unselected_after = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, unselected, gpa, .limited(1024));
+        defer gpa.free(unselected_after);
+        try std.testing.expectEqualStrings("unselected vendor extension\n", unselected_after);
+    }
+}
+
 test "health reports fresh managed and unmanaged projections without degradation or writes" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
@@ -259,12 +374,15 @@ test "skills repair previews without writes then repairs copy and link and reche
     defer gpa.free(missing_installed);
     const personal = try std.fs.path.join(gpa, &.{ codex_home, "skills", "personal", "SKILL.md" });
     defer gpa.free(personal);
+    const unselected = try std.fs.path.join(gpa, &.{ home, ".claude", "commands", "operator.md" });
+    defer gpa.free(unselected);
     try writeFile(copy_staged, fresh_body);
     try writeFile(copy_installed, stale_body);
     try writeFile(link_staged, fresh_body);
     try writeFile(link_installed, stale_body);
     try writeFile(missing_staged, fresh_body);
     try writeFile(personal, "keep me\n");
+    try writeFile(unselected, "unselected vendor extension\n");
     const rows = [_]Row{
         .{ .vendor = "codex", .kind = "skill", .name = "copy", .staged = copy_staged, .installed = copy_installed, .install_kind = "copy" },
         .{ .vendor = "codex", .kind = "agent", .name = "link", .staged = link_staged, .installed = link_installed, .install_kind = "link" },
@@ -275,12 +393,14 @@ test "skills repair previews without writes then repairs copy and link and reche
     const preview = suite.mustRunWith(&.{ "skills", "repair", "--json", "copy", "link", "missing" }, &env);
     defer gpa.free(preview);
     try std.testing.expect(std.mem.indexOf(u8, preview, "\"mode\":\"preview\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, preview, "\"attempted\":3") != null);
     try std.testing.expect(std.mem.indexOf(u8, preview, "\"applied\":0") != null);
     const still_stale = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, copy_installed, gpa, .limited(1024));
     defer gpa.free(still_stale);
     try std.testing.expectEqualStrings(stale_body, still_stale);
     const applied = suite.mustRunWith(&.{ "skills", "repair", "--apply", "--json", "copy", "link", "missing" }, &env);
     defer gpa.free(applied);
+    try std.testing.expect(std.mem.indexOf(u8, applied, "\"outcome\":\"ok\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, applied, "\"applied\":3") != null);
     var link_buf: [std.fs.max_path_bytes]u8 = undefined;
     const link_len = try std.Io.Dir.cwd().readLink(std.testing.io, link_installed, &link_buf);
@@ -288,9 +408,27 @@ test "skills repair previews without writes then repairs copy and link and reche
     const status_out = suite.mustRunWith(&.{ "skills", "status", "--vendor", "codex", "--json" }, &env);
     defer gpa.free(status_out);
     try std.testing.expect(std.mem.indexOf(u8, status_out, "\"fresh\":3") != null);
+    try std.testing.expect(std.mem.indexOf(u8, status_out, "\"stale\":0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, status_out, "\"missing\":0") != null);
+
+    const health = suite.mustRunWith(&.{ "health", "--json" }, &env);
+    defer gpa.free(health);
+    try std.testing.expect(std.mem.indexOf(u8, health, "\"projection_freshness\":{\"state\":\"fresh\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, health, "\"overall\":\"ok\"") != null);
+
+    const second_apply = suite.mustRunWith(&.{ "skills", "repair", "--apply", "--json", "copy", "link", "missing" }, &env);
+    defer gpa.free(second_apply);
+    try std.testing.expect(std.mem.indexOf(u8, second_apply, "\"outcome\":\"ok\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, second_apply, "\"attempted\":0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, second_apply, "\"applied\":0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, second_apply, "\"skipped\":3") != null);
+
     const personal_body = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, personal, gpa, .limited(1024));
     defer gpa.free(personal_body);
     try std.testing.expectEqualStrings("keep me\n", personal_body);
+    const unselected_body = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, unselected, gpa, .limited(1024));
+    defer gpa.free(unselected_body);
+    try std.testing.expectEqualStrings("unselected vendor extension\n", unselected_body);
 }
 
 test "skills status distinguishes missing legacy invalid and unsupported manifests" {
@@ -369,4 +507,22 @@ test "skills repair reports precise partial apply and leaves failed target stale
     defer gpa.free(recheck);
     try std.testing.expect(std.mem.indexOf(u8, recheck, "\"fresh\":1") != null);
     try std.testing.expect(std.mem.indexOf(u8, recheck, "\"stale\":1") != null);
+
+    try std.Io.Dir.cwd().deleteTree(std.testing.io, bad_installed);
+    const recovered = suite.mustRunWith(&.{ "skills", "repair", "z-bad", "--apply", "--json" }, &env);
+    defer gpa.free(recovered);
+    try std.testing.expect(std.mem.indexOf(u8, recovered, "\"outcome\":\"ok\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, recovered, "\"attempted\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, recovered, "\"applied\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, recovered, "\"failed\":0") != null);
+
+    const recovered_status = suite.mustRunWith(&.{ "skills", "status", "--vendor", "codex", "--json" }, &env);
+    defer gpa.free(recovered_status);
+    try std.testing.expect(std.mem.indexOf(u8, recovered_status, "\"fresh\":2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, recovered_status, "\"stale\":0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, recovered_status, "\"missing\":0") != null);
+
+    const recovered_health = suite.mustRunWith(&.{ "health", "--json" }, &env);
+    defer gpa.free(recovered_health);
+    try std.testing.expect(std.mem.indexOf(u8, recovered_health, "\"projection_freshness\":{\"state\":\"fresh\"") != null);
 }
