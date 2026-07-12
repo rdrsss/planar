@@ -255,7 +255,7 @@ pub fn build(
 /// selected; argument shapes and entity-bearing tables are never read.
 pub fn cliPreviewJsonl(d: *db.sqlite.Db, allocator: std.mem.Allocator, window_days: i64, max_bytes: usize) !?[]u8 {
     var sql_buf: [512]u8 = undefined;
-    const sql_text = try std.fmt.bufPrint(&sql_buf, "select verb_path, exit_code, coalesce(error_category,''), replace(recorded_at,' ','T') || 'Z' from cli_invocations where recorded_at >= datetime('now','-{d} days') order by recorded_at asc", .{window_days});
+    const sql_text = try std.fmt.bufPrint(&sql_buf, "select case when verb_path like 'planar %' then verb_path else 'planar ' || verb_path end, exit_code, coalesce(error_category,''), replace(recorded_at,' ','T') || 'Z' from cli_invocations where recorded_at >= datetime('now','-{d} days') order by recorded_at asc", .{window_days});
     const sql = try allocator.dupeZ(u8, sql_text);
     defer allocator.free(sql);
     var stmt = try d.prepare(sql);
@@ -281,6 +281,22 @@ pub fn cliPreviewJsonl(d: *db.sqlite.Db, allocator: std.mem.Allocator, window_da
         if (out.written().len > max_bytes) return error.StreamTooLong;
     }
     return try out.toOwnedSlice();
+}
+
+test "cliPreviewJsonl canonicalizes captured verb paths exactly once" {
+    var d = try db.sqlite.Db.openMemory();
+    defer d.close();
+    try db.migrate.applyAll(&d, std.testing.allocator);
+    _ = try d.execParams(
+        "insert into cli_invocations (verb_path, args_shape, exit_code, error_category, recorded_at) values ('task add', '', 2, 'usage', datetime('now')), ('planar plan show', '', 1, 'not_found', datetime('now'))",
+        &.{},
+    );
+
+    const preview = (try cliPreviewJsonl(&d, std.testing.allocator, 30, 4096)).?;
+    defer std.testing.allocator.free(preview);
+    try std.testing.expect(std.mem.indexOf(u8, preview, "\"verb_path\":\"planar task add\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, preview, "\"verb_path\":\"planar plan show\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, preview, "planar planar") == null);
 }
 
 // =========================================================================
