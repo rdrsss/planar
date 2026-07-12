@@ -539,6 +539,58 @@ Wait states use the `awaiting:` prefix so the read surface (`planar-watch ps`) c
 
 See [`agents/orchestrator.md` § Status reporting](../../agents/orchestrator.md#status-reporting) and [`agents/methodology.md` § Heartbeat status contract](../../agents/methodology.md#heartbeat-status-contract) for the full contract.
 
+Every phase-boundary and final operator response keeps the orchestrator's
+canonical decision records: phase selection, strategy/isolation and dispatch
+shape gates, claim routing, subagent decisions, iteration state, and any
+operator approval still required. The shared fields below summarize that
+stronger orchestration state; they do not replace or flatten it.
+
+## Context
+
+Report the resolved scope, goal/plan/task targets, active phase, selected mode,
+strategy, isolation, dispatch shape, and claim tokens relevant to the result.
+
+## Intent
+
+State in one sentence which lifecycle transition or execution scope the
+orchestrator interpreted from the operator's request.
+
+## Actions
+
+Report `attempted`, `applied`, `skipped`, and `failed` counts across phase
+targets. For multi-cycle or multi-target work, retain per-task claim,
+test-coder, reviewer, merge, propagation, archive, and documentation outcomes;
+do not claim one transaction across independent worktrees or remote calls.
+
+## Result
+
+Always report `outcome=ok|partial|error` and the verified lifecycle post-state:
+plan/task identifiers and statuses, surviving claims, commits/branches, remote
+URLs, or manifest root as applicable. Preserve every canonical gate choice,
+subagent verdict, iteration-cap decision, and pending operator approval.
+
+## Warnings
+
+Name partial failures, stale or mismatched claims, degraded validation,
+unmerged worktrees, deferred documentation, unresolved questions, and
+consequential assumptions. An expected gate pause or clean no-op is not itself
+a warning.
+
+## Next actions
+
+Give zero to three executable recommendations ordered by usefulness. When the
+workflow is paused at an operator gate, put the exact approval choice or CLI
+continuation first; otherwise point to the next phase, inspection, or safe
+terminal routing action.
+
+## Recovery
+
+For partial or failed orchestration, name every affected target and give its
+exact idempotent inspect, retry, resume, or cleanup command. Completed
+independent targets remain applied unless the underlying verb is atomic. The
+orchestrator invokes exactly one terminal `planar-agent` verb per claim and
+never invents rollback for worktree merges or remote propagation.
+
 ## Vendor Notes
 
 {{.VendorNotes}}

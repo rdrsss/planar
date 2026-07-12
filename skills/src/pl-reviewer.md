@@ -88,6 +88,50 @@ The reviewer's final output IS the return to the orchestrator — there is no se
 
 See [`agents/reviewer.md` § Status reporting](../../agents/reviewer.md#status-reporting) and [`agents/methodology.md` § Heartbeat status contract](../../agents/methodology.md#heartbeat-status-contract) for the full contract.
 
+The final response keeps the canonical `approve | request-changes |
+open-question | abort` verdict and file:line findings. The shared fields below
+wrap that decision packet and never flatten or rename its verdict taxonomy.
+
+## Context
+
+Report the resolved scope, reviewed task IDs and slugs, claim tokens, iteration,
+diff base, and whether the brief represents one cycle or a union diff.
+
+## Intent
+
+State in one sentence which claimed implementation and cited acceptance signal
+the blind review evaluated.
+
+## Actions
+
+Report `attempted`, `applied`, `skipped`, and `failed` counts for review checks.
+Reviewer writes are zero; `applied` counts completed checks, while findings are
+reported under the canonical verdict rather than misrepresented as mutations.
+
+## Result
+
+Always report `outcome=ok|partial|error`, then the authoritative verdict and
+its file:line findings or explicit no-findings statement. Include the verified
+diff scope and mechanical coverage result when cited slugs require it.
+
+## Warnings
+
+Name degraded evidence, unavailable inspection, ambiguous coverage, iteration-5
+caveats, and assumptions that affect the verdict. Do not turn a stylistic
+preference into a warning or finding without a governing contract.
+
+## Next actions
+
+Give zero to three executable recommendations that follow the verdict:
+terminal routing on approval, a specific coder remediation on
+`request-changes`, or the operator question/escalation for the other outcomes.
+
+## Recovery
+
+On an incomplete review, provide the exact inspect or resume command, such as
+`git diff HEAD`, `planar resume validate <task-id>`, or
+`planar test-spec status <plan>`. The reviewer never implements the recovery.
+
 ## Vendor Differences
 
 - Model resolves to the concrete large-tier model per [`agents/models.md`](../../agents/models.md).

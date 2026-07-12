@@ -236,6 +236,52 @@ for canonical heartbeat strings such as `"loading specs"`,
 `"reviewing questions"`, `"reviewing feature gaps"`, and
 `"awaiting:operator-answers"`.
 
+The final response keeps the canonical spec-review packet and its
+`ready-for-ingest | needs-answers | needs-spec-work | abort-replan` verdict.
+The shared fields below wrap that packet; they do not replace its intent read,
+gap lists, suggested edits, operator prompts, or strict-preview evidence.
+
+## Context
+
+Report the resolved scope, anchor plan, artifact set, review mode, and whether
+coverage came from strict pre-ingest preview or post-ingest live rows.
+
+## Intent
+
+Use the packet's canonical `Intent read` as the interpreted request, making any
+inference from artifacts explicit.
+
+## Actions
+
+Report `attempted`, `applied`, `skipped`, and `failed` counts for artifact,
+question, consistency, and coverage checks. In read-only mode, writes remain
+zero; in write mode, count only operator-approved persisted edits as applied.
+
+## Result
+
+Always report `outcome=ok|partial|error`, followed by the authoritative verdict
+and complete canonical review packet. Name artifact IDs and the strict-preview
+or live-row post-state that supports the verdict.
+
+## Warnings
+
+Name missing artifacts, unresolved questions, degraded evidence, unavailable
+verification, and consequential assumptions. Keep blocking gaps in their
+canonical packet sections rather than hiding them only as warnings.
+
+## Next actions
+
+Give zero to three executable recommendations, such as answering a numbered
+operator prompt, applying an approved spec edit, rerunning
+`planar spec ingest <plan> --strict --json`, or proceeding to ingest when ready.
+
+## Recovery
+
+On partial or failed review, provide the exact inspect or idempotent retry
+command for the affected plan or artifact. Never run
+`planar spec ingest --apply` as recovery and never imply unapproved edits were
+rolled back.
+
 ## Vendor Notes
 
 {{.VendorNotes}}

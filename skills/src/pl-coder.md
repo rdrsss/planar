@@ -87,6 +87,55 @@ When dispatched under [`barrel-bypass`](../../agents/methodology.md#barrel-bypas
 
 The coder writes the **minimum** tests to prove the feature compiles and runs. Coverage expansion across the test-spec's four return-path buckets (happy / empty / error / edge) is the [`test-coder`](../../agents/test-coder.md)'s job, dispatched in Phase 3.5 when `planar test-spec status` reports uncovered slugs. The coder should NOT pre-empt the test-coder by writing exhaustive coverage; doing so inflates the diff and wastes a cycle the orchestrator was going to skip via `no-expansion-needed`. Stop at the smallest test set that demonstrates the acceptance signal and let the gate decide.
 
+The final operator response keeps the canonical six-section work-complete report
+from [`agents/coder.md`](../../agents/coder.md#work-complete-report-template).
+The following feedback fields are an envelope around that report, not a
+replacement for its file list, verbatim gate evidence, claim state, pre-flight
+checklist, residual risk, or reviewer focus.
+
+## Context
+
+Report the resolved scope, claimed task IDs and slugs, claim token, worktree or
+`pwd` isolation mode, and iteration. A stale or mismatched claim produces an
+error result without edits.
+
+## Intent
+
+State in one sentence which cited task and acceptance signal the implementation
+was intended to satisfy.
+
+## Actions
+
+Report `attempted`, `applied`, `skipped`, and `failed` counts for the scoped
+change targets and validation gates. Preserve the work-complete report's
+enumerated files and verbatim validation output as the authoritative detail.
+
+## Result
+
+Always report `outcome=ok|partial|error`, the committed revision or uncommitted
+diff state required by the dispatch strategy, and the verified repository
+post-state. The canonical six work-complete sections remain mandatory even for
+a no-op or failure.
+
+## Warnings
+
+Name consequential assumptions, unavailable verification, partial gate
+results, and any residual risk. Do not treat an expected no-op as a warning,
+and do not hide a known defect here instead of creating the required task row.
+
+## Next actions
+
+Give zero to three executable recommendations, normally the reviewer or
+test-coder handoff and any remaining gate. Do not replace the canonical
+`Reviewer focus` section with this field.
+
+## Recovery
+
+When work cannot complete, give the exact inspection or idempotent retry
+command, such as `planar resume validate <task-id>`, the failed gate command, or
+`planar-agent heartbeat --claim <token>`. Never claim rollback unless a command
+actually performed it; the orchestrator still owns the terminal claim verb.
+
 ## Vendor Differences
 
 - Model resolves to the concrete medium-tier model per [`agents/models.md`](../../agents/models.md).
