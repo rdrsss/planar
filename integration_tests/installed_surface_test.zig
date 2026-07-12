@@ -494,6 +494,59 @@ test "skills repair previews without writes then repairs copy and link and reche
     try std.testing.expectEqualStrings("unselected vendor extension\n", unselected_body);
 }
 
+test "untrusted staged authority routes status and repair preview to reinstall" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    const home = suite.tmpAbsPath();
+    const planar_home = try std.fs.path.join(gpa, &.{ home, ".planar" });
+    defer gpa.free(planar_home);
+    const codex_home = try std.fs.path.join(gpa, &.{ home, ".codex" });
+    defer gpa.free(codex_home);
+    const unavailable_staged = try std.fs.path.join(gpa, &.{ planar_home, "codex-skills", "unavailable", "SKILL.md" });
+    defer gpa.free(unavailable_staged);
+    const unavailable_installed = try std.fs.path.join(gpa, &.{ codex_home, "skills", "unavailable", "SKILL.md" });
+    defer gpa.free(unavailable_installed);
+    const invalid_staged = try std.fs.path.join(gpa, &.{ planar_home, "codex-skills", "invalid", "SKILL.md" });
+    defer gpa.free(invalid_staged);
+    const invalid_installed = try std.fs.path.join(gpa, &.{ codex_home, "skills", "invalid", "SKILL.md" });
+    defer gpa.free(invalid_installed);
+    const mismatched_staged = try std.fs.path.join(gpa, &.{ planar_home, "codex-skills", "mismatched", "SKILL.md" });
+    defer gpa.free(mismatched_staged);
+    const mismatched_installed = try std.fs.path.join(gpa, &.{ codex_home, "skills", "mismatched", "SKILL.md" });
+    defer gpa.free(mismatched_installed);
+    try writeFile(unavailable_staged, fresh_body);
+    try writeFile(unavailable_installed, stale_body);
+    try writeFile(invalid_staged, fresh_body);
+    try writeFile(invalid_installed, stale_body);
+    try writeFile(mismatched_staged, fresh_body);
+    try writeFile(mismatched_installed, stale_body);
+    const rows = [_]Row{
+        .{ .vendor = "codex", .kind = "skill", .name = "unavailable", .staged = unavailable_staged, .installed = unavailable_installed, .install_kind = "copy" },
+        .{ .vendor = "codex", .kind = "skill", .name = "invalid", .staged = invalid_staged, .installed = invalid_installed, .install_kind = "copy" },
+        .{ .vendor = "codex", .kind = "skill", .name = "mismatched", .staged = mismatched_staged, .installed = mismatched_installed, .install_kind = "copy" },
+    };
+    try writeManifest(gpa, planar_home, &.{"codex"}, &rows);
+    try std.Io.Dir.cwd().deleteFile(std.testing.io, unavailable_staged);
+    try writeFile(invalid_staged, "no projection digest metadata\n");
+    try appendSemanticTamper(gpa, mismatched_staged);
+    const env = envFor(home, planar_home, codex_home);
+
+    const status = suite.mustRunWith(&.{ "skills", "status", "--json" }, &env);
+    defer gpa.free(status);
+    try std.testing.expectEqual(@as(usize, 4), std.mem.count(u8, status, "./install.sh --prefix"));
+    try std.testing.expect(std.mem.indexOf(u8, status, "planar skills repair unavailable --vendor codex --apply") == null);
+    try std.testing.expect(std.mem.indexOf(u8, status, "planar skills repair invalid --vendor codex --apply") == null);
+    try std.testing.expect(std.mem.indexOf(u8, status, "planar skills repair mismatched --vendor codex --apply") == null);
+
+    const preview = suite.execWith(&.{ "skills", "repair", "--json" }, &env);
+    defer preview.deinit(gpa);
+    try std.testing.expect(preview.term == .exited and preview.term.exited == 1);
+    try std.testing.expect(std.mem.indexOf(u8, preview.stdout, "\"action\":\"would-repair\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, preview.stdout, "planar skills repair --apply") == null);
+    try std.testing.expect(std.mem.indexOf(u8, preview.stdout, "./install.sh --prefix") != null);
+}
+
 test "skills status distinguishes missing legacy invalid and unsupported manifests" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
