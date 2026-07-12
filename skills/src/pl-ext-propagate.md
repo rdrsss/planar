@@ -75,9 +75,36 @@ Entities that already have an `external_links(link_role='mirror')` row for the t
 
 ## Underlying CLI verbs
 
-To change the direction of an existing external link, first record its local
-entity, external target, and role. Then unlink and recreate it with the new
-direction; `unlink` removes the old link row and its sync-event history.
+There is no lossless current command for changing an existing external link's
+direction. The `links update` subcommand is deferred, and `links add` /
+`links remove` manage internal `entity_links`, not external bindings. Top-level
+`unlink` / `link` is a destructive recovery: it deletes the old `external_url`,
+`config_json` (including cached propagation strategy), last-sync state, and
+association with its sync-event history. The old events remain detached with
+`link_id=null`; the replacement gets a new row id, null URL/config/last-sync,
+status `never`, and no attached history.
+
+Before any unlink, save the CLI-visible evidence:
+
+```sh
+planar audit trail --link <link-id> --json > external-link-<link-id>-audit.json
+planar sync status --entity <kind:id> --system <system-slug> --json > external-link-<link-id>-status.json
+```
+
+Those reads capture identity, event history, and last-sync state, but the
+public CLI does not expose the exact old URL, config, role, or direction. Stop
+unless the destructive loss is acceptable and the intended role/direction are
+known independently. For a record-only binding, review the full replacement
+command first, then run top-level `planar unlink <link-id>` and `planar link
+<kind:id> --to <system-slug>:<external-id> --role <role> --sync <direction>`.
+This retains the same remote id but does not restore the omitted fields.
+
+For a propagation-owned mirror, validate the plan/system with a dry run before
+unlinking. After unlink, dry-run again to preview fresh creation, then propagate
+with an explicit sync direction. This creates a new remote counterpart and new
+state; it does not restore the deleted row. Pass `--github-strategy` only when
+the old value is independently known. See the complete recovery sequence in
+[`docs/cli-reference.md`](../../docs/cli-reference.md#planar-links-update-link-id).
 
 > **Cross-scope guard.** This verb refuses with exit 1 when the
 > operator's resolved write scope disagrees with the target entity's

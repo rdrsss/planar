@@ -3346,13 +3346,25 @@ planar link <kind:id> --to <system-slug>:<external-id> [--role <link-role>] [--s
 planar unlink <link-id>
 ```
 
-**Description:** Remove an `external_links` row by link id. Any associated `sync_events` rows are also deleted (cascade).
+**Description:** Remove an `external_links` row by link id. Associated
+`sync_events` rows are retained with `link_id=null` by the foreign key's `ON
+DELETE SET NULL` action, but they are detached from the deleted link and no
+longer reachable through `audit trail --link`.
+
+This is not a lossless way to change sync direction. Recreating the binding
+with `planar link` gives it a new row id and resets `external_url` and
+`config_json` (including any cached propagation strategy) to null,
+`last_synced_at` to null, and `last_sync_status` to `never`; the old sync-event
+history is not attached to the replacement. The public CLI cannot export or
+restore the exact old `external_url`, `config_json`, link role, or sync
+direction, so do not unlink unless those losses are acceptable and the role
+and desired direction are known independently.
 
 **Scope guard:** Refuses when the operator's resolved write scope disagrees with the local entity referenced by the link. See [Cross-scope guard](#cross-scope-guard).
 
 **Schema effects:**
 - Deletes from `external_links(id)`.
-- Cascades to `sync_events` via FK.
+- Sets matching `sync_events.link_id` values to null via FK.
 
 **Capture:** Appends `session_entries` row with `prefix='action'`.
 
@@ -4402,8 +4414,62 @@ entity link 22 removed
 
 > **Not yet implemented.** This verb is deferred to the M11 external-plane
 > work. Invoking it prints `links update is deferred to M11` and makes no
-> change; use `links remove` + `links add` as a workaround. The behavior
-> described below is the intended contract, not the current one.
+> change. `links remove` and `links add` manage internal `entity_links`; they
+> cannot change an external link. No lossless external-link update exists in
+> the current CLI. The behavior described below is the intended contract, not
+> the current one.
+
+The only current recovery is destructive top-level `unlink` / `link`, or
+`unlink` followed by a fresh `ext propagate`. Before proceeding, capture the
+CLI-visible evidence:
+
+```sh
+planar audit trail --link <link-id> --json > external-link-<link-id>-audit.json
+planar sync status --entity <kind:id> --system <system-slug> --json \
+  > external-link-<link-id>-status.json
+```
+
+The audit output captures the local entity, system slug, external id, and
+sync-event history; status captures the last-sync timestamp and status. Neither
+command exposes `external_url`, `config_json`, `link_role`, or
+`sync_direction`. If the intended role and direction are not known from an
+independent record, stop: the CLI cannot reconstruct them exactly.
+
+For a record-only binding where retaining the same remote external id matters,
+write down and review the complete replacement command before deleting:
+
+```sh
+planar unlink <link-id>
+planar link <kind:id> --to <system-slug>:<external-id> \
+  --role <role> --sync <read-only|write-back|two-way>
+```
+
+This preserves only the identifiers and explicitly re-entered role/direction.
+The replacement has `external_url=null`, `config_json=null`, no prior
+last-sync state, and no attached prior event history. The old event rows remain
+detached with `link_id=null`; the replacement link cannot query them.
+
+For a propagation-owned mirror, first verify that the plan and system resolve
+while the old row still exists. After capturing evidence and unlinking, preview
+the now-unlinked entity before allowing a new remote counterpart:
+
+```sh
+planar ext propagate <plan-id> --system <system-slug> --dry-run \
+  --sync <read-only|write-back|two-way>
+planar unlink <link-id>
+planar ext propagate <plan-id> --system <system-slug> --dry-run \
+  --sync <read-only|write-back|two-way>
+planar ext propagate <plan-id> --system <system-slug> \
+  --sync <read-only|write-back|two-way>
+```
+
+The first dry run is a pre-delete resolution check; it normally reports the
+existing row as skipped. The second previews fresh creation after unlink. The
+final command creates a new remote counterpart, URL, config, sync state, and
+history; it does not restore the old values. For GitHub, pass
+`--github-strategy <value>` on the fresh propagation only when the old strategy
+is independently known. Otherwise strategy is selected from current state and
+may differ from the deleted `config_json`.
 
 **Synopsis:**
 ```
