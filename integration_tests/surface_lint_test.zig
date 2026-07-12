@@ -60,11 +60,12 @@ fn testDirtyCorpus(allocator: std.mem.Allocator, io: std.Io, bin: []const u8, fi
     const expected_lines = [_][]const u8{
         "agents/drift.md:6: surface-link-missing:",
         "agents/drift.md:7: surface-legacy-reference:",
-        "agents/drift.md:8: surface-artifact-set-drift:",
-        "agents/drift.md:9: surface-command-drift:",
-        "agents/drift.md:10: surface-capability-drift:",
+        "agents/drift.md:8: surface-legacy-reference:",
+        "agents/drift.md:9: surface-artifact-set-drift:",
+        "agents/drift.md:10: surface-command-drift:",
+        "agents/drift.md:11: surface-capability-drift:",
         "skills/src/missing-contract.md:1: surface-contract-missing:",
-        "surface-lint: 6 finding(s) across 2 files\n",
+        "surface-lint: 7 finding(s) across 2 files\n",
     };
     var last: usize = 0;
     for (expected_lines) |needle| {
@@ -84,9 +85,9 @@ fn testDirtyCorpus(allocator: std.mem.Allocator, io: std.Io, bin: []const u8, fi
     try expect(parsed.value.version == 1);
     try expect(!parsed.value.ok);
     try expect(parsed.value.files_scanned == 2);
-    try expect(parsed.value.findings.len == 6);
+    try expect(parsed.value.findings.len == 7);
     const codes = [_][]const u8{
-        "surface-link-missing",  "surface-legacy-reference", "surface-artifact-set-drift",
+        "surface-link-missing",  "surface-legacy-reference", "surface-legacy-reference", "surface-artifact-set-drift",
         "surface-command-drift", "surface-capability-drift", "surface-contract-missing",
     };
     for (codes, parsed.value.findings) |code, finding| try expectEqual(code, finding.code);

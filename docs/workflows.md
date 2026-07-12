@@ -337,6 +337,47 @@ planar ext propagate 42 --system my-gh --verify-counterparts
 
 Probes the remote to confirm every already-linked entity still exists. Missing counterparts are written as `sync_events(outcome='counterpart-missing')` rows. Use `--unlink` to remove stale links or `--recreate` to recreate them immediately.
 
+### Change an existing link's sync direction (destructive recovery only)
+
+The current CLI has no lossless in-place direction update. `planar links
+add/remove` manage internal relationships, not external bindings, and
+`planar links update` is deferred. Top-level `unlink` deletes the old external
+link and detaches its sync events (`link_id` becomes null); a manual `link`
+replacement also loses the old `external_url`, `config_json` (including
+propagation strategy), and last-sync state. The replacement cannot query or
+adopt the detached event history.
+
+Capture what the CLI can expose before deleting anything:
+
+```sh
+planar audit trail --link <link-id> --json > external-link-<link-id>-audit.json
+planar sync status --entity <kind:id> --system <system-slug> --json > external-link-<link-id>-status.json
+planar ext propagate <plan-id> --system <system-slug> --dry-run \
+  --sync <read-only|write-back|two-way>
+```
+
+The first two commands preserve identity/history and last-sync evidence. They
+do not expose the exact URL, config, role, or direction; stop if those values
+are not independently known or their loss is unacceptable. For a
+propagation-owned mirror, continue with:
+
+```sh
+planar unlink <link-id>
+planar ext propagate <plan-id> --system <system-slug> --dry-run \
+  --sync <read-only|write-back|two-way>
+planar ext propagate <plan-id> --system <system-slug> \
+  --sync <read-only|write-back|two-way>
+```
+
+The post-unlink dry run previews fresh creation. The final command creates a
+new remote counterpart and new link state; it cannot restore the old URL,
+configuration, or history. If retaining the same remote external id matters,
+use top-level `planar link` instead of propagation, supplying the independently
+known role and desired direction; that record-only replacement still starts
+with null URL/config/last-sync and status `never`. See the
+[`links update` reference](cli-reference.md#planar-links-update-link-id) for
+the full caveat and command sequence.
+
 ---
 
 ## Recipe 4 — Handoff Between Agents or Sessions

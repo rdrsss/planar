@@ -609,6 +609,28 @@ test "semantic drift fixtures emit stable codes and line evidence" {
         try testing.expectEqual(case.line, fixture.result.findings.items[0].line);
     }
 }
+test "every pinned retired pattern emits stable legacy evidence" {
+    const cases = [_]struct { pattern: []const u8, content: []const u8 }{
+        .{ .pattern = "src/internal/", .content = "Header\n\nUse `src/internal/workbench/parse.go`.\n" },
+        .{ .pattern = "harness Agent/Task tool", .content = "Header\n\nThe harness Agent/Task tool owns dispatch.\n" },
+        .{ .pattern = "harness Agent tool", .content = "Header\n\nThe harness Agent tool owns dispatch.\n" },
+        .{ .pattern = "Go side", .content = "Header\n\nThe Go side performs this step.\n" },
+        .{ .pattern = "Phase 5.5", .content = "Header\n\nContinue in Phase 5.5.\n" },
+    };
+    try testing.expectEqual(retired_patterns.len, cases.len);
+    for (cases, retired_patterns) |case, pattern| {
+        try testing.expectEqualStrings(pattern, case.pattern);
+        var fixture = try scanFixture(case.content, .{});
+        defer fixture.deinit();
+        try testing.expectEqual(@as(usize, 1), fixture.result.findings.items.len);
+        const finding = fixture.result.findings.items[0];
+        try testing.expectEqualStrings(Code.legacy, finding.code);
+        try testing.expectEqual(@as(usize, 3), finding.line);
+        const expected = try std.fmt.allocPrint(testing.allocator, "retired authored-surface reference: {s}", .{case.pattern});
+        defer testing.allocator.free(expected);
+        try testing.expectEqualStrings(expected, finding.message);
+    }
+}
 test "clean fixture and valid next-line suppression pass" {
     var fixture = try scanFixture("<!-- surface-lint-ignore surface-legacy-reference: historical comparison required -->\n\nHistorical `src/internal/foo.go` reference.\n", .{});
     defer fixture.deinit();

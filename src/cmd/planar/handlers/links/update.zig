@@ -5,7 +5,9 @@
 //! Go's `links update` mutates the sync_direction column on an existing
 //! external_links row (not entity_links). This is M11 (external-plane) work
 //! per the M2 locked decision D-update-deferred. The handler is present for
-//! surface parity (so `planar links` lists the verb) but returns NotImplemented.
+//! surface parity but is hidden and returns NotImplemented. The top-level
+//! `unlink` / `link` pair is the only current recovery, and it is destructive:
+//! it cannot preserve the old row's URL, config, sync state, or event history.
 //!
 //! Follow-up task slug: handlers-links-update-m11 (plan 316).
 
@@ -19,5 +21,5 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     const args = cli.castArgs(main.root, &.{ "links", "update" }, args_ptr);
     const ctx = runtime.current();
     _ = args;
-    exit.die(ctx, error.NotImplemented, "links update is deferred to M11 (external-plane); use `links remove` + `links add` as a workaround", .{});
+    exit.die(ctx, error.NotImplemented, "links update is deferred to M11 (external-plane); no lossless CLI update exists (top-level `unlink` + `link` is destructive)", .{});
 }
