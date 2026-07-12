@@ -47,6 +47,64 @@ Summary: every factual claim in a coder's work-complete report must be re-verifi
 
 ---
 
+## Operator feedback contract
+
+Every user-invocable skill returns one compact account of what it understood,
+what it did, and what the operator can do next. The shared fields are:
+
+| Field | Contract |
+|---|---|
+| Context | Resolved scope, target, and mode. |
+| Intent | One sentence stating the interpreted request. |
+| Actions | Counts for `attempted`, `applied`, `skipped`, and `failed`; identify failed targets when there are any. |
+| Result | The verified post-state, including stable entity identifiers, paths, or external URLs. This field is never omitted. |
+| Warnings | Partial failures, consequential assumptions, unavailable checks, or degraded signal. |
+| Next actions | Zero to three executable recommendations, ordered by usefulness. |
+| Recovery | The exact inspect, retry, resume, or undo command when recovery applies. |
+
+Skills use stable CLI JSON internally when it is available, but translate it
+into concise operator-facing prose. A skill that exposes JSON returns the same
+information as named fields rather than a different result model. Empty
+operator-output fields are omitted except `result`; the canonical authored
+skill still carries all seven contract sections so its behavior is explicit.
+
+An exit code is evidence that a command ran, not evidence that the requested
+state exists. After a mutation, read the post-state when a supported read is
+available and report identifiers from that read. If verification is
+unavailable, say so in `warnings` and offer the exact inspection command.
+
+Use these outcome semantics consistently:
+
+- **Success:** `outcome=ok`; report the verified post-state and non-zero action
+  counts where work was applied.
+- **Successful no-op:** `outcome=ok`; report zero applied, explain why nothing
+  changed, emit no warning for the expected empty state, and give an
+  appropriate next action when one exists.
+- **Partial:** `outcome=partial`; retain completed independent targets, list
+  every failed target, and provide its idempotent retry or inspection command.
+  Do not claim cross-target rollback or atomicity that the underlying CLI does
+  not provide.
+- **Failure:** `outcome=error`; distinguish attempted from applied work, report
+  the last verified state, and provide actionable recovery. Never imply an
+  undo occurred unless the underlying operation actually performed one.
+
+The shared contract is a minimum envelope, not a replacement for a stronger
+role-specific schema. Reviewer verdicts, coder work-complete reports,
+orchestrator decisions, and other canonical outputs keep their required fields
+and decision taxonomies; they add or map the shared context, result, warnings,
+next-action, and recovery information without flattening those schemas.
+
+`internal_only: true` in unified skill frontmatter is the sole exemption. It is
+valid only for a helper that is never an operator entry point and is invoked by
+another canonical skill or role that owns the operator-facing result. The
+source must identify that caller and justify the exemption. Hidden,
+inconvenient, normally orchestrator-dispatched, or manually invocable skills
+are still user-invocable and must implement the contract. Internal-only status
+waives only the seven authored feedback sections; it does not waive errors,
+warnings, or recovery information owed to the calling workflow.
+
+---
+
 ## Work-complete report template
 
 Full template lives in [`agents/coder.md §Work-complete report template`](coder.md#work-complete-report-template).

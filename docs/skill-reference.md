@@ -49,6 +49,89 @@ unsupported, or stamped legacy manifest instead routes to `./install.sh
 
 ---
 
+## Skill authoring feedback contract
+
+Every unified skill under `skills/src/` is user-invocable unless its
+frontmatter explicitly says `internal_only: true`. A user-invocable source must
+contain these literal H2 sections, even when a particular return path tells the
+skill to omit an empty field from its final operator output:
+
+```markdown
+## Context
+## Intent
+## Actions
+## Result
+## Warnings
+## Next actions
+## Recovery
+```
+
+Use each section to author the behavior for all relevant return paths:
+
+- `Context` resolves scope, target, and mode before action.
+- `Intent` restates the interpreted request in one sentence so a wrong target
+  or mode is visible before consequential work.
+- `Actions` reports `attempted`, `applied`, `skipped`, and `failed`. A
+  multi-target operation reports all four counts and names every failed target.
+- `Result` is mandatory in every final response. It reports the post-state
+  identifiers, paths, or external URLs and says when the outcome is `ok`,
+  `partial`, or `error`.
+- `Warnings` is reserved for partial failures, assumptions that affect the
+  result, unavailable verification, and degraded signal. An expected no-op is
+  not itself a warning.
+- `Next actions` contains zero to three executable recommendations. Do not pad
+  a terminal result with generic advice.
+- `Recovery` supplies an exact inspect, idempotent retry, resume, or real undo
+  command when applicable. Do not invent rollback for independent writes or
+  remote calls.
+
+Prefer a stable `--json` CLI read for parsing and post-state verification, then
+render concise prose. Exit code zero alone is not a verified mutation. When a
+post-state read exists, use it and return its stable identifiers. When it does
+not exist or fails, preserve the last known result, add a warning, and give the
+inspection command. If the skill itself supports JSON, its JSON result mirrors
+the same fields and action counts as the text response.
+
+Return paths have precise meanings:
+
+| Return path | Required operator feedback |
+|---|---|
+| Success | `outcome=ok`, verified result, and the applied action counts. |
+| Successful no-op | `outcome=ok`, zero applied, the reason nothing changed, no warning for the expected empty state, and a useful next action when one exists. |
+| Partial | `outcome=partial`, completed and failed targets, all four counts, and an exact per-failure retry or inspection command. Completed independent targets remain applied unless the CLI operation is atomic. |
+| Failure | `outcome=error`, attempted versus applied work, last verified state, warnings, and an actionable inspect/retry/resume/undo command when applicable. |
+
+Stronger role-specific contracts remain authoritative. For example, reviewer
+verdicts and coder work-complete reports keep their canonical decision fields,
+sections, and gate evidence; author the shared feedback fields around or as an
+explicit mapping into that schema instead of replacing it with generic prose.
+
+### Internal-only exemption
+
+Use the exemption only for a helper with no direct operator invocation whose
+calling skill or role owns the complete operator-facing result:
+
+```yaml
+---
+slug: example-helper
+internal_only: true
+---
+```
+
+The source body must name the canonical caller and explain why feedback is
+returned through that caller. The flag is not appropriate merely because a
+skill is usually dispatched by the orchestrator, omitted from a common recipe,
+or intended for advanced use: if an operator can invoke it as a supported
+entry point, it is user-invocable. The exemption removes only the requirement
+for the seven literal H2 sections. The helper must still return sufficient
+failure, warning, and recovery detail for its caller to satisfy the shared
+contract.
+
+See [`agents/doctrine.md` §Operator feedback contract](../agents/doctrine.md#operator-feedback-contract)
+for the cross-role outcome and verification doctrine.
+
+---
+
 ## Binary architecture
 
 Planar ships five executables. Four are planning-state binaries, each with a disjoint capability boundary over the shared SQLite DB enforced by its verb set (not by runtime ACLs); skills and agents reach for the binary that matches the work - and only that binary. The capability boundary across those four is locked by integration tests (`integration_tests/capability_boundary_test.zig`). The fifth, `planar-execute`, is the deterministic, spawn-free Lua workflow engine and holds no DB handle.
