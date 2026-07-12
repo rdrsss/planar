@@ -98,6 +98,7 @@ comptime {
     _ = @import("propagate_tree_workflow_test.zig");
     _ = @import("m5_readcomp_workflow_test.zig");
     _ = @import("introspect_workflow_test.zig");
+    _ = @import("feedback_triage_test.zig");
     _ = @import("workflow_authoring_test.zig");
     _ = @import("workflow_run_test.zig");
     _ = @import("dispatch_workflow_test.zig");

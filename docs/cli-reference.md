@@ -6653,3 +6653,22 @@ For quick reference, all documented commands grouped by domain:
 | `run` | `run start`, `run event`, `run finish`, `run show` |
 | `workflow` | `workflow list`, `workflow list --local`, `workflow show <name>` |
 | `schema` | `schema` (also on `planar-agent`, `planar-watch`, `planar-doc`) |
+## Feedback triage
+
+```text
+planar feedback triage list [--plan <id>] [--severity <info|low|medium|high|critical>]
+  [--disposition <value>] [--json]
+planar feedback triage show <task:id|question:id> [--json]
+planar feedback triage set <task:id|question:id> --severity <value>
+  --disposition <value> --reproduction <value>
+  [--duplicate-of <task:id|question:id>] [--evidence <redacted-text>]
+  [--scope <slug>] [--json]
+```
+
+Disposition values are `untriaged`, `needs-reproduction`, `accepted`,
+`retained-question`, `dismissed`, `reported-external`, and `duplicate`.
+Reproduction values are `not-run`, `reproduced`, `not-reproduced`, and
+`inconclusive`. `duplicate` requires `--duplicate-of`; all other dispositions
+forbid it. Duplicate targets must already have triage state, belong to the same
+feedback plan, and may not form self-links or cycles. `set` is scope guarded,
+performs only the operator-confirmed local update, and never posts externally.
