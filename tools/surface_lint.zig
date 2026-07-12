@@ -301,18 +301,18 @@ const command_classes = [_]CommandClass{
     r("planar dashboard"),                   m("planar spec ingest"),           r("planar test-spec status"),      r("planar config show"),           m("planar config edit"),             r("planar config validate"),
     m("planar config init"),                 r("planar config path"),           r("planar templates list"),        r("planar templates show"),        r("planar templates render"),        r("planar templates validate"),
     m("planar templates init"),              r("planar templates path"),        r("planar tree"),                  r("planar search"),                r("planar local list"),              m("planar local link"),
-    m("planar local unlink"),                m("planar local import"),          m("planar local migrate"),         m("planar skills render"),         m("planar import"),                  m("planar synthesize"),
-    r("planar version"),                     r("planar completion"),            r("planar schema"),                r("planar report"),                m("planar bench start"),             m("planar bench event"),
-    m("planar bench touch"),                 m("planar bench harvest"),         m("planar bench finish"),          r("planar bench show"),            m("planar closure compute"),         r("planar closure show"),
-    m("planar run start"),                   m("planar run event"),             m("planar run finish"),            r("planar run show"),              r("planar groups recommend"),        m("planar explore"),
-    r("planar workflow list"),               r("planar workflow show"),         m("planar workflow run"),          r("planar-agent version"),         m("planar-agent pull"),              r("planar-agent peek"),
-    m("planar-agent complete"),              m("planar-agent fail"),            m("planar-agent release"),         m("planar-agent block"),           m("planar-agent claim"),             m("planar-agent heartbeat"),
-    m("planar-agent claim-associate"),       m("planar-agent action start"),    m("planar-agent action end"),      m("planar-agent ingest"),          m("planar-agent reconcile"),         m("planar-agent abort"),
-    r("planar-agent schema"),                m("planar-agent run start"),       m("planar-agent run end"),         m("planar-agent context add"),     m("planar-agent context capsule"),   r("planar-agent context list"),
-    m("planar-agent context resolve"),       r("planar-watch feed"),            r("planar-watch ps"),              r("planar-watch claims"),          r("planar-watch actions"),           r("planar-watch plans"),
-    r("planar-watch log"),                   r("planar-watch tree"),            r("planar-watch run list"),        r("planar-watch run show"),        r("planar-watch sync-events"),       r("planar-watch version"),
-    r("planar-watch completion"),            r("planar-watch schema"),          m("planar-doc build"),             r("planar-doc verify"),            r("planar-doc diff"),                m("planar-doc cover"),
-    m("planar-doc nodoc"),                   r("planar-doc lint"),              r("planar-doc schema"),
+    m("planar local unlink"),                m("planar local import"),          m("planar local migrate"),         m("planar skills render"),         r("planar skills status"),           m("planar skills repair"),
+    m("planar import"),                      m("planar synthesize"),            r("planar version"),               r("planar completion"),            r("planar schema"),                  r("planar report"),
+    m("planar bench start"),                 m("planar bench event"),           m("planar bench touch"),           m("planar bench harvest"),         m("planar bench finish"),            r("planar bench show"),
+    m("planar closure compute"),             r("planar closure show"),          m("planar run start"),             m("planar run event"),             m("planar run finish"),              r("planar run show"),
+    r("planar groups recommend"),            m("planar explore"),               r("planar workflow list"),         r("planar workflow show"),         m("planar workflow run"),            r("planar-agent version"),
+    m("planar-agent pull"),                  r("planar-agent peek"),            m("planar-agent complete"),        m("planar-agent fail"),            m("planar-agent release"),           m("planar-agent block"),
+    m("planar-agent claim"),                 m("planar-agent heartbeat"),       m("planar-agent claim-associate"), m("planar-agent action start"),    m("planar-agent action end"),        m("planar-agent ingest"),
+    m("planar-agent reconcile"),             m("planar-agent abort"),           r("planar-agent schema"),          m("planar-agent run start"),       m("planar-agent run end"),           m("planar-agent context add"),
+    m("planar-agent context capsule"),       r("planar-agent context list"),    m("planar-agent context resolve"), r("planar-watch feed"),            r("planar-watch ps"),                r("planar-watch claims"),
+    r("planar-watch actions"),               r("planar-watch plans"),           r("planar-watch log"),             r("planar-watch tree"),            r("planar-watch run list"),          r("planar-watch run show"),
+    r("planar-watch sync-events"),           r("planar-watch version"),         r("planar-watch completion"),      r("planar-watch schema"),          m("planar-doc build"),               r("planar-doc verify"),
+    r("planar-doc diff"),                    m("planar-doc cover"),             m("planar-doc nodoc"),             r("planar-doc lint"),              r("planar-doc schema"),
 };
 
 fn checkCapability(arena: std.mem.Allocator, file: []const u8, role: []const u8, line_no: usize, line: []const u8, in_fence: bool, findings: *std.ArrayList(Finding), suppressions: *std.ArrayList(Suppression)) !void {
@@ -730,7 +730,7 @@ test "schema inventory has an explicit unique classification for every current l
     //   done
     // The fingerprint pins names and order, while the counts identify which
     // binary drifted when a catalog changes.
-    try testing.expectEqual(@as(usize, 249), command_classes.len);
+    try testing.expectEqual(@as(usize, 251), command_classes.len);
     var planar_count: usize = 0;
     var agent_count: usize = 0;
     var watch_count: usize = 0;
@@ -743,14 +743,14 @@ test "schema inventory has an explicit unique classification for every current l
         try inventory.append(testing.allocator, '\n');
         if (std.mem.startsWith(u8, command.shape, "planar ")) planar_count += 1 else if (std.mem.startsWith(u8, command.shape, "planar-agent ")) agent_count += 1 else if (std.mem.startsWith(u8, command.shape, "planar-watch ")) watch_count += 1 else if (std.mem.startsWith(u8, command.shape, "planar-doc ")) doc_count += 1 else return error.InvalidCommandClassification;
     }
-    try testing.expectEqual(@as(usize, 207), planar_count);
+    try testing.expectEqual(@as(usize, 209), planar_count);
     try testing.expectEqual(@as(usize, 22), agent_count);
     try testing.expectEqual(@as(usize, 13), watch_count);
     try testing.expectEqual(@as(usize, 7), doc_count);
     var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(inventory.items, &digest, .{});
     const hex = std.fmt.bytesToHex(digest, .lower);
-    try testing.expectEqualStrings("815f7f0708f62a0e861fa67b36e859695417cd0d0adc39ea727fac9c1aa50090", &hex);
+    try testing.expectEqualStrings("56964f9e0b13b7fe825b7d3d9064e0d70ef7fa88a6406222f179b7b4d7ba9b59", &hex);
 }
 test "every classified leaf enforces its declared capability" {
     const frontmatter = "---\nrole: fixture\ncapability: read-only\n---\n```sh\n";

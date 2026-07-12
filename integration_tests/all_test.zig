@@ -69,6 +69,7 @@ comptime {
     _ = @import("scope_test.zig");
     _ = @import("search_test.zig");
     _ = @import("skills_render_test.zig");
+    _ = @import("installed_surface_test.zig");
     _ = @import("smoke_test.zig");
     _ = @import("spec_ingest_test.zig");
     _ = @import("tree_test.zig");

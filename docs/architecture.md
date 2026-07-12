@@ -634,6 +634,23 @@ JSON authoritative. The older `.planar-install` prefix stamp remains for
 legacy-install detection and the prefix adoption guard; an install without the
 versioned manifest remains compatible and can be upgraded by reinstalling.
 
+`planar skills status` is the read-only consumer of this contract. It reports
+selected versus unselected vendors, classifies managed rows as `fresh`,
+`stale`, or `missing`, and may enumerate destination-only `unmanaged` entries
+without treating discovery as ownership. Missing, malformed, future-version,
+and stamped legacy manifests remain aggregate manifest states with a
+source-checkout `./install.sh --prefix <resolved-prefix>` bootstrap command;
+they are never guessed into managed rows.
+
+`planar skills repair` shares the same classifier and is preview-first.
+`--apply` operates only on stale or missing manifest rows, replacing copy rows
+from staged bytes and link rows with the recorded staged symlink, then
+verifying the installed digest. It refuses directory-shaped or unowned
+destinations, preserves unmanaged extensions, and reports independent target
+failure as a resumable partial result. Neither status nor repair opens SQLite;
+status has no write path, and repair's filesystem write authority is exactly
+the manifest row set.
+
 ### Authored-surface validation
 
 `tools/surface_lint.zig` deterministically scans canonical Markdown under

@@ -49,6 +49,7 @@ pub const llm = @import("llm.zig");
 pub const import = @import("import.zig");
 pub const synthesize = @import("synthesize.zig");
 pub const skillrender = @import("skillrender.zig");
+pub const installedsurface = @import("installedsurface.zig");
 pub const introspect = @import("introspect.zig");
 pub const closure = @import("closure.zig");
 pub const grouping = @import("grouping.zig");
@@ -80,6 +81,7 @@ test {
     _ = import;
     _ = synthesize;
     _ = skillrender;
+    _ = installedsurface;
     _ = introspect;
     _ = closure;
     _ = grouping;
