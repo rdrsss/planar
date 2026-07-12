@@ -58,6 +58,14 @@ fn writeFile(path: []const u8, body: []const u8) !void {
     try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = path, .data = body });
 }
 
+fn appendSemanticTamper(gpa: std.mem.Allocator, path: []const u8) !void {
+    const before = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, gpa, .limited(4 * 1024 * 1024));
+    defer gpa.free(before);
+    const after = try std.fmt.allocPrint(gpa, "{s}\nsemantic tamper with digest headers unchanged\n", .{before});
+    defer gpa.free(after);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = path, .data = after });
+}
+
 fn inheritedEnv(gpa: std.mem.Allocator) !std.process.Environ.Map {
     const raw: [*:null]?[*:0]u8 = std.c.environ;
     var count: usize = 0;
@@ -163,6 +171,17 @@ test "selected-vendor installer lifecycle writes a fresh manifest in copy and li
         defer gpa.free(health);
         try std.testing.expect(std.mem.indexOf(u8, health, "\"projection_freshness\":{\"state\":\"fresh\"") != null);
         try std.testing.expect(std.mem.indexOf(u8, health, "\"overall\":\"ok\"") != null);
+
+        const staged_status = try std.fs.path.join(gpa, &.{ prefix, "codex-skills", "pl-status", "SKILL.md" });
+        defer gpa.free(staged_status);
+        const installed_status = try std.fs.path.join(gpa, &.{ codex_home, "skills", "pl-status", "SKILL.md" });
+        defer gpa.free(installed_status);
+        try appendSemanticTamper(gpa, staged_status);
+        if (!link) try appendSemanticTamper(gpa, installed_status);
+
+        const tampered = suite.mustRunWith(&.{ "skills", "status", "--json" }, &env);
+        defer gpa.free(tampered);
+        try std.testing.expect(std.mem.indexOf(u8, tampered, "\"stale\":1") != null);
 
         const personal_after = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, personal, gpa, .limited(1024));
         defer gpa.free(personal_after);
