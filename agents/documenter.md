@@ -110,6 +110,29 @@ These three rules together preserve the `planar-doc` capability invariant: the o
 
 The worklist is the documenter's only output. The orchestrator surfaces it to the operator; the operator gates each row.
 
+## Status reporting
+
+The documenter reports each meaningful phase transition to its coordinating
+caller. When the run is claim-backed, that caller publishes the corresponding
+heartbeat; the documenter itself remains a read-only proposer and does not
+acquire or mutate claims.
+
+| Phase | Status string |
+|-------|---------------|
+| Loading the prior manifest and drift worklist | `"loading documentation drift"` |
+| Reading evidence for a known worklist of rows | `"reviewing drift <current>/<total>"` |
+| Classifying a known worklist of rows | `"classifying drift <current>/<total>"` |
+| Assembling the operator-gated proposal | `"drafting documentation worklist"` |
+
+`<current>/<total>` counts drift rows, begins at `1/<total>`, never exceeds the
+known total, and is omitted when `planar-doc diff` has not produced a stable
+non-zero row count. Reading and classification are active work, so these
+statuses never use `awaiting:`. The returned worklist is the final result; do
+not publish a redundant terminal heartbeat after returning it.
+
+See [`agents/methodology.md` § Heartbeat status contract](methodology.md#heartbeat-status-contract)
+for the `awaiting:` convention and 256-byte cap.
+
 ## Cross-references
 
 - Binary capability boundary: [`docs/concepts.md` § Binaries](../docs/concepts.md#binaries).

@@ -99,6 +99,61 @@ These contracts are described fully in the [privacy model](../../docs/concepts.m
   structure beyond adding new rows.
 - Does not run with a scheduler or daemon — on-demand only.
 
+## Context
+
+Report the resolved association scope, feedback-plan id when one exists, the
+`--days` window, transcript root, available diagnostic sources, and the current
+filing mode. Do not expose scope slugs or transcript paths inside finding
+bodies.
+
+## Intent
+
+State in one sentence that the run will aggregate in-window friction signal,
+deduplicate deterministic findings, and file only new rows on the resolved
+feedback plan.
+
+## Actions
+
+Report `attempted`, `applied`, `skipped`, and `failed`. `attempted` counts
+candidate findings after classification; `applied` counts newly filed finding
+rows plus a newly bootstrapped feedback plan when applicable; `skipped` counts
+title-deduplicated candidates; and `failed` counts candidates that could not be
+verified or filed. Separately report scanned, malformed, and unavailable
+signal-source counts without treating an unavailable optional source as an
+applied action.
+
+## Result
+
+Always report `outcome=ok|partial|error`, the stable feedback-plan id, and the
+ids and deterministic titles of newly filed questions and tasks. Verify the
+post-state with `planar plan show <feedback-plan-id> --json` and the three
+canonical question/task list reads before reporting success. A quiet pass is
+`outcome=ok` with zero applied, the reason no findings were filed, and no
+warning merely for the empty result.
+
+## Warnings
+
+Name unavailable or malformed signal sources, degraded transcript coverage,
+post-state reads that could not be completed, and every candidate that failed
+after another independent candidate succeeded. Never include transcript
+prose, argument values, entity titles observed in transcripts, or scope slugs
+in a warning destined for a finding body.
+
+## Next actions
+
+Offer zero to three executable recommendations: inspect the feedback plan,
+retry a failed candidate, or pass a filed finding to `pl-report-issue`. Do not
+recommend posting externally without the existing operator gate.
+
+## Recovery
+
+For a partial result, retain successfully filed independent findings and give
+the original `/pl-introspect` invocation as the idempotent retry; title-based
+dedup prevents duplicate rows. Give `planar question list --plan
+<feedback-plan-id> --status open --json` and the two task-list reads as exact
+inspection commands. Do not claim rollback or offer an undo command: no
+cross-finding transaction exists, and completed findings remain filed.
+
 ## Vendor Notes
 
 {{.VendorNotes}}

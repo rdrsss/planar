@@ -79,6 +79,34 @@ Detection is read-only against the local DB; no remote calls are made to determi
 7. For Jira: post anchor-level decisions as comments on the Epic.
 8. Print the propagation summary.
 
+## Status reporting
+
+The ext-sync agent emits a status at each meaningful phase boundary. Use the
+following strings for claim-backed runs:
+
+| Phase | Status string |
+|-------|---------------|
+| Resolving the anchor, descendants, system, and cached strategy | `"resolving propagation tree"` |
+| Building payloads for a known entity set | `"building payloads <current>/<total>"` |
+| Creating or skipping counterparts in top-down order | `"propagating entities <current>/<total>"` |
+| Waiting for one in-flight adapter request to return | `"awaiting:remote-response <current>/<total>"` |
+| Posting a known set of anchor decisions | `"posting decisions <current>/<total>"` |
+| Probing known linked counterparts under `--verify-counterparts` | `"verifying counterparts <current>/<total>"` |
+| Waiting for the `--restrategize` confirmation gate | `"awaiting:operator-confirmation"` |
+| Assembling created, skipped, and failed rows | `"summarizing propagation"` |
+
+Entity counters use the deduplicated top-down traversal set; decision counters
+use the selected anchor decisions; counterpart counters use the links selected
+for probing. Each counter begins at `1/<total>`, is monotonic, and never exceeds
+its known total. Omit the counter until the applicable total is known and for
+an empty set. Payload building, coordination, and propagation are active work
+and therefore use plain statuses. Reserve `awaiting:` for the time actually
+blocked on a remote response or explicit operator confirmation. The
+propagation summary is the final result; it replaces any terminal heartbeat.
+
+See [`agents/methodology.md` § Heartbeat status contract](methodology.md#heartbeat-status-contract)
+for the full convention and 256-byte cap.
+
 ## Non-trivial task scenarios
 
 Test scenarios that derive from tasks are propagated as Stories with a `test-scenario` label (Jira) or as issues with the `test-scenario` label (GitHub). This is the only label-based semantic in any default strategy.

@@ -246,6 +246,34 @@ new rows.
 8. Report to the operator: how many findings were filed, how many were skipped
    as duplicates, and "nothing noteworthy" if the count is zero.
 
+## Status reporting
+
+The introspector reports each meaningful phase transition to its coordinating
+caller. When the run is claim-backed, the caller publishes these statuses so
+the introspector's existing bounded entity-write authority is unchanged.
+
+| Phase | Status string |
+|-------|---------------|
+| Resolving scope, window, and available signal sources | `"resolving introspection inputs"` |
+| Reading the known diagnostic and watcher sources | `"collecting signals <current>/<total>"` |
+| Mining a known transcript-file inventory | `"scanning transcripts <current>/<total>"` |
+| Classifying normalized candidate signals | `"classifying signals <current>/<total>"` |
+| Checking a known candidate set against existing titles | `"deduplicating findings <current>/<total>"` |
+| Filing the remaining new findings | `"filing findings <current>/<total>"` |
+| Assembling filed, skipped, failed, and unavailable-signal counts | `"summarizing introspection"` |
+
+Signal-source counters use only sources available for the run, transcript
+counters use the discovered in-window file inventory, and candidate/finding
+counters use the redacted candidate set. They begin at `1/<total>`, are
+monotonic, never exceed the known total, and are omitted before the total is
+stable and for an empty set. All current phases are local active work, so none
+uses `awaiting:`; a future external or operator gate may use that prefix only
+while genuinely blocked. The final operator report is the result and replaces
+any terminal heartbeat.
+
+See [`agents/methodology.md` § Heartbeat status contract](methodology.md#heartbeat-status-contract)
+for the full convention and 256-byte cap.
+
 ## Boundaries
 
 - Read-only observability surface. Does not write agent actions, claims, or
