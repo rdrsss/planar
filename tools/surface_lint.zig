@@ -828,7 +828,7 @@ test "schema inventory has an explicit unique classification for every current l
     //   done
     // The fingerprint pins names and order, while the counts identify which
     // binary drifted when a catalog changes.
-    try testing.expectEqual(@as(usize, 251), command_classes.len);
+    try testing.expectEqual(@as(usize, 254), command_classes.len);
     var planar_count: usize = 0;
     var agent_count: usize = 0;
     var watch_count: usize = 0;
@@ -841,14 +841,14 @@ test "schema inventory has an explicit unique classification for every current l
         try inventory.append(testing.allocator, '\n');
         if (std.mem.startsWith(u8, command.shape, "planar ")) planar_count += 1 else if (std.mem.startsWith(u8, command.shape, "planar-agent ")) agent_count += 1 else if (std.mem.startsWith(u8, command.shape, "planar-watch ")) watch_count += 1 else if (std.mem.startsWith(u8, command.shape, "planar-doc ")) doc_count += 1 else return error.InvalidCommandClassification;
     }
-    try testing.expectEqual(@as(usize, 209), planar_count);
+    try testing.expectEqual(@as(usize, 212), planar_count);
     try testing.expectEqual(@as(usize, 22), agent_count);
     try testing.expectEqual(@as(usize, 13), watch_count);
     try testing.expectEqual(@as(usize, 7), doc_count);
     var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(inventory.items, &digest, .{});
     const hex = std.fmt.bytesToHex(digest, .lower);
-    try testing.expectEqualStrings("56964f9e0b13b7fe825b7d3d9064e0d70ef7fa88a6406222f179b7b4d7ba9b59", &hex);
+    try testing.expectEqualStrings("0364501635f77328277bf4d1e72e0049408bd876a3f058c736d21acec1652e5f", &hex);
 }
 test "every classified leaf enforces its declared capability" {
     const frontmatter = "---\nrole: fixture\ncapability: read-only\n---\n```sh\n";
