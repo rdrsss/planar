@@ -37,6 +37,16 @@ Planar's ownership. The file is atomically replaced, and older installations
 that have only `.planar-install` remain valid legacy installs until the
 operator reruns `install.sh`.
 
+Use `planar skills status` to compare that authority with the staged and
+vendor-installed projections. The command is read-only, identifies unselected
+vendors without inventing missing rows, and labels destination-only personal
+extensions `unmanaged` without claiming them. A stale or missing managed row
+includes an exact scoped `planar skills repair ... --apply` command. Repair is
+preview-first, follows each row's recorded copy/link kind, verifies the digest
+after application, and never touches unmanaged content. A missing, malformed,
+unsupported, or stamped legacy manifest instead routes to `./install.sh
+--prefix <resolved-prefix>` from a Planar source checkout.
+
 ---
 
 ## Binary architecture

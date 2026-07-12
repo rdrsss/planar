@@ -1497,6 +1497,47 @@ There is no `planar local promote` shortcut — that is deliberate. Canonical sk
 
 ---
 
+## Recipe 14A — Inspect and repair installed canonical projections
+
+Canonical vendor installs are distinct from the personal sandbox above. Their
+ownership comes only from `~/.planar/install-manifest.json`; directory presence
+alone never grants Planar permission to replace a file.
+
+Start with a read-only inspection:
+
+```
+planar skills status
+planar skills status --vendor codex --json
+```
+
+`fresh`, `stale`, and `missing` apply only to manifest rows. `unmanaged` is an
+informational destination-only extension, and an `unselected` vendor is outside
+the installation set. Neither affects unrelated files.
+
+Preview the recommended repair before mutation:
+
+```
+planar skills repair pl-status --vendor codex
+planar skills repair pl-status --vendor codex --apply
+planar skills status --vendor codex
+```
+
+The apply command copies or re-links only that manifest-owned row and verifies
+it afterward. For a mixed apply, `partial` lists completed and failed targets;
+rerun the reported idempotent command after correcting the failed path. If the
+manifest itself is missing, invalid, unsupported, or legacy, repair does not
+guess ownership. From the Planar source checkout, run the exact bootstrap
+shown by status, whose supported form is:
+
+```
+./install.sh --prefix ~/.planar
+```
+
+Then re-run `planar skills status`. Personal `planar local` extensions remain
+untouched throughout.
+
+---
+
 ## Recipe 15 — Editor-first authoring
 
 Plan 226 closed the friction of the original `push → edit → pull` rhythm: every entity now has a unified `<entity> edit <id>` verb that pushes (if needed), opens `$EDITOR` on the workbench file, validates frontmatter mutations on save, and pulls the result back into the DB. Companion `view`/`diff` verbs and bulk-review surfaces round out the loop.

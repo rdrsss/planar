@@ -5442,7 +5442,53 @@ Test hook: when set, `planar local` uses this directory as the operator's `$HOME
 
 ## Domain: `skills`
 
-The `skills` domain renders generated vendor skill surfaces from the unified source tree (`skills/src/*.md`) and verifies that generated outputs are in sync with source. The vendor profile/model table source of truth is `src/configs/vendors.yaml` (embedded into the binary).
+The `skills` domain renders generated vendor skill surfaces from the unified source tree (`skills/src/*.md`), verifies generated outputs, and inspects or repairs manifest-owned installed projections. The vendor profile/model table source of truth is `src/configs/vendors.yaml` (embedded into the binary).
+
+### `planar skills status [--vendor <claude|codex|copilot>] [--json]`
+
+Read `$PLANAR_HOME/install-manifest.json` (default
+`~/.planar/install-manifest.json`) and compare every selected manifest row with
+its staged and installed projection. This command is filesystem-only and never
+repairs. Per-row states are `fresh`, `stale`, `missing`, and `unmanaged`.
+Vendors absent from the manifest are reported `unselected` and are not scanned
+or treated as missing. Destination entries discovered under a selected vendor
+without a manifest row are informational `unmanaged` extensions; Planar never
+claims or repairs them.
+
+The manifest envelope reports `current`, `missing`, `legacy`, `invalid`, or
+`unsupported`. `legacy` specifically means the older `.planar-install`
+ownership stamp exists without a versioned manifest. Non-current manifest
+states remain one aggregate result instead of expanding installed files into
+managed rows, and provide this verified source-checkout bootstrap shape:
+
+```
+./install.sh --prefix '<resolved PLANAR_HOME>'
+```
+
+JSON contains `manifest`, `vendors`, ordered `projections`, `summary`, and an
+optional exact `repair_command`. Status exits 0 for degraded states so callers
+can inspect the structured result; invalid flags or unreadable filesystem
+state exit non-zero.
+
+### `planar skills repair [<name>...] [--vendor <vendor>] [--apply] [--dry-run] [--json]`
+
+Repair is preview-only by default; `--dry-run` is an explicit spelling of the
+same mode. `--apply` is mutually exclusive with `--dry-run`. Selection is the
+intersection of optional names, optional vendor, and install-manifest rows.
+An unmanaged or unknown name is rejected.
+
+Only `stale` or `missing` manifest-owned destinations may be replaced. `copy`
+rows are atomically replaced from their staged bytes; `link` rows are
+atomically re-linked to their recorded staged path. Every applied row is
+digest-verified. Fresh rows are skipped, unmanaged extensions are preserved,
+and staged-authority mismatch routes to reinstall instead of copying
+untrusted bytes.
+
+Text and JSON report `outcome=ok|partial|error`, mode, manifest status,
+`attempted`, `applied`, `skipped`, `failed`, ordered per-target actions, and an
+idempotent next action. Any target failure leaves successful independent
+repairs in place, reports their exact split, and exits 1; a later status read
+shows completed targets fresh and failed targets still degraded.
 
 ### `planar skills render [slug...]`
 
