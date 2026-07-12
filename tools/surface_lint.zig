@@ -1,5 +1,5 @@
 //! Deterministic semantic validator for authored agent, skill, and doc Markdown.
-//! Usage: surface_lint <repo-root> [--json] [--require-feedback-contract]
+//! Usage: surface_lint <repo-root> [--json]
 //!        surface_lint --command-inventory-json
 
 const std = @import("std");
@@ -20,7 +20,7 @@ const suppressible_codes = [_][]const u8{ Code.link, Code.legacy, Code.artifacts
 
 const Finding = struct { code: []const u8, file: []const u8, line: usize, message: []const u8 };
 const Suppression = struct { code: []const u8, declaration_line: usize, target_line: usize, used: bool = false };
-const Options = struct { require_feedback_contract: bool = false };
+const Options = struct {};
 const Result = struct { findings: std.ArrayList(Finding) = .empty, files_scanned: usize = 0 };
 
 pub fn main(init: std.process.Init) !void {
@@ -36,11 +36,9 @@ pub fn main(init: std.process.Init) !void {
     if (args.len < 2) usage(io);
     var root: ?[]const u8 = null;
     var json = false;
-    var opts = Options{};
+    const opts = Options{};
     for (args[1..]) |arg| {
-        if (std.mem.eql(u8, arg, "--json")) json = true else if (std.mem.eql(u8, arg, "--require-feedback-contract"))
-            opts.require_feedback_contract = true
-        else if (std.mem.startsWith(u8, arg, "-") or root != null)
+        if (std.mem.eql(u8, arg, "--json")) json = true else if (std.mem.startsWith(u8, arg, "-") or root != null)
             usage(io)
         else
             root = arg;
@@ -58,7 +56,7 @@ pub fn main(init: std.process.Init) !void {
 }
 
 fn usage(io: Io) noreturn {
-    Io.File.stderr().writeStreamingAll(io, "usage: surface_lint <repo-root> [--json] [--require-feedback-contract]\n       surface_lint --command-inventory-json\n") catch {};
+    Io.File.stderr().writeStreamingAll(io, "usage: surface_lint <repo-root> [--json]\n       surface_lint --command-inventory-json\n") catch {};
     std.process.exit(2);
 }
 
@@ -95,7 +93,7 @@ fn collectMarkdown(arena: std.mem.Allocator, io: Io, path: []const u8, paths: *s
     }
 }
 
-fn scanFile(arena: std.mem.Allocator, io: Io, root: []const u8, rel_file: []const u8, abs_file: []const u8, content: []const u8, opts: Options, findings: *std.ArrayList(Finding)) !void {
+fn scanFile(arena: std.mem.Allocator, io: Io, root: []const u8, rel_file: []const u8, abs_file: []const u8, content: []const u8, _: Options, findings: *std.ArrayList(Finding)) !void {
     var lines: std.ArrayList([]const u8) = .empty;
     var split = std.mem.splitScalar(u8, content, '\n');
     while (split.next()) |line| try lines.append(arena, line);
@@ -117,8 +115,7 @@ fn scanFile(arena: std.mem.Allocator, io: Io, root: []const u8, rel_file: []cons
         try checkCommand(arena, rel_file, line_no, line, findings, &suppressions);
         try checkDeferredCommand(arena, rel_file, line_no, line, fence != null, findings, &suppressions);
     }
-    if (opts.require_feedback_contract and std.mem.startsWith(u8, rel_file, "skills/src/") and
-        !std.mem.eql(u8, frontmatterValue(content, "internal_only") orelse "", "true"))
+    if (std.mem.startsWith(u8, rel_file, "skills/src/") and !frontmatterLiteralTrue(content, "internal_only"))
         try checkFeedbackContract(arena, rel_file, content, findings, &suppressions);
     for (suppressions.items) |s| if (!s.used) try findings.append(arena, .{
         .code = Code.suppression_unused,
@@ -483,8 +480,45 @@ fn isInvalidAuditSelector(token: []const u8) bool {
 }
 
 fn checkFeedbackContract(arena: std.mem.Allocator, file: []const u8, content: []const u8, findings: *std.ArrayList(Finding), suppressions: *std.ArrayList(Suppression)) !void {
-    const required = [_][]const u8{ "## Context", "## Intent", "## Actions", "## Result", "## Warnings", "## Next actions", "## Recovery" };
-    for (required) |heading| if (std.mem.indexOf(u8, content, heading) == null) try emit(arena, findings, suppressions, Code.contract, file, 1, try std.fmt.allocPrint(arena, "user-invocable skill is missing required feedback heading: {s}", .{heading}));
+    const required = [_][]const u8{ "Context", "Intent", "Actions", "Result", "Warnings", "Next actions", "Recovery" };
+    var counts = [_]usize{0} ** required.len;
+    var malformed_lines = [_]?usize{null} ** required.len;
+    var fence: ?Fence = null;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    var line_no: usize = 0;
+    while (lines.next()) |raw| {
+        line_no += 1;
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (advanceFence(line, &fence) or fence != null) continue;
+        for (required, 0..) |label, idx| {
+            const literal = try std.fmt.allocPrint(arena, "## {s}", .{label});
+            if (std.mem.eql(u8, line, literal)) {
+                counts[idx] += 1;
+                if (counts[idx] > 1) try emit(arena, findings, suppressions, Code.contract, file, line_no, try std.fmt.allocPrint(arena, "duplicate required feedback heading `{s}`; keep exactly one literal H2 section", .{literal}));
+            } else if (malformed_lines[idx] == null) {
+                if (headingLabel(line)) |candidate| {
+                    if (std.mem.eql(u8, candidate, label)) malformed_lines[idx] = line_no;
+                }
+            }
+        }
+    }
+    for (required, 0..) |label, idx| {
+        if (counts[idx] != 0) continue;
+        const literal = try std.fmt.allocPrint(arena, "## {s}", .{label});
+        if (malformed_lines[idx]) |malformed_line| {
+            try emit(arena, findings, suppressions, Code.contract, file, malformed_line, try std.fmt.allocPrint(arena, "required feedback section must be the literal H2 heading `{s}`", .{literal}));
+        } else {
+            try emit(arena, findings, suppressions, Code.contract, file, 1, try std.fmt.allocPrint(arena, "user-invocable skill is missing required feedback heading `{s}`; add that literal H2 section or declare a genuine helper as `internal_only: true` in frontmatter", .{literal}));
+        }
+    }
+}
+
+fn headingLabel(line: []const u8) ?[]const u8 {
+    if (line.len < 3 or line[0] != '#') return null;
+    var hash_count: usize = 1;
+    while (hash_count < line.len and line[hash_count] == '#') : (hash_count += 1) {}
+    if (hash_count == line.len or line[hash_count] != ' ') return null;
+    return std.mem.trim(u8, line[hash_count + 1 ..], " \t\r");
 }
 
 fn emit(arena: std.mem.Allocator, findings: *std.ArrayList(Finding), suppressions: *std.ArrayList(Suppression), code: []const u8, file: []const u8, line: usize, message: []const u8) !void {
@@ -504,6 +538,17 @@ fn frontmatterValue(content: []const u8, key: []const u8) ?[]const u8 {
         if (std.mem.eql(u8, std.mem.trim(u8, line[0..colon], " \t"), key)) return std.mem.trim(u8, line[colon + 1 ..], " \t\r\"");
     }
     return null;
+}
+fn frontmatterLiteralTrue(content: []const u8, key: []const u8) bool {
+    if (!std.mem.startsWith(u8, content, "---\n")) return false;
+    var lines = std.mem.splitScalar(u8, content[4..], '\n');
+    while (lines.next()) |line| {
+        if (std.mem.eql(u8, std.mem.trim(u8, line, " \t\r"), "---")) break;
+        const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        if (std.mem.eql(u8, std.mem.trim(u8, line[0..colon], " \t"), key))
+            return std.mem.eql(u8, std.mem.trim(u8, line[colon + 1 ..], " \t\r"), "true");
+    }
+    return false;
 }
 fn isSuppressible(code: []const u8) bool {
     for (suppressible_codes) |known| if (std.mem.eql(u8, code, known)) return true;
@@ -578,6 +623,9 @@ const FixtureResult = struct {
     }
 };
 fn scanFixture(content: []const u8, opts: Options) !FixtureResult {
+    return scanFixtureAt("agents/fixture.md", content, opts);
+}
+fn scanSkillFixture(content: []const u8, opts: Options) !FixtureResult {
     return scanFixtureAt("skills/src/fixture.md", content, opts);
 }
 fn scanFixtureAt(file: []const u8, content: []const u8, opts: Options) !FixtureResult {
@@ -602,7 +650,8 @@ test "semantic drift fixtures emit stable codes and line evidence" {
         .{ .content = "---\nslug: fixture\n---\n# Fixture\n", .code = Code.contract, .line = 1 },
     };
     for (cases) |case| {
-        var fixture = try scanFixture(case.content, .{ .require_feedback_contract = std.mem.eql(u8, case.code, Code.contract) });
+        const file = if (std.mem.eql(u8, case.code, Code.contract)) "skills/src/fixture.md" else "agents/fixture.md";
+        var fixture = try scanFixtureAt(file, case.content, .{});
         defer fixture.deinit();
         try testing.expect(fixture.result.findings.items.len >= 1);
         try testing.expectEqualStrings(case.code, fixture.result.findings.items[0].code);
@@ -643,9 +692,50 @@ test "clean authored contract passes every semantic rule" {
         "Create product-spec.md, tech-spec.md, roadmap.md, and test-spec.md.\n" ++
         "Run `planar audit trail --kind task 42`.\n\n" ++
         "## Context\n## Intent\n## Actions\n## Result\n## Warnings\n## Next actions\n## Recovery\n";
-    var fixture = try scanFixture(content, .{ .require_feedback_contract = true });
+    var fixture = try scanSkillFixture(content, .{});
     defer fixture.deinit();
     try testing.expectEqual(@as(usize, 0), fixture.result.findings.items.len);
+}
+test "feedback contract rejects missing result and recovery headings" {
+    const cases = [_]struct { omitted: []const u8, expected: []const u8 }{
+        .{ .omitted = "## Result\n", .expected = "## Result" },
+        .{ .omitted = "## Recovery\n", .expected = "## Recovery" },
+    };
+    const complete = "## Context\n## Intent\n## Actions\n## Result\n## Warnings\n## Next actions\n## Recovery\n";
+    for (cases) |case| {
+        const at = std.mem.indexOf(u8, complete, case.omitted).?;
+        const content = try std.mem.concat(testing.allocator, u8, &.{
+            "---\nslug: fixture\n---\n# Fixture\n\n",
+            complete[0..at],
+            complete[at + case.omitted.len ..],
+        });
+        defer testing.allocator.free(content);
+        var fixture = try scanSkillFixture(content, .{});
+        defer fixture.deinit();
+        try testing.expectEqual(@as(usize, 1), fixture.result.findings.items.len);
+        try testing.expectEqualStrings(Code.contract, fixture.result.findings.items[0].code);
+        try testing.expect(std.mem.indexOf(u8, fixture.result.findings.items[0].message, case.expected) != null);
+    }
+}
+test "feedback contract rejects malformed and duplicate literal H2 headings" {
+    const cases = [_]struct { heading: []const u8, line: usize, message: []const u8 }{
+        .{ .heading = "### Result\n", .line = 9, .message = "must be the literal H2 heading" },
+        .{ .heading = "## Result\n## Result\n", .line = 10, .message = "duplicate required feedback heading" },
+    };
+    for (cases) |case| {
+        const content = try std.mem.concat(testing.allocator, u8, &.{
+            "---\nslug: fixture\n---\n# Fixture\n\n## Context\n## Intent\n## Actions\n",
+            case.heading,
+            "## Warnings\n## Next actions\n## Recovery\n",
+        });
+        defer testing.allocator.free(content);
+        var fixture = try scanSkillFixture(content, .{});
+        defer fixture.deinit();
+        try testing.expectEqual(@as(usize, 1), fixture.result.findings.items.len);
+        try testing.expectEqualStrings(Code.contract, fixture.result.findings.items[0].code);
+        try testing.expectEqual(case.line, fixture.result.findings.items[0].line);
+        try testing.expect(std.mem.indexOf(u8, fixture.result.findings.items[0].message, case.message) != null);
+    }
 }
 test "suppression syntax shown inside a fence is illustrative" {
     var fixture = try scanFixture("```html\n<!-- surface-lint-ignore surface-legacy-reference: example -->\n```\n", .{});
@@ -658,8 +748,8 @@ test "narrow introspector write exemption and internal-only contract exemption p
     defer agent_fixture.deinit();
     try testing.expectEqual(@as(usize, 0), agent_fixture.result.findings.items.len);
 
-    const skill = "---\nslug: fixture\ninternal_only: true\n---\n# Internal\n";
-    var skill_fixture = try scanFixture(skill, .{ .require_feedback_contract = true });
+    const skill = "---\nslug: fixture\ninternal_only: true\n---\n# Internal helper\n\nCalled only by `pl-orchestrator`, which owns the operator-facing feedback envelope.\n";
+    var skill_fixture = try scanSkillFixture(skill, .{});
     defer skill_fixture.deinit();
     try testing.expectEqual(@as(usize, 0), skill_fixture.result.findings.items.len);
 
@@ -668,6 +758,13 @@ test "narrow introspector write exemption and internal-only contract exemption p
     defer reviewer_fixture.deinit();
     try testing.expectEqual(@as(usize, 1), reviewer_fixture.result.findings.items.len);
     try testing.expectEqualStrings(Code.capability, reviewer_fixture.result.findings.items[0].code);
+}
+test "internal-only exemption requires a literal frontmatter boolean" {
+    const quoted = "---\nslug: fixture\ninternal_only: \"true\"\n---\n# Not exempt\n";
+    var fixture = try scanSkillFixture(quoted, .{});
+    defer fixture.deinit();
+    try testing.expectEqual(@as(usize, 7), fixture.result.findings.items.len);
+    for (fixture.result.findings.items) |finding| try testing.expectEqualStrings(Code.contract, finding.code);
 }
 test "capability drift scans fenced and inline executable writes without flagging reads or prose" {
     const frontmatter = "---\nrole: fixture\ncapability: read-only\n---\n";
