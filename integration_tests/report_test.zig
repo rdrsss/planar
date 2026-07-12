@@ -223,6 +223,7 @@ test "report-json: configured transcript adapters feed normalized preview with a
     const separator = std.mem.indexOfScalar(u8, captured_line, '|') orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("task add", captured_line[0..separator]);
     const recorded_at = captured_line[separator + 1 ..];
+    try std.testing.expect(std.mem.endsWith(u8, recorded_at, "Z"));
 
     const transcript = try std.fmt.allocPrint(gpa, "{{\"version\":1,\"type\":\"tool_result\",\"timestamp\":\"{s}\",\"tool\":{{\"name\":\"planar task add\",\"input\":{{\"body\":\"PRIVATE_SENTINEL\"}}}},\"exit_code\":2,\"invalid_flag\":true}}", .{recorded_at});
     defer gpa.free(transcript);
@@ -230,6 +231,7 @@ test "report-json: configured transcript adapters feed normalized preview with a
     const json_out = suite.mustRunWith(&.{ "report", "--json" }, &extra);
     defer gpa.free(json_out);
     try std.testing.expect(std.mem.indexOf(u8, json_out, "PRIVATE_SENTINEL") == null);
+    try std.testing.expect(std.mem.indexOf(u8, json_out, "ZZ") == null);
 
     var parsed = try std.json.parseFromSlice(std.json.Value, gpa, json_out, .{});
     defer parsed.deinit();
