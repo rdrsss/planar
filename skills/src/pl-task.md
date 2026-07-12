@@ -48,6 +48,49 @@ planar task link <task-id> <to-kind:to-id> --relationship <kind>
 
 When adding concrete work items to the database, checking what remains in a session, marking progress, or recording a blocking dependency.
 
+## Context
+
+Report the resolved scope, task target or list filter, parent plan or task,
+requested operation, and read or mutation mode.
+
+## Intent
+
+State in one sentence whether the request creates, inspects, updates,
+completes, blocks, or links a task.
+
+## Actions
+
+Report `attempted`, `applied`, `skipped`, and `failed` counts for task rows and
+relationships. Lists and shows have zero applied; an already-matching status or
+existing relationship is an expected skip when reported by the CLI.
+
+## Result
+
+Always report `outcome=ok|partial|error`. After add, update, done, block, or
+link, read `planar task show <task-id> --json` and return the stable task ID,
+status, plan, next action, and verified blocker or relationship. A successful
+no-op reports zero applied and why state already matched.
+
+## Warnings
+
+Name missing or ambiguous targets, scope mismatch, invalid transitions,
+cycles, unavailable post-state reads, and partial independent results. An empty
+list or expected idempotent mutation is not a warning.
+
+## Next actions
+
+Give zero to three executable recommendations based on verified state, such as
+`planar task show <task-id> --json`, the next runnable task, or its blocker
+inspection command.
+
+## Recovery
+
+For every failure, provide `planar task show <task-id> --json` and the exact
+idempotent retry with the original `--scope`, status, next-action, blocker, or
+relationship arguments. Never prescribe `planar task done` plus a separate
+claim release for coordinated agent work, and never claim independent writes
+were rolled back.
+
 ## Vendor Notes
 
 {{.VendorNotes}}

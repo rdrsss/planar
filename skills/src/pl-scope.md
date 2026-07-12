@@ -52,6 +52,44 @@ The cross-scope guard (see [`docs/concepts.md#cross-scope-guard`](../../docs/con
 
 At the start of a session, before running a write verb from an unfamiliar cwd, or when a verb refuses with `AmbiguousScopeError` and you need to see the candidate scopes for the cwd.
 
+## Context
+
+Report the cwd, `show` or `suggest` mode, and JSON or text output mode. Scope is
+resolved fresh for this invocation and is never session state.
+
+## Intent
+
+State in one sentence whether the operator wants the resolved scope or
+candidate associations for an explicit override.
+
+## Actions
+
+Report `attempted`, `applied=0`, `skipped`, and `failed` counts for resolution
+and suggestion checks.
+
+## Result
+
+Always report `outcome=ok|partial|error`, the verified `resolved_scopes`, source
+cwd, and candidate override slugs when requested. No matching scope is an
+explicit successful empty result, not a silent success.
+
+## Warnings
+
+Name ambiguous membership, an unregistered cwd, or unavailable resolution.
+Do not warn for an expected empty suggestion list outside registered projects.
+
+## Next actions
+
+Give zero to three executable recommendations, normally the exact
+`--scope <slug>` form for the intended write or `planar scope suggest --json`
+when resolution is ambiguous.
+
+## Recovery
+
+For a failed or ambiguous read, provide `planar scope show --json` and `planar
+scope suggest --json`. This read-only skill has no undo path and must not
+recommend the removed scope-stack verbs.
+
 ## Vendor Notes
 
 {{.VendorNotes}}

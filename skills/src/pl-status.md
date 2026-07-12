@@ -80,6 +80,46 @@ Open questions
 Summary: 2 plans · 3 tasks (1 blocked) · 1 open question
 ```
 
+## Context
+
+Report the cwd-derived scope and read-only summary mode before querying state.
+
+## Intent
+
+State in one sentence that the operator wants a concise orientation to active
+plans, open tasks, blockers, and unresolved questions in that scope.
+
+## Actions
+
+Report `attempted`, `applied=0`, `skipped`, and `failed` counts for the scope,
+plan, task, and question reads. Empty status groups are omitted from prose and
+counted as successful reads, not failures.
+
+## Result
+
+Always report `outcome=ok|partial|error`, the resolved scope, and the concise
+verified summary with stable entity IDs and totals. If every collection is
+empty, explicitly report zero plans, tasks, and questions rather than returning
+an empty message.
+
+## Warnings
+
+Name unresolved or ambiguous scope and any failed/degraded collection read.
+Ordinary blocked work belongs in the result summary; an otherwise valid empty
+scope is not a warning.
+
+## Next actions
+
+Give zero to three executable recommendations selected from actual state, such
+as the highest-priority runnable task show command or a blocked task's
+dependency inspection. Do not pad an empty scope with generic advice.
+
+## Recovery
+
+For partial or failed reads, provide the exact failed command from the
+underlying verb list and `planar scope show --json` when scope resolution is
+the cause. This read-only skill has no undo path.
+
 ## Vendor Notes
 
 {{.VendorNotes}}

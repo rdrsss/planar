@@ -55,6 +55,43 @@ dedicated `planar-doc` binary (it touches the working tree and the
 
 See [Features: outward-facing docs system](../../docs/features/doc-system.md) for the full mental model.
 
+## Context
+
+Report the requested command path, binary (`planar` or `planar-doc`), and text
+help mode. If no path was supplied, say that top-level discovery was used.
+
+## Intent
+
+State in one sentence which command or workflow the operator wants to discover.
+
+## Actions
+
+Report `attempted`, `applied=0`, `skipped`, and `failed` counts for help lookups.
+An omitted command path is a deliberate top-level lookup, not a skipped action.
+
+## Result
+
+Always report `outcome=ok|partial|error` and a concise summary of the verified
+command path, supported arguments, and relevant reference workflow. When no
+matching command exists, report that explicit empty result rather than
+inventing a verb.
+
+## Warnings
+
+Name ambiguous command paths, unavailable binary help, or documentation that
+describes an unshipped surface. A successful top-level listing has no warning.
+
+## Next actions
+
+Give zero to three executable help or workflow invocations that directly match
+the request; do not pad the response with unrelated commands.
+
+## Recovery
+
+For a failed lookup, provide the exact broader command, such as `planar help`,
+`planar help <subcommand>`, or `planar-doc schema`. This skill is read-only and
+has no undo path.
+
 ## Vendor Notes
 
 {{.VendorNotes}}

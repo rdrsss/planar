@@ -158,6 +158,53 @@ planar plan show <plan-id> [--json]
 
 When `planar health` exits 1 (degraded) and the operator wants to clear the causes rather than just read the report. Also useful after an unclean shutdown, a died agent session, or a long idle period that left handoffs pending.
 
+## Context
+
+Report the global health mode, current cwd-derived scope, inspected association
+slugs, freshness thresholds, and whether the run is diagnosis-only or contains
+operator-approved reconciliation.
+
+## Intent
+
+State in one sentence which degraded contributors will be diagnosed and which,
+if any, the operator approved for reconciliation.
+
+## Actions
+
+Report `attempted`, `applied`, `skipped`, and `failed` counts for expired
+claims, stale handoffs, and non-resumable tasks. Count recent or deliberately
+retained work as skipped, and name every failed target. Never count a preview
+as applied.
+
+## Result
+
+Always report `outcome=ok|partial|error` and the final `planar health --json`
+post-state. After a write, also verify the affected handoff with `planar
+handoff show <handoff-id> --json`, task with `planar task show <task-id>
+--json`, or claim set with `planar-agent reconcile --dry-run --json`. Preserve
+the diagnosis and stronger per-contributor safety classification.
+
+## Warnings
+
+Name integrity failures, scopes that could not be enumerated, recent live work,
+unavailable post-state reads, and approved actions that failed. A healthy run
+or expected decision to retain active work is an informative no-op, not a
+warning.
+
+## Next actions
+
+Give zero to three executable recommendations, ordered by the remaining health
+contributors. A healthy or fully explained state needs no generic cleanup
+advice.
+
+## Recovery
+
+For each failed target, give the exact inspection and safe retry command, such
+as `planar handoff show <handoff-id> --json`, `planar task show <task-id>
+--json`, or `planar-agent reconcile --dry-run --json`. Require a fresh operator
+confirmation before retrying a destructive write; never invent rollback for
+independent reconciliations.
+
 ## Vendor Notes
 
 {{.VendorNotes}}

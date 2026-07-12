@@ -32,6 +32,45 @@ planar health [--json]
 
 At the start of a session to confirm the installation is healthy, in CI to gate on handoff readiness, or when troubleshooting an unexpected error from another command.
 
+## Context
+
+Report that health is global, the resolved database/configuration, and text or
+JSON mode. Do not imply that the cwd limits health contributors.
+
+## Intent
+
+State in one sentence that the run is a read-only check of database integrity,
+schema currency, handoff readiness, and installed projection health.
+
+## Actions
+
+Report `attempted`, `applied=0`, `skipped`, and `failed` counts for the health
+check and its unavailable contributors. Keep the contributor counts returned
+by `planar health`; do not recast a degraded contributor as a write failure.
+
+## Result
+
+Always report `outcome=ok|partial|error`, the verified `overall` value, and the
+concise non-empty contributor summary from `planar health --json`. A healthy
+result explicitly says no reconciliation is needed.
+
+## Warnings
+
+Name degraded or critical contributors and unavailable checks. An expected
+zero count or healthy installation emits no warning.
+
+## Next actions
+
+Give zero to three executable recommendations tied to actual contributors,
+such as `planar skills status --json`, `planar resume validate <task-id>`, or
+invoking `pl-doctor`; omit generic advice when health is clean.
+
+## Recovery
+
+If the check fails, provide `planar health --json` as the exact retry and route
+an integrity failure to inspection rather than reconciliation. This read-only
+skill has no undo path.
+
 ## Vendor Notes
 
 {{.VendorNotes}}
