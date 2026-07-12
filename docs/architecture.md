@@ -615,6 +615,25 @@ excluded from the projection digest itself, avoiding a circular hash. This is
 the public projection-freshness seam used by installation/status tooling;
 `planar skills render --check` continues to compare complete rendered bytes.
 
+After all selected vendor wiring succeeds, `install.sh` atomically replaces
+`$PLANAR_HOME/install-manifest.json` (normally
+`~/.planar/install-manifest.json`). Version 1 records the build id, global
+`copy|link` installation mode, selected managed vendors, and one row per
+managed skill or agent projection. Each row fixes the vendor, projection kind
+and name, staged and installed paths, actual `copy|link` install kind, and both
+renderer digests. Codex and Copilot directory-shaped skills use their staged
+`codex-skills/` or `copilot-skills/` `SKILL.md` as the staged authority; their
+vendor installs are copies even during a global link-mode install. Claude
+skills and vendor agent files are links.
+
+The manifest is the ownership boundary: only its rows are Planar-managed.
+Unselected vendors and destination-only operator extensions are never added.
+The installer writes a temporary file in `$PLANAR_HOME`, closes it, then uses
+a same-directory atomic rename, so an interrupted write cannot make partial
+JSON authoritative. The older `.planar-install` prefix stamp remains for
+legacy-install detection and the prefix adoption guard; an install without the
+versioned manifest remains compatible and can be upgraded by reinstalling.
+
 ### Authored-surface validation
 
 `tools/surface_lint.zig` deterministically scans canonical Markdown under

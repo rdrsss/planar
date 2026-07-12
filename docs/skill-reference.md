@@ -28,6 +28,15 @@ comments to preserve its accepted key schema. Operators should treat the
 values as renderer-owned metadata and regenerate projections rather than edit
 them by hand.
 
+Full installs record the selected managed projections in the versioned
+`~/.planar/install-manifest.json` authority after vendor wiring succeeds. Its
+rows contain vendor/kind/name identity, staged and installed paths, actual
+link-or-copy kind, and the two expected digests. Only those rows are managed:
+an unselected vendor or personal destination-only extension is outside
+Planar's ownership. The file is atomically replaced, and older installations
+that have only `.planar-install` remain valid legacy installs until the
+operator reruns `install.sh`.
+
 ---
 
 ## Binary architecture
