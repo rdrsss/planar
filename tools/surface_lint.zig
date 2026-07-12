@@ -302,14 +302,15 @@ const command_classes = [_]CommandClass{
     m("planar import"),                      m("planar synthesize"),            r("planar version"),               r("planar completion"),            r("planar schema"),                  r("planar report"),
     m("planar bench start"),                 m("planar bench event"),           m("planar bench touch"),           m("planar bench harvest"),         m("planar bench finish"),            r("planar bench show"),
     m("planar closure compute"),             r("planar closure show"),          m("planar run start"),             m("planar run event"),             m("planar run finish"),              r("planar run show"),
-    r("planar groups recommend"),            m("planar explore"),               r("planar workflow list"),         r("planar workflow show"),         m("planar workflow run"),            r("planar-agent version"),
-    m("planar-agent pull"),                  r("planar-agent peek"),            m("planar-agent complete"),        m("planar-agent fail"),            m("planar-agent release"),           m("planar-agent block"),
-    m("planar-agent claim"),                 m("planar-agent heartbeat"),       m("planar-agent claim-associate"), m("planar-agent action start"),    m("planar-agent action end"),        m("planar-agent ingest"),
-    m("planar-agent reconcile"),             m("planar-agent abort"),           r("planar-agent schema"),          m("planar-agent run start"),       m("planar-agent run end"),           m("planar-agent context add"),
-    m("planar-agent context capsule"),       r("planar-agent context list"),    m("planar-agent context resolve"), r("planar-watch feed"),            r("planar-watch ps"),                r("planar-watch claims"),
-    r("planar-watch actions"),               r("planar-watch plans"),           r("planar-watch log"),             r("planar-watch tree"),            r("planar-watch run list"),          r("planar-watch run show"),
-    r("planar-watch sync-events"),           r("planar-watch version"),         r("planar-watch completion"),      r("planar-watch schema"),          m("planar-doc build"),               r("planar-doc verify"),
-    r("planar-doc diff"),                    m("planar-doc cover"),             m("planar-doc nodoc"),             r("planar-doc lint"),              r("planar-doc schema"),
+    r("planar groups recommend"),            m("planar explore"),               r("planar workflow list"),         r("planar workflow show"),         m("planar workflow run"),            r("planar feedback triage list"),
+    r("planar feedback triage show"),        m("planar feedback triage set"),   r("planar-agent version"),         m("planar-agent pull"),            r("planar-agent peek"),              m("planar-agent complete"),
+    m("planar-agent fail"),                  m("planar-agent release"),         m("planar-agent block"),           m("planar-agent claim"),           m("planar-agent heartbeat"),         m("planar-agent claim-associate"),
+    m("planar-agent action start"),          m("planar-agent action end"),      m("planar-agent ingest"),          m("planar-agent reconcile"),       m("planar-agent abort"),             r("planar-agent schema"),
+    m("planar-agent run start"),             m("planar-agent run end"),         m("planar-agent context add"),     m("planar-agent context capsule"), r("planar-agent context list"),      m("planar-agent context resolve"),
+    r("planar-watch feed"),                  r("planar-watch ps"),              r("planar-watch claims"),          r("planar-watch actions"),         r("planar-watch plans"),             r("planar-watch log"),
+    r("planar-watch tree"),                  r("planar-watch run list"),        r("planar-watch run show"),        r("planar-watch sync-events"),     r("planar-watch version"),           r("planar-watch completion"),
+    r("planar-watch schema"),                m("planar-doc build"),             r("planar-doc verify"),            r("planar-doc diff"),              m("planar-doc cover"),               m("planar-doc nodoc"),
+    r("planar-doc lint"),                    r("planar-doc schema"),
 };
 
 fn checkCapability(arena: std.mem.Allocator, file: []const u8, role: []const u8, line_no: usize, line: []const u8, in_fence: bool, findings: *std.ArrayList(Finding), suppressions: *std.ArrayList(Suppression)) !void {
