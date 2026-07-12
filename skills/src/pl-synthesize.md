@@ -251,6 +251,56 @@ planar synthesize <repo-root> --scope <slug>           # override cwd-derived sc
 
 Apply the structured-authoring rules: quoted titles, literal headings, no nested bullets, no `## Out of this plan` H2, workbench discipline, and only annotate skills with the guard note when the guarded verb literally appears in the body.
 
+## Context
+
+Report the resolved scope, repository root, detected or overridden code layout,
+greenfield decision, synthesis or literal mode, preview or apply mode,
+confidence threshold, removal policy, and forward-spec selection.
+
+## Intent
+
+State in one sentence which repository evidence will be reconciled into fresh
+planning artifacts and whether the request is preview-only or approved apply.
+
+## Actions
+
+Report `attempted`, `applied`, `skipped`, and `failed` counts for evidence
+areas, synthesized phases and tasks, decisions, reference artifacts, removals,
+and accepted forward specs. Retain the CLI diff counts and name every failed
+target; rejected or unselected forward specs are skipped.
+
+## Result
+
+Always report `outcome=ok|partial|error`. A preview reports proposed targets
+and zero applied. After apply, verify every returned anchor or accepted forward
+plan with `planar plan show <plan-id> --json` and report its stable ID, status,
+derived entity identifiers, and workbench path. Include the validated request
+fingerprint and code-evidence summary. An idempotent current-state rerun is an
+informative `outcome=ok` with zero applied.
+
+## Warnings
+
+Name greenfield or layout assumptions, confidence-floor findings, missing code
+evidence, cache/schema validation failures, unavailable post-state reads, and
+partial per-target results. Never imply that independently completed plans or
+files were rolled back because another target failed.
+
+## Next actions
+
+Give zero to three executable recommendations. For preview, lead with the exact
+approved `planar synthesize <repo-root> --apply ...` command. For accepted
+forward specs, recommend `planar spec ingest <plan-id> --strict --json` before
+their separate apply gate.
+
+## Recovery
+
+For every failed target, give its exact inspect command and an idempotent retry
+with the original layout, greenfield, threshold, removal, scope, and
+forward-spec flags, such as `planar synthesize <repo-root> --apply ...` and
+`planar plan show <plan-id> --json`. When synthesis output is pending, preserve
+the request fingerprint and rerun after writing the matching cache result.
+Completed independent targets remain applied; do not invent cross-target undo.
+
 ## Vendor Notes
 
 {{.VendorNotes}}
