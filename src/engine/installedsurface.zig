@@ -137,7 +137,7 @@ pub fn status(backing: std.mem.Allocator, opts: Options) !StatusResult {
 
     for (manifest.projections) |row| {
         if (opts.vendor) |filter| if (!std.mem.eql(u8, filter, row.vendor)) continue;
-        const classified = try classifyRow(a, row);
+        const classified = try classifyRow(a, row, bootstrap);
         try projections.append(a, classified);
         increment(&summary, classified.status);
     }
@@ -152,7 +152,10 @@ pub fn status(backing: std.mem.Allocator, opts: Options) !StatusResult {
 
     var requires_bootstrap = false;
     for (projections.items) |projection| {
-        if ((projection.status == .stale or projection.status == .missing) and projection.repair_command == null) {
+        if ((projection.status == .stale or projection.status == .missing) and
+            projection.repair_command != null and
+            std.mem.eql(u8, projection.repair_command.?, bootstrap))
+        {
             requires_bootstrap = true;
             break;
         }
@@ -236,9 +239,9 @@ fn validManifest(manifest: Manifest) bool {
     return true;
 }
 
-fn classifyRow(a: std.mem.Allocator, row: ManifestRow) !ProjectionStatus {
+fn classifyRow(a: std.mem.Allocator, row: ManifestRow, bootstrap: []const u8) !ProjectionStatus {
     const repair_cmd = try std.fmt.allocPrint(a, "planar skills repair {s} --vendor {s} --apply", .{ row.name, row.vendor });
-    const base: ProjectionStatus = .{
+    var base: ProjectionStatus = .{
         .vendor = row.vendor,
         .kind = row.kind,
         .name = row.name,
@@ -247,14 +250,13 @@ fn classifyRow(a: std.mem.Allocator, row: ManifestRow) !ProjectionStatus {
         .install_kind = row.install_kind,
         .status = .stale,
         .reason = "staged projection is unavailable",
-        .repair_command = repair_cmd,
+        .repair_command = bootstrap,
     };
     const staged = readProjection(a, row.staged_path) catch |e| switch (e) {
         error.FileNotFound => return base,
         error.InvalidProjectionDigest => {
             var out = base;
             out.reason = "staged projection has invalid digest metadata; reinstall required";
-            out.repair_command = null;
             return out;
         },
         else => return e,
@@ -266,15 +268,14 @@ fn classifyRow(a: std.mem.Allocator, row: ManifestRow) !ProjectionStatus {
     {
         var out = base;
         out.reason = "staged projection digests differ from the install manifest; reinstall required";
-        out.repair_command = null;
         return out;
     }
     if (!(try semanticDigestMatches(a, row.kind, row.vendor, staged))) {
         var out = base;
         out.reason = "staged projection semantic bytes differ from its manifest digest; reinstall required";
-        out.repair_command = null;
         return out;
     }
+    base.repair_command = repair_cmd;
 
     var link_buf: [std.fs.max_path_bytes]u8 = undefined;
     const link_len = std.Io.Dir.cwd().readLink(fsIo(), row.installed_path, &link_buf) catch null;
@@ -538,6 +539,7 @@ pub fn repair(backing: std.mem.Allocator, opts: RepairOptions) !RepairResult {
     var arena = std.heap.ArenaAllocator.init(backing);
     errdefer arena.deinit();
     const a = arena.allocator();
+    const reinstall = try bootstrapCommand(a, opts.status.planar_home);
     if (before.manifest_status != .current) {
         return .{
             .mode = if (opts.apply) "apply" else "preview",
@@ -565,6 +567,7 @@ pub fn repair(backing: std.mem.Allocator, opts: RepairOptions) !RepairResult {
     var applied: usize = 0;
     var skipped: usize = 0;
     var failed: usize = 0;
+    var reinstall_required = false;
     for (before.projections) |row| {
         if (row.status == .unmanaged or !selectedName(opts.names, row.name)) continue;
         if (row.status == .fresh) {
@@ -573,13 +576,14 @@ pub fn repair(backing: std.mem.Allocator, opts: RepairOptions) !RepairResult {
             continue;
         }
         attempted += 1;
-        if (!opts.apply) {
-            try actions.append(a, try cloneAction(a, row, "would-repair", row.status, null, row.repair_command));
+        if (row.repair_command != null and std.mem.eql(u8, row.repair_command.?, reinstall)) {
+            failed += 1;
+            reinstall_required = true;
+            try actions.append(a, try cloneAction(a, row, "reinstall-required", row.status, "StagedAuthorityMismatch", reinstall));
             continue;
         }
-        if (row.repair_command == null) {
-            failed += 1;
-            try actions.append(a, try cloneAction(a, row, "failed", row.status, "StagedAuthorityMismatch", try bootstrapCommand(a, opts.status.planar_home)));
+        if (!opts.apply) {
+            try actions.append(a, try cloneAction(a, row, "would-repair", row.status, null, row.repair_command));
             continue;
         }
         applyOne(row) catch |e| {
@@ -591,7 +595,7 @@ pub fn repair(backing: std.mem.Allocator, opts: RepairOptions) !RepairResult {
         try actions.append(a, try cloneAction(a, row, "repaired", .fresh, null, null));
     }
     const outcome = if (failed > 0 and applied > 0) "partial" else if (failed > 0) "error" else "ok";
-    const next = if (failed > 0) "planar skills status" else if (opts.apply) "planar skills status" else "planar skills repair --apply";
+    const next = if (reinstall_required) reinstall else if (failed > 0) "planar skills status" else if (opts.apply) "planar skills status" else "planar skills repair --apply";
     return .{
         .mode = if (opts.apply) "apply" else "preview",
         .outcome = outcome,
