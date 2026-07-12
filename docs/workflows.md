@@ -1713,7 +1713,16 @@ The `audit_trail` read surface stitches together `audit_log` (the operator-write
 planar health
 ```
 
-`health` is the always-on smoke check: schema-current, integrity, in-flight tasks resumable, pending handoffs fresh. It is not agent-activity-aware (the claim table is consulted by `dashboard --agents` and `plan next`, not by health), but it is the first verb to run when something looks wrong before you spend time chasing the wrong layer.
+`health` is the always-on smoke check: schema-current, integrity, in-flight
+tasks resumable, pending handoffs fresh, and manifest-owned installed skill and
+agent projections fresh. A stale/missing managed projection or a legacy,
+invalid, or unsupported manifest degrades health and prints an exact repair or
+reinstall command; health itself remains read-only. Unmanaged extensions,
+unselected vendors, and a machine with no recorded Planar installation do not
+degrade. It is not agent-activity-aware (the claim table is consulted by
+`dashboard --agents` and `plan next`, not by health), but it is the first verb
+to run when something looks wrong before you spend time chasing the wrong
+layer.
 
 ### Putting it together
 

@@ -4114,7 +4114,8 @@ SHA                                       session  claim  committed_at          
 
 ## Domain: `health`
 
-Health commands report the operational status of the Planar installation and the handoff readiness of in-flight tasks.
+Health commands report the operational status of the Planar installation, the
+handoff readiness of in-flight tasks, and installed projection freshness.
 
 ---
 
@@ -4125,7 +4126,10 @@ Health commands report the operational status of the Planar installation and the
 planar health [--json]
 ```
 
-**Description:** Report database and handoff readiness health. Checks: database is reachable, schema version is current, `pragma integrity_check` passes, count of in-flight tasks not passing `resume validate`, count of pending handoffs older than the freshness window.
+**Description:** Report database, handoff-readiness, and installed-projection
+health. In addition to the database and handoff checks, health consumes the
+same read-only classification as `planar skills status`; it never repairs or
+rewrites an installed projection.
 
 **Output (human):**
 ```
@@ -4136,6 +4140,8 @@ planar health
   integrity:     ok
   in-flight tasks:  5  (3 resumable, 2 NOT RESUMABLE)
   pending handoffs: 1  (0 stale)
+  projection freshness: fresh (1 managed: 1 fresh, 0 stale, 0 missing; 1 unmanaged; 2 unselected vendors)
+  projection manifest:  current
 
 overall: DEGRADED  (2 tasks not resumable)
 ```
@@ -4152,17 +4158,43 @@ overall: DEGRADED  (2 tasks not resumable)
   "not_resumable_tasks":2,
   "pending_handoffs":1,
   "stale_handoffs":0,
+  "projection_freshness": {
+    "state":"fresh",
+    "manifest_status":"current",
+    "managed":1,
+    "fresh":1,
+    "stale":0,
+    "missing":0,
+    "unmanaged":1,
+    "unselected_vendors":2,
+    "evidence":null,
+    "repair_command":null
+  },
   "overall":"degraded"
 }
 ```
 
-**Schema effects:** Reads `schema_migrations`, `tasks`, `context_snapshots`, `handoffs`.
+The nested field order is stable. `state` is `fresh`, `degraded`, or
+`not_installed`; `evidence` and `repair_command` are present as `null` when
+unused. Text emits optional `projection evidence` and `projection repair`
+lines, in that order, between the manifest and overall lines.
+
+Stale or missing manifest-owned rows degrade health. A legacy, invalid, or
+unsupported manifest also degrades once and reports the classifier's exact
+reinstall command. An absent manifest without the legacy ownership stamp is
+`not_installed` and stays healthy. Unmanaged extensions and vendors omitted by
+the manifest are counted but never degrade health.
+
+**Schema effects:** Reads `schema_migrations`, `tasks`, `context_snapshots`,
+`handoffs`, the install manifest, and installed projection paths. Writes
+nothing.
 
 **Capture:** None.
 
 **Exit codes:**
 - `0` — all checks pass.
-- `1` — degraded (some tasks not resumable or stale handoffs).
+- `1` — degraded (some tasks are not resumable, handoffs are stale, managed
+  projections are stale/missing, or the install manifest needs recovery).
 - `2` — critical (database unreachable or integrity check failed).
 
 ---

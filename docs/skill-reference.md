@@ -496,7 +496,11 @@ Source: `commands/claude/pl-help.md` · `skills/codex/pl-help.md`
 
 ### `/pl-health`
 
-Report database and handoff readiness health: schema version, pending migrations, session state, unresolved sync conflicts.
+Report database, handoff-readiness, and installed-projection health. The output
+includes manifest-owned projection freshness and its exact repair command when
+stale, missing, legacy, invalid, or unsupported state needs attention. The
+read never repairs files; unmanaged local extensions and unselected vendors do
+not degrade health.
 
 **Example:** `/pl-health`
 
