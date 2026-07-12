@@ -25,6 +25,45 @@ fn envFor(home: []const u8, planar_home: []const u8, codex_home: []const u8) [3]
     };
 }
 
+fn appendDigestField(gpa: std.mem.Allocator, out: *std.ArrayList(u8), label: []const u8, value: []const u8) !void {
+    const prefix = try std.fmt.allocPrint(gpa, "{s} {d}:", .{ label, value.len });
+    defer gpa.free(prefix);
+    try out.appendSlice(gpa, prefix);
+    try out.appendSlice(gpa, value);
+    try out.append(gpa, '\n');
+}
+
+fn fixtureProjectionDigest(gpa: std.mem.Allocator, row: Row) ![64]u8 {
+    const raw = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, row.staged, gpa, .limited(4 * 1024 * 1024));
+    defer gpa.free(raw);
+    const first_line_end = std.mem.indexOfScalar(u8, raw, '\n').? + 1;
+    const source_line_end = std.mem.indexOfScalarPos(u8, raw, first_line_end, '\n').? + 1;
+    const projection_line_end = std.mem.indexOfScalarPos(u8, raw, source_line_end, '\n').? + 1;
+    const payload = try std.mem.concat(gpa, u8, &.{ raw[0..first_line_end], raw[projection_line_end..] });
+    defer gpa.free(payload);
+    var canonical: std.ArrayList(u8) = .empty;
+    defer canonical.deinit(gpa);
+    try appendDigestField(gpa, &canonical, "domain", "planar-render-projection-v2");
+    try appendDigestField(gpa, &canonical, "kind", row.kind);
+    try appendDigestField(gpa, &canonical, "source_digest", digest_a);
+    try appendDigestField(gpa, &canonical, "vendor", row.vendor);
+    try appendDigestField(gpa, &canonical, "payload", payload);
+    var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(canonical.items, &digest, .{});
+    return std.fmt.bytesToHex(digest, .lower);
+}
+
+fn stampFixtureDigest(gpa: std.mem.Allocator, path: []const u8, digest: []const u8) !void {
+    const raw = std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, gpa, .limited(4 * 1024 * 1024)) catch |e| switch (e) {
+        error.FileNotFound, error.IsDir => return,
+        else => return e,
+    };
+    defer gpa.free(raw);
+    const at = std.mem.indexOf(u8, raw, digest_b) orelse return error.InvalidFixture;
+    @memcpy(raw[at .. at + digest.len], digest);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = path, .data = raw });
+}
+
 fn writeManifest(gpa: std.mem.Allocator, planar_home: []const u8, vendors: []const []const u8, rows: []const Row) !void {
     try std.Io.Dir.cwd().createDirPath(std.testing.io, planar_home);
     var body: std.ArrayList(u8) = .empty;
@@ -38,11 +77,14 @@ fn writeManifest(gpa: std.mem.Allocator, planar_home: []const u8, vendors: []con
     }
     try body.appendSlice(gpa, "],\"projections\":[");
     for (rows, 0..) |row, i| {
+        const projection_digest = try fixtureProjectionDigest(gpa, row);
+        try stampFixtureDigest(gpa, row.staged, &projection_digest);
+        try stampFixtureDigest(gpa, row.installed, &projection_digest);
         if (i > 0) try body.append(gpa, ',');
         const encoded = try std.fmt.allocPrint(
             gpa,
             "{{\"vendor\":\"{s}\",\"kind\":\"{s}\",\"name\":\"{s}\",\"staged_path\":\"{s}\",\"installed_path\":\"{s}\",\"install_kind\":\"{s}\",\"source_digest\":\"{s}\",\"projection_digest\":\"{s}\"}}",
-            .{ row.vendor, row.kind, row.name, row.staged, row.installed, row.install_kind, digest_a, digest_b },
+            .{ row.vendor, row.kind, row.name, row.staged, row.installed, row.install_kind, digest_a, projection_digest },
         );
         defer gpa.free(encoded);
         try body.appendSlice(gpa, encoded);
@@ -408,6 +450,8 @@ test "skills repair previews without writes then repairs copy and link and reche
         .{ .vendor = "codex", .kind = "skill", .name = "missing", .staged = missing_staged, .installed = missing_installed, .install_kind = "copy" },
     };
     try writeManifest(gpa, planar_home, &.{"codex"}, &rows);
+    const expected_stale = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, copy_installed, gpa, .limited(1024));
+    defer gpa.free(expected_stale);
     const env = envFor(home, planar_home, codex_home);
     const preview = suite.mustRunWith(&.{ "skills", "repair", "--json", "copy", "link", "missing" }, &env);
     defer gpa.free(preview);
@@ -416,7 +460,7 @@ test "skills repair previews without writes then repairs copy and link and reche
     try std.testing.expect(std.mem.indexOf(u8, preview, "\"applied\":0") != null);
     const still_stale = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, copy_installed, gpa, .limited(1024));
     defer gpa.free(still_stale);
-    try std.testing.expectEqualStrings(stale_body, still_stale);
+    try std.testing.expectEqualStrings(expected_stale, still_stale);
     const applied = suite.mustRunWith(&.{ "skills", "repair", "--apply", "--json", "copy", "link", "missing" }, &env);
     defer gpa.free(applied);
     try std.testing.expect(std.mem.indexOf(u8, applied, "\"outcome\":\"ok\"") != null);
