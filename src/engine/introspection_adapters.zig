@@ -455,24 +455,32 @@ fn addAggregate(allocator: std.mem.Allocator, signals: *std.ArrayList(Signal), v
         {
             signal.count +|= 1;
             if (std.mem.order(u8, item.timestamp, signal.first_seen) == .lt) {
+                const replacement = try allocator.dupe(u8, item.timestamp);
                 allocator.free(signal.first_seen);
-                signal.first_seen = try allocator.dupe(u8, item.timestamp);
+                signal.first_seen = replacement;
             }
             if (std.mem.order(u8, item.timestamp, signal.last_seen) == .gt) {
+                const replacement = try allocator.dupe(u8, item.timestamp);
                 allocator.free(signal.last_seen);
-                signal.last_seen = try allocator.dupe(u8, item.timestamp);
+                signal.last_seen = replacement;
             }
             return true;
         }
     }
     if (signals.items.len == max_evidence_buckets) return false;
+    const verb_path = try allocator.dupe(u8, item.verb_path);
+    errdefer allocator.free(verb_path);
+    const first_seen = try allocator.dupe(u8, item.timestamp);
+    errdefer allocator.free(first_seen);
+    const last_seen = try allocator.dupe(u8, item.timestamp);
+    errdefer allocator.free(last_seen);
     try signals.append(allocator, .{
         .vendor = vendor,
-        .verb_path = try allocator.dupe(u8, item.verb_path),
+        .verb_path = verb_path,
         .category = item.category,
         .count = 1,
-        .first_seen = try allocator.dupe(u8, item.timestamp),
-        .last_seen = try allocator.dupe(u8, item.timestamp),
+        .first_seen = first_seen,
+        .last_seen = last_seen,
     });
     return true;
 }
@@ -600,6 +608,24 @@ test "ordinary success is observed without becoming gap while explicit usage evi
     try std.testing.expectEqual(@as(usize, 1), preview.signals.len);
     try std.testing.expectEqual(Category.gap, preview.signals[0].category);
     try std.testing.expectEqualStrings("planar task add", preview.signals[0].verb_path);
+}
+
+test "aggregate allocation failures preserve ownership and clean partial signals" {
+    const jsonl =
+        "{\"schema\":1,\"kind\":\"cli_invocation\",\"recorded_at\":\"2026-07-12T12:02:00Z\",\"verb_path\":\"planar task add\",\"exit_code\":1}\n" ++
+        "{\"schema\":1,\"kind\":\"cli_invocation\",\"recorded_at\":\"2026-07-12T12:01:00Z\",\"verb_path\":\"planar task add\",\"exit_code\":1}";
+    var saw_success = false;
+    for (0..64) |fail_index| {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index });
+        var preview = collectPreview(failing.allocator(), &.{.{ .vendor = .cli_log, .jsonl = jsonl }}) catch |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            continue;
+        };
+        preview.deinit(failing.allocator());
+        saw_success = true;
+        break;
+    }
+    try std.testing.expect(saw_success);
 }
 
 test "preview collector has no persistence dependency and discovery precedence is explicit" {
