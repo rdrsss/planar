@@ -179,7 +179,32 @@ fn readRow(st: *db.sqlite.Stmt, a: std.mem.Allocator) Error!Triage {
     defer a.free(di);
     const r = try st.columnTextAlloc(5, a);
     defer a.free(r);
-    return .{ .id = st.columnInt(0), .finding = try st.columnTextAlloc(1, a), .plan_id = st.columnIntOpt(2), .severity = parseSeverity(s) orelse return Error.QueryFailed, .disposition = parseDisposition(di) orelse return Error.QueryFailed, .reproduction_status = parseReproduction(r) orelse return Error.QueryFailed, .duplicate_of = try st.columnTextOpt(6, a), .evidence_summary = try st.columnTextOpt(7, a), .created_at = try st.columnTextAlloc(8, a), .updated_at = try st.columnTextAlloc(9, a) };
+    const severity = parseSeverity(s) orelse return Error.QueryFailed;
+    const disposition = parseDisposition(di) orelse return Error.QueryFailed;
+    const reproduction_status = parseReproduction(r) orelse return Error.QueryFailed;
+
+    const finding = try st.columnTextAlloc(1, a);
+    errdefer a.free(finding);
+    const duplicate_of = try st.columnTextOpt(6, a);
+    errdefer if (duplicate_of) |value| a.free(value);
+    const evidence_summary = try st.columnTextOpt(7, a);
+    errdefer if (evidence_summary) |value| a.free(value);
+    const created_at = try st.columnTextAlloc(8, a);
+    errdefer a.free(created_at);
+    const updated_at = try st.columnTextAlloc(9, a);
+
+    return .{
+        .id = st.columnInt(0),
+        .finding = finding,
+        .plan_id = st.columnIntOpt(2),
+        .severity = severity,
+        .disposition = disposition,
+        .reproduction_status = reproduction_status,
+        .duplicate_of = duplicate_of,
+        .evidence_summary = evidence_summary,
+        .created_at = created_at,
+        .updated_at = updated_at,
+    };
 }
 pub fn renderText(v: Triage, w: *std.Io.Writer) !void {
     try w.print("{s}\n  severity: {s}\n  disposition: {s}\n  reproduction: {s}\n  duplicate-of: {s}\n  evidence: {s}\n", .{ v.finding, @tagName(v.severity), @tagName(v.disposition), @tagName(v.reproduction_status), v.duplicate_of orelse "-", v.evidence_summary orelse "-" });
@@ -220,6 +245,25 @@ test "set show list structured task and question triage" {
     const rows = try list(&d, a, .{ .plan_id = plan_id });
     defer deinitMany(rows, a);
     try std.testing.expectEqual(@as(usize, 2), rows.len);
+}
+
+test "show frees partially allocated triage rows on allocation failure" {
+    const a = std.testing.allocator;
+    var d = try db.sqlite.Db.openMemory();
+    defer d.close();
+    try db.migrate.applyAll(&d, a);
+    _ = try d.execParams("insert into plans(scope_kind,scope_id,title,slug,status) values('global',null,'Feedback','planar-feedback','draft')", &.{});
+    _ = try d.execParams("insert into tasks(scope_kind,scope_id,plan_id,title) values('global',null,1,'Original'),('global',null,1,'Duplicate')", &.{});
+    _ = try d.execParams("insert into feedback_triage(finding_task_id,severity,disposition,reproduction_status,evidence_summary) values(1,'high','accepted','reproduced','original evidence')", &.{});
+    _ = try d.execParams("insert into feedback_triage(finding_task_id,severity,disposition,reproduction_status,duplicate_of_triage_id,evidence_summary) values(2,'medium','duplicate','not-run',1,'duplicate evidence')", &.{});
+
+    // readRow performs three temporary enum allocations followed by five
+    // allocations transferred into Triage. Fail each allocation in turn; the
+    // testing allocator reports any partial-row leak.
+    for (0..8) |fail_index| {
+        var failing = std.testing.FailingAllocator.init(a, .{ .fail_index = fail_index });
+        try std.testing.expectError(error.OutOfMemory, show(&d, failing.allocator(), .{ .kind = .task, .id = 2 }));
+    }
 }
 
 test "duplicate validation rejects self and cross-plan targets" {
