@@ -66,16 +66,23 @@ test "deleting a duplicate target returns dependent findings to untriaged" {
     _ = suite.mustRunJSON(Triage, arena, &.{ "feedback", "triage", "set", target_ref, "--severity", "medium", "--disposition", "accepted", "--reproduction", "reproduced", "--json" });
     _ = suite.mustRunJSON(Triage, arena, &.{ "feedback", "triage", "set", dependent_ref, "--severity", "low", "--disposition", "duplicate", "--reproduction", "not-run", "--duplicate-of", target_ref, "--json" });
 
+    // The public CLI schema has no task/question deletion verb. Use a raw fixture
+    // delete only to exercise the migration's foreign-key lifecycle semantics;
+    // setup and the observable triage state remain public CLI contracts.
     const delete_sql = std.fmt.allocPrint(arena, "PRAGMA foreign_keys=ON; delete from tasks where id={d};", .{target.id}) catch unreachable;
     const deleted = std.process.run(a, std.testing.io, .{ .argv = &.{ "sqlite3", suite.db_path, delete_sql } }) catch @panic("failed to run sqlite3");
     defer a.free(deleted.stdout);
     defer a.free(deleted.stderr);
     try std.testing.expectEqual(@as(u8, 0), deleted.term.exited);
 
-    const missing_triage = suite.expectFailure(&.{ "feedback", "triage", "show", dependent_ref, "--json" });
-    defer a.free(missing_triage);
+    const preserved = suite.mustRunJSON(Triage, arena, &.{ "feedback", "triage", "show", dependent_ref, "--json" });
+    try std.testing.expectEqualStrings("untriaged", preserved.disposition);
+    try std.testing.expect(preserved.duplicate_of == null);
+    try std.testing.expectEqualStrings("low", preserved.severity);
+    try std.testing.expectEqualStrings("not-run", preserved.reproduction_status);
     const listed = suite.mustRunJSON([]Triage, arena, &.{ "feedback", "triage", "list", "--plan", plan_id, "--json" });
-    try std.testing.expectEqual(@as(usize, 0), listed.len);
+    try std.testing.expectEqual(@as(usize, 1), listed.len);
+    try std.testing.expectEqualStrings(dependent_ref, listed[0].finding);
     const still_present = suite.mustRunJSON(Task, arena, &.{ "task", "show", std.fmt.allocPrint(arena, "{d}", .{dependent.id}) catch unreachable, "--json" });
     try std.testing.expectEqual(dependent.id, still_present.id);
 }

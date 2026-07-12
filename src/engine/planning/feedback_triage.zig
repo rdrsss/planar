@@ -107,13 +107,16 @@ pub fn set(d: *db.sqlite.Db, a: std.mem.Allocator, finding: Ref, args: SetArgs) 
         };
         defer deinit(target_row, a);
         duplicate_id = target_row.id;
-        var cursor = target_row.duplicate_of;
-        while (cursor) |raw| {
-            const r = try parseRef(raw);
+        var cursor: ?Ref = if (target_row.duplicate_of) |raw| try parseRef(raw) else null;
+        while (cursor) |r| {
             if (r.kind == finding.kind and r.id == finding.id) return Error.DuplicateCycle;
             const row = try show(d, a, r);
-            defer deinit(row, a);
-            cursor = row.duplicate_of;
+            const next: ?Ref = if (row.duplicate_of) |raw| parseRef(raw) catch |e| {
+                deinit(row, a);
+                return e;
+            } else null;
+            deinit(row, a);
+            cursor = next;
         }
     }
     const task_id: db.sqlite.Param = if (finding.kind == .task) .{ .int = finding.id } else .{ .null = {} };
@@ -230,4 +233,26 @@ test "duplicate validation rejects self and cross-plan targets" {
     defer deinit(first, a);
     try std.testing.expectError(Error.DuplicateCycle, set(&d, a, .{ .kind = .task, .id = 1 }, .{ .severity = .low, .disposition = .duplicate, .reproduction = .@"not-run", .duplicate_of = .{ .kind = .task, .id = 1 } }));
     try std.testing.expectError(Error.DifferentFeedbackPlan, set(&d, a, .{ .kind = .task, .id = 2 }, .{ .severity = .low, .disposition = .duplicate, .reproduction = .@"not-run", .duplicate_of = .{ .kind = .task, .id = 1 } }));
+}
+
+test "duplicate validation traverses multi-hop chains and rejects cycles" {
+    const a = std.testing.allocator;
+    var d = try db.sqlite.Db.openMemory();
+    defer d.close();
+    try db.migrate.applyAll(&d, a);
+    _ = try d.execParams("insert into plans(scope_kind,scope_id,title,slug,status) values('global',null,'Feedback','planar-feedback','draft')", &.{});
+    _ = try d.execParams("insert into tasks(scope_kind,scope_id,plan_id,title) values('global',null,1,'One'),('global',null,1,'Two'),('global',null,1,'Three'),('global',null,1,'Four')", &.{});
+
+    const one = try set(&d, a, .{ .kind = .task, .id = 1 }, .{ .severity = .low, .disposition = .accepted, .reproduction = .@"not-run" });
+    deinit(one, a);
+    const two = try set(&d, a, .{ .kind = .task, .id = 2 }, .{ .severity = .low, .disposition = .duplicate, .reproduction = .@"not-run", .duplicate_of = .{ .kind = .task, .id = 1 } });
+    deinit(two, a);
+    const three = try set(&d, a, .{ .kind = .task, .id = 3 }, .{ .severity = .low, .disposition = .duplicate, .reproduction = .@"not-run", .duplicate_of = .{ .kind = .task, .id = 2 } });
+    deinit(three, a);
+
+    const four = try set(&d, a, .{ .kind = .task, .id = 4 }, .{ .severity = .low, .disposition = .duplicate, .reproduction = .@"not-run", .duplicate_of = .{ .kind = .task, .id = 3 } });
+    defer deinit(four, a);
+    try std.testing.expectEqualStrings("task:3", four.duplicate_of.?);
+
+    try std.testing.expectError(Error.DuplicateCycle, set(&d, a, .{ .kind = .task, .id = 1 }, .{ .severity = .low, .disposition = .duplicate, .reproduction = .@"not-run", .duplicate_of = .{ .kind = .task, .id = 3 } }));
 }
