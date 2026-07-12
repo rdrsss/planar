@@ -72,7 +72,8 @@ test "deleting a duplicate target returns dependent findings to untriaged" {
     defer a.free(deleted.stderr);
     try std.testing.expectEqual(@as(u8, 0), deleted.term.exited);
 
-    _ = suite.expectFailure(&.{ "feedback", "triage", "show", dependent_ref, "--json" });
+    const missing_triage = suite.expectFailure(&.{ "feedback", "triage", "show", dependent_ref, "--json" });
+    defer a.free(missing_triage);
     const listed = suite.mustRunJSON([]Triage, arena, &.{ "feedback", "triage", "list", "--plan", plan_id, "--json" });
     try std.testing.expectEqual(@as(usize, 0), listed.len);
     const still_present = suite.mustRunJSON(Task, arena, &.{ "task", "show", std.fmt.allocPrint(arena, "{d}", .{dependent.id}) catch unreachable, "--json" });
@@ -96,13 +97,17 @@ test "feedback triage rejects unplanned ambiguous and non-feedback findings" {
     const feedback_id = std.fmt.allocPrint(arena, "{d}", .{feedback.id}) catch unreachable;
     const ambiguous = suite.mustRunJSON(Question, arena, &.{ "question", "add", "--plan", feedback_id, "--json", "Ambiguous question" });
     const ambiguous_id = std.fmt.allocPrint(arena, "{d}", .{ambiguous.id}) catch unreachable;
-    _ = suite.mustRun(&.{ "question", "link", ambiguous_id, std.fmt.allocPrint(arena, "plan:{d}", .{other.id}) catch unreachable, "--relationship", "derives-from", "--json" });
+    const link_out = suite.mustRun(&.{ "question", "link", ambiguous_id, std.fmt.allocPrint(arena, "plan:{d}", .{other.id}) catch unreachable, "--relationship", "derives-from", "--json" });
+    defer a.free(link_out);
 
     const common = [_][]const u8{ "--severity", "low", "--disposition", "accepted", "--reproduction", "not-run" };
     const unplanned_err = suite.expectFailure(&.{ "feedback", "triage", "set", std.fmt.allocPrint(arena, "task:{d}", .{unplanned.id}) catch unreachable, common[0], common[1], common[2], common[3], common[4], common[5] });
+    defer a.free(unplanned_err);
     try std.testing.expect(std.mem.indexOf(u8, unplanned_err, "MissingFeedbackPlan") != null);
     const ordinary_err = suite.expectFailure(&.{ "feedback", "triage", "set", std.fmt.allocPrint(arena, "task:{d}", .{ordinary.id}) catch unreachable, common[0], common[1], common[2], common[3], common[4], common[5] });
+    defer a.free(ordinary_err);
     try std.testing.expect(std.mem.indexOf(u8, ordinary_err, "DifferentFeedbackPlan") != null);
     const ambiguous_err = suite.expectFailure(&.{ "feedback", "triage", "set", std.fmt.allocPrint(arena, "question:{d}", .{ambiguous.id}) catch unreachable, common[0], common[1], common[2], common[3], common[4], common[5] });
+    defer a.free(ambiguous_err);
     try std.testing.expect(std.mem.indexOf(u8, ambiguous_err, "AmbiguousFeedbackPlan") != null);
 }

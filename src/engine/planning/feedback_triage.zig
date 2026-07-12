@@ -21,7 +21,7 @@ pub const Triage = struct {
 };
 pub const Filter = struct { plan_id: ?i64 = null, severity: ?Severity = null, disposition: ?Disposition = null };
 pub const SetArgs = struct { severity: Severity, disposition: Disposition, reproduction: Reproduction, duplicate_of: ?Ref = null, evidence: ?[]const u8 = null };
-pub const Error = error{ NotFound, InvalidInput, DifferentFeedbackPlan, DuplicateCycle, QueryFailed } || std.mem.Allocator.Error;
+pub const Error = error{ NotFound, InvalidInput, MissingFeedbackPlan, AmbiguousFeedbackPlan, DifferentFeedbackPlan, DuplicateCycle, QueryFailed } || std.mem.Allocator.Error;
 
 pub fn parseRef(raw: []const u8) Error!Ref {
     const colon = std.mem.indexOfScalar(u8, raw, ':') orelse return Error.InvalidInput;
@@ -52,16 +52,22 @@ pub fn deinitMany(v: []const Triage, a: std.mem.Allocator) void {
     a.free(v);
 }
 
-fn findingPlan(d: *db.sqlite.Db, r: Ref) Error!?i64 {
+fn findingPlan(d: *db.sqlite.Db, a: std.mem.Allocator, r: Ref) Error!i64 {
     const sql: [:0]const u8 = switch (r.kind) {
-        .task => "select plan_id from tasks where id = ?",
-        .question => "select el.to_id from questions q left join entity_links el on el.from_kind='question' and el.from_id=q.id and el.to_kind='plan' and el.relationship='derives-from' where q.id = ? order by el.to_id limit 1",
+        .task => "select t.plan_id,p.slug from tasks t left join plans p on p.id=t.plan_id where t.id=?",
+        .question => "select count(el.to_id),min(el.to_id),min(p.slug) from questions q left join entity_links el on el.from_kind='question' and el.from_id=q.id and el.to_kind='plan' and el.relationship='derives-from' left join plans p on p.id=el.to_id where q.id=? group by q.id",
     };
     var st = d.prepare(sql) catch return Error.QueryFailed;
     defer st.finalize();
     st.bind(&.{.{ .int = r.id }}) catch return Error.QueryFailed;
     if ((st.step() catch return Error.QueryFailed) != .row) return Error.NotFound;
-    return st.columnIntOpt(0);
+    const link_count = if (r.kind == .question) st.columnInt(0) else @as(i64, 1);
+    if (link_count == 0 or st.columnIntOpt(if (r.kind == .question) 1 else 0) == null) return Error.MissingFeedbackPlan;
+    if (link_count > 1) return Error.AmbiguousFeedbackPlan;
+    const slug = (try st.columnTextOpt(if (r.kind == .question) 2 else 1, a)) orelse return Error.MissingFeedbackPlan;
+    defer a.free(slug);
+    if (!std.mem.eql(u8, slug, "planar-feedback")) return Error.DifferentFeedbackPlan;
+    return st.columnInt(if (r.kind == .question) 1 else 0);
 }
 
 pub fn entityScope(d: *db.sqlite.Db, a: std.mem.Allocator, r: Ref) Error!?[]const u8 {
@@ -89,12 +95,12 @@ pub fn entityScope(d: *db.sqlite.Db, a: std.mem.Allocator, r: Ref) Error!?[]cons
 }
 
 pub fn set(d: *db.sqlite.Db, a: std.mem.Allocator, finding: Ref, args: SetArgs) Error!Triage {
-    const plan = try findingPlan(d, finding);
+    const plan = try findingPlan(d, a, finding);
     if ((args.disposition == .duplicate) != (args.duplicate_of != null)) return Error.InvalidInput;
     var duplicate_id: ?i64 = null;
     if (args.duplicate_of) |target| {
         if (target.kind == finding.kind and target.id == finding.id) return Error.DuplicateCycle;
-        if ((try findingPlan(d, target)) != plan) return Error.DifferentFeedbackPlan;
+        if ((try findingPlan(d, a, target)) != plan) return Error.DifferentFeedbackPlan;
         const target_row = show(d, a, target) catch |e| switch (e) {
             Error.NotFound => return Error.InvalidInput,
             else => return e,
@@ -193,8 +199,8 @@ test "set show list structured task and question triage" {
     var d = try db.sqlite.Db.openMemory();
     defer d.close();
     try db.migrate.applyAll(&d, a);
-    _ = try d.execParams("insert into plans(scope_kind,scope_id,title,slug,status) values('global',null,'Feedback','feedback','draft')", &.{});
-    const plan_id = try d.intQuery("select id from plans where slug='feedback'");
+    _ = try d.execParams("insert into plans(scope_kind,scope_id,title,slug,status) values('global',null,'Feedback','planar-feedback','draft')", &.{});
+    const plan_id = try d.intQuery("select id from plans where slug='planar-feedback'");
     _ = try d.execParams("insert into tasks(scope_kind,scope_id,plan_id,title) values('global',null,?,'Task finding')", &.{.{ .int = plan_id }});
     const task_id = try d.intQuery("select id from tasks where title='Task finding'");
     _ = try d.execParams("insert into questions(scope_kind,scope_id,title) values('global',null,'Question finding')", &.{});
@@ -218,7 +224,7 @@ test "duplicate validation rejects self and cross-plan targets" {
     var d = try db.sqlite.Db.openMemory();
     defer d.close();
     try db.migrate.applyAll(&d, a);
-    _ = try d.execParams("insert into plans(scope_kind,scope_id,title,slug,status) values('global',null,'One','one','draft'),('global',null,'Two','two','draft')", &.{});
+    _ = try d.execParams("insert into plans(scope_kind,scope_id,title,slug,status) values('global',null,'One','planar-feedback','draft'),('global',null,'Two','two','draft')", &.{});
     _ = try d.execParams("insert into tasks(scope_kind,scope_id,plan_id,title) values('global',null,1,'One'),('global',null,2,'Two')", &.{});
     const first = try set(&d, a, .{ .kind = .task, .id = 1 }, .{ .severity = .low, .disposition = .accepted, .reproduction = .@"not-run" });
     defer deinit(first, a);

@@ -5,7 +5,7 @@ create table feedback_triage (
   severity text not null check(severity in ('info','low','medium','high','critical')),
   disposition text not null check(disposition in ('untriaged','needs-reproduction','accepted','retained-question','dismissed','reported-external','duplicate')),
   reproduction_status text not null check(reproduction_status in ('not-run','reproduced','not-reproduced','inconclusive')),
-  duplicate_of_triage_id integer references feedback_triage(id) on delete set null,
+  duplicate_of_triage_id integer references feedback_triage(id) on delete cascade,
   evidence_summary text,
   created_at text not null default (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   updated_at text not null default (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
