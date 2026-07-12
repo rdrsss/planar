@@ -231,3 +231,25 @@ test "duplicate validation rejects self and cross-plan targets" {
     try std.testing.expectError(Error.DuplicateCycle, set(&d, a, .{ .kind = .task, .id = 1 }, .{ .severity = .low, .disposition = .duplicate, .reproduction = .@"not-run", .duplicate_of = .{ .kind = .task, .id = 1 } }));
     try std.testing.expectError(Error.DifferentFeedbackPlan, set(&d, a, .{ .kind = .task, .id = 2 }, .{ .severity = .low, .disposition = .duplicate, .reproduction = .@"not-run", .duplicate_of = .{ .kind = .task, .id = 1 } }));
 }
+
+test "duplicate validation traverses multi-hop chains and rejects cycles" {
+    const a = std.testing.allocator;
+    var d = try db.sqlite.Db.openMemory();
+    defer d.close();
+    try db.migrate.applyAll(&d, a);
+    _ = try d.execParams("insert into plans(scope_kind,scope_id,title,slug,status) values('global',null,'Feedback','planar-feedback','draft')", &.{});
+    _ = try d.execParams("insert into tasks(scope_kind,scope_id,plan_id,title) values('global',null,1,'One'),('global',null,1,'Two'),('global',null,1,'Three'),('global',null,1,'Four')", &.{});
+
+    const one = try set(&d, a, .{ .kind = .task, .id = 1 }, .{ .severity = .low, .disposition = .accepted, .reproduction = .@"not-run" });
+    deinit(one, a);
+    const two = try set(&d, a, .{ .kind = .task, .id = 2 }, .{ .severity = .low, .disposition = .duplicate, .reproduction = .@"not-run", .duplicate_of = .{ .kind = .task, .id = 1 } });
+    deinit(two, a);
+    const three = try set(&d, a, .{ .kind = .task, .id = 3 }, .{ .severity = .low, .disposition = .duplicate, .reproduction = .@"not-run", .duplicate_of = .{ .kind = .task, .id = 2 } });
+    deinit(three, a);
+
+    const four = try set(&d, a, .{ .kind = .task, .id = 4 }, .{ .severity = .low, .disposition = .duplicate, .reproduction = .@"not-run", .duplicate_of = .{ .kind = .task, .id = 3 } });
+    defer deinit(four, a);
+    try std.testing.expectEqualStrings("task:3", four.duplicate_of.?);
+
+    try std.testing.expectError(Error.DuplicateCycle, set(&d, a, .{ .kind = .task, .id = 1 }, .{ .severity = .low, .disposition = .duplicate, .reproduction = .@"not-run", .duplicate_of = .{ .kind = .task, .id = 3 } }));
+}
