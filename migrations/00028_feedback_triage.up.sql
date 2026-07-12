@@ -5,7 +5,7 @@ create table feedback_triage (
   severity text not null check(severity in ('info','low','medium','high','critical')),
   disposition text not null check(disposition in ('untriaged','needs-reproduction','accepted','retained-question','dismissed','reported-external','duplicate')),
   reproduction_status text not null check(reproduction_status in ('not-run','reproduced','not-reproduced','inconclusive')),
-  duplicate_of_triage_id integer references feedback_triage(id) on delete cascade,
+  duplicate_of_triage_id integer references feedback_triage(id) on delete set null,
   evidence_summary text,
   created_at text not null default (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   updated_at text not null default (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
@@ -22,6 +22,17 @@ on feedback_triage(finding_question_id) where finding_question_id is not null;
 
 create index ix_feedback_triage_filters
 on feedback_triage(severity, disposition, updated_at, id);
+
+create trigger feedback_triage_reset_dependents_before_delete
+before delete on feedback_triage
+for each row
+begin
+  update feedback_triage
+  set disposition = 'untriaged',
+      duplicate_of_triage_id = null,
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+  where duplicate_of_triage_id = old.id;
+end;
 
 insert into schema_migrations (version, description)
 values (28, 'structured feedback triage for task and question findings');

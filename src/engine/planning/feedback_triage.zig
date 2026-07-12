@@ -107,13 +107,16 @@ pub fn set(d: *db.sqlite.Db, a: std.mem.Allocator, finding: Ref, args: SetArgs) 
         };
         defer deinit(target_row, a);
         duplicate_id = target_row.id;
-        var cursor = target_row.duplicate_of;
-        while (cursor) |raw| {
-            const r = try parseRef(raw);
+        var cursor: ?Ref = if (target_row.duplicate_of) |raw| try parseRef(raw) else null;
+        while (cursor) |r| {
             if (r.kind == finding.kind and r.id == finding.id) return Error.DuplicateCycle;
             const row = try show(d, a, r);
-            defer deinit(row, a);
-            cursor = row.duplicate_of;
+            const next: ?Ref = if (row.duplicate_of) |raw| parseRef(raw) catch |e| {
+                deinit(row, a);
+                return e;
+            } else null;
+            deinit(row, a);
+            cursor = next;
         }
     }
     const task_id: db.sqlite.Param = if (finding.kind == .task) .{ .int = finding.id } else .{ .null = {} };

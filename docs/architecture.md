@@ -333,9 +333,9 @@ question finding and records severity, disposition, reproduction status,
 optional duplicate target, and a redacted evidence summary. Partial unique
 indexes enforce one row per finding; duplicate targets must remain in the same
 `planar-feedback` plan. Unplanned findings, questions linked to multiple plans,
-and findings on other plans are rejected. Deleting a duplicate target cascades
-through dependent triage rows, returning their still-owned task or question
-findings to the implicit untriaged state. The `planar feedback triage` read
+and findings on other plans are rejected. Deleting a duplicate target preserves
+dependent triage rows and atomically clears their duplicate reference while
+resetting their disposition to `untriaged`. The `planar feedback triage` read
 leaves are deterministic and `set` uses the normal entity scope guard. It never
 writes agent tables or external systems.
 
