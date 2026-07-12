@@ -642,6 +642,15 @@ and stamped legacy manifests remain aggregate manifest states with a
 source-checkout `./install.sh --prefix <resolved-prefix>` bootstrap command;
 they are never guessed into managed rows.
 
+`planar health` calls this same classifier and folds its summary into the
+`projection_freshness` contributor; digest and ownership decisions are not
+duplicated. Manifest-owned stale/missing rows and aggregate legacy, invalid,
+or unsupported manifest states degrade overall health and carry the exact
+classifier recovery command. No manifest and no legacy stamp is
+`not_installed`; unmanaged entries and unselected vendors remain visible
+counts but do not degrade. The health path never invokes repair, rendering,
+installation, or any filesystem/database mutation.
+
 `planar skills repair` shares the same classifier and is preview-first.
 `--apply` operates only on stale or missing manifest rows, replacing copy rows
 from staged bytes and link rows with the recorded staged symlink, then

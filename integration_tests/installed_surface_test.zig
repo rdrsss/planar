@@ -58,6 +58,148 @@ fn writeFile(path: []const u8, body: []const u8) !void {
     try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = path, .data = body });
 }
 
+test "health reports fresh managed and unmanaged projections without degradation or writes" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    const home = suite.tmpAbsPath();
+    const planar_home = try std.fs.path.join(gpa, &.{ home, ".planar" });
+    defer gpa.free(planar_home);
+    const codex_home = try std.fs.path.join(gpa, &.{ home, ".codex" });
+    defer gpa.free(codex_home);
+    const staged = try std.fs.path.join(gpa, &.{ planar_home, "codex-skills", "pl-ok", "SKILL.md" });
+    defer gpa.free(staged);
+    const installed = try std.fs.path.join(gpa, &.{ codex_home, "skills", "pl-ok", "SKILL.md" });
+    defer gpa.free(installed);
+    const personal = try std.fs.path.join(gpa, &.{ codex_home, "skills", "personal", "SKILL.md" });
+    defer gpa.free(personal);
+    try writeFile(staged, fresh_body);
+    try writeFile(installed, fresh_body);
+    try writeFile(personal, "operator owned\n");
+    const rows = [_]Row{.{ .vendor = "codex", .kind = "skill", .name = "pl-ok", .staged = staged, .installed = installed, .install_kind = "copy" }};
+    try writeManifest(gpa, planar_home, &.{"codex"}, &rows);
+    const manifest_path = try std.fs.path.join(gpa, &.{ planar_home, "install-manifest.json" });
+    defer gpa.free(manifest_path);
+    const manifest_before = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, manifest_path, gpa, .limited(8192));
+    defer gpa.free(manifest_before);
+    const personal_before = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, personal, gpa, .limited(1024));
+    defer gpa.free(personal_before);
+    const env = envFor(home, planar_home, codex_home);
+
+    const json = suite.mustRunWith(&.{ "health", "--json" }, &env);
+    defer gpa.free(json);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"projection_freshness\":{\"state\":\"fresh\",\"manifest_status\":\"current\",\"managed\":1,\"fresh\":1,\"stale\":0,\"missing\":0,\"unmanaged\":1,\"unselected_vendors\":2,\"evidence\":null,\"repair_command\":null}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"overall\":\"ok\"") != null);
+
+    const text = suite.mustRunWith(&.{"health"}, &env);
+    defer gpa.free(text);
+    const freshness_at = std.mem.indexOf(u8, text, "projection freshness: fresh (1 managed: 1 fresh, 0 stale, 0 missing; 1 unmanaged; 2 unselected vendors)").?;
+    const manifest_at = std.mem.indexOf(u8, text, "projection manifest:  current").?;
+    const overall_at = std.mem.indexOf(u8, text, "overall:          ok").?;
+    try std.testing.expect(freshness_at < manifest_at and manifest_at < overall_at);
+    try std.testing.expect(std.mem.indexOf(u8, text, "projection repair:") == null);
+
+    const manifest_after = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, manifest_path, gpa, .limited(8192));
+    defer gpa.free(manifest_after);
+    const personal_after = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, personal, gpa, .limited(1024));
+    defer gpa.free(personal_after);
+    try std.testing.expectEqualStrings(manifest_before, manifest_after);
+    try std.testing.expectEqualStrings(personal_before, personal_after);
+}
+
+test "health degrades for stale and missing managed projections and preserves exact evidence" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    const home = suite.tmpAbsPath();
+    const planar_home = try std.fs.path.join(gpa, &.{ home, ".planar" });
+    defer gpa.free(planar_home);
+    const codex_home = try std.fs.path.join(gpa, &.{ home, ".codex" });
+    defer gpa.free(codex_home);
+    const stale_staged = try std.fs.path.join(gpa, &.{ planar_home, "codex-skills", "stale", "SKILL.md" });
+    defer gpa.free(stale_staged);
+    const stale_installed = try std.fs.path.join(gpa, &.{ codex_home, "skills", "stale", "SKILL.md" });
+    defer gpa.free(stale_installed);
+    const missing_staged = try std.fs.path.join(gpa, &.{ planar_home, "codex-skills", "missing", "SKILL.md" });
+    defer gpa.free(missing_staged);
+    const missing_installed = try std.fs.path.join(gpa, &.{ codex_home, "skills", "missing", "SKILL.md" });
+    defer gpa.free(missing_installed);
+    try writeFile(stale_staged, fresh_body);
+    try writeFile(stale_installed, stale_body);
+    try writeFile(missing_staged, fresh_body);
+    const rows = [_]Row{
+        .{ .vendor = "codex", .kind = "skill", .name = "stale", .staged = stale_staged, .installed = stale_installed, .install_kind = "copy" },
+        .{ .vendor = "codex", .kind = "skill", .name = "missing", .staged = missing_staged, .installed = missing_installed, .install_kind = "copy" },
+    };
+    try writeManifest(gpa, planar_home, &.{"codex"}, &rows);
+    const env = envFor(home, planar_home, codex_home);
+    const installed_before = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, stale_installed, gpa, .limited(1024));
+    defer gpa.free(installed_before);
+
+    const result = suite.execWith(&.{ "health", "--json" }, &env);
+    defer result.deinit(gpa);
+    try std.testing.expect(result.term == .exited and result.term.exited == 1);
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "\"state\":\"degraded\",\"manifest_status\":\"current\",\"managed\":2,\"fresh\":0,\"stale\":1,\"missing\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "\"evidence\":\"managed projections differ from the staged installation authority\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "\"repair_command\":\"planar skills repair --apply\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "\"overall\":\"degraded\"") != null);
+    const text_result = suite.execWith(&.{"health"}, &env);
+    defer text_result.deinit(gpa);
+    try std.testing.expect(text_result.term == .exited and text_result.term.exited == 1);
+    const freshness_at = std.mem.indexOf(u8, text_result.stdout, "projection freshness: degraded (2 managed: 0 fresh, 1 stale, 1 missing; 0 unmanaged; 2 unselected vendors)").?;
+    const evidence_at = std.mem.indexOf(u8, text_result.stdout, "projection evidence:  managed projections differ from the staged installation authority").?;
+    const repair_at = std.mem.indexOf(u8, text_result.stdout, "projection repair:    planar skills repair --apply").?;
+    const overall_at = std.mem.indexOf(u8, text_result.stdout, "overall:          degraded").?;
+    try std.testing.expect(freshness_at < evidence_at and evidence_at < repair_at and repair_at < overall_at);
+    const installed_after = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, stale_installed, gpa, .limited(1024));
+    defer gpa.free(installed_after);
+    try std.testing.expectEqualStrings(installed_before, installed_after);
+    try std.testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(std.testing.io, missing_installed, .{}));
+}
+
+test "health reports aggregate manifest recovery contributors without writes" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    const home = suite.tmpAbsPath();
+    const planar_home = try std.fs.path.join(gpa, &.{ home, "legacy-planar" });
+    defer gpa.free(planar_home);
+    const codex_home = try std.fs.path.join(gpa, &.{ home, ".codex" });
+    defer gpa.free(codex_home);
+    const stamp = try std.fs.path.join(gpa, &.{ planar_home, ".planar-install" });
+    defer gpa.free(stamp);
+    try writeFile(stamp, "legacy ownership\n");
+    const env = envFor(home, planar_home, codex_home);
+
+    const result = suite.execWith(&.{ "health", "--json" }, &env);
+    defer result.deinit(gpa);
+    try std.testing.expect(result.term == .exited and result.term.exited == 1);
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "\"state\":\"degraded\",\"manifest_status\":\"legacy\",\"managed\":0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "legacy ownership stamp exists but the versioned install manifest is missing") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "./install.sh --prefix") != null);
+    const stamp_after = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, stamp, gpa, .limited(1024));
+    defer gpa.free(stamp_after);
+    try std.testing.expectEqualStrings("legacy ownership\n", stamp_after);
+
+    const manifest = try std.fs.path.join(gpa, &.{ planar_home, "install-manifest.json" });
+    defer gpa.free(manifest);
+    try writeFile(manifest, "not json\n");
+    const invalid = suite.execWith(&.{ "health", "--json" }, &env);
+    defer invalid.deinit(gpa);
+    try std.testing.expect(invalid.term == .exited and invalid.term.exited == 1);
+    try std.testing.expect(std.mem.indexOf(u8, invalid.stdout, "\"manifest_status\":\"invalid\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, invalid.stdout, "\"evidence\":\"install manifest is invalid\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, invalid.stdout, "./install.sh --prefix") != null);
+
+    try writeFile(manifest, "{\"version\":99}\n");
+    const unsupported = suite.execWith(&.{ "health", "--json" }, &env);
+    defer unsupported.deinit(gpa);
+    try std.testing.expect(unsupported.term == .exited and unsupported.term.exited == 1);
+    try std.testing.expect(std.mem.indexOf(u8, unsupported.stdout, "\"manifest_status\":\"unsupported\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, unsupported.stdout, "\"evidence\":\"install manifest version is unsupported\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, unsupported.stdout, "./install.sh --prefix") != null);
+}
+
 test "skills status reports fresh unmanaged and unselected without writing" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
