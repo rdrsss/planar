@@ -96,6 +96,16 @@ cli_log = false
 # bookkeeping is stored anywhere.
 retention_days = 90
 
+[introspection.transcripts]
+# Each adapter may be disabled independently. An empty path selects the
+# built-in vendor location; a non-empty path is an operator override.
+claude_enabled = true
+claude_path = ""
+codex_enabled = true
+codex_path = ""
+copilot_enabled = true
+copilot_path = ""
+
 # Per-association overrides. Keys here shadow the top-level sections when
 # the named association is in active scope. Slug is the association.slug.
 #

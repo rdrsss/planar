@@ -29,8 +29,8 @@ may explicitly confirm `--apply` to file approved findings on the association's
 
 1. Runs `planar report --json --days <n>` to obtain the diagnostic bundle
    (invocation aggregates, failure tail, stale claims, stale handoffs).
-2. Mines `~/.claude/projects/**/*.jsonl` for `planar` Bash invocations with
-   non-zero exits and retry sequences.
+2. Resolves configured Claude, Codex, Copilot, and CLI-log adapters, then
+   normalizes recognized records into the same redacted signal shape.
 3. Classifies signal into four taxonomy categories: `failure-cluster`,
    `retry-pattern`, `abandoned-workflow`, `gap-feature`.
 4. Reports every considered source as `observed`, `unavailable`, or `disabled`;
@@ -76,6 +76,7 @@ Reads in preview and apply (via [`report`](../../docs/cli-reference.md#domain-re
 ```
 planar report --json --days <n>
 planar health --json
+planar config show --effective --json
 planar plan list --json [--scope <scope>]
 planar question list --plan <id> --status open --json
 planar task list --plan <id> --status todo --json
@@ -105,6 +106,24 @@ Two contracts hold throughout the pass:
 - **Coverage is redacted.** Unavailable-source warnings identify the adapter
   kind and a safe reason, never raw prose, arguments, entity text, scope slugs,
   or local transcript paths.
+- **Normalized evidence is bounded.** Adapter output contains only vendor,
+  verb path, closed category, aggregate count, and first/last timestamps.
+
+## Adapter Configuration
+
+Read configuration through `planar config show --effective --json`. Under
+`[introspection.transcripts]`, each vendor has `*_enabled` and `*_path` keys.
+Disabled wins; then a non-empty override; then the built-in Claude
+`~/.claude/projects/**/*.jsonl`, Codex `~/.codex/sessions/**/*.jsonl`, or
+Copilot `~/.copilot/session-state/**` location. Never fall back after an
+explicit override fails. CLI-log comes only from `planar report --json` and is
+disabled when `[introspection].cli_log` is false.
+
+Report `scanned`, `malformed`, and `normalized` per adapter. Unknown versions
+and malformed records increment `malformed` but never enter evidence or warning
+text. Deduplicate by vendor, verb path, category, and hour bucket; matching
+CLI-log invocations suppress transcript duplicates because CLI-log is
+authoritative for invocations it contains.
 
 These contracts are described fully in the [privacy model](../../docs/concepts.md#usage-introspection-privacy-model).
 
