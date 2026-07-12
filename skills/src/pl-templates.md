@@ -100,6 +100,50 @@ planar templates path default github-issues issue
 6. Run `planar templates render acme-internal github-issues issue --entity task:<task-id>`
    to preview the output before propagation.
 
+## Context
+
+Report the resolved templates root and set, system, kind, entity or file target,
+resolution source, and read, validation, render-preview, or init mode.
+
+## Intent
+
+State in one sentence which template targets will be inspected, validated,
+preview-rendered, or initialized.
+
+## Actions
+
+Report `attempted`, `applied` (the succeeded count), `skipped`, and `failed` per template file or
+render target. List, show, path, validate, and render are read-only with zero
+applied; `init` counts only files actually extracted and treats identical
+existing defaults as skips. Name every failed set/system/kind/path target and
+its validation evidence.
+
+## Result
+
+Always report `outcome=ok|partial|error`. Return resolved paths, resolution
+source, validation findings, or rendered preview identities. After `init`,
+confirm the extracted paths through `planar templates path` and validation.
+An empty filter or fully initialized default set is an informative no-op.
+
+## Warnings
+
+Name fallback resolution, malformed JSON or expressions, missing entity
+context, unavailable path verification, and partial initialization. Rendering
+is always a preview and must never be described as an external write.
+
+## Next actions
+
+Give zero to three executable recommendations. A successful edit workflow
+leads with `planar templates validate <path>` and an exact `planar templates
+render <set> <system> <kind> --entity <kind:id>` preview before propagation.
+
+## Recovery
+
+For each failed template, give its exact `planar templates validate <path>` or
+`planar templates render <set> <system> <kind> --entity <kind:id>` retry and
+`planar templates path <set> <system> <kind>` inspection. Successfully
+initialized independent files remain on disk; never imply cross-file rollback.
+
 ## Vendor Notes
 
 {{.VendorNotes}}

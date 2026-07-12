@@ -53,6 +53,51 @@ planar capture snapshot [<task-id>] [--note <text>]
 
 Before terminating an agent process when another session will need to continue the work. Run `capture note` throughout the session to preserve reasoning; run `handoff` at the end to lock the state.
 
+## Context
+
+Report the resolved scope, task, session, source and destination vendor,
+worktree/branch source, and capture, validate, list, consume, or create mode.
+
+## Intent
+
+State in one sentence which session or task continuity record will be captured,
+inspected, validated, or consumed.
+
+## Actions
+
+Report `attempted`, `applied` (the succeeded count), `skipped`, and `failed` across session snapshot,
+handoff, validation, and consumption targets. Name every failed task, snapshot,
+or handoff ID. List and validate are read-only; an already-consumed handoff or
+an unchanged capture is an explained skip.
+
+## Result
+
+Always report `outcome=ok|partial|error`. After creation, read `planar handoff
+list --status pending --json` and return the handoff and snapshot IDs,
+resume-ready state, task, vendor, worktree, and branch. After consume, verify
+that the handoff is consumed. A list with no matches is an informative no-op.
+
+## Warnings
+
+Name validation gaps, absent claim/worktree evidence, unavailable post-state,
+and partial capture where a snapshot exists but the handoff is not
+resume-ready. Do not treat a legitimate legacy null worktree as a warning
+unless it prevents the requested resume path.
+
+## Next actions
+
+Give zero to three executable recommendations, normally `planar handoff
+validate <snapshot-id>`, `planar resume validate <task-id>`, or the precise
+capture remediation reported by validation.
+
+## Recovery
+
+For each failed target, give its exact inspection and idempotent retry:
+`planar handoff validate <snapshot-id>`, `planar handoff [<task-id>] --vendor
+<vendor> --note <text>`, or `planar handoff consume <handoff-id>`. A persisted
+snapshot or handoff remains persisted; never claim the other targets rolled it
+back.
+
 ## Vendor Notes
 
 {{.VendorNotes}}

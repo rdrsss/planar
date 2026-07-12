@@ -127,6 +127,55 @@ planar link <kind:id> --to <system-slug>:<external-id> --role <role> --sync read
 
 See [`docs/cli-reference.md`](../../docs/cli-reference.md) for the full command grammar.
 
+## Context
+
+Report the resolved scope, anchor plan, external system, selected or cached
+strategy, sync direction, dry-run or apply mode, and counterpart-verification
+or restrategize options.
+
+## Intent
+
+State in one sentence which feature tree will be previewed, propagated,
+verified, restrategized, unlinked, or recreated.
+
+## Actions
+
+Report `attempted`, `applied` (the succeeded count), `skipped`, and `failed` for every entity target.
+Retain the propagation result's created, existing, missing, unlinked, and
+recreated distinctions, and list every failed local identity with system slug
+and remote failure evidence. A dry run applies zero; already-linked entities
+are skips.
+
+## Result
+
+Always report `outcome=ok|partial|error`. Return the anchor plan, strategy,
+system, completed entity-to-link/URL mappings, missing counterparts, and the
+latest sync-event evidence. Verify persisted links with `planar sync status
+--entity <kind:id> --system <system-slug> --json` where supported. A fully
+idempotent rerun is `outcome=ok` with zero applied and the existing links.
+
+## Warnings
+
+Preserve the `--restrategize` confirmation gate and require the existing
+confirmation semantics before changing strategy. Name claim conflicts,
+missing counterparts, destructive unlink/recreate implications, unavailable
+post-state, and partial remote results. Never imply atomicity or rollback
+across independent remote calls.
+
+## Next actions
+
+Give zero to three executable recommendations. A dry run leads with the exact
+approved apply command; missing counterparts lead with their audit/status read
+before any separately confirmed `--unlink` or `--recreate` action.
+
+## Recovery
+
+For each failed entity, provide its `planar sync status --entity <kind:id>
+--system <system-slug> --json` inspection and the exact idempotent `planar ext
+propagate <plan> --system <slug> ...` retry preserving strategy, sync, scope,
+and verification flags. Successful targets remain linked and the retry skips
+them; do not prescribe a cross-target undo.
+
 ## Vendor Notes
 
 {{.VendorNotes}}

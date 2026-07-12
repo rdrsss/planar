@@ -52,6 +52,46 @@ Before archiving, confirm the tree is in sync with the DB: run `pl-workbench-syn
 | `restore` | Recreates the FS tree from the DB. Idempotent if the tree already exists and is clean. |
 | `list` | Lists active (non-archived) features with FS trees. Shows which plans are eligible for archive. |
 
+## Context
+
+Report the resolved scope, plan, workbench path, lifecycle state, and archive,
+restore, or read-only list mode.
+
+## Intent
+
+State in one sentence which feature tree will be listed, archived, or restored.
+
+## Actions
+
+Report `attempted`, `applied` (the succeeded count), `skipped`, and `failed` per plan tree. Name every
+failed plan and path. List applies zero; an already-archived archive or an
+already-present clean restore is an expected skip.
+
+## Result
+
+Always report `outcome=ok|partial|error`. After archive or restore, verify the
+plan through `planar workbench list --json` and report the plan ID, path, and
+observed archived/present state. An empty list or idempotent lifecycle request
+is an informative no-op.
+
+## Warnings
+
+Name unsynced drift, ineligible plan status, path verification failures, and
+partial multi-plan results. Archive removes only the filesystem tree and must
+not be described as deleting DB state.
+
+## Next actions
+
+Give zero to three executable recommendations, led by `planar workbench status
+<plan> --json` before archive or the appropriate restore/sync command afterward.
+
+## Recovery
+
+For each failed plan, give `planar workbench status <plan> --json` and the exact
+idempotent `planar workbench archive <plan>` or `planar workbench restore
+<plan>` retry. A successfully archived or restored independent tree stays in
+that state; never imply cross-target rollback.
+
 ## Vendor Notes
 
 {{.VendorNotes}}
