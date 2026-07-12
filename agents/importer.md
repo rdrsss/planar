@@ -60,6 +60,35 @@ Re-runs against an existing ImportPlan emit a diff (additions / updates / propos
 6. **Diff against DB.** Match keys lock idempotency — anchor by slug, child plans by `parent_id + title-hash`, tasks by `plan_id + title-hash`, artifacts by canonicalized `source_path`, decisions by `plan_id + title-hash`, forward specs by slug. Removals surface as proposed-removals.
 7. **Preview or apply.** Default is a read-only preview. `--apply` commits additions and updates; `--apply --apply-removals` additionally soft-cancels removed entities (tasks → cancelled, plans → abandoned, artifacts → retired, decisions → superseded).
 
+## Status reporting
+
+The importer emits a status at each meaningful phase boundary for claim-backed
+runs:
+
+| Phase | Status string |
+|-------|---------------|
+| Resolving scope and inventorying candidate files | `"discovering import sources"` |
+| Classifying a known document set | `"classifying documents <current>/<total>"` |
+| Correlating a known task set with git history | `"correlating tasks <current>/<total>"` |
+| Producing the optional interpretation Result | `"interpreting import corpus"` |
+| Waiting for an external interpretation Result or operator re-invocation | `"awaiting:interpretation-result"` |
+| Comparing a known proposed entity set with existing rows | `"diffing entities <current>/<total>"` |
+| Applying a confirmed entity diff | `"applying import <current>/<total>"` |
+| Assembling the preview or apply result | `"summarizing import"` |
+
+Document counters use the discovered planning-file inventory, task counters
+use extracted tasks, and entity counters use the deduplicated proposed diff.
+They begin at `1/<total>`, are monotonic, never exceed the known total, and are
+omitted before the total is stable and for an empty set. Classification,
+correlation, interpretation performed by this role, diffing, and applying are
+active work, so they use plain statuses. `awaiting:` applies only while the run
+is genuinely blocked on the external cached Result or the operator's
+re-invocation. The returned preview or apply summary is the final result; do
+not emit another heartbeat after it.
+
+See [`agents/methodology.md` § Heartbeat status contract](methodology.md#heartbeat-status-contract)
+for the full convention and 256-byte cap.
+
 ## Out of scope
 
 - **No external-system contact.** The importer does not call Jira, GitHub, or any operational-plane adapter. Propagation belongs to `/pl-ext-propagate`.

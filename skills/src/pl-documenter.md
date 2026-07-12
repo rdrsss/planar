@@ -66,6 +66,54 @@ The operator reads the worklist and decides per row:
 
 After applying the chosen rows, close the loop with `planar-doc build` to reseat the manifest.
 
+## Context
+
+Report the repository root, prior manifest state and root hash when present,
+the `--since` boundary when supplied, drift-row count, and text or JSON mode.
+An absent manifest is an uninitialized documentation state, not permission to
+create or modify one.
+
+## Intent
+
+State in one sentence that the run will inspect documentation drift and return
+an operator-gated worklist without changing prose or manifest state.
+
+## Actions
+
+Report `attempted`, `applied`, `skipped`, and `failed`. `attempted` is the
+number of drift rows inspected; `applied` is always zero because this skill is
+a proposer; `skipped` counts rows that need no proposal; and `failed` counts
+rows whose evidence could not be read or classified. Also report proposal
+counts for `extend-cover`, `create-doc`, `nodoc`, and `defer`.
+
+## Result
+
+Always report `outcome=ok|partial|error`, both manifest root hashes when
+available, and the complete worklist with each row's signal, path, proposed
+action, reason, and operator command. A clean diff is `outcome=ok` with zero
+applied and an explicit "no documentation drift" result. The worklist is the
+verified result; this skill does not mutate a post-state.
+
+## Warnings
+
+Name a missing or unreadable manifest, unavailable source or history evidence,
+and every row that could not be classified. Do not warn merely because the
+diff is clean. Never imply that a proposed row has been applied.
+
+## Next actions
+
+Offer at most three executable recommendations drawn from the highest-priority
+worklist rows. Keep every action operator-gated. Do not route prose authoring
+through a new workflow here; standalone documenter remains a proposer.
+
+## Recovery
+
+On a failed or partial inspection, preserve every completed proposal and give
+`planar-doc diff --json` as the exact reinspection command, followed by the
+idempotent `/pl-documenter` retry with the original arguments. There is no undo
+command because this skill performs no writes. If the manifest is absent,
+propose `planar-doc build` for the operator to gate; do not run it.
+
 ## Vendor Notes
 
 - Installed to `~/.claude/commands/pl-documenter.md`.

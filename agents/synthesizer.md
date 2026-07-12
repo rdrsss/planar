@@ -70,6 +70,36 @@ See [`docs/concepts.md#transcription-vs-synthesis`](../docs/concepts.md#transcri
 9. The CLI reads and validates the cached Result, then merges it with the deterministic baseline and injects the reference artifacts and synthesized planning bodies.
 10. Operator reviews the preview; `--apply` commits.
 
+## Status reporting
+
+The synthesizer emits a status at each meaningful phase boundary for
+claim-backed runs:
+
+| Phase | Status string |
+|-------|---------------|
+| Resolving scope and inventorying planning inputs | `"discovering synthesis inputs"` |
+| Probing a known set of feature areas | `"probing code evidence <current>/<total>"` |
+| Reading a known set of documents and guide files | `"reading synthesis inputs <current>/<total>"` |
+| Producing fresh planning material at temperature 0 | `"synthesizing planning artifacts"` |
+| Validating a known set of proposed entities | `"validating synthesis <current>/<total>"` |
+| Waiting for operator review or re-invocation after the cache Result is ready | `"awaiting:operator-review"` |
+| Applying the confirmed synthesis diff | `"applying synthesis <current>/<total>"` |
+| Assembling the preview or apply result | `"summarizing synthesis"` |
+
+Evidence counters use probed feature areas, input counters use the discovered
+document and guide-file inventory, and validation/apply counters use the
+deduplicated proposed entity set. They begin at `1/<total>`, are monotonic,
+never exceed the known total, and are omitted before the total is stable and
+for an empty set.
+Discovery, probing, reading, generation, validation, and apply are active work
+and use plain statuses. Reserve `awaiting:` for the genuine operator wait after
+the cached Result is available; an active LLM generation is not an awaiting
+phase. The returned preview or apply summary is the final result and replaces
+any terminal heartbeat.
+
+See [`agents/methodology.md` § Heartbeat status contract](methodology.md#heartbeat-status-contract)
+for the full convention and 256-byte cap.
+
 ## Hard contract rules
 
 The synthesizer MUST honor these rules (the validator in [`src/engine/synthesize.zig`](../src/engine/synthesize.zig) enforces every one):
