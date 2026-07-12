@@ -143,6 +143,12 @@ pub const CollectorLimits = struct {
     max_records: usize = default_max_records,
 };
 
+const FsOperation = enum { selected_stat, directory_open, directory_walk, file_stat, file_read };
+const FsSeam = struct {
+    context: *anyopaque,
+    fail: *const fn (*anyopaque, Vendor, FsOperation, []const u8) bool,
+};
+
 pub const TranscriptConfig = struct {
     home_dir: []const u8,
     claude_enabled: bool = true,
@@ -174,6 +180,16 @@ pub fn collectPreviewFromPaths(
     cli: ?CliLogAdapter,
     limits: CollectorLimits,
 ) !Preview {
+    return collectPreviewFromPathsWithFs(allocator, config, cli, limits, null);
+}
+
+fn collectPreviewFromPathsWithFs(
+    allocator: std.mem.Allocator,
+    config: TranscriptConfig,
+    cli: ?CliLogAdapter,
+    limits: CollectorLimits,
+    fs_seam: ?FsSeam,
+) !Preview {
     var owned: std.ArrayList(OwnedSource) = .empty;
     defer {
         for (owned.items) |item| if (item.bytes) |bytes| allocator.free(bytes);
@@ -185,9 +201,9 @@ pub fn collectPreviewFromPaths(
     var bytes_left = limits.max_bytes;
     var records_left = limits.max_records;
 
-    try collectVendorPath(allocator, &owned, &extra_warnings, .claude, config.claude_enabled, config.claude_path, config.home_dir, ".claude/projects", true, &files_left, &bytes_left, &records_left);
-    try collectVendorPath(allocator, &owned, &extra_warnings, .codex, config.codex_enabled, config.codex_path, config.home_dir, ".codex/sessions", true, &files_left, &bytes_left, &records_left);
-    try collectVendorPath(allocator, &owned, &extra_warnings, .copilot, config.copilot_enabled, config.copilot_path, config.home_dir, ".copilot/session-state", false, &files_left, &bytes_left, &records_left);
+    try collectVendorPath(allocator, &owned, &extra_warnings, .claude, config.claude_enabled, config.claude_path, config.home_dir, ".claude/projects", true, &files_left, &bytes_left, &records_left, fs_seam);
+    try collectVendorPath(allocator, &owned, &extra_warnings, .codex, config.codex_enabled, config.codex_path, config.home_dir, ".codex/sessions", true, &files_left, &bytes_left, &records_left, fs_seam);
+    try collectVendorPath(allocator, &owned, &extra_warnings, .copilot, config.copilot_enabled, config.copilot_path, config.home_dir, ".copilot/session-state", false, &files_left, &bytes_left, &records_left, fs_seam);
 
     if (cli) |adapter| {
         if (!adapter.enabled) {
@@ -250,7 +266,7 @@ pub fn collectConfiguredPreview(allocator: std.mem.Allocator, home_dir: []const 
     }, cli, limits);
 }
 
-fn collectVendorPath(allocator: std.mem.Allocator, owned: *std.ArrayList(OwnedSource), warnings: *std.ArrayList(Warning), vendor: Vendor, enabled: bool, override: []const u8, home: []const u8, builtin_rel: []const u8, jsonl_only: bool, files_left: *usize, bytes_left: *usize, records_left: *usize) !void {
+fn collectVendorPath(allocator: std.mem.Allocator, owned: *std.ArrayList(OwnedSource), warnings: *std.ArrayList(Warning), vendor: Vendor, enabled: bool, override: []const u8, home: []const u8, builtin_rel: []const u8, jsonl_only: bool, files_left: *usize, bytes_left: *usize, records_left: *usize, fs_seam: ?FsSeam) !void {
     if (!enabled) return owned.append(allocator, .{ .raw = .{ .vendor = vendor, .enabled = false } });
     const builtin = try std.fs.path.join(allocator, &.{ home, builtin_rel });
     defer allocator.free(builtin);
@@ -263,19 +279,42 @@ fn collectVendorPath(allocator: std.mem.Allocator, owned: *std.ArrayList(OwnedSo
         paths.deinit(allocator);
     }
     const io = fsIo();
+    if (fsShouldFail(fs_seam, vendor, .selected_stat, selected))
+        return owned.append(allocator, .{ .raw = .{ .vendor = vendor, .available = false } });
     const stat = std.Io.Dir.cwd().statFile(io, selected, .{}) catch {
         return owned.append(allocator, .{ .raw = .{ .vendor = vendor, .available = false } });
     };
     if (stat.kind == .file) {
         try paths.append(allocator, try allocator.dupe(u8, selected));
     } else if (stat.kind == .directory) {
-        var dir = try std.Io.Dir.cwd().openDir(io, selected, .{ .iterate = true });
-        defer dir.close(io);
-        var walker = try dir.walk(allocator);
-        defer walker.deinit();
-        while (try walker.next(io)) |entry| if (entry.kind == .file and (!jsonl_only or std.mem.endsWith(u8, entry.path, ".jsonl"))) {
-            try paths.append(allocator, try std.fs.path.join(allocator, &.{ selected, entry.path }));
+        if (fsShouldFail(fs_seam, vendor, .directory_open, selected)) {
+            try warnings.append(allocator, .{ .vendor = vendor, .kind = .unavailable });
+            return owned.append(allocator, .{ .raw = .{ .vendor = vendor, .available = false } });
+        }
+        var dir = std.Io.Dir.cwd().openDir(io, selected, .{ .iterate = true }) catch {
+            try warnings.append(allocator, .{ .vendor = vendor, .kind = .unavailable });
+            return owned.append(allocator, .{ .raw = .{ .vendor = vendor, .available = false } });
         };
+        defer dir.close(io);
+        if (fsShouldFail(fs_seam, vendor, .directory_walk, selected)) {
+            try warnings.append(allocator, .{ .vendor = vendor, .kind = .unavailable });
+            return owned.append(allocator, .{ .raw = .{ .vendor = vendor, .available = false } });
+        }
+        var walker = dir.walk(allocator) catch {
+            try warnings.append(allocator, .{ .vendor = vendor, .kind = .unavailable });
+            return owned.append(allocator, .{ .raw = .{ .vendor = vendor, .available = false } });
+        };
+        defer walker.deinit();
+        while (true) {
+            const maybe_entry = walker.next(io) catch {
+                try warnings.append(allocator, .{ .vendor = vendor, .kind = .unavailable });
+                break;
+            };
+            const entry = maybe_entry orelse break;
+            if (entry.kind == .file and (!jsonl_only or std.mem.endsWith(u8, entry.path, ".jsonl"))) {
+                try paths.append(allocator, try std.fs.path.join(allocator, &.{ selected, entry.path }));
+            }
+        }
     } else return owned.append(allocator, .{ .raw = .{ .vendor = vendor, .available = false } });
     std.mem.sort([]u8, paths.items, {}, struct {
         fn less(_: void, a: []u8, b: []u8) bool {
@@ -286,18 +325,37 @@ fn collectVendorPath(allocator: std.mem.Allocator, owned: *std.ArrayList(OwnedSo
     var combined: std.ArrayList(u8) = .empty;
     defer combined.deinit(allocator);
     var scanned_files: usize = 0;
+    var io_failures: usize = 0;
     for (paths.items) |path| {
         if (files_left.* == 0) {
             try warnings.append(allocator, .{ .vendor = vendor, .kind = .file_cap });
             break;
         }
-        const file_stat = std.Io.Dir.cwd().statFile(io, path, .{}) catch continue;
+        if (fsShouldFail(fs_seam, vendor, .file_stat, path)) {
+            io_failures += 1;
+            try warnings.append(allocator, .{ .vendor = vendor, .kind = .unavailable });
+            continue;
+        }
+        const file_stat = std.Io.Dir.cwd().statFile(io, path, .{}) catch {
+            io_failures += 1;
+            try warnings.append(allocator, .{ .vendor = vendor, .kind = .unavailable });
+            continue;
+        };
         const size = file_stat.size;
         if (size > bytes_left.*) {
             try warnings.append(allocator, .{ .vendor = vendor, .kind = .byte_cap });
             break;
         }
-        const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, std.Io.Limit.limited(bytes_left.*));
+        if (fsShouldFail(fs_seam, vendor, .file_read, path)) {
+            io_failures += 1;
+            try warnings.append(allocator, .{ .vendor = vendor, .kind = .unavailable });
+            continue;
+        }
+        const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, std.Io.Limit.limited(bytes_left.*)) catch {
+            io_failures += 1;
+            try warnings.append(allocator, .{ .vendor = vendor, .kind = .unavailable });
+            continue;
+        };
         defer allocator.free(bytes);
         const record_count = countRecords(bytes);
         if (record_count > records_left.*) {
@@ -311,12 +369,17 @@ fn collectVendorPath(allocator: std.mem.Allocator, owned: *std.ArrayList(OwnedSo
         records_left.* -= record_count;
         scanned_files += 1;
     }
-    if (scanned_files == 0 and paths.items.len != 0 and combined.items.len == 0) {
-        try owned.append(allocator, .{ .raw = .{ .vendor = vendor } });
+    if (scanned_files == 0 and io_failures != 0) {
+        try owned.append(allocator, .{ .raw = .{ .vendor = vendor, .available = false } });
     } else {
         const bytes = try combined.toOwnedSlice(allocator);
         try owned.append(allocator, .{ .raw = .{ .vendor = vendor, .jsonl = bytes }, .bytes = bytes });
     }
+}
+
+fn fsShouldFail(seam: ?FsSeam, vendor: Vendor, operation: FsOperation, path: []const u8) bool {
+    const active = seam orelse return false;
+    return active.fail(active.context, vendor, operation, path);
 }
 
 fn countRecords(bytes: []const u8) usize {
@@ -346,21 +409,21 @@ fn extract(vendor: Vendor, value: std.json.Value) ?Extracted {
         .claude => blk: {
             if (!integerEquals(obj.get("version"), 1) or !stringEquals(obj.get("type"), "tool_result")) break :blk null;
             const tool = objectValue(obj.get("tool")) orelse break :blk null;
-            break :blk finish(tool.get("name"), obj.get("timestamp"), categoryFromExit(obj.get("exit_code"), boolValue(obj.get("retry")), false));
+            break :blk finish(tool.get("name"), obj.get("timestamp"), categoryFromEvidence(obj.get("exit_code"), boolValue(obj.get("retry")), false, boolValue(obj.get("invalid_flag")) or boolValue(obj.get("help_bounce"))));
         },
         .codex => blk: {
             if (!integerEquals(obj.get("schema_version"), 1) or !stringEquals(obj.get("event"), "command_execution")) break :blk null;
-            break :blk finish(obj.get("command_name"), obj.get("timestamp"), categoryFromExit(obj.get("exit_code"), boolValue(obj.get("retry_of_previous")), false));
+            break :blk finish(obj.get("command_name"), obj.get("timestamp"), categoryFromEvidence(obj.get("exit_code"), boolValue(obj.get("retry_of_previous")), false, boolValue(obj.get("invalid_flag")) or boolValue(obj.get("help_bounce"))));
         },
         .copilot => blk: {
             if (!stringEquals(obj.get("version"), "1") or !stringEquals(obj.get("kind"), "shell_result")) break :blk null;
             const command = objectValue(obj.get("command")) orelse break :blk null;
             const abandoned = stringEquals(obj.get("status"), "abandoned");
-            break :blk finish(command.get("name"), obj.get("time"), categoryFromExit(obj.get("exit_code"), boolValue(obj.get("retry")), abandoned));
+            break :blk finish(command.get("name"), obj.get("time"), categoryFromEvidence(obj.get("exit_code"), boolValue(obj.get("retry")), abandoned, boolValue(obj.get("invalid_flag")) or boolValue(obj.get("help_bounce"))));
         },
         .cli_log => blk: {
             if (!integerEquals(obj.get("schema"), 1) or !stringEquals(obj.get("kind"), "cli_invocation")) break :blk null;
-            break :blk finish(obj.get("verb_path"), obj.get("recorded_at"), categoryFromExit(obj.get("exit_code"), boolValue(obj.get("retry")), false));
+            break :blk finish(obj.get("verb_path"), obj.get("recorded_at"), categoryFromEvidence(obj.get("exit_code"), boolValue(obj.get("retry")), false, stringEquals(obj.get("error_category"), "usage")));
         },
     };
 }
@@ -375,11 +438,12 @@ fn finish(command_value: ?std.json.Value, timestamp_value: ?std.json.Value, cate
     };
 }
 
-fn categoryFromExit(exit_value: ?std.json.Value, retry: bool, abandoned: bool) ?Category {
+fn categoryFromEvidence(exit_value: ?std.json.Value, retry: bool, abandoned: bool, gap: bool) ?Category {
     if (abandoned) return .abandonment;
+    if (gap) return .gap;
     if (retry) return .retry;
     const code = integerValue(exit_value) orelse return null;
-    return if (code == 0) .gap else .failure;
+    return if (code == 0) null else .failure;
 }
 
 fn addAggregate(allocator: std.mem.Allocator, signals: *std.ArrayList(Signal), vendor: Vendor, item: Extracted) !bool {
@@ -525,6 +589,19 @@ test "deduplication is deterministic and cli log is authoritative" {
     try std.testing.expectEqual(@as(u32, 2), preview.coverage[0].normalized);
 }
 
+test "ordinary success is observed without becoming gap while explicit usage evidence is gap" {
+    const jsonl =
+        "{\"schema\":1,\"kind\":\"cli_invocation\",\"recorded_at\":\"2026-07-12T12:01:00Z\",\"verb_path\":\"planar task list\",\"exit_code\":0,\"error_category\":\"\"}\n" ++
+        "{\"schema\":1,\"kind\":\"cli_invocation\",\"recorded_at\":\"2026-07-12T12:02:00Z\",\"verb_path\":\"planar task add\",\"exit_code\":2,\"error_category\":\"usage\"}";
+    var preview = try collectPreview(std.testing.allocator, &.{.{ .vendor = .cli_log, .jsonl = jsonl }});
+    defer preview.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u32, 2), preview.coverage[0].scanned);
+    try std.testing.expectEqual(@as(u32, 1), preview.coverage[0].normalized);
+    try std.testing.expectEqual(@as(usize, 1), preview.signals.len);
+    try std.testing.expectEqual(Category.gap, preview.signals[0].category);
+    try std.testing.expectEqualStrings("planar task add", preview.signals[0].verb_path);
+}
+
 test "preview collector has no persistence dependency and discovery precedence is explicit" {
     try std.testing.expectEqualStrings("/override", discover(true, "/override", "/builtin").?);
     try std.testing.expectEqualStrings("/builtin", discover(true, "", "/builtin").?);
@@ -538,6 +615,49 @@ fn fixtureCliRead(context: *anyopaque, allocator: std.mem.Allocator, max_bytes: 
     const jsonl: *const []const u8 = @ptrCast(@alignCast(context));
     if (jsonl.*.len > max_bytes) return error.StreamTooLong;
     return @as(?[]u8, try allocator.dupe(u8, jsonl.*));
+}
+
+const FaultFixture = struct { vendor: Vendor, operation: FsOperation };
+
+fn fixtureFsFailure(context: *anyopaque, vendor: Vendor, operation: FsOperation, _: []const u8) bool {
+    const fixture: *const FaultFixture = @ptrCast(@alignCast(context));
+    return fixture.vendor == vendor and fixture.operation == operation;
+}
+
+test "filesystem failures degrade only the affected adapter and never fabricate observed-zero" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root_rel = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache/tmp", &tmp.sub_path });
+    defer std.testing.allocator.free(root_rel);
+    const root = try std.fs.path.resolve(std.testing.allocator, &.{root_rel});
+    defer std.testing.allocator.free(root);
+    try tmp.dir.createDirPath(std.testing.io, "claude");
+    try tmp.dir.createDirPath(std.testing.io, "codex");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "claude/a.jsonl", .data = "{\"version\":1,\"type\":\"tool_result\",\"timestamp\":\"2026-07-12T12:05:00Z\",\"tool\":{\"name\":\"planar task add\"},\"exit_code\":1}" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "codex/a.jsonl", .data = "{\"schema_version\":1,\"event\":\"command_execution\",\"timestamp\":\"2026-07-12T12:06:00Z\",\"command_name\":\"planar plan show\",\"exit_code\":1}" });
+    const claude = try std.fs.path.join(std.testing.allocator, &.{ root, "claude" });
+    defer std.testing.allocator.free(claude);
+    const codex = try std.fs.path.join(std.testing.allocator, &.{ root, "codex" });
+    defer std.testing.allocator.free(codex);
+
+    const operations = [_]FsOperation{ .selected_stat, .directory_open, .directory_walk, .file_stat, .file_read };
+    for (operations) |operation| {
+        var fault = FaultFixture{ .vendor = .claude, .operation = operation };
+        var preview = try collectPreviewFromPathsWithFs(std.testing.allocator, .{
+            .home_dir = root,
+            .claude_path = claude,
+            .codex_path = codex,
+            .copilot_enabled = false,
+        }, null, .{}, .{ .context = @ptrCast(&fault), .fail = fixtureFsFailure });
+        defer preview.deinit(std.testing.allocator);
+
+        try std.testing.expectEqual(CoverageState.unavailable, preview.coverage[0].state);
+        try std.testing.expectEqual(@as(u32, 0), preview.coverage[0].scanned);
+        try std.testing.expect(hasWarning(preview.warnings, .claude, .unavailable));
+        try std.testing.expectEqual(@as(usize, 1), preview.signals.len);
+        try std.testing.expectEqual(Vendor.codex, preview.signals[0].vendor);
+        try std.testing.expectEqualStrings("planar plan show", preview.signals[0].verb_path);
+    }
 }
 
 test "path collector honors override precedence, recursive deterministic discovery, redaction, and CLI authority" {

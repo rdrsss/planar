@@ -6376,7 +6376,7 @@ events:
 
 **Description:** Emit the diagnostic bundle: invocation aggregates, failure tail, and always-on health metrics. Reads `cli_invocations` (when CLI logging is enabled) plus the always-on observability tables (`agent_actions`, `sync_events`, `agent_work_claims`, `handoffs`) and renders a structured diagnostic bundle.
 
-When `[introspection].cli_log` is off (the default), the invocation and failure sections render "logging disabled" instead of counts — the operator is never shown fabricated zeros. The always-on sections (`actions`, `sync`, `claims`, `handoffs`, `health`, schema version) render normally in either case.
+When `[introspection].cli_log` is off (the default), the invocation and failure sections render "logging disabled" instead of counts — the operator is never shown fabricated zeros. The always-on sections (`actions`, `sync`, `claims`, `handoffs`, `health`, schema version) render normally in either case. JSON output also includes `introspection_preview` with bounded `signals`, per-adapter `coverage`, and `warnings`, collected read-only from the effective `[introspection.transcripts]` paths. A failed adapter degrades only its own coverage; other adapters still contribute. Successful commands are coverage observations, not gap findings; only explicit invalid-flag/help-bounce evidence is normalized as `gap`.
 
 **Privacy:** All queries are structurally redacted by construction in `src/engine/introspect.zig`. The bundle selects only counts, categories, verb paths, statuses, and timestamps — never entity `title`, `body`, or `summary` columns, never scope slugs, never path-bearing columns.
 

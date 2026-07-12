@@ -18,6 +18,7 @@
 const std = @import("std");
 const cli = @import("cli");
 const engine = @import("engine");
+const db = @import("db");
 const main = @import("../main.zig");
 const runtime = @import("runtime");
 const exit = @import("../exit.zig");
@@ -93,8 +94,9 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
     const d = runtime.ensureDb() catch |e|
         exit.die(ctx, e, "opening database: {s}", .{@errorName(e)});
 
-    // Determine whether CLI logging is enabled by reading the config.
-    const logging_enabled = resolveCliLog(ctx);
+    var resolved = resolveConfig(ctx) orelse exit.die(ctx, error.InvalidConfig, "resolving report config", .{});
+    defer resolved.deinit(ctx.allocator);
+    const logging_enabled = resolved.config.introspection.cli_log;
 
     var bundle = engine.introspect.build(
         d,
@@ -105,6 +107,16 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
         ctx.db_path,
     ) catch |e| exit.die(ctx, e, "building report: {s}", .{@errorName(e)});
     defer bundle.deinit(ctx.allocator);
+
+    var cli_context = CliContext{ .db = d, .window_days = args.days };
+    const home = ctx.environ.getPosix("HOME") orelse "";
+    bundle.preview = engine.introspection_adapters.collectConfiguredPreview(
+        ctx.allocator,
+        home,
+        resolved.config.introspection.transcripts,
+        .{ .context = @ptrCast(&cli_context), .enabled = logging_enabled, .read = readCliPreview },
+        .{},
+    ) catch |e| exit.die(ctx, e, "collecting introspection preview: {s}", .{@errorName(e)});
 
     if (args.json) {
         engine.introspect.renderJson(bundle, ctx.stdout) catch |e|
@@ -117,8 +129,8 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
 
 /// Resolve whether [introspection].cli_log is enabled in config.toml.
 /// Fail-open: if the config can't be read, returns false (no logging).
-fn resolveCliLog(ctx: *const runtime.Ctx) bool {
-    const cfg_path = config_path_mod.resolveConfigPath(ctx.allocator, ctx.environ) catch return false;
+fn resolveConfig(ctx: *const runtime.Ctx) ?engine.config.Resolved {
+    const cfg_path = config_path_mod.resolveConfigPath(ctx.allocator, ctx.environ) catch return null;
     defer ctx.allocator.free(cfg_path);
 
     const file_content: ?[]u8 = std.Io.Dir.cwd().readFileAlloc(
@@ -132,8 +144,12 @@ fn resolveCliLog(ctx: *const runtime.Ctx) bool {
     };
     defer if (file_content) |fc| ctx.allocator.free(fc);
 
-    var resolved = engine.config.resolve(ctx.allocator, file_content, ctx.environ, null) catch return false;
-    defer resolved.deinit(ctx.allocator);
+    return engine.config.resolve(ctx.allocator, file_content, ctx.environ, null) catch null;
+}
 
-    return resolved.config.introspection.cli_log;
+const CliContext = struct { db: *db.sqlite.Db, window_days: i64 };
+
+fn readCliPreview(raw: *anyopaque, allocator: std.mem.Allocator, max_bytes: usize) anyerror!?[]u8 {
+    const context: *CliContext = @ptrCast(@alignCast(raw));
+    return engine.introspect.cliPreviewJsonl(context.db, allocator, context.window_days, max_bytes);
 }

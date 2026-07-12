@@ -191,6 +191,40 @@ test "report-json: empty window emits empty arrays not nulls" {
     try std.testing.expect(fail == .array);
 }
 
+test "report-json: configured transcript adapters feed normalized preview with authoritative CLI dedup" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    const init_out = suite.mustRun(&.{ "init", "--allow-no-repo" });
+    defer gpa.free(init_out);
+
+    const dir = std.fs.path.dirname(suite.db_path) orelse ".";
+    const transcript_path = try std.fs.path.join(gpa, &.{ dir, "claude.jsonl" });
+    defer gpa.free(transcript_path);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = transcript_path, .data = "{\"version\":1,\"type\":\"tool_result\",\"timestamp\":\"2026-07-12T22:05:00Z\",\"tool\":{\"name\":\"planar task add\",\"input\":{\"body\":\"PRIVATE_SENTINEL\"}},\"exit_code\":1}" });
+    seedFailedInvocation(&suite, "planar task add", "validation", 1, 0);
+
+    const cfg_path = try std.fs.path.join(gpa, &.{ dir, "transcript-config.toml" });
+    defer gpa.free(cfg_path);
+    const cfg = try std.fmt.allocPrint(gpa, "[introspection]\ncli_log = true\n[introspection.transcripts]\nclaude_path = \"{s}\"\ncodex_enabled = false\ncopilot_enabled = false\n", .{transcript_path});
+    defer gpa.free(cfg);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = cfg_path, .data = cfg });
+    const extra = cfgEnv(cfg_path);
+    const json_out = suite.mustRunWith(&.{ "report", "--json" }, &extra);
+    defer gpa.free(json_out);
+    try std.testing.expect(std.mem.indexOf(u8, json_out, "PRIVATE_SENTINEL") == null);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, json_out, .{});
+    defer parsed.deinit();
+    const preview = parsed.value.object.get("introspection_preview").?.object;
+    const signals = preview.get("signals").?.array;
+    try std.testing.expectEqual(@as(usize, 1), signals.items.len);
+    try std.testing.expectEqualStrings("cli_log", signals.items[0].object.get("vendor").?.string);
+    try std.testing.expectEqualStrings("failure", signals.items[0].object.get("category").?.string);
+    const coverage = preview.get("coverage").?.array;
+    try std.testing.expectEqual(@as(usize, 4), coverage.items.len);
+}
+
 // =========================================================================
 // report-verb: disabled-log partial bundle
 // =========================================================================
