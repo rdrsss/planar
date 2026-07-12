@@ -51,6 +51,7 @@ pub const synthesize = @import("synthesize.zig");
 pub const skillrender = @import("skillrender.zig");
 pub const installedsurface = @import("installedsurface.zig");
 pub const introspect = @import("introspect.zig");
+pub const introspection_adapters = @import("introspection_adapters.zig");
 pub const closure = @import("closure.zig");
 pub const grouping = @import("grouping.zig");
 

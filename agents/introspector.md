@@ -61,7 +61,9 @@ through `planar plan create`, `planar question add`, and `planar task add`.
 
 - Window: `--days <n>` (default 30) — the report window to analyze.
 - Scope: `--scope <scope>` (default: cwd-derived) — the association whose feedback plan receives findings.
-- Optional `--transcript-dir <path>` override for the vendor transcript root (default `~/.claude/projects/`).
+- Transcript sources resolved from `[introspection.transcripts]`; the legacy
+  `--transcript-dir <path>` input is a run-local override for the active vendor
+  only and never changes configuration.
 - Mode: preview by default; `--apply` only after the operator has reviewed and
   confirmed the proposal.
 
@@ -231,7 +233,7 @@ as a verbatim transcript excerpt.
 
 ## Transcript mining
 
-The introspector mines local Claude transcript JSONL files to surface
+The introspector mines local Claude, Codex, and Copilot records to surface
 failed-invocation patterns and retry sequences that the binary's own
 `cli_invocations` table may not capture (e.g. when CLI logging is off or the
 binary exited before the record hook ran).
@@ -246,17 +248,53 @@ persisted to any Planar entity, SQLite table, or file. This is not a
 recipe's design. Violation of this contract would push private conversational
 text into the feedback plan's entity bodies.
 
+### Adapter discovery and precedence
+
+Resolve configuration only through `planar config show --effective --json`.
+For each adapter, `*_enabled = false` wins over every path. Otherwise a
+non-empty configured `*_path` wins over the built-in path; otherwise use:
+
+- Claude: `~/.claude/projects/**/*.jsonl`
+- Codex: `~/.codex/sessions/**/*.jsonl`
+- Copilot: `~/.copilot/session-state/**`
+- CLI log: the `cli_invocations` section of `planar report --json`; its state
+  follows `[introspection].cli_log` and has no filesystem fallback.
+
+Never probe a lower-precedence location after a configured override is missing
+or unreadable: that adapter is `unavailable`, not silently observed elsewhere.
+Disabled, unavailable, and observed-empty are distinct coverage states.
+
+### Normalized adapter contract
+
+Every recognized source record is reduced immediately to `{vendor, verb_path,
+category, count, first_seen, last_seen}`. The closed vendor set is
+`claude|codex|copilot|cli-log`; category is
+`failure|retry|abandonment|gap`. Coverage additionally reports bounded integer
+`scanned`, `malformed`, and `normalized` counters. A malformed or unknown
+schema/version increments `malformed` and contributes no signal. Warnings name
+only the adapter and safe reason code (`missing`, `unreadable`,
+`unknown-schema`, `malformed-records`), never a record or local path.
+
+Signals are deduplicated by vendor, verb path, category, and hour bucket. A
+matching CLI-log invocation is authoritative: suppress the transcript failure
+for that bucket, while retaining transcript-only retry or abandonment signal.
+Evidence is bounded to the normalized fields and aggregate counters; no sample
+record or excerpt is retained.
+
 **Mining recipe:**
 
-1. Scan `~/.claude/projects/**/*.jsonl` (or the `--transcript-dir` override).
-   Each line is a JSONL message in the Claude transcript format.
+1. Resolve enabled adapters and their single effective locations using the
+   precedence above, then inventory only in-window records.
 2. For each Bash tool call whose `command` field starts with `planar ` (or
    `~/.planar/bin/planar `, the installed path), extract:
    - The verb path (first two tokens after the binary name, stripping flags and values).
    - The exit code from the matching tool result message (look for the paired
      `tool_result` with the same `tool_use_id`, read the `exit_code` or infer
      non-zero from `is_error: true`).
-3. Build a time-ordered sequence of `(verb_path, exit_code)` pairs per session.
+3. Apply the equivalent structural extraction for Codex tool-call records and
+   Copilot session-state command events; accept only recognized schema/version
+   shapes. Build a time-ordered sequence of `(verb_path, exit_class)` pairs per
+   vendor session.
 4. A **retry sequence** is three or more consecutive invocations of the same
    verb path with non-zero exits followed by a zero-exit or end of session.
 5. A **failed invocation** is any invocation with non-zero exit that is not
@@ -284,8 +322,8 @@ instead of treating its absent contribution as observed zero evidence.
 
 1. Resolve scope and window from inputs.
 2. Run `planar report --json --days <n>` and parse the bundle.
-3. Mine `~/.claude/projects/**/*.jsonl` (or `--transcript-dir` override) for
-   failed/retried `planar` Bash invocations per the transcript mining recipe.
+3. Resolve and mine all enabled transcript adapters, plus authoritative CLI-log
+   signal, per the normalized contract and deterministic precedence above.
 4. Classify signal into the four taxonomy categories.
 5. Report the proposed findings and per-source `signal_coverage`; without
    `--apply`, stop with zero writes.
