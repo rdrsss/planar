@@ -18,7 +18,7 @@ pub const AgentsModelsPath = "agents/models.md";
 /// the metadata-free rendered payload. Bump these domains if the canonical
 /// encoding changes.
 const source_digest_domain = "planar-render-source-v1";
-const projection_digest_domain = "planar-render-projection-v1";
+const projection_digest_domain = "planar-render-projection-v2";
 pub const SourceDigestKey = "x-planar-source-digest";
 pub const ProjectionDigestKey = "x-planar-projection-digest";
 
@@ -941,25 +941,10 @@ fn skillProjectionDigests(
     try appendDigestField(allocator, &canonical, "body", source.body);
     const source_digest = sha256Hex(canonical.items);
 
-    canonical.clearRetainingCapacity();
-    try appendDigestField(allocator, &canonical, "domain", projection_digest_domain);
-    try appendDigestField(allocator, &canonical, "kind", "skill");
-    try appendDigestField(allocator, &canonical, "source_digest", &source_digest);
-    try appendDigestField(allocator, &canonical, "vendor", profile.name);
-    try appendDigestField(allocator, &canonical, "title", profile.title);
-    try appendDigestField(allocator, &canonical, "has_invocation_block", if (profile.has_invocation_block) "true" else "false");
-    for (profile.frontmatter_fields, 0..) |field, i| {
-        try appendIndexedDigestField(allocator, &canonical, "frontmatter_field", i, field);
-    }
-    for (profile.install_bullets, 0..) |bullet, i| {
-        try appendIndexedDigestField(allocator, &canonical, "install_bullet", i, bullet);
-    }
-    for (profile.models, 0..) |model, i| {
-        try appendIndexedDigestField(allocator, &canonical, "model_tier", i, model.tier);
-        try appendIndexedDigestField(allocator, &canonical, "model_value", i, model.model);
-    }
-    try appendDigestField(allocator, &canonical, "payload", payload);
-    return .{ .source = source_digest, .projection = sha256Hex(canonical.items) };
+    return .{
+        .source = source_digest,
+        .projection = try projectionDigestForPayload(allocator, "skill", &source_digest, profile.name, payload),
+    };
 }
 
 fn agentProjectionDigests(
@@ -980,21 +965,35 @@ fn agentProjectionDigests(
     try appendDigestField(allocator, &canonical, "body", source.body);
     const source_digest = sha256Hex(canonical.items);
 
-    canonical.clearRetainingCapacity();
+    return .{
+        .source = source_digest,
+        .projection = try projectionDigestForPayload(allocator, "agent", &source_digest, profile.name, payload),
+    };
+}
+
+/// Recomputes the projection digest from the metadata-free bytes that are
+/// installed. Vendor-profile changes are represented by their rendered payload,
+/// allowing status checks to detect semantic edits without the authored source.
+pub fn projectionDigestForPayload(
+    allocator: std.mem.Allocator,
+    kind: []const u8,
+    source_digest: []const u8,
+    vendor: []const u8,
+    payload: []const u8,
+) ![64]u8 {
+    if ((!std.mem.eql(u8, kind, "skill") and !std.mem.eql(u8, kind, "agent")) or
+        source_digest.len != 64 or vendor.len == 0)
+    {
+        return RenderError.ParseFailure;
+    }
+    var canonical = std.ArrayList(u8).empty;
+    defer canonical.deinit(allocator);
     try appendDigestField(allocator, &canonical, "domain", projection_digest_domain);
-    try appendDigestField(allocator, &canonical, "kind", "agent");
-    try appendDigestField(allocator, &canonical, "source_digest", &source_digest);
-    try appendDigestField(allocator, &canonical, "vendor", profile.name);
-    try appendDigestField(allocator, &canonical, "agent_format", profile.agent_format);
-    for (profile.agent_frontmatter_fields, 0..) |field, i| {
-        try appendIndexedDigestField(allocator, &canonical, "agent_frontmatter_field", i, field);
-    }
-    for (profile.models, 0..) |model, i| {
-        try appendIndexedDigestField(allocator, &canonical, "model_tier", i, model.tier);
-        try appendIndexedDigestField(allocator, &canonical, "model_value", i, model.model);
-    }
+    try appendDigestField(allocator, &canonical, "kind", kind);
+    try appendDigestField(allocator, &canonical, "source_digest", source_digest);
+    try appendDigestField(allocator, &canonical, "vendor", vendor);
     try appendDigestField(allocator, &canonical, "payload", payload);
-    return .{ .source = source_digest, .projection = sha256Hex(canonical.items) };
+    return sha256Hex(canonical.items);
 }
 
 /// Canonical field encoding is `label N:value\n`, where N is the byte length

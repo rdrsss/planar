@@ -8,7 +8,7 @@ const repair = @import("repair.zig");
 pub const verb: cli.Cmd = .{
     .name = "skills",
     .desc = "Render, inspect, and repair installed vendor projections.",
-    .long_desc = "Manage unified skills and agent projections. Render produces\n  vendor trees from authored sources. Status reads the versioned install\n  manifest and reports installed freshness without mutation. Repair is\n  manifest-owned and preview-first; --apply replaces only stale or missing\n  managed paths.",
+    .long_desc = "Manage the unified skill source tree under skills/src/ and agent\n  projections. Render produces vendor trees from those authored sources.\n  Status reads the versioned install manifest and reports installed freshness\n  without mutation. Repair is manifest-owned and preview-first; --apply\n  replaces only stale or missing managed paths.",
     .cmds = &.{
         .{
             .name = "render",

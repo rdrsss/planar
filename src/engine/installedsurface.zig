@@ -5,6 +5,7 @@
 //! it never promotes such entries into the managed repair set.
 
 const std = @import("std");
+const skillrender = @import("skillrender.zig");
 
 pub const supported_vendors = [_][]const u8{ "claude", "codex", "copilot" };
 pub const manifest_version: u32 = 1;
@@ -259,11 +260,18 @@ fn classifyRow(a: std.mem.Allocator, row: ManifestRow) !ProjectionStatus {
         else => return e,
     };
     defer a.free(staged.bytes);
+    defer a.free(staged.payload);
     if (!std.mem.eql(u8, staged.source_digest, row.source_digest) or
         !std.mem.eql(u8, staged.projection_digest, row.projection_digest))
     {
         var out = base;
         out.reason = "staged projection digests differ from the install manifest; reinstall required";
+        out.repair_command = null;
+        return out;
+    }
+    if (!(try semanticDigestMatches(a, row.kind, row.vendor, staged))) {
+        var out = base;
+        out.reason = "staged projection semantic bytes differ from its manifest digest; reinstall required";
         out.repair_command = null;
         return out;
     }
@@ -290,6 +298,7 @@ fn classifyRow(a: std.mem.Allocator, row: ManifestRow) !ProjectionStatus {
         else => return e,
     };
     defer a.free(installed.bytes);
+    defer a.free(installed.payload);
 
     if (std.mem.eql(u8, row.install_kind, "link")) {
         if (link_len == null or !std.mem.eql(u8, link_buf[0..link_len.?], row.staged_path)) {
@@ -300,6 +309,11 @@ fn classifyRow(a: std.mem.Allocator, row: ManifestRow) !ProjectionStatus {
     } else if (link_len != null or !std.mem.eql(u8, staged.bytes, installed.bytes)) {
         var out = base;
         out.reason = "managed installed bytes differ from the staged projection";
+        return out;
+    }
+    if (!(try semanticDigestMatches(a, row.kind, row.vendor, installed))) {
+        var out = base;
+        out.reason = "managed installed semantic bytes differ from the manifest digest";
         return out;
     }
     if (!std.mem.eql(u8, installed.source_digest, row.source_digest) or
@@ -316,14 +330,61 @@ fn classifyRow(a: std.mem.Allocator, row: ManifestRow) !ProjectionStatus {
     return out;
 }
 
-const Projection = struct { bytes: []u8, source_digest: []const u8, projection_digest: []const u8 };
+const Projection = struct {
+    bytes: []u8,
+    payload: []u8,
+    source_digest: []const u8,
+    projection_digest: []const u8,
+};
 
 fn readProjection(a: std.mem.Allocator, path: []const u8) !Projection {
     const bytes = try std.Io.Dir.cwd().readFileAlloc(fsIo(), path, a, std.Io.Limit.limited(16 * 1024 * 1024));
     errdefer a.free(bytes);
     const source = digestField(bytes, "x-planar-source-digest") orelse return error.InvalidProjectionDigest;
     const projection = digestField(bytes, "x-planar-projection-digest") orelse return error.InvalidProjectionDigest;
-    return .{ .bytes = bytes, .source_digest = source, .projection_digest = projection };
+    const payload = try stripDigestMetadata(a, bytes);
+    return .{ .bytes = bytes, .payload = payload, .source_digest = source, .projection_digest = projection };
+}
+
+fn semanticDigestMatches(a: std.mem.Allocator, kind: []const u8, vendor: []const u8, projection: Projection) !bool {
+    const actual = try skillrender.projectionDigestForPayload(a, kind, projection.source_digest, vendor, projection.payload);
+    return std.mem.eql(u8, &actual, projection.projection_digest);
+}
+
+fn stripDigestMetadata(a: std.mem.Allocator, bytes: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(a);
+    var in_markdown_frontmatter = false;
+    var in_toml_header = true;
+    var first = true;
+    var start: usize = 0;
+    while (start < bytes.len) {
+        const end = std.mem.indexOfScalarPos(u8, bytes, start, '\n') orelse bytes.len;
+        const line = bytes[start..end];
+        const has_newline = end < bytes.len;
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (first) {
+            in_markdown_frontmatter = std.mem.eql(u8, trimmed, "---");
+            first = false;
+        } else if (in_markdown_frontmatter and std.mem.eql(u8, trimmed, "---")) {
+            in_markdown_frontmatter = false;
+        }
+        const digest_line = if (in_markdown_frontmatter)
+            digestFromLine(trimmed, "x-planar-source-digest", false) != null or
+                digestFromLine(trimmed, "x-planar-projection-digest", false) != null
+        else if (in_toml_header and std.mem.startsWith(u8, trimmed, "#"))
+            digestFromLine(trimmed, "x-planar-source-digest", true) != null or
+                digestFromLine(trimmed, "x-planar-projection-digest", true) != null
+        else
+            false;
+        if (!std.mem.startsWith(u8, trimmed, "#") and trimmed.len != 0) in_toml_header = false;
+        if (!digest_line) {
+            try out.appendSlice(a, line);
+            if (has_newline) try out.append(a, '\n');
+        }
+        start = if (has_newline) end + 1 else bytes.len;
+    }
+    return out.toOwnedSlice(a);
 }
 
 fn digestField(bytes: []const u8, key: []const u8) ?[]const u8 {
@@ -583,10 +644,14 @@ fn applyOne(row: ProjectionStatus) !void {
     };
     const verified = try readProjection(std.heap.smp_allocator, row.installed_path);
     defer std.heap.smp_allocator.free(verified.bytes);
+    defer std.heap.smp_allocator.free(verified.payload);
     const staged = try readProjection(std.heap.smp_allocator, row.staged_path);
     defer std.heap.smp_allocator.free(staged.bytes);
+    defer std.heap.smp_allocator.free(staged.payload);
     if (!std.mem.eql(u8, staged.source_digest, verified.source_digest) or
-        !std.mem.eql(u8, staged.projection_digest, verified.projection_digest)) return error.VerificationFailed;
+        !std.mem.eql(u8, staged.projection_digest, verified.projection_digest) or
+        !(try semanticDigestMatches(std.heap.smp_allocator, row.kind, row.vendor, staged)) or
+        !(try semanticDigestMatches(std.heap.smp_allocator, row.kind, row.vendor, verified))) return error.VerificationFailed;
 }
 
 fn selectedName(names: []const []const u8, name: []const u8) bool {
@@ -671,13 +736,16 @@ test "status classifies managed copy and unmanaged extension" {
     try std.Io.Dir.cwd().createDirPath(std.testing.io, std.fs.path.dirname(installed).?);
     try std.Io.Dir.cwd().createDirPath(std.testing.io, std.fs.path.dirname(unmanaged).?);
     const digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    const body = "---\nx-planar-source-digest: " ++ digest ++ "\nx-planar-projection-digest: " ++ digest ++ "\n---\nbody\n";
+    const payload = "---\n---\nbody\n";
+    const projection_digest = try skillrender.projectionDigestForPayload(gpa, "skill", digest, "codex", payload);
+    const body = try std.fmt.allocPrint(gpa, "---\nx-planar-source-digest: {s}\nx-planar-projection-digest: {s}\n---\nbody\n", .{ digest, projection_digest });
+    defer gpa.free(body);
     try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = staged, .data = body });
     try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = installed, .data = body });
     try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = unmanaged, .data = "personal\n" });
     const manifest_path = try std.fs.path.join(gpa, &.{ planar_home, "install-manifest.json" });
     defer gpa.free(manifest_path);
-    const manifest = try std.fmt.allocPrint(gpa, "{{\"version\":1,\"build_id\":\"test\",\"install_mode\":\"copy\",\"vendors\":[\"codex\"],\"projections\":[{{\"vendor\":\"codex\",\"kind\":\"skill\",\"name\":\"pl-a\",\"staged_path\":\"{s}\",\"installed_path\":\"{s}\",\"install_kind\":\"copy\",\"source_digest\":\"{s}\",\"projection_digest\":\"{s}\"}}]}}", .{ staged, installed, digest, digest });
+    const manifest = try std.fmt.allocPrint(gpa, "{{\"version\":1,\"build_id\":\"test\",\"install_mode\":\"copy\",\"vendors\":[\"codex\"],\"projections\":[{{\"vendor\":\"codex\",\"kind\":\"skill\",\"name\":\"pl-a\",\"staged_path\":\"{s}\",\"installed_path\":\"{s}\",\"install_kind\":\"copy\",\"source_digest\":\"{s}\",\"projection_digest\":\"{s}\"}}]}}", .{ staged, installed, digest, projection_digest });
     defer gpa.free(manifest);
     try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = manifest_path, .data = manifest });
     const codex_home = try std.fs.path.join(gpa, &.{ root, ".codex" });
