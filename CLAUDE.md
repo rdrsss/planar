@@ -138,9 +138,9 @@ distinction is load-bearing — never collapse them.
   `cli-lint-ignore` remain the narrow schema-lint escape hatch. Second,
   `tools/surface_lint.zig` checks repository-relative links, retired
   references, artifact-set agreement, read-only capabilities, and semantic
-  command shapes. Feedback/recovery contract checks are staged behind the
-  optional `--require-feedback-contract` flag until the M3 authored-source
-  retrofit lands; the normal gate does not enable that flag. Run
+  command shapes. Feedback/recovery contract checks enforce the seven literal
+  H2 sections for every unified skill unless its frontmatter declares the
+  genuine-helper exemption `internal_only: true`. Run
   `make surface-lint` when only the semantic pass is wanted. `make test-all`
   depends on the composed `cli-usage-check` gate exactly once. This preserves
   schema-only diagnostics while also rejecting semantic drift.

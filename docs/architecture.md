@@ -666,9 +666,9 @@ the manifest row set.
 `agents/`, `skills/src/`, and `docs/`. It reports repository-relative links
 whose targets are absent, pinned retired implementation references,
 contradictory four-artifact contracts, read-only roles containing write
-commands, invalid semantic command shapes, and (when
-`--require-feedback-contract` is selected) missing skill feedback/recovery
-headings. Generated vendor-projection links are assigned to renderer fixtures
+commands, invalid semantic command shapes, and missing skill feedback/recovery
+headings. Every unified skill is checked by default unless its frontmatter
+contains the literal boolean `internal_only: true`. Generated vendor-projection links are assigned to renderer fixtures
 rather than resolved against directories that do not exist in a source tree.
 
 Run `make surface-lint` for stable text findings or

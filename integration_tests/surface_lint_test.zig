@@ -54,7 +54,7 @@ fn testLiveSchemaInventory(allocator: std.mem.Allocator, io: std.Io, surface_bin
 
 fn testDirtyCorpus(allocator: std.mem.Allocator, io: std.Io, bin: []const u8, fixtures: []const u8) !void {
     const dirty = try std.fs.path.join(allocator, &.{ fixtures, "dirty" });
-    const text = try run(allocator, io, bin, &.{ dirty, "--require-feedback-contract" });
+    const text = try run(allocator, io, bin, &.{dirty});
     try expectExit(text.term, 1);
     try expectEqual("", text.stderr);
     const expected_lines = [_][]const u8{
@@ -73,7 +73,7 @@ fn testDirtyCorpus(allocator: std.mem.Allocator, io: std.Io, bin: []const u8, fi
         last = at + needle.len;
     }
 
-    const json_run = try run(allocator, io, bin, &.{ dirty, "--require-feedback-contract", "--json" });
+    const json_run = try run(allocator, io, bin, &.{ dirty, "--json" });
     try expectExit(json_run.term, 1);
     const Envelope = struct {
         version: u8,
@@ -95,7 +95,7 @@ fn testDirtyCorpus(allocator: std.mem.Allocator, io: std.Io, bin: []const u8, fi
 
 fn testCleanCorpus(allocator: std.mem.Allocator, io: std.Io, bin: []const u8, fixtures: []const u8) !void {
     const clean = try std.fs.path.join(allocator, &.{ fixtures, "clean" });
-    const result = try run(allocator, io, bin, &.{ clean, "--require-feedback-contract" });
+    const result = try run(allocator, io, bin, &.{clean});
     try expectExit(result.term, 0);
     try expectEqual("surface-lint: clean (1 files)\n", result.stdout);
     try expectEqual("", result.stderr);
