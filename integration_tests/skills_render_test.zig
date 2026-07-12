@@ -429,7 +429,7 @@ test "skills render real sources keep model tiers notes and invocation blocks" {
     try std.testing.expect(std.mem.indexOf(u8, claude_orch, "## Vendor Notes") != null);
     try std.testing.expect(std.mem.indexOf(u8, claude_spec_draft, "argument-hint: \"<goal>\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, claude_spec_draft, "\\\"<goal>\\\"") == null);
-    try std.testing.expect(std.mem.indexOf(u8, codex_introspect, "description: 'Run the usage-introspection pass:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, codex_introspect, "description: 'Preview redacted usage-introspection findings, report signal coverage, and apply approved findings") != null);
     try std.testing.expect(std.mem.indexOf(u8, codex_introspect, "association''s feedback plan.'") != null);
 }
 
