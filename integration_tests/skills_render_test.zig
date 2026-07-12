@@ -170,6 +170,71 @@ test "skills render is idempotent" {
     try expectSnapshotsEqual(first, second);
 }
 
+test "skills render digests are stable and change with authored input" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try fixtureRoot(gpa, &tmp, "skills-render-digests");
+    defer gpa.free(root);
+    try writeFixtureSource(gpa, root, "pl-alpha.md", "pl-alpha", "Alpha body");
+
+    {
+        const stdout = mustRunInDir(&suite, root, &.{ "skills", "render" });
+        defer gpa.free(stdout);
+    }
+    const paths = [_][]const u8{
+        "commands/claude/pl-alpha.md",
+        "skills/codex/pl-alpha.md",
+        "skills/copilot/pl-alpha.md",
+    };
+    var before: [paths.len][]u8 = undefined;
+    defer {
+        for (before) |bytes| gpa.free(bytes);
+    }
+    for (paths, 0..) |path, i| {
+        before[i] = try readPath(gpa, root, path);
+        try std.testing.expectEqual(@as(usize, 64), digestValue(before[i], "x-planar-source-digest").?.len);
+        try std.testing.expectEqual(@as(usize, 64), digestValue(before[i], "x-planar-projection-digest").?.len);
+        if (i > 0) try std.testing.expectEqualStrings(
+            digestValue(before[0], "x-planar-source-digest").?,
+            digestValue(before[i], "x-planar-source-digest").?,
+        );
+    }
+
+    // A second unchanged render is byte-identical, including both digest rows.
+    {
+        const stdout = mustRunInDir(&suite, root, &.{ "skills", "render" });
+        defer gpa.free(stdout);
+    }
+    for (paths, 0..) |path, i| {
+        const unchanged = try readPath(gpa, root, path);
+        defer gpa.free(unchanged);
+        try std.testing.expectEqualStrings(before[i], unchanged);
+    }
+
+    try writeFixtureSource(gpa, root, "pl-alpha.md", "pl-alpha", "Changed alpha body");
+    {
+        const stdout = mustRunInDir(&suite, root, &.{ "skills", "render" });
+        defer gpa.free(stdout);
+    }
+    for (paths, 0..) |path, i| {
+        const changed = try readPath(gpa, root, path);
+        defer gpa.free(changed);
+        try std.testing.expect(!std.mem.eql(
+            u8,
+            digestValue(before[i], "x-planar-source-digest").?,
+            digestValue(changed, "x-planar-source-digest").?,
+        ));
+        try std.testing.expect(!std.mem.eql(
+            u8,
+            digestValue(before[i], "x-planar-projection-digest").?,
+            digestValue(changed, "x-planar-projection-digest").?,
+        ));
+    }
+}
+
 test "skills render rewrites and checks agents models table parity" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
@@ -540,4 +605,14 @@ fn countNonEmptyLines(text: []const u8) usize {
         if (std.mem.trim(u8, line, " \t\r").len > 0) n += 1;
     }
     return n;
+}
+
+fn digestValue(bytes: []const u8, key: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    while (lines.next()) |line| {
+        if (!std.mem.startsWith(u8, line, key)) continue;
+        if (line.len <= key.len or line[key.len] != ':') continue;
+        return std.mem.trim(u8, line[key.len + 1 ..], " \t\r");
+    }
+    return null;
 }

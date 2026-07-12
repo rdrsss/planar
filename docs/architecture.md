@@ -601,6 +601,20 @@ The orchestrator gates Phases 2 and 3 on explicit user confirmation. Ingestion n
 
 Agent role specs (vendor-neutral) live under `agents/`. The key files are `agents/methodology.md`, `agents/orchestrator.md`, `agents/planner.md`, `agents/ingestor.md`, `agents/extsync.md`, `agents/importer.md`, `agents/synthesizer.md`, `agents/coder.md`, `agents/reviewer.md`, and `agents/models.md` (tier-to-model resolution).
 
+Every rendered skill and agent projection carries two lowercase SHA-256 values:
+`x-planar-source-digest` identifies the parsed, vendor-neutral authored source,
+and `x-planar-projection-digest` identifies that source plus the
+projection-relevant vendor profile and metadata-free rendered payload. The
+canonical encoding is versioned, fixed-order, and byte-length-prefixed
+(`label N:value\n`); it excludes source/output paths, install paths,
+timestamps, filesystem traversal order, and machine-local state. Markdown
+skills and Claude/Copilot Markdown agents store the values in YAML
+frontmatter. Codex TOML agents store the same keys in leading comments so the
+TOML agent schema is unchanged. Digest rows are presentation metadata and are
+excluded from the projection digest itself, avoiding a circular hash. This is
+the public projection-freshness seam used by installation/status tooling;
+`planar skills render --check` continues to compare complete rendered bytes.
+
 ### Authored-surface validation
 
 `tools/surface_lint.zig` deterministically scans canonical Markdown under

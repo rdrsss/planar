@@ -171,6 +171,85 @@ test "agents render is idempotent" {
     try expectSnapshotsEqual(snap1, snap2);
 }
 
+test "agents render digests are stable and change with authored input" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try fixtureRoot(gpa, &tmp, "agents-render-digests");
+    defer gpa.free(root);
+
+    const src_abs = try repoAgentsSrcFromBin(gpa, suite.bin);
+    defer gpa.free(src_abs);
+    try copyAgentSpecs(gpa, src_abs, root);
+    const skills_src_abs = try repoSkillsSrcFromBin(gpa, suite.bin);
+    defer gpa.free(skills_src_abs);
+    const render_args = &[_][]const u8{
+        "skills", "render", "--src", skills_src_abs, "--out", root,
+    };
+    {
+        const stdout = suite.mustRunInDir(root, render_args);
+        defer gpa.free(stdout);
+    }
+
+    const paths = [_][]const u8{
+        "agents/claude/coder.md",
+        "agents/codex/coder.toml",
+        "agents/copilot/coder.agent.md",
+    };
+    var before: [paths.len][]u8 = undefined;
+    defer {
+        for (before) |bytes| gpa.free(bytes);
+    }
+    for (paths, 0..) |path, i| {
+        before[i] = try readPath(gpa, root, path);
+        try std.testing.expectEqual(@as(usize, 64), digestValue(before[i], "x-planar-source-digest").?.len);
+        try std.testing.expectEqual(@as(usize, 64), digestValue(before[i], "x-planar-projection-digest").?.len);
+        if (i > 0) try std.testing.expectEqualStrings(
+            digestValue(before[0], "x-planar-source-digest").?,
+            digestValue(before[i], "x-planar-source-digest").?,
+        );
+    }
+
+    // Repeatability includes metadata and the vendor-specific semantic body.
+    {
+        const stdout = suite.mustRunInDir(root, render_args);
+        defer gpa.free(stdout);
+    }
+    for (paths, 0..) |path, i| {
+        const unchanged = try readPath(gpa, root, path);
+        defer gpa.free(unchanged);
+        try std.testing.expectEqualStrings(before[i], unchanged);
+    }
+
+    const coder_path = try std.fs.path.join(gpa, &.{ root, "agents", "coder.md" });
+    defer gpa.free(coder_path);
+    const coder_source = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, coder_path, gpa, std.Io.Limit.limited(4 * 1024 * 1024));
+    defer gpa.free(coder_source);
+    const changed_source = try std.fmt.allocPrint(gpa, "{s}\nChanged authored input.\n", .{coder_source});
+    defer gpa.free(changed_source);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = coder_path, .data = changed_source });
+    {
+        const stdout = suite.mustRunInDir(root, render_args);
+        defer gpa.free(stdout);
+    }
+    for (paths, 0..) |path, i| {
+        const changed = try readPath(gpa, root, path);
+        defer gpa.free(changed);
+        try std.testing.expect(!std.mem.eql(
+            u8,
+            digestValue(before[i], "x-planar-source-digest").?,
+            digestValue(changed, "x-planar-source-digest").?,
+        ));
+        try std.testing.expect(!std.mem.eql(
+            u8,
+            digestValue(before[i], "x-planar-projection-digest").?,
+            digestValue(changed, "x-planar-projection-digest").?,
+        ));
+    }
+}
+
 // --check must pass on a freshly rendered staging dir with the real agent specs.
 test "agents render check passes after render" {
     const gpa = std.testing.allocator;
@@ -357,4 +436,16 @@ fn expectSnapshotsEqual(a: []const Snap, b: []const Snap) !void {
         try std.testing.expectEqualStrings(left.path, right.path);
         try std.testing.expectEqualStrings(left.body, right.body);
     }
+}
+
+fn digestValue(bytes: []const u8, key: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    while (lines.next()) |raw_line| {
+        var line = std.mem.trim(u8, raw_line, " \t\r");
+        if (std.mem.startsWith(u8, line, "# ")) line = std.mem.trim(u8, line[2..], " \t\r");
+        if (!std.mem.startsWith(u8, line, key)) continue;
+        if (line.len <= key.len or line[key.len] != ':') continue;
+        return std.mem.trim(u8, line[key.len + 1 ..], " \t\r");
+    }
+    return null;
 }
