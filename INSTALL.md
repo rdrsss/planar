@@ -65,6 +65,10 @@ That's it. The script:
 - Builds `planar` from source by running `zig build -Doptimize=ReleaseSafe --prefix "$HOME/.planar"` from the repo root, which writes `~/.planar/bin/planar`.
 - Copies `agents/`, `commands/`, `skills/`, `migrations/`, `scripts/`, and (if present) `copilot/` into `~/.planar/` (migrations are staged at `~/.planar/migrations/` for ad-hoc `sqlx` use; the binary embeds them at build time via codegen).
 - Symlinks 31 surfaces per vendor into the vendor harness dirs.
+- Atomically writes `~/.planar/install-manifest.json` after the selected vendor
+  wiring succeeds. The versioned file records only selected Planar-managed
+  skill and agent projections; operator-authored destination files are not
+  claimed.
 
 After the script finishes, add `~/.planar/bin` to your PATH so the `planar` command is available:
 
@@ -113,6 +117,12 @@ In Codex, invoke the same Planar skills with `$` syntax, for example `$pl-task` 
 
 - **Copy mode (default).** `install.sh` *copies* the source artifacts into `~/.planar/`. After install, the source checkout can be deleted; `~/.planar/` is self-contained. Updates to the source require re-running `install.sh`.
 - **Link mode (`--link`).** `install.sh` *symlinks* the artifacts from the source repo into `~/.planar/`. Edits to the source propagate immediately. Useful for development on Planar itself or for any contributor iterating on the surfaces. Requires the source repo to stay on disk at its original path.
+
+The global mode describes how source artifacts are staged. The install
+manifest also records each projection's actual install kind: Claude skills and
+all vendor agent files are links, while Codex and Copilot directory-shaped
+skills are copied from their staged `SKILL.md` files so runtimes that do not
+follow directory links can discover them.
 
 ### Initialize the database
 
@@ -274,6 +284,7 @@ After a full install (`install.sh`), the layout under `~/.planar/` is:
 ~/.planar/
 ├── bin/
 │   └── planar                          # the Zig binary
+├── install-manifest.json               # versioned managed-projection authority
 ├── planar.db                           # SQLite database (after `planar init`)
 ├── migrations/
 │   ├── 00001_foundation.up.sql         # canonical migration sources, sqlx-cli format

@@ -82,6 +82,7 @@ DRY_RUN=0                     # set with --dry-run/-n to preview without changes
 INSTALLER_VERSION="1.0.0"     # install.sh's own version (see --version)
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$REPO_ROOT/scripts/install-manifest.sh"
 
 # usage — the canonical help text. Defined before arg parsing so -h/--help and
 # the unknown-flag path can both reach it. (Replaces the old header-comment sed
@@ -382,6 +383,7 @@ BUILD_DEPS=(
   "ln||symlink vendor surfaces"
   "mkdir||create the install tree"
   "rm||replace prior-install artifacts"
+  "mv||atomically replace the install manifest"
   "find||walk vendor + template source trees"
   "rmdir||remove emptied vendor skill directories"
   "sed||parse the pinned zig version from build.zig.zon"
@@ -957,6 +959,26 @@ if [[ -n "$VENDORS" ]]; then
     esac
   done
 fi
+
+# ---------- install authority ----------
+
+# The versioned manifest is written only after every selected vendor has been
+# wired successfully. Its rows are the complete managed-ownership set; files
+# found only in vendor destinations (including personal local-* extensions)
+# are deliberately excluded.
+install_manifest_begin "${PLANAR_BUILD_ID:-unknown}" "$MODE"
+if [[ -n "$VENDORS" ]]; then
+  IFS=',' read -r -a vendor_list <<< "$VENDORS"
+  for v in "${vendor_list[@]}"; do
+    case "$v" in
+      claude|codex|copilot)
+        install_manifest_record_vendor "$v" "$PLANAR_HOME" "$HOME" "$CODEX_HOME"
+        ;;
+    esac
+  done
+fi
+install_manifest_write "$PLANAR_HOME/install-manifest.json"
+vlog "wrote $PLANAR_HOME/install-manifest.json (${#INSTALL_MANIFEST_ROW_VENDOR[@]} managed projections)"
 
 # ---------- ownership stamp ----------
 

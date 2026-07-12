@@ -63,8 +63,12 @@ uninstall: ## Uninstall via ./install.sh --uninstall (preserves ~/.planar/planar
 run: ## Run the CLI from source: make run ARGS="task list"
 	$(ZIG) build run -- $(ARGS)
 
+.PHONY: test-install-manifest
+test-install-manifest: ## Run focused installer manifest ownership/atomicity fixtures
+	bash scripts/install-manifest-test.sh
+
 .PHONY: test
-test: ## Run unit tests
+test: test-install-manifest ## Run unit tests
 	$(ZIG) build test $(ARGS)
 
 .PHONY: test-integration
