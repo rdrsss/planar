@@ -1,32 +1,32 @@
 {
   "version": 2,
   "algo": "xxh64",
-  "root": "290591406fb60dba",
+  "root": "e59364802123b8e9",
   "generated_at": "",
   "entries": {
     "docs/architecture.md": {
-      "doc_hash": "e7b92c4ad4eb1a19",
+      "doc_hash": "b392c646ae0eebf8",
       "sources": {
         "build.zig": "3e1fb7dd81c1a0bb",
         "migrations/": "c346e29e94a157d2",
         "src/db/": "4b08f429d5bc1835",
-        "src/engine/": "40f7ac97ef6a1cff",
+        "src/engine/": "b8d6818733b708d5",
         "src/root.zig": "a50330d9f5048cdf",
         "src/runtime/runtime.zig": "223e03691a183abc",
         "vendor/sqlite/": "a74be58cb1a408f7"
       },
-      "sources_hash": "26a3cc36e069c165",
-      "entry_hash": "9d739288bd836a9c"
+      "sources_hash": "e0f3347356cf3733",
+      "entry_hash": "cf9b0b56d685cb9b"
     },
     "docs/cli-reference.md": {
-      "doc_hash": "8da2166a91af107c",
+      "doc_hash": "538584691aac451e",
       "sources": {
-        "src/cmd/": "bc5af8e72f5b828e",
-        "src/engine/models.zig": "89a1ca6d84af0055",
+        "src/cmd/": "ee00bfe6d270c46b",
+        "src/engine/models.zig": "40927dde5c2b7210",
         "vendor/etc-cli/": "0000000000000000"
       },
-      "sources_hash": "17c77bdb79324252",
-      "entry_hash": "9d724eca6b5a2207"
+      "sources_hash": "601a5c7972082071",
+      "entry_hash": "d349fd3f70123ec8"
     },
     "docs/features/doc-system.md": {
       "doc_hash": "4c601dd0cb42f098",
@@ -46,21 +46,21 @@
       "entry_hash": "f4ad37f82a5b6370"
     },
     "docs/skill-reference.md": {
-      "doc_hash": "4383b0b565e2b229",
+      "doc_hash": "36798fbc5f048316",
       "sources": {
-        "agents/": "9dbad3021d67c636",
-        "skills/": "7c431d34ce4d0763"
+        "agents/": "0003379fde44f610",
+        "skills/": "e4f07b81e8211205"
       },
-      "sources_hash": "8275ad5512985c55",
-      "entry_hash": "5857cbf6f0106ed4"
+      "sources_hash": "dc44adebb268fce1",
+      "entry_hash": "d2a6688561a28ad8"
     },
     "docs/workflows.md": {
-      "doc_hash": "aca956093c3926a5",
+      "doc_hash": "cf08ac06a9f6f703",
       "sources": {
         "scripts/": "abd2737557b6d333"
       },
       "sources_hash": "88c28078a7523560",
-      "entry_hash": "3319cf5d3c4b8fb7"
+      "entry_hash": "56acefd26ad9bc65"
     }
   },
   "nodoc": {
@@ -80,7 +80,7 @@
     "docs/research/scenario-coverage-long-tail.md": "0000000000000000",
     "docs/research/scope-resolution.md": "0000000000000000",
     "install.sh": "b0852fb970beffe8",
-    "integration_tests/": "a870cf874b693ae6",
+    "integration_tests/": "d0b33d1adbcbd8f2",
     "templates/": "0536dfe3149b9acc",
     "tools/": "50f64c82a256904c",
     "vendor/manifest.zon": "123c6b606e6f6b41"

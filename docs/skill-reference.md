@@ -21,12 +21,13 @@ shows the underlying supported interface.
 | Manage machine-local skills and agents | `/pl-local ...` | `planar local import|link|list|unlink|migrate`; repair uses `planar local link --reconcile` |
 | Resume interrupted work or diagnose degraded state | `/pl-resume <task-id>` or `/pl-doctor` | `planar resume`, `planar audit`, `planar health`, `planar-agent reconcile` |
 | Inspect one external item's local history | `/pl-audit-trail <system:key>` | `planar audit trail` |
+| Reconcile a local/external sync conflict | `/pl-sync status` or `/pl-sync resolve <event-id>` | `planar sync status`, `planar audit trail`, guarded `planar sync resolve` |
 | Maintain published documentation | `/pl-doc-maintain` for the full loop; `/pl-documenter` for a proposal-centered sweep | `planar-doc diff|cover|nodoc|lint|build|verify` |
 
 `/pl-local-import` remains an import-only compatibility entry point; prefer
 `/pl-local` for the complete local lifecycle. Documentation maintenance is
-available through the gated workflows listed below; sync-reconciliation intent
-skills belong to a later milestone.
+available through the gated workflows listed below. Sync reconciliation is
+shipped through `/pl-sync` and its gated `sync-reconciler` specialist.
 
 ---
 
@@ -464,15 +465,55 @@ Source: `commands/claude/pl-promote.md` · `skills/codex/pl-promote.md`
 
 ### `/pl-sync`
 
-Pull from and push to the operational plane, surface and resolve conflicts.
+Pull from and push to the operational plane, inspect field-level conflicts, and
+coordinate explicitly approved reconciliation. For each currently conflicted
+link, the skill combines link status, the latest unresolved conflict event from
+the link's audit trail, and current entity state. The event evidence must expose
+both observable values, their provenance and observation times, and a non-empty
+provider version; incomplete, stale, or contradictory evidence forces
+`defer`.
+
+The large-tier, coordinate `sync-reconciler` recommends exactly one
+disposition:
+
+| Disposition | Effect |
+|---|---|
+| `keep-local` | After approval, push the complete current local entity with `planar sync resolve <event-id> --keep local ...`; this is not a field-level patch. |
+| `keep-remote` | After approval, overwrite the local entity with the complete observed remote entity using `--keep remote`; this is not a field-level patch. |
+| `manual-merge` | Do not resolve yet. The operator reviews a proposed merged value, edits through the entity's normal guarded `planar <kind>` workflow, reviews the resulting local post-state, and then separately confirms `keep-local` for that event. |
+| `defer` | Write nothing because evidence is insufficient or resolution was declined or postponed; refresh with a guarded pull before rebuilding evidence. |
+
+Reconciliation is read-and-recommend by default. Before either whole-entity
+resolution, the operator must see both values and provenance, the exact event,
+recommended disposition, rationale, whole-entity effect, and proposed command,
+then explicitly approve that event and disposition. Approval applies only to
+the displayed evidence and is invalid if the event, local version, token, or
+remote evidence changes. The guarded resolve passes the approved evidence token
+and reviewed local `updated_at`; the skill and specialist never edit SQLite,
+invoke an adapter directly, bypass scope checks, or synthesize direct local or
+remote field mutations.
+
+`manual-merge` has two distinct gates: approval of proposed merge text does not
+authorize the local edit, and approval of the guarded local edit does not
+authorize pushing it. After the operator performs the edit, the workflow shows
+the exact local post-state and waits for a second confirmation naming the
+conflict event and `keep-local` before resolving.
+
+Every applied resolution is verified by rereading `sync status`, the link's
+audit trail, and the entity. Success requires the conflict to be closed, the
+returned `new_event_id` to identify a matching resolution event, and entity
+post-state to match the approved whole-entity effect; command exit alone is not
+enough.
 
 **Example:**
 ```
-/pl-sync pull --system my-jira
+/pl-sync pull --all --system my-jira
 /pl-sync push task:<task-id> --system my-jira
+/pl-sync status
+/pl-sync resolve <event-id>
 ```
 
-Source: `commands/claude/pl-sync.md` · `skills/codex/pl-sync.md`
+Source: `skills/src/pl-sync.md` · `agents/sync-reconciler.md`
 
 ---
 
@@ -736,6 +777,7 @@ The vendor-neutral role specs live under `agents/`. Vendor skill files defer to 
 | `agents/introspector.md` | Introspector role: read surface, transcript-mining recipe, finding taxonomy, dedup contract, feedback-plan bootstrap |
 | `agents/janitor.md` | Janitor role: merge verification, Planar state reconciliation, worktree/branch cleanup, plan closeout via the delivery-evidence gate |
 | `agents/doc-author.md` | Doc-author role: writes only operator-approved published prose under `docs/`; never decides coverage or mutates manifest state |
+| `agents/sync-reconciler.md` | Large-tier coordinate role: compares local and remote conflict evidence, recommends one of four dispositions, and coordinates only the exact whole-entity resolution the operator confirms; it is read-and-recommend by default and never performs direct local or remote field mutation |
 | `agents/models.md` | Tier-to-model resolution: maps `large` / `medium` tiers to concrete model IDs per vendor |
 
 ---
