@@ -21,11 +21,12 @@ shows the underlying supported interface.
 | Manage machine-local skills and agents | `/pl-local ...` | `planar local import|link|list|unlink|migrate`; repair uses `planar local link --reconcile` |
 | Resume interrupted work or diagnose degraded state | `/pl-resume <task-id>` or `/pl-doctor` | `planar resume`, `planar audit`, `planar health`, `planar-agent reconcile` |
 | Inspect one external item's local history | `/pl-audit-trail <system:key>` | `planar audit trail` |
+| Maintain published documentation | `/pl-doc-maintain` for the full loop; `/pl-documenter` for a proposal-centered sweep | `planar-doc diff|cover|nodoc|lint|build|verify` |
 
 `/pl-local-import` remains an import-only compatibility entry point; prefer
-`/pl-local` for the complete local lifecycle. Documentation maintenance and
-sync-reconciliation intent skills belong to later milestones and are not
-listed as shipped workflows here.
+`/pl-local` for the complete local lifecycle. Documentation maintenance is
+available through the gated workflows listed below; sync-reconciliation intent
+skills belong to a later milestone.
 
 ---
 
@@ -644,6 +645,49 @@ Source: `commands/claude/pl-templates.md` · `skills/codex/pl-templates.md`
 
 ---
 
+## Documentation Maintenance
+
+### `/pl-documenter`
+
+Inspect manifest-backed repository drift and route it through the read-only
+`documenter` specialist, which proposes `extend-cover`, `create-doc`, `nodoc`,
+or `defer` rows for operator review. The specialist never writes prose or
+manifest state. After the row gate, the skill caller sends only approved prose
+rows to `doc-author` and owns any approved `planar-doc` mutations.
+
+Use this proposal-centered entry point for a manual post-cycle sweep. A clean,
+verified diff is a no-op; unresolved or unapproved rows are not absorbed by a
+manifest rebuild.
+
+**Example:**
+```
+/pl-documenter
+/pl-documenter --json
+```
+
+Source: `skills/src/pl-documenter.md` · `agents/documenter.md` · `agents/doc-author.md`
+
+---
+
+### `/pl-doc-maintain`
+
+Run the complete gated documentation-maintenance loop: read and parse
+`planar-doc diff --json`, obtain documenter proposals, require an explicit
+operator disposition for every row, dispatch approved prose to `doc-author`,
+apply approved coverage or `nodoc` operations, then lint, build, verify, and
+require a clean final diff. The caller alone invokes manifest-writing
+`planar-doc` verbs; neither specialist owns those mutations.
+
+**Example:**
+```
+/pl-doc-maintain
+/pl-doc-maintain --json
+```
+
+Source: `skills/src/pl-doc-maintain.md` · `agents/documenter.md` · `agents/doc-author.md`
+
+---
+
 ## Usage Introspection
 
 ### `/pl-introspect`
@@ -691,6 +735,7 @@ The vendor-neutral role specs live under `agents/`. Vendor skill files defer to 
 | `agents/reviewer.md` | Reviewer role: review criteria, decision taxonomy, caveat recording |
 | `agents/introspector.md` | Introspector role: read surface, transcript-mining recipe, finding taxonomy, dedup contract, feedback-plan bootstrap |
 | `agents/janitor.md` | Janitor role: merge verification, Planar state reconciliation, worktree/branch cleanup, plan closeout via the delivery-evidence gate |
+| `agents/doc-author.md` | Doc-author role: writes only operator-approved published prose under `docs/`; never decides coverage or mutates manifest state |
 | `agents/models.md` | Tier-to-model resolution: maps `large` / `medium` tiers to concrete model IDs per vendor |
 
 ---

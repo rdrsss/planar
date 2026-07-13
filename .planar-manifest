@@ -1,7 +1,7 @@
 {
   "version": 2,
   "algo": "xxh64",
-  "root": "db8874eef3b2ad62",
+  "root": "290591406fb60dba",
   "generated_at": "",
   "entries": {
     "docs/architecture.md": {
@@ -10,22 +10,23 @@
         "build.zig": "3e1fb7dd81c1a0bb",
         "migrations/": "c346e29e94a157d2",
         "src/db/": "4b08f429d5bc1835",
-        "src/engine/": "a814f39db28a172d",
+        "src/engine/": "40f7ac97ef6a1cff",
         "src/root.zig": "a50330d9f5048cdf",
         "src/runtime/runtime.zig": "223e03691a183abc",
         "vendor/sqlite/": "a74be58cb1a408f7"
       },
-      "sources_hash": "4bf06dc634063a72",
-      "entry_hash": "bf4748ac0f2846db"
+      "sources_hash": "26a3cc36e069c165",
+      "entry_hash": "9d739288bd836a9c"
     },
     "docs/cli-reference.md": {
-      "doc_hash": "500d7e4276ae5c52",
+      "doc_hash": "8da2166a91af107c",
       "sources": {
         "src/cmd/": "bc5af8e72f5b828e",
+        "src/engine/models.zig": "89a1ca6d84af0055",
         "vendor/etc-cli/": "0000000000000000"
       },
-      "sources_hash": "92b2f5e39ca14fe4",
-      "entry_hash": "1a368f316453e91b"
+      "sources_hash": "17c77bdb79324252",
+      "entry_hash": "9d724eca6b5a2207"
     },
     "docs/features/doc-system.md": {
       "doc_hash": "4c601dd0cb42f098",
@@ -45,13 +46,13 @@
       "entry_hash": "f4ad37f82a5b6370"
     },
     "docs/skill-reference.md": {
-      "doc_hash": "7b117b8beffae6b6",
+      "doc_hash": "4383b0b565e2b229",
       "sources": {
-        "agents/": "851285b2f2002550",
-        "skills/": "9cc6902d8a70ced1"
+        "agents/": "9dbad3021d67c636",
+        "skills/": "7c431d34ce4d0763"
       },
-      "sources_hash": "318b3d918968e5da",
-      "entry_hash": "3462bb50ae2540fc"
+      "sources_hash": "8275ad5512985c55",
+      "entry_hash": "5857cbf6f0106ed4"
     },
     "docs/workflows.md": {
       "doc_hash": "aca956093c3926a5",
@@ -79,7 +80,7 @@
     "docs/research/scenario-coverage-long-tail.md": "0000000000000000",
     "docs/research/scope-resolution.md": "0000000000000000",
     "install.sh": "b0852fb970beffe8",
-    "integration_tests/": "a5736c853e4ca140",
+    "integration_tests/": "a870cf874b693ae6",
     "templates/": "0536dfe3149b9acc",
     "tools/": "50f64c82a256904c",
     "vendor/manifest.zon": "123c6b606e6f6b41"

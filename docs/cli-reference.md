@@ -4189,6 +4189,7 @@ default routing (role → tier → vendor model):
   reviewer   → large  claude claude-opus-4-8
   test-coder → medium claude claude-sonnet-4-6
   documenter → medium claude claude-sonnet-4-6
+  doc-author → large  claude claude-opus-4-8
 ```
 
 **Output (`--json`):** `{ "providers": [ { "vendor", "bin", "installed", "version", "models": [ { "id", "tier" } ] } ], "default_routing": [ { "role", "tier", "vendor", "model" } ] }`.
@@ -4885,6 +4886,7 @@ coder      = "medium"   # coder resolves to the active vendor's `medium` model
 reviewer   = "large"
 test-coder = "medium"
 documenter = "medium"
+doc-author = "large"
 ```
 
 Override any tier to re-route every role at that tier for that vendor, or any
