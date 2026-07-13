@@ -1,11 +1,11 @@
 {
   "version": 2,
   "algo": "xxh64",
-  "root": "2e8b8b6513b66d40",
+  "root": "527eb2d245cfe0df",
   "generated_at": "",
   "entries": {
     "docs/architecture.md": {
-      "doc_hash": "af6c8254ec0f3fd3",
+      "doc_hash": "9b588dcfd5fec429",
       "sources": {
         "build.zig": "ad3885c59aa8c60e",
         "migrations/": "dc683f02f13d490c",
@@ -16,17 +16,17 @@
         "vendor/sqlite/": "a74be58cb1a408f7"
       },
       "sources_hash": "cbb02e990eb861c8",
-      "entry_hash": "4cd666043cd92391"
+      "entry_hash": "1b4c52c8b2f0a2c8"
     },
     "docs/cli-reference.md": {
-      "doc_hash": "389648a30901104b",
+      "doc_hash": "ca24cb7824604893",
       "sources": {
         "src/cmd/": "c7fb967539ac022a",
         "src/engine/models.zig": "40927dde5c2b7210",
         "vendor/etc-cli/": "0000000000000000"
       },
       "sources_hash": "1b8bb2f91b1bd91b",
-      "entry_hash": "8be6d1dc4b23ca46"
+      "entry_hash": "13ceb3c58882110f"
     },
     "docs/features/doc-system.md": {
       "doc_hash": "4c601dd0cb42f098",
@@ -46,21 +46,21 @@
       "entry_hash": "f4ad37f82a5b6370"
     },
     "docs/skill-reference.md": {
-      "doc_hash": "619cd0ca5fb5bf67",
+      "doc_hash": "6d072d9520793780",
       "sources": {
         "agents/": "a7e0f2eab05efe24",
-        "skills/": "57275a550379677b"
+        "skills/": "d15ff6289cdf67ad"
       },
-      "sources_hash": "f539955abf9949d3",
-      "entry_hash": "ef012466006536da"
+      "sources_hash": "9e14b82ca6eabfc3",
+      "entry_hash": "66ae9fc9f89c741b"
     },
     "docs/workflows.md": {
-      "doc_hash": "c255668101e648d8",
+      "doc_hash": "7cc34b25885e6faa",
       "sources": {
-        "scripts/": "68ea10cba1ff2a10"
+        "scripts/": "acbb33fca74c842e"
       },
-      "sources_hash": "b202f0440da83cfa",
-      "entry_hash": "4d4f8c1b33a8eae4"
+      "sources_hash": "a39a4247779419f8",
+      "entry_hash": "e53bd9e8d083766b"
     }
   },
   "nodoc": {
@@ -68,11 +68,11 @@
     "CLAUDE.md": "6164f274ad4838e5",
     "INSTALL.md": "bfdfd7710cc03296",
     "Makefile": "ff1bcbc8334cfe41",
-    "README.md": "b5b6a0ae788eaa57",
+    "README.md": "ab71a8ccdb587a58",
     "build.zig.zon": "ec0b1222ab927a55",
     "docs/adrs.md": "eb2701a1761bf3f5",
     "docs/changelog.md": "8e1bbafdb2db710c",
-    "docs/concepts.md": "f917f20f4b780504",
+    "docs/concepts.md": "666e9c6919a26e9d",
     "docs/features/workspace-agents.md": "5383400de9c05107",
     "docs/getting-started.md": "9060351c2a115ad8",
     "docs/glossary.md": "e7cba86def7a4b4d",
@@ -80,7 +80,7 @@
     "docs/research/scenario-coverage-long-tail.md": "0000000000000000",
     "docs/research/scope-resolution.md": "0000000000000000",
     "install.sh": "dddbcb1c5e927d1e",
-    "integration_tests/": "46093b8aafad60c5",
+    "integration_tests/": "37364d67f1f47812",
     "templates/": "0536dfe3149b9acc",
     "tools/": "9605abc0c7545854",
     "vendor/manifest.zon": "123c6b606e6f6b41"
