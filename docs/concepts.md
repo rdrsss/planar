@@ -468,7 +468,7 @@ Two operator-visible consequences:
 
 The opt-out is `--no-auto-promote` on the task verbs, used by migrations and scripted bulk edits that don't intend the plan-level transition.
 
-Each transition emits a `session_entries` row with `prefix='note'` and a body that begins with the sentinel line `plan_status: <id>` — recoverable via `planar audit trail <plan> --grep "^plan_status:"`.
+Each transition emits a `session_entries` row with `prefix='note'` and a body that begins with the sentinel line `plan_status: <id>` — recoverable via `planar audit trail --kind plan <plan-id> --grep "^plan_status:"`.
 
 **SQLite table:** `plans`. **Primary verbs:** `planar plan create`, `planar plan show`, `planar plan list`, `planar plan active`, `planar plan done`, `planar plan abandon`.
 
@@ -570,13 +570,13 @@ cycle_scope: plan:N milestone:M | task:T...
 tasks: [<id>, <id>, ...]
 ```
 
-Recover the per-cycle disposition with `planar audit trail <plan> --grep "^dispatch_shape:"`. No schema change; the sentinel-body convention is the contract.
+Recover the per-cycle disposition with `planar audit trail --kind plan <plan-id> --grep "^dispatch_shape:"`. No schema change; the sentinel-body convention is the contract.
 
 **Pick-when summary:** when in doubt, pick `strict`. Move up the table (toward throughput) when you have high confidence in the gates and the spec, or when the diff cadence makes per-cycle reviewer dispatch wasteful. The orchestrator never picks a barrel mode silently — every shape change is an explicit operator choice at the gate.
 
 For the canonical contract see [`agents/methodology.md` §Barrel modes](../agents/methodology.md#barrel-modes). For the CLI-flag surface see [`docs/cli-reference.md` §`/pl-orchestrator`](cli-reference.md#planar-orchestrator).
 
-**SQLite tables:** none beyond `session_entries`. **Primary entry points:** `/pl-orchestrator` (the gate), `agents/methodology.md` §Barrel modes (the contract), `planar audit trail <plan>` (the forensic surface).
+**SQLite tables:** none beyond `session_entries`. **Primary entry points:** `/pl-orchestrator` (the gate), `agents/methodology.md` §Barrel modes (the contract), `planar audit trail --kind plan <plan-id>` (the forensic surface).
 
 ---
 
@@ -1080,7 +1080,17 @@ planar spec ingest <plan>
 
 **Cross-references.** The test-spec carries `verifies: [artifact:<product-spec-id>]` in its frontmatter so the cross-reference machinery tracks which user stories the test plan covers. Scenarios cite tasks via `**Verifies:** task:<id>` *or* `**Verifies:** task:<slug>`. The slug form (plan 286) is the canonical citation chain: scenarios drafted before tasks exist still resolve at apply time, because the ingestor looks up `tasks.slug` against the `[slug: …]` annotations on the roadmap bullets. Unresolvable slugs are a hard error at apply — the operator either adds the missing `[slug:]` to the roadmap or removes the citation.
 
-**Coverage gate.** `planar spec ingest` prints a `coverage:` summary after the additions/updates/removals totals: how many tasks carry a `[slug:]`, how many slug-bearing tasks have a scenario verifying them, and any orphan scenarios (no parseable `**Verifies:**` line). Pass `--strict` to promote uncovered tasks and orphan scenarios from a printed warning into a non-zero exit; this is the gate test-coder cycles depend on. The read-only inspector `planar test-spec status <plan>` prints the same view per-milestone with a four-bucket breakdown (happy / empty / error / edge), classified by scenario-title prefix.
+**Coverage gate.** Before ingestion, `planar spec ingest <plan> --strict --json`
+is the authoritative workbench-draft oracle. Preview is the default because
+`--apply` is absent. Its `coverage` object reports task/slug totals,
+`uncovered_task_slugs`, and `orphan_scenarios` (no parseable `**Verifies:**`
+line); the top-level `slug_collisions` array reports slugs already held by live
+tasks. A non-zero exit or any uncovered, orphan, or collision finding blocks
+ingestion. `planar test-spec status <plan> --json` instead queries live
+`tasks`, `test_scenarios`, and `entity_links`; it becomes authoritative only
+after apply. Before apply, its legitimate zero totals do not prove draft
+coverage. After apply it provides the per-milestone four-bucket breakdown
+(happy / empty / error / edge) used by test-coder cycles and reviewers.
 
 **Planning loop integration.** The planner authors the test-spec in Phase 4 of its authoring pipeline (see [`agents/planner.md` §Authoring phases](../agents/planner.md#authoring-phases)). Phase 4 is purely adversarial: what could go wrong, what scenarios prove this works, what scenarios prove it doesn't. The planner explicitly does NOT propose implementations of the tests — that's the [test-coder](#test-coder)'s job (see below).
 

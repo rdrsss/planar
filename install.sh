@@ -82,6 +82,7 @@ DRY_RUN=0                     # set with --dry-run/-n to preview without changes
 INSTALLER_VERSION="1.0.0"     # install.sh's own version (see --version)
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$REPO_ROOT/scripts/install-manifest.sh"
 
 # usage — the canonical help text. Defined before arg parsing so -h/--help and
 # the unknown-flag path can both reach it. (Replaces the old header-comment sed
@@ -382,6 +383,7 @@ BUILD_DEPS=(
   "ln||symlink vendor surfaces"
   "mkdir||create the install tree"
   "rm||replace prior-install artifacts"
+  "mv||atomically replace the install manifest"
   "find||walk vendor + template source trees"
   "rmdir||remove emptied vendor skill directories"
   "sed||parse the pinned zig version from build.zig.zon"
@@ -543,19 +545,35 @@ title "Placing source artifacts into $PLANAR_HOME"
 # In copy mode we mirror them under $PLANAR_HOME; in link mode we symlink the
 # whole tree so edits to the repo propagate.
 #
-# `skills/` is special-cased: only `skills/src/` is authored in the repo;
-# the per-vendor outputs (`commands/`, `skills/codex/`, `skills/copilot/`)
-# are rendered into $PLANAR_HOME below by `planar skills render`. In link
-# mode we still symlink skills/src so source edits propagate; the
-# rendered outputs are always real files (writing through a link-mode
-# symlink would mutate the repo).
-for d in agents scripts workflows; do
+# `agents/` and `skills/` are special-cased because each mixes canonical
+# authored input with rendered vendor output. Their prefix roots must remain
+# real directories so the renderer never writes through a link into the source
+# checkout.
+for d in scripts workflows; do
   if [[ -d "$REPO_ROOT/$d" ]]; then
     rm -rf "$PLANAR_HOME/$d"
     place "$REPO_ROOT/$d" "$PLANAR_HOME/$d"
     log "$d/ → $PLANAR_HOME/$d ($MODE)"
   fi
 done
+
+# Stage only the canonical top-level agent sources. Vendor subdirectories are
+# renderer output and are recreated below. Link mode keeps authored role/docs
+# live, except models.md: the renderer patches its tier table at install time,
+# so that file must be prefix-owned to preserve the canonical checkout.
+rm -rf "$PLANAR_HOME/agents"
+mkdir -p "$PLANAR_HOME/agents"
+if [[ -d "$REPO_ROOT/agents" ]]; then
+  while IFS= read -r -d '' f; do
+    dst="$PLANAR_HOME/agents/$(basename "$f")"
+    if [[ "$MODE" == "link" && "$(basename "$f")" != "models.md" ]]; then
+      ln -s "$f" "$dst"
+    else
+      cp -f "$f" "$dst"
+    fi
+  done < <(find "$REPO_ROOT/agents" -maxdepth 1 -type f -print0)
+  log "agents/ → $PLANAR_HOME/agents (canonical sources: $MODE; rendered outputs: copy)"
+fi
 
 # Stage skills/src — the unified renderer input — and prepare a real
 # $PLANAR_HOME/skills/ directory the renderer can write into without
@@ -621,8 +639,10 @@ if [[ -d "$REPO_ROOT/templates" ]]; then
   done < <(find "$REPO_ROOT/templates" -type f -print0)
 fi
 
-# Make sure shipped script tooling is executable.
-if [[ -d "$PLANAR_HOME/scripts" ]]; then
+# Make sure copied script tooling is executable. In link mode the prefix path
+# resolves into the source checkout; chmod there would mutate canonical source
+# modes (including non-executable data manifests).
+if [[ "$MODE" != "link" && -d "$PLANAR_HOME/scripts" ]]; then
   chmod +x "$PLANAR_HOME/scripts/"* 2>/dev/null || true
 fi
 
@@ -957,6 +977,26 @@ if [[ -n "$VENDORS" ]]; then
     esac
   done
 fi
+
+# ---------- install authority ----------
+
+# The versioned manifest is written only after every selected vendor has been
+# wired successfully. Its rows are the complete managed-ownership set; files
+# found only in vendor destinations (including personal local-* extensions)
+# are deliberately excluded.
+install_manifest_begin "${PLANAR_BUILD_ID:-unknown}" "$MODE"
+if [[ -n "$VENDORS" ]]; then
+  IFS=',' read -r -a vendor_list <<< "$VENDORS"
+  for v in "${vendor_list[@]}"; do
+    case "$v" in
+      claude|codex|copilot)
+        install_manifest_record_vendor "$v" "$PLANAR_HOME" "$HOME" "$CODEX_HOME"
+        ;;
+    esac
+  done
+fi
+install_manifest_write "$PLANAR_HOME/install-manifest.json"
+vlog "wrote $PLANAR_HOME/install-manifest.json (${#INSTALL_MANIFEST_ROW_VENDOR[@]} managed projections)"
 
 # ---------- ownership stamp ----------
 

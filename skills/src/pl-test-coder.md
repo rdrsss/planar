@@ -73,6 +73,54 @@ The test-coder's final write-up (decision + work-complete report) IS the return 
 
 See [`agents/test-coder.md` § Status reporting](../../agents/test-coder.md#status-reporting) and [`agents/methodology.md` § Heartbeat status contract](../../agents/methodology.md#heartbeat-status-contract) for the full contract.
 
+The final response keeps the canonical `expanded | no-expansion-needed |
+failure-surfaced | abort` decision and the complete test-coder work-complete
+report. The shared fields below wrap that stronger schema; they do not replace
+the decision, classification, test-only file list, or verbatim gate evidence.
+
+## Context
+
+Report the resolved scope, task or plan target, cited scenario slugs, inherited
+claim token, coder-cycle diff base, and test-only mode.
+
+## Intent
+
+State in one sentence which uncovered scenarios the test pass attempted to
+verify independently from the implementation.
+
+## Actions
+
+Report `attempted`, `applied`, `skipped`, and `failed` counts for scenario
+targets and gates. Map already-covered scenarios to `skipped`, authored test
+changes to `applied`, and first-run red tests to `failed` without weakening
+their assertions.
+
+## Result
+
+Always report `outcome=ok|partial|error`, followed by the authoritative
+test-coder decision and canonical work-complete report. Name the test diff and
+verified coverage post-state; for `failure-surfaced`, retain each failure's
+classification and recommendation.
+
+## Warnings
+
+Name ambiguous scenario evidence, unavailable checks, claim drift, and partial
+coverage. A clean `no-expansion-needed` result is an informative no-op, not a
+warning.
+
+## Next actions
+
+Give zero to three executable recommendations. Route `expanded` to reviewer
+dispatch, `failure-surfaced` to operator decision, and a genuine coverage gap
+to the exact next test command or spec inspection.
+
+## Recovery
+
+On error, provide the exact inspection or retry command, such as
+`planar test-spec status <plan> --json`, `planar resume validate <task-id>`, or
+the failed test command. Never edit a failing assertion merely to make recovery
+green.
+
 ## Vendor Notes
 
 {{.VendorNotes}}

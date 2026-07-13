@@ -1,32 +1,32 @@
 {
   "version": 2,
   "algo": "xxh64",
-  "root": "e59364802123b8e9",
+  "root": "2e8b8b6513b66d40",
   "generated_at": "",
   "entries": {
     "docs/architecture.md": {
-      "doc_hash": "b392c646ae0eebf8",
+      "doc_hash": "af6c8254ec0f3fd3",
       "sources": {
-        "build.zig": "3e1fb7dd81c1a0bb",
-        "migrations/": "c346e29e94a157d2",
+        "build.zig": "ad3885c59aa8c60e",
+        "migrations/": "dc683f02f13d490c",
         "src/db/": "4b08f429d5bc1835",
-        "src/engine/": "b8d6818733b708d5",
+        "src/engine/": "841e5349fd5f9810",
         "src/root.zig": "a50330d9f5048cdf",
         "src/runtime/runtime.zig": "223e03691a183abc",
         "vendor/sqlite/": "a74be58cb1a408f7"
       },
-      "sources_hash": "e0f3347356cf3733",
-      "entry_hash": "cf9b0b56d685cb9b"
+      "sources_hash": "cbb02e990eb861c8",
+      "entry_hash": "4cd666043cd92391"
     },
     "docs/cli-reference.md": {
-      "doc_hash": "538584691aac451e",
+      "doc_hash": "389648a30901104b",
       "sources": {
-        "src/cmd/": "ee00bfe6d270c46b",
+        "src/cmd/": "c7fb967539ac022a",
         "src/engine/models.zig": "40927dde5c2b7210",
         "vendor/etc-cli/": "0000000000000000"
       },
-      "sources_hash": "601a5c7972082071",
-      "entry_hash": "d349fd3f70123ec8"
+      "sources_hash": "1b8bb2f91b1bd91b",
+      "entry_hash": "8be6d1dc4b23ca46"
     },
     "docs/features/doc-system.md": {
       "doc_hash": "4c601dd0cb42f098",
@@ -46,43 +46,43 @@
       "entry_hash": "f4ad37f82a5b6370"
     },
     "docs/skill-reference.md": {
-      "doc_hash": "36798fbc5f048316",
+      "doc_hash": "619cd0ca5fb5bf67",
       "sources": {
-        "agents/": "0003379fde44f610",
-        "skills/": "e4f07b81e8211205"
+        "agents/": "a7e0f2eab05efe24",
+        "skills/": "57275a550379677b"
       },
-      "sources_hash": "dc44adebb268fce1",
-      "entry_hash": "d2a6688561a28ad8"
+      "sources_hash": "f539955abf9949d3",
+      "entry_hash": "ef012466006536da"
     },
     "docs/workflows.md": {
-      "doc_hash": "cf08ac06a9f6f703",
+      "doc_hash": "c255668101e648d8",
       "sources": {
-        "scripts/": "abd2737557b6d333"
+        "scripts/": "68ea10cba1ff2a10"
       },
-      "sources_hash": "88c28078a7523560",
-      "entry_hash": "56acefd26ad9bc65"
+      "sources_hash": "b202f0440da83cfa",
+      "entry_hash": "4d4f8c1b33a8eae4"
     }
   },
   "nodoc": {
-    "AGENTS.md": "8f5c07a8e4ea90d6",
-    "CLAUDE.md": "8f5c07a8e4ea90d6",
-    "INSTALL.md": "8c6f9a482dba51cd",
-    "Makefile": "44b063574a2b1f08",
-    "README.md": "d249585a95e30dff",
+    "AGENTS.md": "6164f274ad4838e5",
+    "CLAUDE.md": "6164f274ad4838e5",
+    "INSTALL.md": "bfdfd7710cc03296",
+    "Makefile": "ff1bcbc8334cfe41",
+    "README.md": "b5b6a0ae788eaa57",
     "build.zig.zon": "ec0b1222ab927a55",
     "docs/adrs.md": "eb2701a1761bf3f5",
     "docs/changelog.md": "8e1bbafdb2db710c",
-    "docs/concepts.md": "9950f86467f71b0e",
+    "docs/concepts.md": "f917f20f4b780504",
     "docs/features/workspace-agents.md": "5383400de9c05107",
     "docs/getting-started.md": "9060351c2a115ad8",
     "docs/glossary.md": "e7cba86def7a4b4d",
     "docs/light-touch.md": "24e8c08f94fb20c0",
     "docs/research/scenario-coverage-long-tail.md": "0000000000000000",
     "docs/research/scope-resolution.md": "0000000000000000",
-    "install.sh": "b0852fb970beffe8",
-    "integration_tests/": "d0b33d1adbcbd8f2",
+    "install.sh": "dddbcb1c5e927d1e",
+    "integration_tests/": "46093b8aafad60c5",
     "templates/": "0536dfe3149b9acc",
-    "tools/": "50f64c82a256904c",
+    "tools/": "9605abc0c7545854",
     "vendor/manifest.zon": "123c6b606e6f6b41"
   }
 }

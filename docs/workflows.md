@@ -63,15 +63,30 @@ The `coverage:` line follows the totals. It reports how many of the tasks have a
 /pl-spec-ingest 42 --strict
 ```
 
-`--strict` exits non-zero on any uncovered task or orphan scenario, naming each gap so the operator can fix them in one pass — usually by adding the missing `[slug:]` to a roadmap bullet or filling in a scenario's `**Verifies:**` line.
+For the authoritative pre-ingest check, request the machine-readable preview:
 
-For a per-milestone view (with a four-bucket breakdown by scenario-title prefix) use the read-only inspector:
+```
+planar spec ingest 42 --strict --json
+```
+
+The draft is not ready when the command exits non-zero or when
+`coverage.uncovered_task_slugs`, `coverage.orphan_scenarios`, or the top-level
+`slug_collisions` array is non-empty. The first two usually mean adding a
+missing `[slug:]` to a roadmap bullet or filling in a scenario's
+`**Verifies:**` line; collisions require choosing a globally unique task slug.
+
+After `--apply` has created task, scenario, and verifies rows, use the read-only
+live-row inspector for a per-milestone view with a four-bucket breakdown by
+scenario-title prefix:
 
 ```
 planar test-spec status 42
 ```
 
-No changes are written by either preview or `test-spec status`.
+No changes are written by either preview or `test-spec status`. Do not use
+`test-spec status` before apply as proof of draft completeness: zero totals are
+legitimate when live rows do not exist yet. The strict preview's `coverage`
+object is the pre-ingest oracle; `test-spec status` is the post-ingest oracle.
 
 ### Step 4 — Apply
 
@@ -321,6 +336,47 @@ planar ext propagate 42 --system my-gh --verify-counterparts
 ```
 
 Probes the remote to confirm every already-linked entity still exists. Missing counterparts are written as `sync_events(outcome='counterpart-missing')` rows. Use `--unlink` to remove stale links or `--recreate` to recreate them immediately.
+
+### Change an existing link's sync direction (destructive recovery only)
+
+The current CLI has no lossless in-place direction update. `planar links
+add/remove` manage internal relationships, not external bindings, and
+`planar links update` is deferred. Top-level `unlink` deletes the old external
+link and detaches its sync events (`link_id` becomes null); a manual `link`
+replacement also loses the old `external_url`, `config_json` (including
+propagation strategy), and last-sync state. The replacement cannot query or
+adopt the detached event history.
+
+Capture what the CLI can expose before deleting anything:
+
+```sh
+planar audit trail --link <link-id> --json > external-link-<link-id>-audit.json
+planar sync status --entity <kind:id> --system <system-slug> --json > external-link-<link-id>-status.json
+planar ext propagate <plan-id> --system <system-slug> --dry-run \
+  --sync <read-only|write-back|two-way>
+```
+
+The first two commands preserve identity/history and last-sync evidence. They
+do not expose the exact URL, config, role, or direction; stop if those values
+are not independently known or their loss is unacceptable. For a
+propagation-owned mirror, continue with:
+
+```sh
+planar unlink <link-id>
+planar ext propagate <plan-id> --system <system-slug> --dry-run \
+  --sync <read-only|write-back|two-way>
+planar ext propagate <plan-id> --system <system-slug> \
+  --sync <read-only|write-back|two-way>
+```
+
+The post-unlink dry run previews fresh creation. The final command creates a
+new remote counterpart and new link state; it cannot restore the old URL,
+configuration, or history. If retaining the same remote external id matters,
+use top-level `planar link` instead of propagation, supplying the independently
+known role and desired direction; that record-only replacement still starts
+with null URL/config/last-sync and status `never`. See the
+[`links update` reference](cli-reference.md#planar-links-update-link-id) for
+the full caveat and command sequence.
 
 ---
 
@@ -1463,6 +1519,47 @@ There is no `planar local promote` shortcut — that is deliberate. Canonical sk
 
 ---
 
+## Recipe 14A — Inspect and repair installed canonical projections
+
+Canonical vendor installs are distinct from the personal sandbox above. Their
+ownership comes only from `~/.planar/install-manifest.json`; directory presence
+alone never grants Planar permission to replace a file.
+
+Start with a read-only inspection:
+
+```
+planar skills status
+planar skills status --vendor codex --json
+```
+
+`fresh`, `stale`, and `missing` apply only to manifest rows. `unmanaged` is an
+informational destination-only extension, and an `unselected` vendor is outside
+the installation set. Neither affects unrelated files.
+
+Preview the recommended repair before mutation:
+
+```
+planar skills repair pl-status --vendor codex
+planar skills repair pl-status --vendor codex --apply
+planar skills status --vendor codex
+```
+
+The apply command copies or re-links only that manifest-owned row and verifies
+it afterward. For a mixed apply, `partial` lists completed and failed targets;
+rerun the reported idempotent command after correcting the failed path. If the
+manifest itself is missing, invalid, unsupported, or legacy, repair does not
+guess ownership. From the Planar source checkout, run the exact bootstrap
+shown by status, whose supported form is:
+
+```
+./install.sh --prefix ~/.planar
+```
+
+Then re-run `planar skills status`. Personal `planar local` extensions remain
+untouched throughout.
+
+---
+
 ## Recipe 15 — Editor-first authoring
 
 Plan 226 closed the friction of the original `push → edit → pull` rhythm: every entity now has a unified `<entity> edit <id>` verb that pushes (if needed), opens `$EDITOR` on the workbench file, validates frontmatter mutations on save, and pulls the result back into the DB. Companion `view`/`diff` verbs and bulk-review surfaces round out the loop.
@@ -1627,7 +1724,7 @@ planar question list --plan 85         # open questions
 ### Step 4 — Inspect the audit trail for one entity
 
 ```
-planar audit trail task:541
+planar audit trail --kind task 541
 ```
 
 The `audit_trail` read surface stitches together `audit_log` (the operator-write log) with `entity_links` and now joins against `agent_actions` for any actions taken on the entity. You see each role's `started_at` / `ended_at` / `outcome` plus the operator-side decisions that ran around them.
@@ -1638,7 +1735,16 @@ The `audit_trail` read surface stitches together `audit_log` (the operator-write
 planar health
 ```
 
-`health` is the always-on smoke check: schema-current, integrity, in-flight tasks resumable, pending handoffs fresh. It is not agent-activity-aware (the claim table is consulted by `dashboard --agents` and `plan next`, not by health), but it is the first verb to run when something looks wrong before you spend time chasing the wrong layer.
+`health` is the always-on smoke check: schema-current, integrity, in-flight
+tasks resumable, pending handoffs fresh, and manifest-owned installed skill and
+agent projections fresh. A stale/missing managed projection or a legacy,
+invalid, or unsupported manifest degrades health and prints an exact repair or
+reinstall command; health itself remains read-only. Unmanaged extensions,
+unselected vendors, and a machine with no recorded Planar installation do not
+degrade. It is not agent-activity-aware (the claim table is consulted by
+`dashboard --agents` and `plan next`, not by health), but it is the first verb
+to run when something looks wrong before you spend time chasing the wrong
+layer.
 
 ### Putting it together
 
@@ -1650,7 +1756,7 @@ planar plan next <plan> --include-claimed --include-stale
                                         # one plan's queue, every bucket
 planar plan show <plan>                # plan + steps + child plans
 planar task list --plan <plan>         # tasks under the plan
-planar audit trail <kind:id>           # one entity's history
+planar audit trail --kind <kind> <id> # one entity's history
 planar health                          # is the database itself OK
 ```
 
@@ -2128,7 +2234,7 @@ The orchestrator records the choice and moves on to the parallel-fanout per-cycl
 
 ## Recipe 22 — Orchestrate a multi-task plan with parallel coders
 
-> **Ownership note.** The worktree lifecycle — epic-branch cut, per-lane worktree creation, fan-in merge, failed-lane retention, and full teardown — is **model-runnable via the spawn-free `workflows/parallel-dispatch.lua` seam** (plan 760): `cycle_plan` computes one sequential lane, while `plan`/`waves` compute parallel lanes. The seam computes worktree paths, branch names, merge order, and teardown lists and HANDS BACK; the model orchestrator runs the git worktree/branch/merge ops and spawns coders via the harness Agent tool. There is **no external harness** in this path (and no revival of centurion). The six eligibility rules are the engine's (`recommend-strategy`, `src/engine/planning/strategy.zig`), consumed by the fan-out phases and never re-derived. They apply to `parallel-fanout`, not to a single sequential worktree lane. For the staged-wave (dependency-respecting) variant — proto lands first, then identity + web in parallel — see [Step 11 — Staged waves](#step-11--staged-waves-contract-lane-first) below. In-flight worktree execution is watched through `planar-watch ps --plan <id>` (claims + each claim's `worktree_path`) — there is no separate wave/barrier view.
+> **Ownership note.** The worktree lifecycle — epic-branch cut, per-lane worktree creation, fan-in merge, failed-lane retention, and full teardown — is **model-runnable via the spawn-free `workflows/parallel-dispatch.lua` seam** (plan 760): `cycle_plan` computes one sequential lane, while `plan`/`waves` compute parallel lanes. The seam computes worktree paths, branch names, merge order, and teardown lists and HANDS BACK; the model orchestrator runs the git worktree/branch/merge ops and spawns coders through the host's subagent dispatch surface. There is **no external harness** in this path (and no revival of centurion). The six eligibility rules are the engine's (`recommend-strategy`, `src/engine/planning/strategy.zig`), consumed by the fan-out phases and never re-derived. They apply to `parallel-fanout`, not to a single sequential worktree lane. For the staged-wave (dependency-respecting) variant — proto lands first, then identity + web in parallel — see [Step 11 — Staged waves](#step-11--staged-waves-contract-lane-first) below. In-flight worktree execution is watched through `planar-watch ps --plan <id>` (claims + each claim's `worktree_path`) — there is no separate wave/barrier view.
 
 The full `parallel-fanout` lifecycle, from strategy confirmation through fan-in and reviewer to cleanup. Use this when you have a plan in `active` status with ≥3 tasks, at least 2 of which are parallel-eligible (disjoint `task_touches`, no migration, no singleton-file touch, no blocking open question or proposed-decision dependency).
 
@@ -2562,7 +2668,7 @@ No propagation, no sync subscription. The link makes the upstream issue
 visible to `pl-audit-trail`:
 
 ```bash
-planar audit trail 42 --kind question
+planar audit trail --kind question 42
 # → shows the create event and the external link row
 ```
 

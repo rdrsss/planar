@@ -65,6 +65,13 @@ fn runExecute(
     try env_map.put("PLANAR_DB", db_path);
     try env_map.put("PLANAR_CONFIG_PATH", "/nonexistent-planar-config.toml");
     try env_map.put("PLANAR_DISABLE_WORKTREE_GATE", "1");
+    const suite_root = std.fs.path.dirname(db_path) orelse return error.FileNotFound;
+    const planar_home = try std.fs.path.join(gpa, &.{ suite_root, "planar-home" });
+    defer gpa.free(planar_home);
+    const codex_home = try std.fs.path.join(gpa, &.{ suite_root, "codex-home" });
+    defer gpa.free(codex_home);
+    try env_map.put("PLANAR_HOME", planar_home);
+    try env_map.put("CODEX_HOME", codex_home);
 
     const planar_bin = resolveEnv("PLANAR_BIN");
     const planar_dir = std.fs.path.dirname(planar_bin) orelse ".";

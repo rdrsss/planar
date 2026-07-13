@@ -118,7 +118,7 @@ Operator routing changes belong in
 `~/.planar/workspaces/<org_id>/routing-table-overrides.json`; never edit
 generated `routing-table.json` or canonical generated `AGENTS.md` directly.
 
-## Next Actions
+## Next actions
 
 Give at most three executable recommendations. Prefer:
 

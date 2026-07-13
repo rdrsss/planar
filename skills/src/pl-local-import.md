@@ -70,7 +70,7 @@ copy fallback, shadowing, and partial linking. `--force` requires clear intent
 because it can replace an existing sandbox entry. Never modify or delete the
 external source.
 
-## Next Actions
+## Next actions
 
 Give at most three executable recommendations. Prefer
 `planar local list --json`, `planar local link <name> --json` after

@@ -238,7 +238,7 @@ claims, and feed failures include the plan's direct tasks and plan steps,
 whereas sync events require a direct plan external link. Neither behavior
 recursively includes descendant plans.
 
-## Next Actions
+## Next actions
 
 Give zero to three read-only drill-down commands selected from the evidence:
 

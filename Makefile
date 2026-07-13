@@ -63,8 +63,12 @@ uninstall: ## Uninstall via ./install.sh --uninstall (preserves ~/.planar/planar
 run: ## Run the CLI from source: make run ARGS="task list"
 	$(ZIG) build run -- $(ARGS)
 
+.PHONY: test-install-manifest
+test-install-manifest: ## Run focused installer manifest ownership/atomicity fixtures
+	bash scripts/install-manifest-test.sh
+
 .PHONY: test
-test: ## Run unit tests
+test: test-install-manifest ## Run unit tests
 	$(ZIG) build test $(ARGS)
 
 .PHONY: test-integration
@@ -84,8 +88,12 @@ parity-check: build ## Diff zig binary against Go archive binary (plan 351 Phase
 	scripts/parity-check.sh
 
 .PHONY: cli-usage-check
-cli-usage-check: ## Validate authored CLI invocations (agents/, skills/src/, docs/) against the live command schema
+cli-usage-check: ## Validate authored surfaces against the live CLI schema and semantic contracts
 	$(ZIG) build cli-usage-check
+
+.PHONY: surface-lint
+surface-lint: ## Validate authored links, contracts, capabilities, commands, and retired references
+	$(ZIG) build surface-lint
 
 .PHONY: bench-verify
 bench-verify: build ## planar-doc verify latency tracker — prints cold + warm wall-clock
@@ -114,7 +122,7 @@ coverage-update: build ## Re-seed scripts/coverage-baseline.txt with the current
 	scripts/coverage-check.sh --update
 
 .PHONY: test-all
-test-all: test test-integration parity-check coverage cli-usage-check ## Run unit + integration suites + parity-check gate + coverage ratchet + CLI-usage lint
+test-all: test test-integration parity-check coverage cli-usage-check ## Run unit + integration suites + parity, coverage, and composed authored-surface gates
 
 .PHONY: fmt
 fmt: ## Run zig fmt on the source tree

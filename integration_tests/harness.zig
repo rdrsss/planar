@@ -58,6 +58,11 @@ pub const Suite = struct {
     /// overrides this harness default because execWith applies extra_env after
     /// buildEnvMap.
     config_path: []const u8,
+    /// Per-suite install roots keep filesystem health/status reads from
+    /// observing the operator's real managed projections. Per-call extra_env
+    /// overrides still win for tests that construct explicit install states.
+    planar_home: []const u8,
+    codex_home: []const u8,
     tmp_dir: std.testing.TmpDir,
     /// Lazily-resolved absolute path to `tmp_dir`. Owned by the suite; null
     /// until first access via `tmpAbsPath`.
@@ -93,11 +98,23 @@ pub const Suite = struct {
             &tmp.sub_path,
             "config.toml",
         }) catch @panic("OOM building config_path");
+        const planar_home = std.fs.path.join(allocator, &.{
+            ".zig-cache/tmp",
+            &tmp.sub_path,
+            "planar-home",
+        }) catch @panic("OOM building planar_home");
+        const codex_home = std.fs.path.join(allocator, &.{
+            ".zig-cache/tmp",
+            &tmp.sub_path,
+            "codex-home",
+        }) catch @panic("OOM building codex_home");
         return .{
             .allocator = allocator,
             .bin = bin,
             .db_path = db_path,
             .config_path = config_path,
+            .planar_home = planar_home,
+            .codex_home = codex_home,
             .tmp_dir = tmp,
         };
     }
@@ -108,6 +125,8 @@ pub const Suite = struct {
         if (self.tmp_abs_cache) |p| self.allocator.free(p);
         if (self.abs_db_cache) |p| self.allocator.free(p);
         self.allocator.free(self.config_path);
+        self.allocator.free(self.planar_home);
+        self.allocator.free(self.codex_home);
         self.allocator.free(self.db_path);
         self.tmp_dir.cleanup();
         // Clean up any literal-path tmp dirs created via freshSystemTmpDir.
@@ -226,6 +245,8 @@ pub const Suite = struct {
         // pass PLANAR_CONFIG_PATH via extra_env; execWith applies extra_env
         // after buildEnvMap, so the per-call value wins.
         env_map.put("PLANAR_CONFIG_PATH", self.config_path) catch @panic("OOM injecting PLANAR_CONFIG_PATH");
+        env_map.put("PLANAR_HOME", self.planar_home) catch @panic("OOM injecting PLANAR_HOME");
+        env_map.put("CODEX_HOME", self.codex_home) catch @panic("OOM injecting CODEX_HOME");
         // Plan 297 M3 / t#2937: disable the worktree planning-verb gate
         // for the harness. The harness's tmp dirs may inherit a path
         // containing `.worktrees/` when Planar itself is being developed

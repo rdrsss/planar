@@ -45,8 +45,7 @@ planar scope show
 planar plan show <plan> --json
 planar artifact list --plan <plan-id> --json
 planar question list --plan <plan-id> --json
-planar spec ingest <plan> --format json --strict
-planar test-spec status <plan> --json
+planar spec ingest <plan> --strict --json
 ```
 
 Then load each core artifact with:
@@ -65,9 +64,10 @@ Required artifacts:
 If any core artifact is missing, stop with `needs-spec-work` and list the
 missing files.
 
-Treat failed `spec ingest --strict` or `test-spec status` output as evidence,
-not as a command failure. The point of the skill is to find those gaps before
-the operator applies ingestion.
+Treat a failed strict preview as evidence, not as a skill failure. The point of
+the skill is to find those gaps before the operator applies ingestion. Do not
+run `test-spec status` as a pre-ingest completeness check: it reads live rows,
+so a draft with no ingested task/scenario rows legitimately has zero totals.
 
 ## Review passes
 
@@ -119,7 +119,8 @@ the gap comes from a missing section.
 
 ### 4. Roadmap readiness
 
-Use `planar spec ingest <plan> --format json --strict` as the mechanical preview.
+Use `planar spec ingest <plan> --strict --json` as the mechanical preview. It is
+read-only because `--apply` is absent.
 
 Check that:
 
@@ -129,12 +130,16 @@ Check that:
 - cross-repo work carries `[touches: ...]` annotations when applicable
 - milestones can be reviewed independently
 - the previewed task graph matches the feature the specs describe
+- `coverage.uncovered_task_slugs`, `coverage.orphan_scenarios`, and top-level
+  `slug_collisions` are all empty
 
 Do not apply ingestion.
 
 ### 5. Test scenario coverage
 
-Use `planar test-spec status <plan> --json` as the coverage oracle.
+For a draft that has not been ingested, use the strict preview's `coverage`
+object as the authoritative coverage oracle. A non-zero strict-preview exit or
+any non-empty uncovered/orphan/collision array blocks `ready-for-ingest`.
 
 Check that:
 
@@ -143,6 +148,10 @@ Check that:
 - scenarios include happy, empty/null, error, and edge paths where applicable
 - scenario text is observable behavior, not implementation instructions
 - coverage gaps are converted into concrete scenario proposals
+
+For a plan whose ingestion has already been applied, switch to
+`planar test-spec status <plan> --json`; that command is the authoritative
+post-ingest oracle over live task, scenario, and verifies rows.
 
 ## Verdicts
 
@@ -201,9 +210,11 @@ planar question add "<title>" --body "<body>" --plan <plan-id>
 After writing, rerun:
 
 ```
-planar spec ingest <plan> --format json --strict
-planar test-spec status <plan> --json
+planar spec ingest <plan> --strict --json
 ```
+
+For an already-ingested plan, also rerun
+`planar test-spec status <plan> --json` against the live rows.
 
 Report whether the verdict changed. Do not run `planar spec ingest --apply`.
 
@@ -224,6 +235,52 @@ See [`agents/spec-reviewer.md` § Status reporting](../../agents/spec-reviewer.m
 for canonical heartbeat strings such as `"loading specs"`,
 `"reviewing questions"`, `"reviewing feature gaps"`, and
 `"awaiting:operator-answers"`.
+
+The final response keeps the canonical spec-review packet and its
+`ready-for-ingest | needs-answers | needs-spec-work | abort-replan` verdict.
+The shared fields below wrap that packet; they do not replace its intent read,
+gap lists, suggested edits, operator prompts, or strict-preview evidence.
+
+## Context
+
+Report the resolved scope, anchor plan, artifact set, review mode, and whether
+coverage came from strict pre-ingest preview or post-ingest live rows.
+
+## Intent
+
+Use the packet's canonical `Intent read` as the interpreted request, making any
+inference from artifacts explicit.
+
+## Actions
+
+Report `attempted`, `applied`, `skipped`, and `failed` counts for artifact,
+question, consistency, and coverage checks. In read-only mode, writes remain
+zero; in write mode, count only operator-approved persisted edits as applied.
+
+## Result
+
+Always report `outcome=ok|partial|error`, followed by the authoritative verdict
+and complete canonical review packet. Name artifact IDs and the strict-preview
+or live-row post-state that supports the verdict.
+
+## Warnings
+
+Name missing artifacts, unresolved questions, degraded evidence, unavailable
+verification, and consequential assumptions. Keep blocking gaps in their
+canonical packet sections rather than hiding them only as warnings.
+
+## Next actions
+
+Give zero to three executable recommendations, such as answering a numbered
+operator prompt, applying an approved spec edit, rerunning
+`planar spec ingest <plan> --strict --json`, or proceeding to ingest when ready.
+
+## Recovery
+
+On partial or failed review, provide the exact inspect or idempotent retry
+command for the affected plan or artifact. Never run
+`planar spec ingest --apply` as recovery and never imply unapproved edits were
+rolled back.
 
 ## Vendor Notes
 

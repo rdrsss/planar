@@ -34,6 +34,44 @@ planar demote <kind:id> [--from <association-slug>]
 
 When a task or plan started as personal exploration and has matured enough to belong to an organizational association, or when an entity was promoted prematurely and needs to be pulled back before export.
 
+## Context
+
+Report the entity kind and ID, current scope, target or source association, and
+promote or demote mode before writing.
+
+## Intent
+
+State in one sentence which durable entity relationship to organizational
+scope the operator wants to change.
+
+## Actions
+
+Report `attempted`, `applied`, `skipped`, and `failed` counts per entity. An
+entity already in the requested scope is an informative skip, not a failure.
+
+## Result
+
+Always report `outcome=ok|partial|error`. After mutation, run `planar <kind>
+show <id> --json` and return the stable `kind:id` plus its verified scope. A
+successful no-op reports zero applied and the already-matching scope.
+
+## Warnings
+
+Name unsupported entity kinds, ambiguous associations, export consequences,
+scope mismatches, and unavailable post-state reads. Expected idempotence emits
+no warning.
+
+## Next actions
+
+Give zero to three executable recommendations tied to the new scope, such as
+the exact entity show or relevant workbench inspection command.
+
+## Recovery
+
+Provide `planar <kind> show <id> --json` and the exact idempotent promote or
+demote retry. Offer the real inverse command only when the operator asks to
+reverse a verified applied move; do not imply automatic rollback.
+
 ## Vendor Notes
 
 {{.VendorNotes}}

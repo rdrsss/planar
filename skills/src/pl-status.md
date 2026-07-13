@@ -76,31 +76,31 @@ priority rows, and name the exact drill-down command for omitted rows.
 Use this shared operator-feedback envelope. Omit empty optional sections, but
 always include `Result`.
 
-### Context
+## Context
 
 Resolved scope, cwd-derived mode, and read-only target.
 
-### Intent
+## Intent
 
 One sentence: summarize what needs attention now and identify safe next work.
 
-### Actions
+## Actions
 
 Report `attempted`, `applied`, `skipped`, and `failed`. For this read-only
 workflow `applied` is the number of successful reads and no writes are implied.
 
-### Result
+## Result
 
 Set `outcome=ok|partial|error`, then render the adaptive attention groups and a
 compact count summary. A partial result identifies each failed read.
 
-### Warnings
+## Warnings
 
 Report partial failures, stale coordination state, global handoff filtering,
 assumptions, and truncated rows. Do not repeat attention items merely to fill
 this section.
 
-### Next actions
+## Next actions
 
 Give zero to three executable commands selected from the actual highest-priority
 items. Prefer, as applicable:
@@ -114,7 +114,7 @@ items. Prefer, as applicable:
 Never recommend claiming a task that the claim-aware result marks claimed,
 stale, or blocked.
 
-### Recovery
+## Recovery
 
 On partial or error outcomes, provide the exact idempotent failed read to retry.
 For a fully successful read, omit this section.

@@ -37,7 +37,7 @@ shared_notes:
 
 **The orchestrator loop never edits repository files.** It only runs `planar` / `planar-agent` CLI verbs and spawns / collects subagents. Every working-tree mutation must happen inside a freshly spawned coder subagent with blank context.
 
-**"Dispatch to a coder" means spawning a subagent, not invoking `/pl-coder` inline.** A slash command runs in the caller's own context and model — that collapses the orchestrator and coder into a single agent, which is the defect this rule prevents. Spawn a fresh subagent via the harness Agent/Task tool (subagent type `coder`).
+**"Dispatch to a coder" means spawning a subagent, not invoking `/pl-coder` inline.** A slash command runs in the caller's own context and model — that collapses the orchestrator and coder into a single agent, which is the defect this rule prevents. Spawn a fresh subagent through the host's subagent dispatch surface.
 
 This is Axis A of the two-axis dispatch model and it is non-negotiable. It is independent of:
 - **File count or edit triviality.** Even a one-line doc fix must go through a spawned coder.
@@ -53,7 +53,7 @@ The orchestrator selects phases based on the anchor plan's current `status`:
 
 2. **Ingestion (Phase 2)** — anchor plan in `draft` with workbench artifacts present: invokes `pl-spec-ingest <plan>` in preview mode (no `--apply`), presents the diff to the user, and **waits for explicit confirmation** before running `--apply`. Never auto-applies.
 
-3. **Execution (Phase 3)** — anchor plan `active` or `paused`: first reads claim-aware state with `planar plan next <plan>` (operator-side) or `planar-agent peek <plan>` (agent-side dry-run for explicit task IDs), excludes active unexpired claims, and surfaces stale claims before dispatch. Phase 3 then runs **two gates in order** before any coder runs: the **strategy + isolation gate** (new — see below), which picks the overall methodology for the plan (`classic` / `barrel-deferred` / `barrel-bypass` / `parallel-fanout`) and, for sequential strategies, whether it runs in `pwd` or `worktree`; followed by the **dispatch-shape gate** (existing — `strict` / `grouped` / `single`), which picks the per-cycle batching nested under the chosen strategy. Both gates wait for explicit operator confirmation; both can be pre-committed via flags (`--strategy <name>` / `--isolation <pwd|worktree>` / `--strict` / `--grouped` / `--batch`). Before dispatching each cycle the orchestrator acquires the lease atomically via `planar-agent pull <plan>` (or `planar-agent claim --entity task:<id>` for hand-picked targets) and records the returned `claim_token` in the dispatch entry. With `pwd` isolation, sequential strategies run in the operator checkout. With `worktree` isolation, the orchestrator drives a single sequential lane itself via `workflows/parallel-dispatch.lua --phase cycle_plan`: the seam computes the epic branch, cycle branch, and worktree path, then the model runs the git worktree/branch/merge ops and spawns the coder in that worktree. Under `parallel-fanout`, the orchestrator drives staged worktree fan-out itself via the same seam's `plan`/`waves` phases and spawns N coders concurrently via the harness Agent tool. There is NO external harness for either path. After the coder reports done, the orchestrator runs **Phase 3.5 — test-coder dispatch** (see below): consults `planar test-spec status <plan> --json` and, when the cycle's dispatched slugs intersect the JSON's `uncovered_task_slugs`, dispatches `pl-test-coder`. The output (coder diff alone or the union of coder + test-coder diffs) is routed through `pl-reviewer` at the cadence chosen by the strategy. The cycle terminates via one of `planar-agent complete` / `fail` / `release` / `block` (atomic — flips both claim status and task status in a single transaction). Enforces the 5-iteration cap per reviewer cycle (the test-coder cycle has its own cap, default 2), and surfaces escalations (open questions, aborts, ship-with-caveats, failure-surfaced).
+3. **Execution (Phase 3)** — anchor plan `active` or `paused`: first reads claim-aware state with `planar plan next <plan>` (operator-side) or `planar-agent peek <plan>` (agent-side dry-run for explicit task IDs), excludes active unexpired claims, and surfaces stale claims before dispatch. Phase 3 then runs **two gates in order** before any coder runs: the **strategy + isolation gate** (new — see below), which picks the overall methodology for the plan (`classic` / `barrel-deferred` / `barrel-bypass` / `parallel-fanout`) and, for sequential strategies, whether it runs in `pwd` or `worktree`; followed by the **dispatch-shape gate** (existing — `strict` / `grouped` / `single`), which picks the per-cycle batching nested under the chosen strategy. Both gates wait for explicit operator confirmation; both can be pre-committed via flags (`--strategy <name>` / `--isolation <pwd|worktree>` / `--strict` / `--grouped` / `--batch`). Before dispatching each cycle the orchestrator acquires the lease atomically via `planar-agent pull <plan>` (or `planar-agent claim --entity task:<id>` for hand-picked targets) and records the returned `claim_token` in the dispatch entry. With `pwd` isolation, sequential strategies run in the operator checkout. With `worktree` isolation, the orchestrator drives a single sequential lane itself via `workflows/parallel-dispatch.lua --phase cycle_plan`: the seam computes the epic branch, cycle branch, and worktree path, then the model runs the git worktree/branch/merge ops and spawns the coder in that worktree. Under `parallel-fanout`, the orchestrator drives staged worktree fan-out itself via the same seam's `plan`/`waves` phases and spawns N coders concurrently through the host's subagent dispatch surface. There is NO external harness for either path. After the coder reports done, the orchestrator runs **Phase 3.5 — test-coder dispatch** (see below): consults `planar test-spec status <plan> --json` and, when the cycle's dispatched slugs intersect the JSON's `uncovered_task_slugs`, dispatches `pl-test-coder`. The output (coder diff alone or the union of coder + test-coder diffs) is routed through `pl-reviewer` at the cadence chosen by the strategy. The cycle terminates via one of `planar-agent complete` / `fail` / `release` / `block` (atomic — flips both claim status and task status in a single transaction). Enforces the 5-iteration cap per reviewer cycle (the test-coder cycle has its own cap, default 2), and surfaces escalations (open questions, aborts, ship-with-caveats, failure-surfaced).
 
    **Strategy + isolation gate (first thing Phase 3 does, after reading claim state).** The orchestrator runs the recommendation algorithm against the plan — see [`agents/methodology.md` § Recommendation algorithm](../../agents/methodology.md#recommendation-algorithm) for the rules (mechanical/docs/single-verb → `barrel-bypass`; multi-milestone roadmap with ≤1 parallel-eligible per milestone → `barrel-deferred`; ≥3 tasks with ≥2 parallel-eligible → recommend the model-runnable `parallel-fanout`; single-task → `classic`; otherwise stickiness then `classic`). It then surfaces:
 
@@ -303,8 +303,8 @@ this skill drives it:
 The seam COMPUTES (epic branch, lane branch, worktree path, staged waves,
 contract-lanes-first fan-in merge order, retention/teardown lists,
 boundary-conflict escalation, and the reconcile plan) and HANDS BACK; the model
-runs the git worktree/branch/merge ops and spawns coders via the harness Agent
-tool. The seam never spawns and never touches `git worktree`/`git merge` —
+runs the git worktree/branch/merge ops and spawns coders through the host's
+subagent dispatch surface. The seam never spawns and never touches `git worktree`/`git merge` —
 re-adding a model-spawning primitive is the exact scope creep that got the old
 `planar-execute` extracted. There is **no external harness** in this path
 (product-spec §Non-Goals "Not reviving centurion or any external harness"); the
@@ -368,8 +368,8 @@ is no dedicated wave/barrier view (a recorded non-goal).
 4. **Create per-lane worktrees.** For each lane, `git worktree add <worktree>
    -b <branch> <epic-branch>` on the seam-computed `cycle/p<plan>/<task-slug>`
    branch.
-5. **Fan out N coders concurrently.** In ONE turn, spawn N `coder` subagents via
-   the harness Agent tool, each with `isolation: worktree` pointing at its lane
+5. **Fan out N coders concurrently.** In ONE turn, spawn N `coder` subagents through
+   the host's subagent dispatch surface, each with `isolation: worktree` pointing at its lane
    worktree, each acquiring its own claim with `planar-agent pull <plan> --role
    coder --worktree <path>`. Each coder heartbeats and RETURNS its diff on its
    lane branch — it does NOT fire a terminal verb. (Axis A isolation is
@@ -538,6 +538,58 @@ The orchestrator emits a status string at each meaningful phase boundary using `
 Wait states use the `awaiting:` prefix so the read surface (`planar-watch ps`) can distinguish "blocked on something external" from "actively working." Plain text (no prefix) means the orchestrator is actively coordinating. The cap on `--status` payload is 256 bytes.
 
 See [`agents/orchestrator.md` § Status reporting](../../agents/orchestrator.md#status-reporting) and [`agents/methodology.md` § Heartbeat status contract](../../agents/methodology.md#heartbeat-status-contract) for the full contract.
+
+Every phase-boundary and final operator response keeps the orchestrator's
+canonical decision records: phase selection, strategy/isolation and dispatch
+shape gates, claim routing, subagent decisions, iteration state, and any
+operator approval still required. The shared fields below summarize that
+stronger orchestration state; they do not replace or flatten it.
+
+## Context
+
+Report the resolved scope, goal/plan/task targets, active phase, selected mode,
+strategy, isolation, dispatch shape, and claim tokens relevant to the result.
+
+## Intent
+
+State in one sentence which lifecycle transition or execution scope the
+orchestrator interpreted from the operator's request.
+
+## Actions
+
+Report `attempted`, `applied`, `skipped`, and `failed` counts across phase
+targets. For multi-cycle or multi-target work, retain per-task claim,
+test-coder, reviewer, merge, propagation, archive, and documentation outcomes;
+do not claim one transaction across independent worktrees or remote calls.
+
+## Result
+
+Always report `outcome=ok|partial|error` and the verified lifecycle post-state:
+plan/task identifiers and statuses, surviving claims, commits/branches, remote
+URLs, or manifest root as applicable. Preserve every canonical gate choice,
+subagent verdict, iteration-cap decision, and pending operator approval.
+
+## Warnings
+
+Name partial failures, stale or mismatched claims, degraded validation,
+unmerged worktrees, deferred documentation, unresolved questions, and
+consequential assumptions. An expected gate pause or clean no-op is not itself
+a warning.
+
+## Next actions
+
+Give zero to three executable recommendations ordered by usefulness. When the
+workflow is paused at an operator gate, put the exact approval choice or CLI
+continuation first; otherwise point to the next phase, inspection, or safe
+terminal routing action.
+
+## Recovery
+
+For partial or failed orchestration, name every affected target and give its
+exact idempotent inspect, retry, resume, or cleanup command. Completed
+independent targets remain applied unless the underlying verb is atomic. The
+orchestrator invokes exactly one terminal `planar-agent` verb per claim and
+never invents rollback for worktree merges or remote propagation.
 
 ## Vendor Notes
 

@@ -3170,7 +3170,7 @@ planar ext propagate <plan> [--system <slug>] [--dry-run] [--restrategize [--yes
                             [--verify-counterparts [--unlink | --recreate]]
 ```
 
-**Description:** Push a feature tree to the operational plane. Creates external counterparts (Epic/Story/Sub-task on Jira; parent-issue/sub-issues on GitHub) for the anchor plan and all descendant child plans and tasks that do not yet have a `mirror` link. The propagation strategy is selected per [ADR-0006](adr/0006-github-feature-mapping.md): Jira always uses the epic hierarchy; GitHub uses parent-issue (single-repo), Projects v2 (multi-repo), or zero-repo fallback.
+**Description:** Push a feature tree to the operational plane. Creates external counterparts (Epic/Story/Sub-task on Jira; parent-issue/sub-issues on GitHub) for the anchor plan and all descendant child plans and tasks that do not yet have a `mirror` link. The propagation strategy is selected per [ADR-0006](adrs.md): Jira always uses the epic hierarchy; GitHub uses parent-issue (single-repo), Projects v2 (multi-repo), or zero-repo fallback.
 
 **Strategy stickiness (Phase C):** The chosen strategy is cached on `external_links.config_json` of the anchor plan at first propagation. Subsequent reruns honor the cached strategy even if the repo count later changes. Strategy is not re-evaluated automatically; use `--restrategize` to rebuild.
 
@@ -3346,13 +3346,25 @@ planar link <kind:id> --to <system-slug>:<external-id> [--role <link-role>] [--s
 planar unlink <link-id>
 ```
 
-**Description:** Remove an `external_links` row by link id. Any associated `sync_events` rows are also deleted (cascade).
+**Description:** Remove an `external_links` row by link id. Associated
+`sync_events` rows are retained with `link_id=null` by the foreign key's `ON
+DELETE SET NULL` action, but they are detached from the deleted link and no
+longer reachable through `audit trail --link`.
+
+This is not a lossless way to change sync direction. Recreating the binding
+with `planar link` gives it a new row id and resets `external_url` and
+`config_json` (including any cached propagation strategy) to null,
+`last_synced_at` to null, and `last_sync_status` to `never`; the old sync-event
+history is not attached to the replacement. The public CLI cannot export or
+restore the exact old `external_url`, `config_json`, link role, or sync
+direction, so do not unlink unless those losses are acceptable and the role
+and desired direction are known independently.
 
 **Scope guard:** Refuses when the operator's resolved write scope disagrees with the local entity referenced by the link. See [Cross-scope guard](#cross-scope-guard).
 
 **Schema effects:**
 - Deletes from `external_links(id)`.
-- Cascades to `sync_events` via FK.
+- Sets matching `sync_events.link_id` values to null via FK.
 
 **Capture:** Appends `session_entries` row with `prefix='action'`.
 
@@ -4107,7 +4119,8 @@ SHA                                       session  claim  committed_at          
 
 ## Domain: `health`
 
-Health commands report the operational status of the Planar installation and the handoff readiness of in-flight tasks.
+Health commands report the operational status of the Planar installation, the
+handoff readiness of in-flight tasks, and installed projection freshness.
 
 ---
 
@@ -4118,7 +4131,10 @@ Health commands report the operational status of the Planar installation and the
 planar health [--json]
 ```
 
-**Description:** Report database and handoff readiness health. Checks: database is reachable, schema version is current, `pragma integrity_check` passes, count of in-flight tasks not passing `resume validate`, count of pending handoffs older than the freshness window.
+**Description:** Report database, handoff-readiness, and installed-projection
+health. In addition to the database and handoff checks, health consumes the
+same read-only classification as `planar skills status`; it never repairs or
+rewrites an installed projection.
 
 **Output (human):**
 ```
@@ -4129,6 +4145,8 @@ planar health
   integrity:     ok
   in-flight tasks:  5  (3 resumable, 2 NOT RESUMABLE)
   pending handoffs: 1  (0 stale)
+  projection freshness: fresh (1 managed: 1 fresh, 0 stale, 0 missing; 1 unmanaged; 2 unselected vendors)
+  projection manifest:  current
 
 overall: DEGRADED  (2 tasks not resumable)
 ```
@@ -4145,17 +4163,43 @@ overall: DEGRADED  (2 tasks not resumable)
   "not_resumable_tasks":2,
   "pending_handoffs":1,
   "stale_handoffs":0,
+  "projection_freshness": {
+    "state":"fresh",
+    "manifest_status":"current",
+    "managed":1,
+    "fresh":1,
+    "stale":0,
+    "missing":0,
+    "unmanaged":1,
+    "unselected_vendors":2,
+    "evidence":null,
+    "repair_command":null
+  },
   "overall":"degraded"
 }
 ```
 
-**Schema effects:** Reads `schema_migrations`, `tasks`, `context_snapshots`, `handoffs`.
+The nested field order is stable. `state` is `fresh`, `degraded`, or
+`not_installed`; `evidence` and `repair_command` are present as `null` when
+unused. Text emits optional `projection evidence` and `projection repair`
+lines, in that order, between the manifest and overall lines.
+
+Stale or missing manifest-owned rows degrade health. A legacy, invalid, or
+unsupported manifest also degrades once and reports the classifier's exact
+reinstall command. An absent manifest without the legacy ownership stamp is
+`not_installed` and stays healthy. Unmanaged extensions and vendors omitted by
+the manifest are counted but never degrade health.
+
+**Schema effects:** Reads `schema_migrations`, `tasks`, `context_snapshots`,
+`handoffs`, the install manifest, and installed projection paths. Writes
+nothing.
 
 **Capture:** None.
 
 **Exit codes:**
 - `0` — all checks pass.
-- `1` — degraded (some tasks not resumable or stale handoffs).
+- `1` — degraded (some tasks are not resumable, handoffs are stale, managed
+  projections are stale/missing, or the install manifest needs recovery).
 - `2` — critical (database unreachable or integrity check failed).
 
 ---
@@ -4409,8 +4453,62 @@ entity link 22 removed
 
 > **Not yet implemented.** This verb is deferred to the M11 external-plane
 > work. Invoking it prints `links update is deferred to M11` and makes no
-> change; use `links remove` + `links add` as a workaround. The behavior
-> described below is the intended contract, not the current one.
+> change. `links remove` and `links add` manage internal `entity_links`; they
+> cannot change an external link. No lossless external-link update exists in
+> the current CLI. The behavior described below is the intended contract, not
+> the current one.
+
+The only current recovery is destructive top-level `unlink` / `link`, or
+`unlink` followed by a fresh `ext propagate`. Before proceeding, capture the
+CLI-visible evidence:
+
+```sh
+planar audit trail --link <link-id> --json > external-link-<link-id>-audit.json
+planar sync status --entity <kind:id> --system <system-slug> --json \
+  > external-link-<link-id>-status.json
+```
+
+The audit output captures the local entity, system slug, external id, and
+sync-event history; status captures the last-sync timestamp and status. Neither
+command exposes `external_url`, `config_json`, `link_role`, or
+`sync_direction`. If the intended role and direction are not known from an
+independent record, stop: the CLI cannot reconstruct them exactly.
+
+For a record-only binding where retaining the same remote external id matters,
+write down and review the complete replacement command before deleting:
+
+```sh
+planar unlink <link-id>
+planar link <kind:id> --to <system-slug>:<external-id> \
+  --role <role> --sync <read-only|write-back|two-way>
+```
+
+This preserves only the identifiers and explicitly re-entered role/direction.
+The replacement has `external_url=null`, `config_json=null`, no prior
+last-sync state, and no attached prior event history. The old event rows remain
+detached with `link_id=null`; the replacement link cannot query them.
+
+For a propagation-owned mirror, first verify that the plan and system resolve
+while the old row still exists. After capturing evidence and unlinking, preview
+the now-unlinked entity before allowing a new remote counterpart:
+
+```sh
+planar ext propagate <plan-id> --system <system-slug> --dry-run \
+  --sync <read-only|write-back|two-way>
+planar unlink <link-id>
+planar ext propagate <plan-id> --system <system-slug> --dry-run \
+  --sync <read-only|write-back|two-way>
+planar ext propagate <plan-id> --system <system-slug> \
+  --sync <read-only|write-back|two-way>
+```
+
+The first dry run is a pre-delete resolution check; it normally reports the
+existing row as skipped. The second previews fresh creation after unlink. The
+final command creates a new remote counterpart, URL, config, sync state, and
+history; it does not restore the old values. For GitHub, pass
+`--github-strategy <value>` on the fresh propagation only when the old strategy
+is independently known. Otherwise strategy is selected from current state and
+may differ from the deleted `config_json`.
 
 **Synopsis:**
 ```
@@ -4486,7 +4584,7 @@ Planning pipeline spec commands for decomposing workbench planning documents int
 
 **Synopsis:**
 ```
-planar spec ingest <plan> [--apply] [--apply-removals] [--format text|json] [--strict]
+planar spec ingest <plan> [--apply] [--apply-removals] [--format text|json] [--json] [--strict]
 ```
 
 **Description:** Read `tech-spec.md`, `roadmap.md`, and (when present) `test-spec.md` from the anchor plan's workbench directory, compute the proposed diff against the current database state, and (optionally) commit additions and updates.
@@ -4495,7 +4593,7 @@ Default mode is **preview**: prints a tree-shaped diff and exits 0 without apply
 
 Apply mode is atomic per anchor plan. All derived rows for one anchor plan run inside one SQLite savepoint: child plans, tasks, decisions, test scenarios, links, optional removals, the anchor `draft` -> `active` flip, and the successful action audit either all commit or all roll back. A failed apply leaves no partial derived graph for that anchor and should not require workbench cleanup. When multiple `<plan>` arguments are supplied, each anchor has its own atomic boundary; one plan may apply successfully while another rolls back, and the command exits non-zero if any plan fails.
 
-A `coverage:` line follows the totals on every run. It reports how many tasks carry a `[slug:]`, how many slug-bearing tasks are verified by at least one test-spec scenario, and any orphan scenarios whose `**Verifies:**` line failed to parse. `--strict` promotes uncovered tasks and orphan scenarios from a printed warning into a non-zero exit.
+A `coverage:` line follows the totals on every run. It reports how many tasks carry a `[slug:]`, how many slug-bearing tasks are verified by at least one test-spec scenario, and any orphan scenarios whose `**Verifies:**` line failed to parse. Slug collisions are reported separately. `--strict` promotes uncovered tasks, orphan scenarios, and slug collisions into a non-zero exit.
 
 `<plan>` may be a numeric plan id or a plan slug.
 
@@ -4514,7 +4612,8 @@ A `coverage:` line follows the totals on every run. It reports how many tasks ca
 | `--apply` | Commit additions and updates to the database. | off |
 | `--apply-removals` | Also commit proposed removals (cancel orphan tasks, abandon orphan plans). Must be combined with `--apply`. | off |
 | `--format text\|json` | Output format. `text` prints a tree-shaped diff; `json` emits a machine-readable JSON object. The JSON object carries a `coverage` field with the same data the text mode prints. | `text` |
-| `--strict` | Reject the ingest (exit 1) when any slug-bearing task has no verifying scenario, or when any scenario has no parseable `**Verifies:**` line. | off |
+| `--json` | Shorthand for `--format json`. | off |
+| `--strict` | Reject the ingest (exit 1) when any slug-bearing task has no verifying scenario, any scenario has no parseable `**Verifies:**` line, or any proposed task slug collides with a live task. | off |
 
 **Output (human, `--format text`):**
 
@@ -4542,9 +4641,21 @@ Run with --apply to commit; add --apply-removals to cancel proposed removals.
     {"op": "add", "kind": "task", "title": "Define CheckoutRequest proto", "derives_from": "plan:Protos Changes", "touches": ["acme/protos"]},
     {"op": "add", "kind": "decision", "title": "Use Protocol Buffers", "derives_from": "plan:42"}
   ],
-  "summary": {"additions": 11, "updates": 0, "removals": 0}
+  "summary": {"additions": 11, "updates": 0, "removals": 0},
+  "coverage": {
+    "total_tasks": 5,
+    "tasks_with_slug": 5,
+    "tasks_without_slug": 0,
+    "uncovered_task_slugs": [],
+    "orphan_scenarios": []
+  },
+  "slug_collisions": []
 }
 ```
+
+For pre-ingest review, this JSON is authoritative even when no live task or
+scenario rows exist. A non-empty `uncovered_task_slugs`, `orphan_scenarios`, or
+`slug_collisions` array is an ingest-readiness failure.
 
 **Schema effects:**
 
@@ -4574,7 +4685,11 @@ Writes (only with `--apply`, atomically per anchor plan):
 
 ## Domain: `test-spec`
 
-Read-only inspectors for test-spec coverage. Where `spec ingest --strict` is the ingest-time gate that blocks an apply on a coverage gap, `test-spec status` is the human-facing view the planner runs during Phase 4 self-check.
+Read-only inspectors for post-ingest test-spec coverage. Before apply, the
+authoritative draft check is `spec ingest <plan> --strict --json`, whose
+workbench-derived `coverage` object exists even when there are no live task or
+scenario rows. After apply, `test-spec status` is the human-facing live-row
+oracle used by test-coder and reviewer cycles.
 
 ### `planar test-spec status <plan>`
 
@@ -4788,7 +4903,7 @@ planar synthesize <repo-root> [--apply] [--apply-removals] [--scope <slug>]
 
 Default mode is **preview**: prints a tree-shaped diff and exits 0 without writing. `--apply` is required to commit additions and updates; `--apply --apply-removals` additionally soft-cancels removed entities.
 
-The LLM never runs in Go. The Go side writes a `synthesis.Request` to `$PLANAR_HOME/cache/bootstrap-synthesis/<repo-slug>/_pending.json` and exits 0 with an "Awaiting LLM synthesis" notice. The vendor skill (`commands/claude/pl-synthesize.md`, `skills/codex/pl-synthesize.md`, `skills/copilot/pl-synthesize.md`) reads the Request, runs the LLM at temperature 0, and writes the Result to `<cache-dir>/<fingerprint>.json`. The operator re-runs `planar synthesize <repo-root>`; Go finds the cached Result, validates it, merges it with the deterministic baseline, and emits the preview.
+The LLM never runs in the CLI. The `planar` binary writes a synthesis Request to `$PLANAR_HOME/cache/bootstrap-synthesis/<repo-slug>/_pending.json` and exits 0 with an "Awaiting LLM synthesis" notice. The vendor skill reads the Request, runs the LLM at temperature 0, and writes the Result to `<cache-dir>/<fingerprint>.json`. The operator re-runs `planar synthesize <repo-root>`; the CLI finds the cached Result, validates it, merges it with the deterministic baseline, and emits the preview.
 
 **Arguments:**
 
@@ -4816,12 +4931,12 @@ The LLM never runs in Go. The Go side writes a `synthesis.Request` to `$PLANAR_H
 **Workflow:**
 
 1. Operator runs `planar synthesize <repo-root>`.
-2. Go side runs the deterministic floor (`adopter.Discover` + `adopter.ParseCorpus` + `codeprobe.Probe`).
-3. Go side writes the `synthesis.Request` to `$PLANAR_HOME/cache/bootstrap-synthesis/<repo-slug>/_pending.json`.
-4. Go side exits 0 with the "Awaiting LLM synthesis" message.
+2. The CLI runs deterministic artifact discovery, corpus parsing, and code-evidence probing.
+3. The CLI writes the synthesis Request to `$PLANAR_HOME/cache/bootstrap-synthesis/<repo-slug>/_pending.json`.
+4. The CLI exits 0 with the "Awaiting LLM synthesis" message.
 5. Vendor skill reads the Request, runs the LLM at temperature 0, and writes the Result to `<cache-dir>/<fingerprint>.json`.
 6. Operator re-runs `planar synthesize <repo-root>`.
-7. Go side reads the cached Result, runs `synthesis.Validate`, and merges it with the deterministic baseline.
+7. The CLI reads and validates the cached Result, then merges it with the deterministic baseline.
 8. Operator reviews the preview; `--apply` commits.
 
 **Schema effects:**
@@ -5368,7 +5483,53 @@ Test hook: when set, `planar local` uses this directory as the operator's `$HOME
 
 ## Domain: `skills`
 
-The `skills` domain renders generated vendor skill surfaces from the unified source tree (`skills/src/*.md`) and verifies that generated outputs are in sync with source. The vendor profile/model table source of truth is `src/configs/vendors.yaml` (embedded into the binary).
+The `skills` domain renders generated vendor skill surfaces from the unified source tree (`skills/src/*.md`), verifies generated outputs, and inspects or repairs manifest-owned installed projections. The vendor profile/model table source of truth is `src/configs/vendors.yaml` (embedded into the binary).
+
+### `planar skills status [--vendor <claude|codex|copilot>] [--json]`
+
+Read `$PLANAR_HOME/install-manifest.json` (default
+`~/.planar/install-manifest.json`) and compare every selected manifest row with
+its staged and installed projection. This command is filesystem-only and never
+repairs. Per-row states are `fresh`, `stale`, `missing`, and `unmanaged`.
+Vendors absent from the manifest are reported `unselected` and are not scanned
+or treated as missing. Destination entries discovered under a selected vendor
+without a manifest row are informational `unmanaged` extensions; Planar never
+claims or repairs them.
+
+The manifest envelope reports `current`, `missing`, `legacy`, `invalid`, or
+`unsupported`. `legacy` specifically means the older `.planar-install`
+ownership stamp exists without a versioned manifest. Non-current manifest
+states remain one aggregate result instead of expanding installed files into
+managed rows, and provide this verified source-checkout bootstrap shape:
+
+```
+./install.sh --prefix '<resolved PLANAR_HOME>'
+```
+
+JSON contains `manifest`, `vendors`, ordered `projections`, `summary`, and an
+optional exact `repair_command`. Status exits 0 for degraded states so callers
+can inspect the structured result; invalid flags or unreadable filesystem
+state exit non-zero.
+
+### `planar skills repair [<name>...] [--vendor <vendor>] [--apply] [--dry-run] [--json]`
+
+Repair is preview-only by default; `--dry-run` is an explicit spelling of the
+same mode. `--apply` is mutually exclusive with `--dry-run`. Selection is the
+intersection of optional names, optional vendor, and install-manifest rows.
+An unmanaged or unknown name is rejected.
+
+Only `stale` or `missing` manifest-owned destinations may be replaced. `copy`
+rows are atomically replaced from their staged bytes; `link` rows are
+atomically re-linked to their recorded staged path. Every applied row is
+digest-verified. Fresh rows are skipped, unmanaged extensions are preserved,
+and staged-authority mismatch routes to reinstall instead of copying
+untrusted bytes.
+
+Text and JSON report `outcome=ok|partial|error`, mode, manifest status,
+`attempted`, `applied`, `skipped`, `failed`, ordered per-target actions, and an
+idempotent next action. Any target failure leaves successful independent
+repairs in place, reports their exact split, and exits 1; a later status read
+shows completed targets fresh and failed targets still degraded.
 
 ### `planar skills render [slug...]`
 
@@ -6041,7 +6202,7 @@ planar-watch schema
 planar-doc schema
 ```
 
-The catalog is built at comptime from the command tree, so the verb is a pure write with no DB access. It is intended for structured consumers — LLM tool routers, editor integrations, and the CLI-usage linter (`make cli-usage-check`) that validates authored agent/skill/doc surfaces never reference a flag a binary does not expose (implemented in `tools/cli_usage_lint.zig`).
+The catalog is built at comptime from the command tree, so the verb is a pure write with no DB access. It is intended for structured consumers — LLM tool routers, editor integrations, and the schema-driven first pass of `make cli-usage-check`, which validates that authored agent/skill/doc surfaces never reference a flag a binary does not expose (implemented in `tools/cli_usage_lint.zig`). The same target then runs the semantic authored-surface validator (`tools/surface_lint.zig`); use `make surface-lint` to run that semantic pass alone.
 
 ---
 
@@ -6224,7 +6385,7 @@ events:
 
 **Description:** Emit the diagnostic bundle: invocation aggregates, failure tail, and always-on health metrics. Reads `cli_invocations` (when CLI logging is enabled) plus the always-on observability tables (`agent_actions`, `sync_events`, `agent_work_claims`, `handoffs`) and renders a structured diagnostic bundle.
 
-When `[introspection].cli_log` is off (the default), the invocation and failure sections render "logging disabled" instead of counts — the operator is never shown fabricated zeros. The always-on sections (`actions`, `sync`, `claims`, `handoffs`, `health`, schema version) render normally in either case.
+When `[introspection].cli_log` is off (the default), the invocation and failure sections render "logging disabled" instead of counts — the operator is never shown fabricated zeros. The always-on sections (`actions`, `sync`, `claims`, `handoffs`, `health`, schema version) render normally in either case. JSON output also includes `introspection_preview` with bounded `signals`, per-adapter `coverage`, and `warnings`, collected read-only from the effective `[introspection.transcripts]` paths. A failed adapter degrades only its own coverage; other adapters still contribute. Successful commands are coverage observations, not gap findings; only explicit invalid-flag/help-bounce evidence is normalized as `gap`.
 
 **Privacy:** All queries are structurally redacted by construction in `src/engine/introspect.zig`. The bundle selects only counts, categories, verb paths, statuses, and timestamps — never entity `title`, `body`, or `summary` columns, never scope slugs, never path-bearing columns.
 
@@ -6501,3 +6662,22 @@ For quick reference, all documented commands grouped by domain:
 | `run` | `run start`, `run event`, `run finish`, `run show` |
 | `workflow` | `workflow list`, `workflow list --local`, `workflow show <name>` |
 | `schema` | `schema` (also on `planar-agent`, `planar-watch`, `planar-doc`) |
+## Feedback triage
+
+```text
+planar feedback triage list [--plan <id>] [--severity <info|low|medium|high|critical>]
+  [--disposition <value>] [--json]
+planar feedback triage show <task:id|question:id> [--json]
+planar feedback triage set <task:id|question:id> --severity <value>
+  --disposition <value> --reproduction <value>
+  [--duplicate-of <task:id|question:id>] [--evidence <redacted-text>]
+  [--scope <slug>] [--json]
+```
+
+Disposition values are `untriaged`, `needs-reproduction`, `accepted`,
+`retained-question`, `dismissed`, `reported-external`, and `duplicate`.
+Reproduction values are `not-run`, `reproduced`, `not-reproduced`, and
+`inconclusive`. `duplicate` requires `--duplicate-of`; all other dispositions
+forbid it. Duplicate targets must already have triage state, belong to the same
+feedback plan, and may not form self-links or cycles. `set` is scope guarded,
+performs only the operator-confirmed local update, and never posts externally.

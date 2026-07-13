@@ -327,6 +327,18 @@ Comptime-driven argv parser — no third-party CLI framework, just a small purpo
 
 ## CLI Binary
 
+Structured feedback triage is operator-plane planning state stored in
+`feedback_triage` (migration 00028). Each row belongs to exactly one task or
+question finding and records severity, disposition, reproduction status,
+optional duplicate target, and a redacted evidence summary. Partial unique
+indexes enforce one row per finding; duplicate targets must remain in the same
+`planar-feedback` plan. Unplanned findings, questions linked to multiple plans,
+and findings on other plans are rejected. Deleting a duplicate target preserves
+dependent triage rows and atomically clears their duplicate reference while
+resetting their disposition to `untriaged`. The `planar feedback triage` read
+leaves are deterministic and `set` uses the normal entity scope guard. It never
+writes agent tables or external systems.
+
 `planar` is a Zig executable with a thin `main` in `src/cmd/planar/main.zig` that builds a `cli.Cmd` tree against the [etcli](https://github.com/rdrsss/etcli) parser (vendored under `vendor/etcli/`). Each subcommand domain maps to one entity kind or system surface. Parsing, help rendering, shell completion, and validation are all in the etcli library — Planar does not vendor a CLI framework like cobra or clap.
 
 ### Handler layout
@@ -601,6 +613,95 @@ The orchestrator gates Phases 2 and 3 on explicit user confirmation. Ingestion n
 
 Agent role specs (vendor-neutral) live under `agents/`. The key files are `agents/methodology.md`, `agents/orchestrator.md`, `agents/planner.md`, `agents/ingestor.md`, `agents/extsync.md`, `agents/importer.md`, `agents/synthesizer.md`, `agents/coder.md`, `agents/reviewer.md`, and `agents/models.md` (tier-to-model resolution).
 
+Every rendered skill and agent projection carries two lowercase SHA-256 values:
+`x-planar-source-digest` identifies the parsed, vendor-neutral authored source,
+and `x-planar-projection-digest` identifies that source plus the
+projection-relevant vendor profile and metadata-free rendered payload. The
+canonical encoding is versioned, fixed-order, and byte-length-prefixed
+(`label N:value\n`); it excludes source/output paths, install paths,
+timestamps, filesystem traversal order, and machine-local state. Markdown
+skills and Claude/Copilot Markdown agents store the values in YAML
+frontmatter. Codex TOML agents store the same keys in leading comments so the
+TOML agent schema is unchanged. Digest rows are presentation metadata and are
+excluded from the projection digest itself, avoiding a circular hash. This is
+the public projection-freshness seam used by installation/status tooling;
+`planar skills render --check` continues to compare complete rendered bytes.
+
+After all selected vendor wiring succeeds, `install.sh` atomically replaces
+`$PLANAR_HOME/install-manifest.json` (normally
+`~/.planar/install-manifest.json`). Version 1 records the build id, global
+`copy|link` installation mode, selected managed vendors, and one row per
+managed skill or agent projection. Each row fixes the vendor, projection kind
+and name, staged and installed paths, actual `copy|link` install kind, and both
+renderer digests. Codex and Copilot directory-shaped skills use their staged
+`codex-skills/` or `copilot-skills/` `SKILL.md` as the staged authority; their
+vendor installs are copies even during a global link-mode install. Claude
+skills and vendor agent files are links.
+
+The manifest is the ownership boundary: only its rows are Planar-managed.
+Unselected vendors and destination-only operator extensions are never added.
+The installer writes a temporary file in `$PLANAR_HOME`, closes it, then uses
+a same-directory atomic rename, so an interrupted write cannot make partial
+JSON authoritative. The older `.planar-install` prefix stamp remains for
+legacy-install detection and the prefix adoption guard; an install without the
+versioned manifest remains compatible and can be upgraded by reinstalling.
+
+`planar skills status` is the read-only consumer of this contract. It reports
+selected versus unselected vendors, classifies managed rows as `fresh`,
+`stale`, or `missing`, and may enumerate destination-only `unmanaged` entries
+without treating discovery as ownership. Missing, malformed, future-version,
+and stamped legacy manifests remain aggregate manifest states with a
+source-checkout `./install.sh --prefix <resolved-prefix>` bootstrap command;
+they are never guessed into managed rows.
+
+`planar health` calls this same classifier and folds its summary into the
+`projection_freshness` contributor; digest and ownership decisions are not
+duplicated. Manifest-owned stale/missing rows and aggregate legacy, invalid,
+or unsupported manifest states degrade overall health and carry the exact
+classifier recovery command. No manifest and no legacy stamp is
+`not_installed`; unmanaged entries and unselected vendors remain visible
+counts but do not degrade. The health path never invokes repair, rendering,
+installation, or any filesystem/database mutation.
+
+`planar skills repair` shares the same classifier and is preview-first.
+`--apply` operates only on stale or missing manifest rows, replacing copy rows
+from staged bytes and link rows with the recorded staged symlink, then
+verifying the installed digest. It refuses directory-shaped or unowned
+destinations, preserves unmanaged extensions, and reports independent target
+failure as a resumable partial result. Neither status nor repair opens SQLite;
+status has no write path, and repair's filesystem write authority is exactly
+the manifest row set.
+
+### Authored-surface validation
+
+`tools/surface_lint.zig` deterministically scans canonical Markdown under
+`agents/`, `skills/src/`, and `docs/`. It reports repository-relative links
+whose targets are absent, pinned retired implementation references,
+contradictory four-artifact contracts, read-only roles containing write
+commands, invalid semantic command shapes, and missing skill feedback/recovery
+headings. Every unified skill is checked by default unless its frontmatter
+contains the literal boolean `internal_only: true`. Generated vendor-projection links are assigned to renderer fixtures
+rather than resolved against directories that do not exist in a source tree.
+
+Run `make surface-lint` for stable text findings or
+`zig build surface-lint -- --json` for the versioned JSON envelope. Findings
+are ordered by file, line, code, and message and carry stable
+`surface-*` codes. An intentional match may be suppressed only by a comment on
+the preceding non-blank line naming one code and a non-empty rationale:
+
+```html
+<!-- surface-lint-ignore surface-legacy-reference: historical comparison required -->
+```
+
+Unknown, malformed, file-wide, and unused suppressions are errors. The
+semantic validator is read-only and does not invoke an LLM or open SQLite.
+The normal authored-surface quality gate is `make cli-usage-check`: it runs the
+existing schema-driven CLI-usage validator first, then this semantic validator.
+The ordering preserves schema-lint diagnostics for unexposed flags instead of
+duplicating them as semantic findings. `make test-all` reaches both validators
+once through that composed target; it does not depend separately on
+`surface-lint`.
+
 ---
 
 ## Build and Test
@@ -613,7 +714,7 @@ make build              # → ./bin/planar (ReleaseSafe)
 make test               # unit tests
 make test-integration   # builds ./bin/planar, sets PLANAR_BIN, runs the
                         # integration suite under integration_tests/
-make test-all           # unit + integration + cross-binary parity gate
+make test-all           # unit + integration + parity + coverage + authored-surface gates
 
 # Direct zig CLI from the repo root
 zig build                                # default install (zig-out/bin/planar)
@@ -627,6 +728,7 @@ Planar runs a two-tier test model plus a cross-binary parity gate:
 - **Unit tests** — `test "<name>" { ... }` blocks colocated with the code under test under `src/<module>/`. They exercise the module directly (plus the `db` module when they need a DB) and run under `zig build test`.
 - **CLI integration tests** — `integration_tests/` at the repo root exec the compiled `planar` binary via the `harness.zig` runner (`harness.smoke`, `harness.mustRun`, `harness.mustRunJSON`, `harness.expectFailure`). The suite imports nothing from the engine modules. These suites lock the user-visible contract — flag names, JSON shapes, exit codes, status-transition rules. Always invoke them via `make test-integration` so `PLANAR_BIN` points at the freshly-built `./bin/planar` rather than falling back to per-call rebuilds.
 - **Cross-binary parity gate** — `make parity-check` (wired into `make test-all`) runs `scripts/parity-check.sh`, which diffs the current zig binary against the archived Go reference across the full verb surface and fails on any gap not present in `scripts/parity-allowlist.txt`. When the Go reference binary is unreachable, the gate prints a skip notice and exits 0; the integration suite remains the always-on guard.
+- **Authored-surface lint gate** — `make cli-usage-check` runs the schema-driven CLI validator followed by the semantic authored-surface validator. `make surface-lint` runs only the semantic validator. The composed gate is wired into `make test-all` once.
 
 The binary produced by `make build` lands at `./bin/planar`. The installed binary (used by skills) is at `~/.planar/bin/planar`, built and staged by `install.sh`.
 

@@ -136,11 +136,25 @@ reconciled product-spec.md: 4 questions (2 new, 2 unchanged, 0 stale)
 |------|--------|
 | `--apply` | Persist the decomposition (without this flag, the run is a dry preview). |
 | `--apply-removals` | Apply removals for tasks/decisions/questions no longer present in the spec. |
-| `--strict` | Refuse to apply when any body-only question would be silently registered. |
+| `--strict` | Refuse when preview coverage has an uncovered task slug, orphan scenario, or task-slug collision. |
 | `--format text\|json` | Output shape (default `text`). `--json` is the shorthand for `--format json`. |
 | `--scope <slug>` | Override the cwd-derived scope. |
 
-> Per-question interactive prompting (`--interactive`, `--yes-all`) is a deferred enhancement on the ingest verb; current behavior is silent registration unless `--strict` refuses the run.
+> Per-question interactive prompting (`--interactive`, `--yes-all`) is a deferred enhancement on the ingest verb; current behavior is silent registration. The `--strict` flag governs coverage readiness, not question registration.
+
+### Coverage oracle by lifecycle phase
+
+Before `--apply`, run `planar spec ingest <plan> --strict --json`. Preview is
+the default, so this reads the workbench drafts without creating task or
+scenario rows. Its `coverage` object is the authoritative pre-ingest oracle:
+`coverage.uncovered_task_slugs` and `coverage.orphan_scenarios` must be empty,
+as must the top-level `slug_collisions` array. A non-zero exit or any finding in
+those arrays blocks apply.
+
+After ingestion has been applied, use `planar test-spec status <plan> --json`
+as the authoritative oracle over live task, scenario, and verifies rows. Do not
+interpret zero totals from that live-row command before apply as complete draft
+coverage.
 
 ## What it produces
 
@@ -168,12 +182,65 @@ reconciled product-spec.md: 4 questions (2 new, 2 unchanged, 0 stale)
 > escape (not for routine use). See [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard) for the full guarded/unguarded matrix.
 
 ```
-planar spec ingest <plan> [--apply] [--apply-removals] [--format text|json]
+planar spec ingest <plan> [--apply] [--apply-removals] [--format text|json] [--strict] [--json]
 ```
 
 ## Status reporting
 
 See [`agents/ingestor.md` § Status reporting](../../agents/ingestor.md#status-reporting) for the canonical phase-transition strings (`"reading workbench specs"`, `"decomposing tasks"`, `"writing preview"`, `"awaiting:operator-confirmation"`, `"applying"`). Emit each via `planar-agent heartbeat --claim <token> --status "<text>"`; cap is 256 bytes. The `awaiting:operator-confirmation` string uses the `awaiting:` prefix because the ingestor is genuinely blocked waiting for the explicit user gate before `--apply` may run. See [`agents/methodology.md` § Heartbeat status contract](../../agents/methodology.md#heartbeat-status-contract) for the full convention.
+
+## Context
+
+Report the resolved scope, anchor plan, workbench artifact paths, preview or
+apply mode, strictness, removal policy, and output format.
+
+## Intent
+
+State in one sentence which reviewed draft graph will be previewed or
+persisted and whether removals are authorized.
+
+## Actions
+
+Report `attempted`, `applied`, `skipped`, and `failed` counts for each anchor
+plan and its child plans, tasks, decisions, questions, scenarios, links, and
+removals. Preserve additions, updates, unchanged, and proposed-removals detail.
+Name every failed anchor or non-fatal question target rather than folding it
+into a single command exit.
+
+## Result
+
+Always report `outcome=ok|partial|error`. Preview reports the tree diff and
+coverage object with zero applied. After each successful anchor apply, read
+`planar plan show <plan-id> --json` and `planar test-spec status <plan-id>
+--json`; report the verified anchor status, derived identifiers and counts,
+and live coverage. When multiple anchors are processed, keep the per-anchor
+atomic result distinct. An unchanged preview or apply is `outcome=ok` with zero
+applied and an explicit reason.
+
+## Warnings
+
+Name uncovered task slugs, orphan scenarios, slug collisions, stale questions,
+non-fatal question registration/link failures, unavailable post-state reads,
+and failed anchors. A failed anchor's derived graph rolls back atomically; a
+successful independent anchor remains applied.
+
+## Next actions
+
+Give zero to three executable recommendations. A clean preview leads to the
+operator-gated `planar spec ingest <plan-id> --apply` command, adding
+`--apply-removals` only when removals were explicitly approved. A successful
+apply may recommend `planar workbench push <plan-id>`.
+
+## Recovery
+
+For a strict-preview failure, give `planar spec ingest <plan-id> --strict
+--json` after correcting the named source path. For an apply failure, give
+`planar plan show <plan-id> --json` to confirm the last persisted state and the
+exact idempotent retry `planar spec ingest <plan-id> --apply
+[--apply-removals]`. For non-fatal question failures, include the affected
+question title or ID and its exact `planar question show <id> --json`, add, or
+link retry. Never prescribe cleanup for a rolled-back anchor or roll back a
+successfully applied independent anchor.
 
 ## Vendor Notes
 

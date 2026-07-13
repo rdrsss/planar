@@ -49,6 +49,47 @@ The shared resolver composes these. Skills render, `agents/models.md`, and exter
 - Do not hand-edit `agents/models.md` or any rendered surface — those regenerate from config via the resolver.
 - Do not invent per-call model overrides in Lua workflows; routing is per-role and config-driven.
 
+## Context
+
+Report the selected discovery, routing, refresh, scaffold, or guided-edit mode;
+the resolved config and catalog paths; and the vendors or roles in scope.
+
+## Intent
+
+State in one sentence whether the operator wants to inspect or change effective
+role-to-model routing.
+
+## Actions
+
+Report `attempted`, `applied`, `skipped`, and `failed` counts for provider
+discovery, cache refresh, config scaffold, and routing checks. Read-only
+inspection has zero applied; an already-present scaffold is an expected skip.
+
+## Result
+
+Always report `outcome=ok|partial|error` and the effective routing with its
+provenance. After `planar models refresh`, verify with `planar models list
+--json`; after `planar models apply`, verify with `planar models routing
+--json`. Return the affected role/vendor mappings and durable path, not only a
+successful exit code.
+
+## Warnings
+
+Name missing provider CLIs, curated rather than live catalog evidence, config
+parse errors, unavailable post-state verification, and forced duplicate
+scaffolding. An uninstalled optional provider is not a failure unless requested.
+
+## Next actions
+
+Give zero to three executable recommendations, led by the exact routing check
+or the specific config edit the operator requested.
+
+## Recovery
+
+Provide `planar models routing --json` to inspect the last effective state and
+an idempotent `planar models refresh` or `planar models apply` retry when
+applicable. Do not claim a config rollback that the CLI did not perform.
+
 ## Vendor Notes
 
 {{.VendorNotes}}

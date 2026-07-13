@@ -177,24 +177,40 @@ Independent writes are not one atomic transaction. If a later step fails,
 preserve and report each verified earlier write; do not claim that the chain
 was rolled back.
 
-## Result Contract
+## Context
 
-Return concise sections using the shared operator-feedback contract:
+Report the resolved scope, exact typed targets, and mode (`inspect`, `create`,
+or `link`).
 
-- **Context:** resolved scope, exact typed targets, and mode (`inspect`,
-  `create`, or `link`).
-- **Intent:** one sentence describing the interpreted knowledge operation.
-- **Actions:** `attempted`, `applied`, `skipped`, and `failed` counts. Count
-  each independent mutation target once.
-- **Result:** always include `outcome=ok|partial|error`; for writes, include
-  verified post-state ids and the durable chain in
-  `kind:id --[relationship]--> kind:id` form, plus annotation associations.
-- **Warnings:** assumptions, cross-scope endpoints explicitly confirmed,
-  partial failures, or degraded post-state verification.
-- **Next actions:** zero to three executable recommendations.
-- **Recovery:** exact idempotent inspect or retry commands for every unresolved
-  or failed target. For ambiguity, use scoped list commands and request a typed
-  id; do not offer a mutation command until resolution.
+## Intent
+
+State one sentence describing the interpreted knowledge operation.
+
+## Actions
+
+Report `attempted`, `applied`, `skipped`, and `failed` counts. Count each
+independent mutation target once.
+
+## Result
+
+Always include `outcome=ok|partial|error`; for writes, include verified
+post-state ids and the durable chain in `kind:id --[relationship]--> kind:id`
+form, plus annotation associations.
+
+## Warnings
+
+Name assumptions, cross-scope endpoints explicitly confirmed, partial
+failures, or degraded post-state verification.
+
+## Next actions
+
+Give zero to three executable recommendations.
+
+## Recovery
+
+Give exact idempotent inspect or retry commands for every unresolved or failed
+target. For ambiguity, use scoped list commands and request a typed id; do not
+offer a mutation command until resolution.
 
 Omit empty sections except **Result**. A no-op reports zero applied and why it
 was skipped without manufacturing a warning. A mixed multi-step result is

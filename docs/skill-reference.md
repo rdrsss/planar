@@ -41,6 +41,120 @@ Planar authors each shared skill once at `skills/src/<name>.md` and renders vend
 
 Vendor profile data and model-tier resolution are embedded directly into the `planar` binary at compile time (the YAML literal lives in `src/engine/skillrender.zig`; see `agents/models.md` for the rendered tier table). Drift between `skills/src/` and generated vendor trees is gated by `planar skills render --check` against an out-of-tree staging directory.
 
+Rendered skills and vendor agent projections include
+`x-planar-source-digest` and `x-planar-projection-digest` metadata. Both are
+lowercase SHA-256 hex. The source value is shared by every vendor projection
+of the same parsed authored file; the projection value also covers only the
+vendor profile inputs that affect rendering and the rendered semantic payload.
+Neither value depends on checkout/output paths, install paths, timestamps,
+directory traversal, or local machine state. Skills and Claude/Copilot agents
+carry these keys in YAML frontmatter; Codex TOML agents carry them as leading
+comments to preserve its accepted key schema. Operators should treat the
+values as renderer-owned metadata and regenerate projections rather than edit
+them by hand.
+
+Full installs record the selected managed projections in the versioned
+`~/.planar/install-manifest.json` authority after vendor wiring succeeds. Its
+rows contain vendor/kind/name identity, staged and installed paths, actual
+link-or-copy kind, and the two expected digests. Only those rows are managed:
+an unselected vendor or personal destination-only extension is outside
+Planar's ownership. The file is atomically replaced, and older installations
+that have only `.planar-install` remain valid legacy installs until the
+operator reruns `install.sh`.
+
+Use `planar skills status` to compare that authority with the staged and
+vendor-installed projections. The command is read-only, identifies unselected
+vendors without inventing missing rows, and labels destination-only personal
+extensions `unmanaged` without claiming them. A stale or missing managed row
+includes an exact scoped `planar skills repair ... --apply` command. Repair is
+preview-first, follows each row's recorded copy/link kind, verifies the digest
+after application, and never touches unmanaged content. A missing, malformed,
+unsupported, or stamped legacy manifest instead routes to `./install.sh
+--prefix <resolved-prefix>` from a Planar source checkout.
+
+---
+
+## Skill authoring feedback contract
+
+Every unified skill under `skills/src/` is user-invocable unless its
+frontmatter explicitly says `internal_only: true`. A user-invocable source must
+contain these literal H2 sections, even when a particular return path tells the
+skill to omit an empty field from its final operator output:
+
+```markdown
+## Context
+## Intent
+## Actions
+## Result
+## Warnings
+## Next actions
+## Recovery
+```
+
+Use each section to author the behavior for all relevant return paths:
+
+- `Context` resolves scope, target, and mode before action.
+- `Intent` restates the interpreted request in one sentence so a wrong target
+  or mode is visible before consequential work.
+- `Actions` reports `attempted`, `applied`, `skipped`, and `failed`. A
+  multi-target operation reports all four counts and names every failed target.
+- `Result` is mandatory in every final response. It reports the post-state
+  identifiers, paths, or external URLs and says when the outcome is `ok`,
+  `partial`, or `error`.
+- `Warnings` is reserved for partial failures, assumptions that affect the
+  result, unavailable verification, and degraded signal. An expected no-op is
+  not itself a warning.
+- `Next actions` contains zero to three executable recommendations. Do not pad
+  a terminal result with generic advice.
+- `Recovery` supplies an exact inspect, idempotent retry, resume, or real undo
+  command when applicable. Do not invent rollback for independent writes or
+  remote calls.
+
+Prefer a stable `--json` CLI read for parsing and post-state verification, then
+render concise prose. Exit code zero alone is not a verified mutation. When a
+post-state read exists, use it and return its stable identifiers. When it does
+not exist or fails, preserve the last known result, add a warning, and give the
+inspection command. If the skill itself supports JSON, its JSON result mirrors
+the same fields and action counts as the text response.
+
+Return paths have precise meanings:
+
+| Return path | Required operator feedback |
+|---|---|
+| Success | `outcome=ok`, verified result, and the applied action counts. |
+| Successful no-op | `outcome=ok`, zero applied, the reason nothing changed, no warning for the expected empty state, and a useful next action when one exists. |
+| Partial | `outcome=partial`, completed and failed targets, all four counts, and an exact per-failure retry or inspection command. Completed independent targets remain applied unless the CLI operation is atomic. |
+| Failure | `outcome=error`, attempted versus applied work, last verified state, warnings, and an actionable inspect/retry/resume/undo command when applicable. |
+
+Stronger role-specific contracts remain authoritative. For example, reviewer
+verdicts and coder work-complete reports keep their canonical decision fields,
+sections, and gate evidence; author the shared feedback fields around or as an
+explicit mapping into that schema instead of replacing it with generic prose.
+
+### Internal-only exemption
+
+Use the exemption only for a helper with no direct operator invocation whose
+calling skill or role owns the complete operator-facing result:
+
+```yaml
+---
+slug: example-helper
+internal_only: true
+---
+```
+
+The source body must name the canonical caller and explain why feedback is
+returned through that caller. The flag is not appropriate merely because a
+skill is usually dispatched by the orchestrator, omitted from a common recipe,
+or intended for advanced use: if an operator can invoke it as a supported
+entry point, it is user-invocable. The exemption removes only the requirement
+for the seven literal H2 sections. The helper must still return sufficient
+failure, warning, and recovery detail for its caller to satisfy the shared
+contract.
+
+See [`agents/doctrine.md` §Operator feedback contract](../agents/doctrine.md#operator-feedback-contract)
+for the cross-role outcome and verification doctrine.
+
 ---
 
 ## Binary architecture
@@ -184,7 +298,7 @@ These skills cover the planning cycle from goal statement to operational-plane p
 
 ### `/pl-spec-draft`
 
-Draft planning documents (product spec, tech spec, roadmap, test spec) for a new feature from a goal statement. Creates a draft anchor plan, a workbench directory, and four artifact files. The user reviews and edits the documents before the next phase. The planner authors in four sequential phases — see [`agents/planner.md` §Authoring phases](../agents/planner.md#authoring-phases). Any `## Open questions` H3 items found in the drafted spec files are auto-registered as question entities via `planar question add` — see the "Reviewing open questions" recipe in `docs/workflows.md`.
+Draft planning documents (product spec, tech spec, roadmap, test spec) for a new feature from a goal statement. Creates a draft anchor plan, a workbench directory, and four artifact files. The user reviews and edits the documents before the next phase. The planner authors in four sequential phases — see [`agents/planner.md` §Authoring phases](../agents/planner.md#authoring-phases). Its final draft-coverage check is the read-only `planar spec ingest <plan> --strict --json` preview; `test-spec status` is reserved for live rows after ingestion. Any `## Open questions` H3 items found in the drafted spec files are auto-registered as question entities via `planar question add` — see the "Reviewing open questions" recipe in `docs/workflows.md`.
 
 **Example:**
 ```
@@ -201,7 +315,10 @@ Adversarially review draft planning specs before ingestion. Reconstructs what
 the feature is supposed to be, checks whether it matches the user's intent,
 classifies open questions, runs feature-gap and consistency analysis, and
 checks roadmap/test-scenario readiness. Default mode is read-only; `--write`
-only applies operator-approved artifact and question updates.
+only applies operator-approved artifact and question updates. For a draft plan,
+the reviewer treats strict preview coverage (including uncovered slugs, orphan
+scenarios, and slug collisions) as authoritative; after apply it switches to
+`planar test-spec status <plan> --json` over live rows.
 
 **Example:**
 ```
@@ -597,6 +714,9 @@ diagnostics for `/pl-doctor`, `/pl-resume`, claim reconciliation, explicit
 projection repair, or configuration validation. Health never performs those
 repairs itself, and all state access stays behind `planar` or `planar-agent`
 CLI verbs rather than direct database, config-file, or install-tree inspection.
+Manifest-owned projections report exact repair commands when stale, missing,
+legacy, invalid, or unsupported, while unmanaged local extensions and
+unselected vendors do not degrade health.
 
 **Example:**
 ```
@@ -775,6 +895,7 @@ The vendor-neutral role specs live under `agents/`. Vendor skill files defer to 
 | `agents/coder.md` | Coder role: task implementation contract, test requirements, reporting format |
 | `agents/reviewer.md` | Reviewer role: review criteria, decision taxonomy, caveat recording |
 | `agents/introspector.md` | Introspector role: read surface, transcript-mining recipe, finding taxonomy, dedup contract, feedback-plan bootstrap |
+| `agents/feedback-triager.md` | Feedback triager role: deterministic severity and disposition guidance, reproduction evidence, preview/apply gate, local mutation boundary, and status/result contracts |
 | `agents/janitor.md` | Janitor role: merge verification, Planar state reconciliation, worktree/branch cleanup, plan closeout via the delivery-evidence gate |
 | `agents/doc-author.md` | Doc-author role: writes only operator-approved published prose under `docs/`; never decides coverage or mutates manifest state |
 | `agents/sync-reconciler.md` | Large-tier coordinate role: compares local and remote conflict evidence, recommends one of four dispositions, and coordinates only the exact whole-entity resolution the operator confirms; it is read-and-recommend by default and never performs direct local or remote field mutation |

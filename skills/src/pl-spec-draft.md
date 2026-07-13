@@ -27,7 +27,12 @@ shared_notes:
 
 {{.VendorTitle}} skill surface for the vendor-neutral `planner` agent. See [`agents/planner.md`](../../agents/planner.md) for the full role spec, input/output contract, doc shape conventions, and the **four-phase authoring discipline** (product → tech → roadmap → test). The phase-specific "do NOT" lists are load-bearing: they keep product-spec out of implementation, keep test-spec out of code, and ensure the four return-path buckets (happy / empty-null / error / edge) are reasoned through explicitly as a coverage lens — not collapsed into document structure.
 
-Phase 4 has a self-check before final emission (see [`agents/planner.md` §Phase 4 self-check](../../agents/planner.md#phase-4-self-check-before-final-emission)): every scenario has a non-empty `**Verifies:**`, every cited slug exists as a `[slug: …]` annotation on a roadmap bullet, and every testable bullet carries a `[slug: …]`. Run `planar spec ingest <plan> --strict` and `planar test-spec status <plan>` locally to catch the same failure modes before handoff.
+Phase 4 has a self-check before final emission (see [`agents/planner.md` §Phase 4 self-check](../../agents/planner.md#phase-4-self-check-before-final-emission)): every scenario has a non-empty `**Verifies:**`, every cited slug exists as a `[slug: …]` annotation on a roadmap bullet, and every testable bullet carries a `[slug: …]`. Run the read-only strict JSON preview, `planar spec ingest <plan> --strict --json`, before handoff. Its workbench-derived `coverage` object is authoritative while the plan is still a draft; `planar test-spec status` is reserved for post-ingest live rows.
+
+The draft fails self-check if the strict preview exits non-zero or reports a
+non-empty `coverage.uncovered_task_slugs`, `coverage.orphan_scenarios`, or
+top-level `slug_collisions` array. An empty pre-ingest `test-spec status` result
+is not evidence of coverage.
 
 ## When to use
 
@@ -82,7 +87,7 @@ planar workbench push <plan-id>
 
 ## Front matter contract
 
-Every `.md` file written by this skill carries a YAML front matter block between `---` delimiters at the top of the file. The canonical schema is the `FrontMatter` struct in `src/internal/workbench/parse.go`. Files without valid front matter are treated as malformed by `workbench pull` and are rejected during sync.
+Every `.md` file written by this skill carries a YAML front matter block between `---` delimiters at the top of the file. The canonical schema is the `FrontMatter` struct in [`src/engine/workbench/parse.zig`](../../src/engine/workbench/parse.zig). Files without valid front matter are treated as malformed by `workbench pull` and are rejected during sync.
 
 Required fields for planner-written artifact files:
 
@@ -166,6 +171,56 @@ class question entities rather than depending on external notes.
 ## Status reporting
 
 See [`agents/planner.md` § Status reporting](../../agents/planner.md#status-reporting) for the canonical phase-transition strings (`"drafting product-spec"`, `"drafting tech-spec"`, `"drafting roadmap"`, `"drafting test-spec"`, `"ready for review"`). Emit each via `planar-agent heartbeat --claim <token> --status "<text>"`; cap is 256 bytes. See [`agents/methodology.md` § Heartbeat status contract](../../agents/methodology.md#heartbeat-status-contract) for the `awaiting:` prefix convention.
+
+## Context
+
+Report the resolved scope, goal, derived plan target, workbench root, and draft
+mode. Distinguish a new draft from a resumed draft before creating anything.
+
+## Intent
+
+State in one sentence the feature goal interpreted into the four-document
+planning set and its draft anchor plan.
+
+## Actions
+
+Report `attempted`, `applied`, `skipped`, and `failed` counts for the plan,
+four artifacts, workbench files, question registrations, links, and final
+workbench push. Name every failed artifact or question target. A deduplicated
+question is skipped, not applied.
+
+## Result
+
+Always report `outcome=ok|partial|error`. After each successful mutation, read
+the persisted row with `planar plan show <plan-id> --json`,
+`planar artifact show <artifact-id> --json`, or `planar question show
+<question-id> --json`; after the push, inspect the workbench paths. Return the
+plan ID, all verified artifact IDs and paths, registered question IDs, and the
+strict-preview coverage result. Exit code zero or a written file alone is not
+proof that its artifact body or links persisted.
+
+## Warnings
+
+Name partial artifact or question failures, a failed workbench push, strict
+preview findings, unavailable post-state reads, and consequential scope or
+goal assumptions. Preserve successfully registered independent rows and files;
+do not claim the whole authoring sequence is atomic. An idempotent resume that
+finds all four drafts current reports zero applied without a warning.
+
+## Next actions
+
+Give zero to three executable recommendations. For a complete draft, lead with
+`planar spec ingest <plan-id> --strict --json` for review evidence and then the
+operator-reviewed `planar spec ingest <plan-id> --apply` gate when appropriate.
+
+## Recovery
+
+For every failed target, give an exact inspect and idempotent retry command:
+`planar plan show <plan-id> --json`, `planar artifact show <artifact-id>
+--json`, `planar artifact update <artifact-id> --body @<path>`, or
+`planar workbench push <plan-id>` as applicable. Resume against the captured
+IDs and dedup checks; never recreate completed artifacts or claim rollback of
+the independent plan, artifact, question, link, and filesystem writes.
 
 ## Vendor Notes
 

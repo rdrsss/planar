@@ -78,6 +78,47 @@ For multiple targets, do not roll back completed independent mutations. List eve
 
 When starting or updating structured work, decomposing it, selecting execution strategy or next work, or verifying that a plan is ready to close.
 
+## Context
+
+Report the resolved scope, plan or step target, requested operation, parent or
+relationship target, and read or mutation mode.
+
+## Intent
+
+State in one sentence whether the request creates, inspects, updates,
+decomposes, advances, or links a plan.
+
+## Actions
+
+Report `attempted`, `applied`, `skipped`, and `failed` counts for plans, steps,
+and links. Read-only list/show operations have zero applied; already-satisfied
+step state or existing links are expected skips when the CLI reports them so.
+
+## Result
+
+Always report `outcome=ok|partial|error`. After every create, update, step, or
+link mutation, read `planar plan show <plan-id> --json` and return the stable
+plan ID, status, affected step or relationship, and verified post-state. A
+successful no-op reports zero applied and its reason.
+
+## Warnings
+
+Name missing or ambiguous targets, scope mismatch, invalid transitions,
+unavailable post-state reads, and partial independent mutations. An empty list
+or expected idempotent state is not a warning.
+
+## Next actions
+
+Give zero to three executable recommendations tied to the verified state, such
+as `planar plan show <plan-id> --json` or the next step command.
+
+## Recovery
+
+For a failed target, provide `planar plan show <plan-id> --json` and the exact
+idempotent retry using the original `--scope`, parent, status, step, or
+relationship arguments. Never imply that an independently created plan, step,
+or link was rolled back.
+
 ## Vendor Notes
 
 {{.VendorNotes}}

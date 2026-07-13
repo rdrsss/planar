@@ -101,7 +101,7 @@ Never delete the external import source. Never describe an unlink without
 source restores its content: reconciliation removes its stale manifest and
 vendor installs because no source remains to restore from.
 
-## Next Actions
+## Next actions
 
 Give at most three executable recommendations, chosen from:
 

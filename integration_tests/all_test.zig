@@ -69,6 +69,7 @@ comptime {
     _ = @import("scope_test.zig");
     _ = @import("search_test.zig");
     _ = @import("skills_render_test.zig");
+    _ = @import("installed_surface_test.zig");
     _ = @import("smoke_test.zig");
     _ = @import("spec_ingest_test.zig");
     _ = @import("tree_test.zig");
@@ -97,6 +98,7 @@ comptime {
     _ = @import("propagate_tree_workflow_test.zig");
     _ = @import("m5_readcomp_workflow_test.zig");
     _ = @import("introspect_workflow_test.zig");
+    _ = @import("feedback_triage_test.zig");
     _ = @import("workflow_authoring_test.zig");
     _ = @import("workflow_run_test.zig");
     _ = @import("dispatch_workflow_test.zig");

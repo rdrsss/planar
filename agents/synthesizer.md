@@ -60,19 +60,49 @@ See [`docs/concepts.md#transcription-vs-synthesis`](../docs/concepts.md#transcri
 ## Sequencing
 
 1. Operator runs `planar synthesize <repo-root>`.
-2. Go side runs the deterministic floor: `adopter.Discover` + `adopter.ParseCorpus` + `codeprobe.Probe`.
-3. Go side builds a fingerprinted `synthesis.Request` and writes it to `$PLANAR_HOME/cache/bootstrap-synthesis/<repo-slug>/_pending.json`.
-4. On a cache miss, Go exits 0 with the five-line "Awaiting LLM synthesis" notice naming the pending and target paths.
+2. The CLI runs the deterministic discovery, corpus parsing, and code-evidence probe.
+3. The CLI builds a fingerprinted synthesis Request and writes it to `$PLANAR_HOME/cache/bootstrap-synthesis/<repo-slug>/_pending.json`.
+4. On a cache miss, the CLI exits 0 with the five-line "Awaiting LLM synthesis" notice naming the pending and target paths.
 5. The vendor skill (this role) reads the Request from `_pending.json`.
 6. The skill runs the LLM at temperature 0 with the synthesis prompt: produce fresh planning material, ground done-status claims in `code_evidence.areas[].path`, treat existing docs as CONTEXT not transcription source.
-7. The skill writes a `synthesis.Result` JSON to `<cache-dir>/<fingerprint>.json` matching the schema in [`src/internal/bootstrap/synthesis/result.go`](../src/internal/bootstrap/synthesis/result.go).
+7. The skill writes a synthesis Result JSON to `<cache-dir>/<fingerprint>.json` matching the schema in [`src/engine/synthesize.zig`](../src/engine/synthesize.zig).
 8. Operator re-invokes `planar synthesize <repo-root>`.
-9. Go side reads the cached Result, runs `synthesis.Validate` (hard reject on any issue), adapts to `interpretation.Result`, and merges with the deterministic baseline. Reference artifacts and synthesized planning bodies are injected by `appendSynthesisArtifacts`.
+9. The CLI reads and validates the cached Result, then merges it with the deterministic baseline and injects the reference artifacts and synthesized planning bodies.
 10. Operator reviews the preview; `--apply` commits.
+
+## Status reporting
+
+The synthesizer emits a status at each meaningful phase boundary for
+claim-backed runs:
+
+| Phase | Status string |
+|-------|---------------|
+| Resolving scope and inventorying planning inputs | `"discovering synthesis inputs"` |
+| Probing a known set of feature areas | `"probing code evidence <current>/<total>"` |
+| Reading a known set of documents and guide files | `"reading synthesis inputs <current>/<total>"` |
+| Producing fresh planning material at temperature 0 | `"synthesizing planning artifacts"` |
+| Validating a known set of proposed entities | `"validating synthesis <current>/<total>"` |
+| Waiting for operator review or re-invocation after the cache Result is ready | `"awaiting:operator-review"` |
+| Applying the confirmed synthesis diff | `"applying synthesis <current>/<total>"` |
+| Assembling the preview or apply result | `"summarizing synthesis"` |
+
+Evidence counters use probed feature areas, input counters use the discovered
+document and guide-file inventory, and validation/apply counters use the
+deduplicated proposed entity set. They begin at `1/<total>`, are monotonic,
+never exceed the known total, and are omitted before the total is stable and
+for an empty set.
+Discovery, probing, reading, generation, validation, and apply are active work
+and use plain statuses. Reserve `awaiting:` for the genuine operator wait after
+the cached Result is available; an active LLM generation is not an awaiting
+phase. The returned preview or apply summary is the final result and replaces
+any terminal heartbeat.
+
+See [`agents/methodology.md` § Heartbeat status contract](methodology.md#heartbeat-status-contract)
+for the full convention and 256-byte cap.
 
 ## Hard contract rules
 
-The synthesizer MUST honor (Validate enforces every one — see [`src/internal/bootstrap/synthesis/validate.go`](../src/internal/bootstrap/synthesis/validate.go)):
+The synthesizer MUST honor these rules (the validator in [`src/engine/synthesize.zig`](../src/engine/synthesize.zig) enforces every one):
 
 - `schema_version: 1`, `fingerprint` matches `Request.Fingerprint`, `synthesized: true`.
 - `anchor_title` non-empty; phase slugs unique; task slugs unique within a phase.
@@ -92,7 +122,7 @@ The synthesizer MUST honor (Validate enforces every one — see [`src/internal/b
 - **No external-system contact.** The synthesizer does not call Jira, GitHub, or any operational-plane adapter. Propagation belongs to `/pl-ext-propagate`.
 - **No automatic `/pl-spec-ingest`.** Accepted forward specs are created in `status=draft`; the operator decides when to run `/pl-spec-ingest <plan-id>` on each.
 - **No source-code rewrites.** The synthesizer reads source for evidence only; it never edits source files.
-- **No real LLM calls in Go.** The Go binary stays free of provider API keys, retries, and rate limits; the vendor skill is the LLM engine.
+- **No real LLM calls in the CLI.** The `planar` binary stays free of provider API keys, retries, and rate limits; the vendor skill is the LLM engine.
 - **No verbatim transcription.** That's the `importer` role; `--literal` on `planar synthesize` delegates to `planar import`.
 
 ## Decisions

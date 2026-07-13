@@ -16,10 +16,24 @@
 
 const std = @import("std");
 const db = @import("db");
+const installedsurface = @import("installedsurface.zig");
 
 pub const Error = error{
     SchemaTableMissing,
     QueryFailed,
+};
+
+pub const ProjectionFreshness = struct {
+    state: []const u8,
+    manifest_status: installedsurface.ManifestState,
+    managed: usize,
+    fresh: usize,
+    stale: usize,
+    missing: usize,
+    unmanaged: usize,
+    unselected_vendors: usize,
+    evidence: ?[]const u8,
+    repair_command: ?[]const u8,
 };
 
 /// Snapshot of database + handoff health. Field order is the wire
@@ -39,6 +53,7 @@ pub const Report = struct {
     not_resumable_tasks: i64,
     pending_handoffs: i64,
     stale_handoffs: i64,
+    projection_freshness: ProjectionFreshness,
     overall: []const u8,
 };
 
@@ -112,8 +127,60 @@ pub fn check(d: *db.sqlite.Db, db_path: []const u8) Error!Report {
         .not_resumable_tasks = not_resumable_tasks,
         .pending_handoffs = pending_handoffs,
         .stale_handoffs = stale_handoffs,
+        .projection_freshness = .{
+            .state = "not_installed",
+            .manifest_status = .missing,
+            .managed = 0,
+            .fresh = 0,
+            .stale = 0,
+            .missing = 0,
+            .unmanaged = 0,
+            .unselected_vendors = installedsurface.supported_vendors.len,
+            .evidence = "no managed Planar installation is recorded",
+            .repair_command = null,
+        },
         .overall = if (degraded) "degraded" else "ok",
     };
+}
+
+/// Fold the read-only installed-surface classifier into an existing database
+/// health report. Classification remains owned by `installedsurface.status`;
+/// this function only summarizes that result as a health contributor.
+pub fn withProjectionFreshness(report_in: Report, status: installedsurface.StatusResult) Report {
+    var report = report_in;
+    const managed = status.summary.fresh + status.summary.stale + status.summary.missing;
+    const manifest_degraded = switch (status.manifest_status) {
+        .legacy, .invalid, .unsupported => true,
+        .current, .missing => false,
+    };
+    const managed_degraded = status.summary.stale > 0 or status.summary.missing > 0;
+    const degraded = manifest_degraded or managed_degraded;
+    const state: []const u8 = if (degraded)
+        "degraded"
+    else if (status.manifest_status == .missing)
+        "not_installed"
+    else
+        "fresh";
+    const evidence: ?[]const u8 = if (status.reason) |reason|
+        reason
+    else if (managed_degraded)
+        "managed projections differ from the staged installation authority"
+    else
+        null;
+    report.projection_freshness = .{
+        .state = state,
+        .manifest_status = status.manifest_status,
+        .managed = managed,
+        .fresh = status.summary.fresh,
+        .stale = status.summary.stale,
+        .missing = status.summary.missing,
+        .unmanaged = status.summary.unmanaged,
+        .unselected_vendors = status.summary.unselected_vendors,
+        .evidence = evidence,
+        .repair_command = if (degraded) status.repair_command else null,
+    };
+    if (degraded) report.overall = "degraded";
+    return report;
 }
 
 /// Run `PRAGMA integrity_check` and return true when SQLite reports
@@ -161,6 +228,22 @@ pub fn renderText(report: Report, writer: *std.Io.Writer) std.Io.Writer.Error!vo
         report.stale_handoffs,
         stale_handoff_threshold_hours,
     });
+    try writer.print("projection freshness: {s} ({d} managed: {d} fresh, {d} stale, {d} missing; {d} unmanaged; {d} unselected vendors)\n", .{
+        report.projection_freshness.state,
+        report.projection_freshness.managed,
+        report.projection_freshness.fresh,
+        report.projection_freshness.stale,
+        report.projection_freshness.missing,
+        report.projection_freshness.unmanaged,
+        report.projection_freshness.unselected_vendors,
+    });
+    try writer.print("projection manifest:  {s}\n", .{@tagName(report.projection_freshness.manifest_status)});
+    if (report.projection_freshness.evidence) |evidence| {
+        try writer.print("projection evidence:  {s}\n", .{evidence});
+    }
+    if (report.projection_freshness.repair_command) |command| {
+        try writer.print("projection repair:    {s}\n", .{command});
+    }
     try writer.print("overall:          {s}\n", .{report.overall});
 }
 
@@ -196,4 +279,20 @@ test "check classifies a doing task with no next_action as not-resumable + degra
     try std.testing.expectEqual(@as(i64, 1), report.inflight_tasks);
     try std.testing.expectEqual(@as(i64, 1), report.not_resumable_tasks);
     try std.testing.expectEqualStrings("degraded", report.overall);
+}
+
+test "withProjectionFreshness degrades only managed drift and recovery manifest states" {
+    var d = try db.sqlite.Db.openMemory();
+    defer d.close();
+    try db.migrate.applyAll(&d, std.testing.allocator);
+
+    var current = try installedsurface.status(std.testing.allocator, .{
+        .planar_home = "/definitely/not/a/planar/home",
+        .home = "/definitely/not/a/home",
+        .codex_home = "/definitely/not/a/codex/home",
+    });
+    defer current.deinit();
+    const report = withProjectionFreshness(try check(&d, "/tmp/test.db"), current);
+    try std.testing.expectEqualStrings("not_installed", report.projection_freshness.state);
+    try std.testing.expectEqualStrings("ok", report.overall);
 }

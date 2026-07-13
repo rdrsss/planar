@@ -35,7 +35,7 @@ The reviewer adds signal by doing six things the coder structurally cannot do fo
 
 1. **Read the diff blind.** Fresh session, no coder narrative in the brief. Run `git diff HEAD` and `git diff --stat HEAD` firsthand and form an independent read before looking at anything else.
 2. **Verify intent ↔ implementation match.** Did the diff actually do what the claimed task IDs said? Or did the coder ship something adjacent, smaller, or different?
-3. **Verify claim scope.** The claim token(s) — issued by the orchestrator via `planar-agent pull` / `planar-agent claim` and listed in the brief — define the leased synchronization scope. Cross-check covered entities via `planar audit trail <kind:id>` or `planar dashboard --agents`. Edits outside the claimed tasks or child milestone are scope drift unless the brief carries an explicit operator-approved expansion.
+3. **Verify claim scope.** The claim token(s) — issued by the orchestrator via `planar-agent pull` / `planar-agent claim` and listed in the brief — define the leased synchronization scope. Cross-check covered entities via `planar audit trail --kind <kind> <entity-id>` or `planar dashboard --agents`. Edits outside the claimed tasks or child milestone are scope drift unless the brief carries an explicit operator-approved expansion.
 4. **Catch what the coder rationalized past.** False-positive tests (the test passes but does not exercise the claim); missing edge cases; hidden side effects (files in the change set that are not in the task list); inconsistencies with surrounding conventions; backward-compatibility breaks; forgotten cross-cutting items (skill bodies, doc cross-refs, downstream callers, render-check / validator updates).
 5. **Sanity-check the coder's "surprises" section.** When the coder says "I deviated because X" — does X actually hold, or is it a rationalization? Check the cited evidence.
 6. **Return a specific decision.** One of `approve`, `request-changes`, `open-question`, `abort`, with findings citing file:line.
@@ -87,6 +87,50 @@ The reviewer emits a status string at each meaningful phase boundary using `plan
 The reviewer's final output IS the return to the orchestrator — there is no separate heartbeat after the verdict is written. Status strings use the `awaiting:` prefix when blocked on an external event. The cap on `--status` payload is 256 bytes.
 
 See [`agents/reviewer.md` § Status reporting](../../agents/reviewer.md#status-reporting) and [`agents/methodology.md` § Heartbeat status contract](../../agents/methodology.md#heartbeat-status-contract) for the full contract.
+
+The final response keeps the canonical `approve | request-changes |
+open-question | abort` verdict and file:line findings. The shared fields below
+wrap that decision packet and never flatten or rename its verdict taxonomy.
+
+## Context
+
+Report the resolved scope, reviewed task IDs and slugs, claim tokens, iteration,
+diff base, and whether the brief represents one cycle or a union diff.
+
+## Intent
+
+State in one sentence which claimed implementation and cited acceptance signal
+the blind review evaluated.
+
+## Actions
+
+Report `attempted`, `applied`, `skipped`, and `failed` counts for review checks.
+Reviewer writes are zero; `applied` counts completed checks, while findings are
+reported under the canonical verdict rather than misrepresented as mutations.
+
+## Result
+
+Always report `outcome=ok|partial|error`, then the authoritative verdict and
+its file:line findings or explicit no-findings statement. Include the verified
+diff scope and mechanical coverage result when cited slugs require it.
+
+## Warnings
+
+Name degraded evidence, unavailable inspection, ambiguous coverage, iteration-5
+caveats, and assumptions that affect the verdict. Do not turn a stylistic
+preference into a warning or finding without a governing contract.
+
+## Next actions
+
+Give zero to three executable recommendations that follow the verdict:
+terminal routing on approval, a specific coder remediation on
+`request-changes`, or the operator question/escalation for the other outcomes.
+
+## Recovery
+
+On an incomplete review, provide the exact inspect or resume command, such as
+`git diff HEAD`, `planar resume validate <task-id>`, or
+`planar test-spec status <plan>`. The reviewer never implements the recovery.
 
 ## Vendor Differences
 
