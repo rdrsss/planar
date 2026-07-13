@@ -11,7 +11,7 @@ const harness = @import("harness");
 
 // Render the real orchestrator + coder agent specs from the repo and assert the
 // per-vendor output files exist under the staging dir.
-test "agents render emits per-vendor files for orchestrator and coder" {
+test "agents render emits per-vendor files for orchestrator coder and doc-author" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
@@ -43,12 +43,15 @@ test "agents render emits per-vendor files for orchestrator and coder" {
     // Claude: <role>.md
     try assertFileExists(gpa, root, "agents/claude/orchestrator.md");
     try assertFileExists(gpa, root, "agents/claude/coder.md");
+    try assertFileExists(gpa, root, "agents/claude/doc-author.md");
     // Codex: <role>.toml
     try assertFileExists(gpa, root, "agents/codex/orchestrator.toml");
     try assertFileExists(gpa, root, "agents/codex/coder.toml");
+    try assertFileExists(gpa, root, "agents/codex/doc-author.toml");
     // Copilot: <role>.agent.md
     try assertFileExists(gpa, root, "agents/copilot/orchestrator.agent.md");
     try assertFileExists(gpa, root, "agents/copilot/coder.agent.md");
+    try assertFileExists(gpa, root, "agents/copilot/doc-author.agent.md");
 }
 
 // Load-bearing security property: orchestrator (capability=coordinate) must NOT
@@ -132,6 +135,49 @@ test "agents render orchestrator has no Edit-Write tools coder has both at sonne
     // Coder renders at the medium tier → claude-sonnet-4-6.
     // Check in the full file (model: line is in the frontmatter, unambiguous).
     try std.testing.expect(std.mem.indexOf(u8, coder_claude, "claude-sonnet-4-6") != null);
+}
+
+test "agents render doc-author with write capability at large tier" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try fixtureRoot(gpa, &tmp, "agents-render-doc-author");
+    defer gpa.free(root);
+
+    const src_abs = try repoAgentsSrcFromBin(gpa, suite.bin);
+    defer gpa.free(src_abs);
+    try copyAgentSpecs(gpa, src_abs, root);
+
+    const skills_src_abs = try repoSkillsSrcFromBin(gpa, suite.bin);
+    defer gpa.free(skills_src_abs);
+    const stdout = suite.mustRunInDir(root, &.{
+        "skills",
+        "render",
+        "--src",
+        skills_src_abs,
+        "--out",
+        root,
+    });
+    defer gpa.free(stdout);
+
+    const claude = try readPath(gpa, root, "agents/claude/doc-author.md");
+    defer gpa.free(claude);
+    const tools_line = extractToolsLine(claude) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, tools_line, "Edit") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tools_line, "Write") != null);
+    try std.testing.expect(std.mem.indexOf(u8, claude, "model: claude-opus-4-8") != null);
+    try std.testing.expect(std.mem.indexOf(u8, claude, "approved_rows") != null);
+    try std.testing.expect(std.mem.indexOf(u8, claude, "before the first file mutation") != null);
+    try std.testing.expect(std.mem.indexOf(u8, claude, "`.planar-manifest`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, claude, "Does not originate, infer, or widen operator approval") != null);
+
+    const codex = try readPath(gpa, root, "agents/codex/doc-author.toml");
+    defer gpa.free(codex);
+    try std.testing.expect(std.mem.indexOf(u8, codex, "sandbox_mode = \"workspace-write\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, codex, "model = \"gpt-5.5\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, codex, "model_reasoning_effort = \"high\"") != null);
 }
 
 // Idempotency: rendering twice must produce byte-identical agent output files.

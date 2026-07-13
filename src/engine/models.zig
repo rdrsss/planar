@@ -121,9 +121,9 @@ pub const RoutingRow = struct {
 };
 
 /// The canonical roles whose routing `planar models routing` reports.
-pub const routing_roles = [_][]const u8{ "coder", "reviewer", "test-coder", "documenter" };
+pub const routing_roles = [_][]const u8{ "coder", "reviewer", "test-coder", "documenter", "doc-author" };
 
-/// Returns true when `role` is one of the four built-in canonical roles.
+/// Returns true when `role` is one of the five built-in canonical roles.
 fn isBuiltinRole(role: []const u8) bool {
     for (routing_roles) |r| {
         if (std.mem.eql(u8, r, role)) return true;
@@ -244,6 +244,7 @@ pub const default_role_tiers: []const RoleTier = &.{
     .{ .role = "reviewer", .tier = .large },
     .{ .role = "test-coder", .tier = .medium },
     .{ .role = "documenter", .tier = .medium },
+    .{ .role = "doc-author", .tier = .large },
 };
 
 /// The default vendor every role routes to unless overridden.
@@ -665,7 +666,7 @@ test "resolver: buildRouting with custom role includes it after built-ins" {
     try testing.expectEqualStrings("claude-haiku-4-5", last.model);
 }
 
-test "resolver: buildRouting empty config — exactly four built-in rows, unchanged" {
+test "resolver: buildRouting empty config — exactly five built-in rows" {
     const a = testing.allocator;
     var res = try config.resolve(a, null, std.process.Environ.empty, null);
     defer res.deinit(a);

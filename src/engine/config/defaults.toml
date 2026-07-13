@@ -55,6 +55,7 @@ coder      = "medium"
 reviewer   = "large"
 test-coder = "medium"
 documenter = "medium"
+doc-author = "large"
 
 [external.jira]
 # Base URL of the Jira instance. Required for ext-sync against Jira.
