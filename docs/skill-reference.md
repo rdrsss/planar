@@ -269,20 +269,29 @@ Source: `commands/claude/pl-workbench-archive.md` · `skills/codex/pl-workbench-
 
 ### `/pl-workspace-scan`
 
-Scan a polyrepo workspace, refresh its `routing-table.json`, and regenerate its canonical `AGENTS.md`. Without `--enrich` the skill orchestrates the deterministic static pipeline (`planar workspace routing build` + `planar workspace regenerate`). With `--enrich` the skill additionally invokes the LLM at `temperature=0` per project — using the README excerpt and a depth-2 directory listing as inputs — writes validated results into `~/.planar/cache/workspace-enrichment/<org_id>/`, and re-builds so cached results merge into the table. Operator overrides in `routing-table-overrides.json` always win over enrichment. Cross-link: [docs/concepts.md § Workspace](concepts.md#workspace).
+Manage the complete polyrepo workspace lifecycle through the Planar CLI: initialize a workspace, diagnose registered workspaces, inspect or rebuild routing, scan with optional enrichment, regenerate canonical guidance, and repair drift. The compatible no-argument scan remains `planar workspace routing build` followed by `planar workspace regenerate`; `--enrich` delegates enrichment to the routing build instead of implementing a separate cache protocol. Cross-link: [docs/concepts.md § Workspace](concepts.md#workspace).
 
-**Composition** (the 5-step pipeline from the skill body):
+**Lifecycle operations:**
 
-1. Resolve the target workspace from `--workspace`, the active `kind=org` scope entry, or fail with a clear message.
-2. Run `planar workspace routing build [<workspace>]` to refresh the static routing table.
-3. If `--enrich`: for each project where the cache fingerprint misses and the static summary is not human-authored, run the LLM enrichment loop and write validated results to the enrichment cache; then re-run `planar workspace routing build --enrich` so the Go builder merges the freshly-cached results.
-4. Run `planar workspace regenerate [<workspace>]` to rebuild `AGENTS.md` from the updated routing table.
-5. Print a one-line summary of what changed. With `--dry-run`, prefix the summary with `would scan:` and write nothing.
+1. `init` runs `planar workspace init` from the workspace root.
+2. `doctor` runs `planar workspace doctor` and verifies the repaired fleet with a second pass.
+3. `routing-show` and `routing-build` inspect or rebuild routing with `planar workspace routing show|build`; build accepts `--enrich`.
+4. `scan` composes routing build, routing show, and `planar workspace regenerate`; `regenerate` can also run independently after routing is verified.
+5. `repair` composes doctor, routing rebuild and verification, regeneration, and a final doctor pass. Skill-level `--dry-run` performs reads and reports the commands that would run.
+
+Workspace-root `AGENTS.md` and `CLAUDE.md` are generated links, or copy fallbacks,
+to canonical state under `~/.planar/workspaces/<org_id>/`; do not hand-edit them.
+Operator overrides belong in `routing-table-overrides.json` beside the canonical
+target, while generated routing and guidance are refreshed through the CLI.
 
 **Example:**
 ```
 /pl-workspace-scan                          # scan active workspace, static only
 /pl-workspace-scan --enrich                 # static scan + LLM enrichment pass
+/pl-workspace-scan init                     # initialize from the workspace root
+/pl-workspace-scan doctor                   # diagnose and repair registered workspaces
+/pl-workspace-scan routing-show --workspace org:work
+/pl-workspace-scan repair --workspace org:work
 /pl-workspace-scan --workspace org:work     # explicit workspace target
 /pl-workspace-scan --dry-run                # report what would change, no writes
 ```
@@ -500,7 +509,10 @@ Source: `skills/src/pl-doctor.md`
 
 ### `/pl-status`
 
-Summarize the current scope's state: active and paused plans, open tasks (todo / doing / blocked) grouped by plan, and open questions. Read-only. Use at the start of a session for quick orientation.
+Answer what needs attention now in the current scope: sync conflicts, stale
+claims and handoffs, blocked work and open questions, active claims/actions,
+then claim-aware next work. Empty sections are suppressed and the read-only
+summary stays concise while providing executable next actions.
 
 **Example:** `/pl-status`
 

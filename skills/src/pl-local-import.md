@@ -1,6 +1,6 @@
 ---
 slug: pl-local-import
-description: "Import skill or agent files from an external directory into the local sandbox and link them into every vendor surface."
+description: "Compatibility wrapper for importing skill or agent files into the local sandbox through the canonical pl-local lifecycle."
 source: docs/cli-reference.md#domain-local
 vendor:
   claude:
@@ -10,12 +10,14 @@ vendor:
       /pl-local-import ~/my-skills/
       /pl-local-import ~/my-agents/ --kind agent
 shared_notes:
-  - "Local sandbox files are linked through the CLI link layer; source files must already be valid skill or agent inputs."
+  - "This compatibility entry point preserves existing import invocations; use pl-local for link, list, unlink, migrate, and repair."
 ---
 
-# Pl-Local-Import ({{.VendorTitle}})
+# Pl-Local-Import Compatibility Wrapper ({{.VendorTitle}})
 
-Import operator-authored skill or agent files from an external location (a personal skills folder, a separate git repo, a Dropbox directory) into the local sandbox at `~/.planar/local/{skills,agents}/`, then symlink them into every vendor surface so they are immediately invocable.
+Preserve the existing `pl-local-import <path> [options]` invocation while
+routing it to the canonical `pl-local import` operation. Use `pl-local` for
+the broader link, list, unlink, migrate, and repair lifecycle.
 
 ## When To Invoke
 
@@ -26,48 +28,67 @@ When the operator says any of:
 - "bring in my external skill collection"
 - "add this skill folder to planar"
 
-The argument is a single flat `.md` file, a single dir-shape skill source (`foo/` containing `SKILL.md`), or a directory containing a mix of both. Subdirectories that are not skill dirs are ignored.
+The argument remains a single flat `.md` file, a single dir-shape skill source
+(`foo/` containing `SKILL.md`), or a flat collection containing both shapes.
 
-## What It Does
+## Context
 
-Runs `planar local import` with the operator-supplied path. The verb:
+Interpret every existing invocation as `pl-local import` with the same path,
+kind, `--force`, `--dry-run`, and `--no-link` options. Sources remain
+machine-local under `~/.planar/local/{skills,agents}/`.
 
-1. Validates each file's YAML frontmatter (the same rules as the canonical sandbox walker — `vendors:` must be a subset of `{claude, codex, copilot}`, `kind:` if present must match the target kind).
-2. Materializes each valid input into the sandbox in the correct shape: skills as `~/.planar/local/skills/<name>/SKILL.md` (with any dir-shape auxiliary files copied along), agents as `~/.planar/local/agents/<name>.md`.
-3. Invokes the existing link layer to install into every vendor's surface (Claude gets a file symlink → `<src>/SKILL.md`; Codex and Copilot get directory symlinks → the source dir).
+## Intent
 
-Name collisions with existing sandbox files are skipped unless `--force` is passed; the operator's prior work is never silently lost.
+State that the request imports the supplied path through the canonical local
+lifecycle, including whether it is an agent import, preview, overwrite, or
+import-without-linking.
 
-## What It Does Not Do
+## Actions
 
-- Does not recurse into subdirectories — operator collections are expected to be flat.
-- Does not convert between vendor formats (e.g. Codex SKILL.md directories back into flat `.md` files). Source files must already be the flat-frontmatter skill format.
-- Does not modify or delete the operator's source files.
+Run the matching canonical operation with all supplied options unchanged:
 
-## Underlying CLI Verb
-
-Composes from [`local`](../../docs/cli-reference.md#domain-local):
-
-```
-planar local import <path> [--kind skill|agent] [--force] [--dry-run] [--no-link]
+```text
+planar local import <path> [--kind skill|agent] [--force] [--dry-run] [--no-link] --json
 ```
 
-`--kind skill` is the default. Use `--kind agent` when the input is an agent role file rather than a skill. `--dry-run` previews without writing. `--no-link` imports without linking (useful when the operator wants to inspect the sandbox first).
+Follow the complete `pl-local` import contract: use CLI JSON internally, verify
+linked installs with `planar local list --json` unless `--no-link` or
+`--dry-run` intentionally leaves no new live row, and count attempted,
+applied, skipped, and failed import/link actions.
 
-## Output Shape
+## Result
 
-```
-fixup-protos  imported      ←  /home/me/my-skills/fixup-protos.md
-audit-deps    skipped       reason: name-collision
+Return the same import outcome as `pl-local import`: `outcome=ok|partial|error`,
+the path and kind, action counts, sandbox destinations, and verified vendor
+install rows. Also name `pl-local` as the lifecycle entry point for follow-up
+operations.
 
-imported 1 file(s); skipped 1
+## Warnings
 
-Linking imported files into vendor surfaces:
-fixup-protos (skill)
-  claude   created [symlink]  →  /home/me/.claude/commands/local-fixup-protos.md
-  codex    created [symlink]  →  /home/me/.codex/skills/local-fixup-protos
-  copilot  created [symlink]  →  /home/me/.copilot/skills/local-fixup-protos
-```
+Preserve `pl-local` warnings for collisions, invalid inputs, ignored entries,
+copy fallback, shadowing, and partial linking. `--force` requires clear intent
+because it can replace an existing sandbox entry. Never modify or delete the
+external source.
+
+## Next Actions
+
+Give at most three executable recommendations. Prefer
+`planar local list --json`, `planar local link <name> --json` after
+`--no-link`, or the broader `pl-local` workflow for another lifecycle action.
+
+## Recovery
+
+On partial failure, list each failed input and provide the exact idempotent
+`planar local import ... --json` retry plus `planar local list --json` for
+inspection. Do not claim rollback of inputs that already imported or linked.
+
+## Boundaries
+
+- This wrapper performs only import; it does not invent wrapper-only flags or
+  CLI verbs.
+- Use `pl-local` for link, list, unlink, migrate, and repair.
+- There is no `planar local promote`; canonical promotion remains manual.
+- Do not commit machine-local sources or hand-edit vendor installs/manifests.
 
 ## Vendor Notes
 
