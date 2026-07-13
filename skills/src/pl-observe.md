@@ -33,8 +33,16 @@ Require `--plan <id>`. Accept these observation filters:
 
 Reject a missing/invalid plan id, malformed RFC3339 timestamp, or non-positive
 limit before reading the activity ledgers. Record the observation timestamp in
-UTC and echo every effective filter. Filters are skill inputs: pass them only
-to underlying verbs whose schema exposes the corresponding flag.
+UTC. Parse the validated effective `since` value as an instant and derive a
+canonical UTC comparison token with exactly three fractional digits, matching
+the millisecond-width SQLite `%f` timestamps stored by `sync_events` (for
+example, `2026-07-13T02:00:00-04:00` becomes
+`2026-07-13T06:00:00.000Z`). If the input instant has non-zero precision below
+a millisecond, round the comparison token up to the next millisecond so the
+inclusive lower bound cannot admit an older stored timestamp. Echo this
+canonical value as the effective `since` filter. Filters are skill inputs:
+pass them only to underlying verbs whose schema exposes the corresponding
+flag.
 
 Resolve cwd scope with `planar scope show --json`, verify the target with
 `planar plan show <plan-id> --json`, then read
@@ -62,18 +70,51 @@ planar plan show <plan-id> --json
 planar dashboard --agents --json
 planar-watch actions --plan <plan-id> [--vendor <vendor>] --limit <n> --json
 planar-watch ps --plan <plan-id> [--vendor <vendor>] --stale --json
-planar-watch feed --plan <plan-id> [--vendor <vendor>] --since <RFC3339> --limit <n> --json
-planar-watch sync-events --plan <plan-id> [--system <slug>] --since <RFC3339> --limit <n> --json
+planar-watch feed --plan <plan-id> [--vendor <vendor>] --since <since-utc> --limit <n> --json
+planar-watch sync-events --plan <plan-id> [--system <slug>] --since <since-utc> --limit <n> --json
 planar handoff list --status pending,validated,consumed,abandoned --json
 ```
 
-`feed --json`, `sync-events --json`, and `handoff list --json` emit NDJSON;
-parse each non-empty line as one object. The other commands return JSON objects
-or arrays as documented. Do not interpret an empty NDJSON stream as a parse
-failure. The actions, feed, and sync-events handlers apply `--limit` to their
-global source rows before all requested filtering is complete. Treat their
-outputs as bounded samples, not complete filtered result sets, even when fewer
-than `<n>` matching rows or zero matching rows are returned.
+Pass the same canonical UTC `since-utc` value to both `feed` and
+`sync-events`. Do not pass through the caller's original numeric-offset text:
+`sync-events` currently compares its stored UTC timestamps lexically, so the
+normalized fixed-width millisecond `Z` representation is required to preserve
+instant ordering and include a row exactly on the requested boundary.
+
+Plan matching differs by source. For `actions`, `ps`, and `feed`, `--plan`
+matches rows attached to the plan itself, a task whose `plan_id` is the target,
+or a plan step whose `plan_id` is the target. It does not traverse child plans
+or infer ownership for actions on questions, scenarios, artifacts, or
+decisions. For `sync-events`, `--plan` is narrower: it matches only an event
+whose `link_id` resolves to an `external_links` row directly attached to that
+plan (`entity_kind=plan`, `entity_id=<plan-id>`). A sync event linked to a task
+or plan step on the plan is therefore outside this command's `--plan` result.
+Handoffs have no command-level plan filter and use the separate attribution
+rules below.
+
+`feed --json` and `handoff list --json` emit NDJSON; parse each non-empty line
+as one object and do not interpret an empty stream as a parse failure.
+`sync-events --json` instead emits one JSON envelope with `generated_at` and a
+`sync_events` array; parse the complete output once and read event rows from
+that array. A successfully parsed envelope with `sync_events: []` is an empty
+bounded sample, not a parse failure. The other commands return JSON objects or
+arrays as documented. After parsing the feed, enforce the requested inclusive
+lower bound locally: retain only rows whose top-level `at` is greater than or
+equal to the effective `--since` instant, and count older rows as skipped.
+Parse both RFC3339 values as instants rather than comparing their text, so an
+input with a numeric UTC offset is handled correctly. This instant-aware local
+filter remains required even though the command receives normalized UTC text,
+because the feed's initial snapshot currently uses the epoch as its query
+watermark when `--since` is supplied.
+
+The actions, feed, and sync-events handlers apply `--limit` to their global
+source rows before all requested filtering is complete. Treat their outputs as
+bounded samples, not complete filtered result sets, even when fewer than `<n>`
+matching rows or zero matching rows are returned. If a sampled command returns
+exactly `<n>` rows, report that its output cap was reached. Fewer than `<n>`
+rows does not prove the global source was unsaturated, because plan/vendor,
+time, or system filtering may occur after a source query has already reached
+its cap.
 
 Build the snapshot as follows:
 
@@ -95,13 +136,15 @@ Build the snapshot as follows:
    vendor/role, claim-token prefix, latest action summary/time, claimed time,
    last heartbeat, and lease expiry. Report distinct unique active and stale
    counts; never count or render an expired active row as active.
-3. **Recent failures.** From the plan-matching feed rows in the bounded recent
-   global sample, retain terminal `failed` events and `action_ended` events
-   whose action outcome is `error`, `aborted`, or `timeout`. Show the event
-   timestamp, entity, action/claim identity, outcome, and available summary or
-   release reason. Do not relabel ordinary releases, successful completions,
-   or blocked tasks as failures, and do not claim the sample contains every
-   failure in the requested interval.
+3. **Recent failures.** First apply the effective inclusive `--since` bound
+   locally to every plan-matching feed row using its top-level `at`. From the
+   surviving rows in the bounded recent global sample, retain terminal
+   `failed` events and `action_ended` events whose action outcome is `error`,
+   `aborted`, or `timeout`. Show the event timestamp, entity, action/claim
+   identity, outcome, and available summary or release reason. Do not relabel
+   ordinary releases, successful completions, or blocked tasks as failures,
+   and do not claim the sample contains every failure in the requested
+   interval.
 4. **Sync events.** Render the matching rows from the bounded recent global
    sample with event id, `at`, link id, direction, outcome, changed fields, and
    detail. Preserve `conflict`, `error`, `noop`, and successful outcomes rather
@@ -129,11 +172,12 @@ Count every attempted read. For this read-only workflow, `applied` means a
 successful, parsed observation read; it never means a write. Report
 `attempted`, `applied`, `skipped`, and `failed`. Count the single handoff-list
 command as one attempted read and, when parsed, one applied observation read.
-Count rows removed by local vendor/time filtering and rows unavailable for
-plan attribution as skipped rows, reported separately; there is no public
-snapshot-to-task read, so do not manufacture per-handoff lookup attempts. Do
-not call `planar-agent`, `planar task done`, handoff lifecycle verbs, sync
-mutation verbs, or any other planning/coordination write.
+Count feed rows removed by the local `at >= since` filter, handoff rows removed
+by local vendor/time filtering, and rows unavailable for plan attribution as
+skipped rows, reported separately; there is no public snapshot-to-task read,
+so do not manufacture per-handoff lookup attempts. Do not call
+`planar-agent`, `planar task done`, handoff lifecycle verbs, sync mutation
+verbs, or any other planning/coordination write.
 
 ## Result
 
@@ -188,9 +232,11 @@ observed empty.
 Report failed or partially attributable sources, stale claims, failure events,
 sync conflicts/errors, missing parents caused by sampling, and the bounded
 global-sample limitation for actions, failures, and sync events. Do not warn
-merely because an authoritative current-state section is empty. Explain that
-`--plan` matches the plan itself plus its tasks and plan steps; it does not
-recursively include descendant plans.
+merely because an authoritative current-state section is empty. When
+summarizing plan coverage, preserve the per-source distinction: actions,
+claims, and feed failures include the plan's direct tasks and plan steps,
+whereas sync events require a direct plan external link. Neither behavior
+recursively includes descendant plans.
 
 ## Next Actions
 
