@@ -1,7 +1,7 @@
 {
   "version": 2,
   "algo": "xxh64",
-  "root": "41f43047fec75f19",
+  "root": "db8874eef3b2ad62",
   "generated_at": "",
   "entries": {
     "docs/architecture.md": {
@@ -45,21 +45,21 @@
       "entry_hash": "f4ad37f82a5b6370"
     },
     "docs/skill-reference.md": {
-      "doc_hash": "9ad7e5ebe07004c5",
+      "doc_hash": "7b117b8beffae6b6",
       "sources": {
         "agents/": "851285b2f2002550",
-        "skills/": "3aa46a819653e55a"
+        "skills/": "9cc6902d8a70ced1"
       },
-      "sources_hash": "5985e9a7a3dc2480",
-      "entry_hash": "4765c4886b677400"
+      "sources_hash": "318b3d918968e5da",
+      "entry_hash": "3462bb50ae2540fc"
     },
     "docs/workflows.md": {
       "doc_hash": "aca956093c3926a5",
       "sources": {
-        "scripts/": "1315cee9302fb21f"
+        "scripts/": "abd2737557b6d333"
       },
-      "sources_hash": "2eca34df0c98c04c",
-      "entry_hash": "d16e550ccbb5f2ba"
+      "sources_hash": "88c28078a7523560",
+      "entry_hash": "3319cf5d3c4b8fb7"
     }
   },
   "nodoc": {
