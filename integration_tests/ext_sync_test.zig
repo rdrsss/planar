@@ -154,7 +154,7 @@ test "ext register github + ext test wiring" {
     try std.testing.expect(parsed.value.ok);
 }
 
-test "sync conflict evidence and guarded resolution run through the public CLI" {
+pub fn runSyncConflictEvidenceAndResolutionLifecycle() !void {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
@@ -280,6 +280,10 @@ test "sync conflict evidence and guarded resolution run through the public CLI" 
     defer resolved_task.deinit();
     try std.testing.expectEqualStrings("Reviewed manual merge", resolved_task.value.title);
     try std.testing.expectEqualStrings("todo", resolved_task.value.status);
+}
+
+test "sync conflict evidence and guarded resolution run through the public CLI" {
+    try runSyncConflictEvidenceAndResolutionLifecycle();
 }
 
 test "sync resolve rejects versionless approved evidence and keep-remote replaces the whole local entity" {

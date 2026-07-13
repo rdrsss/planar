@@ -16,7 +16,7 @@ flowchart TD
         S2["/pl-spec-draft · /pl-spec-ingest · /pl-ext-propagate · …"]
     end
 
-    subgraph Binaries["planar CLI (five binaries — four disjoint DB write surfaces + one DB-handle-free engine)"]
+    subgraph Binaries["planar CLI (four planning-state capability surfaces + one DB-handle-free engine)"]
         direction LR
         B1["<b>planar</b><br/>operator RW<br/>planning entities + cockpit TUI"]
         B2["<b>planar-agent</b><br/>agent RW<br/>agent_actions + claims"]
@@ -25,7 +25,7 @@ flowchart TD
         B5["<b>planar-execute</b><br/>spawn-free Lua engine<br/>no DB handle · shells planar"]
     end
 
-    DB[("SQLite database<br/>~/.planar/planar.db<br/>26 migrations · embedded at build time")]
+    DB[("SQLite database<br/>~/.planar/planar.db<br/>28 migrations · embedded at build time")]
     MF[(".planar-manifest<br/>repo-state merkle index")]
 
     Surface -->|invoke| Binaries
@@ -87,6 +87,8 @@ Authoring rules (file naming, the `schema_migrations` insert/delete contract, th
 | 0024 context_records nullable claim | table-rebuild (rename → recreate → copy → drop) that relaxes `context_records.claim_id NOT NULL → nullable`; indexes are also rebuilt to match migration-22 shape. Required by decision 456 (plan 585 stage-close compaction): when the orchestrator writes a compiled capsule via `planar-agent context capsule --run <id>`, the write is run-keyed to `workflow_runs`, not to a worker claim, so capsule rows carry `claim_id = NULL` |
 | 0025 runs | `runs` (one row per `(plan, arm, repetition)` — the measurement-rig experimental unit: `run_uid` unique external id, `plan_id` cascade FK, `arm`/`status`/`corpus_repo` plain-TEXT CLI-enforced enums, `config_hash` GROUP BY key + opaque `config_json`, `base_sha`, `started_at`/`ended_at`); `run_events` (append-only seq-ordered journal, `unique(run_id, seq)`, standalone from `agent_activity`); `run_touches` (declared-vs-actual harvest for RQ1, `kind in (declared, actual)` CHECK, `task_id` a plain integer **not** an FK-cascade so deleting a task never erases historical evidence — only `run_id` cascades) |
 | 0026 closures | `closures` (one row per `(task, symbol unit)` in a task's *derived* closure — the symbols a task must hold resident, computed by static analysis from its declared seed paths: `task_id`/`repo_id` cascade FKs, `path` (defining file) + `symbol` (stem-only qualified name) **both** stored so same-stem files don't collide, `role in (modify, reference, transitive)` CHECK, `token_weight`, `extractor_version`; `unique(task_id, repo_id, path, symbol, role, extractor_version)`). Written by `planar closure compute`, read by `planar closure show`. `transitive` rows are stored but excluded from the effective closure by default |
+| 0027 external sync baseline | adds nullable `external_links.baseline_title` and `baseline_status`, the last common synchronized values used to classify converged, local-only, remote-only, and two-sided changes |
+| 0028 feedback triage | `feedback_triage` — one structured triage row per task or question finding, with severity, disposition, reproduction status, optional duplicate relationship, redacted evidence, and database constraints for target/disposition consistency |
 
 Migration 0015 (`migrations/00015_agent_activity.up.sql`) lands the claim + action store that the agent-coordination feature is built on. `claim_token` is generated in SQL via `lower(hex(randomblob(16)))` (32-char opaque handle). Exclusivity of `(entity_kind, entity_id)` is enforced transactionally in the engine store (`src/engine/runtime/agentactivity/`) under `BEGIN IMMEDIATE` because SQLite cannot express the time-dependent "unexpired" predicate in a partial unique index. WAL mode is enabled per-connection in `src/cmd/planar/runtime.zig` — load-bearing for the wake-tier ladder behind `--follow` AND for cross-binary concurrency between the operator and agent binaries (see Five-binary architecture below).
 
@@ -119,7 +121,7 @@ Planar ships FIVE binaries. Three planning-state binaries share the SQLite engin
 | Binary | Audience | Write surface | DB open mode |
 |---|---|---|---|
 | `planar` | Operator (human + scripts) | Planning entities (plans/tasks/decisions/etc.) + `tasks.status` on operator-driven transitions | Read-write; owns `init` and runs migrations. |
-| `planar-agent` | Agent (vendor hook, orchestrator dispatch) + operator recovery | `agent_actions` + `agent_work_claims`; `tasks.status` ONLY as part of an atomic coordinated operation under a status-transition guard | Read-write; refuses startup with exit 7 if schema is older than the binary's embedded minimum. |
+| `planar-agent` | Agent (vendor hook, orchestrator dispatch) + operator recovery | `agent_actions`, `agent_work_claims`, `workflow_runs`, and `context_records`; `tasks.status` ONLY as part of an atomic coordinated operation under a status-transition guard | Read-write; refuses startup with exit 7 if schema is older than the binary's embedded minimum. |
 | `planar-watch` | Operator (live view) + scripts | None — the binary registers zero write verbs AND opens SQLite via `file:?mode=ro` URI as a second line of defense | Read-only; same schema-version handshake as `planar-agent`. |
 | `planar-doc` | Operator + documenter agent | `.planar-manifest` ONLY — repo-state merkle index at the repo root. Never opens SQLite at all. | No DB handle. |
 
@@ -349,25 +351,36 @@ The handler tree mirrors the engine bucket layout. The `runtime` bucket is mater
 
 ### Subcommand domains
 
-`artifact`, `assoc`, `audit`, `capture`, `config`, `dashboard`, `decision`, `demote`, `doc`, `ext`, `handoff`, `health`, `help`, `import`, `init`, `link`, `links`, `local`, `plan`, `promote`, `question`, `resume`, `scenario`, `scope`, `search`, `skills`, `spec`, `sync`, `synthesize`, `task`, `templates`, `tree`, `workbench`, `workspace`.
+The live command tree currently exposes `init`, `scope`, `assoc`, `plan`,
+`task`, `question`, `scenario`, `decision`, `artifact`, `annotate`, `promote`,
+`demote`, `workbench`, `workspace`, `ext`, `link`, `unlink`, `links`, `sync`,
+`resume`, `handoff`, `capture`, `audit`, `health`, `models`, `dashboard`,
+`spec`, `test-spec`, `config`, `templates`, `tree`, `search`, `local`, `skills`,
+`import`, `synthesize`, `version`, `completion`, `schema`, `report`, `bench`,
+`closure`, `run`, `groups`, `explore`, `workflow`, and `feedback`.
 
 Use `planar --help` for the current list. Use `planar <domain> --help` for subcommand detail. The full surface is enumerated in [docs/cli-reference.md](cli-reference.md).
 
-### Global flags
+### Command flags
 
-| Flag | Default | Purpose |
-|------|---------|---------|
-| `--json` | off | Emit newline-delimited JSON instead of human text |
-| `-q` / `--quiet` | off | Suppress informational output |
-| `--v` | off | Debug-level tracing |
-| `--vv` | off | Trace-level tracing |
+The root command has no inherited global flags. Flags are declared on the leaf
+that consumes them; for example, commands that support machine output declare
+their own `--json`. The deterministic `planar schema` catalog is the authority
+for paths, positionals, aliases, required flags, types, and defaults, and is
+also the input to the schema-driven authored-usage validator.
 
 ### Output conventions
 
 - Human mode (default): line-oriented text.
-- Machine mode (`--json`): one JSON object per result row, snake_case keys matching schema column names.
+- Machine mode (`--json`, where declared): one JSON value followed by a newline.
+  List leaves normally emit an array; single-result leaves emit an object.
+  Stable engine structs generally use snake_case field names, while command
+  envelopes document their own explicit keys.
 - Mutating commands that produce no entity data emit `{"ok":true,"id":<id>}` under `--json`.
-- Exit codes: `0` success, `1` user-fixable error, `2` system error, `3` sync conflict, `64` usage error.
+- Shared exit mapping: `0` success, `1` operational/default failure, `2`
+  parse or input failure, `3` sync conflict, `5` scope mismatch, `6`
+  conflict/precondition failure, `7` schema-version mismatch, and `64`
+  registered-but-not-implemented. Individual command sections narrow this set.
 
 ---
 
@@ -553,7 +566,7 @@ Merge           → adapts Result to interpretation.Result, merges with determin
 Diff + Apply    → SHARED with import — same Diff/Apply stages
 ```
 
-The LLM never runs in the Planar binary. The binary stays free of provider API keys, retries, and rate limits; the vendor skill (`skills/src/pl-synthesize.md` rendered to `commands/claude/pl-synthesize.md` etc.) is the LLM engine. The cache contract is the handoff: the binary writes a Request, the skill writes a Result, the binary validates and merges.
+The LLM never runs in the Planar binary. The binary stays free of provider API keys, retries, and rate limits; the unified `skills/src/pl-synthesize.md` workflow, projected for each selected vendor at install time, is the LLM engine. The cache contract is the handoff: the binary writes a Request, the skill writes a Result, the binary validates and merges.
 
 ### Merge rules (synthesis)
 
@@ -605,13 +618,18 @@ The orchestrator gates Phases 2 and 3 on explicit user confirmation. Ingestion n
 
 ### Vendor surfaces
 
-| Vendor | Source dir | Installed to |
-|--------|-----------|-------------|
-| Claude | `commands/claude/` | `~/.claude/commands/` |
-| Codex | `skills/codex/` | `~/.planar/codex-skills/` runtime, installed into `~/.codex/skills/` |
-| Copilot | `skills/copilot/` | `~/.copilot/skills/` |
+Unified skill sources live only in `skills/src/`; vendor-neutral agent role
+sources live in `agents/`. `planar skills render` creates the vendor projections
+at install time, so `commands/claude/`, `skills/codex/`, and `skills/copilot/`
+are generated output trees rather than authored source directories.
 
-Agent role specs (vendor-neutral) live under `agents/`. The key files are `agents/methodology.md`, `agents/orchestrator.md`, `agents/planner.md`, `agents/ingestor.md`, `agents/extsync.md`, `agents/importer.md`, `agents/synthesizer.md`, `agents/coder.md`, `agents/reviewer.md`, and `agents/models.md` (tier-to-model resolution).
+| Vendor | Staged projection | Installed to |
+|--------|-------------------|-------------|
+| Claude | `$PLANAR_HOME/commands/claude/` | `~/.claude/commands/` |
+| Codex | `$PLANAR_HOME/codex-skills/` | `$CODEX_HOME/skills/` (normally `~/.codex/skills/`) |
+| Copilot | `$PLANAR_HOME/copilot-skills/` | `~/.copilot/skills/` |
+
+Agent role specs (vendor-neutral) live under `agents/`. The key files are `agents/methodology.md`, `agents/orchestrator.md`, `agents/planner.md`, `agents/ingestor.md`, `agents/ext-sync.md`, `agents/importer.md`, `agents/synthesizer.md`, `agents/coder.md`, `agents/reviewer.md`, and `agents/models.md` (tier-to-model resolution).
 
 Every rendered skill and agent projection carries two lowercase SHA-256 values:
 `x-planar-source-digest` identifies the parsed, vendor-neutral authored source,
@@ -675,19 +693,27 @@ the manifest row set.
 ### Authored-surface validation
 
 `tools/surface_lint.zig` deterministically scans canonical Markdown under
-`agents/`, `skills/src/`, and `docs/`. It reports repository-relative links
-whose targets are absent, pinned retired implementation references,
-contradictory four-artifact contracts, read-only roles containing write
-commands, invalid semantic command shapes, and missing skill feedback/recovery
-headings. Every unified skill is checked by default unless its frontmatter
-contains the literal boolean `internal_only: true`. Generated vendor-projection links are assigned to renderer fixtures
-rather than resolved against directories that do not exist in a source tree.
+`agents/`, `skills/src/`, and `docs/`. Its stable finding codes are
+`surface-link-missing`, `surface-legacy-reference`,
+`surface-artifact-set-drift`, `surface-capability-drift`,
+`surface-command-drift`, and `surface-contract-missing`; malformed or unused
+suppressions use `surface-suppression-invalid` and
+`surface-suppression-unused`. These cover absent repository-relative links,
+pinned retired implementation references, contradictory four-artifact
+contracts, read-only roles containing write commands, invalid semantic command
+shapes, and missing skill feedback/recovery headings. Every unified skill is
+checked by default unless its frontmatter contains the literal boolean
+`internal_only: true`. Generated vendor-projection links are assigned to
+renderer fixtures rather than resolved against output directories that do not
+exist in a source checkout.
 
 Run `make surface-lint` for stable text findings or
-`zig build surface-lint -- --json` for the versioned JSON envelope. Findings
-are ordered by file, line, code, and message and carry stable
-`surface-*` codes. An intentional match may be suppressed only by a comment on
-the preceding non-blank line naming one code and a non-empty rationale:
+`zig build surface-lint -- --json` for the versioned envelope
+`{version,ok,files_scanned,findings}`. Each finding is
+`{code,file,line,message}`; findings are ordered by file, line, code, and
+message. A clean result exits 0, and any finding or validator failure exits
+non-zero. An intentional match may be suppressed only by a comment on the
+preceding non-blank line naming one code and a non-empty rationale:
 
 ```html
 <!-- surface-lint-ignore surface-legacy-reference: historical comparison required -->

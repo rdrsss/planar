@@ -136,7 +136,7 @@ fn runInstaller(gpa: std.mem.Allocator, repo_root: []const u8, home: []const u8,
     return std.process.run(gpa, std.testing.io, .{ .argv = argv, .environ_map = &env });
 }
 
-test "selected-vendor installer lifecycle writes a fresh manifest in copy and link modes" {
+pub fn runSelectedVendorInstallerLifecycle() !void {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
@@ -202,6 +202,9 @@ test "selected-vendor installer lifecycle writes a fresh manifest in copy and li
         try std.testing.expect(std.mem.indexOf(u8, manifest, "\"install_kind\": \"copy\"") != null);
         try std.testing.expect(std.mem.indexOf(u8, manifest, "\"install_kind\": \"link\"") != null);
 
+        const manifest_before_reads = try gpa.dupe(u8, manifest);
+        defer gpa.free(manifest_before_reads);
+
         const status = suite.mustRunWith(&.{ "skills", "status", "--json" }, &env);
         defer gpa.free(status);
         try std.testing.expect(std.mem.indexOf(u8, status, "\"manifest\":{\"status\":\"current\"") != null);
@@ -213,6 +216,10 @@ test "selected-vendor installer lifecycle writes a fresh manifest in copy and li
         defer gpa.free(health);
         try std.testing.expect(std.mem.indexOf(u8, health, "\"projection_freshness\":{\"state\":\"fresh\"") != null);
         try std.testing.expect(std.mem.indexOf(u8, health, "\"overall\":\"ok\"") != null);
+
+        const manifest_after_reads = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, manifest_path, gpa, .limited(4 * 1024 * 1024));
+        defer gpa.free(manifest_after_reads);
+        try std.testing.expectEqualStrings(manifest_before_reads, manifest_after_reads);
 
         const staged_status = try std.fs.path.join(gpa, &.{ prefix, "codex-skills", "pl-status", "SKILL.md" });
         defer gpa.free(staged_status);
@@ -232,6 +239,10 @@ test "selected-vendor installer lifecycle writes a fresh manifest in copy and li
         defer gpa.free(unselected_after);
         try std.testing.expectEqualStrings("unselected vendor extension\n", unselected_after);
     }
+}
+
+test "selected-vendor installer lifecycle writes a fresh manifest in copy and link modes" {
+    try runSelectedVendorInstallerLifecycle();
 }
 
 test "health reports fresh managed and unmanaged projections without degradation or writes" {

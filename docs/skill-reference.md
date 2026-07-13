@@ -35,9 +35,20 @@ shipped through `/pl-sync` and its gated `sync-reconciler` specialist.
 
 Planar authors each shared skill once at `skills/src/<name>.md` and renders vendor outputs with `planar skills render`:
 
-- `commands/claude/<name>.md` — generated, installed to `~/.claude/commands/<name>.md`, invoked as `/<name>`
-- `skills/codex/<name>.md` — generated, materialized as `~/.planar/codex-skills/<name>/SKILL.md`, installed into `~/.codex/skills/<name>`
-- `skills/copilot/<name>.md` — generated, installed to `~/.copilot/skills/<name>.md`
+- Claude projections are staged under `$PLANAR_HOME/commands/claude/`, installed
+  to `~/.claude/commands/`, and invoked as `/<name>`.
+- Codex projections are staged as
+  `$PLANAR_HOME/codex-skills/<name>/SKILL.md` and installed under
+  `$CODEX_HOME/skills/` (normally `~/.codex/skills/`).
+- Copilot projections are staged under `$PLANAR_HOME/copilot-skills/` and
+  installed to `~/.copilot/skills/`.
+
+The old repo-relative `commands/claude/`, `skills/codex/`, and
+`skills/copilot/` trees are not checked in. Do not author, link documentation
+to, or commit those generated outputs. Edit `skills/src/<name>.md` or the
+vendor-neutral role in `agents/`, then render to an out-of-tree destination for
+validation. A normal full install renders and stages projections before wiring
+the selected vendors.
 
 Vendor profile data and model-tier resolution are embedded directly into the `planar` binary at compile time (the YAML literal lives in `src/engine/skillrender.zig`; see `agents/models.md` for the rendered tier table). Drift between `skills/src/` and generated vendor trees is gated by `planar skills render --check` against an out-of-tree staging directory.
 
@@ -162,7 +173,13 @@ for the cross-role outcome and verification doctrine.
 Planar ships five executables. Four are planning-state binaries, each with a disjoint capability boundary over the shared SQLite DB enforced by its verb set (not by runtime ACLs); skills and agents reach for the binary that matches the work - and only that binary. The capability boundary across those four is locked by integration tests (`integration_tests/capability_boundary_test.zig`). The fifth, `planar-execute`, is the deterministic, spawn-free Lua workflow engine and holds no DB handle.
 
 - `planar` — operator binary. Read-write to the full schema; owns every planning-entity verb (`plan`, `task`, `decision`, `question`, `scenario`, `artifact`, `workbench`, `doc`, `spec`, `templates`, `ext`, `sync`, `init`, `dashboard`, `tree`, `audit`, `health`, …). Has **no** `agent` subcommand namespace; agent-table writes live on `planar-agent` and agent-table reads live on `planar-watch`.
-- `planar-agent` — agent-callable coordination binary. Read-write **only** to `agent_actions`, `agent_work_claims`, and `tasks.status` (the last only as part of atomic coordinated operations). Verbs: `pull`, `peek`, `claim`, `heartbeat`, `complete`, `fail`, `release`, `block`, `action start`/`action end`, `ingest`, `reconcile`, `abort`, `version`. **Capability invariant:** a vendor hook configured with only `planar-agent` on its PATH cannot touch any plan / decision / question / scenario / artifact / annotation row.
+- `planar-agent` — agent-callable coordination binary. Read-write only to its
+  bounded coordination surfaces (`agent_actions`, `agent_work_claims`,
+  `workflow_runs`, and `context_records`) plus `tasks.status` as part of atomic
+  coordinated operations. Verbs include the claim ritual, action/ingest,
+  workflow/context, and recovery surfaces. **Capability invariant:** a vendor
+  hook configured with only `planar-agent` on its PATH cannot touch any plan /
+  decision / question / scenario / artifact / annotation row.
 - `planar-watch` — human-facing read-only viewer. Opens SQLite via `file:?mode=ro` so the driver itself refuses any write SQL. Verbs: `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `version`, `completion`. **Capability invariant:** a watcher process holding the binary on PATH cannot corrupt operator state even under hostile verb invocation — enforced both by the zero-write verb set and the read-only DB handle.
 - `planar-doc` — doc-state binary. Owns manifest-driven documentation verbs (`build`, `verify`, `diff`, `cover`, `nodoc`, `lint`, `schema`) and never opens SQLite.
 - `planar-execute` — deterministic, spawn-free Lua workflow engine (plan 633). A caller invokes `planar-execute run <wf.lua> --phase <name>` to run a deterministic workflow over an allowlisted host surface (`cli`/`git`/`fs`/`flow`/`ctx`) and collect its JSON result. It holds **no** DB handle (it shells the planning-state binaries for state) and exposes **no** model-spawning host function, so it is a workflow runner, not a harness. It is outside the claim ritual.
@@ -194,7 +211,7 @@ Run the orchestrator over a goal, anchor plan, or task list. Manages all five ph
 
 The Phase 3 dispatch gate offers six shapes (`strict`, `grouped`, `single`, `barrel-grouped`, `barrel-deferred`, `barrel-bypass`); see [`docs/concepts.md` §Dispatch shapes](concepts.md#dispatch-shapes) for the trade-off matrix. Phase 3.5 (test-coder dispatch) fires across all shapes when uncovered slugs intersect the cycle.
 
-Source: `commands/claude/pl-orchestrator.md` · `skills/codex/pl-orchestrator.md` · `agents/orchestrator.md`
+Source: `skills/src/pl-orchestrator.md` · `agents/orchestrator.md`
 
 ---
 
@@ -208,7 +225,7 @@ Implement a scoped coding task end-to-end. Called by the orchestrator in Phase 3
 /coder <task-id>
 ```
 
-Source: `commands/claude/pl-coder.md` · `skills/codex/pl-coder.md` · `agents/coder.md`
+Source: `skills/src/pl-coder.md` · `agents/coder.md`
 
 ---
 
@@ -221,7 +238,7 @@ Review a coder change set. Returns one of `approve`, `request-changes`, `open-qu
 /reviewer <task-id> <iteration>
 ```
 
-Source: `commands/claude/pl-reviewer.md` · `skills/codex/pl-reviewer.md` · `agents/reviewer.md`
+Source: `skills/src/pl-reviewer.md` · `agents/reviewer.md`
 
 ### `/pl-test-coder`
 
@@ -233,7 +250,7 @@ Adversarial test-author dispatched between the coder and the reviewer (Phase 3.5
 /pl-test-coder <plan-id> --plan  # run against every cited scenario in the plan
 ```
 
-Source: `commands/claude/pl-test-coder.md` · `skills/codex/pl-test-coder.md` · `skills/copilot/pl-test-coder.md` · `agents/test-coder.md`
+Source: `skills/src/pl-test-coder.md` · `agents/test-coder.md`
 
 ---
 
@@ -270,7 +287,7 @@ Import an existing repository's planning artefacts (tech specs, roadmaps, ADRs, 
 /pl-import . --dry-run                # emit JSON ImportPlan without writing
 ```
 
-Source: `commands/claude/pl-import.md` · `skills/codex/pl-import.md` · `agents/importer.md`
+Source: `skills/src/pl-import.md` · `agents/importer.md`
 
 ---
 
@@ -288,7 +305,7 @@ The LLM runs in the vendor skill, not in the Planar binary. `src/engine/synthesi
 /pl-synthesize . --literal                # delegate to import (transcription)
 ```
 
-Source: `commands/claude/pl-synthesize.md` · `skills/codex/pl-synthesize.md` · `skills/copilot/pl-synthesize.md` · `agents/synthesizer.md`. See [`concepts.md#transcription-vs-synthesis`](concepts.md#transcription-vs-synthesis) for the decision matrix.
+Source: `skills/src/pl-synthesize.md` · `agents/synthesizer.md`. See [`concepts.md#transcription-vs-synthesis`](concepts.md#transcription-vs-synthesis) for the decision matrix.
 
 ---
 
@@ -305,7 +322,7 @@ Draft planning documents (product spec, tech spec, roadmap, test spec) for a new
 /pl-spec-draft "add billing export to CSV"
 ```
 
-Source: `commands/claude/pl-spec-draft.md` · `skills/codex/pl-spec-draft.md` · `agents/planner.md`
+Source: `skills/src/pl-spec-draft.md` · `agents/planner.md`
 
 ---
 
@@ -326,7 +343,7 @@ scenarios, and slug collisions) as authoritative; after apply it switches to
 /pl-spec-review <plan-id> --write
 ```
 
-Source: `commands/claude/pl-spec-review.md` · `skills/codex/pl-spec-review.md` · `agents/spec-reviewer.md`
+Source: `skills/src/pl-spec-review.md` · `agents/spec-reviewer.md`
 
 ---
 
@@ -340,7 +357,7 @@ Decompose workbench planning documents (`tech-spec.md`, `roadmap.md`) into a str
 /pl-spec-ingest <plan-id> --apply
 ```
 
-Source: `commands/claude/pl-spec-ingest.md` · `skills/codex/pl-spec-ingest.md` · `agents/ingestor.md`
+Source: `skills/src/pl-spec-ingest.md` · `agents/ingestor.md`
 
 ---
 
@@ -355,7 +372,7 @@ Propagate a feature tree (anchor plan + descendants) to a registered external op
 /pl-ext-propagate <plan-id> --dry-run         # preview without contacting the remote
 ```
 
-Source: `commands/claude/pl-ext-propagate.md` · `skills/codex/pl-ext-propagate.md` · `agents/extsync.md`
+Source: `skills/src/pl-ext-propagate.md` · `agents/ext-sync.md`
 
 ---
 
@@ -376,7 +393,7 @@ Full workbench management: pull, push, sync, status, resolve, archive, restore, 
 /pl-workbench publish <plan-id> --system github
 ```
 
-Source: `commands/claude/pl-workbench.md` · `skills/codex/pl-workbench.md`
+Source: `skills/src/pl-workbench.md`
 
 ---
 
@@ -389,7 +406,7 @@ High-level bidirectional sync: reconciles FS and DB in one pass, surfaces confli
 /pl-workbench-sync <plan-id>
 ```
 
-Source: `commands/claude/pl-workbench-sync.md` · `skills/codex/pl-workbench-sync.md`
+Source: `skills/src/pl-workbench-sync.md`
 
 ---
 
@@ -403,7 +420,7 @@ Archive or restore a feature's workbench filesystem tree. `archive` removes the 
 /pl-workbench-archive restore 42
 ```
 
-Source: `commands/claude/pl-workbench-archive.md` · `skills/codex/pl-workbench-archive.md`
+Source: `skills/src/pl-workbench-archive.md`
 
 ---
 
@@ -438,7 +455,7 @@ target, while generated routing and guidance are refreshed through the CLI.
 /pl-workspace-scan --dry-run                # report what would change, no writes
 ```
 
-Source: `commands/claude/pl-workspace-scan.md` · `skills/codex/pl-workspace-scan.md` · `skills/copilot/pl-workspace-scan.md`
+Source: `skills/src/pl-workspace-scan.md`
 
 ---
 
@@ -452,7 +469,7 @@ Initialize the Planar database and register the current directory as a project. 
 
 **Example:** `/pl-init`
 
-Source: `commands/claude/pl-init.md` · `skills/codex/pl-init.md`
+Source: `skills/src/pl-init.md`
 
 ---
 
@@ -467,7 +484,7 @@ Inspect the cwd-derived scope and propose associations from git remote and path.
 /pl-scope suggest            # candidate associations for this cwd
 ```
 
-Source: `commands/claude/pl-scope.md` · `skills/codex/pl-scope.md`
+Source: `skills/src/pl-scope.md`
 
 ---
 
@@ -490,7 +507,7 @@ never `task done` followed by claim release.
 /pl-plan closeout <plan-id> --dry-run
 ```
 
-Source: `commands/claude/pl-plan.md` · `skills/codex/pl-plan.md`
+Source: `skills/src/pl-plan.md`
 
 ---
 
@@ -513,7 +530,7 @@ is only for unclaimed work; claimed agent work uses one atomic
 /pl-task done <unclaimed-task-id>
 ```
 
-Source: `commands/claude/pl-task.md` · `skills/codex/pl-task.md`
+Source: `skills/src/pl-task.md`
 
 ---
 
@@ -527,7 +544,7 @@ Capture open questions during a session, answer them, and link to tasks and spec
 /pl-question answer <question-id> "ISO 8601 UTC, no timezone offset"
 ```
 
-Source: `commands/claude/pl-question.md` · `skills/codex/pl-question.md`
+Source: `skills/src/pl-question.md`
 
 ---
 
@@ -562,7 +579,7 @@ Author test scenarios from a spec or task, verify them, and record outcomes.
 /pl-scenario pass <scenario-id>
 ```
 
-Source: `commands/claude/pl-scenario.md` · `skills/codex/pl-scenario.md`
+Source: `skills/src/pl-scenario.md`
 
 ---
 
@@ -576,7 +593,7 @@ Surface personal entities that have matured and promote or demote them between s
 /pl-promote demote task:<task-id>
 ```
 
-Source: `commands/claude/pl-promote.md` · `skills/codex/pl-promote.md`
+Source: `skills/src/pl-promote.md`
 
 ---
 
@@ -643,7 +660,7 @@ Create a Jira or GitHub Issues counterpart from a local entity and record the ex
 /pl-ext-create my-gh --from task:<task-id>
 ```
 
-Source: `commands/claude/pl-ext-create.md` · `skills/codex/pl-ext-create.md`
+Source: `skills/src/pl-ext-create.md`
 
 ---
 
@@ -656,7 +673,7 @@ For a given external link, show every local session, decision, and commit tied t
 /pl-audit-trail my-jira:PROJ-1234
 ```
 
-Source: `commands/claude/pl-audit-trail.md` · `skills/codex/pl-audit-trail.md`
+Source: `skills/src/pl-audit-trail.md`
 
 ---
 
@@ -669,7 +686,7 @@ Resume an in-flight task from zero conversational context. Validates resume read
 /pl-resume <task-id>
 ```
 
-Source: `commands/claude/pl-resume.md` · `skills/codex/pl-resume.md`
+Source: `skills/src/pl-resume.md`
 
 ---
 
@@ -679,7 +696,7 @@ Capture a context snapshot before terminating, validate it is resume-ready, and 
 
 **Example:** `/pl-handoff`
 
-Source: `commands/claude/pl-handoff.md` · `skills/codex/pl-handoff.md` · `agents/methodology.md`
+Source: `skills/src/pl-handoff.md` · `agents/methodology.md`
 
 ---
 
@@ -701,7 +718,7 @@ the underlying supported CLI commands.
 /pl-help sync resolve
 ```
 
-Source: `commands/claude/pl-help.md` · `skills/codex/pl-help.md`
+Source: `skills/src/pl-help.md`
 
 ---
 
@@ -724,7 +741,7 @@ unselected vendors do not degrade health.
 /pl-health --json
 ```
 
-Source: `commands/claude/pl-health.md` · `skills/codex/pl-health.md`
+Source: `skills/src/pl-health.md`
 
 ---
 
@@ -767,7 +784,7 @@ current scope, and never recommends work marked claimed, stale, or blocked.
 
 **Example:** `/pl-status`
 
-Source: `commands/claude/pl-status.md` · `skills/codex/pl-status.md` · `skills/copilot/pl-status.md`
+Source: `skills/src/pl-status.md`
 
 ---
 
@@ -802,7 +819,7 @@ Inspect, validate, and render Planar JSON templates for external-system propagat
 /pl-templates render task:<task-id> --system my-jira
 ```
 
-Source: `commands/claude/pl-templates.md` · `skills/codex/pl-templates.md`
+Source: `skills/src/pl-templates.md`
 
 ---
 
@@ -853,10 +870,18 @@ Source: `skills/src/pl-doc-maintain.md` · `agents/documenter.md` · `agents/doc
 
 ### `/pl-introspect`
 
-Run a usage-introspection pass: mine `planar report --json` and local Claude
-transcript JSONL files for friction patterns (failure clusters, retry sequences,
-stale claims, gap features) and file each pattern as a structured finding on
-the association's `planar-feedback` plan.
+Preview a usage-introspection pass over the structurally redacted
+`planar report --json` bundle and recognized Claude, Codex, Copilot, and CLI-log
+sources. Adapters normalize only vendor, verb path, category, count, and time
+window; transcript prose, argument values, entity titles, scope slugs, and raw
+paths are discarded. Missing or malformed optional sources degrade
+`signal_coverage` instead of being reported as observed zero.
+
+Preview is the default and writes nothing. After the operator reviews the
+proposals, an explicit apply gate creates or reuses the association's
+`planar-feedback` plan and files only approved findings. Repeated signal is
+deduplicated; a multi-finding failure preserves verified completed rows and
+returns `partial` with per-finding recovery rather than claiming rollback.
 
 **Arguments:** `[--days <n>] [--scope <scope>]`
 
@@ -868,6 +893,7 @@ the association's `planar-feedback` plan.
 /pl-introspect
 /pl-introspect --days 7
 /pl-introspect --scope assoc:my-org
+/pl-introspect --apply                  # still pauses for explicit confirmation
 ```
 
 **Finding taxonomy:** `failure-cluster`, `retry-pattern`, `abandoned-workflow`, `gap-feature`.
@@ -877,6 +903,32 @@ the association's `planar-feedback` plan.
 **Privacy:** Transcript text is ephemeral and never persisted. Finding bodies carry only aggregate signal (counts, verb paths, error categories). See [Usage Introspection Privacy Model](concepts.md#usage-introspection-privacy-model).
 
 Source: `skills/src/pl-introspect.md` · `agents/introspector.md`
+
+---
+
+### `/pl-feedback-triage`
+
+Review redacted task/question findings, obtain a deterministic
+`feedback-triager` assessment, and preview structured severity, disposition,
+reproduction, duplicate, entity, and relationship changes. The initial request
+never counts as confirmation: local apply requires an explicit row-level gate,
+and optional external reporting routes through `pl-report-issue` with a second
+complete issue-body preview. Declining external publication preserves verified
+local triage and posts nothing.
+
+Structured triage is inspected with `planar feedback triage list|show` and
+applied with `planar feedback triage set` only after approval. Independent
+approved findings may complete when another fails; the result is `partial`
+with exact inspection or retry commands for failed targets.
+
+**Example:**
+```
+/pl-feedback-triage --plan 812
+/pl-feedback-triage --finding question:42
+/pl-feedback-triage --finding task:17 --apply
+```
+
+Source: `skills/src/pl-feedback-triage.md` · `agents/feedback-triager.md`
 
 ---
 
@@ -891,10 +943,11 @@ The vendor-neutral role specs live under `agents/`. Vendor skill files defer to 
 | `agents/spec-reviewer.md` | Spec reviewer role: adversarial planning review, open-question reconciliation, feature/test gap analysis |
 | `agents/planner.md` | Planner role: input/output contract, document shape, workbench seeding |
 | `agents/ingestor.md` | Ingestor role: parsing contract, idempotency invariant, preview-first rule |
-| `agents/extsync.md` | Ext-sync role: strategy-selection contract, propagation walk, idempotency |
+| `agents/ext-sync.md` | Ext-sync role: strategy-selection contract, propagation walk, idempotency |
 | `agents/coder.md` | Coder role: task implementation contract, test requirements, reporting format |
 | `agents/reviewer.md` | Reviewer role: review criteria, decision taxonomy, caveat recording |
-| `agents/introspector.md` | Introspector role: read surface, transcript-mining recipe, finding taxonomy, dedup contract, feedback-plan bootstrap |
+| `agents/documenter.md` | Read-only documentation drift classifier: proposes `extend-cover`, `create-doc`, `nodoc`, or `defer`; never writes prose or manifest state |
+| `agents/introspector.md` | Introspector role: cross-vendor redacted signal adapters, preview/apply gate, finding taxonomy, dedup contract, feedback-plan bootstrap |
 | `agents/feedback-triager.md` | Feedback triager role: deterministic severity and disposition guidance, reproduction evidence, preview/apply gate, local mutation boundary, and status/result contracts |
 | `agents/janitor.md` | Janitor role: merge verification, Planar state reconciliation, worktree/branch cleanup, plan closeout via the delivery-evidence gate |
 | `agents/doc-author.md` | Doc-author role: writes only operator-approved published prose under `docs/`; never decides coverage or mutates manifest state |
@@ -905,7 +958,11 @@ The vendor-neutral role specs live under `agents/`. Vendor skill files defer to 
 
 ## Personal sandbox
 
-The repo ships canonical skills and agents under `commands/claude/`, `skills/codex/`, `skills/copilot/`, and `agents/`. Operators who want **personal, machine-local skills and agents** — single-purpose workflows specific to their environment — use the sandbox at `~/.planar/local/{skills,agents}/`.
+The repo authors canonical skills under `skills/src/` and canonical roles under
+`agents/`; installed vendor projections are generated artifacts. Operators who
+want **personal, machine-local skills and agents** — single-purpose workflows
+specific to their environment — use the sandbox at
+`~/.planar/local/{skills,agents}/`.
 
 Authored sandbox sources are installed (symlink with copy fallback) into every vendor's install directory by `planar local link`. Skills are dir-shape (`~/.planar/local/skills/<name>/SKILL.md`); agents stay flat. Each vendor's discovery loader is shape-specific:
 
@@ -965,9 +1022,9 @@ Source: `skills/src/pl-local-import.md`
 
 | | Canonical | Sandbox |
 |---|---|---|
-| Location | `commands/claude/`, `skills/codex/`, `skills/copilot/`, `agents/` in the repo | `~/.planar/local/{skills,agents}/` on the operator's machine |
+| Location | `skills/src/` and `agents/` in the repo; generated projections are staged under `$PLANAR_HOME` | `~/.planar/local/{skills,agents}/` on the operator's machine |
 | Install | `install.sh` or `make install` from the repo checkout | `planar local link` |
-| Authoring overhead | Commit, push, `planar skills render --check` against an out-of-tree staging dir across generated vendor trees | One file, one `planar local link` |
+| Authoring overhead | Commit the unified source, then run semantic lint and `planar skills render --check` against an out-of-tree staging dir | One file, one `planar local link` |
 | Distribution | Shipped to everyone using the repo | This operator's machine only |
 | Promotion | N/A | Manual: copy file into the repo and follow normal contribution flow. No `planar local promote` shortcut |
 

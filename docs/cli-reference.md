@@ -4138,17 +4138,14 @@ rewrites an installed projection.
 
 **Output (human):**
 ```
-planar health
-
-  db:            ~/.planar/planar.db  [ok]
-  schema:        <version>  [current]
-  integrity:     ok
-  in-flight tasks:  5  (3 resumable, 2 NOT RESUMABLE)
-  pending handoffs: 1  (0 stale)
-  projection freshness: fresh (1 managed: 1 fresh, 0 stale, 0 missing; 1 unmanaged; 2 unselected vendors)
-  projection manifest:  current
-
-overall: DEGRADED  (2 tasks not resumable)
+db:               ok (~/.planar/planar.db)
+schema:           v28 of v28 (current)
+integrity:        ok
+in-flight tasks:  5 (3 resumable, 2 NOT resumable)
+pending handoffs: 1 (0 stale > 24h)
+projection freshness: fresh (1 managed: 1 fresh, 0 stale, 0 missing; 1 unmanaged; 2 unselected vendors)
+projection manifest:  current
+overall:          degraded
 ```
 
 **Output (`--json`):**
@@ -4156,7 +4153,10 @@ overall: DEGRADED  (2 tasks not resumable)
 {
   "db_path":"~/.planar/planar.db",
   "db_ok":true,
+  "schema_version":28,
+  "schema_target":28,
   "schema_current":true,
+  "migration_count":28,
   "integrity_ok":true,
   "inflight_tasks":5,
   "resumable_tasks":3,
@@ -4199,8 +4199,8 @@ nothing.
 **Exit codes:**
 - `0` — all checks pass.
 - `1` — degraded (some tasks are not resumable, handoffs are stale, managed
-  projections are stale/missing, or the install manifest needs recovery).
-- `2` — critical (database unreachable or integrity check failed).
+  projections are stale/missing, the install manifest needs recovery, SQLite
+  integrity fails, or the health check itself cannot complete).
 
 ---
 
@@ -4961,7 +4961,7 @@ Writes (only with `--apply`):
 - `2` — system error: database failure, filesystem I/O failure, cache I/O failure.
 
 **Related:**
-- [`commands/claude/pl-synthesize.md`](../commands/claude/pl-synthesize.md) — Claude vendor skill body; load-bearing LLM contract.
+- [`skills/src/pl-synthesize.md`](../skills/src/pl-synthesize.md) — unified authored skill source and load-bearing LLM contract; vendor projections are generated at install time.
 - [`agents/synthesizer.md`](../agents/synthesizer.md) — vendor-neutral role spec.
 - [Domain: `import`](#domain-import) — sibling transcription verb.
 - [Transcription vs Synthesis](./concepts.md#transcription-vs-synthesis) — conceptual split.
@@ -5019,8 +5019,8 @@ override-only) routes individual roles to a different vendor; unset roles use
 provenance; `planar models routing` prints the resolved role→vendor/model
 table; `planar models` reports which provider CLIs are installed. This is the
 **single authoritative routing source** — the skill-render Tier Table
-(`agents/models.md`) and external workflow harnesses resolve
-through it (plan 540); there is no separate `execute-config.toml`.
+(`agents/models.md`) and workflow callers resolve through it (plan 540); there
+is no separate `execute-config.toml`.
 
 ---
 
@@ -5507,9 +5507,15 @@ managed rows, and provide this verified source-checkout bootstrap shape:
 ```
 
 JSON contains `manifest`, `vendors`, ordered `projections`, `summary`, and an
-optional exact `repair_command`. Status exits 0 for degraded states so callers
-can inspect the structured result; invalid flags or unreadable filesystem
-state exit non-zero.
+optional exact `repair_command`. `manifest` contains `status`, `path`, and—when
+available—`version`, `build_id`, `install_mode`, and `reason`. Vendor rows are
+`{vendor,status,managed_count}`. Projection rows contain `vendor`, `kind`,
+`name`, `staged_path`, `installed_path`, `install_kind`, `status`, `reason`, and
+an optional `repair_command`; summary fields are `fresh`, `stale`, `missing`,
+`unmanaged`, and `unselected_vendors`. Status exits 0 for every successfully
+classified state, including degraded states, so callers can inspect the
+structured result. Invalid vendor input exits 2; unreadable filesystem state
+exits 1.
 
 ### `planar skills repair [<name>...] [--vendor <vendor>] [--apply] [--dry-run] [--json]`
 
@@ -5527,9 +5533,12 @@ untrusted bytes.
 
 Text and JSON report `outcome=ok|partial|error`, mode, manifest status,
 `attempted`, `applied`, `skipped`, `failed`, ordered per-target actions, and an
-idempotent next action. Any target failure leaves successful independent
-repairs in place, reports their exact split, and exits 1; a later status read
-shows completed targets fresh and failed targets still degraded.
+idempotent next action. Each action contains `vendor`, `kind`, `name`,
+`installed_path`, `before`, `action`, `post_status`, plus optional `error_name`
+and `next_action`. Any target failure leaves successful independent repairs in
+place, reports their exact split, and exits 1; a later status read shows
+completed targets fresh and failed targets still degraded. Invalid vendor,
+unknown/unmanaged names, and conflicting `--apply --dry-run` exit 2.
 
 ### `planar skills render [slug...]`
 
@@ -5708,11 +5717,17 @@ The `children` array is always present, even when empty (the empty-`global` sign
 
 ## Binary: `planar-agent`
 
-`planar-agent` is the agent-callable coordination binary. Owns every write to `agent_work_claims` and `agent_actions`; operator-recovery verbs (`reconcile`, `abort`) live here too because both are `agent_*` table writers (the capability boundary tracks tables, not audience). See `docs/architecture.md` § "Three-binary architecture" for the binary split.
+`planar-agent` is the agent-callable coordination binary. It owns coordination
+writes to `agent_work_claims`, `agent_actions`, `workflow_runs`, and
+`context_records`, plus the bounded `tasks.status` transitions performed by
+atomic terminal operations. Operator-recovery verbs (`reconcile`, `abort`) live
+here because the capability boundary tracks write ownership, not audience. See
+[Five-binary architecture](architecture.md#five-binary-architecture) for the
+binary split.
 
 Schema-version handshake: `planar-agent` is a **consumer** of the schema, not its owner. Startup queries `schema_migrations.max(version)` and refuses with exit **7** when the live DB is older than the binary's embedded minimum. The remediation pointer ("run `planar init`") is printed to stderr.
 
-### Verb surface (16 verbs)
+### Verb surface
 
 ```text
 # Atomic operations — each wraps (claim lifecycle + action lifecycle +
@@ -5763,6 +5778,7 @@ planar-agent run end    --run-id <identifier> --status completed|failed|interrup
 # to the raw record ids that were distilled (decision 446).
 # Records are append-only — no uniqueness constraint per Q599.
 planar-agent context add     --claim <token> --kind <kind> --body <text> [--compiled-from <id,...>] [--json]
+planar-agent context capsule --run <run-id> --stage <s> --body <text> [--compiled-from <id,...>] [--session <id>] [--json]
 planar-agent context list    --run <run-id> [--stage <s>] [--status active|consumed|superseded] [--kind <k>] [--json]
 planar-agent context resolve --status consumed|superseded (--id <record-id> | --run <run-id> --stage <s>) [--json]
 ```
@@ -5862,7 +5878,12 @@ Claims acquired without `--run`/`--stage` behave byte-for-byte as before (no beh
 
 ### Capability boundary
 
-A process invoked as `planar-agent` writes ONLY to `agent_work_claims`, `agent_actions`, `tasks.status` (the last only as part of atomic coordinated operations with status guards), and `workflow_runs` (via `run start` / `run end` / the `reconcile` run sweep). It NEVER writes to plan / decision / question / scenario / artifact / annotation. A vendor hook configured with only `planar-agent` on its PATH has bounded blast radius — it cannot touch planning state.
+A process invoked as `planar-agent` writes only to `agent_work_claims`,
+`agent_actions`, `workflow_runs`, and `context_records`, plus `tasks.status`
+inside atomic coordinated operations with status guards. It never writes plan,
+decision, question, scenario, artifact, annotation, or feedback-triage rows. A
+vendor hook configured with only `planar-agent` on its PATH therefore has a
+bounded planning-state blast radius.
 
 ---
 
@@ -6628,7 +6649,7 @@ For quick reference, all documented commands grouped by domain:
 | `config` | `config show`, `config show --effective`, `config show --raw`, `config show --defaults`, `config edit`, `config validate`, `config init`, `config path` |
 | `templates` | `templates list`, `templates show`, `templates render`, `templates validate`, `templates init`, `templates path` |
 | `tree` | `tree` |
-| `skills` | `skills render [slug...]`, `skills render --check`, `skills render --check --diff` |
+| `skills` | `skills status`, `skills repair [<name>...]`, `skills render [slug...]`, `skills render --check`, `skills render --check --diff` |
 | `scope` | `scope show`, `scope suggest` (`scope use`/`pop`/`clear` removed in plan 153 M5) |
 | `assoc` | `assoc list`, `assoc create`, `assoc add`, `assoc remove`, `assoc members`, `assoc detect` |
 | `plan` | `plan create`, `plan show`, `plan list`, `plan update`, `plan descendants`, `plan step add`, `plan step done`, `plan step skip`, `plan step link`, `plan link` |
@@ -6661,8 +6682,18 @@ For quick reference, all documented commands grouped by domain:
 | `help` | `help` |
 | `run` | `run start`, `run event`, `run finish`, `run show` |
 | `workflow` | `workflow list`, `workflow list --local`, `workflow show <name>` |
+| `feedback` | `feedback triage list`, `feedback triage show`, `feedback triage set` |
 | `schema` | `schema` (also on `planar-agent`, `planar-watch`, `planar-doc`) |
-## Feedback triage
+## Domain: `feedback`
+
+Migration `00028_feedback_triage` stores deterministic operator triage for
+findings associated with the plan whose slug is `planar-feedback`. One row
+targets exactly one task or question. Partial unique indexes enforce one row per
+finding; a delete trigger resets dependents of a deleted duplicate target to
+`disposition=untriaged` and clears their duplicate reference without deleting
+their evidence or reproduction state. This is local planning state:
+`feedback triage` never writes agent tables and never posts to an external
+system.
 
 ```text
 planar feedback triage list [--plan <id>] [--severity <info|low|medium|high|critical>]
@@ -6676,8 +6707,44 @@ planar feedback triage set <task:id|question:id> --severity <value>
 
 Disposition values are `untriaged`, `needs-reproduction`, `accepted`,
 `retained-question`, `dismissed`, `reported-external`, and `duplicate`.
+Severity values are `info`, `low`, `medium`, `high`, and `critical`.
 Reproduction values are `not-run`, `reproduced`, `not-reproduced`, and
 `inconclusive`. `duplicate` requires `--duplicate-of`; all other dispositions
 forbid it. Duplicate targets must already have triage state, belong to the same
 feedback plan, and may not form self-links or cycles. `set` is scope guarded,
 performs only the operator-confirmed local update, and never posts externally.
+
+`list` may filter by numeric plan id, severity, and disposition; it emits an
+ordered JSON array. `show` and `set` emit one object. The stable row fields are:
+
+```json
+{
+  "id": 7,
+  "finding": "task:42",
+  "plan_id": 12,
+  "severity": "high",
+  "disposition": "accepted",
+  "reproduction_status": "reproduced",
+  "duplicate_of": null,
+  "evidence_summary": "redacted retry trace",
+  "created_at": "2026-07-13T12:00:00.000Z",
+  "updated_at": "2026-07-13T12:00:00.000Z"
+}
+```
+
+Only `set` writes, using an upsert keyed by the task/question finding. Tasks
+must have `plan_id` pointing to the feedback plan. Questions must have exactly
+one `derives-from` plan link, and that plan must be the feedback plan. Evidence
+is stored as supplied in `evidence_summary`; callers are responsible for
+passing redacted text.
+
+**Exit codes:**
+
+- `0` — read or operator-confirmed set succeeded; an empty list is `[]`.
+- `1` — finding/triage row not found, missing or ambiguous feedback-plan
+  membership, cross-plan duplicate, duplicate cycle, database, or other
+  operational failure.
+- `2` — malformed finding reference, invalid enum, missing required flag,
+  invalid duplicate flag combination, or other CLI input failure.
+- `5` — `set` refused a cross-scope write; change cwd or pass the matching
+  explicit `--scope`.

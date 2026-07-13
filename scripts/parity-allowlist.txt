@@ -266,3 +266,12 @@ workflow/json
 workflow/no-args
 workflow/real-cwd
 workflow/real-cwd-json
+
+# feedback/* — Zig-only structured finding-triage surface backed by
+# migration 00028. The Go archive has neither the table nor this verb.
+# Bucket 3.
+feedback/help
+feedback/json
+feedback/no-args
+feedback/real-cwd
+feedback/real-cwd-json
