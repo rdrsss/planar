@@ -44,6 +44,50 @@ planar unlink <link-id>
 
 When an agent needs to surface a local task or plan to the organizational system of record, or to manually bind an existing Jira ticket or GitHub Issue to a local entity.
 
+## Context
+
+Report the resolved scope, local entity, external system, requested role and
+sync direction, and whether the request is a connectivity read, create, link,
+unlink, or registration mutation.
+
+## Intent
+
+State in one sentence which local and external identities will be connected or
+inspected.
+
+## Actions
+
+Report `attempted`, `applied` (the succeeded count), `skipped`, and `failed` counts per system and
+entity. Name every failed target with its local identity, system slug, and
+available remote evidence. An already-existing exact binding is a skip.
+
+## Result
+
+Always report `outcome=ok|partial|error`. After create or link, verify with
+`planar sync status --entity <kind:id> --system <system-slug> --json` and return
+the local entity, external link ID, system slug, and external URL or ID. After
+unlink, verify that the link is absent. List and test are read-only with zero
+applied; an empty list is an informative no-op.
+
+## Warnings
+
+Name scope mismatches, failed connectivity, ambiguous or duplicate bindings,
+unavailable post-state, and independent remote calls that partially succeed.
+Never imply that a successfully created remote target was rolled back.
+
+## Next actions
+
+Give zero to three executable recommendations, led by the verified link's
+status read or the next gated propagation preview when appropriate.
+
+## Recovery
+
+For each failed target, give `planar sync status --entity <kind:id> --system
+<system-slug> --json` and the exact idempotent `planar ext create ...` or
+`planar link ...` retry with the original role, sync, and scope arguments.
+Inspect an unlink failure with `planar audit trail --link <link-id> --json`.
+Completed independent targets remain applied.
+
 ## Vendor Notes
 
 {{.VendorNotes}}

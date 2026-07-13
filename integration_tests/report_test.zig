@@ -191,6 +191,59 @@ test "report-json: empty window emits empty arrays not nulls" {
     try std.testing.expect(fail == .array);
 }
 
+test "report-json: configured transcript adapters feed normalized preview with authoritative CLI dedup" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    const init_out = suite.mustRun(&.{ "init", "--allow-no-repo" });
+    defer gpa.free(init_out);
+
+    const dir = std.fs.path.dirname(suite.db_path) orelse ".";
+    const cfg_path = try std.fs.path.join(gpa, &.{ dir, "transcript-config.toml" });
+    defer gpa.free(cfg_path);
+    const transcript_path = try std.fs.path.join(gpa, &.{ dir, "claude.jsonl" });
+    defer gpa.free(transcript_path);
+    const cfg = try std.fmt.allocPrint(gpa, "[introspection]\ncli_log = true\n[introspection.transcripts]\nclaude_path = \"{s}\"\ncodex_enabled = false\ncopilot_enabled = false\n", .{transcript_path});
+    defer gpa.free(cfg);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = cfg_path, .data = cfg });
+    const extra = cfgEnv(cfg_path);
+
+    // Exercise the real capture hook. The logger stores parser-relative
+    // `task add`; the introspection boundary must expose canonical
+    // `planar task add` without weakening the adapter's validation.
+    const failed = suite.expectFailureWith(&.{ "task", "add", "--unknown-private-flag", "PRIVATE_SENTINEL" }, &extra);
+    defer gpa.free(failed);
+    const captured = std.process.run(gpa, std.testing.io, .{
+        .argv = &.{ "sqlite3", suite.db_path, "select verb_path || '|' || recorded_at from cli_invocations where verb_path = 'task add' order by id desc limit 1;" },
+    }) catch @panic("sqlite3 not found");
+    defer gpa.free(captured.stdout);
+    defer gpa.free(captured.stderr);
+    try std.testing.expect(captured.term == .exited and captured.term.exited == 0);
+    const captured_line = std.mem.trim(u8, captured.stdout, " \r\n");
+    const separator = std.mem.indexOfScalar(u8, captured_line, '|') orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("task add", captured_line[0..separator]);
+    const recorded_at = captured_line[separator + 1 ..];
+    try std.testing.expect(std.mem.endsWith(u8, recorded_at, "Z"));
+
+    const transcript = try std.fmt.allocPrint(gpa, "{{\"version\":1,\"type\":\"tool_result\",\"timestamp\":\"{s}\",\"tool\":{{\"name\":\"planar task add\",\"input\":{{\"body\":\"PRIVATE_SENTINEL\"}}}},\"exit_code\":2,\"invalid_flag\":true}}", .{recorded_at});
+    defer gpa.free(transcript);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = transcript_path, .data = transcript });
+    const json_out = suite.mustRunWith(&.{ "report", "--json" }, &extra);
+    defer gpa.free(json_out);
+    try std.testing.expect(std.mem.indexOf(u8, json_out, "PRIVATE_SENTINEL") == null);
+    try std.testing.expect(std.mem.indexOf(u8, json_out, "ZZ") == null);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, json_out, .{});
+    defer parsed.deinit();
+    const preview = parsed.value.object.get("introspection_preview").?.object;
+    const signals = preview.get("signals").?.array;
+    try std.testing.expectEqual(@as(usize, 1), signals.items.len);
+    try std.testing.expectEqualStrings("cli_log", signals.items[0].object.get("vendor").?.string);
+    try std.testing.expectEqualStrings("gap", signals.items[0].object.get("category").?.string);
+    const coverage = preview.get("coverage").?.array;
+    try std.testing.expectEqual(@as(usize, 4), coverage.items.len);
+}
+
 // =========================================================================
 // report-verb: disabled-log partial bundle
 // =========================================================================

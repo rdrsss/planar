@@ -150,6 +150,11 @@ pub fn classify(path: []const []const u8) Class {
         return .execution_or_read;
     }
 
+    if (eq(top, "feedback") and path.len >= 3 and eq(path[1], "triage")) {
+        if (eq(path[2], "list") or eq(path[2], "show")) return .execution_or_read;
+        return .planning;
+    }
+
     if (eq(top, "plan") or eq(top, "task") or
         eq(top, "question") or eq(top, "scenario") or
         eq(top, "decision") or eq(top, "artifact") or
@@ -256,6 +261,12 @@ test "classify: plan reads are execution_or_read" {
     try std.testing.expectEqual(Class.execution_or_read, classify(&.{ "plan", "next" }));
     try std.testing.expectEqual(Class.execution_or_read, classify(&.{ "plan", "recommend-strategy" }));
     try std.testing.expectEqual(Class.execution_or_read, classify(&.{ "plan", "divergence" }));
+}
+
+test "classify: feedback triage reads and mutation" {
+    try std.testing.expectEqual(Class.execution_or_read, classify(&.{ "feedback", "triage", "list" }));
+    try std.testing.expectEqual(Class.execution_or_read, classify(&.{ "feedback", "triage", "show" }));
+    try std.testing.expectEqual(Class.planning, classify(&.{ "feedback", "triage", "set" }));
 }
 
 test "classify: task done is planning (coders use planar-agent complete)" {

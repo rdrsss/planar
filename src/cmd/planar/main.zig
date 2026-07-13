@@ -61,6 +61,7 @@ const run_h = @import("handlers/run/cmd.zig");
 const groups_h = @import("handlers/groups/cmd.zig");
 const explore_h = @import("handlers/explore.zig");
 const workflow_h = @import("handlers/workflow/cmd.zig");
+const feedback_h = @import("handlers/feedback/cmd.zig");
 
 /// Root command tree. `pub` because each `handlers/*.zig` imports it to
 /// derive its typed args via `cli.castArgs(main.root, &.{…}, ptr)`.
@@ -119,13 +120,14 @@ pub const root: cli.Cmd = .{
         groups_h.verb,
         explore_h.verb,
         workflow_h.verb,
+        feedback_h.verb,
     },
 };
 
 comptime {
     // Comptime cost grows with verbs × subverbs × flags. The 30-verb tree
     // needs a much larger budget than the default 1000.
-    @setEvalBranchQuota(200_000);
+    @setEvalBranchQuota(400_000);
     cli.validate(root);
 }
 
@@ -135,6 +137,10 @@ var stdout_buffer: [4096]u8 = undefined;
 var stderr_buffer: [1024]u8 = undefined;
 
 pub fn main(init: std.process.Init) !void {
+    // etcli's dispatch materializes the complete leaf catalog at comptime.
+    // Keep the quota at the Planar call site so adding public leaves does not
+    // require modifying the pinned vendored parser.
+    @setEvalBranchQuota(20_000_000);
     const arena: std.mem.Allocator = init.arena.allocator();
     const args = try init.minimal.args.toSlice(arena);
 

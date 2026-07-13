@@ -1,125 +1,163 @@
 ---
 slug: pl-workspace-scan
-description: "Scan a workspace, refresh its routing table and AGENTS.md, optionally with LLM-enriched summaries."
+description: "Initialize, inspect, refresh, diagnose, and repair a Planar workspace while preserving the workspace-scan invocation."
 source: docs/cli-reference.md#domain-workspace
 vendor:
   claude:
-    argument_hint: "[--enrich] [--workspace <slug>] [--dry-run]"
+    argument_hint: "[scan|init|doctor|routing-show|routing-build|regenerate|repair] [--enrich] [--workspace <slug>] [--dry-run]"
     invocation_examples: |
-      /pl-workspace-scan                          # scan active workspace, static only
-      /pl-workspace-scan --enrich                 # static scan + LLM enrichment pass
-      /pl-workspace-scan --workspace org:work     # explicit workspace target
-      /pl-workspace-scan --dry-run                # report what would change, no writes
+      /pl-workspace-scan                          # compatible default: routing build + regenerate
+      /pl-workspace-scan --enrich                 # compatible enriched refresh
+      /pl-workspace-scan routing-show --workspace org:work
+      /pl-workspace-scan doctor                   # diagnose and repair registered workspaces
+      /pl-workspace-scan repair --workspace org:work
 shared_notes:
-  - "Active scope and workspace state come from the CLI; the skill must not read or write workspace context outside it."
+  - "Workspace state is resolved and changed only through the Planar CLI; generated routing and guidance files are never edited directly."
 ---
 
-# Planar Workspace Scan ({{.VendorTitle}})
+# Planar Workspace Lifecycle ({{.VendorTitle}})
 
-Orchestrates the scan → routing-build → optional LLM enrichment → AGENTS.md regenerate pipeline for a workspace.
+Use the existing `pl-workspace-scan` entry point for the complete workspace
+lifecycle: initialize, diagnose, inspect or rebuild routing, regenerate the
+canonical guidance, and repair drift. An invocation with no operation remains
+the original scan workflow: routing build followed by regenerate.
 
-## What It Does
+## Context
 
-Refreshes a workspace's static routing table and regenerates the canonical `AGENTS.md` from it. With `--enrich`, the skill invokes the LLM per project (vendor primitives) to produce richer one-line summaries and capability tags, writes the results to the workspace-enrichment cache, and re-builds the routing table so the cached results are merged in.
+Resolve the requested operation, workspace, and mode before acting. Supported
+operations are `scan` (the default), `init`, `doctor`, `routing-show`,
+`routing-build`, `regenerate`, and `repair`. `--enrich` applies only to `init`,
+`scan`, `routing-build`, and `repair`. `--dry-run` is a skill-level preview: it
+performs reads only and does not pretend that the write verbs have a CLI dry-run
+flag.
 
-## CLI Commands
+For `routing-show`, `routing-build`, `regenerate`, and `repair`, translate
+`--workspace <id|org:slug|slug>` to the optional positional `<workspace>` on
+the CLI. If it is omitted, rely on the CLI's documented workspace resolution;
+do not guess when multiple org workspaces exist. `init` always operates on the
+current directory and accepts its documented `--name`, `--slug`, `--scan`,
+`--meta-repo`, `--no-scan`, and `--enrich` flags. `doctor` intentionally checks
+all registered org workspaces and takes no workspace target.
 
-Wraps [`workspace`](../../docs/cli-reference.md#domain-workspace):
+Before a scoped write, run `planar scope show --json`. The cwd must resolve
+inside the intended workspace, or the operator must supply `--workspace` where
+the verb supports it. Stop instead of weakening scope validation.
 
-> **Scope.** `workspace routing build` and `workspace regenerate` are write verbs. The resolver order is: `--workspace <slug>` flag on the skill (translated to the positional `<workspace>` argument on the CLI), then the current working directory's org association. Run this skill from inside the workspace root or pass `--workspace <slug>` explicitly. The skill refuses if no workspace can be resolved. There is no active scope stack and no `scope use` to push.
+## Intent
 
-```
-planar workspace routing build [<workspace>] [--enrich]
-planar workspace routing show [<workspace>] [--json]
-planar workspace regenerate [<workspace>]
-planar workspace doctor
-```
+State the interpreted operation in one sentence, including whether it is a
+read-only preview, a static refresh, or an enriched refresh. If the request is
+ambiguous between initializing a new workspace and refreshing an existing one,
+stop before writing and present those two choices.
 
-## When To Invoke
+## Actions
 
-Run this skill when the workspace shape has changed — a new project added, a README rewritten, dependencies shifted, or after `planar workspace init` lays down the state directory. Routine use is occasional, not per-session; both the static and `--enrich` passes are deliberate, somewhat-expensive operations. Use `--dry-run` to preview what would change without writing.
+Use only these documented commands:
 
-## How the Skill Composes
-
-1. Resolve workspace. If `--workspace` was passed, parse it (`org:<slug>` or numeric id) and pass the slug as the positional argument to the CLI verbs below. Otherwise call `planar scope show --json` and look for a `kind=org` (or `kind_label=org`) entry in the cwd-derived resolved scope. Fail with a clear message if no workspace can be resolved.
-
-2. Run `planar workspace routing build [<workspace>]` to refresh the static routing table. If `--dry-run` was passed, run with `--json` and inspect the output without writing follow-ups.
-
-3. If `--enrich` was passed:
-   a. Read the routing table from `~/.planar/workspaces/<org_id>/routing-table.json` to get the per-project metadata (slug, root_path, summary, summary_source, fingerprint inputs).
-   b. For each project where `summary_source != "manual"` AND no cached enrichment exists for the current fingerprint, run the LLM enrichment loop (see "LLM Enrichment Contract" below). Skip projects whose README is missing or whose static summary already looks human-authored.
-   c. Re-run `planar workspace routing build --enrich [<workspace>]` so the Go builder merges the freshly-cached results.
-
-4. Run `planar workspace regenerate [<workspace>]` to rebuild `AGENTS.md` from the updated routing table. The symlinks (`AGENTS.md`, `CLAUDE.md` at the workspace root) continue to point at the canonical state-dir target — no symlink work needed here.
-
-5. Print a one-line summary describing what changed.
-
-> **Writability guards.** `routing-table.json` and `AGENTS.md` are generated artifacts under `~/.planar/workspaces/<org_id>/`. Manual operator overrides live in a separate `routing-table-overrides.json` file in the same directory and are merged on every build. This skill does not edit either generated file directly, and it does not touch the workbench (see Rule 6 in "Authoring Conventions" below).
-
-## LLM Enrichment Contract (when --enrich)
-
-For each project that passes the cache-miss filter in step 3.b, the skill itself invokes the LLM at `temperature=0` with these inputs:
-
-- Up to 2 KiB of the project's `README.md` (or `README` / `readme.md`).
-- The depth-2 directory listing of the project root, file and directory names only, sorted lexicographically. Exclude `.git`, `node_modules`, `vendor`, `target`, `dist`, `build`.
-
-The prompt asks the model to produce a single JSON object matching this schema (one paragraph per project, no extra commentary):
-
-```json
-{
-  "project_slug": "repo-a",
-  "summary": "Customer-facing API service",
-  "capabilities": ["go-service", "grpc"],
-  "depends_on": ["repo-b"],
-  "fingerprint_hash": "<sha256 from Request>",
-  "provenance": "claude-opus-4-7 temperature=0",
-  "generated_at": "<RFC3339 UTC>",
-  "template_version": 1
-}
+```text
+planar workspace init [--name <text>] [--slug <text>] [--scan <N>] [--meta-repo] [--no-scan] [--enrich] --json
+planar workspace doctor --json
+planar workspace routing build [<workspace>] [--enrich] --json
+planar workspace routing show [<workspace>] --json
+planar workspace regenerate [<workspace>] --json
 ```
 
-Rules:
+Compose operations as follows:
 
-- `summary` is one short sentence, no trailing period required.
-- `capabilities` are lowercased, kebab-cased tags (e.g., `go-service`, `react-app`, `protobuf`).
-- `depends_on` lists sibling project slugs only — never external dependencies.
-- `fingerprint_hash` must equal the sha256 the Go builder computes from the same Request inputs (README first 64 KiB + the sorted depth-2 listing). The cache lookup keys on this exact hash, so a mismatch invalidates the cache entry on the next build.
-- `provenance` records model id and decoding settings.
-- `generated_at` is RFC3339 UTC at the moment the LLM call completed.
-- `template_version` is `1` for the current schema.
+1. `init`: run `workspace init` from the requested workspace root. Treat a
+   successful response with a pipeline warning as partial: registration may
+   already be committed, so do not claim rollback.
+2. `doctor`: run `workspace doctor --json`, report every org's found and
+   repaired issues, then run it once more to verify the fleet's post-state.
+3. `routing-show`: run only `workspace routing show ... --json`.
+4. `routing-build`: run the build, then verify with `routing show --json`.
+5. `regenerate`: first verify routing exists with `routing show --json`, run
+   regenerate, then retain its returned canonical path, project count, and byte
+   count as the post-state evidence.
+6. `scan`: run routing build (add `--enrich` when requested), verify with
+   routing show, run regenerate, and report both results.
+7. `repair`: run doctor, rebuild routing, verify routing show, regenerate, then
+   run doctor again. Doctor repairs state directories and eligible sibling-root
+   guidance links; build and regenerate repair missing or drifted generated
+   content.
 
-Validate the LLM output as well-formed JSON matching this shape before writing. On parse/validation failure, log a warning and skip the project — never write a malformed cache file. Write valid results to `~/.planar/cache/workspace-enrichment/<org_id>/<slug>-<fingerprint>.json` atomically (temp + rename).
+For `--dry-run`, run `planar scope show --json` and, for an existing workspace,
+`planar workspace routing show [<workspace>] --json`. Report the exact commands
+that would run, with `applied=0`; do not call init, doctor, build, or regenerate.
 
-<!--
-Note for maintainers: the fingerprint_hash field is load-bearing. The
-Go routing builder recomputes the same sha256 over (README excerpt +
-sorted depth-2 listing) and uses it to key the cache lookup. If the
-skill writes a Result whose fingerprint_hash disagrees with the Go
-side's computation, the cache file is silently ignored on the next
---enrich build (cache miss). Keep the inputs and hashing algorithm in
-sync with the Go implementation in src/internal/workspace/routing/.
--->
+Track `attempted`, `applied`, `skipped`, and `failed` per CLI stage. Stop stages
+that depend on a failed prerequisite, but still perform safe read-only
+inspection when it can establish the persisted post-state.
 
-## Output
+## Result
 
-A single line on stdout summarising the run:
+Return `outcome=ok|partial|error` plus the resolved scope, workspace identifier,
+operation, and action counts. Include stable post-state from CLI JSON:
 
+- init: org id/slug, project and membership results, and pipeline results;
+- doctor/repair: issues found and repaired per org and the verification pass;
+- routing operations: routing path, project count, dependency edges, enrichment
+  state or misses, and the verified routing-table JSON result;
+- regenerate/scan: canonical `agents_path`, project count, and bytes written.
+
+A successful idempotent run is an informative no-op, not a warning. Say what
+was already current and provide the most useful next read command.
+
+## Warnings
+
+Report pipeline warnings, unresolved workspaces, malformed workspace config,
+enrichment misses, and partial stage failures. `--enrich` delegates enrichment
+to the configured CLI lifecycle; this skill does not inspect projects, compute
+fingerprints, invoke an implementation-specific cache protocol, or write cache
+files itself.
+
+The workspace-root `AGENTS.md` and `CLAUDE.md` are generated links or copy
+fallbacks to canonical state for sibling workspaces. Never hand-edit them.
+Meta-repo root instruction files are repo-owned and doctor leaves them alone.
+Operator routing changes belong in
+`~/.planar/workspaces/<org_id>/routing-table-overrides.json`; never edit
+generated `routing-table.json` or canonical generated `AGENTS.md` directly.
+
+## Next actions
+
+Give at most three executable recommendations. Prefer:
+
+```text
+planar workspace routing show [<workspace>] --json
+planar workspace doctor --json
+planar assoc tree --json
 ```
-workspace org:work scanned (3 projects, 2 enriched, 5 capabilities updated)
-```
 
-When `--dry-run` is set, the prefix is `would scan:` and no files are written.
+Also point existing `/pl-workspace-scan` users to the lifecycle operation names
+without changing the meaning of the no-argument, `--workspace`, or `--enrich`
+forms.
 
-## Authoring Conventions
+## Recovery
 
-This skill body adheres to the structured-authoring rules:
+Name the failed stage and give its exact idempotent recovery:
 
-1. Quoted titles ("Title") not bare. The frontmatter `description` value is a double-quoted string.
-2. Literal headings (`## What It Does`, `## When To Invoke`, `## How the Skill Composes`, `## LLM Enrichment Contract (when --enrich)`, `## Output`, `## Vendor Notes`, `## Invocation`).
-3. No nested bullets. Step lists use only top-level numbered items with prose; sub-letters (a/b/c) are flat under the parent number.
-4. No `## Out of this plan` H2. Deferred items belong in the tech spec's `## Out of scope` section, not in skill bodies.
-5. Always double-quote `title:`-style values when this skill emits frontmatter elsewhere. This skill itself never writes workbench artifacts — it operates on the workspace state directory only.
-6. Workbench discipline: this skill MUST NOT read or write the workbench filesystem. It only touches `~/.planar/workspaces/<org_id>/` (canonical state) and `~/.planar/cache/workspace-enrichment/<org_id>/` (enrichment cache). Active scope and workspace state come from the CLI; the skill must not invent direct DB writes or repo-local context scaffolding.
+- unresolved target: `planar workspace routing show <workspace> --json`;
+- incomplete init pipeline or missing state: `planar workspace doctor --json`;
+- missing/stale routing: `planar workspace routing build <workspace> --json`;
+- enriched refresh: `planar workspace routing build <workspace> --enrich --json`;
+- missing/stale canonical guidance: `planar workspace regenerate <workspace> --json`;
+- suspected link drift: `planar workspace doctor --json`, then rerun the failed
+  scoped stage and its post-state read.
+
+Do not promise rollback across init registration, filesystem repair, routing
+build, and regeneration: they are separate CLI operations. Completed stages
+remain applied and must be named in a partial result.
+
+## Boundaries
+
+- Use the CLI as the only workspace access layer; never write SQLite directly.
+- Do not hand-edit generated workspace guidance, routing tables, manifests, or
+  workspace-root links/copies.
+- Do not remove a workspace or association; there is no workspace destroy verb
+  in this lifecycle.
+- Do not invent a target for global `workspace doctor` or a `--dry-run` CLI
+  flag that the schema does not expose.
+- Keep strict scope behavior and stop on ambiguous resolution.
 
 ## Vendor Notes
 
@@ -128,7 +166,7 @@ This skill body adheres to the structured-authoring rules:
 
 ## Invocation
 
-```
+```text
 {{.InvocationBlock -}}
 ```
 {{- end}}

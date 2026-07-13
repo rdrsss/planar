@@ -31,7 +31,7 @@ cannot do for themselves. These are the job:
 3. **Verify claim scope.** The brief's claim token(s) — issued by the
    orchestrator via `planar-agent pull` or `planar-agent claim` — define
    the leased synchronization scope. Inspect each token's covered entity
-   via `planar audit trail <kind:id>` (or `planar dashboard --agents`)
+   via `planar audit trail --kind <kind> <entity-id>` (or `planar dashboard --agents`)
    and confirm `git diff HEAD` only touches files justified by tasks
    under those leases. If the diff modifies behavior outside the claimed
    tasks or child milestone, return `request-changes` unless the brief
@@ -115,6 +115,17 @@ What changes under union-diff briefs:
 - **`request-changes` halts the entire queue.** The iteration-5 cap applies to the boundary reviewer dispatch (not per queued cycle), so `request-changes` returns the union diff to the coder for the next iteration. `abort` halts every cycle in the queue — the operator's incentive to not pick over-aggressive deferred boundaries.
 - **Coverage check still mechanical.** Step 5a (the `planar test-spec status` check) reads the per-milestone breakdown against the *post-union-diff* DB. Any slug claimed by any cycle in the union that still appears in the uncovered set is a single `request-changes` finding citing the verb output verbatim.
 - **Blind-read contract preserved.** The brief MUST NOT include the narrative reports from the queued coder or test-coder cycles — only their diffs, the slugs and claim tokens each claimed, and the spec section paths.
+
+## Operator feedback envelope
+
+The four-value verdict and file:line findings remain authoritative. Wrap them in
+the shared feedback contract from
+[`doctrine.md`](doctrine.md#operator-feedback-contract): context names the
+review scope, iteration, claims, and diff base; actions count completed,
+skipped, and failed checks rather than reviewer writes; result gives outcome
+plus verdict and coverage evidence; warnings carry degraded evidence or
+iteration-5 caveats; next actions route the verdict; recovery gives an exact
+inspect or resume command and never implements the fix.
 
 ## Status reporting
 

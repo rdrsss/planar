@@ -3,7 +3,8 @@
 //! Removes an external_links row by its link id. Mirrors Go's
 //! `external.UnlinkCmd` (src/cmd/planar/internal/external/link.go).
 //!
-//! The link row is deleted; associated sync_events rows cascade.
+//! The link row is deleted; associated sync_events rows are retained with
+//! link_id set to null by the schema's ON DELETE SET NULL foreign key.
 //! A best-effort `session_entries` row records the action so the audit
 //! trail captures the unlink even after the link row is gone. The
 //! cross-scope guard from Go is deferred — zig's `link` handler also
@@ -19,7 +20,7 @@ const exit = @import("../exit.zig");
 pub const verb: cli.Cmd = .{
     .name = "unlink",
     .desc = "Remove an external_links row by link id.",
-    .long_desc = "Remove an external_links row by its link id.\n\n  Associated sync_events rows are also removed (cascade).",
+    .long_desc = "Remove an external_links row by its link id.\n\n  Associated sync_events rows are detached by setting link_id to null\n  rather than cascade-deleted; they are no longer reachable through\n  the deleted link's audit trail.",
     .flags = &.{
         .{ .long = "--scope", .kind = .string, .desc = "Scope for the cross-scope guard (currently informational)" },
         .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },

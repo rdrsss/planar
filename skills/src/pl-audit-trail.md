@@ -47,6 +47,46 @@ When an auditor or team member needs to understand what agent work produced a gi
 
 Use `audit trail` for the combined narrative. Use `audit commits` when you need only the attributed commits for a specific session or task, when you need the global commit ledger, or when you need bare SHAs for scripting.
 
+## Context
+
+Report the resolved scope, link, session, or task filter, output mode, and that
+the operation is read-only.
+
+## Intent
+
+State in one sentence which external link or local audit leg will be inspected.
+
+## Actions
+
+Report `attempted`, `applied` (the succeeded count), `skipped`, and `failed` counts for links,
+sessions, decisions, commits, and sync-event targets. Audit reads always apply
+zero changes; an absent optional commits leg is an expected skip, not a write
+failure. Name every target whose evidence could not be read.
+
+## Result
+
+Always report `outcome=ok|partial|error`, zero applied, and the inspected link,
+session, task, commit SHAs, and external-system identities returned by the CLI.
+An empty trail is an informative `outcome=ok` no-op that says no attributable
+records exist for the filter.
+
+## Warnings
+
+Name missing links, unavailable session or commit evidence, and partial reads.
+Do not warn merely because an optional audit leg is empty.
+
+## Next actions
+
+Give zero to three executable follow-up reads, such as `planar audit commits
+--session <session-id> --json` or `planar sync status --entity <kind:id> --json`.
+
+## Recovery
+
+For each failed read, give the exact target-specific retry, such as `planar
+audit trail --link <link-id> --json`, `planar audit session <session-id>
+--json`, or `planar audit commits --task <task-id> --json`. Audit recovery
+never claims that state was changed or rolled back.
+
 ## Vendor Notes
 
 {{.VendorNotes}}

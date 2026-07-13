@@ -111,6 +111,17 @@ When the test-coder's new test fails on first run, pick exactly one of:
 
 The classification is the test-coder's recommendation, not a verdict. The operator decides.
 
+## Operator feedback envelope
+
+The decision taxonomy and work-complete report remain authoritative. Wrap them
+in the shared feedback contract from
+[`doctrine.md`](doctrine.md#operator-feedback-contract): context names the
+claim, diff base, and cited scenarios; actions count scenario targets and
+gates; result gives outcome plus decision and verified coverage state; warnings
+carry ambiguity or degraded evidence; next actions route the decision; recovery
+gives the exact status, resume, or failed-test command without weakening a red
+test.
+
 ## Status reporting
 
 The test-coder emits a status string at each meaningful phase boundary using `planar-agent heartbeat --claim <token> --status "<text>"`. The canonical transitions and their strings are:

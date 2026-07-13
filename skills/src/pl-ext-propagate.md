@@ -75,6 +75,37 @@ Entities that already have an `external_links(link_role='mirror')` row for the t
 
 ## Underlying CLI verbs
 
+There is no lossless current command for changing an existing external link's
+direction. The `links update` subcommand is deferred, and `links add` /
+`links remove` manage internal `entity_links`, not external bindings. Top-level
+`unlink` / `link` is a destructive recovery: it deletes the old `external_url`,
+`config_json` (including cached propagation strategy), last-sync state, and
+association with its sync-event history. The old events remain detached with
+`link_id=null`; the replacement gets a new row id, null URL/config/last-sync,
+status `never`, and no attached history.
+
+Before any unlink, save the CLI-visible evidence:
+
+```sh
+planar audit trail --link <link-id> --json > external-link-<link-id>-audit.json
+planar sync status --entity <kind:id> --system <system-slug> --json > external-link-<link-id>-status.json
+```
+
+Those reads capture identity, event history, and last-sync state, but the
+public CLI does not expose the exact old URL, config, role, or direction. Stop
+unless the destructive loss is acceptable and the intended role/direction are
+known independently. For a record-only binding, review the full replacement
+command first, then run top-level `planar unlink <link-id>` and `planar link
+<kind:id> --to <system-slug>:<external-id> --role <role> --sync <direction>`.
+This retains the same remote id but does not restore the omitted fields.
+
+For a propagation-owned mirror, validate the plan/system with a dry run before
+unlinking. After unlink, dry-run again to preview fresh creation, then propagate
+with an explicit sync direction. This creates a new remote counterpart and new
+state; it does not restore the deleted row. Pass `--github-strategy` only when
+the old value is independently known. See the complete recovery sequence in
+[`docs/cli-reference.md`](../../docs/cli-reference.md#planar-links-update-link-id).
+
 > **Cross-scope guard.** This verb refuses with exit 1 when the
 > operator's resolved write scope disagrees with the target entity's
 > stored scope. Run from inside the entity's owning repo, pass
@@ -90,10 +121,60 @@ planar ext propagate <plan> --github-strategy parent-issue|projects-v2|tracking-
 planar ext propagate <plan> --sync read-only|write-back|two-way
 planar ext propagate <plan> --verify-counterparts [--unlink | --recreate]
 planar link <kind:id> --to <system-slug>:<external-id> --propagate
-planar links update <link-id> --sync read-only|write-back|two-way
+planar unlink <link-id>
+planar link <kind:id> --to <system-slug>:<external-id> --role <role> --sync read-only|write-back|two-way
 ```
 
 See [`docs/cli-reference.md`](../../docs/cli-reference.md) for the full command grammar.
+
+## Context
+
+Report the resolved scope, anchor plan, external system, selected or cached
+strategy, sync direction, dry-run or apply mode, and counterpart-verification
+or restrategize options.
+
+## Intent
+
+State in one sentence which feature tree will be previewed, propagated,
+verified, restrategized, unlinked, or recreated.
+
+## Actions
+
+Report `attempted`, `applied` (the succeeded count), `skipped`, and `failed` for every entity target.
+Retain the propagation result's created, existing, missing, unlinked, and
+recreated distinctions, and list every failed local identity with system slug
+and remote failure evidence. A dry run applies zero; already-linked entities
+are skips.
+
+## Result
+
+Always report `outcome=ok|partial|error`. Return the anchor plan, strategy,
+system, completed entity-to-link/URL mappings, missing counterparts, and the
+latest sync-event evidence. Verify persisted links with `planar sync status
+--entity <kind:id> --system <system-slug> --json` where supported. A fully
+idempotent rerun is `outcome=ok` with zero applied and the existing links.
+
+## Warnings
+
+Preserve the `--restrategize` confirmation gate and require the existing
+confirmation semantics before changing strategy. Name claim conflicts,
+missing counterparts, destructive unlink/recreate implications, unavailable
+post-state, and partial remote results. Never imply atomicity or rollback
+across independent remote calls.
+
+## Next actions
+
+Give zero to three executable recommendations. A dry run leads with the exact
+approved apply command; missing counterparts lead with their audit/status read
+before any separately confirmed `--unlink` or `--recreate` action.
+
+## Recovery
+
+For each failed entity, provide its `planar sync status --entity <kind:id>
+--system <system-slug> --json` inspection and the exact idempotent `planar ext
+propagate <plan> --system <slug> ...` retry preserving strategy, sync, scope,
+and verification flags. Successful targets remain linked and the retry skips
+them; do not prescribe a cross-target undo.
 
 ## Vendor Notes
 

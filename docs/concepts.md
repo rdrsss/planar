@@ -468,7 +468,7 @@ Two operator-visible consequences:
 
 The opt-out is `--no-auto-promote` on the task verbs, used by migrations and scripted bulk edits that don't intend the plan-level transition.
 
-Each transition emits a `session_entries` row with `prefix='note'` and a body that begins with the sentinel line `plan_status: <id>` — recoverable via `planar audit trail <plan> --grep "^plan_status:"`.
+Each transition emits a `session_entries` row with `prefix='note'` and a body that begins with the sentinel line `plan_status: <id>` — recoverable via `planar audit trail --kind plan <plan-id> --grep "^plan_status:"`.
 
 **SQLite table:** `plans`. **Primary verbs:** `planar plan create`, `planar plan show`, `planar plan list`, `planar plan active`, `planar plan done`, `planar plan abandon`.
 
@@ -570,13 +570,13 @@ cycle_scope: plan:N milestone:M | task:T...
 tasks: [<id>, <id>, ...]
 ```
 
-Recover the per-cycle disposition with `planar audit trail <plan> --grep "^dispatch_shape:"`. No schema change; the sentinel-body convention is the contract.
+Recover the per-cycle disposition with `planar audit trail --kind plan <plan-id> --grep "^dispatch_shape:"`. No schema change; the sentinel-body convention is the contract.
 
 **Pick-when summary:** when in doubt, pick `strict`. Move up the table (toward throughput) when you have high confidence in the gates and the spec, or when the diff cadence makes per-cycle reviewer dispatch wasteful. The orchestrator never picks a barrel mode silently — every shape change is an explicit operator choice at the gate.
 
 For the canonical contract see [`agents/methodology.md` §Barrel modes](../agents/methodology.md#barrel-modes). For the CLI-flag surface see [`docs/cli-reference.md` §`/pl-orchestrator`](cli-reference.md#planar-orchestrator).
 
-**SQLite tables:** none beyond `session_entries`. **Primary entry points:** `/pl-orchestrator` (the gate), `agents/methodology.md` §Barrel modes (the contract), `planar audit trail <plan>` (the forensic surface).
+**SQLite tables:** none beyond `session_entries`. **Primary entry points:** `/pl-orchestrator` (the gate), `agents/methodology.md` §Barrel modes (the contract), `planar audit trail --kind plan <plan-id>` (the forensic surface).
 
 ---
 
@@ -1016,7 +1016,10 @@ A file's parent directory tree is authoritative for its kind: a `<name>/SKILL.md
 
 **Migrating from the legacy flat layout.** A pre-reshape sandbox stored each skill as a flat `~/.planar/local/skills/<name>.md`. Run `planar local migrate` to convert these to the dir-shape `<name>/SKILL.md` layout. `planar local link` flags any remaining flat skill files with a warning pointing at the migrate verb.
 
-**Frontmatter schema.** The frontmatter mirrors the canonical skill convention used under the repo's `commands/claude/`. Sandbox-specific keys are `shadow:` and `vendors:`; vendors ignore them.
+**Frontmatter schema.** The frontmatter mirrors the unified canonical skill
+convention authored under the repo's `skills/src/`. Vendor projections are
+generated at install time and are not an authoring surface. Sandbox-specific
+keys are `shadow:` and `vendors:`; vendors ignore them.
 
 ```yaml
 ---
@@ -1051,7 +1054,7 @@ The dir-symlink shape for Codex and Copilot is load-bearing. Empirically their d
 
 **Promotion is manual.** No `planar local promote` shortcut. A skill earning a place in the canonical repo means going through the normal git contribution flow: copy the file into `skills/src/`, run `make install` (which invokes `planar skills render` at install time), commit, push, and let `planar skills render --check` (run against an out-of-tree staging dir) plus any remaining relevant validators gate it. The absence of a shortcut is deliberate — canonical and sandbox have different bars.
 
-**SQLite tables:** none — the sandbox is filesystem state. **Primary entry points:** `sandbox.WalkSandbox`, `sandbox.Migrate`, `link.Link`, `link.Unlink`, `link.List`, `importer.Import`. CLI surface: `planar local {list, link, unlink, import, migrate}`.
+**SQLite tables:** none — the sandbox is filesystem state. **Primary entry points:** `sandbox.WalkSandbox`, `sandbox.Migrate`, `link.Link`, `link.Unlink`, `link.List`, `importer.Import`. CLI surface: `planar local {list, link, unlink, import, migrate}`; the `pl-local repair` workflow uses `planar local link --reconcile`, not a separate repair verb.
 
 ## Test spec
 
@@ -1080,7 +1083,17 @@ planar spec ingest <plan>
 
 **Cross-references.** The test-spec carries `verifies: [artifact:<product-spec-id>]` in its frontmatter so the cross-reference machinery tracks which user stories the test plan covers. Scenarios cite tasks via `**Verifies:** task:<id>` *or* `**Verifies:** task:<slug>`. The slug form (plan 286) is the canonical citation chain: scenarios drafted before tasks exist still resolve at apply time, because the ingestor looks up `tasks.slug` against the `[slug: …]` annotations on the roadmap bullets. Unresolvable slugs are a hard error at apply — the operator either adds the missing `[slug:]` to the roadmap or removes the citation.
 
-**Coverage gate.** `planar spec ingest` prints a `coverage:` summary after the additions/updates/removals totals: how many tasks carry a `[slug:]`, how many slug-bearing tasks have a scenario verifying them, and any orphan scenarios (no parseable `**Verifies:**` line). Pass `--strict` to promote uncovered tasks and orphan scenarios from a printed warning into a non-zero exit; this is the gate test-coder cycles depend on. The read-only inspector `planar test-spec status <plan>` prints the same view per-milestone with a four-bucket breakdown (happy / empty / error / edge), classified by scenario-title prefix.
+**Coverage gate.** Before ingestion, `planar spec ingest <plan> --strict --json`
+is the authoritative workbench-draft oracle. Preview is the default because
+`--apply` is absent. Its `coverage` object reports task/slug totals,
+`uncovered_task_slugs`, and `orphan_scenarios` (no parseable `**Verifies:**`
+line); the top-level `slug_collisions` array reports slugs already held by live
+tasks. A non-zero exit or any uncovered, orphan, or collision finding blocks
+ingestion. `planar test-spec status <plan> --json` instead queries live
+`tasks`, `test_scenarios`, and `entity_links`; it becomes authoritative only
+after apply. Before apply, its legitimate zero totals do not prove draft
+coverage. After apply it provides the per-milestone four-bucket breakdown
+(happy / empty / error / edge) used by test-coder cycles and reviewers.
 
 **Planning loop integration.** The planner authors the test-spec in Phase 4 of its authoring pipeline (see [`agents/planner.md` §Authoring phases](../agents/planner.md#authoring-phases)). Phase 4 is purely adversarial: what could go wrong, what scenarios prove this works, what scenarios prove it doesn't. The planner explicitly does NOT propose implementations of the tests — that's the [test-coder](#test-coder)'s job (see below).
 
@@ -1105,7 +1118,7 @@ The fourth agent role, dispatched between the coder and the reviewer in [Phase 3
 
 **Manual invocation.** Operators can invoke `/pl-test-coder <task-id>` directly to backfill coverage on an already-committed change set, or `/pl-test-coder <plan-id> --plan` to run against every cited scenario in a plan. Useful after authoring a new test-spec for an older feature.
 
-**SQLite tables:** none. **Primary entry points:** [`agents/test-coder.md`](../agents/test-coder.md) (canonical contract), `commands/claude/pl-test-coder.md` + `skills/codex/pl-test-coder.md` + `skills/copilot/pl-test-coder.md` (vendor surfaces), `planar test-spec status` (gating verb), `planar spec ingest --strict` (ingest-time gate).
+**SQLite tables:** none. **Primary entry points:** [`agents/test-coder.md`](../agents/test-coder.md) (canonical contract), [`skills/src/pl-test-coder.md`](../skills/src/pl-test-coder.md) (unified skill source), `planar test-spec status` (gating verb), `planar spec ingest --strict` (ingest-time gate). Vendor projections are generated at install time.
 
 ## Usage Introspection Privacy Model
 
@@ -1121,15 +1134,60 @@ The `cli_invocations` table enforces the same guarantee at the write site: the c
 
 Findings filed by the introspector (`planar question add` / `planar task add` on the feedback plan) may legitimately reference verb paths and error categories in their body. Their only guarantee is the **mandatory preview gate** in `pl-report-issue` — the operator personally reviews every byte of issue body text before it posts to GitHub. Skills and docs must present the bundle as machine-safe and the finding embed as operator-reviewed, never the reverse.
 
-### Transcript mining: ephemeral by design
+### Transcript mining: cross-vendor and ephemeral by design
 
-Transcript mining (see [`agents/introspector.md`](../agents/introspector.md)) extracts only structured signal — verb path, exit code, retry count — from local Claude JSONL transcript files. **Transcript text (operator messages, assistant responses, tool output prose) is never persisted to any Planar entity, SQLite table, or file.** This is enforced by the mining recipe's design, not by a downstream filter. Violation would push private conversational text into the feedback plan's entity bodies, which the audit machinery and `pl-report-issue` would then surface upstream.
+Transcript adapters recognize supported Claude, Codex, and Copilot local
+session schemas; the opt-in CLI log remains the authoritative source for
+invocations it contains. Each adapter immediately normalizes records to
+vendor, verb path, category, count, and time range. **Transcript text
+(operator messages, assistant responses, tool output prose), argument values,
+entity titles, scope slugs, and raw transcript paths are never persisted to a
+Planar entity, SQLite table, snapshot, or failure output.** Unknown schema
+versions and malformed records are skipped with counted warnings. A missing or
+disabled source is reported in `signal_coverage`, not conflated with an
+observed zero.
+
+The default `pl-introspect` run is a read-only preview. Only a separately
+confirmed apply phase creates or reuses the feedback plan and files approved,
+deduplicated findings. Cancellation before the gate writes nothing; mixed
+apply results retain successful independent findings and return exact recovery
+for the failures.
 
 ### Opt-in capture
 
 `[introspection].cli_log = false` by default. No `cli_invocations` rows are written until the operator sets `cli_log = true` in `~/.planar/config.toml`. The report verb distinguishes "logging disabled" from "no activity in the window" — the operator is never shown fabricated zeros. The always-on observability tables (`agent_actions`, `sync_events`, `agent_work_claims`, `handoffs`) render normally regardless of the `cli_log` setting.
 
 **SQLite tables:** `cli_invocations` (opt-in; args shape only), `agent_actions`, `sync_events`, `agent_work_claims`, `handoffs` (always-on, read by `report`). **Primary entry points:** `planar report [--json]` (diagnostic bundle), `skills/src/pl-introspect.md` (introspection skill), `agents/introspector.md` (agent role spec).
+
+## Feedback triage
+
+Feedback findings remain ordinary task or question rows on a feedback plan;
+their review state is kept separately in `feedback_triage`. One row targets
+exactly one task or question and records severity
+(`info|low|medium|high|critical`), disposition, reproduction status, optional
+same-plan duplicate target, and redacted evidence. External issue identity
+continues to live in `external_links`, so local triage never predicts or
+duplicates publication state.
+
+`pl-feedback-triage` is preview-first. Its `feedback-triager` specialist may
+recommend `duplicate`, `accepted`, `needs-reproduction`,
+`retained-question`, `dismissed`, or—only after verified publication—
+`reported-external`. The caller shows the proposed entity, relationship, and
+`planar feedback triage set` changes and waits for explicit row-level approval.
+An initial `--apply` request is not confirmation. Optional external reporting
+then enters `pl-report-issue`, which shows the complete issue body and requires
+a second approval. Declining that gate posts nothing and leaves completed
+local triage intact.
+
+Multi-finding application is not atomic across independent findings. Verified
+completed rows remain applied if another target fails; the operator receives
+`outcome=partial`, action counts, and an idempotent inspection or retry command
+for each failure.
+
+**SQLite tables:** `feedback_triage`, plus existing finding entities and
+`external_links`. **Primary entry points:** `planar feedback triage
+list|show|set`, [`skills/src/pl-feedback-triage.md`](../skills/src/pl-feedback-triage.md),
+and [`agents/feedback-triager.md`](../agents/feedback-triager.md).
 
 ---
 

@@ -47,6 +47,52 @@ When the field is non-empty, the resumer MUST prepend a `cd <path>` directive to
 
 For the canonical worktree path/branch/topology conventions (`epic/<plan-slug>` + `cycle/<plan-slug>/<task-slug>`, main checkout stays on master, etc.) see [`docs/concepts.md` §Worktree](../../docs/concepts.md#worktree). The model orchestrator owns that lifecycle through the deterministic seam. For the recovery recipe when the prior coder died and the claim is stale, see [`docs/workflows.md` §Recipe 23](../../docs/workflows.md#recipe-23--recover-a-dead-coder-from-its-worktree).
 
+## Context
+
+Report the resolved scope, task or plan, packet budget, pull policy, vendor,
+claim/handoff source, and validate or resume mode.
+
+## Intent
+
+State in one sentence which interrupted work will be validated or reconstructed
+from durable state.
+
+## Actions
+
+Report `attempted`, `applied` (the succeeded count), `skipped`, and `failed` across validation,
+optional operational pull, and packet assembly targets. Resume and validation
+are reads except for the CLI's explicit pull; name every failed link/system or
+packet component. `--no-pull` and absent optional evidence are explained skips.
+
+## Result
+
+Always report `outcome=ok|partial|error`. Return the task ID and status, exact
+next action, packet sections present, claim or handoff identity, and verified
+worktree/branch when available. A validation-only success applies zero. If an
+optional pull fails but a usable packet is produced, report `partial` and the
+last verified local state.
+
+## Warnings
+
+Name failed freshness pulls, missing resumability fields, stale claims,
+unavailable worktree paths, truncation due to budget, and partial evidence.
+Do not warn for an intentionally omitted optional section or a valid legacy
+no-worktree path.
+
+## Next actions
+
+Give zero to three executable recommendations, led by `cd <worktree_path>` when
+present and then the packet's exact next-action command. Validation failures
+lead with their concrete capture or handoff remediation.
+
+## Recovery
+
+For every failed target, give `planar resume validate <task-id>` plus the exact
+idempotent retry `planar resume <task-id> [--budget <tokens>] [--no-pull]`.
+Name each failed external link's `planar sync status --entity <kind:id>
+--system <slug> --json` inspection. A successful pull or packet component is
+retained; never imply cross-target rollback.
+
 ## Vendor Notes
 
 {{.VendorNotes}}

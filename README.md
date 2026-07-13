@@ -8,7 +8,7 @@ It is **vendor-agnostic by design**: Claude, Codex, and Copilot are first-class 
 
 ## Status
 
-Planar is a feature-complete, local-first tool built as five binaries (`planar`, `planar-agent`, `planar-watch`, `planar-doc`, and `planar-execute` — the deterministic Lua workflow engine, which holds no DB handle and reaches state only through a constrained CLI host surface). The schema has twenty-seven migrations, through `migrations/00027_external_sync_baseline.up.sql`; the runtime applies them automatically from an embedded `migrations` Zig module produced by build-time codegen. The suite contains 1,700+ unit tests and 570+ integration tests. Vendored SQLite is compiled by `build.zig`; `planar-doc` uses a separate DB-free module graph.
+Planar is a feature-complete, local-first tool built as five binaries (`planar`, `planar-agent`, `planar-watch`, `planar-doc`, and `planar-execute` — the deterministic Lua workflow engine, which holds no DB handle and reaches state only through a constrained CLI host surface). The schema has twenty-eight migrations, through `migrations/00028_feedback_triage.up.sql`; the runtime applies them automatically from an embedded `migrations` Zig module produced by build-time codegen. The suite contains 1,700+ unit tests and 570+ integration tests. Vendored SQLite is compiled by `build.zig`; `planar-doc` uses a separate DB-free module graph.
 
 **History.** Repo split — the original Go implementation (M1–M19) is preserved at `github.com/rdrsss/planar-go-archive.git`; the current canonical Zig implementation lives at `github.com/rdrsss/planar.git`.
 
@@ -25,6 +25,12 @@ brew install zig git gh jq ripgrep
 - `gh` — optional but recommended. Used by the default `gh-cli` auth method for the GitHub adapter (`planar ext register github <slug> --project <owner>/<repo>` with `--auth-env` omitted) and by `planar import` to enumerate existing GitHub Issues. Planar degrades gracefully when `gh` is absent.
 - `jq` — required by the bundled agent skills (`pl-spec-draft`, `pl-spec-ingest`) to parse `planar … --json` output in their shell snippets. The Zig binary itself does not depend on `jq`, but skipping it will break those workflows. No `yq` is needed; Planar handles YAML and TOML internally.
 - `ripgrep` (`rg`) — recommended. Planar's agent workflows and the example session below (`planar capture command "rg -l 'v1.client'"`) prefer `rg` over `grep` for fast, gitignore-aware codebase search. Not a hard dependency, but the documented recipes assume it is available.
+
+The full source-checkout installer also uses the base-system utilities declared
+in `install.sh`'s `BUILD_DEPS` manifest (`awk`, `basename`, `cat`, `chmod`,
+`cp`, `dirname`, `find`, `grep`, `head`, `ln`, `ls`, `mkdir`, `mv`, `readlink`,
+`rm`, `rmdir`, `sed`, and `tr`). These ship with supported Unix-like systems;
+the installer preflights them before making changes.
 
 ### Optional / research tools
 
@@ -245,7 +251,7 @@ Three threads run through everything:
 
 ## The schema is the contract
 
-Twenty-seven migration files (`migrations/00001_foundation.up.sql` through `migrations/00027_external_sync_baseline.up.sql`) define Planar's schema. The runtime applies them from an embedded `migrations` Zig module produced by build-time codegen (`tools/gen_migrations.zig`); the public schema-version tracker is `schema_migrations`.
+Twenty-eight migration files (`migrations/00001_foundation.up.sql` through `migrations/00028_feedback_triage.up.sql`) define Planar's schema. The runtime applies them from an embedded `migrations` Zig module produced by build-time codegen (`tools/gen_migrations.zig`); the public schema-version tracker is `schema_migrations`.
 
 Read-side tooling — viewers, query CLIs, Obsidian bridges, future binaries — opens `~/.planar/planar.db` with `PRAGMA query_only = 1`, reads `schema_migrations` to verify version compatibility, and operates without going through the binary. The contract is the schema, not the codebase. See [docs/architecture.md](docs/architecture.md) for the schema overview.
 
@@ -253,17 +259,33 @@ Read-side tooling — viewers, query CLIs, Obsidian bridges, future binaries —
 
 The bundled agent specs and reference workflows use unified source + generated vendor outputs:
 
-| Vendor | Source path | Install destination |
+| Surface | Canonical or staged path | Install destination |
 |--------|-------------|---------------------|
-| Unified skill source | `skills/src/` | Rendered into vendor surfaces by `planar skills render` |
-| Claude | `commands/claude/` (generated) | `~/.claude/commands/` |
-| Codex | `skills/codex/` (generated) | `~/.codex/skills/<skill>` installed directory |
-| Copilot | `skills/copilot/` (generated), `copilot/` (authored prompts/instructions) | `~/.copilot/skills/`, `~/.copilot/` |
+| Unified skill source | `skills/src/` | Rendered by `planar skills render`; never installed directly |
+| Claude | `$PLANAR_HOME/commands/claude/` (generated stage) | `~/.claude/commands/` |
+| Codex | `$PLANAR_HOME/codex-skills/` (generated stage) | `$CODEX_HOME/skills/` (normally `~/.codex/skills/`) |
+| Copilot | `$PLANAR_HOME/copilot-skills/` (generated stage), `copilot/` (authored prompts/instructions) | `~/.copilot/skills/`, `~/.copilot/` |
 | Planar agents | `agents/` | `~/.planar/agents/` |
 
-Eight agent roles total. Three drive task execution: `orchestrator` (large tier), `coder` (medium tier), `reviewer` (large tier). Three drive the feature lifecycle: `planner` (drafts spec/roadmap/scenario docs), `ingestor` (decomposes docs into rich tasks), `ext-sync` (propagates a feature to a registered operational system). Two drive repo onboarding: `importer` (classifies and ingests an existing repo's planning content) and `synthesizer` (re-synthesizes planning artifacts from docs + code + git history). See [`agents/methodology.md`](agents/methodology.md) for the orchestration flow.
+Sixteen agent roles cover orchestration and review, planning and ingestion,
+external propagation, repo adoption, introspection and feedback triage,
+documentation classification/authoring, guarded sync reconciliation, testing,
+and closeout. The specialist boundaries are deliberate: `documenter` is
+read-only, `doc-author` writes only approved prose, `feedback-triager` and
+`sync-reconciler` coordinate preview-gated changes, and planning-state writes
+still go through the owning CLI binary. See
+[`agents/methodology.md`](agents/methodology.md) for orchestration and
+[`docs/skill-reference.md`](docs/skill-reference.md) for the role inventory.
 
-31 vendor surfaces per vendor (`pl-*.md` files under `commands/claude/`, `skills/codex/`, and `skills/copilot/`). Three invoke agent roles directly (`pl-orchestrator`, `pl-coder`, `pl-reviewer`); the rest are workflow wrappers around the `planar` CLI — spec pipeline (`pl-spec-draft`, `pl-spec-ingest`), workbench (`pl-workbench`, `pl-workbench-sync`, `pl-workbench-archive`), external systems (`pl-ext-propagate`, `pl-ext-create`, `pl-templates`), repo onboarding (`pl-import`, `pl-local-import`, `pl-synthesize`, `pl-workspace-scan`), docs (`pl-doc-promote`, `pl-doc-regenerate`), and per-entity CLI wrappers (`pl-plan`, `pl-task`, `pl-question`, `pl-scenario`, `pl-promote`, `pl-status`, `pl-health`, `pl-init`, `pl-scope`, `pl-sync`, `pl-resume`, `pl-handoff`, `pl-audit-trail`, `pl-help`). Vendor-surface drift is gated by `planar skills render --check` against an out-of-tree staging directory.
+Forty-one unified `pl-*` skill sources render for each selected vendor. In
+addition to the planning, workbench, external, onboarding, and entity
+workflows, the inventory includes intent-oriented status/help, durable
+knowledge, operational observation, the complete local lifecycle (with
+`pl-local-import` retained as a compatibility wrapper), preview/apply
+introspection and feedback triage, guarded sync reconciliation, and gated
+documentation maintenance. Repo-relative vendor trees are not checked in;
+canonical edits belong in `skills/src/`, and drift is gated by semantic lint
+plus `planar skills render --check` against an out-of-tree staging directory.
 
 ## Repository layout
 
@@ -285,9 +307,9 @@ The repo root IS the Zig package root: `build.zig` and `build.zig.zon` sit at th
 | `templates/defaults/` | Propagation templates (JSON) for external systems (`github-issues/`, `github-projects/`, `jira/`); embedded at build time |
 | `templates/doc-prompts/`, `templates/entity/`, `templates/workspace-capabilities.toml` | Operator-editable defaults staged into `~/.planar/templates/` on install |
 | `skills/src/` | Unified authored skill sources (`pl-*.md`) |
-| `commands/claude/` | Generated Claude slash commands |
-| `skills/codex/` | Generated Codex skills |
-| `skills/copilot/`, `copilot/` | Generated Copilot skills + authored instructions/prompts |
+| `$PLANAR_HOME/commands/claude/` | Generated Claude staging tree (install output, not checked in) |
+| `$PLANAR_HOME/codex-skills/` | Generated Codex staging tree (install output, not checked in) |
+| `$PLANAR_HOME/copilot-skills/`, `copilot/` | Generated Copilot staging tree + checked-in authored instructions/prompts |
 | `agents/` | Vendor-neutral Planar agent role specs |
 | `docs/` | User-facing reference docs (architecture, CLI, skills, concepts, workflows) |
 | `scripts/` | Bash tooling (acceptance validators, session stats, git hooks); independent of the Zig build |

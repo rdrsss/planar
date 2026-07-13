@@ -93,6 +93,54 @@ For a higher-level "sync this feature now" action without choosing between verbs
   `<id>-<slug>.md` uniformly. Workbenches materialized by older versions may
   have stale bare-named files; delete and re-push to clean up.
 
+## Context
+
+Report the resolved scope, plan and workbench path, verb and direction,
+external system for publish, current drift/conflicts, and read, preview, or
+mutation mode.
+
+## Intent
+
+State in one sentence which feature tree and DB or external target will be
+inspected, reconciled, archived, restored, or published.
+
+## Actions
+
+Report `attempted`, `applied` (the succeeded count), `skipped`, and `failed` per file, entity, plan,
+conflict, or publish target. Name every failed target with plan/path/entity,
+direction or system, and failure evidence. Status and list apply zero;
+unchanged/idempotent targets are skips.
+
+## Result
+
+Always report `outcome=ok|partial|error`. For filesystem operations, verify
+with `planar workbench status <plan> --json` or `planar workbench list --json`
+and return paths, entity IDs, and conflict events. For publish, return each
+local identity and external result and verify supported link/sync post-state.
+A clean status or already-matching operation is an informative no-op.
+
+## Warnings
+
+Preserve direction and conflict gates: confirm pull versus push before a
+consequential overwrite, and do not resolve until the operator selects `fs` or
+`db`. Name drift, conflicts, unavailable verification, and partial filesystem
+or remote results. Never imply atomicity or rollback across independent
+targets.
+
+## Next actions
+
+Give zero to three executable recommendations, ordered from status inspection
+to a separately confirmed resolve or idempotent retry. A publish result may
+recommend its sync-status read, not an automatic propagation.
+
+## Recovery
+
+For every failed target, give `planar workbench status <plan> --json` and the
+exact target-specific retry: pull, push, sync, archive, restore, resolve after
+preference confirmation, or `planar workbench publish <plan-id> --system
+<slug>`. Successful files/entities/remotes remain applied; never fabricate a
+cross-target undo.
+
 ## Vendor Notes
 
 {{.VendorNotes}}

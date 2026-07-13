@@ -78,6 +78,17 @@ Operator prompts:
 If there are no blocking issues, the verdict is `ready-for-ingest` and the
 packet still names residual risks or assumptions.
 
+## Operator feedback envelope
+
+The review packet and four-value verdict remain authoritative. Wrap them in the
+shared feedback contract from
+[`doctrine.md`](doctrine.md#operator-feedback-contract): context names plan,
+artifact set, mode, and coverage oracle; the packet's Intent read supplies
+intent; actions count checks and only operator-approved writes; result gives
+outcome plus the complete packet and verified preview/live-row state; warnings
+do not hide blocking gaps; next actions route the verdict; recovery gives an
+exact inspect or retry command and never applies ingestion.
+
 ## Behavior
 
 1. Resolve the plan and scope:
@@ -86,13 +97,14 @@ packet still names residual risks or assumptions.
    planar plan show <plan> --json
    planar artifact list --plan <plan-id> --json
    planar question list --plan <plan-id> --json
-   planar spec ingest <plan> --format json --strict
-   planar test-spec status <plan> --json
+   planar spec ingest <plan> --strict --json
    ```
 
-   If `spec ingest --strict` or `test-spec status` fails because the specs are
-   incomplete, keep the failure output as review evidence. Do not treat that as
-   a skill failure.
+   The strict command is a read-only preview because `--apply` is absent. Keep a
+   non-zero exit and its output as review evidence rather than treating it as a
+   skill failure. Before ingestion, do not use `test-spec status` as evidence
+   of draft completeness: it queries live rows and legitimately reports zero
+   totals when those rows do not exist.
 
 2. Load the four core artifacts (`product_spec`, `tech_spec`, `roadmap`,
    `test_spec`) with `planar artifact show <artifact-id> --json`. If one is
@@ -134,8 +146,12 @@ packet still names residual risks or assumptions.
    - Cross-repo or cross-surface bullets need `[touches: ...]` annotations or an
      explicit reason they are single-scope.
    - Milestones should be independently reviewable and ordered by dependency.
-   - `planar spec ingest <plan> --format json --strict` output should match the
+   - `planar spec ingest <plan> --strict --json` output should match the
      intended task graph. Any unexpected add/update/removal is a finding.
+   - Treat non-empty `coverage.uncovered_task_slugs`,
+     `coverage.orphan_scenarios`, or top-level `slug_collisions` as blocking
+     ingest-readiness findings. A non-zero strict-preview exit confirms the
+     draft is not ready.
 
 7. Test-spec pass:
    - Every product acceptance signal has at least one scenario or a documented
@@ -144,12 +160,17 @@ packet still names residual risks or assumptions.
    - Scenarios cover happy, empty/null, error, and edge paths for each public
      workflow or API surface when applicable.
    - Scenario text describes observable behavior, not implementation steps.
-   - `planar test-spec status <plan> --json` has no unexplained uncovered slugs
-     before the plan is marked ready for ingestion.
+   - For a draft that has not been ingested, the strict preview's `coverage`
+     object is authoritative. Do not accept empty live-row totals as proof of
+     complete coverage.
+   - If ingestion has already been applied and task/scenario rows exist, use
+     `planar test-spec status <plan> --json` as the authoritative post-ingest
+     oracle and require no unexplained uncovered slugs.
 
 8. Decide:
-   - `ready-for-ingest`: no blocking questions, no material gaps, strict ingest
-     and test-status output are clean or have justified N/A cases.
+   - `ready-for-ingest`: no blocking questions or material gaps remain, and the
+     strict preview has no uncovered slugs, orphan scenarios, or slug
+     collisions.
    - `needs-answers`: one or more operator decisions block coherent specs.
    - `needs-spec-work`: answers are known, but artifacts need concrete edits.
    - `abort-replan`: the artifacts describe the wrong feature or contradict the
@@ -178,9 +199,11 @@ Allowed write-mode actions:
   ```
 - Re-run:
   ```
-  planar spec ingest <plan> --format json --strict
-  planar test-spec status <plan> --json
+  planar spec ingest <plan> --strict --json
   ```
+
+  If this is a review of an already-ingested plan, also re-run
+  `planar test-spec status <plan> --json` against the live rows.
 
 Do not run `planar spec ingest --apply`. Ingestion remains the operator's next
 explicit gate after review.

@@ -80,7 +80,7 @@ Reads:
 planar report --json --days <n>
 planar question show --json <id>
 planar task show --json <id>
-planar audit trail <entity-id> --kind <kind>
+planar audit trail --kind <kind> <entity-id>
 ```
 
 Posts (only after operator confirmation):
@@ -177,6 +177,60 @@ only when the post succeeds.
 - Does not attach transcript excerpts — only the structurally-redacted
   bundle and the operator-reviewed finding text.
 - Does not post without the operator seeing and confirming the full body.
+
+## Context
+
+Report the resolved scope, optional finding identity, diagnostic window,
+GitHub repository, `planar-upstream` registration state, `gh` authentication
+state, and preview or confirmed-post mode.
+
+## Intent
+
+State in one sentence which finding or operator-supplied report will be
+previewed for possible external posting and linkback.
+
+## Actions
+
+Report `attempted`, `applied` (the succeeded count), `skipped`, and `failed`
+for diagnostic collection, finding/audit reads, the GitHub post, registration,
+and record-only linkback. Name every failed target with its finding identity,
+repository or system slug, created issue identity when one exists, and failure
+evidence. Preview reads apply zero; a declined preview skips both post and
+linkback without warning.
+
+## Result
+
+Always report `outcome=ok|partial|error`. A preview returns the assembled body
+identity and zero applied. After confirmation, return the finding, GitHub issue
+number and URL, and external link ID; verify linkback with `planar sync status
+--entity <kind:id> --system planar-upstream --json`. If posting succeeds but
+linkback fails, report `partial`: the issue remains published and must not be
+posted again. A declined preview is an informative `outcome=ok` no-op.
+
+## Warnings
+
+Preserve the mandatory preview and explicit confirmation gate without any
+bypass. Name unavailable or unredacted evidence, authentication/network
+failure, missing registration, unavailable post-state, and the partial case
+where a GitHub issue exists without its local link. Never describe a successful
+post or link as rolled back.
+
+## Next actions
+
+Give zero to three executable recommendations. A preview leads with the
+explicit confirmation choice rather than executing a command. A posted issue
+may lead with its URL and audit/status inspection; a declined preview may
+recommend editing the report inputs and rerunning the preview.
+
+## Recovery
+
+For a collection failure, retry `planar report --json --days <n>` and the exact
+finding/audit read. For a failed post, give `gh auth status` and rerun the skill
+through its mandatory preview; no link exists yet. If the issue was posted but
+linkback failed, do not rerun `gh issue create`: inspect the existing URL, then
+retry only `planar link <kind:id> --to planar-upstream:<issue-number> --role
+reference --sync read-only --json`, followed by `planar sync status --entity
+<kind:id> --system planar-upstream --json`.
 
 ## Vendor Notes
 

@@ -22,7 +22,7 @@ shared_notes:
 
 {{.VendorTitle}} skill surface for the vendor-neutral `importer` agent. See [`agents/importer.md`](../../agents/importer.md) for the full role spec, input/output contract, and workflow steps.
 
-Vendor-neutral skill that imports an existing repo's planning content into Planar. Combines a deterministic Go-side classifier with an opt-in LLM interpretation pass.
+Vendor-neutral skill that imports an existing repo's planning content into Planar. Combines the CLI's deterministic classifier with an opt-in LLM interpretation pass.
 
 ## What It Does
 
@@ -105,18 +105,18 @@ If an earlier import landed wrong done marks before this safety net existed, use
 
 ## --interpret Pass
 
-`pl-import . --interpret` opts into the LLM interpretation pass on top of the deterministic floor. The skill body is the LLM engine; the Go side validates whatever the skill produces. Workflow:
+`pl-import . --interpret` opts into the LLM interpretation pass on top of the deterministic floor. The skill body is the LLM engine; the CLI validates whatever the skill produces. Workflow:
 
-1. Go runs the deterministic classifier, builds an interpretation Request from the resulting Corpus, and computes the Request's sha256 `fingerprint`.
-2. On a cache miss, Go writes the Request to `$PLANAR_HOME/cache/import-interpretation/<repo-slug>/_pending.json`, prints an "Awaiting LLM interpretation" notice naming the pending and target paths, and exits 0.
+1. The CLI runs the deterministic classifier, builds an interpretation Request from the resulting Corpus, and computes the Request's sha256 `fingerprint`.
+2. On a cache miss, the CLI writes the Request to `$PLANAR_HOME/cache/import-interpretation/<repo-slug>/_pending.json`, prints an "Awaiting LLM interpretation" notice naming the pending and target paths, and exits 0.
 3. The vendor skill (this skill body) reads the Request, runs the LLM at temperature 0, and writes a Result to `$PLANAR_HOME/cache/import-interpretation/<repo-slug>/<fingerprint>.json`.
-4. The operator re-runs `planar import <repo> --interpret`. Go finds the cached Result, validates it via the Validate rules below, and merges it with the deterministic Corpus per the four merge rules below.
+4. The operator re-runs `planar import <repo> --interpret`. The CLI finds the cached Result, validates it via the rules below, and merges it with the deterministic Corpus per the four merge rules below.
 
 The Request payload carries: README + each `docs/*` body + git log (last ~500 commits) + guide files (CLAUDE.md as CONTEXT, never backlog) + a tree summary + the detected_artifacts produced by the classifier. The skill must NOT mine guide files for tasks.
 
 ## LLM Result Contract
 
-The skill writes a JSON Result matching this schema. The canonical Go types live in [`src/internal/adopter/interpretation/result.go`](../../src/internal/adopter/interpretation/result.go); the schema below mirrors the field set.
+The skill writes a JSON Result matching this schema. The canonical result types and validation live in [`src/engine/import.zig`](../../src/engine/import.zig); the schema below mirrors the field set.
 
 ```json
 {
@@ -285,6 +285,57 @@ Run with --apply to commit.
 ## Authoring Conventions
 
 Apply the structured-authoring rules: quoted titles, literal headings, no nested bullets, no `## Out of this plan` H2, workbench discipline, and only annotate skills with the guard note when the guarded verb literally appears in the body.
+
+## Context
+
+Report the resolved scope, repository root, selected roadmap, deterministic or
+interpret mode, preview or apply mode, removal policy, confidence threshold,
+status-inference policy, and forward-spec selection.
+
+## Intent
+
+State in one sentence which repository planning material will be transcribed
+and whether the request is a read-only preview or an approved application.
+
+## Actions
+
+Report `attempted`, `applied`, `skipped`, and `failed` counts across classified
+artifacts, plans, tasks, decisions, removals, and accepted forward specs. Keep
+the CLI's additions, updates, and proposed-removals counts, and name every
+failed target. Guide and unclassified files are skipped, not failed.
+
+## Result
+
+Always report `outcome=ok|partial|error`. A preview returns the stable proposed
+targets and zero applied. After apply, use the returned IDs to read each
+persisted anchor and accepted forward plan with `planar plan show <plan-id>
+--json`, and inspect affected entities from those verified plan results. Return
+completed and failed target identifiers plus workbench paths for accepted
+forward specs. A clean idempotent rerun reports `outcome=ok`, zero applied, and
+why the import already matches.
+
+## Warnings
+
+Name low-confidence items, roadmap ambiguity, unsafe status inference,
+interpretation cache or validation failures, unavailable post-state reads,
+and any partial per-target application. Do not describe independent completed
+plans as rolled back when another target fails.
+
+## Next actions
+
+Give zero to three executable recommendations. For preview, lead with the
+exact approved `planar import <repo-root> --apply ...` command. For accepted
+forward specs, recommend `planar spec ingest <plan-id> --strict --json` before
+their separate apply gate.
+
+## Recovery
+
+List each failed target with its exact inspection command and an idempotent
+retry preserving the original flags, for example `planar import <repo-root>
+--apply [--apply-removals] [--interpret] [--scope <slug>]` or `planar plan show
+<plan-id> --json`. If interpretation is pending, name the pending/result cache
+paths and rerun `planar import <repo-root> --interpret` after the result exists.
+Completed targets remain applied; never invent a cross-target undo.
 
 ## Vendor Notes
 

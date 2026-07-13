@@ -12,6 +12,21 @@ const model_engine = @import("models.zig");
 
 pub const AgentsModelsPath = "agents/models.md";
 
+/// Projection metadata contract. Both values are lowercase SHA-256 hex. The
+/// source digest covers the parsed, path-independent authored source; the
+/// projection digest additionally covers projection-relevant vendor inputs and
+/// the metadata-free rendered payload. Bump these domains if the canonical
+/// encoding changes.
+const source_digest_domain = "planar-render-source-v1";
+const projection_digest_domain = "planar-render-projection-v2";
+pub const SourceDigestKey = "x-planar-source-digest";
+pub const ProjectionDigestKey = "x-planar-projection-digest";
+
+pub const ProjectionDigests = struct {
+    source: [64]u8,
+    projection: [64]u8,
+};
+
 const embedded_vendors_yaml =
     \\vendors:
     \\  claude:
@@ -767,14 +782,16 @@ pub fn render(allocator: std.mem.Allocator, source: Source, profile: VendorProfi
     const frontmatter = try renderFrontmatter(allocator, source, profile, model);
     defer allocator.free(frontmatter);
 
-    var out = std.ArrayList(u8).empty;
-    errdefer out.deinit(allocator);
-    try out.appendSlice(allocator, "---\n");
-    try out.appendSlice(allocator, frontmatter);
-    try out.appendSlice(allocator, "---\n\n");
-    try out.appendSlice(allocator, body);
-    if (body.len == 0 or body[body.len - 1] != '\n') try out.append(allocator, '\n');
-    return out.toOwnedSlice(allocator);
+    var payload = std.ArrayList(u8).empty;
+    defer payload.deinit(allocator);
+    try payload.appendSlice(allocator, "---\n");
+    try payload.appendSlice(allocator, frontmatter);
+    try payload.appendSlice(allocator, "---\n\n");
+    try payload.appendSlice(allocator, body);
+    if (body.len == 0 or body[body.len - 1] != '\n') try payload.append(allocator, '\n');
+
+    const digests = try skillProjectionDigests(allocator, source, profile, payload.items);
+    return addMarkdownProjectionMetadata(allocator, payload.items, digests);
 }
 
 pub fn parseAgentSourceFile(allocator: std.mem.Allocator, path: []const u8) !AgentSource {
@@ -898,6 +915,153 @@ fn resolveAgentModel(allocator: std.mem.Allocator, source: AgentSource, profile:
     return RenderError.UnknownModelTier;
 }
 
+fn skillProjectionDigests(
+    allocator: std.mem.Allocator,
+    source: Source,
+    profile: VendorProfile,
+    payload: []const u8,
+) !ProjectionDigests {
+    var canonical = std.ArrayList(u8).empty;
+    defer canonical.deinit(allocator);
+    try appendDigestField(allocator, &canonical, "domain", source_digest_domain);
+    try appendDigestField(allocator, &canonical, "kind", "skill");
+    try appendDigestField(allocator, &canonical, "slug", source.slug);
+    try appendDigestField(allocator, &canonical, "description", source.description);
+    try appendDigestField(allocator, &canonical, "source_link", source.source_link);
+    try appendDigestField(allocator, &canonical, "model_tier", source.model_tier);
+    for (source.vendor, 0..) |vendor, i| {
+        try appendIndexedDigestField(allocator, &canonical, "vendor_name", i, vendor.name);
+        try appendIndexedDigestField(allocator, &canonical, "vendor_argument_hint", i, vendor.argument_hint);
+        try appendIndexedDigestField(allocator, &canonical, "vendor_invocation_examples", i, vendor.invocation_examples);
+        try appendIndexedDigestField(allocator, &canonical, "vendor_model", i, vendor.model);
+    }
+    for (source.shared_notes, 0..) |note, i| {
+        try appendIndexedDigestField(allocator, &canonical, "shared_note", i, note);
+    }
+    try appendDigestField(allocator, &canonical, "body", source.body);
+    const source_digest = sha256Hex(canonical.items);
+
+    return .{
+        .source = source_digest,
+        .projection = try projectionDigestForPayload(allocator, "skill", &source_digest, profile.name, payload),
+    };
+}
+
+fn agentProjectionDigests(
+    allocator: std.mem.Allocator,
+    source: AgentSource,
+    profile: VendorProfile,
+    payload: []const u8,
+) !ProjectionDigests {
+    var canonical = std.ArrayList(u8).empty;
+    defer canonical.deinit(allocator);
+    try appendDigestField(allocator, &canonical, "domain", source_digest_domain);
+    try appendDigestField(allocator, &canonical, "kind", "agent");
+    try appendDigestField(allocator, &canonical, "name", source.name);
+    try appendDigestField(allocator, &canonical, "description", source.description);
+    try appendDigestField(allocator, &canonical, "tier", source.tier);
+    try appendDigestField(allocator, &canonical, "role", source.role);
+    try appendDigestField(allocator, &canonical, "capability", source.capability);
+    try appendDigestField(allocator, &canonical, "body", source.body);
+    const source_digest = sha256Hex(canonical.items);
+
+    return .{
+        .source = source_digest,
+        .projection = try projectionDigestForPayload(allocator, "agent", &source_digest, profile.name, payload),
+    };
+}
+
+/// Recomputes the projection digest from the metadata-free bytes that are
+/// installed. Vendor-profile changes are represented by their rendered payload,
+/// allowing status checks to detect semantic edits without the authored source.
+pub fn projectionDigestForPayload(
+    allocator: std.mem.Allocator,
+    kind: []const u8,
+    source_digest: []const u8,
+    vendor: []const u8,
+    payload: []const u8,
+) ![64]u8 {
+    if ((!std.mem.eql(u8, kind, "skill") and !std.mem.eql(u8, kind, "agent")) or
+        source_digest.len != 64 or vendor.len == 0)
+    {
+        return RenderError.ParseFailure;
+    }
+    var canonical = std.ArrayList(u8).empty;
+    defer canonical.deinit(allocator);
+    try appendDigestField(allocator, &canonical, "domain", projection_digest_domain);
+    try appendDigestField(allocator, &canonical, "kind", kind);
+    try appendDigestField(allocator, &canonical, "source_digest", source_digest);
+    try appendDigestField(allocator, &canonical, "vendor", vendor);
+    try appendDigestField(allocator, &canonical, "payload", payload);
+    return sha256Hex(canonical.items);
+}
+
+/// Canonical field encoding is `label N:value\n`, where N is the byte length
+/// of value. Length-prefixing keeps arbitrary Markdown unambiguous; field order
+/// is fixed above and never comes from filesystem traversal.
+fn appendDigestField(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    label: []const u8,
+    value: []const u8,
+) !void {
+    const prefix = try std.fmt.allocPrint(allocator, "{s} {d}:", .{ label, value.len });
+    defer allocator.free(prefix);
+    try out.appendSlice(allocator, prefix);
+    try out.appendSlice(allocator, value);
+    try out.append(allocator, '\n');
+}
+
+fn appendIndexedDigestField(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    label: []const u8,
+    index: usize,
+    value: []const u8,
+) !void {
+    const indexed = try std.fmt.allocPrint(allocator, "{s}[{d}]", .{ label, index });
+    defer allocator.free(indexed);
+    try appendDigestField(allocator, out, indexed, value);
+}
+
+fn sha256Hex(bytes: []const u8) [64]u8 {
+    var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
+    return std.fmt.bytesToHex(digest, .lower);
+}
+
+fn addMarkdownProjectionMetadata(
+    allocator: std.mem.Allocator,
+    payload: []const u8,
+    digests: ProjectionDigests,
+) ![]u8 {
+    const close = std.mem.indexOf(u8, payload, "\n---\n") orelse return RenderError.MalformedFrontmatter;
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, payload[0 .. close + 1]);
+    const metadata = try std.fmt.allocPrint(
+        allocator,
+        "{s}: {s}\n{s}: {s}\n",
+        .{ SourceDigestKey, digests.source, ProjectionDigestKey, digests.projection },
+    );
+    defer allocator.free(metadata);
+    try out.appendSlice(allocator, metadata);
+    try out.appendSlice(allocator, payload[close + 1 ..]);
+    return out.toOwnedSlice(allocator);
+}
+
+fn addTomlProjectionMetadata(
+    allocator: std.mem.Allocator,
+    payload: []const u8,
+    digests: ProjectionDigests,
+) ![]u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        "# {s}: {s}\n# {s}: {s}\n{s}",
+        .{ SourceDigestKey, digests.source, ProjectionDigestKey, digests.projection, payload },
+    );
+}
+
 /// renderAgent projects one agent role spec into its per-vendor file body.
 /// Claude/Copilot emit YAML frontmatter + body; Codex emits a TOML document with
 /// the body inlined as a triple-quoted `developer_instructions` string.
@@ -905,13 +1069,22 @@ pub fn renderAgent(allocator: std.mem.Allocator, source: AgentSource, profile: V
     const model = try resolveAgentModel(allocator, source, profile);
     defer allocator.free(model);
 
+    const payload = if (std.mem.eql(u8, profile.agent_format, "md-yaml"))
+        try renderAgentMdYaml(allocator, source, profile, model)
+    else if (std.mem.eql(u8, profile.agent_format, "toml"))
+        try renderAgentToml(allocator, source, profile, model)
+    else
+        return RenderError.UnknownAgentFormat;
+    defer allocator.free(payload);
+
+    const digests = try agentProjectionDigests(allocator, source, profile, payload);
     if (std.mem.eql(u8, profile.agent_format, "md-yaml")) {
-        return renderAgentMdYaml(allocator, source, profile, model);
+        return addMarkdownProjectionMetadata(allocator, payload, digests);
     }
     if (std.mem.eql(u8, profile.agent_format, "toml")) {
-        return renderAgentToml(allocator, source, profile, model);
+        return addTomlProjectionMetadata(allocator, payload, digests);
     }
-    return RenderError.UnknownAgentFormat;
+    unreachable;
 }
 
 fn renderAgentMdYaml(
@@ -1108,8 +1281,10 @@ fn isAgentRoleFile(name: []const u8) bool {
 }
 
 /// listAgentSources enumerates renderable agent role files directly under
-/// `agents_dir` (the `<out_dir>/agents` directory). Returns an empty slice when
-/// the directory does not exist.
+/// `agents_dir` (the `<out_dir>/agents` directory). Link-mode installs stage
+/// canonical role sources as symlinks inside a real, prefix-owned agents
+/// directory, so both regular files and symlinks are valid inputs. Returns an
+/// empty slice when the directory does not exist.
 fn listAgentSources(allocator: std.mem.Allocator, agents_dir: []const u8) ![][]const u8 {
     var dir = std.Io.Dir.cwd().openDir(fsIo(), agents_dir, .{ .iterate = true }) catch |e| switch (e) {
         error.FileNotFound => return allocator.alloc([]const u8, 0),
@@ -1123,7 +1298,7 @@ fn listAgentSources(allocator: std.mem.Allocator, agents_dir: []const u8) ![][]c
     }
     var it = dir.iterate();
     while (try it.next(fsIo())) |entry| {
-        if (entry.kind != .file) continue;
+        if (entry.kind != .file and entry.kind != .sym_link) continue;
         if (!isAgentRoleFile(entry.name)) continue;
         const joined = try std.fs.path.join(allocator, &.{ agents_dir, entry.name });
         try out.append(allocator, joined);
@@ -2070,6 +2245,28 @@ fn outputDir(profile: VendorProfile) []const u8 {
     return if (profile.output_dir.len > 0) profile.output_dir else profile.name;
 }
 
+/// Reads one digest value from either YAML frontmatter (`key: value`) or a
+/// leading TOML comment (`# key: value`). The returned slice borrows `bytes`.
+pub fn projectionMetadataValue(bytes: []const u8, key: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    while (lines.next()) |raw_line| {
+        var line = trimSpace(raw_line);
+        if (std.mem.startsWith(u8, line, "# ")) line = trimSpace(line[2..]);
+        if (!std.mem.startsWith(u8, line, key)) continue;
+        if (line.len <= key.len or line[key.len] != ':') continue;
+        const value = trimSpace(line[key.len + 1 ..]);
+        if (value.len == 64 and isLowerHex(value)) return value;
+    }
+    return null;
+}
+
+fn isLowerHex(value: []const u8) bool {
+    for (value) |c| {
+        if (!std.ascii.isDigit(c) and !(c >= 'a' and c <= 'f')) return false;
+    }
+    return true;
+}
+
 fn modelForTier(profile: VendorProfile, tier: []const u8) ?[]const u8 {
     for (profile.models) |m| if (std.mem.eql(u8, m.tier, tier)) return m.model;
     return null;
@@ -2238,6 +2435,46 @@ test "render projects claude and codex frontmatter differences" {
     try std.testing.expect(std.mem.indexOf(u8, claude, "argument-hint: <create|show|list> [args]") != null);
     try std.testing.expect(std.mem.indexOf(u8, codex, "argument-hint:") == null);
     try std.testing.expect(std.mem.indexOf(u8, codex, "name: pl-plan") != null);
+}
+
+test "skill projection digests are path-independent and vendor-sensitive" {
+    const gpa = std.testing.allocator;
+    var vendors = try loadVendors(gpa);
+    defer vendors.deinit(gpa);
+    const raw =
+        \\---
+        \\slug: pl-digest
+        \\description: Digest fixture.
+        \\source: docs/skill-reference.md
+        \\model_tier: medium
+        \\---
+        \\
+        \\# {{.VendorTitle}}
+    ;
+    var source_a = try parseSourceBytes(gpa, "/checkout-a/skills/src/pl-digest.md", raw);
+    defer source_a.deinit(gpa);
+    var source_b = try parseSourceBytes(gpa, "/checkout-b/skills/src/pl-digest.md", raw);
+    defer source_b.deinit(gpa);
+
+    const claude_a = try render(gpa, source_a, vendors.get("claude").?);
+    defer gpa.free(claude_a);
+    const claude_b = try render(gpa, source_b, vendors.get("claude").?);
+    defer gpa.free(claude_b);
+    try std.testing.expectEqualStrings(claude_a, claude_b);
+
+    var changed_profile = vendors.get("claude").?;
+    changed_profile.title = "Changed Claude";
+    const changed = try render(gpa, source_a, changed_profile);
+    defer gpa.free(changed);
+    try std.testing.expectEqualStrings(
+        projectionMetadataValue(claude_a, SourceDigestKey).?,
+        projectionMetadataValue(changed, SourceDigestKey).?,
+    );
+    try std.testing.expect(!std.mem.eql(
+        u8,
+        projectionMetadataValue(claude_a, ProjectionDigestKey).?,
+        projectionMetadataValue(changed, ProjectionDigestKey).?,
+    ));
 }
 
 test "renderTree slug filter writes only selected slug" {
@@ -2530,6 +2767,51 @@ test "renderAgent emits Codex TOML with sandbox_mode and developer_instructions"
     try std.testing.expect(std.mem.indexOf(u8, out, "model_reasoning_effort = \"medium\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "developer_instructions = \"\"\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "# Coder") != null);
+}
+
+test "agent projections carry stable source and vendor digests for all vendors" {
+    const gpa = std.testing.allocator;
+    var vendors = try loadVendors(gpa);
+    defer vendors.deinit(gpa);
+    var coder = try parseAgentSourceBytes(gpa, "/checkout-a/agents/coder.md", agent_coder_fixture);
+    defer coder.deinit(gpa);
+
+    const names = [_][]const u8{ "claude", "codex", "copilot" };
+    var projection_values: [names.len][]const u8 = undefined;
+    var rendered: [names.len][]u8 = undefined;
+    defer {
+        for (rendered) |bytes| gpa.free(bytes);
+    }
+    for (names, 0..) |name, i| {
+        rendered[i] = try renderAgent(gpa, coder, vendors.get(name).?);
+        const source_value = projectionMetadataValue(rendered[i], SourceDigestKey).?;
+        const projection_value = projectionMetadataValue(rendered[i], ProjectionDigestKey).?;
+        try std.testing.expectEqual(@as(usize, 64), source_value.len);
+        try std.testing.expectEqual(@as(usize, 64), projection_value.len);
+        if (i > 0) try std.testing.expectEqualStrings(
+            projectionMetadataValue(rendered[0], SourceDigestKey).?,
+            source_value,
+        );
+        projection_values[i] = projection_value;
+    }
+    try std.testing.expect(!std.mem.eql(u8, projection_values[0], projection_values[1]));
+    try std.testing.expect(!std.mem.eql(u8, projection_values[1], projection_values[2]));
+
+    const changed_fixture = agent_coder_fixture ++ "\nChanged authored input.\n";
+    var changed_source = try parseAgentSourceBytes(gpa, "/checkout-b/agents/coder.md", changed_fixture);
+    defer changed_source.deinit(gpa);
+    const changed = try renderAgent(gpa, changed_source, vendors.get("claude").?);
+    defer gpa.free(changed);
+    try std.testing.expect(!std.mem.eql(
+        u8,
+        projectionMetadataValue(rendered[0], SourceDigestKey).?,
+        projectionMetadataValue(changed, SourceDigestKey).?,
+    ));
+    try std.testing.expect(!std.mem.eql(
+        u8,
+        projectionMetadataValue(rendered[0], ProjectionDigestKey).?,
+        projectionMetadataValue(changed, ProjectionDigestKey).?,
+    ));
 }
 
 test "renderAgent Codex TOML developer_instructions escapes triple-quote and backslash" {

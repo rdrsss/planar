@@ -150,7 +150,7 @@ test "planar models routing: default role→vendor/model + --json shape" {
         return error.TestUnexpectedResult;
     };
     const rows = parsed.value.array;
-    try std.testing.expectEqual(@as(usize, 4), rows.items.len);
+    try std.testing.expectEqual(@as(usize, 6), rows.items.len);
     var saw_coder = false;
     for (rows.items) |row| {
         const o = row.object;
@@ -209,7 +209,7 @@ test "planar models list: codex entries carry human display labels (task 3633)" 
 
 test "planar models routing: custom role in config appears in --json output (plan 586 task 3937)" {
     // A user-defined role ([roles] compactor = "small") must surface in the
-    // routing table alongside the four built-ins, with the correct tier and model.
+    // routing table alongside the built-ins, with the correct tier and model.
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
@@ -242,9 +242,9 @@ test "planar models routing: custom role in config appears in --json output (pla
     };
     const rows = parsed.value.array;
 
-    // Must have 5 rows (4 built-ins + compactor).
-    if (rows.items.len != 5) {
-        std.debug.print("\nexpected 5 routing rows, got {d}\n{s}\n", .{ rows.items.len, stdout });
+    // Must have 7 rows (6 built-ins + compactor).
+    if (rows.items.len != 7) {
+        std.debug.print("\nexpected 7 routing rows, got {d}\n{s}\n", .{ rows.items.len, stdout });
         return error.TestUnexpectedResult;
     }
 
@@ -278,8 +278,8 @@ test "planar models routing: custom role in config appears in --json output (pla
     }
 }
 
-test "planar models routing: empty config — exactly 4 built-in rows, no custom (plan 586 invariant)" {
-    // An empty config must produce exactly the four default rows.
+test "planar models routing: empty config — exactly 6 built-in rows, no custom" {
+    // An empty config must produce exactly the six default rows.
     // This pins the no-behavior-change invariant from the spec.
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
@@ -304,16 +304,18 @@ test "planar models routing: empty config — exactly 4 built-in rows, no custom
         return error.TestUnexpectedResult;
     };
     const rows = parsed.value.array;
-    if (rows.items.len != 4) {
-        std.debug.print("\nexpected 4 routing rows with empty config, got {d}\n{s}\n", .{ rows.items.len, stdout });
+    if (rows.items.len != 6) {
+        std.debug.print("\nexpected 6 routing rows with empty config, got {d}\n{s}\n", .{ rows.items.len, stdout });
         return error.TestUnexpectedResult;
     }
-    // All four built-ins present with correct defaults.
+    // All six built-ins present with correct defaults.
     const expected = [_]struct { role: []const u8, vendor: []const u8, tier: []const u8, model: []const u8 }{
         .{ .role = "coder", .vendor = "claude", .tier = "medium", .model = "claude-sonnet-4-6" },
         .{ .role = "reviewer", .vendor = "claude", .tier = "large", .model = "claude-opus-4-8" },
         .{ .role = "test-coder", .vendor = "claude", .tier = "medium", .model = "claude-sonnet-4-6" },
         .{ .role = "documenter", .vendor = "claude", .tier = "medium", .model = "claude-sonnet-4-6" },
+        .{ .role = "doc-author", .vendor = "claude", .tier = "large", .model = "claude-opus-4-8" },
+        .{ .role = "sync-reconciler", .vendor = "claude", .tier = "large", .model = "claude-opus-4-8" },
     };
     for (rows.items, expected) |row, exp| {
         const o = row.object;

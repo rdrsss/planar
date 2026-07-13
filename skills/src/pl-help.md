@@ -1,12 +1,16 @@
 ---
 slug: pl-help
-description: "Summarize available commands and reference workflows."
+description: "Route operator intent to available Planar workflows or show command help."
 source: docs/cli-reference.md#domain-help
 vendor:
   claude:
-    argument_hint: "[<subcommand>]"
+    argument_hint: "[<intent-or-subcommand>]"
     invocation_examples: |
       /pl-help
+      /pl-help resume interrupted work
+      /pl-help inspect active agents
+      /pl-help record a technical decision
+      /pl-help repair my local skills
       /pl-help task
       /pl-help sync resolve
 shared_notes:
@@ -15,11 +19,16 @@ shared_notes:
 
 # Planar Help ({{.VendorTitle}})
 
-Shows the Planar command reference and explains available reference workflows.
+Routes an operator's intent to an available Planar workflow, or shows the
+command reference for a named CLI verb.
 
 ## What It Does
 
-Without arguments, lists all top-level subcommands with one-line descriptions. With a subcommand argument, shows that command's full usage including flags, output shape, and exit codes. Equivalent to passing `--help` to any command.
+For an intent, selects one workflow, gives a one-line reason, and includes an
+executable example. For a CLI subcommand, shows that command's full usage
+including flags, output shape, and exit codes. It always names the underlying
+CLI verbs so the intent-oriented entry point does not obscure the supported
+interface.
 
 ## CLI Commands
 
@@ -33,6 +42,69 @@ planar <subcommand> --help
 ## When To Invoke
 
 When exploring what Planar can do, looking up the flags for a specific command, or orienting a new agent session to the available CLI surface.
+
+## Intent Routing
+
+Match the operator's requested outcome, not only a keyword. Return the first
+applicable route with its rationale and example. A route marked **available**
+names a canonical skill authored in this checkout. A route marked **CLI
+fallback** is the executable path while its planned intent skill is not yet
+authored; do not claim that the planned skill can be invoked.
+
+| Intent | Route and rationale | Executable example |
+|--------|---------------------|--------------------|
+| Resume or recover interrupted work | **Available:** `pl-resume` validates and restores a specific resumable task; use `pl-doctor` when health is degraded or the task is not resume-ready. Both expose the underlying resume, audit, and reconciliation verbs. | `/pl-resume validate 42`, then `/pl-resume 42`; degraded state: `/pl-doctor` |
+| Observe active work | **Available:** `pl-observe` assembles a read-only, plan-filtered activity view from `planar dashboard`, `planar-watch`, and handoff reads. Use `pl-status` instead for the current scope's attention queue and claim-aware next work. | `/pl-observe --plan 808`; scope orientation: `/pl-status`; direct claim inspection: `planar-watch claims --plan 808 --json` |
+| Manage durable knowledge | **Available:** `pl-knowledge` resolves typed targets, composes scope-safe decision, artifact, annotation, and relationship operations, and verifies their durable post-state. The underlying entity verbs remain available for direct inspection and precise CRUD. | `/pl-knowledge capture "Adopt SQLite WAL" --plan 42 --artifact 17`; direct interfaces: `planar decision --help`, `planar artifact --help`, `planar annotate --help`, `planar links --help` |
+| Manage operator-local skills or agents | **Available:** `pl-local` covers import, list, link, unlink, migrate, and repair across the operator-local lifecycle. Retain `pl-local-import` only for legacy or import-only compatibility. | `/pl-local list`; repair links: `/pl-local repair`; legacy import: `/pl-local-import ~/my-skills/` |
+| Inspect feedback or triage findings | **Available:** `pl-introspect` previews redacted friction findings; `pl-feedback-triage` previews and applies structured local triage; `pl-report-issue` separately previews an external report. | `/pl-introspect --days 7`; then `/pl-feedback-triage --plan <id>` |
+| Maintain published documentation | **Available:** `pl-documenter` runs a proposal-centered sweep; `pl-doc-maintain` owns the complete row-gated documenter → doc-author → manifest verification loop. | `/pl-doc-maintain`; proposal only: `/pl-documenter` |
+
+If the request is a verb lookup rather than an outcome, bypass intent routing:
+
+```
+planar help task
+planar help sync resolve
+planar task --help
+```
+
+## Output Contract
+
+### Context
+
+Report the resolved scope when the selected workflow is scope-sensitive, plus
+the requested intent or verb and whether the route is available or a CLI
+fallback.
+
+### Intent
+
+State the interpreted operator outcome in one sentence.
+
+### Actions
+
+Report `attempted`, `applied`, `skipped`, and `failed`. Help routing is
+read-only, so a successful selection normally reports one attempted and one
+applied route with no mutations.
+
+### Result
+
+Return `outcome=ok|partial|error`, the selected workflow or CLI help path, its
+one-line rationale, and at least one executable example. Never return a planned
+but unauthored skill as invocable.
+
+### Warnings
+
+Identify ambiguity, unavailable planned workflows, or degraded scope signal.
+Do not present normal CLI fallback routing as a failure.
+
+### Next actions
+
+Give zero to three executable commands, beginning with the selected example.
+
+### Recovery
+
+When routing fails or a named verb is unavailable, give the exact inspection
+command: `planar help`, `planar <subcommand> --help`, or `planar schema`.
 
 ## Docs Domain
 
@@ -54,6 +126,43 @@ dedicated `planar-doc` binary (it touches the working tree and the
 > entry point yet.
 
 See [Features: outward-facing docs system](../../docs/features/doc-system.md) for the full mental model.
+
+## Context
+
+Report the requested command path, binary (`planar` or `planar-doc`), and text
+help mode. If no path was supplied, say that top-level discovery was used.
+
+## Intent
+
+State in one sentence which command or workflow the operator wants to discover.
+
+## Actions
+
+Report `attempted`, `applied=0`, `skipped`, and `failed` counts for help lookups.
+An omitted command path is a deliberate top-level lookup, not a skipped action.
+
+## Result
+
+Always report `outcome=ok|partial|error` and a concise summary of the verified
+command path, supported arguments, and relevant reference workflow. When no
+matching command exists, report that explicit empty result rather than
+inventing a verb.
+
+## Warnings
+
+Name ambiguous command paths, unavailable binary help, or documentation that
+describes an unshipped surface. A successful top-level listing has no warning.
+
+## Next actions
+
+Give zero to three executable help or workflow invocations that directly match
+the request; do not pad the response with unrelated commands.
+
+## Recovery
+
+For a failed lookup, provide the exact broader command, such as `planar help`,
+`planar help <subcommand>`, or `planar-doc schema`. This skill is read-only and
+has no undo path.
 
 ## Vendor Notes
 

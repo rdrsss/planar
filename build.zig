@@ -549,10 +549,10 @@ pub fn build(b: *std.Build) void {
     b.getInstallStep().dependOn(&vendor_check_run.step);
 
     // -----------------------------------------------------------------
-    // CLI-usage lint. Dumps each binary's `schema` JSON and validates
-    // that authored prose (agents/, skills/src/, docs/) never references
-    // a flag the binary does not expose. Wired into `make test-all` /
-    // CI via the `cli-usage-check` step.
+    // Authored-surface lint gate. The schema-driven CLI-usage lint remains
+    // the first pass; the semantic surface lint follows it so command-schema
+    // findings retain their existing diagnostics and are not duplicated.
+    // Wired into `make test-all` / CI via the `cli-usage-check` step.
     // -----------------------------------------------------------------
     const cli_usage_lint_exe = b.addExecutable(.{
         .name = "cli_usage_lint",
@@ -562,7 +562,7 @@ pub fn build(b: *std.Build) void {
             .optimize = .Debug,
         }),
     });
-    const cli_usage_check_step = b.step("cli-usage-check", "Validate authored CLI invocations against the live command schema");
+    const cli_usage_check_step = b.step("cli-usage-check", "Validate authored surfaces against the live CLI schema and semantic contracts");
     const cli_usage_check_run = b.addRunArtifact(cli_usage_lint_exe);
     cli_usage_check_run.step.dependOn(b.getInstallStep());
     cli_usage_check_run.addArg(b.pathFromRoot("."));
@@ -571,6 +571,29 @@ pub fn build(b: *std.Build) void {
     cli_usage_check_run.addArg(b.getInstallPath(.bin, "planar-watch"));
     cli_usage_check_run.addArg(b.getInstallPath(.bin, "planar-doc"));
     cli_usage_check_step.dependOn(&cli_usage_check_run.step);
+
+    // Standalone semantic authored-surface validator.
+    const surface_lint_exe = b.addExecutable(.{
+        .name = "surface_lint",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/surface_lint.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+    const surface_lint_step = b.step("surface-lint", "Validate authored agent, skill, and doc semantics");
+    const surface_lint_run = b.addRunArtifact(surface_lint_exe);
+    surface_lint_run.addArg(b.pathFromRoot("."));
+    if (b.args) |args| surface_lint_run.addArgs(args);
+    surface_lint_step.dependOn(&surface_lint_run.step);
+
+    // Keep the direct surface-lint step independently runnable while making
+    // cli-usage-check the single composed quality gate. A distinct run step
+    // avoids forwarding surface-lint-only arguments into the normal gate.
+    const cli_usage_surface_lint_run = b.addRunArtifact(surface_lint_exe);
+    cli_usage_surface_lint_run.addArg(b.pathFromRoot("."));
+    cli_usage_surface_lint_run.step.dependOn(&cli_usage_check_run.step);
+    cli_usage_check_step.dependOn(&cli_usage_surface_lint_run.step);
 
     const run_step = b.step("run", "Run the app");
     const run_cmd = b.addRunArtifact(exe);
@@ -612,6 +635,9 @@ pub fn build(b: *std.Build) void {
 
     const cli_usage_lint_tests = b.addTest(.{ .root_module = cli_usage_lint_exe.root_module, .filters = test_filters_opt });
     const run_cli_usage_lint_tests = b.addRunArtifact(cli_usage_lint_tests);
+
+    const surface_lint_tests = b.addTest(.{ .root_module = surface_lint_exe.root_module, .filters = test_filters_opt });
+    const run_surface_lint_tests = b.addRunArtifact(surface_lint_tests);
 
     const db_tests = b.addTest(.{ .root_module = db_mod, .filters = test_filters_opt });
     const run_db_tests = b.addRunArtifact(db_tests);
@@ -677,6 +703,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_watch_exe_tests.step);
     test_step.dependOn(&run_doc_exe_tests.step);
     test_step.dependOn(&run_cli_usage_lint_tests.step);
+    test_step.dependOn(&run_surface_lint_tests.step);
     test_step.dependOn(&run_db_tests.step);
     test_step.dependOn(&run_cli_tests.step);
     test_step.dependOn(&run_engine_tests.step);
@@ -707,6 +734,25 @@ pub fn build(b: *std.Build) void {
     // common local loop: one test executable, no duplicate smoke-root imports,
     // and the same per-test Suite isolation inside each test block.
     const test_integration_step = b.step("test-integration", "Run integration tests (requires compiled binary)");
+    const surface_lint_blackbox = b.addExecutable(.{
+        .name = "surface_lint_blackbox_test",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("integration_tests/surface_lint_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_surface_lint_blackbox = b.addRunArtifact(surface_lint_blackbox);
+    run_surface_lint_blackbox.addArtifactArg(surface_lint_exe);
+    run_surface_lint_blackbox.addDirectoryArg(b.path("integration_tests/fixtures/surface_lint"));
+    run_surface_lint_blackbox.addArtifactArg(exe);
+    run_surface_lint_blackbox.addArtifactArg(agent_exe);
+    run_surface_lint_blackbox.addArtifactArg(watch_exe);
+    run_surface_lint_blackbox.addArtifactArg(doc_exe);
+    test_integration_step.dependOn(&run_surface_lint_blackbox.step);
+    const test_surface_lint_step = b.step("test-surface-lint", "Run standalone surface-lint black-box tests");
+    test_surface_lint_step.dependOn(&run_surface_lint_blackbox.step);
+
     const integration_all = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("integration_tests/all_test.zig"),
@@ -792,6 +838,9 @@ fn registerIntegrationTestDir(
     while (it.next(b.graph.io) catch |e| std.debug.panic("build.zig: iterate {s}: {s}", .{ dir_abs, @errorName(e) })) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.name, "_test.zig")) continue;
+        // Registered separately because this black-box test takes the emitted
+        // surface_lint executable and fixture-root paths as process arguments.
+        if (std.mem.eql(u8, entry.name, "surface_lint_test.zig")) continue;
 
         const test_rel = std.fs.path.join(b.allocator, &.{ dir_rel, entry.name }) catch @panic("OOM");
 

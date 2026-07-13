@@ -45,6 +45,50 @@ planar workbench sync <plan>
 
 After the user or another agent has edited workbench files and the DB may also have changed independently. After running `planar task done <id>` or `planar plan update` when the affected plan has a workbench tree. Before handing off to another agent so the receiving agent sees a consistent view.
 
+## Context
+
+Report the resolved scope, plan and workbench path, pre-sync drift, requested
+direction or full-sync mode, and any explicit conflict preference.
+
+## Intent
+
+State in one sentence which feature's filesystem and DB state will be inspected
+or reconciled.
+
+## Actions
+
+Report `attempted`, `applied` (the succeeded count), `skipped`, and `failed` per file/entity target,
+plus every conflict event ID. Name every failed path or entity with its
+direction and failure evidence. Status is read-only; unchanged targets are
+skips.
+
+## Result
+
+Always report `outcome=ok|partial|error`. Re-run `planar workbench status
+<plan> --json` and return the plan, paths/entities changed, conflict IDs, and
+confirmed clean or remaining-drift state. A clean sync is `outcome=ok`, zero
+applied, and explains that both sides already match.
+
+## Warnings
+
+Do not resolve conflicts until the operator explicitly chooses `fs` or `db`.
+Name remaining conflicts, unavailable post-state, and partial reconciliation.
+Successfully synchronized independent targets remain applied; never imply an
+automatic rollback.
+
+## Next actions
+
+Give zero to three executable recommendations, normally the exact status read,
+then one separately confirmed `planar workbench resolve <event-id> --prefer
+fs|db` per conflict, followed by status verification.
+
+## Recovery
+
+For each failed target, give `planar workbench status <plan> --json` and the
+exact idempotent `planar workbench sync <plan>` retry. For conflicts, include
+the event ID and exact resolve command only after preference confirmation.
+Retry does not undo or repeat already-clean targets.
+
 ## Vendor Notes
 
 {{.VendorNotes}}

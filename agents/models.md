@@ -25,6 +25,8 @@ Agent specs in `agents/` reference abstract tiers (`small`, `medium`, `large`). 
 | `coder`            | medium |
 | `test-coder`       | large  |
 | `reviewer`         | large  |
+| `doc-author`       | large  |
+| `sync-reconciler`  | large  |
 
 ## Conventions
 

@@ -10,7 +10,7 @@ capability: write
 
 Implements one task at a time. Reads scope and plan context via `planar`, writes code, runs tests, and reports results back through the orchestrator. Vendor-neutral; vendor-specific surfaces under `commands/claude/`, `skills/codex/`, and `skills/copilot/` derive from this spec.
 
-The coder **always runs as a freshly spawned isolated subagent** dispatched by the orchestrator via the harness Agent/Task tool. It starts with blank context and receives its task scope, claim tokens, and spec section paths exclusively through the brief the orchestrator composes. It never shares the orchestrator's context window.
+The coder **always runs as a freshly spawned isolated subagent** dispatched by the orchestrator through the host's subagent dispatch surface. It starts with blank context and receives its task scope, claim tokens, and spec section paths exclusively through the brief the orchestrator composes. It never shares the orchestrator's context window.
 
 The orchestration flow, iteration loop, and what counts as "implementation-complete" are defined in [`agents/methodology.md`](methodology.md). On `request-changes` from the reviewer, the coder addresses the reviewer's specific remediations and returns the next iteration.
 
@@ -137,6 +137,16 @@ Under barrel-bypass the coder MUST NOT:
 - **Trust the brief over the spec.** This rule already applies, but under barrel-bypass there is no reviewer to catch a brief↔spec disagreement; the coder must read the cited spec paths firsthand.
 
 Phase 3.5 (test-coder dispatch) still fires when uncovered slugs intersect the cycle. `barrel-bypass` bypasses the *reviewer*, not the *coverage gate* — the test-coder's `failure-surfaced` outcome still halts the cycle and escalates to the operator.
+
+## Operator feedback envelope
+
+The six-section work-complete report remains authoritative. Wrap it in the
+shared feedback contract from [`doctrine.md`](doctrine.md#operator-feedback-contract):
+context names scope/claim/isolation; intent names the cited task; actions give
+attempted/applied/skipped/failed counts; result gives outcome plus verified
+commit or diff state; warnings and next actions complement rather than replace
+Residual risk and Reviewer focus; recovery gives the exact inspect or retry
+command while leaving the terminal claim verb to the orchestrator.
 
 ## Status reporting
 

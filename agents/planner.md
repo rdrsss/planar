@@ -38,7 +38,7 @@ Vendor-neutral. Vendor-specific surfaces are under `commands/claude/pl-spec-draf
   - `roadmap.md` — `kind=roadmap` (flat milestone list with bulleted work items and `[touches: ...]` annotations)
   - `test-spec.md` — `kind=test_spec` (test strategy with flat `### Scenario: <title>` H3 scenarios — the canonical grammar — plus a coverage-gap checklist and test-surface-allocation table). Each scenario title names the coverage lens it exercises (happy / empty-null / error / edge); the four buckets are a reasoning tool, not document structure. Frontmatter carries `verifies: [artifact:<product-spec-id>]` so cross-references track which user stories the test plan covers.
 
-  Every produced `.md` file carries a YAML front matter block between `---` delimiters at the top of the file. The canonical schema is the `FrontMatter` struct in `src/internal/workbench/parse.go`. Required fields for planner-written artifact files:
+  Every produced `.md` file carries a YAML front matter block between `---` delimiters at the top of the file. The canonical schema is the `FrontMatter` struct in [`src/engine/workbench/parse.zig`](../src/engine/workbench/parse.zig). Required fields for planner-written artifact files:
 
   ```yaml
   ---
@@ -104,7 +104,7 @@ See [`agents/methodology.md` § Heartbeat status contract](methodology.md#heartb
 
 ## Authoring phases
 
-The four documents are authored in four sequential phases, each with its own role-narrowing prompt fragment. The planner is one agent, but each phase has explicit instructions about what to focus on and what to NOT think about. The phasing is what makes the four-document model honest: without it, product-spec drifts into Go types, tech-spec re-litigates user stories, and test-spec proposes implementations instead of describing scenarios.
+The four documents are authored in four sequential phases, each with its own role-narrowing prompt fragment. The planner is one agent, but each phase has explicit instructions about what to focus on and what to NOT think about. The phasing is what makes the four-document model honest: without it, product-spec drifts into implementation types, tech-spec re-litigates user stories, and test-spec proposes implementations instead of describing scenarios.
 
 ### Phase 1 — Product spec
 
@@ -112,7 +112,7 @@ You are authoring `product-spec.md`. Your job is to answer: **what does the oper
 
 **While in this phase, do NOT:**
 
-- Propose Go types, SQL schemas, package layouts, or any implementation choice.
+- Propose implementation types, SQL schemas, package layouts, or any implementation choice.
 - Choose a migration number, file path, function signature, or library.
 - Decide between two implementations — that's the tech-spec's job.
 - Propose tests or scenarios — that's the test-spec's job.
@@ -162,16 +162,24 @@ The coverage-gap checklist at the bottom of `test-spec.md` is the reviewer's str
 
 Before emitting the test-spec as final, the planner walks every scenario it just wrote and confirms:
 
-1. **Every `### Scenario:` block has a non-empty `**Verifies:**` field.** A missing or empty `**Verifies:**` line is a draft failure — go back and decide what the scenario verifies. A scenario without a verifies edge cannot participate in the coverage gate (`planar spec ingest --strict`) or in the per-milestone breakdown (`planar test-spec status`).
+1. **Every `### Scenario:` block has a non-empty `**Verifies:**` field.** A missing or empty `**Verifies:**` line is a draft failure — go back and decide what the scenario verifies. A scenario without a verifies edge cannot participate in the strict ingest-preview coverage gate or, after ingestion, in the live per-milestone breakdown.
 2. **Every slug cited in `**Verifies:** task:<slug>` exists as a `[slug: <slug>]` annotation on a roadmap bullet under this plan.** Slugs not declared in the roadmap are an unresolvable citation and the ingestor will reject the apply. Either add the missing `[slug:]` annotation to the corresponding roadmap bullet, or change the citation to a slug that does exist.
 3. **Every roadmap bullet that names a testable behavior carries a `[slug: …]` annotation.** Bullets without slugs cannot be cited by stable name from the test-spec; pure-mechanical sweeps (mass renames, comment-only cleanups) are the only legitimate slug-free bullets.
 
-These three checks correspond to the failure modes the `--strict` coverage gate fires on. Running the gate locally before handoff catches them before the ingest pass:
+These checks are confirmed against the workbench drafts by the strict JSON
+preview. Preview is the default when `--apply` is absent, so this command does
+not create task or scenario rows:
 
 ```
-planar spec ingest <plan> --strict
-planar test-spec status <plan>
+planar spec ingest <plan> --strict --json
 ```
+
+Treat a non-zero exit, a non-empty `coverage.uncovered_task_slugs`, a non-empty
+`coverage.orphan_scenarios`, or a non-empty top-level `slug_collisions` array as
+a draft failure. Do not use `planar test-spec status` for this pre-ingest check:
+it queries live task/scenario rows, which legitimately do not exist yet. After
+ingestion has been applied, `planar test-spec status <plan> --json` becomes the
+authoritative live-row coverage oracle.
 
 ## Doc shape
 
@@ -209,7 +217,7 @@ artifact_kind: tech_spec
 
 The `## Decisions` H2 is the **only** section the ingestor reads to extract decisions. Each H3 heading becomes one `decisions` row linked to the anchor plan via `entity_links(relationship='derives-from')`. The planner must not embed decision text elsewhere in the document.
 
-The `## Open Questions` H2 is parsed by `ParseTechSpecOpenQuestions` in `src/internal/ingestor/parse.go`. Each H3 heading becomes one `questions` row. When an H3's body begins with a `Resolution:` marker (case-sensitive; must be the first non-blank token after the heading), the ingestor also creates a `decisions` row carrying the resolution text and flips the question to `answered`. Two forms are supported:
+The `## Open Questions` H2 is parsed by `parseTechSpecOpenQuestions` in [`src/engine/ingestor/parse.zig`](../src/engine/ingestor/parse.zig). Each H3 heading becomes one `questions` row. When an H3's body begins with a `Resolution:` marker (case-sensitive; must be the first non-blank token after the heading), the ingestor also creates a `decisions` row carrying the resolution text and flips the question to `answered`. Two forms are supported:
 
 ```markdown
 ## Open Questions
@@ -258,7 +266,7 @@ Each H2 becomes a child plan (one per milestone). Each bullet becomes a task. Th
 
 ### `product-spec.md` front matter
 
-All workbench files carry YAML front matter between `---` delimiters. The canonical schema is `FrontMatter` in `src/internal/workbench/parse.go`. Required fields for `product-spec.md`:
+All workbench files carry YAML front matter between `---` delimiters. The canonical schema is `FrontMatter` in [`src/engine/workbench/parse.zig`](../src/engine/workbench/parse.zig). Required fields for `product-spec.md`:
 
 ```yaml
 ---
@@ -279,7 +287,7 @@ The verbs must be composed in this order to ensure every `.md` file carries cano
 
 1. `planar scope show` — confirm the cwd resolves to a registered scope (or that `--scope` was supplied); abort with a `question` if not.
 2. `planar plan create "<derived title>" --slug <slug> --status draft [--scope assoc:<slug>]` — returns `<plan-id>`.
-3. For each of `product-spec.md`, `tech-spec.md`, `roadmap.md`:
+3. For each of `product-spec.md`, `tech-spec.md`, `roadmap.md`, and `test-spec.md`:
    1. `planar artifact add "<title>" --kind <kind> --plan <plan-id> --body ""` — returns `<artifact-id>`. Creates an empty-body placeholder row so the id is known before the file is written.
    2. Write `<filename>` in the workbench directory with canonical YAML front matter using the returned `<artifact-id>` and `<plan-id>`, followed by the planner-generated Markdown body.
    3. `planar artifact update <artifact-id> --body @<filename>` — persists the full content (front matter + body) into the DB.

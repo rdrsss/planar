@@ -63,15 +63,30 @@ The `coverage:` line follows the totals. It reports how many of the tasks have a
 /pl-spec-ingest 42 --strict
 ```
 
-`--strict` exits non-zero on any uncovered task or orphan scenario, naming each gap so the operator can fix them in one pass — usually by adding the missing `[slug:]` to a roadmap bullet or filling in a scenario's `**Verifies:**` line.
+For the authoritative pre-ingest check, request the machine-readable preview:
 
-For a per-milestone view (with a four-bucket breakdown by scenario-title prefix) use the read-only inspector:
+```
+planar spec ingest 42 --strict --json
+```
+
+The draft is not ready when the command exits non-zero or when
+`coverage.uncovered_task_slugs`, `coverage.orphan_scenarios`, or the top-level
+`slug_collisions` array is non-empty. The first two usually mean adding a
+missing `[slug:]` to a roadmap bullet or filling in a scenario's
+`**Verifies:**` line; collisions require choosing a globally unique task slug.
+
+After `--apply` has created task, scenario, and verifies rows, use the read-only
+live-row inspector for a per-milestone view with a four-bucket breakdown by
+scenario-title prefix:
 
 ```
 planar test-spec status 42
 ```
 
-No changes are written by either preview or `test-spec status`.
+No changes are written by either preview or `test-spec status`. Do not use
+`test-spec status` before apply as proof of draft completeness: zero totals are
+legitimate when live rows do not exist yet. The strict preview's `coverage`
+object is the pre-ingest oracle; `test-spec status` is the post-ingest oracle.
 
 ### Step 4 — Apply
 
@@ -321,6 +336,47 @@ planar ext propagate 42 --system my-gh --verify-counterparts
 ```
 
 Probes the remote to confirm every already-linked entity still exists. Missing counterparts are written as `sync_events(outcome='counterpart-missing')` rows. Use `--unlink` to remove stale links or `--recreate` to recreate them immediately.
+
+### Change an existing link's sync direction (destructive recovery only)
+
+The current CLI has no lossless in-place direction update. `planar links
+add/remove` manage internal relationships, not external bindings, and
+`planar links update` is deferred. Top-level `unlink` deletes the old external
+link and detaches its sync events (`link_id` becomes null); a manual `link`
+replacement also loses the old `external_url`, `config_json` (including
+propagation strategy), and last-sync state. The replacement cannot query or
+adopt the detached event history.
+
+Capture what the CLI can expose before deleting anything:
+
+```sh
+planar audit trail --link <link-id> --json > external-link-<link-id>-audit.json
+planar sync status --entity <kind:id> --system <system-slug> --json > external-link-<link-id>-status.json
+planar ext propagate <plan-id> --system <system-slug> --dry-run \
+  --sync <read-only|write-back|two-way>
+```
+
+The first two commands preserve identity/history and last-sync evidence. They
+do not expose the exact URL, config, role, or direction; stop if those values
+are not independently known or their loss is unacceptable. For a
+propagation-owned mirror, continue with:
+
+```sh
+planar unlink <link-id>
+planar ext propagate <plan-id> --system <system-slug> --dry-run \
+  --sync <read-only|write-back|two-way>
+planar ext propagate <plan-id> --system <system-slug> \
+  --sync <read-only|write-back|two-way>
+```
+
+The post-unlink dry run previews fresh creation. The final command creates a
+new remote counterpart and new link state; it cannot restore the old URL,
+configuration, or history. If retaining the same remote external id matters,
+use top-level `planar link` instead of propagation, supplying the independently
+known role and desired direction; that record-only replacement still starts
+with null URL/config/last-sync and status `never`. See the
+[`links update` reference](cli-reference.md#planar-links-update-link-id) for
+the full caveat and command sequence.
 
 ---
 
@@ -1197,7 +1253,7 @@ The `associations` row, the `projects` rows, and their membership links remain i
 - Concept: [docs/concepts.md § Workspace](concepts.md#workspace).
 - Architecture: [docs/architecture.md § Workspace State Directory Model](architecture.md#workspace-state-directory-model).
 - CLI verbs: [docs/cli-reference.md § Domain: `workspace`](cli-reference.md#domain-workspace).
-- Skill source: [commands/claude/pl-workspace-scan.md](../commands/claude/pl-workspace-scan.md) — full skill body for the LLM enrichment pass.
+- Unified skill source: [`skills/src/pl-workspace-scan.md`](../skills/src/pl-workspace-scan.md). Vendor projections are generated at install time.
 
 ---
 
@@ -1216,13 +1272,26 @@ When either verb fails, fix the issue and retry — the pre-commit hook keeps dr
 
 ### After landing a body of work
 
-When a work cycle ends, the orchestrator launches the documenter agent with the prior manifest, the current repo merkle, and the changed-subtree set. The agent walks each changed source through three outcomes:
+For the complete gated loop, invoke `/pl-doc-maintain`. It reads
+`planar-doc diff --json`, sends the drift to the read-only documenter, and
+shows every proposed row before any mutation. The documenter classifies each
+changed source into four outcomes:
 
 - **Extend an existing entry.** A doc already covers a related path; add the changed path to its `sources` map via `planar-doc cover <path> <repo-path>`.
-- **Author a new doc.** No existing entry covers the change. The agent proposes a doc body; the operator gates the prose, then `planar-doc cover` wires the new entry.
+- **Author a new doc.** No existing entry covers the change. After row
+  approval, only the `doc-author` specialist may write the approved published
+  prose; the caller then applies `planar-doc cover`.
 - **Add to nodoc.** The change is genuinely not worth documenting (vendored code, generated artifacts, etc.). Record the decision via `planar-doc nodoc <repo-path>`; the entry is re-evaluated whenever that path's hash changes.
+- **Defer.** Evidence or operator intent is insufficient. Preserve the row and
+  recovery command; do not absorb it by rebuilding the manifest.
 
-The documenter never writes prose on its own — it produces a worklist the operator reads and acts on.
+The documenter never writes prose or manifest state. `doc-author` never decides
+coverage and receives only approved prose rows. The caller owns approved
+`cover`/`nodoc` operations and the final `lint → build → verify → clean diff`
+sequence. If there is no drift, no specialist is dispatched and the existing
+manifest root is verified without an unnecessary rebuild. If one independent
+row fails, completed rows remain visible and the result is `partial` with an
+exact retry; the workflow does not claim cross-row rollback.
 
 ### After mutating sources
 
@@ -1297,6 +1366,28 @@ planar sync pull --system my-jira
 ```
 
 Pulls remote changes into `sync_events` rows. Conflicts (both sides changed) are surfaced as `sync_events(outcome='conflict')` and require explicit resolution via `planar sync resolve`.
+
+Inspect a conflict through `planar audit trail --link <link-id> --json`. The
+conflict event's `evidence` object carries exact local/remote values,
+provenance, observation time, a token, and the local entity's `updated_at`.
+After approving one whole-entity disposition, pass both compare guards:
+
+```text
+planar sync resolve <event-id> --keep local \
+  --evidence-token <approved-token> \
+  --expected-local-updated-at <reviewed-updated-at> --json
+```
+
+The command refuses a non-latest event, a closed link, a changed token or local
+version, an absent/empty approved or fresh provider version, and a fresh remote
+read that differs from the approved evidence. Missing provider version evidence
+forces `defer`. For a manual merge, edit the local entity first, review its
+post-state, then use that post-edit `updated_at` only after a second explicit
+keep-local confirmation. The local compare-and-swap and fresh remote read narrow
+the race window but cannot eliminate the provider GET-to-write race when the
+provider lacks conditional updates. If the command or adapter fails ambiguously,
+inspect the link audit, sync status, and entity post-state before retrying or
+seeking fresh approval.
 
 ---
 
@@ -1425,19 +1516,66 @@ Removes every per-vendor install for `fixup-protos`. The source file in `~/.plan
 
 ### Step 8 — Promote to canonical (manual)
 
-Once a sandbox skill earns its keep, promote it by copying the file into the repo by hand:
+Once a sandbox skill earns its keep, promote it by copying the unified source
+into the repo by hand:
 
 ```
-cp ~/.planar/local/skills/fixup-protos/SKILL.md commands/claude/fixup-protos.md
-cp ~/.planar/local/skills/fixup-protos/SKILL.md skills/codex/fixup-protos.md
-cp ~/.planar/local/skills/fixup-protos/SKILL.md skills/copilot/fixup-protos.md
+cp ~/.planar/local/skills/fixup-protos/SKILL.md skills/src/fixup-protos.md
 
-git add commands/claude/fixup-protos.md skills/codex/fixup-protos.md skills/copilot/fixup-protos.md
+git add skills/src/fixup-protos.md
 git commit -m "skill: fixup-protos"
 git push   # PR through the normal contribution flow
 ```
 
-There is no `planar local promote` shortcut — that is deliberate. Canonical skills go through `planar skills render --check` against an out-of-tree staging dir, any remaining relevant validators, and contribution review; sandbox skills do not. Keeping the boundary loud preserves the difference. After promotion, you can run `planar local unlink fixup-protos --purge` to retire the sandbox copy.
+Do not copy into or commit repo-relative `commands/claude/`, `skills/codex/`,
+or `skills/copilot/` trees: those are generated projections and are ignored.
+There is no `planar local promote` shortcut — that is deliberate. Canonical
+skills go through semantic lint, `planar skills render --check` against an
+out-of-tree staging dir, any remaining relevant validators, and contribution
+review; sandbox skills do not. Keeping the boundary loud preserves the
+difference. After promotion, you can run `planar local unlink fixup-protos
+--purge` to retire the sandbox copy.
+
+---
+
+## Recipe 14A — Inspect and repair installed canonical projections
+
+Canonical vendor installs are distinct from the personal sandbox above. Their
+ownership comes only from `~/.planar/install-manifest.json`; directory presence
+alone never grants Planar permission to replace a file.
+
+Start with a read-only inspection:
+
+```
+planar skills status
+planar skills status --vendor codex --json
+```
+
+`fresh`, `stale`, and `missing` apply only to manifest rows. `unmanaged` is an
+informational destination-only extension, and an `unselected` vendor is outside
+the installation set. Neither affects unrelated files.
+
+Preview the recommended repair before mutation:
+
+```
+planar skills repair pl-status --vendor codex
+planar skills repair pl-status --vendor codex --apply
+planar skills status --vendor codex
+```
+
+The apply command copies or re-links only that manifest-owned row and verifies
+it afterward. For a mixed apply, `partial` lists completed and failed targets;
+rerun the reported idempotent command after correcting the failed path. If the
+manifest itself is missing, invalid, unsupported, or legacy, repair does not
+guess ownership. From the Planar source checkout, run the exact bootstrap
+shown by status, whose supported form is:
+
+```
+./install.sh --prefix ~/.planar
+```
+
+Then re-run `planar skills status`. Personal `planar local` extensions remain
+untouched throughout.
 
 ---
 
@@ -1605,7 +1743,7 @@ planar question list --plan 85         # open questions
 ### Step 4 — Inspect the audit trail for one entity
 
 ```
-planar audit trail task:541
+planar audit trail --kind task 541
 ```
 
 The `audit_trail` read surface stitches together `audit_log` (the operator-write log) with `entity_links` and now joins against `agent_actions` for any actions taken on the entity. You see each role's `started_at` / `ended_at` / `outcome` plus the operator-side decisions that ran around them.
@@ -1616,7 +1754,16 @@ The `audit_trail` read surface stitches together `audit_log` (the operator-write
 planar health
 ```
 
-`health` is the always-on smoke check: schema-current, integrity, in-flight tasks resumable, pending handoffs fresh. It is not agent-activity-aware (the claim table is consulted by `dashboard --agents` and `plan next`, not by health), but it is the first verb to run when something looks wrong before you spend time chasing the wrong layer.
+`health` is the always-on smoke check: schema-current, integrity, in-flight
+tasks resumable, pending handoffs fresh, and manifest-owned installed skill and
+agent projections fresh. A stale/missing managed projection or a legacy,
+invalid, or unsupported manifest degrades health and prints an exact repair or
+reinstall command; health itself remains read-only. Unmanaged extensions,
+unselected vendors, and a machine with no recorded Planar installation do not
+degrade. It is not agent-activity-aware (the claim table is consulted by
+`dashboard --agents` and `plan next`, not by health), but it is the first verb
+to run when something looks wrong before you spend time chasing the wrong
+layer.
 
 ### Putting it together
 
@@ -1628,7 +1775,7 @@ planar plan next <plan> --include-claimed --include-stale
                                         # one plan's queue, every bucket
 planar plan show <plan>                # plan + steps + child plans
 planar task list --plan <plan>         # tasks under the plan
-planar audit trail <kind:id>           # one entity's history
+planar audit trail --kind <kind> <id> # one entity's history
 planar health                          # is the database itself OK
 ```
 
@@ -2106,7 +2253,7 @@ The orchestrator records the choice and moves on to the parallel-fanout per-cycl
 
 ## Recipe 22 — Orchestrate a multi-task plan with parallel coders
 
-> **Ownership note.** The worktree lifecycle — epic-branch cut, per-lane worktree creation, fan-in merge, failed-lane retention, and full teardown — is **model-runnable via the spawn-free `workflows/parallel-dispatch.lua` seam** (plan 760): `cycle_plan` computes one sequential lane, while `plan`/`waves` compute parallel lanes. The seam computes worktree paths, branch names, merge order, and teardown lists and HANDS BACK; the model orchestrator runs the git worktree/branch/merge ops and spawns coders via the harness Agent tool. There is **no external harness** in this path (and no revival of centurion). The six eligibility rules are the engine's (`recommend-strategy`, `src/engine/planning/strategy.zig`), consumed by the fan-out phases and never re-derived. They apply to `parallel-fanout`, not to a single sequential worktree lane. For the staged-wave (dependency-respecting) variant — proto lands first, then identity + web in parallel — see [Step 11 — Staged waves](#step-11--staged-waves-contract-lane-first) below. In-flight worktree execution is watched through `planar-watch ps --plan <id>` (claims + each claim's `worktree_path`) — there is no separate wave/barrier view.
+> **Ownership note.** The worktree lifecycle — epic-branch cut, per-lane worktree creation, fan-in merge, failed-lane retention, and full teardown — is **model-runnable via the spawn-free `workflows/parallel-dispatch.lua` seam** (plan 760): `cycle_plan` computes one sequential lane, while `plan`/`waves` compute parallel lanes. The seam computes worktree paths, branch names, merge order, and teardown lists and HANDS BACK; the model orchestrator runs the git worktree/branch/merge ops and spawns coders through the host's subagent dispatch surface. There is **no external harness** in this path (and no revival of centurion). The six eligibility rules are the engine's (`recommend-strategy`, `src/engine/planning/strategy.zig`), consumed by the fan-out phases and never re-derived. They apply to `parallel-fanout`, not to a single sequential worktree lane. For the staged-wave (dependency-respecting) variant — proto lands first, then identity + web in parallel — see [Step 11 — Staged waves](#step-11--staged-waves-contract-lane-first) below. In-flight worktree execution is watched through `planar-watch ps --plan <id>` (claims + each claim's `worktree_path`) — there is no separate wave/barrier view.
 
 The full `parallel-fanout` lifecycle, from strategy confirmation through fan-in and reviewer to cleanup. Use this when you have a plan in `active` status with ≥3 tasks, at least 2 of which are parallel-eligible (disjoint `task_touches`, no migration, no singleton-file touch, no blocking open question or proposed-decision dependency).
 
@@ -2540,7 +2687,7 @@ No propagation, no sync subscription. The link makes the upstream issue
 visible to `pl-audit-trail`:
 
 ```bash
-planar audit trail 42 --kind question
+planar audit trail --kind question 42
 # → shows the create event and the external link row
 ```
 
@@ -2742,3 +2889,119 @@ After the next `./install.sh` run, `planar workflow list` will show the workflow
 - **No general exec.** `os.execute`, `io.popen`, `load`, `require`, and spawn-shaped host functions (`agent`, `exec`, `spawn`, `parallel`, etc.) are all nil or blocked. The only host reach is the D7 surface (`cli.planar`, `cli.planar_json`, `cli.planar_watch`, `cli.planar_watch_json`, `git.*`, `fs.*`, `flow.*`, `ctx.*`).
 - **Trace by convention.** Tracing (opening a run record via `planar run start`, emitting events, finishing the run) is the workflow's responsibility, not the engine's. The shipped workflows all open trace runs when a `plan_id` is available. Personal sandbox workflows should follow the same pattern for observability.
 - **Scope-checked by the CLI.** Every CLI verb the workflow shells goes through the normal scope resolver. A workflow that passes `--scope` to its inner CLI calls is explicit; one that relies on cwd-derived scope should document that assumption.
+
+---
+
+## Recipe 29 — Orient, diagnose, and choose work
+
+Use the expanded read workflows instead of reconstructing state from unrelated
+lists:
+
+```bash
+/pl-status                         # current scope: attention queue + safe next work
+/pl-observe --plan <plan-id>       # one plan: actions, claims, failures, sync, handoffs
+/pl-health                         # global DB, resume, handoff, and projection health
+/pl-help repair my local skills    # route an intent to the supported workflow
+```
+
+`pl-status` suppresses empty sections and orders conflicts, stale coordination
+state, blockers/questions, active claims, and claim-aware next work. It does
+not recommend a claimed, stale, or blocked task. `pl-observe` is read-only and
+distinguishes an empty interval from unavailable telemetry. `pl-health` never
+repairs: it explains each degraded contributor and routes to `pl-doctor`,
+`pl-resume`, reconciliation preview, configuration validation, or the exact
+`planar skills repair ...` preview. Use `/pl-plan` and `/pl-task` for the full
+lifecycle once a target is selected; both read post-state after mutations, and
+claimed work still terminates atomically through `planar-agent`.
+
+---
+
+## Recipe 30 — Capture a durable knowledge chain
+
+Use `pl-knowledge` when an intent spans decisions, artifacts, annotations, and
+typed relationships:
+
+```bash
+/pl-knowledge capture "Adopt SQLite WAL" --plan 42 --artifact 17
+/pl-knowledge annotate --anchor-path src/db/db.zig --line-start 88 \
+  "Explain the retry boundary"
+/pl-knowledge link decision:9 artifact:17 --relationship cites
+```
+
+The workflow resolves every natural-language target to exactly one typed
+entity before writing. If resolution is ambiguous it shows candidates and
+stops with `applied=0`; it never guesses. Each approved mutation uses the
+normal scope-guarded entity verb, then reads the entity and relationship back.
+A multi-target partial result keeps verified independent changes and supplies
+an exact retry or inspection command for each failure.
+
+---
+
+## Recipe 31 — Preview introspection, then triage findings
+
+The intake and triage gates are separate:
+
+```bash
+/pl-introspect --days 7
+# Review normalized proposals and signal_coverage; the default writes nothing.
+
+/pl-introspect --days 7 --apply
+# The workflow still pauses for explicit confirmation before filing findings.
+
+/pl-feedback-triage --plan <feedback-plan-id>
+# Review severity, disposition, reproduction, duplicate, and entity/link changes.
+
+/pl-feedback-triage --finding question:42 --apply
+# The initial --apply request still does not bypass the row-level confirmation.
+```
+
+Introspection recognizes supported Claude, Codex, Copilot, and opt-in CLI-log
+sources and persists only redacted normalized signal. Missing or malformed
+optional adapters degrade `signal_coverage`; they are not observed zeros.
+Triage writes only confirmed local rows through `planar feedback triage set`.
+If external reporting is recommended, invoke `/pl-report-issue` and review the
+complete issue body at a second gate. Declining publication posts nothing and
+does not undo completed local triage. Mixed independent results return
+`outcome=partial` with action counts and idempotent per-target recovery.
+
+---
+
+## Recipe 32 — Reconcile a sync conflict safely
+
+Start from current link state and durable audit evidence:
+
+```bash
+/pl-sync status
+/pl-sync pull task:<task-id>
+/pl-sync resolve <conflict-event-id>
+```
+
+With no current conflicts, the workflow is a verified no-op: it does not
+dispatch the reconciler or call resolve. For a conflict, the read-and-recommend
+`sync-reconciler` must show both observable values, provenance, observation
+times, and provider version. Missing or stale evidence forces `defer` and a
+fresh guarded pull. `keep-local` and `keep-remote` are whole-entity choices and
+require explicit approval for the displayed event and evidence.
+
+`manual-merge` is two-gated: first edit the local entity through its ordinary
+scope-guarded workflow and review its post-state; then separately approve
+`keep-local` for that conflict event. Approval of merge text never authorizes
+either mutation. Multi-event application preserves independently resolved
+events and reports failed or deferred events with exact recovery commands.
+
+---
+
+## Recipe 33 — Run the gated documentation-maintenance loop
+
+```bash
+/pl-doc-maintain
+```
+
+The caller reads `planar-doc diff --json`, obtains read-only documenter
+proposals, and requires an operator disposition for every row. Approved
+`create-doc` or prose-refresh rows alone go to `doc-author`; approved `nodoc`
+rows bypass prose authoring. The caller—not either specialist—applies coverage
+state and runs `planar-doc lint`, `build`, `verify`, and a final clean diff.
+Unapproved rows remain visible. A clean initial diff is a no-op and does not
+rebuild the manifest; a partial apply preserves verified rows and reports the
+exact failed-row recovery command.

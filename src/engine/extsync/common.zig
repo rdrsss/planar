@@ -26,6 +26,9 @@ pub const RemoteState = struct {
     due_at: []const u8,
     url: []const u8,
     raw_status: []const u8,
+    /// Stable remote-side version marker (normally the provider's updated_at).
+    /// Empty only for adapters/providers that expose no version metadata.
+    version: []const u8,
 };
 
 pub fn deinitRemoteState(state: RemoteState, allocator: std.mem.Allocator) void {
@@ -37,6 +40,7 @@ pub fn deinitRemoteState(state: RemoteState, allocator: std.mem.Allocator) void 
     allocator.free(state.due_at);
     allocator.free(state.url);
     allocator.free(state.raw_status);
+    allocator.free(state.version);
 }
 
 pub const LocalEntity = struct {
@@ -229,6 +233,7 @@ test "dispatch checks adapter declarations and routes by operation" {
                 .due_at = try allocator.dupe(u8, ""),
                 .url = try allocator.dupe(u8, ""),
                 .raw_status = try allocator.dupe(u8, "To Do"),
+                .version = try allocator.dupe(u8, "2026-01-01T00:00:00Z"),
             };
         }
         pub fn push(_: *const @This(), allocator: std.mem.Allocator, _: []const u8, _: FieldChangeSet) !UpdateOutcome {

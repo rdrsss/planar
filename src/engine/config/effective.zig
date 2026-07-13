@@ -121,6 +121,16 @@ pub const Introspection = struct {
     /// How many days of cli_invocations rows to retain.
     /// Rows older than this are pruned statelessly on the capture path.
     retention_days: i64,
+    transcripts: Transcripts,
+};
+
+pub const Transcripts = struct {
+    claude_enabled: bool,
+    claude_path: []const u8,
+    codex_enabled: bool,
+    codex_path: []const u8,
+    copilot_enabled: bool,
+    copilot_path: []const u8,
 };
 
 // =========================================================================
@@ -489,11 +499,11 @@ pub fn resolve(
         "models.codex.small",      "models.codex.medium",     "models.codex.large",
         "models.copilot.small",    "models.copilot.medium",   "models.copilot.large",
         "roles.coder",             "roles.reviewer",          "roles.test-coder",
-        "roles.documenter",
+        "roles.documenter",        "roles.doc-author",        "roles.sync-reconciler",
         // role_vendors.* are override-only (no embedded default → resolver falls
         // back to [defaults].vendor); picked so an operator-set value resolves.
-               "role_vendors.coder",      "role_vendors.reviewer",
-        "role_vendors.test-coder", "role_vendors.documenter",
+        "role_vendors.coder",      "role_vendors.reviewer",   "role_vendors.test-coder",
+        "role_vendors.documenter", "role_vendors.doc-author", "role_vendors.sync-reconciler",
     };
     for (model_keys) |mk| {
         _ = try pickStr(allocator, environ, &file_map, &def_map, &eff, .{
@@ -506,12 +516,12 @@ pub fn resolve(
     }
 
     // User-defined custom roles (plan 586 task 3937): any `roles.<name>` key
-    // in the config file that is NOT one of the four built-in roles gets
+    // in the config file that is NOT one of the built-in roles gets
     // picked into the effective map so `buildRouting` can enumerate them.
     // Similarly, any `role_vendors.<name>` for a custom role is picked.
     // No embedded-default counterpart (custom roles are config-only).
     {
-        const builtin_roles = [_][]const u8{ "coder", "reviewer", "test-coder", "documenter" };
+        const builtin_roles = [_][]const u8{ "coder", "reviewer", "test-coder", "documenter", "doc-author", "sync-reconciler" };
         var fmap_it = file_map.iterator();
         while (fmap_it.next()) |fentry| {
             const fkey = fentry.key_ptr.*;
@@ -521,7 +531,7 @@ pub fn resolve(
             if (!is_roles and !is_rv) continue;
             const suffix = if (is_roles) fkey["roles.".len..] else fkey["role_vendors.".len..];
             if (suffix.len == 0) continue;
-            // Skip the four built-ins — they are already handled above.
+            // Skip the built-ins — they are already handled above.
             var is_builtin = false;
             for (builtin_roles) |b| {
                 if (std.mem.eql(u8, suffix, b)) {
@@ -672,6 +682,12 @@ pub fn resolve(
         "introspection.retention_days",
         90,
     );
+    const claude_enabled = try pickBool(allocator, &file_map, &def_map, &eff, "introspection.transcripts.claude_enabled", true);
+    const codex_enabled = try pickBool(allocator, &file_map, &def_map, &eff, "introspection.transcripts.codex_enabled", true);
+    const copilot_enabled = try pickBool(allocator, &file_map, &def_map, &eff, "introspection.transcripts.copilot_enabled", true);
+    const claude_path = try pickStr(allocator, environ, &file_map, &def_map, &eff, .{ .key = "introspection.transcripts.claude_path", .env_name = null, .assoc_val = null, .file_key = "introspection.transcripts.claude_path", .def_key = "introspection.transcripts.claude_path" });
+    const codex_path = try pickStr(allocator, environ, &file_map, &def_map, &eff, .{ .key = "introspection.transcripts.codex_path", .env_name = null, .assoc_val = null, .file_key = "introspection.transcripts.codex_path", .def_key = "introspection.transcripts.codex_path" });
+    const copilot_path = try pickStr(allocator, environ, &file_map, &def_map, &eff, .{ .key = "introspection.transcripts.copilot_path", .env_name = null, .assoc_val = null, .file_key = "introspection.transcripts.copilot_path", .def_key = "introspection.transcripts.copilot_path" });
 
     // Build Config with separate dupe allocations from EffectiveMap values.
     // Each pickStr result is owned by EffectiveMap; Config needs its own copy.
@@ -720,6 +736,14 @@ pub fn resolve(
         .introspection = .{
             .cli_log = introspection_cli_log,
             .retention_days = introspection_retention_days,
+            .transcripts = .{
+                .claude_enabled = claude_enabled,
+                .claude_path = try allocator.dupe(u8, claude_path),
+                .codex_enabled = codex_enabled,
+                .codex_path = try allocator.dupe(u8, codex_path),
+                .copilot_enabled = copilot_enabled,
+                .copilot_path = try allocator.dupe(u8, copilot_path),
+            },
         },
     };
 
@@ -867,6 +891,9 @@ pub fn deinitConfig(cfg: *Config, allocator: std.mem.Allocator) void {
     allocator.free(cfg.external.github_issues.status.done);
     for (cfg.external.github_projects.parent_field_names) |s| allocator.free(s);
     allocator.free(cfg.external.github_projects.parent_field_names);
+    allocator.free(cfg.introspection.transcripts.claude_path);
+    allocator.free(cfg.introspection.transcripts.codex_path);
+    allocator.free(cfg.introspection.transcripts.copilot_path);
 }
 
 pub fn deinitEffectiveMap(eff: *EffectiveMap, allocator: std.mem.Allocator) void {
@@ -1009,6 +1036,8 @@ test "effective: model tier maps + role tiers resolve from embedded defaults (pl
         .{ .key = "roles.coder", .want = "medium" },
         .{ .key = "roles.reviewer", .want = "large" },
         .{ .key = "roles.documenter", .want = "medium" },
+        .{ .key = "roles.doc-author", .want = "large" },
+        .{ .key = "roles.sync-reconciler", .want = "large" },
     };
     for (cases) |c| {
         const prov = res.effective.get(c.key) orelse return error.TestFailed;
@@ -1184,6 +1213,24 @@ test "introspection: file section overrides defaults — cli_log true, retention
         return error.TestFailed;
     try std.testing.expectEqualStrings("30", days_prov.value);
     try std.testing.expectEqual(Provenance.config_file, days_prov.source);
+}
+
+test "introspection: transcript adapters resolve independent enable and path overrides" {
+    const a = std.testing.allocator;
+    const file_content =
+        \\[introspection.transcripts]
+        \\claude_enabled = false
+        \\codex_path = "/safe/codex"
+        \\copilot_path = "/safe/copilot"
+    ;
+    var res = try resolve(a, file_content, std.process.Environ.empty, null);
+    defer res.deinit(a);
+
+    try std.testing.expect(!res.config.introspection.transcripts.claude_enabled);
+    try std.testing.expect(res.config.introspection.transcripts.codex_enabled);
+    try std.testing.expectEqualStrings("/safe/codex", res.config.introspection.transcripts.codex_path);
+    try std.testing.expectEqualStrings("/safe/copilot", res.config.introspection.transcripts.copilot_path);
+    try std.testing.expectEqual(Provenance.config_file, res.effective.get("introspection.transcripts.codex_path").?.source);
 }
 
 test "introspection: absent section yields defaults (no file content for section)" {
