@@ -331,9 +331,22 @@ Source: `commands/claude/pl-scope.md` · `skills/codex/pl-scope.md`
 
 ### `/pl-plan`
 
-Draft a plan from a goal, decompose into steps, link to specs and decisions.
+Manage the full plan lifecycle: create and update plans, add/complete/skip/link
+ordered steps, link related entities, select claim-aware next work, recommend an
+execution strategy, repair derived status, and close out eligible plans. Writes
+use the cwd-derived scope (or an explicit `--scope <slug>`), and every mutation
+is verified with `plan show --json`; closeout is previewed before application.
+Claimed agent work still ends through one atomic `planar-agent` terminal verb,
+never `task done` followed by claim release.
 
-**Example:** `/pl-plan "design the billing export schema"`
+**Example:**
+```
+/pl-plan create "Design the billing export schema"
+/pl-plan step add <plan-id> "Define the export contract"
+/pl-plan next <plan-id>
+/pl-plan recommend-strategy <plan-id>
+/pl-plan closeout <plan-id> --dry-run
+```
 
 Source: `commands/claude/pl-plan.md` · `skills/codex/pl-plan.md`
 
@@ -341,13 +354,21 @@ Source: `commands/claude/pl-plan.md` · `skills/codex/pl-plan.md`
 
 ### `/pl-task`
 
-Add, list, prioritize, block, and complete tasks within active scope.
+Manage the full task lifecycle within the cwd-derived scope: create, inspect,
+update, prioritize, block, reopen, complete, cancel, link, and record repository
+touches. After every mutation the skill reads back `task show --json` (and
+`task touches list --json` for touches), verifies status and relationships, and
+reports `next_action` plus an executable next plan command. Manual `task done`
+is only for unclaimed work; claimed agent work uses one atomic
+`planar-agent complete|fail|release|block` terminal operation.
 
 **Example:**
 ```
 /pl-task add "implement CSV serialiser" --plan <plan-id>
-/pl-task list
-/pl-task done <task-id>
+/pl-task block <task-id> --on <blocker-id>
+/pl-task reopen <task-id>
+/pl-task touches add <task-id> billing-api --path src/export/
+/pl-task done <unclaimed-task-id>
 ```
 
 Source: `commands/claude/pl-task.md` · `skills/codex/pl-task.md`
@@ -461,9 +482,21 @@ Source: `commands/claude/pl-handoff.md` · `skills/codex/pl-handoff.md` · `agen
 
 ### `/pl-help`
 
-Summarize available skills and reference workflows for the current vendor surface.
+Route an operator outcome to an available workflow, or show the exact CLI help
+for a named verb. Intent routing covers interrupted-work recovery, active-work
+observation, durable knowledge, operator-local skills and agents, feedback,
+and published-documentation maintenance. It distinguishes invocable workflows
+from CLI fallbacks when a planned skill is not yet authored, and always exposes
+the underlying supported CLI commands.
 
-**Example:** `/pl-help`
+**Example:**
+```
+/pl-help
+/pl-help resume interrupted work
+/pl-help inspect active agents
+/pl-help task
+/pl-help sync resolve
+```
 
 Source: `commands/claude/pl-help.md` · `skills/codex/pl-help.md`
 
@@ -471,9 +504,19 @@ Source: `commands/claude/pl-help.md` · `skills/codex/pl-help.md`
 
 ### `/pl-health`
 
-Report database and handoff readiness health: schema version, pending migrations, session state, unresolved sync conflicts.
+Read and explain global Planar health, including database reachability, schema
+currency, SQLite integrity, resumability, stale handoffs/claims, and installed
+projection freshness. Degraded contributors route to executable, read-first
+diagnostics for `/pl-doctor`, `/pl-resume`, claim reconciliation, explicit
+projection repair, or configuration validation. Health never performs those
+repairs itself, and all state access stays behind `planar` or `planar-agent`
+CLI verbs rather than direct database, config-file, or install-tree inspection.
 
-**Example:** `/pl-health`
+**Example:**
+```
+/pl-health
+/pl-health --json
+```
 
 Source: `commands/claude/pl-health.md` · `skills/codex/pl-health.md`
 
@@ -512,7 +555,9 @@ Source: `skills/src/pl-doctor.md`
 Answer what needs attention now in the current scope: sync conflicts, stale
 claims and handoffs, blocked work and open questions, active claims/actions,
 then claim-aware next work. Empty sections are suppressed and the read-only
-summary stays concise while providing executable next actions.
+summary stays concise while providing executable next actions. It resolves
+scope and state only through the CLI, filters global handoffs back to the
+current scope, and never recommends work marked claimed, stale, or blocked.
 
 **Example:** `/pl-status`
 
@@ -600,6 +645,49 @@ agents → ~/.planar/agents/local-<name>.md               (file symlink → <src
 ```
 
 The `local-` prefix on the install name makes sandbox skills visibly user-authored in every vendor's listing and prevents collisions with canonical installs. `shadow: true` in source frontmatter drops the prefix to explicitly replace a canonical install (with a warning at link time). The Codex / Copilot dir-symlink shape is load-bearing: those loaders empirically reject symlinked SKILL.md files inside real directories, but follow directory symlinks correctly. See [concepts.md § Local sandbox](concepts.md#local-sandbox) for the full design.
+
+### `/pl-local`
+
+Canonical lifecycle workflow for operator-local skills and agents: import,
+link, list, unlink, migrate legacy sources, and repair vendor-link drift. Every
+operation goes through `planar local`, verifies persisted installs with
+`planar local list --json`, and reports partial multi-target results without
+inventing rollback. The skill-level `repair` operation maps to
+`planar local link --reconcile`; there is no standalone `planar local repair`
+verb. Sources remain machine-local, and canonical promotion remains the manual
+contribution flow—there is no `planar local promote` verb.
+
+**Example:**
+```
+/pl-local import ~/my-skills/
+/pl-local link fixup-protos --vendor codex
+/pl-local list
+/pl-local unlink fixup-protos
+/pl-local migrate --dry-run
+/pl-local repair
+```
+
+Source: `skills/src/pl-local.md`
+
+---
+
+### `/pl-local-import`
+
+Compatibility entry point that preserves existing import-only invocations and
+routes them to the canonical `/pl-local import` contract with the same path,
+kind, `--force`, `--dry-run`, and `--no-link` options. Use `/pl-local` for
+list, link, unlink, migrate, and repair; the compatibility wrapper adds no
+flags or CLI verbs of its own.
+
+**Example:**
+```
+/pl-local-import ~/my-skills/fixup-protos.md
+/pl-local-import ~/my-agents/ --kind agent
+```
+
+Source: `skills/src/pl-local-import.md`
+
+---
 
 **Canonical vs sandbox.**
 

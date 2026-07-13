@@ -1,87 +1,87 @@
 {
   "version": 2,
   "algo": "xxh64",
-  "root": "b17097d2f9c7b58a",
+  "root": "41f43047fec75f19",
   "generated_at": "",
   "entries": {
     "docs/architecture.md": {
-      "doc_hash": "e4492d5ff1fd762b",
+      "doc_hash": "e7b92c4ad4eb1a19",
       "sources": {
-        "build.zig": "85342fa208dfd707",
-        "migrations/": "020578d7b8979aac",
-        "src/db/": "38cf4bc9a75dc1bc",
-        "src/engine/": "46f0eb823df851a4",
+        "build.zig": "3e1fb7dd81c1a0bb",
+        "migrations/": "c346e29e94a157d2",
+        "src/db/": "4b08f429d5bc1835",
+        "src/engine/": "a814f39db28a172d",
         "src/root.zig": "a50330d9f5048cdf",
-        "src/runtime/runtime.zig": "4c4cd01b77f9847b",
-        "vendor/sqlite/": "35d54c0413373c40"
+        "src/runtime/runtime.zig": "223e03691a183abc",
+        "vendor/sqlite/": "a74be58cb1a408f7"
       },
-      "sources_hash": "aa341fc8414656ff",
-      "entry_hash": "afaac36a31e00279"
+      "sources_hash": "4bf06dc634063a72",
+      "entry_hash": "bf4748ac0f2846db"
     },
     "docs/cli-reference.md": {
-      "doc_hash": "be7024e0ca2efe5d",
+      "doc_hash": "500d7e4276ae5c52",
       "sources": {
-        "src/cmd/": "10a727d6ad64b5c7",
-        "vendor/etc-cli/": "ae2205bfe1dd4027"
+        "src/cmd/": "bc5af8e72f5b828e",
+        "vendor/etc-cli/": "0000000000000000"
       },
-      "sources_hash": "5c245adb578222de",
-      "entry_hash": "9aa8884e55e05810"
+      "sources_hash": "92b2f5e39ca14fe4",
+      "entry_hash": "1a368f316453e91b"
     },
     "docs/features/doc-system.md": {
-      "doc_hash": "4b8a44058ac4a733",
+      "doc_hash": "4c601dd0cb42f098",
       "sources": {
-        "src/cmd/planar-doc/": "b1dbc302c4f49d58",
+        "src/cmd/planar-doc/": "4833cce912c1555f",
         "src/engine/docs/": "d46c111a7cbd9ba4"
       },
-      "sources_hash": "e5c11b34ecff6869",
-      "entry_hash": "86f47a478ab90f2e"
+      "sources_hash": "201a31d69268ffff",
+      "entry_hash": "2ba05908ebfd7773"
     },
     "docs/features/scope-resolution.md": {
       "doc_hash": "270b6c9054821d9f",
       "sources": {
-        "src/engine/identity/": "86c64ad63c76a0b7"
+        "src/engine/identity/": "7b32ae6aca844d07"
       },
-      "sources_hash": "73c0cd9906cde188",
-      "entry_hash": "2703064a490f54e1"
+      "sources_hash": "219a7a0701ba4c41",
+      "entry_hash": "f4ad37f82a5b6370"
     },
     "docs/skill-reference.md": {
-      "doc_hash": "d0ccce0664809267",
+      "doc_hash": "9ad7e5ebe07004c5",
       "sources": {
-        "agents/": "07b8c57deecb3353",
-        "skills/": "ff1cc5e5a2484308"
+        "agents/": "851285b2f2002550",
+        "skills/": "3aa46a819653e55a"
       },
-      "sources_hash": "52883b96c6f5dc53",
-      "entry_hash": "8a93a86255ce5f2f"
+      "sources_hash": "5985e9a7a3dc2480",
+      "entry_hash": "4765c4886b677400"
     },
     "docs/workflows.md": {
-      "doc_hash": "c63612ccdda79e16",
+      "doc_hash": "aca956093c3926a5",
       "sources": {
-        "scripts/": "655cd4a608e015b7"
+        "scripts/": "1315cee9302fb21f"
       },
-      "sources_hash": "8fb9d8c345b0b903",
-      "entry_hash": "dfbeab5e28baf0c6"
+      "sources_hash": "2eca34df0c98c04c",
+      "entry_hash": "d16e550ccbb5f2ba"
     }
   },
   "nodoc": {
-    "AGENTS.md": "53b31f4985bcf0d0",
-    "CLAUDE.md": "53b31f4985bcf0d0",
-    "INSTALL.md": "ae3d1575e58192c4",
-    "Makefile": "918f6daf79d3c1d3",
-    "README.md": "2bba73565ae4bf55",
-    "build.zig.zon": "8b850fea29cf6175",
-    "docs/adrs.md": "46beb4fa54405655",
-    "docs/changelog.md": "74783a1b27c20cc0",
-    "docs/concepts.md": "52653e20c9557023",
-    "docs/features/workspace-agents.md": "1a5f17b1bff36838",
-    "docs/getting-started.md": "47397fc6f0a65444",
+    "AGENTS.md": "8f5c07a8e4ea90d6",
+    "CLAUDE.md": "8f5c07a8e4ea90d6",
+    "INSTALL.md": "8c6f9a482dba51cd",
+    "Makefile": "44b063574a2b1f08",
+    "README.md": "d249585a95e30dff",
+    "build.zig.zon": "ec0b1222ab927a55",
+    "docs/adrs.md": "eb2701a1761bf3f5",
+    "docs/changelog.md": "8e1bbafdb2db710c",
+    "docs/concepts.md": "9950f86467f71b0e",
+    "docs/features/workspace-agents.md": "5383400de9c05107",
+    "docs/getting-started.md": "9060351c2a115ad8",
     "docs/glossary.md": "e7cba86def7a4b4d",
     "docs/light-touch.md": "24e8c08f94fb20c0",
-    "docs/research/scenario-coverage-long-tail.md": "f10ca0379d6a6bb3",
-    "docs/research/scope-resolution.md": "065c85818949d0c1",
-    "install.sh": "f8b0b31e47608afd",
-    "integration_tests/": "60ec78357b50dee5",
-    "templates/": "7538253a8a401486",
-    "tools/": "9163699b5d05a1b7",
-    "vendor/manifest.zon": "55ed479d3a046998"
+    "docs/research/scenario-coverage-long-tail.md": "0000000000000000",
+    "docs/research/scope-resolution.md": "0000000000000000",
+    "install.sh": "b0852fb970beffe8",
+    "integration_tests/": "a5736c853e4ca140",
+    "templates/": "0536dfe3149b9acc",
+    "tools/": "50f64c82a256904c",
+    "vendor/manifest.zon": "123c6b606e6f6b41"
   }
 }
