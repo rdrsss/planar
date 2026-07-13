@@ -3471,10 +3471,12 @@ link  entity    external-id    system      last-sync           status
 
 **Synopsis:**
 ```
-planar sync resolve <event-id> --keep <side> [--scope <slug>]
+planar sync resolve <event-id> --keep <side>
+  --evidence-token <sha256> --expected-local-updated-at <timestamp>
+  [--scope <slug>]
 ```
 
-**Description:** Resolve a sync conflict recorded in `sync_events`. `--keep local` keeps the local value and pushes it to the remote. `--keep remote` overwrites the local value with the remote value. Resolution is whole-entity; per-field resolution is not supported.
+**Description:** Resolve a sync conflict recorded in `sync_events`. `--keep local` keeps the local value and pushes it to the remote. `--keep remote` overwrites the local value with the remote value. Resolution is whole-entity; per-field resolution is not supported. Read the event through `planar audit trail --link <id> --json`: conflict rows expose an `evidence` object with exact local/remote field values, provenance, observation time, local `updated_at`, provider remote version (`updated`/`updated_at`), and the evidence token.
 
 **Scope guard:** Refuses when the operator's resolved write scope disagrees with the local entity referenced by the link the event belongs to. See [Cross-scope guard](#cross-scope-guard).
 
@@ -3489,6 +3491,8 @@ planar sync resolve <event-id> --keep <side> [--scope <slug>]
 | Flag | Description | Required |
 |------|-------------|----------|
 | `--keep <side>` | `local` or `remote`. | yes |
+| `--evidence-token <sha256>` | Exact token from the operator-approved conflict event evidence. | yes |
+| `--expected-local-updated-at <timestamp>` | Exact approved local entity version. For manual merge, use the reviewed post-edit `updated_at`, not the original conflict value. | yes |
 | `--scope <slug>` | Explicit write-scope override for the target entity guard. | no |
 
 **Output (human):**
@@ -3498,6 +3502,7 @@ conflict resolved: event 15 — kept local value for status
 
 **Schema effects:**
 - Reads `sync_events(outcome='conflict')` and associated `external_links`.
+- Rejects unless the event is the latest event for the link, the link remains conflicted, the stored evidence token matches, the local `updated_at` matches, the approved and freshly read provider versions are both non-empty, and the fresh adapter read still matches the recorded remote values and version. These checks run before either resolution mutation; missing or changed evidence requires defer, a fresh preview, and new approval. The local compare-and-swap plus fresh remote read narrows but cannot eliminate the provider GET-to-write race without a provider conditional-write primitive. After an ambiguous failure, inspect `audit trail --link`, `sync status --entity`, and the local entity before retrying.
 - On `--keep local`: calls adapter `update` with the local value; inserts a fresh `sync_events` row with `direction='push'`, `outcome='ok'`, and `detail='resolved=local; from sync_event=<id>'`.
 - On `--keep remote`: updates the local entity field; inserts a fresh `sync_events` row with `direction='pull'`, `outcome='ok'`, and `detail='resolved=remote; from sync_event=<id>'`.
 - The `direction` value matches the originating action: `pull` for "remote-overwrites-local", `push` for "local-overwrites-remote". The `detail` field records which side won and which conflict event was resolved.
@@ -4190,6 +4195,7 @@ default routing (role → tier → vendor model):
   test-coder → medium claude claude-sonnet-4-6
   documenter → medium claude claude-sonnet-4-6
   doc-author → large  claude claude-opus-4-8
+  sync-reconciler → large claude claude-opus-4-8
 ```
 
 **Output (`--json`):** `{ "providers": [ { "vendor", "bin", "installed", "version", "models": [ { "id", "tier" } ] } ], "default_routing": [ { "role", "tier", "vendor", "model" } ] }`.
@@ -4887,6 +4893,7 @@ reviewer   = "large"
 test-coder = "medium"
 documenter = "medium"
 doc-author = "large"
+sync-reconciler = "large"
 ```
 
 Override any tier to re-route every role at that tier for that vendor, or any

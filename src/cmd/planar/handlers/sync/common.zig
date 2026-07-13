@@ -109,11 +109,13 @@ pub fn resolveConflict(
     allocator: std.mem.Allocator,
     event_id: i64,
     keep: engine.external.sync.ResolveKeep,
+    expected_evidence_token: []const u8,
+    expected_local_updated_at: []const u8,
     handle: *adapter_factory.Handle,
 ) !engine.external.sync.ResolveResult {
     return switch (handle.kind) {
-        .jira => try engine.external.sync.resolveConflict(d, allocator, event_id, keep, &handle.jira_adapter.?),
-        .github => try engine.external.sync.resolveConflict(d, allocator, event_id, keep, &handle.github_adapter.?),
+        .jira => try engine.external.sync.resolveConflict(d, allocator, event_id, keep, expected_evidence_token, expected_local_updated_at, &handle.jira_adapter.?),
+        .github => try engine.external.sync.resolveConflict(d, allocator, event_id, keep, expected_evidence_token, expected_local_updated_at, &handle.github_adapter.?),
     };
 }
 

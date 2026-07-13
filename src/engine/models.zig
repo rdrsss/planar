@@ -121,9 +121,9 @@ pub const RoutingRow = struct {
 };
 
 /// The canonical roles whose routing `planar models routing` reports.
-pub const routing_roles = [_][]const u8{ "coder", "reviewer", "test-coder", "documenter", "doc-author" };
+pub const routing_roles = [_][]const u8{ "coder", "reviewer", "test-coder", "documenter", "doc-author", "sync-reconciler" };
 
-/// Returns true when `role` is one of the five built-in canonical roles.
+/// Returns true when `role` is one of the built-in canonical roles.
 fn isBuiltinRole(role: []const u8) bool {
     for (routing_roles) |r| {
         if (std.mem.eql(u8, r, role)) return true;
@@ -245,6 +245,7 @@ pub const default_role_tiers: []const RoleTier = &.{
     .{ .role = "test-coder", .tier = .medium },
     .{ .role = "documenter", .tier = .medium },
     .{ .role = "doc-author", .tier = .large },
+    .{ .role = "sync-reconciler", .tier = .large },
 };
 
 /// The default vendor every role routes to unless overridden.
@@ -653,9 +654,9 @@ test "resolver: buildRouting with custom role includes it after built-ins" {
     defer res.deinit(a);
     const rows = try buildRouting(a, &res.effective);
     defer a.free(rows);
-    // Four built-ins plus one custom.
+    // Built-ins plus one custom.
     try testing.expectEqual(routing_roles.len + 1, rows.len);
-    // First four are the built-ins.
+    // Built-ins remain first.
     try testing.expectEqualStrings("coder", rows[0].role);
     try testing.expectEqualStrings("reviewer", rows[1].role);
     // Last row is the custom role.
@@ -666,7 +667,7 @@ test "resolver: buildRouting with custom role includes it after built-ins" {
     try testing.expectEqualStrings("claude-haiku-4-5", last.model);
 }
 
-test "resolver: buildRouting empty config — exactly five built-in rows" {
+test "resolver: buildRouting empty config — exactly six built-in rows" {
     const a = testing.allocator;
     var res = try config.resolve(a, null, std.process.Environ.empty, null);
     defer res.deinit(a);

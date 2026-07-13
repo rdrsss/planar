@@ -1298,6 +1298,28 @@ planar sync pull --system my-jira
 
 Pulls remote changes into `sync_events` rows. Conflicts (both sides changed) are surfaced as `sync_events(outcome='conflict')` and require explicit resolution via `planar sync resolve`.
 
+Inspect a conflict through `planar audit trail --link <link-id> --json`. The
+conflict event's `evidence` object carries exact local/remote values,
+provenance, observation time, a token, and the local entity's `updated_at`.
+After approving one whole-entity disposition, pass both compare guards:
+
+```text
+planar sync resolve <event-id> --keep local \
+  --evidence-token <approved-token> \
+  --expected-local-updated-at <reviewed-updated-at> --json
+```
+
+The command refuses a non-latest event, a closed link, a changed token or local
+version, an absent/empty approved or fresh provider version, and a fresh remote
+read that differs from the approved evidence. Missing provider version evidence
+forces `defer`. For a manual merge, edit the local entity first, review its
+post-state, then use that post-edit `updated_at` only after a second explicit
+keep-local confirmation. The local compare-and-swap and fresh remote read narrow
+the race window but cannot eliminate the provider GET-to-write race when the
+provider lacks conditional updates. If the command or adapter fails ambiguously,
+inspect the link audit, sync status, and entity post-state before retrying or
+seeking fresh approval.
+
 ---
 
 ## Recipe 14 — Author a personal skill in the sandbox

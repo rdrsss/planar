@@ -65,8 +65,10 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         ctx.allocator.destroy(h);
     }
 
-    const result = sync_common.resolveConflict(d, ctx.allocator, event_id, keep, h) catch |e| switch (e) {
+    const result = sync_common.resolveConflict(d, ctx.allocator, event_id, keep, args.evidence_token, args.expected_local_updated_at, h) catch |e| switch (e) {
         error.NotConflict => exit.die(ctx, error.InvalidInput, "sync event {d} is not a conflict; nothing to resolve", .{event_id}),
+        error.StaleConflict => exit.die(ctx, error.Conflict, "sync event {d} is stale or no longer the latest event for its link", .{event_id}),
+        error.EvidenceChanged => exit.die(ctx, error.Conflict, "sync event {d} evidence or approved local version changed; inspect and approve fresh evidence", .{event_id}),
         error.AdapterFailed => exit.die(ctx, e, "sync resolve: adapter call failed", .{}),
         else => exit.die(ctx, e, "sync resolve: {s}", .{@errorName(e)}),
     };

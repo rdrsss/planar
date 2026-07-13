@@ -11,7 +11,7 @@ const harness = @import("harness");
 
 // Render the real orchestrator + coder agent specs from the repo and assert the
 // per-vendor output files exist under the staging dir.
-test "agents render emits per-vendor files for orchestrator coder and doc-author" {
+test "agents render emits per-vendor files for canonical specialists" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
@@ -44,14 +44,17 @@ test "agents render emits per-vendor files for orchestrator coder and doc-author
     try assertFileExists(gpa, root, "agents/claude/orchestrator.md");
     try assertFileExists(gpa, root, "agents/claude/coder.md");
     try assertFileExists(gpa, root, "agents/claude/doc-author.md");
+    try assertFileExists(gpa, root, "agents/claude/sync-reconciler.md");
     // Codex: <role>.toml
     try assertFileExists(gpa, root, "agents/codex/orchestrator.toml");
     try assertFileExists(gpa, root, "agents/codex/coder.toml");
     try assertFileExists(gpa, root, "agents/codex/doc-author.toml");
+    try assertFileExists(gpa, root, "agents/codex/sync-reconciler.toml");
     // Copilot: <role>.agent.md
     try assertFileExists(gpa, root, "agents/copilot/orchestrator.agent.md");
     try assertFileExists(gpa, root, "agents/copilot/coder.agent.md");
     try assertFileExists(gpa, root, "agents/copilot/doc-author.agent.md");
+    try assertFileExists(gpa, root, "agents/copilot/sync-reconciler.agent.md");
 }
 
 // Load-bearing security property: orchestrator (capability=coordinate) must NOT
@@ -178,6 +181,71 @@ test "agents render doc-author with write capability at large tier" {
     try std.testing.expect(std.mem.indexOf(u8, codex, "sandbox_mode = \"workspace-write\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, codex, "model = \"gpt-5.5\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, codex, "model_reasoning_effort = \"high\"") != null);
+}
+
+test "agents render sync-reconciler coordinate capability at large tier" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try fixtureRoot(gpa, &tmp, "agents-render-sync-reconciler");
+    defer gpa.free(root);
+
+    const src_abs = try repoAgentsSrcFromBin(gpa, suite.bin);
+    defer gpa.free(src_abs);
+    try copyAgentSpecs(gpa, src_abs, root);
+
+    const skills_src_abs = try repoSkillsSrcFromBin(gpa, suite.bin);
+    defer gpa.free(skills_src_abs);
+    const stdout = suite.mustRunInDir(root, &.{
+        "skills",
+        "render",
+        "--src",
+        skills_src_abs,
+        "--out",
+        root,
+    });
+    defer gpa.free(stdout);
+
+    const claude = try readPath(gpa, root, "agents/claude/sync-reconciler.md");
+    defer gpa.free(claude);
+    const tools_line = extractToolsLine(claude) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, tools_line, "Edit") == null);
+    try std.testing.expect(std.mem.indexOf(u8, tools_line, "Write") == null);
+    try std.testing.expect(std.mem.indexOf(u8, claude, "model: claude-opus-4-8") != null);
+    try std.testing.expect(std.mem.indexOf(u8, claude, "`keep-local`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, claude, "`keep-remote`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, claude, "`manual-merge`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, claude, "`defer`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, claude, "only valid disposition is `defer`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, claude, "second explicit") != null);
+    try expectSyncStatusAuditBoundary(claude);
+    try expectSyncReconciliationContract(claude);
+
+    const codex = try readPath(gpa, root, "agents/codex/sync-reconciler.toml");
+    defer gpa.free(codex);
+    try std.testing.expect(std.mem.indexOf(u8, codex, "sandbox_mode = \"workspace-write\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, codex, "must NOT edit source files") != null);
+    try std.testing.expect(std.mem.indexOf(u8, codex, "model = \"gpt-5.5\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, codex, "model_reasoning_effort = \"high\"") != null);
+    try expectSyncStatusAuditBoundary(codex);
+    try expectSyncReconciliationContract(codex);
+
+    const copilot = try readPath(gpa, root, "agents/copilot/sync-reconciler.agent.md");
+    defer gpa.free(copilot);
+    try expectSyncStatusAuditBoundary(copilot);
+    try expectSyncReconciliationContract(copilot);
+
+    for ([_][]const u8{
+        "commands/claude/pl-sync.md",
+        "skills/codex/pl-sync.md",
+        "skills/copilot/pl-sync.md",
+    }) |rel| {
+        const projection = try readPath(gpa, root, rel);
+        defer gpa.free(projection);
+        try expectSyncReconciliationContract(projection);
+    }
 }
 
 // Idempotency: rendering twice must produce byte-identical agent output files.
@@ -349,6 +417,27 @@ fn readPath(allocator: std.mem.Allocator, root: []const u8, rel: []const u8) ![]
     const full = try std.fs.path.join(allocator, &.{ root, rel });
     defer allocator.free(full);
     return std.Io.Dir.cwd().readFileAlloc(std.testing.io, full, allocator, std.Io.Limit.limited(1024 * 1024 * 2));
+}
+
+fn expectSyncReconciliationContract(content: []const u8) !void {
+    try std.testing.expect(std.mem.indexOf(u8, content, "planar sync status --entity <kind:id> --json") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "planar audit trail --link <link-id> --json") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "planar <kind> show <id> --json") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "`sync status` exposes current link state, not recorded sync") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "new_event_id") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "direction") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "outcome") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "detail") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "provider GET→write race") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "never retry blindly") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "entity post-state") != null);
+}
+
+fn expectSyncStatusAuditBoundary(content: []const u8) !void {
+    try std.testing.expect(std.mem.indexOf(u8, content, "status contains no conflicted links or rows") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "`sync status` exposes current link state, not recorded sync events") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "`audit trail --link ... --json` as the sync-event evidence surface") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "status contains no conflict events") == null);
 }
 
 const Snap = struct { path: []const u8, body: []const u8 };

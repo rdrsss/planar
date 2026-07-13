@@ -50,6 +50,8 @@ pub const verb: cli.Cmd = .{
             .desc = "Settle a sync conflict on a link.",
             .flags = &.{
                 .{ .long = "--keep", .kind = .string, .required = true, .desc = "Which side to keep (local|remote)" },
+                .{ .long = "--evidence-token", .kind = .string, .required = true, .desc = "Exact token from the approved conflict evidence" },
+                .{ .long = "--expected-local-updated-at", .kind = .string, .required = true, .desc = "Approved local entity updated_at version" },
                 .{ .long = "--scope", .kind = .string },
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },

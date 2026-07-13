@@ -277,6 +277,7 @@ fn parseIssue(allocator: std.mem.Allocator, fallback_external_id: []const u8, ra
         break :blk std.fmt.parseInt(i64, id_str, 10) catch 0;
     };
     const due_at = getObjectString(fields, "duedate") orelse "";
+    const version = getObjectString(fields, "updated") orelse "";
 
     return .{
         .external_id = try allocator.dupe(u8, key),
@@ -288,6 +289,7 @@ fn parseIssue(allocator: std.mem.Allocator, fallback_external_id: []const u8, ra
         .due_at = try allocator.dupe(u8, due_at),
         .url = try allocator.dupe(u8, ""),
         .raw_status = try allocator.dupe(u8, status_name),
+        .version = try allocator.dupe(u8, version),
     };
 }
 

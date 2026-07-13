@@ -61,6 +61,8 @@ pub const Error = error{
     UnsupportedEntityKind,
     InvalidKeep,
     NotConflict,
+    StaleConflict,
+    EvidenceChanged,
     AdapterFailed,
     LinkExists,
 } || std.mem.Allocator.Error;
@@ -90,6 +92,7 @@ pub const SyncEvent = struct {
     outcome: []const u8,
     fields_changed: ?[]const u8,
     detail: ?[]const u8,
+    context_json: ?[]const u8,
     at: []const u8,
 };
 
@@ -99,6 +102,7 @@ pub fn deinitSyncEvents(events: []const SyncEvent, allocator: std.mem.Allocator)
         allocator.free(e.outcome);
         if (e.fields_changed) |s| allocator.free(s);
         if (e.detail) |s| allocator.free(s);
+        if (e.context_json) |s| allocator.free(s);
         allocator.free(e.at);
     }
     allocator.free(events);
@@ -108,7 +112,7 @@ pub fn deinitSyncEvents(events: []const SyncEvent, allocator: std.mem.Allocator)
 /// `external.EventsForLink` and feeds `audit trail --link <id>`.
 pub fn eventsForLink(d: *db.sqlite.Db, allocator: std.mem.Allocator, link_id: i64) Error![]SyncEvent {
     var stmt = d.prepare(
-        \\select id, direction, outcome, fields_changed, detail, at
+        \\select id, direction, outcome, fields_changed, detail, context_json, at
         \\from sync_events
         \\where link_id = ?
         \\order by id
@@ -123,6 +127,7 @@ pub fn eventsForLink(d: *db.sqlite.Db, allocator: std.mem.Allocator, link_id: i6
             allocator.free(e.outcome);
             if (e.fields_changed) |s| allocator.free(s);
             if (e.detail) |s| allocator.free(s);
+            if (e.context_json) |s| allocator.free(s);
             allocator.free(e.at);
         }
         out.deinit(allocator);
@@ -138,7 +143,8 @@ pub fn eventsForLink(d: *db.sqlite.Db, allocator: std.mem.Allocator, link_id: i6
                     .outcome = try stmt.columnTextAlloc(2, allocator),
                     .fields_changed = try stmt.columnTextOpt(3, allocator),
                     .detail = try stmt.columnTextOpt(4, allocator),
-                    .at = try stmt.columnTextAlloc(5, allocator),
+                    .context_json = try stmt.columnTextOpt(5, allocator),
+                    .at = try stmt.columnTextAlloc(6, allocator),
                 };
                 try out.append(allocator, e);
             },
@@ -168,6 +174,8 @@ pub fn pullLink(d: *db.sqlite.Db, allocator: std.mem.Allocator, link: external_l
     defer if (!committed) d.exec("rollback") catch {};
 
     var result = PullResult{ .link_id = link.id, .outcome = .noop };
+    var conflict_local: ?EntityFields = null;
+    defer if (conflict_local) |fields| deinitEntityFields(fields, allocator);
     switch (link.sync_direction) {
         .@"write-back" => {
             result.outcome = .noop;
@@ -177,15 +185,12 @@ pub fn pullLink(d: *db.sqlite.Db, allocator: std.mem.Allocator, link: external_l
             var allow_status = true;
             var baseline = try loadBaseline(d, allocator, link.id);
             defer baseline.deinit(allocator);
-            var local: ?EntityFields = null;
-            defer if (local) |fields| deinitEntityFields(fields, allocator);
-
             if (link.sync_direction == .@"two-way" and baseline.present()) {
-                local = localEntityFields(d, allocator, link.entity_kind, link.entity_id) catch |err| switch (err) {
+                conflict_local = localEntityFields(d, allocator, link.entity_kind, link.entity_id) catch |err| switch (err) {
                     Error.NotFound => null,
                     else => return err,
                 };
-                if (local) |fields| {
+                if (conflict_local) |fields| {
                     const title_remote_changed = remote.title.len > 0 and !std.mem.eql(u8, remote.title, baseline.title.?);
                     const title_local_changed = !std.mem.eql(u8, fields.title, baseline.title.?);
                     const status_remote_changed = remote.status.len > 0 and !std.mem.eql(u8, remote.status, baseline.status.?);
@@ -237,7 +242,13 @@ pub fn pullLink(d: *db.sqlite.Db, allocator: std.mem.Allocator, link: external_l
 
     const changed_json = marshalFieldsChanged(allocator, result.fields_changed) catch return Error.QueryFailed;
     defer if (changed_json) |s| allocator.free(s);
-    _ = try insertSyncEvent(d, link.id, "pull", result.outcome.toEventText(), changed_json, if (result.detail.len == 0) null else result.detail);
+    var evidence_json: ?[]const u8 = null;
+    defer if (evidence_json) |s| allocator.free(s);
+    if (result.outcome == .conflict) {
+        const local_fields = conflict_local orelse return Error.NotFound;
+        evidence_json = try conflictEvidenceJson(d, allocator, link.id, local_fields, remote);
+    }
+    _ = try insertSyncEvent(d, link.id, "pull", result.outcome.toEventText(), changed_json, if (result.detail.len == 0) null else result.detail, evidence_json);
 
     d.exec("commit") catch return Error.QueryFailed;
     committed = true;
@@ -280,7 +291,7 @@ pub fn pushLink(d: *db.sqlite.Db, allocator: std.mem.Allocator, link: external_l
     try storeBaseline(d, link.id, fields.title, fields.status);
     const changed_json = marshalFieldsChanged(allocator, update.fields_applied) catch return Error.QueryFailed;
     defer if (changed_json) |s| allocator.free(s);
-    _ = try insertSyncEvent(d, link.id, "push", "ok", changed_json, null);
+    _ = try insertSyncEvent(d, link.id, "push", "ok", changed_json, null, null);
 
     d.exec("commit") catch return Error.QueryFailed;
     committed = true;
@@ -292,49 +303,66 @@ pub fn pushLink(d: *db.sqlite.Db, allocator: std.mem.Allocator, link: external_l
     };
 }
 
-pub fn resolveConflict(d: *db.sqlite.Db, allocator: std.mem.Allocator, event_id: i64, keep: ResolveKeep, adapter: anytype) Error!ResolveResult {
-    const link_id, const outcome = try loadSyncEventLinkOutcome(d, allocator, event_id);
-    defer allocator.free(outcome);
-    if (!std.mem.eql(u8, outcome, "conflict")) return Error.NotConflict;
+pub fn resolveConflict(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    event_id: i64,
+    keep: ResolveKeep,
+    expected_evidence_token: []const u8,
+    expected_local_updated_at: []const u8,
+    adapter: anytype,
+) Error!ResolveResult {
+    d.exec("begin immediate") catch return Error.QueryFailed;
+    var committed = false;
+    defer if (!committed) d.exec("rollback") catch {};
 
-    const link = external_link.show(d, allocator, link_id) catch |e| switch (e) {
+    const event = try loadConflictEvent(d, allocator, event_id);
+    defer event.deinit(allocator);
+    if (!std.mem.eql(u8, event.outcome, "conflict")) return Error.NotConflict;
+    if (!std.mem.eql(u8, event.evidence.token, expected_evidence_token)) return Error.EvidenceChanged;
+    if (try latestEventId(d, event.link_id) != event_id) return Error.StaleConflict;
+
+    const link = external_link.show(d, allocator, event.link_id) catch |e| switch (e) {
         error.NotFound => return Error.NotFound,
         else => return Error.QueryFailed,
     };
     defer external_link.deinit(link, allocator);
+    if (link.last_sync_status != .conflict) return Error.StaleConflict;
+
+    const local = try localEntityFields(d, allocator, link.entity_kind, link.entity_id);
+    defer deinitEntityFields(local, allocator);
+    if (!std.mem.eql(u8, local.updated_at, expected_local_updated_at)) return Error.EvidenceChanged;
 
     const direction: []const u8 = switch (keep) {
         .local => "push",
         .remote => "pull",
     };
-    var pulled_remote: ?extsync.RemoteState = null;
-    defer if (pulled_remote) |remote| extsync.deinitRemoteState(remote, allocator);
+    const Adapter = @TypeOf(adapter.*);
+    const remote = extsync.dispatch(Adapter, .pull, adapter, extsync.PullArgs{
+        .allocator = allocator,
+        .external_id = link.external_id,
+    }) catch return Error.AdapterFailed;
+    defer extsync.deinitRemoteState(remote, allocator);
+    if (event.evidence.remote.version.len == 0 or
+        remote.version.len == 0 or
+        !std.mem.eql(u8, remote.title, event.evidence.remote.title) or
+        !std.mem.eql(u8, remote.status, event.evidence.remote.status) or
+        !std.mem.eql(u8, remote.version, event.evidence.remote.version))
+    {
+        return Error.EvidenceChanged;
+    }
 
     if (keep == .local) {
-        const fields = try localEntityFields(d, allocator, link.entity_kind, link.entity_id);
-        defer deinitEntityFields(fields, allocator);
-        const Adapter = @TypeOf(adapter.*);
         const pushed = extsync.dispatch(Adapter, .push, adapter, extsync.PushArgs{
             .allocator = allocator,
             .external_id = link.external_id,
-            .fields = .{ .title = fields.title, .status = fields.status },
+            .fields = .{ .title = local.title, .status = local.status },
         }) catch return Error.AdapterFailed;
         defer extsync.deinitUpdateOutcome(pushed, allocator);
-    } else {
-        const Adapter = @TypeOf(adapter.*);
-        const remote = extsync.dispatch(Adapter, .pull, adapter, extsync.PullArgs{
-            .allocator = allocator,
-            .external_id = link.external_id,
-        }) catch return Error.AdapterFailed;
-        pulled_remote = remote;
     }
 
-    d.exec("begin immediate") catch return Error.QueryFailed;
-    var committed = false;
-    defer if (!committed) d.exec("rollback") catch {};
-
-    if (keep == .remote and pulled_remote != null) {
-        const changed = try applyRemoteToLocal(d, allocator, link, pulled_remote.?, true, false, true, true);
+    if (keep == .remote) {
+        const changed = try applyRemoteToLocal(d, allocator, link, remote, true, false, true, true);
         if (changed.len > 0) allocator.free(changed);
     }
 
@@ -347,7 +375,7 @@ pub fn resolveConflict(d: *db.sqlite.Db, allocator: std.mem.Allocator, event_id:
     try storeBaseline(d, link.id, resolved_fields.title, resolved_fields.status);
     const detail = try std.fmt.allocPrint(allocator, "resolved={s}; from sync_event={d}", .{ @tagName(keep), event_id });
     defer allocator.free(detail);
-    const new_event_id = try insertSyncEvent(d, link.id, direction, "ok", null, detail);
+    const new_event_id = try insertSyncEvent(d, link.id, direction, "ok", null, detail, null);
 
     d.exec("commit") catch return Error.QueryFailed;
     committed = true;
@@ -386,25 +414,60 @@ pub fn status(d: *db.sqlite.Db, allocator: std.mem.Allocator, filter: external_l
     return try out.toOwnedSlice(allocator);
 }
 
-fn loadSyncEventLinkOutcome(d: *db.sqlite.Db, allocator: std.mem.Allocator, event_id: i64) Error!struct { i64, []const u8 } {
-    var stmt = d.prepare("select link_id, outcome from sync_events where id = ?") catch return Error.QueryFailed;
+const ConflictEvidence = struct {
+    version: i64,
+    token: []const u8,
+    observed_at: []const u8,
+    local: struct { title: []const u8, status: []const u8, updated_at: []const u8, source: []const u8 },
+    remote: struct { title: []const u8, status: []const u8, version: []const u8, source: []const u8 },
+};
+
+const LoadedConflictEvent = struct {
+    link_id: i64,
+    outcome: []const u8,
+    context_json: []const u8,
+    parsed: std.json.Parsed(ConflictEvidence),
+    evidence: ConflictEvidence,
+
+    fn deinit(self: LoadedConflictEvent, allocator: std.mem.Allocator) void {
+        allocator.free(self.outcome);
+        allocator.free(self.context_json);
+        self.parsed.deinit();
+    }
+};
+
+fn loadConflictEvent(d: *db.sqlite.Db, allocator: std.mem.Allocator, event_id: i64) Error!LoadedConflictEvent {
+    var stmt = d.prepare("select link_id, outcome, context_json from sync_events where id = ?") catch return Error.QueryFailed;
     defer stmt.finalize();
     stmt.bind(&.{.{ .int = event_id }}) catch return Error.QueryFailed;
     return switch (stmt.step() catch return Error.QueryFailed) {
         .done => Error.NotFound,
         .row => blk: {
             if (stmt.columnIsNull(0)) return Error.NotFound;
-            break :blk .{
-                stmt.columnInt(0),
-                try stmt.columnTextAlloc(1, allocator),
-            };
+            const outcome = try stmt.columnTextAlloc(1, allocator);
+            errdefer allocator.free(outcome);
+            const context_json = (try stmt.columnTextOpt(2, allocator)) orelse return Error.EvidenceChanged;
+            errdefer allocator.free(context_json);
+            const parsed = std.json.parseFromSlice(ConflictEvidence, allocator, context_json, .{ .ignore_unknown_fields = true }) catch return Error.EvidenceChanged;
+            break :blk .{ .link_id = stmt.columnInt(0), .outcome = outcome, .context_json = context_json, .parsed = parsed, .evidence = parsed.value };
         },
+    };
+}
+
+fn latestEventId(d: *db.sqlite.Db, link_id: i64) Error!i64 {
+    var stmt = d.prepare("select coalesce(max(id), 0) from sync_events where link_id = ?") catch return Error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .int = link_id }}) catch return Error.QueryFailed;
+    return switch (stmt.step() catch return Error.QueryFailed) {
+        .done => 0,
+        .row => stmt.columnInt(0),
     };
 }
 
 const EntityFields = struct {
     title: []const u8,
     status: []const u8,
+    updated_at: []const u8,
 };
 
 const Baseline = struct {
@@ -444,14 +507,15 @@ fn storeBaseline(d: *db.sqlite.Db, link_id: i64, title: []const u8, status_value
 fn deinitEntityFields(fields: EntityFields, allocator: std.mem.Allocator) void {
     allocator.free(fields.title);
     allocator.free(fields.status);
+    allocator.free(fields.updated_at);
 }
 
 fn localEntityFields(d: *db.sqlite.Db, allocator: std.mem.Allocator, kind: external_link.ExternalEntityKind, entity_id: i64) Error!EntityFields {
     const sql: [:0]const u8 = switch (kind) {
-        .task => "select coalesce(title,''), coalesce(status,'') from tasks where id = ?",
-        .plan => "select coalesce(title,''), coalesce(status,'') from plans where id = ?",
-        .question => "select coalesce(title,''), coalesce(status,'') from questions where id = ?",
-        .artifact => "select coalesce(title,''), coalesce(status,'') from artifacts where id = ?",
+        .task => "select coalesce(title,''), coalesce(status,''), updated_at from tasks where id = ?",
+        .plan => "select coalesce(title,''), coalesce(status,''), updated_at from plans where id = ?",
+        .question => "select coalesce(title,''), coalesce(status,''), updated_at from questions where id = ?",
+        .artifact => "select coalesce(title,''), coalesce(status,''), updated_at from artifacts where id = ?",
         else => return Error.UnsupportedEntityKind,
     };
     var stmt = d.prepare(sql) catch return Error.QueryFailed;
@@ -462,6 +526,7 @@ fn localEntityFields(d: *db.sqlite.Db, allocator: std.mem.Allocator, kind: exter
         .row => .{
             .title = try stmt.columnTextAlloc(0, allocator),
             .status = try stmt.columnTextAlloc(1, allocator),
+            .updated_at = try stmt.columnTextAlloc(2, allocator),
         },
     };
 }
@@ -542,6 +607,43 @@ fn copyFieldNames(allocator: std.mem.Allocator, fields: []const []const u8) ![]c
     return try out.toOwnedSlice(allocator);
 }
 
+fn conflictEvidenceJson(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    link_id: i64,
+    local: EntityFields,
+    remote: extsync.RemoteState,
+) Error![]const u8 {
+    var ts_stmt = d.prepare("select strftime('%Y-%m-%dT%H:%M:%fZ','now')") catch return Error.QueryFailed;
+    defer ts_stmt.finalize();
+    if ((ts_stmt.step() catch return Error.QueryFailed) != .row) return Error.QueryFailed;
+    const observed_at = try ts_stmt.columnTextAlloc(0, allocator);
+    defer allocator.free(observed_at);
+    var token_input: std.Io.Writer.Allocating = .init(allocator);
+    defer token_input.deinit();
+    token_input.writer.print("v1\x00{d}\x00{s}\x00{s}\x00{s}\x00{s}\x00{s}\x00{s}", .{
+        link_id,
+        local.title,
+        local.status,
+        local.updated_at,
+        remote.title,
+        remote.status,
+        remote.version,
+    }) catch return Error.QueryFailed;
+    var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(token_input.written(), &digest, .{});
+    const token_hex = std.fmt.bytesToHex(digest, .lower);
+
+    const evidence = .{
+        .version = @as(i64, 1),
+        .token = token_hex[0..],
+        .observed_at = observed_at,
+        .local = .{ .title = local.title, .status = local.status, .updated_at = local.updated_at, .source = "planar entity" },
+        .remote = .{ .title = remote.title, .status = remote.status, .version = remote.version, .source = "external adapter pull" },
+    };
+    return extsync.jsonStringifyAlloc(allocator, evidence) catch return Error.QueryFailed;
+}
+
 fn insertSyncEvent(
     d: *db.sqlite.Db,
     link_id: i64,
@@ -549,22 +651,24 @@ fn insertSyncEvent(
     outcome: []const u8,
     fields_changed_json: ?[]const u8,
     detail: ?[]const u8,
+    context_json: ?[]const u8,
 ) Error!i64 {
     return d.execParams(
-        \\insert into sync_events (link_id, direction, outcome, fields_changed, detail)
-        \\values (?, ?, ?, ?, ?)
+        \\insert into sync_events (link_id, direction, outcome, fields_changed, detail, context_json)
+        \\values (?, ?, ?, ?, ?, ?)
     , &.{
         .{ .int = link_id },
         .{ .text = direction },
         .{ .text = outcome },
         if (fields_changed_json) |s| .{ .text = s } else .{ .null = {} },
         if (detail) |s| .{ .text = s } else .{ .null = {} },
+        if (context_json) |s| .{ .text = s } else .{ .null = {} },
     }) catch return Error.QueryFailed;
 }
 
 fn bestEffortErrorWrite(d: *db.sqlite.Db, allocator: std.mem.Allocator, link_id: i64, direction: []const u8, detail: []const u8) void {
     external_link.updateSyncState(d, link_id, .@"error") catch return;
-    _ = insertSyncEvent(d, link_id, direction, "error", null, detail) catch {};
+    _ = insertSyncEvent(d, link_id, direction, "error", null, detail, null) catch {};
     _ = allocator;
 }
 
@@ -592,6 +696,7 @@ fn mustInsertSystem(d: *db.sqlite.Db, slug: []const u8) !i64 {
 const FakeAdapter = struct {
     remote_title: []const u8,
     remote_status: []const u8,
+    remote_version: []const u8 = "adapter-v1",
     pushes: usize = 0,
 
     pub fn pull(self: *const @This(), allocator: std.mem.Allocator, external_id: []const u8) !extsync.RemoteState {
@@ -605,6 +710,7 @@ const FakeAdapter = struct {
             .due_at = try allocator.dupe(u8, ""),
             .url = try allocator.dupe(u8, ""),
             .raw_status = try allocator.dupe(u8, ""),
+            .version = try allocator.dupe(u8, self.remote_version),
         };
     }
 
@@ -623,6 +729,34 @@ const FakeAdapter = struct {
         return try allocator.dupe(u8, "{}");
     }
 };
+
+const SeededConflict = struct {
+    id: i64,
+    token: []const u8,
+    local_updated_at: []const u8,
+
+    fn deinit(self: SeededConflict, allocator: std.mem.Allocator) void {
+        allocator.free(self.token);
+        allocator.free(self.local_updated_at);
+    }
+};
+
+fn seedConflictForTest(d: *db.sqlite.Db, allocator: std.mem.Allocator, link: external_link.ExtLink, adapter: *FakeAdapter) !SeededConflict {
+    const local = try localEntityFields(d, allocator, link.entity_kind, link.entity_id);
+    defer deinitEntityFields(local, allocator);
+    const remote = try adapter.pull(allocator, link.external_id);
+    defer extsync.deinitRemoteState(remote, allocator);
+    const evidence_json = try conflictEvidenceJson(d, allocator, link.id, local, remote);
+    defer allocator.free(evidence_json);
+    var parsed = try std.json.parseFromSlice(ConflictEvidence, allocator, evidence_json, .{});
+    defer parsed.deinit();
+    try external_link.updateSyncState(d, link.id, .conflict);
+    return .{
+        .id = try insertSyncEvent(d, link.id, "pull", "conflict", "[\"title\"]", "test conflict", evidence_json),
+        .token = try allocator.dupe(u8, parsed.value.token),
+        .local_updated_at = try allocator.dupe(u8, local.updated_at),
+    };
+}
 
 test "pull two-way updates local mapped fields and writes sync_event" {
     const a = std.testing.allocator;
@@ -790,19 +924,96 @@ test "resolveConflict keep local writes resolution event and sets link status ok
     });
     defer external_link.deinit(link, a);
 
-    const event_id = try d.execParams(
-        \\insert into sync_events (link_id, direction, outcome, detail)
-        \\values (?, 'pull', 'conflict', 'status conflict')
-    , &.{.{ .int = link.id }});
-
     var adapter = FakeAdapter{ .remote_title = "Remote title", .remote_status = "doing" };
-    const resolved = try resolveConflict(&d, a, event_id, .local, &adapter);
+    const conflict = try seedConflictForTest(&d, a, link, &adapter);
+    defer conflict.deinit(a);
+    const resolved = try resolveConflict(&d, a, conflict.id, .local, conflict.token, conflict.local_updated_at, &adapter);
     try std.testing.expect(resolved.ok);
-    try std.testing.expect(resolved.new_event_id > event_id);
+    try std.testing.expect(resolved.new_event_id > conflict.id);
 
     const refreshed = try external_link.show(&d, a, link.id);
     defer external_link.deinit(refreshed, a);
     try std.testing.expectEqual(external_link.SyncStatus.ok, refreshed.last_sync_status);
+}
+
+test "resolveConflict rejects a non-latest conflict without remote mutation" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const task_id = try mustInsertTask(&d, "Conflict Task", "todo");
+    const system_id = try mustInsertSystem(&d, "sys-stale-event");
+    const link = try external_link.create(&d, a, .{ .entity_kind = .task, .entity_id = task_id, .system_id = system_id, .external_id = "PROJ-STALE", .sync_direction = .@"two-way" });
+    defer external_link.deinit(link, a);
+    var adapter = FakeAdapter{ .remote_title = "Remote title", .remote_status = "doing" };
+    const conflict = try seedConflictForTest(&d, a, link, &adapter);
+    defer conflict.deinit(a);
+    _ = try insertSyncEvent(&d, link.id, "pull", "noop", null, null, null);
+
+    try std.testing.expectError(Error.StaleConflict, resolveConflict(&d, a, conflict.id, .local, conflict.token, conflict.local_updated_at, &adapter));
+    try std.testing.expectEqual(@as(usize, 0), adapter.pushes);
+}
+
+test "resolveConflict rejects an intervening local version without remote mutation" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const task_id = try mustInsertTask(&d, "Conflict Task", "todo");
+    const system_id = try mustInsertSystem(&d, "sys-local-race");
+    const link = try external_link.create(&d, a, .{ .entity_kind = .task, .entity_id = task_id, .system_id = system_id, .external_id = "PROJ-LOCAL", .sync_direction = .@"two-way" });
+    defer external_link.deinit(link, a);
+    var adapter = FakeAdapter{ .remote_title = "Remote title", .remote_status = "doing" };
+    const conflict = try seedConflictForTest(&d, a, link, &adapter);
+    defer conflict.deinit(a);
+    _ = try d.execParams("update tasks set title = 'Manual merge', updated_at = '2099-01-01T00:00:00.000Z' where id = ?", &.{.{ .int = task_id }});
+
+    try std.testing.expectError(Error.EvidenceChanged, resolveConflict(&d, a, conflict.id, .local, conflict.token, conflict.local_updated_at, &adapter));
+    try std.testing.expectEqual(@as(usize, 0), adapter.pushes);
+}
+
+test "resolveConflict rejects an intervening remote value without push" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const task_id = try mustInsertTask(&d, "Conflict Task", "todo");
+    const system_id = try mustInsertSystem(&d, "sys-remote-race");
+    const link = try external_link.create(&d, a, .{ .entity_kind = .task, .entity_id = task_id, .system_id = system_id, .external_id = "PROJ-REMOTE", .sync_direction = .@"two-way" });
+    defer external_link.deinit(link, a);
+    var adapter = FakeAdapter{ .remote_title = "Remote title", .remote_status = "doing" };
+    const conflict = try seedConflictForTest(&d, a, link, &adapter);
+    defer conflict.deinit(a);
+    adapter.remote_title = "Changed again";
+
+    try std.testing.expectError(Error.EvidenceChanged, resolveConflict(&d, a, conflict.id, .local, conflict.token, conflict.local_updated_at, &adapter));
+    try std.testing.expectEqual(@as(usize, 0), adapter.pushes);
+}
+
+test "resolveConflict rejects absent approved or fresh provider versions without mutation" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const task_id = try mustInsertTask(&d, "Conflict Task", "todo");
+    const system_id = try mustInsertSystem(&d, "sys-missing-version");
+    const link = try external_link.create(&d, a, .{ .entity_kind = .task, .entity_id = task_id, .system_id = system_id, .external_id = "PROJ-NOVERSION", .sync_direction = .@"two-way" });
+    defer external_link.deinit(link, a);
+    var adapter = FakeAdapter{ .remote_title = "Remote title", .remote_status = "doing" };
+
+    const approved_missing = try seedConflictForTest(&d, a, link, &adapter);
+    defer approved_missing.deinit(a);
+    _ = try d.execParams(
+        "update sync_events set context_json = replace(context_json, 'adapter-v1', '') where id = ?",
+        &.{.{ .int = approved_missing.id }},
+    );
+    try std.testing.expectError(Error.EvidenceChanged, resolveConflict(&d, a, approved_missing.id, .local, approved_missing.token, approved_missing.local_updated_at, &adapter));
+    try std.testing.expectEqual(@as(usize, 0), adapter.pushes);
+    try std.testing.expectEqual(@as(i64, 1), try d.intQuery("select count(*) from sync_events"));
+
+    _ = try d.execParams("delete from sync_events where id = ?", &.{.{ .int = approved_missing.id }});
+    const fresh_missing = try seedConflictForTest(&d, a, link, &adapter);
+    defer fresh_missing.deinit(a);
+    adapter.remote_version = "";
+    try std.testing.expectError(Error.EvidenceChanged, resolveConflict(&d, a, fresh_missing.id, .remote, fresh_missing.token, fresh_missing.local_updated_at, &adapter));
+    try std.testing.expectEqual(@as(usize, 0), adapter.pushes);
+    try std.testing.expectEqual(@as(i64, 1), try d.intQuery("select count(*) from sync_events"));
 }
 
 test "pull two-way with missing local entity is noop and still records sync event" {
@@ -850,13 +1061,10 @@ test "resolveConflict keep remote skips empty remote status while applying non-e
     });
     defer external_link.deinit(link, a);
 
-    const event_id = try d.execParams(
-        \\insert into sync_events (link_id, direction, outcome, detail)
-        \\values (?, 'pull', 'conflict', 'status conflict')
-    , &.{.{ .int = link.id }});
-
     var adapter = FakeAdapter{ .remote_title = "Remote title", .remote_status = "" };
-    _ = try resolveConflict(&d, a, event_id, .remote, &adapter);
+    const conflict = try seedConflictForTest(&d, a, link, &adapter);
+    defer conflict.deinit(a);
+    _ = try resolveConflict(&d, a, conflict.id, .remote, conflict.token, conflict.local_updated_at, &adapter);
 
     var stmt = try d.prepare("select title, status from tasks where id = ?");
     defer stmt.finalize();
@@ -889,17 +1097,16 @@ test "resolveConflict keep remote fails for missing local entity and writes no r
     });
     defer external_link.deinit(link, a);
 
-    const event_id = try d.execParams(
-        \\insert into sync_events (link_id, direction, outcome, detail)
-        \\values (?, 'pull', 'conflict', 'status conflict')
-    , &.{.{ .int = link.id }});
+    const evidence = "{\"version\":1,\"token\":\"missing\",\"observed_at\":\"now\",\"local\":{\"title\":\"\",\"status\":\"\",\"updated_at\":\"missing\",\"source\":\"planar entity\"},\"remote\":{\"title\":\"Remote title\",\"status\":\"doing\",\"version\":\"adapter-v1\",\"source\":\"external adapter pull\"}}";
+    const event_id = try insertSyncEvent(&d, link.id, "pull", "conflict", null, "status conflict", evidence);
+    try external_link.updateSyncState(&d, link.id, .conflict);
 
     var adapter = FakeAdapter{ .remote_title = "Remote title", .remote_status = "doing" };
-    try std.testing.expectError(Error.NotFound, resolveConflict(&d, a, event_id, .remote, &adapter));
+    try std.testing.expectError(Error.NotFound, resolveConflict(&d, a, event_id, .remote, "missing", "missing", &adapter));
 
     const refreshed = try external_link.show(&d, a, link.id);
     defer external_link.deinit(refreshed, a);
-    try std.testing.expectEqual(external_link.SyncStatus.never, refreshed.last_sync_status);
+    try std.testing.expectEqual(external_link.SyncStatus.conflict, refreshed.last_sync_status);
 
     var stmt = try d.prepare("select count(*) from sync_events where link_id = ?");
     defer stmt.finalize();

@@ -489,12 +489,11 @@ pub fn resolve(
         "models.codex.small",      "models.codex.medium",     "models.codex.large",
         "models.copilot.small",    "models.copilot.medium",   "models.copilot.large",
         "roles.coder",             "roles.reviewer",          "roles.test-coder",
-        "roles.documenter",        "roles.doc-author",
+        "roles.documenter",        "roles.doc-author",        "roles.sync-reconciler",
         // role_vendors.* are override-only (no embedded default → resolver falls
         // back to [defaults].vendor); picked so an operator-set value resolves.
-               "role_vendors.coder",
-        "role_vendors.reviewer",   "role_vendors.test-coder", "role_vendors.documenter",
-        "role_vendors.doc-author",
+        "role_vendors.coder",      "role_vendors.reviewer",   "role_vendors.test-coder",
+        "role_vendors.documenter", "role_vendors.doc-author", "role_vendors.sync-reconciler",
     };
     for (model_keys) |mk| {
         _ = try pickStr(allocator, environ, &file_map, &def_map, &eff, .{
@@ -507,12 +506,12 @@ pub fn resolve(
     }
 
     // User-defined custom roles (plan 586 task 3937): any `roles.<name>` key
-    // in the config file that is NOT one of the five built-in roles gets
+    // in the config file that is NOT one of the built-in roles gets
     // picked into the effective map so `buildRouting` can enumerate them.
     // Similarly, any `role_vendors.<name>` for a custom role is picked.
     // No embedded-default counterpart (custom roles are config-only).
     {
-        const builtin_roles = [_][]const u8{ "coder", "reviewer", "test-coder", "documenter", "doc-author" };
+        const builtin_roles = [_][]const u8{ "coder", "reviewer", "test-coder", "documenter", "doc-author", "sync-reconciler" };
         var fmap_it = file_map.iterator();
         while (fmap_it.next()) |fentry| {
             const fkey = fentry.key_ptr.*;
@@ -522,7 +521,7 @@ pub fn resolve(
             if (!is_roles and !is_rv) continue;
             const suffix = if (is_roles) fkey["roles.".len..] else fkey["role_vendors.".len..];
             if (suffix.len == 0) continue;
-            // Skip the five built-ins — they are already handled above.
+            // Skip the built-ins — they are already handled above.
             var is_builtin = false;
             for (builtin_roles) |b| {
                 if (std.mem.eql(u8, suffix, b)) {
@@ -1011,6 +1010,7 @@ test "effective: model tier maps + role tiers resolve from embedded defaults (pl
         .{ .key = "roles.reviewer", .want = "large" },
         .{ .key = "roles.documenter", .want = "medium" },
         .{ .key = "roles.doc-author", .want = "large" },
+        .{ .key = "roles.sync-reconciler", .want = "large" },
     };
     for (cases) |c| {
         const prov = res.effective.get(c.key) orelse return error.TestFailed;

@@ -510,6 +510,10 @@ fn runLinkForm(
                 try ctx.stdout.print(",\"detail\":", .{});
                 try output.writeJsonString(ctx.stdout, dt);
             }
+            if (e.context_json) |evidence| {
+                try ctx.stdout.print(",\"evidence\":", .{});
+                try ctx.stdout.writeAll(evidence);
+            }
             try ctx.stdout.print(",\"at\":", .{});
             try output.writeJsonString(ctx.stdout, e.at);
             try ctx.stdout.print("}}", .{});
@@ -546,6 +550,7 @@ fn runLinkForm(
         for (events) |e| {
             const fc = e.fields_changed orelse "(no fields)";
             try ctx.stdout.print("  {s}  {s:<5}  {s:<10}  {s}\n", .{ e.at, e.direction, e.outcome, fc });
+            if (e.context_json) |evidence| try ctx.stdout.print("    evidence: {s}\n", .{evidence});
         }
     }
 

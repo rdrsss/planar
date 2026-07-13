@@ -815,6 +815,7 @@ fn parseIssue(allocator: std.mem.Allocator, external_id: []const u8, raw: []cons
     const body = getObjectString(obj, "body") orelse "";
     const state = getObjectString(obj, "state") orelse "open";
     const html_url = getObjectString(obj, "html_url") orelse "";
+    const version = getObjectString(obj, "updated_at") orelse "";
     const assignee = blk: {
         const assignee_v = obj.get("assignee") orelse break :blk "";
         if (assignee_v != .object) break :blk "";
@@ -846,6 +847,7 @@ fn parseIssue(allocator: std.mem.Allocator, external_id: []const u8, raw: []cons
         .due_at = try allocator.dupe(u8, ""),
         .url = try allocator.dupe(u8, html_url),
         .raw_status = try allocator.dupe(u8, status_raw),
+        .version = try allocator.dupe(u8, version),
     };
 }
 
