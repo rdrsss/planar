@@ -6,6 +6,29 @@ This document lists every available skill, grouped by purpose, with a one-line d
 
 ---
 
+## Choose By Intent
+
+Start with the intent-oriented skill when the request spans several CLI
+domains; use the listed verbs directly when you need their exact flags or one
+narrow operation. `/pl-help <outcome>` can select among these routes and always
+shows the underlying supported interface.
+
+| Outcome | Recommended entry point | Underlying CLI surface |
+|---|---|---|
+| Decide what needs attention in the current scope | `/pl-status` | `planar dashboard --agents`, `planar plan next`, `planar health` |
+| Observe one plan's actions, claims, failures, sync events, and handoffs | `/pl-observe --plan <id>` | `planar dashboard --agents`, `planar-watch actions|ps|feed|sync-events`, `planar handoff list` |
+| Record or connect durable technical knowledge | `/pl-knowledge ...` | `planar decision`, `planar artifact`, `planar annotate`, `planar links` |
+| Manage machine-local skills and agents | `/pl-local ...` | `planar local import|link|list|unlink|migrate`; repair uses `planar local link --reconcile` |
+| Resume interrupted work or diagnose degraded state | `/pl-resume <task-id>` or `/pl-doctor` | `planar resume`, `planar audit`, `planar health`, `planar-agent reconcile` |
+| Inspect one external item's local history | `/pl-audit-trail <system:key>` | `planar audit trail` |
+
+`/pl-local-import` remains an import-only compatibility entry point; prefer
+`/pl-local` for the complete local lifecycle. Documentation maintenance and
+sync-reconciliation intent skills belong to later milestones and are not
+listed as shipped workflows here.
+
+---
+
 ## Source And Render Model
 
 Planar authors each shared skill once at `skills/src/<name>.md` and renders vendor outputs with `planar skills render`:
@@ -389,6 +412,27 @@ Source: `commands/claude/pl-question.md` · `skills/codex/pl-question.md`
 
 ---
 
+### `/pl-knowledge`
+
+Manage durable decisions, artifacts, anchored annotations, and typed entity
+relationships through one intent-oriented workflow. The skill resolves every
+natural-language target to one typed entity before writing, honors entity scope
+guards, reads the changed state back, and reports relationships in
+`kind:id --[relationship]--> kind:id` form. It composes rather than replaces
+the `planar decision`, `artifact`, `annotate`, and `links` domains.
+
+**Example:**
+```
+/pl-knowledge capture "Adopt SQLite WAL" --plan 42 --artifact 17
+/pl-knowledge annotate --anchor-path src/db/db.zig --line-start 88 "Explain the retry boundary"
+/pl-knowledge link annotation:12 plan:42 --relationship addresses
+/pl-knowledge link decision:9 artifact:17 --relationship cites
+```
+
+Source: `skills/src/pl-knowledge.md`
+
+---
+
 ### `/pl-scenario`
 
 Author test scenarios from a spec or task, verify them, and record outcomes.
@@ -562,6 +606,26 @@ current scope, and never recommends work marked claimed, stale, or blocked.
 **Example:** `/pl-status`
 
 Source: `commands/claude/pl-status.md` · `skills/codex/pl-status.md` · `skills/copilot/pl-status.md`
+
+---
+
+### `/pl-observe`
+
+Build a read-only operational snapshot for one plan: its action topology,
+active and stale claims, recent failures, sync events, and attributable
+handoffs. Use `/pl-observe` for “what has been happening on this plan?” and
+`/pl-status` for “what needs attention or should I do next?” The workflow reads
+through `planar` and `planar-watch`; their individual verbs remain available
+for direct drill-down or continuous following.
+
+**Example:**
+```
+/pl-observe --plan 808
+/pl-observe --plan 808 --since 2026-07-13T00:00:00Z --limit 50
+planar-watch log --task 4889 --limit 50 --json
+```
+
+Source: `skills/src/pl-observe.md`
 
 ---
 

@@ -9,6 +9,8 @@ vendor:
       /pl-help
       /pl-help resume interrupted work
       /pl-help inspect active agents
+      /pl-help record a technical decision
+      /pl-help repair my local skills
       /pl-help task
       /pl-help sync resolve
 shared_notes:
@@ -52,8 +54,8 @@ authored; do not claim that the planned skill can be invoked.
 | Intent | Route and rationale | Executable example |
 |--------|---------------------|--------------------|
 | Resume or recover interrupted work | **Available:** `pl-resume` validates and restores a specific resumable task; use `pl-doctor` when health is degraded or the task is not resume-ready. Both expose the underlying resume, audit, and reconciliation verbs. | `/pl-resume validate 42`, then `/pl-resume 42`; degraded state: `/pl-doctor` |
-| Observe active work | **Available:** `pl-status` is the scope-oriented summary and routes active claims, actions, handoffs, conflicts, and next work. The broader read-only `pl-observe` workflow is planned but is not authored in this checkout. | `/pl-status`; focused CLI inspection: `planar-watch claims --json` |
-| Manage durable knowledge | **CLI fallback:** decisions, artifacts, annotations, and links are durable Planar entities, but the planned `pl-knowledge` workflow is not authored in this checkout. Use command help before a mutation so scope guards and exact flags remain visible. | `planar decision --help`; `planar artifact --help`; `planar link --help` |
+| Observe active work | **Available:** `pl-observe` assembles a read-only, plan-filtered activity view from `planar dashboard`, `planar-watch`, and handoff reads. Use `pl-status` instead for the current scope's attention queue and claim-aware next work. | `/pl-observe --plan 808`; scope orientation: `/pl-status`; direct claim inspection: `planar-watch claims --plan 808 --json` |
+| Manage durable knowledge | **Available:** `pl-knowledge` resolves typed targets, composes scope-safe decision, artifact, annotation, and relationship operations, and verifies their durable post-state. The underlying entity verbs remain available for direct inspection and precise CRUD. | `/pl-knowledge capture "Adopt SQLite WAL" --plan 42 --artifact 17`; direct interfaces: `planar decision --help`, `planar artifact --help`, `planar annotate --help`, `planar links --help` |
 | Manage operator-local skills or agents | **Available:** `pl-local` covers import, list, link, unlink, migrate, and repair across the operator-local lifecycle. Retain `pl-local-import` only for legacy or import-only compatibility. | `/pl-local list`; repair links: `/pl-local repair`; legacy import: `/pl-local-import ~/my-skills/` |
 | Inspect feedback or triage findings | **Available:** `pl-introspect` gathers redacted friction findings and `pl-report-issue` previews an external report. The planned deterministic `pl-feedback-triage` workflow is not authored in this checkout. | `/pl-introspect --days 7`; inspect available feedback verbs with `planar feedback --help` |
 | Maintain published documentation | **Available:** `pl-documenter` proposes documentation actions for operator review. The planned end-to-end `pl-doc-maintain` workflow and doc-author are not authored in this checkout; use `planar-doc` for the currently shipped manifest operations. | `/pl-documenter --since main`; then `planar-doc lint` and `planar-doc verify` |
