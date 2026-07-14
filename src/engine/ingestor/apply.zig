@@ -37,9 +37,9 @@ pub const Options = struct {
     apply: bool = false,
     apply_removals: bool = false,
     /// Scope slug for child plans, tasks, decisions, scenarios created
-    /// during apply. `null` = global. Mirrors Go's
-    /// `runSpecIngestOne` behavior: child entities inherit the operator's
-    /// resolved write scope (anchor.AssocSlug or the explicit `--scope`).
+    /// during apply. `null` = global. The handler supplies the anchor plan's
+    /// stored scope so every derived entity preserves anchor provenance;
+    /// the operator's resolved write scope only authorizes the apply.
     scope: ?[]const u8 = null,
 };
 
@@ -127,10 +127,10 @@ fn applyWithinSavepoint(
 ) Error!Result {
     var res: Result = .{};
 
-    // Anchor scope. Threaded from the handler via opts.scope so child
-    // plans, tasks, decisions, and scenarios land in the operator's
-    // resolved write scope (or global when null). Mirrors Go's
-    // runSpecIngestOne which uses anchor.AssocSlug / --scope.
+    // Anchor scope. Threaded from the handler via opts.scope so child plans,
+    // tasks, decisions, and scenarios inherit the anchor plan's stored
+    // provenance (or global when null), independent of the operator scope
+    // that authorized the write.
     const scope_slug: ?[]const u8 = opts.scope;
 
     // ---- removals -----------------------------------------------------

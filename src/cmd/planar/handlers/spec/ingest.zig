@@ -109,30 +109,33 @@ fn runOnePlan(
     defer freeAnchor(ctx.allocator, anchor);
 
     // ---- cross-scope guard ------------------------------------------
-    // Operator's write scope: explicit --scope wins; otherwise default to
-    // the anchor's own assoc_slug (or null for a global anchor). This
-    // matches Go's runSpecIngestOne, which loads the plan's stored scope
-    // and refuses when the operator's resolved scope disagrees.
-    const op_scope: ?[]const u8 = blk: {
-        if (scope_flag) |s| break :blk if (s.len == 0) null else s;
-        break :blk if (anchor.assoc_slug.len == 0) null else anchor.assoc_slug;
-    };
-    const entity_scope: ?[]const u8 = if (anchor.assoc_slug.len == 0) null else anchor.assoc_slug;
-    scope_mod.guard(entity_scope, op_scope) catch |e| switch (e) {
-        error.ScopeMismatch => {
-            try ctx.stderr.print(
-                "plan {d} belongs to {s} but the resolved write scope is {s}. " ++
-                    "Refusing cross-scope write; pass --scope {s} or cd into the right repo.\n",
-                .{
-                    anchor.id,
-                    if (entity_scope) |s| s else "global",
-                    if (op_scope) |s| s else "global",
-                    if (entity_scope) |s| s else "global",
-                },
-            );
+    // Numeric IDs are unambiguous read locators, so preview may inspect an
+    // anchor outside the cwd-derived scope. Apply crosses the write boundary:
+    // resolve operator intent from --scope/cwd and refuse before any graph
+    // mutation when it does not cover the anchor's stored scope.
+    const entity_scope: ?[]const u8 = if (anchor.scope_slug.len == 0) null else anchor.scope_slug;
+    if (apply_flag) {
+        const resolution = scope_mod.resolveForWrite(ctx, scope_flag) catch |e| {
+            try ctx.stderr.print("plan {d}: resolving write scope: {s}\n", .{ anchor.id, @errorName(e) });
             return e;
-        },
-    };
+        };
+        scope_mod.guardWithMembership(d, entity_scope, resolution.scope) catch |e| switch (e) {
+            error.ScopeMismatch => {
+                try ctx.stderr.print(
+                    "plan {d} belongs to {s} but the resolved write scope is {s}. " ++
+                        "Refusing cross-scope write; pass --scope {s} or cd into the right repo.\n",
+                    .{
+                        anchor.id,
+                        if (entity_scope) |s| s else "global",
+                        if (resolution.scope) |s| s else "global",
+                        if (entity_scope) |s| s else "global",
+                    },
+                );
+                return e;
+            },
+            else => return e,
+        };
+    }
 
     // ---- locate workbench feature dir -------------------------------
     const wb_root = engine.workbench.resolveRoot(ctx.allocator, ctx.environ) catch |e| {
@@ -295,7 +298,7 @@ fn runOnePlan(
     const apply_opts: ingestor.apply.Options = .{
         .apply = apply_flag,
         .apply_removals = apply_removals,
-        .scope = op_scope,
+        .scope = entity_scope,
     };
     const result = ingestor.apply.apply(d, ctx.allocator, diff, apply_opts) catch |e| {
         try ctx.stderr.print("plan {d} ({s}): apply failed: {s}\n", .{ anchor.id, anchor.slug, @errorName(e) });
@@ -330,12 +333,14 @@ const Anchor = struct {
     id: i64,
     slug: []const u8,
     assoc_slug: []const u8,
+    scope_slug: []const u8,
     status: []const u8,
 };
 
 fn freeAnchor(allocator: std.mem.Allocator, a: Anchor) void {
     allocator.free(a.slug);
     allocator.free(a.assoc_slug);
+    allocator.free(a.scope_slug);
     allocator.free(a.status);
 }
 
@@ -348,9 +353,15 @@ fn fetchAnchor(d: *db.sqlite.Db, allocator: std.mem.Allocator, arg: []const u8) 
     } else |_| {}
     // Slug lookup.
     var stmt = try d.prepare(
-        \\select p.id, p.slug, coalesce(a.slug, ''), p.status
+        \\select p.id, p.slug, coalesce(a.slug, ''), p.status,
+        \\ case p.scope_kind
+        \\   when 'association' then coalesce(a.slug, '')
+        \\   when 'repo' then 'repo:' || coalesce(pr.slug, '')
+        \\   else ''
+        \\ end
         \\from plans p
         \\left join associations a on (p.scope_kind = 'association' and a.id = p.scope_id)
+        \\left join projects pr on (p.scope_kind = 'repo' and pr.id = p.scope_id)
         \\where p.parent_plan_id is null and p.slug = ?
         \\order by p.id limit 1
     );
@@ -363,15 +374,22 @@ fn fetchAnchor(d: *db.sqlite.Db, allocator: std.mem.Allocator, arg: []const u8) 
             .slug = try stmt.columnTextAlloc(1, allocator),
             .assoc_slug = try stmt.columnTextAlloc(2, allocator),
             .status = try stmt.columnTextAlloc(3, allocator),
+            .scope_slug = try stmt.columnTextAlloc(4, allocator),
         },
     }
 }
 
 fn fetchAnchorById(d: *db.sqlite.Db, allocator: std.mem.Allocator, id: i64) !Anchor {
     var stmt = try d.prepare(
-        \\select p.id, p.slug, coalesce(a.slug, ''), p.status
+        \\select p.id, p.slug, coalesce(a.slug, ''), p.status,
+        \\ case p.scope_kind
+        \\   when 'association' then coalesce(a.slug, '')
+        \\   when 'repo' then 'repo:' || coalesce(pr.slug, '')
+        \\   else ''
+        \\ end
         \\from plans p
         \\left join associations a on (p.scope_kind = 'association' and a.id = p.scope_id)
+        \\left join projects pr on (p.scope_kind = 'repo' and pr.id = p.scope_id)
         \\where p.id = ? and p.parent_plan_id is null
     );
     defer stmt.finalize();
@@ -383,6 +401,7 @@ fn fetchAnchorById(d: *db.sqlite.Db, allocator: std.mem.Allocator, id: i64) !Anc
             .slug = try stmt.columnTextAlloc(1, allocator),
             .assoc_slug = try stmt.columnTextAlloc(2, allocator),
             .status = try stmt.columnTextAlloc(3, allocator),
+            .scope_slug = try stmt.columnTextAlloc(4, allocator),
         },
     }
 }

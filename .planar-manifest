@@ -1,7 +1,7 @@
 {
   "version": 2,
   "algo": "xxh64",
-  "root": "f1e56522615a1f1c",
+  "root": "8ac5092ecdba8cbe",
   "generated_at": "",
   "entries": {
     "docs/architecture.md": {
@@ -72,7 +72,7 @@
     "build.zig.zon": "ec0b1222ab927a55",
     "docs/adrs.md": "eb2701a1761bf3f5",
     "docs/changelog.md": "8e1bbafdb2db710c",
-    "docs/concepts.md": "666e9c6919a26e9d",
+    "docs/concepts.md": "caf56598dd9bf70f",
     "docs/features/workspace-agents.md": "5383400de9c05107",
     "docs/getting-started.md": "9060351c2a115ad8",
     "docs/glossary.md": "e7cba86def7a4b4d",
@@ -80,7 +80,7 @@
     "docs/research/scenario-coverage-long-tail.md": "0000000000000000",
     "docs/research/scope-resolution.md": "0000000000000000",
     "install.sh": "dddbcb1c5e927d1e",
-    "integration_tests/": "80ff76f2c189f1af",
+    "integration_tests/": "ac1929dd61231f59",
     "templates/": "0536dfe3149b9acc",
     "tools/": "9605abc0c7545854",
     "vendor/manifest.zon": "123c6b606e6f6b41"

@@ -147,7 +147,7 @@ Verbs that perform an explicit cross-scope check on every invocation. The "guard
 
 | Verb | Guards against | Notes |
 |------|---------------|-------|
-| `spec ingest <plan>` | `plan` | Bulk write of derived rows under the anchor plan. |
+| `spec ingest <plan> --apply` | `plan` | Bulk write of derived rows under the anchor plan; preview remains read-only. |
 | `ext propagate <plan>` | `plan` | Walks the feature tree to create external counterparts. |
 | `sync push <link\|kind:id>` | `plan` or `task` | Single-target push form; `--all` is unguarded. |
 | `sync pull <link\|kind:id>` | `plan` or `task` | Single-target pull form; `--all` is unguarded. |
@@ -4584,7 +4584,7 @@ Planning pipeline spec commands for decomposing workbench planning documents int
 
 **Synopsis:**
 ```
-planar spec ingest <plan> [--apply] [--apply-removals] [--format text|json] [--json] [--strict]
+planar spec ingest <plan> [--apply] [--apply-removals] [--format text|json] [--json] [--scope <scope>] [--strict]
 ```
 
 **Description:** Read `tech-spec.md`, `roadmap.md`, and (when present) `test-spec.md` from the anchor plan's workbench directory, compute the proposed diff against the current database state, and (optionally) commit additions and updates.
@@ -4597,7 +4597,7 @@ A `coverage:` line follows the totals on every run. It reports how many tasks ca
 
 `<plan>` may be a numeric plan id or a plan slug.
 
-**Scope guard:** Refuses when the operator's resolved write scope disagrees with the anchor plan's stored scope (the verb materialises derived rows under the anchor's scope). See [Cross-scope guard](#cross-scope-guard).
+**Scope guard:** Preview is read-only, so a numeric plan id may locate and inspect an anchor outside the cwd-derived scope. `--apply` refuses before writing when the operator's resolved write scope disagrees with the anchor plan's stored scope; pass the anchor's scope explicitly with `--scope` (or run from its owning cwd) to apply. Derived rows always retain the anchor's stored scope. See [Cross-scope guard](#cross-scope-guard).
 
 **Arguments:**
 
@@ -4613,6 +4613,7 @@ A `coverage:` line follows the totals on every run. It reports how many tasks ca
 | `--apply-removals` | Also commit proposed removals (cancel orphan tasks, abandon orphan plans). Must be combined with `--apply`. | off |
 | `--format text\|json` | Output format. `text` prints a tree-shaped diff; `json` emits a machine-readable JSON object. The JSON object carries a `coverage` field with the same data the text mode prints. | `text` |
 | `--json` | Shorthand for `--format json`. | off |
+| `--scope <scope>` | Select operator write scope for `--apply`. Required when cwd does not resolve to a scope that covers the anchor plan. | cwd-derived |
 | `--strict` | Reject the ingest (exit 1) when any slug-bearing task has no verifying scenario, any scenario has no parseable `**Verifies:**` line, or any proposed task slug collides with a live task. | off |
 
 **Output (human, `--format text`):**
@@ -4698,7 +4699,7 @@ oracle used by test-coder and reviewer cycles.
 planar test-spec status <plan> [--json]
 ```
 
-**Description:** Print per-milestone test-spec coverage for an anchor plan. Each row reports the milestone's child plan, total tasks, slug-bearing tasks, covered tasks, and a four-bucket breakdown (happy / empty / error / edge) classified by scenario-title prefix. A summary line totals across milestones.
+**Description:** Print per-milestone test-spec coverage for an anchor plan. Each row reports the milestone's child plan, total tasks, slug-bearing tasks, covered tasks, and a four-bucket breakdown (happy / empty / error / edge) classified by scenario-title prefix. A summary line totals across milestones. A numeric plan id is an unambiguous read locator and may resolve an anchor outside the cwd-derived scope.
 
 This command is read-only. It does not consult the workbench filesystem — it queries `tasks`, `test_scenarios`, and `entity_links` directly.
 
