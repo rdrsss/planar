@@ -284,6 +284,15 @@ and unresolved gates; next actions give at most three executable continuations;
 recovery is target-specific and never claims atomic rollback across worktrees
 or remote calls.
 
+Before any Planar write targeting a scope outside the cwd-derived set from
+`planar scope show --json`, emit
+`[cross-scope write: <scope-kind>:<scope-slug>]` as a standalone narrative
+line immediately before the command, naming the actual `project`,
+`association`, or `global` target, and pass the matching explicit `--scope`.
+Do not emit this cue for same-scope writes. The cue is transcript visibility,
+not a permission bypass; phase gates, claim ownership, strict scope resolution,
+and the five-binary capability boundaries remain unchanged.
+
 ## Status reporting
 
 The orchestrator emits a status string at each meaningful phase boundary using `planar-agent heartbeat --claim <token> --status "<text>"`. The canonical transitions and their strings are:

@@ -166,6 +166,21 @@ contract.
 See [`agents/doctrine.md` §Operator feedback contract](../agents/doctrine.md#operator-feedback-contract)
 for the cross-role outcome and verification doctrine.
 
+### Cross-scope write visibility
+
+When a Planar-authored agent or skill is about to write outside the scope
+derived from its cwd, it prints a standalone cue immediately before the write:
+
+```text
+[cross-scope write: project:planar]
+```
+
+The cue always names the actual `project:<slug>`, `association:<slug>`, or
+`global` target and is omitted for same-scope writes. The command still uses
+the matching explicit `--scope` value and remains subject to its normal
+operator gates, scope guards, claim ownership, and binary capability boundary.
+The cue changes transcript visibility only; it is not a permission override.
+
 ---
 
 ## Binary architecture

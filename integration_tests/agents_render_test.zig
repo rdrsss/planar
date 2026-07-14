@@ -57,6 +57,53 @@ test "agents render emits per-vendor files for canonical specialists" {
     try assertFileExists(gpa, root, "agents/copilot/sync-reconciler.agent.md");
 }
 
+test "cross-scope write cue renders for orchestrator and spec-reviewer across vendors" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try fixtureRoot(gpa, &tmp, "agents-render-cross-scope-cue");
+    defer gpa.free(root);
+
+    const src_abs = try repoAgentsSrcFromBin(gpa, suite.bin);
+    defer gpa.free(src_abs);
+    try copyAgentSpecs(gpa, src_abs, root);
+
+    const skills_src_abs = try repoSkillsSrcFromBin(gpa, suite.bin);
+    defer gpa.free(skills_src_abs);
+    const stdout = suite.mustRunInDir(root, &.{
+        "skills",
+        "render",
+        "--src",
+        skills_src_abs,
+        "--out",
+        root,
+    });
+    defer gpa.free(stdout);
+
+    const paths = [_][]const u8{
+        "agents/claude/orchestrator.md",
+        "agents/codex/orchestrator.toml",
+        "agents/copilot/orchestrator.agent.md",
+        "agents/claude/spec-reviewer.md",
+        "agents/codex/spec-reviewer.toml",
+        "agents/copilot/spec-reviewer.agent.md",
+        "commands/claude/pl-orchestrator.md",
+        "skills/codex/pl-orchestrator.md",
+        "skills/copilot/pl-orchestrator.md",
+        "commands/claude/pl-spec-review.md",
+        "skills/codex/pl-spec-review.md",
+        "skills/copilot/pl-spec-review.md",
+    };
+    for (paths) |path| {
+        const rendered = try readPath(gpa, root, path);
+        defer gpa.free(rendered);
+        try std.testing.expect(std.mem.indexOf(u8, rendered, "[cross-scope write: <scope-kind>:<scope-slug>]") != null);
+        try std.testing.expect(std.mem.indexOf(u8, rendered, "same-scope") != null);
+    }
+}
+
 // Load-bearing security property: orchestrator (capability=coordinate) must NOT
 // have Edit or Write in its tools list, while coder (capability=write) must have
 // both, and at the sonnet model id.

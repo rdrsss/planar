@@ -45,6 +45,18 @@ This is Axis A of the two-axis dispatch model and it is non-negotiable. It is in
 
 **Axis B (reviewer disposition)** is the tunable axis: whether a reviewer pass runs after the coder. The six dispatch shapes (`strict`, `grouped`, `single`, `barrel-grouped`, `barrel-deferred`, `barrel-bypass`) and the reviewer-dispatch profile are Axis B — they govern reviewer behavior, not coder isolation.
 
+## Cross-scope write visibility
+
+Before any Planar write targeting a scope outside the cwd-derived set from
+`planar scope show --json`, emit
+`[cross-scope write: <scope-kind>:<scope-slug>]` as a standalone narrative
+line immediately before the command. Name the actual target as
+`project:<slug>`, `association:<slug>`, or `global`, and pass the matching
+explicit `--scope` value accepted by the CLI. Do not emit the cue for
+same-scope writes. This is transcript visibility only: it does not bypass an
+operator gate, claim ownership, strict scope resolution, or a binary capability
+boundary, and it never authorizes `--no-scope-check`.
+
 ## Phase Behavior
 
 The orchestrator selects phases based on the anchor plan's current `status`:

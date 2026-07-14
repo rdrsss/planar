@@ -89,6 +89,14 @@ outcome plus the complete packet and verified preview/live-row state; warnings
 do not hide blocking gaps; next actions route the verdict; recovery gives an
 exact inspect or retry command and never applies ingestion.
 
+Before any operator-approved write, compare its target with the cwd-derived
+scope from `planar scope show --json`. If they differ, emit
+`[cross-scope write: <scope-kind>:<scope-slug>]` as a standalone narrative
+line immediately before invoking `planar`, naming the actual `project`,
+`association`, or `global` target, and pass the matching explicit `--scope`.
+Do not emit this cue for same-scope writes. The cue is transcript visibility,
+not a permission bypass; all existing approval and scope guards still apply.
+
 ## Behavior
 
 1. Resolve the plan and scope:

@@ -103,6 +103,24 @@ are still user-invocable and must implement the contract. Internal-only status
 waives only the seven authored feedback sections; it does not waive errors,
 warnings, or recovery information owed to the calling workflow.
 
+### Cross-scope write cue
+
+Before a Planar-authored workflow invokes a write whose target is outside the
+cwd-derived scope reported by `planar scope show --json`, it emits this
+standalone narrative line immediately before the command:
+
+```text
+[cross-scope write: <scope-kind>:<scope-slug>]
+```
+
+The label names the actual target as `project:<slug>`,
+`association:<slug>`, or `global`; a generic warning such as
+`[cross-scope write]` is insufficient. The command still passes the matching
+explicit `--scope` value accepted by the CLI. This cue makes intent visible in
+the transcript; it does not grant permission, replace an operator gate, weaken
+strict scope resolution, or authorize `--no-scope-check`. Same-scope writes do
+not emit the cue.
+
 ---
 
 ## Work-complete report template
