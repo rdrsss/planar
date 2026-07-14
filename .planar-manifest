@@ -1,7 +1,7 @@
 {
   "version": 2,
   "algo": "xxh64",
-  "root": "62135187e1ae3ff9",
+  "root": "8f1a567d4bbce8dd",
   "generated_at": "",
   "entries": {
     "docs/architecture.md": {
@@ -80,7 +80,7 @@
     "docs/research/scenario-coverage-long-tail.md": "0000000000000000",
     "docs/research/scope-resolution.md": "0000000000000000",
     "install.sh": "dddbcb1c5e927d1e",
-    "integration_tests/": "a605e249ae5676b6",
+    "integration_tests/": "34d22c5c9842dbdb",
     "templates/": "0536dfe3149b9acc",
     "tools/": "9605abc0c7545854",
     "vendor/manifest.zon": "123c6b606e6f6b41"
