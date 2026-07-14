@@ -433,6 +433,50 @@ test "skills render real sources keep model tiers notes and invocation blocks" {
     try std.testing.expect(std.mem.indexOf(u8, codex_introspect, "association''s feedback plan.'") != null);
 }
 
+test "skills render pl-spec-review has one authoritative cross-scope rule for every vendor" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try fixtureRoot(gpa, &tmp, "skills-render-spec-review-cross-scope");
+    defer gpa.free(root);
+
+    const src_abs = try repoSkillsSrcFromBin(gpa, suite.bin);
+    defer gpa.free(src_abs);
+
+    {
+        const stdout = mustRunInDir(&suite, root, &.{
+            "skills",
+            "render",
+            "--src",
+            src_abs,
+            "--out",
+            root,
+            "pl-spec-review",
+        });
+        defer gpa.free(stdout);
+    }
+
+    for ([_][]const u8{
+        "commands/claude/pl-spec-review.md",
+        "skills/codex/pl-spec-review.md",
+        "skills/copilot/pl-spec-review.md",
+    }) |projection| {
+        const rendered = try readPath(gpa, root, projection);
+        defer gpa.free(rendered);
+        try std.testing.expectEqual(
+            @as(usize, 1),
+            std.mem.count(u8, rendered, "## Cross-scope write cue"),
+        );
+        try std.testing.expectEqual(
+            @as(usize, 1),
+            std.mem.count(u8, rendered, "Before invoking a mutation, compare its target with the cwd-derived scope"),
+        );
+        try std.testing.expect(std.mem.indexOf(u8, rendered, "<scope-kind>:<scope-slug>") == null);
+    }
+}
+
 test "skills render supports interspersed slugs and flags ordering" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
