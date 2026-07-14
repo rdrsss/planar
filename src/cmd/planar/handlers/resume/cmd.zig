@@ -1,7 +1,7 @@
 //! handlers/resume/cmd.zig — `planar resume [<task-id>]` + `planar resume validate`
 //!
 //! Top-level run produces the 8-section resume packet. When task-id is
-//! omitted, falls back to the most-recent session.task_id.
+//! omitted, falls back to the most-recent active task in cwd scope.
 
 const std = @import("std");
 const cli = @import("cli");
@@ -9,6 +9,7 @@ const engine = @import("engine");
 const main = @import("../../main.zig");
 const runtime = @import("runtime");
 const exit = @import("../../exit.zig");
+const scope_mod = @import("../../scope.zig");
 
 const validate = @import("validate.zig");
 
@@ -43,14 +44,54 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
         task_id = std.fmt.parseInt(i64, raw, 10) catch
             exit.die(ctx, error.InvalidInput, "task id must be an integer, got '{s}'", .{raw});
     } else {
-        // Fall back to the most recent session.task_id.
+        const cwd = scope_mod.operatorCwd(ctx.allocator, ctx.io) catch |e|
+            exit.die(ctx, e, "resolve cwd for resume: {s}", .{@errorName(e)});
+        defer ctx.allocator.free(cwd);
+        const read_scopes = scope_mod.resolveForReadSet(ctx, cwd, null) catch |e|
+            exit.die(ctx, e, "resolve scope for resume: {s}", .{@errorName(e)});
+        defer ctx.allocator.free(read_scopes);
+        if (read_scopes.len == 0) {
+            exit.die(
+                ctx,
+                error.NoReadScope,
+                "cwd is not inside any registered Planar scope; cd into a registered scope or pass <task-id> explicitly",
+                .{},
+            );
+        }
+
+        // Sessions are the activity clock for resume. Walk newest-first and
+        // select the first still-active task whose stored scope is in the
+        // cwd-derived read set. Global tasks only match an explicitly global
+        // read scope; they never leak into a repo/association cwd.
         const sql: [:0]const u8 =
-            "select task_id from sessions where task_id is not null order by started_at desc limit 1";
+            \\select s.task_id, t.scope_kind, t.scope_id
+            \\from sessions s
+            \\join tasks t on t.id = s.task_id
+            \\where s.task_id is not null
+            \\  and t.status in ('todo', 'doing', 'blocked')
+            \\order by s.started_at desc, s.id desc
+        ;
         var stmt = d.prepare(sql) catch |e| exit.die(ctx, e, "lookup recent session: {s}", .{@errorName(e)});
         defer stmt.finalize();
-        switch (stmt.step() catch |e| exit.die(ctx, e, "lookup step: {s}", .{@errorName(e)})) {
-            .done => exit.die(ctx, error.InvalidInput, "no active task found; pass <task-id> explicitly", .{}),
-            .row => task_id = stmt.columnInt(0),
+        while (true) {
+            switch (stmt.step() catch |e| exit.die(ctx, e, "lookup step: {s}", .{@errorName(e)})) {
+                .done => exit.die(
+                    ctx,
+                    error.NotFound,
+                    "no active task in cwd-derived scope; pass <task-id> explicitly",
+                    .{},
+                ),
+                .row => {
+                    const kind = stmt.columnTextAlloc(1, ctx.allocator) catch |e|
+                        exit.die(ctx, e, "read task scope: {s}", .{@errorName(e)});
+                    defer ctx.allocator.free(kind);
+                    const scope_id = stmt.columnIntOpt(2);
+                    if (matchesReadScope(kind, scope_id, read_scopes)) {
+                        task_id = stmt.columnInt(0);
+                        break;
+                    }
+                },
+            }
         }
     }
 
@@ -65,6 +106,17 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
         return;
     }
     try renderText(ctx, packet);
+}
+
+fn matchesReadScope(kind: []const u8, id: ?i64, scopes: []const scope_mod.ReadScope) bool {
+    for (scopes) |scope| {
+        switch (scope.kind) {
+            .global => if (std.mem.eql(u8, kind, "global") and id == null) return true,
+            .association => if (std.mem.eql(u8, kind, "association") and id == scope.id) return true,
+            .repo => if (std.mem.eql(u8, kind, "repo") and id == scope.id) return true,
+        }
+    }
+    return false;
 }
 
 fn renderText(ctx: *const runtime.Ctx, p: engine.runtime.@"resume".Packet) !void {
