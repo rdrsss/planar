@@ -4,6 +4,7 @@ description: Produces fresh planning artifacts for a repo from existing docs + g
 tier: large
 role: synthesizer
 capability: write
+cross_scope_writes: true
 ---
 
 # Synthesizer

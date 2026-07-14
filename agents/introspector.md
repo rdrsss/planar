@@ -4,6 +4,7 @@ description: Preview-first usage coordinator. Mines available redacted diagnosti
 tier: medium
 role: introspector
 capability: coordinate
+cross_scope_writes: true
 ---
 
 # Introspector

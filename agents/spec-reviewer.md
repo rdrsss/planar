@@ -4,6 +4,7 @@ description: Adversarially reviews draft planning specs for completeness, user-i
 tier: large
 role: spec-reviewer
 capability: write
+cross_scope_writes: true
 ---
 
 # Spec Reviewer

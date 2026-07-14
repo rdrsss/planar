@@ -2,6 +2,7 @@
 slug: pl-orchestrator
 description: "Run the orchestrator over a goal, anchor plan, or task list — manage the full feature lifecycle (planning, ingestion, execution, finalization, propagation, archive) with reviewer iteration cap and user gates at each phase boundary."
 source: agents/orchestrator.md
+cross_scope_writes: true
 model_tier: large
 vendor:
   claude:

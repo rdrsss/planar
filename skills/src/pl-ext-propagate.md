@@ -2,6 +2,7 @@
 slug: pl-ext-propagate
 description: "Propagate a feature (anchor plan + descendants) to a registered external operational system (Jira or GitHub Issues)."
 source: agents/ext-sync.md
+cross_scope_writes: true
 model_tier: large
 vendor:
   claude:

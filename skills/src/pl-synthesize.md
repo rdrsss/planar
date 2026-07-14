@@ -2,6 +2,7 @@
 slug: pl-synthesize
 description: "Synthesize fresh planning artifacts for a repo from existing docs + git log + source code via an LLM pass. Use for messy / docs-only / mid-evolution repos."
 source: agents/synthesizer.md
+cross_scope_writes: true
 model_tier: large
 vendor:
   claude:

@@ -2,6 +2,7 @@
 slug: pl-workbench-sync
 description: "Bidirectionally sync a feature's workbench filesystem with the database."
 source: docs/cli-reference.md#domain-workbench
+cross_scope_writes: true
 vendor:
   claude:
     argument_hint: "<plan> [--prefer fs|db]"

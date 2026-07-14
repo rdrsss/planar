@@ -4,6 +4,7 @@ description: Top-level dispatcher. Manages the full feature lifecycle — planni
 tier: large
 role: orchestrator
 capability: coordinate
+cross_scope_writes: true
 ---
 
 # Orchestrator

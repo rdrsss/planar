@@ -2,6 +2,7 @@
 slug: pl-plan
 description: "Create, update, inspect, recommend, advance, and close out plans and their steps."
 source: docs/cli-reference.md#domain-plan
+cross_scope_writes: true
 vendor:
   claude:
     argument_hint: "<create|show|list|update|step|link|next|recommend-strategy|closeout> [args]"

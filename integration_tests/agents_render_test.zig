@@ -57,6 +57,254 @@ test "agents render emits per-vendor files for canonical specialists" {
     try assertFileExists(gpa, root, "agents/copilot/sync-reconciler.agent.md");
 }
 
+test "cross-scope write cue and normalized mappings render across mutation surfaces and vendors" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try fixtureRoot(gpa, &tmp, "agents-render-cross-scope-cue");
+    defer gpa.free(root);
+
+    const src_abs = try repoAgentsSrcFromBin(gpa, suite.bin);
+    defer gpa.free(src_abs);
+    try copyAgentSpecs(gpa, src_abs, root);
+
+    const skills_src_abs = try repoSkillsSrcFromBin(gpa, suite.bin);
+    defer gpa.free(skills_src_abs);
+    const stdout = suite.mustRunInDir(root, &.{
+        "skills",
+        "render",
+        "--src",
+        skills_src_abs,
+        "--out",
+        root,
+    });
+    defer gpa.free(stdout);
+
+    const agent_paths = [_][]const u8{
+        "agents/claude/coder.md",
+        "agents/codex/coder.toml",
+        "agents/copilot/coder.agent.md",
+        "agents/claude/ext-sync.md",
+        "agents/codex/ext-sync.toml",
+        "agents/copilot/ext-sync.agent.md",
+        "agents/claude/feedback-triager.md",
+        "agents/codex/feedback-triager.toml",
+        "agents/copilot/feedback-triager.agent.md",
+        "agents/claude/importer.md",
+        "agents/codex/importer.toml",
+        "agents/copilot/importer.agent.md",
+        "agents/claude/ingestor.md",
+        "agents/codex/ingestor.toml",
+        "agents/copilot/ingestor.agent.md",
+        "agents/claude/introspector.md",
+        "agents/codex/introspector.toml",
+        "agents/copilot/introspector.agent.md",
+        "agents/claude/janitor.md",
+        "agents/codex/janitor.toml",
+        "agents/copilot/janitor.agent.md",
+        "agents/claude/orchestrator.md",
+        "agents/codex/orchestrator.toml",
+        "agents/copilot/orchestrator.agent.md",
+        "agents/claude/planner.md",
+        "agents/codex/planner.toml",
+        "agents/copilot/planner.agent.md",
+        "agents/claude/spec-reviewer.md",
+        "agents/codex/spec-reviewer.toml",
+        "agents/copilot/spec-reviewer.agent.md",
+        "agents/claude/sync-reconciler.md",
+        "agents/codex/sync-reconciler.toml",
+        "agents/copilot/sync-reconciler.agent.md",
+        "agents/claude/synthesizer.md",
+        "agents/codex/synthesizer.toml",
+        "agents/copilot/synthesizer.agent.md",
+    };
+    for (agent_paths) |path| {
+        const rendered = try readPath(gpa, root, path);
+        defer gpa.free(rendered);
+        try assertCrossScopeContract(rendered);
+    }
+
+    const mutation_skills = [_][]const u8{
+        "pl-doctor",
+        "pl-coder",
+        "pl-ext-create",
+        "pl-ext-propagate",
+        "pl-feedback-triage",
+        "pl-import",
+        "pl-introspect",
+        "pl-knowledge",
+        "pl-orchestrator",
+        "pl-plan",
+        "pl-promote",
+        "pl-question",
+        "pl-report-issue",
+        "pl-reviewer",
+        "pl-scenario",
+        "pl-spec-draft",
+        "pl-spec-ingest",
+        "pl-spec-review",
+        "pl-sync",
+        "pl-synthesize",
+        "pl-task",
+        "pl-workbench",
+        "pl-workbench-archive",
+        "pl-workbench-sync",
+        "pl-workspace-scan",
+    };
+    const vendor_dirs = [_][]const u8{
+        "commands/claude",
+        "skills/codex",
+        "skills/copilot",
+    };
+    for (mutation_skills) |slug| {
+        for (vendor_dirs) |vendor_dir| {
+            const path = try std.fmt.allocPrint(gpa, "{s}/{s}.md", .{ vendor_dir, slug });
+            defer gpa.free(path);
+            const rendered = try readPath(gpa, root, path);
+            defer gpa.free(rendered);
+            try assertCrossScopeContract(rendered);
+        }
+    }
+
+    const WorkbenchWorkflow = struct {
+        slug: []const u8,
+        mutations: []const []const u8,
+    };
+    const workbench_workflows = [_]WorkbenchWorkflow{
+        .{
+            .slug = "pl-workbench",
+            .mutations = &.{
+                "planar workbench pull <plan>",
+                "planar workbench push <plan>",
+                "planar workbench sync <plan>",
+            },
+        },
+        .{
+            .slug = "pl-workbench-archive",
+            .mutations = &.{
+                "planar workbench archive <plan>",
+                "planar workbench restore <plan>",
+            },
+        },
+        .{
+            .slug = "pl-workbench-sync",
+            .mutations = &.{"planar workbench sync <plan>"},
+        },
+    };
+
+    for (vendor_dirs) |vendor_dir| {
+        for (workbench_workflows) |workflow| {
+            const path = try std.fmt.allocPrint(gpa, "{s}/{s}.md", .{ vendor_dir, workflow.slug });
+            defer gpa.free(path);
+            const rendered = try readPath(gpa, root, path);
+            defer gpa.free(rendered);
+            try assertWorkbenchTargetRule(
+                rendered,
+                workflow.mutations,
+            );
+        }
+
+        const workspace_path = try std.fmt.allocPrint(gpa, "{s}/pl-workspace-scan.md", .{vendor_dir});
+        defer gpa.free(workspace_path);
+        const workspace = try readPath(gpa, root, workspace_path);
+        defer gpa.free(workspace);
+        try assertCommandTargetRule(
+            workspace,
+            "- Single workspace target:",
+            "[cross-scope write: association:org:work]",
+            "planar workspace routing build org:work",
+            "Do not add `--scope`.",
+        );
+        try assertCommandTargetRule(
+            workspace,
+            "- All-workspaces doctor:",
+            "[cross-scope write: association:org:work]",
+            "planar workspace doctor --json",
+            "doctor takes no target or",
+        );
+
+        const promote_path = try std.fmt.allocPrint(gpa, "{s}/pl-promote.md", .{vendor_dir});
+        defer gpa.free(promote_path);
+        const promote = try readPath(gpa, root, promote_path);
+        defer gpa.free(promote);
+        try assertCommandTargetRule(
+            promote,
+            "- `planar promote`/`demote`:",
+            "[cross-scope write: association:org:acme]",
+            "`--to` or `--from`/global-demotion form",
+            "do not add `--scope`.",
+        );
+    }
+
+    const read_only_paths = [_][]const u8{
+        "agents/claude/reviewer.md",
+        "agents/codex/reviewer.toml",
+        "agents/copilot/reviewer.agent.md",
+        "agents/claude/documenter.md",
+        "agents/codex/documenter.toml",
+        "agents/copilot/documenter.agent.md",
+        "commands/claude/pl-status.md",
+        "skills/codex/pl-status.md",
+        "skills/copilot/pl-status.md",
+    };
+    for (read_only_paths) |path| {
+        const rendered = try readPath(gpa, root, path);
+        defer gpa.free(rendered);
+        try std.testing.expect(std.mem.indexOf(u8, rendered, "## Cross-scope write cue") == null);
+    }
+}
+
+fn assertCrossScopeContract(rendered: []const u8) !void {
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "<normalized-target-label>") != null);
+    try assertCueMapping(rendered, "- Repo/project row", "[cross-scope write: project:planar]", "--scope repo:planar");
+    try assertCueMapping(rendered, "- Ordinary association", "[cross-scope write: association:org:acme]", "--scope assoc:org:acme");
+    try assertCueMapping(rendered, "- Legacy project association", "[cross-scope write: project:planar]", "--scope assoc:project:planar");
+    try assertCueMapping(rendered, "- Global target", "[cross-scope write: global]", "--scope global");
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "Never emit `association:project:planar`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "[cross-scope write: association:project:planar]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "Same-scope writes MUST NOT emit any cross-scope cue.") != null);
+}
+
+fn assertCueMapping(rendered: []const u8, bullet_start: []const u8, cue: []const u8, cli_scope: []const u8) !void {
+    const start = std.mem.indexOf(u8, rendered, bullet_start) orelse return error.TestExpectedEqual;
+    const tail = rendered[start..];
+    const end = std.mem.indexOfPos(u8, tail, bullet_start.len, "\n-") orelse tail.len;
+    const bullet = tail[0..end];
+    try std.testing.expect(std.mem.indexOf(u8, bullet, cue) != null);
+    try std.testing.expect(std.mem.indexOf(u8, bullet, cli_scope) != null);
+}
+
+fn assertCommandTargetRule(
+    rendered: []const u8,
+    bullet_start: []const u8,
+    cue_rule: []const u8,
+    target_rule: []const u8,
+    scope_rule: []const u8,
+) !void {
+    const start = std.mem.indexOf(u8, rendered, bullet_start) orelse return error.TestExpectedEqual;
+    const tail = rendered[start..];
+    const end = std.mem.indexOfPos(u8, tail, bullet_start.len, "\n-") orelse tail.len;
+    const bullet = tail[0..end];
+    try std.testing.expect(std.mem.indexOf(u8, bullet, cue_rule) != null);
+    try std.testing.expect(std.mem.indexOf(u8, bullet, target_rule) != null);
+    try std.testing.expect(std.mem.indexOf(u8, bullet, scope_rule) != null);
+}
+
+fn assertWorkbenchTargetRule(rendered: []const u8, mutations: []const []const u8) !void {
+    try assertCommandTargetRule(
+        rendered,
+        "- Workbench plan target:",
+        "[cross-scope write: project:planar]",
+        "preserve the positional target",
+        "Do not add `--scope`.",
+    );
+    for (mutations) |mutation| {
+        try std.testing.expect(std.mem.indexOf(u8, rendered, mutation) != null);
+    }
+}
+
 // Load-bearing security property: orchestrator (capability=coordinate) must NOT
 // have Edit or Write in its tools list, while coder (capability=write) must have
 // both, and at the sonnet model id.

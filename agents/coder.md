@@ -4,6 +4,7 @@ description: Coding agent that implements scoped tasks end-to-end. Dispatched by
 tier: medium
 role: coder
 capability: write
+cross_scope_writes: true
 ---
 
 # Coder

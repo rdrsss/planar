@@ -2,6 +2,7 @@
 slug: pl-workbench-archive
 description: "Archive or restore a feature's workbench filesystem tree."
 source: docs/cli-reference.md#domain-workbench
+cross_scope_writes: true
 vendor:
   claude:
     argument_hint: "<archive|restore> <plan>"

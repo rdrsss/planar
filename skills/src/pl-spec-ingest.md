@@ -2,6 +2,7 @@
 slug: pl-spec-ingest
 description: "Decompose workbench planning documents into a structured task graph in the Planar database."
 source: agents/ingestor.md
+cross_scope_writes: true
 model_tier: large
 vendor:
   claude:

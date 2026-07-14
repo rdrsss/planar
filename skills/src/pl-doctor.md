@@ -2,6 +2,7 @@
 slug: pl-doctor
 description: "Guided reconciliation flow for a degraded Planar DB: diagnose contributors, clear stale claims and handoffs, triage non-resumable in-flight tasks."
 source: docs/cli-reference.md#domain-health
+cross_scope_writes: true
 vendor:
   claude:
     argument_hint: "[--json]"

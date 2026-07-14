@@ -4,6 +4,7 @@ description: Trusted finalization agent. Merges approved work, reconciles Planar
 tier: medium
 role: janitor
 capability: coordinate
+cross_scope_writes: true
 ---
 
 # Janitor

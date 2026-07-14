@@ -4,6 +4,7 @@ description: Drafts product specs, tech specs, roadmaps, and initial test scenar
 tier: large
 role: planner
 capability: write
+cross_scope_writes: true
 ---
 
 # Planner

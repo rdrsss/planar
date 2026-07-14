@@ -2,6 +2,7 @@
 slug: pl-coder
 description: "Implements scoped coding tasks (called by the orchestrator)."
 source: agents/coder.md
+cross_scope_writes: true
 model_tier: medium
 vendor:
   claude:

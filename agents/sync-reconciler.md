@@ -4,6 +4,7 @@ description: Reconciles local and external sync conflicts from observable eviden
 tier: large
 role: sync-reconciler
 capability: coordinate
+cross_scope_writes: true
 ---
 
 # Sync Reconciler

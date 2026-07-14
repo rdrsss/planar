@@ -4,6 +4,7 @@ description: Reads workbench planning documents and decomposes them into a struc
 tier: large
 role: ingestor
 capability: coordinate
+cross_scope_writes: true
 ---
 
 # Ingestor

@@ -2,6 +2,7 @@
 slug: pl-spec-review
 description: "Adversarially review draft planning specs for completeness, open questions, feature gaps, user-intent fit, roadmap readiness, and test scenario coverage before ingestion."
 source: agents/spec-reviewer.md
+cross_scope_writes: true
 model_tier: large
 vendor:
   claude:
@@ -68,6 +69,14 @@ Treat a failed strict preview as evidence, not as a skill failure. The point of
 the skill is to find those gaps before the operator applies ingestion. Do not
 run `test-spec status` as a pre-ingest completeness check: it reads live rows,
 so a draft with no ingested task/scenario rows legitimately has zero totals.
+
+In write mode, compare every approved write target with the cwd-derived scope
+from `planar scope show --json`. When they differ, emit
+`[cross-scope write: <scope-kind>:<scope-slug>]` as a standalone narrative
+line immediately before invoking `planar`, name the actual `project`,
+`association`, or `global` target, and pass the matching explicit `--scope`.
+Do not emit the cue for same-scope writes. It makes intent visible without
+weakening operator approval, strict scope resolution, or binary capabilities.
 
 ## Review passes
 

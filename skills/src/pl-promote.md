@@ -2,6 +2,7 @@
 slug: pl-promote
 description: "Surface personal entities that have matured and promote or demote them between scopes."
 source: docs/cli-reference.md#domain-promote
+cross_scope_writes: true
 vendor:
   claude:
     argument_hint: "<kind:id> --to <association-slug> | demote <kind:id> [--from <association-slug>]"

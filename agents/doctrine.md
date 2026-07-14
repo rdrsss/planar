@@ -103,6 +103,33 @@ are still user-invocable and must implement the contract. Internal-only status
 waives only the seven authored feedback sections; it does not waive errors,
 warnings, or recovery information owed to the calling workflow.
 
+### Cross-scope write cue
+
+Before a Planar-authored workflow invokes a write whose target is outside the
+cwd-derived scope reported by `planar scope show --json`, it emits this
+standalone narrative line immediately before the command:
+
+```text
+[cross-scope write: <normalized-target-label>]
+```
+
+Normalize the stored target and CLI argument exactly as follows:
+
+| Stored target | Cue label | Explicit CLI value |
+|---|---|---|
+| Repo/project row, project slug `planar` | `project:planar` | `--scope repo:planar` |
+| Ordinary association, slug `org:acme` | `association:org:acme` | `--scope assoc:org:acme` |
+| Legacy project association: `kind=association`, slug `project:planar`, `kind_label=project` | `project:planar` | `--scope assoc:project:planar` |
+| Global | `global` | `--scope global` |
+
+The legacy row therefore never produces the invalid/doubled display label
+`association:project:planar`. `planar promote`/`demote` retain their own
+destination arguments while using the same cue-label normalization. A generic
+warning such as `[cross-scope write]` is insufficient. This cue makes intent
+visible in the transcript; it does not grant permission, replace an operator
+gate, weaken strict scope resolution, or authorize `--no-scope-check`.
+**Same-scope writes MUST NOT emit any cross-scope cue.**
+
 ---
 
 ## Work-complete report template

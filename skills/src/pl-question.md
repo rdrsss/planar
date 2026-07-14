@@ -2,6 +2,7 @@
 slug: pl-question
 description: "Capture open questions during a session, answer them, and link to tasks and specs."
 source: docs/cli-reference.md#domain-question
+cross_scope_writes: true
 vendor:
   claude:
     argument_hint: "<add|answer|list|show|wontfix|link> [args]"

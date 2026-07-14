@@ -2,6 +2,7 @@
 slug: pl-ext-create
 description: "Create a Jira or GitHub Issues counterpart from a local entity and record the link."
 source: docs/cli-reference.md#domain-ext
+cross_scope_writes: true
 vendor:
   claude:
     argument_hint: "<system-slug> --from <kind:id> [--type <issue-type>]"

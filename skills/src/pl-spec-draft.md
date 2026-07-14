@@ -2,6 +2,7 @@
 slug: pl-spec-draft
 description: "Draft initial product spec, tech spec, test spec, and roadmap for a new feature from a goal statement."
 source: agents/planner.md
+cross_scope_writes: true
 model_tier: large
 vendor:
   claude:

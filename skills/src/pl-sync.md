@@ -2,6 +2,7 @@
 slug: pl-sync
 description: "Pull from and push to the operational plane, inspect field-level conflicts, and coordinate explicitly approved reconciliation."
 source: docs/cli-reference.md#domain-sync
+cross_scope_writes: true
 vendor:
   claude:
     argument_hint: "<pull|push|status|resolve> <target> [args]"

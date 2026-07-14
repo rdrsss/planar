@@ -166,6 +166,35 @@ contract.
 See [`agents/doctrine.md` §Operator feedback contract](../agents/doctrine.md#operator-feedback-contract)
 for the cross-role outcome and verification doctrine.
 
+### Cross-scope write visibility
+
+When a Planar-authored agent or skill is about to write outside the scope
+derived from its cwd, it prints a standalone cue immediately before the write:
+
+```text
+[cross-scope write: project:planar]
+```
+
+Normalize labels independently from command targeting. For verbs that support
+`--scope`, a repo/project slug `planar` uses cue `project:planar` and `--scope
+repo:planar`; an ordinary association slug `org:acme` uses cue
+`association:org:acme` and `--scope assoc:org:acme`; a legacy association row
+whose slug is `project:planar` and whose `kind_label=project` uses cue
+`project:planar` and `--scope assoc:project:planar`; global uses cue `global`
+and `--scope global`. The legacy row never displays
+`association:project:planar`.
+
+When a verb has no `--scope`, preserve its supported explicit target instead.
+Workbench workflows retain their positional `plan:<id>` target;
+promote/demote retain `--to` or `--from`/global demotion; and workspace routing
+or regeneration translates skill input `--workspace org:work` to the CLI's
+positional `org:work` target. Before the targetless, fleet-wide `workspace
+doctor`, emit one normalized cue per foreign registered org workspace, sorted
+by label, then invoke doctor once. Never add `--scope` to a verb whose schema
+lacks it. Same-scope writes MUST NOT emit any cross-scope cue. Commands remain
+subject to their normal operator gates, scope guards, claim ownership, and
+binary capability boundary; the cue changes transcript visibility only.
+
 ---
 
 ## Binary architecture
