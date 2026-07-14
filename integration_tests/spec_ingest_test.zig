@@ -15,6 +15,145 @@ test "spec ingest rejects --apply-removals without --apply" {
     try std.testing.expect(std.mem.containsAtLeast(u8, stderr, 1, "--apply-removals requires --apply"));
 }
 
+test "explicit plan id crosses cwd scope for ingest reads but apply requires matching scope" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_backing = std.heap.ArenaAllocator.init(gpa);
+    defer arena_backing.deinit();
+    const arena = arena_backing.allocator();
+
+    const project_a = suite.registerProject("explicit-plan-read-a");
+    const project_b = suite.freshSystemTmpDir();
+    const init_b = suite.mustRunInDir(project_b, &.{
+        "init", "--allow-no-repo", "--name", "explicit-plan-read-b",
+    });
+    gpa.free(init_b);
+
+    const assoc_a = "explicit-plan-read-a";
+    const assoc_b = "explicit-plan-read-b";
+    const scope_b = "assoc:explicit-plan-read-b";
+    const create_a = suite.mustRun(&.{ "assoc", "create", assoc_a, "--kind", "project" });
+    gpa.free(create_a);
+    const create_b = suite.mustRun(&.{ "assoc", "create", assoc_b, "--kind", "project" });
+    gpa.free(create_b);
+    const add_a = suite.mustRun(&.{ "assoc", "add", assoc_a, project_a });
+    gpa.free(add_a);
+    const add_b = suite.mustRun(&.{ "assoc", "add", assoc_b, project_b });
+    gpa.free(add_b);
+
+    const IDJSON = struct { id: i64 };
+    const plan = suite.mustRunJSON(IDJSON, arena, &.{
+        "plan", "create", "--json", "--scope", scope_b, "Explicit plan read target",
+    });
+    const plan_id = std.fmt.allocPrint(arena, "{d}", .{plan.id}) catch @panic("OOM");
+
+    const tech_body =
+        \\# Explicit Plan Read Tech Spec
+        \\
+        \\## Status
+        \\
+        \\Draft.
+        \\
+    ;
+    const roadmap_body =
+        \\# Explicit Plan Read Roadmap
+        \\
+        \\## Scope-safe ingestion
+        \\
+        \\- Apply only with explicit operator intent [slug: explicit-plan-read-task]
+        \\
+    ;
+    const test_spec_body =
+        \\# Explicit Plan Read Test Spec
+        \\
+        \\## Scenarios
+        \\
+        \\### Scenario: Explicit plan read stays available
+        \\
+        \\**Bucket:** happy path
+        \\**Verifies:** task:explicit-plan-read-task
+        \\
+    ;
+
+    const tech = suite.mustRun(&.{
+        "artifact", "add",   "--json", "--scope", scope_b,                        "--kind", "tech_spec",
+        "--plan",   plan_id, "--body", tech_body, "Explicit Plan Read Tech Spec",
+    });
+    gpa.free(tech);
+    const roadmap = suite.mustRun(&.{
+        "artifact", "add",   "--json", "--scope",    scope_b,                      "--kind", "roadmap",
+        "--plan",   plan_id, "--body", roadmap_body, "Explicit Plan Read Roadmap",
+    });
+    gpa.free(roadmap);
+    const test_spec = suite.mustRun(&.{
+        "artifact", "add",   "--json", "--scope",      scope_b,                        "--kind", "test_spec",
+        "--plan",   plan_id, "--body", test_spec_body, "Explicit Plan Read Test Spec",
+    });
+    gpa.free(test_spec);
+
+    const wb = createWorkbenchEnv(&suite, arena, "workbench-explicit-plan-read");
+    const push = suite.mustRunWith(&.{ "workbench", "push", "--json", plan_id }, wb.env);
+    gpa.free(push);
+
+    const cwd_env = [_]harness.Suite.ExtraEnvEntry{
+        .{ .key = "PLANAR_DB", .value = suite.absDbPath() },
+        .{ .key = "PWD", .value = project_a },
+        .{ .key = "PLANAR_WORKBENCH_ROOT", .value = wb.wb_root },
+    };
+
+    // Explicit-ID reads locate the anchor independently of cwd-derived scope.
+    const shown = suite.execWithInDir(project_a, &.{ "plan", "show", "--json", plan_id }, &cwd_env);
+    defer shown.deinit(gpa);
+    try std.testing.expect(shown.term == .exited and shown.term.exited == 0);
+    try std.testing.expect(std.mem.containsAtLeast(u8, shown.stdout, 1, plan_id));
+
+    const status_before = suite.execWithInDir(project_a, &.{ "test-spec", "status", plan_id, "--json" }, &cwd_env);
+    defer status_before.deinit(gpa);
+    try std.testing.expect(status_before.term == .exited and status_before.term.exited == 0);
+    try std.testing.expect(std.mem.containsAtLeast(u8, status_before.stdout, 1, plan_id));
+
+    const PreviewJSON = struct {
+        anchor_plan_id: i64,
+        summary: struct { additions: i64 },
+    };
+    const preview = suite.execWithInDir(project_a, &.{ "spec", "ingest", plan_id, "--json" }, &cwd_env);
+    defer preview.deinit(gpa);
+    try std.testing.expect(preview.term == .exited and preview.term.exited == 0);
+    const preview_json = parseJSON(PreviewJSON, arena, preview.stdout);
+    try std.testing.expectEqual(plan.id, preview_json.anchor_plan_id);
+    try std.testing.expect(preview_json.summary.additions > 0);
+
+    // Apply is a write boundary: cwd scope A cannot mutate the scope-B anchor.
+    const refused = suite.execWithInDir(project_a, &.{ "spec", "ingest", plan_id, "--apply" }, &cwd_env);
+    defer refused.deinit(gpa);
+    try std.testing.expect(refused.term == .exited and refused.term.exited != 0);
+    try std.testing.expect(std.mem.containsAtLeast(u8, refused.stderr, 1, "belongs to explicit-plan-read-b"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, refused.stderr, 1, "resolved write scope is explicit-plan-read-a"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, refused.stderr, 1, "--scope explicit-plan-read-b"));
+
+    const PlanJSON = struct { status: []const u8 };
+    const after_refusal = suite.mustRunJSON(PlanJSON, arena, &.{ "plan", "show", "--json", plan_id });
+    try std.testing.expectEqualStrings("draft", after_refusal.status);
+
+    // The operator can recover from the same cwd by selecting the anchor scope.
+    const applied = suite.execWithInDir(project_a, &.{
+        "spec", "ingest", plan_id, "--apply", "--scope", scope_b,
+    }, &cwd_env);
+    defer applied.deinit(gpa);
+    try std.testing.expect(applied.term == .exited and applied.term.exited == 0);
+
+    const after_apply = suite.mustRunJSON(PlanJSON, arena, &.{ "plan", "show", "--json", plan_id });
+    try std.testing.expectEqualStrings("active", after_apply.status);
+
+    const status_after = suite.execWithInDir(project_a, &.{ "test-spec", "status", plan_id, "--json" }, &cwd_env);
+    defer status_after.deinit(gpa);
+    try std.testing.expect(status_after.term == .exited and status_after.term.exited == 0);
+    try std.testing.expect(std.mem.containsAtLeast(u8, status_after.stdout, 1, "\"tasks_with_slug\":1"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, status_after.stdout, 1, "\"tasks_covered\":1"));
+}
+
 test "spec ingest apply unresolved task slug rolls back derived graph" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
