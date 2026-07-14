@@ -2,6 +2,7 @@
 slug: pl-import
 description: "Import an existing repo's planning content into Planar — deterministic classifier plus opt-in LLM interpretation."
 source: agents/importer.md
+cross_scope_writes: true
 model_tier: large
 vendor:
   claude:

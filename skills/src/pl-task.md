@@ -2,6 +2,7 @@
 slug: pl-task
 description: "Create, inspect, update, block, reopen, complete, and cancel tasks within the cwd-derived scope."
 source: docs/cli-reference.md#domain-task
+cross_scope_writes: true
 vendor:
   claude:
     argument_hint: "<add|list|show|update|block|reopen|done|cancel|link|touches> [args]"

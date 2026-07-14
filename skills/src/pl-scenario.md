@@ -2,6 +2,7 @@
 slug: pl-scenario
 description: "Author test scenarios from a spec or task, verify and record outcomes."
 source: docs/cli-reference.md#domain-scenario
+cross_scope_writes: true
 vendor:
   claude:
     argument_hint: "<add|verify|list|show|retire> [args]"

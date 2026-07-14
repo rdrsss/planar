@@ -2,6 +2,7 @@
 slug: pl-feedback-triage
 description: "Preview and apply structured triage for redacted feedback findings, with separately gated external reporting."
 source: docs/cli-reference.md#domain-feedback
+cross_scope_writes: true
 vendor:
   claude:
     argument_hint: "[--plan <id>] [--finding <task:id|question:id>] [--scope <scope>] [--apply]"

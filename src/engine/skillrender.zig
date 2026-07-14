@@ -150,6 +150,7 @@ pub const Source = struct {
     description: []const u8,
     source_link: []const u8,
     model_tier: []const u8,
+    cross_scope_writes: bool,
     vendor: []SourceVendor,
     shared_notes: [][]const u8,
     body: []const u8,
@@ -586,6 +587,7 @@ pub fn parseSourceBytes(allocator: std.mem.Allocator, path: []const u8, raw: []c
         .description = try allocator.dupe(u8, ""),
         .source_link = try allocator.dupe(u8, ""),
         .model_tier = try allocator.dupe(u8, ""),
+        .cross_scope_writes = false,
         .vendor = &.{},
         .shared_notes = &.{},
         .body = try allocator.dupe(u8, body_trimmed),
@@ -639,6 +641,16 @@ pub fn parseSourceBytes(allocator: std.mem.Allocator, path: []const u8, raw: []c
         if (std.mem.eql(u8, key, "model_tier")) {
             allocator.free(source.model_tier);
             source.model_tier = try dupScalarValue(allocator, val);
+            i += 1;
+            continue;
+        }
+        if (std.mem.eql(u8, key, "cross_scope_writes")) {
+            source.cross_scope_writes = if (std.mem.eql(u8, val, "true"))
+                true
+            else if (std.mem.eql(u8, val, "false"))
+                false
+            else
+                return RenderError.ParseFailure;
             i += 1;
             continue;
         }
@@ -789,6 +801,10 @@ pub fn render(allocator: std.mem.Allocator, source: Source, profile: VendorProfi
     try payload.appendSlice(allocator, "---\n\n");
     try payload.appendSlice(allocator, body);
     if (body.len == 0 or body[body.len - 1] != '\n') try payload.append(allocator, '\n');
+    if (source.cross_scope_writes) {
+        try payload.append(allocator, '\n');
+        try payload.appendSlice(allocator, cross_scope_write_contract);
+    }
 
     const digests = try skillProjectionDigests(allocator, source, profile, payload.items);
     return addMarkdownProjectionMetadata(allocator, payload.items, digests);
@@ -905,6 +921,35 @@ const coordinate_codex_note =
     "> set so legitimate `planar`/`planar-agent` DB writes succeed. Do not edit repository source\n" ++
     "> files from this agent — that boundary is doctrinal here, not structurally enforced.\n";
 
+const cross_scope_write_contract =
+    \\## Cross-scope write cue
+    \\
+    \\Before invoking a mutation, compare its target with the cwd-derived scope from
+    \\`planar scope show --json`. If the target is outside that scope, emit this
+    \\standalone narrative line immediately before the command:
+    \\
+    \\```text
+    \\[cross-scope write: <normalized-target-label>]
+    \\```
+    \\
+    \\Use these exact normalized labels and command arguments:
+    \\
+    \\- Repo/project row with project slug `planar`: cue
+    \\  `[cross-scope write: project:planar]`; pass `--scope repo:planar`.
+    \\- Ordinary association with slug `org:acme`: cue
+    \\  `[cross-scope write: association:org:acme]`; pass `--scope assoc:org:acme`.
+    \\- Legacy project association with `kind=association`, slug `project:planar`,
+    \\  and `kind_label=project`: cue `[cross-scope write: project:planar]`; pass
+    \\  `--scope assoc:project:planar`. Never emit `association:project:planar`.
+    \\- Global target: cue `[cross-scope write: global]`; pass `--scope global`.
+    \\
+    \\For `planar promote`/`demote`, whose destination is expressed by `--to` or
+    \\the global demotion contract instead of `--scope`, use the same cue-label
+    \\mapping and preserve those command-specific arguments. The cue is visibility,
+    \\not authorization: it does not replace confirmation, relax scope guards, or
+    \\permit `--no-scope-check`. Same-scope writes MUST NOT emit any cross-scope cue.
+;
+
 /// resolveAgentModel maps the agent's tier to a concrete model via the vendor's
 /// existing `models:` table.
 fn resolveAgentModel(allocator: std.mem.Allocator, source: AgentSource, profile: VendorProfile) ![]u8 {
@@ -929,6 +974,7 @@ fn skillProjectionDigests(
     try appendDigestField(allocator, &canonical, "description", source.description);
     try appendDigestField(allocator, &canonical, "source_link", source.source_link);
     try appendDigestField(allocator, &canonical, "model_tier", source.model_tier);
+    try appendDigestField(allocator, &canonical, "cross_scope_writes", if (source.cross_scope_writes) "true" else "false");
     for (source.vendor, 0..) |vendor, i| {
         try appendIndexedDigestField(allocator, &canonical, "vendor_name", i, vendor.name);
         try appendIndexedDigestField(allocator, &canonical, "vendor_argument_hint", i, vendor.argument_hint);
@@ -2377,6 +2423,7 @@ test "parse source required fields" {
         \\description: Draft a plan
         \\source: docs/cli-reference.md#domain-plan
         \\model_tier: large
+        \\cross_scope_writes: true
         \\vendor:
         \\  claude:
         \\    argument_hint: "<create|show>"
@@ -2397,6 +2444,7 @@ test "parse source required fields" {
     defer src.deinit(gpa);
     try std.testing.expectEqualStrings("pl-plan", src.slug);
     try std.testing.expectEqualStrings("large", src.model_tier);
+    try std.testing.expect(src.cross_scope_writes);
     try std.testing.expectEqual(@as(usize, 1), src.vendor.len);
     try std.testing.expectEqual(@as(usize, 1), src.shared_notes.len);
 }
@@ -2411,6 +2459,7 @@ test "render projects claude and codex frontmatter differences" {
         \\description: Draft a plan from a goal.
         \\source: docs/cli-reference.md#domain-plan
         \\model_tier: large
+        \\cross_scope_writes: true
         \\vendor:
         \\  claude:
         \\    argument_hint: "<create|show|list> [args]"
@@ -2435,6 +2484,9 @@ test "render projects claude and codex frontmatter differences" {
     try std.testing.expect(std.mem.indexOf(u8, claude, "argument-hint: <create|show|list> [args]") != null);
     try std.testing.expect(std.mem.indexOf(u8, codex, "argument-hint:") == null);
     try std.testing.expect(std.mem.indexOf(u8, codex, "name: pl-plan") != null);
+    try std.testing.expect(std.mem.indexOf(u8, claude, "[cross-scope write: project:planar]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, codex, "--scope assoc:project:planar") != null);
+    try std.testing.expect(std.mem.indexOf(u8, codex, "Same-scope writes MUST NOT emit any cross-scope cue.") != null);
 }
 
 test "skill projection digests are path-independent and vendor-sensitive" {
@@ -2623,6 +2675,7 @@ test "render rejects stray template end" {
         .description = try gpa.dupe(u8, "desc"),
         .source_link = try gpa.dupe(u8, "docs/x"),
         .model_tier = try gpa.dupe(u8, ""),
+        .cross_scope_writes = false,
         .vendor = &.{},
         .shared_notes = &.{},
         .body = try gpa.dupe(u8, "hi\n{{end}}\n"),

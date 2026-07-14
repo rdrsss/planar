@@ -110,16 +110,25 @@ cwd-derived scope reported by `planar scope show --json`, it emits this
 standalone narrative line immediately before the command:
 
 ```text
-[cross-scope write: <scope-kind>:<scope-slug>]
+[cross-scope write: <normalized-target-label>]
 ```
 
-The label names the actual target as `project:<slug>`,
-`association:<slug>`, or `global`; a generic warning such as
-`[cross-scope write]` is insufficient. The command still passes the matching
-explicit `--scope` value accepted by the CLI. This cue makes intent visible in
-the transcript; it does not grant permission, replace an operator gate, weaken
-strict scope resolution, or authorize `--no-scope-check`. Same-scope writes do
-not emit the cue.
+Normalize the stored target and CLI argument exactly as follows:
+
+| Stored target | Cue label | Explicit CLI value |
+|---|---|---|
+| Repo/project row, project slug `planar` | `project:planar` | `--scope repo:planar` |
+| Ordinary association, slug `org:acme` | `association:org:acme` | `--scope assoc:org:acme` |
+| Legacy project association: `kind=association`, slug `project:planar`, `kind_label=project` | `project:planar` | `--scope assoc:project:planar` |
+| Global | `global` | `--scope global` |
+
+The legacy row therefore never produces the invalid/doubled display label
+`association:project:planar`. `planar promote`/`demote` retain their own
+destination arguments while using the same cue-label normalization. A generic
+warning such as `[cross-scope write]` is insufficient. This cue makes intent
+visible in the transcript; it does not grant permission, replace an operator
+gate, weaken strict scope resolution, or authorize `--no-scope-check`.
+**Same-scope writes MUST NOT emit any cross-scope cue.**
 
 ---
 

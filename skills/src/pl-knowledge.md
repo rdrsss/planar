@@ -2,6 +2,7 @@
 slug: pl-knowledge
 description: "Manage durable decisions, artifacts, annotations, and relationships with scope-safe writes and verified post-state."
 source: docs/cli-reference.md#domain-decision
+cross_scope_writes: true
 vendor:
   claude:
     argument_hint: "<capture|artifact|annotate|link|show> [args]"

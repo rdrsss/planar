@@ -175,11 +175,16 @@ derived from its cwd, it prints a standalone cue immediately before the write:
 [cross-scope write: project:planar]
 ```
 
-The cue always names the actual `project:<slug>`, `association:<slug>`, or
-`global` target and is omitted for same-scope writes. The command still uses
-the matching explicit `--scope` value and remains subject to its normal
-operator gates, scope guards, claim ownership, and binary capability boundary.
-The cue changes transcript visibility only; it is not a permission override.
+Normalize targets exactly: a repo/project slug `planar` uses cue
+`project:planar` and `--scope repo:planar`; an ordinary association slug
+`org:acme` uses cue `association:org:acme` and `--scope assoc:org:acme`; a
+legacy association row whose slug is `project:planar` and whose
+`kind_label=project` uses cue `project:planar` and `--scope
+assoc:project:planar`; global uses cue `global` and `--scope global`. The legacy
+row never displays `association:project:planar`. Same-scope writes MUST NOT
+emit any cross-scope cue. Commands remain subject to their normal operator
+gates, scope guards, claim ownership, and binary capability boundary; the cue
+changes transcript visibility only.
 
 ---
 

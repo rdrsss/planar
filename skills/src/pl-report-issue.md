@@ -2,6 +2,7 @@
 slug: pl-report-issue
 description: "Assemble and post a GitHub issue from a feedback-plan finding and the diagnostic bundle; record the posted issue as an external link on the finding."
 source: docs/cli-reference.md#domain-report
+cross_scope_writes: true
 vendor:
   claude:
     argument_hint: "[--finding <kind:id>] [--days <n>] [--scope <scope>]"

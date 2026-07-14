@@ -285,13 +285,16 @@ recovery is target-specific and never claims atomic rollback across worktrees
 or remote calls.
 
 Before any Planar write targeting a scope outside the cwd-derived set from
-`planar scope show --json`, emit
-`[cross-scope write: <scope-kind>:<scope-slug>]` as a standalone narrative
-line immediately before the command, naming the actual `project`,
-`association`, or `global` target, and pass the matching explicit `--scope`.
-Do not emit this cue for same-scope writes. The cue is transcript visibility,
-not a permission bypass; phase gates, claim ownership, strict scope resolution,
-and the five-binary capability boundaries remain unchanged.
+`planar scope show --json`, emit `[cross-scope write:
+<normalized-target-label>]` as a standalone narrative line immediately before
+the command. Use these exact mappings: repo/project slug `planar` → cue
+`project:planar`, `--scope repo:planar`; ordinary association slug `org:acme` →
+cue `association:org:acme`, `--scope assoc:org:acme`; legacy association row
+with slug `project:planar` and `kind_label=project` → cue `project:planar`,
+`--scope assoc:project:planar`; global → cue `global`, `--scope global`.
+Never emit `association:project:planar`. **Same-scope writes MUST NOT emit any cross-scope cue.** The cue is transcript visibility, not a permission bypass;
+phase gates, claim ownership, strict scope resolution, and the five-binary
+capability boundaries remain unchanged.
 
 ## Status reporting
 

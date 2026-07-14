@@ -2,6 +2,7 @@
 slug: pl-introspect
 description: "Preview redacted usage-introspection findings, report signal coverage, and apply approved findings to the association's feedback plan."
 source: docs/cli-reference.md#domain-report
+cross_scope_writes: true
 vendor:
   claude:
     argument_hint: "[--days <n>] [--scope <scope>] [--apply]"

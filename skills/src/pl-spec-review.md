@@ -2,6 +2,7 @@
 slug: pl-spec-review
 description: "Adversarially review draft planning specs for completeness, open questions, feature gaps, user-intent fit, roadmap readiness, and test scenario coverage before ingestion."
 source: agents/spec-reviewer.md
+cross_scope_writes: true
 model_tier: large
 vendor:
   claude:

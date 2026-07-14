@@ -57,7 +57,7 @@ test "agents render emits per-vendor files for canonical specialists" {
     try assertFileExists(gpa, root, "agents/copilot/sync-reconciler.agent.md");
 }
 
-test "cross-scope write cue renders for orchestrator and spec-reviewer across vendors" {
+test "cross-scope write cue and normalized mappings render across mutation surfaces and vendors" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
@@ -82,26 +82,79 @@ test "cross-scope write cue renders for orchestrator and spec-reviewer across ve
     });
     defer gpa.free(stdout);
 
-    const paths = [_][]const u8{
+    const agent_paths = [_][]const u8{
         "agents/claude/orchestrator.md",
         "agents/codex/orchestrator.toml",
         "agents/copilot/orchestrator.agent.md",
         "agents/claude/spec-reviewer.md",
         "agents/codex/spec-reviewer.toml",
         "agents/copilot/spec-reviewer.agent.md",
-        "commands/claude/pl-orchestrator.md",
-        "skills/codex/pl-orchestrator.md",
-        "skills/copilot/pl-orchestrator.md",
-        "commands/claude/pl-spec-review.md",
-        "skills/codex/pl-spec-review.md",
-        "skills/copilot/pl-spec-review.md",
     };
-    for (paths) |path| {
+    for (agent_paths) |path| {
         const rendered = try readPath(gpa, root, path);
         defer gpa.free(rendered);
-        try std.testing.expect(std.mem.indexOf(u8, rendered, "[cross-scope write: <scope-kind>:<scope-slug>]") != null);
-        try std.testing.expect(std.mem.indexOf(u8, rendered, "same-scope") != null);
+        try assertCrossScopeContract(rendered);
     }
+
+    const mutation_skills = [_][]const u8{
+        "pl-doctor",
+        "pl-ext-create",
+        "pl-ext-propagate",
+        "pl-feedback-triage",
+        "pl-import",
+        "pl-introspect",
+        "pl-knowledge",
+        "pl-orchestrator",
+        "pl-plan",
+        "pl-promote",
+        "pl-question",
+        "pl-report-issue",
+        "pl-scenario",
+        "pl-spec-draft",
+        "pl-spec-ingest",
+        "pl-spec-review",
+        "pl-sync",
+        "pl-synthesize",
+        "pl-task",
+    };
+    const vendor_dirs = [_][]const u8{
+        "commands/claude",
+        "skills/codex",
+        "skills/copilot",
+    };
+    for (mutation_skills) |slug| {
+        for (vendor_dirs) |vendor_dir| {
+            const path = try std.fmt.allocPrint(gpa, "{s}/{s}.md", .{ vendor_dir, slug });
+            defer gpa.free(path);
+            const rendered = try readPath(gpa, root, path);
+            defer gpa.free(rendered);
+            try assertCrossScopeContract(rendered);
+            try std.testing.expect(std.mem.indexOf(u8, rendered, "[cross-scope write: project:planar]") != null);
+            try std.testing.expect(std.mem.indexOf(u8, rendered, "[cross-scope write: association:org:acme]") != null);
+            try std.testing.expect(std.mem.indexOf(u8, rendered, "[cross-scope write: global]") != null);
+        }
+    }
+
+    const read_only_paths = [_][]const u8{
+        "commands/claude/pl-status.md",
+        "skills/codex/pl-status.md",
+        "skills/copilot/pl-status.md",
+    };
+    for (read_only_paths) |path| {
+        const rendered = try readPath(gpa, root, path);
+        defer gpa.free(rendered);
+        try std.testing.expect(std.mem.indexOf(u8, rendered, "## Cross-scope write cue") == null);
+    }
+}
+
+fn assertCrossScopeContract(rendered: []const u8) !void {
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "<normalized-target-label>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "--scope repo:planar") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "--scope assoc:org:acme") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "--scope assoc:project:planar") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "--scope global") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "Never emit `association:project:planar`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "Same-scope writes MUST NOT emit any cross-scope cue.") != null);
 }
 
 // Load-bearing security property: orchestrator (capability=coordinate) must NOT
