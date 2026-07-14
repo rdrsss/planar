@@ -110,6 +110,10 @@ fn emit(ctx: *const runtime.Ctx, r: InitResult, json: bool) !void {
     try ctx.stdout.print("  schema:  {d}\n", .{r.schema_version});
     if (r.project_slug) |slug| {
         try ctx.stdout.print("  project: {s} (id: {d})\n", .{ slug, r.project_id.? });
+        if (r.root_path) |root| {
+            try ctx.stdout.print("  next:    `planar assoc create project:{s} --kind project`\n", .{slug});
+            try ctx.stdout.print("           `planar assoc add project:{s} {s}`\n", .{ slug, root });
+        }
     }
 }
 

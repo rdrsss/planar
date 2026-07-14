@@ -1,6 +1,6 @@
 # Planar Workflows
 
-End-to-end recipes for common Planar operations. These assume you have run `planar init` and understand the core concepts (see `docs/concepts.md`).
+End-to-end recipes for common Planar operations. These assume you have run `planar init`, followed its printed `planar assoc create` / `planar assoc add` next steps to establish a project association, and understand the core concepts (see `docs/concepts.md`). `planar plan create` refuses to infer global ownership from an initialized but unassociated project; use `--scope global` only when that ownership is intentional.
 
 ---
 

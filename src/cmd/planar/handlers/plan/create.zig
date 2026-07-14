@@ -25,6 +25,15 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     // association — plan 352 task 2450.
     const resolution = scope_mod.resolveForWrite(ctx, args.scope) catch |e|
         exit.die(ctx, e, "plan create: resolving scope failed: {s}", .{@errorName(e)});
+    if (args.scope == null and resolution.reason == .project_unassociated) {
+        const project_slug = resolution.project_slug orelse "project";
+        exit.die(
+            ctx,
+            error.ScopeMismatch,
+            "plan create: project has no association; run `planar assoc create project:{s} --kind project` then `planar assoc add project:{s} <repo-path>`, or pass `--scope global` explicitly",
+            .{ project_slug, project_slug },
+        );
+    }
     const effective_scope: ?[]const u8 = if (resolution.scope) |s| s else null;
 
     const plan = engine.planning.plan.create(d, ctx.allocator, .{
