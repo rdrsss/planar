@@ -168,18 +168,41 @@ test "cross-scope write cue and normalized mappings render across mutation surfa
         }
     }
 
+    const WorkbenchWorkflow = struct {
+        slug: []const u8,
+        mutations: []const []const u8,
+    };
+    const workbench_workflows = [_]WorkbenchWorkflow{
+        .{
+            .slug = "pl-workbench",
+            .mutations = &.{
+                "planar workbench pull <plan>",
+                "planar workbench push <plan>",
+                "planar workbench sync <plan>",
+            },
+        },
+        .{
+            .slug = "pl-workbench-archive",
+            .mutations = &.{
+                "planar workbench archive <plan>",
+                "planar workbench restore <plan>",
+            },
+        },
+        .{
+            .slug = "pl-workbench-sync",
+            .mutations = &.{"planar workbench sync <plan>"},
+        },
+    };
+
     for (vendor_dirs) |vendor_dir| {
-        for ([_][]const u8{ "pl-workbench", "pl-workbench-archive", "pl-workbench-sync" }) |slug| {
-            const path = try std.fmt.allocPrint(gpa, "{s}/{s}.md", .{ vendor_dir, slug });
+        for (workbench_workflows) |workflow| {
+            const path = try std.fmt.allocPrint(gpa, "{s}/{s}.md", .{ vendor_dir, workflow.slug });
             defer gpa.free(path);
             const rendered = try readPath(gpa, root, path);
             defer gpa.free(rendered);
-            try assertCommandTargetRule(
+            try assertWorkbenchTargetRule(
                 rendered,
-                "- Workbench plan target:",
-                "[cross-scope write: project:planar]",
-                "planar workbench sync plan:<plan-id>",
-                "Do not add `--scope`.",
+                workflow.mutations,
             );
         }
 
@@ -267,6 +290,19 @@ fn assertCommandTargetRule(
     try std.testing.expect(std.mem.indexOf(u8, bullet, cue_rule) != null);
     try std.testing.expect(std.mem.indexOf(u8, bullet, target_rule) != null);
     try std.testing.expect(std.mem.indexOf(u8, bullet, scope_rule) != null);
+}
+
+fn assertWorkbenchTargetRule(rendered: []const u8, mutations: []const []const u8) !void {
+    try assertCommandTargetRule(
+        rendered,
+        "- Workbench plan target:",
+        "[cross-scope write: project:planar]",
+        "preserve the positional target",
+        "Do not add `--scope`.",
+    );
+    for (mutations) |mutation| {
+        try std.testing.expect(std.mem.indexOf(u8, rendered, mutation) != null);
+    }
 }
 
 // Load-bearing security property: orchestrator (capability=coordinate) must NOT
