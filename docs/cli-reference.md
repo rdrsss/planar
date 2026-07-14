@@ -601,6 +601,7 @@ plan 7: "Implement billing module"  [draft]  slug:implement-billing-module  (sco
 **Exit codes:**
 - `1` — `--parent` plan id not found.
 - `1` — scope not resolvable.
+- `5` — cwd resolves to a registered project with no association and `--scope` was omitted.
 
 ---
 

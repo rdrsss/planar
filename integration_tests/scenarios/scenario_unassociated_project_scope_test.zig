@@ -35,13 +35,31 @@ test "scenario: unassociated project refuses implicit global plan but permits ex
 
     const root = suite.registerProject("fresh-project");
 
-    const stderr = suite.expectFailureInDir(root, &.{
+    const env = [_]harness.Suite.ExtraEnvEntry{
+        .{ .key = "PLANAR_DB", .value = suite.absDbPath() },
+        .{ .key = "PWD", .value = root },
+    };
+    const implicit = suite.execWithInDir(root, &.{
         "plan", "create", "Implicit global must be refused",
+    }, &env);
+    defer implicit.deinit(gpa);
+    try std.testing.expect(implicit.term == .exited);
+    try std.testing.expectEqual(@as(u8, 5), implicit.term.exited);
+    try std.testing.expectEqual(@as(usize, 0), implicit.stdout.len);
+    try std.testing.expect(std.mem.containsAtLeast(u8, implicit.stderr, 1, "project has no association"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, implicit.stderr, 1, "planar assoc create"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, implicit.stderr, 1, "planar assoc add"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, implicit.stderr, 1, "--scope global"));
+
+    const after_refusal_raw = suite.mustRunInDir(root, &.{
+        "plan", "list", "--scope", "global", "--json",
     });
-    defer gpa.free(stderr);
-    try std.testing.expect(std.mem.containsAtLeast(u8, stderr, 1, "project has no association"));
-    try std.testing.expect(std.mem.containsAtLeast(u8, stderr, 1, "planar assoc create"));
-    try std.testing.expect(std.mem.containsAtLeast(u8, stderr, 1, "planar assoc add"));
+    defer gpa.free(after_refusal_raw);
+    const after_refusal = std.json.parseFromSlice([]PlanJSON, arena, after_refusal_raw, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    }) catch unreachable;
+    try std.testing.expectEqual(@as(usize, 0), after_refusal.value.len);
 
     const explicit_raw = suite.mustRunInDir(root, &.{
         "plan", "create", "--scope", "global", "--json", "Explicit global remains supported",
