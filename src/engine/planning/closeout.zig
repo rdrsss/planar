@@ -820,3 +820,68 @@ fn checkBranchMerged(allocator: std.mem.Allocator, repo_root: []const u8, branch
     }
     return false;
 }
+
+// =========================================================================
+// Tests
+// =========================================================================
+
+fn setupCloseoutTestDb(allocator: std.mem.Allocator) !db.sqlite.Db {
+    var d = try db.sqlite.Db.openMemory();
+    errdefer d.close();
+    try db.migrate.applyAll(&d, allocator);
+    return d;
+}
+
+fn seedReadyCloseoutPlan(d: *db.sqlite.Db) !i64 {
+    return d.execParams(
+        "insert into plans (scope_kind, title, slug, status) values ('global', 'Closeout', 'closeout', 'active')",
+        &.{},
+    );
+}
+
+fn forceCloseoutAuditFailure(d: *db.sqlite.Db) !void {
+    try d.exec(
+        \\create trigger fail_closeout_audit before insert on audit_log
+        \\begin
+        \\  select raise(abort, 'forced closeout audit failure');
+        \\end;
+    );
+}
+
+test "apply rolls back plan status when audit recording fails" {
+    const allocator = std.testing.allocator;
+    var d = try setupCloseoutTestDb(allocator);
+    defer d.close();
+    const plan_id = try seedReadyCloseoutPlan(&d);
+    try forceCloseoutAuditFailure(&d);
+
+    try std.testing.expectError(error.WriteFailed, evaluate(&d, allocator, plan_id, true, false));
+    try std.testing.expectEqual(
+        @as(i64, 1),
+        try d.intQuery("select count(*) from plans where id = 1 and status = 'active'"),
+    );
+    try std.testing.expectEqual(@as(i64, 0), try d.intQuery("select count(*) from audit_log"));
+}
+
+test "apply audit failure frees transferred warning ownership" {
+    const allocator = std.testing.allocator;
+    var d = try setupCloseoutTestDb(allocator);
+    defer d.close();
+    const plan_id = try seedReadyCloseoutPlan(&d);
+    const task_id = try d.execParams(
+        "insert into tasks (scope_kind, plan_id, title, status) values ('global', ?, 'Done task', 'done')",
+        &.{.{ .int = plan_id }},
+    );
+    const session_id = try d.execParams("insert into sessions (vendor) values ('test')", &.{});
+    _ = try d.execParams(
+        \\insert into agent_work_claims (
+        \\  claim_token, session_id, entity_kind, entity_id, status, vendor, lease_expires_at
+        \\) values ('stale-closeout-claim', ?, 'task', ?, 'active', 'test', '2000-01-01T00:00:00.000Z')
+    , &.{ .{ .int = session_id }, .{ .int = task_id } });
+    try forceCloseoutAuditFailure(&d);
+
+    // The stale claim allocates a warning before ownership transfers out of
+    // the ArrayList. std.testing.allocator makes any missed error-path free
+    // fail this test, including the outer blocked_by/warnings slices.
+    try std.testing.expectError(error.WriteFailed, evaluate(&d, allocator, plan_id, true, false));
+}
