@@ -36,6 +36,7 @@ comptime {
     _ = @import("parity_intentional_divergence_test.zig");
     _ = @import("parity_plan_next_test.zig");
     _ = @import("parity_resume_test.zig");
+    _ = @import("resume_scope_test.zig");
     _ = @import("parity_tree_cwd_derive_test.zig");
     _ = @import("parity_tree_render_test.zig");
     _ = @import("plan_next_buckets_test.zig");
