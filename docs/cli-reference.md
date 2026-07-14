@@ -4584,7 +4584,7 @@ Planning pipeline spec commands for decomposing workbench planning documents int
 
 **Synopsis:**
 ```
-planar spec ingest <plan> [--apply] [--apply-removals] [--format text|json] [--json] [--strict]
+planar spec ingest <plan> [--apply] [--apply-removals] [--format text|json] [--json] [--scope <scope>] [--strict]
 ```
 
 **Description:** Read `tech-spec.md`, `roadmap.md`, and (when present) `test-spec.md` from the anchor plan's workbench directory, compute the proposed diff against the current database state, and (optionally) commit additions and updates.
@@ -4613,6 +4613,7 @@ A `coverage:` line follows the totals on every run. It reports how many tasks ca
 | `--apply-removals` | Also commit proposed removals (cancel orphan tasks, abandon orphan plans). Must be combined with `--apply`. | off |
 | `--format text\|json` | Output format. `text` prints a tree-shaped diff; `json` emits a machine-readable JSON object. The JSON object carries a `coverage` field with the same data the text mode prints. | `text` |
 | `--json` | Shorthand for `--format json`. | off |
+| `--scope <scope>` | Select operator write scope for `--apply`. Required when cwd does not resolve to a scope that covers the anchor plan. | cwd-derived |
 | `--strict` | Reject the ingest (exit 1) when any slug-bearing task has no verifying scenario, any scenario has no parseable `**Verifies:**` line, or any proposed task slug collides with a live task. | off |
 
 **Output (human, `--format text`):**

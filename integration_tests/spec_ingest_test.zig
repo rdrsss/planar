@@ -154,6 +154,102 @@ test "explicit plan id crosses cwd scope for ingest reads but apply requires mat
     try std.testing.expect(std.mem.containsAtLeast(u8, status_after.stdout, 1, "\"tasks_covered\":1"));
 }
 
+test "spec ingest member association may apply repo anchor and derived rows stay repo scoped" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_backing = std.heap.ArenaAllocator.init(gpa);
+    defer arena_backing.deinit();
+    const arena = arena_backing.allocator();
+
+    const InitJSON = struct { project_slug: []const u8 };
+    const project_root = suite.tmpAbsPath();
+    const init_raw = suite.mustRunInDir(project_root, &.{
+        "init", "--allow-no-repo", "--json", "--name", "repo-ingest-anchor",
+    });
+    defer gpa.free(init_raw);
+    const init = parseJSON(InitJSON, arena, init_raw);
+    const repo_scope = std.fmt.allocPrint(arena, "repo:{s}", .{init.project_slug}) catch @panic("OOM");
+
+    const assoc_slug = "repo-ingest-members";
+    const assoc_scope = "assoc:repo-ingest-members";
+    const create_assoc = suite.mustRun(&.{ "assoc", "create", assoc_slug, "--kind", "org" });
+    gpa.free(create_assoc);
+    const add_member = suite.mustRun(&.{ "assoc", "add", assoc_slug, project_root });
+    gpa.free(add_member);
+
+    const ScopedEntity = struct {
+        id: i64,
+        scope_kind: []const u8,
+        scope_id: ?i64 = null,
+    };
+    const anchor = suite.mustRunJSON(ScopedEntity, arena, &.{
+        "plan", "create", "--json", "--scope", repo_scope, "Repo ingest anchor",
+    });
+    try std.testing.expectEqualStrings("repo", anchor.scope_kind);
+    try std.testing.expect(anchor.scope_id != null);
+    const anchor_id = std.fmt.allocPrint(arena, "{d}", .{anchor.id}) catch @panic("OOM");
+
+    const tech_body =
+        \\# Repo Ingest Tech Spec
+        \\
+        \\## Status
+        \\
+        \\Draft.
+        \\
+    ;
+    const roadmap_body =
+        \\# Repo Ingest Roadmap
+        \\
+        \\## Preserve repo provenance
+        \\
+        \\- Create a repo-scoped derived task [slug: repo-derived-task]
+        \\
+    ;
+    const tech = suite.mustRun(&.{
+        "artifact", "add",     "--json", "--scope", repo_scope,              "--kind", "tech_spec",
+        "--plan",   anchor_id, "--body", tech_body, "Repo Ingest Tech Spec",
+    });
+    gpa.free(tech);
+    const roadmap = suite.mustRun(&.{
+        "artifact", "add",     "--json", "--scope",    repo_scope,            "--kind", "roadmap",
+        "--plan",   anchor_id, "--body", roadmap_body, "Repo Ingest Roadmap",
+    });
+    gpa.free(roadmap);
+
+    const wb = createWorkbenchEnv(&suite, arena, "workbench-repo-ingest-member");
+    const push = suite.mustRunWith(&.{ "workbench", "push", "--json", anchor_id }, wb.env);
+    gpa.free(push);
+
+    // The org association covers its member repository for writes, but the
+    // anchor's repo scope remains the provenance for every derived row.
+    const apply = suite.execWith(&.{
+        "spec", "ingest", anchor_id, "--apply", "--scope", assoc_scope,
+    }, wb.env);
+    defer apply.deinit(gpa);
+    try std.testing.expect(apply.term == .exited and apply.term.exited == 0);
+
+    const children_raw = suite.mustRun(&.{
+        "plan", "list", "--json", "--scope", repo_scope, "--parent", anchor_id,
+    });
+    defer gpa.free(children_raw);
+    const children = parseJSON([]const ScopedEntity, arena, children_raw);
+    try std.testing.expectEqual(@as(usize, 1), children.len);
+    try std.testing.expectEqualStrings("repo", children[0].scope_kind);
+    try std.testing.expectEqual(anchor.scope_id.?, children[0].scope_id.?);
+
+    const child_id = std.fmt.allocPrint(arena, "{d}", .{children[0].id}) catch @panic("OOM");
+    const tasks_raw = suite.mustRun(&.{
+        "task", "list", "--json", "--scope", repo_scope, "--plan", child_id,
+    });
+    defer gpa.free(tasks_raw);
+    const tasks = parseJSON([]const ScopedEntity, arena, tasks_raw);
+    try std.testing.expectEqual(@as(usize, 1), tasks.len);
+    try std.testing.expectEqualStrings("repo", tasks[0].scope_kind);
+    try std.testing.expectEqual(anchor.scope_id.?, tasks[0].scope_id.?);
+}
+
 test "spec ingest apply unresolved task slug rolls back derived graph" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
