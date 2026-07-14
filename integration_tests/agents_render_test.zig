@@ -151,6 +151,7 @@ test "cross-scope write cue and normalized mappings render across mutation surfa
         "pl-workbench",
         "pl-workbench-archive",
         "pl-workbench-sync",
+        "pl-workspace-scan",
     };
     const vendor_dirs = [_][]const u8{
         "commands/claude",
@@ -165,6 +166,53 @@ test "cross-scope write cue and normalized mappings render across mutation surfa
             defer gpa.free(rendered);
             try assertCrossScopeContract(rendered);
         }
+    }
+
+    for (vendor_dirs) |vendor_dir| {
+        for ([_][]const u8{ "pl-workbench", "pl-workbench-archive", "pl-workbench-sync" }) |slug| {
+            const path = try std.fmt.allocPrint(gpa, "{s}/{s}.md", .{ vendor_dir, slug });
+            defer gpa.free(path);
+            const rendered = try readPath(gpa, root, path);
+            defer gpa.free(rendered);
+            try assertCommandTargetRule(
+                rendered,
+                "- Workbench plan target:",
+                "[cross-scope write: project:planar]",
+                "planar workbench sync plan:<plan-id>",
+                "Do not add `--scope`.",
+            );
+        }
+
+        const workspace_path = try std.fmt.allocPrint(gpa, "{s}/pl-workspace-scan.md", .{vendor_dir});
+        defer gpa.free(workspace_path);
+        const workspace = try readPath(gpa, root, workspace_path);
+        defer gpa.free(workspace);
+        try assertCommandTargetRule(
+            workspace,
+            "- Single workspace target:",
+            "[cross-scope write: association:org:work]",
+            "planar workspace routing build org:work",
+            "Do not add `--scope`.",
+        );
+        try assertCommandTargetRule(
+            workspace,
+            "- All-workspaces doctor:",
+            "[cross-scope write: association:org:work]",
+            "planar workspace doctor --json",
+            "doctor takes no target or",
+        );
+
+        const promote_path = try std.fmt.allocPrint(gpa, "{s}/pl-promote.md", .{vendor_dir});
+        defer gpa.free(promote_path);
+        const promote = try readPath(gpa, root, promote_path);
+        defer gpa.free(promote);
+        try assertCommandTargetRule(
+            promote,
+            "- `planar promote`/`demote`:",
+            "[cross-scope write: association:org:acme]",
+            "`--to` or `--from`/global-demotion form",
+            "do not add `--scope`.",
+        );
     }
 
     const read_only_paths = [_][]const u8{
@@ -203,6 +251,22 @@ fn assertCueMapping(rendered: []const u8, bullet_start: []const u8, cue: []const
     const bullet = tail[0..end];
     try std.testing.expect(std.mem.indexOf(u8, bullet, cue) != null);
     try std.testing.expect(std.mem.indexOf(u8, bullet, cli_scope) != null);
+}
+
+fn assertCommandTargetRule(
+    rendered: []const u8,
+    bullet_start: []const u8,
+    cue_rule: []const u8,
+    target_rule: []const u8,
+    scope_rule: []const u8,
+) !void {
+    const start = std.mem.indexOf(u8, rendered, bullet_start) orelse return error.TestExpectedEqual;
+    const tail = rendered[start..];
+    const end = std.mem.indexOfPos(u8, tail, bullet_start.len, "\n-") orelse tail.len;
+    const bullet = tail[0..end];
+    try std.testing.expect(std.mem.indexOf(u8, bullet, cue_rule) != null);
+    try std.testing.expect(std.mem.indexOf(u8, bullet, target_rule) != null);
+    try std.testing.expect(std.mem.indexOf(u8, bullet, scope_rule) != null);
 }
 
 // Load-bearing security property: orchestrator (capability=coordinate) must NOT

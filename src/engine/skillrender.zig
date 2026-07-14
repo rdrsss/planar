@@ -941,7 +941,12 @@ const cross_scope_write_contract =
     \\[cross-scope write: <normalized-target-label>]
     \\```
     \\
-    \\Use these exact normalized labels and command arguments:
+    \\Normalize the cue independently from the command's target syntax. Use an
+    \\explicit `--scope` only when that verb supports it; otherwise preserve the
+    \\verb's supported plan, entity, workspace, positional, `--to`, or `--from`
+    \\target. Never add `--scope` to a verb whose schema lacks it.
+    \\
+    \\For verbs that support `--scope`, use these exact label/argument mappings:
     \\
     \\- Repo/project row with project slug `planar`: cue
     \\  `[cross-scope write: project:planar]`; pass `--scope repo:planar`.
@@ -952,11 +957,32 @@ const cross_scope_write_contract =
     \\  `--scope assoc:project:planar`. Never emit `association:project:planar`.
     \\- Global target: cue `[cross-scope write: global]`; pass `--scope global`.
     \\
-    \\For `planar promote`/`demote`, whose destination is expressed by `--to` or
-    \\the global demotion contract instead of `--scope`, use the same cue-label
-    \\mapping and preserve those command-specific arguments. The cue is visibility,
-    \\not authorization: it does not replace confirmation, relax scope guards, or
-    \\permit `--no-scope-check`. Same-scope writes MUST NOT emit any cross-scope cue.
+    \\For commands without `--scope`, use these command-specific target rules:
+    \\
+    \\- Workbench plan target: resolve the stored owner of `plan:<plan-id>`. For a
+    \\  plan owned by project `planar`, emit `[cross-scope write: project:planar]`
+    \\  and preserve the positional target, for example
+    \\  `planar workbench sync plan:<plan-id>`. Do not add `--scope`.
+    \\- Existing entity target: resolve the entity's stored owner, emit its normalized
+    \\  scope cue, and preserve the supported `<kind:id>`, plan, event, or other
+    \\  positional target. Do not add `--scope`.
+    \\- Single workspace target: translate skill input `--workspace org:work` to the
+    \\  CLI's positional target, emit `[cross-scope write: association:org:work]`,
+    \\  and run, for example, `planar workspace routing build org:work` or
+    \\  `planar workspace regenerate org:work`. Do not add `--scope`.
+    \\- All-workspaces doctor: enumerate registered org workspaces first. Immediately
+    \\  before the single `planar workspace doctor --json` command, emit one normalized
+    \\  cue for each workspace outside the cwd-derived scope, for example
+    \\  `[cross-scope write: association:org:work]`, sorted by normalized label.
+    \\  Emit no cue for same-scope workspaces; doctor takes no target or `--scope`
+    \\  argument.
+    \\- `planar promote`/`demote`: derive the cue from the destination. For
+    \\  `--to org:acme`, emit `[cross-scope write: association:org:acme]`; preserve
+    \\  the supported `--to` or `--from`/global-demotion form and do not add `--scope`.
+    \\
+    \\The cue is visibility, not authorization: it does not replace confirmation,
+    \\relax scope guards, or permit `--no-scope-check`.
+    \\Same-scope writes MUST NOT emit any cross-scope cue.
 ;
 
 /// resolveAgentModel maps the agent's tier to a concrete model via the vendor's

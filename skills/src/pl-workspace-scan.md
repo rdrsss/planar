@@ -2,6 +2,7 @@
 slug: pl-workspace-scan
 description: "Initialize, inspect, refresh, diagnose, and repair a Planar workspace while preserving the workspace-scan invocation."
 source: docs/cli-reference.md#domain-workspace
+cross_scope_writes: true
 vendor:
   claude:
     argument_hint: "[scan|init|doctor|routing-show|routing-build|regenerate|repair] [--enrich] [--workspace <slug>] [--dry-run]"
