@@ -207,6 +207,10 @@ pub fn evaluate(
     }
 
     const blocked_by = try reasons.toOwnedSlice(allocator);
+    errdefer {
+        for (blocked_by) |reason| allocator.free(reason);
+        allocator.free(blocked_by);
+    }
     const ready = blocked_by.len == 0;
 
     // Build warnings (stale claims are advisory, not blocking).
@@ -226,6 +230,10 @@ pub fn evaluate(
     }
 
     const warnings = try warns.toOwnedSlice(allocator);
+    errdefer {
+        for (warnings) |warning| allocator.free(warning);
+        allocator.free(warnings);
+    }
 
     // Collect advisory git evidence.
     const git_evidence = try collectGitEvidence(d, allocator, plan_id);
@@ -251,6 +259,10 @@ pub fn evaluate(
 
     // Apply if requested and gate passes.
     const applied = if (apply and ready) blk: {
+        d.exec("begin immediate") catch return Error.QueryFailed;
+        var committed = false;
+        defer if (!committed) d.exec("rollback") catch {};
+
         _ = d.execParams(
             "update plans set status = 'done', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') where id = ?",
             &.{.{ .int = plan_id }},
@@ -260,6 +272,8 @@ pub fn evaluate(
             .entity = .{ .kind = "plan", .id = plan_id },
             .summary = null,
         });
+        d.exec("commit") catch return Error.QueryFailed;
+        committed = true;
         break :blk true;
     } else false;
 
