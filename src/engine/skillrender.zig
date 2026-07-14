@@ -176,7 +176,7 @@ pub const Source = struct {
 };
 
 /// Parsed agent role spec from `agents/<role>.md`. Frontmatter fields are
-/// `name, description, tier, role, capability`; the Markdown body becomes the
+/// `name, description, tier, role, capability, cross_scope_writes`; the Markdown body becomes the
 /// rendered subagent system prompt.
 pub const AgentSource = struct {
     path: []const u8,
@@ -185,6 +185,7 @@ pub const AgentSource = struct {
     tier: []const u8,
     role: []const u8,
     capability: []const u8,
+    cross_scope_writes: bool,
     body: []const u8,
 
     pub fn deinit(self: *AgentSource, allocator: std.mem.Allocator) void {
@@ -840,6 +841,7 @@ pub fn parseAgentSourceBytes(allocator: std.mem.Allocator, path: []const u8, raw
         .tier = try allocator.dupe(u8, ""),
         .role = try allocator.dupe(u8, ""),
         .capability = try allocator.dupe(u8, ""),
+        .cross_scope_writes = false,
         .body = try allocator.dupe(u8, body_trimmed),
     };
     errdefer source.deinit(allocator);
@@ -871,6 +873,13 @@ pub fn parseAgentSourceBytes(allocator: std.mem.Allocator, path: []const u8, raw
         } else if (std.mem.eql(u8, key, "capability")) {
             allocator.free(source.capability);
             source.capability = try dupScalarValue(allocator, val);
+        } else if (std.mem.eql(u8, key, "cross_scope_writes")) {
+            source.cross_scope_writes = if (std.mem.eql(u8, val, "true"))
+                true
+            else if (std.mem.eql(u8, val, "false"))
+                false
+            else
+                return RenderError.ParseFailure;
         }
     }
 
@@ -1008,6 +1017,7 @@ fn agentProjectionDigests(
     try appendDigestField(allocator, &canonical, "tier", source.tier);
     try appendDigestField(allocator, &canonical, "role", source.role);
     try appendDigestField(allocator, &canonical, "capability", source.capability);
+    try appendDigestField(allocator, &canonical, "cross_scope_writes", if (source.cross_scope_writes) "true" else "false");
     try appendDigestField(allocator, &canonical, "body", source.body);
     const source_digest = sha256Hex(canonical.items);
 
@@ -1169,6 +1179,10 @@ fn renderAgentMdYaml(
     try out.appendSlice(allocator, "---\n\n");
     try out.appendSlice(allocator, source.body);
     if (source.body.len == 0 or source.body[source.body.len - 1] != '\n') try out.append(allocator, '\n');
+    if (source.cross_scope_writes) {
+        try out.append(allocator, '\n');
+        try out.appendSlice(allocator, cross_scope_write_contract);
+    }
     return out.toOwnedSlice(allocator);
 }
 
@@ -1192,6 +1206,10 @@ fn renderAgentToml(
     try body_buf.appendSlice(allocator, source.body);
     if (body_buf.items.len == 0 or body_buf.items[body_buf.items.len - 1] != '\n') {
         try body_buf.append(allocator, '\n');
+    }
+    if (source.cross_scope_writes) {
+        try body_buf.append(allocator, '\n');
+        try body_buf.appendSlice(allocator, cross_scope_write_contract);
     }
 
     var out = std.ArrayList(u8).empty;
@@ -2705,6 +2723,7 @@ const agent_coder_fixture =
     \\tier: medium
     \\role: coder
     \\capability: write
+    \\cross_scope_writes: true
     \\---
     \\
     \\# Coder
@@ -2733,6 +2752,7 @@ test "parseAgentSourceFile parses frontmatter and body" {
     try std.testing.expectEqualStrings("orchestrator", src.name);
     try std.testing.expectEqualStrings("orchestrator", src.role);
     try std.testing.expectEqualStrings("coordinate", src.capability);
+    try std.testing.expect(!src.cross_scope_writes);
     try std.testing.expectEqualStrings("large", src.tier);
     try std.testing.expect(std.mem.indexOf(u8, src.body, "# Orchestrator") != null);
 }
@@ -2804,6 +2824,7 @@ test "renderAgent emits Claude md-yaml frontmatter with tools and model" {
     try std.testing.expect(std.mem.indexOf(u8, out, "tools: [Read, Edit, Write, Bash, Grep, Glob]") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "model: claude-sonnet-4-6") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "# Coder") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "## Cross-scope write cue") != null);
 }
 
 test "renderAgent emits Codex TOML with sandbox_mode and developer_instructions" {
@@ -2820,6 +2841,7 @@ test "renderAgent emits Codex TOML with sandbox_mode and developer_instructions"
     try std.testing.expect(std.mem.indexOf(u8, out, "model_reasoning_effort = \"medium\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "developer_instructions = \"\"\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "# Coder") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "## Cross-scope write cue") != null);
 }
 
 test "agent projections carry stable source and vendor digests for all vendors" {

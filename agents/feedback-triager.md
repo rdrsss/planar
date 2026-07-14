@@ -4,6 +4,7 @@ description: Preview-first feedback triage coordinator. Classifies redacted find
 tier: large
 role: feedback-triager
 capability: coordinate
+cross_scope_writes: true
 ---
 
 # Feedback Triager

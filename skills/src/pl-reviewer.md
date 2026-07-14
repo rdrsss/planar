@@ -2,6 +2,7 @@
 slug: pl-reviewer
 description: "Reviews coder output. Returns one of approve / request-changes / open-question / abort."
 source: agents/reviewer.md
+cross_scope_writes: true
 model_tier: large
 vendor:
   claude:

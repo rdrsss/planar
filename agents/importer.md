@@ -4,6 +4,7 @@ description: Translates an existing repository's planning content into Planar. R
 tier: large
 role: importer
 capability: write
+cross_scope_writes: true
 ---
 
 # Importer

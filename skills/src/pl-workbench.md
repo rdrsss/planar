@@ -2,6 +2,7 @@
 slug: pl-workbench
 description: "Manage the bidirectional workbench filesystem for an active feature."
 source: docs/cli-reference.md#domain-workbench
+cross_scope_writes: true
 vendor:
   claude:
     argument_hint: "<pull|push|status|resolve|sync|archive|restore|list|publish> [<plan>] [args]"

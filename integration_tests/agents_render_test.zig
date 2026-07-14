@@ -83,12 +83,42 @@ test "cross-scope write cue and normalized mappings render across mutation surfa
     defer gpa.free(stdout);
 
     const agent_paths = [_][]const u8{
+        "agents/claude/coder.md",
+        "agents/codex/coder.toml",
+        "agents/copilot/coder.agent.md",
+        "agents/claude/ext-sync.md",
+        "agents/codex/ext-sync.toml",
+        "agents/copilot/ext-sync.agent.md",
+        "agents/claude/feedback-triager.md",
+        "agents/codex/feedback-triager.toml",
+        "agents/copilot/feedback-triager.agent.md",
+        "agents/claude/importer.md",
+        "agents/codex/importer.toml",
+        "agents/copilot/importer.agent.md",
+        "agents/claude/ingestor.md",
+        "agents/codex/ingestor.toml",
+        "agents/copilot/ingestor.agent.md",
+        "agents/claude/introspector.md",
+        "agents/codex/introspector.toml",
+        "agents/copilot/introspector.agent.md",
+        "agents/claude/janitor.md",
+        "agents/codex/janitor.toml",
+        "agents/copilot/janitor.agent.md",
         "agents/claude/orchestrator.md",
         "agents/codex/orchestrator.toml",
         "agents/copilot/orchestrator.agent.md",
+        "agents/claude/planner.md",
+        "agents/codex/planner.toml",
+        "agents/copilot/planner.agent.md",
         "agents/claude/spec-reviewer.md",
         "agents/codex/spec-reviewer.toml",
         "agents/copilot/spec-reviewer.agent.md",
+        "agents/claude/sync-reconciler.md",
+        "agents/codex/sync-reconciler.toml",
+        "agents/copilot/sync-reconciler.agent.md",
+        "agents/claude/synthesizer.md",
+        "agents/codex/synthesizer.toml",
+        "agents/copilot/synthesizer.agent.md",
     };
     for (agent_paths) |path| {
         const rendered = try readPath(gpa, root, path);
@@ -98,6 +128,7 @@ test "cross-scope write cue and normalized mappings render across mutation surfa
 
     const mutation_skills = [_][]const u8{
         "pl-doctor",
+        "pl-coder",
         "pl-ext-create",
         "pl-ext-propagate",
         "pl-feedback-triage",
@@ -109,6 +140,7 @@ test "cross-scope write cue and normalized mappings render across mutation surfa
         "pl-promote",
         "pl-question",
         "pl-report-issue",
+        "pl-reviewer",
         "pl-scenario",
         "pl-spec-draft",
         "pl-spec-ingest",
@@ -116,6 +148,9 @@ test "cross-scope write cue and normalized mappings render across mutation surfa
         "pl-sync",
         "pl-synthesize",
         "pl-task",
+        "pl-workbench",
+        "pl-workbench-archive",
+        "pl-workbench-sync",
     };
     const vendor_dirs = [_][]const u8{
         "commands/claude",
@@ -129,13 +164,16 @@ test "cross-scope write cue and normalized mappings render across mutation surfa
             const rendered = try readPath(gpa, root, path);
             defer gpa.free(rendered);
             try assertCrossScopeContract(rendered);
-            try std.testing.expect(std.mem.indexOf(u8, rendered, "[cross-scope write: project:planar]") != null);
-            try std.testing.expect(std.mem.indexOf(u8, rendered, "[cross-scope write: association:org:acme]") != null);
-            try std.testing.expect(std.mem.indexOf(u8, rendered, "[cross-scope write: global]") != null);
         }
     }
 
     const read_only_paths = [_][]const u8{
+        "agents/claude/reviewer.md",
+        "agents/codex/reviewer.toml",
+        "agents/copilot/reviewer.agent.md",
+        "agents/claude/documenter.md",
+        "agents/codex/documenter.toml",
+        "agents/copilot/documenter.agent.md",
         "commands/claude/pl-status.md",
         "skills/codex/pl-status.md",
         "skills/copilot/pl-status.md",
@@ -149,12 +187,22 @@ test "cross-scope write cue and normalized mappings render across mutation surfa
 
 fn assertCrossScopeContract(rendered: []const u8) !void {
     try std.testing.expect(std.mem.indexOf(u8, rendered, "<normalized-target-label>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "--scope repo:planar") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "--scope assoc:org:acme") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "--scope assoc:project:planar") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "--scope global") != null);
+    try assertCueMapping(rendered, "- Repo/project row", "[cross-scope write: project:planar]", "--scope repo:planar");
+    try assertCueMapping(rendered, "- Ordinary association", "[cross-scope write: association:org:acme]", "--scope assoc:org:acme");
+    try assertCueMapping(rendered, "- Legacy project association", "[cross-scope write: project:planar]", "--scope assoc:project:planar");
+    try assertCueMapping(rendered, "- Global target", "[cross-scope write: global]", "--scope global");
     try std.testing.expect(std.mem.indexOf(u8, rendered, "Never emit `association:project:planar`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "[cross-scope write: association:project:planar]") == null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "Same-scope writes MUST NOT emit any cross-scope cue.") != null);
+}
+
+fn assertCueMapping(rendered: []const u8, bullet_start: []const u8, cue: []const u8, cli_scope: []const u8) !void {
+    const start = std.mem.indexOf(u8, rendered, bullet_start) orelse return error.TestExpectedEqual;
+    const tail = rendered[start..];
+    const end = std.mem.indexOfPos(u8, tail, bullet_start.len, "\n-") orelse tail.len;
+    const bullet = tail[0..end];
+    try std.testing.expect(std.mem.indexOf(u8, bullet, cue) != null);
+    try std.testing.expect(std.mem.indexOf(u8, bullet, cli_scope) != null);
 }
 
 // Load-bearing security property: orchestrator (capability=coordinate) must NOT

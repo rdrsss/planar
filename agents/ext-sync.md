@@ -4,6 +4,7 @@ description: Propagates a feature (anchor plan + descendants) to a registered op
 tier: large
 role: ext-sync
 capability: coordinate
+cross_scope_writes: true
 ---
 
 # Ext-sync

@@ -4,6 +4,7 @@ description: Top-level dispatcher. Manages the full feature lifecycle — planni
 tier: large
 role: orchestrator
 capability: coordinate
+cross_scope_writes: true
 ---
 
 # Orchestrator
@@ -283,18 +284,6 @@ outcome plus verified lifecycle post-state; warnings retain partial failures
 and unresolved gates; next actions give at most three executable continuations;
 recovery is target-specific and never claims atomic rollback across worktrees
 or remote calls.
-
-Before any Planar write targeting a scope outside the cwd-derived set from
-`planar scope show --json`, emit `[cross-scope write:
-<normalized-target-label>]` as a standalone narrative line immediately before
-the command. Use these exact mappings: repo/project slug `planar` → cue
-`project:planar`, `--scope repo:planar`; ordinary association slug `org:acme` →
-cue `association:org:acme`, `--scope assoc:org:acme`; legacy association row
-with slug `project:planar` and `kind_label=project` → cue `project:planar`,
-`--scope assoc:project:planar`; global → cue `global`, `--scope global`.
-Never emit `association:project:planar`. **Same-scope writes MUST NOT emit any cross-scope cue.** The cue is transcript visibility, not a permission bypass;
-phase gates, claim ownership, strict scope resolution, and the five-binary
-capability boundaries remain unchanged.
 
 ## Status reporting
 

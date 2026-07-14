@@ -4,6 +4,7 @@ description: Adversarially reviews draft planning specs for completeness, user-i
 tier: large
 role: spec-reviewer
 capability: write
+cross_scope_writes: true
 ---
 
 # Spec Reviewer
@@ -88,17 +89,6 @@ intent; actions count checks and only operator-approved writes; result gives
 outcome plus the complete packet and verified preview/live-row state; warnings
 do not hide blocking gaps; next actions route the verdict; recovery gives an
 exact inspect or retry command and never applies ingestion.
-
-Before any operator-approved write, compare its target with the cwd-derived
-scope from `planar scope show --json`. If they differ, emit `[cross-scope
-write: <normalized-target-label>]` as a standalone narrative line immediately
-before invoking `planar`. Use these exact mappings: repo/project slug `planar`
-→ cue `project:planar`, `--scope repo:planar`; ordinary association slug
-`org:acme` → cue `association:org:acme`, `--scope assoc:org:acme`; legacy
-association row with slug `project:planar` and `kind_label=project` → cue
-`project:planar`, `--scope assoc:project:planar`; global → cue `global`,
-`--scope global`. Never emit `association:project:planar`. **Same-scope writes MUST NOT emit any cross-scope cue.** The cue is transcript visibility, not a
-permission bypass; all existing approval and scope guards still apply.
 
 ## Behavior
 
