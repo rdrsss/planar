@@ -201,7 +201,7 @@ Initializes the Planar database and registers the current directory as a project
 planar init [--name <text>] [--skip-project] [--allow-no-repo] [--force]
 ```
 
-**Description:** Idempotently ensure the config file exists (via `config init`), apply the embedded migration corpus (compiled into the binary at build time from `migrations/` via `tools/gen_migrations.zig`) against the configured database (creating it if absent), then register the current working directory as a project if it is not already registered. Emits a summary of schema version and project id. Order: ensure config → apply migrations → create project row.
+**Description:** Idempotently ensure the config file exists (via `config init`), apply the embedded migration corpus (compiled into the binary at build time from `migrations/` via `tools/gen_migrations.zig`) against the configured database (creating it if absent), then register the current working directory as a project if it is not already registered. Human output names the `assoc create` and `assoc add` commands that establish the project's planning scope; `--json` retains the stable initialization result shape without prose guidance. Order: ensure config → apply migrations → create project row.
 
 **Workspace-shape guardrail:** when cwd has no `.git` of its own but contains one or more immediate child directories that do, `planar init` refuses with a hint pointing at `planar workspace init`. A bare init in a polyrepo workspace directory would otherwise register a semantically-wrong project row for the workspace itself. Pass `--allow-no-repo` (alias `--force`) to override and register the non-repo cwd as a standalone project anyway. See [Domain: `workspace`](#domain-workspace) and [concepts.md § Workspace](concepts.md#workspace).
 
@@ -220,6 +220,8 @@ planar initialized
   db:      ~/.planar/planar.db
   schema:  <integer version from schema_migrations>
   project: <slug> (id: <id>)
+  next:    `planar assoc create project:<slug> --kind project`
+           `planar assoc add project:<slug> <root-path>`
 ```
 
 **Output (`--json`):**
@@ -566,7 +568,7 @@ Plans are the top-level structured intent for a body of work. They may be hierar
 planar plan create <title> [--scope <scope>] [--parent <plan-id>] [--summary <text>]
 ```
 
-**Description:** Create a new plan with the given title under the cwd-derived write scope, or the explicitly specified scope.
+**Description:** Create a new plan with the given title under the cwd-derived write scope, or the explicitly specified scope. When cwd resolves to a registered project with no association, implicit creation is refused instead of silently falling back to global scope. Create and add an association as directed by `planar init`, or pass `--scope global` when global ownership is intentional.
 
 **Arguments:**
 
@@ -599,6 +601,7 @@ plan 7: "Implement billing module"  [draft]  slug:implement-billing-module  (sco
 **Exit codes:**
 - `1` — `--parent` plan id not found.
 - `1` — scope not resolvable.
+- `5` — cwd resolves to a registered project with no association and `--scope` was omitted.
 
 ---
 

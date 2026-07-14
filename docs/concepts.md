@@ -341,11 +341,13 @@ The `slug` on an association is the stable identifier used in scope references, 
 
 A project is a registered local working directory — what you'd call a "repo." It is identified by its `root_path` on disk and has a `slug` that is used in scope references (`--scope repo:<slug>`).
 
-`planar init` registers the current directory as a project (or upgrades an existing registration) and applies any pending schema migrations. You only run it once per repo.
+`planar init` registers the current directory as a project (or upgrades an existing registration) and applies any pending schema migrations. You only run it once per repo. Registration does not automatically create an association; human output gives the exact `planar assoc create` and `planar assoc add` commands for that next step.
 
 Projects are read-only after `init` — the project record is not meant to be updated or deleted. Associations are the mechanism for grouping projects.
 
 Use `--scope repo:<slug>` when a plan, task, question, scenario, decision, or artifact belongs to the repository itself. Use `--scope assoc:<workspace>` for cross-repo coordination work that intentionally sits above any one repository. A root repo and a nested repo can both be registered projects; cwd matching picks the longest root path so nested work does not collapse into the containing repo.
+
+`planar plan create` refuses an implicit write from a registered project that has no association, because treating the missing association as global would hide an ownership mistake. Add the project to an association first, or pass `--scope global` explicitly when the plan is intentionally global.
 
 **SQLite table:** `projects`. **Primary verbs:** `planar init`, `planar project list`, `planar project show`.
 
