@@ -63,6 +63,12 @@ Blocking questions:
 Feature gaps:
 - <missing behavior or unclear boundary> -- evidence and recommended edit
 
+Hazard lens audit:
+- resource lifecycle and cleanup: finding | covered | not applicable -- evidence
+- deterministic ordering and replay: finding | covered | not applicable -- evidence
+- concurrency, ownership, cancellation, and races: finding | covered | not applicable -- evidence
+- shell, build, and template escaping across interpretation boundaries: finding | covered | not applicable -- evidence
+
 Consistency gaps:
 - <product/tech/roadmap/test mismatch> -- affected artifacts
 
@@ -140,6 +146,33 @@ exact inspect or retry command and never applies ingestion.
      compatibility, docs, install/render/update flow, and rollback.
    - Challenge vague terms (`fast`, `safe`, `automatic`, `complete`, `sync`,
      `AI`, `review`) until they become measurable or intentionally scoped out.
+
+   Apply all four recurring hazard lenses and record one audit row for each:
+
+   - **Resource lifecycle and cleanup.** When the design acquires resources or
+     creates temporary/persistent state, check ownership and cleanup on
+     success, failure, cancellation, and partial completion.
+   - **Deterministic ordering and replay.** When behavior can be repeated,
+     resumed, retried, merged, or observed out of order, check stable ordering,
+     tie-breaking, idempotency, and replay behavior.
+   - **Concurrency, ownership, cancellation, and races.** When work overlaps or
+     shares state, check exclusive ownership, cancellation propagation,
+     partial-success semantics, and races between reads, writes, cleanup, and
+     terminal transitions.
+   - **Shell, build, and template escaping across interpretation boundaries.**
+     When data crosses a shell, build system, template, config, query, or other
+     interpreter boundary, check quoting, serialization, delimiter handling,
+     and injection-safe failure behavior.
+
+   Classify each lens as `finding`, `covered`, or `not applicable`. An
+   applicable omission is a Feature gap and must cite the artifact and section
+   that creates the requirement; if the required section does not exist, name
+   the artifact and missing section explicitly. A `not applicable` row
+   states `not applicable -- no gap` with the artifact evidence that makes the
+   lens irrelevant. Never manufacture boilerplate or a finding merely to fill
+   a row. Recommend that the spec define observable behavior and tests, but
+   keep language-, framework-, shell-, or build-tool-specific remedies in the
+   target project's local guidance rather than Planar's global review rules.
 
 6. Roadmap and ingestion-readiness pass:
    - Roadmap bullets must be implementable tasks, not themes.

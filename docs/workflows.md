@@ -3005,3 +3005,81 @@ state and runs `planar-doc lint`, `build`, `verify`, and a final clean diff.
 Unapproved rows remain visible. A clean initial diff is a no-op and does not
 rebuild the manifest; a partial apply preserves verified rows and reports the
 exact failed-row recovery command.
+
+---
+
+## Recipe 34 — Close a capacity-aware orchestration cycle
+
+### Contain a provider-capacity failure
+
+Start parallel work in an operator-confirmed bounded wave. If a lane reports a
+systemic category, classify the whole supplied wave without mutating it:
+
+```bash
+planar-execute run workflows/parallel-dispatch.lua \
+  --phase capacity_reconcile \
+  --args '{"plan_id":42,"lanes":[
+    {"task_id":101,"provider":"codex","outcome":"landed"},
+    {"task_id":102,"provider":"claude","outcome":"failed_clean","category":"usage_limit"},
+    {"task_id":103,"provider":"claude","outcome":"pending"}
+  ]}'
+```
+
+The result preserves landed and already-running lanes, opens a breaker only for
+the affected provider, and partitions the remainder into retryable,
+provider-blocked, abandoned, and unfinished sets. Run its `planar resume
+<task-id> --json` reads. For an abandoned lane, inspect
+`planar-watch claims --plan 42 --status all --json`, then preview
+`planar-agent reconcile --plan 42 --dry-run --json`. The workflow itself never
+spawns, aborts, reconciles, or resets the provider. Resume that provider only
+after an explicit dispatch decision with a newly confirmed maximum wave size.
+
+### Close documentation with repository identity evidence
+
+Run `/pl-doc-maintain`. Before classifying manifest rows, the workflow derives
+the migration tail/schema insert, exact five binaries from `build.zig`,
+canonical generated-surface boundary, and `AGENTS.md`/`CLAUDE.md` equivalence.
+An explicit contradiction becomes an operator-gated
+`guidance-identity-drift` row. Approve, reject, or defer it like any other row;
+unresolved identity drift prevents a *clean documentation closeout* but does
+not alter janitor-owned plan closeout. Neither the documenter nor doc-author
+repairs guidance, symlinks, generated projections, or the manifest
+automatically.
+
+### Review recurring design hazards before ingestion
+
+Invoke `/pl-spec-review <plan-id>` and inspect all four hazard-lens rows:
+
+1. resource lifecycle and cleanup;
+2. deterministic ordering and replay;
+3. concurrency, ownership, cancellation, and races;
+4. shell, build, and template escaping across interpreter boundaries.
+
+Each row must be `finding`, `covered`, or `not applicable` with artifact
+evidence. Resolve applicable findings in the draft and rerun the read-only
+review before `/pl-spec-ingest`; use `--write` only for the separately
+operator-approved edits supported by the skill.
+
+### Run a shipped deterministic workflow
+
+Use `planar-execute run <file> --phase <name> [--args <json>]`. The shipped
+workflows are source-controlled seams, not model-spawning harnesses:
+
+| Workflow | Shipped phases / purpose |
+|---|---|
+| `bench_run_ritual.lua` | `setup`, `harvest` — clean-slate measurement ritual |
+| `dispatch.lua` | `prep`, `route`, `heartbeat` — deterministic dispatch preparation and claim routing |
+| `example.lua` | `setup` — minimal host-surface example |
+| `finalize_closeout.lua` | `closeout` — evaluate and apply the non-force closeout gate |
+| `handoff.lua` | `handoff` — traced snapshot/create/validate handoff sequence |
+| `health.lua` | `health` — structured health read |
+| `introspect.lua` | `introspect` — redacted usage-signal workflow |
+| `parallel-dispatch.lua` | lane/wave, fan-in, recovery, capacity, and teardown computation |
+| `propagate_tree.lua` | `propagate` — resumable external propagation walk |
+| `resume.lua` | `resume` — structured task resume packet read |
+| `status.lua` | `status` — composed scope/plan/task/question status read |
+
+Read each file's `@meta` block for its exact phase names and argument contract.
+The engine has no SQLite handle or model-spawn function; it reaches state only
+through its allowlisted host calls and hands control back for judgment or
+agent dispatch.

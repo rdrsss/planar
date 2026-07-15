@@ -568,6 +568,46 @@ test "skills render preserves quota-aware provider breaker policy for every vend
     }
 }
 
+test "skills render preserves guidance identity closeout for orchestrator and documenter" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try fixtureRoot(gpa, &tmp, "skills-render-guidance-closeout");
+    defer gpa.free(root);
+
+    const src_abs = try repoSkillsSrcFromBin(gpa, suite.bin);
+    defer gpa.free(src_abs);
+    const stdout = mustRunInDir(&suite, root, &.{
+        "skills",          "render",        "--src", src_abs, "--out", root,
+        "pl-orchestrator", "pl-documenter",
+    });
+    defer gpa.free(stdout);
+
+    for ([_][]const u8{
+        "commands/claude/pl-orchestrator.md",
+        "skills/codex/pl-orchestrator.md",
+        "skills/copilot/pl-orchestrator.md",
+        "commands/claude/pl-documenter.md",
+        "skills/codex/pl-documenter.md",
+        "skills/copilot/pl-documenter.md",
+    }) |projection| {
+        const rendered = try readPath(gpa, root, projection);
+        defer gpa.free(rendered);
+        for ([_][]const u8{
+            "authoritative_identity",
+            "migration_tail",
+            "schema_version",
+            "generated_surface_boundary",
+            "guidance_equivalence",
+            "guidance-identity-drift",
+            "clean closeout",
+            "no automatic prose",
+        }) |needle| try std.testing.expect(std.mem.indexOf(u8, rendered, needle) != null);
+    }
+}
+
 test "skills render pl-spec-review has one authoritative cross-scope rule for every vendor" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);

@@ -112,7 +112,27 @@ The orchestrator selects phases based on the anchor plan's current `status`:
 
    **Relationship to Archive:** Finalization does merge + DB closeout; Archive does workbench FS archival. They are distinct steps; use `--finalize --archive` to chain them in one invocation.
 
-6. **Documenter (Phase 6, default-on)** — at the end of every cycle (unless `--no-docs` was supplied), runs `planar-doc diff --json`, packages the envelope `{ manifest_path, diff_records, covered_docs, cycle_summary }`, dispatches `pl-documenter`, surfaces the returned worklist to the user, and applies each operator-approved row through `planar-doc cover` / `planar-doc nodoc` / a staged doc-body commit, then closes with `planar-doc build`. The documenter only proposes — no `planar-doc` verb fires until the operator approves the row. See [`agents/orchestrator.md` § Phase 6 (Documenter)](../../agents/orchestrator.md#phase-6--documenter-pl-documenter-default-on).
+6. **Documenter (Phase 6, default-on)** — at the end of every cycle (unless `--no-docs` was supplied), runs `planar-doc diff --json`, packages the envelope `{ manifest_path, diff_records, covered_docs, cycle_summary, authoritative_identity, guidance_files }`, dispatches `pl-documenter`, surfaces the returned worklist to the user, and applies each operator-approved row through `planar-doc cover` / `planar-doc nodoc` / a staged doc-body commit, then closes with `planar-doc build`. The documenter only proposes — no `planar-doc` verb fires until the operator approves the row. See [`agents/orchestrator.md` § Phase 6 (Documenter)](../../agents/orchestrator.md#phase-6--documenter-pl-documenter-default-on).
+
+   Derive `authoritative_identity` from repository/build evidence, never from
+   guidance prose: `migration_tail` is the lexically greatest five-digit up
+   migration with a matching down file; `schema_version` is its prefix checked
+   against the tail's `schema_migrations` insert; `binary_set` is exactly
+   `planar`, `planar-agent`, `planar-watch`, `planar-doc`, and
+   `planar-execute` as installed by `build.zig`; `generated_surface_boundary`
+   records `skills/src/` and `agents/` as canonical sources with vendor
+   projections generated out of tree, evidenced by `.gitignore` and
+   `planar skills render`; `guidance_equivalence` records whether `AGENTS.md`
+   and `CLAUDE.md` resolve through a symlink or compare byte-for-byte. Inspect
+   those paths, `README.md`, and other repo guidance that explicitly asserts a
+   fact. Missing assertions are not drift.
+
+   Every contradiction becomes an operator-gated normal row with
+   `signal: guidance-identity-drift`, expected/actual/evidence, and `action:
+   defer` for guidance outside `docs/`. Any unresolved row blocks reporting a
+   **clean closeout** for Phase 6; zero contradictions invents no rows. There is
+   no automatic prose, symlink replacement, manifest write, or plan-closeout
+   mutation, and the janitor remains the sole owner of `planar plan closeout`.
 
 ## Durable boundary checklist
 

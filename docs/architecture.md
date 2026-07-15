@@ -25,7 +25,7 @@ flowchart TD
         B5["<b>planar-execute</b><br/>spawn-free Lua engine<br/>no DB handle · shells planar"]
     end
 
-    DB[("SQLite database<br/>~/.planar/planar.db<br/>28 migrations · embedded at build time")]
+    DB[("SQLite database<br/>~/.planar/planar.db<br/>29 migrations · embedded at build time")]
     MF[(".planar-manifest<br/>repo-state merkle index")]
 
     Surface -->|invoke| Binaries
@@ -34,6 +34,8 @@ flowchart TD
     B3 -->|read-only| DB
     B4 -->|read / write| MF
     B5 -->|shells| B1
+    B5 -->|shells| B2
+    B5 -->|shells| B3
 ```
 
 Two layers are touched by users and agents:
@@ -168,6 +170,27 @@ not audience. Their optional `--category` flag records an operator-supplied
 closed failure classification only while the existing recovery transaction
 clears the claim; neither verb categorizes claims autonomously.
 
+Default direct task claims use the same atomic ownership model as pulls.
+`planar-agent claim --entity task:<id>` acquires the claim, moves an eligible
+task from `todo` to `doing`, and opens a `claim_check` action in one
+`BEGIN IMMEDIATE` transaction. The action is durable evidence that this claim
+owned the transition. `abort` and `reconcile` may therefore restore that task
+to `todo` only when no live replacement claim exists, and close the marker in
+the same recovery transaction. `claim --no-transition` is the explicit
+low-level primitive: it creates no marker and recovery does not infer a task
+status change from it.
+
+Capacity containment is deliberately split between durable classification
+and deterministic orchestration. Migration 0029 stores the closed category on
+terminal claims; `planar-watch` and `planar report` expose it. The
+`capacity_reconcile` phase of `workflows/parallel-dispatch.lua` consumes
+caller-supplied lane outcomes and opens an in-memory breaker only for a
+provider with `usage_limit`, `context_limit`, or `output_limit`. It preserves
+landed and already-running lanes, blocks only later lanes for that provider,
+and emits inspection/resume commands. The phase uses only `flow.*`: it never
+spawns, mutates a claim, reconciles, aborts, or persists breaker state. Provider
+reset and any recovery mutation remain explicit operator decisions.
+
 The `planar-agent run start/end` verbs and the `planar-agent context add/list/resolve/capsule` verbs (plan 585) are agent-table writers — they write `workflow_runs` and `context_records` respectively — so they live on `planar-agent`, not `planar`. (`context capsule` is the run-keyed capsule writer used by stage-close compaction; it writes a `capsule` record with `claim_id = NULL`, distinct from the claim-keyed worker writes of `context add`.) The observability view (`planar-watch run list/show`) lives on `planar-watch`, consistent with the zero-write boundary. These verbs were originally designed to serve an embedded-Lua harness; that re-entrant, model-spawning incarnation was extracted to a separate external project. They remain in `planar-agent` / `planar-watch` as the durable coordination surface any external harness — or the revived deterministic `planar-execute` engine — can consume.
 
 The shared engine module lives at `src/engine/runtime/agentactivity/`; per-binary handlers live under `src/cmd/<binary>/handlers/`. `planar-agent` carries the full coordination surface; `planar-watch` carries the read-only viewer surface (`feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `run`, `version`, `completion`, `schema`) with a Tier-2 event-driven `--follow` loop.
@@ -296,6 +319,16 @@ flowchart LR
 | `src/cmd/planar/` | Operator binary entry — `main.zig` plus runtime scaffolding (`runtime.zig`, `scope.zig`, `output.zig`, `editflow.zig`, `editor.zig`, `exit.zig`) and per-verb handlers under `handlers/`. Also contains the interactive cockpit under `cockpit/` (`gate.zig`, `app.zig`, the `view_model.zig` facade plus `view_model/` domains, `views/`, `widgets/`, `edit/`). |
 | `src/cmd/planar-agent/` | Agent-callable coordination binary — `main.zig`, `exit.zig`, and its comptime-registered claim, action, run, context, recovery, and terminal-operation handlers. |
 | `src/cmd/planar-watch/` | Read-only viewer binary — `main.zig`, `exit.zig`, and per-verb handlers under `handlers/` (including the `--follow` wake loop). Unchanged by the cockpit addition; `planar-watch` remains the scriptable NDJSON viewer. |
+| `src/cmd/planar-doc/` | Filesystem-only documentation binary — manifest diff, coverage, lint, build, and verification handlers. It uses `src/runtime/doc_runtime.zig` and does not link the database graph. |
+| `src/cmd/planar-execute/` | Spawn-free deterministic workflow engine — Lua workflow loading, schema/allowlist enforcement, state, and `run` handling. It links the first-party confinement layers under `src/lua/`, `src/runtime/`, and `src/treesitter/`, but no SQLite module. |
+
+The first-party runtime boundary is source-owned: `src/lua/lua.zig` provides
+the Lua binding used by `planar-execute`; `src/runtime/doc_runtime.zig`
+provides the DB-free runtime used by `planar-doc`; and
+`src/treesitter/treesitter.zig` is Planar's Tree-sitter binding. These files
+are ordinary reviewed source, not generated projections. Build-generated Zig
+modules are limited to the migration and default-template outputs emitted by
+`tools/gen_migrations.zig` and `tools/gen_templates.zig`.
 
 ### Domain engine (`src/engine/`)
 
@@ -639,6 +672,15 @@ Unified skill sources live only in `skills/src/`; vendor-neutral agent role
 sources live in `agents/`. `planar skills render` creates the vendor projections
 at install time, so `commands/claude/`, `skills/codex/`, and `skills/copilot/`
 are generated output trees rather than authored source directories.
+
+This is a source-of-truth boundary, not merely a directory convention. Review
+and edit `skills/src/` and `agents/`; validate projections in an out-of-tree
+render destination. Never repair guidance drift by editing a generated vendor
+projection. At documentation closeout the orchestrator derives the migration
+tail, schema version, exact five-binary set, generated-surface boundary, and
+`AGENTS.md`/`CLAUDE.md` equivalence from repository/build evidence. Explicit
+contradictions become operator-gated `guidance-identity-drift` rows; omissions
+do not invent work and no guidance or manifest file is changed automatically.
 
 | Vendor | Staged projection | Installed to |
 |--------|-------------------|-------------|

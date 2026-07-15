@@ -5807,6 +5807,17 @@ planar-agent context resolve --status consumed|superseded (--id <record-id> | --
 
 All write verbs open `BEGIN IMMEDIATE` so the writer lock blocks any concurrent claim attempt on the same row. The status-transition guard (`policy.status.check`) is consulted before each `UPDATE tasks SET status` — refusal rolls the transaction back and the claim keeps its previous state.
 
+Failure categories are terminal observations, not retry policy. Systemic
+capacity handling is implemented by the caller through
+`planar-execute run workflows/parallel-dispatch.lua --phase
+capacity_reconcile --args <json>`, not by a `planar` provider-capacity verb.
+That deterministic phase consumes supplied lane outcomes and emits a
+provider-scoped breaker/recovery packet; it performs no claim write, provider
+call, spawn, abort, reconcile, or persisted breaker reset. Use
+`planar-watch claims --plan <id> --status all --json` to inspect claims,
+`planar-agent reconcile --plan <id> --dry-run --json` to preview stale recovery,
+and `planar report --json` for aggregate `{provider,category,count}` rows.
+
 ### JSON shapes
 
 Stable across versions; new keys may be added, existing keys do not change name or type without a migration. Full reference: `docs/architecture.md` § "JSON shapes" and the tech-spec at `~/.planar/workbench/project_planar/p85-agent-activity/58-agent-activity-tracking-tech-spec.md`.

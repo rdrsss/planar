@@ -542,6 +542,32 @@ Expired claims (`lease_expires_at < now()`) are NOT active and do not trigger th
 
 **SQLite table:** `tasks`. **Primary verbs:** `planar task add`, `planar task list`, `planar task show`, `planar task doing`, `planar task done`, `planar task block`, `planar task cancel`, `planar task reopen`.
 
+### Claim-owned task state and recovery
+
+Agent dispatch has one ownership ritual: acquire a claim, heartbeat it at
+TTL/2, then invoke exactly one terminal verb. Both `planar-agent pull <plan>`
+and the default `planar-agent claim --entity task:<id>` atomically acquire the
+claim and move an eligible task from `todo` to `doing`. A direct claim also
+opens a `claim_check` action in that transaction. The marker proves which
+claim owned the status transition; it is not a synthetic completion event.
+`--no-transition` retains the primitive claim-only behavior and creates no
+marker.
+
+Normal closure is atomic: `complete`, `fail`, `release`, or `block` updates the
+claim, its action, and the task together. `fail` restores the task to `todo`
+and records one closed failure category: `usage_limit`, `context_limit`,
+`output_limit`, `tool_failure`, `validation`, or `unknown`. The default is
+`unknown`. Successful, released, and blocked claims do not acquire a category.
+
+Recovery preserves that ownership proof. `abort` can restore a default direct
+claim's `doing` task to `todo` and close its `claim_check` marker only when no
+live replacement claim owns the task. `reconcile` performs the equivalent
+restoration for expired pull or direct claims with action evidence, and leaves
+primitive claims alone. Both operations make the claim transition, task reset,
+marker closure, and optional failure classification in their existing
+transaction. Always preview a sweep with `planar-agent reconcile --dry-run
+--json`; recovery never mutates a live, unexpired claim.
+
 ---
 
 ## Dispatch shapes
@@ -620,6 +646,25 @@ Phase 3 runs the strategy gate first, then the dispatch-shape gate nested under 
 2. **Dispatch-shape gate.** Constrained by the strategy: `parallel-fanout` forces the `fan-out` shape; `barrel-deferred` and `barrel-bypass` force their matching shapes; `classic` keeps the full strict / grouped / single menu.
 
 Neither gate has an auto-default — the recommendation never silently turns into an action. `classic` is the continuity guarantee: an operator who always picks (or accepts the recommendation of) `classic` sees no behavioral change relative to today.
+
+### Provider-scoped capacity containment
+
+Parallel waves are bounded before dispatch. When a lane terminates with
+`usage_limit`, `context_limit`, or `output_limit`, the orchestrator opens an
+in-memory circuit breaker only for that lane's provider. It preserves landed
+work, allows already-running lanes to finish normally, continues eligible
+lanes on unaffected providers, and starts no later lane on the affected
+provider until the operator explicitly resets dispatch and confirms a new
+maximum wave size. `tool_failure`, `validation`, and `unknown` remain
+non-systemic lane failures.
+
+`workflows/parallel-dispatch.lua --phase capacity_reconcile` computes this
+partition from supplied lane outcomes and returns `landed`, `running`,
+`unaffected`, `provider_blocked`, `retryable`, `abandoned`, and `unfinished`
+sets plus exact resume and recovery reads. It is not a daemon or provider API:
+the phase uses only `flow.*`, persists no breaker, performs no spawn, and never
+aborts or reconciles a claim. A dead lane remains an explicit operator recovery
+choice after claim inspection and a reconciliation dry-run.
 
 ### Persistence
 
