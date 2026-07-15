@@ -66,6 +66,7 @@ pub fn addCover(
     defer manifest_v2.deinitManifest(allocator, m);
 
     // Constraint checks.
+    if (findNodocIndex(m, doc_path) != null) return error.SourceAlreadyInNodoc;
     if (findNodocIndex(m, source_path) != null) return error.SourceAlreadyInNodoc;
     if (findCoveringDoc(m, source_path)) |existing_doc| {
         if (std.mem.eql(u8, existing_doc, doc_path)) return error.SourceAlreadyCovered;
@@ -162,6 +163,7 @@ pub fn addNodoc(
     var m = try loadManifest(allocator, repo_root);
     defer manifest_v2.deinitManifest(allocator, m);
 
+    if (findEntryIndex(m, source_path) != null) return error.SourceAlreadyCoveredByDifferentDoc;
     if (findCoveringDoc(m, source_path) != null) return error.SourceAlreadyCoveredByDifferentDoc;
     if (findNodocIndex(m, source_path) != null) return error.SourceAlreadyInNodoc;
 
