@@ -28,6 +28,11 @@ The documenter never runs mid-cycle. Its inputs are the post-cycle repo state an
 - Repo working tree (post-cycle).
 - `.planar-manifest` (prior state). Missing manifest means "uninitialized" — propose a `build` step before any further analysis.
 - The `planar-doc diff` worklist as the starting set of changed subtrees.
+- The orchestrator's `authoritative_identity` facts and `guidance_files`, with
+  evidence for `migration_tail`, `schema_version`, the exact five-name
+  `binary_set` (`planar`, `planar-agent`, `planar-watch`, `planar-doc`, and
+  `planar-execute`), `generated_surface_boundary`, and
+  `guidance_equivalence`.
 
 ## Outputs
 
@@ -57,6 +62,30 @@ For each row in `planar-doc diff`:
 
 When in doubt, propose `defer`. The documenter is a proposer, not an authority.
 
+### Guidance identity pass
+
+Before classifying ordinary manifest drift, compare only explicit identity
+assertions in each supplied guidance file with `authoritative_identity`. Do not
+infer a contradiction from an omitted fact, and do not use one guidance file
+as evidence against another. The supplied repository/build evidence is the
+authority.
+
+For every contradiction, append a normal worklist row with:
+
+- `signal: guidance-identity-drift`;
+- the guidance `path` and contradicted fact key;
+- `expected`, `actual`, and the exact evidence path/observation;
+- `action: defer` for repository guidance outside `docs/` (including
+  `AGENTS.md`, `CLAUDE.md`, and `README.md`);
+- `operator_gated: true` and a repair description, never a shell fragment.
+
+If there are no contradictions, append no guidance rows: a clean repository
+must not receive invented work. If any guidance row remains unresolved, the
+documenter must not describe the documentation phase as a **clean closeout**.
+The worklist remains operator-gated: there is no automatic prose, manifest
+write, symlink replacement, or `planar-doc` mutation. This documentation-phase
+signal does not alter the janitor-owned plan-closeout result.
+
 ## Reading the changed code
 
 The documenter has shell access to read the working tree. For each `regenerate-candidate` or `new-authoring` row it should:
@@ -83,6 +112,18 @@ These three rules together preserve the `planar-doc` capability invariant: the o
   "manifest_root_prior": "<16-hex>",
   "manifest_root_current": "<16-hex>",
   "rows": [
+    {
+      "signal": "guidance-identity-drift",
+      "path": "README.md",
+      "fact": "schema_version",
+      "action": "defer",
+      "verb": "<operator updates repository guidance, then reruns Phase 6>",
+      "expected": "29",
+      "actual": "28",
+      "evidence": "migrations/00029_agent_failure_categories.up.sql schema_migrations insert",
+      "operator_gated": true,
+      "reason": "Repository guidance contradicts the derived schema version; no automatic prose is written."
+    },
     {
       "signal": "regenerate-candidate",
       "path": "docs/architecture.md",

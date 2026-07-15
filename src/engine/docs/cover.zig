@@ -66,6 +66,7 @@ pub fn addCover(
     defer manifest_v2.deinitManifest(allocator, m);
 
     // Constraint checks.
+    if (findNodocIndex(m, doc_path) != null) return error.SourceAlreadyInNodoc;
     if (findNodocIndex(m, source_path) != null) return error.SourceAlreadyInNodoc;
     if (findCoveringDoc(m, source_path)) |existing_doc| {
         if (std.mem.eql(u8, existing_doc, doc_path)) return error.SourceAlreadyCovered;
@@ -162,6 +163,7 @@ pub fn addNodoc(
     var m = try loadManifest(allocator, repo_root);
     defer manifest_v2.deinitManifest(allocator, m);
 
+    if (findEntryIndex(m, source_path) != null) return error.SourceAlreadyCoveredByDifferentDoc;
     if (findCoveringDoc(m, source_path) != null) return error.SourceAlreadyCoveredByDifferentDoc;
     if (findNodocIndex(m, source_path) != null) return error.SourceAlreadyInNodoc;
 
@@ -481,4 +483,66 @@ test "addNodoc + removeNodoc round-trip" {
     try removeNodoc(testing.allocator, root, "src/foo/bar.zig");
     // After removal it's gone.
     try testing.expectError(error.PathNotInNodoc, removeNodoc(testing.allocator, root, "src/foo/bar.zig"));
+}
+
+test "addNodoc refuses a doc entry path without changing the manifest" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(std.testing.io, &buf);
+    const root = buf[0..root_len];
+
+    try tmp.dir.createDirPath(std.testing.io, "src/foo");
+    var src_f = try tmp.dir.createFile(std.testing.io, "src/foo/lib.zig", .{});
+    try src_f.writeStreamingAll(std.testing.io, "pub fn foo() void {}\n");
+    src_f.close(std.testing.io);
+    try tmp.dir.createDirPath(std.testing.io, "docs/features");
+    var doc_f = try tmp.dir.createFile(std.testing.io, "docs/features/foo.md", .{});
+    try doc_f.writeStreamingAll(std.testing.io, "# Foo\n");
+    doc_f.close(std.testing.io);
+
+    const built = try builder.build(testing.allocator, root);
+    manifest_v2.deinitManifest(testing.allocator, built.manifest);
+    try addCover(testing.allocator, root, "docs/features/foo.md", "src/foo/");
+
+    const before = try tmp.dir.readFileAlloc(std.testing.io, manifest_v2.file_name, testing.allocator, .limited(128 * 1024));
+    defer testing.allocator.free(before);
+    try testing.expectError(
+        error.SourceAlreadyCoveredByDifferentDoc,
+        addNodoc(testing.allocator, root, "docs/features/foo.md"),
+    );
+    const after = try tmp.dir.readFileAlloc(std.testing.io, manifest_v2.file_name, testing.allocator, .limited(128 * 1024));
+    defer testing.allocator.free(after);
+    try testing.expectEqualStrings(before, after);
+}
+
+test "addCover refuses a doc path already in nodoc without changing the manifest" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(std.testing.io, &buf);
+    const root = buf[0..root_len];
+
+    try tmp.dir.createDirPath(std.testing.io, "src/foo");
+    var src_f = try tmp.dir.createFile(std.testing.io, "src/foo/lib.zig", .{});
+    try src_f.writeStreamingAll(std.testing.io, "pub fn foo() void {}\n");
+    src_f.close(std.testing.io);
+    try tmp.dir.createDirPath(std.testing.io, "docs/features");
+    var doc_f = try tmp.dir.createFile(std.testing.io, "docs/features/foo.md", .{});
+    try doc_f.writeStreamingAll(std.testing.io, "# Foo\n");
+    doc_f.close(std.testing.io);
+
+    const built = try builder.build(testing.allocator, root);
+    manifest_v2.deinitManifest(testing.allocator, built.manifest);
+    try addNodoc(testing.allocator, root, "docs/features/foo.md");
+
+    const before = try tmp.dir.readFileAlloc(std.testing.io, manifest_v2.file_name, testing.allocator, .limited(128 * 1024));
+    defer testing.allocator.free(before);
+    try testing.expectError(
+        error.SourceAlreadyInNodoc,
+        addCover(testing.allocator, root, "docs/features/foo.md", "src/foo/"),
+    );
+    const after = try tmp.dir.readFileAlloc(std.testing.io, manifest_v2.file_name, testing.allocator, .limited(128 * 1024));
+    defer testing.allocator.free(after);
+    try testing.expectEqualStrings(before, after);
 }

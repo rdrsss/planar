@@ -70,27 +70,59 @@ Parse JSON rather than human output. `diff` is the authoritative row set. Use
 evidence; `--since` narrows those Git reads and does not replace the manifest
 diff.
 
-If the diff is empty and verification confirms `drift=false` with matching
-live and stored roots, return a clean no-op. Dispatch neither specialist and do
-not rebuild. If the two reads disagree, return an error with both observations
-and the exact retry commands.
+Independently derive `authoritative_identity` from repository/build evidence:
+
+- `migration_tail` is the lexically greatest five-digit up migration with a
+  matching down file; `schema_version` is its prefix cross-checked against the
+  tail up file's `schema_migrations` insert;
+- `binary_set` is exactly `planar`, `planar-agent`, `planar-watch`,
+  `planar-doc`, and `planar-execute` from `build.zig` installed artifacts;
+- `generated_surface_boundary` records `skills/src/` and `agents/` as
+  canonical, with vendor projections generated out of tree, evidenced by
+  `.gitignore` and `planar skills render`;
+- `guidance_equivalence` records whether `AGENTS.md` and `CLAUDE.md` resolve
+  through a symlink or compare byte-for-byte.
+
+Compare explicit assertions in repo-owned `AGENTS.md`, `CLAUDE.md`,
+`README.md`, and any other supplied guidance file. Missing assertions are not
+drift. If both manifest diff and identity contradictions are empty and verify
+confirms `drift=false` with matching roots, return a clean no-op. Dispatch
+neither specialist and do not rebuild. If the manifest reads disagree, return
+an error with both observations and the exact retry commands.
 
 ### 2. Dispatch the read-only proposer
 
-For a non-empty diff, pass a fresh `documenter` specialist this envelope:
+For a non-empty diff or any identity contradiction, pass a fresh `documenter`
+specialist this envelope:
 
 ```json
 {
   "manifest_path": ".planar-manifest",
   "diff_records": [],
   "covered_docs": {},
-  "cycle_summary": []
+  "cycle_summary": [],
+  "authoritative_identity": {
+    "migration_tail": {},
+    "schema_version": {},
+    "binary_set": {},
+    "generated_surface_boundary": {},
+    "guidance_equivalence": {}
+  },
+  "guidance_files": ["AGENTS.md", "CLAUDE.md", "README.md"]
 }
 ```
 
 Preserve `diff_records` exactly from `planar-doc diff --json`. Populate
 `covered_docs` from the existing manifest. Include only caller-supplied facts in
 `cycle_summary`; never fabricate task or plan identifiers.
+
+Each explicit contradiction becomes a normal row with `signal:
+guidance-identity-drift`, path/fact, expected, actual, exact evidence, `action:
+defer` for guidance outside `docs/`, and `operator_gated: true`. Zero
+contradictions invents no guidance rows. Any unresolved guidance row blocks a
+**clean closeout** for the documentation phase but never changes the
+janitor-owned plan closeout state. Identity drift causes no automatic prose,
+symlink replacement, manifest write, or mutation.
 
 The specialist may read the repository and classify rows as `extend-cover`,
 `create-doc`, `nodoc`, or `defer`. It must not edit any file, invoke any

@@ -60,7 +60,11 @@ const ShowEvent = struct {
     created_at: []const u8 = "",
 };
 
-const PlanId = struct { id: i64 };
+const PlanId = struct {
+    id: i64,
+    scope_kind: []const u8,
+    scope_id: ?i64 = null,
+};
 
 // -------------------------------------------------------------------------
 // Helper
@@ -69,12 +73,16 @@ const PlanId = struct { id: i64 };
 /// Seed a project + plan; return the plan id as a decimal string (arena-owned).
 fn seedPlan(suite: *harness.Suite, arena: std.mem.Allocator) []const u8 {
     const root = suite.registerProject("run-test");
-    const p = suite.mustRunInDir(root, &.{ "plan", "create", "--json", "Run test plan" });
+    const p = suite.mustRunInDir(root, &.{ "plan", "create", "--json", "--scope", "global", "Run test plan" });
     defer suite.allocator.free(p);
     const plan = std.json.parseFromSlice(PlanId, arena, p, .{
         .allocate = .alloc_always,
         .ignore_unknown_fields = true,
     }) catch @panic("parseFromSlice PlanId failed");
+    std.testing.expectEqualStrings("global", plan.value.scope_kind) catch
+        @panic("run lifecycle seed plan must be globally owned");
+    std.testing.expect(plan.value.scope_id == null) catch
+        @panic("globally owned run lifecycle seed plan must not have a scope id");
     return std.fmt.allocPrint(arena, "{d}", .{plan.value.id}) catch @panic("OOM");
 }
 

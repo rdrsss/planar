@@ -19,6 +19,7 @@ pub const verb: cli.Cmd = .{
     .flags = &.{
         .{ .long = "--claim", .kind = .string, .required = true, .desc = "Claim token returned by pull/claim" },
         .{ .long = "--reason", .kind = .string, .required = true, .desc = "Failure reason recorded on the claim and action" },
+        .{ .long = "--category", .kind = .choice, .choices = &.{ "usage_limit", "context_limit", "output_limit", "tool_failure", "validation", "unknown" }, .default = .{ .choice = "unknown" }, .desc = "Closed failure category (default: unknown)" },
         .{ .long = "--no-locality-probe", .kind = .bool, .default = .{ .bool = false }, .desc = "Skip the git locality probe and commit collection" },
         .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
     },
@@ -30,7 +31,8 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
     const ctx = runtime.current();
     const d = runtime.ensureDbConsumer() catch |e| exit.die(ctx, e, "{s}", .{@errorName(e)});
 
-    const result = atomic.failWork(d, ctx.allocator, args.claim, args.reason) catch |e|
+    const category = engine.runtime.agentactivity.types.FailureCategory.fromText(args.category) orelse unreachable;
+    const result = atomic.failWork(d, ctx.allocator, args.claim, args.reason, category) catch |e|
         exit.die(ctx, e, "fail: {s}", .{@errorName(e)});
     defer result.deinit(ctx.allocator);
 

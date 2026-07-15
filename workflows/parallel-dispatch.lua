@@ -1,7 +1,7 @@
 --[[ @meta
 name: parallel-dispatch
-description: Deterministic, spawn-free wave/lane computation for the model orchestrator's worktree paths. Computes the current parallel wave (from recommend-strategy eligibility), a single sequential cycle lane for worktree-deferred execution, the FULL ordered wave list (from recommend-strategy eligibility + the plan's `blocks` graph, for ordering/labeling only, with the terminal cross-lane integration pass marked), each lane's worktree path + branch name, the epic branch name, the wave-barrier gate, the wave-aware (contract-lanes-first) fan-in merge order, the boundary-conflict escalation payload, and the partial-wave reconcile plan — then HANDS BACK. The model creates the worktrees, spawns the coders, and runs the git merges/reconciles; this seam never spawns and never touches git worktree/branch/merge.
-phases: plan, cycle_plan, waves, barrier_check, fan_in, conflict_escalation, reconcile_plan, teardown
+description: Deterministic, spawn-free wave/lane computation for the model orchestrator's worktree paths. Computes the current parallel wave (from recommend-strategy eligibility), a single sequential cycle lane for worktree-deferred execution, the FULL ordered wave list (from recommend-strategy eligibility + the plan's `blocks` graph, for ordering/labeling only, with the terminal cross-lane integration pass marked), each lane's worktree path + branch name, the epic branch name, the wave-barrier gate, the wave-aware (contract-lanes-first) fan-in merge order, the boundary-conflict escalation payload, the partial-wave reconcile plan, and provider-scoped capacity containment — then HANDS BACK. The model creates the worktrees, spawns the coders, and runs the git merges/reconciles; this seam never spawns and never touches git worktree/branch/merge.
+phases: plan, cycle_plan, waves, barrier_check, fan_in, conflict_escalation, reconcile_plan, capacity_reconcile, teardown
 seam: planar plan recommend-strategy --json (via ctx.recommend_strategy), planar plan show --json (via ctx.plan_show), planar links list task:<id> --json (via cli.planar, for `blocks`-edge ordering only)
 --]]
 
@@ -105,6 +105,20 @@ seam: planar plan recommend-strategy --json (via ctx.recommend_strategy), planar
 --                   that do not. Pure computation; the model runs the actual
 --                   `planar-agent reconcile`. HANDS BACK.
 --
+--   capacity_reconcile
+--                 — (plan 858 M3, capacity-reconcile) classify a caller-supplied
+--                   partial wave after structured lane outcomes are known. A
+--                   systemic category (usage_limit | context_limit |
+--                   output_limit) opens an in-memory breaker for ONLY that
+--                   provider. Landed lanes stay landed; every other lane is
+--                   partitioned into retryable, abandoned, or provider_blocked,
+--                   while already-running and unaffected lanes remain named;
+--                   the exact unfinished union and an explicit recovery packet
+--                   are emitted. Pure computation:
+--                   no provider call, spawn, claim mutation, reconcile, or abort.
+--                   The caller owns explicit recovery and may rederive this
+--                   result from supplied outcomes on resume. HANDS BACK.
+--
 --   teardown      — (M4, cleanup-teardown) on plan completion, compute the FULL
 --                   teardown list: ALL lane worktrees to `git worktree remove`
 --                   and ALL lane branches to `git branch -D`. The EPIC branch is
@@ -195,6 +209,19 @@ seam: planar plan recommend-strategy --json (via ctx.recommend_strategy), planar
 --                    outcome (str: "landed" | "failed_clean" | "abandoned"),
 --                    branch (str, optional), worktree (str, optional) }) }
 --
+--   capacity_reconcile: { plan_id (int, required),
+--             lanes (non-empty array, required; each {
+--                    task_id (positive int), provider (non-empty str),
+--                    outcome (str: "landed" | "failed_clean" | "abandoned" |
+--                    "pending" | "running"), category (optional for
+--                    failed_clean/abandoned;
+--                    one of usage_limit | context_limit | output_limit |
+--                    tool_failure | validation | unknown; omitted
+--                    failure categories default to unknown) }) }
+--             Category is forbidden on landed/pending/running outcomes. Unknown fields,
+--             outcomes, categories, duplicate task ids, and malformed values
+--             fail closed.
+--
 --   teardown: { plan_id (int, required),
 --             lanes (array, required; each { task_id (int),
 --                    branch (str, optional), worktree (str, optional) }),
@@ -211,6 +238,25 @@ local function require_arg(name)
     flow.fail("parallel-dispatch.lua: missing required ctx.args field: " .. name)
   end
   return v
+end
+
+--- require_only_args(phase, allowed) — reject unknown top-level --args keys.
+-- Collect + sort first so malformed input fails with byte-stable diagnostics
+-- rather than depending on Lua table iteration order.
+local function require_only_args(phase, allowed)
+  local unknown = {}
+  for name, _ in pairs(ctx.args) do
+    if not allowed[name] then
+      unknown[#unknown + 1] = tostring(name)
+    end
+  end
+  table.sort(unknown)
+  if #unknown > 0 then
+    flow.fail("parallel-dispatch.lua/" .. phase
+      .. ": unknown top-level ctx.args field '" .. unknown[1] .. "'")
+    return false
+  end
+  return true
 end
 
 --- tostr(v) — coerce to string for path/branch construction.
@@ -1093,6 +1139,277 @@ function reconcile_plan()
     reconcile = reconcile,
     available = available,
     landed = landed,
+  })
+end
+
+-- ---------------------------------------------------------------------------
+-- Phase: capacity_reconcile (plan 858 M3 — provider-scoped containment)
+--
+-- Classify a caller-supplied partial wave without consulting a provider or
+-- Planar state. Systemic failures open a breaker only for their provider. The
+-- output buckets are a disjoint partition: landed work is preserved;
+-- abandoned lanes remain explicit; unfinished lanes on an open provider are
+-- provider_blocked; all other unfinished lanes are retryable. `unfinished` is
+-- exactly the non-landed union. All arrays are sorted for byte-stable output.
+--
+-- This phase deliberately has only flow.* host calls. It cannot spawn, inspect
+-- or write the DB, mutate a claim, reconcile a stranded claim, abort a lane, or
+-- reset a provider breaker. The caller owns those explicit recovery choices.
+-- ---------------------------------------------------------------------------
+function capacity_reconcile()
+  flow.phase("capacity_reconcile")
+  flow.log("parallel-dispatch.lua/capacity_reconcile: starting")
+
+  if not require_only_args("capacity_reconcile", { plan_id = true, lanes = true }) then
+    return
+  end
+  local plan_id = require_arg("plan_id")
+  local in_lanes = require_arg("lanes")
+  if type(plan_id) ~= "number" or plan_id <= 0 or plan_id % 1 ~= 0 then
+    flow.fail("parallel-dispatch.lua/capacity_reconcile: plan_id must be a positive integer")
+    return
+  end
+  if type(in_lanes) ~= "table" or #in_lanes == 0 then
+    flow.fail("parallel-dispatch.lua/capacity_reconcile: lanes must be a non-empty array")
+    return
+  end
+
+  local valid_outcomes = {
+    landed = true,
+    failed_clean = true,
+    abandoned = true,
+    pending = true,
+    running = true,
+  }
+  local valid_categories = {
+    usage_limit = true,
+    context_limit = true,
+    output_limit = true,
+    tool_failure = true,
+    validation = true,
+    unknown = true,
+  }
+  local systemic_categories = {
+    usage_limit = true,
+    context_limit = true,
+    output_limit = true,
+  }
+  local allowed_lane_fields = {
+    task_id = true,
+    provider = true,
+    outcome = true,
+    category = true,
+  }
+
+  -- Validate and normalize every lane before producing any classification.
+  -- Failure categories default to the closed `unknown` value; categories on a
+  -- non-failure outcome are rejected rather than silently ignored.
+  local seen_task_ids = {}
+  local lanes = {}
+  local breaker_category_sets = {}
+  for _, lane in ipairs(in_lanes) do
+    if type(lane) ~= "table" then
+      flow.fail("parallel-dispatch.lua/capacity_reconcile: each lane must be an object")
+      return
+    end
+    for field, _ in pairs(lane) do
+      if not allowed_lane_fields[field] then
+        flow.fail("parallel-dispatch.lua/capacity_reconcile: unknown lane field '"
+          .. tostr(field) .. "'")
+        return
+      end
+    end
+    local task_id = lane.task_id
+    local provider = lane.provider
+    local outcome = lane.outcome
+    local category = lane.category
+    if type(task_id) ~= "number" or task_id <= 0 or task_id % 1 ~= 0 then
+      flow.fail("parallel-dispatch.lua/capacity_reconcile: each task_id must be a positive integer")
+      return
+    end
+    if seen_task_ids[task_id] then
+      flow.fail("parallel-dispatch.lua/capacity_reconcile: duplicate task_id " .. tostr(task_id))
+      return
+    end
+    seen_task_ids[task_id] = true
+    if type(provider) ~= "string" or provider == "" then
+      flow.fail("parallel-dispatch.lua/capacity_reconcile: task " .. tostr(task_id)
+        .. " requires a non-empty provider")
+      return
+    end
+    if type(outcome) ~= "string" or not valid_outcomes[outcome] then
+      flow.fail("parallel-dispatch.lua/capacity_reconcile: unknown or malformed outcome for task "
+        .. tostr(task_id))
+      return
+    end
+    local is_failure = outcome == "failed_clean" or outcome == "abandoned"
+    if is_failure then
+      if category == nil then
+        category = "unknown"
+      end
+      if type(category) ~= "string" or not valid_categories[category] then
+        flow.fail("parallel-dispatch.lua/capacity_reconcile: unknown or malformed category for task "
+          .. tostr(task_id))
+        return
+      end
+    elseif category ~= nil then
+      flow.fail("parallel-dispatch.lua/capacity_reconcile: category is only valid for a failed or abandoned task "
+        .. tostr(task_id))
+      return
+    end
+
+    lanes[#lanes + 1] = {
+      task_id = task_id,
+      provider = provider,
+      outcome = outcome,
+      category = category,
+    }
+    if category ~= nil and systemic_categories[category] then
+      local category_set = breaker_category_sets[provider]
+      if category_set == nil then
+        category_set = {}
+        breaker_category_sets[provider] = category_set
+      end
+      category_set[category] = true
+    end
+  end
+  if #lanes ~= #in_lanes then
+    flow.fail("parallel-dispatch.lua/capacity_reconcile: lanes must be a dense array")
+    return
+  end
+
+  -- Materialize the provider breakers in lexical provider/category order. A
+  -- provider may report multiple systemic categories in a supplied wave; keep
+  -- all of them rather than selecting one from hash iteration order.
+  local provider_breakers = {}
+  for provider, category_set in pairs(breaker_category_sets) do
+    local categories = {}
+    for category, _ in pairs(category_set) do
+      categories[#categories + 1] = category
+    end
+    table.sort(categories)
+    provider_breakers[#provider_breakers + 1] = {
+      provider = provider,
+      categories = categories,
+      open = true,
+      reset_required = true,
+    }
+  end
+  table.sort(provider_breakers, function(a, b)
+    return a.provider < b.provider
+  end)
+
+  local landed = {}
+  local retryable = {}
+  local abandoned = {}
+  local provider_blocked = {}
+  local running = {}
+  local unaffected = {}
+  local unfinished = {}
+  for _, lane in ipairs(lanes) do
+    local entry = {
+      task_id = lane.task_id,
+      provider = lane.provider,
+      outcome = lane.outcome,
+      category = lane.category,
+    }
+    if lane.outcome == "landed" then
+      entry.classification = "landed"
+      entry.reason = "landed_preserved"
+      landed[#landed + 1] = entry
+    elseif lane.outcome == "abandoned" then
+      entry.classification = "abandoned"
+      entry.reason = "caller_reported_abandoned"
+      abandoned[#abandoned + 1] = entry
+      unfinished[#unfinished + 1] = entry
+    elseif lane.outcome == "running" then
+      -- A breaker stops NEW dispatches only. Work already running is allowed to
+      -- reach its ordinary terminal, even when its provider is now open.
+      entry.classification = "running"
+      entry.reason = "already_running_allowed_to_finish"
+      running[#running + 1] = entry
+      unfinished[#unfinished + 1] = entry
+      if breaker_category_sets[lane.provider] == nil then
+        unaffected[#unaffected + 1] = entry
+      end
+    elseif breaker_category_sets[lane.provider] ~= nil then
+      entry.classification = "provider_blocked"
+      entry.reason = "provider_capacity_breaker_open"
+      provider_blocked[#provider_blocked + 1] = entry
+      unfinished[#unfinished + 1] = entry
+    else
+      entry.classification = "retryable"
+      if lane.outcome == "pending" then
+        entry.reason = "provider_available"
+      else
+        entry.reason = "non_systemic_failure"
+      end
+      retryable[#retryable + 1] = entry
+      unaffected[#unaffected + 1] = entry
+      unfinished[#unfinished + 1] = entry
+    end
+  end
+  sort_by_task_id(landed)
+  sort_by_task_id(retryable)
+  sort_by_task_id(abandoned)
+  sort_by_task_id(provider_blocked)
+  sort_by_task_id(running)
+  sort_by_task_id(unaffected)
+  sort_by_task_id(unfinished)
+
+  -- Exact, deterministic recovery packet. Resume commands cover only the
+  -- unfinished union. Breaker reset is deliberately an operator dispatch
+  -- choice rather than an invented CLI mutation or persisted state change.
+  local resumes = {}
+  for _, lane in ipairs(unfinished) do
+    resumes[#resumes + 1] = {
+      task_id = lane.task_id,
+      command = "planar resume " .. tostr(lane.task_id) .. " --json",
+    }
+  end
+  local provider_resets = {}
+  for _, breaker in ipairs(provider_breakers) do
+    provider_resets[#provider_resets + 1] = {
+      provider = breaker.provider,
+      breaker = "open",
+      required = true,
+      action = "explicit_dispatch",
+      confirm_max_wave_size = true,
+    }
+  end
+  local plan_arg = tostr(plan_id)
+  local recovery = {
+    resumes = resumes,
+    provider_resets = provider_resets,
+    claim_recovery = {
+      required = #abandoned > 0,
+      inspect_command = "planar-watch claims --plan " .. plan_arg .. " --status all --json",
+      reconcile_preview_command = "planar-agent reconcile --plan " .. plan_arg .. " --dry-run --json",
+    },
+  }
+
+  flow.log("parallel-dispatch.lua/capacity_reconcile: classified "
+    .. tostr(#landed) .. " landed and " .. tostr(#unfinished)
+    .. " unfinished lane(s) across " .. tostr(#provider_breakers)
+    .. " open provider breaker(s)")
+  flow.result({
+    plan_id = plan_id,
+    breaker_open = #provider_breakers > 0,
+    provider_breakers = provider_breakers,
+    landed = landed,
+    retryable = retryable,
+    abandoned = abandoned,
+    provider_blocked = provider_blocked,
+    running = running,
+    unaffected = unaffected,
+    unfinished = unfinished,
+    recovery = recovery,
+    -- Explicit invariants for callers and black-box tests. These are facts
+    -- about this phase, not commands or recovery recommendations.
+    automatic_reconcile = false,
+    automatic_abort = false,
+    spawned = false,
+    host_calls = { "flow.phase", "flow.log", "flow.result" },
   })
 end
 

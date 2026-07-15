@@ -13,6 +13,18 @@ pub fn main(init: std.process.Init) !void {
 }
 
 fn testLiveSchemaInventory(allocator: std.mem.Allocator, io: std.Io, surface_bin: []const u8, schema_bins: []const []const u8) !void {
+    var random_bytes: [8]u8 = undefined;
+    io.random(&random_bytes);
+    const suffix = std.fmt.bytesToHex(random_bytes, .lower);
+    const tmp_root = try std.fmt.allocPrint(allocator, "{s}/planar-surface-lint-{s}", .{ tmpBase(), suffix });
+    try std.Io.Dir.cwd().createDirPath(io, tmp_root);
+    defer std.Io.Dir.cwd().deleteTree(io, tmp_root) catch {};
+
+    const inherited_db = try std.fs.path.join(allocator, &.{ tmp_root, "inherited.db" });
+    const isolated_db = try std.fs.path.join(allocator, &.{ tmp_root, "schema.db" });
+    var env_map = try currentEnviron().createMap(allocator);
+    defer env_map.deinit();
+
     const inventory_run = try run(allocator, io, surface_bin, &.{"--command-inventory-json"});
     try expectExit(inventory_run.term, 0);
     try expectEqual("", inventory_run.stderr);
@@ -34,7 +46,11 @@ fn testLiveSchemaInventory(allocator: std.mem.Allocator, io: std.Io, surface_bin
     const Schema = struct { commands: []const Command };
     var live: std.StringHashMapUnmanaged(void) = .empty;
     for (schema_bins) |bin| {
-        const schema_run = try run(allocator, io, bin, &.{"schema"});
+        // Start each invocation with a sentinel inherited DB, then override it
+        // in the schema runner. If that isolation is ever removed, the fresh
+        // binary will create/migrate inherited.db and this test fails.
+        try env_map.put("PLANAR_DB", inherited_db);
+        const schema_run = try runWithDb(allocator, io, bin, &.{"schema"}, &env_map, isolated_db);
         try expectExit(schema_run.term, 0);
         try expectEqual("", schema_run.stderr);
         const schema = try std.json.parseFromSlice(Schema, allocator, schema_run.stdout, .{ .ignore_unknown_fields = true });
@@ -50,6 +66,12 @@ fn testLiveSchemaInventory(allocator: std.mem.Allocator, io: std.Io, surface_bin
     while (classified_it.next()) |command| try expect(live.contains(command.*));
     var live_it = live.keyIterator();
     while (live_it.next()) |command| try expect(classified.contains(command.*));
+
+    std.Io.Dir.cwd().access(io, inherited_db, .{}) catch |err| switch (err) {
+        error.FileNotFound => return,
+        else => return err,
+    };
+    return error.TestExpectedEqual;
 }
 
 fn testDirtyCorpus(allocator: std.mem.Allocator, io: std.Io, bin: []const u8, fixtures: []const u8) !void {
@@ -106,6 +128,42 @@ fn run(allocator: std.mem.Allocator, io: std.Io, bin: []const u8, extra: []const
     try argv.append(allocator, bin);
     try argv.appendSlice(allocator, extra);
     return std.process.run(allocator, io, .{ .argv = argv.items });
+}
+
+fn runWithDb(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    bin: []const u8,
+    extra: []const []const u8,
+    env_map: *std.process.Environ.Map,
+    db_path: []const u8,
+) !std.process.RunResult {
+    var argv: std.ArrayList([]const u8) = .empty;
+    try argv.append(allocator, bin);
+    try argv.appendSlice(allocator, extra);
+    try env_map.put("PLANAR_DB", db_path);
+    return std.process.run(allocator, io, .{ .argv = argv.items, .environ_map = env_map });
+}
+
+fn currentEnviron() std.process.Environ {
+    const raw: [*:null]?[*:0]u8 = std.c.environ;
+    var env_count: usize = 0;
+    while (raw[env_count] != null) : (env_count += 1) {}
+    const env_slice: [:null]const ?[*:0]const u8 = @ptrCast(raw[0..env_count :null]);
+    return .{ .block = .{ .slice = env_slice } };
+}
+
+fn tmpBase() []const u8 {
+    const raw: [*:null]?[*:0]u8 = std.c.environ;
+    var i: usize = 0;
+    while (raw[i]) |entry| : (i += 1) {
+        const value: []const u8 = std.mem.span(entry);
+        if (std.mem.startsWith(u8, value, "TMPDIR=") and value.len > "TMPDIR=".len) {
+            const tmp = value["TMPDIR=".len..];
+            return if (tmp[tmp.len - 1] == '/') tmp[0 .. tmp.len - 1] else tmp;
+        }
+    }
+    return "/tmp";
 }
 
 fn expectExit(term: std.process.Child.Term, code: u8) !void {

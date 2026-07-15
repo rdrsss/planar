@@ -124,6 +124,7 @@ pub fn writeClaimWithActivity(
     try std.json.Stringify.encodeJsonString(c.lease_expires_at, .{}, w);
     try writeStringOpt(w, "released_at", c.released_at);
     try writeStringOpt(w, "release_reason", c.release_reason);
+    try writeStringOpt(w, "failure_category", if (c.failure_category) |category| category.toText() else null);
     try writeIntOpt(w, "run_id", c.run_id);
     try writeStringOpt(w, "stage", c.stage);
     // latest_action — emitted only by planar-watch ps (plan 467 M3

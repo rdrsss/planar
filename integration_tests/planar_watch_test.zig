@@ -150,6 +150,14 @@ fn extractStringField(gpa: std.mem.Allocator, json: []const u8, prefix: []const 
     return try gpa.dupe(u8, json[i..end]);
 }
 
+fn lineContaining(text: []const u8, needle: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.indexOf(u8, line, needle) != null) return line;
+    }
+    return null;
+}
+
 // =========================================================================
 // Capability boundary: --help enumerates the read-only verb set only.
 // =========================================================================
@@ -328,6 +336,121 @@ test "planar-watch claims --json returns {generated_at, claims}" {
     const all_out = mustRunWatch(&suite, &.{ "claims", "--json", "--status", "all" });
     defer gpa.free(all_out);
     try std.testing.expect(std.mem.indexOf(u8, all_out, "\"claims\":[") != null);
+}
+
+test "planar-watch claims-category-text surfaces a categorized terminal additively" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const pid = seedPlanWithTask(&suite, "watch-claims-category", "categorized-task");
+    defer gpa.free(pid);
+    const pull_out = mustRunAgent(&suite, &.{ "pull", pid, "--no-locality-probe", "--json" });
+    defer gpa.free(pull_out);
+    const token = extractStringField(gpa, pull_out, "\"claim_token\":\"") catch @panic("no claim token");
+    defer gpa.free(token);
+    gpa.free(mustRunAgent(&suite, &.{
+        "fail", "--claim", token, "--reason", "bounded failure", "--category", "usage_limit", "--no-locality-probe", "--json",
+    }));
+
+    const text_out = mustRunWatch(&suite, &.{ "claims", "--status", "all" });
+    defer gpa.free(text_out);
+    try std.testing.expect(std.mem.indexOf(u8, text_out, "status:aborted") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text_out, "category:usage_limit") != null);
+}
+
+test "planar-watch claims and ps text add category only to categorized rows" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const pid = seedPlanWithTask(&suite, "watch-category-row-parity", "unused-task");
+    defer gpa.free(pid);
+    const stale_task_json = suite.mustRun(&.{ "task", "add", "--plan", pid, "--json", "stale-task" });
+    defer gpa.free(stale_task_json);
+    const stale_task_id = extractIntField(stale_task_json, "\"id\"") orelse @panic("no stale task id");
+    const active_task_json = suite.mustRun(&.{ "task", "add", "--plan", pid, "--json", "active-task" });
+    defer gpa.free(active_task_json);
+    const active_task_id = extractIntField(active_task_json, "\"id\"") orelse @panic("no active task id");
+    const stale_ref = try std.fmt.allocPrint(gpa, "task:{d}", .{stale_task_id});
+    defer gpa.free(stale_ref);
+    const active_ref = try std.fmt.allocPrint(gpa, "task:{d}", .{active_task_id});
+    defer gpa.free(active_ref);
+
+    const stale_claim = mustRunAgent(&suite, &.{ "claim", "--entity", stale_ref, "--ttl", "1", "--no-locality-probe", "--json" });
+    defer gpa.free(stale_claim);
+    const stale_token = try extractStringField(gpa, stale_claim, "\"claim_token\":\"");
+    defer gpa.free(stale_token);
+    const active_claim = mustRunAgent(&suite, &.{ "claim", "--entity", active_ref, "--no-locality-probe", "--json" });
+    defer gpa.free(active_claim);
+    const active_token = try extractStringField(gpa, active_claim, "\"claim_token\":\"");
+    defer gpa.free(active_token);
+    try std.testing.io.sleep(std.Io.Duration.fromSeconds(2), std.Io.Clock.awake);
+    gpa.free(mustRunAgent(&suite, &.{ "reconcile", "--plan", pid, "--category", "usage_limit", "--json" }));
+
+    const claims_text = mustRunWatch(&suite, &.{ "claims", "--plan", pid, "--status", "all" });
+    defer gpa.free(claims_text);
+    const claims_stale_line = lineContaining(claims_text, stale_token) orelse return error.MissingCategorizedClaim;
+    const claims_active_line = lineContaining(claims_text, active_token) orelse return error.MissingActiveClaim;
+    try std.testing.expect(std.mem.indexOf(u8, claims_stale_line, "category:usage_limit") != null);
+    try std.testing.expect(std.mem.indexOf(u8, claims_active_line, "category:") == null);
+
+    const ps_text = mustRunWatch(&suite, &.{ "ps", "--plan", pid, "--stale" });
+    defer gpa.free(ps_text);
+    const ps_stale_line = lineContaining(ps_text, stale_token) orelse return error.MissingCategorizedClaim;
+    const ps_active_line = lineContaining(ps_text, active_token) orelse return error.MissingActiveClaim;
+    try std.testing.expect(std.mem.indexOf(u8, ps_stale_line, "category:usage_limit") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ps_active_line, "category:") == null);
+}
+
+test "planar-watch feed-log-categories JSON retain categorized terminal claims" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const pid = seedPlanWithTask(&suite, "watch-feed-log-categories", "failed-task");
+    defer gpa.free(pid);
+    const failed_task_json = suite.mustRun(&.{ "task", "list", "--scope", "global", "--plan", pid, "--json" });
+    defer gpa.free(failed_task_json);
+    const failed_task_id = extractIntField(failed_task_json, "\"id\"") orelse @panic("no failed task id");
+    const failed_task_arg = try std.fmt.allocPrint(gpa, "{d}", .{failed_task_id});
+    defer gpa.free(failed_task_arg);
+
+    const pull = mustRunAgent(&suite, &.{ "pull", pid, "--no-locality-probe", "--json" });
+    defer gpa.free(pull);
+    const failed_token = try extractStringField(gpa, pull, "\"claim_token\":\"");
+    defer gpa.free(failed_token);
+    gpa.free(mustRunAgent(&suite, &.{
+        "fail", "--claim", failed_token, "--reason", "bounded", "--category", "tool_failure", "--json",
+    }));
+
+    const stale_task_json = suite.mustRun(&.{ "task", "add", "--plan", pid, "--json", "stale-task" });
+    defer gpa.free(stale_task_json);
+    const stale_task_id = extractIntField(stale_task_json, "\"id\"") orelse @panic("no stale task id");
+    const stale_task_arg = try std.fmt.allocPrint(gpa, "{d}", .{stale_task_id});
+    defer gpa.free(stale_task_arg);
+    const stale_ref = try std.fmt.allocPrint(gpa, "task:{d}", .{stale_task_id});
+    defer gpa.free(stale_ref);
+    const stale_claim = mustRunAgent(&suite, &.{ "claim", "--entity", stale_ref, "--ttl", "1", "--no-locality-probe", "--json" });
+    defer gpa.free(stale_claim);
+    try std.testing.io.sleep(std.Io.Duration.fromSeconds(2), std.Io.Clock.awake);
+    gpa.free(mustRunAgent(&suite, &.{ "reconcile", "--plan", pid, "--category", "usage_limit", "--json" }));
+
+    inline for ([_]struct { task: []const u8, category: []const u8 }{
+        .{ .task = failed_task_arg, .category = "tool_failure" },
+        .{ .task = stale_task_arg, .category = "usage_limit" },
+    }) |expected| {
+        const category_needle = try std.fmt.allocPrint(gpa, "\"failure_category\":\"{s}\"", .{expected.category});
+        defer gpa.free(category_needle);
+
+        const feed_json = mustRunWatch(&suite, &.{ "feed", "--task", expected.task, "--json" });
+        defer gpa.free(feed_json);
+        try std.testing.expect(std.mem.indexOf(u8, feed_json, category_needle) != null);
+
+        const log_json = mustRunWatch(&suite, &.{ "log", "--task", expected.task, "--json" });
+        defer gpa.free(log_json);
+        try std.testing.expect(std.mem.indexOf(u8, log_json, category_needle) != null);
+    }
 }
 
 // =========================================================================

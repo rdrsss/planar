@@ -42,6 +42,9 @@ pub const Identity = struct {
 pub const State = struct {
     status: []const u8,
     next_action: []const u8,
+    /// The latest durable context snapshot when one has a body; otherwise
+    /// the latest session-timeline entry. This lets a zero-context resumer
+    /// recover orchestration checkpoint metadata from the packet itself.
     last_action_at: []const u8 = "",
     last_action_body: []const u8 = "",
 };
@@ -419,6 +422,24 @@ pub fn buildPacket(
         const last = entries[0];
         state.last_action_at = try allocator.dupe(u8, last.created_at);
         state.last_action_body = try allocator.dupe(u8, last.body);
+    }
+
+    // A context snapshot is the durable resume boundary. Prefer its body
+    // over the session timeline so `resume --json` carries the exact
+    // checkpoint that `resume validate` accepted. Timeline activity remains
+    // the fallback for tasks whose latest snapshot has no narrative body.
+    const latest_snapshot = try snapshot_mod.getLatestForTask(d, allocator, task_id);
+    if (latest_snapshot) |snapshot| {
+        defer snapshot_mod.deinit(snapshot, allocator);
+        if (snapshot.body.len > 0) {
+            const snapshot_at = try allocator.dupe(u8, snapshot.created_at);
+            errdefer allocator.free(snapshot_at);
+            const snapshot_body = try allocator.dupe(u8, snapshot.body);
+            if (state.last_action_at.len > 0) allocator.free(state.last_action_at);
+            if (state.last_action_body.len > 0) allocator.free(state.last_action_body);
+            state.last_action_at = snapshot_at;
+            state.last_action_body = snapshot_body;
+        }
     }
 
     // ---- Section 6 — Decisions + questions ----------------------------
@@ -879,6 +900,69 @@ test "buildPacket assembles identity + recent activity + audit footer" {
     try std.testing.expectEqual(@as(usize, 1), p.recent_activity.len);
     try std.testing.expect(p.audit != null);
     try std.testing.expectEqualStrings("claude", p.audit.?.vendor);
+}
+
+test "buildPacket prefers durable snapshot body over session timeline" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const tid = try d.execParams(
+        "insert into tasks (scope_kind, title, status, next_action) values ('global', 'the title', 'doing', 'next')",
+        &.{},
+    );
+    const sess = try session_mod.startSession(&d, a, .{ .vendor = "claude", .task_id = tid });
+    defer session_mod.deinit(sess, a);
+    try session_mod.appendEntry(&d, sess.id, "note", "transient timeline entry");
+    const snap = try snapshot_mod.create(&d, a, .{
+        .session_id = sess.id,
+        .task_id = tid,
+        .vendor = "claude",
+        .body = "orchestration_checkpoint: v1\nstage: reviewer-decision",
+        .next_action = "next",
+    });
+    defer snapshot_mod.deinit(snap, a);
+
+    const p = try buildPacket(&d, a, tid);
+    defer deinitPacket(p, a);
+    try std.testing.expectEqualStrings(
+        "orchestration_checkpoint: v1\nstage: reviewer-decision",
+        p.state.last_action_body,
+    );
+    try std.testing.expectEqualStrings(snap.created_at, p.state.last_action_at);
+    try std.testing.expectEqualStrings("transient timeline entry", p.recent_activity[0].body);
+}
+
+test "buildPacket retains session timeline when latest snapshot body is empty" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const tid = try d.execParams(
+        "insert into tasks (scope_kind, title, status, next_action) values ('global', 'the title', 'doing', 'next')",
+        &.{},
+    );
+    const sess = try session_mod.startSession(&d, a, .{ .vendor = "claude", .task_id = tid });
+    defer session_mod.deinit(sess, a);
+    try session_mod.appendEntry(&d, sess.id, "note", "timeline remains authoritative");
+    const entries = try session_mod.recentEntriesForTask(&d, a, tid, 1);
+    defer session_mod.deinitEntries(entries, a);
+    try std.testing.expectEqual(@as(usize, 1), entries.len);
+
+    const snap = try snapshot_mod.create(&d, a, .{
+        .session_id = sess.id,
+        .task_id = tid,
+        .vendor = "claude",
+        .next_action = "next",
+    });
+    defer snapshot_mod.deinit(snap, a);
+    _ = try d.execParams(
+        "update context_snapshots set created_at = '2099-01-01T00:00:00.000Z' where id = ?",
+        &.{.{ .int = snap.id }},
+    );
+
+    const p = try buildPacket(&d, a, tid);
+    defer deinitPacket(p, a);
+    try std.testing.expectEqualStrings("timeline remains authoritative", p.state.last_action_body);
+    try std.testing.expectEqualStrings(entries[0].created_at, p.state.last_action_at);
 }
 
 test "buildPacket includes plan position when plan exists" {

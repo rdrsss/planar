@@ -57,6 +57,98 @@ test "agents render emits per-vendor files for canonical specialists" {
     try assertFileExists(gpa, root, "agents/copilot/sync-reconciler.agent.md");
 }
 
+test "spec-review hazard lenses render across agent and skill vendors" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try fixtureRoot(gpa, &tmp, "agents-render-spec-review-hazards");
+    defer gpa.free(root);
+
+    const agents_src = try repoAgentsSrcFromBin(gpa, suite.bin);
+    defer gpa.free(agents_src);
+    try copyAgentSpecs(gpa, agents_src, root);
+
+    const skills_src = try repoSkillsSrcFromBin(gpa, suite.bin);
+    defer gpa.free(skills_src);
+    const stdout = suite.mustRunInDir(root, &.{
+        "skills",
+        "render",
+        "--src",
+        skills_src,
+        "--out",
+        root,
+    });
+    defer gpa.free(stdout);
+
+    for ([_][]const u8{
+        "agents/claude/spec-reviewer.md",
+        "agents/codex/spec-reviewer.toml",
+        "agents/copilot/spec-reviewer.agent.md",
+        "commands/claude/pl-spec-review.md",
+        "skills/codex/pl-spec-review.md",
+        "skills/copilot/pl-spec-review.md",
+    }) |projection| {
+        const rendered = try readPath(gpa, root, projection);
+        defer gpa.free(rendered);
+        for ([_][]const u8{
+            "Hazard lens audit",
+            "Resource lifecycle and cleanup",
+            "Deterministic ordering and replay",
+            "Concurrency, ownership, cancellation, and races",
+            "Shell, build, and template escaping across interpretation boundaries",
+            "artifact and missing section explicitly",
+            "not applicable -- no gap",
+            "build-tool-specific remedies",
+            "target project's",
+        }) |needle| {
+            try std.testing.expect(std.mem.indexOf(u8, rendered, needle) != null);
+        }
+    }
+}
+
+test "guidance identity closeout renders across orchestrator and documenter agents" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try fixtureRoot(gpa, &tmp, "agents-render-guidance-closeout");
+    defer gpa.free(root);
+
+    const agents_src = try repoAgentsSrcFromBin(gpa, suite.bin);
+    defer gpa.free(agents_src);
+    try copyAgentSpecs(gpa, agents_src, root);
+    const skills_src = try repoSkillsSrcFromBin(gpa, suite.bin);
+    defer gpa.free(skills_src);
+    const stdout = suite.mustRunInDir(root, &.{ "skills", "render", "--src", skills_src, "--out", root });
+    defer gpa.free(stdout);
+
+    for ([_][]const u8{
+        "agents/claude/orchestrator.md",
+        "agents/codex/orchestrator.toml",
+        "agents/copilot/orchestrator.agent.md",
+        "agents/claude/documenter.md",
+        "agents/codex/documenter.toml",
+        "agents/copilot/documenter.agent.md",
+    }) |projection| {
+        const rendered = try readPath(gpa, root, projection);
+        defer gpa.free(rendered);
+        for ([_][]const u8{
+            "authoritative_identity",
+            "migration_tail",
+            "schema_version",
+            "generated_surface_boundary",
+            "guidance_equivalence",
+            "guidance-identity-drift",
+            "operator-gated",
+            "clean closeout",
+            "planar-execute",
+        }) |needle| try std.testing.expect(std.mem.indexOf(u8, rendered, needle) != null);
+    }
+}
+
 test "cross-scope write cue and normalized mappings render across mutation surfaces and vendors" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
