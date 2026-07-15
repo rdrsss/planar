@@ -433,6 +433,95 @@ test "skills render real sources keep model tiers notes and invocation blocks" {
     try std.testing.expect(std.mem.indexOf(u8, codex_introspect, "association''s feedback plan.'") != null);
 }
 
+test "skills render preserves the durable boundary contract for every vendor" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try fixtureRoot(gpa, &tmp, "skills-render-durable-boundary");
+    defer gpa.free(root);
+
+    const src_abs = try repoSkillsSrcFromBin(gpa, suite.bin);
+    defer gpa.free(src_abs);
+    const stdout = mustRunInDir(&suite, root, &.{
+        "skills",
+        "render",
+        "--src",
+        src_abs,
+        "--out",
+        root,
+        "pl-orchestrator",
+    });
+    defer gpa.free(stdout);
+
+    for ([_][]const u8{
+        "commands/claude/pl-orchestrator.md",
+        "skills/codex/pl-orchestrator.md",
+        "skills/copilot/pl-orchestrator.md",
+    }) |projection| {
+        const rendered = try readPath(gpa, root, projection);
+        defer gpa.free(rendered);
+        for ([_][]const u8{
+            "## Durable boundary checklist",
+            "post-operation status is `todo`",
+            "`doing`, or `blocked`",
+            "Exclude post-operation `done` and `cancelled` tasks",
+            "orchestration_checkpoint: v1",
+            "iteration_scope: <coder-review|test-coder|none>",
+            "planar resume validate <task-id> --json",
+            "exactly `planar resume <task-id> --json`",
+            "return boundary `outcome=partial`",
+        }) |needle| {
+            try std.testing.expect(std.mem.indexOf(u8, rendered, needle) != null);
+        }
+    }
+}
+
+test "skills render wires durable checkpoints into every execution strategy" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try fixtureRoot(gpa, &tmp, "skills-render-durable-strategies");
+    defer gpa.free(root);
+
+    const src_abs = try repoSkillsSrcFromBin(gpa, suite.bin);
+    defer gpa.free(src_abs);
+    const stdout = mustRunInDir(&suite, root, &.{
+        "skills",
+        "render",
+        "--src",
+        src_abs,
+        "--out",
+        root,
+        "pl-orchestrator",
+    });
+    defer gpa.free(stdout);
+
+    for ([_][]const u8{
+        "commands/claude/pl-orchestrator.md",
+        "skills/codex/pl-orchestrator.md",
+        "skills/copilot/pl-orchestrator.md",
+    }) |projection| {
+        const rendered = try readPath(gpa, root, projection);
+        defer gpa.free(rendered);
+        for ([_][]const u8{
+            "### `classic` boundary and restart",
+            "result: request-changes",
+            "### `barrel-deferred` boundary and restart",
+            "result: slice-verified",
+            "### `parallel-fanout` wave boundary and restart",
+            "result: wave-partial",
+            "run `planar resume <task-id> --json` before",
+            "does not change the terminal ritual",
+        }) |needle| {
+            try std.testing.expect(std.mem.indexOf(u8, rendered, needle) != null);
+        }
+    }
+}
+
 test "skills render pl-spec-review has one authoritative cross-scope rule for every vendor" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);

@@ -124,6 +124,7 @@ comptime {
     _ = @import("scenarios/scenario_usage_introspection_test.zig");
     _ = @import("scenarios/scenario_doctor_reconcile_test.zig");
     _ = @import("scenarios/scenario_worktree_resume_test.zig");
+    _ = @import("scenarios/scenario_resumability_boundary_test.zig");
     _ = @import("scenarios/scenario_worktree_scope_test.zig");
     _ = @import("scenarios/scenario_agent_skill_lifecycle_test.zig");
     _ = @import("scenarios/scenario_unassociated_project_scope_test.zig");

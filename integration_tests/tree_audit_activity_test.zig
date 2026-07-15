@@ -607,6 +607,30 @@ test "methodology docs reference `planar-agent pull` and the canonical terminal 
     }
 }
 
+test "methodology defines the durable boundary and surviving target contract" {
+    const gpa = std.testing.allocator;
+    const body = try readRepoFile(gpa, "agents/methodology.md");
+    defer gpa.free(body);
+
+    for ([_][]const u8{
+        "## Durable orchestration boundary contract",
+        "authoritative status is `todo`, `doing`, or",
+        "`blocked` is a surviving target",
+        "status is `done` or `cancelled`",
+        "planar task update <task-id>",
+        "orchestration_checkpoint: v1",
+        "iteration_scope: <coder-review|test-coder|none>",
+        "`resumable:true` makes this target's boundary durable",
+        "returns `outcome=partial`",
+        "exact recovery command: `planar resume <task-id> --json`",
+    }) |needle| {
+        if (std.mem.indexOf(u8, body, needle) == null) {
+            std.debug.print("durable-boundary methodology contract missing: {s}\n", .{needle});
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
 test "methodology + role docs contain ZERO `planar agent <verb>` references" {
     const gpa = std.testing.allocator;
     const files = [_][]const u8{

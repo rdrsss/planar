@@ -196,6 +196,80 @@ An external workflow harness may expose a **finalization hook after a clean work
 5. **Review.** The orchestrator hands the change set and claim token(s) to a `reviewer`. The reviewer decides one of `approve`, `request-changes`, `open-question`, `abort` and treats edits outside the leased scope as scope drift.
 6. **Loop or terminate.** On `request-changes`, the orchestrator returns to implementation with the same claim if the lease is still valid, or renews/reclaims explicitly. On terminal outcome, the claim is released as `completed`, `released`, or `aborted`. The loop is bounded by the iteration cap below.
 
+## Durable orchestration boundary contract
+
+A verified slice, reviewer decision, wave barrier, operator gate, or failure is
+only a **candidate boundary**. It becomes durable for a target only after the
+orchestrator has persisted and validated that target's recovery state. The
+orchestrator MUST NOT describe a candidate boundary as clean or durable merely
+because a subagent returned, a terminal verb fired, or a session is about to
+yield.
+
+### Surviving target
+
+The unit that survives interruption is the task, identified by `task:<id>` —
+not the model process, action, claim, session, branch, or worktree. After the
+candidate-boundary operation and any atomic terminal verb have completed, every
+task in the dispatch scope whose authoritative status is `todo`, `doing`, or
+`blocked` is a surviving target. This includes a task returned to `todo` by
+`planar-agent fail` or `release`, and a task moved to `blocked` by
+`planar-agent block`. In a grouped cycle or wave, classify and checkpoint each
+task independently; one invalid target does not erase or roll back another.
+
+Tasks whose authoritative status is `done` or `cancelled` are terminal. They
+are excluded from the surviving-target gate: the atomic terminal record is
+their durable evidence, and the orchestrator MUST NOT manufacture a resume
+snapshot or next action for them.
+
+### Per-target checkpoint
+
+Before yielding control, process each surviving target in this order:
+
+1. **Write an exact next action.** Run `planar task update <task-id>
+   --next-action "<exact-action>"`. The value must tell a zero-context agent one
+   concrete action to perform, where to perform it (a command, file/symbol, or
+   named operator gate), and the observable success condition. Include any
+   prerequisite that is not recoverable from the resume packet. Phrases such as
+   `continue`, `finish the task`, `implement per acceptance criteria`, or
+   `resume work` are not exact next actions.
+2. **Capture stage, iteration, and result.** Run `planar capture snapshot
+   --task <task-id> --next-action "<same-exact-action>" --note
+   "<checkpoint-body>" --json`. The snapshot body uses this line-oriented
+   contract:
+
+   ```text
+   orchestration_checkpoint: v1
+   stage: <verified-slice|reviewer-decision|wave-barrier|operator-gate|failure>
+   iteration_scope: <coder-review|test-coder|none>
+   iteration: <positive-decimal|0>
+   result: <stable-outcome-token>
+   ```
+
+   `iteration` is the current iteration within `iteration_scope`; use
+   `iteration_scope: none` and `iteration: 0` when no iteration applies (for
+   example, a pre-dispatch operator gate or gates-only barrel cycle). `result`
+   comes from the structured gate, reviewer, terminal, or wave result rather
+   than an invented prose summary. The snapshot augments existing attribution;
+   it does not replace the claim token, handoff, branch, worktree, commit, or
+   action records already captured by their owning mechanisms.
+3. **Validate.** Run `planar resume validate <task-id> --json`. Only
+   `resumable:true` makes this target's boundary durable. On success, return
+   this exact recovery command: `planar resume <task-id> --json`.
+
+If validation fails, the orchestrator returns `outcome=partial` for the
+boundary, leaves that target at its current authoritative status, and does not
+advance or redispatch it. The result names `task:<id>`, includes every returned
+`failures[].check`, `message`, and `remediation`, and ends with the exact retry
+command `planar resume validate <task-id> --json`. When the orchestrator knows
+the missing value (especially the next action), it substitutes that shell-safe
+value into the repair command rather than surfacing a placeholder. Independent
+targets that validated successfully remain durable and applied.
+
+Between candidate boundaries, every held claim still follows the TTL/2
+heartbeat rule. In particular, heartbeat all surviving held claims immediately
+after each serial subagent dispatch returns; checkpointing is not a substitute
+for lease renewal.
+
 ## Orchestration strategies
 
 An orchestration strategy is a named bundle of the five underlying dispatch axes the orchestrator uses to drive a plan: `isolation`, `branch_model`, `concurrency`, `reviewer_cadence`, and `test_coder_cadence`. Strategy is the operator-facing dispatch frame; the existing dispatch-shape gate (strict / grouped / single / barrel-*) runs **nested** under the strategy choice, not parallel to it. A strategy answers "what is the overall methodology for this plan?" The dispatch shape then answers "within that strategy, how do I batch *this cycle's* work?"

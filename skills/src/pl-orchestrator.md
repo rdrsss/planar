@@ -114,6 +114,137 @@ The orchestrator selects phases based on the anchor plan's current `status`:
 
 6. **Documenter (Phase 6, default-on)** — at the end of every cycle (unless `--no-docs` was supplied), runs `planar-doc diff --json`, packages the envelope `{ manifest_path, diff_records, covered_docs, cycle_summary }`, dispatches `pl-documenter`, surfaces the returned worklist to the user, and applies each operator-approved row through `planar-doc cover` / `planar-doc nodoc` / a staged doc-body commit, then closes with `planar-doc build`. The documenter only proposes — no `planar-doc` verb fires until the operator approves the row. See [`agents/orchestrator.md` § Phase 6 (Documenter)](../../agents/orchestrator.md#phase-6--documenter-pl-documenter-default-on).
 
+## Durable boundary checklist
+
+A verified slice, reviewer decision, wave barrier, operator gate, or failure is
+only a candidate boundary. Before yielding, apply this checklist independently
+to every task in the dispatch scope whose post-operation status is `todo`,
+`doing`, or `blocked`. The surviving target is `task:<id>`; the process, claim,
+session, branch, and worktree are attribution to that task, not substitutes for
+it. Exclude post-operation `done` and `cancelled` tasks — they are terminal and
+must not receive a manufactured resume checkpoint.
+
+For each surviving target:
+
+1. Write `planar task update <task-id> --next-action "<exact-action>"`. The
+   value must give a zero-context agent one concrete action, its location
+   (command, file/symbol, or named operator gate), and its observable success
+   condition, plus any prerequisite absent from the resume packet. Do not use
+   vague values such as `continue`, `finish the task`, `implement per
+   acceptance criteria`, or `resume work`.
+2. Capture a task-linked snapshot with the identical next action:
+
+   ```sh
+   planar capture snapshot --task <task-id> \
+     --next-action "<same-exact-action>" \
+     --note "orchestration_checkpoint: v1
+   stage: <verified-slice|reviewer-decision|wave-barrier|operator-gate|failure>
+   iteration_scope: <coder-review|test-coder|none>
+   iteration: <positive-decimal|0>
+   result: <stable-outcome-token>" --json
+   ```
+
+   Use the current iteration within `coder-review` or `test-coder`; use
+   `iteration_scope: none` and `iteration: 0` where no iteration exists. Take
+   `result` from the structured gate, reviewer, terminal, or wave result. Keep
+   existing claim, handoff, branch, worktree, commit, and action attribution;
+   the snapshot does not replace it.
+3. Run `planar resume validate <task-id> --json`. A target is durable only when
+   the result says `resumable:true`. Its zero-context continuation command is
+   exactly `planar resume <task-id> --json`.
+
+If any target fails validation, return boundary `outcome=partial`; do not
+advance or redispatch that target. Name `task:<id>`, preserve every returned
+`failures[].check`, `message`, and `remediation`, substitute any known value
+into placeholder remediation with shell-safe quoting, and finish with the retry
+command `planar resume validate <task-id> --json`. Valid independent targets
+remain durable and applied. Heartbeat every surviving held claim at TTL/2 and
+immediately after each serial subagent dispatch returns; a checkpoint never
+renews a lease.
+
+### `classic` boundary and restart
+
+Apply the checklist after the outcome-producing operation and its atomic
+terminal verb, if any, then re-read each task's authoritative status. An
+approved task completed through `planar-agent complete` is now `done` and is
+excluded. Do not checkpoint it before completion merely to make the cycle look
+resumable.
+
+For a nonterminal classic cycle, preserve the outcome that explains why the
+task survives. A reviewer `request-changes` decision uses
+`stage: reviewer-decision`, `iteration_scope: coder-review`, the current
+positive iteration, and `result: request-changes`; its exact next action names
+the first concrete remediation, where to apply it, and the gate that proves the
+next review is ready. A test-coder `failure-surfaced` or `abort` uses
+`stage: failure`, `iteration_scope: test-coder`, its current iteration, and the
+literal structured result. An open question, terminal `fail`/`release`/`block`,
+or other pause records the corresponding structured result and an exact
+operator gate or retry action. Validate before yielding or dispatching the next
+iteration.
+
+On a zero-context restart, run `planar resume <task-id> --json` before
+reclaiming or redispatching the task. Read the checkpoint's exact stage,
+iteration scope, iteration, result, and `next_action` from the packet; do not
+infer them from conversation history. Confirm any still-live claim or perform
+the packet's explicit recovery action, then execute that exact next action.
+
+### `barrel-deferred` boundary and restart
+
+After every serial coder returns, heartbeat every held claim, verify the slice,
+and checkpoint each still-`doing` task before starting another coder. A slice
+queued for union review uses `stage: verified-slice`, `iteration_scope: none`,
+`iteration: 0`, and `result: slice-verified`; its next action identifies the
+milestone or plan union-review boundary, the branch/diff to include, and
+reviewer approval as the observable success condition. This checkpoint does
+not complete or release the task.
+
+At the deferred reviewer boundary, checkpoint surviving tasks again with
+`stage: reviewer-decision`, `iteration_scope: coder-review`, the current union
+review iteration, and the literal reviewer result. Run resume validation for
+every queued target independently before yielding, retrying review, or adding
+another slice. After approval, invoke the existing atomic terminal verb first;
+tasks that become `done` are excluded, while any task left `todo`, `doing`, or
+`blocked` receives a failure/recovery checkpoint based on its post-terminal
+state. For `barrel-bypass`, a successful `complete` is likewise terminal and
+excluded; only a nonterminal gate failure or pause is checkpointed before the
+operator sees the result.
+
+On restart, run `planar resume <task-id> --json` for every surviving queued
+target before reconstructing the union from its existing branch, worktree,
+commit, and claim attribution. Preserve the checkpoint's exact stage,
+iteration, result, and next action; validate every target again before the
+deferred reviewer or next coder dispatch. One invalid target makes the boundary
+partial but does not discard independently validated slices.
+
+### `parallel-fanout` wave boundary and restart
+
+At fan-in, perform each lane's merge and atomic terminal operation first, then
+run `barrier_check` and classify every lane by its post-operation task status.
+A landed lane completed to `done` is terminal and excluded. A `failed_clean`
+lane returned to `todo` uses `stage: failure`, `iteration_scope: none`,
+`iteration: 0`, and `result: failed-clean`; its exact next action identifies
+the lane recompute/claim command and the gate that proves it may fan in. An
+abandoned or unmerged lane uses its structured outcome and the exact reconcile,
+merge, or operator-conflict action. When the barrier cannot advance because at
+least one lane survives, record `stage: wave-barrier` and
+`result: wave-partial` for those targets.
+
+Before yielding a partial wave, validate every surviving lane independently.
+Do not create a later-wave worktree or redispatch an invalid lane. Return
+`outcome=partial` with per-task validation failures while retaining successful
+validations and terminal landed lanes exactly as recorded.
+
+On restart, run `planar resume <task-id> --json` for each surviving lane before
+`reconcile_plan`, `plan`, or `waves`. Use each packet's exact checkpoint stage,
+iteration, result, and next action to reconcile only that lane; then re-run
+resume validation independently. Recompute and re-fan only the remaining set
+after every target needed by the barrier is either terminal or resumable.
+
+This path wiring does not change the terminal ritual: the orchestrator still
+invokes exactly one of `planar-agent complete`, `fail`, `release`, or `block`
+per claim, and checkpointing always observes the status produced by that
+transaction.
+
 ## User Gates
 
 - Between Phase 1 and Phase 2: user must review artifacts.
