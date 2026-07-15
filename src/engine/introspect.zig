@@ -13,7 +13,7 @@
 //!   agent_actions     — agent-action outcome aggregates.
 //!   sync_events       — sync-event outcome aggregates.
 //!   task_reopens      — reopen count aggregate (Bundle.reopens field).
-//!   agent_work_claims — stale-claim count.
+//!   agent_work_claims — stale-claim count + provider/category failure counts.
 //!   handoffs          — stale-handoff count and never-consumed-handoff count.
 //!
 //! Tables never read (redaction invariant):
@@ -73,6 +73,14 @@ pub const ClaimCounts = struct {
     never_consumed: i64,
 };
 
+/// One privacy-safe terminal claim failure aggregate.
+/// Contains only provider identity, the closed category, and a count.
+pub const ClaimFailureCategoryCount = struct {
+    provider: []const u8,
+    category: []const u8,
+    count: i64,
+};
+
 /// Handoff aggregate counts.
 pub const HandoffCounts = struct {
     /// Pending/validated handoffs older than 24 h.
@@ -83,7 +91,8 @@ pub const HandoffCounts = struct {
 
 /// The complete diagnostic bundle returned by `build`.
 /// Field order is the `--json` wire format (spec: version, schema_version,
-/// health, window, invocations, failures, actions, sync, claims, handoffs).
+/// health, window, invocations, failures, actions, sync, claims,
+/// claim_failure_categories, handoffs).
 pub const Bundle = struct {
     /// Binary version string (embed from build options; "unknown" as default).
     version: []const u8,
@@ -105,6 +114,8 @@ pub const Bundle = struct {
     sync: []SyncOutcome,
     /// Claim aggregate counts (always-on).
     claims: ClaimCounts,
+    /// Failed/stale claim counts by provider and closed category (always-on).
+    claim_failure_categories: []ClaimFailureCategoryCount,
     /// Handoff aggregate counts (always-on).
     handoffs: HandoffCounts,
     /// Count of task reopen events in the window (always-on).
@@ -128,6 +139,11 @@ pub const Bundle = struct {
         allocator.free(self.actions);
         for (self.sync) |*s| allocator.free(s.outcome);
         allocator.free(self.sync);
+        for (self.claim_failure_categories) |*row| {
+            allocator.free(row.provider);
+            allocator.free(row.category);
+        }
+        allocator.free(self.claim_failure_categories);
         for (self.failure_tail) |*r| {
             allocator.free(r.verb_path);
             allocator.free(r.error_category);
@@ -230,6 +246,14 @@ pub fn build(
     }
 
     const claims = queryClaimCounts(d, window_days);
+    const claim_failure_categories = queryClaimFailureCategories(d, allocator, window_days) catch return error.QueryFailed;
+    errdefer {
+        for (claim_failure_categories) |*row| {
+            allocator.free(row.provider);
+            allocator.free(row.category);
+        }
+        allocator.free(claim_failure_categories);
+    }
     const handoffs = queryHandoffCounts(d, window_days);
     const reopens = queryReopenCount(d, window_days);
 
@@ -244,6 +268,7 @@ pub fn build(
         .actions = actions,
         .sync = sync_outcomes,
         .claims = claims,
+        .claim_failure_categories = claim_failure_categories,
         .handoffs = handoffs,
         .reopens = reopens,
         .failure_tail = failure_tail,
@@ -629,6 +654,68 @@ fn queryClaimCounts(d: *db.sqlite.Db, window_days: i64) ClaimCounts {
     return .{ .stale_claims = stale, .never_consumed = never_consumed };
 }
 
+/// Aggregate failed/recovered claims by provider and the closed terminal
+/// category. Null on an aborted/stale legacy or uncategorized recovery row is
+/// the bounded `unknown` bucket. Completed/released claims are non-failure
+/// terminals and are deliberately excluded.
+///
+/// Privacy: selects only vendor, failure_category, count, status, and
+/// claimed_at. It never selects release_reason, action summary, entity text,
+/// arguments, or path-bearing columns.
+fn queryClaimFailureCategories(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    window_days: i64,
+) ![]ClaimFailureCategoryCount {
+    var buf: [1536]u8 = undefined;
+    const sql_str = std.fmt.bufPrint(
+        &buf,
+        "select vendor, coalesce(failure_category, 'unknown') as category, count(*)" ++
+            " from agent_work_claims" ++
+            " where status in ('aborted','stale')" ++
+            "   and claimed_at >= datetime('now', '-{d} days')" ++
+            " group by vendor, coalesce(failure_category, 'unknown')" ++
+            " order by vendor asc," ++
+            " case coalesce(failure_category, 'unknown')" ++
+            "   when 'usage_limit' then 1" ++
+            "   when 'context_limit' then 2" ++
+            "   when 'output_limit' then 3" ++
+            "   when 'tool_failure' then 4" ++
+            "   when 'validation' then 5" ++
+            "   when 'unknown' then 6" ++
+            "   else 7 end asc",
+        .{window_days},
+    ) catch return error.OutOfMemory;
+    const sql = try allocator.dupeZ(u8, sql_str);
+    defer allocator.free(sql);
+
+    var stmt = d.prepare(sql) catch return error.PrepareFailed;
+    defer stmt.finalize();
+
+    var list: std.ArrayList(ClaimFailureCategoryCount) = .empty;
+    errdefer {
+        for (list.items) |*row| {
+            allocator.free(row.provider);
+            allocator.free(row.category);
+        }
+        list.deinit(allocator);
+    }
+    while (true) {
+        const row = stmt.step() catch return error.StepFailed;
+        if (row == .done) break;
+        const provider = try stmt.columnTextAlloc(0, allocator);
+        errdefer allocator.free(provider);
+        const category = try stmt.columnTextAlloc(1, allocator);
+        errdefer allocator.free(category);
+        try list.append(allocator, .{
+            .provider = provider,
+            .category = category,
+            .count = stmt.columnInt(2),
+        });
+    }
+    return list.toOwnedSlice(allocator);
+}
+
 /// Stale-handoff and never-consumed counts from `handoffs`.
 /// Privacy: selects only counts and timestamps. No entity text.
 fn queryHandoffCounts(d: *db.sqlite.Db, window_days: i64) HandoffCounts {
@@ -764,6 +851,15 @@ pub fn renderText(bundle: Bundle, writer: *std.Io.Writer) !void {
         bundle.claims.never_consumed,
     });
 
+    if (bundle.claim_failure_categories.len == 0) {
+        try writer.print("[claim failure categories] none in window\n", .{});
+    } else {
+        try writer.print("[claim failure categories]\n", .{});
+        for (bundle.claim_failure_categories) |row| {
+            try writer.print("  {s}/{s}: {d}\n", .{ row.provider, row.category, row.count });
+        }
+    }
+
     // Handoffs section (always-on).
     try writer.print("[handoffs]      stale={d} never_consumed={d}\n", .{
         bundle.handoffs.stale_handoffs,
@@ -894,6 +990,17 @@ pub fn renderJson(bundle: Bundle, writer: *std.Io.Writer) !void {
         bundle.claims.never_consumed,
     });
 
+    try writer.print(",\"claim_failure_categories\":[", .{});
+    for (bundle.claim_failure_categories, 0..) |row, i| {
+        if (i > 0) try writer.print(",", .{});
+        try writer.print("{{\"provider\":", .{});
+        try std.json.Stringify.encodeJsonString(row.provider, .{}, writer);
+        try writer.print(",\"category\":", .{});
+        try std.json.Stringify.encodeJsonString(row.category, .{}, writer);
+        try writer.print(",\"count\":{d}}}", .{row.count});
+    }
+    try writer.print("]", .{});
+
     // handoffs object (always-on)
     try writer.print(",\"handoffs\":{{\"stale_handoffs\":{d},\"never_consumed\":{d}}}", .{
         bundle.handoffs.stale_handoffs,
@@ -952,6 +1059,7 @@ test "build: empty database — all aggregates are zero / empty" {
     try std.testing.expectEqual(@as(usize, 0), bundle.actions.len);
     try std.testing.expectEqual(@as(usize, 0), bundle.sync.len);
     try std.testing.expectEqual(@as(i64, 0), bundle.claims.stale_claims);
+    try std.testing.expectEqual(@as(usize, 0), bundle.claim_failure_categories.len);
     try std.testing.expectEqual(@as(i64, 0), bundle.handoffs.stale_handoffs);
     try std.testing.expectEqual(@as(usize, 0), bundle.failure_tail.len);
     try std.testing.expectEqual(@as(i64, 30), bundle.window_days);

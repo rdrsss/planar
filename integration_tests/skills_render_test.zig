@@ -522,6 +522,52 @@ test "skills render wires durable checkpoints into every execution strategy" {
     }
 }
 
+test "skills render preserves quota-aware provider breaker policy for every vendor" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try fixtureRoot(gpa, &tmp, "skills-render-provider-breaker");
+    defer gpa.free(root);
+
+    const src_abs = try repoSkillsSrcFromBin(gpa, suite.bin);
+    defer gpa.free(src_abs);
+    const stdout = mustRunInDir(&suite, root, &.{
+        "skills",
+        "render",
+        "--src",
+        src_abs,
+        "--out",
+        root,
+        "pl-orchestrator",
+    });
+    defer gpa.free(stdout);
+
+    for ([_][]const u8{
+        "commands/claude/pl-orchestrator.md",
+        "skills/codex/pl-orchestrator.md",
+        "skills/copilot/pl-orchestrator.md",
+    }) |projection| {
+        const rendered = try readPath(gpa, root, projection);
+        defer gpa.free(rendered);
+        for ([_][]const u8{
+            "## Quota-aware bounded waves and provider circuit breakers",
+            "maximum wave size",
+            "`usage_limit`, `context_limit`, or `output_limit`",
+            "opens only that provider's breaker",
+            "continue eligible lanes on unaffected providers",
+            "does **not** cancel, abort, reconcile, reclaim",
+            "planar-agent reconcile --dry-run",
+            "chooses that provider",
+            "confirms a new maximum wave size",
+            "never triggers automatic claim reconciliation",
+        }) |needle| {
+            try std.testing.expect(std.mem.indexOf(u8, rendered, needle) != null);
+        }
+    }
+}
+
 test "skills render pl-spec-review has one authoritative cross-scope rule for every vendor" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);

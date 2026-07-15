@@ -34,6 +34,7 @@ pub const verb: cli.Cmd = .{
         .{ .long = "--stale-after", .kind = .string, .default = .{ .string = "0" }, .desc = "Additional grace beyond lease expiry (default 0s; accepts bare int seconds or suffixed duration: 10m, 1h, 500ms)" },
         .{ .long = "--session", .kind = .int, .default = .{ .int = 0 }, .desc = "Scope the sweep to a single session id (0 = global sweep, the default)" },
         .{ .long = "--plan", .kind = .int, .desc = "Scope the sweep to claims/actions/runs belonging to this plan id (0 or absent = global sweep)" },
+        .{ .long = "--category", .kind = .choice, .choices = &.{ "usage_limit", "context_limit", "output_limit", "tool_failure", "validation", "unknown" }, .desc = "Optional closed failure category applied to claims made stale" },
         .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
     },
     .run = cli.handler(handle),
@@ -158,12 +159,14 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
     }
 
     const plan_id_opt: ?i64 = if (args.plan) |p| (if (p > 0) p else null) else null;
+    const category = if (args.category) |value| engine.runtime.agentactivity.types.FailureCategory.fromText(value) orelse unreachable else null;
 
     const result = store.reconcileStale(d, ctx.allocator, .{
         .stale_after_secs = stale_after_secs,
         .dry_run = args.dry_run,
         .session_id = if (args.session > 0) args.session else null,
         .plan_id = plan_id_opt,
+        .failure_category = category,
     }) catch |e| {
         if (!args.dry_run) d.exec("ROLLBACK") catch {};
         exit.die(ctx, e, "reconcile: {s}", .{@errorName(e)});

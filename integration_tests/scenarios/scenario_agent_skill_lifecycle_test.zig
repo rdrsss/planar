@@ -165,13 +165,14 @@ test "scenario: durable knowledge is visible through read-only operational obser
     const task = suite.mustRunJSON(Id, arena, &.{ "task", "add", "Observe this work", "--plan", plan_id, "--scope", "global", "--json" });
     const task_id = try std.fmt.allocPrint(arena, "{d}", .{task.id});
     const task_ref = try std.fmt.allocPrint(arena, "task:{d}", .{task.id});
-    const task_before = suite.mustRun(&.{ "task", "show", task_id, "--json" });
-    defer a.free(task_before);
     const claim_raw = mustRunSibling(&suite, "PLANAR_AGENT_BIN", &.{ "claim", "--entity", task_ref, "--role", "documenter", "--no-locality-probe", "--json" });
     defer a.free(claim_raw);
     var claim = try std.json.parseFromSlice(std.json.Value, arena, claim_raw, .{});
     defer claim.deinit();
     const token = claim.value.object.get("claim_token").?.string;
+    const task_after_claim = suite.mustRun(&.{ "task", "show", task_id, "--json" });
+    defer a.free(task_after_claim);
+    try std.testing.expect(std.mem.indexOf(u8, task_after_claim, "\"status\":\"doing\"") != null);
     a.free(mustRunSibling(&suite, "PLANAR_AGENT_BIN", &.{ "heartbeat", "--claim", token, "--status", "scanning docs 1/1", "--json" }));
     const observed = mustRunSibling(&suite, "PLANAR_WATCH_BIN", &.{ "ps", "--json" });
     defer a.free(observed);
@@ -187,7 +188,7 @@ test "scenario: durable knowledge is visible through read-only operational obser
     try std.testing.expect(std.mem.indexOf(u8, observed, "scanning docs 1/1") != null);
     const task_after_observe = suite.mustRun(&.{ "task", "show", task_id, "--json" });
     defer a.free(task_after_observe);
-    try std.testing.expectEqualStrings(task_before, task_after_observe);
+    try std.testing.expectEqualStrings(task_after_claim, task_after_observe);
     a.free(mustRunSibling(&suite, "PLANAR_AGENT_BIN", &.{ "release", "--claim", token, "--reason", "observation complete", "--no-locality-probe", "--json" }));
     const released = suite.mustRunJSON(std.json.Value, arena, &.{ "task", "show", task_id, "--json" });
     try std.testing.expectEqualStrings("todo", released.object.get("status").?.string);

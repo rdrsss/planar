@@ -357,7 +357,8 @@ fn listClaimsByEntity(
         \\       repo_root, branch, head_sha_at_claim, dirty_at_claim,
         \\       purpose, base_ref,
         \\       claimed_at, last_heartbeat_at, lease_expires_at,
-        \\       released_at, release_reason
+        \\       released_at, release_reason,
+        \\       run_id, stage, failure_category
         \\from agent_work_claims
         \\where entity_kind = ? and entity_id = ?
         \\order by claimed_at asc
@@ -379,7 +380,8 @@ fn listClaimsBySession(
         \\       repo_root, branch, head_sha_at_claim, dirty_at_claim,
         \\       purpose, base_ref,
         \\       claimed_at, last_heartbeat_at, lease_expires_at,
-        \\       released_at, release_reason
+        \\       released_at, release_reason,
+        \\       run_id, stage, failure_category
         \\from agent_work_claims
         \\where session_id = ?
         \\order by claimed_at asc
@@ -401,7 +403,8 @@ fn listClaimsByToken(
         \\       repo_root, branch, head_sha_at_claim, dirty_at_claim,
         \\       purpose, base_ref,
         \\       claimed_at, last_heartbeat_at, lease_expires_at,
-        \\       released_at, release_reason
+        \\       released_at, release_reason,
+        \\       run_id, stage, failure_category
         \\from agent_work_claims
         \\where claim_token = ?
     ) catch return error.QueryFailed;
@@ -528,5 +531,11 @@ fn readClaimRow(
         .lease_expires_at = try stmt.columnTextAlloc(21, allocator),
         .released_at = try stmt.columnTextOpt(22, allocator),
         .release_reason = try stmt.columnTextOpt(23, allocator),
+        .run_id = stmt.columnIntOpt(24),
+        .stage = try stmt.columnTextOpt(25, allocator),
+        .failure_category = if (try stmt.columnTextOpt(26, allocator)) |category_text| blk: {
+            defer allocator.free(category_text);
+            break :blk types.FailureCategory.fromText(category_text) orelse return error.QueryFailed;
+        } else null,
     };
 }

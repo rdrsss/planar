@@ -17,8 +17,9 @@
 //!     (planar-agent-release).
 //!   - block: blocker edge inserted, task → blocked, claim → released
 //!     (planar-agent-block).
-//!   - claim primitive does NOT auto-transition task status
-//!     (planar-agent-claim).
+//!   - direct task claim atomically transitions todo → doing; the
+//!     --no-transition escape hatch and non-task claims preserve status
+//!     (direct-claim-transition).
 //!   - heartbeat extends lease (planar-agent-heartbeat).
 //!   - action start/end records nested action under claim
 //!     (planar-agent-action-start, planar-agent-action-end).
@@ -50,6 +51,22 @@ fn resolveAgentBin() []const u8 {
     @panic(
         \\PLANAR_AGENT_BIN is not set.
         \\Run integration tests via: make test-integration (which sets it).
+    );
+}
+
+/// Resolve the read-only planar-watch binary used for claim-ledger assertions.
+fn resolveWatchBin() []const u8 {
+    const raw: [*:null]?[*:0]u8 = std.c.environ;
+    var i: usize = 0;
+    while (raw[i]) |entry| : (i += 1) {
+        const s: []const u8 = std.mem.span(entry);
+        if (std.mem.startsWith(u8, s, "PLANAR_WATCH_BIN=")) {
+            return s["PLANAR_WATCH_BIN=".len..];
+        }
+    }
+    @panic(
+        \\PLANAR_WATCH_BIN is not set.
+        \\Run integration tests via: make test-integration
     );
 }
 
@@ -135,6 +152,39 @@ fn mustRunAgent(
     return res.stdout;
 }
 
+/// Run planar-watch against the suite DB and return stdout. Caller owns it.
+fn mustRunWatch(
+    suite: *const harness.Suite,
+    args: []const []const u8,
+) []u8 {
+    const gpa = suite.allocator;
+    var argv: std.ArrayList([]const u8) = .empty;
+    defer argv.deinit(gpa);
+    argv.append(gpa, resolveWatchBin()) catch @panic("OOM");
+    for (args) |arg| argv.append(gpa, arg) catch @panic("OOM");
+
+    const raw: [*:null]?[*:0]u8 = std.c.environ;
+    var env_count: usize = 0;
+    while (raw[env_count] != null) : (env_count += 1) {}
+    const env_slice: [:null]const ?[*:0]const u8 = @ptrCast(raw[0..env_count :null]);
+    const posix_block: std.process.Environ.PosixBlock = .{ .slice = env_slice };
+    const environ: std.process.Environ = .{ .block = posix_block };
+    var env_map = environ.createMap(gpa) catch @panic("OOM creating env map");
+    defer env_map.deinit();
+    env_map.put("PLANAR_DB", suite.db_path) catch @panic("OOM injecting PLANAR_DB");
+
+    const result = std.process.run(gpa, std.testing.io, .{
+        .argv = argv.items,
+        .environ_map = &env_map,
+    }) catch |e| std.debug.panic("planar-watch spawn failed: {s}", .{@errorName(e)});
+    defer gpa.free(result.stderr);
+    if (result.term != .exited or result.term.exited != 0) {
+        std.debug.print("planar-watch failed (term={any}): {s}\nstderr: {s}\n", .{ result.term, result.stdout, result.stderr });
+        @panic("planar-watch must-run failed");
+    }
+    return result.stdout;
+}
+
 /// Assert exit 0 and return stdout for a planar-agent invocation rooted at
 /// `cwd`. Caller owns the returned buffer.
 fn mustRunAgentInDir(
@@ -167,6 +217,41 @@ fn seedPlanWithTask(suite: *const harness.Suite, plan_slug: []const u8, task_tit
     const task_out = suite.mustRun(&.{ "task", "add", "--plan", plan_id_arg, task_title });
     gpa.free(task_out);
     return plan_id_arg;
+}
+
+fn addTaskId(suite: *const harness.Suite, plan_id: []const u8, title: []const u8) i64 {
+    const out = suite.mustRun(&.{ "task", "add", "--plan", plan_id, "--json", title });
+    defer suite.allocator.free(out);
+    return extractIntField(out, "\"id\"") orelse @panic("no task id");
+}
+
+fn directClaimToken(suite: *const harness.Suite, task_id: i64) []u8 {
+    const gpa = suite.allocator;
+    const ref = std.fmt.allocPrint(gpa, "task:{d}", .{task_id}) catch @panic("OOM");
+    defer gpa.free(ref);
+    const out = mustRunAgent(suite, &.{ "claim", "--entity", ref, "--no-locality-probe", "--json" });
+    defer gpa.free(out);
+    return extractStringField(gpa, out, "\"claim_token\":\"") catch @panic("no token");
+}
+
+fn directClaimTokenWithTtl(suite: *const harness.Suite, task_id: i64, ttl: []const u8) []u8 {
+    const gpa = suite.allocator;
+    const ref = std.fmt.allocPrint(gpa, "task:{d}", .{task_id}) catch @panic("OOM");
+    defer gpa.free(ref);
+    const out = mustRunAgent(suite, &.{ "claim", "--entity", ref, "--ttl", ttl, "--no-locality-probe", "--json" });
+    defer gpa.free(out);
+    return extractStringField(gpa, out, "\"claim_token\":\"") catch @panic("no token");
+}
+
+fn expectTaskStatus(suite: *const harness.Suite, task_id: i64, status: []const u8) !void {
+    const gpa = suite.allocator;
+    const id_arg = std.fmt.allocPrint(gpa, "{d}", .{task_id}) catch @panic("OOM");
+    defer gpa.free(id_arg);
+    const out = suite.mustRun(&.{ "task", "show", "--json", id_arg });
+    defer gpa.free(out);
+    const needle = std.fmt.allocPrint(gpa, "\"status\":\"{s}\"", .{status}) catch @panic("OOM");
+    defer gpa.free(needle);
+    try std.testing.expect(std.mem.indexOf(u8, out, needle) != null);
 }
 
 // =========================================================================
@@ -206,6 +291,52 @@ test "planar-agent version emits planar-agent-prefixed line" {
     try std.testing.expect(res.term == .exited);
     try std.testing.expectEqual(@as(u32, 0), res.term.exited);
     try std.testing.expect(std.mem.startsWith(u8, res.stdout, "planar-agent "));
+}
+
+test "planar-agent claim help and schema expose task transition contract" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const help = runAgent(&suite, &.{ "claim", "--help" });
+    defer help.deinit(gpa);
+    try std.testing.expect(help.term == .exited);
+    try std.testing.expectEqual(@as(u32, 0), help.term.exited);
+    try std.testing.expect(std.mem.indexOf(u8, help.stdout, "--no-transition") != null);
+    try std.testing.expect(std.mem.indexOf(u8, help.stdout, "todo to doing") != null);
+
+    const schema = runAgent(&suite, &.{"schema"});
+    defer schema.deinit(gpa);
+    try std.testing.expect(schema.term == .exited);
+    try std.testing.expectEqual(@as(u32, 0), schema.term.exited);
+    try std.testing.expect(std.mem.indexOf(u8, schema.stdout, "\"--no-transition\"") != null);
+}
+
+test "planar-agent failure category flags are closed and schema-visible" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    for ([_][]const u8{ "fail", "abort", "reconcile" }) |verb_name| {
+        const help = runAgent(&suite, &.{ verb_name, "--help" });
+        defer help.deinit(gpa);
+        try std.testing.expect(help.term == .exited);
+        try std.testing.expectEqual(@as(u32, 0), help.term.exited);
+        try std.testing.expect(std.mem.indexOf(u8, help.stdout, "--category") != null);
+        try std.testing.expect(std.mem.indexOf(u8, help.stdout, "usage_limit") != null);
+        try std.testing.expect(std.mem.indexOf(u8, help.stdout, "context_limit") != null);
+        try std.testing.expect(std.mem.indexOf(u8, help.stdout, "output_limit") != null);
+        try std.testing.expect(std.mem.indexOf(u8, help.stdout, "tool_failure") != null);
+        try std.testing.expect(std.mem.indexOf(u8, help.stdout, "validation") != null);
+        try std.testing.expect(std.mem.indexOf(u8, help.stdout, "unknown") != null);
+    }
+
+    const schema = runAgent(&suite, &.{"schema"});
+    defer schema.deinit(gpa);
+    try std.testing.expect(schema.term == .exited);
+    try std.testing.expectEqual(@as(u32, 0), schema.term.exited);
+    try std.testing.expect(std.mem.indexOf(u8, schema.stdout, "\"--category\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, schema.stdout, "\"usage_limit\"") != null);
 }
 
 // =========================================================================
@@ -507,7 +638,7 @@ test "planar-agent block: blocker edge, task → blocked, claim → released" {
 // claim / heartbeat / action start/end
 // =========================================================================
 
-test "planar-agent claim primitive does NOT auto-transition task status" {
+test "planar-agent direct task claim transitions todo to doing and completes without operator forcing" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
@@ -526,12 +657,264 @@ test "planar-agent claim primitive does NOT auto-transition task status" {
     try std.testing.expect(std.mem.indexOf(u8, claim_out, "\"status\":\"active\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, claim_out, "\"claim_token\":\"") != null);
 
-    // Task status is UNCHANGED (still todo).
+    const token = extractStringField(gpa, claim_out, "\"claim_token\":\"") catch @panic("no token");
+    defer gpa.free(token);
+
+    // Direct task claims enter the same doing state as pull.
+    const tid_arg = std.fmt.allocPrint(gpa, "{d}", .{task_id}) catch @panic("OOM");
+    defer gpa.free(tid_arg);
+    const task_json = suite.mustRun(&.{ "task", "show", "--json", tid_arg });
+    defer gpa.free(task_json);
+    try std.testing.expect(std.mem.indexOf(u8, task_json, "\"status\":\"doing\"") != null);
+
+    // The ordinary terminal path now works without a manual task update.
+    const complete_out = mustRunAgent(&suite, &.{ "complete", "--claim", token, "--json" });
+    defer gpa.free(complete_out);
+    try std.testing.expect(std.mem.indexOf(u8, complete_out, "\"status\":\"done\"") != null);
+}
+
+test "planar-agent direct task claim terminals include default failure category without operator forcing" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const pid_arg = seedPlanWithTask(&suite, "ag-claim-terminals", "unused-task");
+    defer gpa.free(pid_arg);
+    const fail_id = addTaskId(&suite, pid_arg, "fail-target");
+    const release_id = addTaskId(&suite, pid_arg, "release-target");
+    const block_id = addTaskId(&suite, pid_arg, "block-target");
+    const blocker_id = addTaskId(&suite, pid_arg, "blocker");
+
+    const fail_token = directClaimToken(&suite, fail_id);
+    defer gpa.free(fail_token);
+    const fail_out = mustRunAgent(&suite, &.{ "fail", "--claim", fail_token, "--reason", "retry", "--json" });
+    defer gpa.free(fail_out);
+    try std.testing.expect(std.mem.indexOf(u8, fail_out, "\"failure_category\":\"unknown\"") != null);
+    try expectTaskStatus(&suite, fail_id, "todo");
+
+    const release_token = directClaimToken(&suite, release_id);
+    defer gpa.free(release_token);
+    gpa.free(mustRunAgent(&suite, &.{ "release", "--claim", release_token, "--reason", "yield", "--json" }));
+    try expectTaskStatus(&suite, release_id, "todo");
+
+    const block_token = directClaimToken(&suite, block_id);
+    defer gpa.free(block_token);
+    const blocker_arg = std.fmt.allocPrint(gpa, "{d}", .{blocker_id}) catch @panic("OOM");
+    defer gpa.free(blocker_arg);
+    gpa.free(mustRunAgent(&suite, &.{ "block", "--claim", block_token, "--blocker", blocker_arg, "--reason", "waiting", "--json" }));
+    try expectTaskStatus(&suite, block_id, "blocked");
+}
+
+test "planar-agent fail writes category with task claim and action terminal state" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const pid_arg = seedPlanWithTask(&suite, "ag-failure-category", "categorized-fail");
+    defer gpa.free(pid_arg);
+    const pull_out = mustRunAgent(&suite, &.{ "pull", pid_arg, "--no-locality-probe", "--json" });
+    defer gpa.free(pull_out);
+    const task_id = extractIntField(pull_out, "\"task\":{\"id\"") orelse @panic("no task id");
+    const token = extractStringField(gpa, pull_out, "\"claim_token\":\"") catch @panic("no token");
+    defer gpa.free(token);
+
+    const failed = mustRunAgent(&suite, &.{ "fail", "--claim", token, "--reason", "capacity", "--category", "usage_limit", "--json" });
+    defer gpa.free(failed);
+    try std.testing.expect(std.mem.indexOf(u8, failed, "\"status\":\"aborted\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, failed, "\"failure_category\":\"usage_limit\"") != null);
+    try expectTaskStatus(&suite, task_id, "todo");
+
+    const sql = try std.fmt.allocPrint(
+        gpa,
+        "select c.status || '|' || c.failure_category || '|' || t.status || '|' || a.outcome from agent_work_claims c join tasks t on t.id = c.entity_id join agent_actions a on a.claim_id = c.id where c.claim_token = '{s}' order by a.id desc limit 1;",
+        .{token},
+    );
+    defer gpa.free(sql);
+    const row = try sqliteQueryLines(gpa, suite.db_path, sql);
+    defer gpa.free(row);
+    try std.testing.expectEqualStrings("aborted|usage_limit|todo|error\n", row);
+}
+
+test "planar-agent fail rejects unknown category without partial writes" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const pid_arg = seedPlanWithTask(&suite, "ag-failure-category-invalid", "invalid-category");
+    defer gpa.free(pid_arg);
+    const task_id = addTaskId(&suite, pid_arg, "invalid-target");
+    const token = directClaimToken(&suite, task_id);
+    defer gpa.free(token);
+
+    const rejected = runAgent(&suite, &.{ "fail", "--claim", token, "--reason", "capacity", "--category", "quota_exceeded", "--json" });
+    defer rejected.deinit(gpa);
+    try std.testing.expect(rejected.term == .exited);
+    try std.testing.expect(rejected.term.exited != 0);
+    try expectTaskStatus(&suite, task_id, "doing");
+
+    const sql = try std.fmt.allocPrint(
+        gpa,
+        "select c.status || '|' || coalesce(c.failure_category, 'null') || '|' || (select count(*) from agent_actions a where a.claim_id = c.id) || '|' || (select count(*) from agent_actions a where a.claim_id = c.id and a.ended_at is null) from agent_work_claims c where c.claim_token = '{s}';",
+        .{token},
+    );
+    defer gpa.free(sql);
+    const row = try sqliteQueryLines(gpa, suite.db_path, sql);
+    defer gpa.free(row);
+    // Parser rejection occurs before the terminal transaction. The original
+    // direct-claim marker remains the single open action; no closing or extra
+    // action was partially written.
+    try std.testing.expectEqualStrings("active|null|1|1\n", row);
+}
+
+test "failure category migration CHECK rejects values outside the closed enum" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const pid_arg = seedPlanWithTask(&suite, "ag-failure-category-check", "constraint-target");
+    defer gpa.free(pid_arg);
+    const task_id = addTaskId(&suite, pid_arg, "constraint-target-2");
+    const token = directClaimToken(&suite, task_id);
+    defer gpa.free(token);
+
+    const sql = try std.fmt.allocPrint(
+        gpa,
+        "update agent_work_claims set failure_category = 'quota_exceeded' where claim_token = '{s}';",
+        .{token},
+    );
+    defer gpa.free(sql);
+    const rejected = std.process.run(gpa, std.testing.io, .{
+        .argv = &.{ "sqlite3", suite.db_path, sql },
+    }) catch |e| {
+        std.debug.print("sqlite3 spawn failed: {s}\n", .{@errorName(e)});
+        return error.SkipZigTest;
+    };
+    defer gpa.free(rejected.stdout);
+    defer gpa.free(rejected.stderr);
+    try std.testing.expect(rejected.term == .exited);
+    try std.testing.expect(rejected.term.exited != 0);
+    try std.testing.expect(std.mem.indexOf(u8, rejected.stderr, "CHECK constraint failed") != null);
+
+    const verify_sql = try std.fmt.allocPrint(
+        gpa,
+        "select status || '|' || coalesce(failure_category, 'null') from agent_work_claims where claim_token = '{s}';",
+        .{token},
+    );
+    defer gpa.free(verify_sql);
+    const row = try sqliteQueryLines(gpa, suite.db_path, verify_sql);
+    defer gpa.free(row);
+    try std.testing.expectEqualStrings("active|null\n", row);
+}
+
+test "planar-agent non-failure terminals retain null failure category" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const pid_arg = seedPlanWithTask(&suite, "ag-failure-category-null", "unused");
+    defer gpa.free(pid_arg);
+    const complete_id = addTaskId(&suite, pid_arg, "complete-null");
+    const release_id = addTaskId(&suite, pid_arg, "release-null");
+    const block_id = addTaskId(&suite, pid_arg, "block-null");
+    const blocker_id = addTaskId(&suite, pid_arg, "blocker");
+
+    const complete_token = directClaimToken(&suite, complete_id);
+    defer gpa.free(complete_token);
+    const complete_out = mustRunAgent(&suite, &.{ "complete", "--claim", complete_token, "--json" });
+    defer gpa.free(complete_out);
+    try std.testing.expect(std.mem.indexOf(u8, complete_out, "\"failure_category\":null") != null);
+
+    const release_token = directClaimToken(&suite, release_id);
+    defer gpa.free(release_token);
+    const release_out = mustRunAgent(&suite, &.{ "release", "--claim", release_token, "--json" });
+    defer gpa.free(release_out);
+    try std.testing.expect(std.mem.indexOf(u8, release_out, "\"failure_category\":null") != null);
+
+    const block_token = directClaimToken(&suite, block_id);
+    defer gpa.free(block_token);
+    const blocker_arg = try std.fmt.allocPrint(gpa, "{d}", .{blocker_id});
+    defer gpa.free(blocker_arg);
+    const block_out = mustRunAgent(&suite, &.{ "block", "--claim", block_token, "--blocker", blocker_arg, "--json" });
+    defer gpa.free(block_out);
+    try std.testing.expect(std.mem.indexOf(u8, block_out, "\"failure_category\":null") != null);
+}
+
+test "planar-agent direct task claim --no-transition preserves todo" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const pid_arg = seedPlanWithTask(&suite, "ag-claim-no-transition", "direct-target");
+    defer gpa.free(pid_arg);
+    const list_json = suite.mustRun(&.{ "task", "list", "--scope", "global", "--plan", pid_arg, "--json" });
+    defer gpa.free(list_json);
+    const task_id = extractIntField(list_json, "\"id\"") orelse @panic("no task id");
+    const ref = std.fmt.allocPrint(gpa, "task:{d}", .{task_id}) catch @panic("OOM");
+    defer gpa.free(ref);
+
+    const claim_out = mustRunAgent(&suite, &.{ "claim", "--entity", ref, "--no-transition", "--no-locality-probe", "--json" });
+    defer gpa.free(claim_out);
+    try std.testing.expect(std.mem.indexOf(u8, claim_out, "\"status\":\"active\"") != null);
+
     const tid_arg = std.fmt.allocPrint(gpa, "{d}", .{task_id}) catch @panic("OOM");
     defer gpa.free(tid_arg);
     const task_json = suite.mustRun(&.{ "task", "show", "--json", tid_arg });
     defer gpa.free(task_json);
     try std.testing.expect(std.mem.indexOf(u8, task_json, "\"status\":\"todo\"") != null);
+
+    const action_rows = try sqliteQueryLines(gpa, suite.db_path, "select count(*) from agent_actions;");
+    defer gpa.free(action_rows);
+    try std.testing.expectEqualStrings("0\n", action_rows);
+
+    const plan_ref = std.fmt.allocPrint(gpa, "plan:{s}", .{pid_arg}) catch @panic("OOM");
+    defer gpa.free(plan_ref);
+    const plan_claim = mustRunAgent(&suite, &.{ "claim", "--entity", plan_ref, "--no-locality-probe", "--json" });
+    defer gpa.free(plan_claim);
+    const plan_json = suite.mustRun(&.{ "plan", "show", "--json", pid_arg });
+    defer gpa.free(plan_json);
+    try std.testing.expect(std.mem.indexOf(u8, plan_json, "\"status\":\"draft\"") != null);
+}
+
+test "planar-agent direct task claim rejects doing done and blocked and rolls back claims" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const pid_arg = seedPlanWithTask(&suite, "ag-claim-guard", "direct-target");
+    defer gpa.free(pid_arg);
+    for ([_][]const u8{ "doing", "done", "blocked" }) |status| {
+        const task_id = addTaskId(&suite, pid_arg, status);
+        const tid_arg = std.fmt.allocPrint(gpa, "{d}", .{task_id}) catch @panic("OOM");
+        defer gpa.free(tid_arg);
+        if (std.mem.eql(u8, status, "done"))
+            gpa.free(suite.mustRun(&.{ "task", "update", tid_arg, "--status", "doing" }));
+        gpa.free(suite.mustRun(&.{ "task", "update", tid_arg, "--status", status }));
+
+        const ref = std.fmt.allocPrint(gpa, "task:{d}", .{task_id}) catch @panic("OOM");
+        defer gpa.free(ref);
+        const rejected = runAgent(&suite, &.{ "claim", "--entity", ref, "--no-locality-probe", "--json" });
+        defer rejected.deinit(gpa);
+        try std.testing.expect(rejected.term == .exited);
+        try std.testing.expect(rejected.term.exited != 0);
+        try expectTaskStatus(&suite, task_id, status);
+
+        const ledger_json = mustRunWatch(&suite, &.{ "claims", "--status", "all", "--plan", pid_arg, "--json" });
+        defer gpa.free(ledger_json);
+        var ledger = try std.json.parseFromSlice(std.json.Value, gpa, ledger_json, .{});
+        defer ledger.deinit();
+        for (ledger.value.object.get("claims").?.array.items) |claim| {
+            const row = claim.object;
+            const is_rejected_task = std.mem.eql(u8, row.get("entity_kind").?.string, "task") and
+                row.get("entity_id").?.integer == task_id;
+            try std.testing.expect(!is_rejected_task);
+        }
+
+        // A pure claim can immediately acquire the entity, proving the failed
+        // transition did not leave an active claim row behind.
+        const fallback = mustRunAgent(&suite, &.{ "claim", "--entity", ref, "--no-transition", "--no-locality-probe", "--json" });
+        defer gpa.free(fallback);
+        try std.testing.expect(std.mem.indexOf(u8, fallback, "\"status\":\"active\"") != null);
+    }
 }
 
 test "planar-agent claim refuses unsupported entity prefixes" {
@@ -883,6 +1266,139 @@ test "planar-agent abort releases a stuck claim from a different session and rec
     try std.testing.expect(std.mem.indexOf(u8, abort_out, "\"status\":\"aborted\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, abort_out, "\"aborting_session\":") != null);
     try std.testing.expect(std.mem.indexOf(u8, abort_out, "\"release_reason\":\"force release\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, abort_out, "\"failure_category\":null") != null);
+}
+
+test "planar-agent recovery-category abort and reconcile restore direct task claims" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const pid_arg = seedPlanWithTask(&suite, "ag-recovery-category", "abort-target");
+    defer gpa.free(pid_arg);
+    const abort_id = addTaskId(&suite, pid_arg, "abort-categorized");
+    const reconcile_id = addTaskId(&suite, pid_arg, "reconcile-categorized");
+
+    const abort_token = directClaimToken(&suite, abort_id);
+    defer gpa.free(abort_token);
+    const abort_out = mustRunAgent(&suite, &.{ "abort", "--claim", abort_token, "--category", "context_limit", "--json" });
+    defer gpa.free(abort_out);
+    try std.testing.expect(std.mem.indexOf(u8, abort_out, "\"failure_category\":\"context_limit\"") != null);
+    try expectTaskStatus(&suite, abort_id, "todo");
+
+    const ref = try std.fmt.allocPrint(gpa, "task:{d}", .{reconcile_id});
+    defer gpa.free(ref);
+    const claim_out = mustRunAgent(&suite, &.{ "claim", "--entity", ref, "--ttl", "1", "--no-locality-probe", "--json" });
+    defer gpa.free(claim_out);
+    const reconcile_token = extractStringField(gpa, claim_out, "\"claim_token\":\"") catch @panic("no reconcile token");
+    defer gpa.free(reconcile_token);
+    try std.testing.io.sleep(std.Io.Duration.fromSeconds(2), std.Io.Clock.awake);
+
+    const reconcile_out = mustRunAgent(&suite, &.{ "reconcile", "--category", "output_limit", "--stale-after", "0", "--json" });
+    defer gpa.free(reconcile_out);
+    try std.testing.expect(std.mem.indexOf(u8, reconcile_out, "\"claims_marked_stale\":1") != null);
+
+    const sql = try std.fmt.allocPrint(gpa, "select status || '|' || failure_category from agent_work_claims where claim_token = '{s}';", .{reconcile_token});
+    defer gpa.free(sql);
+    const row = try sqliteQueryLines(gpa, suite.db_path, sql);
+    defer gpa.free(row);
+    try std.testing.expectEqualStrings("stale|output_limit\n", row);
+    try expectTaskStatus(&suite, reconcile_id, "todo");
+
+    const marker_sql = try std.fmt.allocPrint(
+        gpa,
+        "select count(*) from agent_actions where claim_id in (select id from agent_work_claims where claim_token in ('{s}','{s}')) and action_kind = 'claim_check' and ended_at is null;",
+        .{ abort_token, reconcile_token },
+    );
+    defer gpa.free(marker_sql);
+    const open_markers = try sqliteQueryLines(gpa, suite.db_path, marker_sql);
+    defer gpa.free(open_markers);
+    try std.testing.expectEqualStrings("0\n", open_markers);
+}
+
+test "plan-scoped reconcile categorizes every target claim and leaves other plans untouched" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const plan_a_arg = seedPlanWithTask(&suite, "ag-reconcile-category-plan-a", "target-a1");
+    defer gpa.free(plan_a_arg);
+    const task_a1 = addTaskId(&suite, plan_a_arg, "target-a2");
+    const task_a2 = addTaskId(&suite, plan_a_arg, "target-a3");
+
+    const plan_b_json = suite.mustRun(&.{ "plan", "create", "--slug", "ag-reconcile-category-plan-b", "--json", "plan b" });
+    defer gpa.free(plan_b_json);
+    const plan_b_id = extractIntField(plan_b_json, "\"id\"") orelse @panic("no plan b id");
+    const plan_b_arg = try std.fmt.allocPrint(gpa, "{d}", .{plan_b_id});
+    defer gpa.free(plan_b_arg);
+    const task_b = addTaskId(&suite, plan_b_arg, "untargeted-b");
+
+    const token_a1 = directClaimTokenWithTtl(&suite, task_a1, "1");
+    defer gpa.free(token_a1);
+    const token_a2 = directClaimTokenWithTtl(&suite, task_a2, "1");
+    defer gpa.free(token_a2);
+    const token_b = directClaimTokenWithTtl(&suite, task_b, "1");
+    defer gpa.free(token_b);
+    try std.testing.io.sleep(std.Io.Duration.fromSeconds(2), std.Io.Clock.awake);
+
+    const scoped = mustRunAgent(&suite, &.{
+        "reconcile", "--plan", plan_a_arg, "--category", "validation", "--stale-after", "0", "--json",
+    });
+    defer gpa.free(scoped);
+    try std.testing.expect(std.mem.indexOf(u8, scoped, "\"claims_marked_stale\":2") != null);
+
+    const scoped_sql = try std.fmt.allocPrint(
+        gpa,
+        "select claim_token || '|' || status || '|' || coalesce(failure_category, 'null') from agent_work_claims where claim_token in ('{s}','{s}','{s}') order by claim_token;",
+        .{ token_a1, token_a2, token_b },
+    );
+    defer gpa.free(scoped_sql);
+    const scoped_rows = try sqliteQueryLines(gpa, suite.db_path, scoped_sql);
+    defer gpa.free(scoped_rows);
+    const a1_expected = try std.fmt.allocPrint(gpa, "{s}|stale|validation", .{token_a1});
+    defer gpa.free(a1_expected);
+    const a2_expected = try std.fmt.allocPrint(gpa, "{s}|stale|validation", .{token_a2});
+    defer gpa.free(a2_expected);
+    const b_active_expected = try std.fmt.allocPrint(gpa, "{s}|active|null", .{token_b});
+    defer gpa.free(b_active_expected);
+    try std.testing.expect(std.mem.indexOf(u8, scoped_rows, a1_expected) != null);
+    try std.testing.expect(std.mem.indexOf(u8, scoped_rows, a2_expected) != null);
+    try std.testing.expect(std.mem.indexOf(u8, scoped_rows, b_active_expected) != null);
+
+    const ledger_json = mustRunWatch(&suite, &.{ "claims", "--status", "all", "--plan", plan_a_arg, "--json" });
+    defer gpa.free(ledger_json);
+    var ledger = try std.json.parseFromSlice(std.json.Value, gpa, ledger_json, .{});
+    defer ledger.deinit();
+    var categorized: usize = 0;
+    for (ledger.value.object.get("claims").?.array.items) |claim| {
+        const category = claim.object.get("failure_category") orelse return error.MissingFailureCategory;
+        if (category == .string and std.mem.eql(u8, category.string, "validation")) categorized += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), categorized);
+
+    const ps_json = mustRunWatch(&suite, &.{ "ps", "--stale", "--plan", plan_a_arg, "--json" });
+    defer gpa.free(ps_json);
+    var ps = try std.json.parseFromSlice(std.json.Value, gpa, ps_json, .{});
+    defer ps.deinit();
+    var ps_categorized: usize = 0;
+    for (ps.value.object.get("stale").?.array.items) |claim| {
+        const category = claim.object.get("failure_category") orelse return error.MissingFailureCategory;
+        if (category == .string and std.mem.eql(u8, category.string, "validation")) ps_categorized += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), ps_categorized);
+
+    const global = mustRunAgent(&suite, &.{ "reconcile", "--stale-after", "0", "--json" });
+    defer gpa.free(global);
+    try std.testing.expect(std.mem.indexOf(u8, global, "\"claims_marked_stale\":1") != null);
+    const global_sql = try std.fmt.allocPrint(
+        gpa,
+        "select status || '|' || coalesce(failure_category, 'null') from agent_work_claims where claim_token = '{s}';",
+        .{token_b},
+    );
+    defer gpa.free(global_sql);
+    const global_row = try sqliteQueryLines(gpa, suite.db_path, global_sql);
+    defer gpa.free(global_row);
+    try std.testing.expectEqualStrings("stale|null\n", global_row);
 }
 
 // =========================================================================

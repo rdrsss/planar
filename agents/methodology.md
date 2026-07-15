@@ -91,7 +91,7 @@ The claim ritual is expressed entirely in `planar-agent` verbs (the dedicated ag
 
 1. **Check.** Before selecting work, the orchestrator runs `planar plan next <plan>` (operator-side claim-aware read) or `planar-agent peek <plan>` (agent-side dry-run of "what would `pull` pick"). Do not derive next work from `task list --status todo` alone.
 2. **Pull.** `planar-agent pull <plan-id> [--role coder] [--worktree <id-or-path>]` atomically picks the next eligible task, claims it (`agent_work_claims.status='active'`), flips the task to `doing`, and starts a top-level `agent_actions` row. Returns `{claim_token, task, action_id}`. When no work is available it returns `{ok:true, no_work:true}` and the agent terminates cleanly.
-   For dispatch where the caller already has a specific task ID (orchestrator hand-picking), use `planar-agent claim --entity task:<id> [--role <r>] [--worktree <path>]` instead. `claim` does not auto-transition the task; the caller is responsible for the status flip (or for invoking `planar-agent action start` to mark work as begun without touching task status).
+   For dispatch where the caller already has a specific task ID (orchestrator hand-picking), use `planar-agent claim --entity task:<id> [--role <r>] [--worktree <path>]` instead. A direct task claim atomically flips `todo` to `doing`, so the ordinary terminal verbs work without an operator-side status update. Use `--no-transition` only when the caller deliberately needs the pure claim primitive; plan and plan-step claims never change entity status.
 
    **Cross-session dispatch hierarchy (`--parent-action`).** When an orchestrator dispatches a coder sub-agent and wants the dispatch to appear as a child of the orchestrator's own action in `planar-watch tree`, it passes `--parent-action <its-own-action-id>` to `planar-agent pull`. The orchestrator's action id is the `action_id` field returned by its own `pull` or `action start`. Example:
 
@@ -269,6 +269,55 @@ Between candidate boundaries, every held claim still follows the TTL/2
 heartbeat rule. In particular, heartbeat all surviving held claims immediately
 after each serial subagent dispatch returns; checkpointing is not a substitute
 for lease renewal.
+
+## Quota-aware staged dispatch policy
+
+`parallel-fanout` starts capacity-unknown work in bounded waves. At the
+strategy gate, the operator or vendor surface sets a maximum wave size; the
+orchestrator records that choice with the dispatch preview and never starts
+more than that many lanes at once. If no maximum is supplied, the orchestrator
+proposes a conservative bounded size and waits for confirmation instead of
+launching the full eligible set. Dependency barriers and the engine's
+parallel-eligibility result remain authoritative: the capacity bound may split
+an eligible wave into smaller dispatch waves, but it never makes a serialized
+or blocked lane eligible.
+
+The model-driven orchestrator maintains one circuit breaker per provider for
+the current run. A terminal categorized as `usage_limit`, `context_limit`, or
+`output_limit` opens only that provider's breaker on the first occurrence.
+After it opens:
+
+1. Do not start any later, not-yet-running lane assigned to that provider.
+2. Let already-running independent lanes reach their ordinary terminal result;
+   do not cancel them or erase landed work.
+3. Continue eligible lanes assigned to unaffected providers, still respecting
+   their wave-size bounds and dependency barriers.
+4. Run the existing wave barrier and explicit reconcile path, then apply the
+   durable-boundary checklist independently to every surviving target.
+
+Opening a breaker never reconciles, aborts, reclaims, or otherwise mutates a
+live claim automatically. A clean categorized terminal remains governed by its
+atomic terminal result. A dead or abandoned claim is reported with the exact
+`planar-watch claims --json` inspection and `planar-agent reconcile --dry-run`
+recovery commands; an operator must explicitly choose any subsequent abort or
+reconcile mutation. Successfully landed lanes and independent artifacts remain
+applied, and the orchestration result claims no cross-lane rollback.
+
+Before yielding, the result and recovery packet name the affected provider and
+systemic category, the breaker as open, the landed and already-running lanes,
+the unfinished provider-blocked lanes, the unaffected lanes allowed to
+continue, and each surviving task's exact `planar resume <task-id> --json`
+command. Circuit state is model-layer state, not a new persisted scheduler or
+background process.
+
+On a zero-context resume, re-read the wave's structured claim outcomes,
+rederive each provider's breaker state, run `planar resume <task-id> --json`
+for every surviving target, and recompute the unfinished eligible set. An open
+breaker closes only after the operator explicitly chooses to dispatch that
+provider again and confirms a new maximum wave size. Elapsed time, a fresh
+session, or capacity on another provider never closes it implicitly. Provider
+API polling, quota prediction, automatic retry timing, and automatic claim
+reconciliation remain out of scope.
 
 ## Orchestration strategies
 

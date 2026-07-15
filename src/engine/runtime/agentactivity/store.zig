@@ -2,7 +2,7 @@
 //! `agent_work_claims` and `agent_actions`.
 //!
 //! These are the single-table CRUD primitives the engine consumes;
-//! multi-table atomic operations (pull/complete/fail/release/block)
+//! multi-table atomic operations (pull/claim/complete/fail/release/block)
 //! live in `atomic.zig` and call into this module under a
 //! `BEGIN IMMEDIATE` transaction.
 //!
@@ -239,6 +239,7 @@ pub fn releaseClaim(
     claim_token: []const u8,
     new_status: types.ClaimStatus,
     reason: ?[]const u8,
+    failure_category: ?types.FailureCategory,
 ) Error!types.Claim {
     if (new_status == .active) return Error.QueryFailed;
 
@@ -246,13 +247,15 @@ pub fn releaseClaim(
         \\update agent_work_claims
         \\set status = ?,
         \\    released_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
-        \\    release_reason = ?
+        \\    release_reason = ?,
+        \\    failure_category = ?
         \\where claim_token = ?
         \\  and status = 'active'
         \\  and lease_expires_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now')
     , &.{
         .{ .text = new_status.toText() },
         textOrNull(reason),
+        textOrNull(if (failure_category) |category| category.toText() else null),
         .{ .text = claim_token },
     }) catch return Error.QueryFailed;
 
@@ -275,16 +278,52 @@ pub fn abortClaim(
     allocator: std.mem.Allocator,
     claim_token: []const u8,
     reason: ?[]const u8,
+    failure_category: ?types.FailureCategory,
 ) Error!types.Claim {
     _ = d.execParams(
         \\update agent_work_claims
         \\set status = 'aborted',
         \\    released_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
-        \\    release_reason = ?
+        \\    release_reason = ?,
+        \\    failure_category = ?
         \\where claim_token = ?
-    , &.{ textOrNull(reason), .{ .text = claim_token } }) catch return Error.QueryFailed;
+    , &.{ textOrNull(reason), textOrNull(if (failure_category) |category| category.toText() else null), .{ .text = claim_token } }) catch return Error.QueryFailed;
     if (d.changes() == 0) return Error.ClaimNotFound;
     return try getClaimByToken(d, allocator, claim_token);
+}
+
+/// Restore a task transitioned by the direct-claim wrapper after explicit
+/// operator abort. The `claim_check` action is the transactional marker that
+/// distinguishes default direct dispatch from `--no-transition`; pull claims
+/// keep their longstanding abort semantics. Caller holds BEGIN IMMEDIATE.
+pub fn resetDirectClaimTaskAfterAbort(
+    d: *db.sqlite.Db,
+    claim_id: i64,
+    task_id: i64,
+) Error!void {
+    _ = d.execParams(
+        \\update tasks set status = 'todo', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        \\where id = ? and status = 'doing'
+        \\  and exists (
+        \\    select 1 from agent_actions
+        \\    where claim_id = ? and action_kind = 'claim_check'
+        \\  )
+        \\  and not exists (
+        \\    select 1 from agent_work_claims
+        \\    where entity_kind = 'task' and entity_id = ? and status = 'active'
+        \\      and lease_expires_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        \\  )
+    , &.{ .{ .int = task_id }, .{ .int = claim_id }, .{ .int = task_id } }) catch return Error.QueryFailed;
+
+    // The marker represents the claim's live work interval. End it in this
+    // same recovery transaction so watch/log never report work continuing
+    // after the claim was force-aborted.
+    _ = d.execParams(
+        \\update agent_actions
+        \\set ended_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+        \\    outcome = 'aborted'
+        \\where claim_id = ? and action_kind = 'claim_check' and ended_at is null
+    , &.{.{ .int = claim_id }}) catch return Error.QueryFailed;
 }
 
 pub fn isClaimActiveUnexpired(d: *db.sqlite.Db, claim_token: []const u8) Error!bool {
@@ -647,6 +686,8 @@ pub const ReconcilePolicy = struct {
     /// or entity_kind='task' AND tasks.plan_id=N).
     /// Null = global sweep (all plans), the default.
     plan_id: ?i64 = null,
+    /// Optional operator-supplied classification written on claims made stale.
+    failure_category: ?types.FailureCategory = null,
 };
 
 pub const ReconcileResult = struct {
@@ -680,7 +721,7 @@ pub fn reconcileStale(
             \\       purpose, base_ref,
             \\       claimed_at, last_heartbeat_at, lease_expires_at,
             \\       released_at, release_reason,
-            \\       run_id, stage
+            \\       run_id, stage, failure_category
             \\from agent_work_claims
             \\where status = 'active'
             \\  and lease_expires_at < strftime('%Y-%m-%dT%H:%M:%fZ','now', '-{d} seconds')
@@ -695,7 +736,7 @@ pub fn reconcileStale(
             \\       purpose, base_ref,
             \\       claimed_at, last_heartbeat_at, lease_expires_at,
             \\       released_at, release_reason,
-            \\       run_id, stage
+            \\       run_id, stage, failure_category
             \\from agent_work_claims
             \\where status = 'active'
             \\  and lease_expires_at < strftime('%Y-%m-%dT%H:%M:%fZ','now', '-{d} seconds')
@@ -780,9 +821,10 @@ pub fn reconcileStale(
                 \\update agent_work_claims
                 \\set status = 'stale',
                 \\    released_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
-                \\    release_reason = 'reconcile: heartbeat expired'
+                \\    release_reason = 'reconcile: heartbeat expired',
+                \\    failure_category = ?
                 \\where id = ? and status = 'active'
-            , &.{.{ .int = c.id }}) catch return Error.QueryFailed;
+            , &.{ textOrNull(if (policy.failure_category) |category| category.toText() else null), .{ .int = c.id } }) catch return Error.QueryFailed;
         }
         result.claims_marked_stale = @intCast(candidates.items.len);
     } else {
@@ -793,7 +835,8 @@ pub fn reconcileStale(
                 \\update agent_work_claims
                 \\set status = 'stale',
                 \\    released_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
-                \\    release_reason = 'reconcile: heartbeat expired'
+                \\    release_reason = 'reconcile: heartbeat expired',
+                \\    failure_category = ?
                 \\where status = 'active'
                 \\  and lease_expires_at < strftime('%Y-%m-%dT%H:%M:%fZ','now', '-{d} seconds')
                 \\  and session_id = {d}
@@ -803,17 +846,20 @@ pub fn reconcileStale(
                 \\update agent_work_claims
                 \\set status = 'stale',
                 \\    released_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
-                \\    release_reason = 'reconcile: heartbeat expired'
+                \\    release_reason = 'reconcile: heartbeat expired',
+                \\    failure_category = ?
                 \\where status = 'active'
                 \\  and lease_expires_at < strftime('%Y-%m-%dT%H:%M:%fZ','now', '-{d} seconds')
             , .{policy.stale_after_secs}) catch return Error.QueryFailed;
-        _ = d.execParams(upd_sql, &.{}) catch return Error.QueryFailed;
+        _ = d.execParams(upd_sql, &.{textOrNull(if (policy.failure_category) |category| category.toText() else null)}) catch return Error.QueryFailed;
         result.claims_marked_stale = @intCast(candidates.items.len);
     }
 
-    // `pullNext` moves claimed tasks to doing. Once that claim is stale the
-    // task must become eligible again, but only when this claim actually had
-    // an action and no replacement claim currently owns the task.
+    // `pullNext` and default direct task claims move tasks to doing. Once such
+    // a claim is stale the task must become eligible again, but only when the
+    // claim has ownership evidence (the pull action or direct `claim_check`
+    // marker) and no replacement claim currently owns the task. Primitive
+    // `--no-transition` claims have no action and therefore cannot reset state.
     for (candidates.items) |c| {
         if (c.entity_kind != .task) continue;
         _ = d.execParams(
@@ -826,6 +872,17 @@ pub fn reconcileStale(
             \\      and lease_expires_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now')
             \\  )
         , &.{ .{ .int = c.entity_id }, .{ .int = c.id }, .{ .int = c.entity_id } }) catch return Error.QueryFailed;
+
+        // Unlike a pull worker action, the direct-claim marker exists only to
+        // delimit the claim-owned task transition. A stale claim ends that
+        // interval even when its owning session remains live.
+        _ = d.execParams(
+            \\update agent_actions
+            \\set ended_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+            \\    outcome = 'aborted'
+            \\where claim_id = ? and action_kind = 'claim_check' and ended_at is null
+        , &.{.{ .int = c.id }}) catch return Error.QueryFailed;
+        result.actions_closed += d.changes();
     }
 
     // Orphaned actions: ended_at IS NULL and the owning session has
@@ -900,7 +957,7 @@ pub fn reconcileStale(
             "\n    where s.id = agent_actions.session_id and s.ended_at is not null" ++
             "\n  )";
     _ = d.execParams(act_upd_sql, &.{}) catch return Error.QueryFailed;
-    result.actions_closed = d.changes();
+    result.actions_closed += d.changes();
 
     result.candidates = try candidates.toOwnedSlice(allocator);
     return result;
@@ -1295,7 +1352,7 @@ fn intOrNull(v: ?i64) db.sqlite.Param {
 }
 
 // -- SQL constants ------------------------------------------------------
-// Column order for all claim SELECT statements (indices 0-25):
+// Column order for all claim SELECT statements (indices 0-26):
 //   0:id, 1:claim_token, 2:session_id, 3:entity_kind, 4:entity_id, 5:claim_scope,
 //   6:status, 7:vendor, 8:vendor_session_id, 9:role, 10:model,
 //   11:worktree_id, 12:worktree_path,
@@ -1303,7 +1360,7 @@ fn intOrNull(v: ?i64) db.sqlite.Param {
 //   17:purpose, 18:base_ref,
 //   19:claimed_at, 20:last_heartbeat_at, 21:lease_expires_at,
 //   22:released_at, 23:release_reason,
-//   24:run_id, 25:stage
+//   24:run_id, 25:stage, 26:failure_category
 
 const claim_columns =
     \\id, claim_token, session_id, entity_kind, entity_id, claim_scope,
@@ -1313,7 +1370,7 @@ const claim_columns =
     \\purpose, base_ref,
     \\claimed_at, last_heartbeat_at, lease_expires_at,
     \\released_at, release_reason,
-    \\run_id, stage
+    \\run_id, stage, failure_category
 ;
 
 const claim_select_by_id: [:0]const u8 =
@@ -1324,7 +1381,7 @@ const claim_select_by_id: [:0]const u8 =
     \\       purpose, base_ref,
     \\       claimed_at, last_heartbeat_at, lease_expires_at,
     \\       released_at, release_reason,
-    \\       run_id, stage
+    \\       run_id, stage, failure_category
     \\from agent_work_claims where id = ?
 ;
 
@@ -1336,7 +1393,7 @@ const claim_select_by_token: [:0]const u8 =
     \\       purpose, base_ref,
     \\       claimed_at, last_heartbeat_at, lease_expires_at,
     \\       released_at, release_reason,
-    \\       run_id, stage
+    \\       run_id, stage, failure_category
     \\from agent_work_claims where claim_token = ?
 ;
 
@@ -1348,7 +1405,7 @@ const claim_select_active_all: [:0]const u8 =
     \\       purpose, base_ref,
     \\       claimed_at, last_heartbeat_at, lease_expires_at,
     \\       released_at, release_reason,
-    \\       run_id, stage
+    \\       run_id, stage, failure_category
     \\from agent_work_claims
     \\where status = 'active'
     \\order by claimed_at desc
@@ -1362,7 +1419,7 @@ const claim_select_active_for_session: [:0]const u8 =
     \\       purpose, base_ref,
     \\       claimed_at, last_heartbeat_at, lease_expires_at,
     \\       released_at, release_reason,
-    \\       run_id, stage
+    \\       run_id, stage, failure_category
     \\from agent_work_claims
     \\where status = 'active' and session_id = ?
     \\order by claimed_at desc
@@ -1376,7 +1433,7 @@ const claim_select_stale: [:0]const u8 =
     \\       purpose, base_ref,
     \\       claimed_at, last_heartbeat_at, lease_expires_at,
     \\       released_at, release_reason,
-    \\       run_id, stage
+    \\       run_id, stage, failure_category
     \\from agent_work_claims
     \\where status = 'stale'
     \\   or (status = 'active' and lease_expires_at < strftime('%Y-%m-%dT%H:%M:%fZ','now'))
@@ -1391,7 +1448,7 @@ const claim_select_by_entity: [:0]const u8 =
     \\       purpose, base_ref,
     \\       claimed_at, last_heartbeat_at, lease_expires_at,
     \\       released_at, release_reason,
-    \\       run_id, stage
+    \\       run_id, stage, failure_category
     \\from agent_work_claims
     \\where entity_kind = ? and entity_id = ?
     \\order by claimed_at desc
@@ -1405,7 +1462,7 @@ const claim_select_by_session: [:0]const u8 =
     \\       purpose, base_ref,
     \\       claimed_at, last_heartbeat_at, lease_expires_at,
     \\       released_at, release_reason,
-    \\       run_id, stage
+    \\       run_id, stage, failure_category
     \\from agent_work_claims
     \\where session_id = ?
     \\order by claimed_at desc
@@ -1441,6 +1498,13 @@ fn readClaimRow(stmt: *db.sqlite.Stmt, allocator: std.mem.Allocator) Error!types
         dirty = types.Dirty.fromText(d_text);
     }
 
+    const category_opt = try stmt.columnTextOpt(26, allocator);
+    var failure_category: ?types.FailureCategory = null;
+    if (category_opt) |category_text| {
+        defer allocator.free(category_text);
+        failure_category = types.FailureCategory.fromText(category_text) orelse return Error.QueryFailed;
+    }
+
     return .{
         .id = stmt.columnInt(0),
         .claim_token = try stmt.columnTextAlloc(1, allocator),
@@ -1468,6 +1532,7 @@ fn readClaimRow(stmt: *db.sqlite.Stmt, allocator: std.mem.Allocator) Error!types
         .release_reason = try stmt.columnTextOpt(23, allocator),
         .run_id = stmt.columnIntOpt(24),
         .stage = try stmt.columnTextOpt(25, allocator),
+        .failure_category = failure_category,
     };
 }
 
@@ -1654,7 +1719,7 @@ test "heartbeatClaim refuses released claim with ClaimNotActive" {
     });
     defer c.deinit(a);
 
-    const r = try releaseClaim(&d, a, c.claim_token, .released, "test");
+    const r = try releaseClaim(&d, a, c.claim_token, .released, "test", null);
     r.deinit(a);
 
     try std.testing.expectError(Error.ClaimNotActive, heartbeatClaim(&d, a, c.claim_token, 600));
@@ -1679,7 +1744,7 @@ test "expired claim cannot be heartbeated or normally released" {
         &.{.{ .int = claim.id }},
     );
     try std.testing.expectError(Error.ClaimNotActive, heartbeatClaim(&d, a, claim.claim_token, 600));
-    try std.testing.expectError(Error.ClaimNotActive, releaseClaim(&d, a, claim.claim_token, .released, "late"));
+    try std.testing.expectError(Error.ClaimNotActive, releaseClaim(&d, a, claim.claim_token, .released, "late", null));
 }
 
 test "releaseClaim transitions status and records reason" {
@@ -1696,7 +1761,7 @@ test "releaseClaim transitions status and records reason" {
     });
     defer c.deinit(a);
 
-    const r = try releaseClaim(&d, a, c.claim_token, .completed, "done");
+    const r = try releaseClaim(&d, a, c.claim_token, .completed, "done", null);
     defer r.deinit(a);
     try std.testing.expectEqual(types.ClaimStatus.completed, r.status);
     try std.testing.expect(r.released_at != null);
@@ -1718,7 +1783,7 @@ test "abortClaim works on any session and marks aborted" {
     defer c.deinit(a);
 
     // No session-ownership check on abort.
-    const r = try abortClaim(&d, a, c.claim_token, "stuck");
+    const r = try abortClaim(&d, a, c.claim_token, "stuck", null);
     defer r.deinit(a);
     try std.testing.expectEqual(types.ClaimStatus.aborted, r.status);
 }
@@ -2140,7 +2205,7 @@ test "listActive surfaces active claims and skips released" {
         .vendor = "test",
     });
     defer c2.deinit(a);
-    const r = try releaseClaim(&d, a, c2.claim_token, .released, null);
+    const r = try releaseClaim(&d, a, c2.claim_token, .released, null, null);
     r.deinit(a);
 
     const active = try listActive(&d, a, null);
@@ -2588,7 +2653,7 @@ test "associateClaimRun returns 0 for a terminal claim (no-op)" {
     defer c.deinit(a);
 
     // Release the claim (moves it to a terminal status).
-    const r = try releaseClaim(&d, a, c.claim_token, .released, "done");
+    const r = try releaseClaim(&d, a, c.claim_token, .released, "done", null);
     r.deinit(a);
 
     // associateClaimRun must be a no-op on a non-active claim.

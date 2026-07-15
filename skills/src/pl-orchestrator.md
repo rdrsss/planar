@@ -245,6 +245,50 @@ invokes exactly one of `planar-agent complete`, `fail`, `release`, or `block`
 per claim, and checkpointing always observes the status produced by that
 transaction.
 
+## Quota-aware bounded waves and provider circuit breakers
+
+When provider capacity is unknown, do not launch the full parallel-eligible
+set. At the strategy gate, let the operator or vendor surface set a maximum
+wave size, record it with the dispatch preview, and start no more than that many
+lanes at once. If no maximum was supplied, propose a conservative bounded size
+and wait for confirmation. A capacity bound may split one eligible wave into
+smaller dispatch waves; it never overrides `blocks`, migration, singleton,
+empty-touches, open-question, proposed-decision, or other serialization rules.
+
+Maintain one circuit breaker per provider for the current run. The first
+terminal categorized as `usage_limit`, `context_limit`, or `output_limit`
+opens only that provider's breaker. From that point:
+
+- start no later not-yet-running lane assigned to the affected provider;
+- let every already-running independent lane reach its ordinary terminal
+  result, preserving landed work;
+- continue eligible lanes on unaffected providers within their own bounded
+  waves and dependency barriers;
+- run the existing barrier/reconcile path and the durable-boundary checklist
+  for every surviving target before yielding.
+
+Opening the breaker does **not** cancel, abort, reconcile, reclaim, or otherwise
+mutate a live claim. A clean categorized terminal keeps its atomic result. For
+a dead or abandoned claim, report the exact `planar-watch claims --json` and
+`planar-agent reconcile --dry-run` inspection commands, then wait for the
+operator to choose any abort or reconcile mutation. Never claim cross-lane
+rollback; completed lanes and independently written artifacts remain applied.
+
+The orchestration result and recovery packet name the affected provider,
+systemic category, `breaker: open`, landed and already-running lanes,
+provider-blocked unfinished lanes, unaffected continuing lanes, and each
+surviving task's exact `planar resume <task-id> --json` command. Do not add a
+provider API call, quota prediction, retry daemon, persisted breaker table, or
+background process.
+
+On zero-context resume, re-read the wave's structured claim outcomes, rederive
+breaker state per provider, load every surviving target with
+`planar resume <task-id> --json`, and recompute only the unfinished eligible
+set. Do not dispatch again to an open provider until the operator explicitly
+chooses that provider and confirms a new maximum wave size. A new session,
+elapsed time, or healthy capacity on another provider is not an implicit reset.
+The breaker itself never triggers automatic claim reconciliation.
+
 ## User Gates
 
 - Between Phase 1 and Phase 2: user must review artifacts.
@@ -276,7 +320,7 @@ planar-agent release  --claim <token> --reason <s>    # atomic: task → todo  +
 planar-agent block    --claim <token> --blocker <id>  # atomic: task → blocked + edge + claim → released
 ```
 
-For hand-picked targets, swap `pull <plan>` with `claim --entity task:<id>` (does NOT auto-transition task status — caller decides). For parallel windows, run the heuristic against `entity_links` + task touches to identify mutually-non-conflicting tasks, then issue independent `pull` calls; each returns its own `claim_token`. For operator-side recovery use `planar-agent reconcile [--dry-run]` and `planar-agent abort --claim <token> --reason <text>`.
+For hand-picked targets, swap `pull <plan>` with `claim --entity task:<id>`; the claim and `todo` → `doing` transition commit atomically. Use `--no-transition` only when the caller deliberately needs the pure claim primitive. For parallel windows, run the heuristic against `entity_links` + task touches to identify mutually-non-conflicting tasks, then issue independent `pull` calls; each returns its own `claim_token`. For operator-side recovery use `planar-agent reconcile [--dry-run]` and `planar-agent abort --claim <token> --reason <text>`.
 
 **Cross-session dispatch hierarchy.** To make a coder's action appear as a child of the orchestrator's own action in `planar-watch tree`, pass `--parent-action <action-id>` to `planar-agent pull`. The orchestrator's action id is the `action_id` field returned by its own `pull` call:
 
@@ -567,6 +611,17 @@ downstream lane becomes eligible only once its `blocks`-blocker is `done`).
 
 These paths are now fully runnable from this skill via the seam:
 
+- **Capacity recovery (plan 858 M3).** After supplied lane outcomes include a
+  systemic `usage_limit`, `context_limit`, or `output_limit`, call
+  `--phase capacity_reconcile` with each lane's `task_id`, `provider`,
+  `outcome` (`landed|failed_clean|abandoned|pending|running`), and failure
+  `category` where applicable. Preserve the returned `landed`, `running`, and
+  `unaffected` sets and operate only on `unfinished`. Report each open provider
+  breaker and the `recovery` packet verbatim: run the per-task `planar resume
+  <task-id> --json` reads, use the claim inspection and reconcile dry-run
+  commands only as explicit operator recovery, and require the operator's
+  `explicit_dispatch` plus a newly confirmed maximum wave size before treating
+  a provider reset as chosen. The phase does not execute any recovery command.
 - **Boundary conflict (M3).** When a `git merge --no-ff <lane>` conflicts, run
   `git merge --abort`, then call `--phase conflict_escalation --args
   '{"plan_id":<id>,"ours":<epic-side branch>,"theirs":<lane branch>,"paths":[…]}'`

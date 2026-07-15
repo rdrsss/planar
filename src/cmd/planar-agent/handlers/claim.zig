@@ -1,17 +1,15 @@
 //! handlers/claim — `planar-agent claim --entity <ref> [flags]`
 //!
-//! Direct claim primitive for orchestrator-dispatch (caller already
-//! knows the target entity by id). DOES NOT auto-transition the task —
-//! the caller is responsible for the status flip or for invoking
-//! `action start --claim <token>` to mark the work as begun without
-//! touching task status.
+//! Direct claim path for orchestrator dispatch (caller already knows the
+//! target entity by id). Task claims atomically transition `todo` → `doing`
+//! by default. `--no-transition` retains the pure claim primitive; plan and
+//! plan-step claims never alter entity state.
 //!
 //! `--entity <ref>` accepts `task:<id>` / `plan:<id>` / `plan_step:<id>`
 //! and strictly refuses other prefixes (util.parseEntityRef).
 
 const std = @import("std");
 const cli = @import("cli");
-const db = @import("db");
 const engine = @import("engine");
 const runtime = @import("runtime");
 
@@ -20,13 +18,13 @@ const exit = @import("../exit.zig");
 const json = @import("json.zig");
 const util = @import("util.zig");
 
-const store = engine.runtime.agentactivity.store;
+const atomic = engine.runtime.agentactivity.atomic;
 const types = engine.runtime.agentactivity.types;
 const session_mod = engine.runtime.session;
 
 pub const verb: cli.Cmd = .{
     .name = "claim",
-    .desc = "Direct claim primitive (orchestrator dispatch path); does NOT auto-transition task status.",
+    .desc = "Direct entity claim; task claims atomically transition todo to doing by default.",
     .flags = &.{
         .{ .long = "--entity", .kind = .string, .required = true, .desc = "Entity ref: task:<id> | plan:<id> | plan_step:<id>" },
         .{ .long = "--vendor", .kind = .string, .default = .{ .string = "planar-agent" }, .desc = "Vendor tag (default: planar-agent)" },
@@ -37,6 +35,7 @@ pub const verb: cli.Cmd = .{
         .{ .long = "--worktree", .kind = .string, .desc = "Worktree id or path for isolation context" },
         .{ .long = "--repo-root", .kind = .string, .desc = "Absolute path of checkout to probe locality against" },
         .{ .long = "--no-locality-probe", .kind = .bool, .default = .{ .bool = false }, .desc = "Skip the git locality probe" },
+        .{ .long = "--no-transition", .kind = .bool, .default = .{ .bool = false }, .desc = "Claim without changing task status (plan and plan_step are always unchanged)" },
         .{ .long = "--force", .kind = .bool, .default = .{ .bool = false }, .desc = "Take over an existing live claim (operator recovery)" },
         .{ .long = "--run", .kind = .int, .desc = "workflow_runs.id to associate with this claim (populated by an external workflow harness; omit for interactive claims)" },
         .{ .long = "--stage", .kind = .string, .desc = "Workflow stage name (e.g. code, review) to record on the claim; requires --run" },
@@ -81,11 +80,7 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
     const ttl_secs = cli.duration.parseSeconds(args.ttl) catch |e|
         exit.die(ctx, e, "invalid --ttl '{s}': expected bare seconds (e.g. 600) or suffixed duration (e.g. 10m, 1h, 500ms)", .{args.ttl});
 
-    // acquireClaim requires BEGIN IMMEDIATE for the "check no active
-    // claim then insert" pair to be safe under contention.
-    d.exec("BEGIN IMMEDIATE") catch |e| exit.die(ctx, e, "BEGIN IMMEDIATE: {s}", .{@errorName(e)});
-
-    const c = store.acquireClaim(d, ctx.allocator, .{
+    const c = atomic.claimEntity(d, ctx.allocator, .{
         .session_id = session_id,
         .entity_kind = eref.kind,
         .entity_id = eref.id,
@@ -100,13 +95,9 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
         .force = args.force,
         .run_id = args.run,
         .stage = args.stage,
-    }) catch |e| {
-        d.exec("ROLLBACK") catch {};
+    }, !args.no_transition) catch |e|
         exit.die(ctx, e, "claim: {s}", .{@errorName(e)});
-    };
     defer c.deinit(ctx.allocator);
-
-    d.exec("COMMIT") catch |e| exit.die(ctx, e, "COMMIT: {s}", .{@errorName(e)});
 
     try emitClaim(ctx, c, args.json);
 }
@@ -127,10 +118,4 @@ fn emitClaim(ctx: *const runtime.Ctx, c: types.Claim, use_json: bool) !void {
             c.status.toText(),
         });
     }
-}
-
-// Keep db live (we touch it for BEGIN/COMMIT/ROLLBACK above; this just
-// pins the import line for clarity).
-comptime {
-    _ = db;
 }
