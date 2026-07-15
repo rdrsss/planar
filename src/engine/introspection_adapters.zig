@@ -38,6 +38,7 @@ pub const Coverage = struct {
     scanned: u32 = 0,
     malformed: u32 = 0,
     normalized: u32 = 0,
+    ignored: u32 = 0,
     capped: u32 = 0,
 };
 
@@ -74,10 +75,34 @@ const Extracted = struct {
     timestamp: []const u8,
 };
 
+const ExtractResult = union(enum) {
+    normalized: Extracted,
+    ignored,
+    malformed,
+};
+
+const PendingClaudeTool = struct {
+    id: []u8,
+    verb_path: []u8,
+    consumed: bool = false,
+};
+
+const ExtractState = struct {
+    claude_tools: std.ArrayList(PendingClaudeTool) = .empty,
+
+    fn deinit(self: *ExtractState, allocator: std.mem.Allocator) void {
+        for (self.claude_tools.items) |tool| {
+            allocator.free(tool.id);
+            allocator.free(tool.verb_path);
+        }
+        self.claude_tools.deinit(allocator);
+    }
+};
+
 /// Collect a no-write preview from raw vendor JSONL.
 ///
-/// Malformed lines include invalid JSON, unknown versions/event kinds, and
-/// records whose bounded command or timestamp fields fail validation.
+/// Invalid JSON and malformed recognized envelopes are isolated. Structurally
+/// valid conversation and future event kinds are ignored without evidence.
 pub fn collectPreview(allocator: std.mem.Allocator, sources: []const RawSource) !Preview {
     var signals: std.ArrayList(Signal) = .empty;
     errdefer {
@@ -88,6 +113,8 @@ pub fn collectPreview(allocator: std.mem.Allocator, sources: []const RawSource) 
     errdefer coverage.deinit(allocator);
 
     for (sources) |source| {
+        var extract_state: ExtractState = .{};
+        defer extract_state.deinit(allocator);
         var cov = Coverage{ .vendor = source.vendor, .state = .observed };
         if (!source.enabled) {
             cov.state = .disabled;
@@ -110,16 +137,19 @@ pub fn collectPreview(allocator: std.mem.Allocator, sources: []const RawSource) 
                 continue;
             };
             defer parsed.deinit();
-            const extracted = extract(source.vendor, parsed.value) orelse {
-                cov.malformed +|= 1;
-                continue;
-            };
-            if (try addAggregate(allocator, &signals, source.vendor, extracted)) {
-                cov.normalized +|= 1;
-            } else {
-                cov.capped +|= 1;
+            switch (try extract(allocator, &extract_state, source.vendor, parsed.value)) {
+                .normalized => |extracted| {
+                    if (try addAggregate(allocator, &signals, source.vendor, extracted)) {
+                        cov.normalized +|= 1;
+                    } else {
+                        cov.capped +|= 1;
+                    }
+                },
+                .ignored => cov.ignored +|= 1,
+                .malformed => cov.malformed +|= 1,
             }
         }
+        std.debug.assert(coverageIsAccounted(cov));
         try coverage.append(allocator, cov);
     }
 
@@ -410,40 +440,263 @@ pub fn discover(enabled: bool, override: []const u8, builtin: []const u8) ?[]con
     return if (override.len != 0) override else builtin;
 }
 
-fn extract(vendor: Vendor, value: std.json.Value) ?Extracted {
-    if (value != .object) return null;
+fn extract(allocator: std.mem.Allocator, state: *ExtractState, vendor: Vendor, value: std.json.Value) !ExtractResult {
+    if (value != .object) return .malformed;
     const obj = value.object;
     return switch (vendor) {
-        .claude => blk: {
-            if (!integerEquals(obj.get("version"), 1) or !stringEquals(obj.get("type"), "tool_result")) break :blk null;
-            const tool = objectValue(obj.get("tool")) orelse break :blk null;
-            break :blk finish(tool.get("name"), obj.get("timestamp"), categoryFromEvidence(obj.get("exit_code"), boolValue(obj.get("retry")), false, boolValue(obj.get("invalid_flag")) or boolValue(obj.get("help_bounce"))));
-        },
-        .codex => blk: {
-            if (!integerEquals(obj.get("schema_version"), 1) or !stringEquals(obj.get("event"), "command_execution")) break :blk null;
-            break :blk finish(obj.get("command_name"), obj.get("timestamp"), categoryFromEvidence(obj.get("exit_code"), boolValue(obj.get("retry_of_previous")), false, boolValue(obj.get("invalid_flag")) or boolValue(obj.get("help_bounce"))));
-        },
-        .copilot => blk: {
-            if (!stringEquals(obj.get("version"), "1") or !stringEquals(obj.get("kind"), "shell_result")) break :blk null;
-            const command = objectValue(obj.get("command")) orelse break :blk null;
-            const abandoned = stringEquals(obj.get("status"), "abandoned");
-            break :blk finish(command.get("name"), obj.get("time"), categoryFromEvidence(obj.get("exit_code"), boolValue(obj.get("retry")), abandoned, boolValue(obj.get("invalid_flag")) or boolValue(obj.get("help_bounce"))));
-        },
-        .cli_log => blk: {
-            if (!integerEquals(obj.get("schema"), 1) or !stringEquals(obj.get("kind"), "cli_invocation")) break :blk null;
-            break :blk finish(obj.get("verb_path"), obj.get("recorded_at"), categoryFromEvidence(obj.get("exit_code"), boolValue(obj.get("retry")), false, stringEquals(obj.get("error_category"), "usage")));
-        },
+        .claude => extractClaude(allocator, state, obj),
+        .codex => extractCodex(obj),
+        .copilot => extractCopilot(obj),
+        .cli_log => extractCliLog(obj),
     };
 }
 
-fn finish(command_value: ?std.json.Value, timestamp_value: ?std.json.Value, category: ?Category) ?Extracted {
-    const command = stringValue(command_value) orelse return null;
-    const timestamp = stringValue(timestamp_value) orelse return null;
-    return .{
-        .verb_path = if (validVerbPath(command)) command else return null,
-        .category = category orelse return null,
-        .timestamp = if (validTimestamp(timestamp)) timestamp else return null,
-    };
+fn extractClaude(allocator: std.mem.Allocator, state: *ExtractState, obj: std.json.ObjectMap) !ExtractResult {
+    if (obj.get("version")) |version| {
+        if (version == .integer or stringEquals(obj.get("type"), "tool_result")) {
+            if (!integerEquals(version, 1) or !stringEquals(obj.get("type"), "tool_result")) return .malformed;
+            const tool = objectValue(obj.get("tool")) orelse return .malformed;
+            return finishLegacy(tool.get("name"), obj.get("timestamp"), categoryFromEvidence(obj.get("exit_code"), boolValue(obj.get("retry")), false, boolValue(obj.get("invalid_flag")) or boolValue(obj.get("help_bounce"))));
+        }
+    }
+
+    const record_type = stringValue(obj.get("type")) orelse return .malformed;
+    if (!std.mem.eql(u8, record_type, "assistant") and !std.mem.eql(u8, record_type, "user")) return .ignored;
+    const timestamp = stringValue(obj.get("timestamp")) orelse return .malformed;
+    if (!validTimestamp(timestamp)) return .malformed;
+    const message = objectValue(obj.get("message")) orelse return .malformed;
+    if (!stringEquals(message.get("role"), record_type)) return .malformed;
+    const content_value = message.get("content") orelse return .malformed;
+
+    if (std.mem.eql(u8, record_type, "assistant")) {
+        if (content_value == .string) return .ignored;
+        if (content_value != .array) return .malformed;
+        // Validate the entire recognized envelope before mutating pairing
+        // state, so a malformed sibling block cannot leave usable residue.
+        for (content_value.array.items) |block_value| {
+            if (block_value != .object) return .malformed;
+            const block = block_value.object;
+            const block_type = stringValue(block.get("type")) orelse return .malformed;
+            if (std.mem.eql(u8, block_type, "text")) {
+                _ = stringValue(block.get("text")) orelse return .malformed;
+                continue;
+            }
+            if (!std.mem.eql(u8, block_type, "tool_use")) continue;
+            _ = stringValue(block.get("id")) orelse return .malformed;
+            const name = stringValue(block.get("name")) orelse return .malformed;
+            const input = objectValue(block.get("input")) orelse return .malformed;
+            if (std.mem.eql(u8, name, "Bash")) {
+                _ = stringValue(input.get("command")) orelse return .malformed;
+            }
+        }
+        for (content_value.array.items) |block_value| {
+            const block = block_value.object;
+            if (!stringEquals(block.get("type"), "tool_use")) continue;
+            const id = stringValue(block.get("id")).?;
+            const name = stringValue(block.get("name")).?;
+            const input = objectValue(block.get("input")).?;
+            if (!std.mem.eql(u8, name, "Bash")) continue;
+            const command = stringValue(input.get("command")).?;
+            const verb_path = boundedPlanarVerbPath(command) orelse continue;
+            if (findClaudeTool(state.claude_tools.items, id) != null) continue;
+            if (state.claude_tools.items.len == default_max_records) continue;
+            const owned_id = try allocator.dupe(u8, id);
+            errdefer allocator.free(owned_id);
+            const owned_verb_path = try allocator.dupe(u8, verb_path);
+            errdefer allocator.free(owned_verb_path);
+            try state.claude_tools.append(allocator, .{ .id = owned_id, .verb_path = owned_verb_path });
+        }
+        return .ignored;
+    }
+
+    if (content_value == .string) return .ignored;
+    if (content_value != .array) return .malformed;
+    for (content_value.array.items) |block_value| {
+        if (block_value != .object) return .malformed;
+        const block = block_value.object;
+        const block_type = stringValue(block.get("type")) orelse return .malformed;
+        if (std.mem.eql(u8, block_type, "text")) {
+            _ = stringValue(block.get("text")) orelse return .malformed;
+            continue;
+        }
+        if (!std.mem.eql(u8, block_type, "tool_result")) continue;
+        _ = stringValue(block.get("tool_use_id")) orelse return .malformed;
+        _ = optionalBoolValue(block.get("is_error"), false) orelse return .malformed;
+    }
+    for (content_value.array.items) |block_value| {
+        const block = block_value.object;
+        if (!stringEquals(block.get("type"), "tool_result")) continue;
+        const tool_use_id = stringValue(block.get("tool_use_id")).?;
+        const is_error = optionalBoolValue(block.get("is_error"), false).?;
+        const tool_index = findClaudeTool(state.claude_tools.items, tool_use_id) orelse continue;
+        const tool = &state.claude_tools.items[tool_index];
+        if (tool.consumed) continue;
+        tool.consumed = true;
+        if (!is_error) return .ignored;
+        return .{ .normalized = .{ .verb_path = tool.verb_path, .category = .failure, .timestamp = timestamp } };
+    }
+    return .ignored;
+}
+
+fn extractCodex(obj: std.json.ObjectMap) ExtractResult {
+    if (obj.get("schema_version") != null or obj.get("event") != null) {
+        if (!integerEquals(obj.get("schema_version"), 1) or !stringEquals(obj.get("event"), "command_execution")) return .malformed;
+        return finishLegacy(obj.get("command_name"), obj.get("timestamp"), categoryFromEvidence(obj.get("exit_code"), boolValue(obj.get("retry_of_previous")), false, boolValue(obj.get("invalid_flag")) or boolValue(obj.get("help_bounce"))));
+    }
+    const record_type = stringValue(obj.get("type")) orelse return .malformed;
+    if (!validTimestamp(stringValue(obj.get("timestamp")) orelse return .malformed)) return .malformed;
+    if (!std.mem.eql(u8, record_type, "response_item")) return .ignored;
+    const payload = objectValue(obj.get("payload")) orelse return .malformed;
+    const payload_type = stringValue(payload.get("type")) orelse return .malformed;
+    if (std.mem.eql(u8, payload_type, "function_call")) {
+        _ = stringValue(payload.get("name")) orelse return .malformed;
+        _ = stringValue(payload.get("arguments")) orelse return .malformed;
+        _ = stringValue(payload.get("call_id")) orelse return .malformed;
+    } else if (std.mem.eql(u8, payload_type, "function_call_output")) {
+        _ = stringValue(payload.get("call_id")) orelse return .malformed;
+        _ = stringValue(payload.get("output")) orelse return .malformed;
+    }
+    return .ignored;
+}
+
+fn extractCopilot(obj: std.json.ObjectMap) ExtractResult {
+    if (obj.get("version") != null or obj.get("kind") != null) {
+        if (!stringEquals(obj.get("version"), "1") or !stringEquals(obj.get("kind"), "shell_result")) return .malformed;
+        const command = objectValue(obj.get("command")) orelse return .malformed;
+        const abandoned = stringEquals(obj.get("status"), "abandoned");
+        return finishLegacy(command.get("name"), obj.get("time"), categoryFromEvidence(obj.get("exit_code"), boolValue(obj.get("retry")), abandoned, boolValue(obj.get("invalid_flag")) or boolValue(obj.get("help_bounce"))));
+    }
+    const record_type = stringValue(obj.get("type")) orelse return .malformed;
+    if (!validTimestamp(stringValue(obj.get("timestamp")) orelse return .malformed)) return .malformed;
+    if (!std.mem.eql(u8, record_type, "tool.execution_start") and !std.mem.eql(u8, record_type, "tool.execution_complete")) return .ignored;
+    const data = objectValue(obj.get("data")) orelse return .malformed;
+    _ = stringValue(data.get("toolCallId")) orelse return .malformed;
+    if (std.mem.eql(u8, record_type, "tool.execution_start")) {
+        _ = stringValue(data.get("toolName")) orelse return .malformed;
+        _ = objectValue(data.get("arguments")) orelse return .malformed;
+    } else {
+        _ = strictBoolValue(data.get("success")) orelse return .malformed;
+        if (data.get("result") == null) return .malformed;
+    }
+    return .ignored;
+}
+
+fn extractCliLog(obj: std.json.ObjectMap) ExtractResult {
+    if (!integerEquals(obj.get("schema"), 1) or !stringEquals(obj.get("kind"), "cli_invocation")) return .malformed;
+    return finishLegacy(obj.get("verb_path"), obj.get("recorded_at"), categoryFromEvidence(obj.get("exit_code"), boolValue(obj.get("retry")), false, stringEquals(obj.get("error_category"), "usage")));
+}
+
+fn finishLegacy(command_value: ?std.json.Value, timestamp_value: ?std.json.Value, category: ?Category) ExtractResult {
+    const command = stringValue(command_value) orelse return .malformed;
+    const timestamp = stringValue(timestamp_value) orelse return .malformed;
+    if (!validVerbPath(command) or !validTimestamp(timestamp)) return .malformed;
+    const normalized_category = category orelse return .ignored;
+    return .{ .normalized = .{
+        .verb_path = command,
+        .category = normalized_category,
+        .timestamp = timestamp,
+    } };
+}
+
+fn findClaudeTool(tools: []const PendingClaudeTool, id: []const u8) ?usize {
+    for (tools, 0..) |tool, i| {
+        if (std.mem.eql(u8, tool.id, id)) return i;
+    }
+    return null;
+}
+
+const PlanarVerbRule = struct {
+    domain: []const u8,
+    /// Space-separated suffixes after `planar <domain>`; empty is a direct
+    /// root leaf. Every entry corresponds to a leaf in the CLI command tree.
+    leaves: []const []const u8,
+};
+
+const planar_verb_rules = [_]PlanarVerbRule{
+    .{ .domain = "annotate", .leaves = &.{ "add", "show", "list", "update", "remove", "tag", "resolve", "dismiss", "archive", "bulk-resolve", "bulk-dismiss", "bulk-archive", "verify", "sweep" } },
+    .{ .domain = "artifact", .leaves = &.{ "add", "show", "list", "update", "edit", "view", "diff", "review", "link" } },
+    .{ .domain = "assoc", .leaves = &.{ "list", "create", "add", "remove", "members", "detect" } },
+    .{ .domain = "audit", .leaves = &.{ "trail", "commits", "session", "publish-decision", "handoff-readiness" } },
+    .{ .domain = "bench", .leaves = &.{ "start", "event", "touch", "harvest", "finish", "show" } },
+    .{ .domain = "capture", .leaves = &.{ "session", "commits", "end", "note", "command", "file", "snapshot" } },
+    .{ .domain = "closure", .leaves = &.{ "compute", "show" } },
+    .{ .domain = "completion", .leaves = &.{""} },
+    .{ .domain = "config", .leaves = &.{ "show", "edit", "validate", "init", "path" } },
+    .{ .domain = "dashboard", .leaves = &.{""} },
+    .{ .domain = "decision", .leaves = &.{ "add", "show", "list", "accept", "supersede", "withdraw", "edit", "view", "diff", "review", "link" } },
+    .{ .domain = "demote", .leaves = &.{""} },
+    .{ .domain = "explore", .leaves = &.{""} },
+    .{ .domain = "ext", .leaves = &.{ "register jira", "register github", "list", "test", "create", "propagate-one", "propagate" } },
+    .{ .domain = "feedback", .leaves = &.{ "triage list", "triage show", "triage set" } },
+    .{ .domain = "groups", .leaves = &.{"recommend"} },
+    .{ .domain = "handoff", .leaves = &.{ "create", "validate", "consume", "abandon", "list", "show" } },
+    .{ .domain = "health", .leaves = &.{""} },
+    .{ .domain = "import", .leaves = &.{""} },
+    .{ .domain = "init", .leaves = &.{""} },
+    .{ .domain = "link", .leaves = &.{""} },
+    .{ .domain = "links", .leaves = &.{ "add", "list", "remove", "trail" } },
+    .{ .domain = "local", .leaves = &.{ "list", "link", "unlink", "import", "migrate" } },
+    .{ .domain = "models", .leaves = &.{ "list", "refresh", "routing", "apply" } },
+    .{ .domain = "plan", .leaves = &.{ "create", "show", "list", "update", "edit", "view", "diff", "review", "link", "next", "recommend-strategy", "divergence", "recompute-status", "closeout", "step add", "step list", "step done", "step skip", "step link", "descendants" } },
+    .{ .domain = "promote", .leaves = &.{""} },
+    .{ .domain = "question", .leaves = &.{ "add", "edit", "view", "diff", "review", "answer", "wontfix", "list", "show", "link" } },
+    .{ .domain = "report", .leaves = &.{""} },
+    .{ .domain = "resume", .leaves = &.{"validate"} },
+    .{ .domain = "run", .leaves = &.{ "start", "event", "finish", "show" } },
+    .{ .domain = "scenario", .leaves = &.{ "add", "edit", "view", "diff", "review", "verify", "retire", "list", "show", "link" } },
+    .{ .domain = "schema", .leaves = &.{""} },
+    .{ .domain = "scope", .leaves = &.{ "show", "suggest", "use", "pop", "clear" } },
+    .{ .domain = "search", .leaves = &.{""} },
+    .{ .domain = "skills", .leaves = &.{ "render", "status", "repair" } },
+    .{ .domain = "spec", .leaves = &.{"ingest"} },
+    .{ .domain = "sync", .leaves = &.{ "pull", "push", "status", "resolve" } },
+    .{ .domain = "synthesize", .leaves = &.{""} },
+    .{ .domain = "task", .leaves = &.{ "add", "show", "list", "update", "edit", "view", "diff", "review", "done", "cancel", "block", "link", "reopen", "touches add", "touches list", "touches remove" } },
+    .{ .domain = "templates", .leaves = &.{ "list", "show", "render", "validate", "init", "path" } },
+    .{ .domain = "test-spec", .leaves = &.{"status"} },
+    .{ .domain = "tree", .leaves = &.{""} },
+    .{ .domain = "unlink", .leaves = &.{""} },
+    .{ .domain = "version", .leaves = &.{""} },
+    .{ .domain = "workbench", .leaves = &.{ "pull", "push", "status", "resolve", "sync", "archive", "restore", "gc", "list", "publish", "extract-questions", "edit" } },
+    .{ .domain = "workflow", .leaves = &.{ "list", "show", "run" } },
+    .{ .domain = "workspace", .leaves = &.{ "init", "doctor", "routing build", "routing show", "regenerate" } },
+};
+
+fn boundedPlanarVerbPath(command: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trim(u8, command, " \t\r\n");
+    if (std.mem.indexOfAny(u8, trimmed, ";&|\n\r") != null) return null;
+    var words = std.mem.tokenizeAny(u8, trimmed, " \t\r\n");
+    const executable = words.next() orelse return null;
+    if (!std.mem.eql(u8, executable, "planar")) return null;
+    const domain = words.next() orelse return null;
+    const domain_end = @intFromPtr(domain.ptr) - @intFromPtr(trimmed.ptr) + domain.len;
+
+    for (planar_verb_rules) |rule| {
+        if (!std.mem.eql(u8, domain, rule.domain)) continue;
+        for (rule.leaves) |leaf| {
+            var candidate_words = words;
+            var leaf_words = std.mem.tokenizeScalar(u8, leaf, ' ');
+            var end = domain_end;
+            var matched = true;
+            while (leaf_words.next()) |expected| {
+                const actual = candidate_words.next() orelse {
+                    matched = false;
+                    break;
+                };
+                if (!std.mem.eql(u8, actual, expected)) {
+                    matched = false;
+                    break;
+                }
+                end = @intFromPtr(actual.ptr) - @intFromPtr(trimmed.ptr) + actual.len;
+            }
+            if (matched) {
+                const path = trimmed[0..end];
+                return if (path.len <= 96) path else null;
+            }
+        }
+        return null;
+    }
+    return null;
 }
 
 fn categoryFromEvidence(exit_value: ?std.json.Value, retry: bool, abandoned: bool, gap: bool) ?Category {
@@ -542,6 +795,14 @@ fn boolValue(value: ?std.json.Value) bool {
     const v = value orelse return false;
     return v == .bool and v.bool;
 }
+fn strictBoolValue(value: ?std.json.Value) ?bool {
+    const v = value orelse return null;
+    return if (v == .bool) v.bool else null;
+}
+fn optionalBoolValue(value: ?std.json.Value, default: bool) ?bool {
+    const v = value orelse return default;
+    return if (v == .bool) v.bool else null;
+}
 fn objectValue(value: ?std.json.Value) ?std.json.ObjectMap {
     const v = value orelse return null;
     return if (v == .object) v.object else null;
@@ -566,6 +827,12 @@ fn signalLessThan(_: void, a: Signal, b: Signal) bool {
 }
 fn coverageLessThan(_: void, a: Coverage, b: Coverage) bool {
     return @intFromEnum(a.vendor) < @intFromEnum(b.vendor);
+}
+
+fn coverageIsAccounted(coverage: Coverage) bool {
+    return @as(u64, coverage.scanned) ==
+        @as(u64, coverage.normalized) + @as(u64, coverage.ignored) +
+            @as(u64, coverage.malformed) + @as(u64, coverage.capped);
 }
 
 test "raw vendor fixtures redact, aggregate, count malformed, and report coverage" {
@@ -603,6 +870,8 @@ test "deduplication is deterministic and cli log is authoritative" {
     try std.testing.expectEqual(@as(usize, 1), preview.signals.len);
     try std.testing.expectEqual(Vendor.cli_log, preview.signals[0].vendor);
     try std.testing.expectEqual(@as(u32, 2), preview.coverage[0].normalized);
+    try std.testing.expectEqual(@as(u32, 0), preview.coverage[0].ignored);
+    for (preview.coverage) |coverage| try expectCoverageAccounted(coverage);
 }
 
 test "ordinary success is observed without becoming gap while explicit usage evidence is gap" {
@@ -613,6 +882,11 @@ test "ordinary success is observed without becoming gap while explicit usage evi
     defer preview.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(u32, 2), preview.coverage[0].scanned);
     try std.testing.expectEqual(@as(u32, 1), preview.coverage[0].normalized);
+    try std.testing.expectEqual(@as(u32, 1), preview.coverage[0].ignored);
+    try std.testing.expectEqual(
+        preview.coverage[0].scanned,
+        preview.coverage[0].normalized + preview.coverage[0].ignored + preview.coverage[0].malformed + preview.coverage[0].capped,
+    );
     try std.testing.expectEqual(@as(usize, 1), preview.signals.len);
     try std.testing.expectEqual(Category.gap, preview.signals[0].category);
     try std.testing.expectEqualStrings("planar task add", preview.signals[0].verb_path);
@@ -807,7 +1081,236 @@ test "distinct evidence cap is explicit and counted" {
     defer preview.deinit(std.testing.allocator);
     try std.testing.expectEqual(max_evidence_buckets, preview.signals.len);
     try std.testing.expectEqual(@as(u32, 1), preview.coverage[0].capped);
+    try std.testing.expectEqual(@as(u32, max_evidence_buckets), preview.coverage[0].normalized);
+    try std.testing.expectEqual(@as(u32, 0), preview.coverage[0].ignored);
+    try expectCoverageAccounted(preview.coverage[0]);
     try std.testing.expect(hasWarning(preview.warnings, .codex, .evidence_cap));
+}
+
+test "mixed coverage remains exactly accounted at the evidence cap boundary" {
+    var jsonl: std.ArrayList(u8) = .empty;
+    defer jsonl.deinit(std.testing.allocator);
+    for (0..max_evidence_buckets) |i| {
+        const line = try std.fmt.allocPrint(
+            std.testing.allocator,
+            "{{\"schema_version\":1,\"event\":\"command_execution\",\"timestamp\":\"2026-07-12T12:00:00Z\",\"command_name\":\"planar verb {d}\",\"exit_code\":1}}\n",
+            .{i},
+        );
+        defer std.testing.allocator.free(line);
+        try jsonl.appendSlice(std.testing.allocator, line);
+    }
+    try jsonl.appendSlice(std.testing.allocator, "{\"schema_version\":1,\"event\":\"command_execution\",\"timestamp\":\"2026-07-12T12:30:00Z\",\"command_name\":\"planar verb 0\",\"exit_code\":1}\n" ++
+        "{\"schema_version\":1,\"event\":\"command_execution\",\"timestamp\":\"2026-07-12T13:00:01Z\",\"command_name\":\"planar ignored success\",\"exit_code\":0}\n" ++
+        "not-json\n" ++
+        "{\"schema_version\":1,\"event\":\"command_execution\",\"timestamp\":\"2026-07-12T13:00:02Z\",\"command_name\":\"planar beyond cap\",\"exit_code\":1}");
+
+    var preview = try collectPreview(std.testing.allocator, &.{.{ .vendor = .codex, .jsonl = jsonl.items }});
+    defer preview.deinit(std.testing.allocator);
+    const coverage = preview.coverage[0];
+
+    try std.testing.expectEqual(@as(u32, max_evidence_buckets + 4), coverage.scanned);
+    try std.testing.expectEqual(@as(u32, max_evidence_buckets + 1), coverage.normalized);
+    try std.testing.expectEqual(@as(u32, 1), coverage.ignored);
+    try std.testing.expectEqual(@as(u32, 1), coverage.malformed);
+    try std.testing.expectEqual(@as(u32, 1), coverage.capped);
+    try expectCoverageAccounted(coverage);
+    try std.testing.expectEqual(max_evidence_buckets, preview.signals.len);
+    try std.testing.expectEqualStrings("planar verb 0", preview.signals[0].verb_path);
+    try std.testing.expectEqual(@as(u32, 2), preview.signals[0].count);
+    try std.testing.expect(hasWarning(preview.warnings, .codex, .malformed));
+    try std.testing.expect(hasWarning(preview.warnings, .codex, .evidence_cap));
+}
+
+test "current Claude fixture pairs tool use and result without retaining private fields" {
+    const fixture = try std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        "integration_tests/fixtures/introspection_transcripts/claude.jsonl",
+        std.testing.allocator,
+        .unlimited,
+    );
+    defer std.testing.allocator.free(fixture);
+    var preview = try collectPreview(std.testing.allocator, &.{.{ .vendor = .claude, .jsonl = fixture }});
+    defer preview.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(u32, 8), preview.coverage[0].scanned);
+    try std.testing.expectEqual(@as(u32, 1), preview.coverage[0].normalized);
+    try std.testing.expectEqual(@as(u32, 6), preview.coverage[0].ignored);
+    try std.testing.expectEqual(@as(u32, 1), preview.coverage[0].malformed);
+    try std.testing.expectEqual(
+        preview.coverage[0].scanned,
+        preview.coverage[0].normalized + preview.coverage[0].ignored + preview.coverage[0].malformed + preview.coverage[0].capped,
+    );
+    try std.testing.expectEqual(@as(usize, 1), preview.signals.len);
+    try std.testing.expectEqual(Vendor.claude, preview.signals[0].vendor);
+    try std.testing.expectEqual(Category.failure, preview.signals[0].category);
+    try std.testing.expectEqualStrings("planar task show", preview.signals[0].verb_path);
+    try std.testing.expectEqualStrings("2026-07-12T12:00:01.000Z", preview.signals[0].first_seen);
+
+    const encoded = try std.json.Stringify.valueAlloc(std.testing.allocator, preview, .{});
+    defer std.testing.allocator.free(encoded);
+    const sentinels = [_][]const u8{ "PRIVATE_TRANSCRIPT_PROSE_SENTINEL", "PRIVATE_ARGUMENT_VALUE_SENTINEL", "PRIVATE_ENTITY_TEXT_SENTINEL", "/private/raw/path/sentinel" };
+    for (sentinels) |sentinel| {
+        try std.testing.expect(std.mem.indexOf(u8, encoded, sentinel) == null);
+    }
+}
+
+test "current Claude ordinary conversation and unknown records are ignored" {
+    const jsonl =
+        "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"private user prose\"},\"timestamp\":\"2026-07-12T12:00:00Z\"}\n" ++
+        "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"private assistant prose\"}]},\"timestamp\":\"2026-07-12T12:00:01Z\"}\n" ++
+        "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"read-1\",\"name\":\"Read\",\"input\":{\"file_path\":\"/private/path\"}}]},\"timestamp\":\"2026-07-12T12:00:02Z\"}\n" ++
+        "{\"type\":\"future_record\",\"payload\":{\"private\":\"content\"},\"timestamp\":\"2026-07-12T12:00:03Z\"}";
+    var preview = try collectPreview(std.testing.allocator, &.{.{ .vendor = .claude, .jsonl = jsonl }});
+    defer preview.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(u32, 4), preview.coverage[0].scanned);
+    try std.testing.expectEqual(@as(u32, 0), preview.coverage[0].normalized);
+    try std.testing.expectEqual(@as(u32, 4), preview.coverage[0].ignored);
+    try std.testing.expectEqual(@as(u32, 0), preview.coverage[0].malformed);
+    try expectCoverageAccounted(preview.coverage[0]);
+    try std.testing.expectEqual(@as(usize, 0), preview.signals.len);
+}
+
+test "current Claude optional is_error defaults false but rejects a present non-boolean" {
+    const jsonl =
+        "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"read-success\",\"name\":\"Read\",\"input\":{\"file_path\":\"/private/raw/path/sentinel\"}}]},\"timestamp\":\"2026-07-12T12:00:00Z\"}\n" ++
+        "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"read-success\",\"content\":\"PRIVATE_TRANSCRIPT_PROSE_SENTINEL\"}]},\"timestamp\":\"2026-07-12T12:00:01Z\"}\n" ++
+        "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"unknown\",\"is_error\":\"false\"}]},\"timestamp\":\"2026-07-12T12:00:02Z\"}";
+    var preview = try collectPreview(std.testing.allocator, &.{.{ .vendor = .claude, .jsonl = jsonl }});
+    defer preview.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(u32, 3), preview.coverage[0].scanned);
+    try std.testing.expectEqual(@as(u32, 0), preview.coverage[0].normalized);
+    try std.testing.expectEqual(@as(u32, 2), preview.coverage[0].ignored);
+    try std.testing.expectEqual(@as(u32, 1), preview.coverage[0].malformed);
+    try std.testing.expectEqual(@as(usize, 0), preview.signals.len);
+    try std.testing.expect(hasWarning(preview.warnings, .claude, .malformed));
+
+    const encoded = try std.json.Stringify.valueAlloc(std.testing.allocator, preview, .{});
+    defer std.testing.allocator.free(encoded);
+    try std.testing.expect(std.mem.indexOf(u8, encoded, "PRIVATE_TRANSCRIPT_PROSE_SENTINEL") == null);
+    try std.testing.expect(std.mem.indexOf(u8, encoded, "/private/raw/path/sentinel") == null);
+}
+
+test "current Claude pairing ignores unmatched out-of-order and duplicate results" {
+    const jsonl =
+        "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"call-1\",\"is_error\":true}]},\"timestamp\":\"2026-07-12T12:00:00Z\"}\n" ++
+        "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"call-1\",\"name\":\"Bash\",\"input\":{\"command\":\"planar plan show 42\"}}]},\"timestamp\":\"2026-07-12T12:00:01Z\"}\n" ++
+        "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"call-1\",\"name\":\"Bash\",\"input\":{\"command\":\"planar task show 77\"}}]},\"timestamp\":\"2026-07-12T12:00:02Z\"}\n" ++
+        "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"call-1\",\"is_error\":true}]},\"timestamp\":\"2026-07-12T12:00:03Z\"}\n" ++
+        "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"call-1\",\"is_error\":true}]},\"timestamp\":\"2026-07-12T12:00:04Z\"}\n" ++
+        "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"call-2\",\"name\":\"Bash\",\"input\":{\"command\":\"planar task show 99\"}}]},\"timestamp\":\"2026-07-12T12:00:05Z\"}";
+    var preview = try collectPreview(std.testing.allocator, &.{.{ .vendor = .claude, .jsonl = jsonl }});
+    defer preview.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(u32, 6), preview.coverage[0].scanned);
+    try std.testing.expectEqual(@as(u32, 1), preview.coverage[0].normalized);
+    try std.testing.expectEqual(@as(u32, 0), preview.coverage[0].malformed);
+    try std.testing.expectEqual(@as(usize, 1), preview.signals.len);
+    try std.testing.expectEqualStrings("planar plan show", preview.signals[0].verb_path);
+}
+
+test "current Claude rejects globally known tokens that are not a valid verb path" {
+    const jsonl =
+        "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"call-invalid-path\",\"name\":\"Bash\",\"input\":{\"command\":\"planar task version PRIVATE_ARGUMENT_VALUE_SENTINEL\"}}]},\"timestamp\":\"2026-07-12T12:00:00Z\"}\n" ++
+        "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"call-invalid-path\",\"is_error\":true,\"content\":\"PRIVATE_TRANSCRIPT_PROSE_SENTINEL\"}]},\"timestamp\":\"2026-07-12T12:00:01Z\"}";
+    var preview = try collectPreview(std.testing.allocator, &.{.{ .vendor = .claude, .jsonl = jsonl }});
+    defer preview.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(u32, 2), preview.coverage[0].scanned);
+    try std.testing.expectEqual(@as(u32, 0), preview.coverage[0].normalized);
+    try std.testing.expectEqual(@as(u32, 0), preview.coverage[0].malformed);
+    try std.testing.expectEqual(@as(usize, 0), preview.signals.len);
+}
+
+test "current Claude pairing state is isolated per raw source" {
+    const tool_use =
+        "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"shared-call-id\",\"name\":\"Bash\",\"input\":{\"command\":\"planar task show 42\"}}]},\"timestamp\":\"2026-07-12T12:00:00Z\"}";
+    const tool_result =
+        "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"shared-call-id\",\"is_error\":true}]},\"timestamp\":\"2026-07-12T12:00:01Z\"}";
+    var preview = try collectPreview(std.testing.allocator, &.{
+        .{ .vendor = .claude, .jsonl = tool_use },
+        .{ .vendor = .claude, .jsonl = tool_result },
+    });
+    defer preview.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), preview.signals.len);
+    try std.testing.expectEqual(@as(usize, 2), preview.coverage.len);
+    for (preview.coverage) |coverage_row| {
+        try std.testing.expectEqual(@as(u32, 1), coverage_row.scanned);
+        try std.testing.expectEqual(@as(u32, 0), coverage_row.normalized);
+        try std.testing.expectEqual(@as(u32, 0), coverage_row.malformed);
+    }
+}
+
+test "malformed recognized envelope degrades only its adapter" {
+    const private_sentinel = "PRIVATE_TRANSCRIPT_PROSE_SENTINEL";
+    const claude =
+        "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":{\"type\":\"tool_use\",\"input\":\"PRIVATE_TRANSCRIPT_PROSE_SENTINEL\"}},\"timestamp\":\"2026-07-12T12:00:00Z\"}";
+    const codex =
+        "{\"schema_version\":1,\"event\":\"command_execution\",\"timestamp\":\"2026-07-12T12:00:01Z\",\"command_name\":\"planar plan show\",\"exit_code\":1}";
+    var preview = try collectPreview(std.testing.allocator, &.{
+        .{ .vendor = .claude, .jsonl = claude },
+        .{ .vendor = .codex, .jsonl = codex },
+    });
+    defer preview.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), preview.signals.len);
+    try std.testing.expectEqual(Vendor.codex, preview.signals[0].vendor);
+    try std.testing.expectEqualStrings("planar plan show", preview.signals[0].verb_path);
+    try std.testing.expect(hasWarning(preview.warnings, .claude, .malformed));
+    try std.testing.expect(!hasWarning(preview.warnings, .codex, .malformed));
+
+    const encoded = try std.json.Stringify.valueAlloc(std.testing.allocator, preview, .{});
+    defer std.testing.allocator.free(encoded);
+    try std.testing.expect(std.mem.indexOf(u8, encoded, private_sentinel) == null);
+}
+
+test "current vendor fixture union distinguishes irrelevant and malformed envelopes" {
+    const codex = try std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        "integration_tests/fixtures/introspection_transcripts/codex.jsonl",
+        std.testing.allocator,
+        .unlimited,
+    );
+    defer std.testing.allocator.free(codex);
+    const copilot = try std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        "integration_tests/fixtures/introspection_transcripts/copilot.jsonl",
+        std.testing.allocator,
+        .unlimited,
+    );
+    defer std.testing.allocator.free(copilot);
+
+    var preview = try collectPreview(std.testing.allocator, &.{
+        .{ .vendor = .codex, .jsonl = codex },
+        .{ .vendor = .copilot, .jsonl = copilot },
+    });
+    defer preview.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), preview.signals.len);
+    for (preview.coverage) |coverage_row| {
+        try std.testing.expectEqual(@as(u32, 7), coverage_row.scanned);
+        try std.testing.expectEqual(@as(u32, 0), coverage_row.normalized);
+        try std.testing.expectEqual(@as(u32, 6), coverage_row.ignored);
+        try std.testing.expectEqual(@as(u32, 1), coverage_row.malformed);
+        try expectCoverageAccounted(coverage_row);
+    }
+
+    const encoded = try std.json.Stringify.valueAlloc(std.testing.allocator, preview, .{});
+    defer std.testing.allocator.free(encoded);
+    const sentinels = [_][]const u8{ "PRIVATE_TRANSCRIPT_PROSE_SENTINEL", "PRIVATE_ARGUMENT_VALUE_SENTINEL", "PRIVATE_ENTITY_TEXT_SENTINEL", "/private/raw/path/sentinel" };
+    for (sentinels) |sentinel| {
+        try std.testing.expect(std.mem.indexOf(u8, encoded, sentinel) == null);
+    }
+}
+
+fn expectCoverageAccounted(coverage: Coverage) !void {
+    try std.testing.expectEqual(
+        @as(u64, coverage.scanned),
+        @as(u64, coverage.normalized) + @as(u64, coverage.ignored) +
+            @as(u64, coverage.malformed) + @as(u64, coverage.capped),
+    );
 }
 
 fn hasWarning(warnings: []const Warning, vendor: Vendor, kind: WarningKind) bool {

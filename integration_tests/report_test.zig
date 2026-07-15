@@ -225,12 +225,19 @@ test "report-json: configured transcript adapters feed normalized preview with a
     const recorded_at = captured_line[separator + 1 ..];
     try std.testing.expect(std.mem.endsWith(u8, recorded_at, "Z"));
 
-    const transcript = try std.fmt.allocPrint(gpa, "{{\"version\":1,\"type\":\"tool_result\",\"timestamp\":\"{s}\",\"tool\":{{\"name\":\"planar task add\",\"input\":{{\"body\":\"PRIVATE_SENTINEL\"}}}},\"exit_code\":2,\"invalid_flag\":true}}", .{recorded_at});
+    const transcript = try std.fmt.allocPrint(
+        gpa,
+        "{{\"version\":1,\"type\":\"tool_result\",\"timestamp\":\"{s}\",\"tool\":{{\"name\":\"planar task add\",\"input\":{{\"body\":\"PRIVATE_SENTINEL\"}}}},\"exit_code\":2,\"invalid_flag\":true}}\n" ++
+            "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"PRIVATE_CONVERSATION_SENTINEL\"}},\"timestamp\":\"2026-07-12T12:00:00Z\"}}\n" ++
+            "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":7}},\"timestamp\":\"2026-07-12T12:00:01Z\"}}",
+        .{recorded_at},
+    );
     defer gpa.free(transcript);
     try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = transcript_path, .data = transcript });
     const json_out = suite.mustRunWith(&.{ "report", "--json" }, &extra);
     defer gpa.free(json_out);
     try std.testing.expect(std.mem.indexOf(u8, json_out, "PRIVATE_SENTINEL") == null);
+    try std.testing.expect(std.mem.indexOf(u8, json_out, "PRIVATE_CONVERSATION_SENTINEL") == null);
     try std.testing.expect(std.mem.indexOf(u8, json_out, "ZZ") == null);
 
     var parsed = try std.json.parseFromSlice(std.json.Value, gpa, json_out, .{});
@@ -242,6 +249,21 @@ test "report-json: configured transcript adapters feed normalized preview with a
     try std.testing.expectEqualStrings("gap", signals.items[0].object.get("category").?.string);
     const coverage = preview.get("coverage").?.array;
     try std.testing.expectEqual(@as(usize, 4), coverage.items.len);
+    const claude_coverage = coverage.items[0].object;
+    try std.testing.expectEqual(@as(i64, 3), claude_coverage.get("scanned").?.integer);
+    try std.testing.expectEqual(@as(i64, 1), claude_coverage.get("normalized").?.integer);
+    try std.testing.expectEqual(@as(i64, 1), claude_coverage.get("ignored").?.integer);
+    try std.testing.expectEqual(@as(i64, 1), claude_coverage.get("malformed").?.integer);
+    try std.testing.expectEqual(@as(i64, 0), claude_coverage.get("capped").?.integer);
+
+    const text_out = suite.mustRunWith(&.{"report"}, &extra);
+    defer gpa.free(text_out);
+    const preview_position = std.mem.indexOf(u8, text_out, "[introspection preview]") orelse return error.TestUnexpectedResult;
+    const failure_tail_position = std.mem.indexOf(u8, text_out, "[failure tail]") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(preview_position < failure_tail_position);
+    try std.testing.expect(std.mem.indexOf(u8, text_out, "claude: state=observed scanned=3 normalized=1 ignored=1 malformed=1 capped=0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text_out, "PRIVATE_SENTINEL") == null);
+    try std.testing.expect(std.mem.indexOf(u8, text_out, "PRIVATE_CONVERSATION_SENTINEL") == null);
 }
 
 // =========================================================================

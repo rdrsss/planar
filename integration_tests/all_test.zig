@@ -80,6 +80,7 @@ comptime {
 
     _ = @import("cli_log_test.zig");
     _ = @import("report_test.zig");
+    _ = @import("introspection_transcript_fixtures_test.zig");
     _ = @import("ergo_fixes_test.zig");
 
     _ = @import("closeout_recompute_test.zig");

@@ -773,6 +773,46 @@ pub fn renderText(bundle: Bundle, writer: *std.Io.Writer) !void {
     // Reopens section (always-on).
     try writer.print("[reopens]       {d}\n\n", .{bundle.reopens});
 
+    try writer.print("[introspection preview]", .{});
+    if (bundle.preview) |preview| {
+        if (preview.coverage.len == 0) {
+            try writer.print(" empty\n", .{});
+        } else {
+            try writer.print("\n", .{});
+            for (preview.coverage) |coverage| {
+                try writer.print("  {s}: state={s} scanned={d} normalized={d} ignored={d} malformed={d} capped={d}\n", .{
+                    @tagName(coverage.vendor),
+                    @tagName(coverage.state),
+                    coverage.scanned,
+                    coverage.normalized,
+                    coverage.ignored,
+                    coverage.malformed,
+                    coverage.capped,
+                });
+            }
+            for (preview.signals) |signal| {
+                try writer.print("  signal {s}/{s}/{s}: count={d} first={s} last={s}\n", .{
+                    @tagName(signal.vendor),
+                    signal.verb_path,
+                    @tagName(signal.category),
+                    signal.count,
+                    signal.first_seen,
+                    signal.last_seen,
+                });
+            }
+            for (preview.warnings) |warning| {
+                try writer.print("  warning {s}/{s}: count={d}\n", .{
+                    @tagName(warning.vendor),
+                    @tagName(warning.kind),
+                    warning.count,
+                });
+            }
+        }
+    } else {
+        try writer.print(" unavailable\n", .{});
+    }
+    try writer.print("\n", .{});
+
     // Failure tail.
     if (!bundle.logging_enabled) {
         try writer.print("[failure tail]  logging disabled\n", .{});
@@ -880,7 +920,7 @@ pub fn renderJson(bundle: Bundle, writer: *std.Io.Writer) !void {
     if (bundle.preview) |preview| {
         for (preview.coverage, 0..) |coverage, i| {
             if (i != 0) try writer.print(",", .{});
-            try writer.print("{{\"vendor\":\"{s}\",\"state\":\"{s}\",\"scanned\":{d},\"malformed\":{d},\"normalized\":{d},\"capped\":{d}}}", .{ @tagName(coverage.vendor), @tagName(coverage.state), coverage.scanned, coverage.malformed, coverage.normalized, coverage.capped });
+            try writer.print("{{\"vendor\":\"{s}\",\"state\":\"{s}\",\"scanned\":{d},\"malformed\":{d},\"normalized\":{d},\"capped\":{d},\"ignored\":{d}}}", .{ @tagName(coverage.vendor), @tagName(coverage.state), coverage.scanned, coverage.malformed, coverage.normalized, coverage.capped, coverage.ignored });
         }
     }
     try writer.print("],\"warnings\":[", .{});
