@@ -72,7 +72,7 @@ const PlanId = struct {
 /// Seed a project + plan; return the plan id as an owned string.
 fn seedPlan(suite: *harness.Suite, arena: std.mem.Allocator) []const u8 {
     const root = suite.registerProject("bench-test");
-    const p = suite.mustRunInDir(root, &.{ "plan", "create", "--json", "Bench test plan" });
+    const p = suite.mustRunInDir(root, &.{ "plan", "create", "--json", "--scope", "global", "Bench test plan" });
     defer suite.allocator.free(p);
     const plan = std.json.parseFromSlice(PlanId, arena, p, .{
         .allocate = .alloc_always,
