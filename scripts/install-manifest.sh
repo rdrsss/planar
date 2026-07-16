@@ -5,6 +5,7 @@ INSTALL_MANIFEST_VERSION=1
 INSTALL_MANIFEST_BUILD_ID=""
 INSTALL_MANIFEST_MODE=""
 INSTALL_MANIFEST_VENDORS=()
+INSTALL_MANIFEST_EXTRAS=()
 INSTALL_MANIFEST_ROW_VENDOR=()
 INSTALL_MANIFEST_ROW_KIND=()
 INSTALL_MANIFEST_ROW_NAME=()
@@ -18,6 +19,7 @@ install_manifest_begin() {
   INSTALL_MANIFEST_BUILD_ID="$1"
   INSTALL_MANIFEST_MODE="$2"
   INSTALL_MANIFEST_VENDORS=()
+  INSTALL_MANIFEST_EXTRAS=()
   INSTALL_MANIFEST_ROW_VENDOR=()
   INSTALL_MANIFEST_ROW_KIND=()
   INSTALL_MANIFEST_ROW_NAME=()
@@ -26,6 +28,10 @@ install_manifest_begin() {
   INSTALL_MANIFEST_ROW_INSTALL_KIND=()
   INSTALL_MANIFEST_ROW_SOURCE_DIGEST=()
   INSTALL_MANIFEST_ROW_PROJECTION_DIGEST=()
+}
+
+install_manifest_add_extra() {
+  INSTALL_MANIFEST_EXTRAS+=("$1")
 }
 
 install_manifest_digest() {
@@ -151,6 +157,11 @@ install_manifest_write() {
     for ((i = 0; i < ${#INSTALL_MANIFEST_VENDORS[@]}; i++)); do
       [[ $i -gt 0 ]] && printf ', ' >&3
       install_manifest_json_quote "${INSTALL_MANIFEST_VENDORS[$i]}" >&3
+    done
+    printf '],\n  "extras": [' >&3
+    for ((i = 0; i < ${#INSTALL_MANIFEST_EXTRAS[@]}; i++)); do
+      [[ $i -gt 0 ]] && printf ', ' >&3
+      install_manifest_json_quote "${INSTALL_MANIFEST_EXTRAS[$i]}" >&3
     done
     printf '],\n  "projections": [\n' >&3
     for ((i = 0; i < ${#INSTALL_MANIFEST_ROW_VENDOR[@]}; i++)); do

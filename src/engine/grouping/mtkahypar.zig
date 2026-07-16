@@ -234,8 +234,9 @@ pub fn encodeTo(
 // ===========================================================================
 
 /// The external solver binary name. Resolved off `$PATH` like every other
-/// optional Planar RUN_DEP (`gh`, `rg`). Not vendored, not compiled by
-/// `build.zig` (D-HG4); the operator builds it from source.
+/// optional Planar RUN_DEP (`gh`, `rg`). Not vendored and not compiled by
+/// `build.zig` (D-HG4); `install.sh --with-mtkahypar` installs the official
+/// native wheel behind Planar's stable adapter contract.
 pub const solver_bin = "mtkahypar";
 
 /// Default imbalance epsilon handed to `mtkahypar`. A 3% block-imbalance
@@ -262,14 +263,13 @@ pub const InvokeError = error{
 
 /// True iff the external `mtkahypar` binary is runnable on this machine.
 ///
-/// Mirrors `harvest.ensureGitAvailable` / `models.probeBinary`: spawn
-/// `mtkahypar --help`, treat ANY spawn error or non-zero/abnormal exit as
-/// "absent". This is the gate the `--solver=mtkahypar` path checks before
-/// reaching for `invoke`; a `false` result degrades to greedy with
-/// `optimal_available:false` and no error surfaced to the operator.
+/// Spawn `mtkahypar --probe`, which imports the native extension before
+/// returning success. This is stronger than a help-only probe: a stale venv or
+/// ABI-incompatible wheel cannot masquerade as an available solver. A `false`
+/// result degrades to greedy with `optimal_available:false`.
 pub fn solverAvailable(allocator: std.mem.Allocator, io: std.Io) bool {
     const res = std.process.run(allocator, io, .{
-        .argv = &.{ solver_bin, "--help" },
+        .argv = &.{ solver_bin, "--probe" },
     }) catch return false;
     defer allocator.free(res.stdout);
     defer allocator.free(res.stderr);
@@ -1707,7 +1707,7 @@ test "mtkahypar.invoke: live solver round-trip (skips when mtkahypar absent)" {
     const t3 = [_]greedy.Unit{.{ .qualified = "lonely", .role = .modify, .weight = 5 }};
     const tasks = [_]greedy.Task{ mkTask(1, &t1), mkTask(2, &t2), mkTask(3, &t3) };
 
-    const slices = invoke(a, std.testing.io, &tasks, .{ .budget = 200 }) catch return error.SkipZigTest;
+    const slices = try invoke(a, std.testing.io, &tasks, .{ .budget = 200 });
     defer freeSlices(a, slices);
 
     // Contract: every task appears in exactly one slice; ids are a partition.
@@ -1756,7 +1756,7 @@ test "mtkahypar.invoke: live coupled fixture — solver-arm cost <= greedy (task
     defer g.deinit(a);
 
     // Solver arm (the real binary).
-    const slices = invoke(a, std.testing.io, &tasks, .{ .budget = budget }) catch return error.SkipZigTest;
+    const slices = try invoke(a, std.testing.io, &tasks, .{ .budget = budget });
     defer freeSlices(a, slices);
 
     // Every slice stays within budget (D-HG3 union-repair invariant).

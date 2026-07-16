@@ -34,7 +34,7 @@ the installer preflights them before making changes.
 
 ### Optional / research tools
 
-- `mtkahypar` — optional. The external [Mt-KaHyPar](https://github.com/kahypar/mt-kahypar) hypergraph partitioner backs the optimal arm of `planar groups recommend --solver=mtkahypar`. Planar shells out to it as a subprocess; it is **not vendored or compiled by `build.zig`** (its C++14/CMake/TBB/Boost toolchain is not a `build.zig`-compilable amalgam), so there is **no Homebrew formula** — build it from source per its README. When `mtkahypar` is absent, `groups recommend` degrades gracefully to the greedy arm and reports `optimal_available:false`; the greedy default never needs it.
+- `mtkahypar` — optional. The external [Mt-KaHyPar](https://github.com/kahypar/mt-kahypar) hypergraph partitioner backs the optimal arm of `planar groups recommend --solver=mtkahypar`. Run `./install.sh --with-mtkahypar` to install the official, hash-locked native PyPI wheel into `~/.planar/opt/mtkahypar/` behind Planar's prefix-owned CLI adapter at `~/.planar/bin/mtkahypar`. This requires `python3` only for the optional adapter and does not add Mt-KaHyPar to `build.zig` or Planar's five-binary set. When absent, `groups recommend` degrades gracefully to greedy and reports `optimal_available:false`.
 
 `sqlx-cli` and `sqlite3` are only needed for ad-hoc developer workflows against a scratch database (see [Build from source](#build-from-source)); the runtime embeds migrations via build-time codegen and uses the vendored SQLite amalgamation, so neither CLI is a runtime dependency. Install the optional `sqlx-cli` for authoring new migration pairs:
 

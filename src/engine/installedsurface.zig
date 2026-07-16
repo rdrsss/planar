@@ -19,6 +19,7 @@ const Manifest = struct {
     build_id: []const u8,
     install_mode: []const u8,
     vendors: []const []const u8,
+    extras: []const []const u8 = &.{},
     projections: []const ManifestRow,
 };
 

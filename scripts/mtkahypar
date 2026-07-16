@@ -1,0 +1,15 @@
+#!/bin/sh
+# Prefix-relative launcher for Planar's optional Mt-KaHyPar wheel adapter.
+set -eu
+
+bin_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+planar_home=$(dirname -- "$bin_dir")
+python="$planar_home/opt/mtkahypar/1.6.1/venv/bin/python"
+adapter="$planar_home/scripts/mtkahypar-adapter.py"
+
+if [ ! -x "$python" ]; then
+  printf '%s\n' "mtkahypar: optional wheel is not installed; rerun install.sh --with-mtkahypar" >&2
+  exit 1
+fi
+
+exec "$python" "$adapter" "$@"

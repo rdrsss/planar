@@ -707,8 +707,9 @@ the public projection-freshness seam used by installation/status tooling;
 After all selected vendor wiring succeeds, `install.sh` atomically replaces
 `$PLANAR_HOME/install-manifest.json` (normally
 `~/.planar/install-manifest.json`). Version 1 records the build id, global
-`copy|link` installation mode, selected managed vendors, and one row per
-managed skill or agent projection. Each row fixes the vendor, projection kind
+`copy|link` installation mode, selected managed vendors, selected optional
+installer extras (currently `mtkahypar`), and one row per managed skill or
+agent projection. Each row fixes the vendor, projection kind
 and name, staged and installed paths, actual `copy|link` install kind, and both
 renderer digests. Codex and Copilot directory-shaped skills use their staged
 `codex-skills/` or `copilot-skills/` `SKILL.md` as the staged authority; their
