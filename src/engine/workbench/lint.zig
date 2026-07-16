@@ -112,7 +112,6 @@ fn collectMarkdown(
     defer dir.close(io);
     var iterator = dir.iterate();
     while (try iterator.next(io)) |entry| {
-        if (entry.name.len > 0 and entry.name[0] == '.') continue;
         const child = try std.fs.path.join(allocator, &.{ dir_path, entry.name });
         defer allocator.free(child);
         switch (entry.kind) {
