@@ -332,6 +332,107 @@ test "scenario: malformed workbench files fail pull push and status with distinc
     }
 }
 
+test "scenario: lint and runtime reject malformed Markdown in hidden feature paths" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    _ = suite.registerProject("wb-hidden-malformed");
+    const wb_root = try std.fmt.allocPrint(arena, "{s}/wb", .{suite.tmpAbsPath()});
+    const env = [_]harness.Suite.ExtraEnvEntry{
+        .{ .key = "PLANAR_WORKBENCH_ROOT", .value = wb_root },
+    };
+
+    const plan_raw = suite.mustRunWith(&.{ "plan", "create", "--json", "Hidden malformed workbench target" }, &env);
+    const plan = try std.json.parseFromSlice(PlanJSON, arena, plan_raw, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    });
+    gpa.free(plan_raw);
+    const plan_id = try std.fmt.allocPrint(arena, "{d}", .{plan.value.id});
+
+    gpa.free(suite.mustRunWith(&.{ "workbench", "push", plan_id, "--json" }, &env));
+    const status_raw = suite.mustRunWith(&.{ "workbench", "status", plan_id, "--json" }, &env);
+    const status = try std.json.parseFromSlice(StatusResult, arena, status_raw, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    });
+    gpa.free(status_raw);
+
+    var feature_path: ?[]const u8 = null;
+    for (status.value.entries) |entry| {
+        if (std.mem.endsWith(u8, entry.file_path, "README.md")) {
+            feature_path = std.fs.path.dirname(entry.file_path);
+            break;
+        }
+    }
+    try std.testing.expect(feature_path != null);
+
+    const hidden_file_rel = try std.fs.path.join(arena, &.{ feature_path.?, ".malformed.md" });
+    const hidden_dir_rel = try std.fs.path.join(arena, &.{ feature_path.?, ".drafts" });
+    const hidden_nested_rel = try std.fs.path.join(arena, &.{ hidden_dir_rel, "nested.md" });
+    const hidden_file_abs = try std.fs.path.join(arena, &.{ wb_root, hidden_file_rel });
+    const hidden_dir_abs = try std.fs.path.join(arena, &.{ wb_root, hidden_dir_rel });
+    const hidden_nested_abs = try std.fs.path.join(arena, &.{ wb_root, hidden_nested_rel });
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, hidden_dir_abs);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{
+        .sub_path = hidden_file_abs,
+        .data = "hidden file without frontmatter\n",
+    });
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{
+        .sub_path = hidden_nested_abs,
+        .data = "nested hidden file without frontmatter\n",
+    });
+
+    const lint_result = suite.execWith(&.{ "workbench", "lint", plan_id, "--json" }, &env);
+    defer lint_result.deinit(gpa);
+    try std.testing.expect(lint_result.term == .exited and lint_result.term.exited == 1);
+    var lint_count: usize = 0;
+    var lint_saw_hidden_file = false;
+    var lint_saw_hidden_nested = false;
+    var lint_lines = std.mem.splitScalar(u8, lint_result.stdout, '\n');
+    while (lint_lines.next()) |line| {
+        if (line.len == 0) continue;
+        const issue = try std.json.parseFromSlice(LintIssue, arena, line, .{
+            .allocate = .alloc_always,
+            .ignore_unknown_fields = false,
+        });
+        try std.testing.expectEqualStrings("malformed_frontmatter", issue.value.code);
+        lint_count += 1;
+        if (std.mem.eql(u8, issue.value.path, hidden_file_abs)) lint_saw_hidden_file = true;
+        if (std.mem.eql(u8, issue.value.path, hidden_nested_abs)) lint_saw_hidden_nested = true;
+    }
+    try std.testing.expectEqual(@as(usize, 2), lint_count);
+    try std.testing.expect(lint_saw_hidden_file);
+    try std.testing.expect(lint_saw_hidden_nested);
+
+    const verbs = [_][]const u8{ "status", "pull", "push", "sync" };
+    for (verbs) |verb| {
+        const result = suite.execWith(&.{ "workbench", verb, plan_id, "--json" }, &env);
+        defer result.deinit(gpa);
+        try std.testing.expect(result.term == .exited and result.term.exited == 1);
+        const summary = try std.json.parseFromSlice(MalformedWorkbenchOp, arena, result.stdout, .{
+            .allocate = .alloc_always,
+            .ignore_unknown_fields = true,
+        });
+        try std.testing.expectEqual(@as(i64, 2), summary.value.malformed);
+        try std.testing.expectEqual(@as(usize, 2), summary.value.malformed_files.len);
+        var runtime_saw_hidden_file = false;
+        var runtime_saw_hidden_nested = false;
+        for (summary.value.malformed_files) |malformed| {
+            try std.testing.expectEqualStrings("MalformedFrontmatter", malformed.parse_error);
+            if (std.mem.eql(u8, malformed.path, hidden_file_rel)) runtime_saw_hidden_file = true;
+            if (std.mem.eql(u8, malformed.path, hidden_nested_rel)) runtime_saw_hidden_nested = true;
+        }
+        try std.testing.expect(runtime_saw_hidden_file);
+        try std.testing.expect(runtime_saw_hidden_nested);
+    }
+}
+
 test "scenario: push reports malformed filtered terminal files before optional cleanup" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
