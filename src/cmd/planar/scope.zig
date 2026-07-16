@@ -4,8 +4,8 @@
 //! the guard rule itself. This wrapper layers in CLI concerns:
 //!
 //!   1. `--scope <slug>` override precedence (handler flag beats cwd).
-//!   2. cwd acquisition via `std.Io.Dir.realPathFileAlloc(.cwd(), …)`,
-//!      since handlers shouldn't reach for IO themselves.
+//!   2. PWD-first cwd acquisition through `engine.operatorpath`, since
+//!      handlers shouldn't choose path spellings themselves.
 //!   3. Forwarding to `runtime.ensureDb` so help-only paths still
 //!      avoid touching the DB.
 //!
@@ -118,21 +118,7 @@ pub fn resolveForWrite(ctx: *const runtime.Ctx, override: ?[]const u8) !Resoluti
 /// PWD-first cwd resolution (matches Go's os.Getwd). Falls back to
 /// realPath when PWD is absent. See plan 351 task 2375 for rationale.
 pub fn operatorCwd(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
-    const real_cwd = try std.Io.Dir.realPathFileAlloc(.cwd(), io, ".", allocator);
-    errdefer allocator.free(real_cwd);
-    if (getPosixEnv("PWD")) |pwd| {
-        if (std.fs.path.isAbsolute(pwd)) {
-            const real_pwd = std.Io.Dir.realPathFileAlloc(.cwd(), io, pwd, allocator) catch null;
-            defer if (real_pwd) |p| allocator.free(p);
-            if (real_pwd) |p| {
-                if (std.mem.eql(u8, p, real_cwd)) {
-                    allocator.free(real_cwd);
-                    return try allocator.dupe(u8, pwd);
-                }
-            }
-        }
-    }
-    return real_cwd;
+    return engine.operatorpath.cwdCurrent(allocator, io);
 }
 
 /// Resolve the cwd-derived read set. An explicit override returns that single
@@ -480,24 +466,6 @@ fn specificityRank(kind: []const u8) u8 {
     if (std.mem.eql(u8, kind, "repo")) return 4;
     if (std.mem.eql(u8, kind, "org")) return 5;
     return 6;
-}
-
-/// Read a POSIX env var from std.c.environ. Returns null when unset
-/// or empty. The returned slice points into the process environ block
-/// and must NOT be freed.
-fn getPosixEnv(key: []const u8) ?[]const u8 {
-    const raw: [*:null]?[*:0]u8 = std.c.environ;
-    var i: usize = 0;
-    while (raw[i]) |entry| : (i += 1) {
-        const s: []const u8 = std.mem.span(entry);
-        if (s.len <= key.len + 1) continue;
-        if (s[key.len] != '=') continue;
-        if (!std.mem.eql(u8, s[0..key.len], key)) continue;
-        const val = s[key.len + 1 ..];
-        if (val.len == 0) return null;
-        return val;
-    }
-    return null;
 }
 
 const MetaWriteResolution = union(enum) {

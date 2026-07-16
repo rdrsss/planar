@@ -1,6 +1,7 @@
 //! engine/local/manifest — sandbox walker + link-manifest IO + migrate.
 
 const std = @import("std");
+const operatorpath = @import("../operatorpath.zig");
 
 pub const Kind = enum { skill, agent };
 
@@ -671,16 +672,7 @@ fn readFile(path: []const u8, allocator: std.mem.Allocator, max: usize) ![]u8 {
 }
 
 fn toAbsolutePath(path: []const u8, allocator: std.mem.Allocator) ![]u8 {
-    if (std.fs.path.isAbsolute(path)) {
-        const resolved_z = std.Io.Dir.realPathFileAbsoluteAlloc(fsIo(), path, allocator) catch
-            return allocator.dupe(u8, path);
-        defer allocator.free(resolved_z);
-        return allocator.dupe(u8, resolved_z[0..resolved_z.len]);
-    }
-    const resolved_z = std.Io.Dir.cwd().realPathFileAlloc(fsIo(), path, allocator) catch
-        return allocator.dupe(u8, path);
-    defer allocator.free(resolved_z);
-    return allocator.dupe(u8, resolved_z[0..resolved_z.len]);
+    return operatorpath.absoluteCurrent(allocator, fsIo(), path) catch allocator.dupe(u8, path);
 }
 
 fn pathExists(path: []const u8) bool {

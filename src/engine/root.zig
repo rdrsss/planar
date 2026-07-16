@@ -25,6 +25,7 @@
 //!   └── …                   ─┘
 
 pub const health = @import("health.zig");
+pub const operatorpath = @import("operatorpath.zig");
 pub const models = @import("models.zig");
 pub const identity = @import("identity.zig");
 pub const policy = @import("policy.zig");
@@ -60,6 +61,7 @@ pub const grouping = @import("grouping.zig");
 // are reachable from `zig build test`.
 test {
     _ = health;
+    _ = operatorpath;
     _ = identity;
     _ = policy;
     _ = planning;

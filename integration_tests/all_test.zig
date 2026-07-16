@@ -38,6 +38,7 @@ comptime {
     _ = @import("parity_resume_test.zig");
     _ = @import("resume_scope_test.zig");
     _ = @import("parity_tree_cwd_derive_test.zig");
+    _ = @import("pwd_path_hardening_test.zig");
     _ = @import("parity_tree_render_test.zig");
     _ = @import("plan_next_buckets_test.zig");
     _ = @import("plan_recommend_strategy_test.zig");
