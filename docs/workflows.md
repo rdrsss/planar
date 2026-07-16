@@ -960,9 +960,10 @@ Outward-facing docs under `docs/` are tracked by `.planar-manifest`, a repo-stat
 - `planar-doc verify` — O(1) compare of the recomputed repo merkle root against `.planar-manifest`'s stored root. Fails on any drift in the covered tree.
 - `planar-doc lint` — walks `docs/` for prose-level issues (the DB-free subset that survived the plan 423 binary split).
 - `planar workbench lint --all` — scans every workbench Markdown file with the same
-  frontmatter parser used by pull/push/status and fails on parse, identity, or anchor-plan
-  issues. The hook runs all three checks and combines their exit status so one failure does
-  not hide diagnostics from the remaining checks.
+  frontmatter parser used by pull/push/status/sync and fails on YAML syntax, identity,
+  per-entity title/status schema, artifact kind, or anchor-plan issues. The hook runs all
+  three checks and combines their exit status so one failure does not hide diagnostics from
+  the remaining checks.
 
 ### Opt in
 

@@ -395,21 +395,57 @@ fn run(
         // status/sync show the full set so the operator can reason about
         // what would have been written. The anchor plan itself is exempt:
         // dropping it would break feature-tree navigation.
-        if (mode == .push and e.id != anchor_plan_id) {
+        const is_anchor = std.mem.eql(u8, e.kind, "plan") and e.id == anchor_plan_id;
+        if (mode == .push and !is_anchor) {
             if (terminal_mod.isFilteredStr(e.kind, e.status, filter_mode)) |drop| {
                 if (drop) {
                     summary.filtered += 1;
                     // Plan 439 M3: surprise-free upgrade path. If the
                     // filtered entity already has a file on disk, that's a
-                    // pre-existing terminal artifact. Count it, and remove
-                    // it if `--apply-cleanup` was passed.
+                    // pre-existing terminal artifact. It still belongs to
+                    // this push's input corpus, so parse and aggregate it
+                    // before applying the output filter or optional cleanup.
                     const pre_rel_path, const pre_db_content = try renderEntity(d, allocator, anchor_plan_id, e.kind, e.id);
                     defer allocator.free(pre_rel_path);
                     defer allocator.free(pre_db_content);
+                    const pre_stored = try feature.storedPath(allocator, a.assoc_slug, a.plan_key, a.slug, pre_rel_path);
+                    defer allocator.free(pre_stored);
+                    const pre_stored_key = try allocator.dupe(u8, pre_stored);
+                    errdefer allocator.free(pre_stored_key);
+                    try seen_files.put(pre_stored_key, true);
+                    try seen_file_keys.append(allocator, pre_stored_key);
                     const pre_abs = try std.fs.path.join(allocator, &.{ feature_dir, pre_rel_path });
                     defer allocator.free(pre_abs);
                     if (pathExists(pre_abs)) {
                         summary.pre_existing_terminal += 1;
+                        const pre_fs_content = try readFileAlloc(allocator, pre_abs);
+                        defer allocator.free(pre_fs_content);
+                        const parsed = parse.parse(allocator, pre_fs_content) catch |parse_err| {
+                            summary.malformed += 1;
+                            try entries.append(allocator, .{
+                                .class = .malformed,
+                                .file_path = try allocator.dupe(u8, pre_stored),
+                                .entity_kind = try allocator.dupe(u8, e.kind),
+                                .entity_id = e.id,
+                                .parse_error = try allocator.dupe(u8, @errorName(parse_err)),
+                            });
+                            if (apply_cleanup) {
+                                const pre_abs_z = try allocator.dupeZ(u8, pre_abs);
+                                defer allocator.free(pre_abs_z);
+                                _ = c.unlink(pre_abs_z.ptr);
+                                summary.cleaned += 1;
+                                _ = d.execParams(
+                                    "delete from workbench_sync_state where anchor_plan_id = ? and entity_kind = ? and entity_id = ?",
+                                    &.{
+                                        .{ .int = anchor_plan_id },
+                                        .{ .text = e.kind },
+                                        .{ .int = e.id },
+                                    },
+                                ) catch {};
+                            }
+                            continue;
+                        };
+                        parse.deinit(parsed, allocator);
                         if (apply_cleanup) {
                             const pre_abs_z = try allocator.dupeZ(u8, pre_abs);
                             defer allocator.free(pre_abs_z);

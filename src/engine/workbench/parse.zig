@@ -9,8 +9,9 @@
 //! cross-reference lists. Field names follow the YAML key contract documented
 //! in the Go parse.go source.
 //!
-//! Required fields: entity_kind, entity_id (must be positive integer).
-//! All other fields are optional and zero-valued when absent.
+//! Required fields: entity_kind, entity_id (must be positive integer), title,
+//! and status. Artifacts additionally require artifact_kind. Status and
+//! artifact-kind values are checked against the database-backed entity schema.
 //!
 //! The YAML parser implemented here is deliberately minimal: it handles the
 //! flat key:value pairs and inline list items that the workbench renderer
@@ -64,7 +65,34 @@ pub const Error = error{
     MalformedFrontmatter,
     MissingRequiredField,
     InvalidEntityKind,
+    InvalidFieldValue,
     OutOfMemory,
+};
+
+/// DiagnosticReason identifies the precise parser rejection so callers can
+/// render actionable messages without re-parsing the frontmatter themselves.
+pub const DiagnosticReason = enum {
+    missing_open_delimiter,
+    missing_close_delimiter,
+    tab_indentation,
+    unquoted_colon,
+    leading_dash_scalar,
+    malformed_yaml,
+    invalid_integer,
+    invalid_entity_ref,
+    missing_required_field,
+    invalid_entity_kind,
+    invalid_field_value,
+};
+
+/// Diagnostic describes the first schema or syntax error in a workbench file.
+/// String fields borrow from `content` or static storage and require no deinit.
+pub const Diagnostic = struct {
+    err: Error,
+    reason: DiagnosticReason,
+    line: usize,
+    field: []const u8 = "",
+    expected: []const u8 = "",
 };
 
 // =========================================================================
@@ -75,8 +103,11 @@ pub const Error = error{
 /// The caller owns all memory in the returned ParseResult.
 /// Returns error.MalformedFrontmatter when the file does not start with "---"
 /// or the closing "---" is absent. Returns error.MissingRequiredField when
-/// entity_kind or entity_id are absent or invalid.
+/// a common or per-kind required field is absent, and InvalidFieldValue when
+/// a kind-specific status or artifact kind is outside the shared schema.
 pub fn parse(allocator: std.mem.Allocator, content: []const u8) Error!ParseResult {
+    if (diagnose(content)) |diagnostic| return diagnostic.err;
+
     // File must start with "---\n".
     if (!std.mem.startsWith(u8, content, "---\n")) {
         return Error.MalformedFrontmatter;
@@ -117,6 +148,190 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) Error!ParseResul
     };
 }
 
+/// Validate workbench YAML syntax and the per-entity frontmatter schema.
+/// The same check gates `parse`, so lint and runtime sync accept identical files.
+pub fn diagnose(content: []const u8) ?Diagnostic {
+    if (!std.mem.startsWith(u8, content, "---\n")) {
+        return .{
+            .err = error.MalformedFrontmatter,
+            .reason = .missing_open_delimiter,
+            .line = 1,
+        };
+    }
+
+    const after_open = content[4..];
+    const yaml, _ = findClose(after_open) orelse return .{
+        .err = error.MalformedFrontmatter,
+        .reason = .missing_close_delimiter,
+        .line = countLines(content),
+    };
+
+    var entity_kind: []const u8 = "";
+    var status: []const u8 = "";
+    var artifact_kind: []const u8 = "";
+    var entity_id: i64 = 0;
+    var saw_entity_kind = false;
+    var saw_entity_id = false;
+    var saw_title = false;
+    var saw_status = false;
+    var saw_artifact_kind = false;
+    var entity_kind_line: usize = 2;
+    var status_line: usize = 6;
+    var artifact_kind_line: usize = 7;
+
+    const ListField = enum { none, touches, verifies, cites, derives_from };
+    var current_list: ListField = .none;
+    var lines = std.mem.splitScalar(u8, yaml, '\n');
+    var line_number: usize = 2;
+    while (lines.next()) |raw_line| : (line_number += 1) {
+        var indent_end: usize = 0;
+        while (indent_end < raw_line.len and (raw_line[indent_end] == ' ' or raw_line[indent_end] == '\t')) : (indent_end += 1) {
+            if (raw_line[indent_end] == '\t') {
+                return .{
+                    .err = error.MalformedFrontmatter,
+                    .reason = .tab_indentation,
+                    .line = line_number,
+                };
+            }
+        }
+        const line = std.mem.trimEnd(u8, raw_line, " \t\r");
+        if (line.len == 0) continue;
+
+        if (std.mem.startsWith(u8, line, "- ")) {
+            if (current_list == .none) {
+                return .{
+                    .err = error.MalformedFrontmatter,
+                    .reason = .leading_dash_scalar,
+                    .line = line_number,
+                };
+            }
+            if (current_list != .touches) {
+                const item = std.mem.trim(u8, line[2..], " \t");
+                if (!validEntityRef(item)) {
+                    return .{
+                        .err = error.MalformedFrontmatter,
+                        .reason = .invalid_entity_ref,
+                        .line = line_number,
+                    };
+                }
+            }
+            continue;
+        }
+
+        const colon_pos = std.mem.indexOfScalar(u8, line, ':') orelse return .{
+            .err = error.MalformedFrontmatter,
+            .reason = .malformed_yaml,
+            .line = line_number,
+        };
+        const key = std.mem.trim(u8, line[0..colon_pos], " \t");
+        if (key.len == 0) return .{
+            .err = error.MalformedFrontmatter,
+            .reason = .malformed_yaml,
+            .line = line_number,
+        };
+        const raw_value = std.mem.trim(u8, line[colon_pos + 1 ..], " \t");
+        if (raw_value.len > 0 and (raw_value[0] == '\'' or raw_value[0] == '"')) {
+            if (raw_value.len < 2 or raw_value[raw_value.len - 1] != raw_value[0]) {
+                return .{
+                    .err = error.MalformedFrontmatter,
+                    .reason = .malformed_yaml,
+                    .line = line_number,
+                };
+            }
+        } else {
+            if (std.mem.indexOf(u8, raw_value, ": ") != null) {
+                return .{
+                    .err = error.MalformedFrontmatter,
+                    .reason = .unquoted_colon,
+                    .line = line_number,
+                };
+            }
+            if (std.mem.startsWith(u8, raw_value, "- ")) {
+                return .{
+                    .err = error.MalformedFrontmatter,
+                    .reason = .leading_dash_scalar,
+                    .line = line_number,
+                };
+            }
+        }
+        const value = stripYamlQuotes(raw_value);
+        current_list = .none;
+
+        if (std.mem.eql(u8, key, "entity_kind")) {
+            entity_kind = value;
+            saw_entity_kind = value.len > 0;
+            entity_kind_line = line_number;
+        } else if (std.mem.eql(u8, key, "entity_id")) {
+            entity_id = std.fmt.parseInt(i64, value, 10) catch return .{
+                .err = error.MalformedFrontmatter,
+                .reason = .invalid_integer,
+                .line = line_number,
+                .field = "entity_id",
+            };
+            saw_entity_id = true;
+        } else if (std.mem.eql(u8, key, "anchor_plan_id") or
+            std.mem.eql(u8, key, "priority"))
+        {
+            _ = std.fmt.parseInt(i64, value, 10) catch return .{
+                .err = error.MalformedFrontmatter,
+                .reason = .invalid_integer,
+                .line = line_number,
+                .field = key,
+            };
+        } else if (std.mem.eql(u8, key, "title")) {
+            saw_title = value.len > 0;
+        } else if (std.mem.eql(u8, key, "status")) {
+            status = value;
+            saw_status = value.len > 0;
+            status_line = line_number;
+        } else if (std.mem.eql(u8, key, "artifact_kind")) {
+            artifact_kind = value;
+            saw_artifact_kind = value.len > 0;
+            artifact_kind_line = line_number;
+        } else if (std.mem.eql(u8, key, "touches")) {
+            current_list = .touches;
+        } else if (std.mem.eql(u8, key, "verifies")) {
+            current_list = .verifies;
+        } else if (std.mem.eql(u8, key, "cites")) {
+            current_list = .cites;
+        } else if (std.mem.eql(u8, key, "derives-from")) {
+            current_list = .derives_from;
+        }
+    }
+
+    if (!saw_entity_kind) return missingField("entity_kind", 2);
+    if (!saw_entity_id or entity_id <= 0) return missingField("entity_id", 3);
+    if (!isEntityKind(entity_kind)) return .{
+        .err = error.InvalidEntityKind,
+        .reason = .invalid_entity_kind,
+        .line = entity_kind_line,
+        .field = "entity_kind",
+        .expected = "plan, task, artifact, scenario, decision, or question",
+    };
+    if (!saw_title) return missingField("title", 5);
+    if (!saw_status) return missingField("status", 6);
+    const expected_status = statusesForKind(entity_kind);
+    if (!valueInList(status, expected_status)) return .{
+        .err = error.InvalidFieldValue,
+        .reason = .invalid_field_value,
+        .line = status_line,
+        .field = "status",
+        .expected = expected_status,
+    };
+    if (std.mem.eql(u8, entity_kind, "artifact")) {
+        if (!saw_artifact_kind) return missingField("artifact_kind", 7);
+        const artifact_kinds = "tech_spec, adr, design_note, summary, readme, generated, other, product_spec, roadmap, research, getting_started, changelog_entry, glossary_term, or test_spec";
+        if (!valueInList(artifact_kind, artifact_kinds)) return .{
+            .err = error.InvalidFieldValue,
+            .reason = .invalid_field_value,
+            .line = artifact_kind_line,
+            .field = "artifact_kind",
+            .expected = artifact_kinds,
+        };
+    }
+    return null;
+}
+
 /// deinit releases all memory owned by a ParseResult.
 pub fn deinit(result: ParseResult, allocator: std.mem.Allocator) void {
     deinitFrontmatter(result.frontmatter, allocator);
@@ -147,6 +362,57 @@ pub fn deinitFrontmatter(fm: FrontMatter, allocator: std.mem.Allocator) void {
 // =========================================================================
 // Internal helpers
 // =========================================================================
+
+fn missingField(field: []const u8, line: usize) Diagnostic {
+    return .{
+        .err = error.MissingRequiredField,
+        .reason = .missing_required_field,
+        .line = line,
+        .field = field,
+        .expected = "a non-empty value",
+    };
+}
+
+fn countLines(content: []const u8) usize {
+    if (content.len == 0) return 1;
+    return std.mem.count(u8, content, "\n") + @as(usize, @intFromBool(content[content.len - 1] != '\n'));
+}
+
+fn isEntityKind(kind: []const u8) bool {
+    const valid = [_][]const u8{ "plan", "task", "artifact", "scenario", "decision", "question" };
+    for (valid) |candidate| {
+        if (std.mem.eql(u8, kind, candidate)) return true;
+    }
+    return false;
+}
+
+fn statusesForKind(kind: []const u8) []const u8 {
+    if (std.mem.eql(u8, kind, "plan")) return "draft, active, paused, done, or abandoned";
+    if (std.mem.eql(u8, kind, "task")) return "todo, doing, blocked, done, or cancelled";
+    if (std.mem.eql(u8, kind, "artifact")) return "draft, active, superseded, or retired";
+    if (std.mem.eql(u8, kind, "scenario")) return "draft, ready, verified, failing, or retired";
+    if (std.mem.eql(u8, kind, "decision")) return "proposed, accepted, superseded, or withdrawn";
+    return "open, answered, or wontfix";
+}
+
+fn valueInList(value: []const u8, list: []const u8) bool {
+    var parts = std.mem.splitScalar(u8, list, ',');
+    while (parts.next()) |raw| {
+        var candidate = std.mem.trim(u8, raw, " ");
+        if (std.mem.startsWith(u8, candidate, "or ")) candidate = candidate[3..];
+        if (std.mem.eql(u8, value, candidate)) return true;
+    }
+    return false;
+}
+
+fn validEntityRef(value: []const u8) bool {
+    const colon = std.mem.indexOfScalar(u8, value, ':') orelse return false;
+    const kind = std.mem.trim(u8, value[0..colon], " \t");
+    const id_text = std.mem.trim(u8, value[colon + 1 ..], " \t");
+    if (kind.len == 0 or id_text.len == 0) return false;
+    const id = std.fmt.parseInt(i64, id_text, 10) catch return false;
+    return id > 0;
+}
 
 /// findClose returns the yaml_block and the body, or null if no closing --- is found.
 fn findClose(rest: []const u8) ?struct { []const u8, []const u8 } {
@@ -418,6 +684,8 @@ test "parse: empty body is OK" {
         \\entity_kind: decision
         \\entity_id: 7
         \\anchor_plan_id: 3
+        \\title: Empty decision
+        \\status: proposed
         \\---
         \\
     ;
@@ -432,6 +700,8 @@ test "parse: touches list" {
         \\entity_kind: task
         \\entity_id: 5
         \\anchor_plan_id: 2
+        \\title: Touched task
+        \\status: todo
         \\touches:
         \\- repo-a
         \\- repo-b
@@ -451,6 +721,9 @@ test "parse: verifies list with EntityRef" {
         \\entity_kind: artifact
         \\entity_id: 11
         \\anchor_plan_id: 4
+        \\title: Verification artifact
+        \\status: active
+        \\artifact_kind: test_spec
         \\verifies:
         \\- task:99
         \\- artifact:12
@@ -473,6 +746,7 @@ test "parse: UTF-8 body content" {
         \\entity_id: 3
         \\anchor_plan_id: 1
         \\title: Héllo Wörld
+        \\status: open
         \\---
         \\
         \\Ünïcödé body 🎉
@@ -490,6 +764,9 @@ test "parse: derives-from list" {
         \\entity_kind: artifact
         \\entity_id: 20
         \\anchor_plan_id: 5
+        \\title: Derived artifact
+        \\status: active
+        \\artifact_kind: tech_spec
         \\derives-from:
         \\- artifact:10
         \\---

@@ -2325,6 +2325,9 @@ bidirectional contract between filesystem and database.
 - `2` — system error (DB, I/O).
 - `3` — conflict(s) detected (status / sync / pull only; resolve to continue).
 
+When one operation finds both malformed files and conflicts, exit code `1` takes precedence;
+the summary still reports both counts so resolving the malformation does not hide the conflict.
+
 ---
 
 ### `planar workbench lint [<plan> | --all | --path <file-or-directory>]`
@@ -2337,9 +2340,12 @@ planar workbench lint --path <file-or-directory> [--json]
 ```
 
 **Description:** Validate Markdown frontmatter without changing the filesystem or database.
-The linter calls the same `FrontMatter` parser used by pull, push, and status, then checks
-that `anchor_plan_id` identifies an existing plan. Exactly one target is required: one
-plan tree, every tree under the workbench root, or one explicit file/directory.
+The linter calls the same `FrontMatter` parser used by pull, push, status, and sync. The
+shared parser requires every rendered entity kind to carry non-empty `title` and `status`,
+validates status against that kind's database enum, and requires artifacts to carry a valid
+`artifact_kind`. Lint then checks that `anchor_plan_id` identifies an existing plan. Exactly
+one target is required: one plan tree, every tree under the workbench root, or one explicit
+file/directory.
 
 Text output lists each issue as `path:line`, followed by a stable severity/code, message,
 and repair hint, then prints the files/errors/warnings totals. `--json` emits one NDJSON
@@ -2556,7 +2562,9 @@ planar workbench sync <plan>
 
 **Description:** Full bidirectional reconciliation for the named anchor plan. Applies
 non-conflicting FS→DB and DB→FS changes in a single pass. Conflicts are surfaced (exit 3)
-and must be resolved with `workbench resolve` before the next sync will be clean.
+and must be resolved with `workbench resolve` before the next sync will be clean. Malformed
+files are counted separately, included in JSON as `malformed` / `malformed_files`, and make
+sync exit 1. When both classes are present, malformed exit precedence applies.
 
 **Arguments:**
 
@@ -2579,7 +2587,7 @@ workbench sync: project_checkout-app/p1-checkout-revamp
 **Capture:** Appends `session_entries` row with `prefix='action'`.
 
 **Exit codes:**
-- `1` — plan not found.
+- `1` — plan not found or one or more malformed files detected.
 - `2` — I/O or DB error.
 - `3` — one or more conflicts detected.
 
