@@ -79,7 +79,7 @@ test "editor validation rejects invalid status mutation on task edit" {
     const res = suite.execWith(&.{ "task", "edit", task_id }, env);
     defer res.deinit(gpa);
     try std.testing.expect(res.term == .exited and res.term.exited != 0);
-    try std.testing.expect(std.mem.containsAtLeast(u8, res.stderr, 1, "QueryFailed"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, res.stderr, 1, "InvalidFieldValue"));
 
     const shown = suite.mustRunJSON(TaskShowJSON, arena, &.{ "task", "show", "--json", task_id });
     try std.testing.expectEqualStrings("todo", shown.status);
