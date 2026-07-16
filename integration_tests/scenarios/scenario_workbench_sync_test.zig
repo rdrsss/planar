@@ -51,6 +51,17 @@ const WorkbenchOp = struct {
     conflicts: i64,
 };
 
+const MalformedFile = struct {
+    path: []const u8,
+    parse_error: []const u8,
+};
+
+const MalformedWorkbenchOp = struct {
+    pending: i64,
+    malformed: i64,
+    malformed_files: []const MalformedFile,
+};
+
 const WorkbenchListEntry = struct {
     plan: i64,
     slug: []const u8,
@@ -216,6 +227,73 @@ test "scenario: workbench sync — push seeds FS, status round-trips, list surfa
         if (saw_question) break;
     }
     try std.testing.expect(saw_question);
+}
+
+test "scenario: malformed workbench files fail pull push and status with distinct diagnostics" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    _ = suite.registerProject("wb-malformed");
+    const wb_root = std.fmt.allocPrint(arena, "{s}/wb", .{suite.tmpAbsPath()}) catch unreachable;
+    const env = [_]harness.Suite.ExtraEnvEntry{
+        .{ .key = "PLANAR_WORKBENCH_ROOT", .value = wb_root },
+    };
+
+    const plan_raw = suite.mustRunWith(&.{ "plan", "create", "--json", "Malformed workbench target" }, &env);
+    const plan = std.json.parseFromSlice(PlanJSON, arena, plan_raw, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    }) catch unreachable;
+    gpa.free(plan_raw);
+    const plan_id = std.fmt.allocPrint(arena, "{d}", .{plan.value.id}) catch unreachable;
+
+    gpa.free(suite.mustRunWith(&.{ "workbench", "push", plan_id, "--json" }, &env));
+    const clean_status_raw = suite.mustRunWith(&.{ "workbench", "status", plan_id, "--json" }, &env);
+    const clean_status = std.json.parseFromSlice(StatusResult, arena, clean_status_raw, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    }) catch unreachable;
+    gpa.free(clean_status_raw);
+
+    var readme_path: ?[]const u8 = null;
+    for (clean_status.value.entries) |entry| {
+        if (std.mem.endsWith(u8, entry.file_path, "README.md")) {
+            readme_path = arena.dupe(u8, entry.file_path) catch unreachable;
+            break;
+        }
+    }
+    try std.testing.expect(readme_path != null);
+    const readme_abs = std.fmt.allocPrint(arena, "{s}/{s}", .{ wb_root, readme_path.? }) catch unreachable;
+    std.Io.Dir.cwd().writeFile(std.testing.io, .{
+        .sub_path = readme_abs,
+        .data = "front matter delimiter is missing\n",
+    }) catch unreachable;
+
+    const verbs = [_][]const u8{ "status", "pull", "push" };
+    for (verbs) |verb| {
+        const text_result = suite.execWith(&.{ "workbench", verb, plan_id }, &env);
+        defer text_result.deinit(gpa);
+        try std.testing.expect(text_result.term == .exited and text_result.term.exited == 1);
+        try std.testing.expect(std.mem.indexOf(u8, text_result.stdout, "1 MALFORMED") != null);
+
+        const json_result = suite.execWith(&.{ "workbench", verb, plan_id, "--json" }, &env);
+        defer json_result.deinit(gpa);
+        try std.testing.expect(json_result.term == .exited and json_result.term.exited == 1);
+        const parsed = std.json.parseFromSlice(MalformedWorkbenchOp, arena, json_result.stdout, .{
+            .allocate = .alloc_always,
+            .ignore_unknown_fields = true,
+        }) catch unreachable;
+        try std.testing.expectEqual(@as(i64, 0), parsed.value.pending);
+        try std.testing.expectEqual(@as(i64, 1), parsed.value.malformed);
+        try std.testing.expectEqual(@as(usize, 1), parsed.value.malformed_files.len);
+        try std.testing.expectEqualStrings(readme_path.?, parsed.value.malformed_files[0].path);
+        try std.testing.expectEqualStrings("MalformedFrontmatter", parsed.value.malformed_files[0].parse_error);
+    }
 }
 
 // =========================================================================
