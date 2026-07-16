@@ -59,7 +59,7 @@ const GroupsJSON = struct {
 /// actually runs and the cost-≤-greedy guard (task 4247) is exercised.
 fn mtkahyparAvailable(gpa: std.mem.Allocator) bool {
     const r = std.process.run(gpa, std.testing.io, .{
-        .argv = &.{ "mtkahypar", "--help" },
+        .argv = &.{ "mtkahypar", "--probe" },
     }) catch return false;
     defer gpa.free(r.stdout);
     defer gpa.free(r.stderr);
@@ -529,12 +529,11 @@ test "groups recommend: --solver=mtkahypar cost is never worse than greedy (task
         "groups", "recommend", pid, "--budget", budget, "--solver", "mtkahypar", "--json",
     });
 
-    // A present but incompatible solver must degrade honestly to greedy.
-    if (solver_g.optimal_available) {
-        try std.testing.expectEqualStrings("mtkahypar", solver_g.solver);
-    } else {
-        try std.testing.expectEqualStrings("greedy", solver_g.solver);
-    }
+    // The availability probe imported the native wheel successfully. Any
+    // invocation failure from here is a live integration failure, not an
+    // acceptable skip/degradation path.
+    try std.testing.expect(solver_g.optimal_available);
+    try std.testing.expectEqualStrings("mtkahypar", solver_g.solver);
 
     // THE GUARANTEE: the solver arm's total cost is ≤ greedy's on this coupled
     // input. Before the fix the solver could report a strictly higher cost.

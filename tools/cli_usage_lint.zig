@@ -104,7 +104,7 @@ pub fn main(init: std.process.Init) !void {
     // collide.
     var catalog = Catalog{};
     for (bin_paths) |bin_path| {
-        loadSchema(arena, io, &catalog, bin_path) catch |e| {
+        loadSchema(arena, init.gpa, io, init.environ_map, &catalog, bin_path) catch |e| {
             std.debug.print("error: failed to load schema from {s}: {s}\n", .{ bin_path, @errorName(e) });
             std.process.exit(2);
         };
@@ -154,9 +154,20 @@ fn lessThanViolation(_: void, a: Violation, b: Violation) bool {
 // Schema loading.
 // ---------------------------------------------------------------------------
 
-fn loadSchema(arena: std.mem.Allocator, io: Io, catalog: *Catalog, bin_path: []const u8) !void {
+fn loadSchema(
+    arena: std.mem.Allocator,
+    gpa: std.mem.Allocator,
+    io: Io,
+    base_env: *const std.process.Environ.Map,
+    catalog: *Catalog,
+    bin_path: []const u8,
+) !void {
+    var schema_env = try SchemaSubprocessEnv.init(gpa, io, base_env);
+    defer schema_env.deinit();
+
     const res = try std.process.run(arena, io, .{
         .argv = &.{ bin_path, "schema" },
+        .environ_map = &schema_env.map,
     });
     if (res.term != .exited or res.term.exited != 0) return error.SchemaCommandFailed;
 
@@ -177,6 +188,55 @@ fn loadSchema(arena: std.mem.Allocator, io: Io, catalog: *Catalog, bin_path: []c
             }
         }
         try catalog.commands.put(arena, try arena.dupe(u8, c.command), cmd);
+    }
+}
+
+const SchemaSubprocessEnv = struct {
+    allocator: std.mem.Allocator,
+    io: Io,
+    map: std.process.Environ.Map,
+    db_path: []u8,
+
+    fn init(
+        allocator: std.mem.Allocator,
+        io: Io,
+        base_env: *const std.process.Environ.Map,
+    ) !SchemaSubprocessEnv {
+        var map = try base_env.clone(allocator);
+        errdefer map.deinit();
+
+        const tmp_root = map.get("TMPDIR") orelse map.get("TEMP") orelse map.get("TMP") orelse ".";
+        var random_bytes: [16]u8 = undefined;
+        io.random(&random_bytes);
+        const hex = std.fmt.bytesToHex(random_bytes, .lower);
+        const filename = try std.fmt.allocPrint(allocator, "planar-cli-schema-{s}.db", .{hex});
+        defer allocator.free(filename);
+        const db_path = try std.fs.path.join(allocator, &.{ tmp_root, filename });
+        errdefer allocator.free(db_path);
+
+        try map.put("PLANAR_DB", db_path);
+        return .{
+            .allocator = allocator,
+            .io = io,
+            .map = map,
+            .db_path = db_path,
+        };
+    }
+
+    fn deinit(self: *SchemaSubprocessEnv) void {
+        deleteDbAndSidecars(self.io, self.allocator, self.db_path);
+        self.map.deinit();
+        self.allocator.free(self.db_path);
+        self.* = undefined;
+    }
+};
+
+fn deleteDbAndSidecars(io: Io, allocator: std.mem.Allocator, db_path: []const u8) void {
+    std.Io.Dir.cwd().deleteFile(io, db_path) catch {};
+    for ([_][]const u8{ "-wal", "-shm" }) |suffix| {
+        const sidecar = std.fmt.allocPrint(allocator, "{s}{s}", .{ db_path, suffix }) catch continue;
+        defer allocator.free(sidecar);
+        std.Io.Dir.cwd().deleteFile(io, sidecar) catch {};
     }
 }
 
@@ -511,6 +571,46 @@ fn testCatalog(arena: std.mem.Allocator) !Catalog {
         try c.commands.put(arena, "planar task", .{ .is_leaf = false });
     }
     return c;
+}
+
+test "schema subprocess environment preserves inherited PLANAR_DB sentinel" {
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var random_bytes: [8]u8 = undefined;
+    io.random(&random_bytes);
+    const hex = std.fmt.bytesToHex(random_bytes, .lower);
+    const sentinel_path = try std.fmt.allocPrint(allocator, "cli-usage-outer-sentinel-{s}.db", .{hex});
+    defer allocator.free(sentinel_path);
+    defer std.Io.Dir.cwd().deleteFile(io, sentinel_path) catch {};
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = sentinel_path, .data = "untouched" });
+
+    var base_env = std.process.Environ.Map.init(allocator);
+    defer base_env.deinit();
+    try base_env.put("TMPDIR", ".");
+    try base_env.put("PLANAR_DB", sentinel_path);
+
+    var isolated = try SchemaSubprocessEnv.init(allocator, io, &base_env);
+    const isolated_path = try allocator.dupe(u8, isolated.db_path);
+    defer allocator.free(isolated_path);
+    try testing.expect(!std.mem.eql(u8, sentinel_path, isolated.map.get("PLANAR_DB").?));
+    try testing.expectEqualStrings(sentinel_path, base_env.get("PLANAR_DB").?);
+
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = isolated.db_path, .data = "schema db" });
+    const wal_path = try std.fmt.allocPrint(allocator, "{s}-wal", .{isolated.db_path});
+    defer allocator.free(wal_path);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = wal_path, .data = "wal" });
+    const shm_path = try std.fmt.allocPrint(allocator, "{s}-shm", .{isolated.db_path});
+    defer allocator.free(shm_path);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = shm_path, .data = "shm" });
+    isolated.deinit();
+
+    const sentinel = try std.Io.Dir.cwd().readFileAlloc(io, sentinel_path, allocator, .limited(64));
+    defer allocator.free(sentinel);
+    try testing.expectEqualStrings("untouched", sentinel);
+    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(io, isolated_path, .{}));
+    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(io, wal_path, .{}));
+    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(io, shm_path, .{}));
 }
 
 test "flags valid on a leaf command pass" {

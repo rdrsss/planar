@@ -224,13 +224,36 @@ The janitor — not the coder, not the orchestrator directly — runs `planar pl
 
 **Triggered when:** Phase 3 ends with at least one merged coder cycle and `--no-docs` was not supplied at orchestrator invocation. Fires after propagation and archive have been offered (so any source moves they introduce are folded into the diff the documenter sees).
 
+**Authoritative repository identity:** Before dispatching the documenter, derive
+an `authoritative_identity` object from repository/build evidence rather than
+copying claims from guidance prose:
+
+- `migration_tail`: lexically greatest `migrations/[0-9][0-9][0-9][0-9][0-9]_*.up.sql`; require its matching down file.
+- `schema_version`: the tail filename's five-digit prefix, cross-checked against
+  that up migration's `schema_migrations` insert.
+- `binary_set`: the exact installed executable names declared by `build.zig`:
+  `planar`, `planar-agent`, `planar-watch`, `planar-doc`, and `planar-execute`.
+- `generated_surface_boundary`: derive from checked-in source directories,
+  `.gitignore`, and the `planar skills render` contract: unified skills are
+  authored only in `skills/src/`, agents in `agents/`, and per-vendor
+  projections are generated out of tree at render/install time.
+- `guidance_equivalence`: inspect `AGENTS.md` and `CLAUDE.md`; valid state is a
+  symlink resolving one to the other or byte-for-byte equality for regular
+  files. Record the observed mode, targets/digests, and evidence paths.
+
+The relevant guidance set starts with repo-owned `AGENTS.md`, `CLAUDE.md`, and
+`README.md`, plus any other repository guidance file that asserts one of those
+facts. Missing assertions do not create drift; only contradictory assertions
+do. This is a read-only derivation and never treats generated vendor output as
+source-of-truth.
+
 **What happens:**
-1. The orchestrator runs `planar-doc diff --json` against the post-cycle working tree and computes the **envelope** the documenter receives: `{ manifest_path, diff_records, covered_docs, cycle_summary }`. The `cycle_summary` field is one short line per dispatched task identifying its slug and its high-level scope (typically the same slugs from the coder briefs).
+1. The orchestrator runs `planar-doc diff --json` against the post-cycle working tree and computes the **envelope** the documenter receives: `{ manifest_path, diff_records, covered_docs, cycle_summary, authoritative_identity, guidance_files }`. The `cycle_summary` field is one short line per dispatched task identifying its slug and its high-level scope (typically the same slugs from the coder briefs).
 2. The orchestrator invokes the `documenter` agent (`/pl-documenter`) with the envelope as input.
 3. The documenter classifies each diff record into one of `extend-cover` / `create-doc` / `nodoc` / `defer` per [`agents/documenter.md` § Decision policy](documenter.md#decision-policy) and returns a worklist.
 4. The orchestrator surfaces the worklist to the user with the verb each row would run. **No `planar-doc` verb fires until the operator approves the row.**
 5. On row-by-row approval, the orchestrator invokes the chosen verb (`planar-doc cover ...`, `planar-doc nodoc ...`, or — for `create-doc` rows — first stages the proposed doc body for the operator to commit, then `planar-doc cover` once the file is in place). Rejected and deferred rows are left untouched.
-6. After applying the approved rows, the orchestrator runs `planar-doc build` to reseat the manifest and surfaces the new root hash in the cycle summary.
+6. After applying the approved rows, the orchestrator runs `planar-doc build` to reseat the manifest and surfaces the new root hash in the cycle summary. If any `guidance-identity-drift` row is rejected, deferred, ambiguous, or unapplied, Phase 6 cannot report a **clean closeout**; it returns the unresolved operator-gated rows and exact evidence instead. This does not reopen or override the janitor-owned `planar plan closeout` result.
 
 **Boundary:** Phase 6 is **default-on** but the documenter only proposes. The orchestrator gates every action: no manifest write, no cover edge, no nodoc entry, and no doc body lands without explicit operator approval. `--no-docs` opts out of the phase entirely (no `planar-doc diff` is even run). The documenter never touches SQLite, so this phase introduces no agent_action / claim writes — only the planning-side cycle-summary record is emitted.
 
@@ -243,11 +266,19 @@ The janitor — not the coder, not the orchestrator directly — runs `planar pl
   "covered_docs": { /* current entries map for cross-reference */ },
   "cycle_summary": [
     { "task_slug": "...", "scope": "..." }
-  ]
+  ],
+  "authoritative_identity": {
+    "migration_tail": { "value": "00029_agent_failure_categories.up.sql", "evidence": ["migrations/00029_agent_failure_categories.up.sql", "migrations/00029_agent_failure_categories.down.sql"] },
+    "schema_version": { "value": 29, "evidence": "schema_migrations insert in the tail up migration" },
+    "binary_set": { "value": ["planar", "planar-agent", "planar-watch", "planar-doc", "planar-execute"], "evidence": "build.zig installed artifacts" },
+    "generated_surface_boundary": { "skill_source": "skills/src/", "agent_source": "agents/", "projections": "generated out of tree", "evidence": [".gitignore", "planar skills render"] },
+    "guidance_equivalence": { "paths": ["AGENTS.md", "CLAUDE.md"], "equivalent": true, "mode": "symlink-or-byte-equal", "evidence": "readlink/cmp observation" }
+  },
+  "guidance_files": ["AGENTS.md", "CLAUDE.md", "README.md"]
 }
 ```
 
-The orchestrator constructs the envelope; the documenter consumes it; the operator gates each returned row.
+The orchestrator constructs the envelope; the documenter consumes it; the operator gates each returned row. No automatic prose or manifest write follows from identity drift.
 
 ## Phase Selection Logic
 

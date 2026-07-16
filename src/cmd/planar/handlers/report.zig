@@ -26,7 +26,7 @@ const config_path_mod = @import("config/path.zig");
 
 pub const verb: cli.Cmd = .{
     .name = "report",
-    .desc = "Emit the diagnostic bundle: invocation aggregates, failure tail, and always-on health metrics.",
+    .desc = "Emit the diagnostic bundle: invocation and closed claim-failure aggregates plus health metrics.",
     .long_desc =
     \\Reads the cli_invocations capture log and the always-on observability
     \\tables (agent_actions, sync_events, agent_work_claims, handoffs) and
@@ -34,7 +34,8 @@ pub const verb: cli.Cmd = .{
     \\
     \\Invocation and failure sections render "logging disabled" when
     \\[introspection].cli_log is off; the always-on sections (actions, sync,
-    \\claims, handoffs, health) render normally in either case.
+    \\claims, claim failure categories, handoffs, health) render normally in
+    \\either case.
     \\
     \\The bundle is structurally redacted: queries select only counts,
     \\categories, verb paths, statuses, and timestamps — never entity text.

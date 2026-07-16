@@ -185,21 +185,24 @@ library.
 
 - **Which solver: Mt-KaHyPar.** Shared-memory parallel, actively developed,
   km1 (connectivity) objective.
-- **Not vendored, not compiled by `build.zig`.** Mt-KaHyPar is C++14/CMake/TBB/
-  Boost — not a `build.zig`-compilable amalgam like sqlite/lua/tree-sitter.
+- **Not vendored, not compiled by `build.zig`.** Mt-KaHyPar is C++17/CMake/TBB/
+  hwloc — not a `build.zig`-compilable amalgam like sqlite/lua/tree-sitter.
   Full-source vendoring was rejected as intractable; an in-process C++/TBB
   binding was rejected because it breaks the zero-dep + cross-compile property.
   `build.zig` is UNTOUCHED; the zero-external-library property holds.
-- **Optional RUN_DEP (warn-only).** Like `gh`/`rg`: when `mtkahypar` is absent,
+- **Optional RUN_DEP (warn-only).** `install.sh --with-mtkahypar` installs the
+  official hash-locked native wheel into a versioned prefix-owned venv and
+  exposes Planar's stable adapter at `$PLANAR_HOME/bin/mtkahypar`. The adapter
+  remains a subprocess; it is not a sixth Planar binary. When absent,
   `groups recommend` degrades to the M3.1 greedy arm and reports
-  `optimal_available:false`. No committed binary; the operator builds from
-  source and the README documents it. When the optimal arm DID run but greedy's
+  `optimal_available:false`. No third-party binary is committed. When the optimal arm DID run but greedy's
   total cost was strictly lower, `selected_greedy:true` is set in the JSON output
   (the greedy result is shipped as the safe cost floor; the solver's partition is
   freed). `selected_greedy` is always false when `optimal_available` is false.
 - **Invocation: subprocess.** Matches the `planar`-shells-out idiom and keeps
   the engine's C/C++ surface bounded to the vendored SQLite. `solverAvailable`
-  probes `mtkahypar --help`; `invoke` writes the hMETIS encoding to an isolated
+  probes `mtkahypar --probe`, which imports the native extension; `invoke`
+  writes the hMETIS encoding to an isolated
   temp dir, runs the solver with `-o km1 -m direct`, scans for the
   version-suffixed partition file, and parses it.
 - **Input format: weighted hMETIS** (`fmt=11`; D-HG1 vertex + hyperedge

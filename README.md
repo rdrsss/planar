@@ -8,7 +8,7 @@ It is **vendor-agnostic by design**: Claude, Codex, and Copilot are first-class 
 
 ## Status
 
-Planar is a feature-complete, local-first tool built as five binaries (`planar`, `planar-agent`, `planar-watch`, `planar-doc`, and `planar-execute` — the deterministic Lua workflow engine, which holds no DB handle and reaches state only through a constrained CLI host surface). The schema has twenty-eight migrations, through `migrations/00028_feedback_triage.up.sql`; the runtime applies them automatically from an embedded `migrations` Zig module produced by build-time codegen. The suite contains 1,700+ unit tests and 570+ integration tests. Vendored SQLite is compiled by `build.zig`; `planar-doc` uses a separate DB-free module graph.
+Planar is a feature-complete, local-first tool built as five binaries (`planar`, `planar-agent`, `planar-watch`, `planar-doc`, and `planar-execute` — the deterministic Lua workflow engine, which holds no DB handle and reaches state only through a constrained CLI host surface). The schema has twenty-nine migrations, through `migrations/00029_agent_failure_categories.up.sql`; the runtime applies them automatically from an embedded `migrations` Zig module produced by build-time codegen. The suite contains 1,700+ unit tests and 570+ integration tests. Vendored SQLite is compiled by `build.zig`; `planar-doc` uses a separate DB-free module graph.
 
 **History.** Repo split — the original Go implementation (M1–M19) is preserved at `github.com/rdrsss/planar-go-archive.git`; the current canonical Zig implementation lives at `github.com/rdrsss/planar.git`.
 
@@ -34,7 +34,7 @@ the installer preflights them before making changes.
 
 ### Optional / research tools
 
-- `mtkahypar` — optional. The external [Mt-KaHyPar](https://github.com/kahypar/mt-kahypar) hypergraph partitioner backs the optimal arm of `planar groups recommend --solver=mtkahypar`. Planar shells out to it as a subprocess; it is **not vendored or compiled by `build.zig`** (its C++14/CMake/TBB/Boost toolchain is not a `build.zig`-compilable amalgam), so there is **no Homebrew formula** — build it from source per its README. When `mtkahypar` is absent, `groups recommend` degrades gracefully to the greedy arm and reports `optimal_available:false`; the greedy default never needs it.
+- `mtkahypar` — optional. The external [Mt-KaHyPar](https://github.com/kahypar/mt-kahypar) hypergraph partitioner backs the optimal arm of `planar groups recommend --solver=mtkahypar`. Run `./install.sh --with-mtkahypar` to install the official, hash-locked native PyPI wheel into `~/.planar/opt/mtkahypar/` behind Planar's prefix-owned CLI adapter at `~/.planar/bin/mtkahypar`. This requires `python3` only for the optional adapter and does not add Mt-KaHyPar to `build.zig` or Planar's five-binary set. When absent, `groups recommend` degrades gracefully to greedy and reports `optimal_available:false`.
 
 `sqlx-cli` and `sqlite3` are only needed for ad-hoc developer workflows against a scratch database (see [Build from source](#build-from-source)); the runtime embeds migrations via build-time codegen and uses the vendored SQLite amalgamation, so neither CLI is a runtime dependency. Install the optional `sqlx-cli` for authoring new migration pairs:
 
@@ -251,7 +251,7 @@ Three threads run through everything:
 
 ## The schema is the contract
 
-Twenty-eight migration files (`migrations/00001_foundation.up.sql` through `migrations/00028_feedback_triage.up.sql`) define Planar's schema. The runtime applies them from an embedded `migrations` Zig module produced by build-time codegen (`tools/gen_migrations.zig`); the public schema-version tracker is `schema_migrations`.
+Twenty-nine migration files (`migrations/00001_foundation.up.sql` through `migrations/00029_agent_failure_categories.up.sql`) define Planar's schema. The runtime applies them from an embedded `migrations` Zig module produced by build-time codegen (`tools/gen_migrations.zig`); the public schema-version tracker is `schema_migrations`.
 
 Read-side tooling — viewers, query CLIs, Obsidian bridges, future binaries — opens `~/.planar/planar.db` with `PRAGMA query_only = 1`, reads `schema_migrations` to verify version compatibility, and operates without going through the binary. The contract is the schema, not the codebase. See [docs/architecture.md](docs/architecture.md) for the schema overview.
 

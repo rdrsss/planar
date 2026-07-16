@@ -147,6 +147,52 @@ fn mustExecute(
     return res;
 }
 
+fn mustRunAgent(
+    gpa: std.mem.Allocator,
+    db_path: []const u8,
+    args: []const []const u8,
+) !RunResult {
+    var argv = std.ArrayList([]const u8).empty;
+    defer argv.deinit(gpa);
+    try argv.append(gpa, resolveEnv("PLANAR_AGENT_BIN"));
+    for (args) |arg| try argv.append(gpa, arg);
+
+    const raw: [*:null]?[*:0]u8 = std.c.environ;
+    var env_count: usize = 0;
+    while (raw[env_count] != null) : (env_count += 1) {}
+    const env_slice: [:null]const ?[*:0]const u8 = @ptrCast(raw[0..env_count :null]);
+    const environ: std.process.Environ = .{ .block = .{ .slice = env_slice } };
+    var env_map = try environ.createMap(gpa);
+    defer env_map.deinit();
+    try env_map.put("PLANAR_DB", db_path);
+
+    const result = try std.process.run(gpa, std.testing.io, .{
+        .argv = argv.items,
+        .environ_map = &env_map,
+    });
+    if (result.term != .exited or result.term.exited != 0) {
+        std.debug.print("planar-agent failed (term={any})\nstdout: {s}\nstderr: {s}\n", .{ result.term, result.stdout, result.stderr });
+        @panic("mustRunAgent: planar-agent exited non-zero");
+    }
+    return .{ .term = result.term, .stdout = result.stdout, .stderr = result.stderr, .gpa = gpa };
+}
+
+fn sqliteQueryLines(gpa: std.mem.Allocator, db_path: []const u8, sql: []const u8) ![]u8 {
+    const result = std.process.run(gpa, std.testing.io, .{
+        .argv = &.{ "sqlite3", "-separator", "|", db_path, sql },
+    }) catch |e| {
+        std.debug.print("sqlite3 spawn failed: {s}\n", .{@errorName(e)});
+        return error.SkipZigTest;
+    };
+    defer gpa.free(result.stderr);
+    if (result.term != .exited or result.term.exited != 0) {
+        std.debug.print("sqlite3 failed: {s}\n", .{result.stderr});
+        gpa.free(result.stdout);
+        return error.SqliteFailed;
+    }
+    return result.stdout;
+}
+
 /// repoRootFromBin — derive repo root from PLANAR_BIN (three dirname levels:
 /// bin/planar → bin → repo-root; the harness build lays the binary at
 /// <root>/bin/planar so two dirname levels reach the root, but the dispatch
@@ -1329,6 +1375,26 @@ const ReconcileResult = struct {
     landed: std.json.Value = .null,
 };
 
+const CapacityBreaker = struct {
+    provider: []const u8,
+    categories: []const []const u8,
+};
+
+const CapacityReconcileResult = struct {
+    plan_id: i64,
+    breaker_open: bool,
+    automatic_reconcile: bool,
+    automatic_abort: bool,
+    spawned: bool,
+    provider_breakers: []CapacityBreaker,
+    landed: std.json.Value,
+    retryable: std.json.Value,
+    abandoned: std.json.Value,
+    provider_blocked: std.json.Value,
+    unfinished: std.json.Value,
+    host_calls: []const []const u8,
+};
+
 /// reconcileLaneIds normalizes a reconcile-list Value into task ids.
 fn reconcileLaneIds(gpa: std.mem.Allocator, v: std.json.Value) []i64 {
     switch (v) {
@@ -1674,6 +1740,322 @@ test "parallel-dispatch reconcile_plan: all-clean-failure wave needs no reconcil
     try std.testing.expect(!parsed.value.needs_reconcile);
     try std.testing.expectEqual(@as(usize, 0), reconcileLaneIds(arena, parsed.value.reconcile).len);
     try std.testing.expectEqual(@as(usize, 2), reconcileLaneIds(arena, parsed.value.available).len);
+}
+
+// ---------------------------------------------------------------------------
+// capacity-reconcile (5137, scenarios 1814-1816) — a systemic failure opens a
+// provider-scoped breaker, preserves landed work, and partitions only the
+// unfinished remainder. The phase is pure: it neither spawns nor mutates claims.
+// ---------------------------------------------------------------------------
+
+test "parallel-dispatch capacity_reconcile: mixed-provider partial wave is stable and provider-scoped" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    _ = suite.registerProject("pd-capacity-mixed");
+    suite.addAssoc("pd-capacity-mixed", null);
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const wf_path = try workflowPath(gpa);
+    defer gpa.free(wf_path);
+
+    // Deliberately unsorted. Task 7 is the capacity failure that opens only the
+    // claude breaker; task 8 was not started and is blocked behind that breaker.
+    // Codex remains usable, landed work stays landed, and the abandoned lane is
+    // explicit without any automatic reconcile.
+    const args_json =
+        \\{"plan_id":861,"lanes":[
+        \\{"task_id":11,"provider":"codex","outcome":"landed"},
+        \\{"task_id":8,"provider":"claude","outcome":"pending"},
+        \\{"task_id":10,"provider":"gemini","outcome":"abandoned","category":"tool_failure"},
+        \\{"task_id":7,"provider":"claude","outcome":"failed_clean","category":"usage_limit"},
+        \\{"task_id":9,"provider":"codex","outcome":"failed_clean","category":"tool_failure"}
+        \\]}
+    ;
+
+    const first = try mustExecute(gpa, suite.tmpAbsPath(), suite.absDbPath(), &.{
+        "run", wf_path, "--phase", "capacity_reconcile", "--args", args_json,
+    });
+    defer first.deinit();
+    const second = try mustExecute(gpa, suite.tmpAbsPath(), suite.absDbPath(), &.{
+        "run", wf_path, "--phase", "capacity_reconcile", "--args", args_json,
+    });
+    defer second.deinit();
+
+    // Identical supplied outcomes produce byte-identical output.
+    try std.testing.expectEqualStrings(first.stdout, second.stdout);
+
+    const out = std.mem.trim(u8, first.stdout, " \t\r\n");
+    const parsed = try std.json.parseFromSlice(CapacityReconcileResult, arena, out, .{ .ignore_unknown_fields = true });
+    try std.testing.expectEqual(@as(i64, 861), parsed.value.plan_id);
+    try std.testing.expect(parsed.value.breaker_open);
+    try std.testing.expect(!parsed.value.automatic_reconcile);
+    try std.testing.expect(!parsed.value.automatic_abort);
+    try std.testing.expect(!parsed.value.spawned);
+
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.provider_breakers.len);
+    try std.testing.expectEqualStrings("claude", parsed.value.provider_breakers[0].provider);
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.provider_breakers[0].categories.len);
+    try std.testing.expectEqualStrings("usage_limit", parsed.value.provider_breakers[0].categories[0]);
+    try std.testing.expectEqualSlices(i64, &.{11}, reconcileLaneIds(arena, parsed.value.landed));
+    try std.testing.expectEqualSlices(i64, &.{9}, reconcileLaneIds(arena, parsed.value.retryable));
+    try std.testing.expectEqualSlices(i64, &.{10}, reconcileLaneIds(arena, parsed.value.abandoned));
+    try std.testing.expectEqualSlices(i64, &.{ 7, 8 }, reconcileLaneIds(arena, parsed.value.provider_blocked));
+    try std.testing.expectEqualSlices(i64, &.{ 7, 8, 9, 10 }, reconcileLaneIds(arena, parsed.value.unfinished));
+    try std.testing.expectEqual(@as(usize, 3), parsed.value.host_calls.len);
+    try std.testing.expectEqualStrings("flow.phase", parsed.value.host_calls[0]);
+    try std.testing.expectEqualStrings("flow.log", parsed.value.host_calls[1]);
+    try std.testing.expectEqualStrings("flow.result", parsed.value.host_calls[2]);
+
+    // The phase's declared/observed host-call trace is flow-only. Structural
+    // tripwires prevent a later edit from sneaking claim mutation, git, DB-like
+    // context reads, or a spawn surface into this deterministic seam.
+    const source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, wf_path, gpa, .limited(256 * 1024)) catch
+        @panic("failed to read parallel-dispatch.lua");
+    defer gpa.free(source);
+    const phase_start = std.mem.indexOf(u8, source, "function capacity_reconcile()") orelse
+        @panic("capacity_reconcile phase missing");
+    const phase_end_rel = std.mem.indexOf(u8, source[phase_start..], "function teardown()") orelse
+        @panic("capacity_reconcile must precede teardown");
+    const phase_source = source[phase_start .. phase_start + phase_end_rel];
+    const forbidden_calls = [_][]const u8{ "cli.", "git.", "fs.", "ctx.", "agent.", "reconcile_args" };
+    for (forbidden_calls) |forbidden| {
+        try std.testing.expect(std.mem.indexOf(u8, phase_source, forbidden) == null);
+    }
+}
+
+test "parallel-dispatch capacity_reconcile: recovery packet preserves running and unaffected lanes with exact commands" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    _ = suite.registerProject("pd-capacity-recovery");
+    suite.addAssoc("pd-capacity-recovery", null);
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const wf_path = try workflowPath(gpa);
+    defer gpa.free(wf_path);
+
+    const args_json =
+        \\{"plan_id":861,"lanes":[
+        \\{"task_id":7,"provider":"gemini","outcome":"abandoned","category":"validation"},
+        \\{"task_id":4,"provider":"codex","outcome":"running"},
+        \\{"task_id":2,"provider":"claude","outcome":"pending"},
+        \\{"task_id":6,"provider":"codex","outcome":"pending"},
+        \\{"task_id":1,"provider":"claude","outcome":"failed_clean","category":"usage_limit"},
+        \\{"task_id":5,"provider":"codex","outcome":"landed"},
+        \\{"task_id":3,"provider":"claude","outcome":"running"}
+        \\]}
+    ;
+    const res = try mustExecute(gpa, suite.tmpAbsPath(), suite.absDbPath(), &.{
+        "run", wf_path, "--phase", "capacity_reconcile", "--args", args_json,
+    });
+    defer res.deinit();
+    var parsed = try std.json.parseFromSlice(std.json.Value, arena, res.stdout, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+
+    try std.testing.expectEqualSlices(i64, &.{5}, reconcileLaneIds(arena, obj.get("landed").?));
+    try std.testing.expectEqualSlices(i64, &.{ 3, 4 }, reconcileLaneIds(arena, obj.get("running").?));
+    try std.testing.expectEqualSlices(i64, &.{6}, reconcileLaneIds(arena, obj.get("retryable").?));
+    try std.testing.expectEqualSlices(i64, &.{7}, reconcileLaneIds(arena, obj.get("abandoned").?));
+    try std.testing.expectEqualSlices(i64, &.{ 1, 2 }, reconcileLaneIds(arena, obj.get("provider_blocked").?));
+    try std.testing.expectEqualSlices(i64, &.{ 1, 2, 3, 4, 6, 7 }, reconcileLaneIds(arena, obj.get("unfinished").?));
+    try std.testing.expectEqualSlices(i64, &.{ 4, 6 }, reconcileLaneIds(arena, obj.get("unaffected").?));
+
+    const breakers = obj.get("provider_breakers").?.array.items;
+    try std.testing.expectEqual(@as(usize, 1), breakers.len);
+    try std.testing.expectEqualStrings("claude", breakers[0].object.get("provider").?.string);
+    try std.testing.expect(breakers[0].object.get("open").?.bool);
+    try std.testing.expect(breakers[0].object.get("reset_required").?.bool);
+
+    const recovery = obj.get("recovery").?.object;
+    const claim_recovery = recovery.get("claim_recovery").?.object;
+    try std.testing.expect(claim_recovery.get("required").?.bool);
+    try std.testing.expectEqualStrings(
+        "planar-watch claims --plan 861 --status all --json",
+        claim_recovery.get("inspect_command").?.string,
+    );
+    try std.testing.expectEqualStrings(
+        "planar-agent reconcile --plan 861 --dry-run --json",
+        claim_recovery.get("reconcile_preview_command").?.string,
+    );
+
+    const resets = recovery.get("provider_resets").?.array.items;
+    try std.testing.expectEqual(@as(usize, 1), resets.len);
+    try std.testing.expectEqualStrings("claude", resets[0].object.get("provider").?.string);
+    try std.testing.expectEqualStrings("open", resets[0].object.get("breaker").?.string);
+    try std.testing.expectEqualStrings("explicit_dispatch", resets[0].object.get("action").?.string);
+    try std.testing.expect(resets[0].object.get("confirm_max_wave_size").?.bool);
+
+    const resumes = recovery.get("resumes").?.array.items;
+    const expected_resume_ids = [_]i64{ 1, 2, 3, 4, 6, 7 };
+    for (resumes, expected_resume_ids) |resume_row, task_id| {
+        try std.testing.expectEqual(task_id, resume_row.object.get("task_id").?.integer);
+        var command_buf: [64]u8 = undefined;
+        const expected_command = try std.fmt.bufPrint(&command_buf, "planar resume {d} --json", .{task_id});
+        try std.testing.expectEqualStrings(expected_command, resume_row.object.get("command").?.string);
+    }
+    try std.testing.expect(!obj.get("automatic_reconcile").?.bool);
+    try std.testing.expect(!obj.get("automatic_abort").?.bool);
+    try std.testing.expect(!obj.get("spawned").?.bool);
+}
+
+test "parallel-dispatch capacity_reconcile: precedence and every category form a sorted disjoint partition" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    _ = suite.registerProject("pd-capacity-precedence");
+    suite.addAssoc("pd-capacity-precedence", null);
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const wf_path = try workflowPath(gpa);
+    defer gpa.free(wf_path);
+
+    const args_a =
+        \\{"plan_id":861,"lanes":[
+        \\{"task_id":8,"provider":"beta","outcome":"pending"},
+        \\{"task_id":4,"provider":"alpha","outcome":"landed"},
+        \\{"task_id":1,"provider":"zed","outcome":"failed_clean","category":"context_limit"},
+        \\{"task_id":7,"provider":"beta","outcome":"failed_clean"},
+        \\{"task_id":5,"provider":"alpha","outcome":"abandoned","category":"tool_failure"},
+        \\{"task_id":3,"provider":"alpha","outcome":"failed_clean","category":"usage_limit"},
+        \\{"task_id":6,"provider":"beta","outcome":"failed_clean","category":"validation"},
+        \\{"task_id":2,"provider":"alpha","outcome":"failed_clean","category":"output_limit"}
+        \\]}
+    ;
+    const args_b =
+        \\{"plan_id":861,"lanes":[
+        \\{"task_id":2,"provider":"alpha","outcome":"failed_clean","category":"output_limit"},
+        \\{"task_id":6,"provider":"beta","outcome":"failed_clean","category":"validation"},
+        \\{"task_id":3,"provider":"alpha","outcome":"failed_clean","category":"usage_limit"},
+        \\{"task_id":5,"provider":"alpha","outcome":"abandoned","category":"tool_failure"},
+        \\{"task_id":7,"provider":"beta","outcome":"failed_clean"},
+        \\{"task_id":1,"provider":"zed","outcome":"failed_clean","category":"context_limit"},
+        \\{"task_id":4,"provider":"alpha","outcome":"landed"},
+        \\{"task_id":8,"provider":"beta","outcome":"pending"}
+        \\]}
+    ;
+
+    const first = try mustExecute(gpa, suite.tmpAbsPath(), suite.absDbPath(), &.{
+        "run", wf_path, "--phase", "capacity_reconcile", "--args", args_a,
+    });
+    defer first.deinit();
+    const permuted = try mustExecute(gpa, suite.tmpAbsPath(), suite.absDbPath(), &.{
+        "run", wf_path, "--phase", "capacity_reconcile", "--args", args_b,
+    });
+    defer permuted.deinit();
+    try std.testing.expectEqualStrings(first.stdout, permuted.stdout);
+
+    const parsed = try std.json.parseFromSlice(
+        CapacityReconcileResult,
+        arena,
+        std.mem.trim(u8, first.stdout, " \t\r\n"),
+        .{ .ignore_unknown_fields = true },
+    );
+    try std.testing.expectEqual(@as(usize, 2), parsed.value.provider_breakers.len);
+    try std.testing.expectEqualStrings("alpha", parsed.value.provider_breakers[0].provider);
+    try std.testing.expectEqual(@as(usize, 2), parsed.value.provider_breakers[0].categories.len);
+    try std.testing.expectEqualStrings("output_limit", parsed.value.provider_breakers[0].categories[0]);
+    try std.testing.expectEqualStrings("usage_limit", parsed.value.provider_breakers[0].categories[1]);
+    try std.testing.expectEqualStrings("zed", parsed.value.provider_breakers[1].provider);
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.provider_breakers[1].categories.len);
+    try std.testing.expectEqualStrings("context_limit", parsed.value.provider_breakers[1].categories[0]);
+    try std.testing.expectEqualSlices(i64, &.{4}, reconcileLaneIds(arena, parsed.value.landed));
+    try std.testing.expectEqualSlices(i64, &.{ 6, 7, 8 }, reconcileLaneIds(arena, parsed.value.retryable));
+    try std.testing.expectEqualSlices(i64, &.{5}, reconcileLaneIds(arena, parsed.value.abandoned));
+    try std.testing.expectEqualSlices(i64, &.{ 1, 2, 3 }, reconcileLaneIds(arena, parsed.value.provider_blocked));
+    try std.testing.expectEqualSlices(i64, &.{ 1, 2, 3, 5, 6, 7, 8 }, reconcileLaneIds(arena, parsed.value.unfinished));
+}
+
+test "parallel-dispatch capacity_reconcile: opening a breaker leaves existing live claim state unchanged" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    _ = suite.registerProject("pd-capacity-live-claim");
+    suite.addAssoc("pd-capacity-live-claim", null);
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const plan = suite.mustRunJSON(PlanJSON, arena, &.{
+        "plan", "create", "--slug", "pd-capacity-live-claim", "--json", "PD_CAPACITY_LIVE_CLAIM",
+    });
+    const plan_ref = try std.fmt.allocPrint(gpa, "plan:{d}", .{plan.id});
+    defer gpa.free(plan_ref);
+    const claim = try mustRunAgent(gpa, suite.absDbPath(), &.{
+        "claim", "--entity", plan_ref, "--no-locality-probe", "--json",
+    });
+    defer claim.deinit();
+
+    const snapshot_sql =
+        \\select claim_token || '|' || status || '|' || coalesce(released_at, 'null') || '|' ||
+        \\       coalesce(release_reason, 'null') || '|' || coalesce(failure_category, 'null')
+        \\from agent_work_claims order by id;
+    ;
+    const before = try sqliteQueryLines(gpa, suite.absDbPath(), snapshot_sql);
+    defer gpa.free(before);
+
+    const wf_path = try workflowPath(gpa);
+    defer gpa.free(wf_path);
+    const args_json =
+        \\{"plan_id":861,"lanes":[
+        \\{"task_id":1,"provider":"claude","outcome":"failed_clean","category":"usage_limit"},
+        \\{"task_id":2,"provider":"claude","outcome":"pending"}
+        \\]}
+    ;
+    const result = try mustExecute(gpa, suite.tmpAbsPath(), suite.absDbPath(), &.{
+        "run", wf_path, "--phase", "capacity_reconcile", "--args", args_json,
+    });
+    defer result.deinit();
+
+    const after = try sqliteQueryLines(gpa, suite.absDbPath(), snapshot_sql);
+    defer gpa.free(after);
+    try std.testing.expect(before.len > 0);
+    try std.testing.expectEqualStrings(before, after);
+}
+
+test "parallel-dispatch capacity_reconcile: unknown or malformed outcomes and categories fail closed" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    _ = suite.registerProject("pd-capacity-invalid");
+    suite.addAssoc("pd-capacity-invalid", null);
+
+    const wf_path = try workflowPath(gpa);
+    defer gpa.free(wf_path);
+
+    const invalid_args = [_][]const u8{
+        \\{"plan_id":861,"lanes":[{"task_id":1,"provider":"claude","outcome":"mystery"}]}
+        ,
+        \\{"plan_id":861,"lanes":[{"task_id":1,"provider":"claude","outcome":"failed_clean","category":"quota-ish"}]}
+        ,
+        \\{"plan_id":861,"lanes":[{"task_id":1,"provider":"claude","outcome":"failed_clean","category":42}]}
+        ,
+        \\{"plan_id":861,"lanes":[{"task_id":1,"provider":"claude","outcome":"pending","category":"usage_limit"}]}
+        ,
+        \\{"plan_id":861,"lanes":[{"task_id":1,"provider":"claude","outcome":"pending","surprise":true}]}
+        ,
+        \\{"plan_id":861,"lanes":[{"task_id":1,"provider":"claude","outcome":"pending"}],"surprise":true}
+        ,
+        \\{"plan_id":861,"lanes":[{"task_id":1,"provider":"claude","outcome":"pending"},{"task_id":1,"provider":"codex","outcome":"pending"}]}
+        ,
+    };
+
+    for (invalid_args) |args_json| {
+        const res = try runExecute(gpa, suite.tmpAbsPath(), suite.absDbPath(), &.{
+            "run", wf_path, "--phase", "capacity_reconcile", "--args", args_json,
+        });
+        defer res.deinit();
+        try std.testing.expect(res.term == .exited and res.term.exited != 0);
+        try std.testing.expectEqual(@as(usize, 0), std.mem.trim(u8, res.stdout, " \t\r\n").len);
+    }
 }
 
 // ---------------------------------------------------------------------------

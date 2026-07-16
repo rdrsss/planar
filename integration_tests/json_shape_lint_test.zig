@@ -291,6 +291,7 @@ const claim_row_fields = [_]RequiredField{
     // Worktree columns.
     .{ .key = "worktree_id", .kind = .integer_or_null },
     .{ .key = "worktree_path", .kind = .string_or_null },
+    .{ .key = "failure_category", .kind = .string_or_null },
 };
 
 // ActionRow — snake_case mirror of agent_actions, including locality

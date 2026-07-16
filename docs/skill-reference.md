@@ -240,6 +240,14 @@ Run the orchestrator over a goal, anchor plan, or task list. Manages all five ph
 
 The Phase 3 dispatch gate offers six shapes (`strict`, `grouped`, `single`, `barrel-grouped`, `barrel-deferred`, `barrel-bypass`); see [`docs/concepts.md` §Dispatch shapes](concepts.md#dispatch-shapes) for the trade-off matrix. Phase 3.5 (test-coder dispatch) fires across all shapes when uncovered slugs intersect the cycle.
 
+Parallel dispatch is capacity-aware. The operator confirms a maximum wave
+size, and systemic `usage_limit`, `context_limit`, or `output_limit` terminals
+open a circuit breaker only for the affected provider. Landed and already
+running work is preserved; unaffected providers may continue. The deterministic
+`capacity_reconcile` workflow phase returns the unfinished/recovery packet but
+does not spawn, abort, reconcile, persist a breaker, or reset one. Resuming the
+provider requires a new explicit dispatch decision and wave-size confirmation.
+
 Source: `skills/src/pl-orchestrator.md` · `agents/orchestrator.md`
 
 ---
@@ -365,6 +373,13 @@ only applies operator-approved artifact and question updates. For a draft plan,
 the reviewer treats strict preview coverage (including uncovered slugs, orphan
 scenarios, and slug collisions) as authoritative; after apply it switches to
 `planar test-spec status <plan> --json` over live rows.
+
+Every review also records four hazard-lens results as `finding`, `covered`, or
+`not applicable`, with artifact evidence: resource lifecycle and cleanup;
+deterministic ordering and replay; concurrency, ownership, cancellation, and
+races; and escaping across shell/build/template interpretation boundaries. An
+applicable omission becomes a feature gap. A non-applicable lens states why;
+the reviewer does not manufacture boilerplate findings.
 
 **Example:**
 ```
@@ -866,6 +881,15 @@ Use this proposal-centered entry point for a manual post-cycle sweep. A clean,
 verified diff is a no-op; unresolved or unapproved rows are not absorbed by a
 manifest rebuild.
 
+Before proposing ordinary rows, the workflow derives authoritative repository
+identity from the migration tail and its schema insert, the five installed
+artifacts in `build.zig`, the canonical `skills/src/` and `agents/` source
+trees, and `AGENTS.md`/`CLAUDE.md` equivalence. Only an explicit contradiction
+in guidance becomes an operator-gated `guidance-identity-drift` row; missing
+prose is not drift. An unresolved identity row blocks the documentation phase
+from reporting a clean closeout, but never changes janitor-owned plan closeout
+state or authorizes an automatic guidance, symlink, prose, or manifest write.
+
 **Example:**
 ```
 /pl-documenter
@@ -968,14 +992,14 @@ The vendor-neutral role specs live under `agents/`. Vendor skill files defer to 
 | File | Role |
 |------|------|
 | `agents/methodology.md` | Shared orchestration methodology: iteration loop, reviewer decisions, escalation, concurrency rules, state capture |
-| `agents/orchestrator.md` | Orchestrator role: phase descriptions, dispatch-shape gate, per-phase triggers |
-| `agents/spec-reviewer.md` | Spec reviewer role: adversarial planning review, open-question reconciliation, feature/test gap analysis |
+| `agents/orchestrator.md` | Orchestrator role: phase descriptions, capacity-aware bounded dispatch, dispatch-shape gate, authoritative documentation identity, and per-phase triggers |
+| `agents/spec-reviewer.md` | Spec reviewer role: adversarial planning review, open-question reconciliation, feature/test gap analysis, and evidence-backed classification of the four recurring hazard lenses |
 | `agents/planner.md` | Planner role: input/output contract, document shape, workbench seeding |
 | `agents/ingestor.md` | Ingestor role: parsing contract, idempotency invariant, preview-first rule |
 | `agents/ext-sync.md` | Ext-sync role: strategy-selection contract, propagation walk, idempotency |
 | `agents/coder.md` | Coder role: task implementation contract, test requirements, reporting format |
 | `agents/reviewer.md` | Reviewer role: review criteria, decision taxonomy, caveat recording |
-| `agents/documenter.md` | Read-only documentation drift classifier: proposes `extend-cover`, `create-doc`, `nodoc`, or `defer`; never writes prose or manifest state |
+| `agents/documenter.md` | Read-only documentation drift classifier: proposes `extend-cover`, `create-doc`, `nodoc`, or `defer`, including operator-gated explicit guidance-identity contradictions; never writes prose or manifest state |
 | `agents/introspector.md` | Introspector role: cross-vendor redacted signal adapters, preview/apply gate, finding taxonomy, dedup contract, feedback-plan bootstrap |
 | `agents/feedback-triager.md` | Feedback triager role: deterministic severity and disposition guidance, reproduction evidence, preview/apply gate, local mutation boundary, and status/result contracts |
 | `agents/janitor.md` | Janitor role: merge verification, Planar state reconciliation, worktree/branch cleanup, plan closeout via the delivery-evidence gate |

@@ -2,7 +2,7 @@
 //!
 //! These wrap one `BEGIN IMMEDIATE` transaction around (claim lifecycle
 //! + action lifecycle + tasks.status update + plan recompute) so the
-//! agent's "pull → work → complete/fail/release/block" ritual stays
+//! agent's "pull/claim → work → complete/fail/release/block" ritual stays
 //! atomic. Each wrapper calls the single-table primitives from
 //! `store.zig` rather than duplicating the SQL.
 //!
@@ -92,6 +92,65 @@ pub const PullArgs = struct {
     /// NULL when --stage is omitted.
     stage: ?[]const u8 = null,
 };
+
+/// Acquire a direct entity claim under the same writer transaction used by
+/// pull. Task claims normally make the guarded `todo` → `doing` transition
+/// before commit; callers can disable that transition to retain the low-level
+/// claim primitive. Plan and plan-step claims never alter entity state.
+pub fn claimEntity(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    args: store.AcquireArgs,
+    transition_task: bool,
+) Error!types.Claim {
+    try beginImmediate(d);
+    var committed = false;
+    errdefer {
+        if (!committed) rollback(d);
+    }
+
+    const claim = try store.acquireClaim(d, allocator, args);
+    errdefer claim.deinit(allocator);
+
+    if (args.entity_kind == .task and transition_task) {
+        const current = try currentTaskStatus(d, allocator, args.entity_id);
+        defer allocator.free(current);
+
+        // Direct dispatch is an entry into work, not an identity update or a
+        // reopen path. Only todo is eligible; --no-transition is the explicit
+        // escape hatch for callers that need the pure claim primitive.
+        if (!std.mem.eql(u8, current, "todo"))
+            return policy.status.Error.IllegalTransition;
+        try policy.status.check(.task, current, "doing", false);
+
+        _ = d.execParams(
+            "update tasks set status = 'doing', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') where id = ? and status = 'todo'",
+            &.{.{ .int = args.entity_id }},
+        ) catch return store.Error.QueryFailed;
+        if (d.changes() != 1) return store.Error.QueryFailed;
+
+        // Direct transitioned claims need the same durable ownership evidence
+        // that pull supplies. Keep this action open for the ordinary terminal
+        // transaction (or explicit recovery) to close; it is not a synthetic
+        // terminal event. Reconcile uses its claim_id link to prove that this
+        // claim, rather than an unrelated primitive claim, moved the task.
+        _ = try store.startAction(d, allocator, .{
+            .session_id = args.session_id,
+            .claim_id = claim.id,
+            .action_kind = .claim_check,
+            .entity_kind = .task,
+            .entity_id = args.entity_id,
+            .vendor = args.vendor,
+            .vendor_role = args.role,
+            .model = args.model,
+            .locality = args.locality,
+        });
+    }
+
+    try commit(d);
+    committed = true;
+    return claim;
+}
 
 /// Atomic pull: pick the next eligible task (highest-priority todo
 /// with no active claim) belonging to plan_id, claim it exclusively,
@@ -228,6 +287,7 @@ pub fn failWork(
     allocator: std.mem.Allocator,
     claim_token: []const u8,
     reason: []const u8,
+    failure_category: types.FailureCategory,
 ) Error!CompleteResult {
     return try terminalTransition(d, allocator, .{
         .claim_token = claim_token,
@@ -236,6 +296,7 @@ pub fn failWork(
         .claim_to = .aborted,
         .outcome = .@"error",
         .reason = reason,
+        .failure_category = failure_category,
     });
 }
 
@@ -311,7 +372,7 @@ pub fn blockWork(
     closeOpenActionForClaim(d, claim.id, .aborted, reason) catch |e| return e;
 
     // Release the claim.
-    var released = store.releaseClaim(d, allocator, claim_token, .released, reason) catch |e| return e;
+    var released = store.releaseClaim(d, allocator, claim_token, .released, reason, null) catch |e| return e;
     errdefer released.deinit(allocator);
 
     // Recompute plan roll-up status inside the same transaction — parity
@@ -354,6 +415,7 @@ const TerminalArgs = struct {
     claim_to: types.ClaimStatus,
     outcome: types.Outcome,
     reason: ?[]const u8,
+    failure_category: ?types.FailureCategory = null,
 };
 
 fn terminalTransition(
@@ -397,7 +459,7 @@ fn terminalTransition(
 
     closeOpenActionForClaim(d, claim.id, targs.outcome, targs.summary) catch |e| return e;
 
-    var released = store.releaseClaim(d, allocator, targs.claim_token, targs.claim_to, targs.reason) catch |e| return e;
+    var released = store.releaseClaim(d, allocator, targs.claim_token, targs.claim_to, targs.reason, targs.failure_category) catch |e| return e;
     errdefer released.deinit(allocator);
 
     // Recompute the plan's roll-up status inside the same transaction —
@@ -520,6 +582,134 @@ fn newSessionAndPlan(d: *db.sqlite.Db) !struct { sid: i64, pid: i64 } {
     return .{ .sid = sid, .pid = pid };
 }
 
+test "claimEntity task claim atomically transitions todo to doing" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const sp = try newSessionAndPlan(&d);
+    const tid = try d.execParams(
+        "insert into tasks (scope_kind, plan_id, title, status) values ('global', ?, 't', 'todo')",
+        &.{.{ .int = sp.pid }},
+    );
+
+    const claim = try claimEntity(&d, a, .{
+        .session_id = sp.sid,
+        .entity_kind = .task,
+        .entity_id = tid,
+        .vendor = "test",
+    }, true);
+    defer claim.deinit(a);
+
+    try std.testing.expectEqual(@as(i64, 1), try d.intQuery(
+        "select count(*) from tasks where status = 'doing'",
+    ));
+    try std.testing.expectEqual(@as(i64, 1), try d.intQuery(
+        "select count(*) from agent_work_claims where status = 'active'",
+    ));
+    try std.testing.expectEqual(@as(i64, 1), try d.intQuery(
+        "select count(*) from agent_actions where action_kind = 'claim_check' and ended_at is null",
+    ));
+}
+
+test "claimEntity no-transition and non-task claims preserve entity status" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const sp = try newSessionAndPlan(&d);
+    const tid = try d.execParams(
+        "insert into tasks (scope_kind, plan_id, title, status) values ('global', ?, 't', 'todo')",
+        &.{.{ .int = sp.pid }},
+    );
+
+    const task_claim = try claimEntity(&d, a, .{
+        .session_id = sp.sid,
+        .entity_kind = .task,
+        .entity_id = tid,
+        .vendor = "test",
+    }, false);
+    defer task_claim.deinit(a);
+    try std.testing.expectEqual(@as(i64, 1), try d.intQuery(
+        "select count(*) from tasks where id = (select max(id) from tasks) and status = 'todo'",
+    ));
+    try std.testing.expectEqual(@as(i64, 0), try d.intQuery(
+        "select count(*) from agent_actions",
+    ));
+
+    const plan_claim = try claimEntity(&d, a, .{
+        .session_id = sp.sid,
+        .entity_kind = .plan,
+        .entity_id = sp.pid,
+        .vendor = "test",
+    }, true);
+    defer plan_claim.deinit(a);
+    try std.testing.expectEqual(@as(i64, 1), try d.intQuery(
+        "select count(*) from plans where id = (select max(id) from plans) and status = 'draft'",
+    ));
+}
+
+test "claimEntity rejects non-todo task and rolls back inserted claim" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const sp = try newSessionAndPlan(&d);
+    const tid = try d.execParams(
+        "insert into tasks (scope_kind, plan_id, title, status) values ('global', ?, 't', 'doing')",
+        &.{.{ .int = sp.pid }},
+    );
+
+    try std.testing.expectError(
+        policy.status.Error.IllegalTransition,
+        claimEntity(&d, a, .{
+            .session_id = sp.sid,
+            .entity_kind = .task,
+            .entity_id = tid,
+            .vendor = "test",
+        }, true),
+    );
+    try std.testing.expectEqual(@as(i64, 0), try d.intQuery(
+        "select count(*) from agent_work_claims",
+    ));
+    try std.testing.expectEqual(@as(i64, 1), try d.intQuery(
+        "select count(*) from tasks where status = 'doing'",
+    ));
+    try std.testing.expectEqual(@as(i64, 0), try d.intQuery(
+        "select count(*) from agent_actions",
+    ));
+}
+
+test "claimEntity rolls back claim when task transition write fails" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const sp = try newSessionAndPlan(&d);
+    const tid = try d.execParams(
+        "insert into tasks (scope_kind, plan_id, title, status) values ('global', ?, 't', 'todo')",
+        &.{.{ .int = sp.pid }},
+    );
+    try d.exec(
+        "create trigger reject_direct_doing before update of status on tasks when new.status = 'doing' begin select raise(abort, 'reject'); end",
+    );
+
+    try std.testing.expectError(
+        store.Error.QueryFailed,
+        claimEntity(&d, a, .{
+            .session_id = sp.sid,
+            .entity_kind = .task,
+            .entity_id = tid,
+            .vendor = "test",
+        }, true),
+    );
+    try std.testing.expectEqual(@as(i64, 0), try d.intQuery(
+        "select count(*) from agent_work_claims",
+    ));
+    try std.testing.expectEqual(@as(i64, 1), try d.intQuery(
+        "select count(*) from tasks where status = 'todo'",
+    ));
+    try std.testing.expectEqual(@as(i64, 0), try d.intQuery(
+        "select count(*) from agent_actions",
+    ));
+}
+
 test "pullNext happy path claims task, flips status, inserts action" {
     const a = std.testing.allocator;
     var d = try setupTestDb(a);
@@ -630,9 +820,10 @@ test "failWork sends task back to todo and aborts claim" {
     });
     defer pulled.deinit(a);
 
-    const failed = try failWork(&d, a, pulled.claim.?.claim_token, "broke");
+    const failed = try failWork(&d, a, pulled.claim.?.claim_token, "broke", .unknown);
     defer failed.deinit(a);
     try std.testing.expectEqual(types.ClaimStatus.aborted, failed.claim.status);
+    try std.testing.expectEqual(types.FailureCategory.unknown, failed.claim.failure_category.?);
 
     const todo_count = try d.intQuery("select count(*) from tasks where status = 'todo'");
     try std.testing.expectEqual(@as(i64, 1), todo_count);

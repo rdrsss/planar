@@ -66,9 +66,9 @@ That's it. The script:
 - Copies `agents/`, `commands/`, `skills/`, `migrations/`, `scripts/`, and (if present) `copilot/` into `~/.planar/` (migrations are staged at `~/.planar/migrations/` for ad-hoc `sqlx` use; the binary embeds them at build time via codegen).
 - Symlinks 31 surfaces per vendor into the vendor harness dirs.
 - Atomically writes `~/.planar/install-manifest.json` after the selected vendor
-  wiring succeeds. The versioned file records only selected Planar-managed
-  skill and agent projections; operator-authored destination files are not
-  claimed.
+  wiring succeeds. The versioned file records selected Planar-managed skill
+  and agent projections plus explicitly selected installer extras;
+  operator-authored destination files are not claimed.
 
 After the script finishes, add `~/.planar/bin` to your PATH so the `planar` command is available:
 
@@ -111,6 +111,7 @@ In Codex, invoke the same Planar skills with `$` syntax, for example `$pl-task` 
 | `--link` | Symlink artifacts from the source repo into `~/.planar/` instead of copying. **Dev mode** — edits to the repo propagate immediately. |
 | `--force` | Overwrite existing symlinks at the destinations. |
 | `--optimize MODE` | Zig optimize mode passed to `zig build -Doptimize=<mode>` (default `ReleaseSafe`). |
+| `--with-mtkahypar` | Install the optional hash-locked native Mt-KaHyPar wheel and Planar CLI adapter under the selected prefix. |
 | `--uninstall` | Tear down everything install.sh created. Preserves `~/.planar/planar.db` unless `--force` is also given. |
 
 ### Copy mode vs link mode
@@ -283,7 +284,9 @@ After a full install (`install.sh`), the layout under `~/.planar/` is:
 ```
 ~/.planar/
 ├── bin/
-│   └── planar                          # the Zig binary
+│   ├── planar                          # the Zig operator binary
+│   └── mtkahypar                       # optional prefix-relative wheel adapter
+├── opt/mtkahypar/1.6.1/venv/          # optional native wheel environment
 ├── install-manifest.json               # versioned managed-projection authority
 ├── planar.db                           # SQLite database (after `planar init`)
 ├── migrations/

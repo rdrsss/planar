@@ -196,7 +196,8 @@ fn listActiveSorted(
         \\       repo_root, branch, head_sha_at_claim, dirty_at_claim,
         \\       purpose, base_ref,
         \\       claimed_at, last_heartbeat_at, lease_expires_at,
-        \\       released_at, release_reason
+        \\       released_at, release_reason,
+        \\       run_id, stage, failure_category
         \\from agent_work_claims
         \\where status = 'active'
         \\order by case when last_heartbeat_at is null then 1 else 0 end asc,
@@ -209,7 +210,8 @@ fn listActiveSorted(
         \\       repo_root, branch, head_sha_at_claim, dirty_at_claim,
         \\       purpose, base_ref,
         \\       claimed_at, last_heartbeat_at, lease_expires_at,
-        \\       released_at, release_reason
+        \\       released_at, release_reason,
+        \\       run_id, stage, failure_category
         \\from agent_work_claims
         \\where status = 'active'
         \\order by claimed_at desc
@@ -470,7 +472,7 @@ fn emitText(
 /// Column order (M3):
 ///   <entity>:<id>  scope:<label>  activity:"<summary>"  vendor:<v>
 ///   branch:<b>  worktree:<basename>  sha:<short>  last_hb:<rel>
-///   token:<tok>
+///   [category:<closed-category>]  token:<tok>
 ///
 /// Tasks:
 ///   3053 — activity:"<summary>" column (truncated to 80 bytes with …)
@@ -504,16 +506,30 @@ fn renderClaimLine(
     const hb_buf = try renderRelativeHeartbeat(allocator, c.last_heartbeat_at);
     defer allocator.free(hb_buf);
 
-    try w.print(
-        "  {s}:{d}  scope:{s}  activity:{s}  vendor:{s}  branch:{s}  worktree:{s}  sha:{s}  last_hb:{s}  token:{s}\n",
-        .{
-            c.entity_kind.toText(), c.entity_id,
-            scope.label(),          activity_buf,
-            c.vendor,               branch,
-            worktree_buf,           sha,
-            hb_buf,                 c.claim_token,
-        },
-    );
+    if (c.failure_category) |category| {
+        try w.print(
+            "  {s}:{d}  scope:{s}  activity:{s}  vendor:{s}  branch:{s}  worktree:{s}  sha:{s}  last_hb:{s}  category:{s}  token:{s}\n",
+            .{
+                c.entity_kind.toText(), c.entity_id,
+                scope.label(),          activity_buf,
+                c.vendor,               branch,
+                worktree_buf,           sha,
+                hb_buf,                 category.toText(),
+                c.claim_token,
+            },
+        );
+    } else {
+        try w.print(
+            "  {s}:{d}  scope:{s}  activity:{s}  vendor:{s}  branch:{s}  worktree:{s}  sha:{s}  last_hb:{s}  token:{s}\n",
+            .{
+                c.entity_kind.toText(), c.entity_id,
+                scope.label(),          activity_buf,
+                c.vendor,               branch,
+                worktree_buf,           sha,
+                hb_buf,                 c.claim_token,
+            },
+        );
+    }
 }
 
 /// Render the activity summary for text output (task 3053).
@@ -602,7 +618,8 @@ fn listStaleClaims(
         \\       repo_root, branch, head_sha_at_claim, dirty_at_claim,
         \\       purpose, base_ref,
         \\       claimed_at, last_heartbeat_at, lease_expires_at,
-        \\       released_at, release_reason
+        \\       released_at, release_reason,
+        \\       run_id, stage, failure_category
         \\from agent_work_claims
         \\where status = 'stale'
         \\   or (status = 'active' and lease_expires_at < strftime('%Y-%m-%dT%H:%M:%fZ','now'))
@@ -649,6 +666,13 @@ fn readClaimRow(
         dirty = types.Dirty.fromText(d_text);
     }
 
+    const category_opt = try stmt.columnTextOpt(26, allocator);
+    var failure_category: ?types.FailureCategory = null;
+    if (category_opt) |category_text| {
+        defer allocator.free(category_text);
+        failure_category = types.FailureCategory.fromText(category_text) orelse return error.QueryFailed;
+    }
+
     return .{
         .id = stmt.columnInt(0),
         .claim_token = try stmt.columnTextAlloc(1, allocator),
@@ -674,5 +698,8 @@ fn readClaimRow(
         .lease_expires_at = try stmt.columnTextAlloc(21, allocator),
         .released_at = try stmt.columnTextOpt(22, allocator),
         .release_reason = try stmt.columnTextOpt(23, allocator),
+        .run_id = stmt.columnIntOpt(24),
+        .stage = try stmt.columnTextOpt(25, allocator),
+        .failure_category = failure_category,
     };
 }

@@ -88,6 +88,28 @@ pub const ClaimStatus = enum {
     }
 };
 
+/// Closed, argument-free classification attached to failed claim terminals.
+/// Null on legacy claims and on non-failure terminal outcomes.
+pub const FailureCategory = enum {
+    usage_limit,
+    context_limit,
+    output_limit,
+    tool_failure,
+    validation,
+    unknown,
+
+    pub fn fromText(s: []const u8) ?FailureCategory {
+        inline for (@typeInfo(FailureCategory).@"enum".fields) |field| {
+            if (std.mem.eql(u8, s, field.name)) return @field(FailureCategory, field.name);
+        }
+        return null;
+    }
+
+    pub fn toText(self: FailureCategory) []const u8 {
+        return @tagName(self);
+    }
+};
+
 pub const EntityKind = enum {
     plan,
     plan_step,
@@ -132,6 +154,7 @@ pub const Claim = struct {
     lease_expires_at: []const u8,
     released_at: ?[]const u8,
     release_reason: ?[]const u8,
+    failure_category: ?FailureCategory = null,
     /// Nullable FK to workflow_runs.id; non-null when the claim was
     /// acquired inside an external harness workflow run via --run <id>.
     run_id: ?i64 = null,
@@ -343,6 +366,21 @@ test "Dirty enum round-trips fromText/toText" {
     try std.testing.expectEqual(Dirty.dirty, Dirty.fromText("dirty").?);
     try std.testing.expectEqual(Dirty.unknown, Dirty.fromText("unknown").?);
     try std.testing.expect(Dirty.fromText("bogus") == null);
+}
+
+test "FailureCategory accepts only the migration's closed values" {
+    const values = [_]FailureCategory{
+        .usage_limit,
+        .context_limit,
+        .output_limit,
+        .tool_failure,
+        .validation,
+        .unknown,
+    };
+    for (values) |value| {
+        try std.testing.expectEqual(value, FailureCategory.fromText(value.toText()).?);
+    }
+    try std.testing.expect(FailureCategory.fromText("quota_exceeded") == null);
 }
 
 test "ActionKind enum recognizes every schema-CHECK value" {

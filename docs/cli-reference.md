@@ -5739,13 +5739,14 @@ Schema-version handshake: `planar-agent` is a **consumer** of the schema, not it
 planar-agent pull       <plan-id> [--vendor <v>] [--vendor-session <vendor:id>] [--role coder] [--ttl <duration>] [--purpose <text>] [--base-ref <git-ref>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--metadata <json>] [--parent-action <action-id>] [--run <run-id>] [--stage <stage>] [--json]
 planar-agent peek       <plan-id> [--json]
 planar-agent complete   --claim <token> [--summary <text>] [--json]
-planar-agent fail       --claim <token> --reason <text> [--json]
+planar-agent fail       --claim <token> --reason <text> [--category usage_limit|context_limit|output_limit|tool_failure|validation|unknown] [--json]
 planar-agent release    --claim <token> [--reason <text>] [--json]
 planar-agent block      --claim <token> --blocker <task-id> [--reason <text>] [--json]
 
-# Claim primitives — for orchestrator-dispatch (caller already knows the
-# target entity by id). claim does NOT auto-transition task status.
-planar-agent claim      --entity task:<id>|plan:<id>|plan_step:<id> [--vendor <v>] [--vendor-session <vendor:id>] [--role <r>] [--ttl <duration>] [--purpose <text>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--force] [--run <run-id>] [--stage <stage>] [--json]
+# Direct claims — for orchestrator dispatch when the caller already knows the
+# target entity by id. Task claims atomically transition todo → doing unless
+# --no-transition is supplied; plan and plan-step state is never changed.
+planar-agent claim      --entity task:<id>|plan:<id>|plan_step:<id> [--vendor <v>] [--vendor-session <vendor:id>] [--role <r>] [--ttl <duration>] [--purpose <text>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--no-transition] [--force] [--run <run-id>] [--stage <stage>] [--json]
 planar-agent heartbeat  --claim <token> [--ttl <duration>] [--status <text>] [--json]
 
 # Nested action lifecycle — for sub-tool-calls or sub-phases inside a
@@ -5760,8 +5761,8 @@ planar-agent ingest     --vendor claude --event @<file|-> [--json]
 # Operator recovery — agent_* table writers, which is why they live on
 # planar-agent (not planar). The operator invokes them directly; vendor
 # hooks never do.
-planar-agent reconcile  [--dry-run] [--stale-after <duration>] [--plan <id>] [--json]
-planar-agent abort      --claim <token> [--reason <text>] [--vendor <s>] [--vendor-session <vendor:id>] [--json]
+planar-agent reconcile  [--dry-run] [--stale-after <duration>] [--plan <id>] [--category usage_limit|context_limit|output_limit|tool_failure|validation|unknown] [--json]
+planar-agent abort      --claim <token> [--reason <text>] [--category usage_limit|context_limit|output_limit|tool_failure|validation|unknown] [--vendor <s>] [--vendor-session <vendor:id>] [--json]
 
 # Workflow run lifecycle — used by an external workflow harness to manage
 # workflow_runs rows while staying DB-handle-free (decision 444). The caller
@@ -5797,14 +5798,25 @@ planar-agent context resolve --status consumed|superseded (--id <record-id> | --
 |------------|------------------|
 | `pull`     | SELECT next eligible task → INSERT `agent_work_claims (status=active)` → UPDATE `tasks.status='doing'` → INSERT `agent_actions`. Returns `{ok, no_work, claim_token, claim, task, action_id}`. No writes on no-eligible-task path. |
 | `complete` | Verify claim active → UPDATE action ended_at + outcome='ok' → UPDATE task status='done' → UPDATE claim status='completed'. |
-| `fail`     | Same as complete with outcome='error', task status='todo', claim status='aborted'. |
+| `fail`     | Same as complete with outcome='error', task status='todo', claim status='aborted', and `failure_category` set from `--category` (default `unknown`). |
 | `release`  | Same as fail with outcome='aborted', claim status='released'. (Distinct semantically from fail — "graceful give-up" vs "I tried and failed".) |
 | `block`    | INSERT `entity_links(from=task, to=blocker, relationship='blocks')` → UPDATE task status='blocked' → UPDATE action ended_at + outcome='aborted' → UPDATE claim status='released'. |
 | `peek`     | Read-only: same SELECT as step 1 of pull; no writes. |
-| `reconcile`| (1) Claim sweep: SELECT expired active claims → UPDATE status='stale' → UPDATE orphaned actions ended_at + outcome='aborted'. Does NOT touch tasks.status. (2) Run sweep: SELECT running `workflow_runs` rows → `kill(pid,0)` each → ESRCH ⇒ mark `abandoned` + set `ended_at`. Both sweeps run inside the same `BEGIN IMMEDIATE` transaction. `--dry-run` returns candidates + run_candidates without writing. `--plan <id>` scopes both sweeps to claims/actions/runs belonging to the given plan. |
-| `abort`    | UPDATE claim status='aborted' + released_at + release_reason → INSERT audit `agent_actions` row naming the aborting session. Does NOT touch tasks.status. |
+| `reconcile`| (1) Claim sweep: SELECT expired active claims → UPDATE status='stale' and optional operator-supplied `failure_category`; a claimed task in `doing` returns to `todo` only when the claim has an ownership action and no active replacement. Direct-claim `claim_check` markers are closed as aborted; the existing ended-session sweep closes other orphaned actions. (2) Run sweep: SELECT running `workflow_runs` rows → `kill(pid,0)` each → ESRCH ⇒ mark `abandoned` + set `ended_at`. Both sweeps run inside the same `BEGIN IMMEDIATE` transaction. `--dry-run` returns candidates + run_candidates without writing. `--plan <id>` scopes both sweeps to claims/actions/runs belonging to the given plan. |
+| `abort`    | UPDATE claim status='aborted' + released_at + release_reason + optional operator-supplied `failure_category` → restore `doing` → `todo` only for a default direct task claim carrying its transactional `claim_check` marker → close that marker as aborted → INSERT audit `agent_actions` row naming the aborting session. Primitive `--no-transition` and pull claims retain their previous task-status behavior. |
 
 All write verbs open `BEGIN IMMEDIATE` so the writer lock blocks any concurrent claim attempt on the same row. The status-transition guard (`policy.status.check`) is consulted before each `UPDATE tasks SET status` — refusal rolls the transaction back and the claim keeps its previous state.
+
+Failure categories are terminal observations, not retry policy. Systemic
+capacity handling is implemented by the caller through
+`planar-execute run workflows/parallel-dispatch.lua --phase
+capacity_reconcile --args <json>`, not by a `planar` provider-capacity verb.
+That deterministic phase consumes supplied lane outcomes and emits a
+provider-scoped breaker/recovery packet; it performs no claim write, provider
+call, spawn, abort, reconcile, or persisted breaker reset. Use
+`planar-watch claims --plan <id> --status all --json` to inspect claims,
+`planar-agent reconcile --plan <id> --dry-run --json` to preview stale recovery,
+and `planar report --json` for aggregate `{provider,category,count}` rows.
 
 ### JSON shapes
 
@@ -5823,7 +5835,7 @@ Stable across versions; new keys may be added, existing keys do not change name 
 | `run start`   | `{ok, run_id, run}` where `run` includes `id`, `plan_id`, `workflow_name`, `run_identifier`, `pid`, `repo_root`, `status:"running"` |
 | `run end`     | `{ok, run_id, status}` where `status` is the terminal status written |
 
-`ClaimRow` matches the `agent_work_claims` row shape with snake_case keys (including locality columns `repo_root`, `branch`, `head_sha_at_claim`, `dirty_at_claim`, worktree columns `worktree_id`, `worktree_path`, and workflow run correlation columns `run_id`, `stage`). `Task` matches `planar task show --json`. `ActionRow` matches `agent_actions` (including locality columns `head_sha`, `dirty`).
+`ClaimRow` matches the `agent_work_claims` row shape with snake_case keys (including nullable `failure_category`, locality columns `repo_root`, `branch`, `head_sha_at_claim`, `dirty_at_claim`, worktree columns `worktree_id`, `worktree_path`, and workflow run correlation columns `run_id`, `stage`). `Task` matches `planar task show --json`. `ActionRow` matches `agent_actions` (including locality columns `head_sha`, `dirty`).
 
 ### `planar-agent reconcile` flags
 
@@ -5834,6 +5846,7 @@ Stable across versions; new keys may be added, existing keys do not change name 
 | `--dry-run` | Report candidates without writing. Returns the same JSON shape as a live run, with `candidates` and `run_candidates` arrays populated. | off |
 | `--stale-after <duration>` | Additional grace period beyond the lease expiry before marking a claim stale. Accepts bare integer (seconds) or a suffixed duration (`10m`, `1h`, `500ms`). Useful for giving agents a small window to heartbeat after lease expiry before the reconciler fires. | `0` |
 | `--plan <id>` | Scope both the claim sweep and the run sweep to claims/actions/runs belonging to the given plan id. When omitted, the sweep is global (all plans). | (global) |
+| `--category <value>` | Record a closed failure category on every claim made stale by this sweep. Accepted values: `usage_limit`, `context_limit`, `output_limit`, `tool_failure`, `validation`, `unknown`. Dry-run never writes it. | (null) |
 | `--json` | Emit a JSON result object. | off |
 
 **JSON shape:**
@@ -5962,8 +5975,9 @@ planar-watch completion <bash|zsh|fish>
 | `activity:"<summary>"` | Quoted string; truncated at 80 bytes with `…` (U+2026). Empty quotes `""` when no action exists. | Most-recent `agent_actions.summary` for the claim. |
 | `worktree:<basename>` | Basename of `worktree_path`. Prefixed with `…` when the full path exceeds 40 chars. Empty quotes `""` when `worktree_path` is null. | `agent_work_claims.worktree_path`. |
 | `last_hb:<rel>` | Relative time (e.g. `15s`, `2m`, `just now`) produced by the `relativeTime` helper; the trailing ` ago` suffix is stripped. Empty string when `last_heartbeat_at` is empty. | `agent_work_claims.last_heartbeat_at`. |
+| `category:<value>` | Appended only when the claim carries a closed terminal `failure_category`; null-category rows retain the previous column sequence unchanged. | `agent_work_claims.failure_category`. |
 
-Full text column order (M3): `<entity>:<id>  scope:<label>  activity:"<summary>"  vendor:<v>  branch:<b>  worktree:<basename>  sha:<8-char>  last_hb:<rel>  token:<tok>`.
+Full text column order (M3): `<entity>:<id>  scope:<label>  activity:"<summary>"  vendor:<v>  branch:<b>  worktree:<basename>  sha:<8-char>  last_hb:<rel>  [category:<value>]  token:<tok>`. `planar-watch claims` uses the same categorized-only addition before its `token:` column. JSON claim rows always carry nullable `failure_category` additively.
 
 Implementation: `src/cmd/planar-watch/handlers/ps.zig` (tasks 3053–3058).
 
@@ -6408,11 +6422,11 @@ events:
 
 ### `planar report [--days <n>] [--tail <n>] [--json]`
 
-**Description:** Emit the diagnostic bundle: invocation aggregates, failure tail, and always-on health metrics. Reads `cli_invocations` (when CLI logging is enabled) plus the always-on observability tables (`agent_actions`, `sync_events`, `agent_work_claims`, `handoffs`) and renders a structured diagnostic bundle.
+**Description:** Emit the diagnostic bundle: invocation aggregates, failure tail, closed claim-failure category aggregates, and always-on health metrics. Reads `cli_invocations` (when CLI logging is enabled) plus the always-on observability tables (`agent_actions`, `sync_events`, `agent_work_claims`, `handoffs`) and renders a structured diagnostic bundle.
 
-When `[introspection].cli_log` is off (the default), the invocation and failure sections render "logging disabled" instead of counts — the operator is never shown fabricated zeros. The always-on sections (`actions`, `sync`, `claims`, `handoffs`, `health`, schema version) render normally in either case. JSON output also includes `introspection_preview` with bounded `signals`, per-adapter `coverage`, and `warnings`, collected read-only from the effective `[introspection.transcripts]` paths. A failed adapter degrades only its own coverage; other adapters still contribute. Successful commands are coverage observations, not gap findings; only explicit invalid-flag/help-bounce evidence is normalized as `gap`.
+When `[introspection].cli_log` is off (the default), the invocation and failure sections render "logging disabled" instead of counts — the operator is never shown fabricated zeros. The always-on sections (`actions`, `sync`, `claims`, `claim_failure_categories`, `handoffs`, `health`, schema version) render normally in either case. JSON output also includes `introspection_preview` with bounded `signals`, per-adapter `coverage`, and `warnings`, collected read-only from the effective `[introspection.transcripts]` paths. A failed adapter degrades only its own coverage; other adapters still contribute. Successful commands are coverage observations, not gap findings; only explicit invalid-flag/help-bounce evidence is normalized as `gap`.
 
-**Privacy:** All queries are structurally redacted by construction in `src/engine/introspect.zig`. The bundle selects only counts, categories, verb paths, statuses, and timestamps — never entity `title`, `body`, or `summary` columns, never scope slugs, never path-bearing columns.
+**Privacy:** All queries are structurally redacted by construction in `src/engine/introspect.zig`. The bundle selects only counts, closed categories, provider identities, verb paths, statuses, and timestamps — never entity `title`, `body`, or `summary` columns, never release reasons or action summaries, never scope slugs, and never path-bearing columns. The claim-failure aggregate includes only `aborted`/`stale` terminals; a null category on those legacy or uncategorized recovery rows is reported as `unknown`. Completed and released claims are non-failure terminals and are excluded.
 
 **Flags:**
 
@@ -6435,6 +6449,7 @@ When `[introspection].cli_log` is off (the default), the invocation and failure 
 | `actions` | array | Agent-action outcome aggregates (always-on). |
 | `sync` | array | Sync-event outcome aggregates (always-on). |
 | `claims` | object | `{stale_claims, never_consumed}` (always-on). |
+| `claim_failure_categories` | array | Stable `{provider, category, count}` rows for aborted/stale claims in the window, ordered by provider then the closed category order. Null categories aggregate as `unknown`; empty windows emit `[]`. |
 | `handoffs` | object | `{stale_handoffs, never_consumed}` (always-on). `never_consumed` counts handoffs created in the window that were never transitioned to `consumed` status (distinct from `stale_handoffs`, which counts only `pending`/`validated` handoffs older than 24 h). |
 | `reopens` | integer | Count of `task_reopens` rows created in the window (always-on). |
 

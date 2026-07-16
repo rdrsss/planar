@@ -85,6 +85,49 @@ fn seedSuccessInvocation(suite: *harness.Suite, verb_path: []const u8) void {
     if (result.term != .exited or result.term.exited != 0) @panic("seed failed");
 }
 
+/// Seed terminal claim categories for the privacy-safe report aggregate.
+/// Includes a null-category stale recovery row (aggregates as unknown), a
+/// non-failure completion (excluded), and an out-of-window failure (excluded).
+fn seedClaimFailureAggregates(suite: *harness.Suite) void {
+    const sql =
+        \\insert into sessions (id, vendor, vendor_session_id)
+        \\values (9001, 'report-fixture', 'capacity-aggregate');
+        \\insert into agent_work_claims
+        \\  (claim_token, session_id, entity_kind, entity_id, claim_scope, status,
+        \\   vendor, claimed_at, last_heartbeat_at, lease_expires_at, released_at,
+        \\   release_reason, failure_category)
+        \\values
+        \\  ('cap-a', 9001, 'plan', 1, 'exclusive', 'aborted', 'claude',
+        \\   datetime('now'), datetime('now'), datetime('now'), datetime('now'),
+        \\   'PRIVATE_RELEASE_REASON_SENTINEL', 'usage_limit'),
+        \\  ('cap-b', 9001, 'plan', 2, 'exclusive', 'aborted', 'claude',
+        \\   datetime('now'), datetime('now'), datetime('now'), datetime('now'),
+        \\   null, 'context_limit'),
+        \\  ('cap-c', 9001, 'plan', 3, 'exclusive', 'stale', 'claude',
+        \\   datetime('now'), datetime('now'), datetime('now'), datetime('now'),
+        \\   null, null),
+        \\  ('cap-d', 9001, 'plan', 4, 'exclusive', 'aborted', 'codex',
+        \\   datetime('now'), datetime('now'), datetime('now'), datetime('now'),
+        \\   null, 'tool_failure'),
+        \\  ('cap-complete', 9001, 'plan', 5, 'exclusive', 'completed', 'codex',
+        \\   datetime('now'), datetime('now'), datetime('now'), datetime('now'),
+        \\   null, null),
+        \\  ('cap-old', 9001, 'plan', 6, 'exclusive', 'aborted', 'claude',
+        \\   datetime('now', '-40 days'), datetime('now', '-40 days'),
+        \\   datetime('now', '-40 days'), datetime('now', '-40 days'), null,
+        \\   'output_limit');
+    ;
+    const result = std.process.run(suite.allocator, std.testing.io, .{
+        .argv = &.{ "sqlite3", suite.db_path, sql },
+    }) catch @panic("sqlite3 not found");
+    defer suite.allocator.free(result.stdout);
+    defer suite.allocator.free(result.stderr);
+    if (result.term != .exited or result.term.exited != 0) {
+        std.debug.print("sqlite3 claim aggregate seed failed: {s}\n", .{result.stderr});
+        @panic("seed failed");
+    }
+}
+
 // =========================================================================
 // report-json: stable machine shape
 // =========================================================================
@@ -120,6 +163,7 @@ test "report-json: --json carries the stable top-level field contract" {
     try std.testing.expect(obj.get("sync") != null);
     try std.testing.expect(obj.get("claims") != null);
     try std.testing.expect(obj.get("handoffs") != null);
+    try std.testing.expect(obj.get("claim_failure_categories") != null);
 
     // invocations and failures must be arrays (empty, not null).
     const inv = obj.get("invocations").?;
@@ -133,6 +177,9 @@ test "report-json: --json carries the stable top-level field contract" {
 
     const sync = obj.get("sync").?;
     try std.testing.expect(sync == .array);
+
+    const claim_failure_categories = obj.get("claim_failure_categories").?;
+    try std.testing.expect(claim_failure_categories == .array);
 
     // claims and handoffs must be objects.
     const claims = obj.get("claims").?;
@@ -225,12 +272,19 @@ test "report-json: configured transcript adapters feed normalized preview with a
     const recorded_at = captured_line[separator + 1 ..];
     try std.testing.expect(std.mem.endsWith(u8, recorded_at, "Z"));
 
-    const transcript = try std.fmt.allocPrint(gpa, "{{\"version\":1,\"type\":\"tool_result\",\"timestamp\":\"{s}\",\"tool\":{{\"name\":\"planar task add\",\"input\":{{\"body\":\"PRIVATE_SENTINEL\"}}}},\"exit_code\":2,\"invalid_flag\":true}}", .{recorded_at});
+    const transcript = try std.fmt.allocPrint(
+        gpa,
+        "{{\"version\":1,\"type\":\"tool_result\",\"timestamp\":\"{s}\",\"tool\":{{\"name\":\"planar task add\",\"input\":{{\"body\":\"PRIVATE_SENTINEL\"}}}},\"exit_code\":2,\"invalid_flag\":true}}\n" ++
+            "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"PRIVATE_CONVERSATION_SENTINEL\"}},\"timestamp\":\"2026-07-12T12:00:00Z\"}}\n" ++
+            "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":7}},\"timestamp\":\"2026-07-12T12:00:01Z\"}}",
+        .{recorded_at},
+    );
     defer gpa.free(transcript);
     try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = transcript_path, .data = transcript });
     const json_out = suite.mustRunWith(&.{ "report", "--json" }, &extra);
     defer gpa.free(json_out);
     try std.testing.expect(std.mem.indexOf(u8, json_out, "PRIVATE_SENTINEL") == null);
+    try std.testing.expect(std.mem.indexOf(u8, json_out, "PRIVATE_CONVERSATION_SENTINEL") == null);
     try std.testing.expect(std.mem.indexOf(u8, json_out, "ZZ") == null);
 
     var parsed = try std.json.parseFromSlice(std.json.Value, gpa, json_out, .{});
@@ -242,6 +296,21 @@ test "report-json: configured transcript adapters feed normalized preview with a
     try std.testing.expectEqualStrings("gap", signals.items[0].object.get("category").?.string);
     const coverage = preview.get("coverage").?.array;
     try std.testing.expectEqual(@as(usize, 4), coverage.items.len);
+    const claude_coverage = coverage.items[0].object;
+    try std.testing.expectEqual(@as(i64, 3), claude_coverage.get("scanned").?.integer);
+    try std.testing.expectEqual(@as(i64, 1), claude_coverage.get("normalized").?.integer);
+    try std.testing.expectEqual(@as(i64, 1), claude_coverage.get("ignored").?.integer);
+    try std.testing.expectEqual(@as(i64, 1), claude_coverage.get("malformed").?.integer);
+    try std.testing.expectEqual(@as(i64, 0), claude_coverage.get("capped").?.integer);
+
+    const text_out = suite.mustRunWith(&.{"report"}, &extra);
+    defer gpa.free(text_out);
+    const preview_position = std.mem.indexOf(u8, text_out, "[introspection preview]") orelse return error.TestUnexpectedResult;
+    const failure_tail_position = std.mem.indexOf(u8, text_out, "[failure tail]") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(preview_position < failure_tail_position);
+    try std.testing.expect(std.mem.indexOf(u8, text_out, "claude: state=observed scanned=3 normalized=1 ignored=1 malformed=1 capped=0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text_out, "PRIVATE_SENTINEL") == null);
+    try std.testing.expect(std.mem.indexOf(u8, text_out, "PRIVATE_CONVERSATION_SENTINEL") == null);
 }
 
 // =========================================================================
@@ -463,6 +532,107 @@ test "report-aggregates: failed invocations appear in failures array" {
     for (failures.items) |item| {
         try std.testing.expect(item.object.get("category") != null);
         try std.testing.expect(item.object.get("count") != null);
+    }
+}
+
+test "report-aggregates: claim failure categories are provider-scoped, stable, and private" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const out = suite.mustRun(&.{ "init", "--allow-no-repo" });
+    defer gpa.free(out);
+    seedClaimFailureAggregates(&suite);
+
+    const json_out = suite.mustRun(&.{ "report", "--days", "30", "--json" });
+    defer gpa.free(json_out);
+    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, json_out, .{});
+    defer parsed.deinit();
+    const rows = parsed.value.object.get("claim_failure_categories") orelse
+        return error.MissingClaimFailureCategories;
+    try std.testing.expect(rows == .array);
+    try std.testing.expectEqual(@as(usize, 4), rows.array.items.len);
+
+    const expected = [_]struct { provider: []const u8, category: []const u8, count: i64 }{
+        .{ .provider = "claude", .category = "usage_limit", .count = 1 },
+        .{ .provider = "claude", .category = "context_limit", .count = 1 },
+        .{ .provider = "claude", .category = "unknown", .count = 1 },
+        .{ .provider = "codex", .category = "tool_failure", .count = 1 },
+    };
+    for (rows.array.items, expected) |row, want| {
+        try std.testing.expectEqualStrings(want.provider, row.object.get("provider").?.string);
+        try std.testing.expectEqualStrings(want.category, row.object.get("category").?.string);
+        try std.testing.expectEqual(want.count, row.object.get("count").?.integer);
+    }
+    try std.testing.expect(std.mem.indexOf(u8, json_out, "PRIVATE_RELEASE_REASON_SENTINEL") == null);
+    try std.testing.expect(std.mem.indexOf(u8, json_out, "release_reason") == null);
+
+    const text_out = suite.mustRun(&.{ "report", "--days", "30" });
+    defer gpa.free(text_out);
+    try std.testing.expect(std.mem.indexOf(u8, text_out, "[claim failure categories]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text_out, "claude/usage_limit: 1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text_out, "claude/unknown: 1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text_out, "PRIVATE_RELEASE_REASON_SENTINEL") == null);
+}
+
+test "report-aggregates: complete closed ordering has exact text parity and no private claim columns" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    gpa.free(suite.mustRun(&.{ "init", "--allow-no-repo" }));
+    seedClaimFailureAggregates(&suite);
+    const extra_sql =
+        \\insert into agent_work_claims
+        \\  (claim_token, session_id, entity_kind, entity_id, claim_scope, status,
+        \\   vendor, claimed_at, last_heartbeat_at, lease_expires_at, released_at,
+        \\   release_reason, failure_category, purpose, base_ref, repo_root, branch, worktree_path)
+        \\values
+        \\  ('cap-output', 9001, 'plan', 7, 'exclusive', 'aborted', 'claude',
+        \\   datetime('now'), datetime('now'), datetime('now'), datetime('now'),
+        \\   'PRIVATE_OUTPUT_RELEASE', 'output_limit', 'PRIVATE_PURPOSE',
+        \\   'PRIVATE_BASE_REF', '/PRIVATE/REPO', 'PRIVATE_BRANCH', '/PRIVATE/WORKTREE'),
+        \\  ('cap-validation', 9001, 'plan', 8, 'exclusive', 'stale', 'claude',
+        \\   datetime('now'), datetime('now'), datetime('now'), datetime('now'),
+        \\   null, 'validation', null, null, null, null, null);
+    ;
+    const seeded = std.process.run(gpa, std.testing.io, .{
+        .argv = &.{ "sqlite3", suite.db_path, extra_sql },
+    }) catch @panic("sqlite3 not found");
+    defer gpa.free(seeded.stdout);
+    defer gpa.free(seeded.stderr);
+    try std.testing.expect(seeded.term == .exited and seeded.term.exited == 0);
+
+    const json_out = suite.mustRun(&.{ "report", "--days", "30", "--json" });
+    defer gpa.free(json_out);
+    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, json_out, .{});
+    defer parsed.deinit();
+    const rows = parsed.value.object.get("claim_failure_categories").?.array.items;
+    const expected_categories = [_][]const u8{
+        "usage_limit", "context_limit", "output_limit", "validation", "unknown", "tool_failure",
+    };
+    try std.testing.expectEqual(expected_categories.len, rows.len);
+    for (rows, expected_categories) |row, category| {
+        try std.testing.expectEqual(@as(usize, 3), row.object.count());
+        try std.testing.expectEqualStrings(category, row.object.get("category").?.string);
+    }
+
+    const text_out = suite.mustRun(&.{ "report", "--days", "30" });
+    defer gpa.free(text_out);
+    for (rows) |row| {
+        const needle = try std.fmt.allocPrint(
+            gpa,
+            "{s}/{s}: {d}",
+            .{ row.object.get("provider").?.string, row.object.get("category").?.string, row.object.get("count").?.integer },
+        );
+        defer gpa.free(needle);
+        try std.testing.expect(std.mem.indexOf(u8, text_out, needle) != null);
+    }
+    for ([_][]const u8{
+        "PRIVATE_OUTPUT_RELEASE", "PRIVATE_PURPOSE", "PRIVATE_BASE_REF", "/PRIVATE/REPO", "PRIVATE_BRANCH", "/PRIVATE/WORKTREE",
+    }) |sentinel| {
+        try std.testing.expect(std.mem.indexOf(u8, json_out, sentinel) == null);
+        try std.testing.expect(std.mem.indexOf(u8, text_out, sentinel) == null);
     }
 }
 

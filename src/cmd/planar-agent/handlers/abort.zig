@@ -1,9 +1,10 @@
 //! handlers/abort — `planar-agent abort --claim <token> [--reason <text>]`
 //!
 //! Operator force-release of a stuck claim from ANY session. Writes an
-//! audit row recording the aborting session as the actor. Does NOT
-//! touch tasks.status — the operator decides whether to revive the
-//! task afterwards.
+//! audit row recording the aborting session as the actor. A task moved to
+//! `doing` by the default direct-claim path is restored to `todo` using that
+//! claim's transactional marker; primitive and pull claims retain their
+//! existing status semantics.
 //!
 //! JSON: { ok, claim_token, claim, aborting_session }.
 
@@ -26,6 +27,7 @@ pub const verb: cli.Cmd = .{
     .flags = &.{
         .{ .long = "--claim", .kind = .string, .required = true, .desc = "Claim token to force-release" },
         .{ .long = "--reason", .kind = .string, .desc = "Optional reason recorded on the claim and audit row" },
+        .{ .long = "--category", .kind = .choice, .choices = &.{ "usage_limit", "context_limit", "output_limit", "tool_failure", "validation", "unknown" }, .desc = "Optional closed failure category for the recovered claim" },
         .{ .long = "--vendor", .kind = .string, .default = .{ .string = "planar-agent" }, .desc = "Vendor tag for the aborting session" },
         .{ .long = "--vendor-session", .kind = .string, .desc = "Vendor session id for the aborting session" },
         .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
@@ -46,11 +48,19 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
 
     d.exec("BEGIN IMMEDIATE") catch |e| exit.die(ctx, e, "BEGIN IMMEDIATE: {s}", .{@errorName(e)});
 
-    const c = store.abortClaim(d, ctx.allocator, args.claim, args.reason) catch |e| {
+    const category = if (args.category) |value| types.FailureCategory.fromText(value) orelse unreachable else null;
+    const c = store.abortClaim(d, ctx.allocator, args.claim, args.reason, category) catch |e| {
         d.exec("ROLLBACK") catch {};
         exit.die(ctx, e, "abort: {s}", .{@errorName(e)});
     };
     defer c.deinit(ctx.allocator);
+
+    if (c.entity_kind == .task) {
+        store.resetDirectClaimTaskAfterAbort(d, c.id, c.entity_id) catch |e| {
+            d.exec("ROLLBACK") catch {};
+            exit.die(ctx, e, "abort task recovery: {s}", .{@errorName(e)});
+        };
+    }
 
     // Audit row: action_kind='other', vendor='planar', summary='aborted by operator'
     // attributing to the aborting session.

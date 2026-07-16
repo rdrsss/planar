@@ -106,10 +106,19 @@ fn emitOnce(
             if (!claimMatches(d, c, args)) continue;
             const scope = agentactivity.store.resolveClaimScope(d, allocator, c);
             defer scope.deinit(allocator);
-            try w.print(
-                "  {s}:{d}  scope:{s}  status:{s}  vendor:{s}  token:{s}\n",
-                .{ c.entity_kind.toText(), c.entity_id, scope.label(), c.status.toText(), c.vendor, c.claim_token },
-            );
+            if (c.failure_category) |category| {
+                try w.print(
+                    "  {s}:{d}  scope:{s}  status:{s}  vendor:{s}  category:{s}  token:{s}\n",
+                    .{ c.entity_kind.toText(), c.entity_id, scope.label(), c.status.toText(), c.vendor, category.toText(), c.claim_token },
+                );
+            } else {
+                // Preserve the established text columns byte-for-byte for the
+                // overwhelmingly common active/non-failure claim row.
+                try w.print(
+                    "  {s}:{d}  scope:{s}  status:{s}  vendor:{s}  token:{s}\n",
+                    .{ c.entity_kind.toText(), c.entity_id, scope.label(), c.status.toText(), c.vendor, c.claim_token },
+                );
+            }
         }
     }
 }
@@ -138,7 +147,8 @@ fn listClaims(
         \\       repo_root, branch, head_sha_at_claim, dirty_at_claim,
         \\       purpose, base_ref,
         \\       claimed_at, last_heartbeat_at, lease_expires_at,
-        \\       released_at, release_reason
+        \\       released_at, release_reason,
+        \\       run_id, stage, failure_category
         \\from agent_work_claims
         \\where status = 'active'
         \\  and lease_expires_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now')
@@ -151,7 +161,8 @@ fn listClaims(
         \\       repo_root, branch, head_sha_at_claim, dirty_at_claim,
         \\       purpose, base_ref,
         \\       claimed_at, last_heartbeat_at, lease_expires_at,
-        \\       released_at, release_reason
+        \\       released_at, release_reason,
+        \\       run_id, stage, failure_category
         \\from agent_work_claims
         \\where status = 'stale'
         \\   or (status = 'active' and lease_expires_at < strftime('%Y-%m-%dT%H:%M:%fZ','now'))
@@ -164,7 +175,8 @@ fn listClaims(
         \\       repo_root, branch, head_sha_at_claim, dirty_at_claim,
         \\       purpose, base_ref,
         \\       claimed_at, last_heartbeat_at, lease_expires_at,
-        \\       released_at, release_reason
+        \\       released_at, release_reason,
+        \\       run_id, stage, failure_category
         \\from agent_work_claims
         \\order by claimed_at desc
         ,
@@ -212,6 +224,13 @@ fn readClaimRow(
         dirty = types.Dirty.fromText(d_text);
     }
 
+    const category_opt = try stmt.columnTextOpt(26, allocator);
+    var failure_category: ?types.FailureCategory = null;
+    if (category_opt) |category_text| {
+        defer allocator.free(category_text);
+        failure_category = types.FailureCategory.fromText(category_text) orelse return error.QueryFailed;
+    }
+
     return .{
         .id = stmt.columnInt(0),
         .claim_token = try stmt.columnTextAlloc(1, allocator),
@@ -237,5 +256,8 @@ fn readClaimRow(
         .lease_expires_at = try stmt.columnTextAlloc(21, allocator),
         .released_at = try stmt.columnTextOpt(22, allocator),
         .release_reason = try stmt.columnTextOpt(23, allocator),
+        .run_id = stmt.columnIntOpt(24),
+        .stage = try stmt.columnTextOpt(25, allocator),
+        .failure_category = failure_category,
     };
 }

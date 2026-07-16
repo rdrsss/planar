@@ -118,6 +118,33 @@ Challenge the draft for missing feature surfaces:
 Every gap must cite the artifact section that implies the need, or state that
 the gap comes from a missing section.
 
+Run these four recurring hazard lenses on every review:
+
+1. **Resource lifecycle and cleanup.** If the design acquires resources or
+   creates temporary/persistent state, check ownership and cleanup on success,
+   failure, cancellation, and partial completion.
+2. **Deterministic ordering and replay.** If behavior can repeat, resume,
+   retry, merge, or arrive out of order, check stable ordering, tie-breaking,
+   idempotency, and replay behavior.
+3. **Concurrency, ownership, cancellation, and races.** If work overlaps or
+   shares state, check exclusive ownership, cancellation propagation,
+   partial-success semantics, and races between reads, writes, cleanup, and
+   terminal transitions.
+4. **Shell, build, and template escaping across interpretation boundaries.**
+   If data crosses a shell, build system, template, config, query, or other
+   interpreter boundary, check quoting, serialization, delimiter handling,
+   and injection-safe failure behavior.
+
+For each lens, emit one `Hazard lens audit` row classified as `finding`,
+`covered`, or `not applicable`. Every applicable omission is also a Feature
+gap and cites the artifact plus relevant section; if that section is absent,
+name the artifact and missing section explicitly. For an inapplicable lens,
+write `not applicable -- no gap` with the artifact evidence that makes it
+irrelevant. Do not invent boilerplate or a finding to fill the row. Recommend
+observable behavior and tests in the spec, while leaving language-, framework-,
+shell-, and build-tool-specific remedies to the target project's local
+guidance rather than Planar's global review rules.
+
 ### 4. Roadmap readiness
 
 Use `planar spec ingest <plan> --strict --json` as the mechanical preview. It is
@@ -178,6 +205,12 @@ Blocking questions:
 
 Feature gaps:
 - <gap> -- evidence and recommended edit
+
+Hazard lens audit:
+- resource lifecycle and cleanup: finding | covered | not applicable -- evidence
+- deterministic ordering and replay: finding | covered | not applicable -- evidence
+- concurrency, ownership, cancellation, and races: finding | covered | not applicable -- evidence
+- shell, build, and template escaping across interpretation boundaries: finding | covered | not applicable -- evidence
 
 Consistency gaps:
 - <mismatch> -- affected artifacts
