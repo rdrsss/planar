@@ -155,18 +155,27 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+    // On glibc, strict -std=c11 hides the POSIX/default-source declarations
+    // tree-sitter uses (le16toh/be16toh from endian.h, fdopen); Darwin exposes
+    // them unconditionally. _DEFAULT_SOURCE restores them on Linux only, so
+    // the macOS compile line is unchanged.
+    const ts_c_flags: []const []const u8 = if (target.result.os.tag == .linux) &.{
+        "-std=c11",
+        // Quiet the runtime's intentional unused-parameter / sign
+        // patterns; upstream builds with these tolerated.
+        "-fno-sanitize=undefined",
+        "-D_DEFAULT_SOURCE",
+    } else &.{
+        "-std=c11",
+        "-fno-sanitize=undefined",
+    };
     treesitter_mod.addCSourceFile(.{
         .file = b.path(ts_core_dir ++ "/lib/src/lib.c"),
-        .flags = &.{
-            "-std=c11",
-            // Quiet the runtime's intentional unused-parameter / sign
-            // patterns; upstream builds with these tolerated.
-            "-fno-sanitize=undefined",
-        },
+        .flags = ts_c_flags,
     });
     treesitter_mod.addCSourceFile(.{
         .file = b.path(ts_zig_dir ++ "/src/parser.c"),
-        .flags = &.{ "-std=c11", "-fno-sanitize=undefined" },
+        .flags = ts_c_flags,
     });
     treesitter_mod.addIncludePath(b.path(ts_core_dir ++ "/lib/include"));
     treesitter_mod.addIncludePath(b.path(ts_core_dir ++ "/lib/src"));
@@ -357,15 +366,21 @@ pub fn build(b: *std.Build) void {
     engine_mod.addIncludePath(b.path(ts_core_dir ++ "/lib/include"));
     engine_mod.linkLibrary(treesitter_lib);
 
+    // link_libc on the doc-side modules: their @cImport sites (dirent.h,
+    // fcntl.h, sys/stat.h) need zig's libc headers, which are only provided
+    // when the module links libc. Darwin links libSystem regardless, which
+    // is why this was invisible on macOS.
     const docs_engine_mod = b.addModule("docs_engine", .{
         .root_source_file = b.path("src/engine/docs_root.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
     const doc_runtime_mod = b.addModule("doc_runtime", .{
         .root_source_file = b.path("src/runtime/doc_runtime.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
 
     // -----------------------------------------------------------------
@@ -510,6 +525,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/cmd/planar-doc/main.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
             .imports = &.{
                 .{ .name = "cli", .module = cli_mod },
                 .{ .name = "engine", .module = docs_engine_mod },
