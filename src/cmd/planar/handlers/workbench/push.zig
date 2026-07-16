@@ -39,4 +39,7 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     if (summary.conflicts > 0) {
         exit.die(ctx, error.Conflict, "{d} conflict(s) require 'workbench resolve <event-id> --prefer fs|db'", .{summary.conflicts});
     }
+    if (summary.malformed > 0) {
+        exit.die(ctx, error.MalformedWorkbench, "{d} malformed workbench file(s); run 'planar workbench lint {d}' for details", .{ summary.malformed, plan.id });
+    }
 }

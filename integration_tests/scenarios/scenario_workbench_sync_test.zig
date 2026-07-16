@@ -62,6 +62,15 @@ const MalformedWorkbenchOp = struct {
     malformed_files: []const MalformedFile,
 };
 
+const LintIssue = struct {
+    path: []const u8,
+    line: i64,
+    severity: []const u8,
+    code: []const u8,
+    message: []const u8,
+    hint: []const u8,
+};
+
 const WorkbenchListEntry = struct {
     plan: i64,
     slug: []const u8,
@@ -273,6 +282,20 @@ test "scenario: malformed workbench files fail pull push and status with distinc
         .sub_path = readme_abs,
         .data = "front matter delimiter is missing\n",
     }) catch unreachable;
+
+    const lint_result = suite.execWith(&.{ "workbench", "lint", plan_id, "--json" }, &env);
+    defer lint_result.deinit(gpa);
+    try std.testing.expect(lint_result.term == .exited and lint_result.term.exited == 1);
+    const lint_issue = std.json.parseFromSlice(LintIssue, arena, lint_result.stdout, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = false,
+    }) catch unreachable;
+    try std.testing.expect(std.mem.endsWith(u8, lint_issue.value.path, "README.md"));
+    try std.testing.expectEqual(@as(i64, 1), lint_issue.value.line);
+    try std.testing.expectEqualStrings("error", lint_issue.value.severity);
+    try std.testing.expectEqualStrings("malformed_frontmatter", lint_issue.value.code);
+    try std.testing.expect(lint_issue.value.message.len > 0);
+    try std.testing.expect(lint_issue.value.hint.len > 0);
 
     const verbs = [_][]const u8{ "status", "pull", "push" };
     for (verbs) |verb| {

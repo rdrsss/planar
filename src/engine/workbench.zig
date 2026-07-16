@@ -18,6 +18,7 @@ pub const manifest = @import("workbench/manifest.zig");
 pub const sync = @import("workbench/sync.zig");
 pub const terminal = @import("workbench/terminal.zig");
 pub const gc = @import("workbench/gc.zig");
+pub const lint = @import("workbench/lint.zig");
 
 /// resolveRoot is the single-source workbench-root resolver.
 /// Resolution order: $PLANAR_WORKBENCH_ROOT env var →
@@ -34,4 +35,5 @@ test {
     _ = sync;
     _ = terminal;
     _ = gc;
+    _ = lint;
 }

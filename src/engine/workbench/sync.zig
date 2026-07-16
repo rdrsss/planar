@@ -19,6 +19,7 @@ pub const Summary = struct {
     applied: usize = 0,
     pending: usize = 0,
     conflicts: usize = 0,
+    malformed: usize = 0,
     /// Count of terminal-status entities excluded from the FS write set under
     /// the active `filter_mode` (plan 439 M2). Always 0 on non-push runs.
     filtered: usize = 0,
@@ -31,6 +32,11 @@ pub const Summary = struct {
     /// pass (only when `--apply-cleanup` was passed). Subset of
     /// `pre_existing_terminal`.
     cleaned: usize = 0,
+};
+
+pub const MalformedFile = struct {
+    path: []const u8,
+    parse_error: []const u8,
 };
 
 pub const Entry = struct {
@@ -46,6 +52,8 @@ pub const Result = struct {
     applied: usize = 0,
     pending: usize = 0,
     conflicts: usize = 0,
+    malformed: usize = 0,
+    malformed_files: []const MalformedFile = &.{},
     /// Count of terminal-status entities excluded from the FS write set.
     filtered: usize = 0,
     /// Pre-existing terminal files visible on disk that fall inside this
@@ -97,6 +105,7 @@ pub fn deinitResult(allocator: std.mem.Allocator, result: Result) void {
         if (entry.parse_error.len > 0) allocator.free(entry.parse_error);
     }
     if (result.entries.len > 0) allocator.free(result.entries);
+    if (result.malformed_files.len > 0) allocator.free(result.malformed_files);
 }
 
 pub fn status(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan_id: i64) !Result {
@@ -442,7 +451,14 @@ fn run(
         const db_hash = try manifest.hashContent(allocator, db_content);
         defer allocator.free(db_hash);
 
+        const parse_error: ?[]const u8 = if (fs_content) |content| check: {
+            const parsed = parse.parse(allocator, content) catch |err| break :check @errorName(err);
+            parse.deinit(parsed, allocator);
+            break :check null;
+        } else null;
+
         const cls: Classification = blk: {
+            if (parse_error != null) break :blk .malformed;
             if (findState(manifest_rows, e.kind, e.id)) |state| {
                 if (fs_content == null) break :blk .deleted_on_fs;
                 const fs_hash = try manifest.hashContent(allocator, fs_content.?);
@@ -534,7 +550,8 @@ fn run(
                     summary.applied += 1;
                 } else summary.pending += 1;
             },
-            .new_on_fs, .malformed => summary.pending += 1,
+            .new_on_fs => summary.pending += 1,
+            .malformed => summary.malformed += 1,
         }
 
         try entries.append(allocator, .{
@@ -543,6 +560,7 @@ fn run(
             .entity_kind = try allocator.dupe(u8, e.kind),
             .entity_id = e.id,
             .conflict_id = conflict_id,
+            .parse_error = if (parse_error) |err| try allocator.dupe(u8, err) else "",
         });
     }
 
@@ -590,7 +608,7 @@ fn run(
         };
         defer allocator.free(content);
         const parsed = parse.parse(allocator, content) catch |parse_err| {
-            summary.pending += 1;
+            summary.malformed += 1;
             try entries.append(allocator, .{
                 .class = .malformed,
                 .file_path = try allocator.dupe(u8, stored),
@@ -655,15 +673,38 @@ fn run(
         defer manifest.deinitRows(rows, allocator);
         try manifest.writeSyncFile(allocator, feature_dir, rows);
     }
+    const owned_entries = try entries.toOwnedSlice(allocator);
+    errdefer {
+        for (owned_entries) |entry| {
+            allocator.free(entry.file_path);
+            allocator.free(entry.entity_kind);
+            if (entry.parse_error.len > 0) allocator.free(entry.parse_error);
+        }
+        allocator.free(owned_entries);
+    }
+    const malformed_files = if (summary.malformed == 0)
+        &[_]MalformedFile{}
+    else blk: {
+        const files = try allocator.alloc(MalformedFile, summary.malformed);
+        var index: usize = 0;
+        for (owned_entries) |entry| {
+            if (entry.class != .malformed) continue;
+            files[index] = .{ .path = entry.file_path, .parse_error = entry.parse_error };
+            index += 1;
+        }
+        break :blk files;
+    };
     return .{
         .applied = summary.applied,
         .pending = summary.pending,
         .conflicts = summary.conflicts,
+        .malformed = summary.malformed,
+        .malformed_files = malformed_files,
         .filtered = summary.filtered,
         .pre_existing_terminal = summary.pre_existing_terminal,
         .cleaned = summary.cleaned,
         .filter_mode = terminal_mod.Mode.toString(filter_mode),
-        .entries = try entries.toOwnedSlice(allocator),
+        .entries = owned_entries,
     };
 }
 
