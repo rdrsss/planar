@@ -375,9 +375,12 @@ test "scenario: lint and runtime reject malformed Markdown in hidden feature pat
     const hidden_file_rel = try std.fs.path.join(arena, &.{ feature_path.?, ".malformed.md" });
     const hidden_dir_rel = try std.fs.path.join(arena, &.{ feature_path.?, ".drafts" });
     const hidden_nested_rel = try std.fs.path.join(arena, &.{ hidden_dir_rel, "nested.md" });
+    const linked_file_rel = try std.fs.path.join(arena, &.{ feature_path.?, "linked-malformed.md" });
     const hidden_file_abs = try std.fs.path.join(arena, &.{ wb_root, hidden_file_rel });
     const hidden_dir_abs = try std.fs.path.join(arena, &.{ wb_root, hidden_dir_rel });
     const hidden_nested_abs = try std.fs.path.join(arena, &.{ wb_root, hidden_nested_rel });
+    const linked_file_abs = try std.fs.path.join(arena, &.{ wb_root, linked_file_rel });
+    const linked_target_abs = try std.fs.path.join(arena, &.{ suite.tmpAbsPath(), "malformed-link-target.md" });
     try std.Io.Dir.cwd().createDirPath(std.testing.io, hidden_dir_abs);
     try std.Io.Dir.cwd().writeFile(std.testing.io, .{
         .sub_path = hidden_file_abs,
@@ -387,6 +390,11 @@ test "scenario: lint and runtime reject malformed Markdown in hidden feature pat
         .sub_path = hidden_nested_abs,
         .data = "nested hidden file without frontmatter\n",
     });
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{
+        .sub_path = linked_target_abs,
+        .data = "linked file without frontmatter\n",
+    });
+    try std.Io.Dir.cwd().symLink(std.testing.io, linked_target_abs, linked_file_abs, .{});
 
     const lint_result = suite.execWith(&.{ "workbench", "lint", plan_id, "--json" }, &env);
     defer lint_result.deinit(gpa);
@@ -394,6 +402,7 @@ test "scenario: lint and runtime reject malformed Markdown in hidden feature pat
     var lint_count: usize = 0;
     var lint_saw_hidden_file = false;
     var lint_saw_hidden_nested = false;
+    var lint_saw_linked_file = false;
     var lint_lines = std.mem.splitScalar(u8, lint_result.stdout, '\n');
     while (lint_lines.next()) |line| {
         if (line.len == 0) continue;
@@ -405,10 +414,12 @@ test "scenario: lint and runtime reject malformed Markdown in hidden feature pat
         lint_count += 1;
         if (std.mem.eql(u8, issue.value.path, hidden_file_abs)) lint_saw_hidden_file = true;
         if (std.mem.eql(u8, issue.value.path, hidden_nested_abs)) lint_saw_hidden_nested = true;
+        if (std.mem.eql(u8, issue.value.path, linked_file_abs)) lint_saw_linked_file = true;
     }
-    try std.testing.expectEqual(@as(usize, 2), lint_count);
+    try std.testing.expectEqual(@as(usize, 3), lint_count);
     try std.testing.expect(lint_saw_hidden_file);
     try std.testing.expect(lint_saw_hidden_nested);
+    try std.testing.expect(lint_saw_linked_file);
 
     const verbs = [_][]const u8{ "status", "pull", "push", "sync" };
     for (verbs) |verb| {
@@ -419,17 +430,20 @@ test "scenario: lint and runtime reject malformed Markdown in hidden feature pat
             .allocate = .alloc_always,
             .ignore_unknown_fields = true,
         });
-        try std.testing.expectEqual(@as(i64, 2), summary.value.malformed);
-        try std.testing.expectEqual(@as(usize, 2), summary.value.malformed_files.len);
+        try std.testing.expectEqual(@as(i64, 3), summary.value.malformed);
+        try std.testing.expectEqual(@as(usize, 3), summary.value.malformed_files.len);
         var runtime_saw_hidden_file = false;
         var runtime_saw_hidden_nested = false;
+        var runtime_saw_linked_file = false;
         for (summary.value.malformed_files) |malformed| {
             try std.testing.expectEqualStrings("MalformedFrontmatter", malformed.parse_error);
             if (std.mem.eql(u8, malformed.path, hidden_file_rel)) runtime_saw_hidden_file = true;
             if (std.mem.eql(u8, malformed.path, hidden_nested_rel)) runtime_saw_hidden_nested = true;
+            if (std.mem.eql(u8, malformed.path, linked_file_rel)) runtime_saw_linked_file = true;
         }
         try std.testing.expect(runtime_saw_hidden_file);
         try std.testing.expect(runtime_saw_hidden_nested);
+        try std.testing.expect(runtime_saw_linked_file);
     }
 }
 
