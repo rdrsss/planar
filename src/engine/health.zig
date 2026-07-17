@@ -76,7 +76,7 @@ pub const StaleDraftPlan = struct {
 };
 
 /// A task which has remained in `doing` beyond the configured threshold.
-pub const StaleDoingTask = struct { id: i64, plan_id: i64, title: []const u8, age_days: i64, suggestion: []const u8 };
+pub const StaleDoingTask = struct { id: i64, plan_id: i64, scope: []const u8, title: []const u8, age_days: i64, suggestion: []const u8 };
 
 /// A question which has remained open beyond the configured threshold.
 pub const StaleOpenQuestion = struct { id: i64, title: []const u8, age_days: i64, suggestion: []const u8 };
@@ -104,6 +104,8 @@ pub const HygieneOptions = struct {
     scope: ?[]const u8 = null,
     stale_doing_days: i64 = 7,
     stale_open_days: i64 = 30,
+    /// Optional fixed clock for deterministic engine tests.
+    now: ?[]const u8 = null,
 };
 
 pub const HygieneError = error{ InvalidThreshold, UnsupportedScope, SlugNotFound, QueryFailed } || std.mem.Allocator.Error;
@@ -122,9 +124,9 @@ pub fn hygiene(d: *db.sqlite.Db, allocator: std.mem.Allocator, options: HygieneO
 
     const plans = try queryStaleDraftPlans(d, allocator, association_id);
     errdefer deinitStalePlans(plans, allocator);
-    const tasks = try queryStaleDoingTasks(d, allocator, association_id, options.stale_doing_days);
+    const tasks = try queryStaleDoingTasks(d, allocator, association_id, options.stale_doing_days, options.now);
     errdefer deinitStaleTasks(tasks, allocator);
-    const questions = try queryStaleOpenQuestions(d, allocator, association_id, options.stale_open_days);
+    const questions = try queryStaleOpenQuestions(d, allocator, association_id, options.stale_open_days, options.now);
     errdefer deinitStaleQuestions(questions, allocator);
     return .{
         .thresholds = .{ .stale_doing_days = options.stale_doing_days, .stale_open_days = options.stale_open_days },
@@ -174,15 +176,24 @@ fn queryStaleDraftPlans(d: *db.sqlite.Db, allocator: std.mem.Allocator, associat
     };
 }
 
-fn queryStaleDoingTasks(d: *db.sqlite.Db, allocator: std.mem.Allocator, association_id: ?i64, threshold_days: i64) HygieneError![]StaleDoingTask {
+fn queryStaleDoingTasks(d: *db.sqlite.Db, allocator: std.mem.Allocator, association_id: ?i64, threshold_days: i64, now: ?[]const u8) HygieneError![]StaleDoingTask {
     const sql: [:0]const u8 =
-        \\select id, plan_id, title, cast(julianday('now')-julianday(updated_at) as integer)
-        \\from tasks where status='doing' and julianday('now')-julianday(updated_at)>?
-        \\ and (? is null or (scope_kind='association' and scope_id=?)) order by id
+        \\select t.id, t.plan_id, t.title,
+        \\ cast(julianday(coalesce(?, 'now'))-julianday(t.updated_at) as integer),
+        \\ case t.scope_kind
+        \\   when 'global' then 'global'
+        \\   when 'association' then 'assoc:' || a.slug
+        \\   when 'repo' then 'repo:' || p.slug
+        \\ end
+        \\from tasks t
+        \\left join associations a on t.scope_kind='association' and a.id=t.scope_id
+        \\left join projects p on t.scope_kind='repo' and p.id=t.scope_id
+        \\where t.status='doing' and julianday(coalesce(?, 'now'))-julianday(t.updated_at)>?
+        \\ and (? is null or (t.scope_kind='association' and t.scope_id=?)) order by t.id
     ;
     var stmt = d.prepare(sql) catch return error.QueryFailed;
     defer stmt.finalize();
-    stmt.bind(&.{ .{ .int = threshold_days }, scopeParam(association_id), scopeParam(association_id) }) catch return error.QueryFailed;
+    stmt.bind(&.{ timeParam(now), timeParam(now), .{ .int = threshold_days }, scopeParam(association_id), scopeParam(association_id) }) catch return error.QueryFailed;
     var rows: std.ArrayList(StaleDoingTask) = .empty;
     errdefer deinitStaleTaskList(&rows, allocator);
     while (true) switch (stmt.step() catch return error.QueryFailed) {
@@ -191,22 +202,24 @@ fn queryStaleDoingTasks(d: *db.sqlite.Db, allocator: std.mem.Allocator, associat
             const id = stmt.columnInt(0);
             const title = try stmt.columnTextAlloc(2, allocator);
             errdefer allocator.free(title);
-            const suggestion = try std.fmt.allocPrint(allocator, "planar task update {d} --status done OR planar task update {d} --status blocked", .{ id, id });
+            const scope = try stmt.columnTextAlloc(4, allocator);
+            errdefer allocator.free(scope);
+            const suggestion = try std.fmt.allocPrint(allocator, "planar task update {d} --scope {s} --status done OR planar task update {d} --scope {s} --status blocked", .{ id, scope, id, scope });
             errdefer allocator.free(suggestion);
-            try rows.append(allocator, .{ .id = id, .plan_id = stmt.columnInt(1), .title = title, .age_days = stmt.columnInt(3), .suggestion = suggestion });
+            try rows.append(allocator, .{ .id = id, .plan_id = stmt.columnInt(1), .scope = scope, .title = title, .age_days = stmt.columnInt(3), .suggestion = suggestion });
         },
     };
 }
 
-fn queryStaleOpenQuestions(d: *db.sqlite.Db, allocator: std.mem.Allocator, association_id: ?i64, threshold_days: i64) HygieneError![]StaleOpenQuestion {
+fn queryStaleOpenQuestions(d: *db.sqlite.Db, allocator: std.mem.Allocator, association_id: ?i64, threshold_days: i64, now: ?[]const u8) HygieneError![]StaleOpenQuestion {
     const sql: [:0]const u8 =
-        \\select id, title, cast(julianday('now')-julianday(updated_at) as integer)
-        \\from questions where status='open' and julianday('now')-julianday(updated_at)>?
+        \\select id, title, cast(julianday(coalesce(?, 'now'))-julianday(updated_at) as integer)
+        \\from questions where status='open' and julianday(coalesce(?, 'now'))-julianday(updated_at)>?
         \\ and (? is null or (scope_kind='association' and scope_id=?)) order by id
     ;
     var stmt = d.prepare(sql) catch return error.QueryFailed;
     defer stmt.finalize();
-    stmt.bind(&.{ .{ .int = threshold_days }, scopeParam(association_id), scopeParam(association_id) }) catch return error.QueryFailed;
+    stmt.bind(&.{ timeParam(now), timeParam(now), .{ .int = threshold_days }, scopeParam(association_id), scopeParam(association_id) }) catch return error.QueryFailed;
     var rows: std.ArrayList(StaleOpenQuestion) = .empty;
     errdefer deinitStaleQuestionList(&rows, allocator);
     while (true) switch (stmt.step() catch return error.QueryFailed) {
@@ -215,7 +228,7 @@ fn queryStaleOpenQuestions(d: *db.sqlite.Db, allocator: std.mem.Allocator, assoc
             const id = stmt.columnInt(0);
             const title = try stmt.columnTextAlloc(1, allocator);
             errdefer allocator.free(title);
-            const suggestion = try std.fmt.allocPrint(allocator, "planar question answer {d} \"<resolution>\" OR planar question wontfix {d}", .{ id, id });
+            const suggestion = try std.fmt.allocPrint(allocator, "planar question answer {d} --answer \"<resolution>\" OR planar question wontfix {d}", .{ id, id });
             errdefer allocator.free(suggestion);
             try rows.append(allocator, .{ .id = id, .title = title, .age_days = stmt.columnInt(2), .suggestion = suggestion });
         },
@@ -224,6 +237,10 @@ fn queryStaleOpenQuestions(d: *db.sqlite.Db, allocator: std.mem.Allocator, assoc
 
 fn scopeParam(id: ?i64) db.sqlite.Param {
     return if (id) |value| .{ .int = value } else .{ .null = {} };
+}
+
+fn timeParam(now: ?[]const u8) db.sqlite.Param {
+    return if (now) |value| .{ .text = value } else .{ .null = {} };
 }
 
 fn deinitStalePlanList(rows: *std.ArrayList(StaleDraftPlan), allocator: std.mem.Allocator) void {
@@ -235,6 +252,7 @@ fn deinitStalePlanList(rows: *std.ArrayList(StaleDraftPlan), allocator: std.mem.
 }
 fn deinitStaleTaskList(rows: *std.ArrayList(StaleDoingTask), allocator: std.mem.Allocator) void {
     for (rows.items) |row| {
+        allocator.free(row.scope);
         allocator.free(row.title);
         allocator.free(row.suggestion);
     }
@@ -256,6 +274,7 @@ fn deinitStalePlans(rows: []StaleDraftPlan, allocator: std.mem.Allocator) void {
 }
 fn deinitStaleTasks(rows: []StaleDoingTask, allocator: std.mem.Allocator) void {
     for (rows) |row| {
+        allocator.free(row.scope);
         allocator.free(row.title);
         allocator.free(row.suggestion);
     }
@@ -479,6 +498,47 @@ pub fn renderText(report: Report, writer: *std.Io.Writer) std.Io.Writer.Error!vo
 }
 
 // ---- tests ----
+
+test "hygiene defaults use strict deterministic task and question age boundaries" {
+    var d = try db.sqlite.Db.openMemory();
+    defer d.close();
+    try db.migrate.applyAll(&d, std.testing.allocator);
+
+    _ = try d.execParams(
+        "insert into plans (scope_kind, title, slug, status) values ('global', 'Active', 'active', 'active')",
+        &.{},
+    );
+    const plan_id = try d.intQuery("select id from plans where title='Active'");
+    _ = try d.execParams(
+        "insert into tasks (scope_kind, plan_id, title, status, updated_at) values ('global', ?, 'Exactly seven days', 'doing', '2026-05-25T00:00:00.000Z')",
+        &.{.{ .int = plan_id }},
+    );
+    _ = try d.execParams(
+        "insert into tasks (scope_kind, plan_id, title, status, updated_at) values ('global', ?, 'Ten days old', 'doing', '2026-05-22T00:00:00.000Z')",
+        &.{.{ .int = plan_id }},
+    );
+    _ = try d.execParams(
+        "insert into questions (scope_kind, title, status, updated_at) values ('global', 'Exactly thirty days', 'open', '2026-05-02T00:00:00.000Z')",
+        &.{},
+    );
+    _ = try d.execParams(
+        "insert into questions (scope_kind, title, status, updated_at) values ('global', 'Forty-five days old', 'open', '2026-04-17T00:00:00.000Z')",
+        &.{},
+    );
+
+    const report = try hygiene(&d, std.testing.allocator, .{ .now = "2026-06-01T00:00:00.000Z" });
+    defer report.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(i64, 7), report.thresholds.stale_doing_days);
+    try std.testing.expectEqual(@as(i64, 30), report.thresholds.stale_open_days);
+    try std.testing.expectEqual(@as(usize, 1), report.stale_doing_tasks.len);
+    try std.testing.expectEqualStrings("Ten days old", report.stale_doing_tasks[0].title);
+    try std.testing.expectEqual(@as(i64, 10), report.stale_doing_tasks[0].age_days);
+    try std.testing.expectEqualStrings("global", report.stale_doing_tasks[0].scope);
+    try std.testing.expectEqual(@as(usize, 1), report.stale_open_questions.len);
+    try std.testing.expectEqualStrings("Forty-five days old", report.stale_open_questions[0].title);
+    try std.testing.expectEqual(@as(i64, 45), report.stale_open_questions[0].age_days);
+}
 
 test "check returns SchemaTableMissing against a freshly-opened in-memory DB" {
     var d = try db.sqlite.Db.openMemory();

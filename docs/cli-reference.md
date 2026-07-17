@@ -4278,10 +4278,22 @@ this stable shape:
     "suggestion": "planar plan update 110 --status done"
   }],
   "stale_doing_tasks": [
-    { "id": 384, "plan_id": 76, "title": "Implement parser", "age_days": 14, "suggestion": "..." }
+    {
+      "id": 384,
+      "plan_id": 76,
+      "scope": "assoc:org:acme",
+      "title": "Implement parser",
+      "age_days": 14,
+      "suggestion": "planar task update 384 --scope assoc:org:acme --status done OR planar task update 384 --scope assoc:org:acme --status blocked"
+    }
   ],
   "stale_open_questions": [
-    { "id": 12, "title": "Regression backfill?", "age_days": 45, "suggestion": "..." }
+    {
+      "id": 12,
+      "title": "Regression backfill?",
+      "age_days": 45,
+      "suggestion": "planar question answer 12 --answer \"<resolution>\" OR planar question wontfix 12"
+    }
   ]
 }
 ```
