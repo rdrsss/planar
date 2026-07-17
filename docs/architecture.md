@@ -462,7 +462,29 @@ Sync is explicit, not automatic:
 - `planar workbench pull <plan>` — FS → DB: read disk changes into DB.
 - `planar workbench sync <plan>` — bidirectional: apply FS→DB and DB→FS in one pass; surface conflicts as `sync_events(outcome='conflict')` rows.
 - `planar workbench status [<plan>]` — show FS-only, DB-only, and conflicting files without writing.
+- `planar workbench lint <plan>|--all|--path <file-or-directory>` — validate workbench Markdown without changing the filesystem or database.
 - `planar workbench resolve <event-id> --prefer fs|db` — settle a conflict.
+
+Workbench Markdown begins with YAML front matter that identifies the entity and
+its anchor plan. Pull, push, status, sync, and lint all use the same
+schema-aware parser, so runtime reconciliation and preflight validation accept
+the same files. The parser requires a supported entity kind, positive entity
+ID, non-empty title and status, a status allowed by that entity kind's schema,
+and, for artifacts, a valid artifact kind. Lint additionally verifies that
+`anchor_plan_id` names an existing plan and reports each issue with its path,
+line, stable severity/code, message, and repair hint. It can validate one plan
+tree, the entire workbench, or an explicit Markdown file or directory as a
+read-only CI or pre-commit surface.
+
+Malformed files are classified separately from ordinary drift and conflicts.
+Push refuses to overwrite them, while pull and sync refuse to import or
+auto-delete them; other files in the same run may still be reconciled. Text
+summaries report the malformed count, JSON results include
+`malformed_files` entries with `path` and `parse_error`, and the command exits
+with code 1. When malformed files and conflicts occur together, the malformed
+exit takes precedence while both classes remain visible; the diagnostic points
+the operator to `planar workbench lint` for field- and line-level repair
+guidance.
 
 `workbench_sync_state` tracks the per-file relationship (entity kind, entity id, content hash, last sync time) so the sync engine can detect changes without re-reading every file on every run.
 
