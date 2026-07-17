@@ -73,6 +73,7 @@ comptime {
     _ = @import("skills_render_test.zig");
     _ = @import("installed_surface_test.zig");
     _ = @import("smoke_test.zig");
+    _ = @import("health_hygiene_test.zig");
     _ = @import("spec_ingest_test.zig");
     _ = @import("tree_test.zig");
     _ = @import("tree_audit_activity_test.zig");
