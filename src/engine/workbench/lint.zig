@@ -116,9 +116,8 @@ fn collectMarkdown(
         defer allocator.free(child);
         switch (entry.kind) {
             .directory => try collectMarkdown(allocator, io, child, files),
-            .file => if (std.mem.endsWith(u8, entry.name, ".md"))
+            else => if (std.mem.endsWith(u8, entry.name, ".md"))
                 try files.append(allocator, try allocator.dupe(u8, child)),
-            else => {},
         }
     }
 }
