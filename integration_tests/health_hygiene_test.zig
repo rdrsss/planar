@@ -78,41 +78,42 @@ test "health hygiene reports scoped lifecycle drift with actionable JSON and tex
     const arena = arena_state.allocator();
 
     _ = suite.registerProject("hygiene-main");
+    suite.addAssoc("hygiene-main", null);
 
     const wrapper = suite.mustRunJSON(Id, arena, &.{
-        "plan", "create", "--json", "Empty draft wrapper",
+        "plan", "create", "--scope", "hygiene-main", "--json", "Empty draft wrapper",
     });
 
     const terminal = suite.mustRunJSON(Id, arena, &.{
-        "plan", "create", "--json", "Finished draft plan",
+        "plan", "create", "--scope", "hygiene-main", "--json", "Finished draft plan",
     });
     const terminal_id = try std.fmt.allocPrint(arena, "{d}", .{terminal.id});
     const done_task = suite.mustRunJSON(Id, arena, &.{
-        "task", "add", "--plan", terminal_id, "--no-auto-promote", "--json", "Already shipped",
+        "task", "add", "--plan", terminal_id, "--scope", "hygiene-main", "--no-auto-promote", "--json", "Already shipped",
     });
     const done_task_id = try std.fmt.allocPrint(arena, "{d}", .{done_task.id});
-    gpa.free(suite.mustRun(&.{ "task", "update", done_task_id, "--status", "doing", "--no-auto-promote" }));
-    gpa.free(suite.mustRun(&.{ "task", "update", done_task_id, "--status", "done", "--no-auto-promote" }));
+    gpa.free(suite.mustRun(&.{ "task", "update", done_task_id, "--scope", "hygiene-main", "--status", "doing", "--no-auto-promote" }));
+    gpa.free(suite.mustRun(&.{ "task", "update", done_task_id, "--scope", "hygiene-main", "--status", "done", "--no-auto-promote" }));
 
     const active = suite.mustRunJSON(Id, arena, &.{
-        "plan", "create", "--status", "active", "--json", "Active delivery",
+        "plan", "create", "--scope", "hygiene-main", "--status", "active", "--json", "Active delivery",
     });
     const active_id = try std.fmt.allocPrint(arena, "{d}", .{active.id});
     const doing_task = suite.mustRunJSON(Id, arena, &.{
-        "task", "add", "--plan", active_id, "--json", "Long-running implementation",
+        "task", "add", "--plan", active_id, "--scope", "hygiene-main", "--json", "Long-running implementation",
     });
     const doing_task_id = try std.fmt.allocPrint(arena, "{d}", .{doing_task.id});
-    gpa.free(suite.mustRun(&.{ "task", "update", doing_task_id, "--status", "doing" }));
+    gpa.free(suite.mustRun(&.{ "task", "update", doing_task_id, "--scope", "hygiene-main", "--status", "doing" }));
 
     const open_question = suite.mustRunJSON(Id, arena, &.{
-        "question", "add", "--json", "Unresolved compatibility question",
+        "question", "add", "--scope", "hygiene-main", "--json", "Unresolved compatibility question",
     });
     const excluded_question = suite.mustRunJSON(Id, arena, &.{
         "question", "add", "--scope", "global", "--json", "Excluded global question",
     });
 
     const report = suite.mustRunJSON(HygieneReport, arena, &.{
-        "health",        "hygiene", "--scope",      "project:hygiene-main",
+        "health",        "hygiene", "--scope",      "hygiene-main",
         "--stale-doing", "0",       "--stale-open", "0",
         "--json",
     });
@@ -144,7 +145,7 @@ test "health hygiene reports scoped lifecycle drift with actionable JSON and tex
     try std.testing.expect(findQuestion(report.stale_open_questions, excluded_question.id) == null);
 
     const text_report = suite.mustRun(&.{
-        "health",        "hygiene", "--scope",      "project:hygiene-main",
+        "health",        "hygiene", "--scope",      "hygiene-main",
         "--stale-doing", "0",       "--stale-open", "0",
     });
     defer gpa.free(text_report);

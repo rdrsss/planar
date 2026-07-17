@@ -303,7 +303,7 @@ const command_classes = [_]CommandClass{
     m("planar sync resolve"),           r("planar resume validate"),             m("planar handoff create"),        m("planar handoff validate"),      m("planar handoff consume"),         m("planar handoff abandon"),
     r("planar handoff list"),           r("planar handoff show"),                m("planar capture session"),       m("planar capture commits"),       m("planar capture end"),             m("planar capture note"),
     m("planar capture command"),        m("planar capture file"),                m("planar capture snapshot"),      r("planar audit trail"),           r("planar audit commits"),           r("planar audit session"),
-    m("planar audit publish-decision"), r("planar audit handoff-readiness"),     r("planar health"),                r("planar models list"),           m("planar models refresh"),          r("planar models routing"),
+    m("planar audit publish-decision"), r("planar audit handoff-readiness"),     r("planar health hygiene"),        r("planar models list"),           m("planar models refresh"),          r("planar models routing"),
     m("planar models apply"),           r("planar dashboard"),                   m("planar spec ingest"),           r("planar test-spec status"),      r("planar config show"),             m("planar config edit"),
     r("planar config validate"),        m("planar config init"),                 r("planar config path"),           r("planar templates list"),        r("planar templates show"),          r("planar templates render"),
     r("planar templates validate"),     m("planar templates init"),              r("planar templates path"),        r("planar tree"),                  r("planar search"),                  r("planar local list"),

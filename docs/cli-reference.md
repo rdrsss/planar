@@ -4248,6 +4248,48 @@ nothing.
   projections are stale/missing, the install manifest needs recovery, SQLite
   integrity fails, or the health check itself cannot complete).
 
+### `planar health hygiene`
+
+```text
+planar health hygiene [--scope <association>] [--stale-doing <days>]
+                      [--stale-open <days>] [--json]
+```
+
+Reports lifecycle drift without changing any entity. Draft plans are reported
+when they have no tasks (suggesting `planar plan update <id> --status
+abandoned`) or when every attached task is `done` or `cancelled` (suggesting
+`--status done`). Tasks in `doing` are reported after 7 days by default, and
+open questions after 30 days. `--stale-doing` and `--stale-open` override those
+non-negative day thresholds. `--scope` limits all three sections to one
+association; without it, the reporter scans all scopes.
+
+Text output contains one actionable section per signal class. JSON output has
+this stable shape:
+
+```json
+{
+  "thresholds": { "stale_doing_days": 7, "stale_open_days": 30 },
+  "stale_draft_plans": [{
+    "id": 110,
+    "parent_plan_id": 85,
+    "title": "M1 — Schema and core store",
+    "reason": "all_tasks_terminal",
+    "task_counts": { "todo": 0, "doing": 0, "blocked": 0, "done": 4, "cancelled": 0 },
+    "suggestion": "planar plan update 110 --status done"
+  }],
+  "stale_doing_tasks": [
+    { "id": 384, "plan_id": 76, "title": "Implement parser", "age_days": 14, "suggestion": "..." }
+  ],
+  "stale_open_questions": [
+    { "id": 12, "title": "Regression backfill?", "age_days": 45, "suggestion": "..." }
+  ]
+}
+```
+
+Findings do not affect process status: a successfully produced hygiene report
+always exits `0`. Invalid flags, thresholds, scopes, or database failures remain
+ordinary command errors.
+
 ---
 
 ## Domain: `models`

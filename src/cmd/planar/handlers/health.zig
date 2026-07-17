@@ -15,6 +15,7 @@ const runtime = @import("runtime");
 const output = @import("../output.zig");
 const exit = @import("../exit.zig");
 const skills_common = @import("skills/common.zig");
+const hygiene_h = @import("health_hygiene.zig");
 
 pub const verb: cli.Cmd = .{
     .name = "health",
@@ -24,6 +25,7 @@ pub const verb: cli.Cmd = .{
         .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
     },
     .run = cli.handler(handle),
+    .cmds = &.{hygiene_h.verb},
 };
 
 fn handle(args_ptr: *const anyopaque) anyerror!void {
