@@ -10,13 +10,14 @@ const engine = @import("engine");
 const main = @import("../../main.zig");
 const runtime = @import("runtime");
 const exit = @import("../../exit.zig");
+const scope_mod = @import("../../scope.zig");
 
 pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     const args = cli.castArgs(main.root, &.{ "assoc", "detect" }, args_ptr);
     const ctx = runtime.current();
     const d = try runtime.ensureDb();
 
-    const cwd = std.Io.Dir.realPathFileAlloc(.cwd(), ctx.io, ".", ctx.allocator) catch |e|
+    const cwd = scope_mod.operatorCwd(ctx.allocator, ctx.io) catch |e|
         exit.die(ctx, e, "getting cwd: {s}", .{@errorName(e)});
     defer ctx.allocator.free(cwd);
 

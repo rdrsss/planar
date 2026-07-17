@@ -26,6 +26,9 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     } else {
         try common.printSyncResult(ctx.stdout, plan.id, plan.slug, .pull, "pull", summary, args.verbose);
     }
+    if (summary.malformed > 0) {
+        exit.die(ctx, error.MalformedWorkbench, "{d} malformed workbench file(s); run 'planar workbench lint {d}' for details", .{ summary.malformed, plan.id });
+    }
     if (summary.conflicts > 0) {
         exit.die(ctx, error.Conflict, "{d} conflict(s) require 'workbench resolve <event-id> --prefer fs|db'", .{summary.conflicts});
     }

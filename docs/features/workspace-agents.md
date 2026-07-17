@@ -4,6 +4,16 @@ doc_kind: feature
 template_version: 1
 regenerated_at: 2026-05-18T00:00:00Z
 regenerated_by: hand
+references:
+  workspace_product_spec:
+    kind: planar
+    entity: artifact:76
+  workspace_tech_spec:
+    kind: planar
+    entity: artifact:77
+  workspace_roadmap:
+    kind: planar
+    entity: artifact:78
 ---
 
 # Workspace AGENTS.md generation
@@ -116,3 +126,7 @@ AGENTS.md and the regenerator's output as a hand-edit signal, and
 - [Workflows: scaffolding a new workspace](../workflows.md)
 - [Features: scope resolution](scope-resolution.md) — workspace init
   feeds the org association the scope resolver later reads.
+
+[^workspace_product_spec]:
+[^workspace_tech_spec]:
+[^workspace_roadmap]:

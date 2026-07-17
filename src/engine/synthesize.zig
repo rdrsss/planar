@@ -4,6 +4,8 @@ const std = @import("std");
 const db = @import("db");
 const llm = @import("llm.zig");
 const planning = @import("planning.zig");
+const forwardspec = @import("forwardspec.zig");
+const operatorpath = @import("operatorpath.zig");
 
 pub const schema_version: i64 = 1;
 pub const min_forward_specs: usize = 3;
@@ -83,7 +85,7 @@ pub fn run(
     if (opts.accept_spec != null and opts.no_forward_specs) return error.InvalidInput;
     if (!isDir(opts.repo_root)) return error.NotFound;
 
-    const abs_root = try std.Io.Dir.realPathFileAlloc(.cwd(), fsIo(), opts.repo_root, allocator);
+    const abs_root = try operatorpath.absolute(allocator, fsIo(), environ, opts.repo_root);
     defer allocator.free(abs_root);
     const provider_kind = try llm.provider.resolve(opts.provider_override, environ);
     const repo_slug = try deriveRepoSlug(allocator, abs_root);
@@ -119,7 +121,7 @@ pub fn run(
         };
         if (opts.apply) {
             const d = d_opt orelse return error.InvalidInput;
-            out.applied = try applySynthesis(d, allocator, req, result, opts.scope, opts.apply_removals);
+            out.applied = try applySynthesis(d, allocator, req, result, opts.scope, opts.apply_removals, opts.accept_spec);
             allocator.free(out.message);
             out.message = try std.fmt.allocPrint(
                 allocator,
@@ -327,6 +329,7 @@ fn applySynthesis(
     result: SynthesisResult,
     scope: ?[]const u8,
     apply_removals: bool,
+    accept_spec: ?[]const u8,
 ) !ApplyReport {
     var report: ApplyReport = .{
         .anchor_plan_id = 0,
@@ -382,6 +385,10 @@ fn applySynthesis(
         try keep_decision_ids.append(allocator, upserted.id);
     }
     if (apply_removals) report.decisions_superseded += try supersedeMissingDecisions(d, anchor_id, keep_decision_ids.items);
+    const forward_report = try forwardspec.apply(d, allocator, result.forward_specs, accept_spec, scope);
+    report.plans_created += forward_report.plans_created;
+    report.plans_updated += forward_report.plans_updated;
+    report.artifacts_created += forward_report.artifacts_created;
     return report;
 }
 

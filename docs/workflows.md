@@ -953,12 +953,17 @@ The `--no-scope-check` escape hatch exists for legacy callers that cannot be upd
 
 ## Recipe 10 — Doc hygiene pre-commit
 
-Outward-facing docs under `docs/` are tracked by `.planar-manifest`, a repo-state merkle index owned by the `planar-doc` binary. The hook compares the live tree against the manifest so doc-source drift cannot land silently.
+Outward-facing docs under `docs/` are tracked by `.planar-manifest`, a repo-state merkle index owned by the `planar-doc` binary. The hook compares the live tree against the manifest and validates workbench frontmatter so file-level drift cannot land silently.
 
 ### What it checks
 
 - `planar-doc verify` — O(1) compare of the recomputed repo merkle root against `.planar-manifest`'s stored root. Fails on any drift in the covered tree.
 - `planar-doc lint` — walks `docs/` for prose-level issues (the DB-free subset that survived the plan 423 binary split).
+- `planar workbench lint --all` — scans every workbench Markdown file with the same
+  frontmatter parser used by pull/push/status/sync and fails on YAML syntax, identity,
+  per-entity title/status schema, artifact kind, or anchor-plan issues. The hook runs all
+  three checks and combines their exit status so one failure does not hide diagnostics from
+  the remaining checks.
 
 ### Opt in
 
@@ -972,7 +977,7 @@ Verify it runs:
 
 ```
 git commit -m 'noop'
-# → runs planar-doc verify then planar-doc lint
+# → runs all three checks listed above
 ```
 
 ### Fixing failures
@@ -984,6 +989,10 @@ planar-doc build
 ```
 
 - `planar-doc lint: N issue(s)` — each line is `<path>: <type>: <detail>`. The prose-level checks are deliberately minimal; richer checks may land later without affecting the binary's capability boundary.
+- `planar workbench lint` issues name the Markdown path and line, a stable diagnostic code,
+  and a repair hint. Run `planar workbench lint --path <path>` to isolate one file, or
+  `planar workbench lint <plan>` to recheck its complete feature tree. CI can run
+  `planar workbench lint --all --json` and consume one NDJSON object per issue.
 
 ### Bypass
 

@@ -1,16 +1,16 @@
 {
   "version": 2,
   "algo": "xxh64",
-  "root": "af220cd7647ae929",
+  "root": "85ed718e911f7cdf",
   "generated_at": "",
   "entries": {
     "docs/architecture.md": {
-      "doc_hash": "6ef3d8a05be9dcdb",
+      "doc_hash": "1ec6d07cebf431eb",
       "sources": {
         "build.zig": "ad3885c59aa8c60e",
         "migrations/": "41e00bb86d2105f4",
         "src/db/": "4b08f429d5bc1835",
-        "src/engine/": "1e0da1c10a2b36ff",
+        "src/engine/": "06a4908f353b44f4",
         "src/lua/lua.zig": "e8722bc249576f70",
         "src/root.zig": "a50330d9f5048cdf",
         "src/runtime/doc_runtime.zig": "8c7ce9b9c1745988",
@@ -18,18 +18,18 @@
         "src/treesitter/treesitter.zig": "fa9caf196414a330",
         "vendor/sqlite/": "a74be58cb1a408f7"
       },
-      "sources_hash": "0242e5094159543e",
-      "entry_hash": "ccb45edb8126866f"
+      "sources_hash": "95f992ca02bc5794",
+      "entry_hash": "34132ec1b345fbd9"
     },
     "docs/cli-reference.md": {
-      "doc_hash": "a00122ff088647ab",
+      "doc_hash": "0d3d15753adbcd26",
       "sources": {
-        "src/cmd/": "610690929461aaf5",
+        "src/cmd/": "18a973fecb179d80",
         "src/engine/models.zig": "40927dde5c2b7210",
         "vendor/etc-cli/": "0000000000000000"
       },
-      "sources_hash": "7e9fdaaaed311fc4",
-      "entry_hash": "76afb96992d16302"
+      "sources_hash": "9085578eef91aed5",
+      "entry_hash": "ea3c9daf9397a43a"
     },
     "docs/features/doc-system.md": {
       "doc_hash": "4c601dd0cb42f098",
@@ -41,12 +41,12 @@
       "entry_hash": "b67520af4cfad983"
     },
     "docs/features/scope-resolution.md": {
-      "doc_hash": "270b6c9054821d9f",
+      "doc_hash": "59e115c0ac580f52",
       "sources": {
         "src/engine/identity/": "7b32ae6aca844d07"
       },
       "sources_hash": "219a7a0701ba4c41",
-      "entry_hash": "f4ad37f82a5b6370"
+      "entry_hash": "5e051a6b5fa1f46a"
     },
     "docs/skill-reference.md": {
       "doc_hash": "885730af9f519699",
@@ -58,14 +58,14 @@
       "entry_hash": "c07d6824fca2ee3f"
     },
     "docs/workflows.md": {
-      "doc_hash": "d49b5429293a1411",
+      "doc_hash": "50e46ead08773a78",
       "sources": {
         "examples/operational-plane.md": "799b69e083d2e412",
         "examples/orchestrator-run.md": "081fe0d488f9bf12",
         "examples/planar-execute-workflow.md": "4e977b9225cddd6c",
         "examples/spec-lifecycle.md": "fec57ce6042f17e1",
         "examples/spec-review-loop.md": "382c38dfad5cf85f",
-        "scripts/": "9525be1c1640ac73",
+        "scripts/": "2649c847bba97dd0",
         "workflows/bench_run_ritual.lua": "28b045c7a621e4b3",
         "workflows/dispatch.lua": "6bcec99d234dd577",
         "workflows/example.lua": "c127ddcf3dd3b3c7",
@@ -78,8 +78,8 @@
         "workflows/resume.lua": "6da6b52875854c21",
         "workflows/status.lua": "7dce32d3e11d9bf3"
       },
-      "sources_hash": "3fff3a0e64ebaaec",
-      "entry_hash": "3a1fffeb090af3e8"
+      "sources_hash": "9597f9f6521c5f85",
+      "entry_hash": "4616cc4e855e9955"
     },
     "metrics/README.md": {
       "doc_hash": "c9cd159f77ead519",
@@ -101,28 +101,28 @@
   "nodoc": {
     "AGENTS.md": "d6e32dc6fff8df01",
     "CLAUDE.md": "d6e32dc6fff8df01",
-    "INSTALL.md": "bfdfd7710cc03296",
+    "INSTALL.md": "6a6279ea3219f69f",
     "Makefile": "ff1bcbc8334cfe41",
-    "README.md": "b0a4664f5324be40",
+    "README.md": "a5ba6d8029274007",
     "build.zig.zon": "ec0b1222ab927a55",
     "docs/adrs.md": "eb2701a1761bf3f5",
     "docs/changelog.md": "8e1bbafdb2db710c",
     "docs/concepts.md": "60c2cade4e789e71",
-    "docs/features/workspace-agents.md": "5383400de9c05107",
-    "docs/getting-started.md": "9060351c2a115ad8",
+    "docs/features/workspace-agents.md": "c53ea43c3709921b",
+    "docs/getting-started.md": "3dff54eaca2e2c0d",
     "docs/glossary.md": "e7cba86def7a4b4d",
     "docs/light-touch.md": "24e8c08f94fb20c0",
     "docs/planar-spec-v0.1.md": "ce76b77440bd6931",
     "docs/research/README.md": "4470a81e22751c35",
     "docs/research/closure-measurement-build-spec.md": "08e75acbc300ccac",
-    "docs/research/hypergraph-tech-spec.md": "7131aac6b5b8691c",
+    "docs/research/hypergraph-tech-spec.md": "14b830e42c0c8f91",
     "docs/research/run-record-schema.md": "c7e1b887f22aff6d",
     "examples/README.md": "6191fac5861e52ac",
     "install-cleanup.txt": "0d50992f8e7201c7",
-    "install.sh": "dddbcb1c5e927d1e",
-    "integration_tests/": "c4e60005bc62e6ed",
+    "install.sh": "f2a167a8a5309a3f",
+    "integration_tests/": "82975d0a091dd97b",
     "templates/": "0536dfe3149b9acc",
-    "tools/": "33de087aeacdb8d4",
+    "tools/": "26f54718592b6533",
     "vendor/etcli/LICENSE": "1f696e0bbc135b12",
     "vendor/etcli/README.md": "052ecc52fea5216c",
     "vendor/etcli/VENDOR.toml": "fa0f9206f0cb5592",

@@ -4,6 +4,16 @@ doc_kind: feature
 template_version: 1
 regenerated_at: 2026-05-18T00:00:00Z
 regenerated_by: hand
+references:
+  scope_product_spec:
+    kind: planar
+    entity: artifact:63
+  scope_tech_spec:
+    kind: planar
+    entity: artifact:64
+  scope_roadmap:
+    kind: planar
+    entity: artifact:65
 ---
 
 # Scope resolution
@@ -126,3 +136,7 @@ comments on those functions are the authoritative specification.
 
 - [Concepts: scope and association](../concepts.md#scope)
 - [Workflows: switching scope mid-session](../workflows.md)
+
+[^scope_product_spec]:
+[^scope_tech_spec]:
+[^scope_roadmap]:

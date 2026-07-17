@@ -25,6 +25,7 @@
 //!   └── …                   ─┘
 
 pub const health = @import("health.zig");
+pub const operatorpath = @import("operatorpath.zig");
 pub const models = @import("models.zig");
 pub const identity = @import("identity.zig");
 pub const policy = @import("policy.zig");
@@ -48,6 +49,7 @@ pub const local = @import("local.zig");
 pub const llm = @import("llm.zig");
 pub const import = @import("import.zig");
 pub const synthesize = @import("synthesize.zig");
+pub const forwardspec = @import("forwardspec.zig");
 pub const skillrender = @import("skillrender.zig");
 pub const installedsurface = @import("installedsurface.zig");
 pub const introspect = @import("introspect.zig");
@@ -59,6 +61,7 @@ pub const grouping = @import("grouping.zig");
 // are reachable from `zig build test`.
 test {
     _ = health;
+    _ = operatorpath;
     _ = identity;
     _ = policy;
     _ = planning;
@@ -81,6 +84,7 @@ test {
     _ = llm;
     _ = import;
     _ = synthesize;
+    _ = forwardspec;
     _ = skillrender;
     _ = installedsurface;
     _ = introspect;

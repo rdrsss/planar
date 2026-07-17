@@ -173,9 +173,11 @@ pub fn printSyncResult(
 
     if (mode == .push) {
         try stdout.print(
-            "workbench {s}: plan {d} ({s}) - {d} applied, {d} pending, {d} filtered (mode={s}), {d} conflict(s)\n",
+            "workbench {s}: plan {d} ({s}) - {d} applied, {d} pending, {d} filtered (mode={s}), {d} conflict(s)",
             .{ verb, plan_id, plan_slug, result.applied, result.pending, result.filtered, result.filter_mode, result.conflicts },
         );
+        if (result.malformed > 0) try stdout.print(", {d} MALFORMED", .{result.malformed});
+        try stdout.print("\n", .{});
         if (result.pre_existing_terminal > 0 and result.cleaned == 0) {
             try stdout.print(
                 "  {d} pre-existing terminal file(s) on disk — run 'planar workbench gc {d}' to remove, or re-push with --apply-cleanup\n",
@@ -189,9 +191,11 @@ pub fn printSyncResult(
         }
     } else {
         try stdout.print(
-            "workbench {s}: plan {d} ({s}) - {d} applied, {d} pending, {d} conflict(s)\n",
+            "workbench {s}: plan {d} ({s}) - {d} applied, {d} pending, {d} conflict(s)",
             .{ verb, plan_id, plan_slug, result.applied, result.pending, result.conflicts },
         );
+        if (result.malformed > 0) try stdout.print(", {d} MALFORMED", .{result.malformed});
+        try stdout.print("\n", .{});
     }
     try printConflictDetails(stdout, result.entries);
     if (result.conflicts > 0) {

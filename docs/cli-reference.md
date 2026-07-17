@@ -2321,9 +2321,42 @@ bidirectional contract between filesystem and database.
 
 **Exit codes (all workbench verbs):**
 - `0` — success.
-- `1` — user error (plan not found, bad argument, workbench root not writable).
+- `1` — operation failure (plan not found, malformed workbench file, lint issue, workbench root not writable).
 - `2` — system error (DB, I/O).
 - `3` — conflict(s) detected (status / sync / pull only; resolve to continue).
+
+When one operation finds both malformed files and conflicts, exit code `1` takes precedence;
+the summary still reports both counts so resolving the malformation does not hide the conflict.
+
+---
+
+### `planar workbench lint [<plan> | --all | --path <file-or-directory>]`
+
+**Synopsis:**
+```
+planar workbench lint <plan> [--json]
+planar workbench lint --all [--json]
+planar workbench lint --path <file-or-directory> [--json]
+```
+
+**Description:** Validate Markdown frontmatter without changing the filesystem or database.
+The linter calls the same `FrontMatter` parser used by pull, push, status, and sync. The
+shared parser requires every rendered entity kind to carry non-empty `title` and `status`,
+validates status against that kind's database enum, and requires artifacts to carry a valid
+`artifact_kind`. Lint then checks that `anchor_plan_id` identifies an existing plan. Exactly
+one target is required: one plan tree, every tree under the workbench root, or one explicit
+file/directory.
+
+Text output lists each issue as `path:line`, followed by a stable severity/code, message,
+and repair hint, then prints the files/errors/warnings totals. `--json` emits one NDJSON
+object per issue with `path`, `line`, `severity`, `code`, `message`, and `hint`. A clean JSON
+run emits no issue rows. Errors and warnings both produce exit code 1, making the command
+suitable for pre-commit hooks and CI.
+
+**Exit codes:**
+- `0` — every scanned file is valid.
+- `1` — one or more errors or warnings, or an unreadable workbench tree.
+- `2` — invalid or missing target selection, or a non-Markdown `--path` file.
 
 ---
 
@@ -2336,7 +2369,9 @@ planar workbench push <plan> [--filter-mode failures|all] [--apply-cleanup]
 
 **Description:** Apply DB→FS changes for the named anchor plan. Each entity linked to the
 plan is rendered as a Markdown file with YAML front matter. Files that match the last-synced
-hash are skipped (no-op). Files are written atomically.
+hash are skipped (no-op). Files are written atomically. Malformed files are counted
+separately from pending drift and are never overwritten; a nonzero count appears in the
+default summary and exits 1. JSON always includes `malformed` and `malformed_files` details.
 
 **Terminal-status filter (plan 439).** Entities whose status falls in the active filter set
 are excluded from the FS write set. The default mode is `failures` — cancelled tasks,
@@ -2378,7 +2413,7 @@ workbench push: project_checkout-app/p1-checkout-revamp
 **Capture:** Appends `session_entries` row with `prefix='action'`.
 
 **Exit codes:**
-- `1` — plan not found or is not a top-level plan.
+- `1` — plan not found, not a top-level plan, or one or more malformed files detected.
 - `2` — workbench root not writable or I/O error.
 
 ---
@@ -2395,6 +2430,9 @@ feature directory is parsed; if its content hash differs from the manifest the e
 updated in the DB. New files with valid front matter are inserted as tasks and linked to the
 anchor plan via `derives-from`. Deleted files (present in manifest, absent on disk) mark the
 entity soft-deleted. Malformed files are reported but not auto-inserted or auto-deleted.
+They are counted separately from pending changes, included in the default summary only
+when nonzero, and make the command exit 1. JSON always includes `malformed` and
+`malformed_files`; each detail has `path` and `parse_error`.
 
 Conflicts (both FS and DB changed since last sync) are surfaced; they are not resolved
 automatically. Use `workbench resolve` to settle them.
@@ -2421,7 +2459,7 @@ workbench pull: project_checkout-app/p1-checkout-revamp
 **Capture:** Appends `session_entries` row with `prefix='action'`.
 
 **Exit codes:**
-- `1` — plan not found.
+- `1` — plan not found or one or more malformed files detected.
 - `2` — I/O error.
 - `3` — one or more conflicts detected.
 
@@ -2437,6 +2475,9 @@ planar workbench status [<plan>]
 **Description:** Classify all (file, entity) pairs for one plan (or all plans with FS trees
 if no plan argument is given) without applying any changes. Reports each file as one of:
 `no-op`, `FS→DB`, `DB→FS`, `conflict`, `new-on-FS`, `deleted-on-FS`, `malformed`.
+Malformed files are distinct from pending drift. A nonzero count appears as
+`, N MALFORMED` in the text summary; JSON always includes `malformed` and
+`malformed_files` details. Any malformed file makes status exit 1.
 
 **Arguments:**
 
@@ -2460,7 +2501,7 @@ workbench status: project_checkout-app/p1-checkout-revamp
 **Capture:** None.
 
 **Exit codes:**
-- `1` — plan not found.
+- `1` — plan not found or one or more malformed files detected.
 - `3` — one or more conflicts detected.
 
 ---
@@ -2521,7 +2562,9 @@ planar workbench sync <plan>
 
 **Description:** Full bidirectional reconciliation for the named anchor plan. Applies
 non-conflicting FS→DB and DB→FS changes in a single pass. Conflicts are surfaced (exit 3)
-and must be resolved with `workbench resolve` before the next sync will be clean.
+and must be resolved with `workbench resolve` before the next sync will be clean. Malformed
+files are counted separately, included in JSON as `malformed` / `malformed_files`, and make
+sync exit 1. When both classes are present, malformed exit precedence applies.
 
 **Arguments:**
 
@@ -2544,7 +2587,7 @@ workbench sync: project_checkout-app/p1-checkout-revamp
 **Capture:** Appends `session_entries` row with `prefix='action'`.
 
 **Exit codes:**
-- `1` — plan not found.
+- `1` — plan not found or one or more malformed files detected.
 - `2` — I/O or DB error.
 - `3` — one or more conflicts detected.
 
@@ -4204,6 +4247,60 @@ nothing.
 - `1` — degraded (some tasks are not resumable, handoffs are stale, managed
   projections are stale/missing, the install manifest needs recovery, SQLite
   integrity fails, or the health check itself cannot complete).
+
+### `planar health hygiene`
+
+```text
+planar health hygiene [--scope <association>] [--stale-doing <days>]
+                      [--stale-open <days>] [--json]
+```
+
+Reports lifecycle drift without changing any entity. Draft plans are reported
+when they have no tasks (suggesting `planar plan update <id> --status
+abandoned`) or when every attached task is `done` or `cancelled` (suggesting
+`--status done`). Tasks in `doing` are reported after 7 days by default, and
+open questions after 30 days. `--stale-doing` and `--stale-open` override those
+non-negative day thresholds. `--scope` limits all three sections to one
+association; without it, the reporter scans all scopes.
+
+Text output contains one actionable section per signal class. JSON output has
+this stable shape:
+
+```json
+{
+  "thresholds": { "stale_doing_days": 7, "stale_open_days": 30 },
+  "stale_draft_plans": [{
+    "id": 110,
+    "parent_plan_id": 85,
+    "title": "M1 — Schema and core store",
+    "reason": "all_tasks_terminal",
+    "task_counts": { "todo": 0, "doing": 0, "blocked": 0, "done": 4, "cancelled": 0 },
+    "suggestion": "planar plan update 110 --status done"
+  }],
+  "stale_doing_tasks": [
+    {
+      "id": 384,
+      "plan_id": 76,
+      "scope": "assoc:org:acme",
+      "title": "Implement parser",
+      "age_days": 14,
+      "suggestion": "planar task update 384 --scope assoc:org:acme --status done OR planar task update 384 --scope assoc:org:acme --status blocked"
+    }
+  ],
+  "stale_open_questions": [
+    {
+      "id": 12,
+      "title": "Regression backfill?",
+      "age_days": 45,
+      "suggestion": "planar question answer 12 --answer \"<resolution>\" OR planar question wontfix 12"
+    }
+  ]
+}
+```
+
+Findings do not affect process status: a successfully produced hygiene report
+always exits `0`. Invalid flags, thresholds, scopes, or database failures remain
+ordinary command errors.
 
 ---
 
@@ -6679,7 +6776,7 @@ For quick reference, all documented commands grouped by domain:
 | `artifact` | `artifact add`, `artifact show`, `artifact list`, `artifact update`, `artifact edit`, `artifact view`, `artifact diff`, `artifact link` |
 | `annotate` | `annotate add`, `annotate show`, `annotate list`, `annotate update`, `annotate remove`, `annotate tag`, `annotate resolve`, `annotate dismiss`, `annotate archive`, `annotate bulk-resolve`, `annotate bulk-dismiss`, `annotate bulk-archive`, `annotate verify`, `annotate sweep` |
 | `promote` | `promote`, `demote` |
-| `workbench` | `workbench push`, `workbench pull`, `workbench status`, `workbench resolve`, `workbench sync`, `workbench archive`, `workbench restore`, `workbench list`, `workbench publish`, `workbench edit` |
+| `workbench` | `workbench lint`, `workbench push`, `workbench pull`, `workbench status`, `workbench resolve`, `workbench sync`, `workbench archive`, `workbench restore`, `workbench list`, `workbench publish`, `workbench edit` |
 | `workspace` | `workspace init`, `workspace doctor`, `workspace routing build`, `workspace routing show`, `workspace regenerate` |
 | `ext` | `ext register jira`, `ext register github`, `ext list`, `ext test`, `ext create`, `ext propagate`, `ext propagate-one` |
 | `link` | `link`, `unlink` |

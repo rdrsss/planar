@@ -15,12 +15,24 @@ const publish = @import("publish.zig");
 const extract_questions = @import("extract_questions.zig");
 const edit = @import("edit.zig");
 const gc = @import("gc.zig");
+const lint = @import("lint.zig");
 
 pub const verb: cli.Cmd = .{
     .name = "workbench",
     .desc = "Manage workbench sync for plan feature directories.",
     .long_desc = "Manage the bidirectional sync surface between the workbench\n  filesystem and the Planar database.\n\n  The workbench root resolution order (highest to lowest priority):\n    1. $PLANAR_WORKBENCH_ROOT env var\n    2. workbench.root in $PLANAR_CONFIG_PATH or ~/.planar/config.toml\n    3. Default: ~/.planar/workbench/",
     .cmds = &.{
+        .{
+            .name = "lint",
+            .desc = "Validate workbench Markdown frontmatter without syncing.",
+            .flags = &.{
+                .{ .long = "--all", .kind = .bool, .default = .{ .bool = false }, .desc = "Validate every workbench tree" },
+                .{ .long = "--path", .kind = .string, .desc = "Validate one Markdown file or directory" },
+                .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
+            },
+            .positionals = &.{.{ .name = "plan", .kind = .string, .required = false }},
+            .run = cli.handler(lint.handle),
+        },
         .{
             .name = "pull",
             .desc = "Apply FS→DB changes; report DB→FS drift.",

@@ -1,22 +1,29 @@
 #!/usr/bin/env bash
 # Planar docs pre-commit hook (plan 423: planar-doc).
 #
-# Verifies that the .planar-manifest is current and that the docs prose
-# linter passes before allowing a commit. Opt in via:
+# Verifies that the .planar-manifest is current and that the docs and
+# workbench linters pass before allowing a commit. Opt in via:
 #
 #   ln -s ../../scripts/git-hooks/pre-commit-docs .git/hooks/pre-commit
 #
 # Documented in docs/workflows.md § Recipe 10 "Doc hygiene pre-commit".
 
-set -e
+status=0
 
 planar-doc verify || {
   echo ".planar-manifest is out of date — run \`planar-doc build\` after" >&2
   echo "reviewing \`planar-doc diff\`" >&2
-  exit 1
+  status=1
 }
 
 planar-doc lint || {
   echo "planar-doc lint failed — fix issues above" >&2
-  exit 1
+  status=1
 }
+
+planar workbench lint --all || {
+  echo "planar workbench lint failed — fix frontmatter issues above" >&2
+  status=1
+}
+
+exit "$status"

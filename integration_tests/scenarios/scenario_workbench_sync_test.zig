@@ -51,6 +51,36 @@ const WorkbenchOp = struct {
     conflicts: i64,
 };
 
+const MalformedFile = struct {
+    path: []const u8,
+    parse_error: []const u8,
+};
+
+const MalformedWorkbenchOp = struct {
+    pending: i64,
+    conflicts: i64,
+    malformed: i64,
+    malformed_files: []const MalformedFile,
+};
+
+const TerminalPushOp = struct {
+    conflicts: i64,
+    malformed: i64,
+    malformed_files: []const MalformedFile,
+    filtered: i64,
+    pre_existing_terminal: i64,
+    cleaned: i64,
+};
+
+const LintIssue = struct {
+    path: []const u8,
+    line: i64,
+    severity: []const u8,
+    code: []const u8,
+    message: []const u8,
+    hint: []const u8,
+};
+
 const WorkbenchListEntry = struct {
     plan: i64,
     slug: []const u8,
@@ -72,6 +102,8 @@ const ExtractedFile = struct {
 const StatusEntry = struct {
     class: []const u8,
     file_path: []const u8,
+    entity_kind: []const u8 = "",
+    entity_id: i64 = 0,
     conflict_id: i64 = 0,
 };
 
@@ -216,6 +248,364 @@ test "scenario: workbench sync — push seeds FS, status round-trips, list surfa
         if (saw_question) break;
     }
     try std.testing.expect(saw_question);
+}
+
+test "scenario: malformed workbench files fail pull push and status with distinct diagnostics" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    _ = suite.registerProject("wb-malformed");
+    const wb_root = std.fmt.allocPrint(arena, "{s}/wb", .{suite.tmpAbsPath()}) catch unreachable;
+    const env = [_]harness.Suite.ExtraEnvEntry{
+        .{ .key = "PLANAR_WORKBENCH_ROOT", .value = wb_root },
+    };
+
+    const plan_raw = suite.mustRunWith(&.{ "plan", "create", "--json", "Malformed workbench target" }, &env);
+    const plan = std.json.parseFromSlice(PlanJSON, arena, plan_raw, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    }) catch unreachable;
+    gpa.free(plan_raw);
+    const plan_id = std.fmt.allocPrint(arena, "{d}", .{plan.value.id}) catch unreachable;
+
+    gpa.free(suite.mustRunWith(&.{ "workbench", "push", plan_id, "--json" }, &env));
+    const clean_status_raw = suite.mustRunWith(&.{ "workbench", "status", plan_id, "--json" }, &env);
+    const clean_status = std.json.parseFromSlice(StatusResult, arena, clean_status_raw, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    }) catch unreachable;
+    gpa.free(clean_status_raw);
+
+    var readme_path: ?[]const u8 = null;
+    for (clean_status.value.entries) |entry| {
+        if (std.mem.endsWith(u8, entry.file_path, "README.md")) {
+            readme_path = arena.dupe(u8, entry.file_path) catch unreachable;
+            break;
+        }
+    }
+    try std.testing.expect(readme_path != null);
+    const readme_abs = std.fmt.allocPrint(arena, "{s}/{s}", .{ wb_root, readme_path.? }) catch unreachable;
+    std.Io.Dir.cwd().writeFile(std.testing.io, .{
+        .sub_path = readme_abs,
+        .data = "front matter delimiter is missing\n",
+    }) catch unreachable;
+
+    const lint_result = suite.execWith(&.{ "workbench", "lint", plan_id, "--json" }, &env);
+    defer lint_result.deinit(gpa);
+    try std.testing.expect(lint_result.term == .exited and lint_result.term.exited == 1);
+    const lint_issue = std.json.parseFromSlice(LintIssue, arena, lint_result.stdout, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = false,
+    }) catch unreachable;
+    try std.testing.expect(std.mem.endsWith(u8, lint_issue.value.path, "README.md"));
+    try std.testing.expectEqual(@as(i64, 1), lint_issue.value.line);
+    try std.testing.expectEqualStrings("error", lint_issue.value.severity);
+    try std.testing.expectEqualStrings("malformed_frontmatter", lint_issue.value.code);
+    try std.testing.expect(lint_issue.value.message.len > 0);
+    try std.testing.expect(lint_issue.value.hint.len > 0);
+
+    const verbs = [_][]const u8{ "status", "pull", "push", "sync" };
+    for (verbs) |verb| {
+        const text_result = suite.execWith(&.{ "workbench", verb, plan_id }, &env);
+        defer text_result.deinit(gpa);
+        try std.testing.expect(text_result.term == .exited and text_result.term.exited == 1);
+        try std.testing.expect(std.mem.indexOf(u8, text_result.stdout, "1 MALFORMED") != null);
+
+        const json_result = suite.execWith(&.{ "workbench", verb, plan_id, "--json" }, &env);
+        defer json_result.deinit(gpa);
+        try std.testing.expect(json_result.term == .exited and json_result.term.exited == 1);
+        const parsed = std.json.parseFromSlice(MalformedWorkbenchOp, arena, json_result.stdout, .{
+            .allocate = .alloc_always,
+            .ignore_unknown_fields = true,
+        }) catch unreachable;
+        try std.testing.expectEqual(@as(i64, 0), parsed.value.pending);
+        try std.testing.expectEqual(@as(i64, 0), parsed.value.conflicts);
+        try std.testing.expectEqual(@as(i64, 1), parsed.value.malformed);
+        try std.testing.expectEqual(@as(usize, 1), parsed.value.malformed_files.len);
+        try std.testing.expectEqualStrings(readme_path.?, parsed.value.malformed_files[0].path);
+        try std.testing.expectEqualStrings("MalformedFrontmatter", parsed.value.malformed_files[0].parse_error);
+    }
+}
+
+test "scenario: lint and runtime reject malformed Markdown in hidden feature paths" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    _ = suite.registerProject("wb-hidden-malformed");
+    const wb_root = try std.fmt.allocPrint(arena, "{s}/wb", .{suite.tmpAbsPath()});
+    const env = [_]harness.Suite.ExtraEnvEntry{
+        .{ .key = "PLANAR_WORKBENCH_ROOT", .value = wb_root },
+    };
+
+    const plan_raw = suite.mustRunWith(&.{ "plan", "create", "--json", "Hidden malformed workbench target" }, &env);
+    const plan = try std.json.parseFromSlice(PlanJSON, arena, plan_raw, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    });
+    gpa.free(plan_raw);
+    const plan_id = try std.fmt.allocPrint(arena, "{d}", .{plan.value.id});
+
+    gpa.free(suite.mustRunWith(&.{ "workbench", "push", plan_id, "--json" }, &env));
+    const status_raw = suite.mustRunWith(&.{ "workbench", "status", plan_id, "--json" }, &env);
+    const status = try std.json.parseFromSlice(StatusResult, arena, status_raw, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    });
+    gpa.free(status_raw);
+
+    var feature_path: ?[]const u8 = null;
+    for (status.value.entries) |entry| {
+        if (std.mem.endsWith(u8, entry.file_path, "README.md")) {
+            feature_path = std.fs.path.dirname(entry.file_path);
+            break;
+        }
+    }
+    try std.testing.expect(feature_path != null);
+
+    const hidden_file_rel = try std.fs.path.join(arena, &.{ feature_path.?, ".malformed.md" });
+    const hidden_dir_rel = try std.fs.path.join(arena, &.{ feature_path.?, ".drafts" });
+    const hidden_nested_rel = try std.fs.path.join(arena, &.{ hidden_dir_rel, "nested.md" });
+    const linked_file_rel = try std.fs.path.join(arena, &.{ feature_path.?, "linked-malformed.md" });
+    const hidden_file_abs = try std.fs.path.join(arena, &.{ wb_root, hidden_file_rel });
+    const hidden_dir_abs = try std.fs.path.join(arena, &.{ wb_root, hidden_dir_rel });
+    const hidden_nested_abs = try std.fs.path.join(arena, &.{ wb_root, hidden_nested_rel });
+    const linked_file_abs = try std.fs.path.join(arena, &.{ wb_root, linked_file_rel });
+    const linked_target_abs = try std.fs.path.join(arena, &.{ suite.tmpAbsPath(), "malformed-link-target.md" });
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, hidden_dir_abs);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{
+        .sub_path = hidden_file_abs,
+        .data = "hidden file without frontmatter\n",
+    });
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{
+        .sub_path = hidden_nested_abs,
+        .data = "nested hidden file without frontmatter\n",
+    });
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{
+        .sub_path = linked_target_abs,
+        .data = "linked file without frontmatter\n",
+    });
+    try std.Io.Dir.cwd().symLink(std.testing.io, linked_target_abs, linked_file_abs, .{});
+
+    const lint_result = suite.execWith(&.{ "workbench", "lint", plan_id, "--json" }, &env);
+    defer lint_result.deinit(gpa);
+    try std.testing.expect(lint_result.term == .exited and lint_result.term.exited == 1);
+    var lint_count: usize = 0;
+    var lint_saw_hidden_file = false;
+    var lint_saw_hidden_nested = false;
+    var lint_saw_linked_file = false;
+    var lint_lines = std.mem.splitScalar(u8, lint_result.stdout, '\n');
+    while (lint_lines.next()) |line| {
+        if (line.len == 0) continue;
+        const issue = try std.json.parseFromSlice(LintIssue, arena, line, .{
+            .allocate = .alloc_always,
+            .ignore_unknown_fields = false,
+        });
+        try std.testing.expectEqualStrings("malformed_frontmatter", issue.value.code);
+        lint_count += 1;
+        if (std.mem.eql(u8, issue.value.path, hidden_file_abs)) lint_saw_hidden_file = true;
+        if (std.mem.eql(u8, issue.value.path, hidden_nested_abs)) lint_saw_hidden_nested = true;
+        if (std.mem.eql(u8, issue.value.path, linked_file_abs)) lint_saw_linked_file = true;
+    }
+    try std.testing.expectEqual(@as(usize, 3), lint_count);
+    try std.testing.expect(lint_saw_hidden_file);
+    try std.testing.expect(lint_saw_hidden_nested);
+    try std.testing.expect(lint_saw_linked_file);
+
+    const verbs = [_][]const u8{ "status", "pull", "push", "sync" };
+    for (verbs) |verb| {
+        const result = suite.execWith(&.{ "workbench", verb, plan_id, "--json" }, &env);
+        defer result.deinit(gpa);
+        try std.testing.expect(result.term == .exited and result.term.exited == 1);
+        const summary = try std.json.parseFromSlice(MalformedWorkbenchOp, arena, result.stdout, .{
+            .allocate = .alloc_always,
+            .ignore_unknown_fields = true,
+        });
+        try std.testing.expectEqual(@as(i64, 3), summary.value.malformed);
+        try std.testing.expectEqual(@as(usize, 3), summary.value.malformed_files.len);
+        var runtime_saw_hidden_file = false;
+        var runtime_saw_hidden_nested = false;
+        var runtime_saw_linked_file = false;
+        for (summary.value.malformed_files) |malformed| {
+            try std.testing.expectEqualStrings("MalformedFrontmatter", malformed.parse_error);
+            if (std.mem.eql(u8, malformed.path, hidden_file_rel)) runtime_saw_hidden_file = true;
+            if (std.mem.eql(u8, malformed.path, hidden_nested_rel)) runtime_saw_hidden_nested = true;
+            if (std.mem.eql(u8, malformed.path, linked_file_rel)) runtime_saw_linked_file = true;
+        }
+        try std.testing.expect(runtime_saw_hidden_file);
+        try std.testing.expect(runtime_saw_hidden_nested);
+        try std.testing.expect(runtime_saw_linked_file);
+    }
+}
+
+test "scenario: push reports malformed filtered terminal files before optional cleanup" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    _ = suite.registerProject("wb-terminal-malformed");
+    const wb_root = try std.fmt.allocPrint(arena, "{s}/wb", .{suite.tmpAbsPath()});
+    const env = [_]harness.Suite.ExtraEnvEntry{
+        .{ .key = "PLANAR_WORKBENCH_ROOT", .value = wb_root },
+    };
+
+    const plan_raw = suite.mustRunWith(&.{ "plan", "create", "--json", "Terminal malformed target" }, &env);
+    const plan = try std.json.parseFromSlice(PlanJSON, arena, plan_raw, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    });
+    gpa.free(plan_raw);
+    const plan_id = try std.fmt.allocPrint(arena, "{d}", .{plan.value.id});
+    const task_raw = suite.mustRunWith(&.{ "task", "add", "--plan", plan_id, "--json", "Terminal task" }, &env);
+    const task = try std.json.parseFromSlice(struct { id: i64 }, arena, task_raw, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    });
+    gpa.free(task_raw);
+    const task_id = try std.fmt.allocPrint(arena, "{d}", .{task.value.id});
+
+    gpa.free(suite.mustRunWith(&.{ "workbench", "push", plan_id, "--json" }, &env));
+    const status_raw = suite.mustRunWith(&.{ "workbench", "status", plan_id, "--json" }, &env);
+    const status = try std.json.parseFromSlice(StatusResult, arena, status_raw, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    });
+    gpa.free(status_raw);
+    var task_path: ?[]const u8 = null;
+    for (status.value.entries) |entry| {
+        if (std.mem.eql(u8, entry.entity_kind, "task") and entry.entity_id == task.value.id) {
+            task_path = try arena.dupe(u8, entry.file_path);
+            break;
+        }
+    }
+    try std.testing.expect(task_path != null);
+    const task_abs = try std.fmt.allocPrint(arena, "{s}/{s}", .{ wb_root, task_path.? });
+
+    gpa.free(suite.mustRunWith(&.{ "task", "cancel", task_id }, &env));
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{
+        .sub_path = task_abs,
+        .data = "terminal file with malformed frontmatter\n",
+    });
+
+    const default_push = suite.execWith(&.{ "workbench", "push", plan_id, "--json" }, &env);
+    defer default_push.deinit(gpa);
+    try std.testing.expect(default_push.term == .exited and default_push.term.exited == 1);
+    const default_summary = try std.json.parseFromSlice(TerminalPushOp, arena, default_push.stdout, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    });
+    try std.testing.expectEqual(@as(i64, 0), default_summary.value.conflicts);
+    try std.testing.expectEqual(@as(i64, 1), default_summary.value.malformed);
+    try std.testing.expectEqual(@as(usize, 1), default_summary.value.malformed_files.len);
+    try std.testing.expectEqualStrings(task_path.?, default_summary.value.malformed_files[0].path);
+    try std.testing.expectEqual(@as(i64, 1), default_summary.value.filtered);
+    try std.testing.expectEqual(@as(i64, 1), default_summary.value.pre_existing_terminal);
+    try std.testing.expectEqual(@as(i64, 0), default_summary.value.cleaned);
+
+    const cleanup_push = suite.execWith(&.{ "workbench", "push", plan_id, "--apply-cleanup", "--json" }, &env);
+    defer cleanup_push.deinit(gpa);
+    try std.testing.expect(cleanup_push.term == .exited and cleanup_push.term.exited == 1);
+    const cleanup_summary = try std.json.parseFromSlice(TerminalPushOp, arena, cleanup_push.stdout, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    });
+    try std.testing.expectEqual(@as(i64, 1), cleanup_summary.value.malformed);
+    try std.testing.expectEqual(@as(i64, 1), cleanup_summary.value.cleaned);
+    try std.testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(std.testing.io, task_abs, .{}));
+
+    const clean_push = suite.execWith(&.{ "workbench", "push", plan_id, "--json" }, &env);
+    defer clean_push.deinit(gpa);
+    try std.testing.expect(clean_push.term == .exited and clean_push.term.exited == 0);
+}
+
+test "scenario: malformed files take exit precedence over simultaneous conflicts" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    _ = suite.registerProject("wb-malformed-conflict");
+    const wb_root = try std.fmt.allocPrint(arena, "{s}/wb", .{suite.tmpAbsPath()});
+    const env = [_]harness.Suite.ExtraEnvEntry{
+        .{ .key = "PLANAR_WORKBENCH_ROOT", .value = wb_root },
+    };
+
+    const plan_raw = suite.mustRunWith(&.{ "plan", "create", "--json", "Malformed conflict target" }, &env);
+    const plan = try std.json.parseFromSlice(PlanJSON, arena, plan_raw, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    });
+    gpa.free(plan_raw);
+    const plan_id = try std.fmt.allocPrint(arena, "{d}", .{plan.value.id});
+    const artifact_raw = suite.mustRunWith(&.{
+        "artifact", "add",         "--json", "--plan",        plan_id,
+        "--kind",   "design_note", "--body", "ORIGINAL_BODY", "Conflict artifact",
+    }, &env);
+    const artifact = try std.json.parseFromSlice(ArtifactBody, arena, artifact_raw, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    });
+    gpa.free(artifact_raw);
+    const artifact_id = try std.fmt.allocPrint(arena, "{d}", .{artifact.value.id});
+
+    gpa.free(suite.mustRunWith(&.{ "workbench", "push", plan_id, "--json" }, &env));
+    const status_raw = suite.mustRunWith(&.{ "workbench", "status", plan_id, "--json" }, &env);
+    const status = try std.json.parseFromSlice(StatusResult, arena, status_raw, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    });
+    gpa.free(status_raw);
+    var readme_path: ?[]const u8 = null;
+    var artifact_path: ?[]const u8 = null;
+    for (status.value.entries) |entry| {
+        if (std.mem.endsWith(u8, entry.file_path, "README.md")) {
+            readme_path = try arena.dupe(u8, entry.file_path);
+        } else if (std.mem.eql(u8, entry.entity_kind, "artifact") and entry.entity_id == artifact.value.id) {
+            artifact_path = try arena.dupe(u8, entry.file_path);
+        }
+    }
+    try std.testing.expect(readme_path != null);
+    try std.testing.expect(artifact_path != null);
+    const readme_abs = try std.fmt.allocPrint(arena, "{s}/{s}", .{ wb_root, readme_path.? });
+    const artifact_abs = try std.fmt.allocPrint(arena, "{s}/{s}", .{ wb_root, artifact_path.? });
+
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = readme_abs, .data = "malformed README\n" });
+    const artifact_content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, artifact_abs, gpa, .limited(1024 * 1024));
+    defer gpa.free(artifact_content);
+    const fs_edited = try std.mem.replaceOwned(u8, gpa, artifact_content, "ORIGINAL_BODY", "FS_BODY");
+    defer gpa.free(fs_edited);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = artifact_abs, .data = fs_edited });
+    gpa.free(suite.mustRunWith(&.{ "artifact", "update", artifact_id, "--body", "DB_BODY" }, &env));
+
+    const verbs = [_][]const u8{ "pull", "push", "sync" };
+    for (verbs) |verb| {
+        const result = suite.execWith(&.{ "workbench", verb, plan_id, "--json" }, &env);
+        defer result.deinit(gpa);
+        try std.testing.expect(result.term == .exited and result.term.exited == 1);
+        const summary = try std.json.parseFromSlice(MalformedWorkbenchOp, arena, result.stdout, .{
+            .allocate = .alloc_always,
+            .ignore_unknown_fields = true,
+        });
+        try std.testing.expectEqual(@as(i64, 1), summary.value.conflicts);
+        try std.testing.expectEqual(@as(i64, 1), summary.value.malformed);
+        try std.testing.expectEqual(@as(usize, 1), summary.value.malformed_files.len);
+    }
 }
 
 // =========================================================================

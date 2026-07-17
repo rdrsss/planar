@@ -38,6 +38,7 @@ comptime {
     _ = @import("parity_resume_test.zig");
     _ = @import("resume_scope_test.zig");
     _ = @import("parity_tree_cwd_derive_test.zig");
+    _ = @import("pwd_path_hardening_test.zig");
     _ = @import("parity_tree_render_test.zig");
     _ = @import("plan_next_buckets_test.zig");
     _ = @import("plan_recommend_strategy_test.zig");
@@ -72,6 +73,7 @@ comptime {
     _ = @import("skills_render_test.zig");
     _ = @import("installed_surface_test.zig");
     _ = @import("smoke_test.zig");
+    _ = @import("health_hygiene_test.zig");
     _ = @import("spec_ingest_test.zig");
     _ = @import("tree_test.zig");
     _ = @import("tree_audit_activity_test.zig");

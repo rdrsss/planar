@@ -19,6 +19,7 @@ pub const Summary = struct {
     applied: usize = 0,
     pending: usize = 0,
     conflicts: usize = 0,
+    malformed: usize = 0,
     /// Count of terminal-status entities excluded from the FS write set under
     /// the active `filter_mode` (plan 439 M2). Always 0 on non-push runs.
     filtered: usize = 0,
@@ -31,6 +32,11 @@ pub const Summary = struct {
     /// pass (only when `--apply-cleanup` was passed). Subset of
     /// `pre_existing_terminal`.
     cleaned: usize = 0,
+};
+
+pub const MalformedFile = struct {
+    path: []const u8,
+    parse_error: []const u8,
 };
 
 pub const Entry = struct {
@@ -46,6 +52,8 @@ pub const Result = struct {
     applied: usize = 0,
     pending: usize = 0,
     conflicts: usize = 0,
+    malformed: usize = 0,
+    malformed_files: []const MalformedFile = &.{},
     /// Count of terminal-status entities excluded from the FS write set.
     filtered: usize = 0,
     /// Pre-existing terminal files visible on disk that fall inside this
@@ -97,6 +105,7 @@ pub fn deinitResult(allocator: std.mem.Allocator, result: Result) void {
         if (entry.parse_error.len > 0) allocator.free(entry.parse_error);
     }
     if (result.entries.len > 0) allocator.free(result.entries);
+    if (result.malformed_files.len > 0) allocator.free(result.malformed_files);
 }
 
 pub fn status(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan_id: i64) !Result {
@@ -386,21 +395,57 @@ fn run(
         // status/sync show the full set so the operator can reason about
         // what would have been written. The anchor plan itself is exempt:
         // dropping it would break feature-tree navigation.
-        if (mode == .push and e.id != anchor_plan_id) {
+        const is_anchor = std.mem.eql(u8, e.kind, "plan") and e.id == anchor_plan_id;
+        if (mode == .push and !is_anchor) {
             if (terminal_mod.isFilteredStr(e.kind, e.status, filter_mode)) |drop| {
                 if (drop) {
                     summary.filtered += 1;
                     // Plan 439 M3: surprise-free upgrade path. If the
                     // filtered entity already has a file on disk, that's a
-                    // pre-existing terminal artifact. Count it, and remove
-                    // it if `--apply-cleanup` was passed.
+                    // pre-existing terminal artifact. It still belongs to
+                    // this push's input corpus, so parse and aggregate it
+                    // before applying the output filter or optional cleanup.
                     const pre_rel_path, const pre_db_content = try renderEntity(d, allocator, anchor_plan_id, e.kind, e.id);
                     defer allocator.free(pre_rel_path);
                     defer allocator.free(pre_db_content);
+                    const pre_stored = try feature.storedPath(allocator, a.assoc_slug, a.plan_key, a.slug, pre_rel_path);
+                    defer allocator.free(pre_stored);
+                    const pre_stored_key = try allocator.dupe(u8, pre_stored);
+                    errdefer allocator.free(pre_stored_key);
+                    try seen_files.put(pre_stored_key, true);
+                    try seen_file_keys.append(allocator, pre_stored_key);
                     const pre_abs = try std.fs.path.join(allocator, &.{ feature_dir, pre_rel_path });
                     defer allocator.free(pre_abs);
                     if (pathExists(pre_abs)) {
                         summary.pre_existing_terminal += 1;
+                        const pre_fs_content = try readFileAlloc(allocator, pre_abs);
+                        defer allocator.free(pre_fs_content);
+                        const parsed = parse.parse(allocator, pre_fs_content) catch |parse_err| {
+                            summary.malformed += 1;
+                            try entries.append(allocator, .{
+                                .class = .malformed,
+                                .file_path = try allocator.dupe(u8, pre_stored),
+                                .entity_kind = try allocator.dupe(u8, e.kind),
+                                .entity_id = e.id,
+                                .parse_error = try allocator.dupe(u8, @errorName(parse_err)),
+                            });
+                            if (apply_cleanup) {
+                                const pre_abs_z = try allocator.dupeZ(u8, pre_abs);
+                                defer allocator.free(pre_abs_z);
+                                _ = c.unlink(pre_abs_z.ptr);
+                                summary.cleaned += 1;
+                                _ = d.execParams(
+                                    "delete from workbench_sync_state where anchor_plan_id = ? and entity_kind = ? and entity_id = ?",
+                                    &.{
+                                        .{ .int = anchor_plan_id },
+                                        .{ .text = e.kind },
+                                        .{ .int = e.id },
+                                    },
+                                ) catch {};
+                            }
+                            continue;
+                        };
+                        parse.deinit(parsed, allocator);
                         if (apply_cleanup) {
                             const pre_abs_z = try allocator.dupeZ(u8, pre_abs);
                             defer allocator.free(pre_abs_z);
@@ -442,7 +487,14 @@ fn run(
         const db_hash = try manifest.hashContent(allocator, db_content);
         defer allocator.free(db_hash);
 
+        const parse_error: ?[]const u8 = if (fs_content) |content| check: {
+            const parsed = parse.parse(allocator, content) catch |err| break :check @errorName(err);
+            parse.deinit(parsed, allocator);
+            break :check null;
+        } else null;
+
         const cls: Classification = blk: {
+            if (parse_error != null) break :blk .malformed;
             if (findState(manifest_rows, e.kind, e.id)) |state| {
                 if (fs_content == null) break :blk .deleted_on_fs;
                 const fs_hash = try manifest.hashContent(allocator, fs_content.?);
@@ -534,7 +586,8 @@ fn run(
                     summary.applied += 1;
                 } else summary.pending += 1;
             },
-            .new_on_fs, .malformed => summary.pending += 1,
+            .new_on_fs => summary.pending += 1,
+            .malformed => summary.malformed += 1,
         }
 
         try entries.append(allocator, .{
@@ -543,6 +596,7 @@ fn run(
             .entity_kind = try allocator.dupe(u8, e.kind),
             .entity_id = e.id,
             .conflict_id = conflict_id,
+            .parse_error = if (parse_error) |err| try allocator.dupe(u8, err) else "",
         });
     }
 
@@ -590,7 +644,7 @@ fn run(
         };
         defer allocator.free(content);
         const parsed = parse.parse(allocator, content) catch |parse_err| {
-            summary.pending += 1;
+            summary.malformed += 1;
             try entries.append(allocator, .{
                 .class = .malformed,
                 .file_path = try allocator.dupe(u8, stored),
@@ -655,15 +709,38 @@ fn run(
         defer manifest.deinitRows(rows, allocator);
         try manifest.writeSyncFile(allocator, feature_dir, rows);
     }
+    const owned_entries = try entries.toOwnedSlice(allocator);
+    errdefer {
+        for (owned_entries) |entry| {
+            allocator.free(entry.file_path);
+            allocator.free(entry.entity_kind);
+            if (entry.parse_error.len > 0) allocator.free(entry.parse_error);
+        }
+        allocator.free(owned_entries);
+    }
+    const malformed_files = if (summary.malformed == 0)
+        &[_]MalformedFile{}
+    else blk: {
+        const files = try allocator.alloc(MalformedFile, summary.malformed);
+        var index: usize = 0;
+        for (owned_entries) |entry| {
+            if (entry.class != .malformed) continue;
+            files[index] = .{ .path = entry.file_path, .parse_error = entry.parse_error };
+            index += 1;
+        }
+        break :blk files;
+    };
     return .{
         .applied = summary.applied,
         .pending = summary.pending,
         .conflicts = summary.conflicts,
+        .malformed = summary.malformed,
+        .malformed_files = malformed_files,
         .filtered = summary.filtered,
         .pre_existing_terminal = summary.pre_existing_terminal,
         .cleaned = summary.cleaned,
         .filter_mode = terminal_mod.Mode.toString(filter_mode),
-        .entries = try entries.toOwnedSlice(allocator),
+        .entries = owned_entries,
     };
 }
 

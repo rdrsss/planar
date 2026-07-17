@@ -5,6 +5,7 @@ const harness = @import("harness");
 
 const ApplyJSON = struct {
     anchor_plan_id: i64 = 0,
+    artifacts_created: usize = 0,
     tasks_cancelled: usize = 0,
     plans_abandoned: usize = 0,
     artifacts_retired: usize = 0,
@@ -32,8 +33,9 @@ const SynthesizeJSON = struct {
     applied: ?ApplyJSON = null,
 };
 
-const PlanJSON = struct { id: i64, slug: []const u8 = "", title: []const u8 = "" };
+const PlanJSON = struct { id: i64, slug: []const u8 = "", title: []const u8 = "", status: []const u8 = "" };
 const TaskJSON = struct { id: i64, slug: []const u8 = "", status: []const u8 = "" };
+const ArtifactJSON = struct { id: i64, kind: []const u8 = "" };
 
 fn parseJSON(comptime T: type, arena: std.mem.Allocator, buf: []const u8) T {
     const trimmed = std.mem.trim(u8, buf, " \n");
@@ -352,8 +354,7 @@ test "M18 synthesize auto-greenfield is true when all evidence areas are zero-si
 // Plan 85 t#2658 — `--accept-spec` / `--no-forward-specs` flags are
 // accepted by both import and synthesize (closes the UnknownFlag
 // regression). Mutual exclusivity is enforced at the engine
-// boundary. Forward-spec materialization itself is deferred to a
-// follow-up task — this slice covers flag plumbing only.
+// boundary. Task 2840 below locks the materialization contract.
 // =========================================================================
 
 test "Plan 85 t#2658: import + synthesize accept --accept-spec and --no-forward-specs" {
@@ -431,4 +432,74 @@ test "Plan 85 t#2658: --accept-spec and --no-forward-specs are mutually exclusiv
         env,
     );
     gpa.free(b);
+}
+
+test "Plan 85 t#2840: import --accept-spec all materializes forward plans artifacts and workbench trees" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    var arena_backing = std.heap.ArenaAllocator.init(gpa);
+    defer arena_backing.deinit();
+    const arena = arena_backing.allocator();
+
+    _ = suite.registerProject("forward-spec-fixture");
+    suite.addAssoc("forward-spec-fixture", null);
+
+    const repo = try mkRepo(gpa, &suite.tmp_dir.sub_path, "repo-forward-spec-materialization");
+    defer gpa.free(repo);
+    const home = try std.fs.path.join(gpa, &.{ ".zig-cache/tmp", &suite.tmp_dir.sub_path, "home-forward-spec-materialization" });
+    defer gpa.free(home);
+    const workbench_root = try std.fs.path.join(gpa, &.{ ".zig-cache/tmp", &suite.tmp_dir.sub_path, "workbench-forward-spec-materialization" });
+    defer gpa.free(workbench_root);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, home);
+
+    const env: []const harness.Suite.ExtraEnvEntry = &.{
+        .{ .key = "PLANAR_HOME", .value = home },
+        .{ .key = "PLANAR_WORKBENCH_ROOT", .value = workbench_root },
+    };
+    const first = suite.mustRunWith(&.{ "import", repo, "--interpret", "--scope", "forward-spec-fixture", "--json" }, env);
+    defer gpa.free(first);
+    const first_json = parseJSON(ImportJSON, arena, first);
+    const cache_payload = try importCachePayload(arena, first_json.fingerprint);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = first_json.cache_path.?, .data = cache_payload });
+
+    const applied = suite.mustRunWith(&.{
+        "import", repo, "--interpret", "--apply", "--accept-spec", "all", "--scope", "forward-spec-fixture", "--json",
+    }, env);
+    defer gpa.free(applied);
+    const applied_json = parseJSON(ImportJSON, arena, applied);
+    try std.testing.expect(applied_json.applied != null);
+
+    const reapplied = suite.mustRunWith(&.{
+        "import", repo, "--interpret", "--apply", "--accept-spec", "all", "--scope", "forward-spec-fixture", "--json",
+    }, env);
+    defer gpa.free(reapplied);
+    const reapplied_json = parseJSON(ImportJSON, arena, reapplied);
+    try std.testing.expect(reapplied_json.applied != null);
+    try std.testing.expectEqual(@as(usize, 0), reapplied_json.applied.?.artifacts_created);
+
+    const plans_raw = suite.mustRun(&.{ "plan", "list", "--scope", "forward-spec-fixture", "--json" });
+    defer gpa.free(plans_raw);
+    const plans = parseJSON([]const PlanJSON, arena, plans_raw);
+
+    var forward_plan_count: usize = 0;
+    var artifact_count: usize = 0;
+    for (plans) |plan| {
+        if (!std.mem.startsWith(u8, plan.slug, "fs")) continue;
+        forward_plan_count += 1;
+        try std.testing.expectEqualStrings("draft", plan.status);
+
+        const plan_id = try std.fmt.allocPrint(arena, "{d}", .{plan.id});
+        const artifacts_raw = suite.mustRun(&.{ "artifact", "list", "--scope", "forward-spec-fixture", "--plan", plan_id, "--json" });
+        defer gpa.free(artifacts_raw);
+        const artifacts = parseJSON([]const ArtifactJSON, arena, artifacts_raw);
+        try std.testing.expectEqual(@as(usize, 3), artifacts.len);
+        artifact_count += artifacts.len;
+
+        const feature_dir_name = try std.fmt.allocPrint(arena, "p{d}-{s}", .{ plan.id, plan.slug });
+        const feature_dir = try std.fs.path.join(arena, &.{ workbench_root, "forward-spec-fixture", feature_dir_name });
+        try std.Io.Dir.cwd().access(std.testing.io, feature_dir, .{});
+    }
+    try std.testing.expectEqual(@as(usize, 3), forward_plan_count);
+    try std.testing.expectEqual(@as(usize, 9), artifact_count);
 }

@@ -4,6 +4,13 @@ doc_kind: getting_started
 template_version: 1
 regenerated_at: 2026-05-18T00:00:00Z
 regenerated_by: hand
+references:
+  doc_tech_spec:
+    kind: planar
+    entity: artifact:67
+  founding_tech_spec:
+    kind: planar
+    entity: artifact:30
 ---
 
 # Getting started
@@ -270,3 +277,6 @@ regenerate-candidate on the next `planar-doc diff`[^doc_tech_spec].
 | `task add`: scope-mismatch error | cwd not equal to stack top | Pass `--scope` or `cd` into the right repo |
 | Workbench files reappear after deletion | Sync round-tripped from DB | Delete the artifact with `planar artifact rm` |
 | `ext propagate`: no adapter registered | Adapter not yet created | `planar ext create <kind>` first |
+
+[^founding_tech_spec]:
+[^doc_tech_spec]:
