@@ -29,6 +29,7 @@ const StalePlan = struct {
 const StaleTask = struct {
     id: i64,
     plan_id: i64,
+    scope: []const u8,
     title: []const u8,
     age_days: i64,
     suggestion: []const u8,
@@ -52,6 +53,8 @@ const HygieneReport = struct {
     stale_doing_tasks: []StaleTask,
     stale_open_questions: []StaleQuestion,
 };
+
+const Status = struct { status: []const u8 };
 
 fn findPlan(rows: []const StalePlan, id: i64) ?StalePlan {
     for (rows) |row| if (row.id == id) return row;
@@ -78,6 +81,7 @@ test "health hygiene reports scoped lifecycle drift with actionable JSON and tex
     const arena = arena_state.allocator();
 
     _ = suite.registerProject("hygiene-main");
+    const other_root = suite.registerProject("hygiene-other");
     suite.addAssoc("hygiene-main", null);
 
     const wrapper = suite.mustRunJSON(Id, arena, &.{
@@ -135,13 +139,24 @@ test "health hygiene reports scoped lifecycle drift with actionable JSON and tex
     const task_row = findTask(report.stale_doing_tasks, doing_task.id) orelse
         return error.TestExpectedEqual;
     try std.testing.expectEqual(active.id, task_row.plan_id);
+    try std.testing.expectEqualStrings("assoc:hygiene-main", task_row.scope);
     try std.testing.expect(task_row.age_days >= 0);
-    try std.testing.expect(std.mem.indexOf(u8, task_row.suggestion, "--status blocked") != null);
+    const expected_task_suggestion = try std.fmt.allocPrint(
+        arena,
+        "planar task update {d} --scope assoc:hygiene-main --status done OR planar task update {d} --scope assoc:hygiene-main --status blocked",
+        .{ doing_task.id, doing_task.id },
+    );
+    try std.testing.expectEqualStrings(expected_task_suggestion, task_row.suggestion);
 
     const question_row = findQuestion(report.stale_open_questions, open_question.id) orelse
         return error.TestExpectedEqual;
     try std.testing.expect(question_row.age_days >= 0);
-    try std.testing.expect(std.mem.indexOf(u8, question_row.suggestion, "question answer") != null);
+    const expected_question_suggestion = try std.fmt.allocPrint(
+        arena,
+        "planar question answer {d} --answer \"<resolution>\" OR planar question wontfix {d}",
+        .{ open_question.id, open_question.id },
+    );
+    try std.testing.expectEqualStrings(expected_question_suggestion, question_row.suggestion);
     try std.testing.expect(findQuestion(report.stale_open_questions, excluded_question.id) == null);
 
     const text_report = suite.mustRun(&.{
@@ -153,4 +168,19 @@ test "health hygiene reports scoped lifecycle drift with actionable JSON and tex
     try std.testing.expect(std.mem.indexOf(u8, text_report, "planar plan update") != null);
     try std.testing.expect(std.mem.indexOf(u8, text_report, "Stale doing tasks") != null);
     try std.testing.expect(std.mem.indexOf(u8, text_report, "Stale open questions") != null);
+
+    // Suggested repairs remain valid when the operator's cwd derives a
+    // different scope from the stale finding.
+    gpa.free(suite.mustRunInDir(other_root, &.{
+        "task", "update", doing_task_id, "--scope", "assoc:hygiene-main", "--status", "done",
+    }));
+    const completed_task = suite.mustRunJSON(Status, arena, &.{ "task", "show", doing_task_id, "--json" });
+    try std.testing.expectEqualStrings("done", completed_task.status);
+
+    const open_question_id = try std.fmt.allocPrint(arena, "{d}", .{open_question.id});
+    gpa.free(suite.mustRun(&.{
+        "question", "answer", open_question_id, "--answer", "Resolved by integration coverage",
+    }));
+    const answered_question = suite.mustRunJSON(Status, arena, &.{ "question", "show", open_question_id, "--json" });
+    try std.testing.expectEqualStrings("answered", answered_question.status);
 }
