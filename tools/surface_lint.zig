@@ -865,7 +865,7 @@ test "schema inventory has an explicit unique classification for every current l
     var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(inventory.items, &digest, .{});
     const hex = std.fmt.bytesToHex(digest, .lower);
-    try testing.expectEqualStrings("9fa5e94c5e052a79e2fa68c332ad93d195792de187cf0e245c2f7309e27c2f37", &hex);
+    try testing.expectEqualStrings("3124786d04a380d76abc0056b152ad7475d05ecd8f882e7eb9a11c7ecb763047", &hex);
 }
 test "every classified leaf enforces its declared capability" {
     const frontmatter = "---\nrole: fixture\ncapability: read-only\n---\n```sh\n";
