@@ -312,8 +312,8 @@ test "planar models routing: empty config — exactly 6 built-in rows, no custom
     const expected = [_]struct { role: []const u8, vendor: []const u8, tier: []const u8, model: []const u8 }{
         .{ .role = "coder", .vendor = "claude", .tier = "medium", .model = "claude-sonnet-4-6" },
         .{ .role = "reviewer", .vendor = "claude", .tier = "large", .model = "claude-opus-4-8" },
-        .{ .role = "test-coder", .vendor = "claude", .tier = "medium", .model = "claude-sonnet-4-6" },
-        .{ .role = "documenter", .vendor = "claude", .tier = "medium", .model = "claude-sonnet-4-6" },
+        .{ .role = "test-coder", .vendor = "claude", .tier = "large", .model = "claude-opus-4-8" },
+        .{ .role = "documenter", .vendor = "claude", .tier = "large", .model = "claude-opus-4-8" },
         .{ .role = "doc-author", .vendor = "claude", .tier = "large", .model = "claude-opus-4-8" },
         .{ .role = "sync-reconciler", .vendor = "claude", .tier = "large", .model = "claude-opus-4-8" },
     };
