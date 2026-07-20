@@ -1035,7 +1035,8 @@ test "effective: model tier maps + role tiers resolve from embedded defaults (pl
         .{ .key = "models.codex.large", .want = "gpt-5.5" },
         .{ .key = "roles.coder", .want = "medium" },
         .{ .key = "roles.reviewer", .want = "large" },
-        .{ .key = "roles.documenter", .want = "medium" },
+        .{ .key = "roles.test-coder", .want = "large" },
+        .{ .key = "roles.documenter", .want = "large" },
         .{ .key = "roles.doc-author", .want = "large" },
         .{ .key = "roles.sync-reconciler", .want = "large" },
     };

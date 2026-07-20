@@ -18,15 +18,32 @@ Agent specs in `agents/` reference abstract tiers (`small`, `medium`, `large`). 
 | large | claude-opus-4-8 | gpt-5.5 | claude-opus-4 |
 ## Agent Assignments
 
-| Agent              | Tier   |
-|--------------------|--------|
-| `orchestrator`     | large  |
-| `spec-reviewer`    | large  |
-| `coder`            | medium |
-| `test-coder`       | large  |
-| `reviewer`         | large  |
-| `doc-author`       | large  |
-| `sync-reconciler`  | large  |
+Every installable agent under `agents/`, its authored `tier:` (the source of
+truth — see §Conventions), its `capability:` (which drives the Codex
+`sandbox_mode` and the Claude tool grant), and its primary work. Rows marked †
+are the six **runtime-resolvable roles** whose tier is *also* carried in
+`[roles]` of `src/engine/config/defaults.toml` for the plan-540 model resolver;
+those two copies MUST agree. Every other agent resolves its model straight from
+this frontmatter via the render path.
+
+| Agent               | Tier   | Capability  | Primary work |
+|---------------------|--------|-------------|--------------|
+| `orchestrator`      | large  | coordinate  | Full lifecycle dispatch; phase selection, escalation, iteration-cap judgment |
+| `planner`           | large  | write       | Drafts product / tech / test specs and the roadmap |
+| `spec-reviewer`     | large  | write       | Adversarial spec review before ingestion |
+| `ingestor`          | large  | coordinate  | Decomposes workbench specs into the task graph |
+| `coder` †           | medium | write       | Scoped implementation (escalates to `large` per §Coder tier policy) |
+| `test-coder` †      | large  | write       | Adversarial test authoring against the coder diff |
+| `reviewer` †        | large  | read-only   | approve / request-changes / open-question / abort |
+| `janitor`           | medium | coordinate  | Merge, reconcile, cleanup, plan closeout |
+| `documenter` †      | large  | read-only   | Proposes the doc worklist from repo drift |
+| `doc-author` †      | large  | write       | Authors approved reference prose under `docs/` |
+| `ext-sync`          | large  | coordinate  | Propagates a feature to Jira / GitHub Issues |
+| `sync-reconciler` † | large  | coordinate  | Reconciles local/external sync conflicts |
+| `importer`          | large  | write       | Translates an existing repo's planning content into Planar |
+| `synthesizer`       | large  | write       | Synthesizes fresh planning artifacts via an LLM pass |
+| `introspector`      | medium | coordinate  | Usage / friction introspection over redacted signal |
+| `feedback-triager`  | large  | coordinate  | Triages redacted feedback findings |
 
 ## Conventions
 
@@ -37,6 +54,26 @@ Agent specs in `agents/` reference abstract tiers (`small`, `medium`, `large`). 
 ## Coder tier policy
 
 The coder defaults to `medium` (sonnet). The orchestrator may escalate the spawned coder subagent to `large` (opus) for cycles that involve schema changes, engine-judgment calls, or large architectural diffs where the higher model tier materially improves the output. Tier is Axis C of the dispatch model and is independent of isolation (Axis A) — even a `large`-tier coder must run as a separately spawned subagent with blank context. Routine implementation, doc changes, and mechanical sweeps do not warrant escalation.
+
+The escalation is keyed to the **type of work** in the cycle, not to the task
+count. The orchestrator classifies each task's dominant work type and proposes
+the corresponding tier in the Phase 3 dispatch preview; when a cycle mixes work
+types, the highest-tier row present wins:
+
+| Work type | Tier | Signals (any one triggers the row) |
+|-----------|------|------------------------------------|
+| Schema / migration | large | new or edited `migrations/*.sql`; a change to the `schema_migrations` contract; a CHECK-constraint or index redesign |
+| Engine judgment | large | non-trivial logic under `src/engine/` or `src/db/`; error-set / allocator-ownership design; a status-transition or scope-resolution rule change |
+| Architectural | large | a new subsystem or binary; a cross-module diff touching many packages; a change to a locked capability boundary |
+| CLI-surface change | large | a new top-level verb, subcommand, or flag whose contract must be pinned by an integration test |
+| Feature (default) | medium | single-verb handler wiring, a bounded feature addition within an existing surface |
+| Mechanical / docs | medium | renames, formatting sweeps, comment/doc-only edits, prose under `docs/`, workflow-surface text |
+
+The one-word reason the orchestrator prints on every non-default (`large`) row
+in the dispatch preview is the matching work-type name from this table
+(`schema`, `engine`, `architectural`, `cli`). The default (`medium`) rows carry
+no reason. The operator may override any task's tier at the gate; the confirmed
+`model_tiers` map is binding for dispatch (Axis C, below).
 
 Axis C is **operator-confirmed, never silent**. The orchestrator surfaces the proposed tier per task in the Phase 3 dispatch preview (the task-breakdown table's tier column, with a one-word reason on every non-default row), and the operator may override any task's tier before confirming. The confirmed assignment is binding: the orchestrator spawns each coder at the confirmed tier and never silently escalates or downgrades — a mid-plan re-proposal is surfaced at the next preview render. Confirmed assignments persist in the dispatch entry's metadata as a `model_tiers` map for cross-cycle stickiness. See [`skills/src/pl-orchestrator.md` §Dispatch preview and model tiers](../skills/src/pl-orchestrator.md) for the preview format.
 

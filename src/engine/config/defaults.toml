@@ -50,11 +50,17 @@ large  = "claude-opus-4"
 # Role → tier mapping (vendor-independent). The shared resolver composes this
 # with [models.<vendor>] to pick a concrete model for a role: e.g. the coder
 # resolves to the `medium` model of the active vendor, the reviewer to `large`.
+# INVARIANT: each entry MUST match the `tier:` frontmatter of the matching
+# agents/<role>.md — the agent spec owns the tier (see agents/models.md
+# §Conventions). The render path resolves an agent's model from that frontmatter
+# directly; this table is the runtime resolver's copy for the built-in roles, so
+# a divergence means the runtime resolves a role to a different model than its
+# rendered surface advertises.
 [roles]
 coder      = "medium"
 reviewer   = "large"
-test-coder = "medium"
-documenter = "medium"
+test-coder = "large"
+documenter = "large"
 doc-author = "large"
 sync-reconciler = "large"
 
