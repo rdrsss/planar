@@ -112,6 +112,58 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         }
     }
 
+    // Step 4: work-type routing validation (plan 899 D10, task
+    // worktype-routing-map). A `[routing.<vendor>.<tier>]` entry must name a
+    // candidate model id present in that tier's resolved candidate list —
+    // file-over-default, same as every other model-tier key. Resolve the
+    // effective config (defaults + this file, no env/assoc override needed
+    // for these keys) to get the merged candidate lists + routing entries,
+    // then cross-check every present routing key against its tier's list.
+    {
+        var eff_res = engine.config.effective.resolve(ctx.allocator, content, ctx.environ, null) catch |e| switch (e) {
+            error.OutOfMemory => exit.die(ctx, error.OutOfMemory, "out of memory", .{}),
+            // Step 1 already validated TOML syntax against the same content;
+            // a second ParseFailed here would indicate a resolver bug, not a
+            // user-facing config error.
+            error.ParseFailed => unreachable,
+        };
+        defer eff_res.deinit(ctx.allocator);
+
+        for (engine.config.effective.vendors) |v| {
+            for (engine.config.effective.tiers) |t| {
+                var mbuf: [160]u8 = undefined;
+                const model_key = std.fmt.bufPrint(&mbuf, "models.{s}.{s}", .{ v, t }) catch continue;
+                const model_entry = eff_res.effective.get(model_key) orelse continue;
+                const candidates: []const []const u8 = if (model_entry.candidates.len > 0)
+                    model_entry.candidates
+                else
+                    &[_][]const u8{model_entry.value};
+
+                for (engine.config.effective.work_types) |wt| {
+                    var rbuf: [220]u8 = undefined;
+                    const routing_key = std.fmt.bufPrint(&rbuf, "routing.{s}.{s}.{s}", .{ v, t, wt }) catch continue;
+                    const routing_entry = eff_res.effective.get(routing_key) orelse continue;
+                    if (routing_entry.value.len == 0) continue;
+
+                    var found = false;
+                    for (candidates) |c| {
+                        if (std.mem.eql(u8, c, routing_entry.value)) {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        ctx.stderr.print(
+                            "error: {s}: routed model id \"{s}\" is not in the {s} candidate list\n",
+                            .{ routing_key, routing_entry.value, model_key },
+                        ) catch {};
+                        has_errors = true;
+                    }
+                }
+            }
+        }
+    }
+
     if (has_errors) {
         runtime.shutdown();
         std.process.exit(1);

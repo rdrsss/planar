@@ -2572,7 +2572,7 @@ planar models list
 # providers:
 #   claude   [installed] 2.1.170 (Claude Code)
 #       large    claude-opus-4-8
-#       medium   claude-sonnet-4-6
+#       medium   claude-sonnet-5
 #       small    claude-haiku-4-5
 #   codex    [installed] codex-cli 0.137.0
 #       large    gpt-5.5                 GPT-5.5 (current) — frontier coding/research
@@ -2584,7 +2584,7 @@ planar models list
 
 ```bash
 planar models routing
-#   coder      → claude claude-sonnet-4-6      (medium) [embedded default]
+#   coder      → claude claude-sonnet-5      (medium) [embedded default]
 #   reviewer   → claude claude-opus-4-8        (large)  [embedded default]
 ```
 

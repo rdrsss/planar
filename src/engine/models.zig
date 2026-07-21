@@ -111,6 +111,105 @@ pub fn resolveRoleAuto(eff: *const config.EffectiveMap, role: []const u8) Resolv
     return resolveRole(eff, vendorForRole(eff, role), role);
 }
 
+// ---------------------------------------------------------------------------
+// Work-type routing (plan 899 D1/D2/D4/D7/D9/D10/D11) — resolve(role,
+// work_type). The plain resolveTier/resolveRole/resolveRoleAuto path above is
+// UNCHANGED and keeps returning the tier default (list[0]) regardless of any
+// routing entries; these are additive overloads-by-name for callers that also
+// have a work type in hand (orchestrator dispatch, wired in a later
+// milestone).
+// ---------------------------------------------------------------------------
+
+/// Resolve `(vendor, tier, work_type)` to a concrete model (plan 899 D9-D11).
+/// Looks up the `[routing.<vendor>.<tier>]` map for `work_type`: on a hit whose
+/// target is present in the tier's candidate list, returns the named
+/// candidate; on a miss (including an unmapped `mechanical` under a custom
+/// config) OR a hit whose target is NOT present in the tier's candidate list
+/// (a stale/invalid routing entry — e.g. an operator narrowed
+/// `[models.<vendor>.<tier>]` without also updating `[routing.*]`), falls back
+/// to the tier default (`list[0]`, same value `resolveTier` returns). The
+/// resolver is deliberately binary (tech-spec Architecture layer 2: hit → named
+/// candidate, miss → `list[0]`) — there is no third error branch here.
+/// Rejecting an invalid routing target is `planar config validate`'s job
+/// (D10); this resolver treats a stale/invalid target exactly like a non-hit,
+/// which is always a valid model (a member of the tier's own list).
+pub fn resolveTierWorkType(
+    eff: *const config.EffectiveMap,
+    vendor: []const u8,
+    tier: []const u8,
+    work_type: []const u8,
+) ResolveError!Resolution {
+    var buf: [160]u8 = undefined;
+    const model_key = std.fmt.bufPrint(&buf, "models.{s}.{s}", .{ vendor, tier }) catch return ResolveError.UnknownTier;
+    const model_vws = eff.get(model_key) orelse {
+        if (!vendorKnown(eff, vendor)) return ResolveError.UnknownVendor;
+        return ResolveError.UnknownTier;
+    };
+    if (model_vws.value.len == 0) return ResolveError.MissingModel;
+
+    var rbuf: [220]u8 = undefined;
+    const routing_key = std.fmt.bufPrint(&rbuf, "routing.{s}.{s}.{s}", .{ vendor, tier, work_type }) catch
+        return .{ .vendor = vendor, .tier = tier, .model = model_vws.value, .source = model_vws.source };
+
+    if (eff.get(routing_key)) |route_vws| {
+        if (route_vws.value.len > 0) {
+            // candidates is always non-empty for a models.<vendor>.<tier> key
+            // recorded by pickModelTierCandidates (candidates[0] == .value);
+            // the single-element fallback below is defensive only.
+            const candidates: []const []const u8 = if (model_vws.candidates.len > 0)
+                model_vws.candidates
+            else
+                &[_][]const u8{model_vws.value};
+            var found = false;
+            for (candidates) |c| {
+                if (std.mem.eql(u8, c, route_vws.value)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (found) return .{ .vendor = vendor, .tier = tier, .model = route_vws.value, .source = route_vws.source };
+            // Stale/invalid routing target (absent from the tier's candidate
+            // list): treat exactly like a non-hit and fall back to the tier
+            // default. `planar config validate` (D10) is the enforcement
+            // point that rejects this config in the first place; the
+            // resolver never hard-errors here (tech-spec Architecture layer
+            // 2 is binary: hit → candidate, miss → list[0]).
+        }
+    }
+
+    // No routing entry for this work type (or a stale/invalid one): fall
+    // back to the tier default.
+    return .{ .vendor = vendor, .tier = tier, .model = model_vws.value, .source = model_vws.source };
+}
+
+/// Resolve `(vendor, role, work_type)`: `roles.<role>` gives the tier, then
+/// `(vendor, tier, work_type)` gives the routed candidate. Mirrors
+/// `resolveRole`'s role→tier lookup exactly.
+pub fn resolveRoleWorkType(
+    eff: *const config.EffectiveMap,
+    vendor: []const u8,
+    role: []const u8,
+    work_type: []const u8,
+) ResolveError!Resolution {
+    var buf: [160]u8 = undefined;
+    const rkey = std.fmt.bufPrint(&buf, "roles.{s}", .{role}) catch return ResolveError.UnknownRole;
+    const tier_vws = eff.get(rkey) orelse return ResolveError.UnknownRole;
+    if (tier_vws.value.len == 0) return ResolveError.UnknownRole;
+    return resolveTierWorkType(eff, vendor, tier_vws.value, work_type);
+}
+
+/// Resolve `(role, work_type)` deriving the vendor from config exactly like
+/// `resolveRoleAuto` — this is the `resolve(role, work_type)` entry point the
+/// plan-899 tech-spec describes (Architecture layer 2): the full
+/// role→(vendor, tier, routed-candidate) path with no caller-supplied vendor.
+pub fn resolveRoleAutoWorkType(
+    eff: *const config.EffectiveMap,
+    role: []const u8,
+    work_type: []const u8,
+) ResolveError!Resolution {
+    return resolveRoleWorkType(eff, vendorForRole(eff, role), role, work_type);
+}
+
 /// One row of the effective role routing table.
 pub const RoutingRow = struct {
     role: []const u8,
@@ -221,7 +320,7 @@ pub const catalog: []const VendorCatalog = &.{
         .bin = "claude",
         .models = &.{
             .{ .id = "claude-opus-4-8", .tier = .large },
-            .{ .id = "claude-sonnet-4-6", .tier = .medium },
+            .{ .id = "claude-sonnet-5", .tier = .medium },
             .{ .id = "claude-haiku-4-5", .tier = .small },
         },
     },
@@ -481,7 +580,7 @@ test "models: default routing mirrors role_model (sonnet coder, opus reviewer)" 
         if (std.mem.eql(u8, r.role, "coder")) {
             saw_coder = true;
             try testing.expectEqualStrings("claude", r.vendor);
-            try testing.expectEqualStrings("claude-sonnet-4-6", r.model);
+            try testing.expectEqualStrings("claude-sonnet-5", r.model);
         }
         if (std.mem.eql(u8, r.role, "reviewer")) {
             saw_reviewer = true;
@@ -540,7 +639,7 @@ test "resolver: default resolution — role→tier→model from embedded default
 
     const coder = try resolveRole(&res.effective, "claude", "coder");
     try testing.expectEqualStrings("medium", coder.tier);
-    try testing.expectEqualStrings("claude-sonnet-4-6", coder.model);
+    try testing.expectEqualStrings("claude-sonnet-5", coder.model);
     try testing.expectEqual(config.Provenance.embedded_default, coder.source);
 
     const reviewer = try resolveRole(&res.effective, "claude", "reviewer");
@@ -600,7 +699,7 @@ test "resolver: resolveRoleAuto derives vendor (default → role_vendors overrid
     defer res.deinit(a);
     const coder = try resolveRoleAuto(&res.effective, "coder");
     try testing.expectEqualStrings("claude", coder.vendor);
-    try testing.expectEqualStrings("claude-sonnet-4-6", coder.model);
+    try testing.expectEqualStrings("claude-sonnet-5", coder.model);
 
     const file =
         \\[role_vendors]
@@ -639,7 +738,7 @@ test "resolver: buildRouting returns a row per canonical role" {
     try testing.expectEqual(routing_roles.len, rows.len);
     try testing.expectEqualStrings("coder", rows[0].role);
     try testing.expectEqualStrings("claude", rows[0].vendor);
-    try testing.expectEqualStrings("claude-sonnet-4-6", rows[0].model);
+    try testing.expectEqualStrings("claude-sonnet-5", rows[0].model);
 }
 
 test "resolver: buildRouting with custom role includes it after built-ins" {
@@ -675,16 +774,16 @@ test "resolver: buildRouting empty config — exactly six built-in rows" {
     defer a.free(rows);
     try testing.expectEqual(routing_roles.len, rows.len);
     try testing.expectEqualStrings("coder", rows[0].role);
-    try testing.expectEqualStrings("claude-sonnet-4-6", rows[0].model);
+    try testing.expectEqualStrings("claude-sonnet-5", rows[0].model);
     try testing.expectEqualStrings("reviewer", rows[1].role);
     try testing.expectEqualStrings("claude-opus-4-8", rows[1].model);
 }
 
 test "models: isKnownModel recognizes curated ids, rejects custom" {
-    try testing.expect(isKnownModel("claude", "claude-sonnet-4-6"));
+    try testing.expect(isKnownModel("claude", "claude-sonnet-5"));
     try testing.expect(isKnownModel("codex", "gpt-5.5"));
     try testing.expect(!isKnownModel("codex", "gpt-9-imaginary"));
-    try testing.expect(!isKnownModel("nope", "claude-sonnet-4-6"));
+    try testing.expect(!isKnownModel("nope", "claude-sonnet-5"));
 }
 
 test "models: renderConfigBlock emits the tier maps + roles scaffold" {
@@ -692,10 +791,163 @@ test "models: renderConfigBlock emits the tier maps + roles scaffold" {
     const block = try renderConfigBlock(a);
     defer a.free(block);
     for ([_][]const u8{
-        "[models.claude]",      "[models.codex]", "claude-sonnet-4-6",
+        "[models.claude]",      "[models.codex]", "claude-sonnet-5",
         "gpt-5.5",              "[roles]",        "coder = \"medium\"",
         "reviewer = \"large\"",
     }) |needle| {
         try testing.expect(std.mem.indexOf(u8, block, needle) != null);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Work-type routing resolver tests (plan 899, task worktype-routing-map)
+// ---------------------------------------------------------------------------
+
+test "resolveTierWorkType: a routing-map hit returns the designated (non-default) candidate" {
+    const a = testing.allocator;
+    const file =
+        \\[models.codex]
+        \\large = ["gpt-5.5", "gpt-5.3-codex-spark"]
+        \\[routing.codex.large]
+        \\schema = "gpt-5.3-codex-spark"
+    ;
+    var res = try config.resolve(a, file, std.process.Environ.empty, null);
+    defer res.deinit(a);
+
+    const r = try resolveTierWorkType(&res.effective, "codex", "large", "schema");
+    try testing.expectEqualStrings("gpt-5.3-codex-spark", r.model);
+    try testing.expectEqual(config.Provenance.config_file, r.source);
+
+    // The role-level and auto-vendor overloads compose the same result.
+    const via_role = try resolveRoleWorkType(&res.effective, "codex", "reviewer", "schema");
+    try testing.expectEqualStrings("gpt-5.3-codex-spark", via_role.model);
+}
+
+test "resolveTierWorkType: unmapped work type falls back to the tier default (list[0])" {
+    // Hand-build the effective map directly (mirrors the "missing model"
+    // resolver test below) so this pins the resolver's fallback logic in
+    // isolation from the shipped embedded default's per-vendor-tier
+    // "mechanical" routing entry — going through config.resolve() would
+    // always populate a "mechanical" entry, which is a separate scenario
+    // (see "mechanical resolves via the shipped embedded default" below).
+    const a = testing.allocator;
+    var eff: config.EffectiveMap = .{};
+    defer eff.deinit(a);
+
+    const model_key = try a.dupe(u8, "models.codex.large");
+    defer a.free(model_key);
+    const candidates = try a.dupe([]const u8, &.{ "a-model", "b-model" });
+    defer a.free(candidates);
+    try eff.put(a, model_key, .{ .value = "a-model", .source = .config_file, .env_var_name = "", .candidates = candidates });
+
+    const routing_key = try a.dupe(u8, "routing.codex.large.schema");
+    defer a.free(routing_key);
+    try eff.put(a, routing_key, .{ .value = "b-model", .source = .config_file, .env_var_name = "" });
+
+    // "feature" has no routing entry at all — falls back to list[0], no error.
+    const feature = try resolveTierWorkType(&eff, "codex", "large", "feature");
+    try testing.expectEqualStrings("a-model", feature.model);
+
+    // "mechanical" behaves identically — a routing key like any other, no
+    // resolver carve-out (D11): also unmapped here, also falls back cleanly.
+    const mechanical = try resolveTierWorkType(&eff, "codex", "large", "mechanical");
+    try testing.expectEqualStrings("a-model", mechanical.model);
+
+    // The mapped work type still resolves to its designated candidate.
+    const schema = try resolveTierWorkType(&eff, "codex", "large", "schema");
+    try testing.expectEqualStrings("b-model", schema.model);
+}
+
+test "resolveTierWorkType: mechanical resolves via the shipped embedded default" {
+    const a = testing.allocator;
+    var res = try config.resolve(a, null, std.process.Environ.empty, null);
+    defer res.deinit(a);
+
+    // Embedded default routes mechanical -> tier default for every vendor/tier.
+    const r = try resolveTierWorkType(&res.effective, "claude", "medium", "mechanical");
+    try testing.expectEqualStrings("claude-sonnet-5", r.model);
+    try testing.expectEqual(config.Provenance.embedded_default, r.source);
+}
+
+test "resolveTierWorkType: a routing entry naming a model absent from the candidate list falls back to list[0] (resolver is binary; validation is D10's job)" {
+    // The resolver never hard-errors on a stale/invalid routing target — that
+    // rejection belongs to `planar config validate` (D10). Here the resolver
+    // treats the invalid hit exactly like a non-hit and returns the tier
+    // default, which is always a valid model (a member of the tier's own
+    // list) — this is the scenario an operator hits by narrowing
+    // `[models.<vendor>.<tier>]` without also updating `[routing.*]`.
+    const a = testing.allocator;
+    const file =
+        \\[models.codex]
+        \\large = ["a-model", "b-model"]
+        \\[routing.codex.large]
+        \\schema = "c-model"
+    ;
+    var res = try config.resolve(a, file, std.process.Environ.empty, null);
+    defer res.deinit(a);
+
+    const r = try resolveTierWorkType(&res.effective, "codex", "large", "schema");
+    try testing.expectEqualStrings("a-model", r.model);
+    try testing.expectEqual(config.Provenance.config_file, r.source);
+}
+
+test "resolveTierWorkType: back-compat — a scalar tier resolves identically for every work type" {
+    const a = testing.allocator;
+    // Every embedded default is a scalar; no config file needed.
+    var res = try config.resolve(a, null, std.process.Environ.empty, null);
+    defer res.deinit(a);
+
+    const work_types_local = [_][]const u8{ "schema", "engine", "architectural", "cli", "feature", "mechanical" };
+    for (work_types_local) |wt| {
+        const r = try resolveTierWorkType(&res.effective, "claude", "medium", wt);
+        try testing.expectEqualStrings("claude-sonnet-5", r.model);
+    }
+}
+
+test "resolveTierWorkType == plain resolveTier for the tier default (back-compat, unaffected by routing)" {
+    const a = testing.allocator;
+    const file =
+        \\[models.codex]
+        \\large = ["gpt-5.5", "gpt-5.3-codex-spark"]
+        \\[routing.codex.large]
+        \\schema = "gpt-5.3-codex-spark"
+    ;
+    var res = try config.resolve(a, file, std.process.Environ.empty, null);
+    defer res.deinit(a);
+
+    // The plain resolveTier/resolveRole path is untouched by the routing map:
+    // it always returns the tier default regardless of any routing entries.
+    const plain = try resolveTier(&res.effective, "codex", "large");
+    try testing.expectEqualStrings("gpt-5.5", plain.model);
+
+    const plain_role = try resolveRole(&res.effective, "codex", "reviewer");
+    try testing.expectEqualStrings("gpt-5.5", plain_role.model);
+
+    // The work-type-aware path with a work type that has NO routing entry
+    // agrees with the plain path.
+    const routed_unmapped = try resolveTierWorkType(&res.effective, "codex", "large", "cli");
+    try testing.expectEqualStrings(plain.model, routed_unmapped.model);
+}
+
+test "resolveRoleAutoWorkType: derives vendor exactly like resolveRoleAuto" {
+    const a = testing.allocator;
+    const file =
+        \\[role_vendors]
+        \\coder = "codex"
+        \\[models.codex]
+        \\medium = ["gpt-5.4", "gpt-5.4-mini"]
+        \\[routing.codex.medium]
+        \\engine = "gpt-5.4-mini"
+    ;
+    var res = try config.resolve(a, file, std.process.Environ.empty, null);
+    defer res.deinit(a);
+
+    const r = try resolveRoleAutoWorkType(&res.effective, "coder", "engine");
+    try testing.expectEqualStrings("codex", r.vendor);
+    try testing.expectEqualStrings("gpt-5.4-mini", r.model);
+
+    // A work type with no routing entry falls back to resolveRoleAuto's result.
+    const auto = try resolveRoleAuto(&res.effective, "coder");
+    const routed_default = try resolveRoleAutoWorkType(&res.effective, "coder", "feature");
+    try testing.expectEqualStrings(auto.model, routed_default.model);
 }
