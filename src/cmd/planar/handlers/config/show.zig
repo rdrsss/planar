@@ -113,15 +113,46 @@ fn showEffective(
             .embedded_default => "embedded default",
         };
 
+        // Multi-candidate tier keys (plan 899 D3/D5): a `models.<vendor>.<tier>`
+        // key whose config value was an array carries the full ordered
+        // candidate list alongside the tier default already shown as `value`.
+        // Scalar-shaped keys (the vast majority, and every key besides
+        // models.<vendor>.<tier>) have candidates.len <= 1 and render exactly
+        // as before.
+        const show_candidates = entry.candidates.len > 1;
+
         if (json_mode) {
-            // One JSON object per line: {"key":"...","value":"...","provenance":"..."}
-            try ctx.stdout.print(
-                "{{\"key\":\"{s}\",\"value\":\"{s}\",\"provenance\":\"{s}\"}}\n",
-                .{ k, display_val, prov_str },
-            );
+            if (show_candidates) {
+                // {"key":"...","value":"...","provenance":"...","candidates":["...","..."]}
+                try ctx.stdout.print(
+                    "{{\"key\":\"{s}\",\"value\":\"{s}\",\"provenance\":\"{s}\",\"candidates\":[",
+                    .{ k, display_val, prov_str },
+                );
+                for (entry.candidates, 0..) |c, i| {
+                    if (i > 0) try ctx.stdout.print(",", .{});
+                    try ctx.stdout.print("\"{s}\"", .{c});
+                }
+                try ctx.stdout.print("]}}\n", .{});
+            } else {
+                // One JSON object per line: {"key":"...","value":"...","provenance":"..."}
+                try ctx.stdout.print(
+                    "{{\"key\":\"{s}\",\"value\":\"{s}\",\"provenance\":\"{s}\"}}\n",
+                    .{ k, display_val, prov_str },
+                );
+            }
         } else {
-            // Human: "key = value  [provenance]"
-            try ctx.stdout.print("{s} = {s}  [{s}]\n", .{ k, display_val, prov_str });
+            if (show_candidates) {
+                // Human: "key = value  [provenance] (candidates: a, b, c)"
+                try ctx.stdout.print("{s} = {s}  [{s}] (candidates: ", .{ k, display_val, prov_str });
+                for (entry.candidates, 0..) |c, i| {
+                    if (i > 0) try ctx.stdout.print(", ", .{});
+                    try ctx.stdout.print("{s}", .{c});
+                }
+                try ctx.stdout.print(")\n", .{});
+            } else {
+                // Human: "key = value  [provenance]"
+                try ctx.stdout.print("{s} = {s}  [{s}]\n", .{ k, display_val, prov_str });
+            }
         }
     }
 }

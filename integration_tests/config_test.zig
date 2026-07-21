@@ -273,3 +273,84 @@ test "config show --effective: a config-file [models] override wins with config-
     }
     try std.testing.expect(found);
 }
+
+test "config show --effective: an array-shaped [models] tier surfaces the candidate list (plan 899 D3/D5)" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    const cfg_path = configPathInTmp(&suite);
+    defer gpa.free(cfg_path);
+
+    // Route codex.large to an ordered candidate list; leave codex.small
+    // scalar (the untouched-edge case).
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{
+        .sub_path = cfg_path,
+        .data =
+        \\[models.codex]
+        \\large = ["gpt-5.5", "gpt-5.3-codex-spark"]
+        ,
+    });
+
+    const extra: []const harness.Suite.ExtraEnvEntry = &.{
+        .{ .key = "PLANAR_CONFIG_PATH", .value = cfg_path },
+    };
+
+    // --- human mode ---
+    const stdout = suite.mustRunWith(&.{ "config", "show", "--effective" }, extra);
+    defer gpa.free(stdout);
+
+    var found_candidates_line = false;
+    var found_scalar_line = false;
+    var lines = std.mem.splitScalar(u8, stdout, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.indexOf(u8, line, "models.codex.large") != null) {
+            if (std.mem.indexOf(u8, line, "(candidates: gpt-5.5, gpt-5.3-codex-spark)") == null) {
+                std.debug.print("\nmodels.codex.large missing candidates suffix: {s}\n", .{line});
+                return error.TestUnexpectedResult;
+            }
+            found_candidates_line = true;
+        }
+        if (std.mem.indexOf(u8, line, "models.codex.small") != null) {
+            // Scalar/one-element edge: no "(candidates: " suffix at all.
+            if (std.mem.indexOf(u8, line, "(candidates:") != null) {
+                std.debug.print("\nmodels.codex.small (scalar) unexpectedly carries a candidates suffix: {s}\n", .{line});
+                return error.TestUnexpectedResult;
+            }
+            found_scalar_line = true;
+        }
+    }
+    try std.testing.expect(found_candidates_line);
+    try std.testing.expect(found_scalar_line);
+
+    // --- JSON mode ---
+    const stdout_json = suite.mustRunWith(&.{ "config", "show", "--effective", "--json" }, extra);
+    defer gpa.free(stdout_json);
+
+    var found_candidates_json = false;
+    var found_scalar_json = false;
+    var json_lines = std.mem.splitScalar(u8, stdout_json, '\n');
+    while (json_lines.next()) |line| {
+        if (std.mem.indexOf(u8, line, "\"key\":\"models.codex.large\"") != null) {
+            if (std.mem.indexOf(u8, line, "\"value\":\"gpt-5.5\"") == null) {
+                std.debug.print("\nmodels.codex.large JSON missing list[0] value: {s}\n", .{line});
+                return error.TestUnexpectedResult;
+            }
+            if (std.mem.indexOf(u8, line, "\"candidates\":[\"gpt-5.5\",\"gpt-5.3-codex-spark\"]") == null) {
+                std.debug.print("\nmodels.codex.large JSON missing candidates array: {s}\n", .{line});
+                return error.TestUnexpectedResult;
+            }
+            found_candidates_json = true;
+        }
+        if (std.mem.indexOf(u8, line, "\"key\":\"models.codex.small\"") != null) {
+            // Scalar/one-element edge: no "candidates" key at all.
+            if (std.mem.indexOf(u8, line, "\"candidates\"") != null) {
+                std.debug.print("\nmodels.codex.small (scalar) JSON unexpectedly carries a candidates key: {s}\n", .{line});
+                return error.TestUnexpectedResult;
+            }
+            found_scalar_json = true;
+        }
+    }
+    try std.testing.expect(found_candidates_json);
+    try std.testing.expect(found_scalar_json);
+}

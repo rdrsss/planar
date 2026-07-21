@@ -45,6 +45,15 @@ pub const ValueWithSource = struct {
     source: Provenance,
     /// Non-empty when source == .env; holds the environment variable name.
     env_var_name: []const u8,
+    /// Full ordered candidate list, populated only for keys that resolve
+    /// through candidate-list-aware logic (currently `models.<vendor>.<tier>`,
+    /// plan 899 D3/D5). A scalar tier value resolves to a one-element list; an
+    /// array resolves to the ordered list as-is. INVARIANT: when non-empty,
+    /// `candidates[0] == value` always — `value` is the tier default and stays
+    /// scalar-compatible for every existing reader (resolveTier, buildRouting,
+    /// skillrender's resolveModel), none of which need to change for this to
+    /// hold. Empty for every other key (scalar-only keys never populate this).
+    candidates: []const []const u8 = &.{},
 };
 
 /// The effective map: flat dotted-key → ValueWithSource.
@@ -488,16 +497,25 @@ pub fn resolve(
         .def_key = null,
     });
 
-    // Model tier maps + role→tier (plan 540). Each key resolves file-over-default
-    // and lands in the effective map (so `config show` surfaces it with
-    // provenance, and the shared model resolver can read it by dotted key).
-    // No env override and no per-association override for these in v1. The
-    // returned value is owned by the effective map; we only call for the side
-    // effect of recording it.
-    const model_keys = [_][]const u8{
-        "models.claude.small",     "models.claude.medium",    "models.claude.large",
-        "models.codex.small",      "models.codex.medium",     "models.codex.large",
-        "models.copilot.small",    "models.copilot.medium",   "models.copilot.large",
+    // Model tier maps (plan 540; candidate-list resolution added plan 899 D3/D5).
+    // Each `models.<vendor>.<tier>` key resolves file-over-default as a
+    // candidate LIST: a scalar config value becomes a one-element list, an
+    // array becomes the ordered list as-is. `candidates[0]` (== `.value`) is
+    // the tier default, so every existing scalar-compatible reader is
+    // unaffected. No env override and no per-association override for these
+    // in v1. Recording lands directly in `eff` (side effect); nothing is
+    // returned for the caller to consume.
+    const model_tier_keys = [_][]const u8{
+        "models.claude.small",  "models.claude.medium",  "models.claude.large",
+        "models.codex.small",   "models.codex.medium",   "models.codex.large",
+        "models.copilot.small", "models.copilot.medium", "models.copilot.large",
+    };
+    for (model_tier_keys) |mk| {
+        try pickModelTierCandidates(allocator, &file_map, &def_map, &eff, mk);
+    }
+
+    // Role→tier (plan 540). Scalar-only; unaffected by the candidate-list change.
+    const role_keys = [_][]const u8{
         "roles.coder",             "roles.reviewer",          "roles.test-coder",
         "roles.documenter",        "roles.doc-author",        "roles.sync-reconciler",
         // role_vendors.* are override-only (no embedded default → resolver falls
@@ -505,7 +523,7 @@ pub fn resolve(
         "role_vendors.coder",      "role_vendors.reviewer",   "role_vendors.test-coder",
         "role_vendors.documenter", "role_vendors.doc-author", "role_vendors.sync-reconciler",
     };
-    for (model_keys) |mk| {
+    for (role_keys) |mk| {
         _ = try pickStr(allocator, environ, &file_map, &def_map, &eff, .{
             .key = mk,
             .env_name = null,
@@ -750,6 +768,81 @@ pub fn resolve(
     return Resolved{ .config = config, .effective = eff };
 }
 
+/// Resolve a `models.<vendor>.<tier>` key as a candidate list (plan 899 D3,
+/// D5). The config value may be a scalar (one candidate) or an array (an
+/// ordered candidate list) at either the config-file layer or the embedded
+/// default layer — file wins over default, mirroring every other model-tier
+/// key. A scalar becomes a one-element list. Records the resolved candidate
+/// list + provenance in `eff` via `storeModelTierCandidates`. No entry is
+/// recorded when the key is absent/empty at both layers (mirrors `pickStr`'s
+/// "nothing found → no provenance entry" behavior).
+fn pickModelTierCandidates(
+    allocator: std.mem.Allocator,
+    file_map: *const std.StringHashMapUnmanaged(parse.Value),
+    def_map: *const std.StringHashMapUnmanaged(parse.Value),
+    eff: *EffectiveMap,
+    key: []const u8,
+) Error!void {
+    if (file_map.get(key)) |fv| {
+        switch (fv) {
+            .string => |s| if (s.len > 0) return storeModelTierCandidates(allocator, eff, key, &.{s}, .config_file),
+            .array => |arr| if (arr.len > 0) return storeModelTierCandidates(allocator, eff, key, arr, .config_file),
+            .int, .bool => {},
+        }
+    }
+    if (def_map.get(key)) |dv| {
+        switch (dv) {
+            .string => |s| if (s.len > 0) return storeModelTierCandidates(allocator, eff, key, &.{s}, .embedded_default),
+            .array => |arr| if (arr.len > 0) return storeModelTierCandidates(allocator, eff, key, arr, .embedded_default),
+            .int, .bool => {},
+        }
+    }
+}
+
+/// Copy `raw` into eff-owned storage as a candidate list and insert into
+/// `eff` under `key`. `candidates[0]` (== `raw[0]`) also lands in `.value`
+/// so every scalar-compatible reader (resolveTier, buildRouting, skillrender's
+/// resolveModel) is unaffected — D5's "list[0] is the tier default" holds by
+/// construction. Frees any previously-stored entry (including a candidate
+/// list) before overwriting, matching the getOrPut pattern used throughout
+/// this file.
+fn storeModelTierCandidates(
+    allocator: std.mem.Allocator,
+    eff: *EffectiveMap,
+    key: []const u8,
+    raw: []const []const u8,
+    source: Provenance,
+) Error!void {
+    std.debug.assert(raw.len > 0);
+
+    const candidates = try allocator.alloc([]const u8, raw.len);
+    var filled: usize = 0;
+    errdefer {
+        for (candidates[0..filled]) |s| allocator.free(s);
+        allocator.free(candidates);
+    }
+    for (raw, 0..) |s, i| {
+        candidates[i] = try allocator.dupe(u8, s);
+        filled += 1;
+    }
+
+    const value = try allocator.dupe(u8, candidates[0]);
+    errdefer allocator.free(value);
+    const k = try allocator.dupe(u8, key);
+    errdefer allocator.free(k);
+
+    const res = try eff.getOrPut(allocator, k);
+    if (res.found_existing) {
+        allocator.free(res.key_ptr.*);
+        allocator.free(res.value_ptr.value);
+        allocator.free(res.value_ptr.env_var_name);
+        for (res.value_ptr.candidates) |s| allocator.free(s);
+        if (res.value_ptr.candidates.len > 0) allocator.free(res.value_ptr.candidates);
+    }
+    res.key_ptr.* = k;
+    res.value_ptr.* = .{ .value = value, .source = source, .env_var_name = "", .candidates = candidates };
+}
+
 /// Handle the special-case parent_field_names (array type). Mirrors Go's
 /// resolveParentFieldNames in resolve.go.
 fn resolveParentFieldNames(
@@ -902,6 +995,8 @@ pub fn deinitEffectiveMap(eff: *EffectiveMap, allocator: std.mem.Allocator) void
         allocator.free(entry.key_ptr.*);
         allocator.free(entry.value_ptr.value);
         allocator.free(entry.value_ptr.env_var_name);
+        for (entry.value_ptr.candidates) |s| allocator.free(s);
+        if (entry.value_ptr.candidates.len > 0) allocator.free(entry.value_ptr.candidates);
     }
     eff.deinit(allocator);
 }
@@ -1073,6 +1168,123 @@ test "effective: config file overrides a model tier + a role tier (plan 540)" {
     const codex_large = res.effective.get("models.codex.large") orelse return error.TestFailed;
     try std.testing.expectEqualStrings("gpt-5.5", codex_large.value);
     try std.testing.expectEqual(Provenance.embedded_default, codex_large.source);
+}
+
+// ---------------------------------------------------------------------------
+// Candidate-list tier resolution (plan 899 D3/D5) — a `models.<vendor>.<tier>`
+// value is either a scalar (one candidate) or an ordered array; `list[0]` is
+// the tier default.
+// ---------------------------------------------------------------------------
+
+test "effective: candidate list — a scalar tier value resolves to a one-element list" {
+    const a = std.testing.allocator;
+    const environ = std.process.Environ.empty;
+
+    // Every embedded default today is a scalar (back-compat baseline).
+    var res = try resolve(a, null, environ, null);
+    defer res.deinit(a);
+
+    const entry = res.effective.get("models.claude.medium") orelse return error.TestFailed;
+    try std.testing.expectEqualStrings("claude-sonnet-4-6", entry.value);
+    try std.testing.expectEqual(@as(usize, 1), entry.candidates.len);
+    try std.testing.expectEqualStrings("claude-sonnet-4-6", entry.candidates[0]);
+    // Invariant: candidates[0] == value always.
+    try std.testing.expectEqualStrings(entry.value, entry.candidates[0]);
+}
+
+test "effective: candidate list — a config-file array becomes the ordered candidate list" {
+    const a = std.testing.allocator;
+    const environ = std.process.Environ.empty;
+
+    const file_content =
+        \\[models.codex]
+        \\large = ["gpt-5.5", "gpt-5.3-codex-spark"]
+    ;
+    var res = try resolve(a, file_content, environ, null);
+    defer res.deinit(a);
+
+    const entry = res.effective.get("models.codex.large") orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(usize, 2), entry.candidates.len);
+    try std.testing.expectEqualStrings("gpt-5.5", entry.candidates[0]);
+    try std.testing.expectEqualStrings("gpt-5.3-codex-spark", entry.candidates[1]);
+}
+
+test "effective: candidate list — list[0] is the tier default surfaced as .value (D5)" {
+    const a = std.testing.allocator;
+    const environ = std.process.Environ.empty;
+
+    const file_content =
+        \\[models.codex]
+        \\large = ["gpt-5.3-codex-spark", "gpt-5.5"]
+    ;
+    var res = try resolve(a, file_content, environ, null);
+    defer res.deinit(a);
+
+    const entry = res.effective.get("models.codex.large") orelse return error.TestFailed;
+    // The FIRST array element is the default, regardless of alphabetical or
+    // catalog ordering — list[0] wins by construction.
+    try std.testing.expectEqualStrings("gpt-5.3-codex-spark", entry.value);
+    try std.testing.expectEqualStrings(entry.candidates[0], entry.value);
+
+    // Every existing scalar-compatible reader (resolveTier et al reads
+    // `.value` directly) is therefore unaffected by the candidate-list change.
+    const models_mod = @import("../models.zig");
+    const resolved = try models_mod.resolveTier(&res.effective, "codex", "large");
+    try std.testing.expectEqualStrings("gpt-5.3-codex-spark", resolved.model);
+}
+
+test "effective: candidate list — provenance preserved for both scalar and array shapes" {
+    const a = std.testing.allocator;
+    const environ = std.process.Environ.empty;
+
+    // Scalar override: config-file provenance.
+    const scalar_file =
+        \\[models.codex]
+        \\medium = "gpt-5.5"
+    ;
+    var res1 = try resolve(a, scalar_file, environ, null);
+    defer res1.deinit(a);
+    const scalar_entry = res1.effective.get("models.codex.medium") orelse return error.TestFailed;
+    try std.testing.expectEqual(Provenance.config_file, scalar_entry.source);
+    try std.testing.expectEqual(@as(usize, 1), scalar_entry.candidates.len);
+
+    // Array override: config-file provenance too.
+    const array_file =
+        \\[models.codex]
+        \\medium = ["gpt-5.5", "gpt-5.4-mini"]
+    ;
+    var res2 = try resolve(a, array_file, environ, null);
+    defer res2.deinit(a);
+    const array_entry = res2.effective.get("models.codex.medium") orelse return error.TestFailed;
+    try std.testing.expectEqual(Provenance.config_file, array_entry.source);
+    try std.testing.expectEqual(@as(usize, 2), array_entry.candidates.len);
+
+    // An untouched scalar-only tier still carries embedded_default provenance.
+    const untouched = res2.effective.get("models.codex.large") orelse return error.TestFailed;
+    try std.testing.expectEqual(Provenance.embedded_default, untouched.source);
+    try std.testing.expectEqual(@as(usize, 1), untouched.candidates.len);
+}
+
+test "effective: candidate list — a config-file override of a scalar-default tier to a list" {
+    const a = std.testing.allocator;
+    const environ = std.process.Environ.empty;
+
+    // The embedded default for claude.small is a scalar; override it with an
+    // array in the config file and confirm the override wins with the full
+    // ordered list + config-file provenance.
+    const file_content =
+        \\[models.claude]
+        \\small = ["claude-haiku-4-5", "claude-sonnet-4-6"]
+    ;
+    var res = try resolve(a, file_content, environ, null);
+    defer res.deinit(a);
+
+    const entry = res.effective.get("models.claude.small") orelse return error.TestFailed;
+    try std.testing.expectEqual(Provenance.config_file, entry.source);
+    try std.testing.expectEqual(@as(usize, 2), entry.candidates.len);
+    try std.testing.expectEqualStrings("claude-haiku-4-5", entry.candidates[0]);
+    try std.testing.expectEqualStrings("claude-sonnet-4-6", entry.candidates[1]);
+    try std.testing.expectEqualStrings("claude-haiku-4-5", entry.value);
 }
 
 test "effective: file overrides default vendor" {
