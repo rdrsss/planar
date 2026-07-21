@@ -96,7 +96,7 @@ During long spawns, the orchestrator calls `dispatch.lua/heartbeat {claim_token}
 **What happens:**
 1. Intake: resolve tasks, confirm scope and acceptance signal. File `open-question` for ambiguous tasks.
 2. Read the claim-aware work queue with `planar plan next <anchor-plan>` (or an equivalent claim-aware selector for explicit task IDs). Exclude active unexpired claims from runnable work. Surface stale claims to the operator or reconcile/force-takeover only when explicitly directed.
-3. Propose dispatch shape per [Dispatch Granularity](methodology.md#dispatch-granularity). Analyze coupling (shared file scope, active claims, sequential dependencies, doc-only deltas) and surface a proposal naming one of the six shapes. The gate text opens with the **dispatch preview** — the task breakdown rendered as the ordered `blocks`-subgraph with the proposed Axis C model tier per task and the routed-model candidate `resolve(role, work_type)` selects within that tier (see [`skills/src/pl-orchestrator.md` §Dispatch preview and model tiers](../skills/src/pl-orchestrator.md) for the build/render rules) — then presents all six shapes with a one-line trade-off each:
+3. Propose dispatch shape per [Dispatch Granularity](methodology.md#dispatch-granularity). Analyze coupling (shared file scope, active claims, sequential dependencies, doc-only deltas) and surface a proposal naming one of the six shapes. Proposed groups must be tier-homogeneous: a group mixing confirmed Axis C tiers is partitioned by tier (one coder per partition, dependency edges still ordering the dispatches) or dispatched per-task — a cycle never inherits its highest task's tier ([`agents/models.md` §Coder tier policy](models.md#coder-tier-policy)). The gate text opens with the **dispatch preview** — the task breakdown rendered as the ordered `blocks`-subgraph with the proposed Axis C model tier per task and the routed-model candidate `resolve(role, work_type)` selects within that tier (see [`skills/src/pl-orchestrator.md` §Dispatch preview and model tiers](../skills/src/pl-orchestrator.md) for the build/render rules) — then presents all six shapes with a one-line trade-off each:
 
    ```
    Phase 3 dispatch preview for plan <p> (<n> open tasks):
@@ -108,13 +108,19 @@ During long spawns, the orchestrator calls `dispatch.lua/heartbeat {claim_token}
        #14  wire-handler          blocked_by: 12     tier: medium  model: claude-sonnet-5          (feature)
      serialized — never waved
        #15  backfill-migration    migration guard    tier: large   model: claude-opus-4-8            (engine)
+       #16  rework-claim-lease    —                  tier: ?       model: —                        (engine? feature? — touches src/engine/ but follows the extant handler pattern)
 
      Tiers resolve per agents/models.md §Tier Table; medium is the coder
-     default, large only for schema / engine-judgment / architectural cycles.
-     The model column is the routed candidate within that tier — the
-     one-word work-type tag now shown on every row is the same
-     classification that drives Axis C tier escalation, but the model
-     lookup applies it at every tier, not only on `large` rows.
+     default, large only for schema / engine-judgment / architectural work
+     (CLI-surface changes are medium). Tiers are per-task — a mixed-tier
+     group is partitioned by tier, never inflated to its highest row. A
+     `tier: ?` row is a classification the orchestrator could not decide;
+     it names the competing signals and requires an explicit operator
+     answer before any cycle containing it dispatches. The model column
+     is the routed candidate within that tier — the one-word work-type
+     tag shown on every row is the same classification that drives Axis C
+     tier escalation, but the model lookup applies it at every tier, not
+     only on `large` rows.
 
    Phase 3 dispatch shape for plan <p>:
 
@@ -137,7 +143,7 @@ During long spawns, the orchestrator calls `dispatch.lua/heartbeat {claim_token}
     task <id> → <candidate> ...]
    ```
 
-   **Wait for explicit user confirmation** before dispatching. The confirmation covers both the preview's tier column and its routed-model column: the operator may override any task's tier (`task 14 → large`) and/or any task's candidate directly (`task 14 → gpt-5.3-codex-spark`) before confirming, and the confirmed tier and candidate are both binding for dispatch — a tier override without an explicit candidate override re-resolves the candidate at the new tier via `resolve(role, work_type)`; a candidate override stands regardless of tier. If the invocation already supplied `--strict`, `--grouped`, `--barrel-grouped`, `--barrel-deferred [--barrel-deferred-at milestone|plan]`, `--barrel-bypass`, or one or more `--batch <task-ids>` flags, honor that without prompting. The flags are mutually exclusive with each other and with `--strict` — passing more than one is a user error. No flag pre-commits Axis C: under a fully-flagged invocation, still print the dispatch preview, proceed without prompting while every task sits at the default tier and its routed candidate, and stop for explicit confirmation before dispatching any task proposed at `large`.
+   **Wait for explicit user confirmation** before dispatching. The confirmation covers both the preview's tier column and its routed-model column: the operator may override any task's tier (`task 14 → large`) and/or any task's candidate directly (`task 14 → gpt-5.6-sol`) before confirming, and the confirmed tier and candidate are both binding for dispatch — a tier override without an explicit candidate override re-resolves the candidate at the new tier via `resolve(role, work_type)`; a candidate override stands regardless of tier. If the invocation already supplied `--strict`, `--grouped`, `--barrel-grouped`, `--barrel-deferred [--barrel-deferred-at milestone|plan]`, `--barrel-bypass`, or one or more `--batch <task-ids>` flags, honor that without prompting. The flags are mutually exclusive with each other and with `--strict` — passing more than one is a user error. No flag pre-commits Axis C: under a fully-flagged invocation, still print the dispatch preview, proceed without prompting while every task sits at the default tier and its routed candidate, and stop for explicit confirmation before dispatching any task proposed at `large` and before any cycle containing a `tier: ?` (ambiguous-classification) row. The dispatch preview is unconditional on every dispatch path — including hand-picked/direct-claim dispatch (`claim --entity task:<id>`) and mid-plan resumes: no coder dispatch may occur for a task that never appeared in a rendered preview row this session.
 4. Plan dispatch: optionally run `planar-agent peek <plan>` to dry-run "what's next" without writing, validate against current claim state. Then invoke `planar-execute run workflows/dispatch.lua --phase prep --args '{"plan_id":<id>}'`. The `prep` phase atomically claims the next task via `planar-agent pull` and returns `{task_id, claim_token, brief, strategy, run_uid}`. If `{available:false}` is returned, the queue is empty — recompute or stop. The orchestrator then **spawns a fresh coder through the host's subagent dispatch surface** using the returned brief. **Worktree isolation** is model-runnable via the `workflows/parallel-dispatch.lua` seam: `cycle_plan` computes one sequential lane for `classic` / `barrel-deferred` / `barrel-bypass` with `--isolation worktree`, while `plan` / `waves` compute staged multi-lane fan-out under `--strategy parallel-fanout`. The seam computes branch names, worktree paths, merge order, and teardown and hands back; the model runs the git ops and spawns the coders. There is no external harness in this path. See [`skills/src/pl-orchestrator.md` §Worktree Isolation](../skills/src/pl-orchestrator.md) for the per-step ritual.
 
    **`--parent-action` for `planar-watch tree` hierarchy.** When the orchestrator dispatches a coder and wants the coder's action to appear as a child of the orchestrator's own action in `planar-watch tree`, it passes `--parent-action <its-own-action-id>` to `planar-agent pull`. The orchestrator's action id is the `action_id` field returned by its own `pull` call. Without this flag, each `pull` starts a new root action and the tree renders as flat disjoint chains. See [`agents/methodology.md` § Coordination claims](methodology.md#coordination-claims) for the full flag description and example.

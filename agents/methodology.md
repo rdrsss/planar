@@ -486,7 +486,7 @@ Use **review** (full coder + reviewer dispatch) if ANY of the following hold:
 
 ### Axis C — Tier (separate from A)
 
-The coder subagent defaults to `medium` tier (sonnet). The orchestrator may escalate to `large` (opus) for schema changes, engine-judgment calls, or large architectural cycles — but tier is independent of isolation. Even an opus-tier coder must run as a separately spawned subagent. See [`agents/models.md`](models.md) for tier-to-model resolution.
+The coder subagent defaults to `medium` tier (sonnet); Planar's decomposition-first premise means execution is deliberately cheap, and the default is expected to hold for most tasks. The orchestrator may propose `large` (opus) per task for schema changes, genuine engine-judgment calls (allocator/error-set/transaction/status-transition design — not routine engine wiring), or large architectural work — but tier is per-task and independent of isolation. A cycle never inherits its highest task's tier: a mixed-tier group is partitioned by tier (one coder per partition) or dispatched per-task. Classification ambiguity is surfaced to the operator at the gate as a `tier: ?` row, never resolved by rounding up to `large`. Even an opus-tier coder must run as a separately spawned subagent. See [`agents/models.md` §Coder tier policy](models.md#coder-tier-policy) for the full policy and tier-to-model resolution.
 
 ## Common defects pre-flight checklist
 
@@ -525,6 +525,8 @@ Before Phase 3 dispatch the orchestrator analyzes task coupling (shared file sco
 | `barrel-grouped`   | Per group                     | Alias for `grouped` with the milestone heuristic locked in; explicit barrel namespace. |
 | `barrel-deferred`  | Deferred (at boundary)        | Throughput priority with a late safety net. Coder cycles run back-to-back; reviewer fires once at a milestone (default) or plan boundary on the union diff. |
 | `barrel-bypass`    | None                          | Maximum throughput. Quality gates ARE the review signal. No reviewer dispatch at all. |
+
+Groups must be **tier-homogeneous**: a `grouped`/`single` cycle whose tasks carry different confirmed Axis C tiers is partitioned by tier before dispatch — one coder per tier partition, dependency edges still ordering the dispatches — or falls back to per-task dispatch for that cycle. A cycle never inherits its highest task's tier (see [`agents/models.md` §Coder tier policy](models.md#coder-tier-policy)).
 
 The orchestrator **surfaces the proposed shape to the user and waits for confirmation** before dispatching. This is a hard user gate identical in strength to the Phase 2 ingestion gate. The user may accept the proposal, edit the groupings, or pick a different shape entirely. The gate is bypassed only when the invocation already specifies `--strict`, `--grouped`, `--barrel-grouped`, `--barrel-deferred [--barrel-deferred-at milestone|plan]`, `--barrel-bypass`, or `--batch <task-ids>...` — those flags act as a pre-committed answer.
 
