@@ -4326,7 +4326,7 @@ planar models list [--json]
 providers:
   claude   [installed] 2.1.170 (Claude Code)
       large    claude-opus-4-8
-      medium   claude-sonnet-4-6
+      medium   claude-sonnet-5
       small    claude-haiku-4-5
   codex    [installed] codex-cli 0.137.0
       large    gpt-5.5
@@ -4334,10 +4334,10 @@ providers:
       small    gpt-5.4-mini
       small    gpt-5.3-codex-spark
 default routing (role → tier → vendor model):
-  coder      → medium claude claude-sonnet-4-6
+  coder      → medium claude claude-sonnet-5
   reviewer   → large  claude claude-opus-4-8
-  test-coder → medium claude claude-sonnet-4-6
-  documenter → medium claude claude-sonnet-4-6
+  test-coder → medium claude claude-sonnet-5
+  documenter → medium claude claude-sonnet-5
   doc-author → large  claude claude-opus-4-8
   sync-reconciler → large claude claude-opus-4-8
 ```
@@ -4358,6 +4358,99 @@ planar models refresh [--json]
 **Description:** Same probe as `list`, and additionally write the result to `${PLANAR_HOME:-~/.planar}/models/catalog.json` as a deterministic cache (creating `models/`). Prints a `wrote model cache: <path>` provenance line to stderr so `--json` stdout stays clean for scripts.
 
 **Exit codes:** `0` on success.
+
+---
+
+### `planar models routing`
+
+**Synopsis:**
+```
+planar models routing [--json]
+```
+
+**Description:** Resolve the effective config through the shared model resolver and print each runtime-resolvable role's vendor, tier, concrete model, and provenance. It composes `[defaults].vendor`, `[roles]`, `[role_vendors]`, and `[models.<vendor>]`. Read-only.
+
+`--json` is the machine form used by external workflow callers that need a per-role dispatch table without linking Planar internals.
+
+**Output (`--json`):** An array of `{ "role", "vendor", "tier", "model", "source" }` rows.
+
+**Exit codes:** `0` on success; `1` for config resolution errors.
+
+---
+
+### `planar models apply`
+
+**Synopsis:**
+```
+planar models apply [--force]
+```
+
+**Description:** Append a generated `[models.<vendor>]` tier map plus `[roles]` scaffold to the resolved config file as an editable starting point. Skips when a `[models]` section is already present; `--force` appends again. This command writes only the config file, not the database.
+
+**Exit codes:** `0` on success or already-present skip; `1` for config path or filesystem failures.
+
+---
+
+### `planar models candidates`
+
+**Synopsis:**
+```
+planar models candidates [--json]
+```
+
+**Description:** Resolve the effective config's per-vendor-tier candidate lists (`[models.<vendor>.<tier>]` — scalar or ordered list, plan 899 D3) and the work-type routing map (`[routing.<vendor>.<tier>]`, plan 899 D4/D9/D10/D11), and print both with provenance. `list[0]` in a candidate list is always the tier default; the routing map names, per work type (`schema`/`engine`/`architectural`/`cli`/`feature`/`mechanical`), which candidate in that list `resolve(role, work_type)` selects. Only work types with an actual routing entry (file override or embedded default) are reported — an unmapped work type falls back to the tier default at resolve time and is simply absent from this listing. Read-only.
+
+**Output (human):**
+```
+tier candidate lists (models.<vendor>.<tier>):
+  claude   small  → claude-haiku-4-5  [embedded default]
+  claude   medium → claude-sonnet-5  [embedded default]
+  claude   large  → claude-opus-4-8  [embedded default]
+  codex    small  → gpt-5.4-mini  [embedded default]
+  codex    medium → gpt-5.4  [embedded default]
+  codex    large  → gpt-5.5  [embedded default]
+  copilot  small  → gpt-5-mini  [embedded default]
+  copilot  medium → gpt-5  [embedded default]
+  copilot  large  → claude-opus-4  [embedded default]
+
+work-type routing map (routing.<vendor>.<tier>.<work-type>):
+  claude   small  mechanical     → claude-haiku-4-5      [embedded default]
+  claude   medium mechanical     → claude-sonnet-5       [embedded default]
+  claude   large  mechanical     → claude-opus-4-8       [embedded default]
+  codex    small  mechanical     → gpt-5.4-mini           [embedded default]
+  codex    medium mechanical     → gpt-5.4                [embedded default]
+  codex    large  mechanical     → gpt-5.5                [embedded default]
+  copilot  small  mechanical     → gpt-5-mini             [embedded default]
+  copilot  medium mechanical     → gpt-5                  [embedded default]
+  copilot  large  mechanical     → claude-opus-4          [embedded default]
+```
+
+A config-file override to a candidate list (e.g. `[models.codex] large = ["gpt-5.5", "gpt-5.3-codex-spark"]`) shows all listed candidates with `[config file]` provenance; a config-file `[routing.<vendor>.<tier>]` entry naming a non-`mechanical` work type appears as an additional row.
+
+**Output (`--json`):** `{ "candidates": [ { "vendor", "tier", "candidates": [...], "source" } ], "routing": [ { "vendor", "tier", "work_type", "model", "source" } ] }`.
+
+**Exit codes:** `0` on success.
+
+---
+
+### `planar models evals`
+
+**Synopsis:**
+```
+planar models evals [--json]
+```
+
+**Description:** Aggregate completed dispatch outcomes into a per-`(work_type, candidate)` routing scorecard and preview-only recommendation list. The command reads the `dispatch_shape:` / `model_choice:` note convention in `session_entries`, terminal `agent_work_claims` status, and `agent_actions(action_kind='test_coder')` rows. It is read-only and writes nothing: no routing-map mutation, no database write, no config write.
+
+`model_choice` entries must carry a `{tier,candidate,work_type}` triple per task. Dispatch notes recorded before that convention, or malformed `model_choice` JSON, are counted in `legacy_dispatch_notes_skipped` and excluded from scoring rather than guessed.
+
+**Signals sourced:** reviewer disposition is recovered from terminal claim status (`completed` as approve, `aborted` as abort); iteration count is recovered from repeated dispatch notes for the same task; test-coder expansion is recovered from `test_coder` action outcomes. Quality-gate pass/fail is not persisted as a discrete field, so the command reports `quality_gate_pass_fail=false` in `signals_sourced`.
+
+**Output (human):** A ranked scorecard by work type, followed by preview-only recommendations and the `signals sourced` line.
+
+**Output (`--json`):** `{ "scorecard": [ScoreRow], "recommendations": [Recommendation], "signals_sourced": {...}, "legacy_dispatch_notes_skipped": N }`. A candidate with no completed-dispatch history in an observed sibling candidate list reports `insufficient_data: true` instead of a fabricated score.
+
+**Exit codes:** `0` on success; `1` for database or config aggregation errors.
 
 ---
 
@@ -4764,14 +4857,17 @@ Reads:
 - `plans` — anchor plan and existing child plans.
 - `tasks` — existing tasks linked via `entity_links(relationship='derives-from')`.
 - `decisions` — existing decisions linked via `entity_links(relationship='derives-from')`.
+- `questions` — existing anchor-linked questions for title-based reconciliation.
+- `test_scenarios` — existing scenarios linked to the anchor for title-based reconciliation.
 - `entity_links` — existing link rows for reconciliation.
 
 Writes (only with `--apply`, atomically per anchor plan):
 - `plans` — inserts child plans; updates anchor plan status (`draft` → `active` on first apply).
 - `tasks` — inserts or updates tasks; cancels orphan tasks (only with `--apply-removals`).
 - `decisions` — inserts or updates decisions.
-- `test_scenarios` — inserts auto-drafted scenarios for non-trivial tasks.
-- `entity_links` — inserts `derives-from` links (plan→anchor, task→plan, decision→anchor), `touches` links (task→repo), and `verifies` links (scenario→task).
+- `questions` — inserts H3 items under tech-spec `## Open Questions`; when the first non-blank body line begins with the case-sensitive `Resolution:` token, answers the new or existing question during the same apply.
+- `test_scenarios` — inserts or updates scenarios parsed from `test-spec.md`; also auto-drafts `Verify: <task title>` scenarios for non-trivial newly added tasks (task body contains at least two bullet lines).
+- `entity_links` — inserts `derives-from` links (plan→anchor, task→plan, decision→anchor, scenario→anchor), `touches` links from roadmap `[touches: <repo-slug>, ...]` annotations (task→repo), and `verifies` links (scenario→task).
 
 **Capture:**
 - Preview mode: one `session_entries` row with `prefix='read'` appended.
@@ -5088,20 +5184,32 @@ Resolution order (highest to lowest priority):
 carry literal values in the config file. Use the `*_env` convention to name the
 environment variable instead.
 
-**Model routing (plan 540).** The config carries per-vendor model **tier maps**
-and a vendor-independent **role→tier** map. The canonical tiers are `small`,
-`medium`, and `large`:
+**Model routing (plan 540, extended plan 899).** The config carries per-vendor
+model **tier maps** (each tier a scalar or an ordered candidate list), a
+vendor+tier **work-type routing map**, and a vendor-independent **role→tier**
+map. The canonical tiers are `small`, `medium`, and `large`; the canonical
+work types are `schema`, `engine`, `architectural`, `cli`, `feature`, and
+`mechanical`:
 
 ```toml
 [models.claude]
 small  = "claude-haiku-4-5"
-medium = "claude-sonnet-4-6"
+medium = "claude-sonnet-5"
 large  = "claude-opus-4-8"
 
 [models.codex]
 small  = "gpt-5.4-mini"
 medium = "gpt-5.4"
-large  = "gpt-5.5"
+# A tier value may be an ordered candidate list instead of a scalar;
+# list[0] is the tier default. Every other reader is scalar-compatible.
+large  = ["gpt-5.5", "gpt-5.3-codex-spark"]
+
+[routing.codex.large]
+# work-type → candidate id (must be a member of the tier's candidate list
+# above). Unmapped work types fall back to the tier default (list[0]).
+schema        = "gpt-5.5"
+architectural = "gpt-5.5"
+feature       = "gpt-5.3-codex-spark"
 
 [roles]
 coder      = "medium"   # coder resolves to the active vendor's `medium` model
@@ -5115,13 +5223,21 @@ sync-reconciler = "large"
 Override any tier to re-route every role at that tier for that vendor, or any
 role to move it to a different tier. A `[role_vendors]` section (role→vendor,
 override-only) routes individual roles to a different vendor; unset roles use
-`[defaults].vendor`. `planar config show --effective` shows each resolved
-`models.<vendor>.<tier>` / `roles.<role>` / `role_vendors.<role>` key with its
-provenance; `planar models routing` prints the resolved role→vendor/model
-table; `planar models` reports which provider CLIs are installed. This is the
-**single authoritative routing source** — the skill-render Tier Table
-(`agents/models.md`) and workflow callers resolve through it (plan 540); there
-is no separate `execute-config.toml`.
+`[defaults].vendor`. `planar config validate` rejects a `[routing.<vendor>.<tier>]`
+entry naming a model id absent from that tier's candidate list — a stale or
+typo'd routing target is a configuration error, not a silent fall-through.
+`planar config show --effective` shows each resolved
+`models.<vendor>.<tier>` / `routing.<vendor>.<tier>.<work-type>` /
+`roles.<role>` / `role_vendors.<role>` key with its provenance;
+`planar models routing` prints the resolved role→vendor/model table;
+`planar models candidates` prints the effective tier candidate lists and the
+work-type routing map with provenance; `planar models` reports which provider
+CLIs are installed. This is the **single authoritative routing source** — the
+skill-render Tier Table (`agents/models.md`), the orchestrator's Phase 3
+dispatch-preview routed-model column (`resolve(role, work_type)`; see
+[`skills/src/pl-orchestrator.md` §Dispatch preview and model tiers](../skills/src/pl-orchestrator.md)),
+and other workflow callers all resolve through it; there is no separate
+`execute-config.toml`.
 
 ---
 
@@ -6786,6 +6902,7 @@ For quick reference, all documented commands grouped by domain:
 | `capture` | `capture session`, `capture end`, `capture commits`, `capture note`, `capture command`, `capture file`, `capture snapshot` |
 | `audit` | `audit trail`, `audit session`, `audit commits`, `audit publish-decision`, `audit handoff-readiness` |
 | `health` | `health` |
+| `models` | `models list`, `models refresh`, `models routing`, `models apply`, `models candidates`, `models evals` |
 | `links` | `links add`, `links list`, `links remove`, `links trail`, `links update` (deferred to M11) |
 | `report` | `report [--days <n>] [--tail <n>] [--json]` |
 | `search` | `search <query>` |

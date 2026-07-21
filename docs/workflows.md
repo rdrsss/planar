@@ -110,7 +110,7 @@ planar plan active 42
 
 Use this when an anchor plan is `active` and you want to execute tasks.
 
-**What happens:** The orchestrator analyzes task coupling, proposes a dispatch shape (strict/grouped/single), waits for confirmation, then dispatches tasks to the coder. Each coder output goes through the reviewer. The loop cap is 5 iterations per dispatch cycle.
+**What happens:** Phase 3 runs two gates in order before dispatching any coder. Gate 1 — strategy + isolation — recommends an execution strategy (`classic`, `barrel-deferred`, `barrel-bypass`, or `parallel-fanout`) and isolation mode (`pwd` or `worktree`), then renders a dispatch preview showing each task with its proposed model tier and routed-model candidate. Gate 2 picks the dispatch shape nested under that strategy. Each coder output goes through the test-coder coverage gate when needed and then the reviewer unless the confirmed mode bypasses or defers review. The reviewer loop cap is 5 iterations per dispatch cycle.
 
 ### Invoke
 
@@ -118,27 +118,60 @@ Use this when an anchor plan is `active` and you want to execute tasks.
 /orchestrator 42
 ```
 
-The orchestrator reads the anchor plan's task graph and proposes a dispatch shape:
+The orchestrator reads claim-aware task state, then opens Gate 1:
 
 ```
 Plan 42 "billing-export-csv" — 5 todo tasks
+
+Phase 3 dispatch preview:
+
+  wave 1
+    #43  add-export-jobs-table     blocks: 45        tier: large   model: claude-opus-4-8  (schema)
+    #44  add-billing-exports-table —                 tier: large   model: claude-opus-4-8  (schema)
+  wave 2 — unblocks when #43 is done
+    #45  write-migration-0008      blocked_by: 43    tier: large   model: claude-opus-4-8  (schema)
+    #46  implement-csv-serialiser  —                 tier: medium  model: claude-sonnet-5  (feature)
+    #47  wire-up-export-endpoint   —                 tier: medium  model: claude-sonnet-5  (feature)
+
+Recommended strategy: classic  pwd
+Rationale: 5-task plan, sequential migration dependencies across 2 waves
+
+  classic pwd       — sequential in current checkout; reviewer per cycle.
+  classic worktree  — sequential cycle worktrees; reviewer per cycle.
+  barrel-deferred   — back-to-back coder cycles; reviewer at boundary.
+  barrel-bypass     — no reviewer; gates are the entire signal.
+  parallel-fanout   — staged worktree fan-out; N coders concurrently.
+
+Confirm strategy and isolation? [classic pwd / classic worktree / barrel-deferred pwd /
+  barrel-deferred worktree / barrel-bypass / parallel-fanout / task <id> -> <tier>]
+```
+
+After confirming the strategy, Gate 2 opens:
+
+```
+Phase 3 dispatch shape for plan 42:
 
 Proposed dispatch shape: grouped
   Group A: tasks 43, 44, 45  (all touch migrations/ — one coder cycle)
   Group B: tasks 46, 47      (independent of Group A)
 
-Accept this shape? [yes / edit / strict / single]
+Accept this shape, the tier assignments, and the routed candidates?
+[yes / edit / strict / single / task <id> -> <tier> / task <id> -> <candidate>]
 ```
 
-Confirm (`yes`) or adjust. The orchestrator then dispatches Group A to `/coder`, routes the output to `/reviewer`, and iterates based on reviewer feedback. On `approve`, tasks flip to `done` and Group B is dispatched.
+Confirm (`yes`) or adjust. The orchestrator then dispatches Group A to a freshly spawned coder subagent, routes the output through Phase 3.5 when needed, and either dispatches the reviewer or records the confirmed reviewer disposition. On `approve`, tasks flip to `done` through `planar-agent complete` and Group B is dispatched.
 
 ### Flags
 
 | Flag | Effect |
 |------|--------|
+| `--strategy <name>` | Pre-commit an execution strategy (`classic`, `barrel-deferred`, `barrel-bypass`, `parallel-fanout`); skip the strategy gate |
+| `--isolation <pwd|worktree>` | For sequential strategies, run cycles in the current checkout (`pwd`) or an isolated git worktree (`worktree`); defaults to `pwd` |
 | `--strict` | One coder cycle per task; skip the dispatch-shape gate |
 | `--grouped` | Orchestrator picks groupings; skip the gate |
 | `--batch 43,44,45 --batch 46,47` | Explicit groupings; skip the gate |
+| `--finalize` | Run Phase 3.7 finalization after execution cycles complete; dispatches the janitor to merge, reconcile, and close out the plan |
+| `--no-docs` | Skip Phase 6 (documenter); by default, documenter runs after a cycle that saw at least one merged coder run |
 | `--propagate` | After all tasks are done, run `ext propagate` automatically |
 | `--archive` | After propagation, archive the workbench tree |
 
@@ -2572,7 +2605,7 @@ planar models list
 # providers:
 #   claude   [installed] 2.1.170 (Claude Code)
 #       large    claude-opus-4-8
-#       medium   claude-sonnet-4-6
+#       medium   claude-sonnet-5
 #       small    claude-haiku-4-5
 #   codex    [installed] codex-cli 0.137.0
 #       large    gpt-5.5                 GPT-5.5 (current) — frontier coding/research
@@ -2584,13 +2617,34 @@ planar models list
 
 ```bash
 planar models routing
-#   coder      → claude claude-sonnet-4-6      (medium) [embedded default]
+#   coder      → claude claude-sonnet-5      (medium) [embedded default]
 #   reviewer   → claude claude-opus-4-8        (large)  [embedded default]
 ```
 
 `planar models routing --json` is the machine form an external workflow harness shells to pick its worker model per role.
 
-**3. Override routing in `~/.planar/config.toml`.** Optionally scaffold an editable block first:
+**3. Inspect candidate lists and work-type routing.**
+
+```bash
+planar models candidates
+# tier candidate lists (models.<vendor>.<tier>):
+#   codex    large  -> gpt-5.5  [embedded default]
+#
+# work-type routing map (routing.<vendor>.<tier>.<work-type>):
+#   codex    large  mechanical -> gpt-5.5  [embedded default]
+```
+
+Candidate lists let a tier hold multiple model ids while keeping `list[0]` as the tier default. The `[routing.<vendor>.<tier>]` map selects a specific candidate for work types such as `schema`, `engine`, `architectural`, `cli`, `feature`, and `mechanical`.
+
+**4. Review routing evals when there is dispatch history.**
+
+```bash
+planar models evals --json
+```
+
+The evals command is read-only. It aggregates completed dispatch notes into a per-`(work_type, candidate)` scorecard and preview-only recommendations. Do not treat a recommendation as applied; ask the operator before changing the routing map.
+
+**5. Override routing in `~/.planar/config.toml`.** Optionally scaffold an editable block first:
 
 ```bash
 planar models apply        # writes [models.*] + [roles] into the config (idempotent)
@@ -2606,17 +2660,22 @@ coder = "codex"
 # …and (optionally) which codex model the medium tier resolves to:
 [models.codex]
 medium = "gpt-5.4"
+large = ["gpt-5.5", "gpt-5.3-codex-spark"]
+
+[routing.codex.large]
+schema = "gpt-5.5"
 
 # Or just bump a role to a different tier:
 [roles]
 reviewer = "large"
 ```
 
-**4. Confirm the change took** — provenance flips to `[config file]`:
+**6. Confirm the change took** — provenance flips to `[config file]`:
 
 ```bash
 planar models routing
 #   coder      → codex  gpt-5.4                (medium) [config file]
+planar models candidates --json
 ```
 
 See [`docs/concepts.md § Model routing`](./concepts.md#model-routing) and the `pl-models-config` skill.

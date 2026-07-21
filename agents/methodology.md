@@ -44,7 +44,7 @@ The orchestrator manages up to five phases per feature. Phases 1–2 apply only 
 
 Plan status is a function of task status, enforced at task-write time. This is the plan-status auto-promotion invariant; the orchestrator does NOT need to explicitly walk child plans through `draft → active → done` after a barrel cycle.
 
-The rule fires inside the transaction of every `task.Add`, `task.Update`, `task.Done`, `task.Reopen`, `task.Cancel`, and `task.Block`:
+The rule fires inside the transaction of every `task.Add`, `task.Update`, `task.Done`, `task.Reopen`, `task.Cancel`, and `task.Block`, and of every `planar-agent` terminal verb (`agent.Complete`, `agent.Fail`, `agent.Release`, `agent.Block`):
 
 | Plan status | Task aggregate | Child plan flips to |
 |-------------|----------------|---------------------|

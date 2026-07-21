@@ -475,9 +475,9 @@ test "agents render orchestrator has no Edit-Write tools coder has both at sonne
         try std.testing.expect(false);
     }
 
-    // Coder renders at the medium tier → claude-sonnet-4-6.
+    // Coder renders at the medium tier → claude-sonnet-5.
     // Check in the full file (model: line is in the frontmatter, unambiguous).
-    try std.testing.expect(std.mem.indexOf(u8, coder_claude, "claude-sonnet-4-6") != null);
+    try std.testing.expect(std.mem.indexOf(u8, coder_claude, "claude-sonnet-5") != null);
 }
 
 test "agents render doc-author with write capability at large tier" {
