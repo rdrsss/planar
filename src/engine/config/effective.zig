@@ -60,6 +60,20 @@ pub const ValueWithSource = struct {
 /// All strings are owned by the allocator passed to resolve().
 pub const EffectiveMap = std.StringHashMapUnmanaged(ValueWithSource);
 
+/// Canonical vendors participating in per-vendor `models.<vendor>.<tier>` and
+/// `routing.<vendor>.<tier>.<work-type>` resolution (plan 540/899).
+pub const vendors = [_][]const u8{ "claude", "codex", "copilot" };
+
+/// Canonical model tiers (plan 540/899).
+pub const tiers = [_][]const u8{ "small", "medium", "large" };
+
+/// Canonical work-type enum (plan 899 D7): the single key that selects both
+/// the tier (via the existing coder-tier policy) and, within the tier, the
+/// routed candidate (via the `[routing.<vendor>.<tier>]` map, D9). Every
+/// work type is uniformly a routing key (D11) — including `mechanical`, whose
+/// shipped embedded default routes to the tier default (`list[0]`).
+pub const work_types = [_][]const u8{ "schema", "engine", "architectural", "cli", "feature", "mechanical" };
+
 // =========================================================================
 // Structured Config (mirrors Go's Config struct field-for-field)
 // =========================================================================
@@ -512,6 +526,30 @@ pub fn resolve(
     };
     for (model_tier_keys) |mk| {
         try pickModelTierCandidates(allocator, &file_map, &def_map, &eff, mk);
+    }
+
+    // Work-type routing map (plan 899 D4/D7/D9/D10/D11): each
+    // `routing.<vendor>.<tier>.<work-type>` key resolves file-over-default like
+    // any other scalar key — a plain candidate model id string, never a list
+    // index (D10). No env override, no per-association override in v1
+    // (mirrors the model-tier keys above). A work type absent from both the
+    // file and the embedded default is simply not recorded in `eff` — callers
+    // (the model resolver) treat a routing-map miss as "fall back to the
+    // tier default", exactly like `pickStr`'s own "nothing found" behavior.
+    for (vendors) |v| {
+        for (tiers) |t| {
+            for (work_types) |wt| {
+                var kbuf: [256]u8 = undefined;
+                const key = std.fmt.bufPrint(&kbuf, "routing.{s}.{s}.{s}", .{ v, t, wt }) catch continue;
+                _ = try pickStr(allocator, environ, &file_map, &def_map, &eff, .{
+                    .key = key,
+                    .env_name = null,
+                    .assoc_val = null,
+                    .file_key = null,
+                    .def_key = null,
+                });
+            }
+        }
     }
 
     // Role→tier (plan 540). Scalar-only; unaffected by the candidate-list change.

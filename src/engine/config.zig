@@ -18,6 +18,9 @@ pub const EffectiveMap = effective.EffectiveMap;
 pub const sensitiveName = effective.sensitiveName;
 pub const sortedKeys = effective.sortedKeys;
 pub const resolve = effective.resolve;
+pub const vendors = effective.vendors;
+pub const tiers = effective.tiers;
+pub const work_types = effective.work_types;
 
 /// Embedded raw bytes of the defaults.toml file. Used by `config show --defaults`.
 pub const defaults_toml: []const u8 = @embedFile("config/defaults.toml");
