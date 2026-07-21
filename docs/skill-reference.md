@@ -50,7 +50,7 @@ vendor-neutral role in `agents/`, then render to an out-of-tree destination for
 validation. A normal full install renders and stages projections before wiring
 the selected vendors.
 
-Vendor profile data and model-tier resolution are embedded directly into the `planar` binary at compile time (the YAML literal lives in `src/engine/skillrender.zig`; see `agents/models.md` for the rendered tier table). Drift between `skills/src/` and generated vendor trees is gated by `planar skills render --check` against an out-of-tree staging directory.
+Vendor profile data and model-tier resolution are embedded directly into the `planar` binary at compile time (the YAML literal lives in `src/engine/skillrender.zig`; see `agents/models.md` for the rendered tier table). Static render paths show each tier's default model (`list[0]` when the config uses candidate lists); runtime orchestration may further select a per-work-type candidate through the shared model resolver. Drift between `skills/src/` and generated vendor trees is gated by `planar skills render --check` against an out-of-tree staging directory.
 
 Rendered skills and vendor agent projections include
 `x-planar-source-digest` and `x-planar-projection-digest` metadata. Both are
@@ -225,7 +225,7 @@ These skills manage the full feature lifecycle and the coder/reviewer execution 
 
 ### `/orchestrator`
 
-Run the orchestrator over a goal, anchor plan, or task list. Manages all five phases (planning → ingestion → execution → propagation → archive) with reviewer iteration cap and user gates at each phase boundary.
+Run the orchestrator over a goal, anchor plan, or task list. Manages planning, ingestion, execution, finalization, propagation, archive, and documentation with reviewer iteration cap and user gates at each phase boundary.
 
 **Example:**
 ```
@@ -865,6 +865,14 @@ Inspect, validate, and render Planar JSON templates for external-system propagat
 
 Source: `skills/src/pl-templates.md`
 
+### `/pl-models-config`
+
+Guided inspection and configuration of per-role model routing. It shells the supported CLI surfaces (`planar models list|routing|candidates|evals|refresh|apply` and `planar config show|validate`) rather than reading or writing config directly. Use it to see installed provider CLIs, effective role -> vendor/model resolution, tier candidate lists, work-type routing, and read-only routing evals.
+
+`models evals` is advisory only: it aggregates completed dispatch history from `session_entries`, `agent_work_claims`, and test-coder `agent_actions`, reports insufficient-data rows honestly, and writes nothing. Any recommended routing-map change requires an explicit operator-confirmed edit to `~/.planar/config.toml`, followed by `planar models candidates --json` verification.
+
+Source: `skills/src/pl-models-config.md`
+
 ---
 
 ## Documentation Maintenance
@@ -1005,7 +1013,7 @@ The vendor-neutral role specs live under `agents/`. Vendor skill files defer to 
 | `agents/janitor.md` | Janitor role: merge verification, Planar state reconciliation, worktree/branch cleanup, plan closeout via the delivery-evidence gate |
 | `agents/doc-author.md` | Doc-author role: writes only operator-approved published prose under `docs/`; never decides coverage or mutates manifest state |
 | `agents/sync-reconciler.md` | Large-tier coordinate role: compares local and remote conflict evidence, recommends one of four dispositions, and coordinates only the exact whole-entity resolution the operator confirms; it is read-and-recommend by default and never performs direct local or remote field mutation |
-| `agents/models.md` | Tier-to-model resolution: maps `large` / `medium` tiers to concrete model IDs per vendor |
+| `agents/models.md` | Tier-to-model resolution: maps `small` / `medium` / `large` tiers to concrete model IDs or ordered candidate lists per vendor, plus work-type routing conventions |
 
 ---
 
