@@ -320,7 +320,7 @@ pub const catalog: []const VendorCatalog = &.{
         .bin = "claude",
         .models = &.{
             .{ .id = "claude-opus-4-8", .tier = .large },
-            .{ .id = "claude-sonnet-4-6", .tier = .medium },
+            .{ .id = "claude-sonnet-5", .tier = .medium },
             .{ .id = "claude-haiku-4-5", .tier = .small },
         },
     },
@@ -580,7 +580,7 @@ test "models: default routing mirrors role_model (sonnet coder, opus reviewer)" 
         if (std.mem.eql(u8, r.role, "coder")) {
             saw_coder = true;
             try testing.expectEqualStrings("claude", r.vendor);
-            try testing.expectEqualStrings("claude-sonnet-4-6", r.model);
+            try testing.expectEqualStrings("claude-sonnet-5", r.model);
         }
         if (std.mem.eql(u8, r.role, "reviewer")) {
             saw_reviewer = true;
@@ -639,7 +639,7 @@ test "resolver: default resolution — role→tier→model from embedded default
 
     const coder = try resolveRole(&res.effective, "claude", "coder");
     try testing.expectEqualStrings("medium", coder.tier);
-    try testing.expectEqualStrings("claude-sonnet-4-6", coder.model);
+    try testing.expectEqualStrings("claude-sonnet-5", coder.model);
     try testing.expectEqual(config.Provenance.embedded_default, coder.source);
 
     const reviewer = try resolveRole(&res.effective, "claude", "reviewer");
@@ -699,7 +699,7 @@ test "resolver: resolveRoleAuto derives vendor (default → role_vendors overrid
     defer res.deinit(a);
     const coder = try resolveRoleAuto(&res.effective, "coder");
     try testing.expectEqualStrings("claude", coder.vendor);
-    try testing.expectEqualStrings("claude-sonnet-4-6", coder.model);
+    try testing.expectEqualStrings("claude-sonnet-5", coder.model);
 
     const file =
         \\[role_vendors]
@@ -738,7 +738,7 @@ test "resolver: buildRouting returns a row per canonical role" {
     try testing.expectEqual(routing_roles.len, rows.len);
     try testing.expectEqualStrings("coder", rows[0].role);
     try testing.expectEqualStrings("claude", rows[0].vendor);
-    try testing.expectEqualStrings("claude-sonnet-4-6", rows[0].model);
+    try testing.expectEqualStrings("claude-sonnet-5", rows[0].model);
 }
 
 test "resolver: buildRouting with custom role includes it after built-ins" {
@@ -774,16 +774,16 @@ test "resolver: buildRouting empty config — exactly six built-in rows" {
     defer a.free(rows);
     try testing.expectEqual(routing_roles.len, rows.len);
     try testing.expectEqualStrings("coder", rows[0].role);
-    try testing.expectEqualStrings("claude-sonnet-4-6", rows[0].model);
+    try testing.expectEqualStrings("claude-sonnet-5", rows[0].model);
     try testing.expectEqualStrings("reviewer", rows[1].role);
     try testing.expectEqualStrings("claude-opus-4-8", rows[1].model);
 }
 
 test "models: isKnownModel recognizes curated ids, rejects custom" {
-    try testing.expect(isKnownModel("claude", "claude-sonnet-4-6"));
+    try testing.expect(isKnownModel("claude", "claude-sonnet-5"));
     try testing.expect(isKnownModel("codex", "gpt-5.5"));
     try testing.expect(!isKnownModel("codex", "gpt-9-imaginary"));
-    try testing.expect(!isKnownModel("nope", "claude-sonnet-4-6"));
+    try testing.expect(!isKnownModel("nope", "claude-sonnet-5"));
 }
 
 test "models: renderConfigBlock emits the tier maps + roles scaffold" {
@@ -791,7 +791,7 @@ test "models: renderConfigBlock emits the tier maps + roles scaffold" {
     const block = try renderConfigBlock(a);
     defer a.free(block);
     for ([_][]const u8{
-        "[models.claude]",      "[models.codex]", "claude-sonnet-4-6",
+        "[models.claude]",      "[models.codex]", "claude-sonnet-5",
         "gpt-5.5",              "[roles]",        "coder = \"medium\"",
         "reviewer = \"large\"",
     }) |needle| {
@@ -865,7 +865,7 @@ test "resolveTierWorkType: mechanical resolves via the shipped embedded default"
 
     // Embedded default routes mechanical -> tier default for every vendor/tier.
     const r = try resolveTierWorkType(&res.effective, "claude", "medium", "mechanical");
-    try testing.expectEqualStrings("claude-sonnet-4-6", r.model);
+    try testing.expectEqualStrings("claude-sonnet-5", r.model);
     try testing.expectEqual(config.Provenance.embedded_default, r.source);
 }
 
@@ -900,7 +900,7 @@ test "resolveTierWorkType: back-compat — a scalar tier resolves identically fo
     const work_types_local = [_][]const u8{ "schema", "engine", "architectural", "cli", "feature", "mechanical" };
     for (work_types_local) |wt| {
         const r = try resolveTierWorkType(&res.effective, "claude", "medium", wt);
-        try testing.expectEqualStrings("claude-sonnet-4-6", r.model);
+        try testing.expectEqualStrings("claude-sonnet-5", r.model);
     }
 }
 

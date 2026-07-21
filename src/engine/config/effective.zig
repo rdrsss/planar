@@ -1161,7 +1161,7 @@ test "effective: model tier maps + role tiers resolve from embedded defaults (pl
 
     const cases = [_]struct { key: []const u8, want: []const u8 }{
         .{ .key = "models.claude.small", .want = "claude-haiku-4-5" },
-        .{ .key = "models.claude.medium", .want = "claude-sonnet-4-6" },
+        .{ .key = "models.claude.medium", .want = "claude-sonnet-5" },
         .{ .key = "models.claude.large", .want = "claude-opus-4-8" },
         .{ .key = "models.codex.small", .want = "gpt-5.4-mini" },
         .{ .key = "models.codex.medium", .want = "gpt-5.4" },
@@ -1223,9 +1223,9 @@ test "effective: candidate list — a scalar tier value resolves to a one-elemen
     defer res.deinit(a);
 
     const entry = res.effective.get("models.claude.medium") orelse return error.TestFailed;
-    try std.testing.expectEqualStrings("claude-sonnet-4-6", entry.value);
+    try std.testing.expectEqualStrings("claude-sonnet-5", entry.value);
     try std.testing.expectEqual(@as(usize, 1), entry.candidates.len);
-    try std.testing.expectEqualStrings("claude-sonnet-4-6", entry.candidates[0]);
+    try std.testing.expectEqualStrings("claude-sonnet-5", entry.candidates[0]);
     // Invariant: candidates[0] == value always.
     try std.testing.expectEqualStrings(entry.value, entry.candidates[0]);
 }

@@ -14,8 +14,43 @@ Agent specs in `agents/` reference abstract tiers (`small`, `medium`, `large`). 
 | Tier | Claude | Codex | Copilot |
 | ------ | ------ | ----- | ------- |
 | small | claude-haiku-4-5 | gpt-5.4-mini | gpt-5-mini |
-| medium | claude-sonnet-4-6 | gpt-5.4 | gpt-5 |
+| medium | claude-sonnet-5 | gpt-5.4 | gpt-5 |
 | large | claude-opus-4-8 | gpt-5.5 | claude-opus-4 |
+
+## Candidate lists and work-type routing
+
+Each `[models.<vendor>.<tier>]` value in `~/.planar/config.toml` (embedded
+defaults in `src/engine/config/defaults.toml`) accepts either a **scalar**
+(one model id — the shape shown in the Tier Table above) or an **ordered
+list** of candidate model ids, e.g. `[models.codex] large = ["gpt-5.5",
+"gpt-5.3-codex-spark"]`. A scalar resolves to a one-element list internally,
+so every existing scalar config is unaffected; `list[0]` is always the
+**tier default** — the model a caller gets when it resolves a bare
+`(vendor, tier)` or `(vendor, role)` pair with no work type in hand
+(`resolveTier`, `resolveRole`, `resolveRoleAuto`, and the render path's
+`resolveModel` in `src/engine/skillrender.zig` all read `list[0]`).
+
+A separate `[routing.<vendor>.<tier>]` sub-table maps a **work type**
+(`schema | engine | architectural | cli | feature | mechanical` — see
+§Coder tier policy below) to one of that tier's candidate model ids. It
+ships as an embedded default (the shipped default only routes `mechanical`
+to the tier default; every other work type falls back to `list[0]` until an
+operator adds an entry) and is fully operator-overridable. The resolver
+entry point is `resolve(role, work_type)` — concretely
+`resolveRoleAutoWorkType` in `src/engine/models.zig` — which resolves the
+role to a tier exactly like the tier-only path, then looks up
+`routing.<vendor>.<tier>.<work_type>`: a hit returns the named candidate, a
+miss falls back to `list[0]`. **Validation:** a routing entry naming a model
+id absent from that tier's candidate list is a configuration error rejected
+by `planar config validate` — not a silent fall-through.
+
+The orchestrator's Phase 3 dispatch preview shows the routed-model candidate
+`resolve(role, work_type)` selects per task, alongside the tier column (see
+[`skills/src/pl-orchestrator.md` §Dispatch preview and model tiers](../skills/src/pl-orchestrator.md)).
+`planar models candidates` prints the effective candidate lists and routing map
+with provenance for operator inspection; see `docs/cli-reference.md` §Domain
+`models` and §Domain `config` (Model routing) for the full CLI surface.
+
 ## Agent Assignments
 
 Every installable agent under `agents/`, its authored `tier:` (the source of
@@ -79,6 +114,6 @@ Axis C is **operator-confirmed, never silent**. The orchestrator surfaces the pr
 
 ## Notes On Identifiers
 
-- `claude-sonnet-4-6` and `claude-opus-4-8` are the current Anthropic identifiers as of 2026-06.
+- `claude-sonnet-5` and `claude-opus-4-8` are the current Anthropic identifiers as of 2026-07.
 - Codex and Copilot identifiers must be verified against each vendor's current model list periodically. Treat the values above as defaults, not guarantees.
 - Vendors that expose Anthropic models (e.g. Copilot routing to `claude-opus-4`) should resolve to the closest available identifier on that vendor, not the Anthropic-native one.

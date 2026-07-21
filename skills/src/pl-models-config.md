@@ -26,28 +26,32 @@ Guided review and configuration of which model each role spawns, across every su
 
 Routing is config-driven and unified in `~/.planar/config.toml`:
 
-- `[models.<vendor>]` — per-vendor tier maps (`small` / `medium` / `large` → concrete model id).
+- `[models.<vendor>]` — per-vendor tier maps (`small` / `medium` / `large` → a **scalar or an ordered candidate list**; `list[0]` is always the tier default).
+- `[routing.<vendor>.<tier>]` — a work-type → candidate map (plan 899): each key is one of `schema | engine | architectural | cli | feature | mechanical` and each value names one candidate from that tier's list above (never a list index). The shipped default only routes `mechanical`; every other work type falls back to the tier default until overridden.
 - `[roles]` — role → tier (e.g. `coder = "medium"`, `reviewer = "large"`).
 - `[role_vendors]` — optional role → vendor override (defaults to `[defaults].vendor`).
 
-The shared resolver composes these. Skills render, `agents/models.md`, and external workflow harnesses all resolve through it — there is no separate per-tool model table.
+The shared resolver composes these: the tier-only path (`resolveTier`/`resolveRole`/`resolveRoleAuto`) always returns `list[0]`; `resolve(role, work_type)` additionally consults the routing map. Skills render, `agents/models.md`, the orchestrator's Phase 3 dispatch-preview routed-model column, and external workflow harnesses all resolve through one of these — there is no separate per-tool model table.
 
 ## What It Does
 
 1. **Discover** — `planar models list` reports each provider CLI's installed-state + version and its curated model catalog (with human labels), plus the default routing.
 2. **Inspect routing** — `planar models routing` prints the effective role → `vendor model` mapping with provenance (`[embedded default]` vs `[config file]`). `--json` for machine consumption (this is what an external workflow harness shells).
-3. **Cache** — `planar models refresh` writes the discovery result to `~/.planar/models/catalog.json`.
-4. **Scaffold** — `planar models apply` writes the `[models]`/`[roles]` block into the config file as an editable starting point (idempotent; `--force` to append again).
-5. **Override** — guide the operator to edit `~/.planar/config.toml`:
+3. **Inspect candidates + routing map** — `planar models candidates` prints each tier's effective candidate list (`list[0]` = tier default) and the work-type routing map (`routing.<vendor>.<tier>.<work-type>` → candidate), both with provenance. `--json` for machine consumption.
+4. **Cache** — `planar models refresh` writes the discovery result to `~/.planar/models/catalog.json`.
+5. **Scaffold** — `planar models apply` writes the `[models]`/`[roles]` block into the config file as an editable starting point (idempotent; `--force` to append again).
+6. **Override** — guide the operator to edit `~/.planar/config.toml`:
    - re-route a tier: set `[models.codex] medium = "gpt-5.4"`.
+   - widen a tier to multiple candidates: set `[models.codex] large = ["gpt-5.5", "gpt-5.3-codex-spark"]`.
+   - route a work type to a specific candidate: set `[routing.codex.large] schema = "gpt-5.5"` (the target must be a member of that tier's candidate list, or `planar config validate` rejects it).
    - move a role's tier: set `[roles] coder = "large"`.
    - route a role to another vendor: set `[role_vendors] coder = "codex"`.
-   Then re-run `planar models routing` to confirm the change took, with provenance now showing `[config file]`.
+   Then re-run `planar models routing` / `planar models candidates` to confirm the change took, with provenance now showing `[config file]`.
 
 ## What It Must Not Do
 
-- Do not hand-edit `agents/models.md` or any rendered surface — those regenerate from config via the resolver.
-- Do not invent per-call model overrides in Lua workflows; routing is per-role and config-driven.
+- Do not hand-edit `agents/models.md` or any rendered surface — those regenerate from config via the resolver, and always show the tier default (`list[0]`); per-task routing is runtime-only in the orchestrator dispatch preview.
+- Do not invent per-call model overrides in Lua workflows; routing is per-role (and, at dispatch time, per-work-type) and config-driven.
 
 ## Context
 
@@ -69,9 +73,10 @@ inspection has zero applied; an already-present scaffold is an expected skip.
 
 Always report `outcome=ok|partial|error` and the effective routing with its
 provenance. After `planar models refresh`, verify with `planar models list
---json`; after `planar models apply`, verify with `planar models routing
---json`. Return the affected role/vendor mappings and durable path, not only a
-successful exit code.
+--json`; after `planar models apply` or a `[routing.*]` edit, verify with
+`planar models routing --json` and `planar models candidates --json`. Return
+the affected role/vendor mappings, tier candidate lists, routing-map entries,
+and durable path, not only a successful exit code.
 
 ## Warnings
 
@@ -86,9 +91,10 @@ or the specific config edit the operator requested.
 
 ## Recovery
 
-Provide `planar models routing --json` to inspect the last effective state and
-an idempotent `planar models refresh` or `planar models apply` retry when
-applicable. Do not claim a config rollback that the CLI did not perform.
+Provide `planar models routing --json` or `planar models candidates --json` to
+inspect the last effective state and an idempotent `planar models refresh` or
+`planar models apply` retry when applicable. Do not claim a config rollback
+that the CLI did not perform.
 
 ## Vendor Notes
 

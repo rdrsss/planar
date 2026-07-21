@@ -1,11 +1,18 @@
 //! handlers/models.zig — `planar models` (plan 540/543 provider + model discovery)
 //!
-//! Two read-oriented subverbs, neither of which touches the database:
+//! Five subverbs, none of which touches the database:
 //!
-//!   list    Probe installed provider CLIs (claude, codex) and print their
-//!           curated model catalogs + the default role→tier→model routing.
-//!   refresh Same probe, plus write the result to
-//!           ${PLANAR_HOME:-~/.planar}/models/catalog.json as a cache.
+//!   list       Probe installed provider CLIs (claude, codex) and print their
+//!              curated model catalogs + the default role→tier→model routing.
+//!   refresh    Same probe, plus write the result to
+//!              ${PLANAR_HOME:-~/.planar}/models/catalog.json as a cache.
+//!   routing    Resolve the effective config and print the role→vendor/
+//!              tier/model routing table with provenance (read-only).
+//!   apply      Scaffold the [models]/[roles] config block into the config
+//!              file as an editable starting point.
+//!   candidates Resolve the effective config and print each tier's candidate
+//!              list plus the work-type routing map with provenance
+//!              (plan 899, read-only).
 //!
 //! Discovery genuinely invokes `<bin> --version` per provider (instant +
 //! auth-free); the model list itself comes from the curated catalog in
@@ -58,6 +65,15 @@ pub const verb: cli.Cmd = .{
                 .{ .long = "--force", .kind = .bool, .default = .{ .bool = false } },
             },
             .run = cli.handler(handleApply),
+        },
+        .{
+            .name = "candidates",
+            .desc = "Show each tier's candidate list and the work-type routing map with provenance.",
+            .long_desc = "Resolve the effective config ([models.<vendor>.<tier>] candidate\n  lists — scalar or ordered list, plan 899 D3 — and the\n  [routing.<vendor>.<tier>] work-type routing map, plan 899 D4/D9/D10/D11)\n  and print both with provenance. list[0] in a tier's candidate list is\n  always the tier default; the routing map names, per work type\n  (schema/engine/architectural/cli/feature/mechanical), which candidate\n  in that list `resolve(role, work_type)` selects. Read-only.",
+            .flags = &.{
+                .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
+            },
+            .run = cli.handler(handleCandidates),
         },
     },
 };
@@ -174,4 +190,108 @@ fn handleApply(args_ptr: *const anyopaque) anyerror!void {
     std.Io.Dir.cwd().writeFile(ctx.io, .{ .sub_path = path, .data = out.items }) catch |e|
         exit.die(ctx, e, "writing config file: {s}", .{@errorName(e)});
     try ctx.stdout.print("wrote model routing config to {s}\n", .{path});
+}
+
+/// One tier's effective candidate list with provenance (plan 899 D3/D5).
+/// `candidates[0]` is always the tier default.
+const TierCandidates = struct {
+    vendor: []const u8,
+    tier: []const u8,
+    candidates: []const []const u8,
+    source: []const u8,
+};
+
+/// One resolved `routing.<vendor>.<tier>.<work_type>` entry with provenance
+/// (plan 899 D4/D9/D10/D11). Only work types actually present in the
+/// effective map (file override or embedded default) are reported — a
+/// work type with no routing entry falls back to the tier default at
+/// resolve time and is simply absent here.
+const RoutingEntry = struct {
+    vendor: []const u8,
+    tier: []const u8,
+    work_type: []const u8,
+    model: []const u8,
+    source: []const u8,
+};
+
+fn handleCandidates(args_ptr: *const anyopaque) anyerror!void {
+    const args = cli.castArgs(main.root, &.{ "models", "candidates" }, args_ptr);
+    const ctx = runtime.current();
+
+    const path = config_path.resolveConfigPath(ctx.allocator, ctx.environ) catch |e|
+        exit.die(ctx, e, "resolving config path: {s}", .{@errorName(e)});
+    defer ctx.allocator.free(path);
+
+    const file_content: ?[]u8 = std.Io.Dir.cwd().readFileAlloc(ctx.io, path, ctx.allocator, .unlimited) catch |e| switch (e) {
+        error.FileNotFound => null,
+        else => exit.die(ctx, e, "reading config file: {s}", .{@errorName(e)}),
+    };
+    defer if (file_content) |fc| ctx.allocator.free(fc);
+
+    var resolved = engine.config.resolve(ctx.allocator, file_content, ctx.environ, null) catch |e|
+        exit.die(ctx, e, "resolving configuration: {s}", .{@errorName(e)});
+    defer resolved.deinit(ctx.allocator);
+
+    var tiers_out: std.ArrayList(TierCandidates) = .empty;
+    defer tiers_out.deinit(ctx.allocator);
+    for (engine.config.vendors) |v| {
+        for (engine.config.tiers) |t| {
+            var buf: [64]u8 = undefined;
+            const key = std.fmt.bufPrint(&buf, "models.{s}.{s}", .{ v, t }) catch continue;
+            const vws = resolved.effective.get(key) orelse continue;
+            tiers_out.append(ctx.allocator, .{
+                .vendor = v,
+                .tier = t,
+                .candidates = vws.candidates,
+                .source = vws.source.label(),
+            }) catch |e| exit.die(ctx, e, "{s}", .{@errorName(e)});
+        }
+    }
+
+    var routing_out: std.ArrayList(RoutingEntry) = .empty;
+    defer routing_out.deinit(ctx.allocator);
+    for (engine.config.vendors) |v| {
+        for (engine.config.tiers) |t| {
+            for (engine.config.work_types) |wt| {
+                var buf: [96]u8 = undefined;
+                const key = std.fmt.bufPrint(&buf, "routing.{s}.{s}.{s}", .{ v, t, wt }) catch continue;
+                const vws = resolved.effective.get(key) orelse continue;
+                if (vws.value.len == 0) continue;
+                routing_out.append(ctx.allocator, .{
+                    .vendor = v,
+                    .tier = t,
+                    .work_type = wt,
+                    .model = vws.value,
+                    .source = vws.source.label(),
+                }) catch |e| exit.die(ctx, e, "{s}", .{@errorName(e)});
+            }
+        }
+    }
+
+    if (args.json) {
+        try ctx.stdout.print("{{\"candidates\":", .{});
+        try std.json.Stringify.value(tiers_out.items, .{}, ctx.stdout);
+        try ctx.stdout.print(",\"routing\":", .{});
+        try std.json.Stringify.value(routing_out.items, .{}, ctx.stdout);
+        try ctx.stdout.print("}}\n", .{});
+        return;
+    }
+
+    try ctx.stdout.print("tier candidate lists (models.<vendor>.<tier>):\n", .{});
+    for (tiers_out.items) |tc| {
+        try ctx.stdout.print("  {s: <8} {s: <6} → ", .{ tc.vendor, tc.tier });
+        for (tc.candidates, 0..) |c, i| {
+            if (i > 0) try ctx.stdout.print(", ", .{});
+            try ctx.stdout.print("{s}", .{c});
+        }
+        try ctx.stdout.print("  [{s}]\n", .{tc.source});
+    }
+
+    try ctx.stdout.print("\nwork-type routing map (routing.<vendor>.<tier>.<work-type>):\n", .{});
+    for (routing_out.items) |re| {
+        try ctx.stdout.print(
+            "  {s: <8} {s: <6} {s: <14} → {s: <22} [{s}]\n",
+            .{ re.vendor, re.tier, re.work_type, re.model, re.source },
+        );
+    }
 }

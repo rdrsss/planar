@@ -73,7 +73,7 @@ test "planar models list --json: providers + curated catalog + default routing s
         try std.testing.expect(po.get("models").?.array.items.len > 0);
     }
 
-    // default_routing: coder → claude-sonnet-4-6, reviewer → claude-opus-4-8.
+    // default_routing: coder → claude-sonnet-5, reviewer → claude-opus-4-8.
     const routing = obj.get("default_routing").?.array;
     var saw_coder = false;
     var saw_reviewer = false;
@@ -83,7 +83,7 @@ test "planar models list --json: providers + curated catalog + default routing s
         const model = ro.get("model").?.string;
         if (std.mem.eql(u8, role, "coder")) {
             saw_coder = true;
-            try std.testing.expectEqualStrings("claude-sonnet-4-6", model);
+            try std.testing.expectEqualStrings("claude-sonnet-5", model);
         }
         if (std.mem.eql(u8, role, "reviewer")) {
             saw_reviewer = true;
@@ -157,7 +157,7 @@ test "planar models routing: default role→vendor/model + --json shape" {
         if (std.mem.eql(u8, o.get("role").?.string, "coder")) {
             saw_coder = true;
             try std.testing.expectEqualStrings("claude", o.get("vendor").?.string);
-            try std.testing.expectEqualStrings("claude-sonnet-4-6", o.get("model").?.string);
+            try std.testing.expectEqualStrings("claude-sonnet-5", o.get("model").?.string);
             try std.testing.expectEqualStrings("medium", o.get("tier").?.string);
         }
     }
@@ -260,7 +260,7 @@ test "planar models routing: custom role in config appears in --json output (pla
             // Built-in coder unchanged: medium/claude/sonnet.
             try std.testing.expectEqualStrings("claude", o.get("vendor").?.string);
             try std.testing.expectEqualStrings("medium", o.get("tier").?.string);
-            try std.testing.expectEqualStrings("claude-sonnet-4-6", o.get("model").?.string);
+            try std.testing.expectEqualStrings("claude-sonnet-5", o.get("model").?.string);
         }
         if (std.mem.eql(u8, role, "reviewer")) saw_reviewer = true;
         if (std.mem.eql(u8, role, "compactor")) {
@@ -310,7 +310,7 @@ test "planar models routing: empty config — exactly 6 built-in rows, no custom
     }
     // All six built-ins present with correct defaults.
     const expected = [_]struct { role: []const u8, vendor: []const u8, tier: []const u8, model: []const u8 }{
-        .{ .role = "coder", .vendor = "claude", .tier = "medium", .model = "claude-sonnet-4-6" },
+        .{ .role = "coder", .vendor = "claude", .tier = "medium", .model = "claude-sonnet-5" },
         .{ .role = "reviewer", .vendor = "claude", .tier = "large", .model = "claude-opus-4-8" },
         .{ .role = "test-coder", .vendor = "claude", .tier = "large", .model = "claude-opus-4-8" },
         .{ .role = "documenter", .vendor = "claude", .tier = "large", .model = "claude-opus-4-8" },
@@ -348,4 +348,103 @@ test "planar models apply: writes the config block, idempotent without --force (
     const s2 = suite.mustRunWith(&.{ "models", "apply" }, extra);
     defer gpa.free(s2);
     try std.testing.expect(std.mem.indexOf(u8, s2, "already present") != null);
+}
+
+test "planar models candidates: default config — tier candidate lists + mechanical routing map, embedded default provenance (plan 899)" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    // Non-existent config → pure embedded defaults.
+    const cfg = std.fs.path.join(gpa, &.{ std.fs.path.dirname(suite.db_path).?, "absent.toml" }) catch @panic("OOM");
+    defer gpa.free(cfg);
+    const extra: []const harness.Suite.ExtraEnvEntry = &.{.{ .key = "PLANAR_CONFIG_PATH", .value = cfg }};
+
+    const stdout = suite.mustRunWith(&.{ "models", "candidates" }, extra);
+    defer gpa.free(stdout);
+
+    const required = [_][]const u8{
+        "tier candidate lists",
+        "claude   medium → claude-sonnet-5",
+        "[embedded default]",
+        "work-type routing map",
+        "claude   medium mechanical",
+    };
+    inline for (required) |needle| {
+        if (std.mem.indexOf(u8, stdout, needle) == null) {
+            std.debug.print("\nmodels candidates text missing '{s}'\nstdout:\n{s}\n", .{ needle, stdout });
+            return error.TestUnexpectedResult;
+        }
+    }
+    // Every embedded default is scalar today — no unmapped work type (schema,
+    // engine, architectural, cli, feature) should appear as a routing row.
+    try std.testing.expect(std.mem.indexOf(u8, stdout, "claude   medium schema") == null);
+}
+
+test "planar models candidates --json: config override widens a tier to a list and adds a non-mechanical routing entry, both surface with config-file provenance (plan 899)" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const cfg = std.fs.path.join(gpa, &.{ std.fs.path.dirname(suite.db_path).?, "candidates.toml" }) catch @panic("OOM");
+    defer gpa.free(cfg);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{
+        .sub_path = cfg,
+        .data =
+        \\[models.codex]
+        \\large = ["gpt-5.5", "gpt-5.3-codex-spark"]
+        \\[routing.codex.large]
+        \\schema = "gpt-5.3-codex-spark"
+        ,
+    });
+    const extra: []const harness.Suite.ExtraEnvEntry = &.{.{ .key = "PLANAR_CONFIG_PATH", .value = cfg }};
+
+    const stdout = suite.mustRunWith(&.{ "models", "candidates", "--json" }, extra);
+    defer gpa.free(stdout);
+
+    const parsed = std.json.parseFromSlice(std.json.Value, arena, std.mem.trim(u8, stdout, " \n"), .{
+        .allocate = .alloc_always,
+    }) catch |e| {
+        std.debug.print("\nmodels candidates --json parse failed: {s}\n{s}\n", .{ @errorName(e), stdout });
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(parsed.value == .object);
+    const obj = parsed.value.object;
+
+    // candidates: codex/large now has 2 entries with config-file provenance.
+    const candidates = obj.get("candidates").?.array;
+    var saw_codex_large = false;
+    for (candidates.items) |c| {
+        const co = c.object;
+        if (std.mem.eql(u8, co.get("vendor").?.string, "codex") and std.mem.eql(u8, co.get("tier").?.string, "large")) {
+            saw_codex_large = true;
+            const cands = co.get("candidates").?.array;
+            try std.testing.expectEqual(@as(usize, 2), cands.items.len);
+            try std.testing.expectEqualStrings("gpt-5.5", cands.items[0].string);
+            try std.testing.expectEqualStrings("gpt-5.3-codex-spark", cands.items[1].string);
+            try std.testing.expectEqualStrings("config file", co.get("source").?.string);
+        }
+    }
+    try std.testing.expect(saw_codex_large);
+
+    // routing: codex/large/schema resolves to the non-default candidate with
+    // config-file provenance.
+    const routing = obj.get("routing").?.array;
+    var saw_schema = false;
+    for (routing.items) |r| {
+        const ro = r.object;
+        if (std.mem.eql(u8, ro.get("vendor").?.string, "codex") and
+            std.mem.eql(u8, ro.get("tier").?.string, "large") and
+            std.mem.eql(u8, ro.get("work_type").?.string, "schema"))
+        {
+            saw_schema = true;
+            try std.testing.expectEqualStrings("gpt-5.3-codex-spark", ro.get("model").?.string);
+            try std.testing.expectEqualStrings("config file", ro.get("source").?.string);
+        }
+    }
+    try std.testing.expect(saw_schema);
 }

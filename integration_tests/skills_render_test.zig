@@ -420,7 +420,7 @@ test "skills render real sources keep model tiers notes and invocation blocks" {
         try std.Io.Dir.cwd().access(std.testing.io, target, .{});
     }
 
-    try std.testing.expect(std.mem.indexOf(u8, claude_coder, "model: claude-sonnet-4-6") != null);
+    try std.testing.expect(std.mem.indexOf(u8, claude_coder, "model: claude-sonnet-5") != null);
     try std.testing.expect(std.mem.indexOf(u8, codex_coder, "model: gpt-5.4") != null);
     try std.testing.expect(std.mem.indexOf(u8, claude_coder, "## Invocation") != null);
     try std.testing.expect(std.mem.indexOf(u8, codex_coder, "## Invocation") == null);

@@ -34,7 +34,7 @@ default_set = "default"
 # to re-route a tier (e.g. point `medium` at a different model).
 [models.claude]
 small  = "claude-haiku-4-5"
-medium = "claude-sonnet-4-6"
+medium = "claude-sonnet-5"
 large  = "claude-opus-4-8"
 
 [models.codex]
@@ -60,7 +60,7 @@ large  = "claude-opus-4"
 mechanical = "claude-haiku-4-5"
 
 [routing.claude.medium]
-mechanical = "claude-sonnet-4-6"
+mechanical = "claude-sonnet-5"
 
 [routing.claude.large]
 mechanical = "claude-opus-4-8"

@@ -1894,11 +1894,11 @@ fn testSourceForTier(allocator: std.mem.Allocator, tier: []const u8) !Source {
 test "resolveModel: a scalar tier value renders that scalar" {
     const gpa = std.testing.allocator;
     // Embedded default `models.claude.medium` is a scalar
-    // ("claude-sonnet-4-6") — no config override needed.
+    // ("claude-sonnet-5") — no config override needed.
     var res = try config.resolve(gpa, null, std.process.Environ.empty, null);
     defer res.deinit(gpa);
     const r = try model_engine.resolveTier(&res.effective, "claude", "medium");
-    try std.testing.expectEqualStrings("claude-sonnet-4-6", r.model);
+    try std.testing.expectEqualStrings("claude-sonnet-5", r.model);
 
     var models_arr = [_]VendorModel{.{ .tier = "medium", .model = r.model }};
     const profile = VendorProfile{
@@ -1917,7 +1917,7 @@ test "resolveModel: a scalar tier value renders that scalar" {
 
     const model = try resolveModel(gpa, source, profile);
     defer gpa.free(model);
-    try std.testing.expectEqualStrings("claude-sonnet-4-6", model);
+    try std.testing.expectEqualStrings("claude-sonnet-5", model);
 }
 
 test "resolveModel: a candidate-list tier value renders list[0], never a later candidate" {
@@ -2987,7 +2987,7 @@ test "tier maps to model via existing models table" {
     const claude = vendors.get("claude").?;
     const model = try resolveAgentModel(gpa, coder, claude);
     defer gpa.free(model);
-    try std.testing.expectEqualStrings("claude-sonnet-4-6", model);
+    try std.testing.expectEqualStrings("claude-sonnet-5", model);
 }
 
 test "renderAgent emits Claude md-yaml frontmatter with tools and model" {
@@ -3001,7 +3001,7 @@ test "renderAgent emits Claude md-yaml frontmatter with tools and model" {
     try std.testing.expect(std.mem.startsWith(u8, out, "---\n"));
     try std.testing.expect(std.mem.indexOf(u8, out, "name: coder") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "tools: [Read, Edit, Write, Bash, Grep, Glob]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "model: claude-sonnet-4-6") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "model: claude-sonnet-5") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "# Coder") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "## Cross-scope write cue") != null);
 }
@@ -3154,7 +3154,7 @@ test "orchestrator renders with NO Edit/Write; coder renders WITH them at sonnet
     defer gpa.free(coder_out);
     try std.testing.expect(std.mem.indexOf(u8, coder_out, "Edit") != null);
     try std.testing.expect(std.mem.indexOf(u8, coder_out, "Write") != null);
-    try std.testing.expect(std.mem.indexOf(u8, coder_out, "model: claude-sonnet-4-6") != null);
+    try std.testing.expect(std.mem.indexOf(u8, coder_out, "model: claude-sonnet-5") != null);
 }
 
 test "Copilot agent files use .agent.md extension" {
@@ -3270,7 +3270,7 @@ test "renderTree renders agents per vendor and leaves models.md patch intact" {
     const models_after = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, models_path, gpa, std.Io.Limit.limited(1 << 20));
     defer gpa.free(models_after);
     try std.testing.expect(std.mem.indexOf(u8, models_after, "stale") == null);
-    try std.testing.expect(std.mem.indexOf(u8, models_after, "claude-sonnet-4-6") != null);
+    try std.testing.expect(std.mem.indexOf(u8, models_after, "claude-sonnet-5") != null);
 
     // re-running checkTree should report in-sync (idempotent render + agent check)
     var check = try checkTree(gpa, .{ .src_dir = src_dir, .out_dir = root });

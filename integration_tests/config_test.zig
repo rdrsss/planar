@@ -221,7 +221,7 @@ test "config show --effective: includes plan-540 model tier maps + role tiers (d
     defer gpa.free(stdout);
 
     for ([_][]const u8{
-        "models.claude.medium", "claude-sonnet-4-6",
+        "models.claude.medium", "claude-sonnet-5",
         "models.codex.large",   "gpt-5.5",
         "roles.coder",          "roles.reviewer",
     }) |needle| {
