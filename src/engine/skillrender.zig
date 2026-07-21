@@ -67,6 +67,19 @@ const embedded_vendors_yaml =
     \\    install_bullets:
     \\      - "Installed to `~/.copilot/skills/<slug>.md`."
     \\      - "Companion instruction and prompt files (when needed) live under `copilot/`."
+    \\  gemini:
+    \\    title: Gemini
+    \\    output_dir: skills/gemini
+    \\    install_path: ~/.gemini/antigravity-cli/skills/<slug>/SKILL.md
+    \\    invoke: /<slug>
+    \\    has_invocation_block: true
+    \\    frontmatter_fields: [name, description, model, source]
+    \\    agents_output_dir: agents/gemini
+    \\    agent_format: md-yaml
+    \\    agent_frontmatter_fields: [name, description, tools, model]
+    \\    install_bullets:
+    \\      - "Installed to `~/.gemini/antigravity-cli/skills/<slug>/SKILL.md`."
+    \\      - "Invoked as `/<slug> <subcommand> [args]`."
 ;
 
 pub const VendorModel = struct {

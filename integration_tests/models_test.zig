@@ -183,13 +183,13 @@ test "planar models routing: [role_vendors] override routes coder to codex" {
     const stdout = suite.mustRunWith(&.{ "models", "routing" }, extra);
     defer gpa.free(stdout);
 
-    // coder row routes to codex / gpt-5.4; reviewer stays claude.
+    // coder row routes to codex / gpt-5.6-terra; reviewer stays claude.
     var coder_ok = false;
     var lines = std.mem.splitScalar(u8, stdout, '\n');
     while (lines.next()) |line| {
         const l = std.mem.trim(u8, line, " \t\r");
         if (!std.mem.startsWith(u8, l, "coder")) continue;
-        if (std.mem.indexOf(u8, l, "codex") != null and std.mem.indexOf(u8, l, "gpt-5.4") != null) coder_ok = true;
+        if (std.mem.indexOf(u8, l, "codex") != null and std.mem.indexOf(u8, l, "gpt-5.6-terra") != null) coder_ok = true;
     }
     if (!coder_ok) {
         std.debug.print("\ncoder not routed to codex:\n{s}\n", .{stdout});

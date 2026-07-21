@@ -44,8 +44,8 @@ The shared resolver composes these: the tier-only path (`resolveTier`/`resolveRo
 7. **Apply an evals recommendation (explicit, operator-gated only)** — a `planar models evals` recommendation is a suggestion, never an instruction to act unprompted. Only after the operator explicitly confirms applying it, guide them to hand-edit the `[routing.<vendor>.<tier>]` table in `~/.planar/config.toml` to the recommended candidate (same edit path as item 8 below), then re-run `planar models candidates --json` to confirm. The skill must never write the routing map on its own initiative from an evals recommendation.
 8. **Override** — guide the operator to edit `~/.planar/config.toml`:
    - re-route a tier: set `[models.codex] medium = "gpt-5.4"`.
-   - widen a tier to multiple candidates: set `[models.codex] large = ["gpt-5.5", "gpt-5.3-codex-spark"]`.
-   - route a work type to a specific candidate: set `[routing.codex.large] schema = "gpt-5.5"` (the target must be a member of that tier's candidate list, or `planar config validate` rejects it).
+   - widen a tier to multiple candidates: set `[models.codex] large = ["gpt-5.6-sol", "gpt-5.5"]`.
+   - route a work type to a specific candidate: set `[routing.codex.large] schema = "gpt-5.6-sol"` (the target must be a member of that tier's candidate list, or `planar config validate` rejects it).
    - move a role's tier: set `[roles] coder = "large"`.
    - route a role to another vendor: set `[role_vendors] coder = "codex"`.
    Then re-run `planar models routing` / `planar models candidates` to confirm the change took, with provenance now showing `[config file]`.

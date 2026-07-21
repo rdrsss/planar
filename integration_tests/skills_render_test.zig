@@ -17,9 +17,9 @@ test "skills render writes all vendor outputs" {
 
     const stdout = mustRunInDir(&suite, root, &.{ "skills", "render" });
     defer gpa.free(stdout);
-    try std.testing.expectEqual(@as(usize, 6), countNonEmptyLines(stdout));
+    try std.testing.expectEqual(@as(usize, 8), countNonEmptyLines(stdout));
 
-    const vendors = [_][]const u8{ "commands/claude", "skills/codex", "skills/copilot" };
+    const vendors = [_][]const u8{ "commands/claude", "skills/codex", "skills/copilot", "skills/gemini" };
     for (vendors) |v| {
         for ([_][]const u8{ "pl-alpha.md", "pl-beta.md" }) |name| {
             const p = try std.fs.path.join(gpa, &.{ root, v, name });
@@ -421,11 +421,11 @@ test "skills render real sources keep model tiers notes and invocation blocks" {
     }
 
     try std.testing.expect(std.mem.indexOf(u8, claude_coder, "model: claude-sonnet-5") != null);
-    try std.testing.expect(std.mem.indexOf(u8, codex_coder, "model: gpt-5.4") != null);
+    try std.testing.expect(std.mem.indexOf(u8, codex_coder, "model: gpt-5.6-terra") != null);
     try std.testing.expect(std.mem.indexOf(u8, claude_coder, "## Invocation") != null);
     try std.testing.expect(std.mem.indexOf(u8, codex_coder, "## Invocation") == null);
     try std.testing.expect(std.mem.indexOf(u8, claude_orch, "model: claude-opus-4-8") != null);
-    try std.testing.expect(std.mem.indexOf(u8, codex_orch, "model: gpt-5") != null);
+    try std.testing.expect(std.mem.indexOf(u8, codex_orch, "model: gpt-5.6-sol") != null);
     try std.testing.expect(std.mem.indexOf(u8, claude_orch, "## Vendor Notes") != null);
     try std.testing.expect(std.mem.indexOf(u8, claude_spec_draft, "argument-hint: \"<goal>\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, claude_spec_draft, "\\\"<goal>\\\"") == null);
@@ -677,7 +677,7 @@ test "skills render supports interspersed slugs and flags ordering" {
         src_dir,
     });
     defer gpa.free(stdout);
-    try std.testing.expectEqual(@as(usize, 6), countNonEmptyLines(stdout));
+    try std.testing.expectEqual(@as(usize, 8), countNonEmptyLines(stdout));
 }
 
 test "skills render diff without check is usage error" {

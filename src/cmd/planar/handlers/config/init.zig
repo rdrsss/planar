@@ -54,7 +54,7 @@ const starter_config =
     \\# # Per-vendor model tier maps + role→tier routing (plan 540). Override a
     \\# # tier to re-route every role at that tier; see `planar models`.
     \\# [models.codex]
-    \\# medium = "gpt-5.4"
+    \\# medium = "gpt-5.6-terra"
     \\#
     \\# [roles]
     \\# coder = "large"

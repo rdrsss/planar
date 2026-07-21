@@ -320,6 +320,7 @@ pub const catalog: []const VendorCatalog = &.{
         .bin = "claude",
         .models = &.{
             .{ .id = "claude-opus-4-8", .tier = .large },
+            .{ .id = "claude-fable-5", .tier = .large, .label = "Claude Fable 5 — Mythos-class, above opus; routable candidate, not the tier default" },
             .{ .id = "claude-sonnet-5", .tier = .medium },
             .{ .id = "claude-haiku-4-5", .tier = .small },
         },
@@ -328,9 +329,12 @@ pub const catalog: []const VendorCatalog = &.{
         .vendor = "codex",
         .bin = "codex",
         .models = &.{
-            .{ .id = "gpt-5.5", .tier = .large, .label = "GPT-5.5 (current) — frontier coding/research" },
-            .{ .id = "gpt-5.4", .tier = .medium, .label = "GPT-5.4 — strong everyday coding" },
-            .{ .id = "gpt-5.4-mini", .tier = .small, .label = "GPT-5.4-mini — fast, cost-efficient" },
+            .{ .id = "gpt-5.6-sol", .tier = .large, .label = "GPT-5.6-sol (current) — frontier coding/research" },
+            .{ .id = "gpt-5.5", .tier = .large, .label = "GPT-5.5 — prior frontier" },
+            .{ .id = "gpt-5.6-terra", .tier = .medium, .label = "GPT-5.6-terra — strong everyday coding" },
+            .{ .id = "gpt-5.4", .tier = .medium, .label = "GPT-5.4 — prior everyday coding" },
+            .{ .id = "gpt-5.6-luna", .tier = .small, .label = "GPT-5.6-luna — fast, cost-efficient" },
+            .{ .id = "gpt-5.4-mini", .tier = .small, .label = "GPT-5.4-mini — prior fast tier" },
             .{ .id = "gpt-5.3-codex-spark", .tier = .small, .label = "GPT-5.3-codex-spark — ultra-fast" },
         },
     },
@@ -647,7 +651,7 @@ test "resolver: default resolution — role→tier→model from embedded default
     try testing.expectEqualStrings("claude-opus-4-8", reviewer.model);
 
     const codex_coder = try resolveRole(&res.effective, "codex", "coder");
-    try testing.expectEqualStrings("gpt-5.4", codex_coder.model);
+    try testing.expectEqualStrings("gpt-5.6-terra", codex_coder.model);
 }
 
 test "resolver: config override resolution carries config-file provenance" {
@@ -709,7 +713,7 @@ test "resolver: resolveRoleAuto derives vendor (default → role_vendors overrid
     defer res2.deinit(a);
     const coder2 = try resolveRoleAuto(&res2.effective, "coder");
     try testing.expectEqualStrings("codex", coder2.vendor);
-    try testing.expectEqualStrings("gpt-5.4", coder2.model);
+    try testing.expectEqualStrings("gpt-5.6-terra", coder2.model);
     // A role without a per-role vendor stays on the default vendor.
     const reviewer2 = try resolveRoleAuto(&res2.effective, "reviewer");
     try testing.expectEqualStrings("claude", reviewer2.vendor);
@@ -726,7 +730,7 @@ test "resolver: vendorForRole falls back to [defaults].vendor" {
     // No role_vendors → every role uses the global default vendor (codex).
     try testing.expectEqualStrings("codex", vendorForRole(&res.effective, "coder"));
     const coder = try resolveRoleAuto(&res.effective, "coder");
-    try testing.expectEqualStrings("gpt-5.4", coder.model);
+    try testing.expectEqualStrings("gpt-5.6-terra", coder.model);
 }
 
 test "resolver: buildRouting returns a row per canonical role" {
@@ -792,7 +796,7 @@ test "models: renderConfigBlock emits the tier maps + roles scaffold" {
     defer a.free(block);
     for ([_][]const u8{
         "[models.claude]",      "[models.codex]", "claude-sonnet-5",
-        "gpt-5.5",              "[roles]",        "coder = \"medium\"",
+        "gpt-5.6-sol",          "[roles]",        "coder = \"medium\"",
         "reviewer = \"large\"",
     }) |needle| {
         try testing.expect(std.mem.indexOf(u8, block, needle) != null);

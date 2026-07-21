@@ -13,17 +13,17 @@ Agent specs in `agents/` reference abstract tiers (`small`, `medium`, `large`). 
 
 | Tier | Claude | Codex | Copilot |
 | ------ | ------ | ----- | ------- |
-| small | claude-haiku-4-5 | gpt-5.4-mini | gpt-5-mini |
-| medium | claude-sonnet-5 | gpt-5.4 | gpt-5 |
-| large | claude-opus-4-8 | gpt-5.5 | claude-opus-4 |
+| small | claude-haiku-4-5 | gpt-5.6-luna | gpt-5-mini |
+| medium | claude-sonnet-5 | gpt-5.6-terra | gpt-5 |
+| large | claude-opus-4-8 | gpt-5.6-sol | claude-opus-4 |
 
 ## Candidate lists and work-type routing
 
 Each `[models.<vendor>.<tier>]` value in `~/.planar/config.toml` (embedded
 defaults in `src/engine/config/defaults.toml`) accepts either a **scalar**
 (one model id — the shape shown in the Tier Table above) or an **ordered
-list** of candidate model ids, e.g. `[models.codex] large = ["gpt-5.5",
-"gpt-5.3-codex-spark"]`. A scalar resolves to a one-element list internally,
+list** of candidate model ids, e.g. `[models.codex] large = ["gpt-5.6-sol",
+"gpt-5.5"]`. A scalar resolves to a one-element list internally,
 so every existing scalar config is unaffected; `list[0]` is always the
 **tier default** — the model a caller gets when it resolves a bare
 `(vendor, tier)` or `(vendor, role)` pair with no work type in hand
@@ -88,32 +88,80 @@ this frontmatter via the render path.
 
 ## Coder tier policy
 
-The coder defaults to `medium` (sonnet). The orchestrator may escalate the spawned coder subagent to `large` (opus) for cycles that involve schema changes, engine-judgment calls, or large architectural diffs where the higher model tier materially improves the output. Tier is Axis C of the dispatch model and is independent of isolation (Axis A) — even a `large`-tier coder must run as a separately spawned subagent with blank context. Routine implementation, doc changes, and mechanical sweeps do not warrant escalation.
+The coder defaults to `medium` (sonnet), and the default is load-bearing, not a starting bid. Planar's premise is that the hard reasoning happens upfront — in the spec, the decomposition, and the locked decisions — so execution is deliberately cheap and fast: a well-decomposed task carries its own context and a `medium` coder is expected to close it. The orchestrator proposes `large` (opus) per task, as an exception it can name, never as a batch default. Tier is Axis C of the dispatch model and is independent of isolation (Axis A) — even a `large`-tier coder must run as a separately spawned subagent with blank context. Routine implementation, CLI-surface additions, doc changes, and mechanical sweeps do not warrant escalation.
 
-The escalation is keyed to the **type of work** in the cycle, not to the task
-count. The orchestrator classifies each task's dominant work type and proposes
-the corresponding tier in the Phase 3 dispatch preview; when a cycle mixes work
-types, the highest-tier row present wins:
+The escalation is keyed to the **type of work** in each task — not to the task
+count, and not to the task's batch-mates. The orchestrator classifies each
+task's dominant work type and proposes the corresponding tier in the Phase 3
+dispatch preview:
 
 | Work type | Tier | Signals (any one triggers the row) |
 |-----------|------|------------------------------------|
 | Schema / migration | large | new or edited `migrations/*.sql`; a change to the `schema_migrations` contract; a CHECK-constraint or index redesign |
-| Engine judgment | large | non-trivial logic under `src/engine/` or `src/db/`; error-set / allocator-ownership design; a status-transition or scope-resolution rule change |
-| Architectural | large | a new subsystem or binary; a cross-module diff touching many packages; a change to a locked capability boundary |
-| CLI-surface change | large | a new top-level verb, subcommand, or flag whose contract must be pinned by an integration test |
+| Engine judgment | large | allocator-ownership or error-set design; a transaction/atomicity boundary change; a status-transition, scope-resolution, or locked-capability-boundary rule change. Routine engine wiring that follows an existing pattern is `feature`, not `engine` — "it touches `src/engine/`" is not by itself an escalation signal. |
+| Architectural | large | a new subsystem or binary; a cross-module diff touching many packages |
+| CLI-surface change | medium | a new top-level verb, subcommand, or flag whose contract must be pinned by an integration test. The contract is pinned by the integration suite and the decomposition carries the design; a surface change that genuinely requires cross-cutting parser or design judgment classifies as `architectural` instead. |
 | Feature (default) | medium | single-verb handler wiring, a bounded feature addition within an existing surface |
 | Mechanical / docs | medium | renames, formatting sweeps, comment/doc-only edits, prose under `docs/`, workflow-surface text |
 
 The one-word reason the orchestrator prints on every non-default (`large`) row
 in the dispatch preview is the matching work-type name from this table
-(`schema`, `engine`, `architectural`, `cli`). The default (`medium`) rows carry
+(`schema`, `engine`, `architectural`). The default (`medium`) rows carry
 no reason. The operator may override any task's tier at the gate; the confirmed
 `model_tiers` map is binding for dispatch (Axis C, below).
 
+**Tiers are per-task; a cycle never inherits its highest task's tier.** The
+former highest-row-wins rule (a mixed cycle escalates wholesale to the highest
+tier present) is retired. When a proposed `grouped`/`single` cycle mixes
+confirmed tiers, the orchestrator partitions the group by tier — one coder per
+tier partition, dependency edges still ordering the dispatches — or falls back
+to per-task dispatch (`strict` / `barrel-deferred`) for that cycle. Inflating a
+`medium` task to `large` because of its batch-mates is prohibited; so is
+silently folding a `large` task into a `medium` batch.
+
+**Ambiguity escalates to the operator, not to opus.** When the classifier
+genuinely cannot decide a task's dominant work type (competing signals, an
+under-specified task body), the orchestrator does NOT round up to `large`. It
+renders the row as `tier: ?` with the competing signals named — e.g.
+`(engine? feature? — touches src/engine/ but follows the extant handler
+pattern)` — and the gate requires an explicit operator answer for that row
+before any cycle containing it dispatches. Uncertainty is a routing question
+for the operator, not a budget decision the orchestrator resolves by rounding
+up.
+
+**Opportunistic escalation on reviewer bounce.** When a `medium` cycle fails
+two consecutive reviewer iterations and the failures read as capability gaps
+(the coder misunderstands the design, not the spec being ambiguous), the
+orchestrator may propose re-dispatching the remaining iterations at `large` —
+surfaced at the next preview render with the reviewer evidence, never applied
+silently. Spec ambiguity escalates to the user as an open question instead; a
+bigger model does not fix an under-specified task.
+
 Axis C is **operator-confirmed, never silent**. The orchestrator surfaces the proposed tier per task in the Phase 3 dispatch preview (the task-breakdown table's tier column, with a one-word reason on every non-default row), and the operator may override any task's tier before confirming. The confirmed assignment is binding: the orchestrator spawns each coder at the confirmed tier and never silently escalates or downgrades — a mid-plan re-proposal is surfaced at the next preview render. Confirmed assignments persist in the dispatch entry's metadata as a `model_tiers` map for cross-cycle stickiness. See [`skills/src/pl-orchestrator.md` §Dispatch preview and model tiers](../skills/src/pl-orchestrator.md) for the preview format.
+
+## Candidate use-cases within a tier
+
+When a tier carries more than one candidate, the routing map is where "which
+one, for what" gets encoded — over the existing work-type vocabulary, never new
+ad-hoc labels (the orchestrator's classifier and `planar models evals`'
+scorecard both key on `schema | engine | architectural | cli | feature |
+mechanical`). The shipped priors:
+
+- **`claude-fable-5` vs `claude-opus-4-8`** (Claude `large`): opus is the tier
+  default — reviewers, escalated coders, and every bare large resolution get
+  opus. Fable is Mythos-class (above opus) and is routed only where a wrong
+  early judgment cascades hardest: the shipped seed routes `architectural` →
+  fable. Widen (e.g. `schema` → fable) or retract via `[routing.claude.large]`
+  in `~/.planar/config.toml`.
+- **`gpt-5.6-sol` vs `gpt-5.5`** (Codex `large`): sol is the current frontier
+  default; gpt-5.5 stays listed as a routable fallback candidate.
+- These are **priors, not conclusions**. `planar models evals` aggregates
+  completed dispatches into a per-(work-type, candidate) scorecard and emits
+  preview-only routing recommendations — let accumulated dispatch history,
+  not intuition, decide whether a routing entry earns its cost.
 
 ## Notes On Identifiers
 
-- `claude-sonnet-5` and `claude-opus-4-8` are the current Anthropic identifiers as of 2026-07.
+- `claude-sonnet-5`, `claude-opus-4-8`, and `claude-fable-5` are the current Anthropic identifiers as of 2026-07. `claude-fable-5` is the Mythos-class tier above opus — kept as a routable `large` candidate, deliberately not the tier default.
 - Codex and Copilot identifiers must be verified against each vendor's current model list periodically. Treat the values above as defaults, not guarantees.
 - Vendors that expose Anthropic models (e.g. Copilot routing to `claude-opus-4`) should resolve to the closest available identifier on that vendor, not the Anthropic-native one.
