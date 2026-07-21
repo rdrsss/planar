@@ -103,9 +103,9 @@ During long spawns, the orchestrator calls `dispatch.lua/heartbeat {claim_token}
 
      wave 1
        #12  add-parity-gate       blocks: 14         tier: large   model: claude-opus-4-8-thinking  (schema)
-       #13  polish-cli-help       —                  tier: medium  model: claude-sonnet-4-6          (feature)
+       #13  polish-cli-help       —                  tier: medium  model: claude-sonnet-5          (feature)
      wave 2 — unblocks when #12 is done
-       #14  wire-handler          blocked_by: 12     tier: medium  model: claude-sonnet-4-6          (feature)
+       #14  wire-handler          blocked_by: 12     tier: medium  model: claude-sonnet-5          (feature)
      serialized — never waved
        #15  backfill-migration    migration guard    tier: large   model: claude-opus-4-8            (engine)
 
