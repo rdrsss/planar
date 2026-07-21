@@ -35,12 +35,15 @@ default_set = "default"
 [models.claude]
 small  = "claude-haiku-4-5"
 medium = "claude-sonnet-5"
-large  = "claude-opus-4-8"
+# list[0] is the tier default; claude-fable-5 (Mythos-class, above opus) is a
+# routable candidate for the hardest judgment work, opt-in via [routing] or a
+# per-task candidate override — deliberately NOT the default (cost).
+large  = ["claude-opus-4-8", "claude-fable-5"]
 
 [models.codex]
-small  = "gpt-5.4-mini"
-medium = "gpt-5.4"
-large  = "gpt-5.5"
+small  = ["gpt-5.6-luna", "gpt-5.4-mini", "gpt-5.3-codex-spark"]
+medium = ["gpt-5.6-terra", "gpt-5.4"]
+large  = ["gpt-5.6-sol", "gpt-5.5"]
 
 [models.copilot]
 small  = "gpt-5-mini"
@@ -64,15 +67,18 @@ mechanical = "claude-sonnet-5"
 
 [routing.claude.large]
 mechanical = "claude-opus-4-8"
+# Seed: route the deepest design work to the Mythos-class candidate. Judged
+# empirically over time via `planar models evals`; remove or retarget freely.
+architectural = "claude-fable-5"
 
 [routing.codex.small]
-mechanical = "gpt-5.4-mini"
+mechanical = "gpt-5.6-luna"
 
 [routing.codex.medium]
-mechanical = "gpt-5.4"
+mechanical = "gpt-5.6-terra"
 
 [routing.codex.large]
-mechanical = "gpt-5.5"
+mechanical = "gpt-5.6-sol"
 
 [routing.copilot.small]
 mechanical = "gpt-5-mini"

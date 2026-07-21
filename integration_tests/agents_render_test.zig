@@ -519,7 +519,7 @@ test "agents render doc-author with write capability at large tier" {
     const codex = try readPath(gpa, root, "agents/codex/doc-author.toml");
     defer gpa.free(codex);
     try std.testing.expect(std.mem.indexOf(u8, codex, "sandbox_mode = \"workspace-write\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, codex, "model = \"gpt-5.5\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, codex, "model = \"gpt-5.6-sol\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, codex, "model_reasoning_effort = \"high\"") != null);
 }
 
@@ -567,7 +567,7 @@ test "agents render sync-reconciler coordinate capability at large tier" {
     defer gpa.free(codex);
     try std.testing.expect(std.mem.indexOf(u8, codex, "sandbox_mode = \"workspace-write\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, codex, "must NOT edit source files") != null);
-    try std.testing.expect(std.mem.indexOf(u8, codex, "model = \"gpt-5.5\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, codex, "model = \"gpt-5.6-sol\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, codex, "model_reasoning_effort = \"high\"") != null);
     try expectSyncStatusAuditBoundary(codex);
     try expectSyncReconciliationContract(codex);

@@ -222,7 +222,7 @@ test "config show --effective: includes plan-540 model tier maps + role tiers (d
 
     for ([_][]const u8{
         "models.claude.medium", "claude-sonnet-5",
-        "models.codex.large",   "gpt-5.5",
+        "models.codex.large",   "gpt-5.6-sol",
         "roles.coder",          "roles.reviewer",
     }) |needle| {
         if (std.mem.indexOf(u8, stdout, needle) == null) {
@@ -282,8 +282,8 @@ test "config show --effective: an array-shaped [models] tier surfaces the candid
     const cfg_path = configPathInTmp(&suite);
     defer gpa.free(cfg_path);
 
-    // Route codex.large to an ordered candidate list; leave codex.small
-    // scalar (the untouched-edge case).
+    // Route codex.large to an ordered candidate list; claude.small stays
+    // scalar in the embedded defaults (the untouched-edge case).
     try std.Io.Dir.cwd().writeFile(std.testing.io, .{
         .sub_path = cfg_path,
         .data =
@@ -311,10 +311,10 @@ test "config show --effective: an array-shaped [models] tier surfaces the candid
             }
             found_candidates_line = true;
         }
-        if (std.mem.indexOf(u8, line, "models.codex.small") != null) {
+        if (std.mem.indexOf(u8, line, "models.claude.small") != null) {
             // Scalar/one-element edge: no "(candidates: " suffix at all.
             if (std.mem.indexOf(u8, line, "(candidates:") != null) {
-                std.debug.print("\nmodels.codex.small (scalar) unexpectedly carries a candidates suffix: {s}\n", .{line});
+                std.debug.print("\nmodels.claude.small (scalar) unexpectedly carries a candidates suffix: {s}\n", .{line});
                 return error.TestUnexpectedResult;
             }
             found_scalar_line = true;
@@ -342,10 +342,10 @@ test "config show --effective: an array-shaped [models] tier surfaces the candid
             }
             found_candidates_json = true;
         }
-        if (std.mem.indexOf(u8, line, "\"key\":\"models.codex.small\"") != null) {
+        if (std.mem.indexOf(u8, line, "\"key\":\"models.claude.small\"") != null) {
             // Scalar/one-element edge: no "candidates" key at all.
             if (std.mem.indexOf(u8, line, "\"candidates\"") != null) {
-                std.debug.print("\nmodels.codex.small (scalar) JSON unexpectedly carries a candidates key: {s}\n", .{line});
+                std.debug.print("\nmodels.claude.small (scalar) JSON unexpectedly carries a candidates key: {s}\n", .{line});
                 return error.TestUnexpectedResult;
             }
             found_scalar_json = true;

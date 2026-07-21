@@ -2605,12 +2605,14 @@ planar models list
 # providers:
 #   claude   [installed] 2.1.170 (Claude Code)
 #       large    claude-opus-4-8
+#       large    claude-fable-5          Claude Fable 5 — Mythos-class, above opus; routable candidate, not the tier default
 #       medium   claude-sonnet-5
 #       small    claude-haiku-4-5
 #   codex    [installed] codex-cli 0.137.0
-#       large    gpt-5.5                 GPT-5.5 (current) — frontier coding/research
-#       medium   gpt-5.4                 GPT-5.4 — strong everyday coding
-#       small    gpt-5.4-mini            GPT-5.4-mini — fast, cost-efficient
+#       large    gpt-5.6-sol             GPT-5.6-sol (current) — frontier coding/research
+#       large    gpt-5.5                 GPT-5.5 — prior frontier
+#       medium   gpt-5.6-terra           GPT-5.6-terra — strong everyday coding
+#       small    gpt-5.6-luna            GPT-5.6-luna — fast, cost-efficient
 ```
 
 **2. See the effective role routing (with provenance).**
@@ -2628,10 +2630,10 @@ planar models routing
 ```bash
 planar models candidates
 # tier candidate lists (models.<vendor>.<tier>):
-#   codex    large  -> gpt-5.5  [embedded default]
+#   codex    large  -> gpt-5.6-sol, gpt-5.5  [embedded default]
 #
 # work-type routing map (routing.<vendor>.<tier>.<work-type>):
-#   codex    large  mechanical -> gpt-5.5  [embedded default]
+#   codex    large  mechanical -> gpt-5.6-sol  [embedded default]
 ```
 
 Candidate lists let a tier hold multiple model ids while keeping `list[0]` as the tier default. The `[routing.<vendor>.<tier>]` map selects a specific candidate for work types such as `schema`, `engine`, `architectural`, `cli`, `feature`, and `mechanical`.
@@ -2659,11 +2661,11 @@ coder = "codex"
 
 # …and (optionally) which codex model the medium tier resolves to:
 [models.codex]
-medium = "gpt-5.4"
-large = ["gpt-5.5", "gpt-5.3-codex-spark"]
+medium = "gpt-5.6-terra"
+large = ["gpt-5.6-sol", "gpt-5.5"]
 
 [routing.codex.large]
-schema = "gpt-5.5"
+schema = "gpt-5.6-sol"
 
 # Or just bump a role to a different tier:
 [roles]
@@ -2674,7 +2676,7 @@ reviewer = "large"
 
 ```bash
 planar models routing
-#   coder      → codex  gpt-5.4                (medium) [config file]
+#   coder      → codex  gpt-5.6-terra          (medium) [config file]
 planar models candidates --json
 ```
 
