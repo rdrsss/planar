@@ -83,6 +83,20 @@ mechanical = "gpt-5"
 [routing.copilot.large]
 mechanical = "claude-opus-4"
 
+[models.gemini]
+small  = "gemini-3.1-flash"
+medium = "gemini-3.1-pro"
+large  = "gemini-3.1-pro"
+
+[routing.gemini.small]
+mechanical = "gemini-3.1-flash"
+
+[routing.gemini.medium]
+mechanical = "gemini-3.1-pro"
+
+[routing.gemini.large]
+mechanical = "gemini-3.1-pro"
+
 # Role → tier mapping (vendor-independent). The shared resolver composes this
 # with [models.<vendor>] to pick a concrete model for a role: e.g. the coder
 # resolves to the `medium` model of the active vendor, the reviewer to `large`.

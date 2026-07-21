@@ -74,7 +74,7 @@ set -eEuo pipefail
 
 PLANAR_HOME="${PLANAR_HOME:-$HOME/.planar}"
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
-VENDORS="claude,codex,copilot"
+VENDORS="claude,codex,copilot,gemini"
 MODE="copy"                   # copy | link
 FORCE=0
 UNINSTALL=0
@@ -101,7 +101,7 @@ Usage:
 
 Options:
   --prefix DIR       Install root (default: ~/.planar)
-  --vendors LIST     Comma-separated vendors to wire: claude,codex,copilot (default: all)
+  --vendors LIST     Comma-separated vendors to wire: claude,codex,copilot,gemini (default: all)
   --no-vendor        Install Planar core only; skip vendor surfaces
   --link             Symlink from this repo instead of copying (dev mode)
   --force            Overwrite existing symlinks / adopt a non-Planar prefix
@@ -275,7 +275,7 @@ symlink_to() {
 if [[ "$UNINSTALL" -eq 1 ]]; then
   title "Uninstalling Planar"
 
-  for vendor_root in "$HOME/.claude/commands" "$HOME/.codex/skills" "$HOME/.copilot/skills"; do
+  for vendor_root in "$HOME/.claude/commands" "$HOME/.codex/skills" "$HOME/.copilot/skills" "$HOME/.gemini/antigravity-cli/skills"; do
     [[ -d "$vendor_root" ]] || continue
     while IFS= read -r -d '' link; do
       target="$(readlink "$link" 2>/dev/null || true)"
@@ -347,7 +347,7 @@ if [[ "$UNINSTALL" -eq 1 ]]; then
   # prune_stale_vendor_agents safety semantics: only remove files whose symlink
   # target points into $PLANAR_HOME; regular files and operator-authored links
   # are left untouched.
-  for agent_dir in "$HOME/.claude/agents" "$CODEX_HOME/agents" "$HOME/.copilot/agents"; do
+  for agent_dir in "$HOME/.claude/agents" "$CODEX_HOME/agents" "$HOME/.copilot/agents" "$HOME/.gemini/antigravity-cli/agents"; do
     [[ -d "$agent_dir" ]] || continue
     while IFS= read -r -d '' link; do
       target="$(readlink "$link" 2>/dev/null || true)"
@@ -485,7 +485,7 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
     log "install pinned Mt-KaHyPar $MTKAHYPAR_VERSION wheel + adapter → $PLANAR_HOME"
   fi
   if [[ -n "$VENDORS" ]]; then
-    log "wire vendor surfaces: $VENDORS → ~/.claude, ~/.codex, ~/.copilot"
+    log "wire vendor surfaces: $VENDORS → ~/.claude, ~/.codex, ~/.copilot, ~/.gemini/antigravity-cli"
   else
     log "vendor surfaces: skipped (--no-vendor)"
   fi
@@ -614,7 +614,7 @@ if [[ "$VERBOSE" -eq 1 ]]; then
 else
   ( cd "$PLANAR_HOME" && "$PLANAR_HOME/bin/planar" skills render --src "$PLANAR_HOME/skills/src" --out "$PLANAR_HOME" ) >/dev/null
 fi
-log "rendered: commands/claude, skills/codex, skills/copilot (+ agents/models.md tier table)"
+log "rendered: commands/claude, skills/codex, skills/copilot, skills/gemini (+ agents/models.md tier table)"
 
 # Migrations live at repo root in sqlx-cli format and are read by the Zig
 # build via codegen. We also stage them under $PLANAR_HOME for ad-hoc
@@ -897,6 +897,86 @@ if [[ -n "$VENDORS" ]]; then
     log "copilot: installed $count skill directories into $dst_dir"
   }
 
+
+  # Gemini discovers skills as directories that contain SKILL.md (same layout as
+  # Codex). Keep Planar's source-of-truth files flat, materialize runtime skill
+  # directories, then install into ~/.gemini/antigravity-cli/skills/ so discovery works.
+  install_gemini_vendor() {
+    local src_dir="$1" runtime_dir="$2" dst_dir="$3"
+    if [[ ! -d "$src_dir" ]]; then
+      warn "gemini: source $src_dir not found, skipping"
+      return 0
+    fi
+    rm -rf "$runtime_dir"
+    mkdir -p "$runtime_dir"
+    mkdir -p "$dst_dir"
+    local count=0
+    while IFS= read -r -d '' f; do
+      local skill_name legacy runtime_skill_dir dst_skill_dir marker
+      skill_name="$(basename "$f" .md)"
+      legacy="$dst_dir/${skill_name}.md"
+      runtime_skill_dir="$runtime_dir/$skill_name"
+      dst_skill_dir="$dst_dir/$skill_name"
+      marker="$dst_skill_dir/.planar-source"
+
+      # Clean up legacy flat symlinks from previous installs.
+      if [[ -L "$legacy" ]]; then
+        local legacy_target
+        legacy_target="$(readlink "$legacy" 2>/dev/null || true)"
+        if [[ "$legacy_target" == "$src_dir/"* || "$legacy_target" == "$PLANAR_HOME/skills/gemini/"* ]]; then
+          rm -f "$legacy"
+        fi
+      fi
+
+      if [[ -L "$dst_skill_dir" ]]; then
+        local dir_target
+        dir_target="$(readlink "$dst_skill_dir" 2>/dev/null || true)"
+        if [[ "$dir_target" == "$runtime_dir/"* || "$dir_target" == "$PLANAR_HOME/gemini-skills/"* ]]; then
+          rm -f "$dst_skill_dir"
+        elif [[ "$FORCE" -eq 1 ]]; then
+          rm -f "$dst_skill_dir"
+        else
+          err "$dst_skill_dir already exists and was not installed by Planar (rerun with --force to overwrite)"
+        fi
+      fi
+
+      if [[ -d "$dst_skill_dir" && -f "$marker" ]]; then
+        local marker_target
+        marker_target="$(cat "$marker" 2>/dev/null || true)"
+        if [[ "$marker_target" == "$f" || "$marker_target" == "$PLANAR_HOME/skills/gemini/"* ]]; then
+          rm -f "$dst_skill_dir/SKILL.md"
+          rm -f "$marker"
+          rmdir "$dst_skill_dir" 2>/dev/null || true
+        fi
+      fi
+
+      if [[ -d "$dst_skill_dir" && ( -e "$dst_skill_dir/SKILL.md" || -L "$dst_skill_dir/SKILL.md" ) ]]; then
+        local skill_target
+        skill_target="$(readlink "$dst_skill_dir/SKILL.md" 2>/dev/null || true)"
+        if [[ "$skill_target" == "$f" || "$skill_target" == "$PLANAR_HOME/skills/gemini/"* ]]; then
+          rm -f "$dst_skill_dir/SKILL.md"
+          rmdir "$dst_skill_dir" 2>/dev/null || true
+        elif [[ "$FORCE" -eq 1 ]]; then
+          rm -rf "$dst_skill_dir"
+        else
+          err "$dst_skill_dir already exists and was not installed by Planar (rerun with --force to overwrite)"
+        fi
+      fi
+
+      mkdir -p "$runtime_skill_dir"
+      if [[ "$MODE" == "link" ]]; then
+        symlink_to "$f" "$runtime_skill_dir/SKILL.md"
+      else
+        cp -f "$f" "$runtime_skill_dir/SKILL.md"
+      fi
+      mkdir -p "$dst_skill_dir"
+      cp -f "$runtime_skill_dir/SKILL.md" "$dst_skill_dir/SKILL.md"
+      printf '%s\n' "$f" > "$marker"
+      count=$((count + 1))
+    done < <(find "$src_dir" -maxdepth 1 -name 'pl-*.md' -print0)
+    log "gemini: installed $count skill directories into $dst_dir"
+  }
+
   # symlink_vendor_agents links every file in the rendered agents/<vendor>/
   # directory into the vendor's agents/ harness directory. Mirrors symlink_vendor
   # but uses a wildcard pattern that covers all file extensions (.md, .toml,
@@ -1018,6 +1098,27 @@ if [[ -n "$VENDORS" ]]; then
     fi
   }
 
+  prune_stale_gemini() {
+    local dst_dir="$1"
+    [[ "$NO_PRUNE" -eq 1 ]] && return 0
+    [[ -d "$dst_dir" ]] || return 0
+    local removed=0
+    while IFS= read -r -d '' skill_dir; do
+      local marker="$skill_dir/.planar-source"
+      [[ -f "$marker" ]] || continue                  # no marker — operator skill
+      local marker_target
+      marker_target="$(cat "$marker" 2>/dev/null || true)"
+      [[ -n "$marker_target" ]] || continue
+      [[ -e "$marker_target" ]] && continue           # source still exists — keep
+      vlog "gemini: pruning stale skill dir $(basename "$skill_dir") (source removed)"
+      rm -rf "$skill_dir"
+      removed=$((removed + 1))
+    done < <(find "$dst_dir" -maxdepth 1 -name 'pl-*' -type d -print0)
+    if [[ "$removed" -gt 0 ]]; then
+      log "gemini: pruned $removed stale skill director$([[ $removed -eq 1 ]] && echo y || echo ies)"
+    fi
+  }
+
   IFS=',' read -r -a vendor_list <<< "$VENDORS"
   for v in "${vendor_list[@]}"; do
     case "$v" in
@@ -1045,6 +1146,12 @@ if [[ -n "$VENDORS" ]]; then
           done < <(find "$PLANAR_HOME/copilot" -maxdepth 1 -type f -print0)
         fi
         ;;
+      gemini)
+        install_gemini_vendor "$PLANAR_HOME/skills/gemini" "$PLANAR_HOME/gemini-skills" "$HOME/.gemini/antigravity-cli/skills"
+        prune_stale_gemini "$HOME/.gemini/antigravity-cli/skills"
+        symlink_vendor_agents "gemini" "$PLANAR_HOME/agents/gemini" "$HOME/.gemini/antigravity-cli/agents"
+        prune_stale_vendor_agents "gemini" "$PLANAR_HOME/agents/gemini" "$HOME/.gemini/antigravity-cli/agents"
+        ;;
       *) warn "unknown vendor: $v (skipping)" ;;
     esac
   done
@@ -1064,7 +1171,7 @@ if [[ -n "$VENDORS" ]]; then
   IFS=',' read -r -a vendor_list <<< "$VENDORS"
   for v in "${vendor_list[@]}"; do
     case "$v" in
-      claude|codex|copilot)
+      claude|codex|copilot|gemini)
         install_manifest_record_vendor "$v" "$PLANAR_HOME" "$HOME" "$CODEX_HOME"
         ;;
     esac
