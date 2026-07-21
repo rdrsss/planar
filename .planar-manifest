@@ -1,16 +1,16 @@
 {
   "version": 2,
   "algo": "xxh64",
-  "root": "85ed718e911f7cdf",
+  "root": "615c063c195ef6af",
   "generated_at": "",
   "entries": {
     "docs/architecture.md": {
-      "doc_hash": "1ec6d07cebf431eb",
+      "doc_hash": "92af2442cab5ac72",
       "sources": {
         "build.zig": "ad3885c59aa8c60e",
         "migrations/": "41e00bb86d2105f4",
         "src/db/": "4b08f429d5bc1835",
-        "src/engine/": "06a4908f353b44f4",
+        "src/engine/": "a5336fb896b1c7e1",
         "src/lua/lua.zig": "e8722bc249576f70",
         "src/root.zig": "a50330d9f5048cdf",
         "src/runtime/doc_runtime.zig": "8c7ce9b9c1745988",
@@ -18,18 +18,18 @@
         "src/treesitter/treesitter.zig": "fa9caf196414a330",
         "vendor/sqlite/": "a74be58cb1a408f7"
       },
-      "sources_hash": "95f992ca02bc5794",
-      "entry_hash": "34132ec1b345fbd9"
+      "sources_hash": "79b883775041ea71",
+      "entry_hash": "a5c95eb270c5b142"
     },
     "docs/cli-reference.md": {
-      "doc_hash": "0d3d15753adbcd26",
+      "doc_hash": "796e4e09aff43498",
       "sources": {
-        "src/cmd/": "18a973fecb179d80",
-        "src/engine/models.zig": "40927dde5c2b7210",
+        "src/cmd/": "def8e7db3f45b7bb",
+        "src/engine/models.zig": "92783dd9418d75c3",
         "vendor/etc-cli/": "0000000000000000"
       },
-      "sources_hash": "9085578eef91aed5",
-      "entry_hash": "ea3c9daf9397a43a"
+      "sources_hash": "dd8e9fc49181d196",
+      "entry_hash": "c0be71afb6d806ad"
     },
     "docs/features/doc-system.md": {
       "doc_hash": "4c601dd0cb42f098",
@@ -48,17 +48,25 @@
       "sources_hash": "219a7a0701ba4c41",
       "entry_hash": "5e051a6b5fa1f46a"
     },
-    "docs/skill-reference.md": {
-      "doc_hash": "885730af9f519699",
+    "docs/operations.md": {
+      "doc_hash": "4aa9130b89321e33",
       "sources": {
-        "agents/": "ebd901a61f18b976",
-        "skills/": "a7b6c66d73f807cf"
+        "agents/methodology.md": "fba3a08168a315f4"
       },
-      "sources_hash": "6c4ebe6a2d111420",
-      "entry_hash": "c07d6824fca2ee3f"
+      "sources_hash": "249905d63e8d5d09",
+      "entry_hash": "903b371ca3eabef0"
+    },
+    "docs/skill-reference.md": {
+      "doc_hash": "aaffd76ce42e31be",
+      "sources": {
+        "agents/": "e37928836c9b0b7c",
+        "skills/": "49aa1247bc1891b4"
+      },
+      "sources_hash": "8a93e071e1898682",
+      "entry_hash": "dec0276ca395fbc4"
     },
     "docs/workflows.md": {
-      "doc_hash": "50e46ead08773a78",
+      "doc_hash": "d9e89c6a6cb61f6c",
       "sources": {
         "examples/operational-plane.md": "799b69e083d2e412",
         "examples/orchestrator-run.md": "081fe0d488f9bf12",
@@ -79,7 +87,7 @@
         "workflows/status.lua": "7dce32d3e11d9bf3"
       },
       "sources_hash": "9597f9f6521c5f85",
-      "entry_hash": "4616cc4e855e9955"
+      "entry_hash": "33a67347510cf9b7"
     },
     "metrics/README.md": {
       "doc_hash": "c9cd159f77ead519",
@@ -107,7 +115,7 @@
     "build.zig.zon": "ec0b1222ab927a55",
     "docs/adrs.md": "eb2701a1761bf3f5",
     "docs/changelog.md": "8e1bbafdb2db710c",
-    "docs/concepts.md": "60c2cade4e789e71",
+    "docs/concepts.md": "fa74cbaf3ada90b4",
     "docs/features/workspace-agents.md": "c53ea43c3709921b",
     "docs/getting-started.md": "3dff54eaca2e2c0d",
     "docs/glossary.md": "e7cba86def7a4b4d",
@@ -120,9 +128,9 @@
     "examples/README.md": "6191fac5861e52ac",
     "install-cleanup.txt": "0d50992f8e7201c7",
     "install.sh": "f2a167a8a5309a3f",
-    "integration_tests/": "82975d0a091dd97b",
+    "integration_tests/": "39772385cdd206a0",
     "templates/": "0536dfe3149b9acc",
-    "tools/": "26f54718592b6533",
+    "tools/": "bb8c2feb14297878",
     "vendor/etcli/LICENSE": "1f696e0bbc135b12",
     "vendor/etcli/README.md": "052ecc52fea5216c",
     "vendor/etcli/VENDOR.toml": "fa0f9206f0cb5592",

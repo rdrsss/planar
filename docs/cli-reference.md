@@ -4361,6 +4361,36 @@ planar models refresh [--json]
 
 ---
 
+### `planar models routing`
+
+**Synopsis:**
+```
+planar models routing [--json]
+```
+
+**Description:** Resolve the effective config through the shared model resolver and print each runtime-resolvable role's vendor, tier, concrete model, and provenance. It composes `[defaults].vendor`, `[roles]`, `[role_vendors]`, and `[models.<vendor>]`. Read-only.
+
+`--json` is the machine form used by external workflow callers that need a per-role dispatch table without linking Planar internals.
+
+**Output (`--json`):** An array of `{ "role", "vendor", "tier", "model", "source" }` rows.
+
+**Exit codes:** `0` on success; `1` for config resolution errors.
+
+---
+
+### `planar models apply`
+
+**Synopsis:**
+```
+planar models apply [--force]
+```
+
+**Description:** Append a generated `[models.<vendor>]` tier map plus `[roles]` scaffold to the resolved config file as an editable starting point. Skips when a `[models]` section is already present; `--force` appends again. This command writes only the config file, not the database.
+
+**Exit codes:** `0` on success or already-present skip; `1` for config path or filesystem failures.
+
+---
+
 ### `planar models candidates`
 
 **Synopsis:**
@@ -4400,6 +4430,27 @@ A config-file override to a candidate list (e.g. `[models.codex] large = ["gpt-5
 **Output (`--json`):** `{ "candidates": [ { "vendor", "tier", "candidates": [...], "source" } ], "routing": [ { "vendor", "tier", "work_type", "model", "source" } ] }`.
 
 **Exit codes:** `0` on success.
+
+---
+
+### `planar models evals`
+
+**Synopsis:**
+```
+planar models evals [--json]
+```
+
+**Description:** Aggregate completed dispatch outcomes into a per-`(work_type, candidate)` routing scorecard and preview-only recommendation list. The command reads the `dispatch_shape:` / `model_choice:` note convention in `session_entries`, terminal `agent_work_claims` status, and `agent_actions(action_kind='test_coder')` rows. It is read-only and writes nothing: no routing-map mutation, no database write, no config write.
+
+`model_choice` entries must carry a `{tier,candidate,work_type}` triple per task. Dispatch notes recorded before that convention, or malformed `model_choice` JSON, are counted in `legacy_dispatch_notes_skipped` and excluded from scoring rather than guessed.
+
+**Signals sourced:** reviewer disposition is recovered from terminal claim status (`completed` as approve, `aborted` as abort); iteration count is recovered from repeated dispatch notes for the same task; test-coder expansion is recovered from `test_coder` action outcomes. Quality-gate pass/fail is not persisted as a discrete field, so the command reports `quality_gate_pass_fail=false` in `signals_sourced`.
+
+**Output (human):** A ranked scorecard by work type, followed by preview-only recommendations and the `signals sourced` line.
+
+**Output (`--json`):** `{ "scorecard": [ScoreRow], "recommendations": [Recommendation], "signals_sourced": {...}, "legacy_dispatch_notes_skipped": N }`. A candidate with no completed-dispatch history in an observed sibling candidate list reports `insufficient_data: true` instead of a fabricated score.
+
+**Exit codes:** `0` on success; `1` for database or config aggregation errors.
 
 ---
 
@@ -4806,14 +4857,17 @@ Reads:
 - `plans` — anchor plan and existing child plans.
 - `tasks` — existing tasks linked via `entity_links(relationship='derives-from')`.
 - `decisions` — existing decisions linked via `entity_links(relationship='derives-from')`.
+- `questions` — existing anchor-linked questions for title-based reconciliation.
+- `test_scenarios` — existing scenarios linked to the anchor for title-based reconciliation.
 - `entity_links` — existing link rows for reconciliation.
 
 Writes (only with `--apply`, atomically per anchor plan):
 - `plans` — inserts child plans; updates anchor plan status (`draft` → `active` on first apply).
 - `tasks` — inserts or updates tasks; cancels orphan tasks (only with `--apply-removals`).
 - `decisions` — inserts or updates decisions.
-- `test_scenarios` — inserts auto-drafted scenarios for non-trivial tasks.
-- `entity_links` — inserts `derives-from` links (plan→anchor, task→plan, decision→anchor), `touches` links (task→repo), and `verifies` links (scenario→task).
+- `questions` — inserts H3 items under tech-spec `## Open Questions`; when the first non-blank body line begins with the case-sensitive `Resolution:` token, answers the new or existing question during the same apply.
+- `test_scenarios` — inserts or updates scenarios parsed from `test-spec.md`; also auto-drafts `Verify: <task title>` scenarios for non-trivial newly added tasks (task body contains at least two bullet lines).
+- `entity_links` — inserts `derives-from` links (plan→anchor, task→plan, decision→anchor, scenario→anchor), `touches` links from roadmap `[touches: <repo-slug>, ...]` annotations (task→repo), and `verifies` links (scenario→task).
 
 **Capture:**
 - Preview mode: one `session_entries` row with `prefix='read'` appended.
@@ -6848,6 +6902,7 @@ For quick reference, all documented commands grouped by domain:
 | `capture` | `capture session`, `capture end`, `capture commits`, `capture note`, `capture command`, `capture file`, `capture snapshot` |
 | `audit` | `audit trail`, `audit session`, `audit commits`, `audit publish-decision`, `audit handoff-readiness` |
 | `health` | `health` |
+| `models` | `models list`, `models refresh`, `models routing`, `models apply`, `models candidates`, `models evals` |
 | `links` | `links add`, `links list`, `links remove`, `links trail`, `links update` (deferred to M11) |
 | `report` | `report [--days <n>] [--tail <n>] [--json]` |
 | `search` | `search <query>` |

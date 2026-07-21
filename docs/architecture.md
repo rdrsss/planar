@@ -2,7 +2,7 @@
 
 Planar is a local-first task tracker and agent-operations infrastructure tool. It spans planning, tasking, scoping, durable agent handoff, vendor parity, and operational-plane integration with Jira and GitHub Issues.
 
-This document describes the system as it stands today — for a new contributor or curious user who wants to understand how Planar works without reading the full source.
+This document describes the system as it stands today — for a new contributor or curious user who wants to understand how Planar works without reading the full source. For the operational flows drawn as diagrams — the spec pipeline, orchestration lifecycle, and claim ritual — see [Operations](operations.md).
 
 ---
 
@@ -348,7 +348,8 @@ Subsystem modules live at the engine root:
 | `src/engine/workbench/` (+ `workbench.zig`) | Bidirectional sync between the workbench filesystem and the database — pull, push, sync, resolve, archive, restore, publish, manifest management. |
 | `src/engine/extsync/` (+ `extsync.zig`) | Operational-plane adapters and propagation. Holds `jira.zig`, `github.zig`, `strategy.zig`, `propagate.zig`, `parent_issue.zig`, `projects_v2.zig`. |
 | `src/engine/templates/` (+ `templates.zig`) | Template rendering for external-system payloads — three-level resolution (user set → default set → embedded), Go-template-compatible placeholder substitution. |
-| `src/engine/ingestor/` (+ `ingestor.zig`) | Planning-document parser and ingestion engine. Reads workbench tech-spec / roadmap files, diffs against DB state, applies. |
+| `src/engine/ingestor/` (+ `ingestor.zig`) | Planning-document parser and ingestion engine. Reads workbench tech-spec / roadmap / test-spec files, diffs against DB state, applies. |
+| `src/engine/evals.zig` | Read-only routing-evals aggregator. Mines completed dispatch notes, terminal claims, and test-coder action outcomes into a per-`(work_type, candidate)` scorecard for `planar models evals`; never mutates config or SQLite. |
 | `src/engine/synthesize.zig` | Synthesis pipeline for `synthesize`: Request/Result, fingerprint cache, Validate, Merge. The LLM runs in the vendor skill; this module owns the deterministic floor and the skill-handoff cache contract. |
 | `src/engine/import.zig` | Transcription pipeline for `import`: classifier, parser, status-inference, diff, apply. The apply layer is shared with `synthesize`. |
 | `src/engine/tree.zig` | Hierarchical rendering for `planar tree` — walks the plan / task / artifact / decision / scenario / question graph and produces the indented output. |
@@ -667,26 +668,37 @@ Planar defines vendor-neutral agent roles under `agents/`. Per-vendor command su
 
 | Agent | Tier | Responsibility |
 |-------|------|---------------|
-| `orchestrator` | large | Receives a goal or task list; manages the full feature lifecycle across up to five phases; dispatches to coders; routes output through reviewers; enforces the iteration cap. |
+| `orchestrator` | large | Receives a goal or task list; manages the full feature lifecycle across up to seven phases; dispatches to coders; routes output through reviewers; enforces the iteration cap. |
 | `coder` | medium | Implements one task (or task group) end-to-end; receives reviewer feedback and addresses it in the next iteration. |
+| `test-coder` | large | Adversarial test authoring against the coder diff; dispatched when uncovered test-spec slugs intersect the cycle's tasks. |
 | `reviewer` | large | Reviews coder output; returns `approve`, `request-changes`, `open-question`, or `abort`. |
-| `planner` | large | Drafts planning documents (product spec, tech spec, roadmap) from a goal statement and registers them as workbench artifacts. |
+| `janitor` | medium | Merge, Planar state reconciliation, worktree/branch cleanup, and `planar plan closeout` after Phase 3 finalization. |
+| `planner` | large | Drafts planning documents (product spec, tech spec, roadmap, test spec) from a goal statement and registers them as workbench artifacts. |
+| `spec-reviewer` | large | Adversarially reviews draft planning artifacts before ingestion and returns a readiness verdict. |
 | `ingestor` | large | Reads planning documents from the workbench and decomposes them into plans, tasks, decisions, and scenarios in the database. |
+| `documenter` | large | Proposes the doc worklist from `planar-doc diff`; runs after Phase 3 so the post-cycle tree is visible. |
+| `doc-author` | large | Writes only operator-approved reference prose under `docs/`; never decides coverage or mutates manifest state. |
 | `ext-sync` | large | Propagates the feature tree to the operational plane and syncs changes bidirectionally. |
+| `sync-reconciler` | large | Compares local and external sync-conflict evidence and coordinates the exact operator-approved whole-entity resolution. |
 | `importer` | large | Translates an existing repository's planning artefacts (specs, ADRs, roadmaps, backlog files, GitHub issues) into Planar's data model without a goal statement. |
 | `synthesizer` | large | Produces fresh planning artifacts for a repo from existing docs + git log + source code via an LLM pass. Sibling of `importer`; shares the Apply machinery but enters from a synthesis contract (code-evidence invariant) rather than transcription. |
+| `introspector` | medium | Mines redacted local usage signal into preview-gated feedback findings. |
+| `feedback-triager` | large | Applies deterministic severity, disposition, reproduction, and duplicate triage to feedback findings. |
 
 ### Phases (orchestrator)
 
-| Phase | Skill | Trigger |
-|-------|-------|---------|
+| Phase | Skill / Agent | Trigger |
+|-------|---------------|---------|
 | 1 — Planning | `pl-spec-draft` | Goal given; no anchor plan or draft with no artifacts |
 | 2 — Ingestion | `pl-spec-ingest` | Anchor plan draft with workbench artifacts present |
-| 3 — Execution | coder + reviewer | Anchor plan active with todo/doing tasks |
+| 3 — Execution | coder + optional test-coder + reviewer | Anchor plan active with todo/doing tasks |
+| 3.5 — Test-coder | `test-coder` | Cycle's tasks intersect uncovered test-spec slugs after coder output |
+| 3.7 — Finalization | `janitor` | Explicit `--finalize` or interactive confirm after Phase 3; merge -> reconcile -> closeout gate |
 | 4 — Propagation | `pl-ext-propagate` | User requests `--propagate` |
 | 5 — Archive | `pl-workbench-archive` | Anchor plan done, user requests `--archive` |
+| 6 — Documenter | `pl-documenter` | Default-on after Phase 3; `planar-doc diff` -> gated worklist -> `planar-doc build` |
 
-The orchestrator gates Phases 2 and 3 on explicit user confirmation. Ingestion never auto-applies. The iteration cap is 5 per dispatch cycle.
+The orchestrator gates Phases 2 and 3 on explicit user confirmation. Ingestion never auto-applies. Phases 3.7 and 4-5 are explicit/opt-in; Phase 6 is default-on but still gates every proposed doc action with the operator. The iteration cap is 5 per reviewer dispatch cycle.
 
 ### Vendor surfaces
 
@@ -710,7 +722,7 @@ do not invent work and no guidance or manifest file is changed automatically.
 | Codex | `$PLANAR_HOME/codex-skills/` | `$CODEX_HOME/skills/` (normally `~/.codex/skills/`) |
 | Copilot | `$PLANAR_HOME/copilot-skills/` | `~/.copilot/skills/` |
 
-Agent role specs (vendor-neutral) live under `agents/`. The key files are `agents/methodology.md`, `agents/orchestrator.md`, `agents/planner.md`, `agents/ingestor.md`, `agents/ext-sync.md`, `agents/importer.md`, `agents/synthesizer.md`, `agents/coder.md`, `agents/reviewer.md`, and `agents/models.md` (tier-to-model resolution).
+Agent role specs (vendor-neutral) live under `agents/`. The key files are `agents/methodology.md`, `agents/doctrine.md`, `agents/orchestrator.md`, `agents/planner.md`, `agents/spec-reviewer.md`, `agents/ingestor.md`, `agents/coder.md`, `agents/test-coder.md`, `agents/reviewer.md`, `agents/janitor.md`, `agents/documenter.md`, `agents/doc-author.md`, `agents/ext-sync.md`, `agents/importer.md`, `agents/synthesizer.md`, `agents/sync-reconciler.md`, and `agents/models.md` (tier-to-model resolution).
 
 Every rendered skill and agent projection carries two lowercase SHA-256 values:
 `x-planar-source-digest` identifies the parsed, vendor-neutral authored source,

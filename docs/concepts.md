@@ -596,9 +596,12 @@ dispatch_shape: <one of the six>
 reviewer_disposition: <dispatched|skipped-by-profile|deferred|bypassed>
 cycle_scope: plan:N milestone:M | task:T...
 tasks: [<id>, <id>, ...]
+claim_tokens: [<token>, <token>, ...]
+model_tiers: {<task-id>: <tier>, ...}
+model_choice: {"<task-id>":{"tier":"<tier>","candidate":"<model-id>","work_type":"<work-type>"}, ...}
 ```
 
-Recover the per-cycle disposition with `planar audit trail --kind plan <plan-id> --grep "^dispatch_shape:"`. No schema change; the sentinel-body convention is the contract.
+Recover the per-cycle disposition with `planar audit trail --kind plan <plan-id> --grep "^dispatch_shape:"`. `model_tiers` records the confirmed tier assignment, and `model_choice` records the concrete routed candidate and work type used by `planar models evals`. No schema change; the sentinel-body convention is the contract.
 
 **Pick-when summary:** when in doubt, pick `strict`. Move up the table (toward throughput) when you have high confidence in the gates and the spec, or when the diff cadence makes per-cycle reviewer dispatch wasteful. The orchestrator never picks a barrel mode silently — every shape change is an explicit operator choice at the gate.
 
@@ -668,7 +671,7 @@ choice after claim inspection and a reconciliation dry-run.
 
 ### Persistence
 
-No new schema. The chosen strategy + axes ride in the existing `agent_actions.metadata` JSON column on the dispatch row. The "last-used strategy for this plan" lookup that drives the recommendation algorithm's stickiness rule is a single indexed read against the most recent dispatch entry's metadata. The `metadata` column wiring is itself a deferred follow-up (task 2939); until that lands, the orchestrator re-derives the recommendation from plan shape each cycle.
+No new schema beyond the existing `agent_actions.metadata` JSON column from migration 00016. The chosen strategy + axes ride on the dispatch row there, and the "last-used strategy for this plan" lookup that drives the recommendation algorithm's stickiness rule is a single indexed read against the most recent dispatch entry's metadata.
 
 For the canonical axis table, named bundles, invalid-combination list, and recommendation algorithm see [`agents/methodology.md` §Orchestration strategies](../agents/methodology.md#orchestration-strategies). For the "pick a strategy" recipe and a worked `parallel-fanout` example see [`docs/workflows.md` §Recipe 21](workflows.md#recipe-21--pick-an-orchestration-strategy-for-a-plan) and [§Recipe 22](workflows.md#recipe-22--orchestrate-a-multi-task-plan-with-parallel-coders).
 
@@ -751,9 +754,9 @@ A question entity can be created through two equivalent paths: (1) interactively
 
 ## Scenario
 
-A scenario is a verification test case attached to a spec, plan, or task. Scenarios are either auto-drafted by the planner agent from spec acceptance criteria or hand-written by the user.
+A scenario is a verification test case attached to a spec, plan, or task. Scenarios are hand-written by the operator, imported from `test-spec.md` by the ingestor, or auto-drafted by the ingestor for non-trivial roadmap tasks.
 
-The ingestor imports scenario sections from `tech-spec.md` into `test_scenarios` rows. The coder agent runs scenarios after implementation and records pass/fail outcomes.
+The ingestor imports scenario sections from `test-spec.md` into `test_scenarios` rows and links them to covered tasks with `entity_links(relationship='verifies')`. During apply, a newly added roadmap task with at least two bullet lines in its body is treated as non-trivial and receives an auto-drafted `Verify: <task title>` scenario.
 
 ### Status lifecycle
 
@@ -775,7 +778,7 @@ Legal transitions (enforced by `policy.status.check`):
 
 Note: `scenario verify --outcome pass` on a `draft` scenario auto-walks `draft → ready → verified` internally (two policy-checked hops), so the operator workflow `scenario add → scenario verify` works without an explicit `scenario ready` step. There is no `scenario ready` CLI verb.
 
-**SQLite table:** `test_scenarios`. **Primary verbs:** `planar scenario add`, `planar scenario list`, `planar scenario pass`, `planar scenario fail`, `planar scenario retire`.
+**SQLite table:** `test_scenarios`. **Primary verbs:** `planar scenario add`, `planar scenario list`, `planar scenario verify`, `planar scenario show`, `planar scenario retire`.
 
 ---
 
@@ -822,6 +825,7 @@ An artifact is a long-form prose document attached to a plan. Artifacts are the 
 | `summary` | Session summary or retrospective |
 | `readme` | README-style overview |
 | `roadmap` | Flat milestone list (consumed by the ingestor) |
+| `test_spec` | Test strategy and scenario coverage plan |
 | `generated` | Machine-generated output (diffs, reports) |
 | `other` | Catch-all |
 | `research` | Academic-tone investigation note. Has its own template. |
@@ -1009,7 +1013,8 @@ A single **shared resolver** (`src/engine/models.zig`) composes these into a con
 - **`planar models`** — `list` (discover installed provider CLIs + curated catalog), `routing` (effective role→vendor/model with provenance; `--json` is what an external workflow harness shells to build its per-role dispatch table), `candidates` (effective tier candidate lists + the work-type routing map with provenance, plan 899), `refresh` (write the `~/.planar/models/catalog.json` cache), `apply` (scaffold the config block).
 - **`agents/models.md`** Tier Table + rendered skill/agent `model:` fields — generated from the resolver at `planar skills render`; the render path always renders `list[0]` for a candidate-list tier (static surfaces show the tier default; per-task routing is runtime-only).
 - **External workflow harnesses** — shell `planar models routing --json` to build a per-role dispatch table (no engine handle), falling back to compiled defaults when `planar` is unreachable.
-- **Orchestrator dispatch (Phase 3)** — the dispatch preview's routed-model column classifies each task's work type and calls `resolve(role, work_type)` to show the routed candidate alongside the tier column; the operator may override either before confirming. The confirmed `{tier, candidate}` pair persists in the dispatch session entry's `model_choice` map (a convention extension, no schema change — see [`agents/orchestrator.md`](../agents/orchestrator.md) step 8a and [`skills/src/pl-orchestrator.md` §Dispatch preview and model tiers](../skills/src/pl-orchestrator.md)).
+- **Orchestrator dispatch (Phase 3)** — the dispatch preview's routed-model column classifies each task's work type and calls `resolve(role, work_type)` to show the routed candidate alongside the tier column; the operator may override either before confirming. The confirmed `{tier, candidate, work_type}` triple persists per task in the dispatch session entry's `model_choice` map (a convention extension, no schema change — see [`agents/orchestrator.md`](../agents/orchestrator.md) step 8a and [`skills/src/pl-orchestrator.md` §Dispatch preview and model tiers](../skills/src/pl-orchestrator.md)).
+- **`planar models evals`** — read-only routing evaluation. It mines completed dispatch notes (`dispatch_shape:` / `model_choice:`), terminal claim status, and test-coder action outcomes into a per-`(work_type, candidate)` scorecard plus preview-only recommendations. Quality-gate pass/fail is not persisted today, so the command reports that signal as unsourced rather than guessing. It writes nothing; applying a recommendation is a separate operator-gated config edit.
 
 The provider CLIs (`claude`, `codex`) do not expose a machine-readable model list, so the per-vendor catalog is curated in the binary; discovery confirms which CLIs are installed by invoking `<bin> --version`. See `docs/cli-reference.md` § Domain `config` (Model routing) and § Domain `models`, and the `pl-models-config` skill.
 
