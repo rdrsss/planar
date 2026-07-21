@@ -13,6 +13,10 @@
 //!   candidates Resolve the effective config and print each tier's candidate
 //!              list plus the work-type routing map with provenance
 //!              (plan 899, read-only).
+//!   evals      Aggregate completed dispatch outcomes into a per-(work-type,
+//!              candidate) scorecard, and a preview-only routing-map
+//!              recommendation. Read-only — writes nothing (plan 898/904,
+//!              tech-spec 520 D8).
 //!
 //! Discovery genuinely invokes `<bin> --version` per provider (instant +
 //! auth-free); the model list itself comes from the curated catalog in
@@ -74,6 +78,15 @@ pub const verb: cli.Cmd = .{
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },
             .run = cli.handler(handleCandidates),
+        },
+        .{
+            .name = "evals",
+            .desc = "Aggregate completed dispatch outcomes into a per-(work-type, candidate) scorecard and preview-only recommendation.",
+            .long_desc = "Read-only aggregation (plan 898/904, tech-spec 520 D8) over the\n  `dispatch_shape` / `model_choice` note convention in `session_entries`\n  (agents/orchestrator.md step 8a), joined with `agent_work_claims`\n  (terminal disposition) and `agent_actions` (test-coder expansion\n  outcome). Emits a per-(work-type, candidate) scorecard and a\n  recommended routing-map change. A pair with no completed-dispatch\n  history reports insufficient-data rather than a fabricated score.\n  Writes nothing: no routing-map mutation, no database write. Applying\n  a recommendation is a separate, explicit operator-gated action.",
+            .flags = &.{
+                .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
+            },
+            .run = cli.handler(handleEvals),
         },
     },
 };
@@ -292,6 +305,87 @@ fn handleCandidates(args_ptr: *const anyopaque) anyerror!void {
         try ctx.stdout.print(
             "  {s: <8} {s: <6} {s: <14} → {s: <22} [{s}]\n",
             .{ re.vendor, re.tier, re.work_type, re.model, re.source },
+        );
+    }
+}
+
+fn handleEvals(args_ptr: *const anyopaque) anyerror!void {
+    const args = cli.castArgs(main.root, &.{ "models", "evals" }, args_ptr);
+    const ctx = runtime.current();
+    const d = runtime.ensureDb() catch |e|
+        exit.die(ctx, e, "opening database: {s}", .{@errorName(e)});
+
+    const path = config_path.resolveConfigPath(ctx.allocator, ctx.environ) catch |e|
+        exit.die(ctx, e, "resolving config path: {s}", .{@errorName(e)});
+    defer ctx.allocator.free(path);
+
+    const file_content: ?[]u8 = std.Io.Dir.cwd().readFileAlloc(ctx.io, path, ctx.allocator, .unlimited) catch |e| switch (e) {
+        error.FileNotFound => null,
+        else => exit.die(ctx, e, "reading config file: {s}", .{@errorName(e)}),
+    };
+    defer if (file_content) |fc| ctx.allocator.free(fc);
+
+    var resolved = engine.config.resolve(ctx.allocator, file_content, ctx.environ, null) catch |e|
+        exit.die(ctx, e, "resolving configuration: {s}", .{@errorName(e)});
+    defer resolved.deinit(ctx.allocator);
+
+    var result = engine.evals.aggregate(d, ctx.allocator, &resolved.effective) catch |e|
+        exit.die(ctx, e, "aggregating routing evals: {s}", .{@errorName(e)});
+    defer result.deinit(ctx.allocator);
+
+    if (args.json) {
+        try ctx.stdout.print("{{\"scorecard\":", .{});
+        try std.json.Stringify.value(result.scorecard, .{}, ctx.stdout);
+        try ctx.stdout.print(",\"recommendations\":", .{});
+        try std.json.Stringify.value(result.recommendations, .{}, ctx.stdout);
+        try ctx.stdout.print(",\"signals_sourced\":", .{});
+        try std.json.Stringify.value(result.signals_sourced, .{}, ctx.stdout);
+        try ctx.stdout.print(",\"legacy_dispatch_notes_skipped\":{d}}}\n", .{result.legacy_dispatch_notes_skipped});
+        return;
+    }
+
+    try ctx.stdout.print("routing evals scorecard (per work-type, candidate) — read-only, writes nothing:\n", .{});
+    if (result.scorecard.len == 0) {
+        try ctx.stdout.print("  (no completed dispatch history recorded yet)\n", .{});
+    }
+    for (result.scorecard) |row| {
+        if (row.insufficient_data) {
+            try ctx.stdout.print(
+                "  {s: <14} {s: <24} insufficient-data  [{s}/{s}]\n",
+                .{ row.work_type, row.candidate, row.vendor orelse "?", row.tier },
+            );
+        } else {
+            try ctx.stdout.print(
+                "  {s: <14} {s: <24} rank {d: <2} {d}/{d} approved  avg {d:.2} iter  [{s}/{s}]\n",
+                .{ row.work_type, row.candidate, row.rank.?, row.approved_count, row.dispatch_count, row.avg_iterations, row.vendor orelse "?", row.tier },
+            );
+        }
+    }
+
+    try ctx.stdout.print("\nrecommendations (preview only — writes nothing; apply is a separate operator-gated step):\n", .{});
+    if (result.recommendations.len == 0) {
+        try ctx.stdout.print("  (none — no work type has scored dispatch history yet)\n", .{});
+    }
+    for (result.recommendations) |rec| {
+        try ctx.stdout.print(
+            "  {s} → {s} [{s}/{s}]: {s}\n",
+            .{ rec.work_type, rec.candidate, rec.vendor orelse "?", rec.tier, rec.rationale },
+        );
+    }
+
+    try ctx.stdout.print(
+        "\nsignals sourced: reviewer_disposition={s} iteration_count={s} quality_gate_pass_fail={s} test_coder_expansion={s}\n",
+        .{
+            if (result.signals_sourced.reviewer_disposition) "yes" else "no",
+            if (result.signals_sourced.iteration_count) "yes" else "no",
+            if (result.signals_sourced.quality_gate_pass_fail) "yes" else "no",
+            if (result.signals_sourced.test_coder_expansion) "yes" else "no",
+        },
+    );
+    if (result.legacy_dispatch_notes_skipped > 0) {
+        try ctx.stdout.print(
+            "note: {d} dispatch note(s) skipped — missing/malformed model_choice work_type\n",
+            .{result.legacy_dispatch_notes_skipped},
         );
     }
 }
