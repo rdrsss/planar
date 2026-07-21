@@ -1857,6 +1857,159 @@ fn resolveModel(allocator: std.mem.Allocator, source: Source, profile: VendorPro
     return RenderError.UnknownModelTier;
 }
 
+// ---------------------------------------------------------------------------
+// resolveModel unit coverage (plan 899, task render-default-candidate).
+//
+// `resolveModel` itself never sees a raw config shape — it only ever reads
+// `profile.models[i].model`, a flat resolved string per tier. The
+// scalar-vs-candidate-list distinction is collapsed one layer up, in
+// `populateModelsFromResolver`, which calls `model_engine.resolveTier`
+// (`src/engine/models.zig`). `resolveTier` reads `EffectiveMap`'s
+// `.value` field, and `effective.zig`'s candidate-list resolution guarantees
+// the invariant `candidates[0] == value` for every `models.<vendor>.<tier>`
+// key (scalar or array) — see `effective.zig`'s `pickModelTierCandidates`.
+// So by the time a resolved model string reaches `VendorProfile.models`, a
+// candidate list has ALREADY collapsed to `list[0]`; no change to
+// `resolveModel` or `populateModelsFromResolver` was needed for this task.
+// These tests exercise the full production path end-to-end — real
+// `config.resolve` output feeding real `model_engine.resolveTier` feeding a
+// hand-built profile fed into `resolveModel` — to pin both shapes at the
+// render layer, per D5 (render path never takes a work type).
+// ---------------------------------------------------------------------------
+
+fn testSourceForTier(allocator: std.mem.Allocator, tier: []const u8) !Source {
+    return .{
+        .path = try allocator.dupe(u8, "skills/src/x.md"),
+        .slug = try allocator.dupe(u8, "x"),
+        .description = try allocator.dupe(u8, "desc"),
+        .source_link = try allocator.dupe(u8, "docs/x"),
+        .model_tier = try allocator.dupe(u8, tier),
+        .cross_scope_writes = false,
+        .vendor = &.{},
+        .shared_notes = &.{},
+        .body = try allocator.dupe(u8, "body"),
+    };
+}
+
+test "resolveModel: a scalar tier value renders that scalar" {
+    const gpa = std.testing.allocator;
+    // Embedded default `models.claude.medium` is a scalar
+    // ("claude-sonnet-4-6") — no config override needed.
+    var res = try config.resolve(gpa, null, std.process.Environ.empty, null);
+    defer res.deinit(gpa);
+    const r = try model_engine.resolveTier(&res.effective, "claude", "medium");
+    try std.testing.expectEqualStrings("claude-sonnet-4-6", r.model);
+
+    var models_arr = [_]VendorModel{.{ .tier = "medium", .model = r.model }};
+    const profile = VendorProfile{
+        .name = "claude",
+        .title = "Claude",
+        .output_dir = "",
+        .install_path = "",
+        .invoke = "",
+        .has_invocation_block = false,
+        .frontmatter_fields = &.{},
+        .install_bullets = &.{},
+        .models = &models_arr,
+    };
+    var source = try testSourceForTier(gpa, "medium");
+    defer source.deinit(gpa);
+
+    const model = try resolveModel(gpa, source, profile);
+    defer gpa.free(model);
+    try std.testing.expectEqualStrings("claude-sonnet-4-6", model);
+}
+
+test "resolveModel: a candidate-list tier value renders list[0], never a later candidate" {
+    const gpa = std.testing.allocator;
+    const file =
+        \\[models.claude]
+        \\large = ["cand-a", "cand-b"]
+    ;
+    var res = try config.resolve(gpa, file, std.process.Environ.empty, null);
+    defer res.deinit(gpa);
+    const r = try model_engine.resolveTier(&res.effective, "claude", "large");
+    try std.testing.expectEqualStrings("cand-a", r.model);
+
+    var models_arr = [_]VendorModel{.{ .tier = "large", .model = r.model }};
+    const profile = VendorProfile{
+        .name = "claude",
+        .title = "Claude",
+        .output_dir = "",
+        .install_path = "",
+        .invoke = "",
+        .has_invocation_block = false,
+        .frontmatter_fields = &.{},
+        .install_bullets = &.{},
+        .models = &models_arr,
+    };
+    var source = try testSourceForTier(gpa, "large");
+    defer source.deinit(gpa);
+
+    const model = try resolveModel(gpa, source, profile);
+    defer gpa.free(model);
+    try std.testing.expectEqualStrings("cand-a", model);
+    try std.testing.expect(!std.mem.eql(u8, model, "cand-b"));
+}
+
+test "resolveModel: single-element candidate list renders identically to the equivalent scalar" {
+    const gpa = std.testing.allocator;
+    const scalar_file =
+        \\[models.claude]
+        \\large = "only-model"
+    ;
+    var scalar_res = try config.resolve(gpa, scalar_file, std.process.Environ.empty, null);
+    defer scalar_res.deinit(gpa);
+    const scalar_r = try model_engine.resolveTier(&scalar_res.effective, "claude", "large");
+
+    const list_file =
+        \\[models.claude]
+        \\large = ["only-model"]
+    ;
+    var list_res = try config.resolve(gpa, list_file, std.process.Environ.empty, null);
+    defer list_res.deinit(gpa);
+    const list_r = try model_engine.resolveTier(&list_res.effective, "claude", "large");
+
+    try std.testing.expectEqualStrings(scalar_r.model, list_r.model);
+
+    var scalar_models_arr = [_]VendorModel{.{ .tier = "large", .model = scalar_r.model }};
+    const scalar_profile = VendorProfile{
+        .name = "claude",
+        .title = "Claude",
+        .output_dir = "",
+        .install_path = "",
+        .invoke = "",
+        .has_invocation_block = false,
+        .frontmatter_fields = &.{},
+        .install_bullets = &.{},
+        .models = &scalar_models_arr,
+    };
+    var list_models_arr = [_]VendorModel{.{ .tier = "large", .model = list_r.model }};
+    const list_profile = VendorProfile{
+        .name = "claude",
+        .title = "Claude",
+        .output_dir = "",
+        .install_path = "",
+        .invoke = "",
+        .has_invocation_block = false,
+        .frontmatter_fields = &.{},
+        .install_bullets = &.{},
+        .models = &list_models_arr,
+    };
+
+    var source_a = try testSourceForTier(gpa, "large");
+    defer source_a.deinit(gpa);
+    var source_b = try testSourceForTier(gpa, "large");
+    defer source_b.deinit(gpa);
+
+    const model_a = try resolveModel(gpa, source_a, scalar_profile);
+    defer gpa.free(model_a);
+    const model_b = try resolveModel(gpa, source_b, list_profile);
+    defer gpa.free(model_b);
+    try std.testing.expectEqualStrings("only-model", model_a);
+    try std.testing.expectEqualStrings(model_a, model_b);
+}
+
 fn buildVendorNotes(allocator: std.mem.Allocator, source: Source, profile: VendorProfile) ![]u8 {
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
