@@ -51,6 +51,24 @@ The orchestrator's Phase 3 dispatch preview shows the routed-model candidate
 with provenance for operator inspection; see `docs/cli-reference.md` §Domain
 `models` and §Domain `config` (Model routing) for the full CLI surface.
 
+## Host capability boundary
+
+Configuration expresses desired routing; the active host's subagent surface
+defines what can actually be dispatched. Host-native orchestration never
+crosses providers: a Codex host selects Codex candidates and a Claude host
+selects Claude candidates even when `defaults.vendor` names another provider.
+Cross-provider execution requires a separate external executor and is not the
+host subagent path described by the orchestrator contract.
+
+The preview records both the desired candidate and its concrete host binding.
+If the host cannot represent that candidate, the row is `unsupported` and the
+orchestrator stops for operator action. It must not silently substitute another
+provider, tier, candidate, or agent type. Claude supports an invocation-level
+model parameter, subject to the higher-precedence
+`CLAUDE_CODE_SUBAGENT_MODEL` environment override. Codex agent roles may be
+fixed to the model in their installed TOML projection; only agent types visible
+in the current dispatch surface are valid bindings.
+
 ## Agent Assignments
 
 Every installable agent under `agents/`, its authored `tier:` (the source of
@@ -89,6 +107,13 @@ this frontmatter via the render path.
 ## Coder tier policy
 
 The coder defaults to `medium` (sonnet), and the default is load-bearing, not a starting bid. Planar's premise is that the hard reasoning happens upfront — in the spec, the decomposition, and the locked decisions — so execution is deliberately cheap and fast: a well-decomposed task carries its own context and a `medium` coder is expected to close it. The orchestrator proposes `large` (opus) per task, as an exception it can name, never as a batch default. Tier is Axis C of the dispatch model and is independent of isolation (Axis A) — even a `large`-tier coder must run as a separately spawned subagent with blank context. Routine implementation, CLI-surface additions, doc changes, and mechanical sweeps do not warrant escalation.
+
+Task-title vocabulary is never sufficient escalation evidence. `config`,
+`module`, `composition root`, `engine`, `refactor`, and a large file count remain
+`medium` when the spec has already made the design decisions. Every `large`
+proposal cites a concrete unresolved schema, allocator, error-set, transaction,
+status-transition, or architecture judgment from the acceptance criteria or
+spec. If it cannot, the task remains `medium`.
 
 The escalation is keyed to the **type of work** in each task — not to the task
 count, and not to the task's batch-mates. The orchestrator classifies each

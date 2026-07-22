@@ -798,11 +798,13 @@ pub fn render(allocator: std.mem.Allocator, source: Source, profile: VendorProfi
     const vendor_notes = try buildVendorNotes(allocator, source, profile);
     defer allocator.free(vendor_notes);
     const invocation = invocationBlock(source, profile);
-    const body = try renderBodyTemplate(allocator, source.body, .{
+    const templated_body = try renderBodyTemplate(allocator, source.body, .{
         .vendor_title = profile.title,
         .vendor_notes = vendor_notes,
         .invocation_block = invocation,
     });
+    defer allocator.free(templated_body);
+    const body = try rewriteProjectedAgentLinks(allocator, templated_body, profile);
     defer allocator.free(body);
 
     const frontmatter = try renderFrontmatter(allocator, source, profile, model);
@@ -2038,9 +2040,49 @@ fn buildVendorNotes(allocator: std.mem.Allocator, source: Source, profile: Vendo
         try out.appendSlice(allocator, note);
         try out.append(allocator, '\n');
     }
+    if (std.mem.eql(u8, source.slug, "pl-orchestrator")) {
+        const host_note = try std.fmt.allocPrint(
+            allocator,
+            "- Active host vendor: `{s}`. Host-native subagents may use only `{s}` candidates; never route a dispatch through another provider merely because `defaults.vendor` or `role_vendors` names it.\n",
+            .{ profile.name, profile.name },
+        );
+        defer allocator.free(host_note);
+        try out.appendSlice(allocator, host_note);
+        if (std.mem.eql(u8, profile.name, "codex")) {
+            const medium = modelForTier(profile, "medium") orelse "unknown";
+            const fixed_note = try std.fmt.allocPrint(
+                allocator,
+                "- Codex role binding: the installed `coder` agent is fixed to the medium candidate `{s}`. A different candidate is unsupported unless a matching installed agent type is visible in the host dispatch surface; render `model: unsupported` and stop instead of substituting.\n",
+                .{medium},
+            );
+            defer allocator.free(fixed_note);
+            try out.appendSlice(allocator, fixed_note);
+        } else if (std.mem.eql(u8, profile.name, "claude")) {
+            try out.appendSlice(allocator, "- Claude role binding: use the Agent tool's per-invocation model parameter. If `CLAUDE_CODE_SUBAGENT_MODEL` is set, surface it as the effective higher-precedence override before the gate.\n");
+        }
+    }
     while (out.items.len > 0 and out.items[out.items.len - 1] == '\n') {
         _ = out.pop();
     }
+    return out.toOwnedSlice(allocator);
+}
+
+fn rewriteProjectedAgentLinks(allocator: std.mem.Allocator, body: []const u8, profile: VendorProfile) ![]u8 {
+    if (!std.mem.eql(u8, profile.name, "codex")) return allocator.dupe(u8, body);
+    return replaceAllLiteral(allocator, body, "../../agents/", "references/agents/");
+}
+
+fn replaceAllLiteral(allocator: std.mem.Allocator, input: []const u8, needle: []const u8, replacement: []const u8) ![]u8 {
+    if (needle.len == 0) return allocator.dupe(u8, input);
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    var rest = input;
+    while (std.mem.indexOf(u8, rest, needle)) |idx| {
+        try out.appendSlice(allocator, rest[0..idx]);
+        try out.appendSlice(allocator, replacement);
+        rest = rest[idx + needle.len ..];
+    }
+    try out.appendSlice(allocator, rest);
     return out.toOwnedSlice(allocator);
 }
 

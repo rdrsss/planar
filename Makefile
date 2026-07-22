@@ -95,6 +95,10 @@ cli-usage-check: ## Validate authored surfaces against the live CLI schema and s
 surface-lint: ## Validate authored links, contracts, capabilities, commands, and retired references
 	$(ZIG) build surface-lint
 
+.PHONY: eval-orchestrator-contract
+eval-orchestrator-contract: ## Validate the deterministic pl-orchestrator eval contract (no model calls)
+	./scripts/eval-pl-orchestrator.sh --contract-only
+
 .PHONY: bench-verify
 bench-verify: build ## planar-doc verify latency tracker — prints cold + warm wall-clock
 	@echo "planar-doc verify: cold + warm wall-clock (rough; integration tests own the latency contract)"

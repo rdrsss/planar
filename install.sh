@@ -812,6 +812,12 @@ if [[ -n "$VENDORS" ]]; then
       fi
       mkdir -p "$dst_skill_dir"
       cp -f "$runtime_skill_dir/SKILL.md" "$dst_skill_dir/SKILL.md"
+      rm -rf "$runtime_skill_dir/references" "$dst_skill_dir/references"
+      mkdir -p "$runtime_skill_dir/references/agents" "$dst_skill_dir/references/agents"
+      while IFS= read -r -d '' agent_ref; do
+        cp -f "$agent_ref" "$runtime_skill_dir/references/agents/$(basename "$agent_ref")"
+        cp -f "$agent_ref" "$dst_skill_dir/references/agents/$(basename "$agent_ref")"
+      done < <(find -L "$PLANAR_HOME/agents" -maxdepth 1 -type f -name '*.md' -print0)
       printf '%s\n' "$f" > "$marker"
       count=$((count + 1))
     done < <(find "$src_dir" -maxdepth 1 -name 'pl-*.md' -print0)
@@ -996,6 +1002,16 @@ if [[ -n "$VENDORS" ]]; then
     log "$name agents: linked $count file(s) into $dst_dir"
   }
 
+  symlink_agent_references() {
+    local dst_dir="$1"
+    mkdir -p "$dst_dir"
+    while IFS= read -r -d '' f; do
+      local dst="$dst_dir/$(basename "$f")"
+      [[ -e "$dst" || -L "$dst" ]] && continue
+      symlink_to "$f" "$dst"
+    done < <(find -L "$PLANAR_HOME/agents" -maxdepth 1 -type f -name '*.md' -print0)
+  }
+
   # prune_stale_vendor_agents removes destination entries that look like
   # Planar-installed agent symlinks but whose source counterpart no longer
   # exists. Mirrors prune_stale_vendor but covers all file extensions.
@@ -1126,12 +1142,14 @@ if [[ -n "$VENDORS" ]]; then
         symlink_vendor "claude" "$PLANAR_HOME/commands/claude" "$HOME/.claude/commands"
         prune_stale_vendor "claude" "$PLANAR_HOME/commands/claude" "$HOME/.claude/commands"
         symlink_vendor_agents "claude" "$PLANAR_HOME/agents/claude" "$HOME/.claude/agents"
+        symlink_agent_references "$HOME/.claude/agents"
         prune_stale_vendor_agents "claude" "$PLANAR_HOME/agents/claude" "$HOME/.claude/agents"
         ;;
       codex)
         install_codex_vendor "$PLANAR_HOME/skills/codex" "$PLANAR_HOME/codex-skills" "$CODEX_HOME/skills"
         prune_stale_codex "$CODEX_HOME/skills"
         symlink_vendor_agents "codex" "$PLANAR_HOME/agents/codex" "$CODEX_HOME/agents"
+        symlink_agent_references "$CODEX_HOME/agents"
         prune_stale_vendor_agents "codex" "$PLANAR_HOME/agents/codex" "$CODEX_HOME/agents"
         ;;
       copilot)

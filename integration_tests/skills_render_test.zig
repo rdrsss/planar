@@ -29,6 +29,31 @@ test "skills render writes all vendor outputs" {
     }
 }
 
+test "skills render makes orchestrator host and Codex references explicit" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try fixtureRoot(gpa, &tmp, "skills-render-orchestrator-host");
+    defer gpa.free(root);
+
+    try writeFixtureSource(gpa, root, "pl-orchestrator.md", "pl-orchestrator", "See [agent](../../agents/orchestrator.md).\n\n{{.VendorNotes}}");
+    const stdout = mustRunInDir(&suite, root, &.{ "skills", "render" });
+    defer gpa.free(stdout);
+
+    const codex = try readPath(gpa, root, "skills/codex/pl-orchestrator.md");
+    defer gpa.free(codex);
+    try std.testing.expect(std.mem.indexOf(u8, codex, "Active host vendor: `codex`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, codex, "references/agents/orchestrator.md") != null);
+    try std.testing.expect(std.mem.indexOf(u8, codex, "../../agents/orchestrator.md") == null);
+
+    const claude = try readPath(gpa, root, "commands/claude/pl-orchestrator.md");
+    defer gpa.free(claude);
+    try std.testing.expect(std.mem.indexOf(u8, claude, "Active host vendor: `claude`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, claude, "CLAUDE_CODE_SUBAGENT_MODEL") != null);
+}
+
 test "skills render check on missing src dir exits zero" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
