@@ -291,3 +291,5 @@ The verbs must be composed in this order to ensure every `.md` file carries cano
    3. `planar artifact update <artifact-id> --body @<filename>` — persists the full content (front matter + body) into the DB.
 4. (Optional) `planar scenario add <title> [--body <text>] [--scope assoc:<slug>]` — for each top-level acceptance scenario.
 5. `planar workbench push <plan-id>` — seeds the workbench manifest. At this point both the DB and the FS carry identical content with valid front matter; subsequent `planar workbench pull` and `planar workbench status` invocations are clean.
+
+See [cross-scope-writes.md](cross-scope-writes.md) before any write outside the cwd-derived scope.

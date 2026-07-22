@@ -126,3 +126,4 @@ On an incomplete review, provide the exact inspect or resume command, such as
 
 ## Vendor Notes
 
+See [cross-scope-writes.md](../../agents/cross-scope-writes.md) before any write outside the cwd-derived scope.

@@ -316,3 +316,4 @@ rolled back.
 
 ## Vendor Notes
 
+See [cross-scope-writes.md](../../agents/cross-scope-writes.md) before any write outside the cwd-derived scope.

@@ -365,3 +365,5 @@ See [`agents/methodology.md` § Heartbeat status contract](methodology.md#heartb
 - Does not run reviewer-initiated remediation; those go back to the coder.
 - Does not auto-apply ingestion or auto-archive. Both require explicit user confirmation.
 - Does not modify schema or the locked CLI surface unless the task and spec explicitly authorize that surface.
+
+See [cross-scope-writes.md](cross-scope-writes.md) before any write outside the cwd-derived scope; when running under Codex, this also covers the Codex enforcement caveat for this role's `coordinate` capability.

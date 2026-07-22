@@ -264,3 +264,5 @@ When dispatched under an agent claim, emit status with
 | Waiting for operator answers | `"awaiting:operator-answers"` |
 | Applying approved spec edits | `"editing specs"` |
 | Writing final packet | `"drafting spec review"` |
+
+See [cross-scope-writes.md](cross-scope-writes.md) before any write outside the cwd-derived scope.

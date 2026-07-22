@@ -222,3 +222,5 @@ inspection/retry commands for failures. Never claim cross-remote rollback.
 - Sync command contract: [`docs/cli-reference.md` § Sync](../docs/cli-reference.md#sync-pull-target).
 - Scope and binary boundaries: [`docs/concepts.md`](../docs/concepts.md).
 - Status doctrine: [`agents/methodology.md`](methodology.md).
+
+See [cross-scope-writes.md](cross-scope-writes.md) before any write outside the cwd-derived scope; when running under Codex, this also covers the Codex enforcement caveat for this role's `coordinate` capability.

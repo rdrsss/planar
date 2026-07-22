@@ -129,3 +129,4 @@ actually performed it; the orchestrator still owns the terminal claim verb.
 
 ## Vendor Notes
 
+See [cross-scope-writes.md](../../agents/cross-scope-writes.md) before any write outside the cwd-derived scope.

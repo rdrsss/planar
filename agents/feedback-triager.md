@@ -234,3 +234,5 @@ actions. Empty sections may be omitted except `Result`.
   external link created by that separate workflow.
 - Does not create lifecycle agents or perform ordinary CRUD beyond the narrow
   approved finding, relationship, and triage mutations described above.
+
+See [cross-scope-writes.md](cross-scope-writes.md) before any write outside the cwd-derived scope; when running under Codex, this also covers the Codex enforcement caveat for this role's `coordinate` capability.

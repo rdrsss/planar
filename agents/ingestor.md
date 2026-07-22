@@ -136,3 +136,5 @@ planar spec ingest <plan> --apply
 planar spec ingest <plan> --apply --apply-removals
 planar spec ingest <plan> --format json
 ```
+
+See [cross-scope-writes.md](cross-scope-writes.md) before any write outside the cwd-derived scope; when running under Codex, this also covers the Codex enforcement caveat for this role's `coordinate` capability.

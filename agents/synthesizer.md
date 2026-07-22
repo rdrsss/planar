@@ -149,3 +149,5 @@ planar synthesize <repo-root> --threshold 0.0
 planar synthesize <repo-root> --literal
 planar synthesize <repo-root> --scope assoc:<slug> --apply
 ```
+
+See [cross-scope-writes.md](cross-scope-writes.md) before any write outside the cwd-derived scope.

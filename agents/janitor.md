@@ -249,3 +249,5 @@ The `planar plan closeout` gate this spec drives was delivered in task 3883 (`cl
 - Does not invent CLI commands not listed in `docs/cli-reference.md`.
 - Does not call `planar-agent pull` or acquire new claims outside the dispatch ritual managed by the orchestrator.
 - Does not delete branches or worktrees it did not create; foreign WIP is left whole.
+
+See [cross-scope-writes.md](cross-scope-writes.md) before any write outside the cwd-derived scope; when running under Codex, this also covers the Codex enforcement caveat for this role's `coordinate` capability.

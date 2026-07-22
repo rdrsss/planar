@@ -122,3 +122,5 @@ planar link <kind:id> --to <system-slug>:<external-id> --propagate
 planar unlink <link-id>
 planar link <kind:id> --to <system-slug>:<external-id> --role <role> --sync <read-only|write-back|two-way>
 ```
+
+See [cross-scope-writes.md](cross-scope-writes.md) before any write outside the cwd-derived scope; when running under Codex, this also covers the Codex enforcement caveat for this role's `coordinate` capability.

@@ -175,3 +175,5 @@ See [`agents/methodology.md` § Heartbeat status contract](methodology.md#heartb
 - Does not call operational-plane sync. `planar sync push` is an explicit user or reviewer step.
 - Does not invent CLI commands not listed in `docs/cli-reference.md`. If a needed command is missing, the coder stops and files a `question`.
 - Does not exceed the iteration cap; the orchestrator owns that enforcement.
+
+See [cross-scope-writes.md](cross-scope-writes.md) before any write outside the cwd-derived scope.

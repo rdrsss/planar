@@ -125,3 +125,5 @@ planar import <repo-root> --scope assoc:<slug> --apply
 planar task reopen <task-id> --status todo --reason "wrongly marked done by import"
 planar task update <task-id> --force --status todo --reason "..."
 ```
+
+See [cross-scope-writes.md](cross-scope-writes.md) before any write outside the cwd-derived scope.

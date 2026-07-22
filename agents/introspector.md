@@ -382,3 +382,5 @@ for the full convention and 256-byte cap.
   explicitly requested.
 - Finding body text must never quote verbatim transcript prose, entity titles,
   argument values, or scope slugs. Aggregate counts and verb paths only.
+
+See [cross-scope-writes.md](cross-scope-writes.md) before any write outside the cwd-derived scope; when running under Codex, this also covers the Codex enforcement caveat for this role's `coordinate` capability.
