@@ -1,16 +1,16 @@
 ---
-slug: pl-health
-description: "Explain each Planar health contributor and route degraded state to an executable, read-first recovery path."
-source: docs/cli-reference.md#domain-health
-vendor:
-  claude:
-    argument_hint: "[--json]"
-    invocation_examples: |
-      /pl-health
-      /pl-health --json
+description: Explain each Planar health contributor and route degraded state to an executable, read-first recovery path.
+origin: docs/cli-reference.md#domain-health
 shared_notes:
-  - "Health is read-only: report installed freshness but never repair, reconcile, resume, or edit configuration automatically."
-  - "Use only the Planar CLI for state access; never inspect or write the database or installed projections directly."
+    - 'Health is read-only: report installed freshness but never repair, reconcile, resume, or edit configuration automatically.'
+    - Use only the Planar CLI for state access; never inspect or write the database or installed projections directly.
+slug: pl-health
+vendor:
+    claude:
+        argument_hint: '[--json]'
+        invocation_examples: |
+            /pl-health
+            /pl-health --json
 ---
 
 # Planar Health ({{.VendorTitle}})
@@ -164,12 +164,3 @@ skill has no undo path.
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```
-{{.InvocationBlock -}}
-```
-{{- end}}

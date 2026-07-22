@@ -1,18 +1,17 @@
 ---
-slug: pl-test-coder
-description: "Adversarial test-author dispatched between coder and reviewer; reads the test-spec and the coder's diff, produces a test-only diff that closes uncovered slugs. Never modifies a failing test to make it pass — surfaces failures with a recommendation."
-source: agents/test-coder.md
-model_tier: large
-vendor:
-  claude:
-    argument_hint: "<task-id>"
-    invocation_examples: |
-      /pl-test-coder <task-id>            # run against one task's cited scenarios
-      /pl-test-coder <plan-id> --plan     # run against every cited scenario in the plan
-      /pl-test-coder <task-id> --since <commit>   # run against a specific coder cycle's diff base
+description: Adversarial test-author dispatched between coder and reviewer; reads the test-spec and the coder's diff, produces a test-only diff that closes uncovered slugs. Never modifies a failing test to make it pass — surfaces failures with a recommendation.
+origin: agents/test-coder.md
 shared_notes:
-  - "Active scope is read at the start of every invocation; no vendor-specific state is kept outside the database."
-  - "On return to the orchestrator, the session id and vendor are recorded on the snapshot."
+    - Active scope is read at the start of every invocation; no vendor-specific state is kept outside the database.
+    - On return to the orchestrator, the session id and vendor are recorded on the snapshot.
+slug: pl-test-coder
+vendor:
+    claude:
+        argument_hint: <task-id>
+        invocation_examples: |
+            /pl-test-coder <task-id>            # run against one task's cited scenarios
+            /pl-test-coder <plan-id> --plan     # run against every cited scenario in the plan
+            /pl-test-coder <task-id> --since <commit>   # run against a specific coder cycle's diff base
 ---
 
 # Test-coder ({{.VendorTitle}})
@@ -123,12 +122,3 @@ green.
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```
-{{.InvocationBlock -}}
-```
-{{- end}}

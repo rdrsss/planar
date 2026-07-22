@@ -1,18 +1,17 @@
 ---
-slug: pl-plan
-description: "Create, update, inspect, recommend, advance, and close out plans and their steps."
-source: docs/cli-reference.md#domain-plan
-cross_scope_writes: true
-vendor:
-  claude:
-    argument_hint: "<create|show|list|update|step|link|next|recommend-strategy|closeout> [args]"
-    invocation_examples: |
-      /pl-plan create "Implement billing module"
-      /pl-plan show <plan-id>
-      /pl-plan step add <plan-id> "Design the data model"
-      /pl-plan link <plan-id> artifact:<artifact-id> --relationship cites
+description: Create, update, inspect, recommend, advance, and close out plans and their steps.
+origin: docs/cli-reference.md#domain-plan
 shared_notes:
-  - "Resolved scope and plan state come from the CLI; the skill must not read or write workspace context outside it."
+    - Resolved scope and plan state come from the CLI; the skill must not read or write workspace context outside it.
+slug: pl-plan
+vendor:
+    claude:
+        argument_hint: <create|show|list|update|step|link|next|recommend-strategy|closeout> [args]
+        invocation_examples: |
+            /pl-plan create "Implement billing module"
+            /pl-plan show <plan-id>
+            /pl-plan step add <plan-id> "Design the data model"
+            /pl-plan link <plan-id> artifact:<artifact-id> --relationship cites
 ---
 
 # Planar Plan ({{.VendorTitle}})
@@ -122,12 +121,3 @@ or link was rolled back.
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```
-{{.InvocationBlock -}}
-```
-{{- end}}

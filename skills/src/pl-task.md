@@ -1,18 +1,17 @@
 ---
-slug: pl-task
-description: "Create, inspect, update, block, reopen, complete, and cancel tasks within the cwd-derived scope."
-source: docs/cli-reference.md#domain-task
-cross_scope_writes: true
-vendor:
-  claude:
-    argument_hint: "<add|list|show|update|block|reopen|done|cancel|link|touches> [args]"
-    invocation_examples: |
-      /pl-task add "Implement payment gateway API" --plan <plan-id> --priority 50
-      /pl-task list
-      /pl-task done 42
-      /pl-task block 43 --on 42
+description: Create, inspect, update, block, reopen, complete, and cancel tasks within the cwd-derived scope.
+origin: docs/cli-reference.md#domain-task
 shared_notes:
-  - "Resolved scope and task state come from the CLI; the skill must not read or write workspace context outside it."
+    - Resolved scope and task state come from the CLI; the skill must not read or write workspace context outside it.
+slug: pl-task
+vendor:
+    claude:
+        argument_hint: <add|list|show|update|block|reopen|done|cancel|link|touches> [args]
+        invocation_examples: |
+            /pl-task add "Implement payment gateway API" --plan <plan-id> --priority 50
+            /pl-task list
+            /pl-task done 42
+            /pl-task block 43 --on 42
 ---
 
 # Planar Task ({{.VendorTitle}})
@@ -123,12 +122,3 @@ were rolled back.
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```
-{{.InvocationBlock -}}
-```
-{{- end}}

@@ -1,14 +1,14 @@
 ---
-slug: pl-init
-description: "Initialize the Planar database and register the current directory as a project."
-source: docs/cli-reference.md#domain-init
-vendor:
-  claude:
-    argument_hint: "[--name <text>] [--db <path>]"
-    invocation_examples: |
-      /pl-init [--name <text>] [--db <path>]
+description: Initialize the Planar database and register the current directory as a project.
+origin: docs/cli-reference.md#domain-init
 shared_notes:
-  - "Resolved scope and database state come from the CLI, not from vendor session memory."
+    - Resolved scope and database state come from the CLI, not from vendor session memory.
+slug: pl-init
+vendor:
+    claude:
+        argument_hint: '[--name <text>] [--db <path>]'
+        invocation_examples: |
+            /pl-init [--name <text>] [--db <path>]
 ---
 
 # Planar Init ({{.VendorTitle}})
@@ -74,12 +74,3 @@ rolled back unless the CLI reports that transaction outcome.
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```
-{{.InvocationBlock -}}
-```
-{{- end}}

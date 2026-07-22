@@ -1,10 +1,7 @@
 ---
-name: coder
 description: Coding agent that implements scoped tasks end-to-end. Dispatched by the orchestrator; returns its change set for review. Does not approve its own work.
-tier: medium
-role: coder
-capability: write
-cross_scope_writes: true
+kind: agent
+slug: coder
 ---
 
 # Coder

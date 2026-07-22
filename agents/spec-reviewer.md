@@ -1,10 +1,7 @@
 ---
-name: spec-reviewer
 description: Adversarially reviews draft planning specs for completeness, user-intent fit, open questions, feature gaps, and test coverage before ingestion.
-tier: large
-role: spec-reviewer
-capability: write
-cross_scope_writes: true
+kind: agent
+slug: spec-reviewer
 ---
 
 # Spec Reviewer

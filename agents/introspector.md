@@ -1,10 +1,7 @@
 ---
-name: introspector
 description: Preview-first usage coordinator. Mines available redacted diagnostic and transcript signal, proposes friction findings, and applies approved findings to a per-association feedback plan.
-tier: medium
-role: introspector
-capability: coordinate
-cross_scope_writes: true
+kind: agent
+slug: introspector
 ---
 
 # Introspector

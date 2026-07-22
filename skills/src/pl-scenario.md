@@ -1,17 +1,16 @@
 ---
-slug: pl-scenario
-description: "Author test scenarios from a spec or task, verify and record outcomes."
-source: docs/cli-reference.md#domain-scenario
-cross_scope_writes: true
-vendor:
-  claude:
-    argument_hint: "<add|verify|list|show|retire> [args]"
-    invocation_examples: |
-      /pl-scenario add "Stripe webhook idempotency" --related 3
-      /pl-scenario verify 9 --outcome pass
-      /pl-scenario list --status failing
+description: Author test scenarios from a spec or task, verify and record outcomes.
+origin: docs/cli-reference.md#domain-scenario
 shared_notes:
-  - "Resolved scope and scenario state come from the CLI; the skill must not read or write workspace context outside it."
+    - Resolved scope and scenario state come from the CLI; the skill must not read or write workspace context outside it.
+slug: pl-scenario
+vendor:
+    claude:
+        argument_hint: <add|verify|list|show|retire> [args]
+        invocation_examples: |
+            /pl-scenario add "Stripe webhook idempotency" --related 3
+            /pl-scenario verify 9 --outcome pass
+            /pl-scenario list --status failing
 ---
 
 # Planar Scenario ({{.VendorTitle}})
@@ -88,12 +87,3 @@ claim a cross-scenario rollback.
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```
-{{.InvocationBlock -}}
-```
-{{- end}}

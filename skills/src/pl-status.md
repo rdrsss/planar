@@ -1,14 +1,14 @@
 ---
-slug: pl-status
-description: "Summarize the cwd-derived scope's state — attention items, active work, claims, handoffs, conflicts, and claim-aware next work."
-source: docs/cli-reference.md#domain-dashboard
-vendor:
-  claude:
-    argument_hint: "[]"
-    invocation_examples: |
-      /pl-status
+description: Summarize the cwd-derived scope's state — attention items, active work, claims, handoffs, conflicts, and claim-aware next work.
+origin: docs/cli-reference.md#domain-dashboard
 shared_notes:
-  - "Resolved scope and database state come from the CLI; the skill must not read or write workspace context outside it."
+    - Resolved scope and database state come from the CLI; the skill must not read or write workspace context outside it.
+slug: pl-status
+vendor:
+    claude:
+        argument_hint: '[]'
+        invocation_examples: |
+            /pl-status
 ---
 
 # Pl-Status ({{.VendorTitle}})
@@ -128,12 +128,3 @@ For a fully successful read, omit this section.
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```
-{{.InvocationBlock -}}
-```
-{{- end}}

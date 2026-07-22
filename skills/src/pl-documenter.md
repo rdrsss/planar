@@ -1,18 +1,17 @@
 ---
-slug: pl-documenter
-description: "Propose documentation actions from repo drift, gate every row, route approved prose to doc-author, and apply approved manifest-only actions through planar-doc."
-source: agents/documenter.md
-model_tier: large
-vendor:
-  claude:
-    argument_hint: "[--json] [--since <git-ref>]"
-    invocation_examples: |
-      /pl-documenter
-      /pl-documenter --json
+description: Propose documentation actions from repo drift, gate every row, route approved prose to doc-author, and apply approved manifest-only actions through planar-doc.
+origin: agents/documenter.md
 shared_notes:
-  - "The documenter specialist is strictly read-only: it proposes rows and never writes prose, manifest state, or coordination state."
-  - "Only operator-approved prose rows are dispatched to doc-author; approved nodoc rows bypass prose authoring."
-  - "The skill caller owns all planar-doc mutations and verifies their post-state."
+    - 'The documenter specialist is strictly read-only: it proposes rows and never writes prose, manifest state, or coordination state.'
+    - Only operator-approved prose rows are dispatched to doc-author; approved nodoc rows bypass prose authoring.
+    - The skill caller owns all planar-doc mutations and verifies their post-state.
+slug: pl-documenter
+vendor:
+    claude:
+        argument_hint: '[--json] [--since <git-ref>]'
+        invocation_examples: |
+            /pl-documenter
+            /pl-documenter --json
 ---
 
 # Documenter ({{.VendorTitle}})
@@ -335,12 +334,3 @@ planar skills render --check --out <staging-dir> pl-documenter
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```text
-{{.InvocationBlock -}}
-```
-{{- end}}

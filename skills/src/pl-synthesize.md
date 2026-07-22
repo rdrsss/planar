@@ -1,21 +1,19 @@
 ---
-slug: pl-synthesize
-description: "Synthesize fresh planning artifacts for a repo from existing docs + git log + source code via an LLM pass. Use for messy / docs-only / mid-evolution repos."
-source: agents/synthesizer.md
-cross_scope_writes: true
-model_tier: large
-vendor:
-  claude:
-    argument_hint: "<repo-root> [--apply] [--scope <slug>] [--accept-spec <slug>] [--code-layout <name>] [--no-forward-specs] [--literal] [--treat-as-greenfield] [--treat-as-nongreenfield] [--threshold N]"
-    invocation_examples: |
-      /pl-synthesize .                          # preview the current repo
-      /pl-synthesize . --apply                  # commit the synthesis
-      /pl-synthesize /path/to/other-repo --dry-run
-      /pl-synthesize . --code-layout go --apply
-      /pl-synthesize . --scope assoc:project:my-app --apply
-      /pl-synthesize . --literal                # delegate to pl-import
+description: Synthesize fresh planning artifacts for a repo from existing docs + git log + source code via an LLM pass. Use for messy / docs-only / mid-evolution repos.
+origin: agents/synthesizer.md
 shared_notes:
-  - "Synthesis cache state and deterministic baselines come from the CLI; the skill must not write planning rows directly."
+    - Synthesis cache state and deterministic baselines come from the CLI; the skill must not write planning rows directly.
+slug: pl-synthesize
+vendor:
+    claude:
+        argument_hint: <repo-root> [--apply] [--scope <slug>] [--accept-spec <slug>] [--code-layout <name>] [--no-forward-specs] [--literal] [--treat-as-greenfield] [--treat-as-nongreenfield] [--threshold N]
+        invocation_examples: |
+            /pl-synthesize .                          # preview the current repo
+            /pl-synthesize . --apply                  # commit the synthesis
+            /pl-synthesize /path/to/other-repo --dry-run
+            /pl-synthesize . --code-layout go --apply
+            /pl-synthesize . --scope assoc:project:my-app --apply
+            /pl-synthesize . --literal                # delegate to pl-import
 ---
 
 # Planar Synthesize ({{.VendorTitle}})
@@ -304,12 +302,3 @@ Completed independent targets remain applied; do not invent cross-target undo.
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```
-{{.InvocationBlock -}}
-```
-{{- end}}

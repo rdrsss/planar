@@ -1,27 +1,15 @@
 ---
-slug: pl-spec-draft
-description: "Draft initial product spec, tech spec, test spec, and roadmap for a new feature from a goal statement."
-source: agents/planner.md
-cross_scope_writes: true
-model_tier: large
-vendor:
-  claude:
-    argument_hint: "\"<goal>\""
-    invocation_examples: |
-      /pl-spec-draft "rebuild the checkout flow to support multi-currency"
-      /pl-spec-draft "add real-time notifications to the dashboard"
-canonical_decisions:
-  - block: "claude-only explicit test-spec artifact bullet and four-document wording"
-    decision: preserve
-    rationale: "Planner contract and agent source require four artifacts, including test-spec."
-  - block: "codex/copilot three-document wording"
-    decision: drop
-    rationale: "It conflicts with the current planner output contract."
-  - block: "copilot-only Anthropic routing caveat"
-    decision: drop
-    rationale: "Vendor runtime routing guidance is environment-specific, not stable skill-source policy."
+description: Draft initial product spec, tech spec, test spec, and roadmap for a new feature from a goal statement.
+origin: agents/planner.md
 shared_notes:
-  - "Active scope and plan state come from the CLI; the skill must not read or write workspace context outside it."
+    - Active scope and plan state come from the CLI; the skill must not read or write workspace context outside it.
+slug: pl-spec-draft
+vendor:
+    claude:
+        argument_hint: '"<goal>"'
+        invocation_examples: |
+            /pl-spec-draft "rebuild the checkout flow to support multi-currency"
+            /pl-spec-draft "add real-time notifications to the dashboard"
 ---
 
 # Spec Draft ({{.VendorTitle}})
@@ -225,12 +213,3 @@ the independent plan, artifact, question, link, and filesystem writes.
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```
-{{.InvocationBlock -}}
-```
-{{- end}}

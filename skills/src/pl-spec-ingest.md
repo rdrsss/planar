@@ -1,19 +1,17 @@
 ---
-slug: pl-spec-ingest
-description: "Decompose workbench planning documents into a structured task graph in the Planar database."
-source: agents/ingestor.md
-cross_scope_writes: true
-model_tier: large
-vendor:
-  claude:
-    argument_hint: "<plan> [--apply] [--apply-removals] [--format text|json]"
-    invocation_examples: |
-      /pl-spec-ingest checkout-rewrite
-      /pl-spec-ingest 42 --apply
-      /pl-spec-ingest checkout-rewrite --apply --apply-removals
-      /pl-spec-ingest 42 --format json
+description: Decompose workbench planning documents into a structured task graph in the Planar database.
+origin: agents/ingestor.md
 shared_notes:
-  - "Workbench artifacts are read through the Planar workbench contract; ingestion preview is never applied silently."
+    - Workbench artifacts are read through the Planar workbench contract; ingestion preview is never applied silently.
+slug: pl-spec-ingest
+vendor:
+    claude:
+        argument_hint: <plan> [--apply] [--apply-removals] [--format text|json]
+        invocation_examples: |
+            /pl-spec-ingest checkout-rewrite
+            /pl-spec-ingest 42 --apply
+            /pl-spec-ingest checkout-rewrite --apply --apply-removals
+            /pl-spec-ingest 42 --format json
 ---
 
 # Spec Ingest ({{.VendorTitle}})
@@ -245,12 +243,3 @@ successfully applied independent anchor.
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```
-{{.InvocationBlock -}}
-```
-{{- end}}

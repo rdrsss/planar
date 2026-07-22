@@ -1,15 +1,15 @@
 ---
-slug: pl-models-config
-description: "Discover installed provider CLIs and review/configure per-role model routing (plan 540)."
-source: docs/cli-reference.md#domain-models
-vendor:
-  claude:
-    argument_hint: "[]"
-    invocation_examples: |
-      /pl-models-config
+description: Discover installed provider CLIs and review/configure per-role model routing (plan 540).
+origin: docs/cli-reference.md#domain-models
 shared_notes:
-  - "All provider/model state comes from the CLI (`planar models`, `planar config`); the skill must not read or write config files directly except by invoking `planar models apply` or guiding the operator to edit `~/.planar/config.toml`."
-  - "The provider CLIs do not enumerate models; the per-vendor catalog is curated in the binary, so `models list` reports installed-state, not a live model fetch."
+    - All provider/model state comes from the CLI (`planar models`, `planar config`); the skill must not read or write config files directly except by invoking `planar models apply` or guiding the operator to edit `~/.planar/config.toml`.
+    - The provider CLIs do not enumerate models; the per-vendor catalog is curated in the binary, so `models list` reports installed-state, not a live model fetch.
+slug: pl-models-config
+vendor:
+    claude:
+        argument_hint: '[]'
+        invocation_examples: |
+            /pl-models-config
 ---
 
 # Pl-Models-Config ({{.VendorTitle}})
@@ -115,4 +115,3 @@ verb writes nothing.
 
 ## Vendor Notes
 
-{{.VendorNotes}}

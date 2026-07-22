@@ -1,19 +1,18 @@
 ---
-slug: pl-workspace-scan
-description: "Initialize, inspect, refresh, diagnose, and repair a Planar workspace while preserving the workspace-scan invocation."
-source: docs/cli-reference.md#domain-workspace
-cross_scope_writes: true
-vendor:
-  claude:
-    argument_hint: "[scan|init|doctor|routing-show|routing-build|regenerate|repair] [--enrich] [--workspace <slug>] [--dry-run]"
-    invocation_examples: |
-      /pl-workspace-scan                          # compatible default: routing build + regenerate
-      /pl-workspace-scan --enrich                 # compatible enriched refresh
-      /pl-workspace-scan routing-show --workspace org:work
-      /pl-workspace-scan doctor                   # diagnose and repair registered workspaces
-      /pl-workspace-scan repair --workspace org:work
+description: Initialize, inspect, refresh, diagnose, and repair a Planar workspace while preserving the workspace-scan invocation.
+origin: docs/cli-reference.md#domain-workspace
 shared_notes:
-  - "Workspace state is resolved and changed only through the Planar CLI; generated routing and guidance files are never edited directly."
+    - Workspace state is resolved and changed only through the Planar CLI; generated routing and guidance files are never edited directly.
+slug: pl-workspace-scan
+vendor:
+    claude:
+        argument_hint: '[scan|init|doctor|routing-show|routing-build|regenerate|repair] [--enrich] [--workspace <slug>] [--dry-run]'
+        invocation_examples: |
+            /pl-workspace-scan                          # compatible default: routing build + regenerate
+            /pl-workspace-scan --enrich                 # compatible enriched refresh
+            /pl-workspace-scan routing-show --workspace org:work
+            /pl-workspace-scan doctor                   # diagnose and repair registered workspaces
+            /pl-workspace-scan repair --workspace org:work
 ---
 
 # Planar Workspace Lifecycle ({{.VendorTitle}})
@@ -162,12 +161,3 @@ remain applied and must be named in a partial result.
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```text
-{{.InvocationBlock -}}
-```
-{{- end}}

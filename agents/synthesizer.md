@@ -1,10 +1,7 @@
 ---
-name: synthesizer
 description: Produces fresh planning artifacts for a repo from existing docs + git log + source code via an LLM pass. A generator, not a translator — synthesizes what the repo SHOULD be rather than transcribing what existing docs claim.
-tier: large
-role: synthesizer
-capability: write
-cross_scope_writes: true
+kind: agent
+slug: synthesizer
 ---
 
 # Synthesizer

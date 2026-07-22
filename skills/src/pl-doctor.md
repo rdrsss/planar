@@ -1,17 +1,16 @@
 ---
-slug: pl-doctor
-description: "Guided reconciliation flow for a degraded Planar DB: diagnose contributors, clear stale claims and handoffs, triage non-resumable in-flight tasks."
-source: docs/cli-reference.md#domain-health
-cross_scope_writes: true
-vendor:
-  claude:
-    argument_hint: "[--json]"
-    invocation_examples: |
-      /pl-doctor
-      /pl-doctor --json
+description: 'Guided reconciliation flow for a degraded Planar DB: diagnose contributors, clear stale claims and handoffs, triage non-resumable in-flight tasks.'
+origin: docs/cli-reference.md#domain-health
 shared_notes:
-  - "All writes are operator-confirmed before executing. Do not auto-cancel or auto-abandon without explicit operator approval at each step."
-  - "Active scope and database state come from the CLI; the skill must not read or write workspace context outside it."
+    - All writes are operator-confirmed before executing. Do not auto-cancel or auto-abandon without explicit operator approval at each step.
+    - Active scope and database state come from the CLI; the skill must not read or write workspace context outside it.
+slug: pl-doctor
+vendor:
+    claude:
+        argument_hint: '[--json]'
+        invocation_examples: |
+            /pl-doctor
+            /pl-doctor --json
 ---
 
 # Planar Doctor ({{.VendorTitle}})
@@ -208,12 +207,3 @@ independent reconciliations.
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```
-{{.InvocationBlock -}}
-```
-{{- end}}

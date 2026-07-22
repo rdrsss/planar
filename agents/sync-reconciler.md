@@ -1,10 +1,7 @@
 ---
-name: sync-reconciler
 description: Reconciles local and external sync conflicts from observable evidence. Recommends exactly one disposition and applies a whole-entity resolution only after explicit operator confirmation.
-tier: large
-role: sync-reconciler
-capability: coordinate
-cross_scope_writes: true
+kind: agent
+slug: sync-reconciler
 ---
 
 # Sync Reconciler

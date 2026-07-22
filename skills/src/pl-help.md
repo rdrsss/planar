@@ -1,20 +1,20 @@
 ---
-slug: pl-help
-description: "Route operator intent to available Planar workflows or show command help."
-source: docs/cli-reference.md#domain-help
-vendor:
-  claude:
-    argument_hint: "[<intent-or-subcommand>]"
-    invocation_examples: |
-      /pl-help
-      /pl-help resume interrupted work
-      /pl-help inspect active agents
-      /pl-help record a technical decision
-      /pl-help repair my local skills
-      /pl-help task
-      /pl-help sync resolve
+description: Route operator intent to available Planar workflows or show command help.
+origin: docs/cli-reference.md#domain-help
 shared_notes:
-  - "Active scope and database state come from the CLI; the skill must not read or write workspace context outside it."
+    - Active scope and database state come from the CLI; the skill must not read or write workspace context outside it.
+slug: pl-help
+vendor:
+    claude:
+        argument_hint: '[<intent-or-subcommand>]'
+        invocation_examples: |
+            /pl-help
+            /pl-help resume interrupted work
+            /pl-help inspect active agents
+            /pl-help record a technical decision
+            /pl-help repair my local skills
+            /pl-help task
+            /pl-help sync resolve
 ---
 
 # Planar Help ({{.VendorTitle}})
@@ -166,12 +166,3 @@ has no undo path.
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```
-{{.InvocationBlock -}}
-```
-{{- end}}

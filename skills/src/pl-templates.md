@@ -1,22 +1,21 @@
 ---
-slug: pl-templates
-description: "Inspect, validate, and render Planar JSON templates for external-system propagation."
-source: docs/cli-reference.md
-model_tier: medium
-vendor:
-  claude:
-    argument_hint: "[set] [system] [kind]"
-    invocation_examples: |
-      /pl-templates
-      /pl-templates list --system jira
-      /pl-templates show default jira epic
-      /pl-templates render default github-issues issue --entity task:<task-id>
-      /pl-templates validate
-      /pl-templates validate ~/.planar/templates/acme-internal/github-issues/issue.json
-      /pl-templates init
-      /pl-templates path default jira epic
+description: Inspect, validate, and render Planar JSON templates for external-system propagation.
+origin: docs/cli-reference.md
 shared_notes:
-  - "Template state is read through the CLI; rendered examples are validation artifacts, not direct adapter writes."
+    - Template state is read through the CLI; rendered examples are validation artifacts, not direct adapter writes.
+slug: pl-templates
+vendor:
+    claude:
+        argument_hint: '[set] [system] [kind]'
+        invocation_examples: |
+            /pl-templates
+            /pl-templates list --system jira
+            /pl-templates show default jira epic
+            /pl-templates render default github-issues issue --entity task:<task-id>
+            /pl-templates validate
+            /pl-templates validate ~/.planar/templates/acme-internal/github-issues/issue.json
+            /pl-templates init
+            /pl-templates path default jira epic
 ---
 
 # Templates ({{.VendorTitle}})
@@ -146,12 +145,3 @@ initialized independent files remain on disk; never imply cross-file rollback.
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```
-{{.InvocationBlock -}}
-```
-{{- end}}

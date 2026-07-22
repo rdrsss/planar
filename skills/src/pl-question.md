@@ -1,17 +1,16 @@
 ---
-slug: pl-question
-description: "Capture open questions during a session, answer them, and link to tasks and specs."
-source: docs/cli-reference.md#domain-question
-cross_scope_writes: true
-vendor:
-  claude:
-    argument_hint: "<add|answer|list|show|wontfix|link> [args]"
-    invocation_examples: |
-      /pl-question add "What is the Stripe API rate limit?"
-      /pl-question answer 3 "100 requests per second per endpoint"
-      /pl-question list --status open
+description: Capture open questions during a session, answer them, and link to tasks and specs.
+origin: docs/cli-reference.md#domain-question
 shared_notes:
-  - "Resolved scope and question state come from the CLI; the skill must not read or write workspace context outside it."
+    - Resolved scope and question state come from the CLI; the skill must not read or write workspace context outside it.
+slug: pl-question
+vendor:
+    claude:
+        argument_hint: <add|answer|list|show|wontfix|link> [args]
+        invocation_examples: |
+            /pl-question add "What is the Stripe API rate limit?"
+            /pl-question answer 3 "100 requests per second per endpoint"
+            /pl-question list --status open
 ---
 
 # Planar Question ({{.VendorTitle}})
@@ -85,12 +84,3 @@ was rolled back.
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```
-{{.InvocationBlock -}}
-```
-{{- end}}

@@ -1,16 +1,16 @@
 ---
-slug: pl-local-import
-description: "Compatibility wrapper for importing skill or agent files into the local sandbox through the canonical pl-local lifecycle."
-source: docs/cli-reference.md#domain-local
-vendor:
-  claude:
-    argument_hint: "<path-to-skill-file-or-directory>"
-    invocation_examples: |
-      /pl-local-import ~/my-skills/fixup-protos.md
-      /pl-local-import ~/my-skills/
-      /pl-local-import ~/my-agents/ --kind agent
+description: Compatibility wrapper for importing skill or agent files into the local sandbox through the canonical pl-local lifecycle.
+origin: docs/cli-reference.md#domain-local
 shared_notes:
-  - "This compatibility entry point preserves existing import invocations; use pl-local for link, list, unlink, migrate, and repair."
+    - This compatibility entry point preserves existing import invocations; use pl-local for link, list, unlink, migrate, and repair.
+slug: pl-local-import
+vendor:
+    claude:
+        argument_hint: <path-to-skill-file-or-directory>
+        invocation_examples: |
+            /pl-local-import ~/my-skills/fixup-protos.md
+            /pl-local-import ~/my-skills/
+            /pl-local-import ~/my-agents/ --kind agent
 ---
 
 # Pl-Local-Import Compatibility Wrapper ({{.VendorTitle}})
@@ -92,12 +92,3 @@ inspection. Do not claim rollback of inputs that already imported or linked.
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```
-{{.InvocationBlock -}}
-```
-{{- end}}

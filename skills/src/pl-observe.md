@@ -1,17 +1,17 @@
 ---
-slug: pl-observe
-description: "Observe one plan's live operational activity: action topology, claims, recent failures, sync events, and handoffs."
-source: docs/cli-reference.md#binary-planar-watch
-vendor:
-  claude:
-    argument_hint: "--plan <id> [--since <RFC3339>] [--limit <n>] [--vendor <vendor>] [--system <slug>]"
-    invocation_examples: |
-      /pl-observe --plan 808
-      /pl-observe --plan 808 --since 2026-07-13T00:00:00Z --limit 50
-      /pl-observe --plan 808 --vendor codex --system github
+description: 'Observe one plan''s live operational activity: action topology, claims, recent failures, sync events, and handoffs.'
+origin: docs/cli-reference.md#binary-planar-watch
 shared_notes:
-  - "This workflow is strictly read-only: use planar and planar-watch read surfaces only; never mutate planning, claim, handoff, or sync state."
-  - "An observed empty collection is different from unavailable telemetry; preserve that distinction in every result."
+    - 'This workflow is strictly read-only: use planar and planar-watch read surfaces only; never mutate planning, claim, handoff, or sync state.'
+    - An observed empty collection is different from unavailable telemetry; preserve that distinction in every result.
+slug: pl-observe
+vendor:
+    claude:
+        argument_hint: --plan <id> [--since <RFC3339>] [--limit <n>] [--vendor <vendor>] [--system <slug>]
+        invocation_examples: |
+            /pl-observe --plan 808
+            /pl-observe --plan 808 --since 2026-07-13T00:00:00Z --limit 50
+            /pl-observe --plan 808 --vendor codex --system github
 ---
 
 # Planar Observe ({{.VendorTitle}})
@@ -278,12 +278,3 @@ limitation, not a failed read.
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```text
-{{.InvocationBlock -}}
-```
-{{- end}}

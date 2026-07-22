@@ -1,19 +1,18 @@
 ---
-slug: pl-feedback-triage
-description: "Preview and apply structured triage for redacted feedback findings, with separately gated external reporting."
-source: docs/cli-reference.md#domain-feedback
-cross_scope_writes: true
-vendor:
-  claude:
-    argument_hint: "[--plan <id>] [--finding <task:id|question:id>] [--scope <scope>] [--apply]"
-    invocation_examples: |
-      /pl-feedback-triage --plan 812
-      /pl-feedback-triage --finding question:42
-      /pl-feedback-triage --finding task:17 --apply
+description: Preview and apply structured triage for redacted feedback findings, with separately gated external reporting.
+origin: docs/cli-reference.md#domain-feedback
 shared_notes:
-  - "Preview is mandatory before any local triage mutation; --apply in the initial request is not confirmation."
-  - "External reporting is a separate workflow with its own full issue preview and explicit confirmation. Declining it preserves completed local triage and posts nothing."
-  - "Use only redacted evidence and supported planar CLI commands; never open SQLite or persist raw transcript text."
+    - Preview is mandatory before any local triage mutation; --apply in the initial request is not confirmation.
+    - External reporting is a separate workflow with its own full issue preview and explicit confirmation. Declining it preserves completed local triage and posts nothing.
+    - Use only redacted evidence and supported planar CLI commands; never open SQLite or persist raw transcript text.
+slug: pl-feedback-triage
+vendor:
+    claude:
+        argument_hint: '[--plan <id>] [--finding <task:id|question:id>] [--scope <scope>] [--apply]'
+        invocation_examples: |
+            /pl-feedback-triage --plan 812
+            /pl-feedback-triage --finding question:42
+            /pl-feedback-triage --finding task:17 --apply
 ---
 
 # Planar Feedback Triage ({{.VendorTitle}})
@@ -242,12 +241,3 @@ post again; follow `pl-report-issue` recovery to retry only the exact
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```
-{{.InvocationBlock -}}
-```
-{{- end}}

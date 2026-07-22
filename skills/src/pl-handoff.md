@@ -1,18 +1,18 @@
 ---
-slug: pl-handoff
-description: "Capture a context snapshot before terminating, validate it is resume-ready, and prepare the handoff record."
-source: docs/cli-reference.md#domain-handoff
-vendor:
-  claude:
-    argument_hint: "[<task-id>] [--vendor <to-vendor>] [--note <text>]"
-    invocation_examples: |
-      /pl-handoff 42 --note "Stopped after implementing the API layer; next: write tests"
-      /pl-handoff validate 15
-      /pl-handoff list
+description: Capture a context snapshot before terminating, validate it is resume-ready, and prepare the handoff record.
+origin: docs/cli-reference.md#domain-handoff
 shared_notes:
-  - "Active scope and session state come from the CLI; the skill must not read or write workspace context outside it."
-  - "The session id and vendor are recorded on every snapshot created by this workflow."
-  - "Worktree state (path / branch / repo_root) is persisted on the handoff row at create time, copied from the active `agent_work_claims` row on the target task. `planar resume` reads it from the live claim when one exists, and falls back to the most-recent worktree-bearing handoff once the claim has been released — operators do not need to keep the claim alive across the handoff."
+    - Active scope and session state come from the CLI; the skill must not read or write workspace context outside it.
+    - The session id and vendor are recorded on every snapshot created by this workflow.
+    - Worktree state (path / branch / repo_root) is persisted on the handoff row at create time, copied from the active `agent_work_claims` row on the target task. `planar resume` reads it from the live claim when one exists, and falls back to the most-recent worktree-bearing handoff once the claim has been released — operators do not need to keep the claim alive across the handoff.
+slug: pl-handoff
+vendor:
+    claude:
+        argument_hint: '[<task-id>] [--vendor <to-vendor>] [--note <text>]'
+        invocation_examples: |
+            /pl-handoff 42 --note "Stopped after implementing the API layer; next: write tests"
+            /pl-handoff validate 15
+            /pl-handoff list
 ---
 
 # Planar Handoff ({{.VendorTitle}})
@@ -100,12 +100,3 @@ back.
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```
-{{.InvocationBlock -}}
-```
-{{- end}}

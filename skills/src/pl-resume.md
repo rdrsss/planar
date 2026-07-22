@@ -1,18 +1,18 @@
 ---
-slug: pl-resume
-description: "Resume an in-flight task from zero conversational context, validate readiness first."
-source: docs/cli-reference.md#domain-resume
-vendor:
-  claude:
-    argument_hint: "[<task-id> | <plan-id>] [--budget <tokens>]"
-    invocation_examples: |
-      /pl-resume 42
-      /pl-resume validate 42
-      /pl-resume
+description: Resume an in-flight task from zero conversational context, validate readiness first.
+origin: docs/cli-reference.md#domain-resume
 shared_notes:
-  - "Active scope and task state come from the CLI; the skill must not read or write workspace context outside it."
-  - "On return, the session id and vendor are recorded on the snapshot."
-  - "When the packet's `active_claim.worktree_path` is non-empty, prepend a `cd <path>` directive before running the next-action commands so the resumer operates from the same isolated checkout the prior session used."
+    - Active scope and task state come from the CLI; the skill must not read or write workspace context outside it.
+    - On return, the session id and vendor are recorded on the snapshot.
+    - When the packet's `active_claim.worktree_path` is non-empty, prepend a `cd <path>` directive before running the next-action commands so the resumer operates from the same isolated checkout the prior session used.
+slug: pl-resume
+vendor:
+    claude:
+        argument_hint: '[<task-id> | <plan-id>] [--budget <tokens>]'
+        invocation_examples: |
+            /pl-resume 42
+            /pl-resume validate 42
+            /pl-resume
 ---
 
 # Planar Resume ({{.VendorTitle}})
@@ -95,12 +95,3 @@ retained; never imply cross-target rollback.
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```
-{{.InvocationBlock -}}
-```
-{{- end}}

@@ -1,29 +1,14 @@
 ---
-slug: pl-coder
-description: "Implements scoped coding tasks (called by the orchestrator)."
-source: agents/coder.md
-cross_scope_writes: true
-model_tier: medium
-vendor:
-  claude:
-    argument_hint: "<task-id>"
-    invocation_examples: |
-      /pl-coder <task-id>
-canonical_decisions:
-  - block: "claude-only test-coder handoff section"
-    decision: preserve
-    rationale: "Guidance aligns with Phase 3.5 behavior and should apply across vendors."
-  - block: "claude-only behavior summary after invocation (resolve task, enforce `resume validate`, implement, return change set)"
-    decision: drop
-    rationale: "Kept as canonical agent-contract behavior in `agents/coder.md` (Behavior flow) rather than duplicated as trailing surface prose in per-vendor renders."
-  - block: "claude-only alias /coder invocation note"
-    decision: drop
-    rationale: "Alias wiring is local/operator-specific and not a stable cross-vendor contract."
-  - block: "barrel-bypass sentence about no reviewer catching suppressed issues"
-    decision: preserve
-    rationale: "The sentence clarifies why full gate evidence is mandatory under barrel-bypass."
+description: Implements scoped coding tasks (called by the orchestrator).
+origin: agents/coder.md
 shared_notes:
-  - "Active scope is read at the start of every invocation; no vendor-specific state is kept outside the database."
+    - Active scope is read at the start of every invocation; no vendor-specific state is kept outside the database.
+slug: pl-coder
+vendor:
+    claude:
+        argument_hint: <task-id>
+        invocation_examples: |
+            /pl-coder <task-id>
 ---
 
 # Coder ({{.VendorTitle}})
@@ -144,12 +129,3 @@ actually performed it; the orchestrator still owns the terminal claim verb.
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```
-{{.InvocationBlock -}}
-```
-{{- end}}

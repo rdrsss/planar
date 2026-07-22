@@ -1,29 +1,14 @@
 ---
-slug: pl-reviewer
-description: "Reviews coder output. Returns one of approve / request-changes / open-question / abort."
-source: agents/reviewer.md
-cross_scope_writes: true
-model_tier: large
-vendor:
-  claude:
-    argument_hint: "<task-id> <iteration>"
-    invocation_examples: |
-      /pl-reviewer <task-id> <iteration>
-canonical_decisions:
-  - block: "codex/copilot coverage-check section (`planar test-spec status`)"
-    decision: preserve
-    rationale: "Matches current reviewer behavior contract in agents/reviewer.md step 5a."
-  - block: "claude-only behavior summary after invocation (pull task/scope/resume packet, read cited specs, run `git diff` firsthand, return decision)"
-    decision: drop
-    rationale: "Behavior remains canonical in `agents/reviewer.md` Behavior steps; removed from trailing vendor-surface prose to avoid duplicated contracts."
-  - block: "claude-only invocation prose and alias note"
-    decision: drop
-    rationale: "Keep invocation in the standard Claude invocation block; local aliases are not canonical."
-  - block: "blind-read wording excludes only coder report vs coder+test-coder reports"
-    decision: preserve codex/copilot wording
-    rationale: "Union-diff and Phase 3.5 flows require excluding both narrative reports."
+description: Reviews coder output. Returns one of approve / request-changes / open-question / abort.
+origin: agents/reviewer.md
 shared_notes:
-  - "Review decisions and caveats are written through the CLI, not in out-of-band notes."
+    - Review decisions and caveats are written through the CLI, not in out-of-band notes.
+slug: pl-reviewer
+vendor:
+    claude:
+        argument_hint: <task-id> <iteration>
+        invocation_examples: |
+            /pl-reviewer <task-id> <iteration>
 ---
 
 # Reviewer ({{.VendorTitle}})
@@ -141,12 +126,3 @@ On an incomplete review, provide the exact inspect or resume command, such as
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```
-{{.InvocationBlock -}}
-```
-{{- end}}

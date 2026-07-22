@@ -88,6 +88,7 @@ INSTALLER_VERSION="1.0.0"     # install.sh's own version (see --version)
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$REPO_ROOT/scripts/install-manifest.sh"
+source "$REPO_ROOT/scripts/discover-scriptorium.sh"
 
 # usage — the canonical help text. Defined before arg parsing so -h/--help and
 # the unknown-flag path can both reach it. (Replaces the old header-comment sed
@@ -432,6 +433,13 @@ fi
 [[ -f "$REPO_ROOT/build.zig.zon" ]] || err "build.zig.zon not found in $REPO_ROOT"
 grep -q '^[[:space:]]*\.name = \.planar' "$REPO_ROOT/build.zig.zon" || err "$REPO_ROOT does not look like the Planar Zig package (build.zig.zon name mismatch)"
 
+# scriptorium discovery — fatal, fail fast before the (slow) zig build below.
+# install.sh no longer renders vendor surfaces itself; it shells the
+# scriptorium binary (tech-spec.md § Architecture "How Planar shells
+# scriptorium", decision D2). Resolves $SCRIPTORIUM_BIN into a validated,
+# floor-checked path; aborts with an actionable message if missing/invalid.
+discover_scriptorium_bin
+
 # Runtime tools — non-fatal; the install still produces a working binary, but
 # Planar's git-backed verbs and the bundled agent skills need these to work.
 check_deps "Planar runtime" 0 "${RUN_DEPS[@]}"
@@ -603,18 +611,25 @@ if [[ -d "$REPO_ROOT/skills/src" ]]; then
 fi
 
 # Render the per-vendor outputs (commands/claude, skills/codex,
-# skills/copilot, agents/models.md tier table) directly into
-# $PLANAR_HOME. This replaces the previous workflow where the rendered
-# outputs were committed to the repo and copied at install time.
-title "Rendering per-vendor skill outputs"
-# The renderer lists every file it writes on stdout; that per-file detail is
+# skills/copilot, skills/gemini, agents/{claude,codex,copilot,gemini})
+# directly into $PLANAR_HOME by shelling the scriptorium binary discovered
+# during preflight, driven by the committed scriptorium.yaml (repo root).
+# This replaces Planar's retired in-tree renderer verb (tech-spec.md §
+# Architecture "How Planar shells scriptorium"). Note: `agents/models.md`'s
+# `## Tier Table` is NOT patched by this step — that patcher relocates to a
+# separate `planar models sync-doc` verb in a later milestone; until that
+# verb lands, models.md installs as ordinary committed content.
+title "Rendering per-vendor skill outputs (scriptorium)"
+SCRIPTORIUM_CONFIG="$REPO_ROOT/scriptorium.yaml"
+[[ -f "$SCRIPTORIUM_CONFIG" ]] || err "scriptorium.yaml not found at $SCRIPTORIUM_CONFIG (required to render skill/agent sources)"
+# scriptorium lists every file it writes on stdout; that per-file detail is
 # verbose-only. Keep stderr (warnings/errors) so the ERR trap still fires.
 if [[ "$VERBOSE" -eq 1 ]]; then
-  ( cd "$PLANAR_HOME" && "$PLANAR_HOME/bin/planar" skills render --src "$PLANAR_HOME/skills/src" --out "$PLANAR_HOME" )
+  ( cd "$PLANAR_HOME" && "$SCRIPTORIUM_BIN" render --config "$SCRIPTORIUM_CONFIG" )
 else
-  ( cd "$PLANAR_HOME" && "$PLANAR_HOME/bin/planar" skills render --src "$PLANAR_HOME/skills/src" --out "$PLANAR_HOME" ) >/dev/null
+  ( cd "$PLANAR_HOME" && "$SCRIPTORIUM_BIN" render --config "$SCRIPTORIUM_CONFIG" ) >/dev/null
 fi
-log "rendered: commands/claude, skills/codex, skills/copilot, skills/gemini (+ agents/models.md tier table)"
+log "rendered via scriptorium: commands/claude, skills/codex, skills/copilot, skills/gemini, agents/{claude,codex,copilot,gemini}"
 
 # Migrations live at repo root in sqlx-cli format and are read by the Zig
 # build via codegen. We also stage them under $PLANAR_HOME for ad-hoc
@@ -739,10 +754,18 @@ if [[ -n "$VENDORS" ]]; then
     log "$name: linked $count file(s) into $dst_dir"
   }
 
-  # Codex discovers skills as directories that contain SKILL.md. Keep Planar's
-  # source-of-truth files flat, materialize Planar-owned runtime skill
-  # directories, then install real Codex skill directories into CODEX_HOME so
-  # discovery works even when the loader does not follow symlinked directories.
+  # Codex discovers skills as directories that contain SKILL.md. Scriptorium's
+  # built-in Codex profile already stages its render output that way — one
+  # `pl-<slug>/SKILL.md` directory per skill under $src_dir (docs/format.md §
+  # 2.1/2.4's `layout: dir`), unlike Claude/Copilot/Gemini's flat `pl-*.md`
+  # staging — so this reads the STAGED SKILL.md directly rather than a flat
+  # source file. (Deliberately not overridden to `layout: file` in
+  # scriptorium.yaml: that field also gates whether `kind: doc` sources
+  # render for this vendor — docs/format.md § 2.5 — and Codex's TOML agent
+  # surface has no markdown-link consumer, so it should keep skipping them.)
+  # Materialize Planar-owned runtime skill directories, then install real
+  # Codex skill directories into CODEX_HOME so discovery works even when the
+  # loader does not follow symlinked directories.
   install_codex_vendor() {
     local src_dir="$1" runtime_dir="$2" dst_dir="$3"
     if [[ ! -d "$src_dir" ]]; then
@@ -755,7 +778,7 @@ if [[ -n "$VENDORS" ]]; then
     local count=0
     while IFS= read -r -d '' f; do
       local skill_name legacy runtime_skill_dir dst_skill_dir marker
-      skill_name="$(basename "$f" .md)"
+      skill_name="$(basename "$(dirname "$f")")"
       legacy="$dst_dir/${skill_name}.md"
       runtime_skill_dir="$runtime_dir/$skill_name"
       dst_skill_dir="$dst_dir/$skill_name"
@@ -820,7 +843,7 @@ if [[ -n "$VENDORS" ]]; then
       done < <(find -L "$PLANAR_HOME/agents" -maxdepth 1 -type f -name '*.md' -print0)
       printf '%s\n' "$f" > "$marker"
       count=$((count + 1))
-    done < <(find "$src_dir" -maxdepth 1 -name 'pl-*.md' -print0)
+    done < <(find "$src_dir" -mindepth 2 -maxdepth 2 -type f -name 'SKILL.md' -print0)
     log "codex: installed $count skill directories into $dst_dir"
   }
 
@@ -1210,8 +1233,8 @@ title "Install complete"
 
 # Count the rendered role set (agents/claude/), not the top-level agents/ dir —
 # the latter mixes in shared docs (doctrine, methodology, models). Both the
-# rendered skills and agent roles are produced by `skills render`, so these
-# reflect what actually got installed regardless of --vendors.
+# rendered skills and agent roles are produced by the scriptorium render step
+# above, so these reflect what actually got installed regardless of --vendors.
 skills_n="$(count_glob "$PLANAR_HOME"/commands/claude/pl-*.md)"
 agents_n="$(count_glob "$PLANAR_HOME"/agents/claude/*.md)"
 

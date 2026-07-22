@@ -1,16 +1,15 @@
 ---
-slug: pl-ext-create
-description: "Create a Jira or GitHub Issues counterpart from a local entity and record the link."
-source: docs/cli-reference.md#domain-ext
-cross_scope_writes: true
-vendor:
-  claude:
-    argument_hint: "<system-slug> --from <kind:id> [--type <issue-type>]"
-    invocation_examples: |
-      /pl-ext-create acme-jira --from plan:<plan-id> --type Epic
-      /pl-ext-create side-gh --from task:<task-id>
+description: Create a Jira or GitHub Issues counterpart from a local entity and record the link.
+origin: docs/cli-reference.md#domain-ext
 shared_notes:
-  - "Active scope and entity state come from the CLI; the skill must not read or write workspace context outside it."
+    - Active scope and entity state come from the CLI; the skill must not read or write workspace context outside it.
+slug: pl-ext-create
+vendor:
+    claude:
+        argument_hint: <system-slug> --from <kind:id> [--type <issue-type>]
+        invocation_examples: |
+            /pl-ext-create acme-jira --from plan:<plan-id> --type Epic
+            /pl-ext-create side-gh --from task:<task-id>
 ---
 
 # Planar Ext Create ({{.VendorTitle}})
@@ -91,12 +90,3 @@ Completed independent targets remain applied.
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```
-{{.InvocationBlock -}}
-```
-{{- end}}

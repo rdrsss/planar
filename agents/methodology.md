@@ -1,6 +1,7 @@
 ---
-name: methodology
 description: Shared agent orchestration methodology — the flow, iteration loop, escalation rules, concurrency rules, and state capture that the orchestrator, coder, and reviewer agents collectively follow.
+kind: doc
+slug: methodology
 ---
 
 # Methodology

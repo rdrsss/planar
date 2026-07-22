@@ -1,17 +1,16 @@
 ---
-slug: pl-promote
-description: "Surface personal entities that have matured and promote or demote them between scopes."
-source: docs/cli-reference.md#domain-promote
-cross_scope_writes: true
-vendor:
-  claude:
-    argument_hint: "<kind:id> --to <association-slug> | demote <kind:id> [--from <association-slug>]"
-    invocation_examples: |
-      /pl-promote task:<task-id> --to org:acme
-      /pl-promote plan:<plan-id> --to project:billing
-      /pl-promote demote task:<task-id>
+description: Surface personal entities that have matured and promote or demote them between scopes.
+origin: docs/cli-reference.md#domain-promote
 shared_notes:
-  - "Active scope and entity state come from the CLI; the skill must not read or write workspace context outside it."
+    - Active scope and entity state come from the CLI; the skill must not read or write workspace context outside it.
+slug: pl-promote
+vendor:
+    claude:
+        argument_hint: <kind:id> --to <association-slug> | demote <kind:id> [--from <association-slug>]
+        invocation_examples: |
+            /pl-promote task:<task-id> --to org:acme
+            /pl-promote plan:<plan-id> --to project:billing
+            /pl-promote demote task:<task-id>
 ---
 
 # Planar Promote ({{.VendorTitle}})
@@ -75,12 +74,3 @@ reverse a verified applied move; do not imply automatic rollback.
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```
-{{.InvocationBlock -}}
-```
-{{- end}}

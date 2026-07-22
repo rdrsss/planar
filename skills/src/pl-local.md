@@ -1,19 +1,19 @@
 ---
-slug: pl-local
-description: "Manage the complete lifecycle of operator-local skills and agents: import, link, list, unlink, migrate, and repair."
-source: docs/cli-reference.md#domain-local
-vendor:
-  claude:
-    argument_hint: "<import|link|list|unlink|migrate|repair> [target] [options]"
-    invocation_examples: |
-      /pl-local import ~/my-skills/
-      /pl-local link fixup-protos --vendor codex
-      /pl-local list
-      /pl-local unlink fixup-protos
-      /pl-local migrate --dry-run
-      /pl-local repair
+description: 'Manage the complete lifecycle of operator-local skills and agents: import, link, list, unlink, migrate, and repair.'
+origin: docs/cli-reference.md#domain-local
 shared_notes:
-  - "Local sources remain machine-local under ~/.planar/local/{skills,agents}/; this workflow never promotes or writes canonical repo skills."
+    - Local sources remain machine-local under ~/.planar/local/{skills,agents}/; this workflow never promotes or writes canonical repo skills.
+slug: pl-local
+vendor:
+    claude:
+        argument_hint: <import|link|list|unlink|migrate|repair> [target] [options]
+        invocation_examples: |
+            /pl-local import ~/my-skills/
+            /pl-local link fixup-protos --vendor codex
+            /pl-local list
+            /pl-local unlink fixup-protos
+            /pl-local migrate --dry-run
+            /pl-local repair
 ---
 
 # Planar Local Lifecycle ({{.VendorTitle}})
@@ -147,12 +147,3 @@ not promise rollback where the CLI provides none.
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```text
-{{.InvocationBlock -}}
-```
-{{- end}}

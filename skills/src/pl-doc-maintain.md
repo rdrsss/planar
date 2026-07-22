@@ -1,16 +1,16 @@
 ---
-slug: pl-doc-maintain
-description: "Maintain published documentation through a gated diff, proposal, prose-authoring, manifest, lint, build, and verification workflow."
-source: docs/features/doc-system.md
-vendor:
-  claude:
-    argument_hint: "[--json]"
-    invocation_examples: |
-      /pl-doc-maintain
-      /pl-doc-maintain --json
+description: Maintain published documentation through a gated diff, proposal, prose-authoring, manifest, lint, build, and verification workflow.
+origin: docs/features/doc-system.md
 shared_notes:
-  - "The documenter is read-only, doc-author writes only operator-approved prose rows, and the caller alone runs planar-doc mutation verbs."
-  - "A clean diff is a verified no-op: do not dispatch either specialist and do not rebuild the manifest."
+    - The documenter is read-only, doc-author writes only operator-approved prose rows, and the caller alone runs planar-doc mutation verbs.
+    - 'A clean diff is a verified no-op: do not dispatch either specialist and do not rebuild the manifest.'
+slug: pl-doc-maintain
+vendor:
+    claude:
+        argument_hint: '[--json]'
+        invocation_examples: |
+            /pl-doc-maintain
+            /pl-doc-maintain --json
 ---
 
 # Planar Documentation Maintenance ({{.VendorTitle}})
@@ -310,12 +310,3 @@ Installation renders and links the vendor surfaces from this canonical source.
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```text
-{{.InvocationBlock -}}
-```
-{{- end}}

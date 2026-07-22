@@ -1,22 +1,20 @@
 ---
-slug: pl-import
-description: "Import an existing repo's planning content into Planar — deterministic classifier plus opt-in LLM interpretation."
-source: agents/importer.md
-cross_scope_writes: true
-model_tier: large
-vendor:
-  claude:
-    argument_hint: "<repo-root> [--apply] [--apply-removals] [--interpret|--no-interpret] [--accept-spec <slug>|all] [--no-forward-specs] [--strict] [--threshold N] [--roadmap <path>] [--scope <slug>] [--no-status-inference] [--trust-status-inference]"
-    invocation_examples: |
-      /pl-import .                                # preview the current repo
-      /pl-import . --apply                        # commit the import
-      /pl-import . --interpret                    # opt into the LLM pass
-      /pl-import . --interpret --apply
-      /pl-import /path/to/other-repo --dry-run
-      /pl-import . --strict --threshold 0.85 --apply
-      /pl-import . --scope assoc:project:my-app --apply
+description: Import an existing repo's planning content into Planar — deterministic classifier plus opt-in LLM interpretation.
+origin: agents/importer.md
 shared_notes:
-  - "Import state and interpretation cache entries come from the CLI; the skill must not invent direct DB writes or repo-local scaffolding."
+    - Import state and interpretation cache entries come from the CLI; the skill must not invent direct DB writes or repo-local scaffolding.
+slug: pl-import
+vendor:
+    claude:
+        argument_hint: <repo-root> [--apply] [--apply-removals] [--interpret|--no-interpret] [--accept-spec <slug>|all] [--no-forward-specs] [--strict] [--threshold N] [--roadmap <path>] [--scope <slug>] [--no-status-inference] [--trust-status-inference]
+        invocation_examples: |
+            /pl-import .                                # preview the current repo
+            /pl-import . --apply                        # commit the import
+            /pl-import . --interpret                    # opt into the LLM pass
+            /pl-import . --interpret --apply
+            /pl-import /path/to/other-repo --dry-run
+            /pl-import . --strict --threshold 0.85 --apply
+            /pl-import . --scope assoc:project:my-app --apply
 ---
 
 # Planar Import ({{.VendorTitle}})
@@ -340,12 +338,3 @@ Completed targets remain applied; never invent a cross-target undo.
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```
-{{.InvocationBlock -}}
-```
-{{- end}}

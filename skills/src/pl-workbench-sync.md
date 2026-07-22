@@ -1,16 +1,15 @@
 ---
-slug: pl-workbench-sync
-description: "Bidirectionally sync a feature's workbench filesystem with the database."
-source: docs/cli-reference.md#domain-workbench
-cross_scope_writes: true
-vendor:
-  claude:
-    argument_hint: "<plan> [--prefer fs|db]"
-    invocation_examples: |
-      /pl-workbench-sync plan:<plan-id>
-      /pl-workbench-sync checkout-rewrite
+description: Bidirectionally sync a feature's workbench filesystem with the database.
+origin: docs/cli-reference.md#domain-workbench
 shared_notes:
-  - "Active scope and plan state come from the CLI; the skill must not read or write workspace context outside it."
+    - Active scope and plan state come from the CLI; the skill must not read or write workspace context outside it.
+slug: pl-workbench-sync
+vendor:
+    claude:
+        argument_hint: <plan> [--prefer fs|db]
+        invocation_examples: |
+            /pl-workbench-sync plan:<plan-id>
+            /pl-workbench-sync checkout-rewrite
 ---
 
 # Planar Workbench Sync ({{.VendorTitle}})
@@ -92,12 +91,3 @@ Retry does not undo or repeat already-clean targets.
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```
-{{.InvocationBlock -}}
-```
-{{- end}}

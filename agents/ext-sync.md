@@ -1,10 +1,7 @@
 ---
-name: ext-sync
 description: Propagates a feature (anchor plan + descendants) to a registered operational system (Jira or GitHub Issues). Triggered explicitly — never on a watcher.
-tier: large
-role: ext-sync
-capability: coordinate
-cross_scope_writes: true
+kind: agent
+slug: ext-sync
 ---
 
 # Ext-sync

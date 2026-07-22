@@ -1,24 +1,23 @@
 ---
-slug: pl-workbench
-description: "Manage the bidirectional workbench filesystem for an active feature."
-source: docs/cli-reference.md#domain-workbench
-cross_scope_writes: true
-vendor:
-  claude:
-    argument_hint: "<pull|push|status|resolve|sync|archive|restore|list|publish> [<plan>] [args]"
-    invocation_examples: |
-      /pl-workbench pull plan:<plan-id>
-      /pl-workbench push plan:<plan-id>
-      /pl-workbench status
-      /pl-workbench status plan:<plan-id>
-      /pl-workbench resolve <conflict-id> --prefer fs
-      /pl-workbench sync plan:<plan-id>
-      /pl-workbench archive plan:<plan-id>
-      /pl-workbench restore plan:<plan-id>
-      /pl-workbench list
-      /pl-workbench publish plan:<plan-id> --system github
+description: Manage the bidirectional workbench filesystem for an active feature.
+origin: docs/cli-reference.md#domain-workbench
 shared_notes:
-  - "Workbench reads and writes route through the CLI; the skill must not edit SQLite rows or generated workbench metadata directly."
+    - Workbench reads and writes route through the CLI; the skill must not edit SQLite rows or generated workbench metadata directly.
+slug: pl-workbench
+vendor:
+    claude:
+        argument_hint: <pull|push|status|resolve|sync|archive|restore|list|publish> [<plan>] [args]
+        invocation_examples: |
+            /pl-workbench pull plan:<plan-id>
+            /pl-workbench push plan:<plan-id>
+            /pl-workbench status
+            /pl-workbench status plan:<plan-id>
+            /pl-workbench resolve <conflict-id> --prefer fs
+            /pl-workbench sync plan:<plan-id>
+            /pl-workbench archive plan:<plan-id>
+            /pl-workbench restore plan:<plan-id>
+            /pl-workbench list
+            /pl-workbench publish plan:<plan-id> --system github
 ---
 
 # Planar Workbench ({{.VendorTitle}})
@@ -144,12 +143,3 @@ cross-target undo.
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```
-{{.InvocationBlock -}}
-```
-{{- end}}

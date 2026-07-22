@@ -1,6 +1,7 @@
 ---
-name: models
 description: Tier-to-model mapping for every supported vendor.
+kind: doc
+slug: models
 ---
 
 # Models And Vendors

@@ -1,20 +1,19 @@
 ---
-slug: pl-sync
-description: "Pull from and push to the operational plane, inspect field-level conflicts, and coordinate explicitly approved reconciliation."
-source: docs/cli-reference.md#domain-sync
-cross_scope_writes: true
-vendor:
-  claude:
-    argument_hint: "<pull|push|status|resolve> <target> [args]"
-    invocation_examples: |
-      /pl-sync pull task:<task-id>
-      /pl-sync push task:<task-id>
-      /pl-sync status
-      /pl-sync resolve <event-id>
+description: Pull from and push to the operational plane, inspect field-level conflicts, and coordinate explicitly approved reconciliation.
+origin: docs/cli-reference.md#domain-sync
 shared_notes:
-  - "Active scope and sync state come from public CLI surfaces; never open SQLite or call an adapter directly."
-  - "A conflict resolution is whole-entity, preview-first, and bound to one explicitly approved event and disposition."
-  - "No conflicts is a verified clean no-op: do not dispatch sync-reconciler and do not call sync resolve."
+    - Active scope and sync state come from public CLI surfaces; never open SQLite or call an adapter directly.
+    - A conflict resolution is whole-entity, preview-first, and bound to one explicitly approved event and disposition.
+    - 'No conflicts is a verified clean no-op: do not dispatch sync-reconciler and do not call sync resolve.'
+slug: pl-sync
+vendor:
+    claude:
+        argument_hint: <pull|push|status|resolve> <target> [args]
+        invocation_examples: |
+            /pl-sync pull task:<task-id>
+            /pl-sync push task:<task-id>
+            /pl-sync status
+            /pl-sync resolve <event-id>
 ---
 
 # Planar Sync ({{.VendorTitle}})
@@ -313,12 +312,3 @@ planar skills render --check --out <staging-dir> pl-sync
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```text
-{{.InvocationBlock -}}
-```
-{{- end}}

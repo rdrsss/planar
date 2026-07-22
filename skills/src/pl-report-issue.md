@@ -1,20 +1,19 @@
 ---
-slug: pl-report-issue
-description: "Assemble and post a GitHub issue from a feedback-plan finding and the diagnostic bundle; record the posted issue as an external link on the finding."
-source: docs/cli-reference.md#domain-report
-cross_scope_writes: true
-vendor:
-  claude:
-    argument_hint: "[--finding <kind:id>] [--days <n>] [--scope <scope>]"
-    invocation_examples: |
-      /pl-report-issue --finding question:42
-      /pl-report-issue --finding task:17 --days 14
-      /pl-report-issue
+description: Assemble and post a GitHub issue from a feedback-plan finding and the diagnostic bundle; record the posted issue as an external link on the finding.
+origin: docs/cli-reference.md#domain-report
 shared_notes:
-  - "The preview gate is mandatory and unskippable. There is NO flag or path that bypasses it. A declined preview posts nothing and changes nothing."
-  - "The diagnostic bundle is structurally redacted (counts, verb paths, categories, timestamps — never entity text). Finding text passes through the mandatory preview gate."
-  - "The gh post uses the operator's existing gh auth. No adapter registration or token configuration is required."
-  - "Linkback uses planar link (record-only external_links row, no propagation, no sync subscription). If no GitHub system is registered yet, register one first with planar ext register github."
+    - The preview gate is mandatory and unskippable. There is NO flag or path that bypasses it. A declined preview posts nothing and changes nothing.
+    - The diagnostic bundle is structurally redacted (counts, verb paths, categories, timestamps — never entity text). Finding text passes through the mandatory preview gate.
+    - The gh post uses the operator's existing gh auth. No adapter registration or token configuration is required.
+    - Linkback uses planar link (record-only external_links row, no propagation, no sync subscription). If no GitHub system is registered yet, register one first with planar ext register github.
+slug: pl-report-issue
+vendor:
+    claude:
+        argument_hint: '[--finding <kind:id>] [--days <n>] [--scope <scope>]'
+        invocation_examples: |
+            /pl-report-issue --finding question:42
+            /pl-report-issue --finding task:17 --days 14
+            /pl-report-issue
 ---
 
 # Planar Report Issue ({{.VendorTitle}})
@@ -235,12 +234,3 @@ reference --sync read-only --json`, followed by `planar sync status --entity
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```
-{{.InvocationBlock -}}
-```
-{{- end}}

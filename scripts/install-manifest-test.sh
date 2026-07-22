@@ -10,7 +10,7 @@ HOME="$TMP/home"
 PREFIX="$HOME/.planar"
 CODEX_HOME="$HOME/.codex"
 mkdir -p \
-  "$PREFIX/skills/codex" "$PREFIX/codex-skills/pl-owned" \
+  "$PREFIX/skills/codex/pl-owned" "$PREFIX/codex-skills/pl-owned" \
   "$PREFIX/agents/codex" "$CODEX_HOME/skills/pl-owned" \
   "$CODEX_HOME/skills/local-personal" "$CODEX_HOME/agents"
 
@@ -25,7 +25,10 @@ write_projection() {
     "fixture = true" > "$path"
 }
 
-write_projection "$PREFIX/skills/codex/pl-owned.md"
+# Scriptorium's built-in Codex profile stages skill render output as
+# pl-<slug>/SKILL.md (docs/format.md § 2.1's `layout: dir`), not a flat
+# pl-<slug>.md file — see install-manifest.sh's codex case.
+write_projection "$PREFIX/skills/codex/pl-owned/SKILL.md"
 write_projection "$PREFIX/codex-skills/pl-owned/SKILL.md"
 write_projection "$PREFIX/agents/codex/coder.toml"
 cp "$PREFIX/codex-skills/pl-owned/SKILL.md" "$CODEX_HOME/skills/pl-owned/SKILL.md"

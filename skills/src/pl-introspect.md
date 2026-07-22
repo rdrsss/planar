@@ -1,21 +1,20 @@
 ---
-slug: pl-introspect
-description: "Preview redacted usage-introspection findings, report signal coverage, and apply approved findings to the association's feedback plan."
-source: docs/cli-reference.md#domain-report
-cross_scope_writes: true
-vendor:
-  claude:
-    argument_hint: "[--days <n>] [--scope <scope>] [--apply]"
-    invocation_examples: |
-      /pl-introspect
-      /pl-introspect --days 7
-      /pl-introspect --scope assoc:my-org
-      /pl-introspect --days 14 --scope assoc:my-org
-      /pl-introspect --days 14 --scope assoc:my-org --apply
+description: Preview redacted usage-introspection findings, report signal coverage, and apply approved findings to the association's feedback plan.
+origin: docs/cli-reference.md#domain-report
 shared_notes:
-  - "Default invocation is a read-only preview. --apply requires explicit operator confirmation and writes only the feedback plan plus approved, deduplicated question/task findings."
-  - "Transcript text is ephemeral and never persisted to any entity body. Only aggregate signal (verb path, exit code, retry count) is extracted."
-  - "Finding titles are deterministic (<taxonomy-key>: <signal-key>). Re-runs over the same signal are idempotent: title-based dedup skips already-present findings."
+    - Default invocation is a read-only preview. --apply requires explicit operator confirmation and writes only the feedback plan plus approved, deduplicated question/task findings.
+    - Transcript text is ephemeral and never persisted to any entity body. Only aggregate signal (verb path, exit code, retry count) is extracted.
+    - 'Finding titles are deterministic (<taxonomy-key>: <signal-key>). Re-runs over the same signal are idempotent: title-based dedup skips already-present findings.'
+slug: pl-introspect
+vendor:
+    claude:
+        argument_hint: '[--days <n>] [--scope <scope>] [--apply]'
+        invocation_examples: |
+            /pl-introspect
+            /pl-introspect --days 7
+            /pl-introspect --scope assoc:my-org
+            /pl-introspect --days 14 --scope assoc:my-org
+            /pl-introspect --days 14 --scope assoc:my-org --apply
 ---
 
 # Planar Introspect ({{.VendorTitle}})
@@ -216,12 +215,3 @@ cross-finding transaction exists, and completed findings remain filed.
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```
-{{.InvocationBlock -}}
-```
-{{- end}}

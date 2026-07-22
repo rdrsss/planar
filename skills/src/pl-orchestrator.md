@@ -1,33 +1,31 @@
 ---
-slug: pl-orchestrator
-description: "Run the orchestrator over a goal, anchor plan, or task list — manage the full feature lifecycle (planning, ingestion, execution, finalization, propagation, archive) with reviewer iteration cap and user gates at each phase boundary."
-source: agents/orchestrator.md
-cross_scope_writes: true
-model_tier: large
-vendor:
-  claude:
-    argument_hint: "<goal|plan-id|task-id> [<task-id>...] [--finalize] [--propagate] [--archive] [--strategy <name>] [--isolation <pwd|worktree>] [--no-docs] [--strict | --grouped | --batch <ids>]"
-    invocation_examples: |
-      /orchestrator <goal>                          # start from scratch: plan → wait → ingest → wait → execute
-      /orchestrator <anchor-plan-id>                # resume from current anchor plan status
-      /orchestrator <task-id> [<task-id>...]        # execute specific tasks (Phase 3 only)
-      /orchestrator <goal> --propagate              # plan → ingest → execute → propagate
-      /orchestrator <anchor-plan-id> --finalize     # execute → dispatch janitor → merge + reconcile + closeout
-      /orchestrator <anchor-plan-id> --finalize --archive  # execute → finalize → archive FS tree
-      /orchestrator <anchor-plan-id> --archive      # execute → mark done → archive FS tree
-      /orchestrator <plan-id> --strategy classic              # explicit continuity — coder in pwd, current branch, sequential
-      /orchestrator <plan-id> --strategy classic --isolation worktree  # sequential cycle worktrees; reviewer per cycle
-      /orchestrator <plan-id> --strategy barrel-deferred      # back-to-back coder cycles in pwd; reviewer at boundary
-      /orchestrator <plan-id> --strategy barrel-deferred --isolation worktree  # back-to-back cycle worktrees; reviewer at boundary
-      /orchestrator <plan-id> --strategy barrel-bypass        # no reviewer; gates are the entire signal
-      /orchestrator <plan-id> --strict              # one coder cycle per task (skip the dispatch-shape gate)
-      /orchestrator <plan-id> --grouped             # orchestrator picks groupings (skip the dispatch-shape gate)
-      /orchestrator <plan-id> --batch 8,9,10 --batch 11,12  # explicit grouping; repeatable (skip the dispatch-shape gate)
-      /orchestrator <plan-id> --barrel-grouped      # DEPRECATED alias for --grouped; prefer --strategy barrel-deferred
-      /orchestrator <plan-id> --barrel-deferred [--barrel-deferred-at milestone|plan]  # DEPRECATED; prefer --strategy barrel-deferred
-      /orchestrator <plan-id> --barrel-bypass       # DEPRECATED; prefer --strategy barrel-bypass
+description: Run the orchestrator over a goal, anchor plan, or task list — manage the full feature lifecycle (planning, ingestion, execution, finalization, propagation, archive) with reviewer iteration cap and user gates at each phase boundary.
+origin: agents/orchestrator.md
 shared_notes:
-  - "Dispatches to the host vendor's Planar skill surfaces by default; cross-vendor dispatch uses the destination vendor's invocation surface."
+    - Dispatches to the host vendor's Planar skill surfaces by default; cross-vendor dispatch uses the destination vendor's invocation surface.
+slug: pl-orchestrator
+vendor:
+    claude:
+        argument_hint: <goal|plan-id|task-id> [<task-id>...] [--finalize] [--propagate] [--archive] [--strategy <name>] [--isolation <pwd|worktree>] [--no-docs] [--strict | --grouped | --batch <ids>]
+        invocation_examples: |
+            /orchestrator <goal>                          # start from scratch: plan → wait → ingest → wait → execute
+            /orchestrator <anchor-plan-id>                # resume from current anchor plan status
+            /orchestrator <task-id> [<task-id>...]        # execute specific tasks (Phase 3 only)
+            /orchestrator <goal> --propagate              # plan → ingest → execute → propagate
+            /orchestrator <anchor-plan-id> --finalize     # execute → dispatch janitor → merge + reconcile + closeout
+            /orchestrator <anchor-plan-id> --finalize --archive  # execute → finalize → archive FS tree
+            /orchestrator <anchor-plan-id> --archive      # execute → mark done → archive FS tree
+            /orchestrator <plan-id> --strategy classic              # explicit continuity — coder in pwd, current branch, sequential
+            /orchestrator <plan-id> --strategy classic --isolation worktree  # sequential cycle worktrees; reviewer per cycle
+            /orchestrator <plan-id> --strategy barrel-deferred      # back-to-back coder cycles in pwd; reviewer at boundary
+            /orchestrator <plan-id> --strategy barrel-deferred --isolation worktree  # back-to-back cycle worktrees; reviewer at boundary
+            /orchestrator <plan-id> --strategy barrel-bypass        # no reviewer; gates are the entire signal
+            /orchestrator <plan-id> --strict              # one coder cycle per task (skip the dispatch-shape gate)
+            /orchestrator <plan-id> --grouped             # orchestrator picks groupings (skip the dispatch-shape gate)
+            /orchestrator <plan-id> --batch 8,9,10 --batch 11,12  # explicit grouping; repeatable (skip the dispatch-shape gate)
+            /orchestrator <plan-id> --barrel-grouped      # DEPRECATED alias for --grouped; prefer --strategy barrel-deferred
+            /orchestrator <plan-id> --barrel-deferred [--barrel-deferred-at milestone|plan]  # DEPRECATED; prefer --strategy barrel-deferred
+            /orchestrator <plan-id> --barrel-bypass       # DEPRECATED; prefer --strategy barrel-bypass
 ---
 
 # Orchestrator ({{.VendorTitle}})
@@ -833,12 +831,3 @@ never invents rollback for worktree merges or remote propagation.
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```
-{{.InvocationBlock -}}
-```
-{{- end}}

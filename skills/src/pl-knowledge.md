@@ -1,17 +1,16 @@
 ---
-slug: pl-knowledge
-description: "Manage durable decisions, artifacts, annotations, and relationships with scope-safe writes and verified post-state."
-source: docs/cli-reference.md#domain-decision
-cross_scope_writes: true
-vendor:
-  claude:
-    argument_hint: "<capture|artifact|annotate|link|show> [args]"
-    invocation_examples: |
-      /pl-knowledge capture "Adopt SQLite WAL" --plan 42 --artifact 17
-      /pl-knowledge annotate --anchor-path src/db/db.zig --line-start 88 "Explain the retry boundary"
-      /pl-knowledge link decision:9 artifact:17 --relationship cites
+description: Manage durable decisions, artifacts, annotations, and relationships with scope-safe writes and verified post-state.
+origin: docs/cli-reference.md#domain-decision
 shared_notes:
-  - "Resolved scope and knowledge state come from the CLI; resolve every natural-language target to one typed entity before any write."
+    - Resolved scope and knowledge state come from the CLI; resolve every natural-language target to one typed entity before any write.
+slug: pl-knowledge
+vendor:
+    claude:
+        argument_hint: <capture|artifact|annotate|link|show> [args]
+        invocation_examples: |
+            /pl-knowledge capture "Adopt SQLite WAL" --plan 42 --artifact 17
+            /pl-knowledge annotate --anchor-path src/db/db.zig --line-start 88 "Explain the retry boundary"
+            /pl-knowledge link decision:9 artifact:17 --relationship cites
 ---
 
 # Planar Knowledge ({{.VendorTitle}})
@@ -227,12 +226,3 @@ durable relationships among Planar entities.
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```text
-{{.InvocationBlock -}}
-```
-{{- end}}

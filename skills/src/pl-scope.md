@@ -1,16 +1,16 @@
 ---
-slug: pl-scope
-description: "Inspect the cwd-derived scope and learn how to override it per verb."
-source: docs/cli-reference.md#domain-scope
-vendor:
-  claude:
-    argument_hint: "<show|suggest>"
-    invocation_examples: |
-      /pl-scope show
-      /pl-scope show --json
-      /pl-scope suggest
+description: Inspect the cwd-derived scope and learn how to override it per verb.
+origin: docs/cli-reference.md#domain-scope
 shared_notes:
-  - "Resolved scope is read from the cwd at the start of every invocation; no vendor-specific state is kept outside the database."
+    - Resolved scope is read from the cwd at the start of every invocation; no vendor-specific state is kept outside the database.
+slug: pl-scope
+vendor:
+    claude:
+        argument_hint: <show|suggest>
+        invocation_examples: |
+            /pl-scope show
+            /pl-scope show --json
+            /pl-scope suggest
 ---
 
 # Planar Scope ({{.VendorTitle}})
@@ -92,12 +92,3 @@ recommend the removed scope-stack verbs.
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```
-{{.InvocationBlock -}}
-```
-{{- end}}

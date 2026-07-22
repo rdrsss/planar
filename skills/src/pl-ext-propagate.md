@@ -1,18 +1,16 @@
 ---
-slug: pl-ext-propagate
-description: "Propagate a feature (anchor plan + descendants) to a registered external operational system (Jira or GitHub Issues)."
-source: agents/ext-sync.md
-cross_scope_writes: true
-model_tier: large
-vendor:
-  claude:
-    argument_hint: "<plan> [--system <slug>] [--dry-run]"
-    invocation_examples: |
-      /pl-ext-propagate checkout-rewrite
-      /pl-ext-propagate 42 --system my-jira
-      /pl-ext-propagate checkout-rewrite --dry-run
+description: Propagate a feature (anchor plan + descendants) to a registered external operational system (Jira or GitHub Issues).
+origin: agents/ext-sync.md
 shared_notes:
-  - "Feature propagation runs through the registered external-system adapter; no direct remote writes happen outside the CLI contract."
+    - Feature propagation runs through the registered external-system adapter; no direct remote writes happen outside the CLI contract.
+slug: pl-ext-propagate
+vendor:
+    claude:
+        argument_hint: <plan> [--system <slug>] [--dry-run]
+        invocation_examples: |
+            /pl-ext-propagate checkout-rewrite
+            /pl-ext-propagate 42 --system my-jira
+            /pl-ext-propagate checkout-rewrite --dry-run
 ---
 
 # Ext-sync Propagate ({{.VendorTitle}})
@@ -179,12 +177,3 @@ them; do not prescribe a cross-target undo.
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```
-{{.InvocationBlock -}}
-```
-{{- end}}

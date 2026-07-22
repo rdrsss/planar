@@ -1,17 +1,15 @@
 ---
-slug: pl-spec-review
-description: "Adversarially review draft planning specs for completeness, open questions, feature gaps, user-intent fit, roadmap readiness, and test scenario coverage before ingestion."
-source: agents/spec-reviewer.md
-cross_scope_writes: true
-model_tier: large
-vendor:
-  claude:
-    argument_hint: "<plan> [--write]"
-    invocation_examples: |
-      /pl-spec-review <plan-id>
-      /pl-spec-review <plan-id> --write
+description: Adversarially review draft planning specs for completeness, open questions, feature gaps, user-intent fit, roadmap readiness, and test scenario coverage before ingestion.
+origin: agents/spec-reviewer.md
 shared_notes:
-  - "Default mode is read-only. Writes are limited to operator-approved artifact and question updates; the skill never applies spec ingestion."
+    - Default mode is read-only. Writes are limited to operator-approved artifact and question updates; the skill never applies spec ingestion.
+slug: pl-spec-review
+vendor:
+    claude:
+        argument_hint: <plan> [--write]
+        invocation_examples: |
+            /pl-spec-review <plan-id>
+            /pl-spec-review <plan-id> --write
 ---
 
 # Spec Review ({{.VendorTitle}})
@@ -318,12 +316,3 @@ rolled back.
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```
-{{.InvocationBlock -}}
-```
-{{- end}}

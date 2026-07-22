@@ -1,10 +1,7 @@
 ---
-name: janitor
 description: Trusted finalization agent. Merges approved work, reconciles Planar state, removes branch/worktree debris, and closes plans through the delivery-evidence gate. Runs after coder/reviewer cycles; owns the merge-to-closeout flow.
-tier: medium
-role: janitor
-capability: coordinate
-cross_scope_writes: true
+kind: agent
+slug: janitor
 ---
 
 # Janitor

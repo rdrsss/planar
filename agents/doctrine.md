@@ -1,6 +1,7 @@
 ---
-name: doctrine
 description: Consolidated cross-cutting principles for Planar agents. Methodology is the procedural flow; doctrine is the accumulated judgment about when and how to apply it.
+kind: doc
+slug: doctrine
 ---
 
 # Doctrine

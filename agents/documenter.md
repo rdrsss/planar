@@ -1,9 +1,7 @@
 ---
-name: documenter
 description: At the end of a work cycle, reads the repo-state merkle diff and proposes a worklist of doc actions (extend-cover / create-doc / nodoc / defer) for the operator to gate. Never writes prose autonomously; never opens SQLite. Owns the .planar-manifest contract.
-tier: large
-role: documenter
-capability: read-only
+kind: agent
+slug: documenter
 ---
 
 # Documenter

@@ -1,15 +1,15 @@
 ---
-slug: pl-audit-trail
-description: "For a given external link, show every local session, decision, and commit tied to it."
-source: docs/cli-reference.md#domain-audit
-vendor:
-  claude:
-    argument_hint: "--link <link-id>"
-    invocation_examples: |
-      /pl-audit-trail --link 7
-      /pl-audit-trail --json --link 7
+description: For a given external link, show every local session, decision, and commit tied to it.
+origin: docs/cli-reference.md#domain-audit
 shared_notes:
-  - "Active scope and audit state come from the CLI; the skill must not read or write workspace context outside it."
+    - Active scope and audit state come from the CLI; the skill must not read or write workspace context outside it.
+slug: pl-audit-trail
+vendor:
+    claude:
+        argument_hint: --link <link-id>
+        invocation_examples: |
+            /pl-audit-trail --link 7
+            /pl-audit-trail --json --link 7
 ---
 
 # Planar Audit Trail ({{.VendorTitle}})
@@ -89,12 +89,3 @@ never claims that state was changed or rolled back.
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```
-{{.InvocationBlock -}}
-```
-{{- end}}

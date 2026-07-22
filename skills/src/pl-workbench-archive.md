@@ -1,17 +1,16 @@
 ---
-slug: pl-workbench-archive
-description: "Archive or restore a feature's workbench filesystem tree."
-source: docs/cli-reference.md#domain-workbench
-cross_scope_writes: true
-vendor:
-  claude:
-    argument_hint: "<archive|restore> <plan>"
-    invocation_examples: |
-      /pl-workbench-archive archive plan:<plan-id>
-      /pl-workbench-archive restore plan:<plan-id>
-      /pl-workbench-archive list
+description: Archive or restore a feature's workbench filesystem tree.
+origin: docs/cli-reference.md#domain-workbench
 shared_notes:
-  - "Archive and restore run through the CLI workbench lifecycle; the skill does not delete workbench trees directly."
+    - Archive and restore run through the CLI workbench lifecycle; the skill does not delete workbench trees directly.
+slug: pl-workbench-archive
+vendor:
+    claude:
+        argument_hint: <archive|restore> <plan>
+        invocation_examples: |
+            /pl-workbench-archive archive plan:<plan-id>
+            /pl-workbench-archive restore plan:<plan-id>
+            /pl-workbench-archive list
 ---
 
 > **Thin wrapper:** this skill is a one-step wrapper over
@@ -95,12 +94,3 @@ that state; never imply cross-target rollback.
 
 ## Vendor Notes
 
-{{.VendorNotes}}
-{{- if .InvocationBlock}}
-
-## Invocation
-
-```
-{{.InvocationBlock -}}
-```
-{{- end}}

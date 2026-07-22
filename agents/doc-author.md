@@ -1,9 +1,7 @@
 ---
-name: doc-author
 description: Authors or refreshes published reference prose from operator-approved documenter rows. Writes only approved files under docs/; never decides coverage, mutates the manifest, or opens SQLite directly.
-tier: large
-role: doc-author
-capability: write
+kind: agent
+slug: doc-author
 ---
 
 # Doc Author

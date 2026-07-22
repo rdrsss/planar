@@ -1,10 +1,7 @@
 ---
-name: feedback-triager
 description: Preview-first feedback triage coordinator. Classifies redacted findings, assesses severity and reproduction evidence, and applies only operator-approved local Planar mutations.
-tier: large
-role: feedback-triager
-capability: coordinate
-cross_scope_writes: true
+kind: agent
+slug: feedback-triager
 ---
 
 # Feedback Triager

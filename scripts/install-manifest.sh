@@ -41,24 +41,48 @@ install_manifest_digest() {
   printf '%s' "$value"
 }
 
+# install_manifest_digest_or_empty <key> <path> — like install_manifest_digest,
+# but returns an empty string (never a non-zero exit) when the header is
+# absent, rather than treating that as fatal. Scriptorium's rendered output
+# does not embed the legacy x-planar-source-digest/x-planar-projection-digest
+# headers (plan 918 tech-spec.md § Architecture "installedsurface.zig" — that
+# in-band digest scheme retires with skillrender at a later milestone;
+# scriptorium tracks install drift out-of-band in its own merkle+xxhash
+# manifest). Absence is expected now, not an install-time error.
+#
+# Brackets install.sh's ERR trap (`trap - ERR` / restore) rather than an
+# `if`/`||` guard: install.sh runs under `set -eE`, and -E (errtrace)
+# propagates the ERR trap into the command-substitution subshell below, where
+# install_manifest_digest's expected non-zero return (header absent) fires
+# the inherited trap immediately — independent of any if/|| wrapping in THIS
+# shell (verified empirically; see scripts/discover-scriptorium.sh's
+# scriptorium_check_floor for the same pattern and the same rationale).
+install_manifest_digest_or_empty() {
+  local key="$1" path="$2" value rc=0
+  trap - ERR
+  value="$(install_manifest_digest "$key" "$path")" && rc=0 || rc=$?
+  trap 'on_err $? $LINENO' ERR
+  [[ $rc -eq 0 ]] && printf '%s' "$value"
+  return 0
+}
+
 install_manifest_add() {
   local vendor="$1" kind="$2" name="$3" staged="$4" installed="$5" install_kind="$6"
   local source_digest projection_digest installed_source_digest installed_projection_digest
-  source_digest="$(install_manifest_digest x-planar-source-digest "$staged")" || {
-    printf 'install.sh: missing or invalid source digest in %s\n' "$staged" >&2
-    return 1
-  }
-  projection_digest="$(install_manifest_digest x-planar-projection-digest "$staged")" || {
-    printf 'install.sh: missing or invalid projection digest in %s\n' "$staged" >&2
-    return 1
-  }
+  source_digest="$(install_manifest_digest_or_empty x-planar-source-digest "$staged")"
+  projection_digest="$(install_manifest_digest_or_empty x-planar-projection-digest "$staged")"
   [[ -f "$installed" ]] || {
     printf 'install.sh: managed projection was not installed at %s\n' "$installed" >&2
     return 1
   }
-  installed_source_digest="$(install_manifest_digest x-planar-source-digest "$installed")" || return 1
-  installed_projection_digest="$(install_manifest_digest x-planar-projection-digest "$installed")" || return 1
-  if [[ "$installed_source_digest" != "$source_digest" || "$installed_projection_digest" != "$projection_digest" ]]; then
+  installed_source_digest="$(install_manifest_digest_or_empty x-planar-source-digest "$installed")"
+  installed_projection_digest="$(install_manifest_digest_or_empty x-planar-projection-digest "$installed")"
+  # A digest is compared only when the STAGED side actually has one (old
+  # skillrender-rendered content); scriptorium-rendered content has neither
+  # side populated, so there is nothing to compare and no mismatch to report
+  # — scriptorium's own manifest (check/status) owns that drift signal now.
+  if [[ -n "$source_digest" && "$installed_source_digest" != "$source_digest" ]] || \
+     [[ -n "$projection_digest" && "$installed_projection_digest" != "$projection_digest" ]]; then
     printf 'install.sh: installed projection digest mismatch at %s\n' "$installed" >&2
     return 1
   fi
@@ -104,12 +128,16 @@ install_manifest_record_vendor() {
       done < <(find "$planar_home/agents/claude" -maxdepth 1 -type f -print0)
       ;;
     codex)
+      # Scriptorium's built-in Codex profile stages skill render output as
+      # one pl-<slug>/SKILL.md directory per skill (docs/format.md § 2.1's
+      # `layout: dir`), not the flat pl-*.md files Claude/Copilot/Gemini get
+      # — see install.sh's install_codex_vendor for the matching read side.
       while IFS= read -r -d '' f; do
-        name="$(basename "$f" .md)"
+        name="$(basename "$(dirname "$f")")"
         staged="$planar_home/codex-skills/$name/SKILL.md"
         installed="$codex_home/skills/$name/SKILL.md"
         install_manifest_add codex skill "$name" "$staged" "$installed" copy
-      done < <(find "$planar_home/skills/codex" -maxdepth 1 -type f -name 'pl-*.md' -print0)
+      done < <(find "$planar_home/skills/codex" -mindepth 2 -maxdepth 2 -type f -name 'SKILL.md' -print0)
       while IFS= read -r -d '' f; do
         name="$(install_manifest_agent_name "$f")"
         install_manifest_add codex agent "$name" "$f" "$codex_home/agents/$(basename "$f")" link

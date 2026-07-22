@@ -1,10 +1,7 @@
 ---
-name: orchestrator
 description: Top-level dispatcher. Manages the full feature lifecycle — planning, ingestion, coder/reviewer execution, finalization, propagation, and archive. Enforces the iteration cap and escalates to the user on open questions or aborts.
-tier: large
-role: orchestrator
-capability: coordinate
-cross_scope_writes: true
+kind: agent
+slug: orchestrator
 ---
 
 # Orchestrator
