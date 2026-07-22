@@ -71,20 +71,15 @@ test "scenario: rendered introspection lifecycle previews three vendors before a
     _ = suite.registerProject("m9-introspect-triage");
 
     const root = suite.tmpAbsPath();
-    const rendered = try std.fs.path.join(arena, &.{ root, "rendered" });
-    var src_buf: [std.fs.max_path_bytes]u8 = undefined;
-    var src_dir = try std.Io.Dir.cwd().openDir(std.testing.io, "skills/src", .{});
-    defer src_dir.close(std.testing.io);
-    const src_len = try src_dir.realPath(std.testing.io, &src_buf);
-    const src = src_buf[0..src_len];
-    a.free(suite.mustRun(&.{ "skills", "render", "--src", src, "--out", rendered, "pl-introspect", "pl-feedback-triage", "pl-knowledge", "pl-observe", "pl-doc-maintain", "pl-sync" }));
+    // Plan 918 M5 retired the in-tree `skills render` verb (scriptorium is
+    // the sole renderer now); the authored sources it used to render from
+    // are exercised directly here instead of through a render pass.
     for ([_][]const u8{
-        "commands/claude/pl-introspect.md",
-        "skills/codex/pl-feedback-triage.md",
-        "skills/copilot/pl-sync.md",
+        "skills/src/pl-introspect.md",
+        "skills/src/pl-feedback-triage.md",
+        "skills/src/pl-sync.md",
     }) |relative| {
-        const path = try std.fs.path.join(arena, &.{ rendered, relative });
-        try std.Io.Dir.cwd().access(std.testing.io, path, .{});
+        try std.Io.Dir.cwd().access(std.testing.io, relative, .{});
     }
 
     const home = try std.fs.path.join(arena, &.{ root, "home" });
@@ -246,18 +241,14 @@ test "scenario: approved documentation proposal is authored covered and verified
     const root = path_buf[0..root_len];
 
     // Agent roles are prompt-driven and are not executed by this deterministic
-    // suite. Render their public surfaces and pin the authority boundary that
-    // the fixture below models: documenter proposes, the operator approves
-    // exact rows, doc-author-equivalent prose writes only those rows, and the
-    // caller owns planar-doc mutations.
-    const rendered = try std.fs.path.join(arena, &.{ suite.tmpAbsPath(), "doc-lifecycle-rendered" });
-    var src_buf: [std.fs.max_path_bytes]u8 = undefined;
-    var src_dir = try std.Io.Dir.cwd().openDir(std.testing.io, "skills/src", .{});
-    defer src_dir.close(std.testing.io);
-    const src_len = try src_dir.realPath(std.testing.io, &src_buf);
-    a.free(suite.mustRun(&.{ "skills", "render", "--src", src_buf[0..src_len], "--out", rendered }));
-    const maintain_path = try std.fs.path.join(arena, &.{ rendered, "skills/codex/pl-doc-maintain.md" });
-    const maintain = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, maintain_path, a, .limited(512 * 1024));
+    // suite. Pin the authority boundary that the fixture below models:
+    // documenter proposes, the operator approves exact rows, doc-author-
+    // equivalent prose writes only those rows, and the caller owns
+    // planar-doc mutations. Plan 918 M5 retired the in-tree `skills render`
+    // verb (scriptorium is the sole renderer now); the authored source
+    // carries this guidance prose directly, so it is read without a render
+    // pass.
+    const maintain = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, "skills/src/pl-doc-maintain.md", a, .limited(512 * 1024));
     defer a.free(maintain);
     try std.testing.expect(std.mem.indexOf(u8, maintain, "approved_rows") != null);
     try std.testing.expect(std.mem.indexOf(u8, maintain, "documenter") != null);

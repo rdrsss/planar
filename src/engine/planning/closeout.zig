@@ -742,9 +742,8 @@ fn probeGitEvidence(
 // =========================================================================
 
 /// The IO handle for spawning git subprocesses. Using the global
-/// single-threaded handle (same as skillrender.zig) — git probes are
-/// best-effort advisory evidence and never run concurrently from a
-/// handler context.
+/// single-threaded handle — git probes are best-effort advisory evidence
+/// and never run concurrently from a handler context.
 fn gitIo() std.Io {
     return std.Io.Threaded.global_single_threaded.io();
 }

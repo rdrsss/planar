@@ -389,9 +389,8 @@ fn handleSyncDoc(args_ptr: *const anyopaque) anyerror!void {
 }
 
 /// Write `data` to `path` via a sibling `<path>.planar-sync-tmp` temp file
-/// followed by a rename, mirroring `installedsurface.zig`'s repair-apply
-/// write pattern so a crash mid-write never leaves `agents/models.md`
-/// truncated or partially rewritten.
+/// followed by a rename (write-temp-then-rename) so a crash mid-write never
+/// leaves `agents/models.md` truncated or partially rewritten.
 fn writeAtomicFile(io: std.Io, path: []const u8, data: []const u8) !void {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const tmp = try std.fmt.bufPrint(&buf, "{s}.planar-sync-tmp", .{path});

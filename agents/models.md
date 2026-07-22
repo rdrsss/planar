@@ -8,7 +8,7 @@ slug: models
 
 Agent specs in `agents/` reference abstract tiers (`small`, `medium`, `large`). The source of truth for concrete vendor model IDs is the Planar config (`[models.<vendor>]` tier maps in `~/.planar/config.toml`, with embedded defaults in `src/engine/config/defaults.toml`), resolved through the shared model resolver (plan 540). This document is the published view.
 
-`planar skills render` regenerates the `## Tier Table` section by resolving each vendor's tier→model through that resolver (config defaults), keeping the surrounding prose human-authored. Run `planar config show --effective` to see the live values + provenance, or `planar models` to see installed providers.
+`planar models sync-doc` regenerates the `## Tier Table` section by resolving each vendor's tier→model through that resolver (config defaults), keeping the surrounding prose human-authored. Run `planar config show --effective` to see the live values + provenance, or `planar models` to see installed providers.
 
 ## Tier Table
 
@@ -27,8 +27,8 @@ list** of candidate model ids, e.g. `[models.codex] large = ["gpt-5.6-sol",
 so every existing scalar config is unaffected; `list[0]` is always the
 **tier default** — the model a caller gets when it resolves a bare
 `(vendor, tier)` or `(vendor, role)` pair with no work type in hand
-(`resolveTier`, `resolveRole`, `resolveRoleAuto`, and the render path's
-`resolveModel` in `src/engine/skillrender.zig` all read `list[0]`).
+(`resolveTier`, `resolveRole`, `resolveRoleAuto`, and `buildTierTableLines`
+in `src/engine/models.zig` all read `list[0]`).
 
 A separate `[routing.<vendor>.<tier>]` sub-table maps a **work type**
 (`schema | engine | architectural | cli | feature | mechanical` — see

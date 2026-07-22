@@ -50,7 +50,6 @@ pub const llm = @import("llm.zig");
 pub const import = @import("import.zig");
 pub const synthesize = @import("synthesize.zig");
 pub const forwardspec = @import("forwardspec.zig");
-pub const skillrender = @import("skillrender.zig");
 pub const installedsurface = @import("installedsurface.zig");
 pub const introspect = @import("introspect.zig");
 pub const introspection_adapters = @import("introspection_adapters.zig");
@@ -86,7 +85,6 @@ test {
     _ = import;
     _ = synthesize;
     _ = forwardspec;
-    _ = skillrender;
     _ = installedsurface;
     _ = introspect;
     _ = closure;

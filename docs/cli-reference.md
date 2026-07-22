@@ -4179,8 +4179,9 @@ planar health [--json]
 
 **Description:** Report database, handoff-readiness, and installed-projection
 health. In addition to the database and handoff checks, health consumes the
-same read-only classification as `planar skills status`; it never repairs or
-rewrites an installed projection.
+same read-only manifest-owned projection classification (presence/validity
+plus byte/symlink freshness); it never repairs or rewrites an installed
+projection.
 
 **Output (human):**
 ```
@@ -4466,7 +4467,7 @@ planar models evals [--json]
 planar models sync-doc [--out <dir>] [--check]
 ```
 
-**Description:** Regenerate ONLY the `## Tier Table` section of `<out>/agents/models.md` from `[models.<vendor>.<tier>]`, resolved through the same shared resolver `models routing`/`models candidates` use, preserving every other line of the file byte-for-byte (the surrounding human-authored prose). `--out` defaults to `.` (the current directory, mirroring `skills render`'s `--out`). Idempotent: running twice produces no diff. This is the plan-918 D4 relocation of skillrender's old render-time tier-table patch — generation now lives upstream in committed source, not in installed output.
+**Description:** Regenerate ONLY the `## Tier Table` section of `<out>/agents/models.md` from `[models.<vendor>.<tier>]`, resolved through the same shared resolver `models routing`/`models candidates` use, preserving every other line of the file byte-for-byte (the surrounding human-authored prose). `--out` defaults to `.` (the current directory). Idempotent: running twice produces no diff. This is the plan-918 D4 relocation of the retired in-tree renderer's old render-time tier-table patch — generation now lives upstream in committed source, not in installed output.
 
 Without `--check`, writes the regenerated file in place (atomically: write a sibling temp file, then rename) when the table has drifted, or reports "already in sync" and writes nothing when it hasn't.
 
@@ -5720,119 +5721,6 @@ List every recorded install across both kinds and all vendors. Status column:
 
 Test hook: when set, `planar local` uses this directory as the operator's `$HOME` for resolving `~/.planar/local/` and the per-vendor install targets. Production use never sets this.
 
-## Domain: `skills`
-
-The `skills` domain renders generated vendor skill surfaces from the unified source tree (`skills/src/*.md`), verifies generated outputs, and inspects or repairs manifest-owned installed projections. The vendor profile/model table source of truth is `src/configs/vendors.yaml` (embedded into the binary).
-
-### `planar skills status [--vendor <claude|codex|copilot>] [--json]`
-
-Read `$PLANAR_HOME/install-manifest.json` (default
-`~/.planar/install-manifest.json`) and compare every selected manifest row with
-its staged and installed projection. This command is filesystem-only and never
-repairs. Per-row states are `fresh`, `stale`, `missing`, and `unmanaged`.
-Vendors absent from the manifest are reported `unselected` and are not scanned
-or treated as missing. Destination entries discovered under a selected vendor
-without a manifest row are informational `unmanaged` extensions; Planar never
-claims or repairs them.
-
-The manifest envelope reports `current`, `missing`, `legacy`, `invalid`, or
-`unsupported`. `legacy` specifically means the older `.planar-install`
-ownership stamp exists without a versioned manifest. Non-current manifest
-states remain one aggregate result instead of expanding installed files into
-managed rows, and provide this verified source-checkout bootstrap shape:
-
-```
-./install.sh --prefix '<resolved PLANAR_HOME>'
-```
-
-JSON contains `manifest`, `vendors`, ordered `projections`, `summary`, and an
-optional exact `repair_command`. `manifest` contains `status`, `path`, and—when
-available—`version`, `build_id`, `install_mode`, and `reason`. Vendor rows are
-`{vendor,status,managed_count}`. Projection rows contain `vendor`, `kind`,
-`name`, `staged_path`, `installed_path`, `install_kind`, `status`, `reason`, and
-an optional `repair_command`; summary fields are `fresh`, `stale`, `missing`,
-`unmanaged`, and `unselected_vendors`. Status exits 0 for every successfully
-classified state, including degraded states, so callers can inspect the
-structured result. Invalid vendor input exits 2; unreadable filesystem state
-exits 1.
-
-### `planar skills repair [<name>...] [--vendor <vendor>] [--apply] [--dry-run] [--json]`
-
-Repair is preview-only by default; `--dry-run` is an explicit spelling of the
-same mode. `--apply` is mutually exclusive with `--dry-run`. Selection is the
-intersection of optional names, optional vendor, and install-manifest rows.
-An unmanaged or unknown name is rejected.
-
-Only `stale` or `missing` manifest-owned destinations may be replaced. `copy`
-rows are atomically replaced from their staged bytes; `link` rows are
-atomically re-linked to their recorded staged path. Every applied row is
-digest-verified. Fresh rows are skipped, unmanaged extensions are preserved,
-and staged-authority mismatch routes to reinstall instead of copying
-untrusted bytes.
-
-Text and JSON report `outcome=ok|partial|error`, mode, manifest status,
-`attempted`, `applied`, `skipped`, `failed`, ordered per-target actions, and an
-idempotent next action. Each action contains `vendor`, `kind`, `name`,
-`installed_path`, `before`, `action`, `post_status`, plus optional `error_name`
-and `next_action`. Any target failure leaves successful independent repairs in
-place, reports their exact split, and exits 1; a later status read shows
-completed targets fresh and failed targets still degraded. Invalid vendor,
-unknown/unmanaged names, and conflicting `--apply --dry-run` exit 2.
-
-### `planar skills render [slug...]`
-
-**Synopsis:**
-```
-planar skills render [slug...]
-  [--src <dir>]
-  [--out <dir>]
-  [--check]
-  [--diff]
-```
-
-**Description:** Render every unified skill source under `--src` (default: `skills/src`) into the per-vendor output trees under `--out` (default: `.`):
-
-- `commands/claude/<slug>.md`
-- `skills/codex/<slug>.md`
-- `skills/copilot/<slug>.md`
-
-With positional `slug` arguments, only those sources are written (the full source tree is still parsed first, so malformed sources fail-fast before any write).
-
-When `agents/models.md` exists under `--out`, `render` also rewrites only its `## Tier Table` section from `src/configs/vendors.yaml`; surrounding prose is preserved.
-
-**Options:**
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--src <dir>` | `skills/src` | Source directory containing unified skill markdown files. |
-| `--out <dir>` | `.` | Output root for generated vendor trees. |
-| `--check` | off | Read-only mode: render in-memory and compare with on-disk generated files; exits non-zero on drift. |
-| `--diff` | off | Valid only with `--check`; emit unified diff text for content-drifted files. |
-
-**`--check` drift categories:**
-
-- `[content]` — file exists but bytes differ from the in-memory render
-- `[missing]` — expected generated file is missing
-- `[orphan]` — generated file exists with no matching source
-
-**Examples:**
-```
-planar skills render
-planar skills render pl-plan pl-task
-planar skills render --check
-planar skills render --check --diff
-```
-
-**Schema effects:** None (filesystem-only).
-
-**Capture:** None.
-
-**Exit codes:**
-- `0` — success (`--check`: in sync).
-- `1` — drift detected under `--check`.
-- `2` — filesystem or parse/render failure.
-- `64` — usage error (for example `--diff` without `--check`).
-
 ## Domain: `tree`
 
 The `tree` domain provides a hierarchical view of Planar entities — plans, tasks, artifacts, decisions, scenarios, and questions — for one or all scopes. Read-only; no schema effects.
@@ -6903,7 +6791,6 @@ For quick reference, all documented commands grouped by domain:
 | `config` | `config show`, `config show --effective`, `config show --raw`, `config show --defaults`, `config edit`, `config validate`, `config init`, `config path` |
 | `templates` | `templates list`, `templates show`, `templates render`, `templates validate`, `templates init`, `templates path` |
 | `tree` | `tree` |
-| `skills` | `skills status`, `skills repair [<name>...]`, `skills render [slug...]`, `skills render --check`, `skills render --check --diff` |
 | `scope` | `scope show`, `scope suggest` (`scope use`/`pop`/`clear` removed in plan 153 M5) |
 | `assoc` | `assoc list`, `assoc create`, `assoc add`, `assoc remove`, `assoc members`, `assoc detect` |
 | `plan` | `plan create`, `plan show`, `plan list`, `plan update`, `plan descendants`, `plan step add`, `plan step done`, `plan step skip`, `plan step link`, `plan link` |

@@ -1,11 +1,29 @@
-//! Installed vendor-projection status and manifest-owned repair.
+//! Installed vendor-projection status (manifest-owned).
 //!
 //! The versioned install manifest is the only ownership authority. Directory
 //! discovery is used solely to label destination-only entries `unmanaged`;
 //! it never promotes such entries into the managed repair set.
+//!
+//! Plan 918 M5: the in-band `x-planar-source-digest`/`x-planar-projection-digest`
+//! projection-digest scheme (and its `skillrender.projectionDigestForPayload`
+//! reader) is retired — scriptorium now owns install-drift detection
+//! out-of-band via its own merkle+xxhash manifest (`scriptorium check`/
+//! `status`). This module keeps its non-digest duties: manifest presence/
+//! validity classification, vendor selection, and unmanaged-entry discovery,
+//! all consumed by `planar health`'s projection-freshness section
+//! (`engine/health.zig`). Freshness is now a plain existence + byte/symlink
+//! comparison against the staged authority, not a semantic digest match.
+//! The `skills status`/`skills repair` CLI verbs retired with the digest
+//! path (plan 918 tech-spec D5); there is no more per-name repair, so any
+//! drift now surfaces the same full-reinstall recovery command.
+//!
+//! Caveat (question 880): this byte/symlink freshness signal depends on the
+//! staged projection tree (`$PLANAR_HOME/{codex-skills,agents/<vendor>,...}`)
+//! being retained on disk post-install as the comparison authority. If the
+//! staged tree is ever pruned after install, freshness classification loses
+//! its comparison baseline for every managed row.
 
 const std = @import("std");
-const skillrender = @import("skillrender.zig");
 
 pub const supported_vendors = [_][]const u8{ "claude", "codex", "copilot" };
 pub const manifest_version: u32 = 1;
@@ -151,24 +169,13 @@ pub fn status(backing: std.mem.Allocator, opts: Options) !StatusResult {
     }
     std.mem.sort(ProjectionStatus, projections.items, {}, lessProjection);
 
-    var requires_bootstrap = false;
-    for (projections.items) |projection| {
-        if ((projection.status == .stale or projection.status == .missing) and
-            projection.repair_command != null and
-            std.mem.eql(u8, projection.repair_command.?, bootstrap))
-        {
-            requires_bootstrap = true;
-            break;
-        }
-    }
+    // There is no more per-name repair verb (plan 918 D5): any drift found
+    // above (stale or missing) has exactly one recovery path now, the full
+    // reinstall that re-shells scriptorium.
     const repair_command: ?[]const u8 = if (summary.stale + summary.missing == 0)
         null
-    else if (requires_bootstrap)
-        bootstrap
-    else if (opts.vendor) |vendor|
-        try std.fmt.allocPrint(a, "planar skills repair --vendor {s} --apply", .{vendor})
     else
-        "planar skills repair --apply";
+        bootstrap;
 
     return .{
         .manifest_status = .current,
@@ -241,8 +248,7 @@ fn validManifest(manifest: Manifest) bool {
 }
 
 fn classifyRow(a: std.mem.Allocator, row: ManifestRow, bootstrap: []const u8) !ProjectionStatus {
-    const repair_cmd = try std.fmt.allocPrint(a, "planar skills repair {s} --vendor {s} --apply", .{ row.name, row.vendor });
-    var base: ProjectionStatus = .{
+    const base: ProjectionStatus = .{
         .vendor = row.vendor,
         .kind = row.kind,
         .name = row.name,
@@ -255,28 +261,9 @@ fn classifyRow(a: std.mem.Allocator, row: ManifestRow, bootstrap: []const u8) !P
     };
     const staged = readProjection(a, row.staged_path) catch |e| switch (e) {
         error.FileNotFound => return base,
-        error.InvalidProjectionDigest => {
-            var out = base;
-            out.reason = "staged projection has invalid digest metadata; reinstall required";
-            return out;
-        },
         else => return e,
     };
-    defer a.free(staged.bytes);
-    defer a.free(staged.payload);
-    if (!std.mem.eql(u8, staged.source_digest, row.source_digest) or
-        !std.mem.eql(u8, staged.projection_digest, row.projection_digest))
-    {
-        var out = base;
-        out.reason = "staged projection digests differ from the install manifest; reinstall required";
-        return out;
-    }
-    if (!(try semanticDigestMatches(a, row.kind, row.vendor, staged))) {
-        var out = base;
-        out.reason = "staged projection semantic bytes differ from its manifest digest; reinstall required";
-        return out;
-    }
-    base.repair_command = repair_cmd;
+    defer a.free(staged);
 
     var link_buf: [std.fs.max_path_bytes]u8 = undefined;
     const link_len = std.Io.Dir.cwd().readLink(fsIo(), row.installed_path, &link_buf) catch null;
@@ -287,11 +274,6 @@ fn classifyRow(a: std.mem.Allocator, row: ManifestRow, bootstrap: []const u8) !P
             out.reason = "managed installed projection is missing";
             return out;
         },
-        error.InvalidProjectionDigest => {
-            var out = base;
-            out.reason = "managed installed projection has invalid digest metadata";
-            return out;
-        },
         error.IsDir => {
             var out = base;
             out.reason = "managed installed destination is a directory and cannot be replaced safely";
@@ -299,8 +281,7 @@ fn classifyRow(a: std.mem.Allocator, row: ManifestRow, bootstrap: []const u8) !P
         },
         else => return e,
     };
-    defer a.free(installed.bytes);
-    defer a.free(installed.payload);
+    defer a.free(installed);
 
     if (std.mem.eql(u8, row.install_kind, "link")) {
         if (link_len == null or !std.mem.eql(u8, link_buf[0..link_len.?], row.staged_path)) {
@@ -308,121 +289,20 @@ fn classifyRow(a: std.mem.Allocator, row: ManifestRow, bootstrap: []const u8) !P
             out.reason = "managed link target differs from the install manifest";
             return out;
         }
-    } else if (link_len != null or !std.mem.eql(u8, staged.bytes, installed.bytes)) {
+    } else if (link_len != null or !std.mem.eql(u8, staged, installed)) {
         var out = base;
         out.reason = "managed installed bytes differ from the staged projection";
         return out;
     }
-    if (!(try semanticDigestMatches(a, row.kind, row.vendor, installed))) {
-        var out = base;
-        out.reason = "managed installed semantic bytes differ from the manifest digest";
-        return out;
-    }
-    if (!std.mem.eql(u8, installed.source_digest, row.source_digest) or
-        !std.mem.eql(u8, installed.projection_digest, row.projection_digest))
-    {
-        var out = base;
-        out.reason = "managed installed digests differ from the install manifest";
-        return out;
-    }
     var out = base;
     out.status = .fresh;
-    out.reason = "manifest, staged projection, and installed projection agree";
+    out.reason = "staged projection and installed projection agree";
     out.repair_command = null;
     return out;
 }
 
-const Projection = struct {
-    bytes: []u8,
-    payload: []u8,
-    source_digest: []const u8,
-    projection_digest: []const u8,
-};
-
-fn readProjection(a: std.mem.Allocator, path: []const u8) !Projection {
-    const bytes = try std.Io.Dir.cwd().readFileAlloc(fsIo(), path, a, std.Io.Limit.limited(16 * 1024 * 1024));
-    errdefer a.free(bytes);
-    const source = digestField(bytes, "x-planar-source-digest") orelse return error.InvalidProjectionDigest;
-    const projection = digestField(bytes, "x-planar-projection-digest") orelse return error.InvalidProjectionDigest;
-    const payload = try stripDigestMetadata(a, bytes);
-    return .{ .bytes = bytes, .payload = payload, .source_digest = source, .projection_digest = projection };
-}
-
-fn semanticDigestMatches(a: std.mem.Allocator, kind: []const u8, vendor: []const u8, projection: Projection) !bool {
-    const actual = try skillrender.projectionDigestForPayload(a, kind, projection.source_digest, vendor, projection.payload);
-    return std.mem.eql(u8, &actual, projection.projection_digest);
-}
-
-fn stripDigestMetadata(a: std.mem.Allocator, bytes: []const u8) ![]u8 {
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(a);
-    var in_markdown_frontmatter = false;
-    var in_toml_header = true;
-    var first = true;
-    var start: usize = 0;
-    while (start < bytes.len) {
-        const end = std.mem.indexOfScalarPos(u8, bytes, start, '\n') orelse bytes.len;
-        const line = bytes[start..end];
-        const has_newline = end < bytes.len;
-        const trimmed = std.mem.trim(u8, line, " \t\r");
-        if (first) {
-            in_markdown_frontmatter = std.mem.eql(u8, trimmed, "---");
-            first = false;
-        } else if (in_markdown_frontmatter and std.mem.eql(u8, trimmed, "---")) {
-            in_markdown_frontmatter = false;
-        }
-        const digest_line = if (in_markdown_frontmatter)
-            digestFromLine(trimmed, "x-planar-source-digest", false) != null or
-                digestFromLine(trimmed, "x-planar-projection-digest", false) != null
-        else if (in_toml_header and std.mem.startsWith(u8, trimmed, "#"))
-            digestFromLine(trimmed, "x-planar-source-digest", true) != null or
-                digestFromLine(trimmed, "x-planar-projection-digest", true) != null
-        else
-            false;
-        if (!std.mem.startsWith(u8, trimmed, "#") and trimmed.len != 0) in_toml_header = false;
-        if (!digest_line) {
-            try out.appendSlice(a, line);
-            if (has_newline) try out.append(a, '\n');
-        }
-        start = if (has_newline) end + 1 else bytes.len;
-    }
-    return out.toOwnedSlice(a);
-}
-
-fn digestField(bytes: []const u8, key: []const u8) ?[]const u8 {
-    var lines = std.mem.splitScalar(u8, bytes, '\n');
-    const first_raw = lines.next() orelse return null;
-    const first = std.mem.trim(u8, first_raw, " \t\r");
-    const markdown = std.mem.eql(u8, first, "---");
-    if (!markdown and !std.mem.startsWith(u8, first, "#")) return null;
-    if (!markdown) {
-        if (digestFromLine(first, key, true)) |value| return value;
-    }
-    while (lines.next()) |raw_line| {
-        const line = std.mem.trim(u8, raw_line, " \t\r");
-        if (markdown) {
-            if (std.mem.eql(u8, line, "---")) return null;
-            if (digestFromLine(line, key, false)) |value| return value;
-        } else {
-            if (line.len == 0) continue;
-            if (!std.mem.startsWith(u8, line, "#")) return null;
-            if (digestFromLine(line, key, true)) |value| return value;
-        }
-    }
-    return null;
-}
-
-fn digestFromLine(raw_line: []const u8, key: []const u8, comment: bool) ?[]const u8 {
-    var line = raw_line;
-    if (comment) {
-        if (!std.mem.startsWith(u8, line, "#")) return null;
-        line = std.mem.trimStart(u8, line[1..], " \t");
-    }
-    if (!std.mem.startsWith(u8, line, key)) return null;
-    line = line[key.len..];
-    if (line.len == 0 or line[0] != ':') return null;
-    const value = std.mem.trim(u8, line[1..], " \t\r");
-    return if (isDigest(value)) value else null;
+fn readProjection(a: std.mem.Allocator, path: []const u8) ![]u8 {
+    return std.Io.Dir.cwd().readFileAlloc(fsIo(), path, a, std.Io.Limit.limited(16 * 1024 * 1024));
 }
 
 fn discoverUnmanaged(
@@ -499,171 +379,6 @@ fn projectionName(a: std.mem.Allocator, entry_name: []const u8) []const u8 {
     return a.dupe(u8, name) catch unreachable;
 }
 
-pub const RepairOptions = struct {
-    status: Options,
-    names: []const []const u8 = &.{},
-    apply: bool = false,
-};
-
-pub const RepairAction = struct {
-    vendor: []const u8,
-    kind: []const u8,
-    name: []const u8,
-    installed_path: []const u8,
-    before: State,
-    action: []const u8,
-    post_status: State,
-    error_name: ?[]const u8,
-    next_action: ?[]const u8,
-};
-
-pub const RepairResult = struct {
-    mode: []const u8,
-    outcome: []const u8,
-    attempted: usize,
-    applied: usize,
-    skipped: usize,
-    failed: usize,
-    actions: []const RepairAction,
-    next_action: ?[]const u8,
-    manifest_status: ManifestState,
-    _arena: std.heap.ArenaAllocator,
-
-    pub fn deinit(self: *RepairResult) void {
-        self._arena.deinit();
-    }
-};
-
-pub fn repair(backing: std.mem.Allocator, opts: RepairOptions) !RepairResult {
-    var before = try status(backing, opts.status);
-    defer before.deinit();
-    var arena = std.heap.ArenaAllocator.init(backing);
-    errdefer arena.deinit();
-    const a = arena.allocator();
-    const reinstall = try bootstrapCommand(a, opts.status.planar_home);
-    if (before.manifest_status != .current) {
-        return .{
-            .mode = if (opts.apply) "apply" else "preview",
-            .outcome = "error",
-            .attempted = 0,
-            .applied = 0,
-            .skipped = 0,
-            .failed = 1,
-            .actions = &.{},
-            .next_action = try a.dupe(u8, before.repair_command.?),
-            .manifest_status = before.manifest_status,
-            ._arena = arena,
-        };
-    }
-    for (opts.names) |name| {
-        var found = false;
-        for (before.projections) |row| {
-            if (row.status != .unmanaged and std.mem.eql(u8, row.name, name)) found = true;
-        }
-        if (!found) return error.UnmanagedOrUnknownProjection;
-    }
-
-    var actions: std.ArrayList(RepairAction) = .empty;
-    var attempted: usize = 0;
-    var applied: usize = 0;
-    var skipped: usize = 0;
-    var failed: usize = 0;
-    var reinstall_required = false;
-    for (before.projections) |row| {
-        if (row.status == .unmanaged or !selectedName(opts.names, row.name)) continue;
-        if (row.status == .fresh) {
-            skipped += 1;
-            try actions.append(a, try cloneAction(a, row, "unchanged", .fresh, null, null));
-            continue;
-        }
-        attempted += 1;
-        if (row.repair_command != null and std.mem.eql(u8, row.repair_command.?, reinstall)) {
-            failed += 1;
-            reinstall_required = true;
-            try actions.append(a, try cloneAction(a, row, "reinstall-required", row.status, "StagedAuthorityMismatch", reinstall));
-            continue;
-        }
-        if (!opts.apply) {
-            try actions.append(a, try cloneAction(a, row, "would-repair", row.status, null, row.repair_command));
-            continue;
-        }
-        applyOne(row) catch |e| {
-            failed += 1;
-            try actions.append(a, try cloneAction(a, row, "failed", row.status, @errorName(e), row.repair_command));
-            continue;
-        };
-        applied += 1;
-        try actions.append(a, try cloneAction(a, row, "repaired", .fresh, null, null));
-    }
-    const outcome = if (failed > 0 and applied > 0) "partial" else if (failed > 0) "error" else "ok";
-    const next = if (reinstall_required) reinstall else if (failed > 0) "planar skills status" else if (opts.apply) "planar skills status" else "planar skills repair --apply";
-    return .{
-        .mode = if (opts.apply) "apply" else "preview",
-        .outcome = outcome,
-        .attempted = attempted,
-        .applied = applied,
-        .skipped = skipped,
-        .failed = failed,
-        .actions = try actions.toOwnedSlice(a),
-        .next_action = next,
-        .manifest_status = .current,
-        ._arena = arena,
-    };
-}
-
-fn cloneAction(a: std.mem.Allocator, row: ProjectionStatus, action: []const u8, post: State, err: ?[]const u8, next: ?[]const u8) !RepairAction {
-    return .{
-        .vendor = try a.dupe(u8, row.vendor),
-        .kind = try a.dupe(u8, row.kind),
-        .name = try a.dupe(u8, row.name),
-        .installed_path = try a.dupe(u8, row.installed_path),
-        .before = row.status,
-        .action = action,
-        .post_status = post,
-        .error_name = if (err) |v| try a.dupe(u8, v) else null,
-        .next_action = if (next) |v| try a.dupe(u8, v) else null,
-    };
-}
-
-fn applyOne(row: ProjectionStatus) !void {
-    const parent = std.fs.path.dirname(row.installed_path) orelse return error.InvalidInput;
-    try std.Io.Dir.cwd().createDirPath(fsIo(), parent);
-    var tmp_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp = try std.fmt.bufPrint(&tmp_buf, "{s}.planar-repair-tmp", .{row.installed_path});
-    std.Io.Dir.cwd().deleteFile(fsIo(), tmp) catch {};
-    errdefer std.Io.Dir.cwd().deleteFile(fsIo(), tmp) catch {};
-    if (std.mem.eql(u8, row.install_kind, "link")) {
-        try std.Io.Dir.cwd().symLink(fsIo(), row.staged_path, tmp, .{});
-    } else {
-        const body = try std.Io.Dir.cwd().readFileAlloc(fsIo(), row.staged_path, std.heap.smp_allocator, std.Io.Limit.limited(16 * 1024 * 1024));
-        defer std.heap.smp_allocator.free(body);
-        try std.Io.Dir.cwd().writeFile(fsIo(), .{ .sub_path = tmp, .data = body });
-    }
-    if (pathIsDirectory(row.installed_path)) return error.UnsafeDestination;
-    std.Io.Dir.cwd().rename(tmp, std.Io.Dir.cwd(), row.installed_path, fsIo()) catch |e| switch (e) {
-        error.AccessDenied, error.PermissionDenied, error.IsDir, error.NotDir => {
-            std.Io.Dir.cwd().deleteFile(fsIo(), row.installed_path) catch {};
-            try std.Io.Dir.cwd().rename(tmp, std.Io.Dir.cwd(), row.installed_path, fsIo());
-        },
-        else => return e,
-    };
-    const verified = try readProjection(std.heap.smp_allocator, row.installed_path);
-    defer std.heap.smp_allocator.free(verified.bytes);
-    defer std.heap.smp_allocator.free(verified.payload);
-    const staged = try readProjection(std.heap.smp_allocator, row.staged_path);
-    defer std.heap.smp_allocator.free(staged.bytes);
-    defer std.heap.smp_allocator.free(staged.payload);
-    if (!std.mem.eql(u8, staged.source_digest, verified.source_digest) or
-        !std.mem.eql(u8, staged.projection_digest, verified.projection_digest) or
-        !(try semanticDigestMatches(std.heap.smp_allocator, row.kind, row.vendor, staged)) or
-        !(try semanticDigestMatches(std.heap.smp_allocator, row.kind, row.vendor, verified))) return error.VerificationFailed;
-}
-
-fn selectedName(names: []const []const u8, name: []const u8) bool {
-    if (names.len == 0) return true;
-    return contains(names, name);
-}
-
 fn bootstrapCommand(a: std.mem.Allocator, planar_home: []const u8) ![]const u8 {
     // Paths are JSON-safe elsewhere; this shell form also handles apostrophes.
     var out: std.ArrayList(u8) = .empty;
@@ -684,7 +399,13 @@ fn contains(values: []const []const u8, needle: []const u8) bool {
     return false;
 }
 
+// Empty is a valid shape, not just 64-hex: scriptorium-rendered projections
+// carry no in-band digest headers, so the M1 install-manifest writer already
+// emits an absence-tolerant empty string for these fields (plan 918
+// tech-spec § Architecture "installedsurface.zig"). Manifest structural
+// validation must accept that shape rather than reject it as malformed.
 fn isDigest(value: []const u8) bool {
+    if (value.len == 0) return true;
     if (value.len != 64) return false;
     for (value) |ch| if (!std.ascii.isDigit(ch) and !(ch >= 'a' and ch <= 'f')) return false;
     return true;
@@ -714,11 +435,6 @@ fn pathExists(path: []const u8) bool {
     return true;
 }
 
-fn pathIsDirectory(path: []const u8) bool {
-    const stat = std.Io.Dir.cwd().statFile(fsIo(), path, .{}) catch return false;
-    return stat.kind == .directory;
-}
-
 fn fsIo() std.Io {
     return std.Io.Threaded.global_single_threaded.io();
 }
@@ -740,11 +456,14 @@ test "status classifies managed copy and unmanaged extension" {
     try std.Io.Dir.cwd().createDirPath(std.testing.io, std.fs.path.dirname(staged).?);
     try std.Io.Dir.cwd().createDirPath(std.testing.io, std.fs.path.dirname(installed).?);
     try std.Io.Dir.cwd().createDirPath(std.testing.io, std.fs.path.dirname(unmanaged).?);
+    // Manifest schema still carries source_digest/projection_digest (written
+    // by install-manifest.sh; plan 918 M5 retires only the in-band file
+    // headers + semantic verification, not the manifest's own JSON fields),
+    // but classification no longer reads or compares them against file
+    // content — freshness is plain byte equality now.
     const digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    const payload = "---\n---\nbody\n";
-    const projection_digest = try skillrender.projectionDigestForPayload(gpa, "skill", digest, "codex", payload);
-    const body = try std.fmt.allocPrint(gpa, "---\nx-planar-source-digest: {s}\nx-planar-projection-digest: {s}\n---\nbody\n", .{ digest, projection_digest });
-    defer gpa.free(body);
+    const projection_digest = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const body = "---\n---\nbody\n";
     try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = staged, .data = body });
     try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = installed, .data = body });
     try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = unmanaged, .data = "personal\n" });
