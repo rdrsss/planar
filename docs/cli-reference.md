@@ -4459,6 +4459,23 @@ planar models evals [--json]
 
 ---
 
+### `planar models sync-doc`
+
+**Synopsis:**
+```
+planar models sync-doc [--out <dir>] [--check]
+```
+
+**Description:** Regenerate ONLY the `## Tier Table` section of `<out>/agents/models.md` from `[models.<vendor>.<tier>]`, resolved through the same shared resolver `models routing`/`models candidates` use, preserving every other line of the file byte-for-byte (the surrounding human-authored prose). `--out` defaults to `.` (the current directory, mirroring `skills render`'s `--out`). Idempotent: running twice produces no diff. This is the plan-918 D4 relocation of skillrender's old render-time tier-table patch — generation now lives upstream in committed source, not in installed output.
+
+Without `--check`, writes the regenerated file in place (atomically: write a sibling temp file, then rename) when the table has drifted, or reports "already in sync" and writes nothing when it hasn't.
+
+With `--check`, this command is read-only: it exits non-zero and names the divergence when the committed table disagrees with a fresh regeneration, and exits `0` reporting "in sync" (writing nothing) when it doesn't. This is the drift gate — run it in CI or a pre-commit hook to catch a hand-edited or stale table.
+
+**Exit codes:** `0` on success (in sync or written); `1` if `agents/models.md` has no `## Tier Table` heading, or (`--check` only) the table has drifted from the resolved config.
+
+---
+
 ## Domain: `dashboard`
 
 ### `planar dashboard`
@@ -6907,7 +6924,7 @@ For quick reference, all documented commands grouped by domain:
 | `capture` | `capture session`, `capture end`, `capture commits`, `capture note`, `capture command`, `capture file`, `capture snapshot` |
 | `audit` | `audit trail`, `audit session`, `audit commits`, `audit publish-decision`, `audit handoff-readiness` |
 | `health` | `health` |
-| `models` | `models list`, `models refresh`, `models routing`, `models apply`, `models candidates`, `models evals` |
+| `models` | `models list`, `models refresh`, `models routing`, `models apply`, `models candidates`, `models evals`, `models sync-doc` |
 | `links` | `links add`, `links list`, `links remove`, `links trail`, `links update` (deferred to M11) |
 | `report` | `report [--days <n>] [--tail <n>] [--json]` |
 | `search` | `search <query>` |

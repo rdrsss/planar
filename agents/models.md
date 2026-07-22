@@ -12,12 +12,11 @@ Agent specs in `agents/` reference abstract tiers (`small`, `medium`, `large`). 
 
 ## Tier Table
 
-| Tier | Claude | Codex | Copilot |
-| ------ | ------ | ----- | ------- |
-| small | claude-haiku-4-5 | gpt-5.6-luna | gpt-5-mini |
-| medium | claude-sonnet-5 | gpt-5.6-terra | gpt-5 |
-| large | claude-opus-4-8 | gpt-5.6-sol | claude-opus-4 |
-
+| Tier | Claude | Codex | Copilot | Gemini |
+| ------ | ------ | ----- | ------- | ------ |
+| small | claude-haiku-4-5 | gpt-5.6-luna | gpt-5-mini | gemini-3.1-flash |
+| medium | claude-sonnet-5 | gpt-5.6-terra | gpt-5 | gemini-3.1-pro |
+| large | claude-opus-4-8 | gpt-5.6-sol | claude-opus-4 | gemini-3.1-pro |
 ## Candidate lists and work-type routing
 
 Each `[models.<vendor>.<tier>]` value in `~/.planar/config.toml` (embedded
