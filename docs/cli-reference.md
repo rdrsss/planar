@@ -4326,11 +4326,15 @@ planar models list [--json]
 providers:
   claude   [installed] 2.1.170 (Claude Code)
       large    claude-opus-4-8
+      large    claude-fable-5
       medium   claude-sonnet-5
       small    claude-haiku-4-5
   codex    [installed] codex-cli 0.137.0
+      large    gpt-5.6-sol
       large    gpt-5.5
+      medium   gpt-5.6-terra
       medium   gpt-5.4
+      small    gpt-5.6-luna
       small    gpt-5.4-mini
       small    gpt-5.3-codex-spark
 default routing (role → tier → vendor model):
@@ -4405,27 +4409,28 @@ planar models candidates [--json]
 tier candidate lists (models.<vendor>.<tier>):
   claude   small  → claude-haiku-4-5  [embedded default]
   claude   medium → claude-sonnet-5  [embedded default]
-  claude   large  → claude-opus-4-8  [embedded default]
-  codex    small  → gpt-5.4-mini  [embedded default]
-  codex    medium → gpt-5.4  [embedded default]
-  codex    large  → gpt-5.5  [embedded default]
+  claude   large  → claude-opus-4-8, claude-fable-5  [embedded default]
+  codex    small  → gpt-5.6-luna, gpt-5.4-mini, gpt-5.3-codex-spark  [embedded default]
+  codex    medium → gpt-5.6-terra, gpt-5.4  [embedded default]
+  codex    large  → gpt-5.6-sol, gpt-5.5  [embedded default]
   copilot  small  → gpt-5-mini  [embedded default]
   copilot  medium → gpt-5  [embedded default]
   copilot  large  → claude-opus-4  [embedded default]
 
 work-type routing map (routing.<vendor>.<tier>.<work-type>):
-  claude   small  mechanical     → claude-haiku-4-5      [embedded default]
-  claude   medium mechanical     → claude-sonnet-5       [embedded default]
-  claude   large  mechanical     → claude-opus-4-8       [embedded default]
-  codex    small  mechanical     → gpt-5.4-mini           [embedded default]
-  codex    medium mechanical     → gpt-5.4                [embedded default]
-  codex    large  mechanical     → gpt-5.5                [embedded default]
+  claude   small  mechanical     → claude-haiku-4-5       [embedded default]
+  claude   medium mechanical     → claude-sonnet-5        [embedded default]
+  claude   large  architectural  → claude-fable-5         [embedded default]
+  claude   large  mechanical     → claude-opus-4-8        [embedded default]
+  codex    small  mechanical     → gpt-5.6-luna           [embedded default]
+  codex    medium mechanical     → gpt-5.6-terra          [embedded default]
+  codex    large  mechanical     → gpt-5.6-sol            [embedded default]
   copilot  small  mechanical     → gpt-5-mini             [embedded default]
   copilot  medium mechanical     → gpt-5                  [embedded default]
   copilot  large  mechanical     → claude-opus-4          [embedded default]
 ```
 
-A config-file override to a candidate list (e.g. `[models.codex] large = ["gpt-5.5", "gpt-5.3-codex-spark"]`) shows all listed candidates with `[config file]` provenance; a config-file `[routing.<vendor>.<tier>]` entry naming a non-`mechanical` work type appears as an additional row.
+A config-file override to a candidate list (e.g. `[models.codex] large = ["gpt-5.6-sol", "gpt-5.5"]`) shows all listed candidates with `[config file]` provenance; a config-file `[routing.<vendor>.<tier>]` entry naming a non-`mechanical` work type appears as an additional row.
 
 **Output (`--json`):** `{ "candidates": [ { "vendor", "tier", "candidates": [...], "source" } ], "routing": [ { "vendor", "tier", "work_type", "model", "source" } ] }`.
 
@@ -5195,21 +5200,21 @@ work types are `schema`, `engine`, `architectural`, `cli`, `feature`, and
 [models.claude]
 small  = "claude-haiku-4-5"
 medium = "claude-sonnet-5"
-large  = "claude-opus-4-8"
+large  = ["claude-opus-4-8", "claude-fable-5"]
 
 [models.codex]
-small  = "gpt-5.4-mini"
-medium = "gpt-5.4"
+small  = "gpt-5.6-luna"
+medium = "gpt-5.6-terra"
 # A tier value may be an ordered candidate list instead of a scalar;
 # list[0] is the tier default. Every other reader is scalar-compatible.
-large  = ["gpt-5.5", "gpt-5.3-codex-spark"]
+large  = ["gpt-5.6-sol", "gpt-5.5"]
 
 [routing.codex.large]
 # work-type → candidate id (must be a member of the tier's candidate list
 # above). Unmapped work types fall back to the tier default (list[0]).
-schema        = "gpt-5.5"
-architectural = "gpt-5.5"
-feature       = "gpt-5.3-codex-spark"
+schema        = "gpt-5.6-sol"
+architectural = "gpt-5.6-sol"
+feature       = "gpt-5.5"
 
 [roles]
 coder      = "medium"   # coder resolves to the active vendor's `medium` model

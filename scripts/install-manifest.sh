@@ -127,6 +127,18 @@ install_manifest_record_vendor() {
         install_manifest_add copilot agent "$name" "$f" "$user_home/.copilot/agents/$(basename "$f")" link
       done < <(find "$planar_home/agents/copilot" -maxdepth 1 -type f -print0)
       ;;
+    gemini)
+      while IFS= read -r -d '' f; do
+        name="$(basename "$f" .md)"
+        staged="$planar_home/gemini-skills/$name/SKILL.md"
+        installed="$user_home/.gemini/antigravity-cli/skills/$name/SKILL.md"
+        install_manifest_add gemini skill "$name" "$staged" "$installed" copy
+      done < <(find "$planar_home/skills/gemini" -maxdepth 1 -type f -name 'pl-*.md' -print0)
+      while IFS= read -r -d '' f; do
+        name="$(install_manifest_agent_name "$f")"
+        install_manifest_add gemini agent "$name" "$f" "$user_home/.gemini/antigravity-cli/agents/$(basename "$f")" link
+      done < <(find "$planar_home/agents/gemini" -maxdepth 1 -type f -print0)
+      ;;
     *) return 1 ;;
   esac
 }

@@ -62,7 +62,7 @@ pub const EffectiveMap = std.StringHashMapUnmanaged(ValueWithSource);
 
 /// Canonical vendors participating in per-vendor `models.<vendor>.<tier>` and
 /// `routing.<vendor>.<tier>.<work-type>` resolution (plan 540/899).
-pub const vendors = [_][]const u8{ "claude", "codex", "copilot" };
+pub const vendors = [_][]const u8{ "claude", "codex", "copilot", "gemini" };
 
 /// Canonical model tiers (plan 540/899).
 pub const tiers = [_][]const u8{ "small", "medium", "large" };
@@ -523,6 +523,7 @@ pub fn resolve(
         "models.claude.small",  "models.claude.medium",  "models.claude.large",
         "models.codex.small",   "models.codex.medium",   "models.codex.large",
         "models.copilot.small", "models.copilot.medium", "models.copilot.large",
+        "models.gemini.small",  "models.gemini.medium",  "models.gemini.large",
     };
     for (model_tier_keys) |mk| {
         try pickModelTierCandidates(allocator, &file_map, &def_map, &eff, mk);
@@ -1163,9 +1164,12 @@ test "effective: model tier maps + role tiers resolve from embedded defaults (pl
         .{ .key = "models.claude.small", .want = "claude-haiku-4-5" },
         .{ .key = "models.claude.medium", .want = "claude-sonnet-5" },
         .{ .key = "models.claude.large", .want = "claude-opus-4-8" },
-        .{ .key = "models.codex.small", .want = "gpt-5.4-mini" },
-        .{ .key = "models.codex.medium", .want = "gpt-5.4" },
-        .{ .key = "models.codex.large", .want = "gpt-5.5" },
+        .{ .key = "models.codex.small", .want = "gpt-5.6-luna" },
+        .{ .key = "models.codex.medium", .want = "gpt-5.6-terra" },
+        .{ .key = "models.codex.large", .want = "gpt-5.6-sol" },
+        .{ .key = "models.gemini.small", .want = "gemini-3.1-flash" },
+        .{ .key = "models.gemini.medium", .want = "gemini-3.1-pro" },
+        .{ .key = "models.gemini.large", .want = "gemini-3.1-pro" },
         .{ .key = "roles.coder", .want = "medium" },
         .{ .key = "roles.reviewer", .want = "large" },
         .{ .key = "roles.test-coder", .want = "large" },

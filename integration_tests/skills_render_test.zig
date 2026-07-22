@@ -17,9 +17,9 @@ test "skills render writes all vendor outputs" {
 
     const stdout = mustRunInDir(&suite, root, &.{ "skills", "render" });
     defer gpa.free(stdout);
-    try std.testing.expectEqual(@as(usize, 6), countNonEmptyLines(stdout));
+    try std.testing.expectEqual(@as(usize, 8), countNonEmptyLines(stdout));
 
-    const vendors = [_][]const u8{ "commands/claude", "skills/codex", "skills/copilot" };
+    const vendors = [_][]const u8{ "commands/claude", "skills/codex", "skills/copilot", "skills/gemini" };
     for (vendors) |v| {
         for ([_][]const u8{ "pl-alpha.md", "pl-beta.md" }) |name| {
             const p = try std.fs.path.join(gpa, &.{ root, v, name });
@@ -27,6 +27,31 @@ test "skills render writes all vendor outputs" {
             try std.Io.Dir.cwd().access(std.testing.io, p, .{});
         }
     }
+}
+
+test "skills render makes orchestrator host and Codex references explicit" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try fixtureRoot(gpa, &tmp, "skills-render-orchestrator-host");
+    defer gpa.free(root);
+
+    try writeFixtureSource(gpa, root, "pl-orchestrator.md", "pl-orchestrator", "See [agent](../../agents/orchestrator.md).\n\n{{.VendorNotes}}");
+    const stdout = mustRunInDir(&suite, root, &.{ "skills", "render" });
+    defer gpa.free(stdout);
+
+    const codex = try readPath(gpa, root, "skills/codex/pl-orchestrator.md");
+    defer gpa.free(codex);
+    try std.testing.expect(std.mem.indexOf(u8, codex, "Active host vendor: `codex`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, codex, "references/agents/orchestrator.md") != null);
+    try std.testing.expect(std.mem.indexOf(u8, codex, "../../agents/orchestrator.md") == null);
+
+    const claude = try readPath(gpa, root, "commands/claude/pl-orchestrator.md");
+    defer gpa.free(claude);
+    try std.testing.expect(std.mem.indexOf(u8, claude, "Active host vendor: `claude`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, claude, "CLAUDE_CODE_SUBAGENT_MODEL") != null);
 }
 
 test "skills render check on missing src dir exits zero" {
@@ -421,11 +446,11 @@ test "skills render real sources keep model tiers notes and invocation blocks" {
     }
 
     try std.testing.expect(std.mem.indexOf(u8, claude_coder, "model: claude-sonnet-5") != null);
-    try std.testing.expect(std.mem.indexOf(u8, codex_coder, "model: gpt-5.4") != null);
+    try std.testing.expect(std.mem.indexOf(u8, codex_coder, "model: gpt-5.6-terra") != null);
     try std.testing.expect(std.mem.indexOf(u8, claude_coder, "## Invocation") != null);
     try std.testing.expect(std.mem.indexOf(u8, codex_coder, "## Invocation") == null);
     try std.testing.expect(std.mem.indexOf(u8, claude_orch, "model: claude-opus-4-8") != null);
-    try std.testing.expect(std.mem.indexOf(u8, codex_orch, "model: gpt-5") != null);
+    try std.testing.expect(std.mem.indexOf(u8, codex_orch, "model: gpt-5.6-sol") != null);
     try std.testing.expect(std.mem.indexOf(u8, claude_orch, "## Vendor Notes") != null);
     try std.testing.expect(std.mem.indexOf(u8, claude_spec_draft, "argument-hint: \"<goal>\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, claude_spec_draft, "\\\"<goal>\\\"") == null);
@@ -677,7 +702,7 @@ test "skills render supports interspersed slugs and flags ordering" {
         src_dir,
     });
     defer gpa.free(stdout);
-    try std.testing.expectEqual(@as(usize, 6), countNonEmptyLines(stdout));
+    try std.testing.expectEqual(@as(usize, 8), countNonEmptyLines(stdout));
 }
 
 test "skills render diff without check is usage error" {

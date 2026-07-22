@@ -866,3 +866,21 @@ The integration suite also follows two stylistic conventions documented in [`CLA
 - **Schema is the contract.** Read-side tools must check `schema_migrations.version` before operating against the database. `planar-agent` and `planar-watch` enforce this at startup (exit 7 on mismatch).
 - **The capability split is verb-level.** Each of the four planning-state binaries can only do what its registered verb set lets it do; `integration_tests/capability_boundary_test.zig` fails CI if a write verb is registered on `planar-watch`, a planning-entity verb on `planar-agent`, or any SQLite-touching verb on `planar-doc`. (The fifth binary, `planar-execute`, holds no DB handle at all and is bounded by the verb sets of the binaries it shells.)
 - **The workflow engine holds no DB handle.** `planar-execute` is a pure, deterministic CLI driver: it shells an exact subset of sibling `planar`/`planar-agent`/`planar-watch` commands and confined Git operations, never opens SQLite, and exposes no model-spawning host function.
+## Host-aware agent model binding
+
+Planar model configuration describes desired role, tier, work-type, and
+candidate routing. A vendor host's native subagent surface is the final
+capability boundary: Codex-native orchestration binds only Codex agents and
+Claude-native orchestration binds only Claude agents. The rendered
+`pl-orchestrator` projection declares its active host vendor and refuses a
+candidate that the host cannot represent rather than silently substituting a
+provider, tier, model, or agent type. Claude supports invocation-level model
+overrides (subject to its environment override); Codex role projections may be
+fixed to their rendered TOML model and therefore require a visible matching
+agent type. Confirmed dispatch records persist the actual
+`{tier,candidate,work_type}` triple.
+
+Shipped Lua workflows are installation assets under
+`${PLANAR_HOME:-$HOME/.planar}/workflows/`. Authored agents and skills invoke
+that installed path instead of assuming the target repository contains a
+`workflows/` directory.
