@@ -288,9 +288,16 @@ pub fn deriveFromCwd(
 ///    path segment. Cheap; no subprocess. Matches the orchestrator's
 ///    convention from `agents/methodology.md`.
 /// 2. **Authoritative fallback:** when the fast path missed, shell out
-///    to `git rev-parse --git-common-dir` and `--show-toplevel`. If the
-///    common dir is NOT the `.git` directly under the toplevel, the
-///    cwd is a secondary worktree.
+///    to `git rev-parse --show-toplevel --git-common-dir
+///    --absolute-git-dir`. The cwd is a secondary worktree exactly when
+///    the per-worktree git dir differs from the repository's common dir
+///    (a linked worktree's git dir lives under `<common>/worktrees/<n>`).
+///    A submodule checkout also has a common dir that is not
+///    `<toplevel>/.git` (its gitfile points at the superproject's
+///    `.git/modules/<path>`), but it is a PRIMARY checkout — its git
+///    dir and common dir are the same directory — so comparing
+///    git-dir vs common-dir classifies it correctly where the older
+///    `common-dir != <toplevel>/.git` rule misfired.
 ///
 /// On any failure (git not installed, cwd not in a git repo, subprocess
 /// timeout) the function returns `is_worktree=false` — the caller stays
@@ -334,6 +341,7 @@ pub fn detectWorktree(
         "rev-parse",
         "--show-toplevel",
         "--git-common-dir",
+        "--absolute-git-dir",
     };
 
     const result = std.process.run(arena, io, .{ .argv = &argv }) catch
@@ -344,13 +352,15 @@ pub fn detectWorktree(
         else => return WorktreeDetection{ .is_worktree = false },
     }
 
-    // Parse two lines.
+    // Parse three lines.
     var lines = std.mem.tokenizeScalar(u8, result.stdout, '\n');
     const toplevel_raw = lines.next() orelse return WorktreeDetection{ .is_worktree = false };
     const common_dir_raw = lines.next() orelse return WorktreeDetection{ .is_worktree = false };
+    const git_dir_raw = lines.next() orelse return WorktreeDetection{ .is_worktree = false };
     const toplevel = std.mem.trim(u8, toplevel_raw, " \r\n\t");
     const common_dir = std.mem.trim(u8, common_dir_raw, " \r\n\t");
-    if (toplevel.len == 0 or common_dir.len == 0) return WorktreeDetection{ .is_worktree = false };
+    const git_dir = std.mem.trim(u8, git_dir_raw, " \r\n\t");
+    if (toplevel.len == 0 or common_dir.len == 0 or git_dir.len == 0) return WorktreeDetection{ .is_worktree = false };
 
     // `--git-common-dir` may return a relative path (relative to the
     // git process's cwd). When relative, resolve it against `toplevel`
@@ -368,18 +378,21 @@ pub fn detectWorktree(
         break :blk joined;
     };
 
-    // Expected primary path: `<toplevel>/.git` (a directory). For a
-    // secondary worktree, `--git-common-dir` points at the *primary
-    // repo's* `.git`, which is NOT `<toplevel>/.git` (because
-    // `--show-toplevel` returns the secondary worktree's working tree).
-    const expected_primary_git = std.fmt.allocPrint(
-        arena,
-        "{s}/.git",
-        .{toplevel},
-    ) catch return WorktreeDetection{ .is_worktree = false };
-
-    if (std.mem.eql(u8, common_dir_abs, expected_primary_git)) {
-        // Common dir matches toplevel/.git → this IS the main worktree.
+    // A linked worktree is the ONLY case where the per-worktree git
+    // dir differs from the repository's common dir: `--absolute-git-dir`
+    // then points under `<common>/worktrees/<name>`. For every primary
+    // checkout the two are the same directory — `<toplevel>/.git` for a
+    // plain repo, and `<superproject>/.git/modules/<path>` for a
+    // submodule checkout. The older rule compared common-dir against
+    // `<toplevel>/.git`, which misclassified submodules as secondary
+    // worktrees (their common dir is never `<toplevel>/.git`) and
+    // pointed the refusal's remediation at `.git/modules/...`.
+    // `--absolute-git-dir` is already canonical; `common_dir_abs` is
+    // either canonical from git or resolved against the canonical
+    // toplevel above.
+    if (std.mem.eql(u8, git_dir, common_dir_abs)) {
+        // git dir == common dir → primary checkout (plain repo or
+        // submodule). Not a worktree.
         return WorktreeDetection{ .is_worktree = false };
     }
 
