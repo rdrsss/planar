@@ -375,6 +375,118 @@ test "scenario: main worktree (canonical checkout) — planning verbs succeed" {
 }
 
 // ============================================================================
+// Scenario 4: submodule checkout is NOT a worktree — planning verbs
+// succeed. A submodule's `.git` is a gitfile pointing at the
+// superproject's `.git/modules/<path>`, so its git-common-dir is never
+// `<toplevel>/.git` — but it is a PRIMARY checkout (its --git-dir
+// EQUALS its --git-common-dir), unlike a linked worktree (--git-dir
+// under `.git/worktrees/<n>` differs from the common dir). The gate
+// must allow planning from a submodule and still refuse a linked
+// worktree cut from that submodule.
+// ============================================================================
+
+test "scenario: submodule checkout — planning verbs succeed; its linked worktree still refused" {
+    const gpa = std.testing.allocator;
+    if (!gitAvailable(gpa)) return error.SkipZigTest;
+
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    // Child repo that will become the submodule.
+    const child_root = suite.freshSystemTmpDir();
+    mustGit(gpa, child_root, &.{"init"});
+    mustGit(gpa, child_root, &.{ "config", "user.email", "test@example.com" });
+    mustGit(gpa, child_root, &.{ "config", "user.name", "Test" });
+    mustGit(gpa, child_root, &.{ "commit", "--allow-empty", "-m", "init child" });
+
+    // Superproject vendoring the child as a submodule under stack/comp.
+    const super_root = suite.freshSystemTmpDir();
+    mustGit(gpa, super_root, &.{"init"});
+    mustGit(gpa, super_root, &.{ "config", "user.email", "test@example.com" });
+    mustGit(gpa, super_root, &.{ "config", "user.name", "Test" });
+    mustGit(gpa, super_root, &.{ "commit", "--allow-empty", "-m", "init super" });
+    // file:// submodule URLs are blocked by default since git 2.38;
+    // allow explicitly for the fixture.
+    mustGit(gpa, super_root, &.{
+        "-c", "protocol.file.allow=always", "submodule", "add", child_root, "stack/comp",
+    });
+    mustGit(gpa, super_root, &.{ "commit", "-m", "vendor child submodule" });
+
+    const sub_root = std.fs.path.join(arena, &.{ super_root, "stack", "comp" }) catch @panic("OOM");
+
+    // Register the SUBMODULE path as a Planar project + association —
+    // submodules are dev checkouts and legitimate planning scopes.
+    const init_out = suite.mustRunInDir(sub_root, &.{
+        "init", "--allow-no-repo", "--name", "wt-submodule-fixture",
+    });
+    gpa.free(init_out);
+
+    const assoc_slug = "wt-submodule-scope";
+    const create_out = suite.mustRun(&.{
+        "assoc", "create", assoc_slug, "--kind", "project",
+    });
+    gpa.free(create_out);
+    const add_out = suite.mustRun(&.{ "assoc", "add", assoc_slug, sub_root });
+    gpa.free(add_out);
+
+    // With the gate ACTIVE (env bypass disabled), a planning verb from
+    // the submodule checkout must succeed: this is a primary checkout,
+    // not a worktree.
+    const ungate = [_]harness.Suite.ExtraEnvEntry{
+        .{ .key = "PLANAR_DISABLE_WORKTREE_GATE", .value = "" },
+        .{ .key = "PLANAR_DB", .value = suite.absDbPath() },
+        .{ .key = "PWD", .value = sub_root },
+    };
+    const res = suite.execWithInDir(sub_root, &.{
+        "plan", "create", "Plan from submodule checkout",
+    }, &ungate);
+    defer gpa.free(res.stdout);
+    defer gpa.free(res.stderr);
+    if (res.term != .exited or res.term.exited != 0) {
+        std.debug.print(
+            "\nplan create from submodule checkout should succeed but didn't\nstdout:{s}\nstderr:{s}\n",
+            .{ res.stdout, res.stderr },
+        );
+        try std.testing.expect(false);
+    }
+
+    // A linked worktree cut FROM the submodule is still a worktree:
+    // its --git-dir (.git/modules/comp/worktrees/<n>) differs from its
+    // common dir (.git/modules/comp). Planning there stays refused.
+    const sub_wt = suite.freshSystemTmpDir();
+    const rm = std.process.run(gpa, std.testing.io, .{
+        .argv = &.{ "rmdir", sub_wt },
+    }) catch @panic("rmdir spawn");
+    gpa.free(rm.stdout);
+    gpa.free(rm.stderr);
+    mustGit(gpa, sub_root, &.{ "worktree", "add", "-b", "sub-wt-branch", sub_wt });
+
+    const ungate_wt = [_]harness.Suite.ExtraEnvEntry{
+        .{ .key = "PLANAR_DISABLE_WORKTREE_GATE", .value = "" },
+        .{ .key = "PLANAR_DB", .value = suite.absDbPath() },
+        .{ .key = "PWD", .value = sub_wt },
+    };
+    const wt_res = suite.execWithInDir(sub_wt, &.{
+        "plan", "create", "should-be-refused-from-submodule-worktree",
+    }, &ungate_wt);
+    defer gpa.free(wt_res.stdout);
+    defer gpa.free(wt_res.stderr);
+    if (wt_res.term == .exited and wt_res.term.exited == 0) {
+        std.debug.print(
+            "\nrefusal expected from submodule's linked worktree but exited 0\nstdout:{s}\nstderr:{s}\n",
+            .{ wt_res.stdout, wt_res.stderr },
+        );
+        try std.testing.expect(false);
+    }
+    try std.testing.expectEqual(@as(u8, 8), wt_res.term.exited);
+    try expectContains(wt_res.stderr, "may not run from inside a worktree");
+}
+
+// ============================================================================
 // Helpers
 // ============================================================================
 
