@@ -2823,7 +2823,7 @@ test "renderTree slug filter writes only selected slug" {
         .slug_filter = &.{"pl-a"},
     });
     defer res.deinit(gpa);
-    try std.testing.expectEqual(@as(usize, 3), res.written_paths.len);
+    try std.testing.expectEqual(@as(usize, 4), res.written_paths.len);
     try std.testing.expectEqual(@as(usize, 1), res.skipped_slugs.len);
     try std.testing.expectEqualStrings("pl-b", res.skipped_slugs[0]);
 }
@@ -3071,7 +3071,7 @@ test "renderAgent emits Codex TOML with sandbox_mode and developer_instructions"
     defer gpa.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "name = \"coder\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "sandbox_mode = \"workspace-write\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "model = \"gpt-5.4\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "model = \"gpt-5.6-terra\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "model_reasoning_effort = \"medium\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "developer_instructions = \"\"\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "# Coder") != null);

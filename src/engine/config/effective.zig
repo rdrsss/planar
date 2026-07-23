@@ -1206,9 +1206,10 @@ test "effective: config file overrides a model tier + a role tier (plan 540)" {
     try std.testing.expectEqualStrings("large", coder.value);
     try std.testing.expectEqual(Provenance.config_file, coder.source);
 
-    // An untouched key keeps its embedded default.
+    // An untouched key keeps its embedded default (list[0] of the
+    // codex.large candidate list).
     const codex_large = res.effective.get("models.codex.large") orelse return error.TestFailed;
-    try std.testing.expectEqualStrings("gpt-5.5", codex_large.value);
+    try std.testing.expectEqualStrings("gpt-5.6-sol", codex_large.value);
     try std.testing.expectEqual(Provenance.embedded_default, codex_large.source);
 }
 
@@ -1302,7 +1303,9 @@ test "effective: candidate list — provenance preserved for both scalar and arr
     try std.testing.expectEqual(@as(usize, 2), array_entry.candidates.len);
 
     // An untouched scalar-only tier still carries embedded_default provenance.
-    const untouched = res2.effective.get("models.codex.large") orelse return error.TestFailed;
+    // (claude.medium — codex.large became a candidate list in the embedded
+    // defaults, so it no longer exercises the scalar shape.)
+    const untouched = res2.effective.get("models.claude.medium") orelse return error.TestFailed;
     try std.testing.expectEqual(Provenance.embedded_default, untouched.source);
     try std.testing.expectEqual(@as(usize, 1), untouched.candidates.len);
 }
