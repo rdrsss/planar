@@ -842,6 +842,7 @@ The Zig package root IS the repo root: `build.zig` and `build.zig.zon` sit at th
 ```bash
 # Makefile wrappers
 make build              # → ./bin/planar (ReleaseSafe)
+make install            # install the five executables to PREFIX/bin
 make test               # unit tests
 make test-integration   # builds ./bin/planar, sets PLANAR_BIN, runs the
                         # integration suite under integration_tests/
@@ -861,7 +862,10 @@ Planar runs a two-tier test model plus a cross-binary parity gate:
 - **Cross-binary parity gate** — `make parity-check` (wired into `make test-all`) runs `scripts/parity-check.sh`, which diffs the current zig binary against the archived Go reference across the full verb surface and fails on any gap not present in `scripts/parity-allowlist.txt`. When the Go reference binary is unreachable, the gate prints a skip notice and exits 0; the integration suite remains the always-on guard.
 - **Authored-surface lint gate** — `make cli-usage-check` runs the schema-driven CLI validator followed by the semantic authored-surface validator. `make surface-lint` runs only the semantic validator. The composed gate is wired into `make test-all` once.
 
-The binary produced by `make build` lands at `./bin/planar`. The installed binary (used by skills) is at `~/.planar/bin/planar`, built and staged by `install.sh`.
+The binaries produced by `make build` land under `./bin/`. `make install`
+installs only those five executables under `PREFIX/bin` (default
+`~/.local/bin`). The legacy `install.sh` / `make install-full` path additionally
+stages skills, agents, workflows, and vendor wiring under `~/.planar`.
 
 The integration suite also follows two stylistic conventions documented in [`CLAUDE.md` § Test stratification](../CLAUDE.md#test-stratification): focused per-verb tests (`integration_tests/<verb>_test.zig`) pin one verb's contract, and scenario tests (`integration_tests/scenarios/*.zig`) walk realistic operator workflows end-to-end through many verbs.
 

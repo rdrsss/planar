@@ -1089,7 +1089,7 @@ Source: `skills/src/pl-local-import.md`
 | | Canonical | Sandbox |
 |---|---|---|
 | Location | `skills/src/` and `agents/` in the repo; generated projections are staged under `$PLANAR_HOME` | `~/.planar/local/{skills,agents}/` on the operator's machine |
-| Install | `install.sh` or `make install` from the repo checkout | `planar local link` |
+| Install | `install.sh` or `make install-full` from the repo checkout | `planar local link` |
 | Authoring overhead | Commit the unified source, then run semantic lint and `scriptorium check` against an out-of-tree staging dir | One file, one `planar local link` |
 | Distribution | Shipped to everyone using the repo | This operator's machine only |
 | Promotion | N/A | Manual: copy file into the repo and follow normal contribution flow. No `planar local promote` shortcut |

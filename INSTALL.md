@@ -2,7 +2,7 @@
 
 This guide covers three install paths, ordered from simplest to most flexible:
 
-1. [Quick install (`zig build --prefix`)](#quick-install-zig-build---prefix) — just the binary, no vendor surfaces.
+1. [Quick install (`make install`)](#quick-install-make-install) — just the executables, no vendor surfaces.
 2. [Full install (`install.sh`)](#full-install-installsh) — binary + agent specs + vendor surfaces (Claude / Codex / Copilot).
 3. [Build from source](#build-from-source) — for contributors.
 
@@ -17,33 +17,41 @@ Plus [uninstall](#uninstall), [troubleshooting](#troubleshooting), and the [inst
 
 No system SQLite is needed. Planar vendors the SQLite amalgamation under `vendor/sqlite/`; `build.zig` compiles it into a static library that statically links into the binary — no platform-specific build flags, no system library dependency.
 
-## Quick install (`zig build --prefix`)
+## Quick install (`make install`)
 
-The shortest path. Drops the `planar` binary at `~/.planar/bin/planar` and nothing else.
+The shortest path. Builds and installs Planar's five executables into
+`~/.local/bin` and nothing else.
 
 There is no zig equivalent to a remote `module@version` install, so clone the repo and build directly into your install prefix:
 
 ```bash
 git clone https://github.com/rdrsss/planar.git
 cd planar
-zig build --prefix "$HOME/.planar"
+make install
 ```
 
-`zig build --prefix <root>` installs the binary at `<root>/bin/planar` because `build.zig` registers the executable as the default install step.
-
-Add `~/.planar/bin` to your `$PATH`, then verify:
+Override the conventional prefix when needed:
 
 ```bash
-export PATH="$HOME/.planar/bin:$PATH"
+make install PREFIX=/opt/planar
+```
+
+Add `~/.local/bin` to your `$PATH`, then verify:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
 planar health
 ```
 
-This installs only the binary. The agent specs, slash commands, skills, and migration sources are *embedded* in the binary, so the CLI works in isolation. But none of the vendor surfaces (Claude `/pl-*` slash commands, Codex skills, Copilot skills) are wired up — for those, use the [full install](#full-install-installsh).
+This installs only the executables. Runtime migrations and default propagation
+templates are embedded, so the CLI works in isolation. It does not stage or
+wire the legacy vendor surfaces; for those, use the
+[full install](#full-install-installsh).
 
-If you want a non-default optimize mode, pass `-Doptimize`:
+If you want a non-default optimize mode, set `OPTIMIZE`:
 
 ```bash
-zig build -Doptimize=ReleaseFast --prefix "$HOME/.planar"
+make install OPTIMIZE=ReleaseFast
 ```
 
 Optimize modes follow Zig conventions: `Debug` (default), `ReleaseSafe`, `ReleaseFast`, `ReleaseSmall`.
@@ -57,7 +65,7 @@ git clone https://github.com/rdrsss/planar.git
 cd planar
 ./install.sh
 # or, equivalently:
-make install                 # extra flags via: make install INSTALL_FLAGS="--link --force"
+make install-full       # extra flags via: make install-full INSTALL_FLAGS="--link --force"
 ```
 
 That's it. The script:

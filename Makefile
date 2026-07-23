@@ -21,6 +21,7 @@ DOC_BIN       := $(BIN_DIR)/$(DOC_BINARY)
 EXECUTE_BIN   := $(BIN_DIR)/$(EXECUTE_BINARY)
 
 ZIG         ?= zig
+PREFIX      ?= $(HOME)/.local
 
 # Default optimize mode for production builds. Override via:
 #   make build OPTIMIZE=Debug
@@ -59,16 +60,26 @@ build: ## Build the planar + planar-agent + planar-watch + planar-doc + planar-e
 	@cp -f zig-out/bin/$(EXECUTE_BINARY) $(EXECUTE_BIN)
 
 .PHONY: install
-install: ## Full install via ./install.sh — pass extra flags as INSTALL_FLAGS="..."
-	./install.sh $(INSTALL_FLAGS)
+install: ## Build and install the five Planar executables into PREFIX/bin (default: ~/.local/bin)
+	$(ZIG) build -Doptimize=$(OPTIMIZE) -Dversion-meta=true --prefix $(PREFIX) $(ARGS)
 
 .PHONY: install-bin
-install-bin: ## Install just the binary into ~/.planar/bin/planar (skips vendor surface staging)
-	@mkdir -p $(HOME)/.planar/bin
-	$(ZIG) build -Doptimize=$(OPTIMIZE) --prefix $(HOME)/.planar $(ARGS)
+install-bin: install ## Compatibility alias for the binary-only install
+
+.PHONY: install-full
+install-full: ## Legacy full install: binaries plus skills, agents, workflows, and vendor wiring
+	./install.sh $(INSTALL_FLAGS)
 
 .PHONY: uninstall
-uninstall: ## Uninstall via ./install.sh --uninstall (preserves ~/.planar/planar.db)
+uninstall: ## Remove the five Planar executables from PREFIX/bin
+	rm -f $(PREFIX)/bin/$(BINARY)
+	rm -f $(PREFIX)/bin/$(AGENT_BINARY)
+	rm -f $(PREFIX)/bin/$(WATCH_BINARY)
+	rm -f $(PREFIX)/bin/$(DOC_BINARY)
+	rm -f $(PREFIX)/bin/$(EXECUTE_BINARY)
+
+.PHONY: uninstall-full
+uninstall-full: ## Remove the legacy full install (preserves ~/.planar/planar.db)
 	./install.sh --uninstall $(INSTALL_FLAGS)
 
 .PHONY: run
