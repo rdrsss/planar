@@ -524,7 +524,11 @@ mkdir -p "$PLANAR_HOME/bin"
 # All five land in $PLANAR_HOME/bin/ in one shot — no extra cp step needed.
 # Migrations and templates/defaults are read from the repo root at
 # codegen time (build.zig sits at the repo root).
-( cd "$REPO_ROOT" && zig build -Doptimize="$OPTIMIZE" --prefix "$PLANAR_HOME" )
+# -Dversion-meta=true: stamp the real git sha/date/dirty into `planar version`.
+# Dev builds default this off because embedding live git metadata invalidates
+# the whole build cache on every commit / dirty-flag flip; installs are the
+# one place the stamped metadata is worth that rebuild.
+( cd "$REPO_ROOT" && zig build -Doptimize="$OPTIMIZE" -Dversion-meta=true --prefix "$PLANAR_HOME" )
 vlog "wrote $PLANAR_HOME/bin/planar"
 vlog "wrote $PLANAR_HOME/bin/planar-agent"
 vlog "wrote $PLANAR_HOME/bin/planar-watch"

@@ -396,13 +396,19 @@ pub fn build(b: *std.Build) void {
 
     // -----------------------------------------------------------------
     // build_options module: compile-time git sha + build date + dirty
-    // flag, exposed to the `version` verb. Operators can override the
-    // defaults via -Dgit-sha=<sha> / -Dbuild-date=<ISO8601> /
-    // -Dgit-dirty=true; otherwise we auto-resolve from `git` against
-    // the repo root. Auto-resolution failures produce "unknown" rather
-    // than a build error so the binary still builds outside a git
-    // checkout.
+    // flag, exposed to the `version` verb. Auto-resolution from `git`
+    // is OPT-IN via -Dversion-meta=true: the resolved values are baked
+    // into a module every binary imports, so embedding the live sha /
+    // dirty flag invalidates the entire build graph on every commit and
+    // every clean<->dirty transition (untracked files count as dirty).
+    // Dev builds default to the stable sentinel "dev" so iterative
+    // rebuilds stay cache-hot; install.sh passes -Dversion-meta=true to
+    // stamp real metadata into installed binaries. Explicit -Dgit-sha /
+    // -Dbuild-date / -Dgit-dirty overrides always win. Auto-resolution
+    // failures produce "unknown" rather than a build error so the
+    // binary still builds outside a git checkout.
     // -----------------------------------------------------------------
+    const version_meta_opt = b.option(bool, "version-meta", "Embed real git sha/date/dirty in `planar version` (invalidates the build cache on every commit and dirty-flag flip; default false embeds \"dev\")") orelse false;
     const sha_opt = b.option([]const u8, "git-sha", "Override git commit sha embedded in `planar version`");
     const date_opt = b.option([]const u8, "build-date", "Override ISO8601 build date embedded in `planar version`");
     const dirty_opt = b.option(bool, "git-dirty", "Override git-dirty marker embedded in `planar version`");
@@ -417,9 +423,9 @@ pub fn build(b: *std.Build) void {
     // to exercise the actual refusal path.
     const test_binary_opt = b.option(bool, "test-binary", "Mark this as a test binary (enables PLANAR_DISABLE_WORKTREE_GATE env-var bypass in worktree_gate)") orelse false;
 
-    const resolved_sha = sha_opt orelse resolveGitSha(b) orelse "unknown";
-    const resolved_date = date_opt orelse resolveBuildDate(b) orelse "unknown";
-    const resolved_dirty: bool = dirty_opt orelse resolveGitDirty(b);
+    const resolved_sha: []const u8 = sha_opt orelse if (version_meta_opt) (resolveGitSha(b) orelse "unknown") else "dev";
+    const resolved_date: []const u8 = date_opt orelse if (version_meta_opt) (resolveBuildDate(b) orelse "unknown") else "dev";
+    const resolved_dirty: bool = dirty_opt orelse (version_meta_opt and resolveGitDirty(b));
 
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "git_sha", resolved_sha);

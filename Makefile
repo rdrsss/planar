@@ -30,6 +30,18 @@ OPTIMIZE    ?= ReleaseSafe
 # Extra args forwarded to underlying zig invocations.
 ARGS        ?=
 
+# Share one Zig local cache between the main checkout and every git worktree
+# of this repo, so worktree builds (agent dispatch, cycle branches) start warm
+# instead of recompiling the vendored C deps and the full module graph from
+# scratch. Zig's cache is lock-protected; concurrent builds are safe. Resolves
+# to the main checkout's .zig-cache — in the main checkout itself this is
+# identical to the default. Outside a git checkout the variable is left unset
+# and zig falls back to ./.zig-cache.
+GIT_COMMON_DIR := $(shell git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+ifneq ($(GIT_COMMON_DIR),)
+export ZIG_LOCAL_CACHE_DIR ?= $(patsubst %/.git,%,$(GIT_COMMON_DIR))/.zig-cache
+endif
+
 .DEFAULT_GOAL := help
 
 .PHONY: help
@@ -76,12 +88,15 @@ test: test-install-manifest ## Run unit tests
 # This activates the PLANAR_DISABLE_WORKTREE_GATE env-var bypass in the
 # worktree gate (plan 297 t#2937). The production binary (make build) is
 # compiled without this flag and ignores the env var entirely.
-test-integration: build ## Run the integration suite against the built binary
-	PLANAR_BIN=$(CURDIR)/$(BIN) PLANAR_AGENT_BIN=$(CURDIR)/$(AGENT_BIN) PLANAR_WATCH_BIN=$(CURDIR)/$(WATCH_BIN) PLANAR_DOC_BIN=$(CURDIR)/$(DOC_BIN) PLANAR_EXECUTE_BIN=$(CURDIR)/$(EXECUTE_BIN) $(ZIG) build test-integration -Dtest-binary=true $(ARGS)
+# No `build` prerequisite: build.zig points the harness (PLANAR_BIN etc.) at
+# the Debug -Dtest-binary=true binaries it installs into zig-out itself, so a
+# ReleaseSafe ./bin pre-build would be dead weight the suite never executes.
+test-integration: ## Run the integration suite (builds its own Debug test binaries)
+	$(ZIG) build test-integration -Dtest-binary=true $(ARGS)
 
 .PHONY: test-integration-files
-test-integration-files: build ## Run integration tests as one executable per test file
-	PLANAR_BIN=$(CURDIR)/$(BIN) PLANAR_AGENT_BIN=$(CURDIR)/$(AGENT_BIN) PLANAR_WATCH_BIN=$(CURDIR)/$(WATCH_BIN) PLANAR_DOC_BIN=$(CURDIR)/$(DOC_BIN) PLANAR_EXECUTE_BIN=$(CURDIR)/$(EXECUTE_BIN) $(ZIG) build test-integration-files -Dtest-binary=true $(ARGS)
+test-integration-files: ## Run integration tests as one executable per test file
+	$(ZIG) build test-integration-files -Dtest-binary=true $(ARGS)
 
 .PHONY: parity-check
 parity-check: build ## Diff zig binary against Go archive binary (plan 351 Phase 5; skips when Go binary unreachable)

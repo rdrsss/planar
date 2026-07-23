@@ -846,7 +846,7 @@ test "resolver: unknown vendor / unknown tier / unknown role errors" {
     var res = try config.resolve(a, null, std.process.Environ.empty, null);
     defer res.deinit(a);
 
-    try testing.expectError(ResolveError.UnknownVendor, resolveTier(&res.effective, "mistral", "medium"));
+    try testing.expectError(ResolveError.UnknownVendor, resolveTier(&res.effective, "acme", "medium"));
     try testing.expectError(ResolveError.UnknownTier, resolveTier(&res.effective, "claude", "xl"));
     try testing.expectError(ResolveError.UnknownRole, resolveRole(&res.effective, "claude", "planner"));
 }
