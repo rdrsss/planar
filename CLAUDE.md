@@ -87,8 +87,9 @@ codegen on the next `zig build`.
 # Via Makefile (preferred for one-off scripts):
 make build              # → ./bin/planar (ReleaseSafe)
 make test               # unit tests
-make test-integration   # builds ./bin/planar, sets PLANAR_BIN, runs the
-                        # integration suite under integration_tests/
+make test-integration   # runs the integration suite under integration_tests/
+                        # (build.zig builds Debug test binaries and points the
+                        # harness at them via PLANAR_BIN itself)
 make test-all           # unit + integration + parity + coverage + authored-surface gates
 
 # Direct zig CLI from the repo root:
@@ -99,6 +100,22 @@ zig build run -- <subcommand>                 # run from source
 ```
 
 Optimize modes follow Zig conventions: `Debug` (default), `ReleaseSafe`, `ReleaseFast`, `ReleaseSmall`. Set via `zig build -Doptimize=<mode>` or `make build OPTIMIZE=<mode>`.
+
+Two build-cache invariants keep iterative builds cheap; don't regress them:
+
+- **Version metadata is opt-in.** `planar version` git metadata (sha, date,
+  dirty flag) is embedded only when `-Dversion-meta=true` is passed; dev
+  builds embed the stable sentinel `dev`. Auto-resolving it by default baked
+  the live sha + dirty flag into a module every binary imports, so every
+  commit and every clean↔dirty flip (untracked files count) invalidated the
+  entire build graph — a full multi-minute rebuild with zero source changes.
+  `install.sh` passes the flag; nothing else should.
+- **Worktrees share the main checkout's Zig cache.** The Makefile exports
+  `ZIG_LOCAL_CACHE_DIR` pointing at the main checkout's `.zig-cache` (derived
+  via `git rev-parse --git-common-dir`), so builds in agent-dispatch worktrees
+  start warm. When running bare `zig build` inside a worktree, prefer the
+  `make` wrappers (or export the variable yourself) to avoid a from-scratch
+  rebuild of the vendored C deps and module graph.
 
 ### Test stratification
 
@@ -246,11 +263,12 @@ co-exist; both earn their keep:
   reachable contract paths (e.g. "verb may legitimately fail when
   contacting the network").
 
-Always run integration tests via `make test-integration` (not bare
-`zig build test-integration`). The make target builds `./bin/planar` and
-exports `PLANAR_BIN` to point at it; without that, the harness falls back
-to building per-call, which is much slower and exercises a freshly
-recompiled binary on every test.
+Run integration tests via `make test-integration`. The zig-level step
+builds Debug `-Dtest-binary=true` binaries and points the harness at them
+via `PLANAR_BIN` itself; the make wrapper adds the shared-worktree
+`ZIG_LOCAL_CACHE_DIR` export and is the canonical entry point. (It no
+longer pre-builds ReleaseSafe `./bin` binaries — the suite never executed
+those.)
 
 Migrations are plain SQL files under `migrations/` in sqlx-cli format
 (`-r` reversible pairs). The runtime applies the embedded `migrations`
@@ -286,7 +304,7 @@ The defaults are mainstream Zig; deviations require justification.
 - Logging: Zig stdlib `std.log`. Structured fields via `std.log.scoped(.<module>)`. JSON output for production; text for dev.
 - C interop: bounded to the vendored SQLite amalgamation under `vendor/sqlite/`, called from `src/db/sqlite.zig`. No other C dependencies. Cross-compilation works out of the box because the SQLite C source is compiled by Zig itself.
 - Module layout: `src/cmd/planar/main.zig` is thin — wires the parser, dispatches to handlers. Per-verb handlers live under `src/cmd/planar/handlers/`. Domain logic lives under `src/engine/<bucket>/` (buckets: `identity/`, `planning/`, `external/`, `runtime/`) with subsystem modules (`workbench`, `extsync`, `templates`, `adapter`, `ingestor`, `tree`, `config`, `syncengine`) at `src/engine/` top level. Build-time codegen tools live at the repo root under `tools/`.
-- Tests: `test "<name>" { ... }` blocks colocated with the code under test are unit tests and run under `zig build test`. The integration suite at `integration_tests/` (repo root) exec's the compiled `planar` binary via `harness.zig`. Run with `make test-integration` (which builds `./bin/planar` and sets `PLANAR_BIN`); see Build And Test § "Test stratification".
+- Tests: `test "<name>" { ... }` blocks colocated with the code under test are unit tests and run under `zig build test`. The integration suite at `integration_tests/` (repo root) exec's the compiled `planar` binary via `harness.zig`. Run with `make test-integration`; see Build And Test § "Test stratification".
 - Test fixtures: per-test temp directories via `std.testing.tmpDir`. SQLite test DBs in-memory or under `tmpDir` for isolation.
 - HTTP adapter tests: in-process test servers via `std.http.Server`. No external mock-server dependency.
 - Output stability: machine-consumable commands use stable, parseable formats (line-oriented or JSON via `std.json`). Avoid decorative formatting in commands that scripts will read.
