@@ -295,7 +295,7 @@ tasks: [44, 45, 46]
 /orchestrator 42 --barrel-bypass
 ```
 
-No reviewer dispatch at all. Coder cycles run back-to-back; quality gates (`make fmt-check` + `make build` + `make test` + `make test-integration` **twice** + `planar skills render --check` against an out-of-tree staging dir + any remaining relevant validators) are the entire signal.
+No reviewer dispatch at all. Coder cycles run back-to-back; quality gates (`make fmt-check` + `make build` + `make test` + `make test-integration` **twice** + `scriptorium check` against an out-of-tree staging dir + `planar models sync-doc --check` + any remaining relevant validators) are the entire signal.
 
 Audit-trail excerpt:
 ```
@@ -1572,52 +1572,64 @@ git push   # PR through the normal contribution flow
 Do not copy into or commit repo-relative `commands/claude/`, `skills/codex/`,
 or `skills/copilot/` trees: those are generated projections and are ignored.
 There is no `planar local promote` shortcut — that is deliberate. Canonical
-skills go through semantic lint, `planar skills render --check` against an
-out-of-tree staging dir, any remaining relevant validators, and contribution
-review; sandbox skills do not. Keeping the boundary loud preserves the
+skills go through semantic lint, `scriptorium check` against an out-of-tree
+staging dir, `planar models sync-doc --check` (when the tier table is
+affected), any remaining relevant validators, and contribution review;
+sandbox skills do not. Keeping the boundary loud preserves the
 difference. After promotion, you can run `planar local unlink fixup-protos
 --purge` to retire the sandbox copy.
 
 ---
 
-## Recipe 14A — Inspect and repair installed canonical projections
+## Recipe 14A — Inspect and reconcile installed canonical projections
 
-Canonical vendor installs are distinct from the personal sandbox above. Their
-ownership comes only from `~/.planar/install-manifest.json`; directory presence
-alone never grants Planar permission to replace a file.
+Canonical vendor installs are rendered and drift-tracked by the external
+scriptorium binary now (plan 918), not by Planar's own (retired) `skills
+status`/`skills repair` verbs — `planar skills` is a placeholder with no
+subcommands. Planar's own `~/.planar/install-manifest.json` still records
+which files `install.sh` wired for which vendor (staged/installed paths,
+copy-vs-link kind), but drift detection on rendered content itself is
+scriptorium's job, tracked in its own machine-local merkle+xxhash manifest.
 
-Start with a read-only inspection:
-
-```
-planar skills status
-planar skills status --vendor codex --json
-```
-
-`fresh`, `stale`, and `missing` apply only to manifest rows. `unmanaged` is an
-informational destination-only extension, and an `unselected` vendor is outside
-the installation set. Neither affects unrelated files.
-
-Preview the recommended repair before mutation:
+Start with a read-only inspection, run from the repo root (`scriptorium.yaml`
+supplies the source roots and vendor set — no `--source` needed):
 
 ```
-planar skills repair pl-status --vendor codex
-planar skills repair pl-status --vendor codex --apply
-planar skills status --vendor codex
+scriptorium check --config scriptorium.yaml
+scriptorium check --config scriptorium.yaml --vendor codex --json
+scriptorium status --config scriptorium.yaml
 ```
 
-The apply command copies or re-links only that manifest-owned row and verifies
-it afterward. For a mixed apply, `partial` lists completed and failed targets;
-rerun the reported idempotent command after correcting the failed path. If the
-manifest itself is missing, invalid, unsupported, or legacy, repair does not
-guess ownership. From the Planar source checkout, run the exact bootstrap
-shown by status, whose supported form is:
+`check` reports `stale` (source changed since the last render), `drifted`
+(the installed file was hand-edited since the last render), and `orphaned`
+(a tracked install whose source no longer exists) findings, and exits
+non-zero on any finding — it never writes anything. `status` gives the
+fuller per-artifact registry-vs-installed picture: defined → rendered →
+installed (to which vendors), plus the same drifted/orphaned flags.
+
+Reconcile with `update` (alias `sync`):
+
+```
+scriptorium update --config scriptorium.yaml --vendor codex
+scriptorium update --config scriptorium.yaml --vendor codex --force
+scriptorium status --config scriptorium.yaml --vendor codex
+```
+
+`update` re-renders and re-installs only what actually changed since the last
+render; by default it refuses to overwrite a hand-edited install or an
+untracked pre-existing file (reported as `refused`) — pass `--force` once
+you've confirmed the overwrite is wanted, and `--prune` to additionally
+remove install records (and their files) whose source no longer exists. If
+scriptorium itself is missing or below the required version floor,
+`install.sh` aborts with an actionable message (`scripts/discover-scriptorium.sh`);
+from the Planar source checkout, re-run:
 
 ```
 ./install.sh --prefix ~/.planar
 ```
 
-Then re-run `planar skills status`. Personal `planar local` extensions remain
-untouched throughout.
+Then re-run `scriptorium status`. Personal `planar local` extensions remain
+untouched throughout — they sit outside scriptorium's registry.
 
 ---
 
@@ -2596,7 +2608,7 @@ For the persistence-on-claim contract see [`docs/concepts.md §Worktree`](concep
 
 ## Recipe 25 — Review and configure per-role model routing
 
-Inspect which models your agent roles will spawn, and re-route them — across Claude and Codex — through the unified config (plan 540). All model routing (skills render, `agents/models.md`, and external workflow harnesses) resolves from one source via the shared resolver.
+Inspect which models your agent roles will spawn, and re-route them — across Claude and Codex — through the unified config (plan 540). All model routing (scriptorium's rendered skill/agent `model:` fields, `agents/models.md`'s Tier Table via `planar models sync-doc`, and external workflow harnesses) resolves from one source via the shared resolver.
 
 **1. Discover installed providers + their catalogs.**
 
@@ -2980,7 +2992,9 @@ not recommend a claimed, stale, or blocked task. `pl-observe` is read-only and
 distinguishes an empty interval from unavailable telemetry. `pl-health` never
 repairs: it explains each degraded contributor and routes to `pl-doctor`,
 `pl-resume`, reconciliation preview, configuration validation, or the exact
-`planar skills repair ...` preview. Use `/pl-plan` and `/pl-task` for the full
+`scriptorium check`/`scriptorium update` preview (canonical projection drift
+is now scriptorium's finding, not a Planar `skills repair` verb — that verb
+retired with the in-tree renderer). Use `/pl-plan` and `/pl-task` for the full
 lifecycle once a target is selected; both read post-state after mutations, and
 claimed work still terminates atomically through `planar-agent`.
 

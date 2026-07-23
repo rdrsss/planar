@@ -12,12 +12,17 @@
 # discover_scriptorium_bin is actually called (it is sourced early but
 # invoked later, during preflight).
 
-# SCRIPTORIUM_MIN_VERSION — a provisional floor. As of this writing
-# scriptorium's CLI surface is render/init/install/uninstall/check/status/
-# update/sync — there is no `--version`/`version` verb to check against a
-# real floor yet. TODO(plan 918 tech-spec Q2, OPEN — operator): once
-# scriptorium ships a version verb, replace scriptorium_check_floor's
-# fallback probe below with a real `version_ge` gate against this value.
+# SCRIPTORIUM_MIN_VERSION — the enforced floor. Q2 (plan 918 tech-spec:
+# discovery order + bootstrap policy) is answered (2026-07-22): discovery is
+# PATH lookup with a $SCRIPTORIUM_BIN override, and a missing/old binary
+# aborts with an actionable message rather than auto-bootstrapping via
+# `go install` (D2). What remains genuinely open is mechanical, not a
+# decision: as of this writing scriptorium's CLI surface is render/init/
+# install/uninstall/check/status/update/sync — there is no `--version`/
+# `version` verb yet to compare against this floor. TODO(plan 918 tech-spec,
+# scriptorium-side ask — file separately): once scriptorium ships a version
+# verb, replace scriptorium_check_floor's fallback probe below with a real
+# `version_ge` gate against this value.
 SCRIPTORIUM_MIN_VERSION="0.1.0"
 
 # scriptorium_check_floor <bin> — best-effort version-floor probe. Tries
@@ -36,15 +41,26 @@ SCRIPTORIUM_MIN_VERSION="0.1.0"
 # reliable way to treat an expected non-zero exit here as data, not a fatal
 # install failure (verified empirically; do not "simplify" this back to a
 # bare `if out=$(...); then`).
+# On failure, scriptorium_check_floor also sets SCRIPTORIUM_FLOOR_FAIL_REASON
+# so the caller (discover_scriptorium_bin) can report a message that matches
+# what actually failed, instead of a single message that misattributes a
+# below-floor version mismatch to the sanity-probe fallback (or vice versa):
+#   "below-floor:<version>" — --version worked but version_ge rejected it.
+#   "sanity-probe"          — no --version support; the render --help
+#                             fallback probe didn't look like scriptorium.
 scriptorium_check_floor() {
   local bin="$1" out ver rc=0
+  SCRIPTORIUM_FLOOR_FAIL_REASON=""
   trap - ERR
   out="$("$bin" --version 2>&1)" && rc=0 || rc=$?
   trap 'on_err $? $LINENO' ERR
   if [[ $rc -eq 0 ]]; then
     ver="${out##* }"
-    version_ge "$ver" "$SCRIPTORIUM_MIN_VERSION"
-    return $?
+    if version_ge "$ver" "$SCRIPTORIUM_MIN_VERSION"; then
+      return 0
+    fi
+    SCRIPTORIUM_FLOOR_FAIL_REASON="below-floor:$ver"
+    return 1
   fi
   # No --version support today — confirm this is recognizably scriptorium's
   # `render` verb (its usage text names the flags render_cmd.go registers)
@@ -53,7 +69,11 @@ scriptorium_check_floor() {
   # it exempts the failing command in the same context it runs in — safe,
   # unlike the `--version` probe above.
   out="$("$bin" render --help 2>&1 || true)"
-  [[ "$out" == *"-config string"* && "$out" == *"-source string"* ]]
+  if [[ "$out" == *"-config string"* && "$out" == *"-source string"* ]]; then
+    return 0
+  fi
+  SCRIPTORIUM_FLOOR_FAIL_REASON="sanity-probe"
+  return 1
 }
 
 # discover_scriptorium_bin — sets the global SCRIPTORIUM_BIN to a resolved,
@@ -70,8 +90,16 @@ discover_scriptorium_bin() {
     [[ -n "$candidate" ]] || err "scriptorium binary not found on PATH (requires >= $SCRIPTORIUM_MIN_VERSION). Install scriptorium and ensure it is on PATH, or set SCRIPTORIUM_BIN to an explicit binary path."
   fi
 
-  scriptorium_check_floor "$candidate" || \
-    err "$candidate does not look like a working scriptorium >= $SCRIPTORIUM_MIN_VERSION (sanity probe against 'scriptorium render --help' failed). Upgrade scriptorium, or point SCRIPTORIUM_BIN at a valid binary."
+  if ! scriptorium_check_floor "$candidate"; then
+    case "$SCRIPTORIUM_FLOOR_FAIL_REASON" in
+      below-floor:*)
+        err "$candidate reports version ${SCRIPTORIUM_FLOOR_FAIL_REASON#below-floor:}, which is below the required floor $SCRIPTORIUM_MIN_VERSION. Upgrade scriptorium, or point SCRIPTORIUM_BIN at a binary >= $SCRIPTORIUM_MIN_VERSION."
+        ;;
+      *)
+        err "$candidate does not look like a working scriptorium (sanity probe against 'scriptorium render --help' failed; scriptorium has no --version verb yet, so this probe stands in for a real floor check). Upgrade scriptorium, or point SCRIPTORIUM_BIN at a valid binary."
+        ;;
+    esac
+  fi
 
   SCRIPTORIUM_BIN="$candidate"
   vlog "scriptorium: using $SCRIPTORIUM_BIN"

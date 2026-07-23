@@ -33,7 +33,11 @@ shipped through `/pl-sync` and its gated `sync-reconciler` specialist.
 
 ## Source And Render Model
 
-Planar authors each shared skill once at `skills/src/<name>.md` and renders vendor outputs with `planar skills render`:
+Planar authors each shared skill once at `skills/src/<name>.md`. `install.sh`
+shells the external scriptorium binary to render vendor outputs (discovered by
+`scripts/discover-scriptorium.sh`: PATH lookup + a `$SCRIPTORIUM_BIN`
+override, gated on a version floor) — `scriptorium render --config
+scriptorium.yaml` (plan 918):
 
 - Claude projections are staged under `$PLANAR_HOME/commands/claude/`, installed
   to `~/.claude/commands/`, and invoked as `/<name>`.
@@ -50,38 +54,39 @@ vendor-neutral role in `agents/`, then render to an out-of-tree destination for
 validation. A normal full install renders and stages projections before wiring
 the selected vendors.
 
-Vendor profile data and model-tier resolution are embedded directly into the `planar` binary at compile time (the YAML literal lives in `src/engine/skillrender.zig`; see `agents/models.md` for the rendered tier table). Static render paths show each tier's default model (`list[0]` when the config uses candidate lists); runtime orchestration may further select a per-work-type candidate through the shared model resolver. Drift between `skills/src/` and generated vendor trees is gated by `planar skills render --check` against an out-of-tree staging directory.
+Vendor profile data lives in scriptorium's built-in per-vendor profiles
+(claude/codex/copilot/gemini), with the repo-root `scriptorium.yaml`
+supplying overrides/additions; model-tier resolution stays Planar-side in the
+shared resolver (`src/engine/models.zig`) and is regenerated into
+`agents/models.md`'s Tier Table by `planar models sync-doc` (plan 918 D4).
+Static render paths show each tier's default model (`list[0]` when the config
+uses candidate lists); runtime orchestration may further select a
+per-work-type candidate through the shared model resolver. Drift between
+`skills/src/` and generated vendor trees is gated by `scriptorium check`
+against an out-of-tree staging directory; `planar models sync-doc --check`
+gates the Tier Table separately.
 
-Rendered skills and vendor agent projections include
-`x-planar-source-digest` and `x-planar-projection-digest` metadata. Both are
-lowercase SHA-256 hex. The source value is shared by every vendor projection
-of the same parsed authored file; the projection value also covers only the
-vendor profile inputs that affect rendering and the rendered semantic payload.
-Neither value depends on checkout/output paths, install paths, timestamps,
-directory traversal, or local machine state. Skills and Claude/Copilot agents
-carry these keys in YAML frontmatter; Codex TOML agents carry them as leading
-comments to preserve its accepted key schema. Operators should treat the
-values as renderer-owned metadata and regenerate projections rather than edit
-them by hand.
+Planar's own in-band `x-planar-source-digest`/`x-planar-projection-digest`
+frontmatter metadata retired along with the in-tree renderer (plan 918 D5) —
+scriptorium-rendered projections carry neither header. Scriptorium tracks
+render/install freshness out-of-band in its own machine-local merkle+xxhash
+manifest: `scriptorium check` reports drift (read-only, non-zero exit on any
+finding) and `scriptorium status` gives the registry-vs-installed view.
+`planar skills status`/`planar skills repair`, which used to read the in-band
+digests, retired alongside them; `planar skills` itself is now a placeholder
+verb with no subcommands.
 
-Full installs record the selected managed projections in the versioned
-`~/.planar/install-manifest.json` authority after vendor wiring succeeds. Its
-rows contain vendor/kind/name identity, staged and installed paths, actual
-link-or-copy kind, and the two expected digests. Only those rows are managed:
-an unselected vendor or personal destination-only extension is outside
-Planar's ownership. The file is atomically replaced, and older installations
-that have only `.planar-install` remain valid legacy installs until the
-operator reruns `install.sh`.
-
-Use `planar skills status` to compare that authority with the staged and
-vendor-installed projections. The command is read-only, identifies unselected
-vendors without inventing missing rows, and labels destination-only personal
-extensions `unmanaged` without claiming them. A stale or missing managed row
-includes an exact scoped `planar skills repair ... --apply` command. Repair is
-preview-first, follows each row's recorded copy/link kind, verifies the digest
-after application, and never touches unmanaged content. A missing, malformed,
-unsupported, or stamped legacy manifest instead routes to `./install.sh
---prefix <resolved-prefix>` from a Planar source checkout.
+Full installs still record the selected managed projections in Planar's own
+versioned `~/.planar/install-manifest.json` authority after vendor wiring
+succeeds (`scripts/install-manifest.sh`). Its rows contain vendor/kind/name
+identity, staged and installed paths, and the actual link-or-copy kind; the
+two digest columns are populated only when the staged file happens to carry
+the legacy headers (nothing does, post-migration) and are left empty
+otherwise — an empty digest is never treated as a mismatch. Only those rows
+are managed: an unselected vendor or personal destination-only extension is
+outside Planar's ownership. The file is atomically replaced, and older
+installations that have only `.planar-install` remain valid legacy installs
+until the operator reruns `install.sh`.
 
 ---
 
@@ -1085,7 +1090,7 @@ Source: `skills/src/pl-local-import.md`
 |---|---|---|
 | Location | `skills/src/` and `agents/` in the repo; generated projections are staged under `$PLANAR_HOME` | `~/.planar/local/{skills,agents}/` on the operator's machine |
 | Install | `install.sh` or `make install` from the repo checkout | `planar local link` |
-| Authoring overhead | Commit the unified source, then run semantic lint and `planar skills render --check` against an out-of-tree staging dir | One file, one `planar local link` |
+| Authoring overhead | Commit the unified source, then run semantic lint and `scriptorium check` against an out-of-tree staging dir | One file, one `planar local link` |
 | Distribution | Shipped to everyone using the repo | This operator's machine only |
 | Promotion | N/A | Manual: copy file into the repo and follow normal contribution flow. No `planar local promote` shortcut |
 

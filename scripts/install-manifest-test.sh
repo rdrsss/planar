@@ -68,4 +68,31 @@ grep -q '"kind": "skill".*"install_kind": "copy"' "$MANIFEST"
 grep -q '"kind": "agent".*"install_kind": "link"' "$MANIFEST"
 [[ ! -e "$MANIFEST.tmp.$$" ]]
 
-printf 'install-manifest tests: 2 passed\n'
+# Digest-less path: what scriptorium actually writes — a SKILL.md with no
+# x-planar-source-digest/x-planar-projection-digest headers at all (the
+# legacy in-band scheme retires with skillrender; scriptorium tracks install
+# drift out-of-band in its own merkle+xxhash manifest — tech-spec.md D5).
+# Confirms install_manifest_add records the row with both digest fields
+# empty rather than erroring, and — the actual drift-comparison behavior —
+# that the legacy mismatch guard never fires for this case even when the
+# staged and installed bytes literally differ, since a digest is compared
+# only when the STAGED side has one. A false-positive mismatch here would
+# mean scriptorium-rendered installs spuriously fail install.sh.
+NODIGEST_PREFIX="$TMP/nodigest_home/.planar"
+NODIGEST_CODEX_HOME="$TMP/nodigest_home/.codex"
+mkdir -p "$NODIGEST_PREFIX/codex-skills/pl-nodigest" "$NODIGEST_CODEX_HOME/skills/pl-nodigest"
+printf 'body = "staged"\n' > "$NODIGEST_PREFIX/codex-skills/pl-nodigest/SKILL.md"
+printf 'body = "installed-drifted"\n' > "$NODIGEST_CODEX_HOME/skills/pl-nodigest/SKILL.md"
+
+install_manifest_begin "build-nodigest" copy
+install_manifest_add codex skill pl-nodigest \
+  "$NODIGEST_PREFIX/codex-skills/pl-nodigest/SKILL.md" \
+  "$NODIGEST_CODEX_HOME/skills/pl-nodigest/SKILL.md" \
+  copy
+NODIGEST_MANIFEST="$TMP/nodigest-manifest.json"
+install_manifest_write "$NODIGEST_MANIFEST"
+grep -q '"name": "pl-nodigest"' "$NODIGEST_MANIFEST"
+grep -q '"source_digest": ""' "$NODIGEST_MANIFEST"
+grep -q '"projection_digest": ""' "$NODIGEST_MANIFEST"
+
+printf 'install-manifest tests: 3 passed\n'

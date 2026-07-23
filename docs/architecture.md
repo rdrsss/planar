@@ -355,7 +355,7 @@ Subsystem modules live at the engine root:
 | `src/engine/tree.zig` | Hierarchical rendering for `planar tree` — walks the plan / task / artifact / decision / scenario / question graph and produces the indented output. |
 | `src/engine/config/` (+ `config.zig`) | Configuration-plane reader: loads `~/.planar/config.toml`, applies the layered resolution order, validates, exposes the resolved config to other modules. |
 | `src/engine/workspace/` (+ `workspace.zig`) | Workspace state directory model: routing table, generated AGENTS.md, symlink lifecycle. |
-| `src/engine/llm/` (+ `llm.zig`), `entitylink.zig`, `health.zig`, `policy/`, `promotion.zig`, `local/`, `skillrender.zig`, `docs.zig`, `search.zig`, `init.zig` | Cross-cutting subsystem modules. |
+| `src/engine/llm/` (+ `llm.zig`), `entitylink.zig`, `health.zig`, `policy/`, `promotion.zig`, `local/`, `docs.zig`, `search.zig`, `init.zig` | Cross-cutting subsystem modules. |
 
 ### CLI parser ([`vendor/etcli/`](https://github.com/rdrsss/etcli))
 
@@ -703,9 +703,11 @@ The orchestrator gates Phases 2 and 3 on explicit user confirmation. Ingestion n
 ### Vendor surfaces
 
 Unified skill sources live only in `skills/src/`; vendor-neutral agent role
-sources live in `agents/`. `planar skills render` creates the vendor projections
-at install time, so `commands/claude/`, `skills/codex/`, and `skills/copilot/`
-are generated output trees rather than authored source directories.
+sources live in `agents/`. `install.sh` shells the external scriptorium binary
+(plan 918; discovered by `scripts/discover-scriptorium.sh`) to create the
+vendor projections at install time, so `commands/claude/`, `skills/codex/`,
+and `skills/copilot/` are generated output trees rather than authored source
+directories.
 
 This is a source-of-truth boundary, not merely a directory convention. Review
 and edit `skills/src/` and `agents/`; validate projections in an out-of-tree
@@ -724,19 +726,19 @@ do not invent work and no guidance or manifest file is changed automatically.
 
 Agent role specs (vendor-neutral) live under `agents/`. The key files are `agents/methodology.md`, `agents/doctrine.md`, `agents/orchestrator.md`, `agents/planner.md`, `agents/spec-reviewer.md`, `agents/ingestor.md`, `agents/coder.md`, `agents/test-coder.md`, `agents/reviewer.md`, `agents/janitor.md`, `agents/documenter.md`, `agents/doc-author.md`, `agents/ext-sync.md`, `agents/importer.md`, `agents/synthesizer.md`, `agents/sync-reconciler.md`, and `agents/models.md` (tier-to-model resolution).
 
-Every rendered skill and agent projection carries two lowercase SHA-256 values:
-`x-planar-source-digest` identifies the parsed, vendor-neutral authored source,
-and `x-planar-projection-digest` identifies that source plus the
-projection-relevant vendor profile and metadata-free rendered payload. The
-canonical encoding is versioned, fixed-order, and byte-length-prefixed
-(`label N:value\n`); it excludes source/output paths, install paths,
-timestamps, filesystem traversal order, and machine-local state. Markdown
-skills and Claude/Copilot Markdown agents store the values in YAML
-frontmatter. Codex TOML agents store the same keys in leading comments so the
-TOML agent schema is unchanged. Digest rows are presentation metadata and are
-excluded from the projection digest itself, avoiding a circular hash. This is
-the public projection-freshness seam used by installation/status tooling;
-`planar skills render --check` continues to compare complete rendered bytes.
+Planar's own in-band `x-planar-source-digest`/`x-planar-projection-digest`
+frontmatter metadata (one lowercase SHA-256 hex value each, versioned,
+fixed-order, byte-length-prefixed encoding) retired along with the in-tree
+renderer (plan 918 D5) — scriptorium-rendered projections carry neither
+header. Scriptorium tracks render/install freshness out-of-band instead, in
+its own machine-local merkle+xxhash manifest: a registry hash over
+`skills/src/`/`agents/` sources, plus a per-artifact rendered-hash/on-disk-hash
+pair whose mismatch is exactly what `scriptorium check` reports as `stale`
+(source changed since last render) or `drifted` (installed bytes hand-edited
+since last render) — read-only, non-zero exit on any finding.
+`scriptorium status` gives the registry-vs-installed view. This is the
+projection-freshness seam installation tooling now reads, replacing the old
+`planar skills render --check` comparison of complete rendered bytes.
 
 After all selected vendor wiring succeeds, `install.sh` atomically replaces
 `$PLANAR_HOME/install-manifest.json` (normally
@@ -744,8 +746,11 @@ After all selected vendor wiring succeeds, `install.sh` atomically replaces
 `copy|link` installation mode, selected managed vendors, selected optional
 installer extras (currently `mtkahypar`), and one row per managed skill or
 agent projection. Each row fixes the vendor, projection kind
-and name, staged and installed paths, actual `copy|link` install kind, and both
-renderer digests. Codex and Copilot directory-shaped skills use their staged
+and name, staged and installed paths, actual `copy|link` install kind, and the
+two legacy digest fields — populated only when the staged file happens to
+carry the retired `x-planar-*` headers (nothing does, post plan-918 migration
+to scriptorium as renderer); empty otherwise, and never treated as a mismatch
+when empty. Codex and Copilot directory-shaped skills use their staged
 `codex-skills/` or `copilot-skills/` `SKILL.md` as the staged authority; their
 vendor installs are copies even during a global link-mode install. Claude
 skills and vendor agent files are links.
@@ -758,31 +763,37 @@ JSON authoritative. The older `.planar-install` prefix stamp remains for
 legacy-install detection and the prefix adoption guard; an install without the
 versioned manifest remains compatible and can be upgraded by reinstalling.
 
-`planar skills status` is the read-only consumer of this contract. It reports
-selected versus unselected vendors, classifies managed rows as `fresh`,
-`stale`, or `missing`, and may enumerate destination-only `unmanaged` entries
-without treating discovery as ownership. Missing, malformed, future-version,
-and stamped legacy manifests remain aggregate manifest states with a
-source-checkout `./install.sh --prefix <resolved-prefix>` bootstrap command;
-they are never guessed into managed rows.
+`src/engine/installedsurface.zig`'s `status()` classifier is the read-only
+consumer of this contract. There is no more standalone `planar skills status`
+CLI verb to expose it directly — plan 918 D5 retired it along with the
+projection-digest path it used to read; `planar skills` is now a placeholder
+verb with no subcommands. The classifier reports selected versus unselected
+vendors and classifies managed rows as `fresh`, `stale`, or `missing` by
+plain existence + byte/symlink comparison against the staged authority (not a
+semantic digest match — that scheme retired with it), and may enumerate
+destination-only `unmanaged` entries without treating discovery as ownership.
+Missing, malformed, future-version, and stamped legacy manifests remain
+aggregate manifest states with a source-checkout `./install.sh --prefix
+<resolved-prefix>` bootstrap command; they are never guessed into managed
+rows. Canonical projection drift in the *rendered content itself* (source
+changed, hand-edited install, orphaned install) is scriptorium's own finding
+now — see `scriptorium check`/`scriptorium status` in Recipe 14A.
 
 `planar health` calls this same classifier and folds its summary into the
-`projection_freshness` contributor; digest and ownership decisions are not
-duplicated. Manifest-owned stale/missing rows and aggregate legacy, invalid,
-or unsupported manifest states degrade overall health and carry the exact
-classifier recovery command. No manifest and no legacy stamp is
-`not_installed`; unmanaged entries and unselected vendors remain visible
+`projection_freshness` contributor; classification and ownership decisions
+are not duplicated elsewhere. Manifest-owned stale/missing rows and aggregate
+legacy, invalid, or unsupported manifest states degrade overall health and
+carry the exact classifier recovery command. No manifest and no legacy stamp
+is `not_installed`; unmanaged entries and unselected vendors remain visible
 counts but do not degrade. The health path never invokes repair, rendering,
 installation, or any filesystem/database mutation.
 
-`planar skills repair` shares the same classifier and is preview-first.
-`--apply` operates only on stale or missing manifest rows, replacing copy rows
-from staged bytes and link rows with the recorded staged symlink, then
-verifying the installed digest. It refuses directory-shaped or unowned
-destinations, preserves unmanaged extensions, and reports independent target
-failure as a resumable partial result. Neither status nor repair opens SQLite;
-status has no write path, and repair's filesystem write authority is exactly
-the manifest row set.
+There is no more per-name `planar skills repair` verb — it retired alongside
+`skills status` and the digest path both used to read (plan 918 D5). Any
+stale or missing row now surfaces the same fixed full-reinstall recovery
+command: `repair_command` is always the `./install.sh --prefix
+<resolved-prefix>` bootstrap, never a scoped per-row repair. The classifier
+itself never opens SQLite and has no write path of its own.
 
 ### Authored-surface validation
 
