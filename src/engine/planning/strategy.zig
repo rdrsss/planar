@@ -76,7 +76,6 @@ const db = @import("db");
 /// (rule 4). Named constant so it is greppable and maintainable — the
 /// tech-spec notes "the list may grow".
 pub const singleton_files = [_][]const u8{
-    "agents/methodology.md",
     "CLAUDE.md",
     "AGENTS.md",
     "docs/cli-reference.md",

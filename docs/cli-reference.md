@@ -911,7 +911,7 @@ Two open tasks are parallel-eligible iff **all six** hold:
 | 1 | No `blocked_by` chain (transitive `blocks` closure) to another not-done task in the plan. |
 | 2 | Disjoint touch set. A task's touch set is the file paths it declares via `task touches add <task> <repo> --path <p>` (`task_touch_paths`), with the coarse repo slug (`entity_links` `touches`) used only for repos that have no path-level declaration. Path detail refines the coarse signal: two tasks editing different files in the same repo are disjoint (eligible). An **empty** touch set is treated as "touches everything" and is never eligible. Two tasks whose touch sets intersect **both** drop (drop-both-on-tie). Eligibility is only as complete as the declared touches — declaring touches accurately is operator/orchestrator hygiene (the omission failure mode is safe: an undeclared task serializes rather than falsely parallelizing). |
 | 3 | No schema migration touched — any task touching `migrations/*.sql` serializes (migration numbering is linear). Unilateral drop. |
-| 4 | No singleton authoritative file touched — `agents/methodology.md`, `CLAUDE.md`, `AGENTS.md`, `docs/cli-reference.md`, `docs/architecture.md`. Unilateral drop. |
+| 4 | No singleton authoritative file touched — `CLAUDE.md`, `AGENTS.md`, `docs/cli-reference.md`, `docs/architecture.md`. Unilateral drop. |
 | 5 | No `open` question linked to the task. |
 | 6 | No `proposed` decision linked to the task. |
 
