@@ -42,6 +42,15 @@ pub const RegisterCwdArgs = struct {
     slug: ?[]const u8 = null,
     /// Optional git remote URL captured by the caller.
     git_remote: ?[]const u8 = null,
+    /// Overwrite an existing registration: when the slug row already
+    /// exists, repoint its root_path (and refresh name/git_remote) to
+    /// this call's values under the SAME project id, so association
+    /// memberships and scoped entities carry over. This is the
+    /// checkout-moved migration path (e.g. a standalone checkout
+    /// retired in favor of a superproject submodule). Without force,
+    /// insert-or-ignore semantics hold and an existing row is returned
+    /// unchanged.
+    force: bool = false,
 };
 
 pub const Error =
@@ -75,10 +84,21 @@ pub fn registerCwd(
     const name: []const u8 = args.name orelse base;
 
     // INSERT OR IGNORE — second call from the same cwd is a no-op.
-    _ = d.execParams(
+    // With `force`, an existing slug row is repointed in place instead
+    // (same id — memberships and scoped entities carry over).
+    const sql = if (args.force)
+        \\insert into projects (slug, name, root_path, git_remote)
+        \\values (?, ?, ?, ?)
+        \\on conflict (slug) do update set
+        \\  name = excluded.name,
+        \\  root_path = excluded.root_path,
+        \\  git_remote = excluded.git_remote,
+        \\  updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    else
         \\insert or ignore into projects (slug, name, root_path, git_remote)
         \\values (?, ?, ?, ?)
-    , &.{
+    ;
+    _ = d.execParams(sql, &.{
         .{ .text = slug_owned },
         .{ .text = name },
         .{ .text = args.cwd },
@@ -212,6 +232,39 @@ test "registerCwd: second call from the same cwd is idempotent" {
     defer project.deinit(p2, a);
 
     try std.testing.expectEqual(p1.id, p2.id);
+    try std.testing.expectEqual(
+        @as(i64, 1),
+        try d.intQuery("select count(*) from projects"),
+    );
+}
+
+test "registerCwd: force repoints root_path under the same id" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    // Slug derives from the cwd BASENAME — the checkout-moved case is
+    // the same leaf directory name under a new parent (a sibling
+    // checkout retired in favor of a superproject submodule).
+    const p1 = try registerCwd(&d, a, .{ .cwd = "/work/old/mover" });
+    defer project.deinit(p1, a);
+
+    // Without force: existing row wins, root_path untouched.
+    const p2 = try registerCwd(&d, a, .{ .cwd = "/work/new/mover" });
+    defer project.deinit(p2, a);
+    try std.testing.expectEqual(p1.id, p2.id);
+    try std.testing.expectEqualStrings("/work/old/mover", p2.root_path.?);
+
+    // With force: same id, repointed root_path, refreshed remote.
+    const p3 = try registerCwd(&d, a, .{
+        .cwd = "/work/new/mover",
+        .git_remote = "git@example.com:mover.git",
+        .force = true,
+    });
+    defer project.deinit(p3, a);
+    try std.testing.expectEqual(p1.id, p3.id);
+    try std.testing.expectEqualStrings("/work/new/mover", p3.root_path.?);
+    try std.testing.expectEqualStrings("git@example.com:mover.git", p3.git_remote.?);
     try std.testing.expectEqual(
         @as(i64, 1),
         try d.intQuery("select count(*) from projects"),

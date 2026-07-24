@@ -70,6 +70,7 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
         .cwd = cwd,
         .name = args.name,
         .git_remote = remote,
+        .force = args.force,
     }) catch |e| exit.die(ctx, e, "registering project: {s}", .{@errorName(e)});
     defer engine.identity.project.deinit(p, ctx.allocator);
 
