@@ -11,13 +11,11 @@
 BINARY        := planar
 AGENT_BINARY  := planar-agent
 WATCH_BINARY  := planar-watch
-DOC_BINARY    := planar-doc
 EXECUTE_BINARY := planar-execute
 BIN_DIR       := bin
 BIN           := $(BIN_DIR)/$(BINARY)
 AGENT_BIN     := $(BIN_DIR)/$(AGENT_BINARY)
 WATCH_BIN     := $(BIN_DIR)/$(WATCH_BINARY)
-DOC_BIN       := $(BIN_DIR)/$(DOC_BINARY)
 EXECUTE_BIN   := $(BIN_DIR)/$(EXECUTE_BINARY)
 
 ZIG         ?= zig
@@ -50,17 +48,16 @@ help:
 	@awk 'BEGIN {FS = ":.*##"; printf "Targets:\n"} /^[a-zA-Z0-9_.-]+:.*##/ {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 .PHONY: build
-build: ## Build the planar + planar-agent + planar-watch + planar-doc + planar-execute binaries into ./bin/ (at repo root)
+build: ## Build the planar + planar-agent + planar-watch + planar-execute binaries into ./bin/ (at repo root)
 	@mkdir -p $(BIN_DIR)
 	$(ZIG) build -Doptimize=$(OPTIMIZE) $(ARGS)
 	@cp -f zig-out/bin/$(BINARY) $(BIN)
 	@cp -f zig-out/bin/$(AGENT_BINARY) $(AGENT_BIN)
 	@cp -f zig-out/bin/$(WATCH_BINARY) $(WATCH_BIN)
-	@cp -f zig-out/bin/$(DOC_BINARY) $(DOC_BIN)
 	@cp -f zig-out/bin/$(EXECUTE_BINARY) $(EXECUTE_BIN)
 
 .PHONY: install
-install: ## Build and install the five Planar executables into PREFIX/bin (default: ~/.local/bin)
+install: ## Build and install the four Planar executables into PREFIX/bin (default: ~/.local/bin)
 	$(ZIG) build -Doptimize=$(OPTIMIZE) -Dversion-meta=true --prefix $(PREFIX) $(ARGS)
 
 .PHONY: install-bin
@@ -71,11 +68,10 @@ install-full: ## Legacy full install: binaries plus skills, agents, workflows, a
 	./install.sh $(INSTALL_FLAGS)
 
 .PHONY: uninstall
-uninstall: ## Remove the five Planar executables from PREFIX/bin
+uninstall: ## Remove the four Planar executables from PREFIX/bin
 	rm -f $(PREFIX)/bin/$(BINARY)
 	rm -f $(PREFIX)/bin/$(AGENT_BINARY)
 	rm -f $(PREFIX)/bin/$(WATCH_BINARY)
-	rm -f $(PREFIX)/bin/$(DOC_BINARY)
 	rm -f $(PREFIX)/bin/$(EXECUTE_BINARY)
 
 .PHONY: uninstall-full
@@ -124,20 +120,6 @@ surface-lint: ## Validate authored links, contracts, capabilities, commands, and
 .PHONY: eval-orchestrator-contract
 eval-orchestrator-contract: ## Validate the deterministic pl-orchestrator eval contract (no model calls)
 	./scripts/eval-pl-orchestrator.sh --contract-only
-
-.PHONY: bench-verify
-bench-verify: build ## planar-doc verify latency tracker — prints cold + warm wall-clock
-	@echo "planar-doc verify: cold + warm wall-clock (rough; integration tests own the latency contract)"
-	@$(DOC_BIN) build > /dev/null 2>&1 || true
-	@start_cold=$$(date +%s%N); \
-	  $(DOC_BIN) verify > /dev/null 2>&1 || true; \
-	  end_cold=$$(date +%s%N); \
-	  cold_ms=$$(( (end_cold - start_cold) / 1000000 )); \
-	  start_warm=$$(date +%s%N); \
-	  $(DOC_BIN) verify > /dev/null 2>&1 || true; \
-	  end_warm=$$(date +%s%N); \
-	  warm_ms=$$(( (end_warm - start_warm) / 1000000 )); \
-	  echo "verify: $${warm_ms}ms (warm) / $${cold_ms}ms (cold)"
 
 .PHONY: coverage
 coverage: build ## Check integration-test leaf-coverage ratio against scripts/coverage-baseline.txt

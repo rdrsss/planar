@@ -8,18 +8,16 @@ regenerated_by: hand
 
 # Outward-facing documentation system
 
-Planar's documentation system is repo-state-driven. A single repo-tracked
-manifest (`.planar-manifest`) links published docs under `docs/` to
-source-area xxh64 / merkle hashes over the repo's working tree, so doc
-drift is detectable, attributable, and addressable without referencing
-any machine-local Planar state. The `planar-doc` binary owns the
-manifest, the walker, and the diff classifier; an orchestrator-launched
-documenter agent consumes the diff at the end of work cycles and emits a
-worklist for the operator to gate.
+Planar delegates published-documentation state to the standalone Tabularium
+tool. Tabularium links docs under `docs/` to source-area xxh64 / merkle hashes
+over the working tree in its machine-local SQLite database, so documentation
+drift is detectable without committing bookkeeping into this repository. An
+orchestrator-launched documenter can consume the diff at the end of work cycles
+and emit a worklist for the operator to gate.
 
 ## What it does
 
-- Maintains `.planar-manifest` — an xxh64-keyed, merkle-rooted index
+- Maintains a machine-local manifest — an xxh64-keyed, merkle-rooted index
   whose entries link each published doc to one or more **repo-path
   sources** (directories or files in the working tree). The root hash
   is O(1) to verify against the live tree.
@@ -32,10 +30,11 @@ worklist for the operator to gate.
 - Tracks a `nodoc` set: paths the documenter inspected and decided
   are not worth documenting. The set is re-evaluated whenever a
   nodoc path's hash changes.
-- Is owned by a dedicated binary, `planar-doc`, with a small
-  capability surface: build / verify / diff / cover / nodoc / lint.
-  `planar-doc` never opens SQLite — its only write is the manifest
-  file itself.
+- Is owned by the separately installed `tabularium` executable, with a small
+  capability surface: build / verify / diff / cover / nodoc / lint / schema /
+  import / export. Its writes stay under `$TABULARIUM_HOME` (default
+  `~/.tabularium`); the documented repository is read-only except when the
+  caller explicitly authors prose.
 
 ## Manifest shape
 
@@ -71,7 +70,7 @@ Source scope (what the root hash covers):
 
 ## The three-signal classifier
 
-`planar-doc diff` walks the merkle, detects changed subtrees, and emits
+`tabularium diff` walks the merkle, detects changed subtrees, and emits
 one of three signals per changed path:
 
 | Signal | Meaning |
@@ -88,22 +87,22 @@ binary itself only reads and reports.
 
 ```sh
 # Build / refresh the manifest (recompute hashes, write atomically).
-planar-doc build
+tabularium build
 
 # O(1) root compare against the live tree.
-planar-doc verify
+tabularium verify
 
 # Three-signal drift breakdown.
-planar-doc diff [--json]
+tabularium diff [--json]
 
 # Add or remove a (doc, source) coverage edge.
-planar-doc cover <doc-path> <repo-path> [--remove]
+tabularium cover <doc-path> <repo-path> [--remove]
 
 # Mark a path as intentionally undocumented (or remove from nodoc).
-planar-doc nodoc <repo-path> [--remove]
+tabularium nodoc <repo-path> [--remove]
 
 # Minimal docs prose linter (URL footnotes etc.; DB-free).
-planar-doc lint [--path <dir>]
+tabularium lint [--path <dir>]
 ```
 
 ## Orchestrator integration
@@ -122,12 +121,12 @@ Internal planning artifacts (tech specs, roadmaps, product specs,
 ADRs, design notes) live as Planar artifacts under the active scope
 and surface via the workbench filesystem. Published outward-facing
 docs live under `docs/` in the repo. The doc system is the boundary:
-the documenter agent proposes; the operator authors; `planar-doc`
+the documenter agent proposes; the operator authors; `tabularium`
 tracks the manifest contract.
 
 ## Related
 
 - [Concepts: artifacts and the workbench](../concepts.md)
 - [Workflows: synthesising and refreshing docs](../workflows.md)
-- [Architecture: the five-binary boundary](../architecture.md)
+- [Architecture: the four-binary boundary](../architecture.md)
 - [Features: scope resolution](scope-resolution.md)

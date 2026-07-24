@@ -447,7 +447,7 @@ Two invariants govern scope behavior when cwd is inside a worktree:
 
 **Execution / read (allowed in worktree):** every `planar-agent *`, every `planar-watch *`, `planar resume`, `planar dashboard`, `planar handoff *`, `planar capture *`, `planar audit *`, `planar health`, every `* show` / `* list` read, `planar workbench {pull,push,status,sync,resolve}`, `planar workspace *`.
 
-**`task done` is refused on purpose.** Coders advance task state via `planar-agent complete --claim <token>`, the atomic terminal verb that flips claim status and task status in one transaction. This reinforces the five-binary boundary in `CLAUDE.md § Operating Rules` and the canonical claim ritual in [Coordination claims](#coordination-claims).
+**`task done` is refused on purpose.** Coders advance task state via `planar-agent complete --claim <token>`, the atomic terminal verb that flips claim status and task status in one transaction. This reinforces the four-binary boundary in `CLAUDE.md § Operating Rules` and the canonical claim ritual in [Coordination claims](#coordination-claims).
 
 **`--scope <slug>` does NOT override the refusal.** The rule is about *where the verb runs*, not which scope it targets. To plan against a member repo from elsewhere, cd to the parent repo (or workspace root with `--scope <member>`); do not try to plan from inside a worktree.
 

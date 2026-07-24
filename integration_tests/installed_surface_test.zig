@@ -165,7 +165,7 @@ pub fn runSelectedVendorInstallerLifecycle() !void {
         \\  if [[ "$1" == --prefix ]]; then prefix="$2"; shift 2; else shift; fi
         \\done
         \\mkdir -p "$prefix/bin"
-        \\for name in planar planar-agent planar-watch planar-doc planar-execute; do
+        \\for name in planar planar-agent planar-watch planar-execute; do
         \\  cp "$PLANAR_BIN" "$prefix/bin/$name"
         \\done
     );

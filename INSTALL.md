@@ -19,7 +19,7 @@ No system SQLite is needed. Planar vendors the SQLite amalgamation under `vendor
 
 ## Quick install (`make install`)
 
-The shortest path. Builds and installs Planar's five executables into
+The shortest path. Builds and installs Planar's four executables into
 `~/.local/bin` and nothing else.
 
 There is no zig equivalent to a remote `module@version` install, so clone the repo and build directly into your install prefix:

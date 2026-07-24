@@ -22,7 +22,7 @@ shows the underlying supported interface.
 | Resume interrupted work or diagnose degraded state | `/pl-resume <task-id>` or `/pl-doctor` | `planar resume`, `planar audit`, `planar health`, `planar-agent reconcile` |
 | Inspect one external item's local history | `/pl-audit-trail <system:key>` | `planar audit trail` |
 | Reconcile a local/external sync conflict | `/pl-sync status` or `/pl-sync resolve <event-id>` | `planar sync status`, `planar audit trail`, guarded `planar sync resolve` |
-| Maintain published documentation | `/pl-doc-maintain` for the full loop; `/pl-documenter` for a proposal-centered sweep | `planar-doc diff|cover|nodoc|lint|build|verify` |
+| Maintain published documentation | `/pl-doc-maintain` for the full loop; `/pl-documenter` for a proposal-centered sweep | `tabularium diff|cover|nodoc|lint|build|verify` |
 
 `/pl-local-import` remains an import-only compatibility entry point; prefer
 `/pl-local` for the complete local lifecycle. Documentation maintenance is
@@ -204,7 +204,7 @@ binary capability boundary; the cue changes transcript visibility only.
 
 ## Binary architecture
 
-Planar ships five executables. Four are planning-state binaries, each with a disjoint capability boundary over the shared SQLite DB enforced by its verb set (not by runtime ACLs); skills and agents reach for the binary that matches the work - and only that binary. The capability boundary across those four is locked by integration tests (`integration_tests/capability_boundary_test.zig`). The fifth, `planar-execute`, is the deterministic, spawn-free Lua workflow engine and holds no DB handle.
+Planar ships four executables. Three are planning-state binaries, each with a disjoint capability boundary over the shared SQLite DB enforced by its verb set (not by runtime ACLs); skills and agents reach for the binary that matches the work - and only that binary. The capability boundary across those four is locked by integration tests (`integration_tests/capability_boundary_test.zig`). The fourth, `planar-execute`, is the deterministic, spawn-free Lua workflow engine and holds no DB handle.
 
 - `planar` — operator binary. Read-write to the full schema; owns every planning-entity verb (`plan`, `task`, `decision`, `question`, `scenario`, `artifact`, `workbench`, `doc`, `spec`, `templates`, `ext`, `sync`, `init`, `dashboard`, `tree`, `audit`, `health`, …). Has **no** `agent` subcommand namespace; agent-table writes live on `planar-agent` and agent-table reads live on `planar-watch`.
 - `planar-agent` — agent-callable coordination binary. Read-write only to its
@@ -215,10 +215,12 @@ Planar ships five executables. Four are planning-state binaries, each with a dis
   hook configured with only `planar-agent` on its PATH cannot touch any plan /
   decision / question / scenario / artifact / annotation row.
 - `planar-watch` — human-facing read-only viewer. Opens SQLite via `file:?mode=ro` so the driver itself refuses any write SQL. Verbs: `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `version`, `completion`. **Capability invariant:** a watcher process holding the binary on PATH cannot corrupt operator state even under hostile verb invocation — enforced both by the zero-write verb set and the read-only DB handle.
-- `planar-doc` — doc-state binary. Owns manifest-driven documentation verbs (`build`, `verify`, `diff`, `cover`, `nodoc`, `lint`, `schema`) and never opens SQLite.
 - `planar-execute` — deterministic, spawn-free Lua workflow engine (plan 633). A caller invokes `planar-execute run <wf.lua> --phase <name>` to run a deterministic workflow over an allowlisted host surface (`cli`/`git`/`fs`/`flow`/`ctx`) and collect its JSON result. It holds **no** DB handle (it shells the planning-state binaries for state) and exposes **no** model-spawning host function, so it is a workflow runner, not a harness. It is outside the claim ritual.
 
 An external Lua-based **harness** (a **separate external project**, distinct from `planar-execute`) is a pure CLI driver that shells these binaries to orchestrate LLM calls; it holds no DB handle and is not part of the Planar binary set.
+
+Documentation workflows call the separately installed `tabularium` tool. It is
+not a Planar build artifact and owns its machine-local manifest database.
 
 Every skill in this document routes its writes through the binary that owns them. Skills that schedule agent work (`/orchestrator`, `/pl-coder`) drive the `planar-agent pull → heartbeat → complete|fail|release|block` ritual; skills that surface live operator views (status, dashboard, audit trail) read through `planar` and `planar-watch`.
 
@@ -888,14 +890,14 @@ Inspect manifest-backed repository drift and route it through the read-only
 `documenter` specialist, which proposes `extend-cover`, `create-doc`, `nodoc`,
 or `defer` rows for operator review. The specialist never writes prose or
 manifest state. After the row gate, the skill caller sends only approved prose
-rows to `doc-author` and owns any approved `planar-doc` mutations.
+rows to `doc-author` and owns any approved `tabularium` mutations.
 
 Use this proposal-centered entry point for a manual post-cycle sweep. A clean,
 verified diff is a no-op; unresolved or unapproved rows are not absorbed by a
 manifest rebuild.
 
 Before proposing ordinary rows, the workflow derives authoritative repository
-identity from the migration tail and its schema insert, the five installed
+identity from the migration tail and its schema insert, the four installed
 artifacts in `build.zig`, the canonical `skills/src/` and `agents/` source
 trees, and `AGENTS.md`/`CLAUDE.md` equivalence. Only an explicit contradiction
 in guidance becomes an operator-gated `guidance-identity-drift` row; missing
@@ -916,11 +918,11 @@ Source: `skills/src/pl-documenter.md` · `agents/documenter.md` · `agents/doc-a
 ### `/pl-doc-maintain`
 
 Run the complete gated documentation-maintenance loop: read and parse
-`planar-doc diff --json`, obtain documenter proposals, require an explicit
+`tabularium diff --json`, obtain documenter proposals, require an explicit
 operator disposition for every row, dispatch approved prose to `doc-author`,
 apply approved coverage or `nodoc` operations, then lint, build, verify, and
 require a clean final diff. The caller alone invokes manifest-writing
-`planar-doc` verbs; neither specialist owns those mutations.
+`tabularium` verbs; neither specialist owns those mutations.
 
 **Example:**
 ```

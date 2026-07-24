@@ -1,6 +1,6 @@
 //! planar-execute — the deterministic, spawn-free Lua workflow engine.
 //!
-//! Fifth Planar binary (plan 633). An LLM caller invokes `planar-execute` to do
+//! Fourth Planar binary (plan 633). An LLM caller invokes `planar-execute` to do
 //! a discrete chunk of *deterministic* work — shell allowlisted CLI verbs, run
 //! confined git, do path-confined file IO, evaluate control flow — and get a
 //! JSON result back.  It is NOT an orchestrator: its Lua host API exposes NO

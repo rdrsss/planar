@@ -151,7 +151,7 @@ in-tree under `src/cli/`; extracted into a standalone repo and
 vendored back under `vendor/etcli/` so other Zig CLI projects can
 reuse it. The deliberate choice over cobra (Go) or clap (Rust)
 stands: the parser surface is small, stable, and integrates with
-the five-binary capability boundary (each binary's verb set is
+the four-binary capability boundary (each binary's verb set is
 its capability surface, enforced at compile time).
 
 **Bucket layouts carry forward.** ADR-0007 (engine bucket grouping)

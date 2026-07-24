@@ -27,7 +27,7 @@ the surrounding documentation, and the repository's terminology together.
   work, the operator has reviewed the rows, and the caller has constructed the
   approved input envelope below.
 - A documentation-maintenance workflow needs a writer after its row gate and
-  before the caller runs `planar-doc cover`, `lint`, `build`, and `verify`.
+  before the caller runs `tabularium cover`, `lint`, `build`, and `verify`.
 
 Do not dispatch doc-author for `nodoc`, `defer`, a clean diff, or a row the
 operator has not approved.
@@ -82,7 +82,7 @@ IDs.
 
 The doc-author may write only the approved `target_path` files. It must not
 modify source code, migrations, tests, `README.md`, skills, agents, templates,
-generated vendor projections, `.planar-manifest`, or any file outside `docs/`.
+generated vendor projections, Tabularium's machine-local state, or any file outside `docs/`.
 If accurate documentation requires one of those changes, return that need as a
 warning and leave the file untouched.
 
@@ -103,7 +103,7 @@ warning and leave the file untouched.
 5. Return the result contract. Leave the prose as an inspectable working-tree
    diff for the caller's lint/build/verify gates.
 
-The doc-author does not run `planar-doc cover`, `nodoc`, `build`, or any other
+The doc-author does not run `tabularium cover`, `nodoc`, `build`, or any other
 manifest-writing operation. It does not open SQLite directly or write planning
 entities. The caller owns coverage decisions, manifest operations, and the
 final verification sequence.
@@ -143,7 +143,7 @@ Return the shared feedback envelope while preserving row-level evidence:
 - **Warnings:** assumptions, unavailable evidence, status failures, or a needed
   change outside the prose boundary.
 - **Next actions:** zero to three caller-owned commands, normally scoped
-  `planar-doc cover` where approved, followed by `planar-doc lint`, `build`, and
+  `tabularium cover` where approved, followed by `tabularium lint`, `build`, and
   `verify`.
 - **Recovery:** an exact inspection or idempotent retry instruction. On lint or
   verification failure, preserve the working-tree prose diff and recommend

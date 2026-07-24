@@ -5849,7 +5849,7 @@ writes to `agent_work_claims`, `agent_actions`, `workflow_runs`, and
 `context_records`, plus the bounded `tasks.status` transitions performed by
 atomic terminal operations. Operator-recovery verbs (`reconcile`, `abort`) live
 here because the capability boundary tracks write ownership, not audience. See
-[Five-binary architecture](architecture.md#five-binary-architecture) for the
+[Four-binary architecture](architecture.md#four-binary-architecture) for the
 binary split.
 
 Schema-version handshake: `planar-agent` is a **consumer** of the schema, not its owner. Startup queries `schema_migrations.max(version)` and refuses with exit **7** when the live DB is older than the binary's embedded minimum. The remediation pointer ("run `planar init`") is printed to stderr.
@@ -6029,7 +6029,7 @@ bounded planning-state blast radius.
 
 ## Binary: `planar-watch`
 
-`planar-watch` is the human-facing **read-only viewer** for live agent activity. Third binary in the five-binary architecture (plan 85 M8). See `docs/architecture.md` § "Five-binary architecture" for the binary split. Note: `planar-watch` is the scriptable NDJSON streaming viewer; the interactive operator cockpit is `planar explore` (bare `planar` on a TTY) — see [Domain: `explore`](#domain-explore).
+`planar-watch` is the human-facing **read-only viewer** for live agent activity. Third binary in the four-binary architecture (plan 85 M8). See `docs/architecture.md` § "Four-binary architecture" for the binary split. Note: `planar-watch` is the scriptable NDJSON streaming viewer; the interactive operator cockpit is `planar explore` (bare `planar` on a TTY) — see [Domain: `explore`](#domain-explore).
 
 Schema-version handshake: `planar-watch` is a **consumer** of the schema, not its owner. Startup queries `schema_migrations.max(version)` and refuses with exit **7** when the live DB is older than the binary's embedded minimum (same code `planar-agent` uses; remediation message "run `planar init`").
 
@@ -6300,68 +6300,18 @@ Each `--follow` verb installs a SIGINT handler that flips an atomic flag. The po
 
 ---
 
-## Binary: `planar-doc`
-
-`planar-doc` is the **repo-state documentation manifest tool**. Fourth binary in the architecture (plan 423 M6). It owns `.planar-manifest` — an xxh64-keyed, merkle-rooted index over the working tree that links published docs under `docs/` to source-area subtrees. The binary never opens SQLite; its only write is the manifest file itself.
-
-See `docs/features/doc-system.md` for the model, `docs/architecture.md` for the five-binary boundary, and `docs/workflows.md` § Recipe 13 for the end-to-end docs-maintenance workflow.
-
-### Capability invariant
-
-A process invoked as `planar-doc` performs **no DB writes** — it never opens SQLite at all. The binary's writes are limited to `.planar-manifest` at the repo root. The capability boundary is the verb set: build, verify, diff, cover, nodoc, lint.
-
-### Verbs
-
-```
-# Recompute hashes over the working tree and write the manifest atomically.
-planar-doc build       [--json]
-
-# O(1) compare of the recomputed merkle root against the stored manifest.
-planar-doc verify      [--json]
-
-# Three-signal drift breakdown.
-planar-doc diff        [--json]
-
-# Add or remove a (doc, source) coverage edge.
-planar-doc cover       <doc-path> <repo-path> [--remove]
-
-# Mark a repo path as intentionally undocumented (or remove from nodoc).
-planar-doc nodoc       <repo-path> [--remove]
-
-# Minimal prose linter under `docs/` (the DB-free subset that survived
-# the plan 423 binary split).
-planar-doc lint        [--path <dir>] [--json]
-```
-
-### Drift signals
-
-`planar-doc diff` emits one of three signals per changed path:
-
-| Signal | Meaning |
-|--------|---------|
-| `regenerate-candidate` | a source the doc covers drifted |
-| `hand-edit` | the doc body changed without its sources moving |
-| `new-authoring` / `deletion` | a path appeared without a covering entry, or an entry's source is gone |
-
-### Exit codes
-
-| Code | Meaning |
-|------|---------|
-| 0 | Success. |
-| 1 | Drift detected (`verify` or `diff` found differences) OR generic failure. |
-| 2 | User-input failure (unknown flag, malformed argument). |
-
----
-
 ## Introspection: `schema` (all binaries)
 
-Every Planar binary — `planar`, `planar-agent`, `planar-watch`, `planar-doc` — exposes a `schema` verb that prints a deterministic flat JSON catalog of its entire command tree: each command's full path, subcommands, aliases, positionals, and flags (with inherited flags merged in). Output is always JSON.
+Every Planar planning-state binary — `planar`, `planar-agent`, and
+`planar-watch` — exposes a `schema` verb that prints a deterministic flat JSON
+catalog of its entire command tree: each command's full path, subcommands,
+aliases, positionals, and flags (with inherited flags merged in). Output is
+always JSON.
 
 ```sh
 planar schema
 planar-agent schema
 planar-watch schema
-planar-doc schema
 ```
 
 The catalog is built at comptime from the command tree, so the verb is a pure write with no DB access. It is intended for structured consumers — LLM tool routers, editor integrations, and the schema-driven first pass of `make cli-usage-check`, which validates that authored agent/skill/doc surfaces never reference a flag a binary does not expose (implemented in `tools/cli_usage_lint.zig`). The same target then runs the semantic authored-surface validator (`tools/surface_lint.zig`); use `make surface-lint` to run that semantic pass alone.
@@ -6825,7 +6775,7 @@ For quick reference, all documented commands grouped by domain:
 | `run` | `run start`, `run event`, `run finish`, `run show` |
 | `workflow` | `workflow list`, `workflow list --local`, `workflow show <name>` |
 | `feedback` | `feedback triage list`, `feedback triage show`, `feedback triage set` |
-| `schema` | `schema` (also on `planar-agent`, `planar-watch`, `planar-doc`) |
+| `schema` | `schema` (also on `planar-agent`, `planar-watch`, `tabularium`) |
 ## Domain: `feedback`
 
 Migration `00028_feedback_triage` stores deterministic operator triage for

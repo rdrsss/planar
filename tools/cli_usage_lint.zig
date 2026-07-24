@@ -17,7 +17,7 @@
 //!   cli_usage_lint <repo-root> <bin-path> [<bin-path> ...]
 //!
 //! Each <bin-path> is an executable whose basename is the binary name as
-//! it appears in prose (planar, planar-agent, planar-watch, planar-doc).
+//! it appears in prose (planar, planar-agent, planar-watch).
 //! The tool scans <repo-root>/{agents, skills/src, docs} for *.md files.
 //!
 //! A line containing the marker `cli-lint-ignore` is skipped entirely —
@@ -100,7 +100,7 @@ pub fn main(init: std.process.Init) !void {
     const bin_paths = args[2..];
 
     // Build one merged catalog keyed by full command string. The leading
-    // token of every key is the binary name, so the four trees never
+    // token of every key is the binary name, so the three trees never
     // collide.
     var catalog = Catalog{};
     for (bin_paths) |bin_path| {

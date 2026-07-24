@@ -235,8 +235,8 @@ flow in with `planar sync pull`.
 
 ## 8. Docs as a first-class repo concern
 
-Outward-facing docs under `docs/` are tracked by `.planar-manifest`,
-a repo-state merkle index owned by the `planar-doc` binary. The
+Outward-facing docs under `docs/` are tracked by the separately installed
+`tabularium` tool in its machine-local database. The
 manifest links each published doc to one or more **repo-path
 sources** (directories or files in the working tree), so any drift
 in covered subtrees surfaces as a regenerate-candidate on the next
@@ -244,16 +244,16 @@ diff. The workflow is:
 
 ```sh
 # After authoring a new doc, wire it to the source areas it covers:
-planar-doc cover docs/features/login-flow.md src/login/
-planar-doc build       # write the manifest atomically
+tabularium cover docs/features/login-flow.md src/login/
+tabularium build       # refresh machine-local project state
 
 # Routine drift checks:
-planar-doc verify      # O(1) root compare against the live tree
-planar-doc diff        # three-signal breakdown if anything moved
+tabularium verify      # O(1) root compare against the live tree
+tabularium diff        # three-signal breakdown if anything moved
 ```
 
 Source drift in `src/login/` then surfaces as a
-regenerate-candidate on the next `planar-doc diff`[^doc_tech_spec].
+regenerate-candidate on the next `tabularium diff`[^doc_tech_spec].
 
 ## 9. Where to go next
 

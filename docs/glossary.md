@@ -22,18 +22,17 @@ associations (the default created by `planar init`) and `org` for
 polyrepo workspaces. Cross-repo features rely on the org-kind
 associations to span repo boundaries cleanly.
 
-## Manifest (`.planar-manifest`)
+## Tabularium manifest
 
-The xxh64-keyed merkle index over the working tree, stored at the
-repo root as `.planar-manifest`. Each entry records the doc's
+The xxh64-keyed merkle index over the working tree, stored in Tabularium's
+machine-local SQLite database. Each entry records the doc's
 `doc_hash`, a per-source `sources` map (one merkle hash per
 **repo-path** subtree the doc covers — directories or files in the
 working tree), a `sources_hash`, and an `entry_hash`. A merkle root
-rolls everything up. `planar-doc verify` is the O(1) root compare;
-`planar-doc diff` walks the three-signal classifier
+rolls everything up. `tabularium verify` is the O(1) root compare;
+`tabularium diff` walks the three-signal classifier
 (regenerate-candidate, hand-edit, new-authoring / deletion);
-`planar-doc build` recomputes hashes and writes the manifest
-atomically.
+`tabularium build` recomputes hashes and saves the project state atomically.
 
 ## Scope
 

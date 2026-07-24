@@ -115,14 +115,14 @@ The orchestrator selects phases based on the anchor plan's current `status`:
 
    **Relationship to Archive:** Finalization does merge + DB closeout; Archive does workbench FS archival. They are distinct steps; use `--finalize --archive` to chain them in one invocation.
 
-6. **Documenter (Phase 6, default-on)** — at the end of every cycle (unless `--no-docs` was supplied), runs `planar-doc diff --json`, packages the envelope `{ manifest_path, diff_records, covered_docs, cycle_summary, authoritative_identity, guidance_files }`, dispatches `pl-documenter`, surfaces the returned worklist to the user, and applies each operator-approved row through `planar-doc cover` / `planar-doc nodoc` / a staged doc-body commit, then closes with `planar-doc build`. The documenter only proposes — no `planar-doc` verb fires until the operator approves the row. See [`agents/orchestrator.md` § Phase 6 (Documenter)](../../agents/orchestrator.md#phase-6--documenter-pl-documenter-default-on).
+6. **Documenter (Phase 6, default-on)** — at the end of every cycle (unless `--no-docs` was supplied), runs `tabularium diff --json`, packages the envelope `{ manifest_root, diff_records, covered_docs, cycle_summary, authoritative_identity, guidance_files }`, dispatches `pl-documenter`, surfaces the returned worklist to the user, and applies each operator-approved row through `tabularium cover` / `tabularium nodoc` / a staged doc-body commit, then closes with `tabularium build`. The documenter only proposes — no `tabularium` verb fires until the operator approves the row. See [`agents/orchestrator.md` § Phase 6 (Documenter)](../../agents/orchestrator.md#phase-6--documenter-pl-documenter-default-on).
 
    Derive `authoritative_identity` from repository/build evidence, never from
    guidance prose: `migration_tail` is the lexically greatest five-digit up
    migration with a matching down file; `schema_version` is its prefix checked
    against the tail's `schema_migrations` insert; `binary_set` is exactly
-   `planar`, `planar-agent`, `planar-watch`, `planar-doc`, and
-   `planar-execute` as installed by `build.zig`; `generated_surface_boundary`
+   `planar`, `planar-agent`, `planar-watch`, and `planar-execute` as installed
+   by `build.zig`; `generated_surface_boundary`
    records `skills/src/` and `agents/` as canonical sources with vendor
    projections generated out of tree, evidenced by `.gitignore` and
    `planar skills render`; `guidance_equivalence` records whether `AGENTS.md`
@@ -324,7 +324,7 @@ The breaker itself never triggers automatic claim reconciliation.
 - Phase 3.7 (Finalization): user must supply `--finalize` or confirm interactively. The orchestrator never finalizes silently on cycle completion. The `planar plan closeout --dry-run` gate must pass before apply; `ready: false` is surfaced to the operator and no closeout runs.
 - Phase 4: user must request propagation.
 - Phase 5: user must request archive.
-- Phase 6 worklist: user must approve each row before `planar-doc cover` / `nodoc` / a staged doc body / `planar-doc build` fires. `--no-docs` opts out of the phase entirely.
+- Phase 6 worklist: user must approve each row before `tabularium cover` / `nodoc` / a staged doc body / `tabularium build` fires. `--no-docs` opts out of the phase entirely.
 
 These gates exist to prevent silent side effects on spec/task creation, FS cleanup, plan-status transitions, and the doc-state manifest.
 

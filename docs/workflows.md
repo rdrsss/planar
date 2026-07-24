@@ -499,7 +499,7 @@ git commit -m "snapshot billing-export spec for review"
 The copy is static — re-run the `cp` to refresh it. For a more
 disciplined "publish a user-facing doc that tracks repo-state
 provenance" path, see [`docs/features/doc-system.md`](features/doc-system.md)
-and `planar-doc cover`.
+and `tabularium cover`.
 
 ---
 
@@ -986,12 +986,12 @@ The `--no-scope-check` escape hatch exists for legacy callers that cannot be upd
 
 ## Recipe 10 — Doc hygiene pre-commit
 
-Outward-facing docs under `docs/` are tracked by `.planar-manifest`, a repo-state merkle index owned by the `planar-doc` binary. The hook compares the live tree against the manifest and validates workbench frontmatter so file-level drift cannot land silently.
+Outward-facing docs under `docs/` are tracked by the separately installed `tabularium` tool in its machine-local database. The hook compares the live tree against the manifest and validates workbench frontmatter so file-level drift cannot land silently.
 
 ### What it checks
 
-- `planar-doc verify` — O(1) compare of the recomputed repo merkle root against `.planar-manifest`'s stored root. Fails on any drift in the covered tree.
-- `planar-doc lint` — walks `docs/` for prose-level issues (the DB-free subset that survived the plan 423 binary split).
+- `tabularium verify` — compare of the recomputed repo merkle root against the machine-local stored root. Fails on any drift in the covered tree.
+- `tabularium lint` — validates documentation schemas and citations under `docs/`.
 - `planar workbench lint --all` — scans every workbench Markdown file with the same
   frontmatter parser used by pull/push/status/sync and fails on YAML syntax, identity,
   per-entity title/status schema, artifact kind, or anchor-plan issues. The hook runs all
@@ -1015,13 +1015,13 @@ git commit -m 'noop'
 
 ### Fixing failures
 
-- `verify: DRIFT` — review the breakdown with `planar-doc diff`. The output classifies each changed path as `regenerate-candidate`, `hand-edit`, or `new-authoring` / `deletion`. Once the docs are settled, refresh the manifest:
+- `verify: DRIFT` — review the breakdown with `tabularium diff`. The output classifies each changed path as `regenerate-candidate`, `hand-edit`, or `new-authoring` / `deletion`. Once the docs are settled, refresh the manifest:
 
 ```
-planar-doc build
+tabularium build
 ```
 
-- `planar-doc lint: N issue(s)` — each line is `<path>: <type>: <detail>`. The prose-level checks are deliberately minimal; richer checks may land later without affecting the binary's capability boundary.
+- `tabularium lint: N issue(s)` — each line is `<path>: <type>: <detail>`. Fix the reported schema or citation issue, then rerun the check.
 - `planar workbench lint` issues name the Markdown path and line, a stable diagnostic code,
   and a repair hint. Run `planar workbench lint --path <path>` to isolate one file, or
   `planar workbench lint <plan>` to recheck its complete feature tree. CI can run
@@ -1301,29 +1301,29 @@ The `associations` row, the `projects` rows, and their membership links remain i
 
 ## Recipe 13 — Maintaining the docs surface
 
-Outward-facing docs under `docs/` are tracked by `.planar-manifest`, the repo-state merkle index owned by `planar-doc`. Recipes 10 (pre-commit hook) and 12 (workspace) cover the mechanical guards; this recipe covers the human-judgement layer: keeping published docs in sync with what the repo actually looks like.
+Outward-facing docs under `docs/` are tracked by the separately installed `tabularium` tool and its machine-local merkle state. Recipes 10 (pre-commit hook) and 12 (workspace) cover the mechanical guards; this recipe covers the human-judgement layer: keeping published docs in sync with what the repo actually looks like.
 
 ### Daily / per-PR loop
 
 Every change that touches the repo is covered by two verbs.
 
-- `planar-doc verify` — O(1) root-hash compare against `.planar-manifest`. The pre-commit hook from [Recipe 10](#recipe-10--doc-hygiene-pre-commit) invokes this; the recipe also explains how to interpret each drift signal.
-- `planar-doc lint` — prose-level checks under `docs/` (the DB-free subset that survived the plan 423 binary split).
+- `tabularium verify` — root-hash compare against Tabularium's machine-local project state. The pre-commit hook from [Recipe 10](#recipe-10--doc-hygiene-pre-commit) invokes this; the recipe also explains how to interpret each drift signal.
+- `tabularium lint` — documentation-schema and citation checks under `docs/`.
 
 When either verb fails, fix the issue and retry — the pre-commit hook keeps drift out of the tree.
 
 ### After landing a body of work
 
 For the complete gated loop, invoke `/pl-doc-maintain`. It reads
-`planar-doc diff --json`, sends the drift to the read-only documenter, and
+`tabularium diff --json`, sends the drift to the read-only documenter, and
 shows every proposed row before any mutation. The documenter classifies each
 changed source into four outcomes:
 
-- **Extend an existing entry.** A doc already covers a related path; add the changed path to its `sources` map via `planar-doc cover <path> <repo-path>`.
+- **Extend an existing entry.** A doc already covers a related path; add the changed path to its `sources` map via `tabularium cover <path> <repo-path>`.
 - **Author a new doc.** No existing entry covers the change. After row
   approval, only the `doc-author` specialist may write the approved published
-  prose; the caller then applies `planar-doc cover`.
-- **Add to nodoc.** The change is genuinely not worth documenting (vendored code, generated artifacts, etc.). Record the decision via `planar-doc nodoc <repo-path>`; the entry is re-evaluated whenever that path's hash changes.
+  prose; the caller then applies `tabularium cover`.
+- **Add to nodoc.** The change is genuinely not worth documenting (vendored code, generated artifacts, etc.). Record the decision via `tabularium nodoc <repo-path>`; the entry is re-evaluated whenever that path's hash changes.
 - **Defer.** Evidence or operator intent is insufficient. Preserve the row and
   recovery command; do not absorb it by rebuilding the manifest.
 
@@ -1340,14 +1340,14 @@ exact retry; the workflow does not claim cross-row rollback.
 Touching anything under `src/`, `migrations/`, `templates/`, or `vendor/` may invalidate a doc that covers that subtree. The manifest detects this via the per-entry merkle of `sources`; surface the affected docs with:
 
 ```
-planar-doc diff
+tabularium diff
 ```
 
 Each row carries one of three signals:
 
-- `regenerate-candidate` — a source the doc covers drifted. Refresh the prose, then `planar-doc build` to reseat the entry hash.
-- `hand-edit` — the doc body changed without its sources moving. Usually fine; just re-run `planar-doc build` once the prose is settled.
-- `new-authoring` / `deletion` — a path appeared without a covering entry, or an entry's source path is gone. Either wire coverage (`planar-doc cover ...`), mark as `nodoc`, or accept the deletion and rebuild.
+- `regenerate-candidate` — a source the doc covers drifted. Refresh the prose, then `tabularium build` to reseat the entry hash.
+- `hand-edit` — the doc body changed without its sources moving. Usually fine; just re-run `tabularium build` once the prose is settled.
+- `new-authoring` / `deletion` — a path appeared without a covering entry, or an entry's source path is gone. Either wire coverage (`tabularium cover ...`), mark as `nodoc`, or accept the deletion and rebuild.
 
 The pre-commit hook gates on `verify`, not `diff`, so the diff is your visibility into "what would `build` change". Always read it before running build.
 
@@ -1355,7 +1355,7 @@ The pre-commit hook gates on `verify`, not `diff`, so the diff is your visibilit
 
 - Pre-commit hook: [Recipe 10 — Doc hygiene pre-commit](#recipe-10--doc-hygiene-pre-commit).
 - Workspace docs surface: [Recipe 12 — Working in a polyrepo workspace](#recipe-12--working-in-a-polyrepo-workspace).
-- CLI verbs: [docs/cli-reference.md § Binary: `planar-doc`](cli-reference.md#binary-planar-doc).
+- CLI verbs: the standalone Tabularium README and `tabularium --help`.
 
 ---
 
@@ -2029,7 +2029,7 @@ Both error paths are atomic — the surrounding `BEGIN IMMEDIATE` transaction ro
 
 ## Recipe 19 — Live agent cockpit with `planar-watch`
 
-`planar-watch` is the third binary in the five-binary architecture — the **human-facing read-only viewer**. It opens the database in strict read-only mode (`SQLITE_OPEN_READONLY`); the SQLite driver itself refuses every write SQL string, which is the second line of defense behind the binary's "no write verbs registered" capability boundary. The first defense is the verb tree itself: it contains exactly seven read verbs — `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree` — plus the conventional `version` and `completion` helpers, and zero anything that mutates state.
+`planar-watch` is the third binary in the four-binary architecture — the **human-facing read-only viewer**. It opens the database in strict read-only mode (`SQLITE_OPEN_READONLY`); the SQLite driver itself refuses every write SQL string, which is the second line of defense behind the binary's "no write verbs registered" capability boundary. The first defense is the verb tree itself: it contains exactly seven read verbs — `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree` — plus the conventional `version` and `completion` helpers, and zero anything that mutates state.
 
 This recipe walks the streaming-cockpit workflow. The companion recipe for the operator's read-fold-ins on the `planar` binary lives in Recipe 16.
 
@@ -3081,11 +3081,11 @@ events and reports failed or deferred events with exact recovery commands.
 /pl-doc-maintain
 ```
 
-The caller reads `planar-doc diff --json`, obtains read-only documenter
+The caller reads `tabularium diff --json`, obtains read-only documenter
 proposals, and requires an operator disposition for every row. Approved
 `create-doc` or prose-refresh rows alone go to `doc-author`; approved `nodoc`
 rows bypass prose authoring. The caller—not either specialist—applies coverage
-state and runs `planar-doc lint`, `build`, `verify`, and a final clean diff.
+state and runs `tabularium lint`, `build`, `verify`, and a final clean diff.
 Unapproved rows remain visible. A clean initial diff is a no-op and does not
 rebuild the manifest; a partial apply preserves verified rows and reports the
 exact failed-row recovery command.
@@ -3121,7 +3121,7 @@ after an explicit dispatch decision with a newly confirmed maximum wave size.
 ### Close documentation with repository identity evidence
 
 Run `/pl-doc-maintain`. Before classifying manifest rows, the workflow derives
-the migration tail/schema insert, exact five binaries from `build.zig`,
+the migration tail/schema insert, exact four binaries from `build.zig`,
 canonical generated-surface boundary, and `AGENTS.md`/`CLAUDE.md` equivalence.
 An explicit contradiction becomes an operator-gated
 `guidance-identity-drift` row. Approve, reject, or defer it like any other row;

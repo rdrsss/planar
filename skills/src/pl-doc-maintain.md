@@ -2,7 +2,7 @@
 description: Maintain published documentation through a gated diff, proposal, prose-authoring, manifest, lint, build, and verification workflow.
 origin: docs/features/doc-system.md
 shared_notes:
-    - The documenter is read-only, doc-author writes only operator-approved prose rows, and the caller alone runs planar-doc mutation verbs.
+    - The documenter is read-only, doc-author writes only operator-approved prose rows, and the caller alone runs tabularium mutation verbs.
     - 'A clean diff is a verified no-op: do not dispatch either specialist and do not rebuild the manifest.'
 slug: pl-doc-maintain
 vendor:
@@ -17,14 +17,15 @@ vendor:
 
 Runs the complete published-documentation maintenance loop without weakening
 the boundary between proposal, prose authoring, and manifest state. The
-workflow may read the repository and `.planar-manifest`; it never opens SQLite
-directly. `planar-doc` is the only manifest writer.
+workflow may read the repository and query Tabularium's machine-local state;
+it never opens either SQLite database directly. `tabularium` is the only
+documentation-state writer.
 
 ## Context
 
 Run from the root of the repository being maintained. Resolve and retain its
-absolute path, the `.planar-manifest` path, the requested output mode (concise
-text or `--json`), and a snapshot of the working-tree paths already modified
+absolute path, the requested output mode (concise text or `--json`), and a
+snapshot of the working-tree paths already modified
 before this workflow starts. Existing changes belong to the operator and must
 not be reverted, overwritten, or reported as doc-author output.
 
@@ -43,17 +44,18 @@ state with lint, build, and verify.
 
 ## Commands
 
-Use only the shipped doc-state surface:
+Use only the separately installed Tabularium surface:
 
 ```text
-planar-doc diff --json
-planar-doc cover <doc-path> <source-path>
-planar-doc cover <doc-path> <source-path> --remove
-planar-doc nodoc <source-path>
-planar-doc nodoc <source-path> --remove
-planar-doc lint --json
-planar-doc build --json
-planar-doc verify --json
+tabularium diff --json
+tabularium export
+tabularium cover <doc-path> <source-path>
+tabularium cover <doc-path> <source-path> --remove
+tabularium nodoc <source-path>
+tabularium nodoc <source-path> --remove
+tabularium lint --json
+tabularium build --json
+tabularium verify --json
 ```
 
 `diff --json` is JSON Lines: each non-blank line is one record containing
@@ -71,34 +73,34 @@ repository, and symlink resolution outside the repository before any write.
 
 ### 1. Diff and clean no-op
 
-Run `planar-doc diff --json` and parse every JSONL record.
+Run `tabularium diff --json` and parse every JSONL record.
 
 If there are zero records, do not dispatch documenter or doc-author and do not
-run `cover`, `nodoc`, `lint`, or `build`. Run `planar-doc verify --json` as the
+run `cover`, `nodoc`, `lint`, or `build`. Run `tabularium verify --json` as the
 post-state read. A clean verify must report `drift=false` and matching `root`
 and `manifest_root`; return those existing roots with zero applied changes. If
 verification disagrees with the empty diff, return an error with both outputs
 and the exact retry commands rather than rebuilding implicitly.
 
-If `.planar-manifest` is missing or unreadable, stop before mutation. Recommend
-an operator-reviewed initialization with `planar-doc build --json`; do not
+If Tabularium's machine-local project state is missing or unreadable, stop before mutation. Recommend
+an operator-reviewed initialization with `tabularium build --json`; do not
 silently create the baseline because doing so would accept the current tree as
 documented state.
 
 ### 2. Read-only documenter proposal
 
-For a non-empty diff, read the current manifest and construct this envelope:
+For a non-empty diff, run `tabularium export` and construct this envelope:
 
 ```json
 {
-  "manifest_path": ".planar-manifest",
+  "manifest_root": "<root from tabularium export>",
   "diff_records": [],
   "covered_docs": {},
   "cycle_summary": []
 }
 ```
 
-`diff_records` contains the parsed `planar-doc diff --json` rows verbatim.
+`diff_records` contains the parsed `tabularium diff --json` rows verbatim.
 `covered_docs` is the current manifest entries map needed to compare existing
 coverage. For a standalone invocation, `cycle_summary` may be empty; include
 only caller-supplied cycle facts and never invent task or plan identifiers.
@@ -107,8 +109,8 @@ Dispatch a fresh `documenter` specialist through the host's agent-dispatch
 mechanism with that envelope and the canonical
 [`agents/documenter.md`](../../agents/documenter.md) instructions. The
 documenter may read the repository and return `extend-cover`, `create-doc`,
-`nodoc`, or `defer` proposals. It must not write prose, invoke `planar-doc`,
-change `.planar-manifest`, or write coordination state. If it changes any
+`nodoc`, or `defer` proposals. It must not write prose, invoke `tabularium`,
+change Tabularium's machine-local state, or write coordination state. If it changes any
 working-tree path, stop with `outcome=error` and surface the unexpected diff.
 
 Normalize the returned proposal into stable invocation-local row IDs while
@@ -116,7 +118,7 @@ preserving each original diff record. Each row shown at the gate must include:
 
 ```text
 row_id, signal, source path, proposed action, target doc (when applicable),
-whether prose is required, exact proposed planar-doc operation, and reason
+whether prose is required, exact proposed tabularium operation, and reason
 ```
 
 Do not infer a missing target, source, action, or prose requirement. Mark an
@@ -132,8 +134,8 @@ general encouragement, or approval of one row is not approval of the rest.
 | Gate disposition | Allowed proposal | Effect after confirmation |
 |---|---|---|
 | `approve-prose` | `create-doc`, or `extend-cover` that requires a prose refresh | Include the exact row in the doc-author envelope. No manifest verb yet. |
-| `approve-cover` | `extend-cover` with a validated target doc and source path | Caller runs the exact `planar-doc cover` add/remove operation after any required prose succeeds. |
-| `approve-nodoc` | `nodoc` | Caller runs `planar-doc nodoc <source-path>` (or the explicitly proposed `--remove` form). Never dispatch doc-author. |
+| `approve-cover` | `extend-cover` with a validated target doc and source path | Caller runs the exact `tabularium cover` add/remove operation after any required prose succeeds. |
+| `approve-nodoc` | `nodoc` | Caller runs `tabularium nodoc <source-path>` (or the explicitly proposed `--remove` form). Never dispatch doc-author. |
 | `approve-reseat` | A hand edit or already-accurate covered source for which the proposal requires no prose or coverage change | Authorizes this row to be absorbed by the later build; performs no row-level command. |
 | `reject` | any | No write. The row remains unresolved for this run. |
 | `defer` | any | No write. Preserve the proposal and recovery command. |
@@ -193,11 +195,11 @@ instruction.
 After all approved prose rows succeed, the caller—not documenter or
 doc-author—runs the exact approved row operations:
 
-- Run `planar-doc cover <target-doc> <source-path>` for each approved new
+- Run `tabularium cover <target-doc> <source-path>` for each approved new
   coverage edge, including successful `create-doc` rows that require coverage.
-- Run `planar-doc cover <target-doc> <source-path> --remove` only when that
+- Run `tabularium cover <target-doc> <source-path> --remove` only when that
   removal form was displayed and approved.
-- Run `planar-doc nodoc <source-path>` or its approved `--remove` form for each
+- Run `tabularium nodoc <source-path>` or its approved `--remove` form for each
   `approve-nodoc` row. These rows bypass prose authoring entirely.
 - Run no command for an `approve-reseat` row; its approval applies only to the
   final build.
@@ -212,14 +214,14 @@ and failed rows precisely. Independent commands are not one transaction.
 Proceed only when every initial diff row has an approved, successfully applied
 or approved-reseat disposition and no unexpected path exists.
 
-1. Run `planar-doc lint --json`. On failure, leave the approved prose and
+1. Run `tabularium lint --json`. On failure, leave the approved prose and
    manifest diff inspectable, return `outcome=partial`, and provide the exact
    lint retry. Do not build.
-2. Run `planar-doc build --json` and retain its returned `root`. This is the
+2. Run `tabularium build --json` and retain its returned `root`. This is the
    sole step that reseats the complete manifest after the row gate.
-3. Run `planar-doc verify --json`. Require exit 0, `drift=false`, and equality
+3. Run `tabularium verify --json`. Require exit 0, `drift=false`, and equality
    between the live `root`, stored `manifest_root`, and the build root.
-4. Run `planar-doc diff --json` once more. Require zero records. A remaining
+4. Run `tabularium diff --json` once more. Require zero records. A remaining
    row is a verification failure even if the root comparison passed.
 
 If build or verify fails, preserve the working-tree diff, report the last
@@ -272,9 +274,9 @@ hide an unresolved row behind a successful command exit.
 Give zero to three executable recommendations. Prefer, in order:
 
 ```text
-planar-doc diff --json
-planar-doc lint --json
-planar-doc verify --json
+tabularium diff --json
+tabularium lint --json
+tabularium verify --json
 ```
 
 When operator judgment is still required, name the exact row IDs and required
@@ -283,13 +285,13 @@ row is approved and ready to be absorbed.
 
 ## Recovery
 
-For read or parse failure, retry `planar-doc diff --json` from the reported
+For read or parse failure, retry `tabularium diff --json` from the reported
 repository root. For prose failure, inspect the working-tree diff and retry the
 doc-author with an envelope containing only still-approved failed rows. For a
 row-level manifest failure, retry the exact validated `cover` or `nodoc`
 command for that row. For lint/build/verify failure, preserve the diff and
-retry the failed command, followed by `planar-doc verify --json` and
-`planar-doc diff --json`.
+retry the failed command, followed by `tabularium verify --json` and
+`tabularium diff --json`.
 
 Never recommend a blanket reset or claim that completed independent operations
 were rolled back. If approval must change, return to the row gate and obtain a
@@ -309,4 +311,3 @@ planar skills render --check --out <staging-dir> pl-doc-maintain
 Installation renders and links the vendor surfaces from this canonical source.
 
 ## Vendor Notes
-

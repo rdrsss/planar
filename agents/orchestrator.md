@@ -247,7 +247,7 @@ copying claims from guidance prose:
 - `schema_version`: the tail filename's five-digit prefix, cross-checked against
   that up migration's `schema_migrations` insert.
 - `binary_set`: the exact installed executable names declared by `build.zig`:
-  `planar`, `planar-agent`, `planar-watch`, `planar-doc`, and `planar-execute`.
+  `planar`, `planar-agent`, `planar-watch`, and `planar-execute`.
 - `generated_surface_boundary`: derive from checked-in source directories,
   `.gitignore`, and the `planar skills render` contract: unified skills are
   authored only in `skills/src/`, agents in `agents/`, and per-vendor
@@ -263,21 +263,21 @@ do. This is a read-only derivation and never treats generated vendor output as
 source-of-truth.
 
 **What happens:**
-1. The orchestrator runs `planar-doc diff --json` against the post-cycle working tree and computes the **envelope** the documenter receives: `{ manifest_path, diff_records, covered_docs, cycle_summary, authoritative_identity, guidance_files }`. The `cycle_summary` field is one short line per dispatched task identifying its slug and its high-level scope (typically the same slugs from the coder briefs).
+1. The orchestrator runs `tabularium diff --json` against the post-cycle working tree, reads coverage with `tabularium export`, and computes the **envelope** the documenter receives: `{ manifest_root, diff_records, covered_docs, cycle_summary, authoritative_identity, guidance_files }`. The `cycle_summary` field is one short line per dispatched task identifying its slug and its high-level scope (typically the same slugs from the coder briefs).
 2. The orchestrator invokes the `documenter` agent (`/pl-documenter`) with the envelope as input.
 3. The documenter classifies each diff record into one of `extend-cover` / `create-doc` / `nodoc` / `defer` per [`agents/documenter.md` § Decision policy](documenter.md#decision-policy) and returns a worklist.
-4. The orchestrator surfaces the worklist to the user with the verb each row would run. **No `planar-doc` verb fires until the operator approves the row.**
-5. On row-by-row approval, the orchestrator invokes the chosen verb (`planar-doc cover ...`, `planar-doc nodoc ...`, or — for `create-doc` rows — first stages the proposed doc body for the operator to commit, then `planar-doc cover` once the file is in place). Rejected and deferred rows are left untouched.
-6. After applying the approved rows, the orchestrator runs `planar-doc build` to reseat the manifest and surfaces the new root hash in the cycle summary. If any `guidance-identity-drift` row is rejected, deferred, ambiguous, or unapplied, Phase 6 cannot report a **clean closeout**; it returns the unresolved operator-gated rows and exact evidence instead. This does not reopen or override the janitor-owned `planar plan closeout` result.
+4. The orchestrator surfaces the worklist to the user with the verb each row would run. **No `tabularium` verb fires until the operator approves the row.**
+5. On row-by-row approval, the orchestrator invokes the chosen verb (`tabularium cover ...`, `tabularium nodoc ...`, or — for `create-doc` rows — first stages the proposed doc body for the operator to commit, then `tabularium cover` once the file is in place). Rejected and deferred rows are left untouched.
+6. After applying the approved rows, the orchestrator runs `tabularium build` to reseat the manifest and surfaces the new root hash in the cycle summary. If any `guidance-identity-drift` row is rejected, deferred, ambiguous, or unapplied, Phase 6 cannot report a **clean closeout**; it returns the unresolved operator-gated rows and exact evidence instead. This does not reopen or override the janitor-owned `planar plan closeout` result.
 
-**Boundary:** Phase 6 is **default-on** but the documenter only proposes. The orchestrator gates every action: no manifest write, no cover edge, no nodoc entry, and no doc body lands without explicit operator approval. `--no-docs` opts out of the phase entirely (no `planar-doc diff` is even run). The documenter never touches SQLite, so this phase introduces no agent_action / claim writes — only the planning-side cycle-summary record is emitted.
+**Boundary:** Phase 6 is **default-on** but the documenter only proposes. The orchestrator gates every action: no manifest write, no cover edge, no nodoc entry, and no doc body lands without explicit operator approval. `--no-docs` opts out of the phase entirely (no `tabularium diff` is even run). The documenter never touches SQLite, so this phase introduces no agent_action / claim writes — only the planning-side cycle-summary record is emitted.
 
 **Envelope contract:**
 
 ```json
 {
-  "manifest_path": ".planar-manifest",
-  "diff_records": [ /* `planar-doc diff --json` rows verbatim */ ],
+  "manifest_root": "<root from tabularium export>",
+  "diff_records": [ /* `tabularium diff --json` rows verbatim */ ],
   "covered_docs": { /* current entries map for cross-reference */ },
   "cycle_summary": [
     { "task_slug": "...", "scope": "..." }
@@ -285,7 +285,7 @@ source-of-truth.
   "authoritative_identity": {
     "migration_tail": { "value": "00029_agent_failure_categories.up.sql", "evidence": ["migrations/00029_agent_failure_categories.up.sql", "migrations/00029_agent_failure_categories.down.sql"] },
     "schema_version": { "value": 29, "evidence": "schema_migrations insert in the tail up migration" },
-    "binary_set": { "value": ["planar", "planar-agent", "planar-watch", "planar-doc", "planar-execute"], "evidence": "build.zig installed artifacts" },
+    "binary_set": { "value": ["planar", "planar-agent", "planar-watch", "planar-execute"], "evidence": "build.zig installed artifacts" },
     "generated_surface_boundary": { "skill_source": "skills/src/", "agent_source": "agents/", "projections": "generated out of tree", "evidence": [".gitignore", "planar skills render"] },
     "guidance_equivalence": { "paths": ["AGENTS.md", "CLAUDE.md"], "equivalent": true, "mode": "symlink-or-byte-equal", "evidence": "readlink/cmp observation" }
   },
@@ -317,7 +317,7 @@ Phases 1 and 2 are only relevant for `draft` features. For an `active` or `pause
 5. **Phase 3.7 (if `--finalize` or interactive confirm, after Phase 3 completes).** Dispatch the `janitor` subagent. Janitor runs verify → merge → reconcile → cleanup → `planar plan closeout`. Orchestrator surfaces result (closed or blocked-with-reasons) to operator.
 6. **Phase 4 (if requested).** Propagate to external system. Present summary.
 7. **Phase 5 (if requested).** Archive FS tree. Confirm DB retention.
-8. **Phase 6 (default-on; `--no-docs` opts out).** Run `planar-doc diff`, dispatch the documenter, surface the worklist, apply each operator-approved row, then `planar-doc build`.
+8. **Phase 6 (default-on; `--no-docs` opts out).** Run `tabularium diff`, dispatch the documenter, surface the worklist, apply each operator-approved row, then `tabularium build`.
 
 ## Operator feedback envelope
 

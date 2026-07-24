@@ -321,8 +321,7 @@ const command_classes = [_]CommandClass{
     m("planar-agent abort"),            r("planar-agent schema"),                m("planar-agent run start"),       m("planar-agent run end"),         m("planar-agent context add"),       m("planar-agent context capsule"),
     r("planar-agent context list"),     m("planar-agent context resolve"),       r("planar-watch feed"),            r("planar-watch ps"),              r("planar-watch claims"),            r("planar-watch actions"),
     r("planar-watch plans"),            r("planar-watch log"),                   r("planar-watch tree"),            r("planar-watch run list"),        r("planar-watch run show"),          r("planar-watch sync-events"),
-    r("planar-watch version"),          r("planar-watch completion"),            r("planar-watch schema"),          m("planar-doc build"),             r("planar-doc verify"),              r("planar-doc diff"),
-    m("planar-doc cover"),              m("planar-doc nodoc"),                   r("planar-doc lint"),              r("planar-doc schema"),
+    r("planar-watch version"),          r("planar-watch completion"),            r("planar-watch schema"),
 };
 
 fn checkCapability(arena: std.mem.Allocator, file: []const u8, role: []const u8, line_no: usize, line: []const u8, in_fence: bool, findings: *std.ArrayList(Finding), suppressions: *std.ArrayList(Suppression)) !void {
@@ -366,11 +365,6 @@ const capability_exemptions = [_]struct { file: []const u8, role: []const u8, sh
     .{ .file = "agents/introspector.md", .role = "introspector", .shape = "planar plan create" },
     .{ .file = "agents/introspector.md", .role = "introspector", .shape = "planar task add" },
     .{ .file = "agents/introspector.md", .role = "introspector", .shape = "planar question add" },
-    // The documenter returns these exact invocations as proposed worklist
-    // rows, but its boundary explicitly forbids invoking them itself.
-    .{ .file = "agents/documenter.md", .role = "documenter", .shape = "planar-doc build" },
-    .{ .file = "agents/documenter.md", .role = "documenter", .shape = "planar-doc cover" },
-    .{ .file = "agents/documenter.md", .role = "documenter", .shape = "planar-doc nodoc" },
     // Review is entity-read-only but participates in the claim lease ritual;
     // terminal claim mutations remain deliberately absent from this list.
     .{ .file = "agents/reviewer.md", .role = "reviewer", .shape = "planar-agent pull" },
@@ -842,33 +836,31 @@ test "shell command boundaries accept separators substitutions and groups but re
     try testing.expectEqual(@as(usize, 0), clean_fixture.result.findings.items.len);
 }
 test "schema inventory has an explicit unique classification for every current leaf" {
-    // Generated from the four freshly built catalogs with:
-    //   for b in planar planar-agent planar-watch planar-doc; do
+    // Generated from the three freshly built catalogs with:
+    //   for b in planar planar-agent planar-watch; do
     //     $b schema | jq -r '.commands[] | select((.subcommands|length)==0 and (.path|length)>0) | .command'
     //   done
     // The fingerprint pins names and order, while the counts identify which
     // binary drifted when a catalog changes.
-    try testing.expectEqual(@as(usize, 256), command_classes.len);
+    try testing.expectEqual(@as(usize, 249), command_classes.len);
     var planar_count: usize = 0;
     var agent_count: usize = 0;
     var watch_count: usize = 0;
-    var doc_count: usize = 0;
     var inventory: std.ArrayList(u8) = .empty;
     defer inventory.deinit(testing.allocator);
     for (command_classes, 0..) |command, idx| {
         for (command_classes[0..idx]) |prior| try testing.expect(!std.mem.eql(u8, prior.shape, command.shape));
         try inventory.appendSlice(testing.allocator, command.shape);
         try inventory.append(testing.allocator, '\n');
-        if (std.mem.startsWith(u8, command.shape, "planar ")) planar_count += 1 else if (std.mem.startsWith(u8, command.shape, "planar-agent ")) agent_count += 1 else if (std.mem.startsWith(u8, command.shape, "planar-watch ")) watch_count += 1 else if (std.mem.startsWith(u8, command.shape, "planar-doc ")) doc_count += 1 else return error.InvalidCommandClassification;
+        if (std.mem.startsWith(u8, command.shape, "planar ")) planar_count += 1 else if (std.mem.startsWith(u8, command.shape, "planar-agent ")) agent_count += 1 else if (std.mem.startsWith(u8, command.shape, "planar-watch ")) watch_count += 1 else return error.InvalidCommandClassification;
     }
     try testing.expectEqual(@as(usize, 214), planar_count);
     try testing.expectEqual(@as(usize, 22), agent_count);
     try testing.expectEqual(@as(usize, 13), watch_count);
-    try testing.expectEqual(@as(usize, 7), doc_count);
     var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(inventory.items, &digest, .{});
     const hex = std.fmt.bytesToHex(digest, .lower);
-    try testing.expectEqualStrings("025c9fc9aeea2304048fe2915c9661b3ed6496951563e922ccc91c36622c952a", &hex);
+    try testing.expectEqualStrings("d09e8abc328cd6a1def06f391ff2349fbf45a4a7bbb691ce4870df02ba35c365", &hex);
 }
 test "every classified leaf enforces its declared capability" {
     const frontmatter = "---\nrole: fixture\ncapability: read-only\n---\n```sh\n";

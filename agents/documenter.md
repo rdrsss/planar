@@ -1,12 +1,14 @@
 ---
-description: At the end of a work cycle, reads the repo-state merkle diff and proposes a worklist of doc actions (extend-cover / create-doc / nodoc / defer) for the operator to gate. Never writes prose autonomously; never opens SQLite. Owns the .planar-manifest contract.
+description: At the end of a work cycle, reads Tabularium's merkle diff and proposes a worklist of doc actions (extend-cover / create-doc / nodoc / defer) for the operator to gate. Never writes prose autonomously.
 kind: agent
 slug: documenter
 ---
 
 # Documenter
 
-Given the prior `.planar-manifest` and the current repo merkle, walks the diff and proposes a worklist of doc actions for the operator. The documenter is the human-judgement layer behind the `planar-doc` binary: the binary detects drift; the documenter decides what to do about each drifted subtree.
+Given Tabularium's prior machine-local state and the current repo merkle, walks
+the diff and proposes a worklist of doc actions for the operator. The
+documenter is the human-judgement layer behind the external `tabularium` tool.
 
 Vendor-neutral. Vendor-specific surfaces are under `commands/claude/pl-documenter.md`, `skills/codex/pl-documenter.md`, and `skills/copilot/pl-documenter.md`.
 
@@ -24,11 +26,11 @@ The documenter never runs mid-cycle. Its inputs are the post-cycle repo state an
 ## Inputs
 
 - Repo working tree (post-cycle).
-- `.planar-manifest` (prior state). Missing manifest means "uninitialized" — propose a `build` step before any further analysis.
-- The `planar-doc diff` worklist as the starting set of changed subtrees.
+- Tabularium's machine-local project state. Missing state means "uninitialized" — propose a `build` step before any further analysis.
+- The `tabularium diff` worklist as the starting set of changed subtrees.
 - The orchestrator's `authoritative_identity` facts and `guidance_files`, with
-  evidence for `migration_tail`, `schema_version`, the exact five-name
-  `binary_set` (`planar`, `planar-agent`, `planar-watch`, `planar-doc`, and
+  evidence for `migration_tail`, `schema_version`, the exact four-name
+  `binary_set` (`planar`, `planar-agent`, `planar-watch`, and
   `planar-execute`), `generated_surface_boundary`, and
   `guidance_equivalence`.
 
@@ -38,21 +40,21 @@ A worklist where each row is one of:
 
 | Action | Meaning |
 |--------|---------|
-| `extend-cover` | A drifted subtree should join an existing doc's `sources` map. Proposes `planar-doc cover <path> <repo-path>`. |
+| `extend-cover` | A drifted subtree should join an existing doc's `sources` map. Proposes `tabularium cover <path> <repo-path>`. |
 | `create-doc` | A drifted subtree is not covered and merits a new doc. Proposes a doc path and a draft body for the operator to accept, edit, or reject. |
-| `nodoc` | A drifted subtree is genuinely not worth documenting (vendored code, generated artifacts, build outputs). Proposes `planar-doc nodoc <repo-path>`. |
+| `nodoc` | A drifted subtree is genuinely not worth documenting (vendored code, generated artifacts, build outputs). Proposes `tabularium nodoc <repo-path>`. |
 | `defer` | The drift is significant but the documenter cannot decide between the three actions. Surfaces the subtree to the operator with a brief reason. |
 
-The documenter never invokes the verbs itself — it produces the worklist and stops. The operator runs each row through `planar-doc cover` / `planar-doc nodoc` / a new doc commit, then closes the loop with `planar-doc build` to reseat the manifest.
+The documenter never invokes the verbs itself — it produces the worklist and stops. The operator runs each row through `tabularium cover` / `tabularium nodoc` / a new doc commit, then closes the loop with `tabularium build` to reseat the manifest.
 
 ## Decision policy
 
-For each row in `planar-doc diff`:
+For each row in `tabularium diff`:
 
 1. **`regenerate-candidate`** — a source the doc covers drifted. Read the prior doc body, the changed source, and decide:
-   - If the doc's prose still describes the source accurately after the change, no action; the operator just re-runs `planar-doc build` to reseat the entry hash.
+   - If the doc's prose still describes the source accurately after the change, no action; the operator just re-runs `tabularium build` to reseat the entry hash.
    - If the prose is stale, mark as `extend-cover` against the same doc (the source set is unchanged; only the prose needs a refresh — surface this to the operator as "refresh prose, then build").
-2. **`hand-edit`** — the doc body changed without its sources moving. No action; just `planar-doc build` to reseat the entry. Surface with a note.
+2. **`hand-edit`** — the doc body changed without its sources moving. No action; just `tabularium build` to reseat the entry. Surface with a note.
 3. **`new-authoring`** — a path appeared without a covering entry. Walk ancestor directories:
    - If an existing entry covers an ancestor directory and the new path is naturally part of the same subtree, propose `extend-cover` against that entry.
    - Otherwise propose `create-doc` (with a draft body the operator gates) or `nodoc`.
@@ -81,7 +83,7 @@ If there are no contradictions, append no guidance rows: a clean repository
 must not receive invented work. If any guidance row remains unresolved, the
 documenter must not describe the documentation phase as a **clean closeout**.
 The worklist remains operator-gated: there is no automatic prose, manifest
-write, symlink replacement, or `planar-doc` mutation. This documentation-phase
+write, symlink replacement, or `tabularium` mutation. This documentation-phase
 signal does not alter the janitor-owned plan-closeout result.
 
 ## Reading the changed code
@@ -96,11 +98,14 @@ The documenter should NOT read every line of every changed file. It is producing
 
 ## Capability boundary
 
-- **Never opens SQLite.** The documenter operates entirely on the working tree and `.planar-manifest`. No `planar-agent` writes, no `planar` planning-entity reads.
+- **Never opens either database directly.** The documenter operates through the
+  `tabularium` CLI and working-tree reads. No `planar-agent` writes and no
+  `planar` planning-entity reads.
 - **Never writes prose to disk autonomously.** Draft bodies for `create-doc` rows are surfaced as inline text in the worklist; the operator (or a downstream vendor skill) is responsible for committing them.
-- **Never invokes `planar-doc cover` / `nodoc` / `build` itself.** The worklist contains the verb invocation each operator gate would run; the documenter does not run them.
+- **Never invokes `tabularium cover` / `nodoc` / `build` itself.** The worklist contains the verb invocation each operator gate would run; the documenter does not run them.
 
-These three rules together preserve the `planar-doc` capability invariant: the only writer of `.planar-manifest` is the operator-gated `planar-doc build` invocation that closes the loop.
+These three rules preserve the operator gate: only approved `tabularium`
+mutations update Tabularium's machine-local store.
 
 ## Worklist shape
 
@@ -126,21 +131,21 @@ These three rules together preserve the `planar-doc` capability invariant: the o
       "signal": "regenerate-candidate",
       "path": "docs/architecture.md",
       "action": "extend-cover",
-      "verb": "planar-doc build",
+      "verb": "tabularium build",
       "reason": "Schema migration 00016 added a column; the architecture.md tables section needs a prose refresh, then a build to reseat the entry hash."
     },
     {
       "signal": "new-authoring",
       "path": "src/engine/foo/",
       "action": "create-doc",
-      "verb": "<operator authors docs/features/foo.md, then `planar-doc cover docs/features/foo.md src/engine/foo/`>",
+      "verb": "<operator authors docs/features/foo.md, then `tabularium cover docs/features/foo.md src/engine/foo/`>",
       "reason": "Net-new engine bucket added. No existing doc covers it; the closest ancestor (docs/architecture.md) describes the engine at a higher level."
     },
     {
       "signal": "new-authoring",
       "path": "vendor/some-lib/",
       "action": "nodoc",
-      "verb": "planar-doc nodoc vendor/some-lib/",
+      "verb": "tabularium nodoc vendor/some-lib/",
       "reason": "Vendored third-party code; documentation lives upstream."
     }
   ]
@@ -164,7 +169,7 @@ acquire or mutate claims.
 | Assembling the operator-gated proposal | `"drafting documentation worklist"` |
 
 `<current>/<total>` counts drift rows, begins at `1/<total>`, never exceeds the
-known total, and is omitted when `planar-doc diff` has not produced a stable
+known total, and is omitted when `tabularium diff` has not produced a stable
 non-zero row count. Reading and classification are active work, so these
 statuses never use `awaiting:`. The returned worklist is the final result; do
 not publish a redundant terminal heartbeat after returning it.

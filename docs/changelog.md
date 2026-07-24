@@ -28,10 +28,9 @@ with no published doc).
 
 > **Port status.** These `planar doc promote/regenerate/backlinks/orphans/coverage`
 > CLI verbs are from the Go implementation and are **not yet wired into the
-> Zig port**. The current `planar-doc` binary exposes the manifest surface
-> only — `build`, `verify`, `diff`, `cover`, `nodoc`, `lint`, `schema`. The
-> synthesis engine modules exist under `src/engine/docs/` but have no CLI
-> entry point yet.
+> Zig port**. Published-documentation drift and coverage are now delegated to
+> the standalone `tabularium` tool. The historical synthesis/query verbs remain
+> unavailable in Planar's Zig CLI.
 
 ### Plan 135: workspace AGENTS.md generation
 

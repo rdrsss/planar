@@ -3,8 +3,8 @@
 //! Focused suites pin each verb's complete contract. These scenarios compose
 //! the same public commands in the order prescribed by the rendered skills:
 //! render/fresh health -> cross-vendor introspection preview -> approved triage,
-//! durable knowledge -> read-only observation, approved doc maintenance, and
-//! guarded sync conflict resolution.
+//! durable knowledge -> read-only observation and guarded sync conflict
+//! resolution.
 
 const std = @import("std");
 const harness = @import("harness");
@@ -189,139 +189,6 @@ test "scenario: durable knowledge is visible through read-only operational obser
     try std.testing.expectEqualStrings("todo", released.object.get("status").?.string);
 }
 
-const DocResult = struct { term: std.process.Child.Term, stdout: []u8, stderr: []u8 };
-
-const DocumenterProposalRow = struct {
-    row_id: []const u8,
-    action: []const u8,
-    source_path: []const u8,
-    target_path: []const u8,
-};
-
-const DocumenterProposal = struct { rows: []const DocumenterProposalRow };
-
-fn applyApprovedProse(
-    a: std.mem.Allocator,
-    root: []const u8,
-    row: DocumenterProposalRow,
-    approved_row_ids: []const []const u8,
-) !void {
-    var approved = false;
-    for (approved_row_ids) |row_id| {
-        if (std.mem.eql(u8, row_id, row.row_id)) approved = true;
-    }
-    if (!approved) return error.UnapprovedProposalRow;
-    if (!std.mem.eql(u8, row.action, "create-doc") or
-        !std.mem.startsWith(u8, row.target_path, "docs/")) return error.InvalidProposalRow;
-    const target = try std.fs.path.join(a, &.{ root, row.target_path });
-    defer a.free(target);
-    try writeAbsolute(target, "# Widget\n\nApproved public reference.\n");
-}
-
-fn runDoc(a: std.mem.Allocator, cwd: []const u8, args: []const []const u8) !DocResult {
-    var argv: std.ArrayList([]const u8) = .empty;
-    defer argv.deinit(a);
-    try argv.append(a, envBin("PLANAR_DOC_BIN"));
-    for (args) |arg| try argv.append(a, arg);
-    const result = try std.process.run(a, std.testing.io, .{ .argv = argv.items, .cwd = .{ .path = cwd } });
-    return .{ .term = result.term, .stdout = result.stdout, .stderr = result.stderr };
-}
-
-test "scenario: approved documentation proposal is authored covered and verified" {
-    const a = std.testing.allocator;
-    var suite = harness.Suite.init(a);
-    defer suite.deinit();
-    var arena_state = std.heap.ArenaAllocator.init(a);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const root_len = try tmp.dir.realPath(std.testing.io, &path_buf);
-    const root = path_buf[0..root_len];
-
-    // Agent roles are prompt-driven and are not executed by this deterministic
-    // suite. Pin the authority boundary that the fixture below models:
-    // documenter proposes, the operator approves exact rows, doc-author-
-    // equivalent prose writes only those rows, and the caller owns
-    // planar-doc mutations. Plan 918 M5 retired the in-tree `skills render`
-    // verb (scriptorium is the sole renderer now); the authored source
-    // carries this guidance prose directly, so it is read without a render
-    // pass.
-    const maintain = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, "skills/src/pl-doc-maintain.md", a, .limited(512 * 1024));
-    defer a.free(maintain);
-    try std.testing.expect(std.mem.indexOf(u8, maintain, "approved_rows") != null);
-    try std.testing.expect(std.mem.indexOf(u8, maintain, "documenter") != null);
-    try std.testing.expect(std.mem.indexOf(u8, maintain, "read-only") != null);
-    try std.testing.expect(std.mem.indexOf(u8, maintain, "caller") != null);
-    try std.testing.expect(std.mem.indexOf(u8, maintain, "unapproved rows must never appear") != null);
-    try std.testing.expect(std.mem.indexOf(u8, maintain, "caller—not documenter or") != null);
-
-    const baseline = try runDoc(a, root, &.{ "build", "--json" });
-    defer a.free(baseline.stdout);
-    defer a.free(baseline.stderr);
-    try std.testing.expect(baseline.term == .exited and baseline.term.exited == 0);
-    try tmp.dir.createDirPath(std.testing.io, "src/widget");
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/widget/lib.zig", .data = "pub fn widget() void {}\n" });
-
-    const preview = try runDoc(a, root, &.{ "diff", "--json" });
-    defer a.free(preview.stdout);
-    defer a.free(preview.stderr);
-    try std.testing.expect(preview.term == .exited and preview.term.exited == 1);
-    try std.testing.expect(std.mem.indexOf(u8, preview.stdout, "\"signal\":\"new-authoring\"") != null);
-    try std.testing.expectError(error.FileNotFound, tmp.dir.access(std.testing.io, "docs/features/widget.md", .{}));
-
-    const proposal_json =
-        \\{"rows":[
-        \\  {"row_id":"doc-1","action":"create-doc","source_path":"src/widget/","target_path":"docs/features/widget.md"},
-        \\  {"row_id":"doc-2","action":"create-doc","source_path":"src/private/","target_path":"docs/features/unapproved.md"}
-        \\]}
-    ;
-    var proposal = try std.json.parseFromSlice(DocumenterProposal, arena, proposal_json, .{});
-    defer proposal.deinit();
-    const manifest_before_rejection = try tmp.dir.readFileAlloc(std.testing.io, ".planar-manifest", a, .limited(512 * 1024));
-    defer a.free(manifest_before_rejection);
-    try std.testing.expectError(
-        error.UnapprovedProposalRow,
-        applyApprovedProse(a, root, proposal.value.rows[1], &.{"doc-1"}),
-    );
-    try std.testing.expectError(error.FileNotFound, tmp.dir.access(std.testing.io, "docs/features/unapproved.md", .{}));
-    const manifest_after_rejection = try tmp.dir.readFileAlloc(std.testing.io, ".planar-manifest", a, .limited(512 * 1024));
-    defer a.free(manifest_after_rejection);
-    try std.testing.expectEqualStrings(manifest_before_rejection, manifest_after_rejection);
-
-    try applyApprovedProse(a, root, proposal.value.rows[0], &.{"doc-1"});
-    try tmp.dir.access(std.testing.io, "docs/features/widget.md", .{});
-    var final_root: ?[]u8 = null;
-    defer if (final_root) |value| a.free(value);
-    for ([_][]const []const u8{
-        &.{ "cover", "docs/features/widget.md", "src/widget/" },
-        &.{ "lint", "--json" },
-        &.{ "build", "--json" },
-        &.{ "verify", "--json" },
-        &.{ "diff", "--json" },
-    }) |args| {
-        const result = try runDoc(a, root, args);
-        defer a.free(result.stdout);
-        defer a.free(result.stderr);
-        if (result.term != .exited or result.term.exited != 0) {
-            std.debug.print("planar-doc {s} failed: {s}\n", .{ args[0], result.stderr });
-            return error.TestUnexpectedResult;
-        }
-        if (std.mem.eql(u8, args[0], "verify"))
-            try std.testing.expect(std.mem.indexOf(u8, result.stdout, "\"drift\":false") != null);
-        if (std.mem.eql(u8, args[0], "build")) {
-            var built = try std.json.parseFromSlice(std.json.Value, arena, result.stdout, .{});
-            defer built.deinit();
-            final_root = try a.dupe(u8, built.value.object.get("root").?.string);
-            try std.testing.expect(final_root.?.len > 0);
-        }
-        if (std.mem.eql(u8, args[0], "diff"))
-            try std.testing.expectEqual(@as(usize, 0), std.mem.trim(u8, result.stdout, " \r\n\t").len);
-    }
-    try std.testing.expect(final_root != null);
-}
-
 test "scenario: approved sync conflict resolution uses the rendered public workflow" {
     try ext_sync.runSyncConflictEvidenceAndResolutionLifecycle();
 }
@@ -421,7 +288,7 @@ test "scenario: guidance-closeout-envelope stale identity blocks clean while cle
 
     const build = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, "build.zig", a, .limited(512 * 1024));
     defer a.free(build);
-    for ([_][]const u8{ "planar", "planar-agent", "planar-watch", "planar-doc", "planar-execute" }) |binary| {
+    for ([_][]const u8{ "planar", "planar-agent", "planar-watch", "planar-execute" }) |binary| {
         const declaration = try std.fmt.allocPrint(a, ".name = \"{s}\"", .{binary});
         defer a.free(declaration);
         try std.testing.expect(std.mem.indexOf(u8, build, declaration) != null);
@@ -452,7 +319,7 @@ test "scenario: guidance-closeout-envelope stale identity blocks clean while cle
     const facts = [_]GuidanceFact{
         .{ .key = "migration_tail", .expected = "00029_agent_failure_categories.up.sql", .evidence = "migrations/ + schema_migrations insert" },
         .{ .key = "schema_version", .expected = "29", .evidence = "00029 up migration" },
-        .{ .key = "binary_set", .expected = "planar,planar-agent,planar-watch,planar-doc,planar-execute", .evidence = "build.zig installed artifacts" },
+        .{ .key = "binary_set", .expected = "planar,planar-agent,planar-watch,planar-execute", .evidence = "build.zig installed artifacts" },
     };
     const stale = [_]GuidanceObservation{
         .{ .path = "CLAUDE.md", .key = "migration_tail", .actual = "00027_external_sync_baseline.up.sql" },
@@ -473,7 +340,7 @@ test "scenario: guidance-closeout-envelope stale identity blocks clean while cle
     const clean = [_]GuidanceObservation{
         .{ .path = "CLAUDE.md", .key = "migration_tail", .actual = "00029_agent_failure_categories.up.sql" },
         .{ .path = "README.md", .key = "schema_version", .actual = "29" },
-        .{ .path = "README.md", .key = "binary_set", .actual = "planar,planar-agent,planar-watch,planar-doc,planar-execute" },
+        .{ .path = "README.md", .key = "binary_set", .actual = "planar,planar-agent,planar-watch,planar-execute" },
     };
     const clean_rows = try guidanceRows(a, &facts, &clean);
     defer a.free(clean_rows);

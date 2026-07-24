@@ -5,10 +5,10 @@ const std = @import("std");
 pub fn main(init: std.process.Init) !void {
     const allocator = init.arena.allocator();
     const args = try init.minimal.args.toSlice(allocator);
-    try expect(args.len == 7);
+    try expect(args.len == 6);
     try testDirtyCorpus(allocator, init.io, args[1], args[2]);
     try testCleanCorpus(allocator, init.io, args[1], args[2]);
-    try testLiveSchemaInventory(allocator, init.io, args[1], args[3..7]);
+    try testLiveSchemaInventory(allocator, init.io, args[1], args[3..6]);
     try std.Io.File.stdout().writeStreamingAll(init.io, "All 3 surface-lint black-box tests passed.\n");
 }
 

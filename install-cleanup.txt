@@ -19,3 +19,5 @@
 # planar-execute as a shipped fifth binary — the deterministic spawn-free
 # workflow engine — so the cleanup line was removed (a re-install must keep,
 # not delete, it).)
+# Retired documentation binary (moved to the standalone tabularium project).
+bin/tabularium

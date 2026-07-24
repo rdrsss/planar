@@ -1,10 +1,10 @@
 ---
-description: Propose documentation actions from repo drift, gate every row, route approved prose to doc-author, and apply approved manifest-only actions through planar-doc.
+description: Propose documentation actions from repo drift, gate every row, route approved prose to doc-author, and apply approved manifest-only actions through tabularium.
 origin: agents/documenter.md
 shared_notes:
     - 'The documenter specialist is strictly read-only: it proposes rows and never writes prose, manifest state, or coordination state.'
     - Only operator-approved prose rows are dispatched to doc-author; approved nodoc rows bypass prose authoring.
-    - The skill caller owns all planar-doc mutations and verifies their post-state.
+    - The skill caller owns all tabularium mutations and verifies their post-state.
 slug: pl-documenter
 vendor:
     claude:
@@ -24,7 +24,7 @@ approved prose to `doc-author`, and apply approved doc-state operations.
 
 The distinction is load-bearing. The documenter proposes; it never writes.
 `doc-author` writes only approved prose under `docs/`. The skill caller alone
-runs approved `planar-doc` mutations. For a full maintenance pass with the same
+runs approved `tabularium` mutations. For a full maintenance pass with the same
 boundaries, see [`pl-doc-maintain`](pl-doc-maintain.md).
 
 ## Context
@@ -32,16 +32,16 @@ boundaries, see [`pl-doc-maintain`](pl-doc-maintain.md).
 Resolve and report:
 
 - the absolute repository root and output mode (`text` or `json`);
-- `.planar-manifest` and its prior root;
+- Tabularium's machine-local project state and its prior root;
 - the optional `--since <git-ref>` evidence boundary;
-- the initial `planar-doc diff --json` row count; and
+- the initial `tabularium diff --json` row count; and
 - whether a dispatcher can invoke fresh `documenter` and `doc-author`
   specialists.
 
 Run from the target repository. Do not open SQLite, invent planning context, or
 use a repository-local substitute for the manifest. If the manifest is missing
 or unreadable, stop before mutation and recommend an operator-reviewed
-`planar-doc build --json`; do not silently accept the current tree as baseline.
+`tabularium build --json`; do not silently accept the current tree as baseline.
 
 ## Intent
 
@@ -60,8 +60,9 @@ and the prior manifest; an in-progress tree produces unstable proposals.
 Run:
 
 ```text
-planar-doc diff --json
-planar-doc verify --json
+tabularium diff --json
+tabularium verify --json
+tabularium export
 ```
 
 Parse JSON rather than human output. `diff` is the authoritative row set. Use
@@ -74,8 +75,8 @@ Independently derive `authoritative_identity` from repository/build evidence:
 - `migration_tail` is the lexically greatest five-digit up migration with a
   matching down file; `schema_version` is its prefix cross-checked against the
   tail up file's `schema_migrations` insert;
-- `binary_set` is exactly `planar`, `planar-agent`, `planar-watch`,
-  `planar-doc`, and `planar-execute` from `build.zig` installed artifacts;
+- `binary_set` is exactly `planar`, `planar-agent`, `planar-watch`, and
+  `planar-execute` from `build.zig` installed artifacts;
 - `generated_surface_boundary` records `skills/src/` and `agents/` as
   canonical, with vendor projections generated out of tree, evidenced by
   `.gitignore` and `planar skills render`;
@@ -96,7 +97,7 @@ specialist this envelope:
 
 ```json
 {
-  "manifest_path": ".planar-manifest",
+  "manifest_root": "<root from tabularium export>",
   "diff_records": [],
   "covered_docs": {},
   "cycle_summary": [],
@@ -111,8 +112,8 @@ specialist this envelope:
 }
 ```
 
-Preserve `diff_records` exactly from `planar-doc diff --json`. Populate
-`covered_docs` from the existing manifest. Include only caller-supplied facts in
+Preserve `diff_records` exactly from `tabularium diff --json`. Populate
+`covered_docs` from `tabularium export`. Include only caller-supplied facts in
 `cycle_summary`; never fabricate task or plan identifiers.
 
 Each explicit contradiction becomes a normal row with `signal:
@@ -125,13 +126,13 @@ symlink replacement, manifest write, or mutation.
 
 The specialist may read the repository and classify rows as `extend-cover`,
 `create-doc`, `nodoc`, or `defer`. It must not edit any file, invoke any
-`planar-doc` mutation, call `planar` or `planar-agent`, or write coordination
+`tabularium` mutation, call `planar` or `planar-agent`, or write coordination
 state. Compare the working-tree paths before and after dispatch. Any specialist
 write stops the workflow with `outcome=error`.
 
 Normalize proposals into invocation-local `row_id` values. Each gate row must
 show the original signal and source path, proposed action, target doc when
-applicable, whether prose is required, the exact proposed `planar-doc`
+applicable, whether prose is required, the exact proposed `tabularium`
 operation, and the reason. Missing or ambiguous fields force `defer`; do not
 infer write authority.
 
@@ -143,8 +144,8 @@ explicit disposition for each row ID:
 | Disposition | Valid proposal | Authorized effect |
 |---|---|---|
 | `approve-prose` | `create-doc`, or `extend-cover` requiring a prose refresh | Send exactly this row to doc-author. Run no manifest verb until its prose succeeds. |
-| `approve-cover` | `extend-cover` requiring no prose and naming a valid doc and source | Caller runs the exact displayed `planar-doc cover` add/remove operation. |
-| `approve-nodoc` | `nodoc` | Caller runs the exact displayed `planar-doc nodoc` operation. Never dispatch doc-author. |
+| `approve-cover` | `extend-cover` requiring no prose and naming a valid doc and source | Caller runs the exact displayed `tabularium cover` add/remove operation. |
+| `approve-nodoc` | `nodoc` | Caller runs the exact displayed `tabularium nodoc` operation. Never dispatch doc-author. |
 | `approve-reseat` | `hand-edit` or already-accurate covered source requiring no prose or coverage change | Run no row-level command; approval permits the final build to absorb it. |
 | `reject` | any | No write; row remains unresolved. |
 | `defer` | any | No write; preserve the proposal and recovery path. |
@@ -155,7 +156,7 @@ target, source, removal mode, prose requirement, or authoring instruction
 requires a new gate. A prose deletion, a target outside `docs/`, or an action
 outside this allowlist is always deferred.
 
-Do not run `planar-doc build` while any initial row is rejected, deferred,
+Do not run `tabularium build` while any initial row is rejected, deferred,
 ambiguous, or failed. Build reseats the whole tree and would absorb unapproved
 state.
 
@@ -201,10 +202,10 @@ After every approved prose row succeeds, the caller—not documenter or
 doc-author—runs the exact gated operations:
 
 ```text
-planar-doc cover <target-doc> <source-path>
-planar-doc cover <target-doc> <source-path> --remove
-planar-doc nodoc <source-path>
-planar-doc nodoc <source-path> --remove
+tabularium cover <target-doc> <source-path>
+tabularium cover <target-doc> <source-path> --remove
+tabularium nodoc <source-path>
+tabularium nodoc <source-path> --remove
 ```
 
 Use only the displayed approved form. A successful `create-doc` normally needs
@@ -212,7 +213,7 @@ its approved `cover` operation after authoring. An `approve-reseat` row runs no
 row-level command.
 
 An approved `nodoc` row bypasses prose authoring entirely: do not dispatch
-doc-author for it, run its approved `planar-doc nodoc` operation directly, and
+doc-author for it, run its approved `tabularium nodoc` operation directly, and
 verify the observable manifest state before advancing. Apply the same post-state
 check after every `cover` operation. Retain per-row command evidence because
 independent operations are not one transaction.
@@ -223,10 +224,10 @@ Only after every initial row is approved and successfully applied or approved
 for reseating, run:
 
 ```text
-planar-doc lint --json
-planar-doc build --json
-planar-doc verify --json
-planar-doc diff --json
+tabularium lint --json
+tabularium build --json
+tabularium verify --json
+tabularium diff --json
 ```
 
 Lint must pass before build. Retain the build root. Verification must return
@@ -299,9 +300,9 @@ unresolved row behind a successful exit code.
 Give zero to three executable recommendations, normally selected from:
 
 ```text
-planar-doc diff --json
-planar-doc lint --json
-planar-doc verify --json
+tabularium diff --json
+tabularium lint --json
+tabularium verify --json
 ```
 
 When operator judgment is required, name the exact row IDs and disposition
@@ -310,12 +311,12 @@ row is approved and ready to be absorbed.
 
 ## Recovery
 
-For read or parse failure, retry `planar-doc diff --json` from the reported
+For read or parse failure, retry `tabularium diff --json` from the reported
 repository root. For prose failure, inspect the working-tree diff and retry
 doc-author with only still-approved failed rows. For a row-level failure, retry
-the exact gated `planar-doc cover` or `planar-doc nodoc` command and recheck its
+the exact gated `tabularium cover` or `tabularium nodoc` command and recheck its
 post-state. For a closing-gate failure, retry the failed command, followed by
-`planar-doc verify --json` and `planar-doc diff --json`.
+`tabularium verify --json` and `tabularium diff --json`.
 
 Never recommend a blanket reset or say completed operations were rolled back
 unless a supported undo command actually ran. Any changed approval returns to
@@ -333,4 +334,3 @@ planar skills render --check --out <staging-dir> pl-documenter
 ```
 
 ## Vendor Notes
-

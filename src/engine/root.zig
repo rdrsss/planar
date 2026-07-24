@@ -41,7 +41,6 @@ pub const tree = @import("tree.zig");
 pub const external = @import("external.zig");
 pub const extsync = @import("extsync.zig");
 pub const config = @import("config.zig");
-pub const docs = @import("docs.zig");
 pub const ingestor = @import("ingestor.zig");
 pub const templates = @import("templates.zig");
 pub const workspace = @import("workspace.zig");
@@ -76,7 +75,6 @@ test {
     _ = external;
     _ = extsync;
     _ = config;
-    _ = docs;
     _ = ingestor;
     _ = templates;
     _ = workspace;

@@ -8,13 +8,12 @@
 //! entity-create provenance row to `agent_actions` when a planning
 //! entity is created under an active claim — plan 467 D2/D3.)
 //!
-//! Five-binary architecture:
+//! Four-binary architecture:
 //!   - `planar`         : operator surface; runs migrations; writes
 //!                        planning + tasks.status.
 //!   - `planar-agent`   : THIS binary; writes agent_* + tasks.status
 //!                        only as part of atomic coordinated operations.
 //!   - `planar-watch`   : read-only viewer; opens DB with `?mode=ro`.
-//!   - `planar-doc`     : doc-system manifest tool; no SQLite driver.
 //!   - `planar-execute` : deterministic Lua workflow engine; no DB handle.
 //!
 //! Schema-version handshake: planar-agent is a CONSUMER of the schema,

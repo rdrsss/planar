@@ -8,7 +8,7 @@ It is **vendor-agnostic by design**: Claude, Codex, and Copilot are first-class 
 
 ## Status
 
-Planar is a feature-complete, local-first tool built as five binaries (`planar`, `planar-agent`, `planar-watch`, `planar-doc`, and `planar-execute` — the deterministic Lua workflow engine, which holds no DB handle and reaches state only through a constrained CLI host surface). The schema has twenty-nine migrations, through `migrations/00029_agent_failure_categories.up.sql`; the runtime applies them automatically from an embedded `migrations` Zig module produced by build-time codegen. The suite contains 1,700+ unit tests and 570+ integration tests. Vendored SQLite is compiled by `build.zig`; `planar-doc` uses a separate DB-free module graph.
+Planar is a feature-complete, local-first tool built as four binaries (`planar`, `planar-agent`, `planar-watch`, and `planar-execute` — the deterministic Lua workflow engine, which holds no DB handle and reaches state only through a constrained CLI host surface). The schema has twenty-nine migrations, through `migrations/00029_agent_failure_categories.up.sql`; the runtime applies them automatically from an embedded `migrations` Zig module produced by build-time codegen. The suite contains 1,700+ unit tests and 570+ integration tests. Vendored SQLite is compiled by `build.zig`.
 
 **History.** Repo split — the original Go implementation (M1–M19) is preserved at `github.com/rdrsss/planar-go-archive.git`; the current canonical Zig implementation lives at `github.com/rdrsss/planar.git`.
 
@@ -25,6 +25,9 @@ brew install zig git gh jq ripgrep
 - `gh` — optional but recommended. Used by the default `gh-cli` auth method for the GitHub adapter (`planar ext register github <slug> --project <owner>/<repo>` with `--auth-env` omitted) and by `planar import` to enumerate existing GitHub Issues. Planar degrades gracefully when `gh` is absent.
 - `jq` — required by the bundled agent skills (`pl-spec-draft`, `pl-spec-ingest`) to parse `planar … --json` output in their shell snippets. The Zig binary itself does not depend on `jq`, but skipping it will break those workflows. No `yq` is needed; Planar handles YAML and TOML internally.
 - `ripgrep` (`rg`) — recommended. Planar's agent workflows and the example session below (`planar capture command "rg -l 'v1.client'"`) prefer `rg` over `grep` for fast, gitignore-aware codebase search. Not a hard dependency, but the documented recipes assume it is available.
+- `tabularium` — required only by the bundled documentation-maintenance
+  workflows. It is a separate project and is not built or installed by Planar;
+  install it from `locumipsum/tabularium` when using those workflows.
 
 The full source-checkout installer also uses the base-system utilities declared
 in `install.sh`'s `BUILD_DEPS` manifest (`awk`, `basename`, `cat`, `chmod`,
@@ -34,7 +37,7 @@ the installer preflights them before making changes.
 
 ### Optional / research tools
 
-- `mtkahypar` — optional. The external [Mt-KaHyPar](https://github.com/kahypar/mt-kahypar) hypergraph partitioner backs the optimal arm of `planar groups recommend --solver=mtkahypar`. Run `./install.sh --with-mtkahypar` to install the official, hash-locked native PyPI wheel into `~/.planar/opt/mtkahypar/` behind Planar's prefix-owned CLI adapter at `~/.planar/bin/mtkahypar`. This requires `python3` only for the optional adapter and does not add Mt-KaHyPar to `build.zig` or Planar's five-binary set. When absent, `groups recommend` degrades gracefully to greedy and reports `optimal_available:false`.
+- `mtkahypar` — optional. The external [Mt-KaHyPar](https://github.com/kahypar/mt-kahypar) hypergraph partitioner backs the optimal arm of `planar groups recommend --solver=mtkahypar`. Run `./install.sh --with-mtkahypar` to install the official, hash-locked native PyPI wheel into `~/.planar/opt/mtkahypar/` behind Planar's prefix-owned CLI adapter at `~/.planar/bin/mtkahypar`. This requires `python3` only for the optional adapter and does not add Mt-KaHyPar to `build.zig` or Planar's four-binary set. When absent, `groups recommend` degrades gracefully to greedy and reports `optimal_available:false`.
 
 `sqlx-cli` and `sqlite3` are only needed for ad-hoc developer workflows against a scratch database (see [Build from source](#build-from-source)); the runtime embeds migrations via build-time codegen and uses the vendored SQLite amalgamation, so neither CLI is a runtime dependency. Install the optional `sqlx-cli` for authoring new migration pairs:
 

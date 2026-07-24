@@ -366,23 +366,6 @@ pub fn build(b: *std.Build) void {
     engine_mod.addIncludePath(b.path(ts_core_dir ++ "/lib/include"));
     engine_mod.linkLibrary(treesitter_lib);
 
-    // link_libc on the doc-side modules: their @cImport sites (dirent.h,
-    // fcntl.h, sys/stat.h) need zig's libc headers, which are only provided
-    // when the module links libc. Darwin links libSystem regardless, which
-    // is why this was invisible on macOS.
-    const docs_engine_mod = b.addModule("docs_engine", .{
-        .root_source_file = b.path("src/engine/docs_root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    const doc_runtime_mod = b.addModule("doc_runtime", .{
-        .root_source_file = b.path("src/runtime/doc_runtime.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-
     // -----------------------------------------------------------------
     // Library module (existing planar package surface).
     // -----------------------------------------------------------------
@@ -458,7 +441,7 @@ pub fn build(b: *std.Build) void {
 
     // -----------------------------------------------------------------
     // `planar-agent` executable (plan 85). Second binary in the
-    // five-binary architecture. M1 ships the scaffold (schema-version
+    // four-binary architecture. M1 ships the scaffold (schema-version
     // handshake + a single `version` verb); M2 wires the 13-verb
     // atomic / claim / action / reconcile / abort surface on top.
     //
@@ -489,7 +472,7 @@ pub fn build(b: *std.Build) void {
 
     // -----------------------------------------------------------------
     // `planar-watch` executable (plan 85 M8). Third binary in the
-    // five-binary architecture — the human-facing read-only viewer.
+    // four-binary architecture — the human-facing read-only viewer.
     // Opens the DB via `runtime.ensureDbStrictReadOnly`, which uses
     // `sqlite3_open_v2(..., SQLITE_OPEN_READONLY, ...)` so the SQLite
     // driver itself refuses any write SQL. That's the second line of
@@ -518,32 +501,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(watch_exe);
 
     // -----------------------------------------------------------------
-    // `planar-doc` executable (plan 423 M6). Fourth binary in the
-    // architecture — repo-state documentation manifest tool. Read-heavy
-    // with one small state file (`.planar-manifest`) as its only write.
-    // Links cli, engine (docs subsystem), runtime, build_options. Does
-    // NOT link db — this binary never opens SQLite. Capability boundary
-    // is the verb set: build, verify, diff, cover, nodoc, lint.
-    // -----------------------------------------------------------------
-    const doc_exe = b.addExecutable(.{
-        .name = "planar-doc",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/cmd/planar-doc/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-            .imports = &.{
-                .{ .name = "cli", .module = cli_mod },
-                .{ .name = "engine", .module = docs_engine_mod },
-                .{ .name = "runtime", .module = doc_runtime_mod },
-                .{ .name = "build_options", .module = build_options_mod },
-            },
-        }),
-    });
-    b.installArtifact(doc_exe);
-
-    // -----------------------------------------------------------------
-    // `planar-execute` executable (plan 633 P0.2c). Fifth binary — the
+    // `planar-execute` executable (plan 633 P0.2c). Fourth binary — the
     // deterministic, spawn-free Lua workflow engine. Links Lua as a static
     // lib (addIncludePath + linkLibrary, mirroring the lua_zig_mod wiring)
     // and intentionally does NOT link db / engine / runtime: the engine
@@ -591,7 +549,6 @@ pub fn build(b: *std.Build) void {
     cli_usage_check_run.addArg(b.getInstallPath(.bin, "planar"));
     cli_usage_check_run.addArg(b.getInstallPath(.bin, "planar-agent"));
     cli_usage_check_run.addArg(b.getInstallPath(.bin, "planar-watch"));
-    cli_usage_check_run.addArg(b.getInstallPath(.bin, "planar-doc"));
     cli_usage_check_step.dependOn(&cli_usage_check_run.step);
 
     // Standalone semantic authored-surface validator.
@@ -651,9 +608,6 @@ pub fn build(b: *std.Build) void {
 
     const watch_exe_tests = b.addTest(.{ .root_module = watch_exe.root_module, .filters = test_filters_opt });
     const run_watch_exe_tests = b.addRunArtifact(watch_exe_tests);
-
-    const doc_exe_tests = b.addTest(.{ .root_module = doc_exe.root_module, .filters = test_filters_opt });
-    const run_doc_exe_tests = b.addRunArtifact(doc_exe_tests);
 
     const cli_usage_lint_tests = b.addTest(.{ .root_module = cli_usage_lint_exe.root_module, .filters = test_filters_opt });
     const run_cli_usage_lint_tests = b.addRunArtifact(cli_usage_lint_tests);
@@ -723,7 +677,6 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_exe_tests.step);
     test_step.dependOn(&run_agent_exe_tests.step);
     test_step.dependOn(&run_watch_exe_tests.step);
-    test_step.dependOn(&run_doc_exe_tests.step);
     test_step.dependOn(&run_cli_usage_lint_tests.step);
     test_step.dependOn(&run_surface_lint_tests.step);
     test_step.dependOn(&run_db_tests.step);
@@ -770,7 +723,6 @@ pub fn build(b: *std.Build) void {
     run_surface_lint_blackbox.addArtifactArg(exe);
     run_surface_lint_blackbox.addArtifactArg(agent_exe);
     run_surface_lint_blackbox.addArtifactArg(watch_exe);
-    run_surface_lint_blackbox.addArtifactArg(doc_exe);
     test_integration_step.dependOn(&run_surface_lint_blackbox.step);
     const test_surface_lint_step = b.step("test-surface-lint", "Run standalone surface-lint black-box tests");
     test_surface_lint_step.dependOn(&run_surface_lint_blackbox.step);
@@ -799,10 +751,6 @@ pub fn build(b: *std.Build) void {
     run_integration_all.setEnvironmentVariable(
         "PLANAR_WATCH_BIN",
         b.getInstallPath(.bin, "planar-watch"),
-    );
-    run_integration_all.setEnvironmentVariable(
-        "PLANAR_DOC_BIN",
-        b.getInstallPath(.bin, "planar-doc"),
     );
     run_integration_all.setEnvironmentVariable(
         "PLANAR_EXECUTE_BIN",
@@ -891,10 +839,6 @@ fn registerIntegrationTestDir(
         run.setEnvironmentVariable(
             "PLANAR_WATCH_BIN",
             b.getInstallPath(.bin, "planar-watch"),
-        );
-        run.setEnvironmentVariable(
-            "PLANAR_DOC_BIN",
-            b.getInstallPath(.bin, "planar-doc"),
         );
         run.setEnvironmentVariable(
             "PLANAR_EXECUTE_BIN",

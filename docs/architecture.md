@@ -16,31 +16,28 @@ flowchart TD
         S2["/pl-spec-draft · /pl-spec-ingest · /pl-ext-propagate · …"]
     end
 
-    subgraph Binaries["planar CLI (four planning-state capability surfaces + one DB-handle-free engine)"]
+    subgraph Binaries["Planar CLI (three planning-state surfaces + one DB-handle-free engine)"]
         direction LR
         B1["<b>planar</b><br/>operator RW<br/>planning entities + cockpit TUI"]
         B2["<b>planar-agent</b><br/>agent RW<br/>agent_actions + claims"]
         B3["<b>planar-watch</b><br/>read-only viewer<br/>file:?mode=ro"]
-        B4["<b>planar-doc</b><br/>repo-state manifest<br/>.planar-manifest only"]
-        B5["<b>planar-execute</b><br/>spawn-free Lua engine<br/>no DB handle · shells planar"]
+        B4["<b>planar-execute</b><br/>spawn-free Lua engine<br/>no DB handle · shells planar"]
     end
 
     DB[("SQLite database<br/>~/.planar/planar.db<br/>29 migrations · embedded at build time")]
-    MF[(".planar-manifest<br/>repo-state merkle index")]
 
     Surface -->|invoke| Binaries
     B1 -->|read / write| DB
     B2 -->|read / write| DB
     B3 -->|read-only| DB
-    B4 -->|read / write| MF
-    B5 -->|shells| B1
-    B5 -->|shells| B2
-    B5 -->|shells| B3
+    B4 -->|shells| B1
+    B4 -->|shells| B2
+    B4 -->|shells| B3
 ```
 
 Two layers are touched by users and agents:
 
-1. **The Planar binaries** — five Zig executables. Three share the SQLite engine/runtime graph: `planar` is the operator surface and hosts the interactive cockpit, `planar-agent` owns coordination writes, and `planar-watch` is a driver-enforced read-only viewer. `planar-doc` links a separate filesystem-only engine/runtime graph; `planar-execute` links neither graph and reaches state only through an exact allowlist of sibling Planar commands. Capability boundaries are enforced by each binary's verb set and locked by integration tests. See [Five-binary architecture](#five-binary-architecture) below.
+1. **The Planar binaries** — four Zig executables. Three share the SQLite engine/runtime graph: `planar` is the operator surface and hosts the interactive cockpit, `planar-agent` owns coordination writes, and `planar-watch` is a driver-enforced read-only viewer. `planar-execute` links the vendored Lua runtime and reaches state only through an exact allowlist of sibling Planar commands. Capability boundaries are enforced by each binary's verb set and locked by integration tests. See [Four-binary architecture](#four-binary-architecture) below.
 2. **The skill and agent layer** — vendor-specific command surfaces (Claude slash commands, Codex skills, Copilot skills) generated from a single source tree under `skills/src/` at install time. Skills invoke binary verbs; binary verbs operate on SQLite.
 
 An LLM agent running a skill has no direct database access. It calls Planar verbs and reads their stdout.
@@ -93,7 +90,7 @@ Authoring rules (file naming, the `schema_migrations` insert/delete contract, th
 | 0028 feedback triage | `feedback_triage` — one structured triage row per task or question finding, with severity, disposition, reproduction status, optional duplicate relationship, redacted evidence, and database constraints for target/disposition consistency |
 | 0029 agent failure categories | adds nullable `agent_work_claims.failure_category` with the closed `usage_limit\|context_limit\|output_limit\|tool_failure\|validation\|unknown` enum and a category/claimed-time partial index for aggregate reporting |
 
-Migration 0015 (`migrations/00015_agent_activity.up.sql`) lands the claim + action store that the agent-coordination feature is built on. `claim_token` is generated in SQL via `lower(hex(randomblob(16)))` (32-char opaque handle). Exclusivity of `(entity_kind, entity_id)` is enforced transactionally in the engine store (`src/engine/runtime/agentactivity/`) under `BEGIN IMMEDIATE` because SQLite cannot express the time-dependent "unexpired" predicate in a partial unique index. WAL mode is enabled per-connection in `src/cmd/planar/runtime.zig` — load-bearing for the wake-tier ladder behind `--follow` AND for cross-binary concurrency between the operator and agent binaries (see Five-binary architecture below).
+Migration 0015 (`migrations/00015_agent_activity.up.sql`) lands the claim + action store that the agent-coordination feature is built on. `claim_token` is generated in SQL via `lower(hex(randomblob(16)))` (32-char opaque handle). Exclusivity of `(entity_kind, entity_id)` is enforced transactionally in the engine store (`src/engine/runtime/agentactivity/`) under `BEGIN IMMEDIATE` because SQLite cannot express the time-dependent "unexpired" predicate in a partial unique index. WAL mode is enabled per-connection in `src/cmd/planar/runtime.zig` — load-bearing for the wake-tier ladder behind `--follow` AND for cross-binary concurrency between the operator and agent binaries (see Four-binary architecture below).
 
 Migration 0029 adds the nullable, CHECK-constrained
 `agent_work_claims.failure_category` classification. `planar-agent fail`
@@ -129,18 +126,17 @@ The `agent_actions.metadata` JSON column (migration 00016) is the durable home f
 
 Migration 00027 adds `external_links.baseline_title` and `baseline_status`. These fields store the last common synchronized values used to distinguish local-only, remote-only, converged, and true two-sided changes before a two-way pull mutates local state.
 
-### Five-binary architecture
+### Four-binary architecture
 
-Planar ships FIVE binaries. Three planning-state binaries share the SQLite engine/runtime graph; `planar-doc` links a separate filesystem-only engine and runtime, and `planar-execute` links neither. The split is real: separate `src/cmd/` source trees, separate `addExecutable` entries in `build.zig`, separate `--help` surfaces, and separate installed artifacts.
+Planar ships four binaries. Three planning-state binaries share the SQLite engine/runtime graph; `planar-execute` links the vendored Lua runtime and no SQLite graph. The split is real: separate `src/cmd/` source trees, separate `addExecutable` entries in `build.zig`, separate `--help` surfaces, and separate installed artifacts.
 
-(The fifth binary, `planar-execute`, ships from `src/cmd/planar-execute/`, but it is **not a planning-state binary**: it holds no SQLite handle and is absent from the capability matrix below. It is the deterministic, spawn-free Lua workflow engine described in [`planar-execute` — fifth binary, no DB handle](#planar-execute--fifth-binary-no-db-handle) below; its constrained host surface shells only `planar`, `planar-agent`, and `planar-watch`, so its state access remains bounded by those binaries' verb sets.)
+(The fourth binary, `planar-execute`, ships from `src/cmd/planar-execute/`, but it is **not a planning-state binary**: it holds no SQLite handle and is absent from the capability matrix below. It is the deterministic, spawn-free Lua workflow engine described in [`planar-execute` — fourth binary, no DB handle](#planar-execute--fifth-binary-no-db-handle) below; its constrained host surface shells only `planar`, `planar-agent`, and `planar-watch`, so its state access remains bounded by those binaries' verb sets.)
 
 | Binary | Audience | Write surface | DB open mode |
 |---|---|---|---|
 | `planar` | Operator (human + scripts) | Planning entities (plans/tasks/decisions/etc.) + `tasks.status` on operator-driven transitions | Read-write; owns `init` and runs migrations. |
 | `planar-agent` | Agent (vendor hook, orchestrator dispatch) + operator recovery | `agent_actions`, `agent_work_claims`, `workflow_runs`, and `context_records`; `tasks.status` ONLY as part of an atomic coordinated operation under a status-transition guard | Read-write; refuses startup with exit 7 if schema is older than the binary's embedded minimum. |
 | `planar-watch` | Operator (live view) + scripts | None — the binary registers zero write verbs AND opens SQLite via `file:?mode=ro` URI as a second line of defense | Read-only; same schema-version handshake as `planar-agent`. |
-| `planar-doc` | Operator + documenter agent | `.planar-manifest` ONLY — repo-state merkle index at the repo root. Never opens SQLite at all. | No DB handle. |
 
 Capability invariant — non-overlapping write surfaces enforced at
 compile time by each binary's verb set, not by runtime ACLs:
@@ -159,9 +155,8 @@ compile time by each binary's verb set, not by runtime ACLs:
   touch planning state.
 - `planar-watch` is incapable of writing to the DB at all — both the
   verb set and the read-only DB handle are load-bearing.
-- `planar-doc` is incapable of touching the DB at all (no SQLite
-  driver linked into the binary). Its only write is the
-  `.planar-manifest` file at the repo root.
+- Documentation state is outside Planar. The standalone `tabularium` tool owns
+  a machine-local SQLite database and only reads the documented repository.
 
 The operator-recovery verbs `planar-agent reconcile` and
 `planar-agent abort` live on `planar-agent` (not `planar`) because both
@@ -199,7 +194,7 @@ The shared engine module lives at `src/engine/runtime/agentactivity/`; per-binar
 
 The `planar` binary embeds an interactive TUI cockpit (plan 591). Bare `planar` on a TTY launches it (landing on the Scope Explorer); `planar explore` is the explicit alias. Non-TTY contexts, `TERM=dumb`, `PLANAR_NO_TUI`, and `--plain` all fall back to the existing help/usage output — the cockpit never activates in automated pipelines.
 
-**Why `planar`, not `planar-watch`:** the cockpit offers three editing tiers (entity-field editing, claim-aware task lifecycle transitions, external/workbench actions). Editing requires a read-write DB handle, which is structurally incompatible with `planar-watch`'s `SQLITE_OPEN_READONLY` driver. `planar-watch` is **unchanged** — it remains the scriptable, zero-write, NDJSON-streaming viewer whose `capability_boundary_test.zig` invariants stand. The cockpit's placement in `planar` preserves the five-binary capability model.
+**Why `planar`, not `planar-watch`:** the cockpit offers three editing tiers (entity-field editing, claim-aware task lifecycle transitions, external/workbench actions). Editing requires a read-write DB handle, which is structurally incompatible with `planar-watch`'s `SQLITE_OPEN_READONLY` driver. `planar-watch` is **unchanged** — it remains the scriptable, zero-write, NDJSON-streaming viewer whose `capability_boundary_test.zig` invariants stand. The cockpit's placement in `planar` preserves the four-binary capability model.
 
 **No schema change.** The cockpit's views are read-only projections of existing tables (see the data-source table in the tech spec). Editing reuses the existing engine write paths and guards — no new tables, columns, or write code.
 
@@ -223,7 +218,7 @@ Cockpit startup loads only the selected initial view. Other views load when the 
 
 See [docs/concepts.md § Interactive cockpit](concepts.md#interactive-cockpit) for the operator-facing model and [docs/cli-reference.md § Domain: explore](cli-reference.md#domain-explore) for the full flag reference.
 
-### `planar-execute` — fifth binary, no DB handle
+### `planar-execute` — fourth binary, no DB handle
 
 Revived in plan 633, `planar-execute` is a deterministic, spawn-free Lua workflow engine. A caller invokes `planar-execute run <wf.lua> --phase <name> [--args <json>]`; the engine loads the workflow in a Lua sandbox, registers an allowlisted host surface (`cli`/`git`/`fs`/`flow`/`ctx`), runs the named phase, and prints `flow.result(table)` as JSON. The CLI boundary is an exact `(binary, command path)` allowlist, and each Planar binary is resolved beside the running `planar-execute` rather than through `PATH`. `git.*` is confined with `-C <worktree>` plus validated refs. `fs.*` walks from an opened sandbox-root handle, opens every parent and final entry with no-follow semantics, and rejects absolute paths, dot segments, alternate separators, and symlink components. The sandbox exposes no model-spawning primitive and nils `os`/`io`/`load`/`loadfile`/`loadstring`/`require`/`dofile`/`math.random`. The engine holds no SQLite handle and does not participate in the claim ritual; the caller owns transitions between deterministic phases and any LLM work.
 
@@ -319,12 +314,10 @@ flowchart LR
 | `src/cmd/planar/` | Operator binary entry — `main.zig` plus runtime scaffolding (`runtime.zig`, `scope.zig`, `output.zig`, `editflow.zig`, `editor.zig`, `exit.zig`) and per-verb handlers under `handlers/`. Also contains the interactive cockpit under `cockpit/` (`gate.zig`, `app.zig`, the `view_model.zig` facade plus `view_model/` domains, `views/`, `widgets/`, `edit/`). |
 | `src/cmd/planar-agent/` | Agent-callable coordination binary — `main.zig`, `exit.zig`, and its comptime-registered claim, action, run, context, recovery, and terminal-operation handlers. |
 | `src/cmd/planar-watch/` | Read-only viewer binary — `main.zig`, `exit.zig`, and per-verb handlers under `handlers/` (including the `--follow` wake loop). Unchanged by the cockpit addition; `planar-watch` remains the scriptable NDJSON viewer. |
-| `src/cmd/planar-doc/` | Filesystem-only documentation binary — manifest diff, coverage, lint, build, and verification handlers. It uses `src/runtime/doc_runtime.zig` and does not link the database graph. |
 | `src/cmd/planar-execute/` | Spawn-free deterministic workflow engine — Lua workflow loading, schema/allowlist enforcement, state, and `run` handling. It links the first-party confinement layers under `src/lua/`, `src/runtime/`, and `src/treesitter/`, but no SQLite module. |
 
 The first-party runtime boundary is source-owned: `src/lua/lua.zig` provides
-the Lua binding used by `planar-execute`; `src/runtime/doc_runtime.zig`
-provides the DB-free runtime used by `planar-doc`; and
+the Lua binding used by `planar-execute`; and
 `src/treesitter/treesitter.zig` is Planar's Tree-sitter binding. These files
 are ordinary reviewed source, not generated projections. Build-generated Zig
 modules are limited to the migration and default-template outputs emitted by
@@ -676,7 +669,7 @@ Planar defines vendor-neutral agent roles under `agents/`. Per-vendor command su
 | `planner` | large | Drafts planning documents (product spec, tech spec, roadmap, test spec) from a goal statement and registers them as workbench artifacts. |
 | `spec-reviewer` | large | Adversarially reviews draft planning artifacts before ingestion and returns a readiness verdict. |
 | `ingestor` | large | Reads planning documents from the workbench and decomposes them into plans, tasks, decisions, and scenarios in the database. |
-| `documenter` | large | Proposes the doc worklist from `planar-doc diff`; runs after Phase 3 so the post-cycle tree is visible. |
+| `documenter` | large | Proposes the doc worklist from `tabularium diff`; runs after Phase 3 so the post-cycle tree is visible. |
 | `doc-author` | large | Writes only operator-approved reference prose under `docs/`; never decides coverage or mutates manifest state. |
 | `ext-sync` | large | Propagates the feature tree to the operational plane and syncs changes bidirectionally. |
 | `sync-reconciler` | large | Compares local and external sync-conflict evidence and coordinates the exact operator-approved whole-entity resolution. |
@@ -696,7 +689,7 @@ Planar defines vendor-neutral agent roles under `agents/`. Per-vendor command su
 | 3.7 — Finalization | `janitor` | Explicit `--finalize` or interactive confirm after Phase 3; merge -> reconcile -> closeout gate |
 | 4 — Propagation | `pl-ext-propagate` | User requests `--propagate` |
 | 5 — Archive | `pl-workbench-archive` | Anchor plan done, user requests `--archive` |
-| 6 — Documenter | `pl-documenter` | Default-on after Phase 3; `planar-doc diff` -> gated worklist -> `planar-doc build` |
+| 6 — Documenter | `pl-documenter` | Default-on after Phase 3; `tabularium diff` -> gated worklist -> `tabularium build` |
 
 The orchestrator gates Phases 2 and 3 on explicit user confirmation. Ingestion never auto-applies. Phases 3.7 and 4-5 are explicit/opt-in; Phase 6 is default-on but still gates every proposed doc action with the operator. The iteration cap is 5 per reviewer dispatch cycle.
 
@@ -713,7 +706,7 @@ This is a source-of-truth boundary, not merely a directory convention. Review
 and edit `skills/src/` and `agents/`; validate projections in an out-of-tree
 render destination. Never repair guidance drift by editing a generated vendor
 projection. At documentation closeout the orchestrator derives the migration
-tail, schema version, exact five-binary set, generated-surface boundary, and
+tail, schema version, exact four-binary set, generated-surface boundary, and
 `AGENTS.md`/`CLAUDE.md` equivalence from repository/build evidence. Explicit
 contradictions become operator-gated `guidance-identity-drift` rows; omissions
 do not invent work and no guidance or manifest file is changed automatically.
@@ -842,7 +835,7 @@ The Zig package root IS the repo root: `build.zig` and `build.zig.zon` sit at th
 ```bash
 # Makefile wrappers
 make build              # → ./bin/planar (ReleaseSafe)
-make install            # install the five executables to PREFIX/bin
+make install            # install the four executables to PREFIX/bin
 make test               # unit tests
 make test-integration   # builds ./bin/planar, sets PLANAR_BIN, runs the
                         # integration suite under integration_tests/
@@ -863,7 +856,7 @@ Planar runs a two-tier test model plus a cross-binary parity gate:
 - **Authored-surface lint gate** — `make cli-usage-check` runs the schema-driven CLI validator followed by the semantic authored-surface validator. `make surface-lint` runs only the semantic validator. The composed gate is wired into `make test-all` once.
 
 The binaries produced by `make build` land under `./bin/`. `make install`
-installs only those five executables under `PREFIX/bin` (default
+installs only those four executables under `PREFIX/bin` (default
 `~/.local/bin`). The legacy `install.sh` / `make install-full` path additionally
 stages skills, agents, workflows, and vendor wiring under `~/.planar`.
 
@@ -876,10 +869,10 @@ The integration suite also follows two stylistic conventions documented in [`CLA
 - **One `*Db` per process.** Passed through explicit `App` / `Store` parameters; no global mutable state.
 - **Migrations are append-only.** Never edit a released migration. Add a new file with the next sequence number via `sqlx migrate add -r <name> --source migrations`.
 - **The adapter boundary is duck-typed.** The sync engine and propagation modules accept `adapter: anytype` and dispatch via the comptime adapter type; they never branch on adapter kind.
-- **No external (system) C dependencies — only vendored C source.** `vendor/sqlite/` (linked into `planar`, `planar-agent`, and `planar-watch`) and `vendor/lua/` (linked into `planar-execute`) are the only C the build touches; `planar-doc` links neither.
+- **No external (system) C dependencies — only vendored C source.** `vendor/sqlite/` (linked into `planar`, `planar-agent`, and `planar-watch`) and `vendor/lua/` (linked into `planar-execute`) are the only C the build touches.
 - **Skills call the binaries.** Agent skills do not write the database directly. They invoke `planar` / `planar-agent` verbs and read stdout. `planar-watch` is read-only and opens the database via `file:?mode=ro`.
 - **Schema is the contract.** Read-side tools must check `schema_migrations.version` before operating against the database. `planar-agent` and `planar-watch` enforce this at startup (exit 7 on mismatch).
-- **The capability split is verb-level.** Each of the four planning-state binaries can only do what its registered verb set lets it do; `integration_tests/capability_boundary_test.zig` fails CI if a write verb is registered on `planar-watch`, a planning-entity verb on `planar-agent`, or any SQLite-touching verb on `planar-doc`. (The fifth binary, `planar-execute`, holds no DB handle at all and is bounded by the verb sets of the binaries it shells.)
+- **The capability split is verb-level.** Each of the three planning-state binaries can only do what its registered verb set lets it do; `integration_tests/capability_boundary_test.zig` fails CI if a write verb is registered on `planar-watch` or a planning-entity verb on `planar-agent`. The fourth binary, `planar-execute`, holds no DB handle and is bounded by the verb sets of the binaries it shells.
 - **The workflow engine holds no DB handle.** `planar-execute` is a pure, deterministic CLI driver: it shells an exact subset of sibling `planar`/`planar-agent`/`planar-watch` commands and confined Git operations, never opens SQLite, and exposes no model-spawning host function.
 ## Host-aware agent model binding
 

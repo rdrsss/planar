@@ -1,6 +1,6 @@
 //! planar-watch — human-facing read-only viewer for agent activity.
 //!
-//! Read-only planning-state binary in the five-binary architecture. Opens the
+//! Read-only planning-state binary in the four-binary architecture. Opens the
 //! SQLite database via `runtime.ensureDbStrictReadOnly`, which uses
 //! `sqlite3_open_v2(..., SQLITE_OPEN_READONLY, ...)` so the SQLite
 //! driver itself refuses every write SQL string. That is the SECOND

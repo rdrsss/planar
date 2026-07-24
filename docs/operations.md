@@ -1,7 +1,7 @@
 # Planar Operations
 
 How a unit of work moves from a goal to merged code through Planar's agents
-and the five-binary boundary. This is the operational spine: the moving parts
+and the four-binary boundary. This is the operational spine: the moving parts
 that the reference docs describe statically, drawn as the flows they actually
 run.
 
@@ -163,7 +163,7 @@ verification, Planar reconciliation, branch/worktree cleanup, and
 `--archive` archives the workbench tree. The database retains the feature.
 
 **Phase 6** is default-on unless `--no-docs` is supplied. The orchestrator runs
-`planar-doc diff`, dispatches the documenter to propose a worklist
+`tabularium diff`, dispatches the documenter to propose a worklist
 (`extend-cover`, `create-doc`, `nodoc`, `defer`), gates each row with the
 operator, and then runs the caller-owned doc manifest gates. The documenter
 proposes; doc-author writes only approved prose rows.

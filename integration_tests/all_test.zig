@@ -7,7 +7,6 @@
 comptime {
     _ = @import("capability_boundary_test.zig");
     _ = @import("models_test.zig");
-    _ = @import("planar_doc_test.zig");
     _ = @import("planar_execute_test.zig");
     _ = @import("bench_run_ritual_test.zig");
     _ = @import("workbench_terminal_filter_test.zig");
