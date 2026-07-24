@@ -77,6 +77,62 @@ test "child process cwd wins over stale parent PWD for worktree gate and init" {
     try std.testing.expectEqualStrings("global", plan.scope_kind);
 }
 
+test "init --force repoints an existing slug registration to the new cwd" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const InitIdJSON = struct {
+        project_id: i64,
+        project_slug: []const u8,
+        root_path: []const u8 = "",
+    };
+
+    // The slug derives from the cwd BASENAME, so the checkout-moved
+    // case is the same leaf directory name under two different parents
+    // (sibling checkout vs superproject submodule).
+    const dir_a = try std.fs.path.join(arena, &.{ suite.freshSystemTmpDir(), "repoint-home" });
+    try mkdirp(dir_a);
+    const dir_b = try std.fs.path.join(arena, &.{ suite.freshSystemTmpDir(), "repoint-home" });
+    try mkdirp(dir_b);
+
+    const env = [_]harness.Suite.ExtraEnvEntry{
+        .{ .key = "PLANAR_DB", .value = suite.absDbPath() },
+    };
+
+    // First registration roots the slug at dir_a.
+    const first = mustRunJSONWithEnvInDir(&suite, InitIdJSON, arena, dir_a, &.{
+        "init", "--allow-no-repo", "--json",
+    }, &env);
+    const real_a = try std.Io.Dir.realPathFileAlloc(.cwd(), std.testing.io, dir_a, std.testing.allocator);
+    defer std.testing.allocator.free(real_a);
+    try std.testing.expectEqualStrings(real_a, first.root_path);
+
+    // Same-basename cwd WITHOUT --force: insert-or-ignore returns the
+    // dir_a registration untouched (existing dedupe contract).
+    const dupe = mustRunJSONWithEnvInDir(&suite, InitIdJSON, arena, dir_b, &.{
+        "init", "--allow-no-repo", "--json",
+    }, &env);
+    try std.testing.expectEqual(first.project_id, dupe.project_id);
+    try std.testing.expectEqualStrings(real_a, dupe.root_path);
+
+    // With --force the registration repoints to dir_b under the SAME
+    // project id, so association memberships and scoped entities carry
+    // over. This is the checkout-moved migration path (e.g. sibling
+    // checkout retired in favor of a superproject submodule).
+    const forced = mustRunJSONWithEnvInDir(&suite, InitIdJSON, arena, dir_b, &.{
+        "init", "--allow-no-repo", "--json", "--force",
+    }, &env);
+    const real_b = try std.Io.Dir.realPathFileAlloc(.cwd(), std.testing.io, dir_b, std.testing.allocator);
+    defer std.testing.allocator.free(real_b);
+    try std.testing.expectEqual(first.project_id, forced.project_id);
+    try std.testing.expectEqualStrings(real_b, forced.root_path);
+}
+
 test "repo scope create list update guard and tree surfaces" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
