@@ -47,7 +47,7 @@ through `planar plan create`, `planar question add`, and `planar task add`.
 
 ## Tier
 
-`medium`. Resolved to a concrete model per [`agents/models.md`](models.md).
+`medium`. Resolved to a concrete model per the stack's model-tier routing (owned by the armarium orchestration layer).
 
 ## When to use
 
@@ -362,7 +362,7 @@ scanning, classification, preview, dedup, filing, and summarization remain
 active work. The final operator report is the result and replaces any terminal
 heartbeat.
 
-See [`agents/methodology.md` § Heartbeat status contract](methodology.md#heartbeat-status-contract)
+See the heartbeat status contract (owned by the armarium orchestration layer)
 for the full convention and 256-byte cap.
 
 ## Boundaries
@@ -383,4 +383,4 @@ for the full convention and 256-byte cap.
 - Finding body text must never quote verbatim transcript prose, entity titles,
   argument values, or scope slugs. Aggregate counts and verb paths only.
 
-See [cross-scope-writes.md](cross-scope-writes.md) before any write outside the cwd-derived scope; when running under Codex, this also covers the Codex enforcement caveat for this role's `coordinate` capability.
+Cross-scope writes require the scope checks defined by the stack's cross-scope-writes doctrine (armarium orchestration layer); when running under Codex, this also covers the Codex enforcement caveat for this role's `coordinate` capability.

@@ -14,7 +14,7 @@ Vendor-neutral. Vendor-specific surfaces are under `commands/claude/pl-documente
 
 ## Tier
 
-`large`. Resolved to a concrete model per [`agents/models.md`](models.md). Coverage decisions require reading the changed code, the existing docs, and the manifest contract together — the same level of judgement as orchestration.
+`large`. Resolved to a concrete model per the stack's model-tier routing (owned by the armarium orchestration layer). Coverage decisions require reading the changed code, the existing docs, and the manifest contract together — the same level of judgement as orchestration.
 
 ## When to use
 
@@ -174,12 +174,12 @@ non-zero row count. Reading and classification are active work, so these
 statuses never use `awaiting:`. The returned worklist is the final result; do
 not publish a redundant terminal heartbeat after returning it.
 
-See [`agents/methodology.md` § Heartbeat status contract](methodology.md#heartbeat-status-contract)
+See the heartbeat status contract (owned by the armarium orchestration layer)
 for the `awaiting:` convention and 256-byte cap.
 
 ## Cross-references
 
 - Binary capability boundary: [`docs/concepts.md` § Binaries](../docs/concepts.md#binaries).
 - Manifest model: [`docs/features/doc-system.md`](../docs/features/doc-system.md).
-- Orchestrator wiring: [`agents/orchestrator.md` § Phase 6 (Documenter)](orchestrator.md).
+- Orchestrator wiring: the orchestrator's documenter phase (armarium orchestration layer).
 - Skill surface: [`skills/src/pl-documenter.md`](../skills/src/pl-documenter.md).

@@ -12,7 +12,7 @@ Vendor-neutral. Vendor-specific surfaces are under `commands/claude/pl-synthesiz
 
 ## Tier
 
-`large`. Resolved to a concrete model per [`agents/models.md`](models.md). Mapping the union of an existing repo's planning material, its git log, and its source tree onto a coherent fresh spec — while honoring the code-evidence invariant — requires the same level of judgment as planning and orchestration.
+`large`. Resolved to a concrete model per the stack's model-tier routing (owned by the armarium orchestration layer). Mapping the union of an existing repo's planning material, its git log, and its source tree onto a coherent fresh spec — while honoring the code-evidence invariant — requires the same level of judgment as planning and orchestration.
 
 ## When to use
 
@@ -95,7 +95,7 @@ the cached Result is available; an active LLM generation is not an awaiting
 phase. The returned preview or apply summary is the final result and replaces
 any terminal heartbeat.
 
-See [`agents/methodology.md` § Heartbeat status contract](methodology.md#heartbeat-status-contract)
+See the heartbeat status contract (owned by the armarium orchestration layer)
 for the full convention and 256-byte cap.
 
 ## Hard contract rules
@@ -150,4 +150,4 @@ planar synthesize <repo-root> --literal
 planar synthesize <repo-root> --scope assoc:<slug> --apply
 ```
 
-See [cross-scope-writes.md](cross-scope-writes.md) before any write outside the cwd-derived scope.
+Cross-scope writes require the scope checks defined by the stack's cross-scope-writes doctrine (armarium orchestration layer).

@@ -31,14 +31,14 @@ Routing is config-driven and unified in `~/.planar/config.toml`:
 - `[roles]` — role → tier (e.g. `coder = "medium"`, `reviewer = "large"`).
 - `[role_vendors]` — optional role → vendor override (defaults to `[defaults].vendor`).
 
-The shared resolver composes these: the tier-only path (`resolveTier`/`resolveRole`/`resolveRoleAuto`) always returns `list[0]`; `resolve(role, work_type)` additionally consults the routing map. Skills render, `agents/models.md`, the orchestrator's Phase 3 dispatch-preview routed-model column, and external workflow harnesses all resolve through one of these — there is no separate per-tool model table.
+The shared resolver composes these: the tier-only path (`resolveTier`/`resolveRole`/`resolveRoleAuto`) always returns `list[0]`; `resolve(role, work_type)` additionally consults the routing map. Scriptorium's render step, the stack's Tier Table (owned by the armarium orchestration layer), the orchestrator's dispatch-preview routed-model column (armarium orchestration layer), and external workflow harnesses all resolve through one of these — there is no separate per-tool model table.
 
 ## What It Does
 
 1. **Discover** — `planar models list` reports each provider CLI's installed-state + version and its curated model catalog (with human labels), plus the default routing.
 2. **Inspect routing** — `planar models routing` prints the effective role → `vendor model` mapping with provenance (`[embedded default]` vs `[config file]`). `--json` for machine consumption (this is what an external workflow harness shells).
 3. **Inspect candidates + routing map** — `planar models candidates` prints each tier's effective candidate list (`list[0]` = tier default) and the work-type routing map (`routing.<vendor>.<tier>.<work-type>` → candidate), both with provenance. `--json` for machine consumption.
-4. **Review routing evals** — `planar models evals` (`--json`) aggregates *completed* dispatch outcomes (the `dispatch_shape` / `model_choice` note convention in `session_entries`, `agents/orchestrator.md` step 8a) into a per-(work-type, candidate) scorecard, ranked by approval rate and iteration count to approval, plus a per-work-type recommendation. It is **read-only — it writes nothing**: no routing-map mutation, no database write (plan 898/904, tech-spec 520 D8). A (work-type, candidate) pair with no completed-dispatch history reports `insufficient_data: true` rather than a fabricated score. Report the `signals_sourced` block verbatim — quality-gate pass/fail is not currently recorded anywhere in `session_entries`/`agent_actions`/`agent_work_claims`, so it is honestly reported as unsourced rather than guessed.
+4. **Review routing evals** — `planar models evals` (`--json`) aggregates *completed* dispatch outcomes (the `dispatch_shape` / `model_choice` note convention in `session_entries`, the orchestrator's dispatch step (armarium orchestration layer)) into a per-(work-type, candidate) scorecard, ranked by approval rate and iteration count to approval, plus a per-work-type recommendation. It is **read-only — it writes nothing**: no routing-map mutation, no database write (plan 898/904, tech-spec 520 D8). A (work-type, candidate) pair with no completed-dispatch history reports `insufficient_data: true` rather than a fabricated score. Report the `signals_sourced` block verbatim — quality-gate pass/fail is not currently recorded anywhere in `session_entries`/`agent_actions`/`agent_work_claims`, so it is honestly reported as unsourced rather than guessed.
 5. **Cache** — `planar models refresh` writes the discovery result to `~/.planar/models/catalog.json`.
 6. **Scaffold** — `planar models apply` writes the `[models]`/`[roles]` block into the config file as an editable starting point (idempotent; `--force` to append again).
 7. **Apply an evals recommendation (explicit, operator-gated only)** — a `planar models evals` recommendation is a suggestion, never an instruction to act unprompted. Only after the operator explicitly confirms applying it, guide them to hand-edit the `[routing.<vendor>.<tier>]` table in `~/.planar/config.toml` to the recommended candidate (same edit path as item 8 below), then re-run `planar models candidates --json` to confirm. The skill must never write the routing map on its own initiative from an evals recommendation.
@@ -52,7 +52,7 @@ The shared resolver composes these: the tier-only path (`resolveTier`/`resolveRo
 
 ## What It Must Not Do
 
-- Do not hand-edit `agents/models.md` or any rendered surface — those regenerate from config via the resolver, and always show the tier default (`list[0]`); per-task routing is runtime-only in the orchestrator dispatch preview.
+- Do not hand-edit the Tier Table (owned by the armarium orchestration layer) or any rendered surface — those regenerate from config via the resolver, and always show the tier default (`list[0]`); per-task routing is runtime-only in the orchestrator dispatch preview.
 - Do not invent per-call model overrides in Lua workflows; routing is per-role (and, at dispatch time, per-work-type) and config-driven.
 
 ## Context

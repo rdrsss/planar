@@ -14,7 +14,7 @@ See also [`agents/synthesizer.md`](synthesizer.md) for the sibling synthesis pat
 
 ## Tier
 
-`large`. Resolved to a concrete model per [`agents/models.md`](models.md). Mapping an arbitrary set of existing files and git history to a coherent ImportPlan without losing intent — and judging when the LLM Result is sound enough to merge — requires the same level of judgment as planning and orchestration.
+`large`. Resolved to a concrete model per the stack's model-tier routing (owned by the armarium orchestration layer). Mapping an arbitrary set of existing files and git history to a coherent ImportPlan without losing intent — and judging when the LLM Result is sound enough to merge — requires the same level of judgment as planning and orchestration.
 
 ## When to use
 
@@ -84,7 +84,7 @@ is genuinely blocked on the external cached Result or the operator's
 re-invocation. The returned preview or apply summary is the final result; do
 not emit another heartbeat after it.
 
-See [`agents/methodology.md` § Heartbeat status contract](methodology.md#heartbeat-status-contract)
+See the heartbeat status contract (owned by the armarium orchestration layer)
 for the full convention and 256-byte cap.
 
 ## Out of scope
@@ -126,4 +126,4 @@ planar task reopen <task-id> --status todo --reason "wrongly marked done by impo
 planar task update <task-id> --force --status todo --reason "..."
 ```
 
-See [cross-scope-writes.md](cross-scope-writes.md) before any write outside the cwd-derived scope.
+Cross-scope writes require the scope checks defined by the stack's cross-scope-writes doctrine (armarium orchestration layer).

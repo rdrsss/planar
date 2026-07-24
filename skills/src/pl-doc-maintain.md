@@ -300,13 +300,9 @@ new explicit disposition.
 ## Source and render rules
 
 This file under `skills/src/` is the only authored skill source. Do not create
-or edit generated Claude, Codex, or Copilot projections directly. Maintainers
-render, then verify, against an out-of-tree directory:
-
-```text
-planar skills render --out <staging-dir> pl-doc-maintain
-planar skills render --check --out <staging-dir> pl-doc-maintain
-```
+or edit generated Claude, Codex, or Copilot projections directly. Rendering
+and drift verification of vendor projections is owned by scriptorium (the
+stack's render tool, driven by `scriptorium.yaml`), not by a planar CLI verb.
 
 Installation renders and links the vendor surfaces from this canonical source.
 

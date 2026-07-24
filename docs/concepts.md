@@ -21,7 +21,7 @@ The fourth, `planar-execute`, is **not** a planning-state executable: it is the 
 **Capability invariant — `planar-watch`:** the binary's verb set contains zero write verbs (`feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `run`, `version`, `completion`, `schema` only). Enforced two ways: (1) the verb set; (2) the read-only DB handle. `planar-watch` is **not** the interactive cockpit — it is and remains the scriptable, read-only NDJSON streaming viewer. The cockpit lives in the read-write `planar` binary because editing requires a read-write DB handle (see [§ Interactive cockpit](#interactive-cockpit)).
 
 
-The ritual every code-writing agent dispatch follows is `planar-agent pull → heartbeat → complete|fail|release|block` (atomic across all three tables). See [agents/methodology.md § Coordination claims](../agents/methodology.md#coordination-claims) and the tech spec § "Agent methodology contract" for the full sequence.
+The ritual every code-writing agent dispatch follows is `planar-agent pull → heartbeat → complete|fail|release|block` (atomic across all three tables). See the coordination-claims contract (owned by the armarium orchestration layer) and the tech spec § "Agent methodology contract" for the full sequence.
 
 `planar-execute` is deliberately **outside** this ritual: it is a workflow engine the caller invokes, not an agent-table writer, and holds no DB handle. When a workflow needs to participate in a claim, it does so by shelling `planar-agent` verbs through the `cli` host function — exactly as any other caller would — never by holding a claim itself.
 
@@ -456,7 +456,7 @@ A plan has a filesystem-safe `slug` unique within its parent scope, used in work
 
 The anchor plan for a feature is the top-level plan with no `parent_plan_id`. Child plans are used for sub-features or roadmap milestones within a larger feature.
 
-**Status auto-promotion (plan 304).** Plan status is a function of task status, enforced at task-write time. The auto-promotion invariant fires inside every `task.Add` / `Update` / `Done` / `Reopen` / `Cancel` / `Block` transaction and applies a transition matrix that flips the plan based on the post-write task aggregate. The matrix lives in [`agents/methodology.md` §Plan-status invariant](../agents/methodology.md#plan-status-invariant).
+**Status auto-promotion (plan 304).** Plan status is a function of task status, enforced at task-write time. The auto-promotion invariant fires inside every `task.Add` / `Update` / `Done` / `Reopen` / `Cancel` / `Block` transaction and applies a transition matrix that flips the plan based on the post-write task aggregate. The matrix lives in the plan-status-invariant contract (owned by the armarium orchestration layer).
 
 Two operator-visible consequences:
 
@@ -568,7 +568,7 @@ transaction. Always preview a sweep with `planar-agent reconcile --dry-run
 
 ## Dispatch shapes
 
-The orchestrator's Phase 3 dispatch gate offers six named **dispatch shapes** — each a distinct point on the *grouping* × *reviewer disposition* matrix. The shape picks how many tasks land in one coder cycle AND when (or whether) the reviewer is dispatched. The operator picks one shape per `/pl-orchestrator` invocation at the gate; the choice is recorded as a `session_entries` row (with `prefix='note'` + the sentinel body line `dispatch_shape: <shape>`) for the audit trail.
+The orchestrator's Phase 3 dispatch gate offers six named **dispatch shapes** — each a distinct point on the *grouping* × *reviewer disposition* matrix. The shape picks how many tasks land in one coder cycle AND when (or whether) the reviewer is dispatched. The operator picks one shape per `/orchestrator` invocation at the gate (armarium orchestration layer); the choice is recorded as a `session_entries` row (with `prefix='note'` + the sentinel body line `dispatch_shape: <shape>`) for the audit trail.
 
 | Shape              | Grouping                     | Reviewer disposition  | Pick when |
 |--------------------|------------------------------|-----------------------|-----------|
@@ -601,9 +601,9 @@ Recover the per-cycle disposition with `planar audit trail --kind plan <plan-id>
 
 **Pick-when summary:** when in doubt, pick `strict`. Move up the table (toward throughput) when you have high confidence in the gates and the spec, or when the diff cadence makes per-cycle reviewer dispatch wasteful. The orchestrator never picks a barrel mode silently — every shape change is an explicit operator choice at the gate.
 
-For the canonical contract see [`agents/methodology.md` §Barrel modes](../agents/methodology.md#barrel-modes). For the CLI-flag surface see [`docs/cli-reference.md` §`/pl-orchestrator`](cli-reference.md#planar-orchestrator).
+For the canonical contract see the barrel-modes contract (owned by the armarium orchestration layer). For the CLI-flag surface see [`docs/cli-reference.md` §`/orchestrator`](cli-reference.md#planar-orchestrator).
 
-**SQLite tables:** none beyond `session_entries`. **Primary entry points:** `/pl-orchestrator` (the gate), `agents/methodology.md` §Barrel modes (the contract), `planar audit trail --kind plan <plan-id>` (the forensic surface).
+**SQLite tables:** none beyond `session_entries`. **Primary entry points:** `/orchestrator` (the gate, armarium orchestration layer), its barrel-modes contract, `planar audit trail --kind plan <plan-id>` (the forensic surface).
 
 ---
 
@@ -621,7 +621,7 @@ An orchestration strategy is the operator-facing dispatch frame for a plan. It b
 | `barrel-deferred` | Coder cycles run back-to-back; reviewer fires once at a milestone or plan boundary on the union diff. Supports both `pwd` and `worktree` isolation. |
 | `barrel-bypass` | No reviewer dispatch at all. Quality gates (`make fmt-check` + `make build` + `make test` + `make test-integration` twice + render check + remaining validators) are the entire signal. Supports both `pwd` and `worktree` isolation. |
 
-The model-driven `/pl-orchestrator` skill runs the sequential strategies in either `pwd` or `worktree` isolation and runs `parallel-fanout` in worktrees. Worktree bookkeeping is driven via the spawn-free `workflows/parallel-dispatch.lua` seam: `cycle_plan` computes one sequential lane; `plan`/`waves` compute fan-out lanes. The model runs the git worktree/branch/merge ops and spawns the coders; the seam only computes and hands back. There is **no external harness**. In-flight worktree execution is watched through the existing `planar-watch ps --plan <id>` surface (claims + each claim's `worktree_path`); there is no dedicated wave/barrier view (a recorded non-goal).
+The model-driven `/orchestrator` skill (armarium orchestration layer) runs the sequential strategies in either `pwd` or `worktree` isolation and runs `parallel-fanout` in worktrees. Worktree bookkeeping is driven via the spawn-free `workflows/parallel-dispatch.lua` seam: `cycle_plan` computes one sequential lane; `plan`/`waves` compute fan-out lanes. The model runs the git worktree/branch/merge ops and spawns the coders; the seam only computes and hands back. There is **no external harness**. In-flight worktree execution is watched through the existing `planar-watch ps --plan <id>` surface (claims + each claim's `worktree_path`); there is no dedicated wave/barrier view (a recorded non-goal).
 
 ### The five underlying axes
 
@@ -641,7 +641,7 @@ Advanced operators can compose a custom strategy with `--strategy custom` plus p
 
 Phase 3 runs the strategy gate first, then the dispatch-shape gate nested under the chosen strategy:
 
-1. **Strategy + isolation gate.** The model orchestrator surfaces its recommendation + a one-line rationale + the runnable strategy menu (`classic` / `barrel-deferred` / `barrel-bypass` / `parallel-fanout`) and the isolation choice (`pwd` / `worktree`) where applicable. Operator confirms or overrides. Skipped only when `--strategy <name>` plus any needed axis flags was passed at invocation. The recommendation algorithm is plan-shape-driven with status-quo bias — see [`agents/methodology.md` §Recommendation algorithm](../agents/methodology.md#recommendation-algorithm).
+1. **Strategy + isolation gate.** The model orchestrator surfaces its recommendation + a one-line rationale + the runnable strategy menu (`classic` / `barrel-deferred` / `barrel-bypass` / `parallel-fanout`) and the isolation choice (`pwd` / `worktree`) where applicable. Operator confirms or overrides. Skipped only when `--strategy <name>` plus any needed axis flags was passed at invocation. The recommendation algorithm is plan-shape-driven with status-quo bias — see the recommendation-algorithm contract (owned by the armarium orchestration layer).
 2. **Dispatch-shape gate.** Constrained by the strategy: `parallel-fanout` forces the `fan-out` shape; `barrel-deferred` and `barrel-bypass` force their matching shapes; `classic` keeps the full strict / grouped / single menu.
 
 Neither gate has an auto-default — the recommendation never silently turns into an action. `classic` is the continuity guarantee: an operator who always picks (or accepts the recommendation of) `classic` sees no behavioral change relative to today.
@@ -669,9 +669,9 @@ choice after claim inspection and a reconciliation dry-run.
 
 No new schema beyond the existing `agent_actions.metadata` JSON column from migration 00016. The chosen strategy + axes ride on the dispatch row there, and the "last-used strategy for this plan" lookup that drives the recommendation algorithm's stickiness rule is a single indexed read against the most recent dispatch entry's metadata.
 
-For the canonical axis table, named bundles, invalid-combination list, and recommendation algorithm see [`agents/methodology.md` §Orchestration strategies](../agents/methodology.md#orchestration-strategies). For the "pick a strategy" recipe and a worked `parallel-fanout` example see [`docs/workflows.md` §Recipe 21](workflows.md#recipe-21--pick-an-orchestration-strategy-for-a-plan) and [§Recipe 22](workflows.md#recipe-22--orchestrate-a-multi-task-plan-with-parallel-coders).
+For the canonical axis table, named bundles, invalid-combination list, and recommendation algorithm see the orchestration-strategies contract (owned by the armarium orchestration layer). For the "pick a strategy" recipe and a worked `parallel-fanout` example see [`docs/workflows.md` §Recipe 21](workflows.md#recipe-21--pick-an-orchestration-strategy-for-a-plan) and [§Recipe 22](workflows.md#recipe-22--orchestrate-a-multi-task-plan-with-parallel-coders).
 
-**SQLite tables:** none — strategy is metadata on the dispatch row. **Primary entry points:** `/pl-orchestrator` (the gate), `agents/methodology.md` §Orchestration strategies (the contract).
+**SQLite tables:** none — strategy is metadata on the dispatch row. **Primary entry points:** `/orchestrator` (the gate, armarium orchestration layer), its orchestration-strategies contract.
 
 ---
 
@@ -721,7 +721,7 @@ Two invariants govern scope behavior when cwd is inside a worktree:
 1. **The parent repo dictates the scope.** A worktree at `<repo>/.worktrees/{epic,cycle}/...` resolves to the same association as `<repo>`. Worktrees are not separately scoped; they inherit. Reads (`planar plan list`, `planar task show`, `planar-watch *`) work transparently from inside a worktree.
 2. **Planning verbs are refused from inside worktrees.** Verbs that mutate planning state (`plan add/update/done`, `task add/update/done/touches`, `question`, `decision`, `artifact add/update`, `scenario`, `spec draft/ingest`, `link/unlink/links`, `assoc`, `promote`, `demote`, `init`) refuse with a distinct exit code and a message pointing at the parent repo's cwd. `task done` is refused on purpose — coders use `planar-agent complete --claim <token>`, the atomic terminal verb. `--scope <slug>` does NOT override the refusal; the rule is about *where the verb runs*, not which scope it targets.
 
-For the canonical path scheme, branch scheme, lifecycle, the six parallelizability rules, and the conflict-resolution taxonomy see [`agents/methodology.md` §Worktrees](../agents/methodology.md#worktrees). For the recovery recipe when a coder dies mid-cycle see [`docs/workflows.md` §Recipe 23](workflows.md#recipe-23--recover-a-dead-coder-from-its-worktree).
+For the canonical path scheme, branch scheme, lifecycle, the six parallelizability rules, and the conflict-resolution taxonomy see the worktrees contract (owned by the armarium orchestration layer). For the recovery recipe when a coder dies mid-cycle see [`docs/workflows.md` §Recipe 23](workflows.md#recipe-23--recover-a-dead-coder-from-its-worktree).
 
 **SQLite tables:** `agent_work_claims` (`worktree_path` column, migration 00015). **Primary entry points:** `planar-agent pull --worktree <path>`, `planar resume <task>`, `planar-watch claims`, `planar dashboard --agents`.
 
@@ -1007,9 +1007,9 @@ Which model an agent role spawns is **config-driven and unified** (plan 540, ext
 A single **shared resolver** (`src/engine/models.zig`) composes these into a concrete `(vendor, model)`. The tier-only path (`resolveTier`, `resolveRole`, `resolveRoleAuto`) is unchanged and always returns the tier default (`list[0]`). A parallel `resolve(role, work_type)` entry point (`resolveTierWorkType` / `resolveRoleWorkType` / `resolveRoleAutoWorkType`) additionally consults the routing map: a hit returns the named candidate, a miss (or a stale routing target absent from the candidate list) falls back to the tier default. Every consumer resolves through one of these — there are no parallel per-tool model tables:
 
 - **`planar models`** — `list` (discover installed provider CLIs + curated catalog), `routing` (effective role→vendor/model with provenance; `--json` is what an external workflow harness shells to build its per-role dispatch table), `candidates` (effective tier candidate lists + the work-type routing map with provenance, plan 899), `refresh` (write the `~/.planar/models/catalog.json` cache), `apply` (scaffold the config block).
-- **`agents/models.md`** Tier Table + rendered skill/agent `model:` fields — the Tier Table is regenerated from the resolver by `planar models sync-doc` (plan 918 D4; idempotent, `--check` gates drift in CI); rendered skill/agent `model:` fields come from scriptorium's render step, which always renders `list[0]` for a candidate-list tier (static surfaces show the tier default; per-task routing is runtime-only).
+- **The Tier Table** (owned by the armarium orchestration layer) + rendered skill/agent `model:` fields — the Tier Table is regenerated from the resolver by `planar models sync-doc` (plan 918 D4; idempotent, `--check` gates drift in CI); rendered skill/agent `model:` fields come from scriptorium's render step, which always renders `list[0]` for a candidate-list tier (static surfaces show the tier default; per-task routing is runtime-only).
 - **External workflow harnesses** — shell `planar models routing --json` to build a per-role dispatch table (no engine handle), falling back to compiled defaults when `planar` is unreachable.
-- **Orchestrator dispatch (Phase 3)** — the dispatch preview's routed-model column classifies each task's work type and calls `resolve(role, work_type)` to show the routed candidate alongside the tier column; the operator may override either before confirming. The confirmed `{tier, candidate, work_type}` triple persists per task in the dispatch session entry's `model_choice` map (a convention extension, no schema change — see [`agents/orchestrator.md`](../agents/orchestrator.md) step 8a and [`skills/src/pl-orchestrator.md` §Dispatch preview and model tiers](../skills/src/pl-orchestrator.md)).
+- **Orchestrator dispatch (Phase 3)** — the dispatch preview's routed-model column classifies each task's work type and calls `resolve(role, work_type)` to show the routed candidate alongside the tier column; the operator may override either before confirming. The confirmed `{tier, candidate, work_type}` triple persists per task in the dispatch session entry's `model_choice` map (a convention extension, no schema change — see the orchestrator's dispatch step 8a and its dispatch-preview model-tiers section, both owned by the armarium orchestration layer).
 - **`planar models evals`** — read-only routing evaluation. It mines completed dispatch notes (`dispatch_shape:` / `model_choice:`), terminal claim status, and test-coder action outcomes into a per-`(work_type, candidate)` scorecard plus preview-only recommendations. Quality-gate pass/fail is not persisted today, so the command reports that signal as unsourced rather than guessing. It writes nothing; applying a recommendation is a separate operator-gated config edit.
 
 The provider CLIs (`claude`, `codex`) do not expose a machine-readable model list, so the per-vendor catalog is curated in the binary; discovery confirms which CLIs are installed by invoking `<bin> --version`. See `docs/cli-reference.md` § Domain `config` (Model routing) and § Domain `models`, and the `pl-models-config` skill.
@@ -1153,7 +1153,15 @@ coverage. After apply it provides the per-milestone four-bucket breakdown
 
 ## Test-coder
 
-The fourth agent role, dispatched between the coder and the reviewer in [Phase 3.5](../agents/methodology.md#phase-35--test-coder-dispatch). Reads the test-spec and the coder's diff; produces a test-only diff that closes uncovered slugs. Never modifies a failing test to make it pass — surfaces failures with a classification (`test-wrong-author-error` / `code-wrong-bug-surfaced` / `ambiguous-operator-decide`).
+The fourth agent role, dispatched between the coder and the reviewer in Phase
+3.5. Since the M3 raise (armarium plan 929) the test-coder, like the
+orchestrator/coder/reviewer/janitor roles around it, lives in armarium (the
+stack's meta repo); this section describes the contract planar's
+`planar test-spec status` gating verb and scenario/entity_links schema exist
+to support. Reads the test-spec and the coder's diff; produces a test-only
+diff that closes uncovered slugs. Never modifies a failing test to make it
+pass — surfaces failures with a classification (`test-wrong-author-error` /
+`code-wrong-bug-surfaced` / `ambiguous-operator-decide`).
 
 **Cognitive-split rationale.** A coder writing tests for their own feature has the wrong incentive: make-the-green-test-pass shapes both the feature and the test. A test-coder reading the test-spec and the coder's already-committed feature has no incentive to make tests easy to pass — only to verify the cited scenarios. The two roles enforce different mental models. The load-bearing clause is **tests-may-be-elevating-bugs**: when a new test fails on first run, the test-coder does NOT modify the test, it classifies the failure and reports it. A red test is signal, not noise.
 
@@ -1166,9 +1174,9 @@ The fourth agent role, dispatched between the coder and the reviewer in [Phase 3
 
 **Iteration cap.** The test-coder cycle has its own cap (default 2; the work shape is "expand or don't" rather than "iterate to convergence"). Independent of the coder/reviewer's 5-iteration cap.
 
-**Manual invocation.** Operators can invoke `/pl-test-coder <task-id>` directly to backfill coverage on an already-committed change set, or `/pl-test-coder <plan-id> --plan` to run against every cited scenario in a plan. Useful after authoring a new test-spec for an older feature.
+**Manual invocation.** Operators can invoke `/test-coder <task-id>` directly to backfill coverage on an already-committed change set, or `/test-coder <plan-id> --plan` to run against every cited scenario in a plan. Useful after authoring a new test-spec for an older feature.
 
-**SQLite tables:** none. **Primary entry points:** [`agents/test-coder.md`](../agents/test-coder.md) (canonical contract), [`skills/src/pl-test-coder.md`](../skills/src/pl-test-coder.md) (unified skill source), `planar test-spec status` (gating verb), `planar spec ingest --strict` (ingest-time gate). Vendor projections are generated at install time.
+**SQLite tables:** none. **Primary entry points:** the test-coder's canonical contract and unified skill source (armarium orchestration layer), `planar test-spec status` (gating verb), `planar spec ingest --strict` (ingest-time gate). Vendor projections are generated at install time.
 
 ## Usage Introspection Privacy Model
 

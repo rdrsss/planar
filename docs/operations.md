@@ -16,9 +16,9 @@ Three flows carry most work:
 
 Each section leads with a diagram, then the contract, then pointers into
 [`concepts.md`](concepts.md), [`architecture.md`](architecture.md),
-[`workflows.md`](workflows.md), and
-[`agents/methodology.md`](../agents/methodology.md). Nothing here introduces
-new behavior; it summarizes the existing contract.
+[`workflows.md`](workflows.md), and the armarium orchestration layer's
+coordination contract. Nothing here introduces new behavior; it summarizes
+the existing contract.
 
 ---
 
@@ -93,6 +93,13 @@ anchor plan's status and drives a feature through planning, ingestion,
 execution, optional finalization, optional propagation/archive, and the
 default-on documentation pass. Planning and ingestion are hard-gated;
 execution runs a reviewer loop capped at five iterations.
+
+Since the M3 raise (armarium plan 929), the orchestrator, coder, reviewer,
+test-coder, and janitor roles that drive this lifecycle live in armarium (the
+stack's meta repo), not in this repo's `agents/`. The documenter and
+doc-author roles referenced in Phase 6 remain planar's own. Planar itself
+retains and drives the primitives these roles compose: the `planar-agent`
+claim ritual (§3 below), `tabularium diff`, and the doc manifest gates.
 
 ```mermaid
 flowchart TD
@@ -169,7 +176,7 @@ operator, and then runs the caller-owned doc manifest gates. The documenter
 proposes; doc-author writes only approved prose rows.
 
 Detail: [`workflows.md` Recipe 2](workflows.md#recipe-2--run-the-orchestrator)
-and [`agents/methodology.md`](../agents/methodology.md).
+and the armarium orchestration layer's methodology contract.
 
 ---
 
@@ -224,7 +231,7 @@ complete. Operator recovery uses `planar-agent reconcile --dry-run` first, then
 never mutates a live, unexpired claim.
 
 Detail: [`concepts.md` §Claim-owned task state and recovery](concepts.md#claim-owned-task-state-and-recovery)
-and [`agents/methodology.md` §Coordination claims](../agents/methodology.md#coordination-claims).
+and the coordination-claims contract (owned by the armarium orchestration layer).
 
 ---
 
@@ -258,5 +265,6 @@ the [`pl-models-config`](../skills/src/pl-models-config.md) skill.
   boundary, workbench, adapters.
 - [Concepts](concepts.md) — the entity and gate mental model.
 - [Workflows](workflows.md) — step-by-step operator recipes.
-- [`agents/methodology.md`](../agents/methodology.md) — authoritative
-  agent-coordination contract.
+- The armarium orchestration layer's methodology doc — authoritative
+  agent-coordination contract (raised from this repo at plan 918/929; planar
+  retains and drives the primitives it coordinates).

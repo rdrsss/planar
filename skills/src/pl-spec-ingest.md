@@ -186,7 +186,7 @@ planar spec ingest <plan> [--apply] [--apply-removals] [--format text|json] [--s
 
 ## Status reporting
 
-See [`agents/ingestor.md` § Status reporting](../../agents/ingestor.md#status-reporting) for the canonical phase-transition strings (`"reading workbench specs"`, `"decomposing tasks"`, `"writing preview"`, `"awaiting:operator-confirmation"`, `"applying"`). Emit each via `planar-agent heartbeat --claim <token> --status "<text>"`; cap is 256 bytes. The `awaiting:operator-confirmation` string uses the `awaiting:` prefix because the ingestor is genuinely blocked waiting for the explicit user gate before `--apply` may run. See [`agents/methodology.md` § Heartbeat status contract](../../agents/methodology.md#heartbeat-status-contract) for the full convention.
+See [`agents/ingestor.md` § Status reporting](../../agents/ingestor.md#status-reporting) for the canonical phase-transition strings (`"reading workbench specs"`, `"decomposing tasks"`, `"writing preview"`, `"awaiting:operator-confirmation"`, `"applying"`). Emit each via `planar-agent heartbeat --claim <token> --status "<text>"`; cap is 256 bytes. The `awaiting:operator-confirmation` string uses the `awaiting:` prefix because the ingestor is genuinely blocked waiting for the explicit user gate before `--apply` may run. See the heartbeat status contract (owned by the armarium orchestration layer) for the full convention.
 
 ## Context
 
@@ -243,4 +243,4 @@ successfully applied independent anchor.
 
 ## Vendor Notes
 
-See [cross-scope-writes.md](../../agents/cross-scope-writes.md) before any write outside the cwd-derived scope.
+Cross-scope writes require the scope checks defined by the stack's cross-scope-writes doctrine (armarium orchestration layer).

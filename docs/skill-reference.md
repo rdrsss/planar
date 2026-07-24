@@ -58,7 +58,7 @@ Vendor profile data lives in scriptorium's built-in per-vendor profiles
 (claude/codex/copilot/gemini), with the repo-root `scriptorium.yaml`
 supplying overrides/additions; model-tier resolution stays Planar-side in the
 shared resolver (`src/engine/models.zig`) and is regenerated into
-`agents/models.md`'s Tier Table by `planar models sync-doc` (plan 918 D4).
+the Tier Table (owned by the armarium orchestration layer) by `planar models sync-doc` (plan 918 D4).
 Static render paths show each tier's default model (`list[0]` when the config
 uses candidate lists); runtime orchestration may further select a
 per-work-type candidate through the shared model resolver. Drift between
@@ -168,7 +168,7 @@ for the seven literal H2 sections. The helper must still return sufficient
 failure, warning, and recovery detail for its caller to satisfy the shared
 contract.
 
-See [`agents/doctrine.md` §Operator feedback contract](../agents/doctrine.md#operator-feedback-contract)
+See the operator-feedback contract (owned by the armarium orchestration layer)
 for the cross-role outcome and verification doctrine.
 
 ### Cross-scope write visibility
@@ -222,79 +222,22 @@ An external Lua-based **harness** (a **separate external project**, distinct fro
 Documentation workflows call the separately installed `tabularium` tool. It is
 not a Planar build artifact and owns its machine-local manifest database.
 
-Every skill in this document routes its writes through the binary that owns them. Skills that schedule agent work (`/orchestrator`, `/pl-coder`) drive the `planar-agent pull → heartbeat → complete|fail|release|block` ritual; skills that surface live operator views (status, dashboard, audit trail) read through `planar` and `planar-watch`.
+Every skill in this document routes its writes through the binary that owns them. Skills that schedule agent work (the armarium orchestration layer's `/orchestrator` and `/coder`) drive the `planar-agent pull → heartbeat → complete|fail|release|block` ritual; skills that surface live operator views (status, dashboard, audit trail) read through `planar` and `planar-watch`.
 
 ---
 
 ## Orchestration
 
-These skills manage the full feature lifecycle and the coder/reviewer execution loop. They are the highest-level entry points.
-
-### `/orchestrator`
-
-Run the orchestrator over a goal, anchor plan, or task list. Manages planning, ingestion, execution, finalization, propagation, archive, and documentation with reviewer iteration cap and user gates at each phase boundary.
-
-**Example:**
-```
-/orchestrator "add billing export to CSV"
-/orchestrator <plan-id>                       # resume from the plan's current status
-/orchestrator <task-id> <task-id> --strict    # execute specific tasks, one cycle per task
-/orchestrator <plan-id> --barrel-grouped      # one cycle per milestone; reviewer per group
-/orchestrator <plan-id> --barrel-deferred     # coder cycles back-to-back; reviewer at milestone boundary
-/orchestrator <plan-id> --barrel-bypass       # no reviewer; gates are the entire signal
-/orchestrator <plan-id> --propagate --archive # execute, then propagate and archive
-```
-
-The Phase 3 dispatch gate offers six shapes (`strict`, `grouped`, `single`, `barrel-grouped`, `barrel-deferred`, `barrel-bypass`); see [`docs/concepts.md` §Dispatch shapes](concepts.md#dispatch-shapes) for the trade-off matrix. Phase 3.5 (test-coder dispatch) fires across all shapes when uncovered slugs intersect the cycle.
-
-Parallel dispatch is capacity-aware. The operator confirms a maximum wave
-size, and systemic `usage_limit`, `context_limit`, or `output_limit` terminals
-open a circuit breaker only for the affected provider. Landed and already
-running work is preserved; unaffected providers may continue. The deterministic
-`capacity_reconcile` workflow phase returns the unfinished/recovery packet but
-does not spawn, abort, reconcile, persist a breaker, or reset one. Resuming the
-provider requires a new explicit dispatch decision and wave-size confirmation.
-
-Source: `skills/src/pl-orchestrator.md` · `agents/orchestrator.md`
-
----
-
-
-### `/coder`
-
-Implement a scoped coding task end-to-end. Called by the orchestrator in Phase 3; can also be invoked directly for single-task work outside the full orchestrator flow.
-
-**Example:**
-```
-/coder <task-id>
-```
-
-Source: `skills/src/pl-coder.md` · `agents/coder.md`
-
----
-
-### `/reviewer`
-
-Review a coder change set. Returns one of `approve`, `request-changes`, `open-question`, or `abort`. Called by the orchestrator after each coder iteration; also invokable directly.
-
-**Example:**
-```
-/reviewer <task-id> <iteration>
-```
-
-Source: `skills/src/pl-reviewer.md` · `agents/reviewer.md`
-
-### `/pl-test-coder`
-
-Adversarial test-author dispatched between the coder and the reviewer (Phase 3.5) when `planar test-spec status` reports uncovered slugs intersecting the dispatched cycle. Reads the test-spec and the coder's diff; produces a test-only diff that closes uncovered slugs. When a new test fails on first run, the test-coder surfaces the failure with a classification (`test-wrong-author-error` / `code-wrong-bug-surfaced` / `ambiguous-operator-decide`) — it never modifies the test to make it pass. Also invokable directly to backfill coverage on an already-committed change set.
-
-**Example:**
-```
-/pl-test-coder <task-id>         # run against one task's cited scenarios
-/pl-test-coder <plan-id> --plan  # run against every cited scenario in the plan
-```
-
-Source: `skills/src/pl-test-coder.md` · `agents/test-coder.md`
+The orchestrator, coder, reviewer, and test-coder roles that manage the full
+feature lifecycle and the coder/reviewer execution loop were raised to
+armarium (the stack's meta repo) at plan 918/929. `/orchestrator`, `/coder`,
+`/reviewer`, and `/test-coder` no longer render or install from this repo —
+see armarium's own skill and agent sources for those entry points. Planar
+retains and drives the primitives they compose: the `planar-agent` claim
+ritual, `planar test-spec status` coverage gating, and the dispatch-preview
+model-tier/routing surface. See
+[`docs/operations.md` §2 The Orchestration Lifecycle](operations.md#2-the-orchestration-lifecycle)
+and [`docs/concepts.md` §Dispatch shapes](concepts.md#dispatch-shapes).
 
 ---
 
@@ -747,7 +690,7 @@ Capture a context snapshot before terminating, validate it is resume-ready, and 
 
 **Example:** `/pl-handoff`
 
-Source: `skills/src/pl-handoff.md` · `agents/methodology.md`
+Source: `skills/src/pl-handoff.md` · the heartbeat/handoff contract (owned by the armarium orchestration layer)
 
 ---
 
@@ -1002,25 +945,20 @@ Source: `skills/src/pl-feedback-triage.md` · `agents/feedback-triager.md`
 
 ## Agent Role Specs
 
-The vendor-neutral role specs live under `agents/`. Vendor skill files defer to them for the authoritative behavior description.
+The vendor-neutral role specs live under `agents/`. Vendor skill files defer to them for the authoritative behavior description. The orchestrator, coder, reviewer, test-coder, and janitor roles — plus their companion methodology, doctrine, and model-tier-routing docs — were raised to armarium (the stack's meta repo) at plan 918/929 and no longer live in this repo; see armarium's own agent sources for those roles.
 
 | File | Role |
 |------|------|
-| `agents/methodology.md` | Shared orchestration methodology: iteration loop, reviewer decisions, escalation, concurrency rules, state capture |
-| `agents/orchestrator.md` | Orchestrator role: phase descriptions, capacity-aware bounded dispatch, dispatch-shape gate, authoritative documentation identity, and per-phase triggers |
+| `(raised to armarium)` | Orchestrator, coder, reviewer, test-coder, and janitor roles, plus the shared methodology/doctrine contracts and model-tier-routing table — raised to armarium at plan 918/929 |
 | `agents/spec-reviewer.md` | Spec reviewer role: adversarial planning review, open-question reconciliation, feature/test gap analysis, and evidence-backed classification of the four recurring hazard lenses |
 | `agents/planner.md` | Planner role: input/output contract, document shape, workbench seeding |
 | `agents/ingestor.md` | Ingestor role: parsing contract, idempotency invariant, preview-first rule |
 | `agents/ext-sync.md` | Ext-sync role: strategy-selection contract, propagation walk, idempotency |
-| `agents/coder.md` | Coder role: task implementation contract, test requirements, reporting format |
-| `agents/reviewer.md` | Reviewer role: review criteria, decision taxonomy, caveat recording |
 | `agents/documenter.md` | Read-only documentation drift classifier: proposes `extend-cover`, `create-doc`, `nodoc`, or `defer`, including operator-gated explicit guidance-identity contradictions; never writes prose or manifest state |
 | `agents/introspector.md` | Introspector role: cross-vendor redacted signal adapters, preview/apply gate, finding taxonomy, dedup contract, feedback-plan bootstrap |
 | `agents/feedback-triager.md` | Feedback triager role: deterministic severity and disposition guidance, reproduction evidence, preview/apply gate, local mutation boundary, and status/result contracts |
-| `agents/janitor.md` | Janitor role: merge verification, Planar state reconciliation, worktree/branch cleanup, plan closeout via the delivery-evidence gate |
 | `agents/doc-author.md` | Doc-author role: writes only operator-approved published prose under `docs/`; never decides coverage or mutates manifest state |
 | `agents/sync-reconciler.md` | Large-tier coordinate role: compares local and remote conflict evidence, recommends one of four dispositions, and coordinates only the exact whole-entity resolution the operator confirms; it is read-and-recommend by default and never performs direct local or remote field mutation |
-| `agents/models.md` | Tier-to-model resolution: maps `small` / `medium` / `large` tiers to concrete model IDs or ordered candidate lists per vendor, plus work-type routing conventions |
 
 ---
 

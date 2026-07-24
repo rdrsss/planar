@@ -302,14 +302,10 @@ blanket database or working-tree reset.
 ## Source and render rules
 
 This file under `skills/src/` is the only authored source. Do not edit generated
-Claude, Codex, or Copilot projections directly. Maintainers render and verify
-against an out-of-tree directory:
-
-```text
-planar skills render --out <staging-dir> pl-sync
-planar skills render --check --out <staging-dir> pl-sync
-```
+Claude, Codex, or Copilot projections directly. Rendering and drift
+verification of vendor projections is owned by scriptorium (the stack's
+render tool, driven by `scriptorium.yaml`), not by a planar CLI verb.
 
 ## Vendor Notes
 
-See [cross-scope-writes.md](../../agents/cross-scope-writes.md) before any write outside the cwd-derived scope.
+Cross-scope writes require the scope checks defined by the stack's cross-scope-writes doctrine (armarium orchestration layer).

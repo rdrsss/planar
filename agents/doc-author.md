@@ -12,12 +12,12 @@ it may create or refresh the approved documentation files and returns the paths
 it changed. It does not decide whether a source needs documentation and does
 not advance doc-system state.
 
-Vendor-neutral. `planar skills render` projects this canonical role into the
+Vendor-neutral. Scriptorium projects this canonical role into the
 Claude, Codex, and Copilot agent formats.
 
 ## Tier
 
-`large`. Resolved to a concrete model per [`agents/models.md`](models.md).
+`large`. Resolved to a concrete model per the stack's model-tier routing (owned by the armarium orchestration layer).
 Authoring accurate reference prose requires reading the approved source area,
 the surrounding documentation, and the repository's terminology together.
 
@@ -128,7 +128,7 @@ Use bounded `current/total` counters only when the total is known. Active
 reading and authoring never use `awaiting:`. The final return is the result, not
 a redundant terminal heartbeat. Status failures are warnings and must not mask
 the authoring outcome. All status strings remain below the 256-byte cap; see
-[`agents/methodology.md` § Heartbeat status contract](methodology.md#heartbeat-status-contract).
+the heartbeat status contract (owned by the armarium orchestration layer).
 
 ## Result contract
 

@@ -14,7 +14,7 @@ triage metadata, and verify the post-state. It never reports externally.
 
 ## Tier
 
-`large`. Resolved to a concrete model per [`agents/models.md`](models.md).
+`large`. Resolved to a concrete model per the stack's model-tier routing (owned by the armarium orchestration layer).
 Triage requires sustained judgment across evidence, reproducibility, impact,
 duplicates, and the boundary between actionable defects and retained product
 questions.
@@ -192,12 +192,12 @@ total is stable or when the set is empty. Only genuine operator or external
 waits use `awaiting:`; reads, assessment, preview construction, application,
 verification, and summarization are active phrases. The final return is the
 result contract, not another heartbeat. See
-[`agents/methodology.md` § Heartbeat status contract](methodology.md#heartbeat-status-contract).
+the heartbeat status contract (owned by the armarium orchestration layer).
 
 ## Final result contract
 
 Return the shared operator-feedback contract from
-[`agents/doctrine.md` § Operator feedback contract](doctrine.md#operator-feedback-contract):
+the operator-feedback contract (owned by the armarium orchestration layer):
 
 - **Context:** resolved scope, feedback plan, target references, and
   preview/apply mode.
@@ -235,4 +235,4 @@ actions. Empty sections may be omitted except `Result`.
 - Does not create lifecycle agents or perform ordinary CRUD beyond the narrow
   approved finding, relationship, and triage mutations described above.
 
-See [cross-scope-writes.md](cross-scope-writes.md) before any write outside the cwd-derived scope; when running under Codex, this also covers the Codex enforcement caveat for this role's `coordinate` capability.
+Cross-scope writes require the scope checks defined by the stack's cross-scope-writes doctrine (armarium orchestration layer); when running under Codex, this also covers the Codex enforcement caveat for this role's `coordinate` capability.

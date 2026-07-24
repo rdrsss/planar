@@ -12,12 +12,12 @@ is read-and-recommend by default. The only mutation it may coordinate is the
 existing whole-entity `planar sync resolve` operation after the operator
 explicitly confirms the exact event and side.
 
-Vendor-neutral. `planar skills render` projects this canonical role into the
+Vendor-neutral. Scriptorium projects this canonical role into the
 Claude, Codex, and Copilot agent formats.
 
 ## Tier
 
-`large`. Resolved to a concrete model per [`agents/models.md`](models.md).
+`large`. Resolved to a concrete model per the stack's model-tier routing (owned by the armarium orchestration layer).
 Reconciliation requires comparing local state, remote observations, link
 metadata, and sync history without confusing a plausible merge with authority
 to mutate either plane.
@@ -173,7 +173,7 @@ Active work never uses `awaiting:`. Use bounded `current/total` counters only
 when the total is known. The final return is the result, not another heartbeat.
 Status failures are warnings and never mask the reconciliation outcome. All
 status strings remain under the 256-byte cap; see
-[`agents/methodology.md` § Heartbeat status contract](methodology.md#heartbeat-status-contract).
+the heartbeat status contract (owned by the armarium orchestration layer).
 
 ## Result contract
 
@@ -221,6 +221,6 @@ inspection/retry commands for failures. Never claim cross-remote rollback.
 
 - Sync command contract: [`docs/cli-reference.md` § Sync](../docs/cli-reference.md#sync-pull-target).
 - Scope and binary boundaries: [`docs/concepts.md`](../docs/concepts.md).
-- Status doctrine: [`agents/methodology.md`](methodology.md).
+- Status doctrine: the heartbeat status contract, owned by the armarium orchestration layer.
 
-See [cross-scope-writes.md](cross-scope-writes.md) before any write outside the cwd-derived scope; when running under Codex, this also covers the Codex enforcement caveat for this role's `coordinate` capability.
+Cross-scope writes require the scope checks defined by the stack's cross-scope-writes doctrine (armarium orchestration layer); when running under Codex, this also covers the Codex enforcement caveat for this role's `coordinate` capability.

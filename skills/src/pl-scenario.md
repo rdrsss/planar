@@ -87,4 +87,4 @@ claim a cross-scenario rollback.
 
 ## Vendor Notes
 
-See [cross-scope-writes.md](../../agents/cross-scope-writes.md) before any write outside the cwd-derived scope.
+Cross-scope writes require the scope checks defined by the stack's cross-scope-writes doctrine (armarium orchestration layer).

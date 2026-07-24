@@ -79,7 +79,7 @@ Independently derive `authoritative_identity` from repository/build evidence:
   `planar-execute` from `build.zig` installed artifacts;
 - `generated_surface_boundary` records `skills/src/` and `agents/` as
   canonical, with vendor projections generated out of tree, evidenced by
-  `.gitignore` and `planar skills render`;
+  `.gitignore` and scriptorium's render step;
 - `guidance_equivalence` records whether `AGENTS.md` and `CLAUDE.md` resolve
   through a symlink or compare byte-for-byte.
 
@@ -325,12 +325,8 @@ the row gate.
 ## Source and render rules
 
 This file under `skills/src/` is the only authored skill source. Do not edit
-generated Claude, Codex, or Copilot projections. Maintainers render and verify
-against an out-of-tree staging directory:
-
-```text
-planar skills render --out <staging-dir> pl-documenter
-planar skills render --check --out <staging-dir> pl-documenter
-```
+generated Claude, Codex, or Copilot projections. Rendering and drift
+verification of vendor projections is owned by scriptorium (the stack's
+render tool, driven by `scriptorium.yaml`), not by a planar CLI verb.
 
 ## Vendor Notes
