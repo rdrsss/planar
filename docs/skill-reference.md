@@ -22,11 +22,12 @@ shows the underlying supported interface.
 | Resume interrupted work or diagnose degraded state | `/pl-resume <task-id>` or `/pl-doctor` | `planar resume`, `planar audit`, `planar health`, `planar-agent reconcile` |
 | Inspect one external item's local history | `/pl-audit-trail <system:key>` | `planar audit trail` |
 | Reconcile a local/external sync conflict | `/pl-sync status` or `/pl-sync resolve <event-id>` | `planar sync status`, `planar audit trail`, guarded `planar sync resolve` |
-| Maintain published documentation | `/pl-doc-maintain` for the full loop; `/pl-documenter` for a proposal-centered sweep | `tabularium diff|cover|nodoc|lint|build|verify` |
+| Maintain published documentation | Raised to tabularium (owns the doc-system tool and its `/pl-doc-maintain` full loop / `/pl-documenter` proposal sweep); planar drives the underlying tool verbs | `tabularium diff|cover|nodoc|lint|build|verify` |
 
 `/pl-local-import` remains an import-only compatibility entry point; prefer
-`/pl-local` for the complete local lifecycle. Documentation maintenance is
-available through the gated workflows listed below. Sync reconciliation is
+`/pl-local` for the complete local lifecycle. Documentation maintenance was
+raised to tabularium (see the Documentation Maintenance section below); planar
+drives the underlying `tabularium` tool verbs. Sync reconciliation is
 shipped through `/pl-sync` and its gated `sync-reconciler` specialist.
 
 ---
@@ -827,53 +828,16 @@ Source: `skills/src/pl-models-config.md`
 
 ## Documentation Maintenance
 
-### `/pl-documenter`
-
-Inspect manifest-backed repository drift and route it through the read-only
-`documenter` specialist, which proposes `extend-cover`, `create-doc`, `nodoc`,
-or `defer` rows for operator review. The specialist never writes prose or
-manifest state. After the row gate, the skill caller sends only approved prose
-rows to `doc-author` and owns any approved `tabularium` mutations.
-
-Use this proposal-centered entry point for a manual post-cycle sweep. A clean,
-verified diff is a no-op; unresolved or unapproved rows are not absorbed by a
-manifest rebuild.
-
-Before proposing ordinary rows, the workflow derives authoritative repository
-identity from the migration tail and its schema insert, the four installed
-artifacts in `build.zig`, the canonical `skills/src/` and `agents/` source
-trees, and `AGENTS.md`/`CLAUDE.md` equivalence. Only an explicit contradiction
-in guidance becomes an operator-gated `guidance-identity-drift` row; missing
-prose is not drift. An unresolved identity row blocks the documentation phase
-from reporting a clean closeout, but never changes janitor-owned plan closeout
-state or authorizes an automatic guidance, symlink, prose, or manifest write.
-
-**Example:**
-```
-/pl-documenter
-/pl-documenter --json
-```
-
-Source: `skills/src/pl-documenter.md` · `agents/documenter.md` · `agents/doc-author.md`
-
----
-
-### `/pl-doc-maintain`
-
-Run the complete gated documentation-maintenance loop: read and parse
-`tabularium diff --json`, obtain documenter proposals, require an explicit
-operator disposition for every row, dispatch approved prose to `doc-author`,
-apply approved coverage or `nodoc` operations, then lint, build, verify, and
-require a clean final diff. The caller alone invokes manifest-writing
-`tabularium` verbs; neither specialist owns those mutations.
-
-**Example:**
-```
-/pl-doc-maintain
-/pl-doc-maintain --json
-```
-
-Source: `skills/src/pl-doc-maintain.md` · `agents/documenter.md` · `agents/doc-author.md`
+The documenter and doc-author roles and the `/pl-documenter` / `/pl-doc-maintain`
+skills that drive the gated documentation-maintenance loop were raised to
+tabularium (the stack's standalone documentation tool, which owns the manifest
+database they operate) at the doc-cluster transfer (planar plan 933). They no
+longer render or install from this repo — see tabularium's own skill and agent
+sources for those entry points. Planar retains and drives the primitives they
+compose: the `planar-agent` claim ritual and the underlying `tabularium diff` /
+`cover` / `nodoc` / `lint` / `build` / `verify` tool verbs. For the operator
+recipes see [`workflows.md` Recipe 33](workflows.md#recipe-33--run-the-gated-documentation-maintenance-loop)
+and the Phase 6 lifecycle in [`operations.md`](operations.md#2-the-orchestration-lifecycle).
 
 ---
 
@@ -945,7 +909,7 @@ Source: `skills/src/pl-feedback-triage.md` · `agents/feedback-triager.md`
 
 ## Agent Role Specs
 
-The vendor-neutral role specs live under `agents/`. Vendor skill files defer to them for the authoritative behavior description. The orchestrator, coder, reviewer, test-coder, and janitor roles — plus their companion methodology, doctrine, and model-tier-routing docs — were raised to armarium (the stack's meta repo) at plan 918/929 and no longer live in this repo; see armarium's own agent sources for those roles.
+The vendor-neutral role specs live under `agents/`. Vendor skill files defer to them for the authoritative behavior description. The orchestrator, coder, reviewer, test-coder, and janitor roles — plus their companion methodology, doctrine, and model-tier-routing docs — were raised to armarium (the stack's meta repo) at plan 918/929 and no longer live in this repo; see armarium's own agent sources for those roles. The documenter and doc-author roles were likewise raised — to tabularium (which owns the doc-system tool they drive) — at the doc-cluster transfer (planar plan 933); see tabularium's own agent sources for those.
 
 | File | Role |
 |------|------|
@@ -954,10 +918,9 @@ The vendor-neutral role specs live under `agents/`. Vendor skill files defer to 
 | `agents/planner.md` | Planner role: input/output contract, document shape, workbench seeding |
 | `agents/ingestor.md` | Ingestor role: parsing contract, idempotency invariant, preview-first rule |
 | `agents/ext-sync.md` | Ext-sync role: strategy-selection contract, propagation walk, idempotency |
-| `agents/documenter.md` | Read-only documentation drift classifier: proposes `extend-cover`, `create-doc`, `nodoc`, or `defer`, including operator-gated explicit guidance-identity contradictions; never writes prose or manifest state |
+| `(raised to tabularium)` | Documenter and doc-author roles — read-only documentation drift classifier and operator-approved prose author — raised to tabularium at the doc-cluster transfer (planar plan 933) |
 | `agents/introspector.md` | Introspector role: cross-vendor redacted signal adapters, preview/apply gate, finding taxonomy, dedup contract, feedback-plan bootstrap |
 | `agents/feedback-triager.md` | Feedback triager role: deterministic severity and disposition guidance, reproduction evidence, preview/apply gate, local mutation boundary, and status/result contracts |
-| `agents/doc-author.md` | Doc-author role: writes only operator-approved published prose under `docs/`; never decides coverage or mutates manifest state |
 | `agents/sync-reconciler.md` | Large-tier coordinate role: compares local and remote conflict evidence, recommends one of four dispositions, and coordinates only the exact whole-entity resolution the operator confirms; it is read-and-recommend by default and never performs direct local or remote field mutation |
 
 ---

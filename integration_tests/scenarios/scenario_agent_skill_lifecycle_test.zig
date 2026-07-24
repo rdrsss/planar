@@ -256,21 +256,20 @@ fn deriveMigrationTail(allocator: std.mem.Allocator) ![]u8 {
 
 test "scenario: guidance-closeout-envelope stale identity blocks clean while clean invents no rows" {
     const a = std.testing.allocator;
-    // `agents/orchestrator.md` was deleted by armarium plan 929 M3 (raised
-    // upstream to armarium, no `pl-` prefix); the guidance-closeout-
-    // envelope vocabulary check is retargeted to pin solely against
-    // `agents/documenter.md`, the retained in-repo doc that still
-    // documents this exact contract (see planar plan 932 task 5448).
-    const documenter = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, "agents/documenter.md", a, .limited(512 * 1024));
-    defer a.free(documenter);
-    for ([_][]const u8{
-        "authoritative_identity",
-        "guidance-identity-drift",
-        "operator-gated",
-        "clean closeout",
-    }) |needle| {
-        try std.testing.expect(std.mem.indexOf(u8, documenter, needle) != null);
-    }
+    // RETIRED sub-assertion (planar plan 933 task 5456 — doc-cluster transfer):
+    // 8cf4705 (task 5448) had retargeted the guidance-closeout-envelope
+    // vocabulary check onto `agents/documenter.md` after `agents/orchestrator.md`
+    // was raised. The doc-cluster transfer now raises `agents/documenter.md` and
+    // `agents/doc-author.md` to tabularium (commit 967ed7f), so that anchor is
+    // gone too. The specific "authoritative documentation identity" vocabulary
+    // (`authoritative_identity`, `guidance-identity-drift`, `operator-gated`,
+    // `clean closeout`) is inherently the documenter role's own contract; no
+    // retained planar surface carries the token set (grepped: `authoritative_identity`
+    // has ZERO retained hits, and no single retained doc holds all four), so this
+    // sub-assertion is RETIRED rather than retargeted onto an unrelated doc.
+    // The scenario's substance is unaffected: the guidance-identity-drift envelope
+    // is computed below from planar's own repository/build identity evidence via
+    // the in-test `guidanceRows` model, not from any raised agent doc.
 
     // Derive the live clean envelope from the same repo/build evidence named by
     // the authored workflow. Guidance prose is observed only after the facts
@@ -301,12 +300,15 @@ test "scenario: guidance-closeout-envelope stale identity blocks clean while cle
     for ([_][]const u8{ "/commands/", "/skills/codex/", "/skills/copilot/", "/agents/claude/", "/agents/codex/", "/agents/copilot/" }) |generated| {
         try std.testing.expect(std.mem.indexOf(u8, ignore, generated) != null);
     }
-    // Source-vs-generated sanity check retargeted to the retained
-    // documenter role: `skills/src/pl-orchestrator.md` and
-    // `agents/orchestrator.md` no longer exist in planar post-raise
-    // (armarium plan 929 M3 / planar plan 932 task 5448).
-    try std.Io.Dir.cwd().access(std.testing.io, "skills/src/pl-documenter.md", .{});
-    try std.Io.Dir.cwd().access(std.testing.io, "agents/documenter.md", .{});
+    // Source-vs-generated sanity check: confirm an authored skill+agent
+    // source pair lives under `skills/src/` and `agents/` (not an
+    // accidentally-committed generated/gitignored path). Retargeted from the
+    // now-raised `skills/src/pl-documenter.md` + `agents/documenter.md`
+    // (doc-cluster transfer to tabularium, planar plan 933 task 5456) to the
+    // retained `skills/src/pl-plan.md` + `agents/planner.md` pair; any retained
+    // authored source satisfies this structural invariant.
+    try std.Io.Dir.cwd().access(std.testing.io, "skills/src/pl-plan.md", .{});
+    try std.Io.Dir.cwd().access(std.testing.io, "agents/planner.md", .{});
 
     var link_buf: [std.fs.max_path_bytes]u8 = undefined;
     const link_len = try std.Io.Dir.cwd().readLink(std.testing.io, "AGENTS.md", &link_buf);

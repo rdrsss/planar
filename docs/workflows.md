@@ -1314,10 +1314,14 @@ When either verb fails, fix the issue and retry — the pre-commit hook keeps dr
 
 ### After landing a body of work
 
-For the complete gated loop, invoke `/pl-doc-maintain`. It reads
-`tabularium diff --json`, sends the drift to the read-only documenter, and
-shows every proposed row before any mutation. The documenter classifies each
-changed source into four outcomes:
+For the complete gated loop, invoke tabularium's `/tabularium-doc-maintain`
+skill. The documenter/doc-author cluster that drives this loop — and the skill
+itself, formerly planar's `/pl-doc-maintain` — was raised to tabularium (which
+owns the doc-system tool and its manifest database) at the doc-cluster transfer
+(planar plan 933); planar no longer ships it, but the workflow it runs is
+unchanged. It reads `tabularium diff --json`, sends the drift to the read-only
+documenter, and shows every proposed row before any mutation. The documenter
+classifies each changed source into four outcomes:
 
 - **Extend an existing entry.** A doc already covers a related path; add the changed path to its `sources` map via `tabularium cover <path> <repo-path>`.
 - **Author a new doc.** No existing entry covers the change. After row
@@ -3078,10 +3082,14 @@ events and reports failed or deferred events with exact recovery commands.
 ## Recipe 33 — Run the gated documentation-maintenance loop
 
 ```bash
-/pl-doc-maintain
+/tabularium-doc-maintain
 ```
 
-The caller reads `tabularium diff --json`, obtains read-only documenter
+This loop lives in tabularium: the documenter/doc-author cluster and the
+`/tabularium-doc-maintain` skill (formerly planar's `/pl-doc-maintain`) were
+raised to tabularium — which owns the doc-system tool and its manifest database
+— at the doc-cluster transfer (planar plan 933). The caller reads
+`tabularium diff --json`, obtains read-only documenter
 proposals, and requires an operator disposition for every row. Approved
 `create-doc` or prose-refresh rows alone go to `doc-author`; approved `nodoc`
 rows bypass prose authoring. The caller—not either specialist—applies coverage
@@ -3120,7 +3128,9 @@ after an explicit dispatch decision with a newly confirmed maximum wave size.
 
 ### Close documentation with repository identity evidence
 
-Run `/pl-doc-maintain`. Before classifying manifest rows, the workflow derives
+Run tabularium's `/tabularium-doc-maintain` (raised to tabularium at the
+doc-cluster transfer, planar plan 933; formerly planar's `/pl-doc-maintain`).
+Before classifying manifest rows, the workflow derives
 the migration tail/schema insert, exact four binaries from `build.zig`,
 canonical generated-surface boundary, and `AGENTS.md`/`CLAUDE.md` equivalence.
 An explicit contradiction becomes an operator-gated

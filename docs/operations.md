@@ -97,9 +97,12 @@ execution runs a reviewer loop capped at five iterations.
 Since the M3 raise (armarium plan 929), the orchestrator, coder, reviewer,
 test-coder, and janitor roles that drive this lifecycle live in armarium (the
 stack's meta repo), not in this repo's `agents/`. The documenter and
-doc-author roles referenced in Phase 6 remain planar's own. Planar itself
-retains and drives the primitives these roles compose: the `planar-agent`
-claim ritual (§3 below), `tabularium diff`, and the doc manifest gates.
+doc-author roles referenced in Phase 6 were likewise raised — to tabularium
+(the stack's standalone documentation tool, which owns the manifest database
+they operate) at the doc-cluster transfer (planar plan 933) — and no longer
+live in this repo's `agents/` either. Planar itself retains and drives the
+primitives these roles compose: the `planar-agent` claim ritual (§3 below),
+`tabularium diff`, and the doc manifest gates.
 
 ```mermaid
 flowchart TD

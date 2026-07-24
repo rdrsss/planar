@@ -23,7 +23,16 @@
 //! are retargeted to planar's own retained surfaces where the audited
 //! invariant still applies to planar; two checks whose subject was
 //! inherently the orchestrator role itself are retired (see the removal
-//! comments below):
+//! comments below).
+//!
+//! Planar plan 933 task 5456 (doc-cluster transfer): the doc-system cluster
+//! — `agents/documenter.md`, `agents/doc-author.md`, `skills/src/pl-documenter.md`,
+//! `skills/src/pl-doc-maintain.md` — was likewise raised, to tabularium
+//! (commit 967ed7f), which owns the doc-system tool they drive. 8cf4705 had
+//! seeded several of the retained-surface samples below with `documenter` /
+//! `doc-author` / `pl-documenter`; those entries are re-pointed here at other
+//! retained planar surfaces (the audited namespace/ritual invariants apply
+//! generally, so the sample choice is not load-bearing).
 //!
 //!   - Planar's retained surfaces (`docs/cli-reference.md`, the
 //!     retained `agents/*.md` role docs that discuss the claim ritual)
@@ -611,7 +620,10 @@ test "CLI reference documents `planar-agent pull` and the canonical terminal ver
     const gpa = std.testing.allocator;
     const files = [_][]const u8{
         "docs/cli-reference.md",
-        "agents/documenter.md",
+        // `agents/documenter.md` raised to tabularium (plan 933 task 5456);
+        // re-pointed to `agents/sync-reconciler.md`, another retained agent
+        // dispatched through `planar-agent`.
+        "agents/sync-reconciler.md",
         "agents/ingestor.md",
         "agents/planner.md",
     };
@@ -658,17 +670,21 @@ test "methodology + role docs contain ZERO `planar agent <verb>` references" {
     // skills to every retained planar surface that discusses `planar-agent`
     // verbs — the namespace-purity invariant (never the space-separated
     // `planar agent <verb>` form) applies generally, not just to the
-    // now-armarium-owned role docs.
+    // now-armarium-owned role docs. The doc-cluster transfer (plan 933 task
+    // 5456) raised `documenter` / `doc-author` / `pl-documenter` to tabularium;
+    // re-pointed here to the retained `ext-sync` / `feedback-triager` agents
+    // and the `pl-knowledge` skill (the invariant holds for any retained
+    // authored surface).
     const files = [_][]const u8{
-        "agents/documenter.md",
-        "agents/doc-author.md",
+        "agents/ext-sync.md",
+        "agents/feedback-triager.md",
         "agents/ingestor.md",
         "agents/introspector.md",
         "agents/planner.md",
         "agents/spec-reviewer.md",
         "agents/sync-reconciler.md",
         "skills/src/pl-doctor.md",
-        "skills/src/pl-documenter.md",
+        "skills/src/pl-knowledge.md",
         "skills/src/pl-health.md",
         "skills/src/pl-observe.md",
         "skills/src/pl-plan.md",
@@ -730,11 +746,14 @@ test "retained agent/skill surfaces do NOT reference `planar-agent ps` / log / t
     // retained-surface sample used by the ZERO-references test above —
     // the binary-boundary purity invariant applies to any retained doc
     // that discusses agent verbs, not just the now-armarium-owned ones.
+    // Doc-cluster transfer (plan 933 task 5456) raised `documenter` /
+    // `pl-documenter`; re-pointed to the retained `sync-reconciler` agent
+    // and the `pl-status` skill.
     const files = [_][]const u8{
-        "agents/documenter.md",
+        "agents/sync-reconciler.md",
         "agents/ingestor.md",
         "agents/planner.md",
-        "skills/src/pl-documenter.md",
+        "skills/src/pl-status.md",
         "skills/src/pl-plan.md",
         "skills/src/pl-task.md",
     };
