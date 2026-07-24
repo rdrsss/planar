@@ -37,7 +37,11 @@ require() { command -v "$1" >/dev/null 2>&1 || fail "missing command: $1"; }
 require jq
 jq -e '.expected.tier == "medium" and .expected.requires_explicit_gate == true' "$CASE" >/dev/null
 rg -q 'every task defaults to `medium`' "$ROOT/skills/src/pl-orchestrator.md" || fail "medium-default contract missing"
-rg -q 'Active host vendor:' "$ROOT/src/engine/skillrender.zig" || fail "host-vendor projection note missing"
+# The "Active host vendor:" projection-note check that used to live here
+# asserted on src/engine/skillrender.zig's special-cased pl-orchestrator
+# injection. skillrender.zig was deleted at plan 918 (rendering moved to
+# scriptorium); the note has no static-source equivalent left to assert on
+# in this repo, so the check is retired rather than repointed.
 if rg -q 'planar-execute run workflows/' "$ROOT/skills/src/pl-orchestrator.md" "$ROOT/agents/orchestrator.md"; then
   fail "checkout-relative workflow invocation remains"
 fi
