@@ -14,18 +14,24 @@
 //!   - `planar audit trail <kind:id>` does NOT print "Agent activity:"
 //!     when nothing is recorded (task:activity-summary-empty-degrade).
 //!
-//! And methodology / vendor-surface namespace purity:
+//! And methodology / vendor-surface namespace purity. Planar plan 932 task
+//! 5448: armarium plan 929 M3 deleted the 5 role agents (orchestrator,
+//! coder, reviewer, test-coder, janitor), their companion docs
+//! (methodology, doctrine, models, cross-scope-writes), and the 4 `pl-`
+//! role skills from this repo — they're retained upstream in armarium
+//! under `agents/` and `skills/` (prefix dropped per D5). The checks below
+//! are retargeted to planar's own retained surfaces where the audited
+//! invariant still applies to planar; two checks whose subject was
+//! inherently the orchestrator role itself are retired (see the removal
+//! comments below):
 //!
-//!   - The canonical agent docs (`agents/methodology.md`, `orchestrator.md`,
-//!     `coder.md`, `reviewer.md`) reference `planar-agent pull` /
-//!     `complete` / `fail` / `release` / `block` and do NOT reference
-//!     any `planar agent <verb>` subcommand (task:methodology-claim-
-//!     ritual, task:vendor-surfaces-claim-aware,
-//!     task:orchestrator-parallelism-aware).
-//!   - The orchestrator surfaces specifically reference `planar-agent
-//!     peek` (the parallelism-aware dry-run before dispatch).
-//!   - The docs do NOT reference `planar-agent ps` / `log` / `tail`
-//!     (those live on `planar-watch`, coming in M8).
+//!   - Planar's retained surfaces (`docs/cli-reference.md`, the
+//!     retained `agents/*.md` role docs that discuss the claim ritual)
+//!     reference `planar-agent pull` / `complete` / `fail` / `release` /
+//!     `block` and do NOT reference any `planar agent <verb>` subcommand
+//!     (task:methodology-claim-ritual, task:vendor-surfaces-claim-aware).
+//!   - The retained surfaces do NOT reference `planar-agent ps` / `log` /
+//!     `tail` (those live on `planar-watch`).
 
 const std = @import("std");
 const harness = @import("harness");
@@ -535,11 +541,27 @@ test "audit trail link form folds in commits and omits the commits key when empt
 // =========================================================================
 
 /// Resolve a path relative to the repository root by walking upward
-/// from `PLANAR_BIN`'s parent until `agents/methodology.md` is found.
-/// `make test-integration` exports `PLANAR_BIN=<repo>/bin/planar` so
-/// the repo root is exactly two levels above the binary file. The
-/// search loop is defensive in case the binary moves out of `<repo>/
-/// bin/`. Returns an absolute path the caller owns.
+/// from `PLANAR_BIN`'s parent until a `.git` entry is found. `.git` is
+/// planar's own unambiguous repo-root marker: a directory for a plain
+/// checkout, or a FILE (containing `gitdir: ...`) for a submodule
+/// checkout such as this one under armarium's `stack/planar/`. The
+/// existence probe (`std.Io.Dir.accessAbsolute`) is deliberately
+/// type-agnostic so it matches both shapes.
+///
+/// This walk MUST stop at the first `.git` entry and must NOT continue
+/// probing upward into a superproject: armarium (the superproject that
+/// pins this repo as a submodule) carries its own top-level `agents/`
+/// tree post-raise, so a walk that kept climbing past planar's boundary
+/// could silently resolve into armarium instead of failing when a
+/// requested `rel` no longer exists in planar. Once the boundary is
+/// found, the caller's subsequent file open surfaces `FileNotFound`
+/// directly for a `rel` that doesn't exist here — a clean failure
+/// instead of a wrong-repo resolution.
+///
+/// `make test-integration` exports `PLANAR_BIN=<repo>/bin/planar` so the
+/// repo root is normally two levels above the binary file; the search
+/// loop is defensive in case the binary moves. Returns an absolute path
+/// the caller owns.
 fn resolveRepoPath(gpa: std.mem.Allocator, rel: []const u8) ![]u8 {
     const raw: [*:null]?[*:0]u8 = std.c.environ;
     var bin_path: ?[]const u8 = null;
@@ -557,12 +579,11 @@ fn resolveRepoPath(gpa: std.mem.Allocator, rel: []const u8) ![]u8 {
     var depth: usize = 0;
     while (depth < 12) : (depth += 1) {
         cwd = std.fs.path.dirname(cwd) orelse return error.RepoRootNotFound;
-        const probe = try std.fs.path.join(gpa, &.{ cwd, "agents", "methodology.md" });
-        defer gpa.free(probe);
-        // Probe via std.Io.Dir.openFileAbsolute — accepts an absolute
-        // path. Successful open ⇒ this is the repo root.
-        var file = std.Io.Dir.openFileAbsolute(std.testing.io, probe, .{}) catch continue;
-        file.close(std.testing.io);
+        const git_marker = try std.fs.path.join(gpa, &.{ cwd, ".git" });
+        defer gpa.free(git_marker);
+        std.Io.Dir.accessAbsolute(std.testing.io, git_marker, .{}) catch continue;
+        // Found the repo boundary. Stop unconditionally — do not keep
+        // climbing even if `rel` turns out not to exist at this level.
         return try std.fs.path.join(gpa, &.{ cwd, rel });
     }
     return error.RepoRootNotFound;
@@ -577,17 +598,28 @@ fn readRepoFile(gpa: std.mem.Allocator, rel: []const u8) ![]u8 {
     return try reader.interface.allocRemaining(gpa, std.Io.Limit.limited(1 * 1024 * 1024));
 }
 
-test "methodology docs reference `planar-agent pull` and the canonical terminal verbs" {
+// `agents/methodology.md` was deleted from planar by armarium plan 929 M3
+// (raised upstream, no `pl-` prefix). Planar's own claim-ritual contract —
+// "every code-writing agent dispatch follows planar-agent pull -> heartbeat
+// -> exactly one terminal verb" — is still true of planar's CLI regardless
+// of who orchestrates it, so this check is RETARGETED (not retired) to
+// `docs/cli-reference.md` (the retained, authoritative CLI surface, which
+// documents the full verb set including `reconcile` / `abort`) plus a
+// sample of retained planar agent docs that reference `planar-agent`
+// as consumers of the ritual.
+test "CLI reference documents `planar-agent pull` and the canonical terminal verbs" {
     const gpa = std.testing.allocator;
     const files = [_][]const u8{
-        "agents/methodology.md",
-        "agents/orchestrator.md",
-        "agents/coder.md",
-        "agents/reviewer.md",
+        "docs/cli-reference.md",
+        "agents/documenter.md",
+        "agents/ingestor.md",
+        "agents/planner.md",
     };
-    // The methodology file MUST mention `planar-agent pull` and each
-    // of complete / fail / release / block. The supporting role docs
-    // MUST reference `planar-agent` at least once each.
+    // The CLI reference MUST mention `planar-agent pull` and each of
+    // complete / fail / release / block / reconcile / abort. The
+    // retained agent docs MUST reference `planar-agent` at least once
+    // each (they are dispatched through it, even though they aren't the
+    // orchestrator itself).
     {
         const body = try readRepoFile(gpa, files[0]);
         defer gpa.free(body);
@@ -607,42 +639,44 @@ test "methodology docs reference `planar-agent pull` and the canonical terminal 
     }
 }
 
-test "methodology defines the durable boundary and surviving target contract" {
-    const gpa = std.testing.allocator;
-    const body = try readRepoFile(gpa, "agents/methodology.md");
-    defer gpa.free(body);
-
-    for ([_][]const u8{
-        "## Durable orchestration boundary contract",
-        "authoritative status is `todo`, `doing`, or",
-        "`blocked` is a surviving target",
-        "status is `done` or `cancelled`",
-        "planar task update <task-id>",
-        "orchestration_checkpoint: v1",
-        "iteration_scope: <coder-review|test-coder|none>",
-        "`resumable:true` makes this target's boundary durable",
-        "returns `outcome=partial`",
-        "exact recovery command: `planar resume <task-id> --json`",
-    }) |needle| {
-        if (std.mem.indexOf(u8, body, needle) == null) {
-            std.debug.print("durable-boundary methodology contract missing: {s}\n", .{needle});
-            return error.TestUnexpectedResult;
-        }
-    }
-}
+// RETIRED: "methodology defines the durable boundary and surviving target
+// contract" previously pinned `agents/methodology.md`'s durable
+// orchestration-checkpoint / resumability vocabulary
+// (`orchestration_checkpoint: v1`, `iteration_scope: ...`, etc). That
+// contract is inherently about the orchestrator's own dispatch-loop
+// internals, which armarium plan 929 M3 moved to armarium wholesale —
+// planar has no retained doc that independently asserts this vocabulary
+// (grepped: zero hits across docs/, agents/, CLAUDE.md). The subject no
+// longer exists in planar, so there is nothing left here to retarget;
+// the orchestration-boundary contract is armarium's concern to test
+// against its own `agents/methodology.md` going forward.
 
 test "methodology + role docs contain ZERO `planar agent <verb>` references" {
     const gpa = std.testing.allocator;
+    // Retargeted from the deleted methodology/orchestrator/coder/reviewer/
+    // test-coder docs and pl-orchestrator/pl-coder/pl-reviewer/pl-test-coder
+    // skills to every retained planar surface that discusses `planar-agent`
+    // verbs — the namespace-purity invariant (never the space-separated
+    // `planar agent <verb>` form) applies generally, not just to the
+    // now-armarium-owned role docs.
     const files = [_][]const u8{
-        "agents/methodology.md",
-        "agents/orchestrator.md",
-        "agents/coder.md",
-        "agents/reviewer.md",
-        "agents/test-coder.md",
-        "skills/src/pl-orchestrator.md",
-        "skills/src/pl-coder.md",
-        "skills/src/pl-reviewer.md",
-        "skills/src/pl-test-coder.md",
+        "agents/documenter.md",
+        "agents/doc-author.md",
+        "agents/ingestor.md",
+        "agents/introspector.md",
+        "agents/planner.md",
+        "agents/spec-reviewer.md",
+        "agents/sync-reconciler.md",
+        "skills/src/pl-doctor.md",
+        "skills/src/pl-documenter.md",
+        "skills/src/pl-health.md",
+        "skills/src/pl-observe.md",
+        "skills/src/pl-plan.md",
+        "skills/src/pl-resume.md",
+        "skills/src/pl-spec-draft.md",
+        "skills/src/pl-spec-ingest.md",
+        "skills/src/pl-status.md",
+        "skills/src/pl-task.md",
     };
     // Forbidden literal verb references. Each scan looks for the
     // exact substring; phrases like "no `planar agent` subcommand"
@@ -680,36 +714,29 @@ test "methodology + role docs contain ZERO `planar agent <verb>` references" {
     }
 }
 
-test "orchestrator surfaces reference `planar-agent peek` for parallelism-aware dispatch" {
-    const gpa = std.testing.allocator;
-    const files = [_][]const u8{
-        "agents/orchestrator.md",
-        "skills/src/pl-orchestrator.md",
-    };
-    for (files) |rel| {
-        const body = try readRepoFile(gpa, rel);
-        defer gpa.free(body);
-        try std.testing.expect(std.mem.indexOf(u8, body, "planar-agent peek") != null);
-        // The orchestrator surfaces still reason about parallel dispatch, but
-        // the model orchestrator skill no longer claims to be "parallelism-
-        // aware" itself — plan 492 moved worktree/parallel fan-out to the
-        // planar-orchestrate harness. The load-bearing check is the
-        // `planar-agent peek` namespace-purity reference plus a parallel-
-        // dispatch mention; the exact framing differs per surface.
-        try std.testing.expect(std.mem.indexOf(u8, body, "parallel") != null);
-    }
-}
+// RETIRED: "orchestrator surfaces reference `planar-agent peek` for
+// parallelism-aware dispatch" previously pinned `agents/orchestrator.md`
+// and `skills/src/pl-orchestrator.md` specifically. Its subject —
+// parallelism-aware dispatch reasoning owned by the orchestrator role —
+// is inherently about a role that armarium plan 929 M3 moved out of
+// planar wholesale; there is no retained planar surface that plays this
+// role, so retargeting would just be testing an unrelated doc under a
+// borrowed name. Retired rather than retargeted.
 
-test "methodology + role docs do NOT reference `planar-agent ps` / log / tail (those live on planar-watch)" {
+test "retained agent/skill surfaces do NOT reference `planar-agent ps` / log / tail (those live on planar-watch)" {
     const gpa = std.testing.allocator;
+    // Retargeted from the deleted methodology/orchestrator/coder/reviewer
+    // docs and pl-orchestrator/pl-coder/pl-reviewer skills to the same
+    // retained-surface sample used by the ZERO-references test above —
+    // the binary-boundary purity invariant applies to any retained doc
+    // that discusses agent verbs, not just the now-armarium-owned ones.
     const files = [_][]const u8{
-        "agents/methodology.md",
-        "agents/orchestrator.md",
-        "agents/coder.md",
-        "agents/reviewer.md",
-        "skills/src/pl-orchestrator.md",
-        "skills/src/pl-coder.md",
-        "skills/src/pl-reviewer.md",
+        "agents/documenter.md",
+        "agents/ingestor.md",
+        "agents/planner.md",
+        "skills/src/pl-documenter.md",
+        "skills/src/pl-plan.md",
+        "skills/src/pl-task.md",
     };
     const forbidden = [_][]const u8{
         "planar-agent ps",

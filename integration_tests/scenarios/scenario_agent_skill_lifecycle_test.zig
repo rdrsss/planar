@@ -256,8 +256,11 @@ fn deriveMigrationTail(allocator: std.mem.Allocator) ![]u8 {
 
 test "scenario: guidance-closeout-envelope stale identity blocks clean while clean invents no rows" {
     const a = std.testing.allocator;
-    const orchestrator = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, "agents/orchestrator.md", a, .limited(512 * 1024));
-    defer a.free(orchestrator);
+    // `agents/orchestrator.md` was deleted by armarium plan 929 M3 (raised
+    // upstream to armarium, no `pl-` prefix); the guidance-closeout-
+    // envelope vocabulary check is retargeted to pin solely against
+    // `agents/documenter.md`, the retained in-repo doc that still
+    // documents this exact contract (see planar plan 932 task 5448).
     const documenter = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, "agents/documenter.md", a, .limited(512 * 1024));
     defer a.free(documenter);
     for ([_][]const u8{
@@ -266,7 +269,6 @@ test "scenario: guidance-closeout-envelope stale identity blocks clean while cle
         "operator-gated",
         "clean closeout",
     }) |needle| {
-        try std.testing.expect(std.mem.indexOf(u8, orchestrator, needle) != null);
         try std.testing.expect(std.mem.indexOf(u8, documenter, needle) != null);
     }
 
@@ -299,8 +301,12 @@ test "scenario: guidance-closeout-envelope stale identity blocks clean while cle
     for ([_][]const u8{ "/commands/", "/skills/codex/", "/skills/copilot/", "/agents/claude/", "/agents/codex/", "/agents/copilot/" }) |generated| {
         try std.testing.expect(std.mem.indexOf(u8, ignore, generated) != null);
     }
-    try std.Io.Dir.cwd().access(std.testing.io, "skills/src/pl-orchestrator.md", .{});
-    try std.Io.Dir.cwd().access(std.testing.io, "agents/orchestrator.md", .{});
+    // Source-vs-generated sanity check retargeted to the retained
+    // documenter role: `skills/src/pl-orchestrator.md` and
+    // `agents/orchestrator.md` no longer exist in planar post-raise
+    // (armarium plan 929 M3 / planar plan 932 task 5448).
+    try std.Io.Dir.cwd().access(std.testing.io, "skills/src/pl-documenter.md", .{});
+    try std.Io.Dir.cwd().access(std.testing.io, "agents/documenter.md", .{});
 
     var link_buf: [std.fs.max_path_bytes]u8 = undefined;
     const link_len = try std.Io.Dir.cwd().readLink(std.testing.io, "AGENTS.md", &link_buf);
