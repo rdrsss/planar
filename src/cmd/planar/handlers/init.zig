@@ -22,6 +22,7 @@ pub const verb: cli.Cmd = .{
     .desc = "Initialize the Planar database and register the current directory as a project.",
     .flags = &.{
         .{ .long = "--name", .kind = .string, .desc = "Project name (defaults to repo dir)" },
+        .{ .long = "--slug", .kind = .string, .desc = "Explicit project slug (defaults to a slug derived from the directory name); with --force, targets that registration for repoint" },
         .{ .long = "--skip-project", .kind = .bool, .default = .{ .bool = false }, .desc = "Only init the DB; skip project registration" },
         .{ .long = "--allow-no-repo", .kind = .bool, .default = .{ .bool = false }, .desc = "Allow initialization outside a git repo" },
         .{ .long = "--force", .kind = .bool, .default = .{ .bool = false }, .desc = "Overwrite an existing project registration" },
@@ -69,6 +70,7 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
     const p = engine.init.registerCwd(d, ctx.allocator, .{
         .cwd = cwd,
         .name = args.name,
+        .slug = args.slug,
         .git_remote = remote,
         .force = args.force,
     }) catch |e| exit.die(ctx, e, "registering project: {s}", .{@errorName(e)});
