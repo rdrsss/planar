@@ -133,6 +133,51 @@ test "init --force repoints an existing slug registration to the new cwd" {
     try std.testing.expectEqualStrings(real_b, forced.root_path);
 }
 
+test "init --slug targets an explicit slug for registration and repoint" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const InitIdJSON = struct {
+        project_id: i64,
+        project_slug: []const u8,
+        root_path: []const u8 = "",
+    };
+
+    // Two checkouts with DIFFERENT basenames. Basename-derived slugs
+    // cannot connect them; --slug is the explicit bridge (the real
+    // case: a slug-suffixed registration like planar-2 whose checkout
+    // moved to a superproject submodule path with basename planar).
+    const dir_a = try std.fs.path.join(arena, &.{ suite.freshSystemTmpDir(), "old-leaf" });
+    try mkdirp(dir_a);
+    const dir_b = try std.fs.path.join(arena, &.{ suite.freshSystemTmpDir(), "new-leaf" });
+    try mkdirp(dir_b);
+
+    const env = [_]harness.Suite.ExtraEnvEntry{
+        .{ .key = "PLANAR_DB", .value = suite.absDbPath() },
+    };
+
+    // Register dir_a under an explicit slug that ignores the basename.
+    const first = mustRunJSONWithEnvInDir(&suite, InitIdJSON, arena, dir_a, &.{
+        "init", "--allow-no-repo", "--json", "--slug", "moved-ident",
+    }, &env);
+    try std.testing.expectEqualStrings("moved-ident", first.project_slug);
+
+    // Repoint the explicit slug to dir_b: same id, new root.
+    const forced = mustRunJSONWithEnvInDir(&suite, InitIdJSON, arena, dir_b, &.{
+        "init", "--allow-no-repo", "--json", "--slug", "moved-ident", "--force",
+    }, &env);
+    const real_b = try std.Io.Dir.realPathFileAlloc(.cwd(), std.testing.io, dir_b, std.testing.allocator);
+    defer std.testing.allocator.free(real_b);
+    try std.testing.expectEqual(first.project_id, forced.project_id);
+    try std.testing.expectEqualStrings("moved-ident", forced.project_slug);
+    try std.testing.expectEqualStrings(real_b, forced.root_path);
+}
+
 test "repo scope create list update guard and tree surfaces" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
