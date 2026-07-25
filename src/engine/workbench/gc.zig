@@ -18,6 +18,10 @@ const feature = @import("feature.zig");
 const terminal_mod = @import("terminal.zig");
 
 const c = @cImport({
+    // glibc's fortified open/openat wrappers in bits/fcntl2.h use
+    // __attribute__((__error__(...))), which translate-c cannot represent —
+    // disable fortification so translate-c sees the plain declarations.
+    @cDefine("_FORTIFY_SOURCE", "0");
     @cInclude("dirent.h");
     @cInclude("unistd.h");
     @cInclude("sys/stat.h");

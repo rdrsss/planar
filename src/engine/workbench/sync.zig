@@ -6,6 +6,10 @@ const parse = @import("parse.zig");
 const render = @import("render.zig");
 const terminal_mod = @import("terminal.zig");
 const c = @cImport({
+    // glibc's fortified open/openat wrappers in bits/fcntl2.h use
+    // __attribute__((__error__(...))), which translate-c cannot represent —
+    // disable fortification so translate-c sees the plain declarations.
+    @cDefine("_FORTIFY_SOURCE", "0");
     @cInclude("fcntl.h");
     @cInclude("unistd.h");
     @cInclude("sys/stat.h");
