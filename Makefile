@@ -117,10 +117,6 @@ cli-usage-check: ## Validate authored surfaces against the live CLI schema and s
 surface-lint: ## Validate authored links, contracts, capabilities, commands, and retired references
 	$(ZIG) build surface-lint
 
-.PHONY: eval-orchestrator-contract
-eval-orchestrator-contract: ## Validate the deterministic pl-orchestrator eval contract (no model calls)
-	./scripts/eval-pl-orchestrator.sh --contract-only
-
 .PHONY: coverage
 coverage: build ## Check integration-test leaf-coverage ratio against scripts/coverage-baseline.txt
 	scripts/coverage-check.sh
