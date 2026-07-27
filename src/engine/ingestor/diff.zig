@@ -89,6 +89,16 @@ pub const ScenarioEntry = struct {
     existing_id: i64 = 0,
 };
 
+/// Parsed roadmap provenance for one task, including unchanged tasks that do
+/// not otherwise appear in the mutation diff.
+pub const RoadmapCitation = struct {
+    existing_task_id: i64 = 0,
+    child_plan_title: []const u8,
+    task_title: []const u8,
+    source_locator: []const u8,
+    source_text: []const u8,
+};
+
 /// A proposed ADD task slug that already exists on a task NOT part of this
 /// ingest. `tasks.slug` carries a global partial-unique index (migration
 /// 00011 `ux_tasks_slug`), so this collision would cause `SlugConflict` at
@@ -120,6 +130,7 @@ pub const Diff = struct {
     orphan_tasks: []const TaskEntry = &.{},
     orphan_plans: []const PlanEntry = &.{},
     scenarios: []const ScenarioEntry = &.{},
+    roadmap_citations: []const RoadmapCitation = &.{},
     /// Task slugs proposed as ADD that already exist globally on a task
     /// outside this ingest's anchor subtree. Non-empty means --apply would
     /// fail with SlugConflict; the preview surfaces these ahead of time.
@@ -182,6 +193,13 @@ pub fn deinitDiff(d: Diff, allocator: std.mem.Allocator) void {
     allocator.free(d.orphan_plans);
     for (d.scenarios) |s| deinitScenarioEntry(s, allocator);
     allocator.free(d.scenarios);
+    for (d.roadmap_citations) |c| {
+        allocator.free(c.child_plan_title);
+        allocator.free(c.task_title);
+        allocator.free(c.source_locator);
+        allocator.free(c.source_text);
+    }
+    allocator.free(d.roadmap_citations);
     for (d.slug_collisions) |sc| allocator.free(sc.slug);
     allocator.free(d.slug_collisions);
 }
@@ -292,7 +310,18 @@ pub fn compute(
     var used_plan_ids: std.AutoHashMap(i64, void) = .init(allocator);
     defer used_plan_ids.deinit();
 
-    for (milestones) |ms| {
+    var roadmap_citations: std.ArrayList(RoadmapCitation) = .empty;
+    errdefer {
+        for (roadmap_citations.items) |c| {
+            allocator.free(c.child_plan_title);
+            allocator.free(c.task_title);
+            allocator.free(c.source_locator);
+            allocator.free(c.source_text);
+        }
+        roadmap_citations.deinit(allocator);
+    }
+
+    for (milestones, 0..) |ms, milestone_index| {
         const ms_title = std.mem.trim(u8, ms.name, " \t");
         const existing = planByTitle(existing_plans, ms_title);
 
@@ -325,10 +354,25 @@ pub fn compute(
             tasks_out.deinit(allocator);
         }
 
-        for (ms.work_items) |wi| {
+        for (ms.work_items, 0..) |wi, item_index| {
             const wi_title = std.mem.trim(u8, wi.title, " \t");
             const task_body = try buildTaskBody(allocator, wi);
             const existing_t = taskByTitle(existing_tasks, wi_title);
+            const locator = try std.fmt.allocPrint(
+                allocator,
+                "roadmap#milestone:{d}/item:{d}",
+                .{ milestone_index + 1, item_index + 1 },
+            );
+            try roadmap_citations.append(allocator, .{
+                .existing_task_id = if (existing_t) |et| et.id else 0,
+                .child_plan_title = try allocator.dupe(u8, ms_title),
+                .task_title = try allocator.dupe(u8, wi_title),
+                .source_locator = locator,
+                .source_text = try allocator.dupe(
+                    u8,
+                    if (wi.source_text.len > 0) wi.source_text else wi.title,
+                ),
+            });
 
             if (existing_t) |et| {
                 try used_task_ids.put(et.id, {});
@@ -604,6 +648,7 @@ pub fn compute(
     result.new_questions = try new_questions_out.toOwnedSlice(allocator);
     result.updated_question_status = try status_changes_out.toOwnedSlice(allocator);
     result.scenarios = try scenarios_out.toOwnedSlice(allocator);
+    result.roadmap_citations = try roadmap_citations.toOwnedSlice(allocator);
     result.slug_collisions = try slug_collisions_out.toOwnedSlice(allocator);
 
     return result;
@@ -1122,11 +1167,13 @@ test "compute: roadmap with one milestone → adds plan + tasks" {
         .title = try a.dupe(u8, "Add foo"),
         .touches = &.{},
         .slug = try a.dupe(u8, "add-foo"),
+        .source_text = try a.dupe(u8, "- Add foo [slug: add-foo]"),
     };
     const wi_b = parse.WorkItem{
         .title = try a.dupe(u8, "Add bar"),
         .touches = &.{},
         .slug = try a.dupe(u8, ""),
+        .source_text = try a.dupe(u8, "- Add bar"),
     };
     var wis = try a.alloc(parse.WorkItem, 2);
     wis[0] = wi_a;
@@ -1151,6 +1198,11 @@ test "compute: roadmap with one milestone → adds plan + tasks" {
     try testing.expectEqualStrings("add-foo", diff_result.child_plans[0].tasks[0].slug);
     try testing.expectEqualStrings("Add bar", diff_result.child_plans[0].tasks[1].title);
     try testing.expectEqualStrings("", diff_result.child_plans[0].tasks[1].slug);
+    try testing.expectEqual(@as(usize, 2), diff_result.roadmap_citations.len);
+    try testing.expectEqualStrings("roadmap#milestone:1/item:1", diff_result.roadmap_citations[0].source_locator);
+    try testing.expectEqualStrings("- Add foo [slug: add-foo]", diff_result.roadmap_citations[0].source_text);
+    try testing.expectEqualStrings("roadmap#milestone:1/item:2", diff_result.roadmap_citations[1].source_locator);
+    try testing.expectEqualStrings("- Add bar", diff_result.roadmap_citations[1].source_text);
 }
 
 test "buildTaskBody: matches Go format" {
@@ -1159,6 +1211,7 @@ test "buildTaskBody: matches Go format" {
         .title = "Add foo",
         .touches = &.{ "repo-a", "repo-b" },
         .slug = "",
+        .source_text = "- Add foo",
     };
     const body = try buildTaskBody(a, wi);
     defer a.free(body);
@@ -1182,6 +1235,7 @@ test "buildTaskBody: no touches → no Repository Scope section" {
         .title = "Add bar",
         .touches = &.{},
         .slug = "",
+        .source_text = "- Add bar",
     };
     const body = try buildTaskBody(a, wi);
     defer a.free(body);

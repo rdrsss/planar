@@ -79,6 +79,8 @@ pub const WorkItem = struct {
     title: []const u8,
     touches: []const []const u8,
     slug: []const u8,
+    /// Canonical folded roadmap bullet, including source annotations.
+    source_text: []const u8,
 };
 
 pub fn deinitWorkItem(w: WorkItem, allocator: std.mem.Allocator) void {
@@ -86,6 +88,7 @@ pub fn deinitWorkItem(w: WorkItem, allocator: std.mem.Allocator) void {
     for (w.touches) |s| allocator.free(s);
     allocator.free(w.touches);
     allocator.free(w.slug);
+    allocator.free(w.source_text);
 }
 
 /// One H2 milestone in a roadmap.
@@ -845,6 +848,8 @@ fn isBullet(line: []const u8) bool {
 
 fn parseBullet(allocator: std.mem.Allocator, line: []const u8) std.mem.Allocator.Error!WorkItem {
     var raw = std.mem.trimStart(u8, line, " \t");
+    const source_text = try allocator.dupe(u8, std.mem.trim(u8, raw, " \t"));
+    errdefer allocator.free(source_text);
     if (std.mem.startsWith(u8, raw, "- ")) raw = raw[2..] else if (std.mem.startsWith(u8, raw, "* ")) raw = raw[2..];
 
     var title = std.mem.trim(u8, raw, " \t");
@@ -907,7 +912,12 @@ fn parseBullet(allocator: std.mem.Allocator, line: []const u8) std.mem.Allocator
     const title_final = try allocator.dupe(u8, title);
     if (title_needs_free) allocator.free(title);
     const touches_slice = try touches.toOwnedSlice(allocator);
-    return .{ .title = title_final, .touches = touches_slice, .slug = slug_buf };
+    return .{
+        .title = title_final,
+        .touches = touches_slice,
+        .slug = slug_buf,
+        .source_text = source_text,
+    };
 }
 
 /// sanitizeSlug normalizes a slug annotation value: trim, lowercase ASCII,
@@ -1154,6 +1164,10 @@ test "parseRoadmap: multi-line bullets fold continuation lines and surface trail
         ms[0].work_items[0].title,
     );
     try testing.expectEqualStrings("m1-first", ms[0].work_items[0].slug);
+    try testing.expectEqualStrings(
+        "- First bullet runs across two lines and the slug sits on the second. [slug: m1-first]",
+        ms[0].work_items[0].source_text,
+    );
 
     // Bullet 2: touches on the continuation.
     try testing.expectEqualStrings(
@@ -1163,6 +1177,10 @@ test "parseRoadmap: multi-line bullets fold continuation lines and surface trail
     try testing.expectEqual(@as(usize, 2), ms[0].work_items[1].touches.len);
     try testing.expectEqualStrings("alpha", ms[0].work_items[1].touches[0]);
     try testing.expectEqualStrings("beta", ms[0].work_items[1].touches[1]);
+    try testing.expectEqualStrings(
+        "- Second bullet has the touches on a continuation. [touches: alpha, beta]",
+        ms[0].work_items[1].source_text,
+    );
 
     // Bullet 3: single-line baseline unaffected.
     try testing.expectEqualStrings("Third bullet single-line only", ms[0].work_items[2].title);

@@ -21,6 +21,7 @@ const db = @import("db");
 const diff_mod = @import("diff.zig");
 const parse = @import("parse.zig");
 const scenarios_mod = @import("scenarios.zig");
+const materialize = @import("materialize.zig");
 const entitylink = @import("../entitylink.zig");
 const plan_mod = @import("../planning/plan.zig");
 const task_mod = @import("../planning/task.zig");
@@ -74,6 +75,7 @@ pub const Error =
     scenario_mod.Error ||
     entitylink.Error ||
     scenarios_mod.Error ||
+    materialize.Error ||
     std.mem.Allocator.Error;
 
 // =========================================================================
@@ -238,6 +240,12 @@ fn applyWithinSavepoint(
         }
     }
 
+    // Every ingested task has one explicit citation to the exact roadmap
+    // bullet that created it. Reconcile these links before deriving facts so
+    // artifact facts follow task citations rather than anchor membership.
+    const roadmap_citations = try reconcileRoadmapCitations(d, allocator, diff);
+    defer allocator.free(roadmap_citations);
+
     // ---- decisions ----------------------------------------------------
     for (diff.decisions) |de| {
         switch (de.op) {
@@ -328,6 +336,11 @@ fn applyWithinSavepoint(
         res.questions_answered += 1;
     }
 
+    // Replace the complete provenance-bearing fact set inside the same
+    // savepoint as entity reconciliation. A failure therefore leaves the
+    // previous authoritative set intact and exposes no partial rows.
+    try materialize.reconcile(d, allocator, diff.anchor_plan_id, roadmap_citations);
+
     // ---- flip anchor draft → active -----------------------------------
     if (std.mem.eql(u8, diff.current_status, "draft")) {
         const active: plan_mod.Status = .active;
@@ -356,6 +369,107 @@ const ResolvedRef = struct {
 fn freeRefs(allocator: std.mem.Allocator, refs: []const ResolvedRef) void {
     for (refs) |r| allocator.free(r.kind);
     allocator.free(refs);
+}
+
+fn reconcileRoadmapCitations(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    diff: diff_mod.Diff,
+) Error![]const materialize.RoadmapCitation {
+    var artifact_stmt = d.prepare(
+        \\select a.id
+        \\from artifacts a
+        \\join entity_links el on el.from_kind = 'artifact' and el.from_id = a.id
+        \\  and el.to_kind = 'plan' and el.to_id = ?
+        \\  and el.relationship = 'derives-from'
+        \\where a.kind = 'roadmap'
+        \\order by a.id limit 1
+    ) catch return Error.QueryFailed;
+    defer artifact_stmt.finalize();
+    artifact_stmt.bind(&.{.{ .int = diff.anchor_plan_id }}) catch return Error.QueryFailed;
+    switch (artifact_stmt.step() catch return Error.QueryFailed) {
+        .done => return try allocator.alloc(materialize.RoadmapCitation, 0),
+        .row => {},
+    }
+    const artifact_id = artifact_stmt.columnInt(0);
+
+    d.exec(
+        \\create temp table if not exists spec_ingest_roadmap_citations (
+        \\  task_id integer primary key
+        \\)
+    ) catch return Error.QueryFailed;
+    d.exec("delete from temp.spec_ingest_roadmap_citations") catch return Error.QueryFailed;
+
+    var citations = try allocator.alloc(materialize.RoadmapCitation, diff.roadmap_citations.len);
+    errdefer allocator.free(citations);
+    for (diff.roadmap_citations, 0..) |citation, i| {
+        const task_id = if (citation.existing_task_id > 0)
+            citation.existing_task_id
+        else
+            try resolveTaskFromRoadmapMapping(
+                d,
+                diff.anchor_plan_id,
+                citation.child_plan_title,
+                citation.task_title,
+            );
+        citations[i] = .{
+            .task_id = task_id,
+            .artifact_id = artifact_id,
+            .source_locator = citation.source_locator,
+            .source_text = citation.source_text,
+        };
+        _ = d.execParams(
+            "insert into temp.spec_ingest_roadmap_citations (task_id) values (?)",
+            &.{.{ .int = task_id }},
+        ) catch return Error.QueryFailed;
+        ensureLink(d, allocator, .task, task_id, .artifact, artifact_id, .cites) catch |e| return e;
+    }
+
+    _ = d.execParams(
+        \\delete from entity_links
+        \\where from_kind = 'task' and to_kind = 'artifact' and to_id = ?
+        \\  and relationship = 'cites'
+        \\  and from_id in (
+        \\    select task_id from routing_task_facts
+        \\    where fact_kind = 'cited_artifact_section'
+        \\      and source_entity_kind = 'artifact' and source_entity_id = ?
+        \\      and (
+        \\        source_locator like 'roadmap#milestone:%'
+        \\        or source_locator like 'roadmap#task:%'
+        \\      )
+        \\  )
+        \\  and from_id not in (
+        \\    select task_id from temp.spec_ingest_roadmap_citations
+        \\  )
+    , &.{ .{ .int = artifact_id }, .{ .int = artifact_id } }) catch return Error.QueryFailed;
+    return citations;
+}
+
+fn resolveTaskFromRoadmapMapping(
+    d: *db.sqlite.Db,
+    anchor_plan_id: i64,
+    child_plan_title: []const u8,
+    task_title: []const u8,
+) Error!i64 {
+    var stmt = d.prepare(
+        \\select t.id
+        \\from tasks t join plans p on p.id = t.plan_id
+        \\where p.parent_plan_id = ?
+        \\  and lower(trim(p.title)) = lower(trim(?))
+        \\  and lower(trim(t.title)) = lower(trim(?))
+        \\  and t.status != 'cancelled'
+        \\order by t.id limit 1
+    ) catch return Error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(&.{
+        .{ .int = anchor_plan_id },
+        .{ .text = child_plan_title },
+        .{ .text = task_title },
+    }) catch return Error.QueryFailed;
+    return switch (stmt.step() catch return Error.QueryFailed) {
+        .done => Error.NotFound,
+        .row => stmt.columnInt(0),
+    };
 }
 
 /// resolveSlugRefs maps every `task:<slug>` ref to a numeric task id by
@@ -661,6 +775,86 @@ fn readPlanStatus(d: *db.sqlite.Db, allocator: std.mem.Allocator, plan_id: i64) 
     return try stmt.columnTextAlloc(0, allocator);
 }
 
+test "apply: preserves an explicit manual roadmap section citation and its fact" {
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    try d.exec(
+        \\insert into plans (
+        \\  scope_kind, title, slug, status
+        \\) values ('global', 'Anchor', 'manual-roadmap-anchor', 'active');
+        \\insert into plans (
+        \\  scope_kind, title, slug, status, parent_plan_id
+        \\) values ('global', 'Child', 'manual-roadmap-child', 'active', 1);
+        \\insert into artifacts (
+        \\  scope_kind, kind, title, body
+        \\) values (
+        \\  'global', 'roadmap', 'Roadmap',
+        \\  '## Manual Evidence
+        \\
+        \\MANUAL_ROADMAP_SENTINEL'
+        \\);
+        \\insert into entity_links (
+        \\  from_kind, from_id, to_kind, to_id, relationship
+        \\) values ('artifact', 1, 'plan', 1, 'derives-from');
+        \\insert into tasks (
+        \\  scope_kind, plan_id, title, body, next_action
+        \\) values (
+        \\  'global', 2, 'Manual roadmap citation',
+        \\  '## Acceptance Criteria
+        \\
+        \\- Preserve explicit manual roadmap evidence.
+        \\
+        \\## Spec Citations
+        \\
+        \\- artifact:1#Manual Evidence',
+        \\  'Preserve the explicit manual roadmap citation.'
+        \\);
+        \\insert into entity_links (
+        \\  from_kind, from_id, to_kind, to_id, relationship
+        \\) values ('task', 1, 'artifact', 1, 'cites')
+    );
+
+    const ingest_diff = diff_mod.Diff{
+        .anchor_plan_id = 1,
+        .anchor_slug = try a.dupe(u8, "manual-roadmap-anchor"),
+        .assoc_slug = try a.dupe(u8, ""),
+        .current_status = try a.dupe(u8, "active"),
+    };
+    defer diff_mod.deinitDiff(ingest_diff, a);
+
+    _ = try apply(&d, a, ingest_diff, .{ .apply = true });
+    try testing.expectEqual(@as(i64, 1), try d.intQuery(
+        \\select count(*) from entity_links
+        \\where from_kind = 'task' and from_id = 1
+        \\  and to_kind = 'artifact' and to_id = 1 and relationship = 'cites'
+    ));
+    try testing.expectEqual(@as(i64, 1), try d.intQuery(
+        \\select count(*) from routing_task_facts
+        \\where task_id = 1 and fact_kind = 'cited_artifact_section'
+        \\  and value_text = 'MANUAL_ROADMAP_SENTINEL'
+        \\  and source_entity_kind = 'artifact' and source_entity_id = 1
+        \\  and source_locator = 'artifact:1#Manual Evidence'
+        \\  and length(source_digest) = 64
+        \\  and materializer_version = 'spec-ingest-v1'
+    ));
+    const initial_fact_id = try d.intQuery(
+        \\select id from routing_task_facts
+        \\where task_id = 1 and fact_kind = 'cited_artifact_section'
+    );
+
+    _ = try apply(&d, a, ingest_diff, .{ .apply = true });
+    try testing.expectEqual(@as(i64, 1), try d.intQuery(
+        \\select count(*) from routing_task_facts
+        \\where task_id = 1 and fact_kind = 'cited_artifact_section'
+    ));
+    try testing.expectEqual(initial_fact_id, try d.intQuery(
+        \\select id from routing_task_facts
+        \\where task_id = 1 and fact_kind = 'cited_artifact_section'
+    ));
+}
+
 test "apply: creates child plan + task and flips anchor draft → active" {
     const a = testing.allocator;
     var d = try setupTestDb(a);
@@ -671,14 +865,37 @@ test "apply: creates child plan + task and flips anchor draft → active" {
         &.{},
     );
     const anchor_id = try d.intQuery("select id from plans where slug = 'anch2'");
+    try d.exec(
+        \\insert into artifacts (scope_kind, kind, title, body)
+        \\values (
+        \\  'global', 'roadmap', 'Mutable display label',
+        \\  '## M1
+        \\
+        \\- ROADMAP_SENTINEL [slug: imp-foo]
+        \\- SLUGLESS_SENTINEL wraps
+        \\  onto a continuation line'
+        \\);
+        \\insert into entity_links (
+        \\  from_kind, from_id, to_kind, to_id, relationship
+        \\) values ('artifact', 1, 'plan', 1, 'derives-from')
+    );
 
-    var tasks = try a.alloc(diff_mod.TaskEntry, 1);
+    var tasks = try a.alloc(diff_mod.TaskEntry, 2);
     tasks[0] = .{
         .op = .add,
         .title = try a.dupe(u8, "Implement foo"),
         .body = try a.dupe(u8, "## Acceptance Criteria\n\n- foo\n"),
         .touches = &.{},
         .slug = try a.dupe(u8, "imp-foo"),
+        .existing_id = 0,
+        .child_plan_title = try a.dupe(u8, "M1"),
+    };
+    tasks[1] = .{
+        .op = .add,
+        .title = try a.dupe(u8, "Implement slugless"),
+        .body = try a.dupe(u8, "## Acceptance Criteria\n\n- slugless sentinel\n"),
+        .touches = &.{},
+        .slug = try a.dupe(u8, ""),
         .existing_id = 0,
         .child_plan_title = try a.dupe(u8, "M1"),
     };
@@ -689,18 +906,66 @@ test "apply: creates child plan + task and flips anchor draft → active" {
         .existing_id = 0,
         .tasks = tasks,
     };
+    var decisions = try a.alloc(diff_mod.DecisionEntry, 1);
+    decisions[0] = .{
+        .op = .add,
+        .title = try a.dupe(u8, "Decision display label"),
+        .body = try a.dupe(u8, "DECISION_SENTINEL atomic transaction"),
+    };
+    var questions = try a.alloc(parse.Question, 1);
+    questions[0] = .{
+        .title = try a.dupe(u8, "Question display label"),
+        .body = try a.dupe(u8, "QUESTION_SENTINEL"),
+        .resolution = try a.dupe(u8, ""),
+    };
+    var verifies = try a.alloc(parse.TaskRef, 1);
+    verifies[0] = .{
+        .kind = try a.dupe(u8, "task"),
+        .id = 0,
+        .slug = try a.dupe(u8, "imp-foo"),
+    };
+    var scenarios = try a.alloc(diff_mod.ScenarioEntry, 1);
+    scenarios[0] = .{
+        .op = .add,
+        .title = try a.dupe(u8, "Scenario display label"),
+        .body = try a.dupe(u8, "**Acceptance:** SCENARIO_SENTINEL exits zero"),
+        .kind = try a.dupe(u8, "integration"),
+        .acceptance = try a.dupe(u8, "SCENARIO_SENTINEL exits zero"),
+        .verifies = verifies,
+    };
+    var roadmap_citations = try a.alloc(diff_mod.RoadmapCitation, 2);
+    roadmap_citations[0] = .{
+        .child_plan_title = try a.dupe(u8, "M1"),
+        .task_title = try a.dupe(u8, "Implement foo"),
+        .source_locator = try a.dupe(u8, "roadmap#milestone:1/item:1"),
+        .source_text = try a.dupe(u8, "- ROADMAP_SENTINEL [slug: imp-foo]"),
+    };
+    roadmap_citations[1] = .{
+        .child_plan_title = try a.dupe(u8, "M1"),
+        .task_title = try a.dupe(u8, "Implement slugless"),
+        .source_locator = try a.dupe(u8, "roadmap#milestone:1/item:2"),
+        .source_text = try a.dupe(u8, "- SLUGLESS_SENTINEL wraps onto a continuation line"),
+    };
     const diff = diff_mod.Diff{
         .anchor_plan_id = anchor_id,
         .anchor_slug = try a.dupe(u8, "anch2"),
         .assoc_slug = try a.dupe(u8, ""),
         .current_status = try a.dupe(u8, "draft"),
         .child_plans = plans,
+        .decisions = decisions,
+        .new_questions = questions,
+        .scenarios = scenarios,
+        .roadmap_citations = roadmap_citations,
     };
     defer diff_mod.deinitDiff(diff, a);
 
+    const preview = try apply(&d, a, diff, .{ .apply = false });
+    try testing.expectEqual(@as(usize, 0), preview.tasks_created);
+    try testing.expectEqual(@as(i64, 0), try d.intQuery("select count(*) from routing_task_facts"));
+
     const res = try apply(&d, a, diff, .{ .apply = true });
     try testing.expectEqual(@as(usize, 1), res.plans_created);
-    try testing.expectEqual(@as(usize, 1), res.tasks_created);
+    try testing.expectEqual(@as(usize, 2), res.tasks_created);
     try testing.expect(res.anchor_activated);
 
     // Anchor is now active.
@@ -723,6 +988,378 @@ test "apply: creates child plan + task and flips anchor draft → active" {
     try stmt.bind(&.{.{ .int = anchor_id }});
     _ = try stmt.step();
     try testing.expect(stmt.columnInt(0) >= 2);
+
+    try testing.expectEqual(@as(i64, 1), try d.intQuery(
+        \\select count(*) from entity_links
+        \\where from_kind = 'task' and from_id = 1
+        \\  and to_kind = 'artifact' and to_id = 1 and relationship = 'cites'
+    ));
+    try testing.expectEqual(@as(i64, 1), try d.intQuery(
+        \\select count(*) from routing_task_facts
+        \\where task_id = 2 and fact_kind = 'cited_artifact_section'
+        \\  and value_text = '- SLUGLESS_SENTINEL wraps onto a continuation line'
+        \\  and source_locator = 'roadmap#milestone:1/item:2'
+    ));
+    try testing.expectEqual(@as(i64, 1), try d.intQuery(
+        \\select count(*) from routing_task_facts
+        \\where fact_kind = 'cited_artifact_section'
+        \\  and value_text = '- ROADMAP_SENTINEL [slug: imp-foo]'
+        \\  and source_entity_kind = 'artifact' and source_entity_id = 1
+        \\  and source_locator = 'roadmap#milestone:1/item:1'
+    ));
+    try testing.expectEqual(@as(i64, 1), try d.intQuery(
+        \\select count(*) from routing_task_facts
+        \\where fact_kind = 'validation_gate'
+        \\  and value_text = 'SCENARIO_SENTINEL exits zero'
+    ));
+    try testing.expectEqual(@as(i64, 2), try d.intQuery(
+        "select count(*) from routing_task_facts where fact_kind = 'unresolved_question'",
+    ));
+    const scenario_digest = try materialize.sourceDigestAlloc(
+        a,
+        "test_scenario",
+        1,
+        "body#acceptance",
+        "SCENARIO_SENTINEL exits zero",
+    );
+    defer a.free(scenario_digest);
+    try expectFactDigest(&d, "validation_gate", scenario_digest);
+    const question_digest = try materialize.sourceDigestAlloc(
+        a,
+        "question",
+        1,
+        "status",
+        "QUESTION_SENTINEL",
+    );
+    defer a.free(question_digest);
+    try expectFactDigest(&d, "unresolved_question", question_digest);
+    // Ingest creates proposed decisions. They are not locked facts.
+    try testing.expectEqual(@as(i64, 0), try d.intQuery(
+        "select count(*) from routing_task_facts where fact_kind = 'locked_decision'",
+    ));
+
+    const bullet = "- ROADMAP_SENTINEL [slug: imp-foo]";
+    const expected_digest = try materialize.sourceDigestAlloc(a, "artifact", 1, "roadmap#milestone:1/item:1", bullet);
+    defer a.free(expected_digest);
+    const initial_digest = try readFactDigest(&d, a, "cited_artifact_section");
+    defer a.free(initial_digest);
+    try testing.expectEqualStrings(expected_digest, initial_digest);
+    const initial_fact_id = try d.intQuery(
+        "select id from routing_task_facts where fact_kind = 'cited_artifact_section'",
+    );
+
+    var replay_citations = try a.alloc(diff_mod.RoadmapCitation, 2);
+    replay_citations[0] = .{
+        .existing_task_id = 1,
+        .child_plan_title = try a.dupe(u8, "M1"),
+        .task_title = try a.dupe(u8, "Implement foo"),
+        .source_locator = try a.dupe(u8, "roadmap#milestone:1/item:1"),
+        .source_text = try a.dupe(u8, "- ROADMAP_SENTINEL [slug: imp-foo]"),
+    };
+    replay_citations[1] = .{
+        .existing_task_id = 2,
+        .child_plan_title = try a.dupe(u8, "M1"),
+        .task_title = try a.dupe(u8, "Implement slugless"),
+        .source_locator = try a.dupe(u8, "roadmap#milestone:1/item:2"),
+        .source_text = try a.dupe(u8, "- SLUGLESS_SENTINEL wraps onto a continuation line"),
+    };
+    const replay_diff = diff_mod.Diff{
+        .anchor_plan_id = anchor_id,
+        .anchor_slug = try a.dupe(u8, "anch2"),
+        .assoc_slug = try a.dupe(u8, ""),
+        .current_status = try a.dupe(u8, "active"),
+        .roadmap_citations = replay_citations,
+    };
+    defer diff_mod.deinitDiff(replay_diff, a);
+    // Persisted slug drift does not affect the parsed work-item mapping.
+    try d.exec("update tasks set slug = 'stale-slug' where id = 1");
+    _ = try apply(&d, a, replay_diff, .{ .apply = true });
+    try testing.expectEqual(initial_fact_id, try d.intQuery(
+        "select id from routing_task_facts where fact_kind = 'cited_artifact_section'",
+    ));
+
+    // A manually authored roadmap citation with no prior ingestor-owned fact
+    // is outside the reconciliation ownership boundary and remains intact.
+    try d.exec(
+        \\insert into tasks (
+        \\  scope_kind, plan_id, title, body, next_action
+        \\) values (
+        \\  'global', 2, 'Manual citation task', 'manual', 'manual'
+        \\);
+        \\insert into entity_links (
+        \\  from_kind, from_id, to_kind, to_id, relationship
+        \\) values ('task', 3, 'artifact', 1, 'cites')
+    );
+    _ = try apply(&d, a, replay_diff, .{ .apply = true });
+    try testing.expectEqual(@as(i64, 1), try d.intQuery(
+        \\select count(*) from entity_links
+        \\where from_kind = 'task' and from_id = 3
+        \\  and to_kind = 'artifact' and to_id = 1 and relationship = 'cites'
+    ));
+    const fact_id_after_manual_citation = try d.intQuery(
+        \\select id from routing_task_facts
+        \\where task_id = 1 and fact_kind = 'cited_artifact_section'
+    );
+
+    // Display labels and timestamps are excluded from canonical lineage.
+    try d.exec(
+        \\update artifacts set title = 'Another display label',
+        \\  updated_at = '2099-01-01T00:00:00Z' where id = 1
+    );
+    _ = try apply(&d, a, replay_diff, .{ .apply = true });
+    try testing.expectEqual(fact_id_after_manual_citation, try d.intQuery(
+        \\select id from routing_task_facts
+        \\where task_id = 1 and fact_kind = 'cited_artifact_section'
+    ));
+
+    // A semantic source change changes the exact canonical digest.
+    try d.exec(
+        \\update artifacts set body = '## M1
+        \\
+        \\- ROADMAP_SENTINEL_CHANGED [slug: changed-source-slug]
+        \\- SLUGLESS_SENTINEL wraps
+        \\  onto a continuation line' where id = 1
+    );
+    // The parsed mapping, rather than persisted task slugs, carries the exact
+    // current roadmap source into reconciliation.
+    a.free(replay_citations[0].source_text);
+    replay_citations[0].source_text =
+        try a.dupe(u8, "- ROADMAP_SENTINEL_CHANGED [slug: changed-source-slug]");
+    _ = try apply(&d, a, replay_diff, .{ .apply = true });
+    const changed_digest = try readFactDigest(&d, a, "cited_artifact_section");
+    defer a.free(changed_digest);
+    try testing.expect(!std.mem.eql(u8, initial_digest, changed_digest));
+
+    // Accepted decisions are materialized; proposed decisions above were not.
+    try d.exec("update decisions set status = 'accepted' where id = 1");
+    _ = try apply(&d, a, replay_diff, .{ .apply = true });
+    try testing.expectEqual(@as(i64, 3), try d.intQuery(
+        \\select count(*) from routing_task_facts
+        \\where fact_kind = 'locked_decision'
+        \\  and value_text = 'DECISION_SENTINEL atomic transaction'
+    ));
+    const decision_digest = try materialize.sourceDigestAlloc(
+        a,
+        "decision",
+        1,
+        "body",
+        "DECISION_SENTINEL atomic transaction",
+    );
+    defer a.free(decision_digest);
+    try expectFactDigest(&d, "locked_decision", decision_digest);
+    try testing.expectEqual(@as(i64, 0), try d.intQuery(
+        \\select count(*) from routing_task_facts
+        \\where fact_kind like '%model%' or fact_kind like '%provider%'
+        \\   or fact_kind like '%tier%' or fact_kind like '%recommend%'
+    ));
+
+    // Link insertion order does not affect the stable fact set.
+    try d.exec(
+        \\insert into entity_links (
+        \\  from_kind, from_id, to_kind, to_id, relationship
+        \\) values ('task', 1, 'task', 99, 'blocks');
+        \\insert into entity_links (
+        \\  from_kind, from_id, to_kind, to_id, relationship
+        \\) values ('task', 1, 'task', 98, 'blocks')
+    );
+    _ = try apply(&d, a, replay_diff, .{ .apply = true });
+    try testing.expectEqual(@as(i64, 2), try d.intQuery(
+        "select value_integer from routing_task_facts where fact_kind = 'dependency_fanout'",
+    ));
+    const ordered_links = try readOrderedLinkFacts(&d, a);
+    defer a.free(ordered_links);
+    const max_fact_id = try d.intQuery("select max(id) from routing_task_facts");
+    try d.exec(
+        \\delete from entity_links where from_kind = 'task' and from_id = 1
+        \\  and to_kind = 'task' and relationship = 'blocks';
+        \\insert into entity_links (
+        \\  from_kind, from_id, to_kind, to_id, relationship
+        \\) values ('task', 1, 'task', 98, 'blocks');
+        \\insert into entity_links (
+        \\  from_kind, from_id, to_kind, to_id, relationship
+        \\) values ('task', 1, 'task', 99, 'blocks')
+    );
+    _ = try apply(&d, a, replay_diff, .{ .apply = true });
+    const reordered_links = try readOrderedLinkFacts(&d, a);
+    defer a.free(reordered_links);
+    try testing.expectEqualStrings(ordered_links, reordered_links);
+    try testing.expectEqual(max_fact_id, try d.intQuery("select max(id) from routing_task_facts"));
+
+    // Non-roadmap citations carry an explicit artifact+section locator in the
+    // task body and digest only that named section.
+    try d.exec(
+        \\insert into artifacts (scope_kind, kind, title, body)
+        \\values (
+        \\  'global', 'tech_spec', 'Tech display label',
+        \\  '## Transaction
+        \\
+        \\TECH_SENTINEL
+        \\
+        \\## Uncited
+        \\
+        \\IGNORED'
+        \\);
+        \\insert into entity_links (
+        \\  from_kind, from_id, to_kind, to_id, relationship
+        \\) values ('task', 1, 'artifact', 2, 'cites');
+        \\update tasks set body = body || '
+        \\
+        \\## Spec Citations
+        \\
+        \\- artifact:2#Transaction' where id = 1
+    );
+    _ = try apply(&d, a, replay_diff, .{ .apply = true });
+    try testing.expectEqual(@as(i64, 1), try d.intQuery(
+        \\select count(*) from routing_task_facts
+        \\where fact_kind = 'cited_artifact_section'
+        \\  and source_entity_id = 2
+        \\  and source_locator = 'artifact:2#Transaction'
+        \\  and value_text = 'TECH_SENTINEL'
+    ));
+    const tech_digest = try materialize.sourceDigestAlloc(
+        a,
+        "artifact",
+        2,
+        "artifact:2#Transaction",
+        "TECH_SENTINEL",
+    );
+    defer a.free(tech_digest);
+    var tech_digest_stmt = try d.prepare(
+        \\select source_digest from routing_task_facts
+        \\where fact_kind = 'cited_artifact_section' and source_entity_id = 2
+    );
+    defer tech_digest_stmt.finalize();
+    _ = try tech_digest_stmt.step();
+    const actual_tech_digest = try tech_digest_stmt.columnTextAlloc(0, a);
+    defer a.free(actual_tech_digest);
+    try testing.expectEqualStrings(tech_digest, actual_tech_digest);
+
+    // An explicit citation without an identifiable section is a real
+    // derivation failure. The ingest savepoint rolls back graph and fact writes.
+    try d.exec(
+        \\insert into artifacts (scope_kind, kind, title, body)
+        \\values ('global', 'tech_spec', 'Bad citation', 'no section locator');
+        \\insert into entity_links (
+        \\  from_kind, from_id, to_kind, to_id, relationship
+        \\) values ('task', 1, 'artifact', 3, 'cites')
+    );
+    var bad_tasks = try a.alloc(diff_mod.TaskEntry, 1);
+    bad_tasks[0] = .{
+        .op = .update,
+        .title = try a.dupe(u8, "Implement foo"),
+        .body = try a.dupe(
+            u8,
+            "## Acceptance Criteria\n\n- changed in failed apply\n\n## Spec Citations\n\n- artifact:2#Transaction\n",
+        ),
+        .touches = &.{},
+        .slug = try a.dupe(u8, "stale-slug"),
+        .existing_id = 1,
+        .child_plan_title = try a.dupe(u8, "M1"),
+    };
+    var bad_plans = try a.alloc(diff_mod.PlanEntry, 1);
+    bad_plans[0] = .{
+        .op = .update,
+        .title = try a.dupe(u8, "M1"),
+        .existing_id = 2,
+        .tasks = bad_tasks,
+    };
+    var bad_citations = try a.alloc(diff_mod.RoadmapCitation, 2);
+    bad_citations[0] = .{
+        .existing_task_id = 1,
+        .child_plan_title = try a.dupe(u8, "M1"),
+        .task_title = try a.dupe(u8, "Implement foo"),
+        .source_locator = try a.dupe(u8, "roadmap#milestone:1/item:1"),
+        .source_text = try a.dupe(u8, "- ROADMAP_SENTINEL_CHANGED [slug: changed-source-slug]"),
+    };
+    bad_citations[1] = .{
+        .existing_task_id = 2,
+        .child_plan_title = try a.dupe(u8, "M1"),
+        .task_title = try a.dupe(u8, "Implement slugless"),
+        .source_locator = try a.dupe(u8, "roadmap#milestone:1/item:2"),
+        .source_text = try a.dupe(u8, "- SLUGLESS_SENTINEL wraps onto a continuation line"),
+    };
+    const bad_diff = diff_mod.Diff{
+        .anchor_plan_id = anchor_id,
+        .anchor_slug = try a.dupe(u8, "anch2"),
+        .assoc_slug = try a.dupe(u8, ""),
+        .current_status = try a.dupe(u8, "active"),
+        .child_plans = bad_plans,
+        .roadmap_citations = bad_citations,
+    };
+    defer diff_mod.deinitDiff(bad_diff, a);
+    const facts_before_failure = try d.intQuery("select count(*) from routing_task_facts");
+    const fact_set_before_failure = try readAllFacts(&d, a);
+    defer a.free(fact_set_before_failure);
+    try testing.expectError(materialize.Error.InvalidCitation, apply(&d, a, bad_diff, .{ .apply = true }));
+    try testing.expectEqual(@as(i64, 0), try d.intQuery(
+        \\select count(*) from tasks
+        \\where id = 1 and body like '%changed in failed apply%'
+    ));
+    try testing.expectEqual(facts_before_failure, try d.intQuery("select count(*) from routing_task_facts"));
+    const fact_set_after_failure = try readAllFacts(&d, a);
+    defer a.free(fact_set_after_failure);
+    try testing.expectEqualStrings(fact_set_before_failure, fact_set_after_failure);
+}
+
+fn readFactDigest(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    fact_kind: []const u8,
+) ![]const u8 {
+    var stmt = try d.prepare(
+        "select source_digest from routing_task_facts where fact_kind = ? order by id limit 1",
+    );
+    defer stmt.finalize();
+    try stmt.bind(&.{.{ .text = fact_kind }});
+    _ = try stmt.step();
+    return try stmt.columnTextAlloc(0, allocator);
+}
+
+fn readOrderedLinkFacts(d: *db.sqlite.Db, allocator: std.mem.Allocator) ![]const u8 {
+    var stmt = try d.prepare(
+        \\select group_concat(row_text, '|') from (
+        \\  select fact_kind || ':' || source_entity_kind || ':' ||
+        \\         source_entity_id || ':' || source_locator || ':' ||
+        \\         source_digest as row_text
+        \\  from routing_task_facts
+        \\  where fact_kind in ('blocks', 'blocked_by', 'dependency_fanout')
+        \\  order by source_entity_kind, source_entity_id, source_locator, fact_kind
+        \\)
+    );
+    defer stmt.finalize();
+    _ = try stmt.step();
+    return try stmt.columnTextAlloc(0, allocator);
+}
+
+fn readAllFacts(d: *db.sqlite.Db, allocator: std.mem.Allocator) ![]const u8 {
+    var stmt = try d.prepare(
+        \\select group_concat(row_text, '|') from (
+        \\  select task_id || ':' || fact_kind || ':' || value_type || ':' ||
+        \\         coalesce(value_bool, '') || ':' || coalesce(value_integer, '') || ':' ||
+        \\         coalesce(value_text, '') || ':' || source_entity_kind || ':' ||
+        \\         source_entity_id || ':' || source_locator || ':' || source_digest || ':' ||
+        \\         materializer_version as row_text
+        \\  from routing_task_facts
+        \\  order by task_id, source_entity_kind, source_entity_id, source_locator,
+        \\           fact_kind, value_type, coalesce(value_text, ''),
+        \\           coalesce(value_integer, value_bool)
+        \\)
+    );
+    defer stmt.finalize();
+    _ = try stmt.step();
+    return try stmt.columnTextAlloc(0, allocator);
+}
+
+fn expectFactDigest(d: *db.sqlite.Db, fact_kind: []const u8, expected: []const u8) !void {
+    var stmt = try d.prepare(
+        "select source_digest from routing_task_facts where fact_kind = ? order by id limit 1",
+    );
+    defer stmt.finalize();
+    try stmt.bind(&.{.{ .text = fact_kind }});
+    _ = try stmt.step();
+    const actual = try stmt.columnTextAlloc(0, testing.allocator);
+    defer testing.allocator.free(actual);
+    try testing.expectEqualStrings(expected, actual);
 }
 
 test "apply: --apply-removals without --apply is rejected" {
