@@ -21,6 +21,7 @@ const db = @import("db");
 const diff_mod = @import("diff.zig");
 const parse = @import("parse.zig");
 const scenarios_mod = @import("scenarios.zig");
+const materialize = @import("materialize.zig");
 const entitylink = @import("../entitylink.zig");
 const plan_mod = @import("../planning/plan.zig");
 const task_mod = @import("../planning/task.zig");
@@ -74,6 +75,7 @@ pub const Error =
     scenario_mod.Error ||
     entitylink.Error ||
     scenarios_mod.Error ||
+    materialize.Error ||
     std.mem.Allocator.Error;
 
 // =========================================================================
@@ -327,6 +329,11 @@ fn applyWithinSavepoint(
         defer question_mod.deinit(answered, allocator);
         res.questions_answered += 1;
     }
+
+    // Replace the complete provenance-bearing fact set inside the same
+    // savepoint as entity reconciliation. A failure therefore leaves the
+    // previous authoritative set intact and exposes no partial rows.
+    try materialize.reconcile(d, allocator, diff.anchor_plan_id);
 
     // ---- flip anchor draft → active -----------------------------------
     if (std.mem.eql(u8, diff.current_status, "draft")) {

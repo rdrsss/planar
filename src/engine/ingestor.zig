@@ -20,6 +20,7 @@ pub const coverage = @import("ingestor/coverage.zig");
 pub const apply = @import("ingestor/apply.zig");
 pub const render = @import("ingestor/render.zig");
 pub const scenarios = @import("ingestor/scenarios.zig");
+pub const materialize = @import("ingestor/materialize.zig");
 
 test {
     _ = parse;
@@ -28,4 +29,5 @@ test {
     _ = apply;
     _ = render;
     _ = scenarios;
+    _ = materialize;
 }
