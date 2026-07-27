@@ -321,6 +321,40 @@ pub fn listCandidates(
     return out.toOwnedSlice(allocator);
 }
 
+/// Read one candidate with the latest observation made by the requested host.
+/// Host identity is mandatory at eligibility time; observations from other
+/// hosts are never substituted even when they carry a larger version number.
+pub fn getCandidateForHost(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    id: i64,
+    host_id: []const u8,
+) RegistryError!RegistryCandidate {
+    if (!validOpaqueValue(host_id)) return error.InvalidValue;
+    var stmt = d.prepare(
+        \\select id, vendor, candidate_id, enabled, fallback_order,
+        \\       registration_version, compatibility_source
+        \\from routing_candidates where id = ?
+    ) catch return error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .int = id }}) catch return error.QueryFailed;
+    if ((stmt.step() catch return error.QueryFailed) == .done) return error.NotFound;
+    const candidate: RegistryCandidate = .{
+        .registration = .{
+            .id = stmt.columnInt(0),
+            .vendor = stmt.columnTextAlloc(1, allocator) catch return error.OutOfMemory,
+            .candidate_id = stmt.columnTextAlloc(2, allocator) catch return error.OutOfMemory,
+            .enabled = stmt.columnInt(3) != 0,
+            .fallback_order = stmt.columnInt(4),
+            .registration_version = stmt.columnInt(5),
+            .compatibility_source = stmt.columnTextAlloc(6, allocator) catch return error.OutOfMemory,
+        },
+        .bindings = try readBindings(d, allocator, id),
+        .latest_observation = try readLatestObservationForHost(d, allocator, id, host_id),
+    };
+    return candidate;
+}
+
 fn readBindings(d: *db.sqlite.Db, allocator: std.mem.Allocator, id: i64) RegistryError![]CandidateBinding {
     var out: std.ArrayList(CandidateBinding) = .empty;
     errdefer {
@@ -361,6 +395,51 @@ fn readLatestObservation(
     ) catch return error.QueryFailed;
     defer stmt.finalize();
     stmt.bind(&.{.{ .int = id }}) catch return error.QueryFailed;
+    return switch (stmt.step() catch return error.QueryFailed) {
+        .done => null,
+        .row => blk: {
+            const availability = stmt.columnTextAlloc(3, allocator) catch return error.OutOfMemory;
+            defer allocator.free(availability);
+            const verification = stmt.columnTextAlloc(4, allocator) catch return error.OutOfMemory;
+            defer allocator.free(verification);
+            break :blk .{
+                .id = stmt.columnInt(0),
+                .candidate_id = id,
+                .host_id = stmt.columnTextAlloc(1, allocator) catch return error.OutOfMemory,
+                .observation_version = stmt.columnInt(2),
+                .availability = parseAvailability(availability) orelse return error.QueryFailed,
+                .spawn_verification = parseSpawnVerification(verification) orelse return error.QueryFailed,
+                .evidence_ref = stmt.columnTextAlloc(5, allocator) catch return error.OutOfMemory,
+                .captured_at = stmt.columnTextAlloc(6, allocator) catch return error.OutOfMemory,
+                .expires_at = stmt.columnTextAlloc(7, allocator) catch return error.OutOfMemory,
+            };
+        },
+    };
+}
+
+fn readLatestObservationForHost(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    id: i64,
+    host_id: []const u8,
+) RegistryError!?HostObservation {
+    var stmt = d.prepare(
+        \\select id, host_id, observation_version, availability,
+        \\       spawn_verification, evidence_ref, captured_at, expires_at
+        \\from routing_host_observations
+        \\where candidate_id = ? and host_id = ?
+        \\order by observation_version desc, id desc limit 1
+    ) catch return error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(&.{ .{ .int = id }, .{ .text = host_id } }) catch return error.QueryFailed;
+    return readObservationRow(&stmt, allocator, id);
+}
+
+fn readObservationRow(
+    stmt: anytype,
+    allocator: std.mem.Allocator,
+    id: i64,
+) RegistryError!?HostObservation {
     return switch (stmt.step() catch return error.QueryFailed) {
         .done => null,
         .row => blk: {
@@ -667,12 +746,22 @@ test "registry CRUD exposes bindings and latest versioned host observation" {
     _ = try observeCandidate(&conn, .{
         .candidate_id = id,
         .host_id = "host-a",
-        .observation_version = 2,
+        .observation_version = 100,
         .availability = .unavailable,
         .spawn_verification = .failed,
         .evidence_ref = "probe:2",
         .captured_at = "2026-01-02T00:00:00Z",
         .expires_at = "2026-01-03T00:00:00Z",
+    });
+    _ = try observeCandidate(&conn, .{
+        .candidate_id = id,
+        .host_id = "host-b",
+        .observation_version = 1,
+        .availability = .available,
+        .spawn_verification = .verified,
+        .evidence_ref = "host-b:1",
+        .captured_at = "2026-01-02T00:00:00Z",
+        .expires_at = "2027-01-03T00:00:00Z",
     });
     try updateCandidate(&conn, id, false, 3);
 
@@ -686,8 +775,14 @@ test "registry CRUD exposes bindings and latest versioned host observation" {
     try std.testing.expect(!rows[0].registration.enabled);
     try std.testing.expectEqual(@as(i64, 3), rows[0].registration.fallback_order);
     try std.testing.expectEqual(@as(usize, 1), rows[0].bindings.len);
-    try std.testing.expectEqual(@as(i64, 2), rows[0].latest_observation.?.observation_version);
+    try std.testing.expectEqual(@as(i64, 100), rows[0].latest_observation.?.observation_version);
     try std.testing.expectEqual(Availability.unavailable, rows[0].latest_observation.?.availability);
+
+    const host_b = try getCandidateForHost(&conn, allocator, id, "host-b");
+    defer host_b.deinit(allocator);
+    try std.testing.expectEqual(@as(i64, 1), host_b.latest_observation.?.observation_version);
+    try std.testing.expectEqual(Availability.available, host_b.latest_observation.?.availability);
+    try std.testing.expectEqual(SpawnVerification.verified, host_b.latest_observation.?.spawn_verification);
 
     try unbindCandidate(&conn, id, "coder", .medium);
     try std.testing.expectError(error.QueryFailed, deleteCandidate(&conn, id));

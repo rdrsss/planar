@@ -175,6 +175,7 @@ pub const verb: cli.Cmd = .{
                     .desc = "Report every independent eligibility gate and named exclusion reason.",
                     .flags = &.{
                         .{ .long = "--candidate", .kind = .int, .required = true },
+                        .{ .long = "--host", .kind = .string, .required = true },
                         .{ .long = "--role", .kind = .string, .required = true },
                         .{ .long = "--tier", .kind = .string, .required = true },
                         .{ .long = "--now", .kind = .string, .required = true },
@@ -182,6 +183,16 @@ pub const verb: cli.Cmd = .{
                         .{ .long = "--policy-permits", .kind = .bool, .default = .{ .bool = false } },
                     },
                     .run = cli.handler(handleRegistryEligibility),
+                },
+                .{
+                    .name = "verify-identity",
+                    .desc = "Compare requested and actual spawn identity without aliasing.",
+                    .flags = &.{
+                        .{ .long = "--candidate", .kind = .int, .required = true },
+                        .{ .long = "--actual-vendor", .kind = .string, .required = true },
+                        .{ .long = "--actual-id", .kind = .string, .required = true },
+                    },
+                    .run = cli.handler(handleRegistryVerifyIdentity),
                 },
                 .{
                     .name = "import-legacy",
@@ -575,18 +586,9 @@ fn handleRegistryEligibility(args_ptr: *const anyopaque) anyerror!void {
     const ctx = runtime.current();
     const tier = parseTier(args.tier) orelse exit.die(ctx, error.InvalidInput, "invalid tier: {s}", .{args.tier});
     const d = runtime.ensureDb() catch |e| exit.die(ctx, e, "opening database: {s}", .{@errorName(e)});
-    const candidates = engine.routing.store.listCandidates(d, ctx.allocator) catch |e|
+    const candidate = engine.routing.store.getCandidateForHost(d, ctx.allocator, args.candidate, args.host) catch |e|
         exit.die(ctx, e, "reading candidate: {s}", .{@errorName(e)});
-    defer {
-        for (candidates) |candidate| candidate.deinit(ctx.allocator);
-        ctx.allocator.free(candidates);
-    }
-    var selected: ?engine.routing.store.RegistryCandidate = null;
-    for (candidates) |candidate| if (candidate.registration.id == args.candidate) {
-        selected = candidate;
-        break;
-    };
-    const candidate = selected orelse exit.die(ctx, error.NotFound, "candidate {d} not found", .{args.candidate});
+    defer candidate.deinit(ctx.allocator);
     var bound = false;
     for (candidate.bindings) |binding| {
         if (std.mem.eql(u8, binding.role, args.role) and binding.tier == tier) {
@@ -604,11 +606,38 @@ fn handleRegistryEligibility(args_ptr: *const anyopaque) anyerror!void {
     });
     var reason_buffer: [6]engine.routing.store.EligibilityReason = undefined;
     const reasons = eligibility.reasons(&reason_buffer);
-    try ctx.stdout.print("{{\"candidate\":{d},\"eligible\":{},\"gates\":", .{ args.candidate, eligibility.eligible() });
+    try ctx.stdout.print("{{\"candidate\":{d},\"host\":", .{args.candidate});
+    try std.json.Stringify.value(args.host, .{}, ctx.stdout);
+    try ctx.stdout.print(",\"eligible\":{},\"gates\":", .{eligibility.eligible()});
     try std.json.Stringify.value(eligibility, .{}, ctx.stdout);
     try ctx.stdout.print(",\"reasons\":", .{});
     try std.json.Stringify.value(reasons, .{}, ctx.stdout);
     try ctx.stdout.print("}}\n", .{});
+}
+
+fn handleRegistryVerifyIdentity(args_ptr: *const anyopaque) anyerror!void {
+    const args = cli.castArgs(main.root, &.{ "models", "registry", "verify-identity" }, args_ptr);
+    const ctx = runtime.current();
+    const d = runtime.ensureDb() catch |e| exit.die(ctx, e, "opening database: {s}", .{@errorName(e)});
+    const candidates = engine.routing.store.listCandidates(d, ctx.allocator) catch |e|
+        exit.die(ctx, e, "reading candidate: {s}", .{@errorName(e)});
+    defer {
+        for (candidates) |candidate| candidate.deinit(ctx.allocator);
+        ctx.allocator.free(candidates);
+    }
+    var requested: ?engine.routing.store.CandidateRegistration = null;
+    for (candidates) |candidate| if (candidate.registration.id == args.candidate) {
+        requested = candidate.registration;
+        break;
+    };
+    const registration = requested orelse exit.die(ctx, error.NotFound, "candidate {d} not found", .{args.candidate});
+    const result = engine.routing.store.verifyActualIdentity(
+        registration.vendor,
+        registration.candidate_id,
+        args.actual_vendor,
+        args.actual_id,
+    );
+    try ctx.stdout.print("{{\"candidate\":{d},\"identity\":\"{s}\"}}\n", .{ args.candidate, @tagName(result) });
 }
 
 fn handleRegistryImportLegacy(args_ptr: *const anyopaque) anyerror!void {

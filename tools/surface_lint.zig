@@ -277,53 +277,52 @@ fn m(comptime shape: []const u8) CommandClass {
 // the filesystem, or a remote system. Reads are explicit so a missing write
 // entry cannot silently become an implicit read.
 const command_classes = [_]CommandClass{
-    m("planar init"),                          r("planar scope show"),                  r("planar scope suggest"),         r("planar scope use"),              r("planar scope pop"),               r("planar scope clear"),
-    r("planar assoc list"),                    m("planar assoc create"),                m("planar assoc add"),             m("planar assoc remove"),           r("planar assoc members"),           m("planar assoc detect"),
-    m("planar plan create"),                   r("planar plan show"),                   r("planar plan list"),             m("planar plan update"),            m("planar plan edit"),               r("planar plan view"),
-    r("planar plan diff"),                     r("planar plan review"),                 m("planar plan link"),             r("planar plan next"),              r("planar plan recommend-strategy"), r("planar plan divergence"),
-    m("planar plan recompute-status"),         m("planar plan closeout"),               m("planar plan step add"),         r("planar plan step list"),         m("planar plan step done"),          m("planar plan step skip"),
-    m("planar plan step link"),                r("planar plan descendants"),            m("planar task add"),              r("planar task show"),              r("planar task list"),               m("planar task update"),
-    m("planar task edit"),                     r("planar task view"),                   r("planar task diff"),             r("planar task review"),            m("planar task done"),               m("planar task cancel"),
-    m("planar task block"),                    m("planar task link"),                   m("planar task reopen"),           m("planar task touches add"),       r("planar task touches list"),       m("planar task touches remove"),
-    m("planar question add"),                  m("planar question edit"),               r("planar question view"),         r("planar question diff"),          r("planar question review"),         m("planar question answer"),
-    m("planar question wontfix"),              r("planar question list"),               r("planar question show"),         m("planar question link"),          m("planar scenario add"),            m("planar scenario edit"),
-    r("planar scenario view"),                 r("planar scenario diff"),               r("planar scenario review"),       m("planar scenario verify"),        m("planar scenario retire"),         r("planar scenario list"),
-    r("planar scenario show"),                 m("planar scenario link"),               m("planar decision add"),          r("planar decision show"),          r("planar decision list"),           m("planar decision accept"),
-    m("planar decision supersede"),            m("planar decision withdraw"),           m("planar decision edit"),         r("planar decision view"),          r("planar decision diff"),           r("planar decision review"),
-    m("planar decision link"),                 m("planar artifact add"),                r("planar artifact show"),         r("planar artifact list"),          m("planar artifact update"),         m("planar artifact edit"),
-    r("planar artifact view"),                 r("planar artifact diff"),               r("planar artifact review"),       m("planar artifact link"),          m("planar annotate add"),            r("planar annotate show"),
-    r("planar annotate list"),                 m("planar annotate update"),             m("planar annotate remove"),       m("planar annotate tag"),           m("planar annotate resolve"),        m("planar annotate dismiss"),
-    m("planar annotate archive"),              m("planar annotate bulk-resolve"),       m("planar annotate bulk-dismiss"), m("planar annotate bulk-archive"),  r("planar annotate verify"),         m("planar annotate sweep"),
-    m("planar promote"),                       m("planar demote"),                      r("planar workbench lint"),        m("planar workbench pull"),         m("planar workbench push"),          r("planar workbench status"),
-    m("planar workbench resolve"),             m("planar workbench sync"),              m("planar workbench archive"),     m("planar workbench restore"),      m("planar workbench gc"),            r("planar workbench list"),
-    m("planar workbench publish"),             r("planar workbench extract-questions"), m("planar workbench edit"),        m("planar workspace init"),         m("planar workspace doctor"),        m("planar workspace routing build"),
-    r("planar workspace routing show"),        m("planar workspace regenerate"),        m("planar ext register jira"),     m("planar ext register github"),    r("planar ext list"),                r("planar ext test"),
-    m("planar ext create"),                    m("planar ext propagate-one"),           m("planar ext propagate"),         m("planar link"),                   m("planar unlink"),                  m("planar links add"),
-    r("planar links list"),                    m("planar links remove"),                r("planar links trail"),           m("planar sync pull"),              m("planar sync push"),               r("planar sync status"),
-    m("planar sync resolve"),                  r("planar resume validate"),             m("planar handoff create"),        m("planar handoff validate"),       m("planar handoff consume"),         m("planar handoff abandon"),
-    r("planar handoff list"),                  r("planar handoff show"),                m("planar capture session"),       m("planar capture commits"),        m("planar capture end"),             m("planar capture note"),
-    m("planar capture command"),               m("planar capture file"),                m("planar capture snapshot"),      r("planar audit trail"),            r("planar audit commits"),           r("planar audit session"),
-    m("planar audit publish-decision"),        r("planar audit handoff-readiness"),     r("planar health hygiene"),        r("planar models list"),            m("planar models refresh"),          r("planar models routing"),
-    m("planar models apply"),                  r("planar models candidates"),           r("planar models evals"),          m("planar models sync-doc"),        r("planar models registry list"),    m("planar models registry add"),
-    m("planar models registry update"),        m("planar models registry remove"),      m("planar models registry bind"),  m("planar models registry unbind"), m("planar models registry observe"), r("planar models registry eligibility"),
-    m("planar models registry import-legacy"), r("planar models registry export"),      r("planar dashboard"),             m("planar spec ingest"),            r("planar test-spec status"),        r("planar config show"),
-    m("planar config edit"),                   r("planar config validate"),             m("planar config init"),           r("planar config path"),            r("planar templates list"),          r("planar templates show"),
-    r("planar templates render"),              r("planar templates validate"),          m("planar templates init"),        r("planar templates path"),         r("planar tree"),                    r("planar search"),
-    r("planar local list"),                    m("planar local link"),                  m("planar local unlink"),          m("planar local import"),           m("planar local migrate"),
+    m("planar init"),                          r("planar scope show"),                  r("planar scope suggest"),                   r("planar scope use"),              r("planar scope pop"),               r("planar scope clear"),
+    r("planar assoc list"),                    m("planar assoc create"),                m("planar assoc add"),                       m("planar assoc remove"),           r("planar assoc members"),           m("planar assoc detect"),
+    m("planar plan create"),                   r("planar plan show"),                   r("planar plan list"),                       m("planar plan update"),            m("planar plan edit"),               r("planar plan view"),
+    r("planar plan diff"),                     r("planar plan review"),                 m("planar plan link"),                       r("planar plan next"),              r("planar plan recommend-strategy"), r("planar plan divergence"),
+    m("planar plan recompute-status"),         m("planar plan closeout"),               m("planar plan step add"),                   r("planar plan step list"),         m("planar plan step done"),          m("planar plan step skip"),
+    m("planar plan step link"),                r("planar plan descendants"),            m("planar task add"),                        r("planar task show"),              r("planar task list"),               m("planar task update"),
+    m("planar task edit"),                     r("planar task view"),                   r("planar task diff"),                       r("planar task review"),            m("planar task done"),               m("planar task cancel"),
+    m("planar task block"),                    m("planar task link"),                   m("planar task reopen"),                     m("planar task touches add"),       r("planar task touches list"),       m("planar task touches remove"),
+    m("planar question add"),                  m("planar question edit"),               r("planar question view"),                   r("planar question diff"),          r("planar question review"),         m("planar question answer"),
+    m("planar question wontfix"),              r("planar question list"),               r("planar question show"),                   m("planar question link"),          m("planar scenario add"),            m("planar scenario edit"),
+    r("planar scenario view"),                 r("planar scenario diff"),               r("planar scenario review"),                 m("planar scenario verify"),        m("planar scenario retire"),         r("planar scenario list"),
+    r("planar scenario show"),                 m("planar scenario link"),               m("planar decision add"),                    r("planar decision show"),          r("planar decision list"),           m("planar decision accept"),
+    m("planar decision supersede"),            m("planar decision withdraw"),           m("planar decision edit"),                   r("planar decision view"),          r("planar decision diff"),           r("planar decision review"),
+    m("planar decision link"),                 m("planar artifact add"),                r("planar artifact show"),                   r("planar artifact list"),          m("planar artifact update"),         m("planar artifact edit"),
+    r("planar artifact view"),                 r("planar artifact diff"),               r("planar artifact review"),                 m("planar artifact link"),          m("planar annotate add"),            r("planar annotate show"),
+    r("planar annotate list"),                 m("planar annotate update"),             m("planar annotate remove"),                 m("planar annotate tag"),           m("planar annotate resolve"),        m("planar annotate dismiss"),
+    m("planar annotate archive"),              m("planar annotate bulk-resolve"),       m("planar annotate bulk-dismiss"),           m("planar annotate bulk-archive"),  r("planar annotate verify"),         m("planar annotate sweep"),
+    m("planar promote"),                       m("planar demote"),                      r("planar workbench lint"),                  m("planar workbench pull"),         m("planar workbench push"),          r("planar workbench status"),
+    m("planar workbench resolve"),             m("planar workbench sync"),              m("planar workbench archive"),               m("planar workbench restore"),      m("planar workbench gc"),            r("planar workbench list"),
+    m("planar workbench publish"),             r("planar workbench extract-questions"), m("planar workbench edit"),                  m("planar workspace init"),         m("planar workspace doctor"),        m("planar workspace routing build"),
+    r("planar workspace routing show"),        m("planar workspace regenerate"),        m("planar ext register jira"),               m("planar ext register github"),    r("planar ext list"),                r("planar ext test"),
+    m("planar ext create"),                    m("planar ext propagate-one"),           m("planar ext propagate"),                   m("planar link"),                   m("planar unlink"),                  m("planar links add"),
+    r("planar links list"),                    m("planar links remove"),                r("planar links trail"),                     m("planar sync pull"),              m("planar sync push"),               r("planar sync status"),
+    m("planar sync resolve"),                  r("planar resume validate"),             m("planar handoff create"),                  m("planar handoff validate"),       m("planar handoff consume"),         m("planar handoff abandon"),
+    r("planar handoff list"),                  r("planar handoff show"),                m("planar capture session"),                 m("planar capture commits"),        m("planar capture end"),             m("planar capture note"),
+    m("planar capture command"),               m("planar capture file"),                m("planar capture snapshot"),                r("planar audit trail"),            r("planar audit commits"),           r("planar audit session"),
+    m("planar audit publish-decision"),        r("planar audit handoff-readiness"),     r("planar health hygiene"),                  r("planar models list"),            m("planar models refresh"),          r("planar models routing"),
+    m("planar models apply"),                  r("planar models candidates"),           r("planar models evals"),                    m("planar models sync-doc"),        r("planar models registry list"),    m("planar models registry add"),
+    m("planar models registry update"),        m("planar models registry remove"),      m("planar models registry bind"),            m("planar models registry unbind"), m("planar models registry observe"), r("planar models registry eligibility"),
+    m("planar models registry import-legacy"), r("planar models registry export"),      r("planar models registry verify-identity"), r("planar dashboard"),              m("planar spec ingest"),             r("planar test-spec status"),
+    r("planar config show"),                   m("planar config edit"),                 r("planar config validate"),                 m("planar config init"),            r("planar config path"),             r("planar templates list"),
+    r("planar templates show"),                r("planar templates render"),            r("planar templates validate"),              m("planar templates init"),         r("planar templates path"),          r("planar tree"),
+    r("planar search"),                        r("planar local list"),                  m("planar local link"),                      m("planar local unlink"),           m("planar local import"),            m("planar local migrate"),
     // `planar skills` is a childless placeholder (plan 918 M5 retired its
     // render/status/repair subcommands); bare invocation only prints help.
-              r("planar skills"),
-    m("planar import"),                        m("planar synthesize"),                  r("planar version"),               r("planar completion"),             r("planar schema"),                  r("planar report"),
-    m("planar bench start"),                   m("planar bench event"),                 m("planar bench touch"),           m("planar bench harvest"),          m("planar bench finish"),            r("planar bench show"),
-    m("planar closure compute"),               r("planar closure show"),                m("planar run start"),             m("planar run event"),              m("planar run finish"),              r("planar run show"),
-    r("planar groups recommend"),              m("planar explore"),                     r("planar workflow list"),         r("planar workflow show"),          m("planar workflow run"),            r("planar feedback triage list"),
-    r("planar feedback triage show"),          m("planar feedback triage set"),         r("planar-agent version"),         m("planar-agent pull"),             r("planar-agent peek"),              m("planar-agent complete"),
-    m("planar-agent fail"),                    m("planar-agent release"),               m("planar-agent block"),           m("planar-agent claim"),            m("planar-agent heartbeat"),         m("planar-agent claim-associate"),
-    m("planar-agent action start"),            m("planar-agent action end"),            m("planar-agent ingest"),          m("planar-agent reconcile"),        m("planar-agent abort"),             r("planar-agent schema"),
-    m("planar-agent run start"),               m("planar-agent run end"),               m("planar-agent context add"),     m("planar-agent context capsule"),  r("planar-agent context list"),      m("planar-agent context resolve"),
-    r("planar-watch feed"),                    r("planar-watch ps"),                    r("planar-watch claims"),          r("planar-watch actions"),          r("planar-watch plans"),             r("planar-watch log"),
-    r("planar-watch tree"),                    r("planar-watch run list"),              r("planar-watch run show"),        r("planar-watch sync-events"),      r("planar-watch version"),           r("planar-watch completion"),
-    r("planar-watch schema"),
+    r("planar skills"),                        m("planar import"),                      m("planar synthesize"),                      r("planar version"),                r("planar completion"),              r("planar schema"),
+    r("planar report"),                        m("planar bench start"),                 m("planar bench event"),                     m("planar bench touch"),            m("planar bench harvest"),           m("planar bench finish"),
+    r("planar bench show"),                    m("planar closure compute"),             r("planar closure show"),                    m("planar run start"),              m("planar run event"),               m("planar run finish"),
+    r("planar run show"),                      r("planar groups recommend"),            m("planar explore"),                         r("planar workflow list"),          r("planar workflow show"),           m("planar workflow run"),
+    r("planar feedback triage list"),          r("planar feedback triage show"),        m("planar feedback triage set"),             r("planar-agent version"),          m("planar-agent pull"),              r("planar-agent peek"),
+    m("planar-agent complete"),                m("planar-agent fail"),                  m("planar-agent release"),                   m("planar-agent block"),            m("planar-agent claim"),             m("planar-agent heartbeat"),
+    m("planar-agent claim-associate"),         m("planar-agent action start"),          m("planar-agent action end"),                m("planar-agent ingest"),           m("planar-agent reconcile"),         m("planar-agent abort"),
+    r("planar-agent schema"),                  m("planar-agent run start"),             m("planar-agent run end"),                   m("planar-agent context add"),      m("planar-agent context capsule"),   r("planar-agent context list"),
+    m("planar-agent context resolve"),         r("planar-watch feed"),                  r("planar-watch ps"),                        r("planar-watch claims"),           r("planar-watch actions"),           r("planar-watch plans"),
+    r("planar-watch log"),                     r("planar-watch tree"),                  r("planar-watch run list"),                  r("planar-watch run show"),         r("planar-watch sync-events"),       r("planar-watch version"),
+    r("planar-watch completion"),              r("planar-watch schema"),
 };
 
 fn checkCapability(arena: std.mem.Allocator, file: []const u8, role: []const u8, line_no: usize, line: []const u8, in_fence: bool, findings: *std.ArrayList(Finding), suppressions: *std.ArrayList(Suppression)) !void {
@@ -844,7 +843,7 @@ test "schema inventory has an explicit unique classification for every current l
     //   done
     // The fingerprint pins names and order, while the counts identify which
     // binary drifted when a catalog changes.
-    try testing.expectEqual(@as(usize, 259), command_classes.len);
+    try testing.expectEqual(@as(usize, 260), command_classes.len);
     var planar_count: usize = 0;
     var agent_count: usize = 0;
     var watch_count: usize = 0;
@@ -856,13 +855,13 @@ test "schema inventory has an explicit unique classification for every current l
         try inventory.append(testing.allocator, '\n');
         if (std.mem.startsWith(u8, command.shape, "planar ")) planar_count += 1 else if (std.mem.startsWith(u8, command.shape, "planar-agent ")) agent_count += 1 else if (std.mem.startsWith(u8, command.shape, "planar-watch ")) watch_count += 1 else return error.InvalidCommandClassification;
     }
-    try testing.expectEqual(@as(usize, 224), planar_count);
+    try testing.expectEqual(@as(usize, 225), planar_count);
     try testing.expectEqual(@as(usize, 22), agent_count);
     try testing.expectEqual(@as(usize, 13), watch_count);
     var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(inventory.items, &digest, .{});
     const hex = std.fmt.bytesToHex(digest, .lower);
-    try testing.expectEqualStrings("51b6a40025548a1239edd5d2883dbe6819a06224ae4eadabe16829ae4285297a", &hex);
+    try testing.expectEqualStrings("1993c7334d9a52c1e2f1605730ea7e2137b2317e0f45a5131f3a3683942b3834", &hex);
 }
 test "every classified leaf enforces its declared capability" {
     const frontmatter = "---\nrole: fixture\ncapability: read-only\n---\n```sh\n";
