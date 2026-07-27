@@ -9,7 +9,10 @@ const db = @import("db");
 
 pub const materializer_version = "spec-ingest-v1";
 
-pub const Error = error{QueryFailed} || std.mem.Allocator.Error;
+pub const Error = error{
+    QueryFailed,
+    InvalidCitation,
+} || std.mem.Allocator.Error;
 
 const Value = union(enum) {
     bool: bool,
@@ -151,30 +154,44 @@ fn stageTaskFacts(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan_id
 
 fn stageArtifactFacts(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan_id: i64) Error!void {
     var stmt = d.prepare(
-        \\select t.id, a.id, a.kind, coalesce(a.body, '')
+        \\select t.id, coalesce(t.slug, ''), coalesce(t.body, ''),
+        \\       a.id, a.kind, coalesce(a.body, '')
         \\from tasks t
         \\join plans p on p.id = t.plan_id
-        \\join entity_links el on el.from_kind = 'artifact'
-        \\  and el.to_kind = 'plan' and el.to_id = ?
-        \\  and el.relationship = 'derives-from'
-        \\join artifacts a on a.id = el.from_id
+        \\join entity_links el on el.from_kind = 'task' and el.from_id = t.id
+        \\  and el.to_kind = 'artifact' and el.relationship = 'cites'
+        \\join artifacts a on a.id = el.to_id
         \\where p.parent_plan_id = ?
         \\order by t.id, a.id
     ) catch return Error.QueryFailed;
     defer stmt.finalize();
-    stmt.bind(&.{ .{ .int = anchor_plan_id }, .{ .int = anchor_plan_id } }) catch return Error.QueryFailed;
+    stmt.bind(&.{.{ .int = anchor_plan_id }}) catch return Error.QueryFailed;
     while (true) switch (stmt.step() catch return Error.QueryFailed) {
         .done => break,
         .row => {
             const task_id = stmt.columnInt(0);
-            const artifact_id = stmt.columnInt(1);
-            const kind = try stmt.columnTextAlloc(2, allocator);
+            const task_slug = try stmt.columnTextAlloc(1, allocator);
+            defer allocator.free(task_slug);
+            const task_body = try stmt.columnTextAlloc(2, allocator);
+            defer allocator.free(task_body);
+            const artifact_id = stmt.columnInt(3);
+            const kind = try stmt.columnTextAlloc(4, allocator);
             defer allocator.free(kind);
-            const body = try stmt.columnTextAlloc(3, allocator);
+            const body = try stmt.columnTextAlloc(5, allocator);
             defer allocator.free(body);
-            const locator = try std.fmt.allocPrint(allocator, "artifact#{s}", .{kind});
+
+            var locator: []const u8 = undefined;
+            var cited_source: []const u8 = undefined;
+            if (std.mem.eql(u8, kind, "roadmap") and task_slug.len > 0) {
+                cited_source = roadmapBulletForSlug(body, task_slug) orelse
+                    return Error.InvalidCitation;
+                locator = try std.fmt.allocPrint(allocator, "roadmap#task:{s}", .{task_slug});
+            } else {
+                locator = try explicitArtifactLocator(allocator, task_body, artifact_id);
+                cited_source = artifactSection(body, locator) orelse return Error.InvalidCitation;
+            }
             defer allocator.free(locator);
-            try stage(d, allocator, task_id, "cited_artifact_section", .{ .text = kind }, "artifact", artifact_id, locator, body);
+            try stage(d, allocator, task_id, "cited_artifact_section", .{ .text = cited_source }, "artifact", artifact_id, locator, cited_source);
         },
     };
 }
@@ -187,7 +204,7 @@ fn stageDecisionFacts(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_pla
         \\join entity_links el on el.from_kind = 'decision'
         \\  and el.to_kind = 'plan' and el.to_id = ?
         \\  and el.relationship = 'derives-from'
-        \\join decisions de on de.id = el.from_id
+        \\join decisions de on de.id = el.from_id and de.status = 'accepted'
         \\where p.parent_plan_id = ?
         \\order by t.id, de.id
     ) catch return Error.QueryFailed;
@@ -295,14 +312,19 @@ fn stageLinkFacts(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan_id
             const other_id = if (std.mem.eql(u8, from_kind, "task") and from_id == task_id) to_id else from_id;
             const locator = try std.fmt.allocPrint(allocator, "{s}:{d}", .{ other_kind, other_id });
             defer allocator.free(locator);
-            const fact_kind = if (std.mem.eql(u8, relationship, "touches")) "touch" else "dependency";
+            const fact_kind = if (std.mem.eql(u8, relationship, "touches"))
+                "touch"
+            else if (std.mem.eql(u8, from_kind, "task") and from_id == task_id)
+                "blocks"
+            else
+                "blocked_by";
             try stage(d, allocator, task_id, fact_kind, .{ .integer = other_id }, other_kind, other_id, locator, relationship);
         },
     };
 
     try stageCount(d, allocator, anchor_plan_id, "touch", "breadth", "links#touches");
     try stageCount(d, allocator, anchor_plan_id, "scenario", "validation_burden", "links#scenarios");
-    try stageCount(d, allocator, anchor_plan_id, "dependency", "dependency_fanout", "links#dependencies");
+    try stageCount(d, allocator, anchor_plan_id, "blocks", "dependency_fanout", "links#blocks-outgoing");
 }
 
 fn stageCount(
@@ -379,7 +401,7 @@ fn stage(
     locator: []const u8,
     semantic_source: []const u8,
 ) Error!void {
-    const digest = try digestAlloc(allocator, source_kind, source_id, locator, semantic_source);
+    const digest = try sourceDigestAlloc(allocator, source_kind, source_id, locator, semantic_source);
     defer allocator.free(digest);
     const value_type = switch (value) {
         .bool => "bool",
@@ -419,7 +441,7 @@ fn stage(
     }) catch return Error.QueryFailed;
 }
 
-fn digestAlloc(
+pub fn sourceDigestAlloc(
     allocator: std.mem.Allocator,
     source_kind: []const u8,
     source_id: i64,
@@ -435,6 +457,77 @@ fn digestAlloc(
     var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(canonical, &digest, .{});
     return try std.fmt.allocPrint(allocator, "{x}", .{digest});
+}
+
+pub fn roadmapBulletForSlug(body: []const u8, slug: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, body, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (!std.mem.startsWith(u8, trimmed, "- ") and !std.mem.startsWith(u8, trimmed, "* ")) continue;
+        const marker_start = std.mem.indexOf(u8, trimmed, "[slug:") orelse continue;
+        const after_marker = trimmed[marker_start + "[slug:".len ..];
+        const close = std.mem.indexOfScalar(u8, after_marker, ']') orelse continue;
+        if (std.mem.eql(u8, std.mem.trim(u8, after_marker[0..close], " \t"), slug))
+            return trimmed;
+    }
+    return null;
+}
+
+fn explicitArtifactLocator(
+    allocator: std.mem.Allocator,
+    task_body: []const u8,
+    artifact_id: i64,
+) Error![]const u8 {
+    const marker = try std.fmt.allocPrint(allocator, "artifact:{d}#", .{artifact_id});
+    defer allocator.free(marker);
+    const start = std.mem.indexOf(u8, task_body, marker) orelse return Error.InvalidCitation;
+    const tail = task_body[start..];
+    var end: usize = 0;
+    while (end < tail.len and tail[end] != '\n' and tail[end] != '\r' and
+        tail[end] != ',' and tail[end] != ')' and tail[end] != ']') : (end += 1)
+    {}
+    const locator = std.mem.trim(u8, tail[0..end], " \t");
+    if (locator.len <= marker.len) return Error.InvalidCitation;
+    return try allocator.dupe(u8, locator);
+}
+
+fn artifactSection(body: []const u8, locator: []const u8) ?[]const u8 {
+    const hash = std.mem.indexOfScalar(u8, locator, '#') orelse return null;
+    const section_name = std.mem.trim(u8, locator[hash + 1 ..], " \t");
+    if (section_name.len == 0) return null;
+    var lines = std.mem.splitScalar(u8, body, '\n');
+    var offset: usize = 0;
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        var hashes: usize = 0;
+        while (hashes < trimmed.len and trimmed[hashes] == '#') : (hashes += 1) {}
+        if (hashes == 0 or hashes >= trimmed.len or trimmed[hashes] != ' ') {
+            offset += line.len + 1;
+            continue;
+        }
+        const heading = std.mem.trim(u8, trimmed[hashes + 1 ..], " \t");
+        if (!std.ascii.eqlIgnoreCase(heading, section_name)) {
+            offset += line.len + 1;
+            continue;
+        }
+        const section_start = @min(offset + line.len + 1, body.len);
+        const tail = body[section_start..];
+        var section_end = tail.len;
+        var tail_lines = std.mem.splitScalar(u8, tail, '\n');
+        var tail_offset: usize = 0;
+        while (tail_lines.next()) |next_line| {
+            const next_trimmed = std.mem.trim(u8, next_line, " \t\r");
+            var next_hashes: usize = 0;
+            while (next_hashes < next_trimmed.len and next_trimmed[next_hashes] == '#') : (next_hashes += 1) {}
+            if (next_hashes > 0 and next_hashes <= hashes and next_hashes < next_trimmed.len and next_trimmed[next_hashes] == ' ') {
+                section_end = tail_offset;
+                break;
+            }
+            tail_offset += next_line.len + 1;
+        }
+        return std.mem.trim(u8, tail[0..section_end], " \t\r\n");
+    }
+    return null;
 }
 
 fn containsFold(haystack: []const u8, needle: []const u8) bool {
@@ -481,19 +574,27 @@ test "materialization preserves lineage, replay identity, rollback, and model ne
         \\  scope_kind, scope_id, title, slug, parent_plan_id, status
         \\) values ('repo', 1, 'Milestone', 'milestone', 1, 'active');
         \\insert into tasks (
-        \\  scope_kind, scope_id, plan_id, title, body, next_action
+        \\  scope_kind, scope_id, plan_id, title, body, next_action, slug
         \\) values (
         \\  'repo', 1, 2, 'Sentinel task',
         \\  '## Acceptance Criteria
         \\
         \\- LINEAGE_SENTINEL is implemented and tested.',
-        \\  'Implement per acceptance criteria.'
+        \\  'Implement per acceptance criteria.', 'sentinel-task'
         \\);
         \\insert into artifacts (scope_kind, scope_id, kind, title, body)
-        \\values ('repo', 1, 'tech_spec', 'Display label', 'ARTIFACT_SENTINEL');
+        \\values (
+        \\  'repo', 1, 'roadmap', 'Display label',
+        \\  '## Milestone
+        \\
+        \\- ARTIFACT_SENTINEL [slug: sentinel-task]'
+        \\);
         \\insert into entity_links (
         \\  from_kind, from_id, to_kind, to_id, relationship
         \\) values ('artifact', 1, 'plan', 1, 'derives-from');
+        \\insert into entity_links (
+        \\  from_kind, from_id, to_kind, to_id, relationship
+        \\) values ('task', 1, 'artifact', 1, 'cites');
         \\insert into decisions (scope_kind, scope_id, title, body)
         \\values ('repo', 1, 'Display decision', 'DECISION_SENTINEL atomic transaction');
         \\insert into entity_links (
@@ -511,7 +612,13 @@ test "materialization preserves lineage, replay identity, rollback, and model ne
         \\);
         \\insert into entity_links (
         \\  from_kind, from_id, to_kind, to_id, relationship
-        \\) values ('test_scenario', 1, 'task', 1, 'verifies')
+        \\) values ('test_scenario', 1, 'task', 1, 'verifies');
+        \\insert into entity_links (
+        \\  from_kind, from_id, to_kind, to_id, relationship
+        \\) values ('task', 1, 'task', 99, 'blocks');
+        \\insert into entity_links (
+        \\  from_kind, from_id, to_kind, to_id, relationship
+        \\) values ('task', 98, 'task', 1, 'blocks')
     );
 
     try conn.savepoint(allocator, "facts_apply");
@@ -536,6 +643,19 @@ test "materialization preserves lineage, replay identity, rollback, and model ne
         \\  and materializer_version = 'spec-ingest-v1'
     ));
     try std.testing.expectEqual(@as(i64, 0), try conn.intQuery(
+        "select count(*) from routing_task_facts where fact_kind = 'locked_decision'",
+    ));
+    try std.testing.expectEqual(@as(i64, 1), try conn.intQuery(
+        "select count(*) from routing_task_facts where fact_kind = 'blocks'",
+    ));
+    try std.testing.expectEqual(@as(i64, 1), try conn.intQuery(
+        "select count(*) from routing_task_facts where fact_kind = 'blocked_by'",
+    ));
+    try std.testing.expectEqual(@as(i64, 1), try conn.intQuery(
+        \\select value_integer from routing_task_facts
+        \\where fact_kind = 'dependency_fanout'
+    ));
+    try std.testing.expectEqual(@as(i64, 0), try conn.intQuery(
         \\select count(*) from routing_task_facts
         \\where fact_kind like '%model%' or fact_kind like '%tier%'
         \\   or fact_kind like '%provider%' or fact_kind like '%recommend%'
@@ -549,17 +669,10 @@ test "materialization preserves lineage, replay identity, rollback, and model ne
     try std.testing.expectEqual(max_id_before, try conn.intQuery("select max(id) from routing_task_facts"));
     try std.testing.expectEqual(count_before, try conn.intQuery("select count(*) from routing_task_facts"));
 
-    try conn.savepoint(allocator, "facts_rollback");
-    try conn.exec("update tasks set next_action = 'Run the exact sentinel gate.' where id = 1");
+    try conn.exec("update decisions set status = 'accepted' where id = 1");
     try reconcile(&conn, allocator, 1);
     try std.testing.expectEqual(@as(i64, 1), try conn.intQuery(
         \\select count(*) from routing_task_facts
-        \\where fact_kind = 'next_action_exact' and value_bool = 1
-    ));
-    try conn.rollbackToSavepoint(allocator, "facts_rollback");
-    try conn.releaseSavepoint(allocator, "facts_rollback");
-    try std.testing.expectEqual(@as(i64, 1), try conn.intQuery(
-        \\select count(*) from routing_task_facts
-        \\where fact_kind = 'next_action_exact' and value_bool = 0
+        \\where fact_kind = 'locked_decision' and value_text = 'DECISION_SENTINEL atomic transaction'
     ));
 }
