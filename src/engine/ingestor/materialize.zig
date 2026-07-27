@@ -20,15 +20,24 @@ const Value = union(enum) {
     text: []const u8,
 };
 
+pub const RoadmapCitation = struct {
+    task_id: i64,
+    artifact_id: i64,
+    source_locator: []const u8,
+    source_text: []const u8,
+};
+
 pub fn reconcile(
     d: *db.sqlite.Db,
     allocator: std.mem.Allocator,
     anchor_plan_id: i64,
+    roadmap_citations: []const RoadmapCitation,
 ) Error!void {
     try createStage(d);
     d.exec("delete from temp.routing_task_facts_stage") catch return Error.QueryFailed;
 
     try stageTaskFacts(d, allocator, anchor_plan_id);
+    try stageRoadmapFacts(d, allocator, roadmap_citations);
     try stageArtifactFacts(d, allocator, anchor_plan_id);
     try stageDecisionFacts(d, allocator, anchor_plan_id);
     try stageQuestionFacts(d, allocator, anchor_plan_id);
@@ -60,6 +69,26 @@ pub fn reconcile(
         \\         fact_kind, value_type, coalesce(value_text, ''),
         \\         coalesce(value_integer, value_bool)
     ) catch return Error.QueryFailed;
+}
+
+fn stageRoadmapFacts(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    citations: []const RoadmapCitation,
+) Error!void {
+    for (citations) |citation| {
+        try stage(
+            d,
+            allocator,
+            citation.task_id,
+            "cited_artifact_section",
+            .{ .text = citation.source_text },
+            "artifact",
+            citation.artifact_id,
+            citation.source_locator,
+            citation.source_text,
+        );
+    }
 }
 
 fn createStage(d: *db.sqlite.Db) Error!void {
@@ -154,13 +183,12 @@ fn stageTaskFacts(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan_id
 
 fn stageArtifactFacts(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan_id: i64) Error!void {
     var stmt = d.prepare(
-        \\select t.id, coalesce(t.slug, ''), coalesce(t.body, ''),
-        \\       a.id, a.kind, coalesce(a.body, '')
+        \\select t.id, coalesce(t.body, ''), a.id, coalesce(a.body, '')
         \\from tasks t
         \\join plans p on p.id = t.plan_id
         \\join entity_links el on el.from_kind = 'task' and el.from_id = t.id
         \\  and el.to_kind = 'artifact' and el.relationship = 'cites'
-        \\join artifacts a on a.id = el.to_id
+        \\join artifacts a on a.id = el.to_id and a.kind != 'roadmap'
         \\where p.parent_plan_id = ?
         \\order by t.id, a.id
     ) catch return Error.QueryFailed;
@@ -170,27 +198,15 @@ fn stageArtifactFacts(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_pla
         .done => break,
         .row => {
             const task_id = stmt.columnInt(0);
-            const task_slug = try stmt.columnTextAlloc(1, allocator);
-            defer allocator.free(task_slug);
-            const task_body = try stmt.columnTextAlloc(2, allocator);
+            const task_body = try stmt.columnTextAlloc(1, allocator);
             defer allocator.free(task_body);
-            const artifact_id = stmt.columnInt(3);
-            const kind = try stmt.columnTextAlloc(4, allocator);
-            defer allocator.free(kind);
-            const body = try stmt.columnTextAlloc(5, allocator);
+            const artifact_id = stmt.columnInt(2);
+            const body = try stmt.columnTextAlloc(3, allocator);
             defer allocator.free(body);
 
-            var locator: []const u8 = undefined;
-            var cited_source: []const u8 = undefined;
-            if (std.mem.eql(u8, kind, "roadmap") and task_slug.len > 0) {
-                cited_source = roadmapBulletForSlug(body, task_slug) orelse
-                    return Error.InvalidCitation;
-                locator = try std.fmt.allocPrint(allocator, "roadmap#task:{s}", .{task_slug});
-            } else {
-                locator = try explicitArtifactLocator(allocator, task_body, artifact_id);
-                cited_source = artifactSection(body, locator) orelse return Error.InvalidCitation;
-            }
+            const locator = try explicitArtifactLocator(allocator, task_body, artifact_id);
             defer allocator.free(locator);
+            const cited_source = artifactSection(body, locator) orelse return Error.InvalidCitation;
             try stage(d, allocator, task_id, "cited_artifact_section", .{ .text = cited_source }, "artifact", artifact_id, locator, cited_source);
         },
     };
@@ -495,39 +511,98 @@ fn artifactSection(body: []const u8, locator: []const u8) ?[]const u8 {
     const hash = std.mem.indexOfScalar(u8, locator, '#') orelse return null;
     const section_name = std.mem.trim(u8, locator[hash + 1 ..], " \t");
     if (section_name.len == 0) return null;
-    var lines = std.mem.splitScalar(u8, body, '\n');
+
+    var selected_level: ?usize = null;
+    var section_start: usize = 0;
+    var fence_char: ?u8 = null;
+    var fence_len: usize = 0;
     var offset: usize = 0;
-    while (lines.next()) |line| {
-        const trimmed = std.mem.trim(u8, line, " \t\r");
-        var hashes: usize = 0;
-        while (hashes < trimmed.len and trimmed[hashes] == '#') : (hashes += 1) {}
-        if (hashes == 0 or hashes >= trimmed.len or trimmed[hashes] != ' ') {
-            offset += line.len + 1;
-            continue;
-        }
-        const heading = std.mem.trim(u8, trimmed[hashes + 1 ..], " \t");
-        if (!std.ascii.eqlIgnoreCase(heading, section_name)) {
-            offset += line.len + 1;
-            continue;
-        }
-        const section_start = @min(offset + line.len + 1, body.len);
-        const tail = body[section_start..];
-        var section_end = tail.len;
-        var tail_lines = std.mem.splitScalar(u8, tail, '\n');
-        var tail_offset: usize = 0;
-        while (tail_lines.next()) |next_line| {
-            const next_trimmed = std.mem.trim(u8, next_line, " \t\r");
-            var next_hashes: usize = 0;
-            while (next_hashes < next_trimmed.len and next_trimmed[next_hashes] == '#') : (next_hashes += 1) {}
-            if (next_hashes > 0 and next_hashes <= hashes and next_hashes < next_trimmed.len and next_trimmed[next_hashes] == ' ') {
-                section_end = tail_offset;
-                break;
+    while (offset <= body.len) {
+        const line_end = std.mem.indexOfScalarPos(u8, body, offset, '\n') orelse body.len;
+        const line = body[offset..line_end];
+        const next_offset = if (line_end < body.len) line_end + 1 else body.len + 1;
+
+        if (fenceDelimiter(line)) |fence| {
+            if (fence_char == null) {
+                fence_char = fence.char;
+                fence_len = fence.len;
+            } else if (fence.char == fence_char.? and fence.len >= fence_len and fence.is_closing) {
+                fence_char = null;
+                fence_len = 0;
             }
-            tail_offset += next_line.len + 1;
+            offset = next_offset;
+            continue;
         }
-        return std.mem.trim(u8, tail[0..section_end], " \t\r\n");
+
+        if (fence_char == null and !isIndentedCode(line)) {
+            if (atxHeading(line)) |heading| {
+                if (selected_level) |level| {
+                    if (heading.level <= level)
+                        return std.mem.trim(u8, body[section_start..offset], " \t\r\n");
+                } else if (std.ascii.eqlIgnoreCase(heading.title, section_name)) {
+                    selected_level = heading.level;
+                    section_start = @min(next_offset, body.len);
+                }
+            }
+        }
+
+        if (line_end == body.len) break;
+        offset = next_offset;
     }
-    return null;
+    return if (selected_level != null)
+        std.mem.trim(u8, body[section_start..], " \t\r\n")
+    else
+        null;
+}
+
+const Heading = struct {
+    level: usize,
+    title: []const u8,
+};
+
+fn atxHeading(line: []const u8) ?Heading {
+    const without_cr = std.mem.trimEnd(u8, line, "\r");
+    var indent: usize = 0;
+    while (indent < without_cr.len and without_cr[indent] == ' ' and indent < 4) : (indent += 1) {}
+    if (indent > 3 or indent >= without_cr.len or without_cr[indent] != '#') return null;
+    var level: usize = 0;
+    while (indent + level < without_cr.len and without_cr[indent + level] == '#' and level < 7) : (level += 1) {}
+    if (level == 0 or level > 6) return null;
+    const after = indent + level;
+    if (after < without_cr.len and without_cr[after] != ' ' and without_cr[after] != '\t') return null;
+    var title = std.mem.trim(u8, without_cr[after..], " \t");
+    while (title.len > 0 and title[title.len - 1] == '#') title = std.mem.trimEnd(u8, title[0 .. title.len - 1], " \t");
+    return .{ .level = level, .title = title };
+}
+
+const Fence = struct {
+    char: u8,
+    len: usize,
+    is_closing: bool,
+};
+
+fn fenceDelimiter(line: []const u8) ?Fence {
+    const without_cr = std.mem.trimEnd(u8, line, "\r");
+    var indent: usize = 0;
+    while (indent < without_cr.len and without_cr[indent] == ' ' and indent < 4) : (indent += 1) {}
+    if (indent > 3 or indent >= without_cr.len) return null;
+    const char = without_cr[indent];
+    if (char != '`' and char != '~') return null;
+    var count: usize = 0;
+    while (indent + count < without_cr.len and without_cr[indent + count] == char) : (count += 1) {}
+    return if (count >= 3) .{
+        .char = char,
+        .len = count,
+        .is_closing = std.mem.trim(u8, without_cr[indent + count ..], " \t").len == 0,
+    } else null;
+}
+
+fn isIndentedCode(line: []const u8) bool {
+    if (line.len == 0) return false;
+    if (line[0] == '\t') return true;
+    var spaces: usize = 0;
+    while (spaces < line.len and line[spaces] == ' ') : (spaces += 1) {}
+    return spaces >= 4;
 }
 
 fn containsFold(haystack: []const u8, needle: []const u8) bool {
@@ -559,6 +634,54 @@ test "generic ingest placeholders are explicitly unready" {
     try std.testing.expect(!containsFold("Concrete acceptance", "is implemented and tested."));
     try std.testing.expect(containsFold("Thing is implemented and tested.", "IS IMPLEMENTED AND TESTED."));
     try std.testing.expect(containsFold("Implement per acceptance criteria.", "implement per acceptance criteria"));
+}
+
+test "artifact sections honor nested headings and ignore code-block headings" {
+    const body =
+        \\```md
+        \\## Target
+        \\outside fenced decoy
+        \\```
+        \\    ## Target
+        \\    outside indented decoy
+        \\## Target
+        \\TARGET_SENTINEL
+        \\### Nested
+        \\NESTED_SENTINEL
+        \\```md
+        \\## Fenced fake terminator
+        \\FENCED_SENTINEL
+        \\```
+        \\    ## Indented fake terminator
+        \\    INDENTED_SENTINEL
+        \\TAIL_SENTINEL
+        \\## Next
+        \\NEXT_SENTINEL
+    ;
+    const section_body = artifactSection(body, "artifact:7#Target") orelse
+        return error.TestUnexpectedResult;
+    const expected =
+        \\TARGET_SENTINEL
+        \\### Nested
+        \\NESTED_SENTINEL
+        \\```md
+        \\## Fenced fake terminator
+        \\FENCED_SENTINEL
+        \\```
+        \\    ## Indented fake terminator
+        \\    INDENTED_SENTINEL
+        \\TAIL_SENTINEL
+    ;
+    try std.testing.expectEqualStrings(expected, section_body);
+    try std.testing.expect(std.mem.indexOf(u8, section_body, "TARGET_SENTINEL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, section_body, "### Nested") != null);
+    try std.testing.expect(std.mem.indexOf(u8, section_body, "NESTED_SENTINEL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, section_body, "FENCED_SENTINEL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, section_body, "INDENTED_SENTINEL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, section_body, "TAIL_SENTINEL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, section_body, "outside fenced decoy") == null);
+    try std.testing.expect(std.mem.indexOf(u8, section_body, "outside indented decoy") == null);
+    try std.testing.expect(std.mem.indexOf(u8, section_body, "NEXT_SENTINEL") == null);
 }
 
 test "materialization preserves lineage, replay identity, rollback, and model neutrality" {
@@ -621,8 +744,14 @@ test "materialization preserves lineage, replay identity, rollback, and model ne
         \\) values ('task', 98, 'task', 1, 'blocks')
     );
 
+    const roadmap_citations = [_]RoadmapCitation{.{
+        .task_id = 1,
+        .artifact_id = 1,
+        .source_locator = "roadmap#milestone:1/item:1",
+        .source_text = "- ARTIFACT_SENTINEL [slug: sentinel-task]",
+    }};
     try conn.savepoint(allocator, "facts_apply");
-    try reconcile(&conn, allocator, 1);
+    try reconcile(&conn, allocator, 1, &roadmap_citations);
     try conn.releaseSavepoint(allocator, "facts_apply");
 
     try std.testing.expectEqual(@as(i64, 1), try conn.intQuery(
@@ -664,13 +793,13 @@ test "materialization preserves lineage, replay identity, rollback, and model ne
     const max_id_before = try conn.intQuery("select max(id) from routing_task_facts");
     const count_before = try conn.intQuery("select count(*) from routing_task_facts");
     try conn.savepoint(allocator, "facts_replay");
-    try reconcile(&conn, allocator, 1);
+    try reconcile(&conn, allocator, 1, &roadmap_citations);
     try conn.releaseSavepoint(allocator, "facts_replay");
     try std.testing.expectEqual(max_id_before, try conn.intQuery("select max(id) from routing_task_facts"));
     try std.testing.expectEqual(count_before, try conn.intQuery("select count(*) from routing_task_facts"));
 
     try conn.exec("update decisions set status = 'accepted' where id = 1");
-    try reconcile(&conn, allocator, 1);
+    try reconcile(&conn, allocator, 1, &roadmap_citations);
     try std.testing.expectEqual(@as(i64, 1), try conn.intQuery(
         \\select count(*) from routing_task_facts
         \\where fact_kind = 'locked_decision' and value_text = 'DECISION_SENTINEL atomic transaction'
