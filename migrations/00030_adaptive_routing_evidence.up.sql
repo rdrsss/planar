@@ -35,7 +35,7 @@ on routing_candidate_bindings (role, tier, candidate_id);
 -- host about one exact candidate identifier and its spawn verification.
 create table routing_host_observations (
   id                  integer primary key autoincrement,
-  candidate_id        integer not null references routing_candidates(id) on delete cascade,
+  candidate_id        integer not null references routing_candidates(id) on delete restrict,
   host_id             text not null check (length(host_id) > 0),
   observation_version integer not null check (observation_version > 0),
   availability        text not null check (
@@ -118,8 +118,14 @@ create table routing_experiments (
     complexity in ('bounded', 'standard', 'high-risk')
   ),
   routing_policy_version    text not null check (length(routing_policy_version) > 0),
-  eligible_population_json  text not null check (json_valid(eligible_population_json)),
-  candidate_set_json        text not null check (json_valid(candidate_set_json)),
+  eligible_population_json  text not null check (
+    json_valid(eligible_population_json)
+    and json_type(eligible_population_json) = 'array'
+  ),
+  candidate_set_json        text not null check (
+    json_valid(candidate_set_json)
+    and json_type(candidate_set_json) = 'array'
+  ),
   allocation_method         text not null check (
     allocation_method in ('randomized', 'balanced')
   ),
@@ -201,6 +207,39 @@ create index ix_routing_dispatch_snapshots_experiment
 on routing_dispatch_snapshots (experiment_id, logical_work_item_id)
 where experiment_id is not null;
 
+-- Declared assignments must be members of the frozen experiment manifest and
+-- exactly match its cohort. A merely non-null experiment ID is insufficient.
+create trigger routing_dispatch_snapshots_experiment_identity
+before insert on routing_dispatch_snapshots
+when new.assignment_class = 'declared_experiment'
+  and not exists (
+    select 1
+    from routing_experiments as experiment
+    where experiment.id = new.experiment_id
+      and experiment.project_id = new.project_id
+      and experiment.validation_policy_version = new.validation_policy_version
+      and experiment.vendor = new.vendor
+      and experiment.role = new.role
+      and experiment.tier = new.tier
+      and experiment.work_type = new.work_type
+      and experiment.complexity = new.complexity
+      and experiment.routing_policy_version = new.routing_policy_version
+      and exists (
+        select 1
+        from json_each(experiment.eligible_population_json)
+        where value = new.logical_work_item_id
+      )
+      and exists (
+        select 1
+        from json_each(experiment.candidate_set_json)
+        where type = 'integer'
+          and value = new.requested_candidate_id
+      )
+  )
+begin
+  select raise(abort, 'routing dispatch does not match frozen experiment');
+end;
+
 -- routing_dispatch_events: append-only attempts and outcomes. event_id makes
 -- replay idempotent; per-dispatch sequence makes out-of-order folding stable.
 create table routing_dispatch_events (
@@ -270,6 +309,10 @@ create table routing_terminal_samples (
   created_at                text not null default (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   check (quality_success = 0 or terminal_state = 'completed'),
   check (
+    terminal_state != 'candidate_mismatch'
+    or (cohort_eligible = 0 and exclusion_reason is not null)
+  ),
+  check (
     (cohort_eligible = 1 and exclusion_reason is null)
     or (cohort_eligible = 0 and exclusion_reason is not null)
   ),
@@ -294,6 +337,8 @@ when not exists (
   from routing_dispatch_events as event
   join routing_dispatch_snapshots as dispatch
     on dispatch.id = event.dispatch_id
+  join routing_candidates as candidate
+    on candidate.id = dispatch.requested_candidate_id
   where event.event_id = new.terminal_event_id
     and event.event_kind = 'outcome'
     and event.terminal_state = new.terminal_state
@@ -310,6 +355,13 @@ when not exists (
     and dispatch.tier = new.tier
     and dispatch.work_type = new.work_type
     and dispatch.complexity = new.complexity
+    and (
+      new.cohort_eligible = 0
+      or (
+        dispatch.actual_vendor = dispatch.vendor
+        and dispatch.actual_candidate_id = candidate.candidate_id
+      )
+    )
 )
 begin
   select raise(abort, 'routing terminal sample identity mismatch');
@@ -364,6 +416,18 @@ begin
   select raise(abort, 'routing dispatch snapshots are immutable');
 end;
 
+create trigger routing_host_observations_immutable
+before update on routing_host_observations
+begin
+  select raise(abort, 'routing host observations are immutable');
+end;
+
+create trigger routing_host_observations_immutable_delete
+before delete on routing_host_observations
+begin
+  select raise(abort, 'routing host observations are immutable');
+end;
+
 -- Experiment status may advance, but the pre-outcome manifest is frozen.
 create trigger routing_experiments_manifest_immutable
 before update of
@@ -387,6 +451,12 @@ before update of
 on routing_experiments
 begin
   select raise(abort, 'routing experiment manifests are immutable');
+end;
+
+create trigger routing_experiments_immutable_delete
+before delete on routing_experiments
+begin
+  select raise(abort, 'routing experiments are immutable');
 end;
 
 create trigger routing_dispatch_events_append_only_update

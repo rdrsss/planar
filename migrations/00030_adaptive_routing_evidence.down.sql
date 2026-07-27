@@ -3,9 +3,13 @@ drop trigger routing_terminal_samples_immutable;
 drop trigger routing_terminal_samples_identity;
 drop trigger routing_dispatch_events_append_only_delete;
 drop trigger routing_dispatch_events_append_only_update;
+drop trigger routing_experiments_immutable_delete;
 drop trigger routing_experiments_manifest_immutable;
+drop trigger routing_host_observations_immutable_delete;
+drop trigger routing_host_observations_immutable;
 drop trigger routing_dispatch_snapshots_immutable_delete;
 drop trigger routing_dispatch_snapshots_immutable;
+drop trigger routing_dispatch_snapshots_experiment_identity;
 
 drop view routing_candidate_compatibility_v1;
 
