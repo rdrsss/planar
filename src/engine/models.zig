@@ -1,4 +1,4 @@
-//! engine/models.zig — provider + model capability discovery (plan 540/543).
+//! engine/models.zig — opaque candidate configuration and host observations.
 //!
 //! Backs the `planar models` verb. Two responsibilities:
 //!
@@ -22,7 +22,8 @@
 //! (phase 2) is the eventual single source of truth for external harnesses and
 //! skills render.
 //!
-//! No DB handle is required; discovery is filesystem/PATH + subprocess only.
+//! The embedded catalog below is retained for one read/export compatibility
+//! window only. It is never an eligibility, classification, or ranking input.
 
 const std = @import("std");
 const config = @import("config.zig");
@@ -55,6 +56,84 @@ pub const Resolution = struct {
     model: []const u8,
     source: config.Provenance,
 };
+
+pub const HostObservationView = struct {
+    host_id: []const u8,
+    observation_version: i64,
+    cli_availability: []const u8,
+    exact_spawn_verification: []const u8,
+    captured_at: []const u8,
+    expires_at: []const u8,
+    evidence_ref: []const u8,
+};
+
+pub const ConfiguredCandidate = struct {
+    opaque_id: []const u8,
+    vendor: []const u8,
+    enabled: bool = true,
+    tier: []const u8,
+    allowed_roles: []const []const u8,
+    fallback_order: usize,
+    compatibility_source: []const u8 = "legacy_config",
+    latest_observation: ?HostObservationView = null,
+};
+
+pub const ConfiguredRegistry = struct {
+    candidates: []ConfiguredCandidate,
+    migration_warning: []const u8 =
+        "legacy [models] configuration imported as opaque candidate IDs; export and migrate to the candidate registry",
+
+    pub fn deinit(self: ConfiguredRegistry, allocator: std.mem.Allocator) void {
+        for (self.candidates) |candidate| allocator.free(candidate.allowed_roles);
+        allocator.free(self.candidates);
+    }
+};
+
+/// One-window compatibility import for the former `[models]` catalog. Values
+/// are copied byte-for-byte from effective configuration; no ID is guessed,
+/// normalized, classified from a label, or checked against `catalog`.
+pub fn importLegacyConfig(
+    allocator: std.mem.Allocator,
+    eff: *const config.EffectiveMap,
+) std.mem.Allocator.Error!ConfiguredRegistry {
+    var out: std.ArrayList(ConfiguredCandidate) = .empty;
+    errdefer {
+        for (out.items) |candidate| allocator.free(candidate.allowed_roles);
+        out.deinit(allocator);
+    }
+    for (config.vendors) |vendor| {
+        var order: usize = 0;
+        for (config.tiers) |tier| {
+            var key_buf: [160]u8 = undefined;
+            const key = std.fmt.bufPrint(&key_buf, "models.{s}.{s}", .{ vendor, tier }) catch continue;
+            const value = eff.get(key) orelse continue;
+            const ids: []const []const u8 = if (value.candidates.len > 0)
+                value.candidates
+            else
+                &.{value.value};
+            for (ids) |opaque_id| {
+                if (opaque_id.len == 0) continue;
+                var roles: std.ArrayList([]const u8) = .empty;
+                defer roles.deinit(allocator);
+                for (routing_roles) |role| {
+                    var role_buf: [160]u8 = undefined;
+                    const role_key = std.fmt.bufPrint(&role_buf, "roles.{s}", .{role}) catch continue;
+                    const role_tier = eff.get(role_key) orelse continue;
+                    if (std.mem.eql(u8, role_tier.value, tier)) try roles.append(allocator, role);
+                }
+                try out.append(allocator, .{
+                    .opaque_id = opaque_id,
+                    .vendor = vendor,
+                    .tier = tier,
+                    .allowed_roles = try roles.toOwnedSlice(allocator),
+                    .fallback_order = order,
+                });
+                order += 1;
+            }
+        }
+    }
+    return .{ .candidates = try out.toOwnedSlice(allocator) };
+}
 
 /// True when the effective map carries a `models.<vendor>.medium` key — the
 /// canonical presence probe for a known vendor.
@@ -729,6 +808,34 @@ pub fn renderText(report: Report, writer: *std.Io.Writer) std.Io.Writer.Error!vo
 // ---------------------------------------------------------------------------
 
 const testing = std.testing;
+
+test "models: legacy config imports exact opaque IDs without catalog metadata" {
+    const a = testing.allocator;
+    const file =
+        \\[models.codex]
+        \\small = ["--opaque value; $()", "operator/exact:id"]
+        \\medium = "medium-id"
+        \\large = "large-id"
+        \\[roles]
+        \\coder = "small"
+    ;
+    var resolved = try config.resolve(a, file, std.process.Environ.empty, null);
+    defer resolved.deinit(a);
+    const registry = try importLegacyConfig(a, &resolved.effective);
+    defer registry.deinit(a);
+
+    var found = false;
+    for (registry.candidates) |candidate| {
+        if (std.mem.eql(u8, candidate.opaque_id, "--opaque value; $()")) {
+            found = true;
+            try testing.expectEqualStrings("codex", candidate.vendor);
+            try testing.expectEqualStrings("small", candidate.tier);
+            try testing.expect(candidate.latest_observation == null);
+            try testing.expect(candidate.allowed_roles.len > 0);
+        }
+    }
+    try testing.expect(found);
+}
 
 test "models: catalog has the two known vendors, each with a model at every tier" {
     try testing.expectEqual(@as(usize, 2), catalog.len);

@@ -132,6 +132,467 @@ pub const HostObservation = struct {
     expires_at: []const u8,
 };
 
+pub const RegistryCandidate = struct {
+    registration: CandidateRegistration,
+    bindings: []CandidateBinding,
+    latest_observation: ?HostObservation,
+
+    pub fn deinit(self: RegistryCandidate, allocator: std.mem.Allocator) void {
+        allocator.free(self.registration.vendor);
+        allocator.free(self.registration.candidate_id);
+        allocator.free(self.registration.compatibility_source);
+        for (self.bindings) |binding| allocator.free(binding.role);
+        allocator.free(self.bindings);
+        if (self.latest_observation) |observation| {
+            allocator.free(observation.host_id);
+            allocator.free(observation.evidence_ref);
+            allocator.free(observation.captured_at);
+            allocator.free(observation.expires_at);
+        }
+    }
+};
+
+pub const RegistryError = error{
+    InvalidValue,
+    NotFound,
+    Conflict,
+    QueryFailed,
+    OutOfMemory,
+};
+
+pub const CreateCandidate = struct {
+    vendor: []const u8,
+    candidate_id: []const u8,
+    enabled: bool = true,
+    fallback_order: i64,
+    compatibility_source: []const u8 = "native",
+};
+
+pub fn createCandidate(d: *db.sqlite.Db, args: CreateCandidate) RegistryError!i64 {
+    if (!validOpaqueValue(args.vendor) or !validOpaqueValue(args.candidate_id) or
+        args.fallback_order < 0 or
+        !(std.mem.eql(u8, args.compatibility_source, "native") or
+            std.mem.eql(u8, args.compatibility_source, "legacy_config")))
+        return error.InvalidValue;
+    return d.execParams(
+        \\insert into routing_candidates
+        \\  (vendor, candidate_id, enabled, fallback_order, compatibility_source)
+        \\values (?, ?, ?, ?, ?)
+    , &.{
+        .{ .text = args.vendor },
+        .{ .text = args.candidate_id },
+        .{ .int = @intFromBool(args.enabled) },
+        .{ .int = args.fallback_order },
+        .{ .text = args.compatibility_source },
+    }) catch return error.Conflict;
+}
+
+pub fn findCandidateId(d: *db.sqlite.Db, vendor: []const u8, candidate_id: []const u8) RegistryError!?i64 {
+    var stmt = d.prepare(
+        "select id from routing_candidates where vendor = ? and candidate_id = ?",
+    ) catch return error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(&.{ .{ .text = vendor }, .{ .text = candidate_id } }) catch return error.QueryFailed;
+    return switch (stmt.step() catch return error.QueryFailed) {
+        .done => null,
+        .row => stmt.columnInt(0),
+    };
+}
+
+pub fn updateCandidate(
+    d: *db.sqlite.Db,
+    id: i64,
+    enabled: bool,
+    fallback_order: i64,
+) RegistryError!void {
+    if (fallback_order < 0) return error.InvalidValue;
+    _ = d.execParams(
+        \\update routing_candidates
+        \\set enabled = ?, fallback_order = ?,
+        \\    registration_version = registration_version + 1,
+        \\    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        \\where id = ?
+    , &.{ .{ .int = @intFromBool(enabled) }, .{ .int = fallback_order }, .{ .int = id } }) catch
+        return error.QueryFailed;
+    if (d.changes() != 1) return error.NotFound;
+}
+
+pub fn deleteCandidate(d: *db.sqlite.Db, id: i64) RegistryError!void {
+    _ = d.execParams("delete from routing_candidates where id = ?", &.{.{ .int = id }}) catch
+        return error.QueryFailed;
+    if (d.changes() != 1) return error.NotFound;
+}
+
+pub fn bindCandidate(
+    d: *db.sqlite.Db,
+    candidate_id: i64,
+    role: []const u8,
+    tier: Tier,
+) RegistryError!void {
+    if (!validOpaqueValue(role)) return error.InvalidValue;
+    _ = d.execParams(
+        \\insert into routing_candidate_bindings (candidate_id, role, tier)
+        \\values (?, ?, ?)
+        \\on conflict(candidate_id, role, tier) do nothing
+    , &.{ .{ .int = candidate_id }, .{ .text = role }, .{ .text = @tagName(tier) } }) catch
+        return error.QueryFailed;
+}
+
+pub fn unbindCandidate(
+    d: *db.sqlite.Db,
+    candidate_id: i64,
+    role: []const u8,
+    tier: Tier,
+) RegistryError!void {
+    _ = d.execParams(
+        "delete from routing_candidate_bindings where candidate_id = ? and role = ? and tier = ?",
+        &.{ .{ .int = candidate_id }, .{ .text = role }, .{ .text = @tagName(tier) } },
+    ) catch return error.QueryFailed;
+}
+
+pub const ObserveCandidate = struct {
+    candidate_id: i64,
+    host_id: []const u8,
+    observation_version: i64,
+    availability: Availability,
+    spawn_verification: SpawnVerification,
+    evidence_ref: []const u8,
+    captured_at: []const u8,
+    expires_at: []const u8,
+};
+
+pub fn observeCandidate(d: *db.sqlite.Db, args: ObserveCandidate) RegistryError!i64 {
+    if (!validOpaqueValue(args.host_id) or !validOpaqueValue(args.evidence_ref) or
+        args.observation_version <= 0 or
+        std.mem.order(u8, args.expires_at, args.captured_at) != .gt)
+        return error.InvalidValue;
+    return d.execParams(
+        \\insert into routing_host_observations
+        \\  (candidate_id, host_id, observation_version, availability,
+        \\   spawn_verification, evidence_ref, captured_at, expires_at)
+        \\values (?, ?, ?, ?, ?, ?, ?, ?)
+    , &.{
+        .{ .int = args.candidate_id },
+        .{ .text = args.host_id },
+        .{ .int = args.observation_version },
+        .{ .text = @tagName(args.availability) },
+        .{ .text = @tagName(args.spawn_verification) },
+        .{ .text = args.evidence_ref },
+        .{ .text = args.captured_at },
+        .{ .text = args.expires_at },
+    }) catch return error.Conflict;
+}
+
+pub fn listCandidates(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+) RegistryError![]RegistryCandidate {
+    var out: std.ArrayList(RegistryCandidate) = .empty;
+    errdefer {
+        for (out.items) |candidate| candidate.deinit(allocator);
+        out.deinit(allocator);
+    }
+    var stmt = d.prepare(
+        \\select id, vendor, candidate_id, enabled, fallback_order,
+        \\       registration_version, compatibility_source
+        \\from routing_candidates
+        \\order by vendor, fallback_order, candidate_id
+    ) catch return error.QueryFailed;
+    defer stmt.finalize();
+    while (true) switch (stmt.step() catch return error.QueryFailed) {
+        .done => break,
+        .row => {
+            const id = stmt.columnInt(0);
+            try out.append(allocator, .{
+                .registration = .{
+                    .id = id,
+                    .vendor = stmt.columnTextAlloc(1, allocator) catch return error.OutOfMemory,
+                    .candidate_id = stmt.columnTextAlloc(2, allocator) catch return error.OutOfMemory,
+                    .enabled = stmt.columnInt(3) != 0,
+                    .fallback_order = stmt.columnInt(4),
+                    .registration_version = stmt.columnInt(5),
+                    .compatibility_source = stmt.columnTextAlloc(6, allocator) catch return error.OutOfMemory,
+                },
+                .bindings = try readBindings(d, allocator, id),
+                .latest_observation = try readLatestObservation(d, allocator, id),
+            });
+        },
+    };
+    return out.toOwnedSlice(allocator);
+}
+
+/// Read one candidate with the latest observation made by the requested host.
+/// Host identity is mandatory at eligibility time; observations from other
+/// hosts are never substituted even when they carry a larger version number.
+pub fn getCandidateForHost(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    id: i64,
+    host_id: []const u8,
+) RegistryError!RegistryCandidate {
+    if (!validOpaqueValue(host_id)) return error.InvalidValue;
+    var stmt = d.prepare(
+        \\select id, vendor, candidate_id, enabled, fallback_order,
+        \\       registration_version, compatibility_source
+        \\from routing_candidates where id = ?
+    ) catch return error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .int = id }}) catch return error.QueryFailed;
+    if ((stmt.step() catch return error.QueryFailed) == .done) return error.NotFound;
+    const candidate: RegistryCandidate = .{
+        .registration = .{
+            .id = stmt.columnInt(0),
+            .vendor = stmt.columnTextAlloc(1, allocator) catch return error.OutOfMemory,
+            .candidate_id = stmt.columnTextAlloc(2, allocator) catch return error.OutOfMemory,
+            .enabled = stmt.columnInt(3) != 0,
+            .fallback_order = stmt.columnInt(4),
+            .registration_version = stmt.columnInt(5),
+            .compatibility_source = stmt.columnTextAlloc(6, allocator) catch return error.OutOfMemory,
+        },
+        .bindings = try readBindings(d, allocator, id),
+        .latest_observation = try readLatestObservationForHost(d, allocator, id, host_id),
+    };
+    return candidate;
+}
+
+fn readBindings(d: *db.sqlite.Db, allocator: std.mem.Allocator, id: i64) RegistryError![]CandidateBinding {
+    var out: std.ArrayList(CandidateBinding) = .empty;
+    errdefer {
+        for (out.items) |binding| allocator.free(binding.role);
+        out.deinit(allocator);
+    }
+    var stmt = d.prepare(
+        "select role, tier from routing_candidate_bindings where candidate_id = ? order by role, tier",
+    ) catch return error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .int = id }}) catch return error.QueryFailed;
+    while (true) switch (stmt.step() catch return error.QueryFailed) {
+        .done => break,
+        .row => {
+            const tier_text = stmt.columnTextAlloc(1, allocator) catch return error.OutOfMemory;
+            defer allocator.free(tier_text);
+            try out.append(allocator, .{
+                .candidate_id = id,
+                .role = stmt.columnTextAlloc(0, allocator) catch return error.OutOfMemory,
+                .tier = parseTier(tier_text) orelse return error.QueryFailed,
+            });
+        },
+    };
+    return out.toOwnedSlice(allocator);
+}
+
+fn readLatestObservation(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    id: i64,
+) RegistryError!?HostObservation {
+    var stmt = d.prepare(
+        \\select id, host_id, observation_version, availability,
+        \\       spawn_verification, evidence_ref, captured_at, expires_at
+        \\from routing_host_observations
+        \\where candidate_id = ?
+        \\order by observation_version desc, id desc limit 1
+    ) catch return error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .int = id }}) catch return error.QueryFailed;
+    return switch (stmt.step() catch return error.QueryFailed) {
+        .done => null,
+        .row => blk: {
+            const availability = stmt.columnTextAlloc(3, allocator) catch return error.OutOfMemory;
+            defer allocator.free(availability);
+            const verification = stmt.columnTextAlloc(4, allocator) catch return error.OutOfMemory;
+            defer allocator.free(verification);
+            break :blk .{
+                .id = stmt.columnInt(0),
+                .candidate_id = id,
+                .host_id = stmt.columnTextAlloc(1, allocator) catch return error.OutOfMemory,
+                .observation_version = stmt.columnInt(2),
+                .availability = parseAvailability(availability) orelse return error.QueryFailed,
+                .spawn_verification = parseSpawnVerification(verification) orelse return error.QueryFailed,
+                .evidence_ref = stmt.columnTextAlloc(5, allocator) catch return error.OutOfMemory,
+                .captured_at = stmt.columnTextAlloc(6, allocator) catch return error.OutOfMemory,
+                .expires_at = stmt.columnTextAlloc(7, allocator) catch return error.OutOfMemory,
+            };
+        },
+    };
+}
+
+fn readLatestObservationForHost(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    id: i64,
+    host_id: []const u8,
+) RegistryError!?HostObservation {
+    var stmt = d.prepare(
+        \\select id, host_id, observation_version, availability,
+        \\       spawn_verification, evidence_ref, captured_at, expires_at
+        \\from routing_host_observations
+        \\where candidate_id = ? and host_id = ?
+        \\order by observation_version desc, id desc limit 1
+    ) catch return error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(&.{ .{ .int = id }, .{ .text = host_id } }) catch return error.QueryFailed;
+    return readObservationRow(&stmt, allocator, id);
+}
+
+fn readObservationRow(
+    stmt: anytype,
+    allocator: std.mem.Allocator,
+    id: i64,
+) RegistryError!?HostObservation {
+    return switch (stmt.step() catch return error.QueryFailed) {
+        .done => null,
+        .row => blk: {
+            const availability = stmt.columnTextAlloc(3, allocator) catch return error.OutOfMemory;
+            defer allocator.free(availability);
+            const verification = stmt.columnTextAlloc(4, allocator) catch return error.OutOfMemory;
+            defer allocator.free(verification);
+            break :blk .{
+                .id = stmt.columnInt(0),
+                .candidate_id = id,
+                .host_id = stmt.columnTextAlloc(1, allocator) catch return error.OutOfMemory,
+                .observation_version = stmt.columnInt(2),
+                .availability = parseAvailability(availability) orelse return error.QueryFailed,
+                .spawn_verification = parseSpawnVerification(verification) orelse return error.QueryFailed,
+                .evidence_ref = stmt.columnTextAlloc(5, allocator) catch return error.OutOfMemory,
+                .captured_at = stmt.columnTextAlloc(6, allocator) catch return error.OutOfMemory,
+                .expires_at = stmt.columnTextAlloc(7, allocator) catch return error.OutOfMemory,
+            };
+        },
+    };
+}
+
+fn parseTier(value: []const u8) ?Tier {
+    inline for (std.meta.tags(Tier)) |tag| if (std.mem.eql(u8, value, @tagName(tag))) return tag;
+    return null;
+}
+
+fn parseAvailability(value: []const u8) ?Availability {
+    inline for (std.meta.tags(Availability)) |tag| if (std.mem.eql(u8, value, @tagName(tag))) return tag;
+    return null;
+}
+
+fn parseSpawnVerification(value: []const u8) ?SpawnVerification {
+    inline for (std.meta.tags(SpawnVerification)) |tag| if (std.mem.eql(u8, value, @tagName(tag))) return tag;
+    return null;
+}
+
+/// Independent dispatch gates for one opaque registration.  These fields are
+/// intentionally not collapsed into a score: callers must retain the named
+/// reason for every failed gate.
+pub const Eligibility = struct {
+    cli_available: bool,
+    exact_spawn_verified: bool,
+    role_tier_bound: bool,
+    role_surface_override_supported: bool,
+    host_policy_permits: bool,
+    observation_fresh: bool,
+
+    pub fn eligible(self: Eligibility) bool {
+        return self.cli_available and self.exact_spawn_verified and
+            self.role_tier_bound and self.role_surface_override_supported and
+            self.host_policy_permits and self.observation_fresh;
+    }
+
+    pub fn reasonCount(self: Eligibility) usize {
+        return @as(usize, @intFromBool(!self.cli_available)) +
+            @as(usize, @intFromBool(!self.exact_spawn_verified)) +
+            @as(usize, @intFromBool(!self.role_tier_bound)) +
+            @as(usize, @intFromBool(!self.role_surface_override_supported)) +
+            @as(usize, @intFromBool(!self.host_policy_permits)) +
+            @as(usize, @intFromBool(!self.observation_fresh));
+    }
+
+    pub fn reasons(self: Eligibility, buffer: *[6]EligibilityReason) []const EligibilityReason {
+        var len: usize = 0;
+        if (!self.cli_available) {
+            buffer[len] = .provider_cli_unavailable;
+            len += 1;
+        }
+        if (!self.exact_spawn_verified) {
+            buffer[len] = .exact_spawn_unverified;
+            len += 1;
+        }
+        if (!self.role_tier_bound) {
+            buffer[len] = .role_tier_not_bound;
+            len += 1;
+        }
+        if (!self.role_surface_override_supported) {
+            buffer[len] = .role_surface_override_unsupported;
+            len += 1;
+        }
+        if (!self.host_policy_permits) {
+            buffer[len] = .host_policy_denied;
+            len += 1;
+        }
+        if (!self.observation_fresh) {
+            buffer[len] = .host_observation_expired;
+            len += 1;
+        }
+        return buffer[0..len];
+    }
+};
+
+pub const EligibilityReason = enum {
+    provider_cli_unavailable,
+    exact_spawn_unverified,
+    role_tier_not_bound,
+    role_surface_override_unsupported,
+    host_policy_denied,
+    host_observation_expired,
+};
+
+/// Inputs already established by the host/configuration boundary.  Planar
+/// never derives any field from a candidate ID or display metadata.
+pub const EligibilityInput = struct {
+    enabled: bool,
+    binding_present: bool,
+    role_surface_override_supported: bool,
+    host_policy_permits: bool,
+    observation: ?HostObservation,
+    now: []const u8,
+};
+
+pub fn evaluateEligibility(input: EligibilityInput) Eligibility {
+    const observation = input.observation;
+    return .{
+        .cli_available = observation != null and observation.?.availability == .available,
+        .exact_spawn_verified = observation != null and observation.?.spawn_verification == .verified,
+        .role_tier_bound = input.enabled and input.binding_present,
+        .role_surface_override_supported = input.role_surface_override_supported,
+        .host_policy_permits = input.host_policy_permits,
+        .observation_fresh = observation != null and
+            std.mem.order(u8, input.now, observation.?.expires_at) == .lt,
+    };
+}
+
+/// Reject values that cannot safely cross JSON/argv boundaries.  Punctuation,
+/// whitespace, leading dashes, and shell metacharacters remain opaque data.
+pub fn validOpaqueValue(value: []const u8) bool {
+    if (value.len == 0) return false;
+    for (value) |c| if (c < 0x20 or c == 0x7f) return false;
+    return true;
+}
+
+pub const IdentityVerification = enum {
+    matched,
+    missing_actual_identity,
+    vendor_mismatch,
+    candidate_mismatch,
+};
+
+pub fn verifyActualIdentity(
+    requested_vendor: []const u8,
+    requested_candidate: []const u8,
+    actual_vendor: ?[]const u8,
+    actual_candidate: ?[]const u8,
+) IdentityVerification {
+    if (actual_vendor == null or actual_candidate == null) return .missing_actual_identity;
+    if (!std.mem.eql(u8, requested_vendor, actual_vendor.?)) return .vendor_mismatch;
+    if (!std.mem.eql(u8, requested_candidate, actual_candidate.?)) return .candidate_mismatch;
+    return .matched;
+}
+
 /// One materialized task fact with complete source lineage.
 pub const TaskFact = struct {
     id: i64,
@@ -225,6 +686,126 @@ pub const TerminalSample = struct {
     cohort_eligible: bool,
     exclusion_reason: ?[]const u8,
 };
+
+test "eligibility names independent provider, verification, binding, policy, and freshness gates" {
+    const observation: HostObservation = .{
+        .id = 1,
+        .candidate_id = 1,
+        .host_id = "host-a",
+        .observation_version = 3,
+        .availability = .unavailable,
+        .spawn_verification = .mismatch,
+        .evidence_ref = "probe:3",
+        .captured_at = "2026-01-01T00:00:00Z",
+        .expires_at = "2026-01-02T00:00:00Z",
+    };
+    const eligibility = evaluateEligibility(.{
+        .enabled = false,
+        .binding_present = true,
+        .role_surface_override_supported = false,
+        .host_policy_permits = false,
+        .observation = observation,
+        .now = "2026-01-03T00:00:00Z",
+    });
+    try std.testing.expect(!eligibility.eligible());
+    try std.testing.expect(!eligibility.cli_available);
+    try std.testing.expect(!eligibility.exact_spawn_verified);
+    try std.testing.expect(!eligibility.role_tier_bound);
+    try std.testing.expect(!eligibility.observation_fresh);
+    try std.testing.expectEqual(@as(usize, 6), eligibility.reasonCount());
+}
+
+test "opaque identifiers preserve shell punctuation but reject control characters" {
+    try std.testing.expect(validOpaqueValue("--opaque value; $() 'quoted'"));
+    try std.testing.expect(!validOpaqueValue("unsafe\nvalue"));
+    try std.testing.expect(!validOpaqueValue(""));
+}
+
+test "registry CRUD exposes bindings and latest versioned host observation" {
+    const allocator = std.testing.allocator;
+    var conn = try db.sqlite.Db.openMemory();
+    defer conn.close();
+    try db.migrate.applyAll(&conn, allocator);
+
+    const id = try createCandidate(&conn, .{
+        .vendor = "vendor-x",
+        .candidate_id = "--opaque value; $()",
+        .fallback_order = 7,
+    });
+    try bindCandidate(&conn, id, "coder", .medium);
+    _ = try observeCandidate(&conn, .{
+        .candidate_id = id,
+        .host_id = "host-a",
+        .observation_version = 1,
+        .availability = .available,
+        .spawn_verification = .unverified,
+        .evidence_ref = "probe:1",
+        .captured_at = "2026-01-01T00:00:00Z",
+        .expires_at = "2026-01-02T00:00:00Z",
+    });
+    _ = try observeCandidate(&conn, .{
+        .candidate_id = id,
+        .host_id = "host-a",
+        .observation_version = 100,
+        .availability = .unavailable,
+        .spawn_verification = .failed,
+        .evidence_ref = "probe:2",
+        .captured_at = "2026-01-02T00:00:00Z",
+        .expires_at = "2026-01-03T00:00:00Z",
+    });
+    _ = try observeCandidate(&conn, .{
+        .candidate_id = id,
+        .host_id = "host-b",
+        .observation_version = 1,
+        .availability = .available,
+        .spawn_verification = .verified,
+        .evidence_ref = "host-b:1",
+        .captured_at = "2026-01-02T00:00:00Z",
+        .expires_at = "2027-01-03T00:00:00Z",
+    });
+    try updateCandidate(&conn, id, false, 3);
+
+    const rows = try listCandidates(&conn, allocator);
+    defer {
+        for (rows) |row| row.deinit(allocator);
+        allocator.free(rows);
+    }
+    try std.testing.expectEqual(@as(usize, 1), rows.len);
+    try std.testing.expectEqualStrings("--opaque value; $()", rows[0].registration.candidate_id);
+    try std.testing.expect(!rows[0].registration.enabled);
+    try std.testing.expectEqual(@as(i64, 3), rows[0].registration.fallback_order);
+    try std.testing.expectEqual(@as(usize, 1), rows[0].bindings.len);
+    try std.testing.expectEqual(@as(i64, 100), rows[0].latest_observation.?.observation_version);
+    try std.testing.expectEqual(Availability.unavailable, rows[0].latest_observation.?.availability);
+
+    const host_b = try getCandidateForHost(&conn, allocator, id, "host-b");
+    defer host_b.deinit(allocator);
+    try std.testing.expectEqual(@as(i64, 1), host_b.latest_observation.?.observation_version);
+    try std.testing.expectEqual(Availability.available, host_b.latest_observation.?.availability);
+    try std.testing.expectEqual(SpawnVerification.verified, host_b.latest_observation.?.spawn_verification);
+
+    try unbindCandidate(&conn, id, "coder", .medium);
+    try std.testing.expectError(error.QueryFailed, deleteCandidate(&conn, id));
+}
+
+test "requested and actual identities never alias" {
+    try std.testing.expectEqual(
+        IdentityVerification.matched,
+        verifyActualIdentity("vendor-x", "candidate-a", "vendor-x", "candidate-a"),
+    );
+    try std.testing.expectEqual(
+        IdentityVerification.vendor_mismatch,
+        verifyActualIdentity("vendor-x", "candidate-a", "vendor-y", "candidate-a"),
+    );
+    try std.testing.expectEqual(
+        IdentityVerification.candidate_mismatch,
+        verifyActualIdentity("vendor-x", "candidate-a", "vendor-x", "candidate-b"),
+    );
+    try std.testing.expectEqual(
+        IdentityVerification.missing_actual_identity,
+        verifyActualIdentity("vendor-x", "candidate-a", null, null),
+    );
+}
 
 test "migration 00030 enforces opaque candidate and host observation identity" {
     var conn = try db.sqlite.Db.openMemory();
