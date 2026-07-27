@@ -235,6 +235,13 @@ when new.assignment_class = 'declared_experiment'
         where type = 'integer'
           and value = new.requested_candidate_id
       )
+      and exists (
+        select 1
+        from routing_candidates as candidate
+        where candidate.id = new.requested_candidate_id
+          and candidate.vendor = experiment.vendor
+          and candidate.vendor = new.vendor
+      )
   )
 begin
   select raise(abort, 'routing dispatch does not match frozen experiment');
@@ -356,10 +363,25 @@ when not exists (
     and dispatch.work_type = new.work_type
     and dispatch.complexity = new.complexity
     and (
-      new.cohort_eligible = 0
+      (
+        dispatch.actual_vendor is null
+        and dispatch.actual_candidate_id is null
+        and new.terminal_state != 'candidate_mismatch'
+      )
       or (
         dispatch.actual_vendor = dispatch.vendor
         and dispatch.actual_candidate_id = candidate.candidate_id
+        and new.terminal_state != 'candidate_mismatch'
+      )
+      or (
+        dispatch.actual_vendor is not null
+        and dispatch.actual_candidate_id is not null
+        and (
+          dispatch.actual_vendor != dispatch.vendor
+          or dispatch.actual_candidate_id != candidate.candidate_id
+        )
+        and new.terminal_state = 'candidate_mismatch'
+        and new.cohort_eligible = 0
       )
     )
 )

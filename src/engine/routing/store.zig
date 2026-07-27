@@ -345,6 +345,11 @@ test "migration 00030 enforces foreign keys, bindings, and immutable audit rows"
         \\insert into routing_candidate_bindings (candidate_id, role, tier)
         \\values (1, 'coder', 'unknown')
     );
+    try conn.exec(
+        \\insert into routing_candidates
+        \\  (vendor, candidate_id, fallback_order)
+        \\values ('vendor-y', 'candidate-cross-vendor', 0)
+    );
 
     try seedDispatchRow(&conn);
     try expectConstraint(
@@ -368,6 +373,26 @@ test "migration 00030 enforces foreign keys, bindings, and immutable audit rows"
     );
 
     try seedExperimentalDispatch(&conn);
+    try expectConstraint(&conn,
+        \\insert into routing_dispatch_snapshots (
+        \\  dispatch_key, task_id, logical_work_item_id, project_id,
+        \\  validation_policy_version, routing_policy_version,
+        \\  profile_rule_version, vendor, role, tier, work_type, complexity,
+        \\  packet_digest, policy_digest, capability_digest,
+        \\  requested_candidate_id, actual_vendor, actual_candidate_id,
+        \\  assignment_class, experiment_id, operator_decision,
+        \\  reviewer_disposition, terminal_state, confirmed_at
+        \\)
+        \\select
+        \\  'cross-vendor-candidate', task_id, logical_work_item_id, project_id,
+        \\  validation_policy_version, routing_policy_version,
+        \\  profile_rule_version, vendor, role, tier, work_type, complexity,
+        \\  packet_digest, policy_digest, capability_digest,
+        \\  2, 'vendor-y', 'candidate-cross-vendor',
+        \\  assignment_class, experiment_id, operator_decision,
+        \\  reviewer_disposition, terminal_state, confirmed_at
+        \\from routing_dispatch_snapshots where id = 2
+    );
     try expectConstraint(&conn,
         \\insert into routing_dispatch_snapshots (
         \\  dispatch_key, task_id, logical_work_item_id, project_id,
@@ -452,6 +477,49 @@ test "migration 00030 enforces foreign keys, bindings, and immutable audit rows"
         \\)
     );
     try conn.exec(
+        \\insert into routing_dispatch_snapshots (
+        \\  dispatch_key, task_id, logical_work_item_id, project_id,
+        \\  validation_policy_version, routing_policy_version,
+        \\  profile_rule_version, vendor, role, tier, work_type, complexity,
+        \\  packet_digest, policy_digest, capability_digest,
+        \\  requested_candidate_id, actual_vendor, actual_candidate_id,
+        \\  assignment_class, experiment_id, operator_decision,
+        \\  reviewer_disposition, terminal_state, confirmed_at
+        \\)
+        \\select
+        \\  'actual-mismatch-named', task_id, 'task:2', project_id,
+        \\  validation_policy_version, routing_policy_version,
+        \\  profile_rule_version, vendor, role, tier, work_type, complexity,
+        \\  packet_digest, policy_digest, capability_digest,
+        \\  requested_candidate_id, actual_vendor, actual_candidate_id,
+        \\  assignment_class, experiment_id, operator_decision,
+        \\  reviewer_disposition, terminal_state, confirmed_at
+        \\from routing_dispatch_snapshots where id = 3
+    );
+    try conn.exec(
+        \\insert into routing_dispatch_events (
+        \\  dispatch_id, event_id, sequence, event_kind, terminal_state,
+        \\  payload_json, occurred_at
+        \\) values (
+        \\  4, 'mismatch-named-event', 1, 'outcome', 'candidate_mismatch', '{}',
+        \\  '2026-01-01T00:09:30Z'
+        \\)
+    );
+    try conn.exec(
+        \\insert into routing_terminal_samples (
+        \\  experiment_id, logical_work_item_id, role, initial_packet_digest,
+        \\  candidate_id, project_id, validation_policy_version,
+        \\  routing_policy_version, vendor, tier, work_type, complexity,
+        \\  terminal_event_id, terminal_state, quality_success,
+        \\  cohort_eligible, exclusion_reason, finalized_at
+        \\) values (
+        \\  1, 'task:2', 'coder', 'packet-experiment', 1, 1,
+        \\  'validation-v1', 'routing-v1', 'vendor-x', 'medium', 'schema',
+        \\  'standard', 'mismatch-named-event', 'candidate_mismatch', 0, 0,
+        \\  'actual_candidate_mismatch', '2026-01-01T00:10:00Z'
+        \\)
+    );
+    try conn.exec(
         \\insert into routing_dispatch_events (
         \\  dispatch_id, event_id, sequence, event_kind, terminal_state,
         \\  payload_json, occurred_at
@@ -480,7 +548,7 @@ test "migration 00030 enforces foreign keys, bindings, and immutable audit rows"
         \\  validation_policy_version, routing_policy_version,
         \\  profile_rule_version, vendor, role, tier, work_type, complexity,
         \\  packet_digest, policy_digest, capability_digest,
-        \\  2, actual_vendor, 'candidate-b',
+        \\  3, actual_vendor, 'candidate-b',
         \\  assignment_class, experiment_id, operator_decision,
         \\  reviewer_disposition, terminal_state, confirmed_at
         \\from routing_dispatch_snapshots where id = 2
@@ -493,7 +561,7 @@ test "migration 00030 enforces foreign keys, bindings, and immutable audit rows"
         \\  terminal_event_id, terminal_state, quality_success,
         \\  cohort_eligible, finalized_at
         \\) values (
-        \\  1, 'task:1', 'coder', 'packet-experiment', 2, 1,
+        \\  1, 'task:1', 'coder', 'packet-experiment', 3, 1,
         \\  'validation-v1', 'routing-v1', 'vendor-x', 'medium', 'schema',
         \\  'standard', 'terminal-event', 'completed', 1, 1,
         \\  '2026-01-01T00:11:00Z'
@@ -580,7 +648,8 @@ fn seedExperiment(conn: *db.sqlite.Db) !void {
         \\  operator_approved_at
         \\) values (
         \\  'experiment-1', 1, 'validation-v1', 'vendor-x', 'coder',
-        \\  'medium', 'schema', 'standard', 'routing-v1', '["task:1"]', '[1]',
+        \\  'medium', 'schema', 'standard', 'routing-v1',
+        \\  '["task:1","task:2"]', '[1,2]',
         \\  'balanced', '{}', '{}', 'manifest',
         \\  '2026-01-01T00:00:00Z'
         \\)
