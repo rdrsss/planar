@@ -276,7 +276,7 @@ test "scenario: guidance-closeout-envelope stale identity blocks clean while cle
     // are known, so it cannot become its own authority.
     const migration_tail = try deriveMigrationTail(a);
     defer a.free(migration_tail);
-    try std.testing.expectEqualStrings("00029_agent_failure_categories.up.sql", migration_tail);
+    try std.testing.expectEqualStrings("00030_adaptive_routing_evidence.up.sql", migration_tail);
     const migration_base = migration_tail[0 .. migration_tail.len - ".up.sql".len];
     const down_path = try std.fmt.allocPrint(a, "migrations/{s}.down.sql", .{migration_base});
     defer a.free(down_path);
@@ -285,7 +285,7 @@ test "scenario: guidance-closeout-envelope stale identity blocks clean while cle
     defer a.free(up_path);
     const up_body = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, up_path, a, .limited(128 * 1024));
     defer a.free(up_body);
-    try std.testing.expect(std.mem.indexOf(u8, up_body, "values (29,") != null);
+    try std.testing.expect(std.mem.indexOf(u8, up_body, "values (30,") != null);
 
     const build = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, "build.zig", a, .limited(512 * 1024));
     defer a.free(build);
@@ -321,12 +321,12 @@ test "scenario: guidance-closeout-envelope stale identity blocks clean while cle
     const readme = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, "README.md", a, .limited(512 * 1024));
     defer a.free(readme);
     for ([_][]const u8{ claude_guidance, readme }) |guidance| {
-        try std.testing.expect(std.mem.indexOf(u8, guidance, "00029_agent_failure_categories.up.sql") != null);
+        try std.testing.expect(std.mem.indexOf(u8, guidance, "00030_adaptive_routing_evidence.up.sql") != null);
     }
 
     const facts = [_]GuidanceFact{
-        .{ .key = "migration_tail", .expected = "00029_agent_failure_categories.up.sql", .evidence = "migrations/ + schema_migrations insert" },
-        .{ .key = "schema_version", .expected = "29", .evidence = "00029 up migration" },
+        .{ .key = "migration_tail", .expected = "00030_adaptive_routing_evidence.up.sql", .evidence = "migrations/ + schema_migrations insert" },
+        .{ .key = "schema_version", .expected = "30", .evidence = "00030 up migration" },
         .{ .key = "binary_set", .expected = "planar,planar-agent,planar-watch,planar-execute", .evidence = "build.zig installed artifacts" },
     };
     const stale = [_]GuidanceObservation{
@@ -346,8 +346,8 @@ test "scenario: guidance-closeout-envelope stale identity blocks clean while cle
     try std.testing.expect(!clean_closeout);
 
     const clean = [_]GuidanceObservation{
-        .{ .path = "CLAUDE.md", .key = "migration_tail", .actual = "00029_agent_failure_categories.up.sql" },
-        .{ .path = "README.md", .key = "schema_version", .actual = "29" },
+        .{ .path = "CLAUDE.md", .key = "migration_tail", .actual = "00030_adaptive_routing_evidence.up.sql" },
+        .{ .path = "README.md", .key = "schema_version", .actual = "30" },
         .{ .path = "README.md", .key = "binary_set", .actual = "planar,planar-agent,planar-watch,planar-execute" },
     };
     const clean_rows = try guidanceRows(a, &facts, &clean);

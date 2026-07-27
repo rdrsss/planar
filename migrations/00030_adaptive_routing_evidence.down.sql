@@ -1,0 +1,23 @@
+drop trigger routing_terminal_samples_immutable_delete;
+drop trigger routing_terminal_samples_immutable;
+drop trigger routing_terminal_samples_identity;
+drop trigger routing_dispatch_events_append_only_delete;
+drop trigger routing_dispatch_events_append_only_update;
+drop trigger routing_experiments_manifest_immutable;
+drop trigger routing_dispatch_snapshots_immutable_delete;
+drop trigger routing_dispatch_snapshots_immutable;
+
+drop view routing_candidate_compatibility_v1;
+
+drop table routing_legacy_outcomes;
+drop table routing_terminal_samples;
+drop table routing_dispatch_events;
+drop table routing_dispatch_snapshots;
+drop table routing_experiments;
+drop table routing_task_facts;
+drop table routing_host_observations;
+drop table routing_candidate_bindings;
+drop table routing_candidates;
+
+delete from schema_migrations
+where version = 30;

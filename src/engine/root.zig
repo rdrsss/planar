@@ -55,6 +55,7 @@ pub const introspection_adapters = @import("introspection_adapters.zig");
 pub const closure = @import("closure.zig");
 pub const grouping = @import("grouping.zig");
 pub const evals = @import("evals.zig");
+pub const routing = @import("routing.zig");
 
 // Pull every submodule into the test build so per-file `test` blocks
 // are reachable from `zig build test`.
@@ -88,4 +89,5 @@ test {
     _ = closure;
     _ = grouping;
     _ = evals;
+    _ = routing;
 }
