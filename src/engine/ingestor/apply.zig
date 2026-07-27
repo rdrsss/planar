@@ -775,6 +775,86 @@ fn readPlanStatus(d: *db.sqlite.Db, allocator: std.mem.Allocator, plan_id: i64) 
     return try stmt.columnTextAlloc(0, allocator);
 }
 
+test "apply: preserves an explicit manual roadmap section citation and its fact" {
+    const a = testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+
+    try d.exec(
+        \\insert into plans (
+        \\  scope_kind, title, slug, status
+        \\) values ('global', 'Anchor', 'manual-roadmap-anchor', 'active');
+        \\insert into plans (
+        \\  scope_kind, title, slug, status, parent_plan_id
+        \\) values ('global', 'Child', 'manual-roadmap-child', 'active', 1);
+        \\insert into artifacts (
+        \\  scope_kind, kind, title, body
+        \\) values (
+        \\  'global', 'roadmap', 'Roadmap',
+        \\  '## Manual Evidence
+        \\
+        \\MANUAL_ROADMAP_SENTINEL'
+        \\);
+        \\insert into entity_links (
+        \\  from_kind, from_id, to_kind, to_id, relationship
+        \\) values ('artifact', 1, 'plan', 1, 'derives-from');
+        \\insert into tasks (
+        \\  scope_kind, plan_id, title, body, next_action
+        \\) values (
+        \\  'global', 2, 'Manual roadmap citation',
+        \\  '## Acceptance Criteria
+        \\
+        \\- Preserve explicit manual roadmap evidence.
+        \\
+        \\## Spec Citations
+        \\
+        \\- artifact:1#Manual Evidence',
+        \\  'Preserve the explicit manual roadmap citation.'
+        \\);
+        \\insert into entity_links (
+        \\  from_kind, from_id, to_kind, to_id, relationship
+        \\) values ('task', 1, 'artifact', 1, 'cites')
+    );
+
+    const ingest_diff = diff_mod.Diff{
+        .anchor_plan_id = 1,
+        .anchor_slug = try a.dupe(u8, "manual-roadmap-anchor"),
+        .assoc_slug = try a.dupe(u8, ""),
+        .current_status = try a.dupe(u8, "active"),
+    };
+    defer diff_mod.deinitDiff(ingest_diff, a);
+
+    _ = try apply(&d, a, ingest_diff, .{ .apply = true });
+    try testing.expectEqual(@as(i64, 1), try d.intQuery(
+        \\select count(*) from entity_links
+        \\where from_kind = 'task' and from_id = 1
+        \\  and to_kind = 'artifact' and to_id = 1 and relationship = 'cites'
+    ));
+    try testing.expectEqual(@as(i64, 1), try d.intQuery(
+        \\select count(*) from routing_task_facts
+        \\where task_id = 1 and fact_kind = 'cited_artifact_section'
+        \\  and value_text = 'MANUAL_ROADMAP_SENTINEL'
+        \\  and source_entity_kind = 'artifact' and source_entity_id = 1
+        \\  and source_locator = 'artifact:1#Manual Evidence'
+        \\  and length(source_digest) = 64
+        \\  and materializer_version = 'spec-ingest-v1'
+    ));
+    const initial_fact_id = try d.intQuery(
+        \\select id from routing_task_facts
+        \\where task_id = 1 and fact_kind = 'cited_artifact_section'
+    );
+
+    _ = try apply(&d, a, ingest_diff, .{ .apply = true });
+    try testing.expectEqual(@as(i64, 1), try d.intQuery(
+        \\select count(*) from routing_task_facts
+        \\where task_id = 1 and fact_kind = 'cited_artifact_section'
+    ));
+    try testing.expectEqual(initial_fact_id, try d.intQuery(
+        \\select id from routing_task_facts
+        \\where task_id = 1 and fact_kind = 'cited_artifact_section'
+    ));
+}
+
 test "apply: creates child plan + task and flips anchor draft → active" {
     const a = testing.allocator;
     var d = try setupTestDb(a);

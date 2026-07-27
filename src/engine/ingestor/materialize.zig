@@ -38,7 +38,7 @@ pub fn reconcile(
 
     try stageTaskFacts(d, allocator, anchor_plan_id);
     try stageRoadmapFacts(d, allocator, roadmap_citations);
-    try stageArtifactFacts(d, allocator, anchor_plan_id);
+    try stageArtifactFacts(d, allocator, anchor_plan_id, roadmap_citations);
     try stageDecisionFacts(d, allocator, anchor_plan_id);
     try stageQuestionFacts(d, allocator, anchor_plan_id);
     try stageScenarioFacts(d, allocator, anchor_plan_id);
@@ -181,14 +181,19 @@ fn stageTaskFacts(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan_id
     };
 }
 
-fn stageArtifactFacts(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan_id: i64) Error!void {
+fn stageArtifactFacts(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    anchor_plan_id: i64,
+    roadmap_citations: []const RoadmapCitation,
+) Error!void {
     var stmt = d.prepare(
-        \\select t.id, coalesce(t.body, ''), a.id, coalesce(a.body, '')
+        \\select t.id, coalesce(t.body, ''), a.id, a.kind, coalesce(a.body, '')
         \\from tasks t
         \\join plans p on p.id = t.plan_id
         \\join entity_links el on el.from_kind = 'task' and el.from_id = t.id
         \\  and el.to_kind = 'artifact' and el.relationship = 'cites'
-        \\join artifacts a on a.id = el.to_id and a.kind != 'roadmap'
+        \\join artifacts a on a.id = el.to_id
         \\where p.parent_plan_id = ?
         \\order by t.id, a.id
     ) catch return Error.QueryFailed;
@@ -201,15 +206,42 @@ fn stageArtifactFacts(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_pla
             const task_body = try stmt.columnTextAlloc(1, allocator);
             defer allocator.free(task_body);
             const artifact_id = stmt.columnInt(2);
-            const body = try stmt.columnTextAlloc(3, allocator);
+            const kind = try stmt.columnTextAlloc(3, allocator);
+            defer allocator.free(kind);
+            const body = try stmt.columnTextAlloc(4, allocator);
             defer allocator.free(body);
 
+            if (std.mem.eql(u8, kind, "roadmap")) {
+                if (hasParsedRoadmapCitation(roadmap_citations, task_id, artifact_id)) continue;
+                if (!try hasExplicitArtifactReference(allocator, task_body, artifact_id)) continue;
+            }
             const locator = try explicitArtifactLocator(allocator, task_body, artifact_id);
             defer allocator.free(locator);
             const cited_source = artifactSection(body, locator) orelse return Error.InvalidCitation;
             try stage(d, allocator, task_id, "cited_artifact_section", .{ .text = cited_source }, "artifact", artifact_id, locator, cited_source);
         },
     };
+}
+
+fn hasParsedRoadmapCitation(
+    citations: []const RoadmapCitation,
+    task_id: i64,
+    artifact_id: i64,
+) bool {
+    for (citations) |citation| {
+        if (citation.task_id == task_id and citation.artifact_id == artifact_id) return true;
+    }
+    return false;
+}
+
+fn hasExplicitArtifactReference(
+    allocator: std.mem.Allocator,
+    task_body: []const u8,
+    artifact_id: i64,
+) std.mem.Allocator.Error!bool {
+    const marker = try std.fmt.allocPrint(allocator, "artifact:{d}#", .{artifact_id});
+    defer allocator.free(marker);
+    return std.mem.indexOf(u8, task_body, marker) != null;
 }
 
 fn stageDecisionFacts(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan_id: i64) Error!void {
