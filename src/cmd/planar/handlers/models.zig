@@ -98,8 +98,124 @@ pub const verb: cli.Cmd = .{
             },
             .run = cli.handler(handleEvals),
         },
+        .{
+            .name = "registry",
+            .desc = "Manage opaque operator candidates and host observations.",
+            .cmds = &.{
+                .{
+                    .name = "list",
+                    .desc = "List registrations, bindings, and latest observations.",
+                    .flags = &.{.{ .long = "--json", .kind = .bool, .default = .{ .bool = false } }},
+                    .run = cli.handler(handleRegistryList),
+                },
+                .{
+                    .name = "add",
+                    .desc = "Register one exact opaque candidate identifier.",
+                    .flags = &.{
+                        .{ .long = "--vendor", .kind = .string, .required = true },
+                        .{ .long = "--id", .kind = .string, .required = true },
+                        .{ .long = "--order", .kind = .int, .required = true },
+                        .{ .long = "--disabled", .kind = .bool, .default = .{ .bool = false } },
+                    },
+                    .run = cli.handler(handleRegistryAdd),
+                },
+                .{
+                    .name = "update",
+                    .desc = "Update enabled state and deterministic fallback order.",
+                    .flags = &.{
+                        .{ .long = "--candidate", .kind = .int, .required = true },
+                        .{ .long = "--order", .kind = .int, .required = true },
+                        .{ .long = "--disabled", .kind = .bool, .default = .{ .bool = false } },
+                    },
+                    .run = cli.handler(handleRegistryUpdate),
+                },
+                .{
+                    .name = "remove",
+                    .desc = "Remove a candidate when no immutable evidence references it.",
+                    .flags = &.{.{ .long = "--candidate", .kind = .int, .required = true }},
+                    .run = cli.handler(handleRegistryRemove),
+                },
+                .{
+                    .name = "bind",
+                    .desc = "Allow one role and tier for a candidate.",
+                    .flags = &.{
+                        .{ .long = "--candidate", .kind = .int, .required = true },
+                        .{ .long = "--role", .kind = .string, .required = true },
+                        .{ .long = "--tier", .kind = .string, .required = true },
+                    },
+                    .run = cli.handler(handleRegistryBind),
+                },
+                .{
+                    .name = "unbind",
+                    .desc = "Remove one explicit role and tier binding.",
+                    .flags = &.{
+                        .{ .long = "--candidate", .kind = .int, .required = true },
+                        .{ .long = "--role", .kind = .string, .required = true },
+                        .{ .long = "--tier", .kind = .string, .required = true },
+                    },
+                    .run = cli.handler(handleRegistryUnbind),
+                },
+                .{
+                    .name = "observe",
+                    .desc = "Append an exact, versioned host capability observation.",
+                    .flags = &.{
+                        .{ .long = "--candidate", .kind = .int, .required = true },
+                        .{ .long = "--host", .kind = .string, .required = true },
+                        .{ .long = "--version", .kind = .int, .required = true },
+                        .{ .long = "--availability", .kind = .string, .required = true },
+                        .{ .long = "--spawn-verification", .kind = .string, .required = true },
+                        .{ .long = "--evidence-ref", .kind = .string, .required = true },
+                        .{ .long = "--captured-at", .kind = .string, .required = true },
+                        .{ .long = "--expires-at", .kind = .string, .required = true },
+                    },
+                    .run = cli.handler(handleRegistryObserve),
+                },
+                .{
+                    .name = "eligibility",
+                    .desc = "Report every independent eligibility gate and named exclusion reason.",
+                    .flags = &.{
+                        .{ .long = "--candidate", .kind = .int, .required = true },
+                        .{ .long = "--role", .kind = .string, .required = true },
+                        .{ .long = "--tier", .kind = .string, .required = true },
+                        .{ .long = "--now", .kind = .string, .required = true },
+                        .{ .long = "--override-supported", .kind = .bool, .default = .{ .bool = false } },
+                        .{ .long = "--policy-permits", .kind = .bool, .default = .{ .bool = false } },
+                    },
+                    .run = cli.handler(handleRegistryEligibility),
+                },
+                .{
+                    .name = "import-legacy",
+                    .desc = "Import effective [models] values as opaque registry entries.",
+                    .run = cli.handler(handleRegistryImportLegacy),
+                },
+                .{
+                    .name = "export",
+                    .desc = "Export the versioned registry compatibility document.",
+                    .flags = &.{.{ .long = "--json", .kind = .bool, .default = .{ .bool = false } }},
+                    .run = cli.handler(handleRegistryExport),
+                },
+            },
+        },
     },
 };
+
+fn parseTier(value: []const u8) ?engine.routing.store.Tier {
+    inline for (std.meta.tags(engine.routing.store.Tier)) |tag|
+        if (std.mem.eql(u8, value, @tagName(tag))) return tag;
+    return null;
+}
+
+fn parseAvailability(value: []const u8) ?engine.routing.store.Availability {
+    inline for (std.meta.tags(engine.routing.store.Availability)) |tag|
+        if (std.mem.eql(u8, value, @tagName(tag))) return tag;
+    return null;
+}
+
+fn parseVerification(value: []const u8) ?engine.routing.store.SpawnVerification {
+    inline for (std.meta.tags(engine.routing.store.SpawnVerification)) |tag|
+        if (std.mem.eql(u8, value, @tagName(tag))) return tag;
+    return null;
+}
 
 fn handleList(args_ptr: *const anyopaque) anyerror!void {
     const args = cli.castArgs(main.root, &.{ "models", "list" }, args_ptr);
@@ -110,6 +226,7 @@ fn handleList(args_ptr: *const anyopaque) anyerror!void {
         "model discovery failed: {s}",
         .{@errorName(e)},
     );
+    try ctx.stderr.print("warning: embedded catalog output is a one-window compatibility view; use `planar models registry export --json`\n", .{});
     try output.emit(ctx, engine.models, report, .{ .json = args.json });
 }
 
@@ -139,6 +256,7 @@ fn handleRefresh(args_ptr: *const anyopaque) anyerror!void {
 
     try output.emit(ctx, engine.models, report, .{ .json = args.json });
     // Provenance note on stderr so JSON stdout stays clean for scripts.
+    try ctx.stderr.print("warning: catalog.json is a one-window compatibility export; the candidate registry is authoritative\n", .{});
     try ctx.stderr.print("wrote model cache: {s}\n", .{path});
 }
 
@@ -160,7 +278,6 @@ fn handleRouting(args_ptr: *const anyopaque) anyerror!void {
     var resolved = engine.config.resolve(ctx.allocator, file_content, ctx.environ, null) catch |e|
         exit.die(ctx, e, "resolving configuration: {s}", .{@errorName(e)});
     defer resolved.deinit(ctx.allocator);
-
     const rows = engine.models.buildRouting(ctx.allocator, &resolved.effective) catch |e|
         exit.die(ctx, e, "building model routing: {s}", .{@errorName(e)});
     defer ctx.allocator.free(rows);
@@ -212,6 +329,7 @@ fn handleApply(args_ptr: *const anyopaque) anyerror!void {
 
     std.Io.Dir.cwd().writeFile(ctx.io, .{ .sub_path = path, .data = out.items }) catch |e|
         exit.die(ctx, e, "writing config file: {s}", .{@errorName(e)});
+    try ctx.stderr.print("warning: generated [models] configuration is legacy compatibility input; run `planar models registry import-legacy`\n", .{});
     try ctx.stdout.print("wrote model routing config to {s}\n", .{path});
 }
 
@@ -254,6 +372,9 @@ fn handleCandidates(args_ptr: *const anyopaque) anyerror!void {
     var resolved = engine.config.resolve(ctx.allocator, file_content, ctx.environ, null) catch |e|
         exit.die(ctx, e, "resolving configuration: {s}", .{@errorName(e)});
     defer resolved.deinit(ctx.allocator);
+    const registry = engine.models.importLegacyConfig(ctx.allocator, &resolved.effective) catch |e|
+        exit.die(ctx, e, "importing legacy model configuration: {s}", .{@errorName(e)});
+    defer registry.deinit(ctx.allocator);
 
     var tiers_out: std.ArrayList(TierCandidates) = .empty;
     defer tiers_out.deinit(ctx.allocator);
@@ -292,7 +413,11 @@ fn handleCandidates(args_ptr: *const anyopaque) anyerror!void {
     }
 
     if (args.json) {
-        try ctx.stdout.print("{{\"candidates\":", .{});
+        try ctx.stdout.print("{{\"registry\":", .{});
+        try std.json.Stringify.value(registry.candidates, .{}, ctx.stdout);
+        try ctx.stdout.print(",\"migration_warning\":", .{});
+        try std.json.Stringify.value(registry.migration_warning, .{}, ctx.stdout);
+        try ctx.stdout.print(",\"candidates\":", .{});
         try std.json.Stringify.value(tiers_out.items, .{}, ctx.stdout);
         try ctx.stdout.print(",\"routing\":", .{});
         try std.json.Stringify.value(routing_out.items, .{}, ctx.stdout);
@@ -300,6 +425,15 @@ fn handleCandidates(args_ptr: *const anyopaque) anyerror!void {
         return;
     }
 
+    try ctx.stdout.print("warning: {s}\n", .{registry.migration_warning});
+    try ctx.stdout.print("opaque candidate registry (legacy compatibility view):\n", .{});
+    for (registry.candidates) |candidate| {
+        try ctx.stdout.print(
+            "  {s: <8} {s: <24} {s: <6} order={d} observation=none\n",
+            .{ candidate.vendor, candidate.opaque_id, candidate.tier, candidate.fallback_order },
+        );
+    }
+    try ctx.stdout.print("\n", .{});
     try ctx.stdout.print("tier candidate lists (models.<vendor>.<tier>):\n", .{});
     for (tiers_out.items) |tc| {
         try ctx.stdout.print("  {s: <8} {s: <6} → ", .{ tc.vendor, tc.tier });
@@ -317,6 +451,204 @@ fn handleCandidates(args_ptr: *const anyopaque) anyerror!void {
             .{ re.vendor, re.tier, re.work_type, re.model, re.source },
         );
     }
+}
+
+fn handleRegistryList(args_ptr: *const anyopaque) anyerror!void {
+    const ctx = runtime.current();
+    const d = runtime.ensureDb() catch |e| exit.die(ctx, e, "opening database: {s}", .{@errorName(e)});
+    // `export` intentionally shares the same additive versioned wire shape.
+    const args = cli.castArgs(main.root, &.{ "models", "registry", "list" }, args_ptr);
+    const candidates = engine.routing.store.listCandidates(d, ctx.allocator) catch |e|
+        exit.die(ctx, e, "listing model registry: {s}", .{@errorName(e)});
+    defer {
+        for (candidates) |candidate| candidate.deinit(ctx.allocator);
+        ctx.allocator.free(candidates);
+    }
+    if (args.json) {
+        try ctx.stdout.print("{{\"registry_version\":1,\"candidates\":", .{});
+        try std.json.Stringify.value(candidates, .{}, ctx.stdout);
+        try ctx.stdout.print(",\"migration_warning\":\"legacy catalog compatibility is one-window and non-authoritative\"}}\n", .{});
+        return;
+    }
+    for (candidates) |candidate| {
+        try ctx.stdout.print(
+            "{d} {s} {s} enabled={} order={d} bindings={d} observation={s}\n",
+            .{
+                candidate.registration.id,
+                candidate.registration.vendor,
+                candidate.registration.candidate_id,
+                candidate.registration.enabled,
+                candidate.registration.fallback_order,
+                candidate.bindings.len,
+                if (candidate.latest_observation == null) "none" else "present",
+            },
+        );
+    }
+}
+
+fn handleRegistryExport(args_ptr: *const anyopaque) anyerror!void {
+    const args = cli.castArgs(main.root, &.{ "models", "registry", "export" }, args_ptr);
+    const ctx = runtime.current();
+    const d = runtime.ensureDb() catch |e| exit.die(ctx, e, "opening database: {s}", .{@errorName(e)});
+    const candidates = engine.routing.store.listCandidates(d, ctx.allocator) catch |e|
+        exit.die(ctx, e, "exporting model registry: {s}", .{@errorName(e)});
+    defer {
+        for (candidates) |candidate| candidate.deinit(ctx.allocator);
+        ctx.allocator.free(candidates);
+    }
+    if (!args.json) try ctx.stderr.print("warning: legacy catalog compatibility is one-window and non-authoritative\n", .{});
+    try ctx.stdout.print("{{\"registry_version\":1,\"candidates\":", .{});
+    try std.json.Stringify.value(candidates, .{}, ctx.stdout);
+    try ctx.stdout.print(",\"migration_warning\":\"legacy catalog compatibility is one-window and non-authoritative\"}}\n", .{});
+}
+
+fn handleRegistryAdd(args_ptr: *const anyopaque) anyerror!void {
+    const args = cli.castArgs(main.root, &.{ "models", "registry", "add" }, args_ptr);
+    const ctx = runtime.current();
+    const d = runtime.ensureDb() catch |e| exit.die(ctx, e, "opening database: {s}", .{@errorName(e)});
+    const id = engine.routing.store.createCandidate(d, .{
+        .vendor = args.vendor,
+        .candidate_id = args.id,
+        .enabled = !args.disabled,
+        .fallback_order = args.order,
+    }) catch |e| exit.die(ctx, e, "registering opaque candidate: {s}", .{@errorName(e)});
+    try ctx.stdout.print("{d}\n", .{id});
+}
+
+fn handleRegistryUpdate(args_ptr: *const anyopaque) anyerror!void {
+    const args = cli.castArgs(main.root, &.{ "models", "registry", "update" }, args_ptr);
+    const ctx = runtime.current();
+    const d = runtime.ensureDb() catch |e| exit.die(ctx, e, "opening database: {s}", .{@errorName(e)});
+    engine.routing.store.updateCandidate(d, args.candidate, !args.disabled, args.order) catch |e|
+        exit.die(ctx, e, "updating candidate: {s}", .{@errorName(e)});
+}
+
+fn handleRegistryRemove(args_ptr: *const anyopaque) anyerror!void {
+    const args = cli.castArgs(main.root, &.{ "models", "registry", "remove" }, args_ptr);
+    const ctx = runtime.current();
+    const d = runtime.ensureDb() catch |e| exit.die(ctx, e, "opening database: {s}", .{@errorName(e)});
+    engine.routing.store.deleteCandidate(d, args.candidate) catch |e|
+        exit.die(ctx, e, "removing candidate: {s}", .{@errorName(e)});
+}
+
+fn handleRegistryBind(args_ptr: *const anyopaque) anyerror!void {
+    const args = cli.castArgs(main.root, &.{ "models", "registry", "bind" }, args_ptr);
+    const ctx = runtime.current();
+    const tier = parseTier(args.tier) orelse exit.die(ctx, error.InvalidInput, "invalid tier: {s}", .{args.tier});
+    const d = runtime.ensureDb() catch |e| exit.die(ctx, e, "opening database: {s}", .{@errorName(e)});
+    engine.routing.store.bindCandidate(d, args.candidate, args.role, tier) catch |e|
+        exit.die(ctx, e, "binding candidate: {s}", .{@errorName(e)});
+}
+
+fn handleRegistryUnbind(args_ptr: *const anyopaque) anyerror!void {
+    const args = cli.castArgs(main.root, &.{ "models", "registry", "unbind" }, args_ptr);
+    const ctx = runtime.current();
+    const tier = parseTier(args.tier) orelse exit.die(ctx, error.InvalidInput, "invalid tier: {s}", .{args.tier});
+    const d = runtime.ensureDb() catch |e| exit.die(ctx, e, "opening database: {s}", .{@errorName(e)});
+    engine.routing.store.unbindCandidate(d, args.candidate, args.role, tier) catch |e|
+        exit.die(ctx, e, "unbinding candidate: {s}", .{@errorName(e)});
+}
+
+fn handleRegistryObserve(args_ptr: *const anyopaque) anyerror!void {
+    const args = cli.castArgs(main.root, &.{ "models", "registry", "observe" }, args_ptr);
+    const ctx = runtime.current();
+    const availability = parseAvailability(args.availability) orelse
+        exit.die(ctx, error.InvalidInput, "invalid availability: {s}", .{args.availability});
+    const verification = parseVerification(args.spawn_verification) orelse
+        exit.die(ctx, error.InvalidInput, "invalid spawn verification: {s}", .{args.spawn_verification});
+    const d = runtime.ensureDb() catch |e| exit.die(ctx, e, "opening database: {s}", .{@errorName(e)});
+    const id = engine.routing.store.observeCandidate(d, .{
+        .candidate_id = args.candidate,
+        .host_id = args.host,
+        .observation_version = args.version,
+        .availability = availability,
+        .spawn_verification = verification,
+        .evidence_ref = args.evidence_ref,
+        .captured_at = args.captured_at,
+        .expires_at = args.expires_at,
+    }) catch |e| exit.die(ctx, e, "recording host observation: {s}", .{@errorName(e)});
+    try ctx.stdout.print("{d}\n", .{id});
+}
+
+fn handleRegistryEligibility(args_ptr: *const anyopaque) anyerror!void {
+    const args = cli.castArgs(main.root, &.{ "models", "registry", "eligibility" }, args_ptr);
+    const ctx = runtime.current();
+    const tier = parseTier(args.tier) orelse exit.die(ctx, error.InvalidInput, "invalid tier: {s}", .{args.tier});
+    const d = runtime.ensureDb() catch |e| exit.die(ctx, e, "opening database: {s}", .{@errorName(e)});
+    const candidates = engine.routing.store.listCandidates(d, ctx.allocator) catch |e|
+        exit.die(ctx, e, "reading candidate: {s}", .{@errorName(e)});
+    defer {
+        for (candidates) |candidate| candidate.deinit(ctx.allocator);
+        ctx.allocator.free(candidates);
+    }
+    var selected: ?engine.routing.store.RegistryCandidate = null;
+    for (candidates) |candidate| if (candidate.registration.id == args.candidate) {
+        selected = candidate;
+        break;
+    };
+    const candidate = selected orelse exit.die(ctx, error.NotFound, "candidate {d} not found", .{args.candidate});
+    var bound = false;
+    for (candidate.bindings) |binding| {
+        if (std.mem.eql(u8, binding.role, args.role) and binding.tier == tier) {
+            bound = true;
+            break;
+        }
+    }
+    const eligibility = engine.routing.store.evaluateEligibility(.{
+        .enabled = candidate.registration.enabled,
+        .binding_present = bound,
+        .role_surface_override_supported = args.override_supported,
+        .host_policy_permits = args.policy_permits,
+        .observation = candidate.latest_observation,
+        .now = args.now,
+    });
+    var reason_buffer: [6]engine.routing.store.EligibilityReason = undefined;
+    const reasons = eligibility.reasons(&reason_buffer);
+    try ctx.stdout.print("{{\"candidate\":{d},\"eligible\":{},\"gates\":", .{ args.candidate, eligibility.eligible() });
+    try std.json.Stringify.value(eligibility, .{}, ctx.stdout);
+    try ctx.stdout.print(",\"reasons\":", .{});
+    try std.json.Stringify.value(reasons, .{}, ctx.stdout);
+    try ctx.stdout.print("}}\n", .{});
+}
+
+fn handleRegistryImportLegacy(args_ptr: *const anyopaque) anyerror!void {
+    _ = cli.castArgs(main.root, &.{ "models", "registry", "import-legacy" }, args_ptr);
+    const ctx = runtime.current();
+    const path = config_path.resolveConfigPath(ctx.allocator, ctx.environ) catch |e|
+        exit.die(ctx, e, "resolving config path: {s}", .{@errorName(e)});
+    defer ctx.allocator.free(path);
+    const content: ?[]u8 = std.Io.Dir.cwd().readFileAlloc(ctx.io, path, ctx.allocator, .unlimited) catch |e| switch (e) {
+        error.FileNotFound => null,
+        else => exit.die(ctx, e, "reading config: {s}", .{@errorName(e)}),
+    };
+    defer if (content) |bytes| ctx.allocator.free(bytes);
+    var resolved = engine.config.resolve(ctx.allocator, content, ctx.environ, null) catch |e|
+        exit.die(ctx, e, "resolving config: {s}", .{@errorName(e)});
+    defer resolved.deinit(ctx.allocator);
+    const legacy = engine.models.importLegacyConfig(ctx.allocator, &resolved.effective) catch |e|
+        exit.die(ctx, e, "importing legacy config: {s}", .{@errorName(e)});
+    defer legacy.deinit(ctx.allocator);
+    const d = runtime.ensureDb() catch |e| exit.die(ctx, e, "opening database: {s}", .{@errorName(e)});
+    var imported: usize = 0;
+    for (legacy.candidates) |candidate| {
+        var id = engine.routing.store.findCandidateId(d, candidate.vendor, candidate.opaque_id) catch |e|
+            exit.die(ctx, e, "checking candidate: {s}", .{@errorName(e)});
+        if (id == null) {
+            id = engine.routing.store.createCandidate(d, .{
+                .vendor = candidate.vendor,
+                .candidate_id = candidate.opaque_id,
+                .fallback_order = @intCast(candidate.fallback_order),
+                .compatibility_source = "legacy_config",
+            }) catch |e| exit.die(ctx, e, "importing candidate: {s}", .{@errorName(e)});
+            imported += 1;
+        }
+        const tier = parseTier(candidate.tier).?;
+        for (candidate.allowed_roles) |role|
+            engine.routing.store.bindCandidate(d, id.?, role, tier) catch |e|
+                exit.die(ctx, e, "importing candidate binding: {s}", .{@errorName(e)});
+    }
+    try ctx.stderr.print("warning: {s}\n", .{legacy.migration_warning});
+    try ctx.stdout.print("imported {d} opaque candidates\n", .{imported});
 }
 
 /// `planar models sync-doc [--check]` (plan 918 D4, milestone M3). Reads
