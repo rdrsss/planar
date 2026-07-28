@@ -194,6 +194,7 @@ pub fn classify(path: []const []const u8) Class {
 
 fn isReadLeaf(sub: []const u8) bool {
     return eq(sub, "show") or
+        eq(sub, "packet") or
         eq(sub, "list") or
         eq(sub, "view") or
         eq(sub, "diff") or

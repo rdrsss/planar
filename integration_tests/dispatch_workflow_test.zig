@@ -23,6 +23,8 @@
 
 const std = @import("std");
 const harness = @import("harness");
+const db = @import("db");
+const engine = @import("engine");
 
 // ---------------------------------------------------------------------------
 // resolveEnv — same pattern as planar_execute_test.zig
@@ -197,12 +199,154 @@ fn seedDispatchPlan(suite: *harness.Suite, slug: []const u8) SeedResult {
     const task_json = suite.mustRun(&.{ "task", "add", "--plan", plan_id_str, "--json", "Implement feature X" });
     defer gpa.free(task_json);
     const task_id = extractIntField(task_json, "\"id\"") orelse @panic("no task id from task add --json");
+    seedAuthoritativePacket(suite, plan_id, task_id);
 
     // Activate the plan so `plan next` returns eligible tasks.
     const upd = suite.mustRun(&.{ "plan", "update", plan_id_str, "--status", "active" });
     gpa.free(upd);
 
     return .{ .plan_id_str = plan_id_str, .task_id = task_id };
+}
+
+fn seedAuthoritativePacket(suite: *harness.Suite, plan_id: i64, task_id: i64) void {
+    const gpa = suite.allocator;
+    const materialize = engine.ingestor.materialize;
+    const acceptance_digest = materialize.sourceDigestAlloc(
+        gpa,
+        "task",
+        task_id,
+        "body#acceptance-criteria",
+        "The dispatch fixture compiles a complete authoritative coder brief.",
+    ) catch @panic("cannot digest dispatch acceptance");
+    defer gpa.free(acceptance_digest);
+    const next_action_digest = materialize.sourceDigestAlloc(
+        gpa,
+        "task",
+        task_id,
+        "next_action",
+        "Execute the seeded dispatch workflow and verify its terminal transition.",
+    ) catch @panic("cannot digest dispatch next action");
+    defer gpa.free(next_action_digest);
+    const product_digest = materialize.sourceDigestAlloc(
+        gpa,
+        "artifact",
+        91001,
+        "artifact:91001#Requirements",
+        "Product requirements",
+    ) catch @panic("cannot digest dispatch product section");
+    defer gpa.free(product_digest);
+    const tech_digest = materialize.sourceDigestAlloc(
+        gpa,
+        "artifact",
+        91002,
+        "artifact:91002#Technical contract",
+        "Technical contract",
+    ) catch @panic("cannot digest dispatch technical section");
+    defer gpa.free(tech_digest);
+    const roadmap_digest = materialize.sourceDigestAlloc(
+        gpa,
+        "artifact",
+        91003,
+        "artifact:91003#Roadmap milestone",
+        "Roadmap milestone",
+    ) catch @panic("cannot digest dispatch roadmap section");
+    defer gpa.free(roadmap_digest);
+    const test_digest = materialize.sourceDigestAlloc(
+        gpa,
+        "artifact",
+        91004,
+        "artifact:91004#Dispatch scenarios",
+        "Dispatch scenarios",
+    ) catch @panic("cannot digest dispatch test section");
+    defer gpa.free(test_digest);
+    const path = gpa.dupeZ(u8, suite.absDbPath()) catch @panic("OOM");
+    defer gpa.free(path);
+    var conn = db.sqlite.Db.open(path) catch @panic("cannot open dispatch fixture DB");
+    defer conn.close();
+    const sql = std.fmt.allocPrint(
+        gpa,
+        \\update tasks set body='## Acceptance Criteria
+        \\The dispatch fixture compiles a complete authoritative coder brief.
+        \\## Required validation
+        \\make test-integration',
+        \\next_action='Execute the seeded dispatch workflow and verify its terminal transition.'
+        \\where id={d};
+        \\insert into projects(id,slug,name) values(91000,'dispatch-fixture','Dispatch fixture');
+        \\insert into artifacts(id,scope_kind,scope_id,kind,title,body,source_path,status)
+        \\select 91001,scope_kind,scope_id,'product_spec','Product','## Requirements
+        \\Product requirements','product-spec.md','active' from plans where id={d};
+        \\insert into artifacts(id,scope_kind,scope_id,kind,title,body,source_path,status)
+        \\select 91002,scope_kind,scope_id,'tech_spec','Technical','## Technical contract
+        \\Technical contract','tech-spec.md','active' from plans where id={d};
+        \\insert into artifacts(id,scope_kind,scope_id,kind,title,body,source_path,status)
+        \\select 91003,scope_kind,scope_id,'roadmap','Roadmap','## Roadmap milestone
+        \\Roadmap milestone','roadmap.md','active' from plans where id={d};
+        \\insert into artifacts(id,scope_kind,scope_id,kind,title,body,source_path,status)
+        \\select 91004,scope_kind,scope_id,'test_spec','Tests','## Dispatch scenarios
+        \\Dispatch scenarios','test-spec.md','active' from plans where id={d};
+        \\insert into decisions(id,scope_kind,scope_id,title,body,status)
+        \\select 91005,scope_kind,scope_id,'Dispatch contract','Use the authoritative packet.','accepted' from plans where id={d};
+        \\insert into test_scenarios(id,scope_kind,scope_id,title,body,status)
+        \\select 91007,scope_kind,scope_id,'Happy path — dispatch fixture coverage','The authoritative packet drives dispatch.','draft' from plans where id={d};
+        \\insert into tasks(id,scope_kind,scope_id,plan_id,title,body,status,next_action)
+        \\select 91006,scope_kind,scope_id,id,'Seed dependency','Dependency context','done','Dependency already complete.' from plans where id={d};
+        \\insert into task_touch_paths(task_id,repo_id,path) values({d},91000,'workflows/dispatch.lua');
+        \\insert into entity_links(from_kind,from_id,to_kind,to_id,relationship) values
+        \\('task',{d},'artifact',91001,'cites'),
+        \\('task',{d},'artifact',91002,'cites'),
+        \\('task',{d},'artifact',91003,'cites'),
+        \\('task',{d},'artifact',91004,'cites'),
+        \\('task',{d},'decision',91005,'cites'),
+        \\('task',{d},'task',91006,'blocks'),
+        \\('test_scenario',91007,'plan',{d},'derives-from'),
+        \\('test_scenario',91007,'task',{d},'verifies');
+        \\insert into routing_task_facts(
+        \\ task_id,fact_kind,value_type,value_bool,value_text,source_entity_kind,
+        \\ source_entity_id,source_locator,source_digest,materializer_version
+        \\) values
+        \\ ({d},'acceptance_complete','bool',1,null,'task',{d},'body#acceptance-criteria','{s}','spec-ingest-v1'),
+        \\ ({d},'next_action_exact','bool',1,null,'task',{d},'next_action','{s}','spec-ingest-v1'),
+        \\ ({d},'cited_artifact_section','text',null,'Product requirements','artifact',91001,'artifact:91001#Requirements','{s}','spec-ingest-v1'),
+        \\ ({d},'cited_artifact_section','text',null,'Technical contract','artifact',91002,'artifact:91002#Technical contract','{s}','spec-ingest-v1'),
+        \\ ({d},'cited_artifact_section','text',null,'Roadmap milestone','artifact',91003,'artifact:91003#Roadmap milestone','{s}','spec-ingest-v1'),
+        \\ ({d},'cited_artifact_section','text',null,'Dispatch scenarios','artifact',91004,'artifact:91004#Dispatch scenarios','{s}','spec-ingest-v1');
+    ,
+        .{
+            task_id,
+            plan_id,
+            plan_id,
+            plan_id,
+            plan_id,
+            plan_id,
+            plan_id,
+            plan_id,
+            task_id,
+            task_id,
+            task_id,
+            task_id,
+            task_id,
+            task_id,
+            task_id,
+            plan_id,
+            task_id,
+            task_id,
+            task_id,
+            acceptance_digest,
+            task_id,
+            task_id,
+            next_action_digest,
+            task_id,
+            product_digest,
+            task_id,
+            tech_digest,
+            task_id,
+            roadmap_digest,
+            task_id,
+            test_digest,
+        },
+    ) catch @panic("OOM");
+    defer gpa.free(sql);
+    conn.execSlice(gpa, sql) catch @panic("cannot seed authoritative dispatch packet");
 }
 
 // ---------------------------------------------------------------------------

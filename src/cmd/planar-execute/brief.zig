@@ -99,6 +99,9 @@ pub const ContextRef = struct {
 ///
 /// No field is a subprocess call or a live read — `compileBrief` is pure.
 pub const BriefInputs = struct {
+    /// When present, all implementation context is rendered from this
+    /// authoritative packet. Production callers must set it.
+    authoritative_packet: ?state.TaskPacket = null,
     // -----------------------------------------------------------------------
     // Plan + task identity
     // -----------------------------------------------------------------------
@@ -183,6 +186,34 @@ pub const BriefInputs = struct {
     context_records: []const ContextRef = &.{},
 };
 
+fn renderPacketEvidence(
+    writer: *std.Io.Writer,
+    heading: []const u8,
+    values: []const state.PacketEvidence,
+) !void {
+    try writer.print("### {s}\n\n", .{heading});
+    if (values.len == 0) {
+        try writer.writeAll("_(none)_\n\n");
+        return;
+    }
+    for (values) |value| {
+        try writer.print(
+            "- `{s}:{d}` locator=`{s}` status=`{s}` freshness=`{s}` required={} covered={}\n",
+            .{ value.kind, value.id, value.locator, value.status, value.freshness, value.required, value.covered },
+        );
+        try writer.print("  - provenance: `{s}`\n", .{value.provenance});
+        try writer.print("  - source digest: `{s}`\n", .{value.source_digest});
+        try writer.print("  - current digest: `{s}`\n", .{value.current_digest});
+        try writer.print("  - materializer: `{s}` / current `{s}`\n", .{ value.materializer_version, value.current_materializer_version });
+        if (value.display_label.len > 0)
+            try writer.print("  - display label: {s}\n", .{value.display_label});
+        try writer.writeAll("  - exact text:\n");
+        var lines = std.mem.splitScalar(u8, value.text, '\n');
+        while (lines.next()) |line| try writer.print("    > {s}\n", .{line});
+    }
+    try writer.writeByte('\n');
+}
+
 // ---------------------------------------------------------------------------
 // compileBrief — the pure compiler
 // ---------------------------------------------------------------------------
@@ -214,7 +245,30 @@ pub const BriefInputs = struct {
 pub fn compileBrief(
     allocator: std.mem.Allocator,
     inputs: BriefInputs,
-) error{ OutOfMemory, WriteFailed }![]const u8 {
+) error{ OutOfMemory, WriteFailed, AuthoritativeIdentityMismatch }![]const u8 {
+    var authoritative_plan: ?state.PacketEvidence = null;
+    var authoritative_claim: ?state.PacketEvidence = null;
+    if (inputs.authoritative_packet) |authoritative| {
+        if (!authoritative.ready() or inputs.tasks.len != 1 or
+            inputs.tasks[0].id != authoritative.input.task_id or
+            !std.mem.eql(u8, inputs.tasks[0].status, authoritative.input.status) or
+            authoritative.input.owning_plans.len != 1 or
+            authoritative.input.owning_plans[0].id != @as(i64, @intCast(inputs.plan.id)))
+        {
+            return error.AuthoritativeIdentityMismatch;
+        }
+        authoritative_plan = authoritative.input.owning_plans[0];
+        for (authoritative.input.claims) |claim| {
+            if (std.mem.eql(u8, claim.text, inputs.claim_token) and
+                std.mem.eql(u8, claim.status, "active"))
+            {
+                authoritative_claim = claim;
+                break;
+            }
+        }
+        if (authoritative_claim == null) return error.AuthoritativeIdentityMismatch;
+    }
+
     // std.Io.Writer.Allocating is the Zig 0.16 idiomatic growable byte buffer
     // with a writer interface. It stores its allocator internally so all write
     // calls are arg-free; toOwnedSlice() transfers ownership to the caller.
@@ -229,24 +283,42 @@ pub fn compileBrief(
     // -----------------------------------------------------------------------
     try buf.writer.writeAll("# Coder Brief\n\n");
 
-    try buf.writer.print("**Plan:** {s} (id {d})\n", .{ inputs.plan.title, inputs.plan.id });
+    if (authoritative_plan) |plan| {
+        const label = if (plan.display_label.len > 0) plan.display_label else plan.text;
+        try buf.writer.print("**Plan:** {s} (id {d})\n", .{ label, plan.id });
+    } else {
+        try buf.writer.print("**Plan:** {s} (id {d})\n", .{ inputs.plan.title, inputs.plan.id });
+    }
     if (inputs.plan.slug) |slug| {
         try buf.writer.print("**Plan slug:** {s}\n", .{slug});
     }
-    try buf.writer.print("**Plan status:** {s}\n\n", .{inputs.plan.status});
+    try buf.writer.print("**Plan status:** {s}\n\n", .{if (authoritative_plan) |plan| plan.status else inputs.plan.status});
 
     try buf.writer.writeAll("**Task(s) dispatched:**\n");
-    for (inputs.tasks) |t| {
-        if (t.slug) |slug| {
-            try buf.writer.print("- task:{d} — {s} [slug: {s}]\n", .{ t.id, t.title, slug });
+    if (inputs.authoritative_packet) |authoritative| {
+        const slug = inputs.tasks[0].slug;
+        if (slug) |value| {
+            try buf.writer.print("- task:{d} — {s} [slug: {s}; status: {s}]\n", .{ authoritative.input.task_id, authoritative.input.title, value, authoritative.input.status });
         } else {
-            try buf.writer.print("- task:{d} — {s}\n", .{ t.id, t.title });
+            try buf.writer.print("- task:{d} — {s} [status: {s}]\n", .{ authoritative.input.task_id, authoritative.input.title, authoritative.input.status });
+        }
+    } else {
+        for (inputs.tasks) |t| {
+            if (t.slug) |slug| {
+                try buf.writer.print("- task:{d} — {s} [slug: {s}]\n", .{ t.id, t.title, slug });
+            } else {
+                try buf.writer.print("- task:{d} — {s}\n", .{ t.id, t.title });
+            }
         }
     }
     try buf.writer.writeByte('\n');
 
     // Methodology requirement: claim token listed explicitly.
-    try buf.writer.print("**Claim token:** `{s}`\n\n", .{inputs.claim_token});
+    try buf.writer.print("**Claim token:** `{s}`\n\n", .{if (authoritative_claim) |claim| claim.text else inputs.claim_token});
+    if (inputs.authoritative_packet) |authoritative| {
+        try buf.writer.print("**Authoritative packet digest:** `{s}`\n\n", .{authoritative.digest});
+        try buf.writer.print("**Authoritative task title:** {s}\n\n", .{authoritative.input.title});
+    }
 
     // -----------------------------------------------------------------------
     // Section 2 — Problem statement.
@@ -255,7 +327,7 @@ pub fn compileBrief(
     // The caller supplies the problem_statement verbatim; we render it as-is.
     // -----------------------------------------------------------------------
     try buf.writer.writeAll("## Problem\n\n");
-    try buf.writer.writeAll(inputs.problem_statement);
+    if (inputs.authoritative_packet) |authoritative| try buf.writer.writeAll(authoritative.input.acceptance_criteria) else try buf.writer.writeAll(inputs.problem_statement);
     try buf.writer.writeAll("\n\n");
 
     // -----------------------------------------------------------------------
@@ -269,7 +341,10 @@ pub fn compileBrief(
     // structural completeness) but no bullet items appear.
     // -----------------------------------------------------------------------
     try buf.writer.writeAll("## Read firsthand (do not paraphrase)\n\n");
-    if (inputs.spec_citations.len == 0) {
+    if (inputs.authoritative_packet) |authoritative| {
+        for (authoritative.input.citations) |citation| try buf.writer.print("- `{s}`\n", .{citation.locator});
+        try buf.writer.writeByte('\n');
+    } else if (inputs.spec_citations.len == 0) {
         try buf.writer.writeAll("_(no spec citations for this cycle)_\n\n");
     } else {
         for (inputs.spec_citations) |cit| {
@@ -293,13 +368,32 @@ pub fn compileBrief(
     // Methodology requirement: "Note locked decisions inline."
     // -----------------------------------------------------------------------
     try buf.writer.writeAll("## Locked decisions\n\n");
-    if (inputs.locked_decisions.len == 0) {
+    if (inputs.authoritative_packet) |authoritative| {
+        for (authoritative.input.decisions) |decision| try buf.writer.print("- **{d}**: {s}\n", .{ decision.id, decision.text });
+        try buf.writer.writeByte('\n');
+    } else if (inputs.locked_decisions.len == 0) {
         try buf.writer.writeAll("_(no locked decisions for this cycle)_\n\n");
     } else {
         for (inputs.locked_decisions) |d| {
             try buf.writer.print("- **{s}**: {s}\n", .{ d.id, d.text });
         }
         try buf.writer.writeByte('\n');
+    }
+
+    if (inputs.authoritative_packet) |authoritative| {
+        try buf.writer.writeAll("## Authoritative packet context\n\n");
+        try buf.writer.print("**Task body:**\n\n{s}\n\n", .{authoritative.input.body});
+        try buf.writer.print("**Exact next action:**\n\n{s}\n\n", .{authoritative.input.next_action});
+        try renderPacketEvidence(&buf.writer, "Owning plans", authoritative.input.owning_plans);
+        try renderPacketEvidence(&buf.writer, "Anchor plans", authoritative.input.anchor_plans);
+        try renderPacketEvidence(&buf.writer, "Spec citations and source digests", authoritative.input.citations);
+        try renderPacketEvidence(&buf.writer, "Locked decisions", authoritative.input.decisions);
+        try renderPacketEvidence(&buf.writer, "Questions", authoritative.input.questions);
+        try renderPacketEvidence(&buf.writer, "Scenarios and coverage", authoritative.input.scenarios);
+        try renderPacketEvidence(&buf.writer, "Dependencies", authoritative.input.dependencies);
+        try renderPacketEvidence(&buf.writer, "Touched surfaces", authoritative.input.touches);
+        try renderPacketEvidence(&buf.writer, "Current claims", authoritative.input.claims);
+        try renderPacketEvidence(&buf.writer, "Materialized facts, provenance, and freshness", authoritative.input.facts);
     }
 
     // -----------------------------------------------------------------------
@@ -386,7 +480,10 @@ pub fn compileBrief(
     // Methodology requirement: "Specify the gates the coder must run."
     // -----------------------------------------------------------------------
     try buf.writer.writeAll("## Gates (run all; paste counts verbatim in report)\n\n");
-    if (inputs.gates.len == 0) {
+    if (inputs.authoritative_packet) |authoritative| {
+        for (authoritative.input.validation_gates) |gate| try buf.writer.print("- `{s}`\n", .{gate.text});
+        try buf.writer.writeByte('\n');
+    } else if (inputs.gates.len == 0) {
         try buf.writer.writeAll("_(no gates specified — check the orchestrator brief)_\n\n");
     } else {
         for (inputs.gates) |g| {

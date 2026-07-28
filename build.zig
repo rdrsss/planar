@@ -704,7 +704,6 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-
     // The default integration path uses one umbrella root. This is the
     // common local loop: one test executable, no duplicate smoke-root imports,
     // and the same per-test Suite isolation inside each test block.
@@ -734,6 +733,8 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "harness", .module = harness_mod },
+                .{ .name = "engine", .module = engine_mod },
+                .{ .name = "db", .module = db_mod },
             },
         }),
         .filters = test_filters_opt,

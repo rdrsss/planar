@@ -17,6 +17,7 @@ const block = @import("block.zig");
 const link = @import("link.zig");
 const reopen = @import("reopen.zig");
 const touches = @import("touches/cmd.zig");
+const packet = @import("packet.zig");
 
 pub const verb: cli.Cmd = .{
     .name = "task",
@@ -48,6 +49,13 @@ pub const verb: cli.Cmd = .{
             .flags = &.{.{ .long = "--json", .kind = .bool, .default = .{ .bool = false } }},
             .positionals = &.{.{ .name = "task-id", .kind = .string, .required = true }},
             .run = cli.handler(show.handle),
+        },
+        .{
+            .name = "packet",
+            .desc = "Compile the authoritative current routing packet for a task.",
+            .flags = &.{.{ .long = "--json", .kind = .bool, .default = .{ .bool = false } }},
+            .positionals = &.{.{ .name = "task-id", .kind = .string, .required = true }},
+            .run = cli.handler(packet.handle),
         },
         .{
             .name = "list",
