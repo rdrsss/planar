@@ -18,14 +18,19 @@ test "packet assembler reads current isolated Planar database state" {
     try live_db.execSlice(allocator,
         \\insert into plans(id,scope_kind,scope_id,title,slug,status) values(9000,'association',1,'Anchor','anchor','active'),(9001,'association',1,'Owner','owner','active');
         \\insert into tasks(id,scope_kind,scope_id,plan_id,title,body,status,next_action) values
-        \\(9002,'association',1,9001,'Live packet task','## Acceptance criteria
+        \\(9002,'association',1,9001,'Live packet task','## Acceptance Criteria
         \\Exact current rows reach the brief.
+        \\Citations: artifact:9010#Requirements, artifact:9011#Dispatch-time packet compiler,
+        \\artifact:9012#Cross-stack contract, artifact:9013#Coder brief
         \\## Required validation
         \\make test-integration','doing','Compile live rows and verify the production brief.'),
         \\(9003,'association',1,9001,'Dependency','','done','Already complete.');
         \\insert into artifacts(id,scope_kind,scope_id,kind,title,body,source_path,status) values
-        \\(9010,'association',1,'product_spec','P','p','p.md','active'),(9011,'association',1,'tech_spec','T','t','t.md','active'),
-        \\(9012,'association',1,'roadmap','R','r','r.md','active'),(9013,'association',1,'test_spec','S','s','s.md','active');
+        \\(9010,'association',1,'product_spec','P','## Requirements
+        \\p','p.md','active'),(9011,'association',1,'tech_spec','T','## Dispatch-time packet compiler
+        \\t','t.md','active'),(9012,'association',1,'roadmap','R','## Cross-stack contract
+        \\r','r.md','active'),(9013,'association',1,'test_spec','S','## Coder brief
+        \\s','s.md','active');
         \\insert into decisions(id,scope_kind,scope_id,title,body,status) values(9020,'association',1,'Locked','locked text','accepted');
         \\insert into test_scenarios(id,scope_kind,scope_id,title,body,status) values(2142,'association',1,'Coder brief equals authoritative packet','SCENARIO_2142_EXACT_CONTEXT','draft');
         \\insert into entity_links(from_kind,from_id,to_kind,to_id,relationship) values
@@ -40,25 +45,53 @@ test "packet assembler reads current isolated Planar database state" {
         \\insert into sessions(id,vendor) values(9040,'test');
         \\insert into agent_work_claims(claim_token,session_id,entity_kind,entity_id,status,vendor,lease_expires_at) values('liveclaim',9040,'task',9002,'active','test','2999-01-01T00:00:00.000Z');
     );
-    const fact_digest = try sourceDigestAlloc(
+    const acceptance_digest = try sourceDigestAlloc(
+        allocator,
+        "task",
+        9002,
+        "body#acceptance-criteria",
+        "Exact current rows reach the brief.\nCitations: artifact:9010#Requirements, artifact:9011#Dispatch-time packet compiler,\nartifact:9012#Cross-stack contract, artifact:9013#Coder brief",
+    );
+    defer allocator.free(acceptance_digest);
+    const next_exact_digest = try sourceDigestAlloc(
         allocator,
         "task",
         9002,
         "next_action",
         "Compile live rows and verify the production brief.",
     );
-    defer allocator.free(fact_digest);
+    defer allocator.free(next_exact_digest);
+    const product_digest = try sourceDigestAlloc(allocator, "artifact", 9010, "artifact:9010#Requirements", "p");
+    defer allocator.free(product_digest);
+    const tech_digest = try sourceDigestAlloc(allocator, "artifact", 9011, "artifact:9011#Dispatch-time packet compiler", "t");
+    defer allocator.free(tech_digest);
+    const roadmap_digest = try sourceDigestAlloc(allocator, "artifact", 9012, "artifact:9012#Cross-stack contract", "r");
+    defer allocator.free(roadmap_digest);
+    const test_digest = try sourceDigestAlloc(allocator, "artifact", 9013, "artifact:9013#Coder brief", "s");
+    defer allocator.free(test_digest);
     _ = try live_db.execParams(
         \\insert into routing_task_facts(
-        \\ task_id,fact_kind,value_type,value_text,source_entity_kind,
+        \\ task_id,fact_kind,value_type,value_bool,value_text,source_entity_kind,
         \\ source_entity_id,source_locator,source_digest,materializer_version
-        \\) values(9002,'next_action','text','Compile live rows and verify the production brief.',
-        \\ 'task',9002,'next_action',?,'spec-ingest-v1')
-    , &.{.{ .text = fact_digest }});
+        \\) values
+        \\ (9002,'acceptance_complete','bool',1,null,'task',9002,'body#acceptance-criteria',?,'spec-ingest-v1'),
+        \\ (9002,'next_action_exact','bool',1,null,'task',9002,'next_action',?,'spec-ingest-v1'),
+        \\ (9002,'cited_artifact_section','text',null,'p','artifact',9010,'artifact:9010#Requirements',?,'spec-ingest-v1'),
+        \\ (9002,'cited_artifact_section','text',null,'t','artifact',9011,'artifact:9011#Dispatch-time packet compiler',?,'spec-ingest-v1'),
+        \\ (9002,'cited_artifact_section','text',null,'r','artifact',9012,'artifact:9012#Cross-stack contract',?,'spec-ingest-v1'),
+        \\ (9002,'cited_artifact_section','text',null,'s','artifact',9013,'artifact:9013#Coder brief',?,'spec-ingest-v1')
+    , &.{
+        .{ .text = acceptance_digest },
+        .{ .text = next_exact_digest },
+        .{ .text = product_digest },
+        .{ .text = tech_digest },
+        .{ .text = roadmap_digest },
+        .{ .text = test_digest },
+    });
     var live = try packet.assembleTask(allocator, &live_db, 9002);
     defer live.deinit();
     try std.testing.expect(live.packet.ready());
-    try std.testing.expectEqualStrings("Anchor", live.packet.input.anchor_plans[0].text);
+    try std.testing.expectEqualStrings("Anchor", live.packet.input.anchor_plans[0].display_label);
     try std.testing.expectEqual(@as(usize, 4), live.packet.input.citations.len);
     try std.testing.expectEqual(@as(i64, 9020), live.packet.input.decisions[0].id);
     try std.testing.expectEqual(@as(i64, 2142), live.packet.input.scenarios[0].id);
@@ -69,14 +102,78 @@ test "packet assembler reads current isolated Planar database state" {
     try std.testing.expectEqualStrings("active", live.packet.input.anchor_plans[0].status);
     try std.testing.expectEqualStrings("liveclaim", live.packet.input.claims[0].text);
     try std.testing.expectEqualStrings("current", live.packet.input.facts[0].freshness);
-    try std.testing.expectEqualStrings(fact_digest, live.packet.input.facts[0].current_digest);
+    try std.testing.expectEqualStrings(acceptance_digest, live.packet.input.facts[0].current_digest);
+
+    // Display-only plan and artifact labels remain renderable but do not
+    // participate in the semantic digest.
+    try live_db.exec("update plans set title='Renamed owner label' where id=9001; update artifacts set title='Renamed product label' where id=9010");
+    var label_renamed = try packet.assembleTask(allocator, &live_db, 9002);
+    defer label_renamed.deinit();
+    try std.testing.expectEqualStrings("Renamed owner label", label_renamed.packet.input.owning_plans[0].display_label);
+    try std.testing.expectEqualStrings("Renamed product label", label_renamed.packet.input.citations[0].display_label);
+    try std.testing.expectEqualStrings(&live.packet.digest, &label_renamed.packet.digest);
+
+    // Black-box readiness regressions: the packet assembler must not recover
+    // mandatory context from the whole body, a missing fact, or a whole
+    // artifact placeholder.
+    try live_db.exec("update tasks set body=replace(body,'## Acceptance Criteria','## Acceptance') where id=9002");
+    var no_acceptance_heading = try packet.assembleTask(allocator, &live_db, 9002);
+    defer no_acceptance_heading.deinit();
+    try std.testing.expect(std.mem.indexOfScalar(packet.ReadinessReason, no_acceptance_heading.packet.reasons, .missing_acceptance_section) != null);
+    try live_db.exec("update tasks set body=replace(body,'## Acceptance','## Acceptance Criteria') where id=9002");
+
+    try live_db.exec("update routing_task_facts set fact_kind='acceptance_fact_hidden' where task_id=9002 and fact_kind='acceptance_complete'");
+    var no_acceptance_fact = try packet.assembleTask(allocator, &live_db, 9002);
+    defer no_acceptance_fact.deinit();
+    try std.testing.expect(std.mem.indexOfScalar(packet.ReadinessReason, no_acceptance_fact.packet.reasons, .missing_acceptance_fact) != null);
+    try live_db.exec("update routing_task_facts set fact_kind='acceptance_complete' where task_id=9002 and fact_kind='acceptance_fact_hidden'");
+
+    try live_db.exec("update routing_task_facts set source_locator='artifact:9010' where task_id=9002 and source_entity_id=9010 and fact_kind='cited_artifact_section'");
+    var whole_artifact_placeholder = try packet.assembleTask(allocator, &live_db, 9002);
+    defer whole_artifact_placeholder.deinit();
+    try std.testing.expect(std.mem.indexOfScalar(packet.ReadinessReason, whole_artifact_placeholder.packet.reasons, .missing_product_spec) != null);
+    try std.testing.expect(std.mem.indexOfScalar(packet.ReadinessReason, whole_artifact_placeholder.packet.reasons, .unresolved_citation) != null);
+    try live_db.exec("update routing_task_facts set source_locator='artifact:9010#Requirements' where task_id=9002 and source_entity_id=9010 and fact_kind='cited_artifact_section'");
+
+    // Six directly linked cross-plan scenarios must survive assembly even
+    // though the owning-plan coverage oracle marks each one uncovered.
+    try live_db.execSlice(allocator,
+        \\insert into plans(id,scope_kind,scope_id,title,slug,status) values(9060,'association',1,'Other anchor','other-anchor','active');
+        \\insert into test_scenarios(id,scope_kind,scope_id,title,body,status) values
+        \\(2143,'association',1,'Cross 1','cross-1','draft'),
+        \\(2144,'association',1,'Cross 2','cross-2','draft'),
+        \\(2145,'association',1,'Cross 3','cross-3','draft'),
+        \\(2146,'association',1,'Cross 4','cross-4','draft'),
+        \\(2147,'association',1,'Cross 5','cross-5','draft'),
+        \\(2148,'association',1,'Cross 6','cross-6','draft');
+        \\insert into entity_links(from_kind,from_id,to_kind,to_id,relationship)
+        \\select 'test_scenario',id,'task',9002,'verifies' from test_scenarios where id between 2143 and 2148;
+        \\insert into entity_links(from_kind,from_id,to_kind,to_id,relationship)
+        \\select 'test_scenario',id,'plan',9060,'derives-from' from test_scenarios where id between 2143 and 2148;
+    );
+    var cross_plan = try packet.assembleTask(allocator, &live_db, 9002);
+    defer cross_plan.deinit();
+    try std.testing.expectEqual(@as(usize, 7), cross_plan.packet.input.scenarios.len);
+    var cross_plan_count: usize = 0;
+    for (cross_plan.packet.input.scenarios) |scenario| {
+        if (scenario.id >= 2143 and scenario.id <= 2148) {
+            cross_plan_count += 1;
+            try std.testing.expect(!scenario.covered);
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 6), cross_plan_count);
+    try std.testing.expect(std.mem.indexOfScalar(packet.ReadinessReason, cross_plan.packet.reasons, .uncovered_required_scenario) != null);
+    try live_db.exec("delete from entity_links where from_kind='test_scenario' and from_id between 2143 and 2148; delete from test_scenarios where id between 2143 and 2148");
 
     var reviewer_packet = try packet.assemblePlanning(allocator, &live_db, .spec_reviewer, 9000);
     defer reviewer_packet.deinit();
-    try std.testing.expect(reviewer_packet.packet.ready());
+    try std.testing.expect(!reviewer_packet.packet.ready());
+    try std.testing.expect(std.mem.indexOfScalar(packet.PlanningReason, reviewer_packet.packet.reasons, .missing_strict_preview) != null);
     var ingestor_packet = try packet.assemblePlanning(allocator, &live_db, .ingestor, 9000);
     defer ingestor_packet.deinit();
-    try std.testing.expect(ingestor_packet.packet.ready());
+    try std.testing.expect(!ingestor_packet.packet.ready());
+    try std.testing.expect(std.mem.indexOfScalar(packet.PlanningReason, ingestor_packet.packet.reasons, .missing_strict_preview) != null);
+    try std.testing.expect(std.mem.indexOfScalar(packet.PlanningReason, ingestor_packet.packet.reasons, .missing_apply_boundary) != null);
     try std.testing.expectEqualStrings("tasks:2;covered:2;scenarios:1", ingestor_packet.packet.input.coverage[0].text);
     try live_db.exec(
         \\insert into plans(id,scope_kind,scope_id,title,slug,status) values(9050,'association',1,'Empty planning plan','empty-planning','active');
@@ -93,7 +190,7 @@ test "packet assembler reads current isolated Planar database state" {
     var invocation = try packet.assembleInvocation(allocator, &live_db, 9000, "configured-static");
     defer invocation.deinit();
     switch (invocation.resolution) {
-        .packet => {},
+        .static_fallback => |fallback| try std.testing.expectEqualStrings("invocation_packet_not_ready", fallback.reason),
         else => return error.TestUnexpectedResult,
     }
 
@@ -115,7 +212,7 @@ test "packet assembler reads current isolated Planar database state" {
     try std.testing.expect(std.mem.indexOf(u8, result.stdout, "Exact current rows reach the brief") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.stdout, "SCENARIO_2142_EXACT_CONTEXT") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.stdout, "scenario:2142") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout, fact_digest) != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, acceptance_digest) != null);
     try std.testing.expect(std.mem.indexOf(u8, result.stdout, "caller text must not win") == null);
 
     const plan_mismatch_path = try std.fs.path.join(allocator, &.{ suite.tmpAbsPath(), "brief-plan-mismatch.lua" });
@@ -300,12 +397,17 @@ test "current packet is the sole coder brief source and stale lineage fails clos
     };
     const fresh = [_]packet.Evidence{
         .{ .kind = "acceptance_complete", .id = 5526, .locator = "task:5526#acceptance", .text = "true", .source_digest = "current", .current_digest = "current" },
+        .{ .kind = "next_action_exact", .id = 5527, .locator = "task:5526#next-action", .text = "true", .source_digest = "current", .current_digest = "current" },
     };
     const input: packet.TaskInput = .{
         .task_id = 5526,
         .status = "doing",
         .title = "Compile authoritative packets",
-        .body = "Preserve exact packet evidence.",
+        .body =
+        \\Preserve exact packet evidence.
+        \\## Acceptance Criteria
+        \\The coder brief preserves exact mandatory fields and digest.
+        ,
         .next_action = "Compile live linked context, reject incomplete context, and run four named gates.",
         .acceptance_criteria = "The coder brief preserves exact mandatory fields and digest.",
         .owning_plans = &linked,

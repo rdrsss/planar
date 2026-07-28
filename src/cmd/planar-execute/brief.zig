@@ -205,6 +205,8 @@ fn renderPacketEvidence(
         try writer.print("  - source digest: `{s}`\n", .{value.source_digest});
         try writer.print("  - current digest: `{s}`\n", .{value.current_digest});
         try writer.print("  - materializer: `{s}` / current `{s}`\n", .{ value.materializer_version, value.current_materializer_version });
+        if (value.display_label.len > 0)
+            try writer.print("  - display label: {s}\n", .{value.display_label});
         try writer.writeAll("  - exact text:\n");
         var lines = std.mem.splitScalar(u8, value.text, '\n');
         while (lines.next()) |line| try writer.print("    > {s}\n", .{line});
@@ -282,7 +284,8 @@ pub fn compileBrief(
     try buf.writer.writeAll("# Coder Brief\n\n");
 
     if (authoritative_plan) |plan| {
-        try buf.writer.print("**Plan:** {s} (id {d})\n", .{ plan.text, plan.id });
+        const label = if (plan.display_label.len > 0) plan.display_label else plan.text;
+        try buf.writer.print("**Plan:** {s} (id {d})\n", .{ label, plan.id });
     } else {
         try buf.writer.print("**Plan:** {s} (id {d})\n", .{ inputs.plan.title, inputs.plan.id });
     }

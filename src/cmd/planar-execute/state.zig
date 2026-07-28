@@ -108,6 +108,7 @@ pub const PacketEvidence = struct {
     id: i64,
     locator: []const u8,
     text: []const u8,
+    display_label: []const u8 = "",
     source_digest: []const u8,
     current_digest: []const u8,
     required: bool,
