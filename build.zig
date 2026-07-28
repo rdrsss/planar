@@ -704,6 +704,11 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const routing_packet_mod = b.addModule("routing_packet", .{
+        .root_source_file = b.path("src/engine/routing/packet.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
 
     // The default integration path uses one umbrella root. This is the
     // common local loop: one test executable, no duplicate smoke-root imports,
@@ -734,6 +739,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "harness", .module = harness_mod },
+                .{ .name = "routing_packet", .module = routing_packet_mod },
             },
         }),
         .filters = test_filters_opt,
