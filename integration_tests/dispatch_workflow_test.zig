@@ -23,6 +23,7 @@
 
 const std = @import("std");
 const harness = @import("harness");
+const db = @import("db");
 
 // ---------------------------------------------------------------------------
 // resolveEnv — same pattern as planar_execute_test.zig
@@ -197,12 +198,70 @@ fn seedDispatchPlan(suite: *harness.Suite, slug: []const u8) SeedResult {
     const task_json = suite.mustRun(&.{ "task", "add", "--plan", plan_id_str, "--json", "Implement feature X" });
     defer gpa.free(task_json);
     const task_id = extractIntField(task_json, "\"id\"") orelse @panic("no task id from task add --json");
+    seedAuthoritativePacket(suite, plan_id, task_id);
 
     // Activate the plan so `plan next` returns eligible tasks.
     const upd = suite.mustRun(&.{ "plan", "update", plan_id_str, "--status", "active" });
     gpa.free(upd);
 
     return .{ .plan_id_str = plan_id_str, .task_id = task_id };
+}
+
+fn seedAuthoritativePacket(suite: *harness.Suite, plan_id: i64, task_id: i64) void {
+    const gpa = suite.allocator;
+    const path = gpa.dupeZ(u8, suite.absDbPath()) catch @panic("OOM");
+    defer gpa.free(path);
+    var conn = db.sqlite.Db.open(path) catch @panic("cannot open dispatch fixture DB");
+    defer conn.close();
+    const sql = std.fmt.allocPrint(
+        gpa,
+        \\update tasks set body='## Acceptance Criteria
+        \\The dispatch fixture compiles a complete authoritative coder brief.
+        \\## Required validation
+        \\make test-integration',
+        \\next_action='Execute the seeded dispatch workflow and verify its terminal transition.'
+        \\where id={d};
+        \\insert into projects(id,slug,name) values(91000,'dispatch-fixture','Dispatch fixture');
+        \\insert into artifacts(id,scope_kind,scope_id,kind,title,body,source_path,status)
+        \\select 91001,scope_kind,scope_id,'product_spec','Product','Product requirements','product-spec.md','active' from plans where id={d};
+        \\insert into artifacts(id,scope_kind,scope_id,kind,title,body,source_path,status)
+        \\select 91002,scope_kind,scope_id,'tech_spec','Technical','Technical contract','tech-spec.md','active' from plans where id={d};
+        \\insert into artifacts(id,scope_kind,scope_id,kind,title,body,source_path,status)
+        \\select 91003,scope_kind,scope_id,'roadmap','Roadmap','Roadmap milestone','roadmap.md','active' from plans where id={d};
+        \\insert into artifacts(id,scope_kind,scope_id,kind,title,body,source_path,status)
+        \\select 91004,scope_kind,scope_id,'test_spec','Tests','Dispatch scenarios','test-spec.md','active' from plans where id={d};
+        \\insert into decisions(id,scope_kind,scope_id,title,body,status)
+        \\select 91005,scope_kind,scope_id,'Dispatch contract','Use the authoritative packet.','accepted' from plans where id={d};
+        \\insert into tasks(id,scope_kind,scope_id,plan_id,title,body,status,next_action)
+        \\select 91006,scope_kind,scope_id,id,'Seed dependency','Dependency context','done','Dependency already complete.' from plans where id={d};
+        \\insert into task_touch_paths(task_id,repo_id,path) values({d},91000,'workflows/dispatch.lua');
+        \\insert into entity_links(from_kind,from_id,to_kind,to_id,relationship) values
+        \\('task',{d},'artifact',91001,'cites'),
+        \\('task',{d},'artifact',91002,'cites'),
+        \\('task',{d},'artifact',91003,'cites'),
+        \\('task',{d},'artifact',91004,'cites'),
+        \\('task',{d},'decision',91005,'cites'),
+        \\('task',{d},'task',91006,'blocks');
+    ,
+        .{
+            task_id,
+            plan_id,
+            plan_id,
+            plan_id,
+            plan_id,
+            plan_id,
+            plan_id,
+            task_id,
+            task_id,
+            task_id,
+            task_id,
+            task_id,
+            task_id,
+            task_id,
+        },
+    ) catch @panic("OOM");
+    defer gpa.free(sql);
+    conn.execSlice(gpa, sql) catch @panic("cannot seed authoritative dispatch packet");
 }
 
 // ---------------------------------------------------------------------------

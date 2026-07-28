@@ -61,8 +61,6 @@ const std = @import("std");
 const state = @import("state.zig");
 const schema = @import("schema.zig");
 const brief = @import("brief.zig");
-const engine = @import("engine");
-const db = @import("db");
 
 /// Shared Lua C-API import. Exported so `main.zig` reuses the SAME cimport
 /// (two separate `@cImport` blocks produce incompatible opaque types for
@@ -71,7 +69,6 @@ pub const c = @cImport({
     @cInclude("lua.h");
     @cInclude("lauxlib.h");
     @cInclude("lualib.h");
-    @cInclude("stdlib.h");
 });
 
 const Io = std.Io;
@@ -629,15 +626,15 @@ fn commandAllowed(bin: []const u8, argv: []const []const u8) bool {
     if (argv.len < 2) return false;
     const Pair = struct { []const u8, []const u8 };
     const allowed = [_]Pair{
-        .{ "scope", "show" },              .{ "plan", "show" },        .{ "plan", "list" },
-        .{ "plan", "descendants" },        .{ "plan", "next" },        .{ "plan", "closeout" },
-        .{ "plan", "recommend-strategy" }, .{ "task", "show" },        .{ "task", "list" },
-        .{ "task", "add" },                .{ "task", "touches" },     .{ "question", "list" },
-        .{ "question", "add" },            .{ "links", "list" },       .{ "run", "start" },
-        .{ "run", "event" },               .{ "run", "finish" },       .{ "bench", "start" },
-        .{ "bench", "show" },              .{ "bench", "harvest" },    .{ "bench", "finish" },
-        .{ "ext", "propagate-one" },       .{ "capture", "snapshot" }, .{ "handoff", "create" },
-        .{ "handoff", "validate" },
+        .{ "scope", "show" },              .{ "plan", "show" },         .{ "plan", "list" },
+        .{ "plan", "descendants" },        .{ "plan", "next" },         .{ "plan", "closeout" },
+        .{ "plan", "recommend-strategy" }, .{ "task", "show" },         .{ "task", "list" },
+        .{ "task", "packet" },             .{ "task", "add" },          .{ "task", "touches" },
+        .{ "question", "list" },           .{ "question", "add" },      .{ "links", "list" },
+        .{ "run", "start" },               .{ "run", "event" },         .{ "run", "finish" },
+        .{ "bench", "start" },             .{ "bench", "show" },        .{ "bench", "harvest" },
+        .{ "bench", "finish" },            .{ "ext", "propagate-one" }, .{ "capture", "snapshot" },
+        .{ "handoff", "create" },          .{ "handoff", "validate" },
     };
     for (allowed) |pair| {
         if (std.mem.eql(u8, argv[0], pair[0]) and std.mem.eql(u8, argv[1], pair[1])) return true;
@@ -1115,19 +1112,20 @@ fn hostCtxBrief(L: ?*c.lua_State) callconv(.c) c_int {
     const schema_parsed = schema.loadSchema(hs.arena, hs.io, "planar-agent") catch raiseError(L, "ctx.brief: failed to load planar-agent schema", .{});
     const agent_schema = schema.BinSchema.init(schema_parsed.value);
 
-    const db_path_ptr = c.getenv("PLANAR_DB") orelse raiseError(L, "ctx.brief: PLANAR_DB required for authoritative packet", .{});
-    var live_db = db.sqlite.Db.open(db_path_ptr) catch raiseError(L, "ctx.brief: cannot open PLANAR_DB", .{});
-    defer live_db.close();
-    var live_packet = engine.routing.packet.assembleTask(hs.arena, &live_db, task_id) catch raiseError(L, "ctx.brief: authoritative packet assembly failed", .{});
-    defer live_packet.deinit();
-    const authoritative = engine.routing.packet.coderBrief(live_packet.packet) catch raiseError(L, "ctx.brief: authoritative packet not ready", .{});
+    var task_id_buf: [32]u8 = undefined;
+    const task_id_str = std.fmt.bufPrint(&task_id_buf, "{d}", .{task_id}) catch raiseError(L, "ctx.brief: task id formatting failed", .{});
+    const packet_json = runAllowlisted(L, hs, "planar", &.{ "task", "packet", task_id_str, "--json" });
+    const authoritative_parsed = state.parseTaskPacket(hs.arena, packet_json) catch
+        raiseError(L, "ctx.brief: authoritative packet parse failed", .{});
+    const authoritative = authoritative_parsed.value;
+    if (!authoritative.ready()) raiseError(L, "ctx.brief: authoritative packet not ready", .{});
 
     // Adapt TaskShow → the TaskEntry shape compileBrief consumes.
     const tasks = hs.arena.alloc(state.TaskEntry, 1) catch raiseError(L, "out of memory", .{});
     tasks[0] = .{
         .id = task_parsed.value.id,
         .plan_id = @intCast(plan_id),
-        .title = plan_parsed.value.title,
+        .title = authoritative.input.title,
         .slug = task_parsed.value.slug,
         .status = task_parsed.value.status,
     };

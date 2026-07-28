@@ -100,6 +100,54 @@ pub const TaskShow = struct {
     status: []const u8,
 };
 
+/// JSON wire contract returned by `planar task packet <id> --json`.
+/// Keeping this projection here preserves planar-execute's subprocess-only
+/// capability boundary: the workflow host never imports engine or opens DB.
+pub const PacketEvidence = struct {
+    kind: []const u8,
+    id: i64,
+    locator: []const u8,
+    text: []const u8,
+    source_digest: []const u8,
+    current_digest: []const u8,
+    required: bool,
+    covered: bool,
+    status: []const u8,
+    provenance: []const u8,
+    materializer_version: []const u8 = "",
+    current_materializer_version: []const u8 = "",
+    freshness: []const u8 = "current",
+};
+
+pub const TaskPacketInput = struct {
+    task_id: i64,
+    title: []const u8,
+    body: []const u8,
+    next_action: []const u8,
+    acceptance_criteria: []const u8,
+    owning_plans: []PacketEvidence,
+    anchor_plans: []PacketEvidence,
+    citations: []PacketEvidence,
+    decisions: []PacketEvidence,
+    questions: []PacketEvidence,
+    scenarios: []PacketEvidence,
+    dependencies: []PacketEvidence,
+    touches: []PacketEvidence,
+    claims: []PacketEvidence,
+    validation_gates: []PacketEvidence,
+    facts: []PacketEvidence,
+};
+
+pub const TaskPacket = struct {
+    input: TaskPacketInput,
+    digest: []const u8,
+    reasons: []const []const u8,
+
+    pub fn ready(self: TaskPacket) bool {
+        return self.reasons.len == 0;
+    }
+};
+
 /// A single task entry inside `planar plan next <id> --json`'s task arrays.
 ///
 /// The verb returns tasks in four arrays: `available`, `claimed`, `stale`,
@@ -381,6 +429,28 @@ pub fn taskShow(
     // own copies of every string (`status`, `slug`), otherwise escape-free
     // fields borrow into the `stdout` buffer that the `defer` frees on return.
     return std.json.parseFromSlice(TaskShow, allocator, stdout, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    }) catch return StateError.ParseFailed;
+}
+
+pub fn taskPacket(
+    allocator: std.mem.Allocator,
+    io: Io,
+    task_id: u64,
+) StateError!std.json.Parsed(TaskPacket) {
+    var id_buf: [32]u8 = undefined;
+    const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{task_id}) catch return StateError.SubprocessFailed;
+    const stdout = try spawnPlanar(allocator, io, &.{ "task", "packet", id_str, "--json" }, 4 * 1024 * 1024);
+    defer allocator.free(stdout);
+    return parseTaskPacket(allocator, stdout);
+}
+
+pub fn parseTaskPacket(
+    allocator: std.mem.Allocator,
+    json: []const u8,
+) StateError!std.json.Parsed(TaskPacket) {
+    return std.json.parseFromSlice(TaskPacket, allocator, json, .{
         .ignore_unknown_fields = true,
         .allocate = .alloc_always,
     }) catch return StateError.ParseFailed;

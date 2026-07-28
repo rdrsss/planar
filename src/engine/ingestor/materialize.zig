@@ -539,7 +539,7 @@ fn explicitArtifactLocator(
     return try allocator.dupe(u8, locator);
 }
 
-fn artifactSection(body: []const u8, locator: []const u8) ?[]const u8 {
+pub fn artifactSection(body: []const u8, locator: []const u8) ?[]const u8 {
     const hash = std.mem.indexOfScalar(u8, locator, '#') orelse return null;
     const section_name = std.mem.trim(u8, locator[hash + 1 ..], " \t");
     if (section_name.len == 0) return null;
@@ -646,7 +646,7 @@ fn containsFold(haystack: []const u8, needle: []const u8) bool {
     return false;
 }
 
-fn section(body: []const u8, heading: []const u8) []const u8 {
+pub fn section(body: []const u8, heading: []const u8) []const u8 {
     const start = std.mem.indexOf(u8, body, heading) orelse return "";
     const content_start = start + heading.len;
     const tail = body[content_start..];
@@ -654,7 +654,7 @@ fn section(body: []const u8, heading: []const u8) []const u8 {
     return std.mem.trim(u8, tail[0..end], " \t\r\n");
 }
 
-fn field(body: []const u8, marker: []const u8) ?[]const u8 {
+pub fn field(body: []const u8, marker: []const u8) ?[]const u8 {
     const start = std.mem.indexOf(u8, body, marker) orelse return null;
     const tail = body[start + marker.len ..];
     const end = std.mem.indexOfScalar(u8, tail, '\n') orelse tail.len;

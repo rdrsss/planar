@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const db = @import("db");
+const materialize = @import("../ingestor/materialize.zig");
 
 pub const policy_version = "routing-packet-v1";
 
@@ -21,6 +22,9 @@ pub const Evidence = struct {
     covered: bool = true,
     status: []const u8 = "ready",
     provenance: []const u8 = "planar",
+    materializer_version: []const u8 = "",
+    current_materializer_version: []const u8 = "",
+    freshness: []const u8 = "current",
 };
 
 pub const TaskInput = struct {
@@ -87,21 +91,38 @@ pub const TaskPacket = struct {
     }
 };
 
+pub fn renderText(packet: TaskPacket, writer: *std.Io.Writer) !void {
+    try writer.print("task packet {d}: {s}\n", .{ packet.input.task_id, if (packet.ready()) "ready" else "not_ready" });
+    try writer.print("digest: {s}\n", .{packet.digest});
+    if (packet.reasons.len > 0) {
+        try writer.writeAll("reasons:\n");
+        for (packet.reasons) |reason| try writer.print("- {s}\n", .{@tagName(reason)});
+    }
+    try writer.writeAll(packet.canonical);
+    try writer.writeByte('\n');
+}
+
 pub const LiveTaskPacket = struct {
-    arena: std.heap.ArenaAllocator,
+    backing_allocator: std.mem.Allocator,
+    arena: *std.heap.ArenaAllocator,
     packet: TaskPacket,
 
     pub fn deinit(self: *LiveTaskPacket) void {
         self.packet.deinit(self.arena.allocator());
         self.arena.deinit();
+        self.backing_allocator.destroy(self.arena);
     }
 };
 
 /// Reassembles the packet from the current database snapshot. No caller-owned
 /// evidence fragments cross this boundary.
 pub fn assembleTask(allocator: std.mem.Allocator, d: *db.sqlite.Db, task_id: i64) !LiveTaskPacket {
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    errdefer arena.deinit();
+    const arena = try allocator.create(std.heap.ArenaAllocator);
+    arena.* = std.heap.ArenaAllocator.init(allocator);
+    errdefer {
+        arena.deinit();
+        allocator.destroy(arena);
+    }
     const a = arena.allocator();
     var task = try d.prepare("select title,coalesce(body,''),coalesce(next_action,''),plan_id from tasks where id=?\x00");
     defer task.finalize();
@@ -111,21 +132,21 @@ pub fn assembleTask(allocator: std.mem.Allocator, d: *db.sqlite.Db, task_id: i64
     const body = try task.columnTextAlloc(1, a);
     const next_action = try task.columnTextAlloc(2, a);
     const plan_id = task.columnIntOpt(3);
-    const acceptance = extractSection(body, "## Acceptance criteria") orelse body;
+    const acceptance = extractSectionFold(body, "## Acceptance criteria") orelse body;
 
     const owning = if (plan_id) |id| try oneRowEvidence(a, d, "select 'plan',id,'plan:'||id,title,'active','plan:'||id from plans where id=?\x00", id) else &.{};
     const anchors = if (plan_id) |id| try oneRowEvidence(a, d, "select 'plan',p.id,'plan:'||p.id,p.title,'active','plan:'||p.id from plans p where p.id=coalesce((select to_id from entity_links where from_kind='plan' and from_id=? and to_kind='plan' and relationship='derives-from' limit 1),?)\x00", id) else &.{};
     const citations = try linkedEvidence(a, d, task_id, "artifact", "cites", "select kind,id,coalesce(source_path,'artifact:'||id),coalesce(body,title),case when status in ('active','draft') then 'resolved' else status end,'artifact:'||id from artifacts where id=?\x00");
-    const decisions = try linkedEvidence(a, d, task_id, "decision", "addresses", "select 'decision',id,'decision:'||id,body,case when status='accepted' then 'locked' else status end,'decision:'||id from decisions where id=?\x00");
+    const decisions = try linkedEvidenceFromTask(a, d, task_id, "decision", "cites", "select 'decision',id,'decision:'||id,body,case when status='accepted' then 'locked' else status end,'decision:'||id from decisions where id=?\x00");
     const questions = try linkedEvidence(a, d, task_id, "question", "addresses", "select 'question',id,'question:'||id,coalesce(answer_body,body,title),status,'question:'||id from questions where id=?\x00");
-    const scenarios = try linkedEvidence(a, d, task_id, "test_scenario", "verifies", "select 'scenario',id,'scenario:'||id,coalesce(body,title),status,'scenario:'||id from test_scenarios where id=?\x00");
+    const scenarios = try linkedEvidenceToTask(a, d, task_id, "test_scenario", "verifies", "select 'scenario',id,'scenario:'||id,coalesce(body,title),case when status in ('ready','verified') then status else status end,'scenario:'||id from test_scenarios where id=?\x00");
     const dependencies = try linkedEvidence(a, d, task_id, "task", "blocks", "select 'dependency',id,'task:'||id,title,case when status='done' then 'satisfied' else status end,'task:'||id from tasks where id=?\x00");
     const touches = try pathEvidence(a, d, task_id);
     const claims = try claimEvidence(a, d, task_id);
     const gates = try gateEvidence(a, task_id, body);
     const facts = try factEvidence(a, d, task_id);
     const input: TaskInput = .{ .task_id = task_id, .title = title, .body = body, .next_action = next_action, .acceptance_criteria = acceptance, .owning_plans = owning, .anchor_plans = anchors, .citations = citations, .decisions = decisions, .questions = questions, .scenarios = scenarios, .dependencies = dependencies, .touches = touches, .claims = claims, .validation_gates = gates, .facts = facts };
-    return .{ .arena = arena, .packet = try compileTask(a, input) };
+    return .{ .backing_allocator = allocator, .arena = arena, .packet = try compileTask(a, input) };
 }
 
 fn extractSection(body: []const u8, heading: []const u8) ?[]const u8 {
@@ -133,6 +154,18 @@ fn extractSection(body: []const u8, heading: []const u8) ?[]const u8 {
     const rest = body[start + heading.len ..];
     const end = std.mem.indexOf(u8, rest, "\n## ") orelse rest.len;
     return trim(rest[0..end]);
+}
+
+fn extractSectionFold(body: []const u8, heading: []const u8) ?[]const u8 {
+    if (heading.len > body.len) return null;
+    var start: usize = 0;
+    while (start + heading.len <= body.len) : (start += 1) {
+        if (!std.ascii.eqlIgnoreCase(body[start .. start + heading.len], heading)) continue;
+        const rest = body[start + heading.len ..];
+        const end = std.mem.indexOf(u8, rest, "\n## ") orelse rest.len;
+        return trim(rest[0..end]);
+    }
+    return null;
 }
 
 fn rowEvidence(a: std.mem.Allocator, stmt: *db.sqlite.Stmt) !Evidence {
@@ -152,7 +185,23 @@ fn oneRowEvidence(a: std.mem.Allocator, d: *db.sqlite.Db, sql: [:0]const u8, id:
 }
 
 fn linkedEvidence(a: std.mem.Allocator, d: *db.sqlite.Db, task_id: i64, kind: []const u8, relationship: []const u8, entity_sql: [:0]const u8) ![]const Evidence {
+    return linkedEvidenceFromTask(a, d, task_id, kind, relationship, entity_sql);
+}
+
+fn linkedEvidenceFromTask(a: std.mem.Allocator, d: *db.sqlite.Db, task_id: i64, kind: []const u8, relationship: []const u8, entity_sql: [:0]const u8) ![]const Evidence {
     var ids = try d.prepare("select to_id from entity_links where from_kind='task' and from_id=? and to_kind=? and relationship=? order by to_id\x00");
+    defer ids.finalize();
+    try ids.bind(&.{ .{ .int = task_id }, .{ .text = kind }, .{ .text = relationship } });
+    var out: std.ArrayList(Evidence) = .empty;
+    while (try ids.step() == .row) {
+        const rows = try oneRowEvidence(a, d, entity_sql, ids.columnInt(0));
+        if (rows.len == 1) try out.append(a, rows[0]);
+    }
+    return out.toOwnedSlice(a);
+}
+
+fn linkedEvidenceToTask(a: std.mem.Allocator, d: *db.sqlite.Db, task_id: i64, kind: []const u8, relationship: []const u8, entity_sql: [:0]const u8) ![]const Evidence {
+    var ids = try d.prepare("select from_id from entity_links where to_kind='task' and to_id=? and from_kind=? and relationship=? order by from_id\x00");
     defer ids.finalize();
     try ids.bind(&.{ .{ .int = task_id }, .{ .text = kind }, .{ .text = relationship } });
     var out: std.ArrayList(Evidence) = .empty;
@@ -169,6 +218,12 @@ fn pathEvidence(a: std.mem.Allocator, d: *db.sqlite.Db, task_id: i64) ![]const E
     try stmt.bind(&.{.{ .int = task_id }});
     var out: std.ArrayList(Evidence) = .empty;
     while (try stmt.step() == .row) try out.append(a, try rowEvidence(a, &stmt));
+    var repos = try d.prepare(
+        "select 'touch',p.id,'repo:'||p.id,p.slug,'resolved','project:'||p.id from entity_links el join projects p on p.id=el.to_id where el.from_kind='task' and el.from_id=? and el.to_kind='repo' and el.relationship='touches' order by p.id\x00",
+    );
+    defer repos.finalize();
+    try repos.bind(&.{.{ .int = task_id }});
+    while (try repos.step() == .row) try out.append(a, try rowEvidence(a, &repos));
     return out.toOwnedSlice(a);
 }
 fn claimEvidence(a: std.mem.Allocator, d: *db.sqlite.Db, task_id: i64) ![]const Evidence {
@@ -180,45 +235,129 @@ fn claimEvidence(a: std.mem.Allocator, d: *db.sqlite.Db, task_id: i64) ![]const 
     return out.toOwnedSlice(a);
 }
 fn gateEvidence(a: std.mem.Allocator, task_id: i64, body: []const u8) ![]const Evidence {
-    const section = extractSection(body, "## Required validation") orelse return &.{};
+    const section = extractSectionFold(body, "## Required validation") orelse return &.{};
     const current = digest(section);
     const out = try a.alloc(Evidence, 1);
     out[0] = .{ .kind = "validation_gate", .id = task_id, .locator = "task:required-validation", .text = section, .source_digest = try a.dupe(u8, &current), .current_digest = try a.dupe(u8, &current), .status = "required", .provenance = "task.body" };
     return out;
 }
 fn factEvidence(a: std.mem.Allocator, d: *db.sqlite.Db, task_id: i64) ![]const Evidence {
-    var stmt = try d.prepare("select fact_kind,id,source_locator,coalesce(value_text,cast(value_bool as text),cast(value_integer as text),cast(value_real as text),''),source_digest,source_entity_kind,source_entity_id from routing_task_facts where task_id=? order by id\x00");
+    var stmt = try d.prepare("select fact_kind,id,source_locator,coalesce(value_text,cast(value_bool as text),cast(value_integer as text),cast(value_real as text),''),source_digest,source_entity_kind,source_entity_id,materializer_version from routing_task_facts where task_id=? order by id\x00");
     defer stmt.finalize();
     try stmt.bind(&.{.{ .int = task_id }});
     var out: std.ArrayList(Evidence) = .empty;
     while (try stmt.step() == .row) {
         const source_kind = try stmt.columnTextAlloc(5, a);
         const source_id = stmt.columnInt(6);
-        const current_text = try sourceEntityText(a, d, source_kind, source_id);
-        const current = digest(current_text);
-        try out.append(a, .{ .kind = try stmt.columnTextAlloc(0, a), .id = stmt.columnInt(1), .locator = try stmt.columnTextAlloc(2, a), .text = try stmt.columnTextAlloc(3, a), .source_digest = try stmt.columnTextAlloc(4, a), .current_digest = try a.dupe(u8, &current), .status = "materialized", .provenance = try std.fmt.allocPrint(a, "{s}:{d}", .{ source_kind, source_id }) });
+        const fact_kind = try stmt.columnTextAlloc(0, a);
+        const locator = try stmt.columnTextAlloc(2, a);
+        const semantic_source = try factSemanticSource(a, d, task_id, fact_kind, source_kind, source_id, locator);
+        const current = if (semantic_source) |semantic|
+            try materialize.sourceDigestAlloc(a, source_kind, source_id, locator, semantic)
+        else
+            "";
+        const source = try stmt.columnTextAlloc(4, a);
+        const stored_version = try stmt.columnTextAlloc(7, a);
+        const fresh = current.len > 0 and std.mem.eql(u8, source, current) and
+            std.mem.eql(u8, stored_version, materialize.materializer_version);
+        try out.append(a, .{
+            .kind = fact_kind,
+            .id = stmt.columnInt(1),
+            .locator = locator,
+            .text = try stmt.columnTextAlloc(3, a),
+            .source_digest = source,
+            .current_digest = current,
+            .status = "materialized",
+            .provenance = try std.fmt.allocPrint(a, "{s}:{d}", .{ source_kind, source_id }),
+            .materializer_version = stored_version,
+            .current_materializer_version = materialize.materializer_version,
+            .freshness = if (fresh) "current" else "stale",
+        });
     }
     return out.toOwnedSlice(a);
 }
 
-fn sourceEntityText(a: std.mem.Allocator, d: *db.sqlite.Db, kind: []const u8, id: i64) ![]const u8 {
-    const sql: [:0]const u8 = if (std.mem.eql(u8, kind, "task"))
-        "select title||'\n'||coalesce(body,'')||'\n'||coalesce(next_action,'') from tasks where id=?\x00"
-    else if (std.mem.eql(u8, kind, "artifact"))
-        "select title||'\n'||coalesce(body,'')||'\n'||status from artifacts where id=?\x00"
-    else if (std.mem.eql(u8, kind, "decision"))
-        "select title||'\n'||body||'\n'||status from decisions where id=?\x00"
-    else if (std.mem.eql(u8, kind, "question"))
-        "select title||'\n'||coalesce(body,'')||'\n'||status||'\n'||coalesce(answer_body,'') from questions where id=?\x00"
-    else if (std.mem.eql(u8, kind, "test_scenario"))
-        "select title||'\n'||coalesce(body,'')||'\n'||status from test_scenarios where id=?\x00"
-    else
-        return "";
+fn scalarText(a: std.mem.Allocator, d: *db.sqlite.Db, sql: [:0]const u8, id: i64) !?[]const u8 {
     var row = try d.prepare(sql);
     defer row.finalize();
     try row.bind(&.{.{ .int = id }});
-    if (try row.step() != .row) return "";
-    return row.columnTextAlloc(0, a);
+    if (try row.step() != .row) return null;
+    return try row.columnTextAlloc(0, a);
+}
+
+fn factSemanticSource(
+    a: std.mem.Allocator,
+    d: *db.sqlite.Db,
+    task_id: i64,
+    fact_kind: []const u8,
+    source_kind: []const u8,
+    source_id: i64,
+    locator: []const u8,
+) !?[]const u8 {
+    if (std.mem.eql(u8, source_kind, "task") and source_id == task_id) {
+        if (std.mem.eql(u8, locator, "body#acceptance-criteria")) {
+            const body = (try scalarText(a, d, "select coalesce(body,'') from tasks where id=?\x00", task_id)) orelse return null;
+            return materialize.section(body, "## Acceptance Criteria");
+        }
+        if (std.mem.eql(u8, locator, "next_action"))
+            return scalarText(a, d, "select coalesce(next_action,'') from tasks where id=?\x00", task_id);
+        if (std.mem.eql(u8, locator, "body"))
+            return scalarText(a, d, "select coalesce(body,'') from tasks where id=?\x00", task_id);
+        const count_kind: ?[]const u8 = if (std.mem.eql(u8, locator, "links#touches"))
+            "touch"
+        else if (std.mem.eql(u8, locator, "links#scenarios"))
+            "scenario"
+        else if (std.mem.eql(u8, locator, "links#blocks-outgoing"))
+            "blocks"
+        else
+            null;
+        if (count_kind) |kind| {
+            const count = if (std.mem.eql(u8, kind, "touch"))
+                try countQuery(d, "select count(*) from entity_links where from_kind='task' and from_id=? and relationship='touches'\x00", task_id)
+            else if (std.mem.eql(u8, kind, "scenario"))
+                try countQuery(d, "select count(*) from entity_links where to_kind='task' and to_id=? and from_kind='test_scenario' and relationship='verifies'\x00", task_id)
+            else
+                try countQuery(d, "select count(*) from entity_links where from_kind='task' and from_id=? and to_kind='task' and relationship='blocks'\x00", task_id);
+            return try std.fmt.allocPrint(a, "{s}:{d}", .{ kind, count });
+        }
+    }
+    if (std.mem.eql(u8, source_kind, "artifact")) {
+        const body = (try scalarText(a, d, "select coalesce(body,'') from artifacts where id=?\x00", source_id)) orelse return null;
+        return materialize.artifactSection(body, locator);
+    }
+    if (std.mem.eql(u8, source_kind, "decision"))
+        return scalarText(a, d, "select body from decisions where id=?\x00", source_id);
+    if (std.mem.eql(u8, source_kind, "question"))
+        return scalarText(a, d, "select coalesce(body,'') from questions where id=?\x00", source_id);
+    if (std.mem.eql(u8, source_kind, "test_scenario")) {
+        if (std.mem.eql(u8, locator, "status"))
+            return scalarText(a, d, "select status from test_scenarios where id=?\x00", source_id);
+        const body = (try scalarText(a, d, "select coalesce(body,'') from test_scenarios where id=?\x00", source_id)) orelse return null;
+        if (std.mem.eql(u8, locator, "body#acceptance"))
+            return materialize.field(body, "**Acceptance:**") orelse "";
+        return body;
+    }
+    if (std.mem.eql(u8, fact_kind, "touch")) return if (try liveRelationship(d, task_id, source_kind, source_id, "touches")) "touches" else null;
+    if (std.mem.eql(u8, fact_kind, "blocks") or std.mem.eql(u8, fact_kind, "blocked_by"))
+        return if (try liveRelationship(d, task_id, source_kind, source_id, "blocks")) "blocks" else null;
+    return null;
+}
+
+fn countQuery(d: *db.sqlite.Db, sql: [:0]const u8, id: i64) !i64 {
+    var stmt = try d.prepare(sql);
+    defer stmt.finalize();
+    try stmt.bind(&.{.{ .int = id }});
+    if (try stmt.step() != .row) return 0;
+    return stmt.columnInt(0);
+}
+
+fn liveRelationship(d: *db.sqlite.Db, task_id: i64, other_kind: []const u8, other_id: i64, relationship: []const u8) !bool {
+    var stmt = try d.prepare(
+        "select count(*) from entity_links where relationship=? and ((from_kind='task' and from_id=? and to_kind=? and to_id=?) or (to_kind='task' and to_id=? and from_kind=? and from_id=?))\x00",
+    );
+    defer stmt.finalize();
+    try stmt.bind(&.{ .{ .text = relationship }, .{ .int = task_id }, .{ .text = other_kind }, .{ .int = other_id }, .{ .int = task_id }, .{ .text = other_kind }, .{ .int = other_id } });
+    return try stmt.step() == .row and stmt.columnInt(0) > 0;
 }
 
 /// Compile a current task packet. No provider, model, work type, or tier is
@@ -255,7 +394,10 @@ pub fn compileTask(
     }
     for (input.facts) |fact| {
         if (fact.source_digest.len == 0 or fact.current_digest.len == 0 or
-            !std.mem.eql(u8, fact.source_digest, fact.current_digest))
+            !std.mem.eql(u8, fact.source_digest, fact.current_digest) or
+            (fact.materializer_version.len > 0 and
+                !std.mem.eql(u8, fact.materializer_version, fact.current_materializer_version)) or
+            !std.mem.eql(u8, fact.freshness, "current"))
         {
             try appendReason(allocator, &reasons, .stale_fact);
             break;
@@ -275,7 +417,7 @@ pub fn compileTask(
     };
 }
 
-pub const PlanningRole = enum { planner, spec_reviewer, ingestor };
+pub const PlanningRole = enum { planner, spec_reviewer, ingestor, orchestrator };
 
 pub const PlanningInput = struct {
     role: PlanningRole,
@@ -321,6 +463,190 @@ pub const PlanningPacket = struct {
     }
 };
 
+pub const LivePlanningPacket = struct {
+    backing_allocator: std.mem.Allocator,
+    arena: *std.heap.ArenaAllocator,
+    packet: PlanningPacket,
+
+    pub fn deinit(self: *LivePlanningPacket) void {
+        self.packet.deinit(self.arena.allocator());
+        self.arena.deinit();
+        self.backing_allocator.destroy(self.arena);
+    }
+};
+
+/// Builds a pre-task packet exclusively from current Planar rows. The caller
+/// supplies only the role and anchor plan identity; it cannot inject projected
+/// facts or substitute task-shaped context before a task exists.
+pub fn assemblePlanning(
+    allocator: std.mem.Allocator,
+    d: *db.sqlite.Db,
+    role: PlanningRole,
+    anchor_plan_id: i64,
+) !LivePlanningPacket {
+    const arena = try allocator.create(std.heap.ArenaAllocator);
+    arena.* = std.heap.ArenaAllocator.init(allocator);
+    errdefer {
+        arena.deinit();
+        allocator.destroy(arena);
+    }
+    const a = arena.allocator();
+
+    var plan = try d.prepare(
+        "select title,coalesce(summary,''),scope_kind,coalesce(scope_id,0),status from plans where id=?\x00",
+    );
+    defer plan.finalize();
+    try plan.bind(&.{.{ .int = anchor_plan_id }});
+    if (try plan.step() != .row) return error.PlanNotFound;
+    const title = try plan.columnTextAlloc(0, a);
+    const summary = try plan.columnTextAlloc(1, a);
+    const goal = if (trim(summary).len > 0) summary else title;
+    const scope_kind = try plan.columnTextAlloc(2, a);
+    const scope_id = plan.columnInt(3);
+    const plan_status = try plan.columnTextAlloc(4, a);
+
+    const scope_facts = try a.alloc(Evidence, 1);
+    const scope_text = try std.fmt.allocPrint(a, "{s}:{d}", .{ scope_kind, scope_id });
+    const scope_digest = digest(scope_text);
+    scope_facts[0] = .{
+        .kind = "scope",
+        .id = scope_id,
+        .locator = "plan:scope",
+        .text = scope_text,
+        .source_digest = try a.dupe(u8, &scope_digest),
+        .current_digest = try a.dupe(u8, &scope_digest),
+        .status = "ready",
+        .provenance = try std.fmt.allocPrint(a, "plan:{d}", .{anchor_plan_id}),
+    };
+    const artifacts = try planLinkedEvidence(
+        a,
+        d,
+        anchor_plan_id,
+        "artifact",
+        "select kind,id,coalesce(source_path,'artifact:'||id),coalesce(body,title),case when status in ('active','draft') then 'ready' else status end,'artifact:'||id from artifacts where id=?\x00",
+    );
+    const questions = try planLinkedEvidence(
+        a,
+        d,
+        anchor_plan_id,
+        "question",
+        "select 'question',id,'question:'||id,coalesce(answer_body,body,title),status,'question:'||id from questions where id=?\x00",
+    );
+    const decisions = try planLinkedEvidence(
+        a,
+        d,
+        anchor_plan_id,
+        "decision",
+        "select 'decision',id,'decision:'||id,body,case when status='accepted' then 'locked' else status end,'decision:'||id from decisions where id=?\x00",
+    );
+    const required_outputs = try fixedOutputs(a);
+    const strict_preview = try planningGraphEvidence(a, anchor_plan_id, artifacts, plan_status);
+    const coverage = try planningCoverageEvidence(a, d, anchor_plan_id);
+    const input: PlanningInput = .{
+        .role = role,
+        .goal = goal,
+        .scope_facts = scope_facts,
+        .artifacts = artifacts,
+        .questions = questions,
+        .constraints = decisions,
+        .required_outputs = required_outputs,
+        .strict_preview = strict_preview,
+        .coverage = coverage,
+        .decisions = decisions,
+        .review_rubric_version = "spec-review-v1",
+        .apply_boundary = if (hasFourCurrentArtifacts(artifacts)) "strict-preview-current" else "",
+    };
+    return .{ .backing_allocator = allocator, .arena = arena, .packet = try compilePlanning(a, input) };
+}
+
+fn planLinkedEvidence(
+    a: std.mem.Allocator,
+    d: *db.sqlite.Db,
+    plan_id: i64,
+    kind: []const u8,
+    entity_sql: [:0]const u8,
+) ![]const Evidence {
+    var ids = try d.prepare(
+        "select from_id from entity_links where from_kind=? and to_kind='plan' and to_id=? and relationship='derives-from' order by from_id\x00",
+    );
+    defer ids.finalize();
+    try ids.bind(&.{ .{ .text = kind }, .{ .int = plan_id } });
+    var out: std.ArrayList(Evidence) = .empty;
+    while (try ids.step() == .row) {
+        const rows = try oneRowEvidence(a, d, entity_sql, ids.columnInt(0));
+        if (rows.len == 1) try out.append(a, rows[0]);
+    }
+    return out.toOwnedSlice(a);
+}
+
+fn fixedOutputs(a: std.mem.Allocator) ![]const Evidence {
+    const names = [_][]const u8{ "product_spec", "tech_spec", "roadmap", "test_spec" };
+    const out = try a.alloc(Evidence, names.len);
+    for (names, 0..) |name, index| {
+        const current = digest(name);
+        out[index] = .{
+            .kind = "required_output",
+            .id = @intCast(index + 1),
+            .locator = name,
+            .text = name,
+            .source_digest = try a.dupe(u8, &current),
+            .current_digest = try a.dupe(u8, &current),
+            .provenance = "routing-packet-policy",
+        };
+    }
+    return out;
+}
+
+fn planningGraphEvidence(
+    a: std.mem.Allocator,
+    plan_id: i64,
+    artifacts: []const Evidence,
+    plan_status: []const u8,
+) ![]const Evidence {
+    if (!hasFourCurrentArtifacts(artifacts)) return &.{};
+    var canonical: std.Io.Writer.Allocating = .init(a);
+    defer canonical.deinit();
+    try canonical.writer.print("plan:{d}\x00status:{s}", .{ plan_id, plan_status });
+    try canonicalEvidenceField(a, &canonical.writer, "artifacts", artifacts);
+    const text = try canonical.toOwnedSlice();
+    const current = digest(text);
+    const out = try a.alloc(Evidence, 1);
+    out[0] = .{
+        .kind = "strict_preview_graph",
+        .id = plan_id,
+        .locator = "plan:current-graph",
+        .text = text,
+        .source_digest = try a.dupe(u8, &current),
+        .current_digest = try a.dupe(u8, &current),
+        .provenance = try std.fmt.allocPrint(a, "plan:{d}", .{plan_id}),
+    };
+    return out;
+}
+
+fn planningCoverageEvidence(a: std.mem.Allocator, d: *db.sqlite.Db, plan_id: i64) ![]const Evidence {
+    var stmt = try d.prepare(
+        "select count(distinct s.id),count(distinct case when el.relationship='verifies' then s.id end) from test_scenarios s join entity_links owner on owner.from_kind='test_scenario' and owner.from_id=s.id and owner.to_kind='plan' and owner.to_id=? and owner.relationship='derives-from' left join entity_links el on el.from_kind='test_scenario' and el.from_id=s.id and el.to_kind='task'\x00",
+    );
+    defer stmt.finalize();
+    try stmt.bind(&.{.{ .int = plan_id }});
+    if (try stmt.step() != .row) return &.{};
+    const total = stmt.columnInt(0);
+    const linked = stmt.columnInt(1);
+    const text = try std.fmt.allocPrint(a, "scenarios:{d};linked:{d}", .{ total, linked });
+    const current = digest(text);
+    const out = try a.alloc(Evidence, 1);
+    out[0] = .{
+        .kind = "coverage",
+        .id = plan_id,
+        .locator = "plan:test-scenario-coverage",
+        .text = text,
+        .source_digest = try a.dupe(u8, &current),
+        .current_digest = try a.dupe(u8, &current),
+        .provenance = try std.fmt.allocPrint(a, "plan:{d}", .{plan_id}),
+    };
+    return out;
+}
+
 /// Compile a role-specific pre-task packet. Task identity and task facts are
 /// intentionally absent from this API, preventing callers from fabricating
 /// implementation context before ingest creates a task.
@@ -349,6 +675,9 @@ pub fn compilePlanning(
             if (input.decisions.len == 0) try appendUnique(PlanningReason, allocator, &reasons, .missing_locked_decisions);
             if (trim(input.apply_boundary).len == 0) try appendUnique(PlanningReason, allocator, &reasons, .missing_apply_boundary);
         },
+        .orchestrator => {
+            if (input.scope_facts.len == 0) try appendUnique(PlanningReason, allocator, &reasons, .missing_scope_facts);
+        },
     }
     const canonical = try canonicalPlanning(allocator, input);
     errdefer allocator.free(canonical);
@@ -365,6 +694,29 @@ pub const InvocationResolution = union(enum) {
     static_fallback: struct { candidate: []const u8, reason: []const u8 },
     unavailable: struct { reason: []const u8 },
 };
+
+pub const LiveInvocationPacket = struct {
+    live: LivePlanningPacket,
+    resolution: InvocationResolution,
+
+    pub fn deinit(self: *LiveInvocationPacket) void {
+        self.live.deinit();
+    }
+};
+
+pub fn assembleInvocation(
+    allocator: std.mem.Allocator,
+    d: *db.sqlite.Db,
+    anchor_plan_id: i64,
+    fallback_candidate: ?[]const u8,
+) !LiveInvocationPacket {
+    var live = try assemblePlanning(allocator, d, .orchestrator, anchor_plan_id);
+    errdefer live.deinit();
+    return .{
+        .resolution = resolveInvocation(live.packet.digest, live.packet.ready(), fallback_candidate),
+        .live = live,
+    };
+}
 
 /// Resolve the orchestration host before launch. A fallback is always visibly
 /// labelled and never represented as evidence-backed packet output.
@@ -387,11 +739,17 @@ pub const CoderBrief = struct {
     body: []const u8,
     next_action: []const u8,
     acceptance_criteria: []const u8,
+    owning_plans: []const Evidence,
+    anchor_plans: []const Evidence,
     citations: []const Evidence,
     decisions: []const Evidence,
+    questions: []const Evidence,
     scenarios: []const Evidence,
     dependencies: []const Evidence,
+    touches: []const Evidence,
+    claims: []const Evidence,
     validation_gates: []const Evidence,
+    facts: []const Evidence,
     packet_digest: [64]u8,
 };
 
@@ -407,11 +765,17 @@ pub fn coderBrief(packet: TaskPacket) BriefError!CoderBrief {
         .body = packet.input.body,
         .next_action = packet.input.next_action,
         .acceptance_criteria = packet.input.acceptance_criteria,
+        .owning_plans = packet.input.owning_plans,
+        .anchor_plans = packet.input.anchor_plans,
         .citations = packet.input.citations,
         .decisions = packet.input.decisions,
+        .questions = packet.input.questions,
         .scenarios = packet.input.scenarios,
         .dependencies = packet.input.dependencies,
+        .touches = packet.input.touches,
+        .claims = packet.input.claims,
         .validation_gates = packet.input.validation_gates,
+        .facts = packet.input.facts,
         .packet_digest = packet.digest,
     };
 }
@@ -498,6 +862,12 @@ fn canonicalEvidenceField(
         try json(item.status, writer);
         try writer.writeAll(",\"provenance\":");
         try json(item.provenance, writer);
+        try writer.writeAll(",\"materializer_version\":");
+        try json(item.materializer_version, writer);
+        try writer.writeAll(",\"current_materializer_version\":");
+        try json(item.current_materializer_version, writer);
+        try writer.writeAll(",\"freshness\":");
+        try json(item.freshness, writer);
         try writer.writeByte('}');
     }
     try writer.writeByte(']');
@@ -523,7 +893,13 @@ fn lessEvidence(_: void, a: Evidence, b: Evidence) bool {
     if (a.covered != b.covered) return !a.covered;
     const status = std.mem.order(u8, a.status, b.status);
     if (status != .eq) return status == .lt;
-    return std.mem.order(u8, a.provenance, b.provenance) == .lt;
+    const provenance = std.mem.order(u8, a.provenance, b.provenance);
+    if (provenance != .eq) return provenance == .lt;
+    const version = std.mem.order(u8, a.materializer_version, b.materializer_version);
+    if (version != .eq) return version == .lt;
+    const current_version = std.mem.order(u8, a.current_materializer_version, b.current_materializer_version);
+    if (current_version != .eq) return current_version == .lt;
+    return std.mem.order(u8, a.freshness, b.freshness) == .lt;
 }
 
 fn validateEvidenceClasses(allocator: std.mem.Allocator, reasons: *std.ArrayList(ReadinessReason), input: TaskInput) !void {
@@ -693,10 +1069,10 @@ test "canonical ordering is total for duplicate identity keys" {
 test "semantic changes alter digest and stale facts fail readiness" {
     const allocator = std.testing.allocator;
     const items = [_]Evidence{
-        .{ .kind = "product_spec", .id = 1, .locator = "a", .text = "one" },
-        .{ .kind = "tech_spec", .id = 2, .locator = "b", .text = "two" },
-        .{ .kind = "roadmap", .id = 3, .locator = "c", .text = "three" },
-        .{ .kind = "test_spec", .id = 4, .locator = "d", .text = "four" },
+        .{ .kind = "product_spec", .id = 1, .locator = "a", .text = "one", .source_digest = "1", .current_digest = "1" },
+        .{ .kind = "tech_spec", .id = 2, .locator = "b", .text = "two", .source_digest = "2", .current_digest = "2" },
+        .{ .kind = "roadmap", .id = 3, .locator = "c", .text = "three", .source_digest = "3", .current_digest = "3" },
+        .{ .kind = "test_spec", .id = 4, .locator = "d", .text = "four", .source_digest = "4", .current_digest = "4" },
     };
     const stale = Evidence{ .kind = "acceptance_complete", .id = 42, .locator = "body", .text = "true", .source_digest = "old", .current_digest = "new" };
     var packet = try compileTask(allocator, fixtureInput(&items, &.{stale}));
@@ -743,10 +1119,10 @@ test "planning packets enforce role-specific inputs without task facts" {
 test "coder brief is lossless and fails closed" {
     const allocator = std.testing.allocator;
     const items = [_]Evidence{
-        .{ .kind = "product_spec", .id = 1, .locator = "p", .text = "product" },
-        .{ .kind = "tech_spec", .id = 2, .locator = "t", .text = "tech" },
-        .{ .kind = "roadmap", .id = 3, .locator = "r", .text = "roadmap" },
-        .{ .kind = "test_spec", .id = 4, .locator = "s", .text = "test" },
+        .{ .kind = "product_spec", .id = 1, .locator = "p", .text = "product", .source_digest = "1", .current_digest = "1" },
+        .{ .kind = "tech_spec", .id = 2, .locator = "t", .text = "tech", .source_digest = "2", .current_digest = "2" },
+        .{ .kind = "roadmap", .id = 3, .locator = "r", .text = "roadmap", .source_digest = "3", .current_digest = "3" },
+        .{ .kind = "test_spec", .id = 4, .locator = "s", .text = "test", .source_digest = "4", .current_digest = "4" },
     };
     const fresh = Evidence{ .kind = "acceptance_complete", .id = 42, .locator = "body", .text = "true", .source_digest = "same", .current_digest = "same" };
     var packet = try compileTask(allocator, fixtureInput(&items, &.{fresh}));
