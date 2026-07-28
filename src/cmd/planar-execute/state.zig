@@ -121,6 +121,7 @@ pub const PacketEvidence = struct {
 
 pub const TaskPacketInput = struct {
     task_id: i64,
+    status: []const u8,
     title: []const u8,
     body: []const u8,
     next_action: []const u8,

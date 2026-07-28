@@ -1141,7 +1141,10 @@ fn hostCtxBrief(L: ?*c.lua_State) callconv(.c) c_int {
         .agent_schema = agent_schema,
         .gates = gates,
     };
-    const compiled = brief.compileBrief(hs.arena, inputs) catch raiseError(L, "ctx.brief: compileBrief failed", .{});
+    const compiled = brief.compileBrief(hs.arena, inputs) catch |e| switch (e) {
+        error.AuthoritativeIdentityMismatch => raiseError(L, "ctx.brief: caller plan/task/claim does not match authoritative packet", .{}),
+        else => raiseError(L, "ctx.brief: compileBrief failed", .{}),
+    };
     _ = c.lua_pushlstring(L, compiled.ptr, compiled.len);
     return 1;
 }

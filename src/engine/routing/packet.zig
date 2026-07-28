@@ -8,6 +8,7 @@
 const std = @import("std");
 const db = @import("db");
 const materialize = @import("../ingestor/materialize.zig");
+const test_spec_status = @import("../planning/test_spec_status.zig");
 
 pub const policy_version = "routing-packet-v1";
 
@@ -29,6 +30,7 @@ pub const Evidence = struct {
 
 pub const TaskInput = struct {
     task_id: i64,
+    status: []const u8,
     title: []const u8,
     body: []const u8,
     next_action: []const u8,
@@ -49,10 +51,13 @@ pub const TaskInput = struct {
 pub const ReadinessReason = enum {
     missing_title,
     missing_body,
+    invalid_task_status,
     generic_acceptance,
     generic_next_action,
     missing_owning_plan,
     missing_anchor_plan,
+    invalid_owning_plan,
+    invalid_anchor_plan,
     missing_product_spec,
     missing_tech_spec,
     missing_roadmap,
@@ -124,7 +129,7 @@ pub fn assembleTask(allocator: std.mem.Allocator, d: *db.sqlite.Db, task_id: i64
         allocator.destroy(arena);
     }
     const a = arena.allocator();
-    var task = try d.prepare("select title,coalesce(body,''),coalesce(next_action,''),plan_id from tasks where id=?\x00");
+    var task = try d.prepare("select title,coalesce(body,''),coalesce(next_action,''),plan_id,status from tasks where id=?\x00");
     defer task.finalize();
     try task.bind(&.{.{ .int = task_id }});
     if (try task.step() != .row) return error.TaskNotFound;
@@ -132,20 +137,22 @@ pub fn assembleTask(allocator: std.mem.Allocator, d: *db.sqlite.Db, task_id: i64
     const body = try task.columnTextAlloc(1, a);
     const next_action = try task.columnTextAlloc(2, a);
     const plan_id = task.columnIntOpt(3);
+    const task_status = try task.columnTextAlloc(4, a);
     const acceptance = extractSectionFold(body, "## Acceptance criteria") orelse body;
 
-    const owning = if (plan_id) |id| try oneRowEvidence(a, d, "select 'plan',id,'plan:'||id,title,'active','plan:'||id from plans where id=?\x00", id) else &.{};
-    const anchors = if (plan_id) |id| try oneRowEvidence(a, d, "select 'plan',p.id,'plan:'||p.id,p.title,'active','plan:'||p.id from plans p where p.id=coalesce((select to_id from entity_links where from_kind='plan' and from_id=? and to_kind='plan' and relationship='derives-from' limit 1),?)\x00", id) else &.{};
-    const citations = try linkedEvidence(a, d, task_id, "artifact", "cites", "select kind,id,coalesce(source_path,'artifact:'||id),coalesce(body,title),case when status in ('active','draft') then 'resolved' else status end,'artifact:'||id from artifacts where id=?\x00");
-    const decisions = try linkedEvidenceFromTask(a, d, task_id, "decision", "cites", "select 'decision',id,'decision:'||id,body,case when status='accepted' then 'locked' else status end,'decision:'||id from decisions where id=?\x00");
+    const owning = if (plan_id) |id| try oneRowEvidence(a, d, "select 'plan',id,'plan:'||id,title,status,'plan:'||id from plans where id=?\x00", id) else &.{};
+    const anchors = if (plan_id) |id| try oneRowEvidence(a, d, "select 'plan',p.id,'plan:'||p.id,p.title,p.status,'plan:'||p.id from plans owner join plans p on p.id=coalesce(owner.parent_plan_id,(select el.to_id from entity_links el join plans parent on parent.id=el.to_id where el.from_kind='plan' and el.from_id=owner.id and el.to_kind='plan' and el.relationship='derives-from' and parent.scope_kind=owner.scope_kind and coalesce(parent.scope_id,0)=coalesce(owner.scope_id,0) limit 1),owner.id) where owner.id=?\x00", id) else &.{};
+    const citations = try linkedEvidence(a, d, task_id, "artifact", "cites", "select kind,id,coalesce(source_path,'artifact:'||id),coalesce(body,title),status,'artifact:'||id from artifacts where id=?\x00");
+    const decisions = try linkedEvidenceFromTask(a, d, task_id, "decision", "cites", "select 'decision',id,'decision:'||id,body,status,'decision:'||id from decisions where id=?\x00");
     const questions = try linkedEvidence(a, d, task_id, "question", "addresses", "select 'question',id,'question:'||id,coalesce(answer_body,body,title),status,'question:'||id from questions where id=?\x00");
-    const scenarios = try linkedEvidenceToTask(a, d, task_id, "test_scenario", "verifies", "select 'scenario',id,'scenario:'||id,coalesce(body,title),case when status in ('ready','verified') then status else status end,'scenario:'||id from test_scenarios where id=?\x00");
+    const anchor_plan_id = if (anchors.len == 1) anchors[0].id else if (plan_id) |id| id else 0;
+    const scenarios = try scenarioEvidence(a, d, task_id, anchor_plan_id);
     const dependencies = try linkedEvidence(a, d, task_id, "task", "blocks", "select 'dependency',id,'task:'||id,title,case when status='done' then 'satisfied' else status end,'task:'||id from tasks where id=?\x00");
     const touches = try pathEvidence(a, d, task_id);
     const claims = try claimEvidence(a, d, task_id);
     const gates = try gateEvidence(a, task_id, body);
     const facts = try factEvidence(a, d, task_id);
-    const input: TaskInput = .{ .task_id = task_id, .title = title, .body = body, .next_action = next_action, .acceptance_criteria = acceptance, .owning_plans = owning, .anchor_plans = anchors, .citations = citations, .decisions = decisions, .questions = questions, .scenarios = scenarios, .dependencies = dependencies, .touches = touches, .claims = claims, .validation_gates = gates, .facts = facts };
+    const input: TaskInput = .{ .task_id = task_id, .status = task_status, .title = title, .body = body, .next_action = next_action, .acceptance_criteria = acceptance, .owning_plans = owning, .anchor_plans = anchors, .citations = citations, .decisions = decisions, .questions = questions, .scenarios = scenarios, .dependencies = dependencies, .touches = touches, .claims = claims, .validation_gates = gates, .facts = facts };
     return .{ .backing_allocator = allocator, .arena = arena, .packet = try compileTask(a, input) };
 }
 
@@ -177,7 +184,12 @@ fn rowEvidence(a: std.mem.Allocator, stmt: *db.sqlite.Stmt) !Evidence {
 fn oneRowEvidence(a: std.mem.Allocator, d: *db.sqlite.Db, sql: [:0]const u8, id: i64) ![]const Evidence {
     var stmt = try d.prepare(sql);
     defer stmt.finalize();
-    try stmt.bind(if (std.mem.count(u8, sql, "?") == 2) &.{ .{ .int = id }, .{ .int = id } } else &.{.{ .int = id }});
+    switch (std.mem.count(u8, sql, "?")) {
+        1 => try stmt.bind(&.{.{ .int = id }}),
+        2 => try stmt.bind(&.{ .{ .int = id }, .{ .int = id } }),
+        3 => try stmt.bind(&.{ .{ .int = id }, .{ .int = id }, .{ .int = id } }),
+        else => return error.InvalidEvidenceQuery,
+    }
     if (try stmt.step() != .row) return &.{};
     const out = try a.alloc(Evidence, 1);
     out[0] = try rowEvidence(a, &stmt);
@@ -212,6 +224,33 @@ fn linkedEvidenceToTask(a: std.mem.Allocator, d: *db.sqlite.Db, task_id: i64, ki
     return out.toOwnedSlice(a);
 }
 
+/// Scenario coverage uses the same authoritative relationship directions as
+/// `test-spec status`: the scenario must belong to the anchor and verify the
+/// task. Lifecycle status is preserved independently from coverage.
+fn scenarioEvidence(a: std.mem.Allocator, d: *db.sqlite.Db, task_id: i64, anchor_plan_id: i64) ![]const Evidence {
+    var stmt = try d.prepare(
+        \\select 'scenario',s.id,'scenario:'||s.id,coalesce(s.body,s.title),
+        \\       s.status,'scenario:'||s.id
+        \\from test_scenarios s
+        \\join entity_links owner on owner.from_kind='test_scenario'
+        \\ and owner.from_id=s.id and owner.to_kind='plan' and owner.to_id=?
+        \\ and owner.relationship='derives-from'
+        \\join entity_links verifies on verifies.from_kind='test_scenario'
+        \\ and verifies.from_id=s.id and verifies.to_kind='task'
+        \\ and verifies.to_id=? and verifies.relationship='verifies'
+        \\order by s.id
+    );
+    defer stmt.finalize();
+    try stmt.bind(&.{ .{ .int = anchor_plan_id }, .{ .int = task_id } });
+    var out: std.ArrayList(Evidence) = .empty;
+    while (try stmt.step() == .row) {
+        var evidence = try rowEvidence(a, &stmt);
+        evidence.covered = true;
+        try out.append(a, evidence);
+    }
+    return out.toOwnedSlice(a);
+}
+
 fn pathEvidence(a: std.mem.Allocator, d: *db.sqlite.Db, task_id: i64) ![]const Evidence {
     var stmt = try d.prepare("select 'touch',id,path,path,'resolved','task_touch_path:'||id from task_touch_paths where task_id=? order by id\x00");
     defer stmt.finalize();
@@ -227,7 +266,7 @@ fn pathEvidence(a: std.mem.Allocator, d: *db.sqlite.Db, task_id: i64) ![]const E
     return out.toOwnedSlice(a);
 }
 fn claimEvidence(a: std.mem.Allocator, d: *db.sqlite.Db, task_id: i64) ![]const Evidence {
-    var stmt = try d.prepare("select 'claim',id,'claim:'||id,claim_token,case when status='active' and lease_expires_at>strftime('%Y-%m-%dT%H:%M:%fZ','now') then 'active' else status end,'agent_work_claim:'||id from agent_work_claims where entity_kind='task' and entity_id=? and status='active' order by id\x00");
+    var stmt = try d.prepare("select 'claim',id,'claim:'||id,claim_token,case when status='active' and lease_expires_at>strftime('%Y-%m-%dT%H:%M:%fZ','now') then 'active' when status='active' then 'expired' else status end,'agent_work_claim:'||id from agent_work_claims where entity_kind='task' and entity_id=? and status='active' order by id\x00");
     defer stmt.finalize();
     try stmt.bind(&.{.{ .int = task_id }});
     var out: std.ArrayList(Evidence) = .empty;
@@ -337,9 +376,12 @@ fn factSemanticSource(
             return materialize.field(body, "**Acceptance:**") orelse "";
         return body;
     }
-    if (std.mem.eql(u8, fact_kind, "touch")) return if (try liveRelationship(d, task_id, source_kind, source_id, "touches")) "touches" else null;
-    if (std.mem.eql(u8, fact_kind, "blocks") or std.mem.eql(u8, fact_kind, "blocked_by"))
-        return if (try liveRelationship(d, task_id, source_kind, source_id, "blocks")) "blocks" else null;
+    if (std.mem.eql(u8, fact_kind, "touch"))
+        return if (try liveRelationship(d, task_id, source_kind, source_id, "touches", .outgoing)) "touches" else null;
+    if (std.mem.eql(u8, fact_kind, "blocks"))
+        return if (try liveRelationship(d, task_id, source_kind, source_id, "blocks", .outgoing)) "blocks" else null;
+    if (std.mem.eql(u8, fact_kind, "blocked_by"))
+        return if (try liveRelationship(d, task_id, source_kind, source_id, "blocks", .incoming)) "blocks" else null;
     return null;
 }
 
@@ -351,12 +393,16 @@ fn countQuery(d: *db.sqlite.Db, sql: [:0]const u8, id: i64) !i64 {
     return stmt.columnInt(0);
 }
 
-fn liveRelationship(d: *db.sqlite.Db, task_id: i64, other_kind: []const u8, other_id: i64, relationship: []const u8) !bool {
-    var stmt = try d.prepare(
-        "select count(*) from entity_links where relationship=? and ((from_kind='task' and from_id=? and to_kind=? and to_id=?) or (to_kind='task' and to_id=? and from_kind=? and from_id=?))\x00",
-    );
+const RelationshipDirection = enum { outgoing, incoming };
+
+fn liveRelationship(d: *db.sqlite.Db, task_id: i64, other_kind: []const u8, other_id: i64, relationship: []const u8, direction: RelationshipDirection) !bool {
+    const sql: [:0]const u8 = switch (direction) {
+        .outgoing => "select count(*) from entity_links where relationship=? and from_kind='task' and from_id=? and to_kind=? and to_id=?\x00",
+        .incoming => "select count(*) from entity_links where relationship=? and to_kind='task' and to_id=? and from_kind=? and from_id=?\x00",
+    };
+    var stmt = try d.prepare(sql);
     defer stmt.finalize();
-    try stmt.bind(&.{ .{ .text = relationship }, .{ .int = task_id }, .{ .text = other_kind }, .{ .int = other_id }, .{ .int = task_id }, .{ .text = other_kind }, .{ .int = other_id } });
+    try stmt.bind(&.{ .{ .text = relationship }, .{ .int = task_id }, .{ .text = other_kind }, .{ .int = other_id } });
     return try stmt.step() == .row and stmt.columnInt(0) > 0;
 }
 
@@ -371,6 +417,8 @@ pub fn compileTask(
 
     if (trim(input.title).len == 0) try appendReason(allocator, &reasons, .missing_title);
     if (trim(input.body).len == 0) try appendReason(allocator, &reasons, .missing_body);
+    if (!statusIn(input.status, &.{ "todo", "doing" }))
+        try appendReason(allocator, &reasons, .invalid_task_status);
     if (genericAcceptance(input.acceptance_criteria))
         try appendReason(allocator, &reasons, .generic_acceptance);
     if (genericNextAction(input.next_action))
@@ -386,6 +434,8 @@ pub fn compileTask(
     if (input.touches.len == 0) try appendReason(allocator, &reasons, .missing_touch);
     if (input.validation_gates.len == 0) try appendReason(allocator, &reasons, .absent_validation_gates);
 
+    if (input.scenarios.len == 0)
+        try appendReason(allocator, &reasons, .uncovered_required_scenario);
     for (input.scenarios) |scenario| {
         if (scenario.required and !scenario.covered) {
             try appendReason(allocator, &reasons, .uncovered_required_scenario);
@@ -440,10 +490,13 @@ pub const PlanningReason = enum {
     missing_source_artifacts,
     missing_required_outputs,
     missing_artifact_digests,
+    non_current_artifacts,
     missing_strict_preview,
     missing_review_rubric,
     missing_coverage,
+    incomplete_coverage,
     missing_locked_decisions,
+    invalid_locked_decisions,
     missing_apply_boundary,
 };
 
@@ -523,7 +576,7 @@ pub fn assemblePlanning(
         d,
         anchor_plan_id,
         "artifact",
-        "select kind,id,coalesce(source_path,'artifact:'||id),coalesce(body,title),case when status in ('active','draft') then 'ready' else status end,'artifact:'||id from artifacts where id=?\x00",
+        "select kind,id,coalesce(source_path,'artifact:'||id),coalesce(body,title),status,'artifact:'||id from artifacts where id=?\x00",
     );
     const questions = try planLinkedEvidence(
         a,
@@ -537,7 +590,7 @@ pub fn assemblePlanning(
         d,
         anchor_plan_id,
         "decision",
-        "select 'decision',id,'decision:'||id,body,case when status='accepted' then 'locked' else status end,'decision:'||id from decisions where id=?\x00",
+        "select 'decision',id,'decision:'||id,body,status,'decision:'||id from decisions where id=?\x00",
     );
     const required_outputs = try fixedOutputs(a);
     const strict_preview = try planningGraphEvidence(a, anchor_plan_id, artifacts, plan_status);
@@ -624,15 +677,13 @@ fn planningGraphEvidence(
 }
 
 fn planningCoverageEvidence(a: std.mem.Allocator, d: *db.sqlite.Db, plan_id: i64) ![]const Evidence {
-    var stmt = try d.prepare(
-        "select count(distinct s.id),count(distinct case when el.relationship='verifies' then s.id end) from test_scenarios s join entity_links owner on owner.from_kind='test_scenario' and owner.from_id=s.id and owner.to_kind='plan' and owner.to_id=? and owner.relationship='derives-from' left join entity_links el on el.from_kind='test_scenario' and el.from_id=s.id and el.to_kind='task'\x00",
-    );
-    defer stmt.finalize();
-    try stmt.bind(&.{.{ .int = plan_id }});
-    if (try stmt.step() != .row) return &.{};
-    const total = stmt.columnInt(0);
-    const linked = stmt.columnInt(1);
-    const text = try std.fmt.allocPrint(a, "scenarios:{d};linked:{d}", .{ total, linked });
+    const oracle = try test_spec_status.compute(d, a, plan_id);
+    defer test_spec_status.deinit(oracle, a);
+    const total_tasks = oracle.summary.total_tasks;
+    const tasks_covered = oracle.summary.tasks_covered;
+    const total_scenarios = oracle.summary.total_scenarios;
+    const complete = total_tasks > 0 and tasks_covered == total_tasks and total_scenarios > 0;
+    const text = try std.fmt.allocPrint(a, "tasks:{d};covered:{d};scenarios:{d}", .{ total_tasks, tasks_covered, total_scenarios });
     const current = digest(text);
     const out = try a.alloc(Evidence, 1);
     out[0] = .{
@@ -642,6 +693,8 @@ fn planningCoverageEvidence(a: std.mem.Allocator, d: *db.sqlite.Db, plan_id: i64
         .text = text,
         .source_digest = try a.dupe(u8, &current),
         .current_digest = try a.dupe(u8, &current),
+        .covered = complete,
+        .status = if (complete) "complete" else "incomplete",
         .provenance = try std.fmt.allocPrint(a, "plan:{d}", .{plan_id}),
     };
     return out;
@@ -657,6 +710,10 @@ pub fn compilePlanning(
     var reasons: std.ArrayList(PlanningReason) = .empty;
     defer reasons.deinit(allocator);
     if (trim(input.goal).len == 0) try appendUnique(PlanningReason, allocator, &reasons, .missing_goal);
+    if (input.artifacts.len > 0 and !planningArtifactsCurrent(input.artifacts))
+        try appendUnique(PlanningReason, allocator, &reasons, .non_current_artifacts);
+    if (input.decisions.len > 0 and !planningDecisionsAccepted(input.decisions))
+        try appendUnique(PlanningReason, allocator, &reasons, .invalid_locked_decisions);
     switch (input.role) {
         .planner => {
             if (input.scope_facts.len == 0) try appendUnique(PlanningReason, allocator, &reasons, .missing_scope_facts);
@@ -672,6 +729,8 @@ pub fn compilePlanning(
             if (!hasFourCurrentArtifacts(input.artifacts)) try appendUnique(PlanningReason, allocator, &reasons, .missing_artifact_digests);
             if (input.strict_preview.len == 0) try appendUnique(PlanningReason, allocator, &reasons, .missing_strict_preview);
             if (input.coverage.len == 0) try appendUnique(PlanningReason, allocator, &reasons, .missing_coverage);
+            if (input.coverage.len > 0 and !planningCoverageComplete(input.coverage))
+                try appendUnique(PlanningReason, allocator, &reasons, .incomplete_coverage);
             if (input.decisions.len == 0) try appendUnique(PlanningReason, allocator, &reasons, .missing_locked_decisions);
             if (trim(input.apply_boundary).len == 0) try appendUnique(PlanningReason, allocator, &reasons, .missing_apply_boundary);
         },
@@ -735,6 +794,7 @@ pub fn resolveInvocation(
 
 pub const CoderBrief = struct {
     task_id: i64,
+    status: []const u8,
     title: []const u8,
     body: []const u8,
     next_action: []const u8,
@@ -761,6 +821,7 @@ pub fn coderBrief(packet: TaskPacket) BriefError!CoderBrief {
     if (!packet.ready()) return error.PacketNotReady;
     return .{
         .task_id = packet.input.task_id,
+        .status = packet.input.status,
         .title = packet.input.title,
         .body = packet.input.body,
         .next_action = packet.input.next_action,
@@ -785,7 +846,9 @@ fn canonicalTask(allocator: std.mem.Allocator, input: TaskInput) ![]const u8 {
     defer out.deinit();
     try out.writer.writeAll("{\"policy\":");
     try json(policy_version, &out.writer);
-    try out.writer.print(",\"task_id\":{d},\"title\":", .{input.task_id});
+    try out.writer.print(",\"task_id\":{d},\"status\":", .{input.task_id});
+    try json(input.status, &out.writer);
+    try out.writer.writeAll(",\"title\":");
     try json(input.title, &out.writer);
     try out.writer.writeAll(",\"body\":");
     try json(input.body, &out.writer);
@@ -904,13 +967,14 @@ fn lessEvidence(_: void, a: Evidence, b: Evidence) bool {
 
 fn validateEvidenceClasses(allocator: std.mem.Allocator, reasons: *std.ArrayList(ReadinessReason), input: TaskInput) !void {
     const classes = [_]struct { values: []const Evidence, reason: ReadinessReason, accepted: []const []const u8 }{
-        .{ .values = input.citations, .reason = .unresolved_citation, .accepted = &.{ "resolved", "ready" } },
-        .{ .values = input.decisions, .reason = .invalid_locked_decision, .accepted = &.{ "locked", "accepted", "ready" } },
+        .{ .values = input.owning_plans, .reason = .invalid_owning_plan, .accepted = &.{ "active", "paused", "ready" } },
+        .{ .values = input.anchor_plans, .reason = .invalid_anchor_plan, .accepted = &.{ "active", "paused", "ready" } },
+        .{ .values = input.citations, .reason = .unresolved_citation, .accepted = &.{ "active", "draft", "ready" } },
+        .{ .values = input.decisions, .reason = .invalid_locked_decision, .accepted = &.{ "accepted", "ready" } },
         .{ .values = input.questions, .reason = .unresolved_question, .accepted = &.{ "answered", "non_blocking", "ready" } },
         .{ .values = input.dependencies, .reason = .invalid_dependency, .accepted = &.{ "satisfied", "ready", "done" } },
         .{ .values = input.touches, .reason = .invalid_touch, .accepted = &.{ "resolved", "ready" } },
         .{ .values = input.claims, .reason = .inactive_claim, .accepted = &.{"active"} },
-        .{ .values = input.scenarios, .reason = .uncovered_required_scenario, .accepted = &.{ "ready", "verified" } },
         .{ .values = input.validation_gates, .reason = .invalid_validation_gate, .accepted = &.{ "required", "ready" } },
     };
     for (classes) |class| for (class.values) |item| {
@@ -925,6 +989,15 @@ fn validateEvidenceClasses(allocator: std.mem.Allocator, reasons: *std.ArrayList
         };
         if (!accepted) try appendReason(allocator, reasons, class.reason);
     };
+    // Scenario lifecycle is independent of coverage. A linked draft scenario
+    // covers its task in the authoritative oracle; only the verifies/ownership
+    // relationship (represented by `covered`) determines coverage readiness.
+    for (input.scenarios) |item| {
+        if (!item.required) continue;
+        if (trim(item.provenance).len == 0) try appendReason(allocator, reasons, .missing_provenance);
+        if (!evidenceCurrent(item)) try appendReason(allocator, reasons, .stale_mandatory_evidence);
+        if (!item.covered) try appendReason(allocator, reasons, .uncovered_required_scenario);
+    }
 }
 
 fn digest(bytes: []const u8) [64]u8 {
@@ -968,8 +1041,8 @@ fn hasFourCurrentArtifacts(values: []const Evidence) bool {
     for (kinds) |kind| {
         var found = false;
         for (values) |value| {
-            if (std.mem.eql(u8, value.kind, kind) and value.source_digest.len > 0 and
-                std.mem.eql(u8, value.source_digest, value.current_digest))
+            if (std.mem.eql(u8, value.kind, kind) and evidenceCurrent(value) and
+                statusIn(value.status, &.{ "draft", "active" }))
             {
                 found = true;
                 break;
@@ -978,6 +1051,35 @@ fn hasFourCurrentArtifacts(values: []const Evidence) bool {
         if (!found) return false;
     }
     return true;
+}
+
+fn evidenceCurrent(value: Evidence) bool {
+    return value.source_digest.len > 0 and value.current_digest.len > 0 and
+        std.mem.eql(u8, value.source_digest, value.current_digest) and
+        std.mem.eql(u8, value.freshness, "current") and trim(value.provenance).len > 0;
+}
+
+fn statusIn(status: []const u8, accepted: []const []const u8) bool {
+    for (accepted) |value| if (std.mem.eql(u8, status, value)) return true;
+    return false;
+}
+
+fn planningArtifactsCurrent(values: []const Evidence) bool {
+    for (values) |value| if (value.required and
+        (!evidenceCurrent(value) or !statusIn(value.status, &.{ "draft", "active" }))) return false;
+    return true;
+}
+
+fn planningDecisionsAccepted(values: []const Evidence) bool {
+    for (values) |value| if (value.required and
+        (!evidenceCurrent(value) or !std.mem.eql(u8, value.status, "accepted"))) return false;
+    return true;
+}
+
+fn planningCoverageComplete(values: []const Evidence) bool {
+    for (values) |value| if (value.required and
+        (!evidenceCurrent(value) or !value.covered or !std.mem.eql(u8, value.status, "complete"))) return false;
+    return values.len > 0;
 }
 
 fn contradictory(values: []const Evidence) bool {
@@ -1008,6 +1110,7 @@ fn appendUnique(comptime T: type, allocator: std.mem.Allocator, values: *std.Arr
 fn fixtureInput(items: []const Evidence, facts: []const Evidence) TaskInput {
     return .{
         .task_id = 42,
+        .status = "doing",
         .title = "Exact \"title\"; $(still data)",
         .body = "Implement canonical packet behavior.",
         .next_action = "Compile current linked entities and verify all named gates.",
@@ -1090,10 +1193,10 @@ test "semantic changes alter digest and stale facts fail readiness" {
 test "planning packets enforce role-specific inputs without task facts" {
     const allocator = std.testing.allocator;
     const artifacts = [_]Evidence{
-        .{ .kind = "product_spec", .id = 1, .locator = "p", .text = "", .source_digest = "1", .current_digest = "1" },
-        .{ .kind = "tech_spec", .id = 2, .locator = "t", .text = "", .source_digest = "2", .current_digest = "2" },
-        .{ .kind = "roadmap", .id = 3, .locator = "r", .text = "", .source_digest = "3", .current_digest = "3" },
-        .{ .kind = "test_spec", .id = 4, .locator = "s", .text = "", .source_digest = "4", .current_digest = "4" },
+        .{ .kind = "product_spec", .id = 1, .locator = "p", .text = "", .source_digest = "1", .current_digest = "1", .status = "draft" },
+        .{ .kind = "tech_spec", .id = 2, .locator = "t", .text = "", .source_digest = "2", .current_digest = "2", .status = "draft" },
+        .{ .kind = "roadmap", .id = 3, .locator = "r", .text = "", .source_digest = "3", .current_digest = "3", .status = "draft" },
+        .{ .kind = "test_spec", .id = 4, .locator = "s", .text = "", .source_digest = "4", .current_digest = "4", .status = "draft" },
     };
     const evidence = [_]Evidence{.{ .kind = "preview", .id = 1, .locator = "strict", .text = "ok" }};
     var reviewer = try compilePlanning(allocator, .{
@@ -1114,6 +1217,57 @@ test "planning packets enforce role-specific inputs without task facts" {
     });
     defer ingestor.deinit(allocator);
     try std.testing.expect(!ingestor.ready());
+}
+
+test "planning packet readiness evaluates artifact decision and coverage lifecycle" {
+    const allocator = std.testing.allocator;
+    const artifacts = [_]Evidence{
+        .{ .kind = "product_spec", .id = 1, .locator = "p", .text = "", .source_digest = "1", .current_digest = "1", .status = "draft" },
+        .{ .kind = "tech_spec", .id = 2, .locator = "t", .text = "", .source_digest = "2", .current_digest = "2", .status = "active" },
+        .{ .kind = "roadmap", .id = 3, .locator = "r", .text = "", .source_digest = "3", .current_digest = "3", .status = "draft" },
+        .{ .kind = "test_spec", .id = 4, .locator = "s", .text = "", .source_digest = "4", .current_digest = "4", .status = "active" },
+    };
+    const preview = [_]Evidence{.{ .kind = "preview", .id = 1, .locator = "strict", .text = "ok" }};
+    const coverage = [_]Evidence{.{ .kind = "coverage", .id = 1, .locator = "oracle", .text = "tasks:1;covered:1;scenarios:1", .source_digest = "c", .current_digest = "c", .covered = true, .status = "complete" }};
+    const decisions = [_]Evidence{.{ .kind = "decision", .id = 1, .locator = "decision:1", .text = "locked", .source_digest = "d", .current_digest = "d", .status = "accepted" }};
+    const input: PlanningInput = .{
+        .role = .ingestor,
+        .goal = "Apply reviewed artifacts.",
+        .artifacts = &artifacts,
+        .strict_preview = &preview,
+        .coverage = &coverage,
+        .decisions = &decisions,
+        .apply_boundary = "strict-preview-current",
+    };
+    var ready = try compilePlanning(allocator, input);
+    defer ready.deinit(allocator);
+    try std.testing.expect(ready.ready());
+
+    var no_scenarios = coverage;
+    no_scenarios[0].text = "tasks:0;covered:0;scenarios:0";
+    no_scenarios[0].covered = false;
+    no_scenarios[0].status = "incomplete";
+    var incomplete_input = input;
+    incomplete_input.coverage = &no_scenarios;
+    var incomplete = try compilePlanning(allocator, incomplete_input);
+    defer incomplete.deinit(allocator);
+    try std.testing.expect(std.mem.indexOfScalar(PlanningReason, incomplete.reasons, .incomplete_coverage) != null);
+
+    var rejected = decisions;
+    rejected[0].status = "withdrawn";
+    var rejected_input = input;
+    rejected_input.decisions = &rejected;
+    var rejected_packet = try compilePlanning(allocator, rejected_input);
+    defer rejected_packet.deinit(allocator);
+    try std.testing.expect(std.mem.indexOfScalar(PlanningReason, rejected_packet.reasons, .invalid_locked_decisions) != null);
+
+    var retired = artifacts;
+    retired[0].status = "retired";
+    var retired_input = input;
+    retired_input.artifacts = &retired;
+    var retired_packet = try compilePlanning(allocator, retired_input);
+    defer retired_packet.deinit(allocator);
+    try std.testing.expect(std.mem.indexOfScalar(PlanningReason, retired_packet.reasons, .non_current_artifacts) != null);
 }
 
 test "coder brief is lossless and fails closed" {

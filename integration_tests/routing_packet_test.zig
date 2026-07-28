@@ -27,14 +27,15 @@ test "packet assembler reads current isolated Planar database state" {
         \\(9010,'association',1,'product_spec','P','p','p.md','active'),(9011,'association',1,'tech_spec','T','t','t.md','active'),
         \\(9012,'association',1,'roadmap','R','r','r.md','active'),(9013,'association',1,'test_spec','S','s','s.md','active');
         \\insert into decisions(id,scope_kind,scope_id,title,body,status) values(9020,'association',1,'Locked','locked text','accepted');
-        \\insert into test_scenarios(id,scope_kind,scope_id,title,body,status) values(2142,'association',1,'Coder brief equals authoritative packet','SCENARIO_2142_EXACT_CONTEXT','ready');
+        \\insert into test_scenarios(id,scope_kind,scope_id,title,body,status) values(2142,'association',1,'Coder brief equals authoritative packet','SCENARIO_2142_EXACT_CONTEXT','draft');
         \\insert into entity_links(from_kind,from_id,to_kind,to_id,relationship) values
         \\('plan',9001,'plan',9000,'derives-from'),('task',9002,'artifact',9010,'cites'),('task',9002,'artifact',9011,'cites'),
         \\('task',9002,'artifact',9012,'cites'),('task',9002,'artifact',9013,'cites'),('task',9002,'decision',9020,'cites'),
         \\('test_scenario',2142,'task',9002,'verifies'),('task',9002,'task',9003,'blocks'),
         \\('artifact',9010,'plan',9000,'derives-from'),('artifact',9011,'plan',9000,'derives-from'),
         \\('artifact',9012,'plan',9000,'derives-from'),('artifact',9013,'plan',9000,'derives-from'),
-        \\('decision',9020,'plan',9000,'derives-from'),('test_scenario',2142,'plan',9000,'derives-from');
+        \\('decision',9020,'plan',9000,'derives-from'),('test_scenario',2142,'plan',9000,'derives-from'),
+        \\('test_scenario',2142,'task',9003,'verifies');
         \\insert into task_touch_paths(task_id,repo_id,path) select 9002,id,'src/live.zig' from projects order by id limit 1;
         \\insert into sessions(id,vendor) values(9040,'test');
         \\insert into agent_work_claims(claim_token,session_id,entity_kind,entity_id,status,vendor,lease_expires_at) values('liveclaim',9040,'task',9002,'active','test','2999-01-01T00:00:00.000Z');
@@ -61,6 +62,11 @@ test "packet assembler reads current isolated Planar database state" {
     try std.testing.expectEqual(@as(usize, 4), live.packet.input.citations.len);
     try std.testing.expectEqual(@as(i64, 9020), live.packet.input.decisions[0].id);
     try std.testing.expectEqual(@as(i64, 2142), live.packet.input.scenarios[0].id);
+    try std.testing.expect(live.packet.input.scenarios[0].covered);
+    try std.testing.expectEqualStrings("draft", live.packet.input.scenarios[0].status);
+    try std.testing.expectEqualStrings("doing", live.packet.input.status);
+    try std.testing.expectEqualStrings("active", live.packet.input.owning_plans[0].status);
+    try std.testing.expectEqualStrings("active", live.packet.input.anchor_plans[0].status);
     try std.testing.expectEqualStrings("liveclaim", live.packet.input.claims[0].text);
     try std.testing.expectEqualStrings("current", live.packet.input.facts[0].freshness);
     try std.testing.expectEqualStrings(fact_digest, live.packet.input.facts[0].current_digest);
@@ -71,6 +77,19 @@ test "packet assembler reads current isolated Planar database state" {
     var ingestor_packet = try packet.assemblePlanning(allocator, &live_db, .ingestor, 9000);
     defer ingestor_packet.deinit();
     try std.testing.expect(ingestor_packet.packet.ready());
+    try std.testing.expectEqualStrings("tasks:2;covered:2;scenarios:1", ingestor_packet.packet.input.coverage[0].text);
+    try live_db.exec(
+        \\insert into plans(id,scope_kind,scope_id,title,slug,status) values(9050,'association',1,'Empty planning plan','empty-planning','active');
+        \\insert into entity_links(from_kind,from_id,to_kind,to_id,relationship) values
+        \\('artifact',9010,'plan',9050,'derives-from'),('artifact',9011,'plan',9050,'derives-from'),
+        \\('artifact',9012,'plan',9050,'derives-from'),('artifact',9013,'plan',9050,'derives-from'),
+        \\('decision',9020,'plan',9050,'derives-from');
+    );
+    var empty_ingestor = try packet.assemblePlanning(allocator, &live_db, .ingestor, 9050);
+    defer empty_ingestor.deinit();
+    try std.testing.expect(!empty_ingestor.packet.ready());
+    try std.testing.expectEqualStrings("tasks:0;covered:0;scenarios:0", empty_ingestor.packet.input.coverage[0].text);
+    try std.testing.expect(std.mem.indexOfScalar(packet.PlanningReason, empty_ingestor.packet.reasons, .incomplete_coverage) != null);
     var invocation = try packet.assembleInvocation(allocator, &live_db, 9000, "configured-static");
     defer invocation.deinit();
     switch (invocation.resolution) {
@@ -98,6 +117,125 @@ test "packet assembler reads current isolated Planar database state" {
     try std.testing.expect(std.mem.indexOf(u8, result.stdout, "scenario:2142") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.stdout, fact_digest) != null);
     try std.testing.expect(std.mem.indexOf(u8, result.stdout, "caller text must not win") == null);
+
+    const plan_mismatch_path = try std.fs.path.join(allocator, &.{ suite.tmpAbsPath(), "brief-plan-mismatch.lua" });
+    defer allocator.free(plan_mismatch_path);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = plan_mismatch_path, .data =
+        \\function run()
+        \\  ctx.brief({plan_id=9000, task_id=9002, claim_token="liveclaim", problem_statement="ignored"})
+        \\end
+    });
+    const plan_mismatch = try runExecute(allocator, suite.tmpAbsPath(), suite.absDbPath(), plan_mismatch_path);
+    defer allocator.free(plan_mismatch.stdout);
+    defer allocator.free(plan_mismatch.stderr);
+    try std.testing.expect(plan_mismatch.term.exited != 0);
+    try std.testing.expect(std.mem.indexOf(u8, plan_mismatch.stderr, "does not match authoritative packet") != null);
+
+    const claim_mismatch_path = try std.fs.path.join(allocator, &.{ suite.tmpAbsPath(), "brief-claim-mismatch.lua" });
+    defer allocator.free(claim_mismatch_path);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = claim_mismatch_path, .data =
+        \\function run()
+        \\  ctx.brief({plan_id=9001, task_id=9002, claim_token="caller-claim", problem_statement="ignored"})
+        \\end
+    });
+    const claim_mismatch = try runExecute(allocator, suite.tmpAbsPath(), suite.absDbPath(), claim_mismatch_path);
+    defer allocator.free(claim_mismatch.stdout);
+    defer allocator.free(claim_mismatch.stderr);
+    try std.testing.expect(claim_mismatch.term.exited != 0);
+    try std.testing.expect(std.mem.indexOf(u8, claim_mismatch.stderr, "does not match authoritative packet") != null);
+
+    try live_db.exec("update agent_work_claims set lease_expires_at='2000-01-01T00:00:00.000Z' where claim_token='liveclaim'");
+    var expired = try packet.assembleTask(allocator, &live_db, 9002);
+    defer expired.deinit();
+    try std.testing.expectEqualStrings("expired", expired.packet.input.claims[0].status);
+    try std.testing.expect(std.mem.indexOfScalar(packet.ReadinessReason, expired.packet.reasons, .inactive_claim) != null);
+    try std.testing.expect(!std.mem.eql(u8, &live.packet.digest, &expired.packet.digest));
+
+    try live_db.exec("update agent_work_claims set lease_expires_at='2999-01-01T00:00:00.000Z' where claim_token='liveclaim'");
+    try live_db.exec("update tasks set status='blocked' where id=9002");
+    var transitioned = try packet.assembleTask(allocator, &live_db, 9002);
+    defer transitioned.deinit();
+    try std.testing.expectEqualStrings("blocked", transitioned.packet.input.status);
+    try std.testing.expect(std.mem.indexOfScalar(packet.ReadinessReason, transitioned.packet.reasons, .invalid_task_status) != null);
+    try std.testing.expect(!std.mem.eql(u8, &live.packet.digest, &transitioned.packet.digest));
+
+    try live_db.exec("update tasks set status='doing' where id=9002");
+    try live_db.exec("update plans set status='paused' where id=9001");
+    var paused_owner = try packet.assembleTask(allocator, &live_db, 9002);
+    defer paused_owner.deinit();
+    try std.testing.expect(paused_owner.packet.ready());
+    try std.testing.expectEqualStrings("paused", paused_owner.packet.input.owning_plans[0].status);
+    try std.testing.expect(!std.mem.eql(u8, &live.packet.digest, &paused_owner.packet.digest));
+
+    try live_db.exec("delete from entity_links where from_kind='test_scenario' and from_id=2142 and to_kind='task' and to_id=9002 and relationship='verifies'");
+    var uncovered = try packet.assembleTask(allocator, &live_db, 9002);
+    defer uncovered.deinit();
+    try std.testing.expectEqual(@as(usize, 0), uncovered.packet.input.scenarios.len);
+    try std.testing.expect(std.mem.indexOfScalar(packet.ReadinessReason, uncovered.packet.reasons, .uncovered_required_scenario) != null);
+
+    try live_db.exec("update decisions set status='withdrawn' where id=9020");
+    var rejected_decision = try packet.assemblePlanning(allocator, &live_db, .ingestor, 9000);
+    defer rejected_decision.deinit();
+    try std.testing.expect(std.mem.indexOfScalar(packet.PlanningReason, rejected_decision.packet.reasons, .invalid_locked_decisions) != null);
+    try live_db.exec("update decisions set status='accepted' where id=9020");
+
+    try live_db.exec("update artifacts set status='retired' where id=9010");
+    var retired_artifact = try packet.assemblePlanning(allocator, &live_db, .spec_reviewer, 9000);
+    defer retired_artifact.deinit();
+    try std.testing.expect(std.mem.indexOfScalar(packet.PlanningReason, retired_artifact.packet.reasons, .non_current_artifacts) != null);
+}
+
+test "fact freshness rejects reversed relationship directions" {
+    const allocator = std.testing.allocator;
+    var suite = harness.Suite.init(allocator);
+    defer suite.deinit();
+    _ = suite.registerProject("routing-directions");
+    const path = try allocator.dupeZ(u8, suite.absDbPath());
+    defer allocator.free(path);
+    var live_db = try db.sqlite.Db.open(path);
+    defer live_db.close();
+    try live_db.execSlice(allocator,
+        \\insert into projects(id,slug,name) values(9204,'direction-target','Direction target');
+        \\insert into plans(id,scope_kind,scope_id,title,slug,status) values(9200,'global',null,'Direction plan','direction-plan','active');
+        \\insert into tasks(id,scope_kind,scope_id,plan_id,title,body,status,next_action) values
+        \\(9201,'global',null,9200,'Direction task','Direction-sensitive facts.','doing','Verify exact relationship directions.'),
+        \\(9202,'global',null,9200,'Outgoing target','','done','Done.'),
+        \\(9203,'global',null,9200,'Incoming source','','done','Done.');
+        \\insert into entity_links(from_kind,from_id,to_kind,to_id,relationship) values
+        \\('task',9201,'task',9202,'blocks'),
+        \\('task',9203,'task',9201,'blocks'),
+        \\('task',9201,'repo',9204,'touches');
+    );
+    const blocks_digest = try sourceDigestAlloc(allocator, "task", 9202, "task:9202", "blocks");
+    defer allocator.free(blocks_digest);
+    const blocked_by_digest = try sourceDigestAlloc(allocator, "task", 9203, "task:9203", "blocks");
+    defer allocator.free(blocked_by_digest);
+    const touch_digest = try sourceDigestAlloc(allocator, "repo", 9204, "repo:9204", "touches");
+    defer allocator.free(touch_digest);
+    _ = try live_db.execParams(
+        \\insert into routing_task_facts(task_id,fact_kind,value_type,value_integer,source_entity_kind,source_entity_id,source_locator,source_digest,materializer_version)
+        \\values(9201,'blocks','integer',9202,'task',9202,'task:9202',?,'spec-ingest-v1'),
+        \\      (9201,'blocked_by','integer',9203,'task',9203,'task:9203',?,'spec-ingest-v1'),
+        \\      (9201,'touch','integer',9204,'repo',9204,'repo:9204',?,'spec-ingest-v1')
+    , &.{ .{ .text = blocks_digest }, .{ .text = blocked_by_digest }, .{ .text = touch_digest } });
+
+    var current = try packet.assembleTask(allocator, &live_db, 9201);
+    defer current.deinit();
+    for (current.packet.input.facts) |fact|
+        try std.testing.expectEqualStrings("current", fact.freshness);
+
+    try live_db.exec(
+        \\delete from entity_links where relationship in ('blocks','touches');
+        \\insert into entity_links(from_kind,from_id,to_kind,to_id,relationship) values
+        \\('task',9202,'task',9201,'blocks'),
+        \\('task',9201,'task',9203,'blocks'),
+        \\('repo',9204,'task',9201,'touches');
+    );
+    var reversed = try packet.assembleTask(allocator, &live_db, 9201);
+    defer reversed.deinit();
+    for (reversed.packet.input.facts) |fact|
+        try std.testing.expectEqualStrings("stale", fact.freshness);
+    try std.testing.expect(std.mem.indexOfScalar(packet.ReadinessReason, reversed.packet.reasons, .stale_fact) != null);
 }
 
 fn sourceDigestAlloc(
@@ -165,6 +303,7 @@ test "current packet is the sole coder brief source and stale lineage fails clos
     };
     const input: packet.TaskInput = .{
         .task_id = 5526,
+        .status = "doing",
         .title = "Compile authoritative packets",
         .body = "Preserve exact packet evidence.",
         .next_action = "Compile live linked context, reject incomplete context, and run four named gates.",

@@ -243,7 +243,30 @@ fn renderPacketEvidence(
 pub fn compileBrief(
     allocator: std.mem.Allocator,
     inputs: BriefInputs,
-) error{ OutOfMemory, WriteFailed }![]const u8 {
+) error{ OutOfMemory, WriteFailed, AuthoritativeIdentityMismatch }![]const u8 {
+    var authoritative_plan: ?state.PacketEvidence = null;
+    var authoritative_claim: ?state.PacketEvidence = null;
+    if (inputs.authoritative_packet) |authoritative| {
+        if (!authoritative.ready() or inputs.tasks.len != 1 or
+            inputs.tasks[0].id != authoritative.input.task_id or
+            !std.mem.eql(u8, inputs.tasks[0].status, authoritative.input.status) or
+            authoritative.input.owning_plans.len != 1 or
+            authoritative.input.owning_plans[0].id != @as(i64, @intCast(inputs.plan.id)))
+        {
+            return error.AuthoritativeIdentityMismatch;
+        }
+        authoritative_plan = authoritative.input.owning_plans[0];
+        for (authoritative.input.claims) |claim| {
+            if (std.mem.eql(u8, claim.text, inputs.claim_token) and
+                std.mem.eql(u8, claim.status, "active"))
+            {
+                authoritative_claim = claim;
+                break;
+            }
+        }
+        if (authoritative_claim == null) return error.AuthoritativeIdentityMismatch;
+    }
+
     // std.Io.Writer.Allocating is the Zig 0.16 idiomatic growable byte buffer
     // with a writer interface. It stores its allocator internally so all write
     // calls are arg-free; toOwnedSlice() transfers ownership to the caller.
@@ -258,24 +281,37 @@ pub fn compileBrief(
     // -----------------------------------------------------------------------
     try buf.writer.writeAll("# Coder Brief\n\n");
 
-    try buf.writer.print("**Plan:** {s} (id {d})\n", .{ inputs.plan.title, inputs.plan.id });
+    if (authoritative_plan) |plan| {
+        try buf.writer.print("**Plan:** {s} (id {d})\n", .{ plan.text, plan.id });
+    } else {
+        try buf.writer.print("**Plan:** {s} (id {d})\n", .{ inputs.plan.title, inputs.plan.id });
+    }
     if (inputs.plan.slug) |slug| {
         try buf.writer.print("**Plan slug:** {s}\n", .{slug});
     }
-    try buf.writer.print("**Plan status:** {s}\n\n", .{inputs.plan.status});
+    try buf.writer.print("**Plan status:** {s}\n\n", .{if (authoritative_plan) |plan| plan.status else inputs.plan.status});
 
     try buf.writer.writeAll("**Task(s) dispatched:**\n");
-    for (inputs.tasks) |t| {
-        if (t.slug) |slug| {
-            try buf.writer.print("- task:{d} — {s} [slug: {s}]\n", .{ t.id, t.title, slug });
+    if (inputs.authoritative_packet) |authoritative| {
+        const slug = inputs.tasks[0].slug;
+        if (slug) |value| {
+            try buf.writer.print("- task:{d} — {s} [slug: {s}; status: {s}]\n", .{ authoritative.input.task_id, authoritative.input.title, value, authoritative.input.status });
         } else {
-            try buf.writer.print("- task:{d} — {s}\n", .{ t.id, t.title });
+            try buf.writer.print("- task:{d} — {s} [status: {s}]\n", .{ authoritative.input.task_id, authoritative.input.title, authoritative.input.status });
+        }
+    } else {
+        for (inputs.tasks) |t| {
+            if (t.slug) |slug| {
+                try buf.writer.print("- task:{d} — {s} [slug: {s}]\n", .{ t.id, t.title, slug });
+            } else {
+                try buf.writer.print("- task:{d} — {s}\n", .{ t.id, t.title });
+            }
         }
     }
     try buf.writer.writeByte('\n');
 
     // Methodology requirement: claim token listed explicitly.
-    try buf.writer.print("**Claim token:** `{s}`\n\n", .{inputs.claim_token});
+    try buf.writer.print("**Claim token:** `{s}`\n\n", .{if (authoritative_claim) |claim| claim.text else inputs.claim_token});
     if (inputs.authoritative_packet) |authoritative| {
         try buf.writer.print("**Authoritative packet digest:** `{s}`\n\n", .{authoritative.digest});
         try buf.writer.print("**Authoritative task title:** {s}\n\n", .{authoritative.input.title});

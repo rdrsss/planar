@@ -232,6 +232,8 @@ fn seedAuthoritativePacket(suite: *harness.Suite, plan_id: i64, task_id: i64) vo
         \\select 91004,scope_kind,scope_id,'test_spec','Tests','Dispatch scenarios','test-spec.md','active' from plans where id={d};
         \\insert into decisions(id,scope_kind,scope_id,title,body,status)
         \\select 91005,scope_kind,scope_id,'Dispatch contract','Use the authoritative packet.','accepted' from plans where id={d};
+        \\insert into test_scenarios(id,scope_kind,scope_id,title,body,status)
+        \\select 91007,scope_kind,scope_id,'Happy path — dispatch fixture coverage','The authoritative packet drives dispatch.','draft' from plans where id={d};
         \\insert into tasks(id,scope_kind,scope_id,plan_id,title,body,status,next_action)
         \\select 91006,scope_kind,scope_id,id,'Seed dependency','Dependency context','done','Dependency already complete.' from plans where id={d};
         \\insert into task_touch_paths(task_id,repo_id,path) values({d},91000,'workflows/dispatch.lua');
@@ -241,7 +243,9 @@ fn seedAuthoritativePacket(suite: *harness.Suite, plan_id: i64, task_id: i64) vo
         \\('task',{d},'artifact',91003,'cites'),
         \\('task',{d},'artifact',91004,'cites'),
         \\('task',{d},'decision',91005,'cites'),
-        \\('task',{d},'task',91006,'blocks');
+        \\('task',{d},'task',91006,'blocks'),
+        \\('test_scenario',91007,'plan',{d},'derives-from'),
+        \\('test_scenario',91007,'task',{d},'verifies');
     ,
         .{
             task_id,
@@ -251,12 +255,15 @@ fn seedAuthoritativePacket(suite: *harness.Suite, plan_id: i64, task_id: i64) vo
             plan_id,
             plan_id,
             plan_id,
+            plan_id,
             task_id,
             task_id,
             task_id,
             task_id,
             task_id,
             task_id,
+            task_id,
+            plan_id,
             task_id,
         },
     ) catch @panic("OOM");
