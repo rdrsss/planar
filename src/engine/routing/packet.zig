@@ -6,6 +6,7 @@
 //! only semantic fields. Runtime routing consumes the resulting digest.
 
 const std = @import("std");
+const db = @import("db");
 
 pub const policy_version = "routing-packet-v1";
 
@@ -18,6 +19,8 @@ pub const Evidence = struct {
     current_digest: []const u8 = "",
     required: bool = true,
     covered: bool = true,
+    status: []const u8 = "ready",
+    provenance: []const u8 = "planar",
 };
 
 pub const TaskInput = struct {
@@ -57,6 +60,15 @@ pub const ReadinessReason = enum {
     uncovered_required_scenario,
     stale_fact,
     contradictory_mandatory_fact,
+    unresolved_citation,
+    invalid_locked_decision,
+    unresolved_question,
+    invalid_dependency,
+    invalid_touch,
+    inactive_claim,
+    invalid_validation_gate,
+    missing_provenance,
+    stale_mandatory_evidence,
 };
 
 pub const TaskPacket = struct {
@@ -74,6 +86,140 @@ pub const TaskPacket = struct {
         allocator.free(self.reasons);
     }
 };
+
+pub const LiveTaskPacket = struct {
+    arena: std.heap.ArenaAllocator,
+    packet: TaskPacket,
+
+    pub fn deinit(self: *LiveTaskPacket) void {
+        self.packet.deinit(self.arena.allocator());
+        self.arena.deinit();
+    }
+};
+
+/// Reassembles the packet from the current database snapshot. No caller-owned
+/// evidence fragments cross this boundary.
+pub fn assembleTask(allocator: std.mem.Allocator, d: *db.sqlite.Db, task_id: i64) !LiveTaskPacket {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    errdefer arena.deinit();
+    const a = arena.allocator();
+    var task = try d.prepare("select title,coalesce(body,''),coalesce(next_action,''),plan_id from tasks where id=?\x00");
+    defer task.finalize();
+    try task.bind(&.{.{ .int = task_id }});
+    if (try task.step() != .row) return error.TaskNotFound;
+    const title = try task.columnTextAlloc(0, a);
+    const body = try task.columnTextAlloc(1, a);
+    const next_action = try task.columnTextAlloc(2, a);
+    const plan_id = task.columnIntOpt(3);
+    const acceptance = extractSection(body, "## Acceptance criteria") orelse body;
+
+    const owning = if (plan_id) |id| try oneRowEvidence(a, d, "select 'plan',id,'plan:'||id,title,'active','plan:'||id from plans where id=?\x00", id) else &.{};
+    const anchors = if (plan_id) |id| try oneRowEvidence(a, d, "select 'plan',p.id,'plan:'||p.id,p.title,'active','plan:'||p.id from plans p where p.id=coalesce((select to_id from entity_links where from_kind='plan' and from_id=? and to_kind='plan' and relationship='derives-from' limit 1),?)\x00", id) else &.{};
+    const citations = try linkedEvidence(a, d, task_id, "artifact", "cites", "select kind,id,coalesce(source_path,'artifact:'||id),coalesce(body,title),case when status in ('active','draft') then 'resolved' else status end,'artifact:'||id from artifacts where id=?\x00");
+    const decisions = try linkedEvidence(a, d, task_id, "decision", "addresses", "select 'decision',id,'decision:'||id,body,case when status='accepted' then 'locked' else status end,'decision:'||id from decisions where id=?\x00");
+    const questions = try linkedEvidence(a, d, task_id, "question", "addresses", "select 'question',id,'question:'||id,coalesce(answer_body,body,title),status,'question:'||id from questions where id=?\x00");
+    const scenarios = try linkedEvidence(a, d, task_id, "test_scenario", "verifies", "select 'scenario',id,'scenario:'||id,coalesce(body,title),status,'scenario:'||id from test_scenarios where id=?\x00");
+    const dependencies = try linkedEvidence(a, d, task_id, "task", "blocks", "select 'dependency',id,'task:'||id,title,case when status='done' then 'satisfied' else status end,'task:'||id from tasks where id=?\x00");
+    const touches = try pathEvidence(a, d, task_id);
+    const claims = try claimEvidence(a, d, task_id);
+    const gates = try gateEvidence(a, task_id, body);
+    const facts = try factEvidence(a, d, task_id);
+    const input: TaskInput = .{ .task_id = task_id, .title = title, .body = body, .next_action = next_action, .acceptance_criteria = acceptance, .owning_plans = owning, .anchor_plans = anchors, .citations = citations, .decisions = decisions, .questions = questions, .scenarios = scenarios, .dependencies = dependencies, .touches = touches, .claims = claims, .validation_gates = gates, .facts = facts };
+    return .{ .arena = arena, .packet = try compileTask(a, input) };
+}
+
+fn extractSection(body: []const u8, heading: []const u8) ?[]const u8 {
+    const start = std.mem.indexOf(u8, body, heading) orelse return null;
+    const rest = body[start + heading.len ..];
+    const end = std.mem.indexOf(u8, rest, "\n## ") orelse rest.len;
+    return trim(rest[0..end]);
+}
+
+fn rowEvidence(a: std.mem.Allocator, stmt: *db.sqlite.Stmt) !Evidence {
+    const text = try stmt.columnTextAlloc(3, a);
+    const current = digest(text);
+    return .{ .kind = try stmt.columnTextAlloc(0, a), .id = stmt.columnInt(1), .locator = try stmt.columnTextAlloc(2, a), .text = text, .source_digest = try a.dupe(u8, &current), .current_digest = try a.dupe(u8, &current), .status = try stmt.columnTextAlloc(4, a), .provenance = try stmt.columnTextAlloc(5, a) };
+}
+
+fn oneRowEvidence(a: std.mem.Allocator, d: *db.sqlite.Db, sql: [:0]const u8, id: i64) ![]const Evidence {
+    var stmt = try d.prepare(sql);
+    defer stmt.finalize();
+    try stmt.bind(if (std.mem.count(u8, sql, "?") == 2) &.{ .{ .int = id }, .{ .int = id } } else &.{.{ .int = id }});
+    if (try stmt.step() != .row) return &.{};
+    const out = try a.alloc(Evidence, 1);
+    out[0] = try rowEvidence(a, &stmt);
+    return out;
+}
+
+fn linkedEvidence(a: std.mem.Allocator, d: *db.sqlite.Db, task_id: i64, kind: []const u8, relationship: []const u8, entity_sql: [:0]const u8) ![]const Evidence {
+    var ids = try d.prepare("select to_id from entity_links where from_kind='task' and from_id=? and to_kind=? and relationship=? order by to_id\x00");
+    defer ids.finalize();
+    try ids.bind(&.{ .{ .int = task_id }, .{ .text = kind }, .{ .text = relationship } });
+    var out: std.ArrayList(Evidence) = .empty;
+    while (try ids.step() == .row) {
+        const rows = try oneRowEvidence(a, d, entity_sql, ids.columnInt(0));
+        if (rows.len == 1) try out.append(a, rows[0]);
+    }
+    return out.toOwnedSlice(a);
+}
+
+fn pathEvidence(a: std.mem.Allocator, d: *db.sqlite.Db, task_id: i64) ![]const Evidence {
+    var stmt = try d.prepare("select 'touch',id,path,path,'resolved','task_touch_path:'||id from task_touch_paths where task_id=? order by id\x00");
+    defer stmt.finalize();
+    try stmt.bind(&.{.{ .int = task_id }});
+    var out: std.ArrayList(Evidence) = .empty;
+    while (try stmt.step() == .row) try out.append(a, try rowEvidence(a, &stmt));
+    return out.toOwnedSlice(a);
+}
+fn claimEvidence(a: std.mem.Allocator, d: *db.sqlite.Db, task_id: i64) ![]const Evidence {
+    var stmt = try d.prepare("select 'claim',id,'claim:'||id,claim_token,case when status='active' and lease_expires_at>strftime('%Y-%m-%dT%H:%M:%fZ','now') then 'active' else status end,'agent_work_claim:'||id from agent_work_claims where entity_kind='task' and entity_id=? and status='active' order by id\x00");
+    defer stmt.finalize();
+    try stmt.bind(&.{.{ .int = task_id }});
+    var out: std.ArrayList(Evidence) = .empty;
+    while (try stmt.step() == .row) try out.append(a, try rowEvidence(a, &stmt));
+    return out.toOwnedSlice(a);
+}
+fn gateEvidence(a: std.mem.Allocator, task_id: i64, body: []const u8) ![]const Evidence {
+    const section = extractSection(body, "## Required validation") orelse return &.{};
+    const current = digest(section);
+    const out = try a.alloc(Evidence, 1);
+    out[0] = .{ .kind = "validation_gate", .id = task_id, .locator = "task:required-validation", .text = section, .source_digest = try a.dupe(u8, &current), .current_digest = try a.dupe(u8, &current), .status = "required", .provenance = "task.body" };
+    return out;
+}
+fn factEvidence(a: std.mem.Allocator, d: *db.sqlite.Db, task_id: i64) ![]const Evidence {
+    var stmt = try d.prepare("select fact_kind,id,source_locator,coalesce(value_text,cast(value_bool as text),cast(value_integer as text),cast(value_real as text),''),source_digest,source_entity_kind,source_entity_id from routing_task_facts where task_id=? order by id\x00");
+    defer stmt.finalize();
+    try stmt.bind(&.{.{ .int = task_id }});
+    var out: std.ArrayList(Evidence) = .empty;
+    while (try stmt.step() == .row) {
+        const source_kind = try stmt.columnTextAlloc(5, a);
+        const source_id = stmt.columnInt(6);
+        const current_text = try sourceEntityText(a, d, source_kind, source_id);
+        const current = digest(current_text);
+        try out.append(a, .{ .kind = try stmt.columnTextAlloc(0, a), .id = stmt.columnInt(1), .locator = try stmt.columnTextAlloc(2, a), .text = try stmt.columnTextAlloc(3, a), .source_digest = try stmt.columnTextAlloc(4, a), .current_digest = try a.dupe(u8, &current), .status = "materialized", .provenance = try std.fmt.allocPrint(a, "{s}:{d}", .{ source_kind, source_id }) });
+    }
+    return out.toOwnedSlice(a);
+}
+
+fn sourceEntityText(a: std.mem.Allocator, d: *db.sqlite.Db, kind: []const u8, id: i64) ![]const u8 {
+    const sql: [:0]const u8 = if (std.mem.eql(u8, kind, "task"))
+        "select title||'\n'||coalesce(body,'')||'\n'||coalesce(next_action,'') from tasks where id=?\x00"
+    else if (std.mem.eql(u8, kind, "artifact"))
+        "select title||'\n'||coalesce(body,'')||'\n'||status from artifacts where id=?\x00"
+    else if (std.mem.eql(u8, kind, "decision"))
+        "select title||'\n'||body||'\n'||status from decisions where id=?\x00"
+    else if (std.mem.eql(u8, kind, "question"))
+        "select title||'\n'||coalesce(body,'')||'\n'||status||'\n'||coalesce(answer_body,'') from questions where id=?\x00"
+    else if (std.mem.eql(u8, kind, "test_scenario"))
+        "select title||'\n'||coalesce(body,'')||'\n'||status from test_scenarios where id=?\x00"
+    else
+        return "";
+    var row = try d.prepare(sql);
+    defer row.finalize();
+    try row.bind(&.{.{ .int = id }});
+    if (try row.step() != .row) return "";
+    return row.columnTextAlloc(0, a);
+}
 
 /// Compile a current task packet. No provider, model, work type, or tier is
 /// selected here: those are dispatch-time projections over this packet.
@@ -117,6 +263,7 @@ pub fn compileTask(
     }
     if (contradictory(input.facts))
         try appendReason(allocator, &reasons, .contradictory_mandatory_fact);
+    try validateEvidenceClasses(allocator, &reasons, input);
 
     const canonical = try canonicalTask(allocator, input);
     errdefer allocator.free(canonical);
@@ -346,7 +493,12 @@ fn canonicalEvidenceField(
         try json(item.source_digest, writer);
         try writer.writeAll(",\"current_digest\":");
         try json(item.current_digest, writer);
-        try writer.print(",\"required\":{},\"covered\":{}}}", .{ item.required, item.covered });
+        try writer.print(",\"required\":{},\"covered\":{}", .{ item.required, item.covered });
+        try writer.writeAll(",\"status\":");
+        try json(item.status, writer);
+        try writer.writeAll(",\"provenance\":");
+        try json(item.provenance, writer);
+        try writer.writeByte('}');
     }
     try writer.writeByte(']');
 }
@@ -363,7 +515,40 @@ fn lessEvidence(_: void, a: Evidence, b: Evidence) bool {
     if (locator != .eq) return locator == .lt;
     const text = std.mem.order(u8, a.text, b.text);
     if (text != .eq) return text == .lt;
-    return std.mem.order(u8, a.source_digest, b.source_digest) == .lt;
+    const source_digest = std.mem.order(u8, a.source_digest, b.source_digest);
+    if (source_digest != .eq) return source_digest == .lt;
+    const current_digest = std.mem.order(u8, a.current_digest, b.current_digest);
+    if (current_digest != .eq) return current_digest == .lt;
+    if (a.required != b.required) return !a.required;
+    if (a.covered != b.covered) return !a.covered;
+    const status = std.mem.order(u8, a.status, b.status);
+    if (status != .eq) return status == .lt;
+    return std.mem.order(u8, a.provenance, b.provenance) == .lt;
+}
+
+fn validateEvidenceClasses(allocator: std.mem.Allocator, reasons: *std.ArrayList(ReadinessReason), input: TaskInput) !void {
+    const classes = [_]struct { values: []const Evidence, reason: ReadinessReason, accepted: []const []const u8 }{
+        .{ .values = input.citations, .reason = .unresolved_citation, .accepted = &.{ "resolved", "ready" } },
+        .{ .values = input.decisions, .reason = .invalid_locked_decision, .accepted = &.{ "locked", "accepted", "ready" } },
+        .{ .values = input.questions, .reason = .unresolved_question, .accepted = &.{ "answered", "non_blocking", "ready" } },
+        .{ .values = input.dependencies, .reason = .invalid_dependency, .accepted = &.{ "satisfied", "ready", "done" } },
+        .{ .values = input.touches, .reason = .invalid_touch, .accepted = &.{ "resolved", "ready" } },
+        .{ .values = input.claims, .reason = .inactive_claim, .accepted = &.{"active"} },
+        .{ .values = input.scenarios, .reason = .uncovered_required_scenario, .accepted = &.{ "ready", "verified" } },
+        .{ .values = input.validation_gates, .reason = .invalid_validation_gate, .accepted = &.{ "required", "ready" } },
+    };
+    for (classes) |class| for (class.values) |item| {
+        if (!item.required) continue;
+        if (trim(item.provenance).len == 0) try appendReason(allocator, reasons, .missing_provenance);
+        if (item.source_digest.len == 0 or item.current_digest.len == 0 or !std.mem.eql(u8, item.source_digest, item.current_digest))
+            try appendReason(allocator, reasons, .stale_mandatory_evidence);
+        var accepted = false;
+        for (class.accepted) |status| if (std.mem.eql(u8, item.status, status)) {
+            accepted = true;
+            break;
+        };
+        if (!accepted) try appendReason(allocator, reasons, class.reason);
+    };
 }
 
 fn digest(bytes: []const u8) [64]u8 {
@@ -488,6 +673,21 @@ test "canonical task packet ignores input order and safely encodes adversarial t
     defer two.deinit(allocator);
     try std.testing.expectEqualStrings(&one.digest, &two.digest);
     try std.testing.expect(std.mem.indexOf(u8, one.canonical, "\\\"; $(touch nope)") != null);
+}
+
+test "canonical ordering is total for duplicate identity keys" {
+    const allocator = std.testing.allocator;
+    const low = Evidence{ .kind = "product_spec", .id = 1, .locator = "same", .text = "same", .source_digest = "x", .current_digest = "a", .required = false, .covered = false, .status = "resolved", .provenance = "artifact:1" };
+    const high = Evidence{ .kind = "product_spec", .id = 1, .locator = "same", .text = "same", .source_digest = "x", .current_digest = "b", .required = true, .covered = true, .status = "ready", .provenance = "artifact:2" };
+    const first = [_]Evidence{ low, high };
+    const second = [_]Evidence{ high, low };
+    var out1: std.Io.Writer.Allocating = .init(allocator);
+    defer out1.deinit();
+    var out2: std.Io.Writer.Allocating = .init(allocator);
+    defer out2.deinit();
+    try canonicalEvidenceField(allocator, &out1.writer, "e", &first);
+    try canonicalEvidenceField(allocator, &out2.writer, "e", &second);
+    try std.testing.expectEqualStrings(out1.written(), out2.written());
 }
 
 test "semantic changes alter digest and stale facts fail readiness" {

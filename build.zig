@@ -521,6 +521,9 @@ pub fn build(b: *std.Build) void {
     });
     execute_exe.root_module.addIncludePath(b.path(lua_src_dir));
     execute_exe.root_module.linkLibrary(lua_lib);
+    execute_exe.root_module.addImport("engine", engine_mod);
+    execute_exe.root_module.addImport("db", db_mod);
+    execute_exe.root_module.linkLibrary(sqlite_lib);
     b.installArtifact(execute_exe);
 
     // Vendored-deps drift check runs before the binary is installed, so
@@ -661,6 +664,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    planar_execute_mod.addImport("engine", engine_mod);
 
     const planar_execute_tests = b.addTest(.{ .root_module = planar_execute_mod, .filters = test_filters_opt });
     const run_planar_execute_tests = b.addRunArtifact(planar_execute_tests);
@@ -708,6 +712,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/engine/routing/packet.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{.{ .name = "db", .module = db_mod }},
     });
 
     // The default integration path uses one umbrella root. This is the
@@ -740,6 +745,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "harness", .module = harness_mod },
                 .{ .name = "routing_packet", .module = routing_packet_mod },
+                .{ .name = "db", .module = db_mod },
             },
         }),
         .filters = test_filters_opt,

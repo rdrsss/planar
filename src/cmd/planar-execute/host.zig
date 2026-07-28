@@ -61,6 +61,8 @@ const std = @import("std");
 const state = @import("state.zig");
 const schema = @import("schema.zig");
 const brief = @import("brief.zig");
+const engine = @import("engine");
+const db = @import("db");
 
 /// Shared Lua C-API import. Exported so `main.zig` reuses the SAME cimport
 /// (two separate `@cImport` blocks produce incompatible opaque types for
@@ -69,6 +71,7 @@ pub const c = @cImport({
     @cInclude("lua.h");
     @cInclude("lauxlib.h");
     @cInclude("lualib.h");
+    @cInclude("stdlib.h");
 });
 
 const Io = std.Io;
@@ -1112,6 +1115,13 @@ fn hostCtxBrief(L: ?*c.lua_State) callconv(.c) c_int {
     const schema_parsed = schema.loadSchema(hs.arena, hs.io, "planar-agent") catch raiseError(L, "ctx.brief: failed to load planar-agent schema", .{});
     const agent_schema = schema.BinSchema.init(schema_parsed.value);
 
+    const db_path_ptr = c.getenv("PLANAR_DB") orelse raiseError(L, "ctx.brief: PLANAR_DB required for authoritative packet", .{});
+    var live_db = db.sqlite.Db.open(db_path_ptr) catch raiseError(L, "ctx.brief: cannot open PLANAR_DB", .{});
+    defer live_db.close();
+    var live_packet = engine.routing.packet.assembleTask(hs.arena, &live_db, task_id) catch raiseError(L, "ctx.brief: authoritative packet assembly failed", .{});
+    defer live_packet.deinit();
+    const authoritative = engine.routing.packet.coderBrief(live_packet.packet) catch raiseError(L, "ctx.brief: authoritative packet not ready", .{});
+
     // Adapt TaskShow → the TaskEntry shape compileBrief consumes.
     const tasks = hs.arena.alloc(state.TaskEntry, 1) catch raiseError(L, "out of memory", .{});
     tasks[0] = .{
@@ -1123,6 +1133,7 @@ fn hostCtxBrief(L: ?*c.lua_State) callconv(.c) c_int {
     };
 
     const inputs = brief.BriefInputs{
+        .authoritative_packet = authoritative,
         .plan = plan_parsed.value,
         .tasks = tasks,
         .claim_token = claim_token,

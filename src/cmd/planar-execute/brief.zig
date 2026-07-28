@@ -45,6 +45,7 @@
 const std = @import("std");
 const state = @import("state.zig");
 const schema = @import("schema.zig");
+const routing_packet = @import("engine").routing.packet;
 
 // ---------------------------------------------------------------------------
 // Input types
@@ -99,6 +100,9 @@ pub const ContextRef = struct {
 ///
 /// No field is a subprocess call or a live read — `compileBrief` is pure.
 pub const BriefInputs = struct {
+    /// When present, all implementation context is rendered from this
+    /// authoritative packet. Production callers must set it.
+    authoritative_packet: ?routing_packet.CoderBrief = null,
     // -----------------------------------------------------------------------
     // Plan + task identity
     // -----------------------------------------------------------------------
@@ -247,6 +251,10 @@ pub fn compileBrief(
 
     // Methodology requirement: claim token listed explicitly.
     try buf.writer.print("**Claim token:** `{s}`\n\n", .{inputs.claim_token});
+    if (inputs.authoritative_packet) |authoritative| {
+        try buf.writer.print("**Authoritative packet digest:** `{s}`\n\n", .{authoritative.packet_digest});
+        try buf.writer.print("**Authoritative task title:** {s}\n\n", .{authoritative.title});
+    }
 
     // -----------------------------------------------------------------------
     // Section 2 — Problem statement.
@@ -255,7 +263,7 @@ pub fn compileBrief(
     // The caller supplies the problem_statement verbatim; we render it as-is.
     // -----------------------------------------------------------------------
     try buf.writer.writeAll("## Problem\n\n");
-    try buf.writer.writeAll(inputs.problem_statement);
+    if (inputs.authoritative_packet) |authoritative| try buf.writer.writeAll(authoritative.acceptance_criteria) else try buf.writer.writeAll(inputs.problem_statement);
     try buf.writer.writeAll("\n\n");
 
     // -----------------------------------------------------------------------
@@ -269,7 +277,10 @@ pub fn compileBrief(
     // structural completeness) but no bullet items appear.
     // -----------------------------------------------------------------------
     try buf.writer.writeAll("## Read firsthand (do not paraphrase)\n\n");
-    if (inputs.spec_citations.len == 0) {
+    if (inputs.authoritative_packet) |authoritative| {
+        for (authoritative.citations) |citation| try buf.writer.print("- `{s}`\n", .{citation.locator});
+        try buf.writer.writeByte('\n');
+    } else if (inputs.spec_citations.len == 0) {
         try buf.writer.writeAll("_(no spec citations for this cycle)_\n\n");
     } else {
         for (inputs.spec_citations) |cit| {
@@ -293,7 +304,10 @@ pub fn compileBrief(
     // Methodology requirement: "Note locked decisions inline."
     // -----------------------------------------------------------------------
     try buf.writer.writeAll("## Locked decisions\n\n");
-    if (inputs.locked_decisions.len == 0) {
+    if (inputs.authoritative_packet) |authoritative| {
+        for (authoritative.decisions) |decision| try buf.writer.print("- **{d}**: {s}\n", .{ decision.id, decision.text });
+        try buf.writer.writeByte('\n');
+    } else if (inputs.locked_decisions.len == 0) {
         try buf.writer.writeAll("_(no locked decisions for this cycle)_\n\n");
     } else {
         for (inputs.locked_decisions) |d| {
@@ -386,7 +400,10 @@ pub fn compileBrief(
     // Methodology requirement: "Specify the gates the coder must run."
     // -----------------------------------------------------------------------
     try buf.writer.writeAll("## Gates (run all; paste counts verbatim in report)\n\n");
-    if (inputs.gates.len == 0) {
+    if (inputs.authoritative_packet) |authoritative| {
+        for (authoritative.validation_gates) |gate| try buf.writer.print("- `{s}`\n", .{gate.text});
+        try buf.writer.writeByte('\n');
+    } else if (inputs.gates.len == 0) {
         try buf.writer.writeAll("_(no gates specified — check the orchestrator brief)_\n\n");
     } else {
         for (inputs.gates) |g| {
