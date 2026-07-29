@@ -295,7 +295,7 @@ tasks: [44, 45, 46]
 /orchestrator 42 --barrel-bypass
 ```
 
-No reviewer dispatch at all. Coder cycles run back-to-back; quality gates (`make fmt-check` + `make build` + `make test` + `make test-integration` **twice** + `scriptorium check` against an out-of-tree staging dir + `planar models sync-doc --check` + any remaining relevant validators) are the entire signal.
+No reviewer dispatch at all. Coder cycles run back-to-back; quality gates (`make fmt-check` + `make build` + `make test` + `make test-integration` **twice** + `scriptorium check` against an out-of-tree staging dir + any remaining relevant validators) are the entire signal.
 
 Audit-trail excerpt:
 ```
@@ -1577,7 +1577,7 @@ Do not copy into or commit repo-relative `commands/claude/`, `skills/codex/`,
 or `skills/copilot/` trees: those are generated projections and are ignored.
 There is no `planar local promote` shortcut — that is deliberate. Canonical
 skills go through semantic lint, `scriptorium check` against an out-of-tree
-staging dir, `planar models sync-doc --check` (when the tier table is
+staging dir (when the tier table is
 affected), any remaining relevant validators, and contribution review;
 sandbox skills do not. Keeping the boundary loud preserves the
 difference. After promotion, you can run `planar local unlink fixup-protos
@@ -2612,7 +2612,7 @@ For the persistence-on-claim contract see [`docs/concepts.md §Worktree`](concep
 
 ## Recipe 25 — Review and configure per-role model routing
 
-Inspect which models your agent roles will spawn, and re-route them — across Claude and Codex — through the unified config (plan 540). All model routing (scriptorium's rendered skill/agent `model:` fields, the Tier Table (owned by the armarium orchestration layer) via `planar models sync-doc`, and external workflow harnesses) resolves from one source via the shared resolver.
+Inspect which models your agent roles will spawn, and re-route them — across Claude and Codex — through the unified config (plan 540). Scriptorium's rendered skill/agent `model:` fields and external workflow harnesses resolve from one source via the shared resolver. The Tier Table is owned and hand-maintained by the armarium orchestration layer; Planar no longer generates it.
 
 **1. Discover installed providers + their catalogs.**
 

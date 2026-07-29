@@ -4460,25 +4460,6 @@ planar models evals [--json]
 
 ---
 
-### `planar models sync-doc`
-
-**Synopsis:**
-```
-planar models sync-doc [--out <dir>] [--check]
-```
-
-**Description:** Regenerate ONLY the `## Tier Table` section of `<out>/agents/models.md` from `[models.<vendor>.<tier>]`, resolved through the same shared resolver `models routing`/`models candidates` use, preserving every other line of the file byte-for-byte (the surrounding human-authored prose). `--out` defaults to `.` (the current directory). Idempotent: running twice produces no diff. This is the plan-918 D4 relocation of the retired in-tree renderer's old render-time tier-table patch — generation now lives upstream in committed source, not in installed output.
-
-Without `--check`, writes the regenerated file in place (atomically: write a sibling temp file, then rename) when the table has drifted, or reports "already in sync" and writes nothing when it hasn't.
-
-With `--check`, this command is read-only: it exits non-zero and names the divergence when the committed table disagrees with a fresh regeneration, and exits `0` reporting "in sync" (writing nothing) when it doesn't. This is the drift gate — run it in CI or a pre-commit hook to catch a hand-edited or stale table.
-
-**Exit codes:** `0` on success (in sync or written); `1` if `agents/models.md` has no `## Tier Table` heading, or (`--check` only) the table has drifted from the resolved config.
-
----
-
-## Domain: `dashboard`
-
 ### `planar dashboard`
 
 **Synopsis:**
@@ -5869,8 +5850,15 @@ planar-agent block      --claim <token> --blocker <task-id> [--reason <text>] [-
 # Direct claims — for orchestrator dispatch when the caller already knows the
 # target entity by id. Task claims atomically transition todo → doing unless
 # --no-transition is supplied; plan and plan-step state is never changed.
-planar-agent claim      --entity task:<id>|plan:<id>|plan_step:<id> [--vendor <v>] [--vendor-session <vendor:id>] [--role <r>] [--ttl <duration>] [--purpose <text>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--no-transition] [--force] [--run <run-id>] [--stage <stage>] [--json]
+planar-agent claim      --entity task:<id>|plan:<id>|plan_step:<id> [--vendor <v>] [--vendor-session <vendor:id>] [--role <r>] [--model <s>] [--ttl <duration>] [--purpose <text>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--no-transition] [--force] [--run <run-id>] [--stage <stage>] [--json]
 planar-agent heartbeat  --claim <token> [--ttl <duration>] [--status <text>] [--json]
+
+# `--model` records the model actually used, verbatim, as an OPAQUE STRING.
+# Planar does not decide, validate, or publish what is "supported": an
+# unrecognized value is stored, not rejected, and a vendor/model pair that
+# disagrees is recorded as given rather than corrected. The catalog and spawn
+# verification belong to the Armarium/host boundary. Omitting it is valid and
+# stores NULL — reporting is optional.
 
 # Nested action lifecycle — for sub-tool-calls or sub-phases inside a
 # claim. Optional; lightweight claims skip these.
@@ -6761,7 +6749,7 @@ For quick reference, all documented commands grouped by domain:
 | `capture` | `capture session`, `capture end`, `capture commits`, `capture note`, `capture command`, `capture file`, `capture snapshot` |
 | `audit` | `audit trail`, `audit session`, `audit commits`, `audit publish-decision`, `audit handoff-readiness` |
 | `health` | `health` |
-| `models` | `models list`, `models refresh`, `models routing`, `models apply`, `models candidates`, `models evals`, `models sync-doc` |
+| `models` | `models list`, `models refresh`, `models routing`, `models apply`, `models candidates`, `models evals` |
 | `links` | `links add`, `links list`, `links remove`, `links trail`, `links update` (deferred to M11) |
 | `report` | `report [--days <n>] [--tail <n>] [--json]` |
 | `search` | `search <query>` |

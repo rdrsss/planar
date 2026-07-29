@@ -59,13 +59,14 @@ Vendor profile data lives in scriptorium's built-in per-vendor profiles
 (claude/codex/copilot/gemini), with the repo-root `scriptorium.yaml`
 supplying overrides/additions; model-tier resolution stays Planar-side in the
 shared resolver (`src/engine/models.zig`) and is regenerated into
-the Tier Table (owned by the armarium orchestration layer) by `planar models sync-doc` (plan 918 D4).
+the Tier Table is owned and hand-maintained by the armarium orchestration layer; Planar no longer generates it.
 Static render paths show each tier's default model (`list[0]` when the config
 uses candidate lists); runtime orchestration may further select a
 per-work-type candidate through the shared model resolver. Drift between
 `skills/src/` and generated vendor trees is gated by `scriptorium check`
-against an out-of-tree staging directory; `planar models sync-doc --check`
-gates the Tier Table separately.
+against an out-of-tree staging directory. The Tier Table is not gated here:
+it is owned and hand-maintained by the armarium orchestration layer, and
+Planar neither generates nor validates it.
 
 Planar's own in-band `x-planar-source-digest`/`x-planar-projection-digest`
 frontmatter metadata retired along with the in-tree renderer (plan 918 D5) —

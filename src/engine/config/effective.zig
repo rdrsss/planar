@@ -51,7 +51,7 @@ pub const ValueWithSource = struct {
     /// array resolves to the ordered list as-is. INVARIANT: when non-empty,
     /// `candidates[0] == value` always — `value` is the tier default and stays
     /// scalar-compatible for every existing reader (resolveTier, buildRouting,
-    /// `models.buildTierTableLines`), none of which need to change for this to
+    /// the tier-table generator, since removed), none of which need to change for this to
     /// hold. Empty for every other key (scalar-only keys never populate this).
     candidates: []const []const u8 = &.{},
 };
@@ -841,7 +841,7 @@ fn pickModelTierCandidates(
 /// Copy `raw` into eff-owned storage as a candidate list and insert into
 /// `eff` under `key`. `candidates[0]` (== `raw[0]`) also lands in `.value`
 /// so every scalar-compatible reader (resolveTier, buildRouting,
-/// `models.buildTierTableLines`) is unaffected — D5's "list[0] is the tier
+/// the since-removed tier-table generator) is unaffected — D5's "list[0] is the tier
 /// default" holds by construction. Frees any previously-stored entry
 /// (including a candidate list) before overwriting, matching the getOrPut
 /// pattern used throughout this file.
