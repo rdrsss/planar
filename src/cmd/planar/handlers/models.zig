@@ -34,7 +34,7 @@ const config_path = @import("config/path.zig");
 pub const verb: cli.Cmd = .{
     .name = "models",
     .desc = "Discover installed provider CLIs and their model catalogs.",
-    .long_desc = "Probe the supported provider CLIs (claude, codex) for\n  installed-state + version, and report their curated model\n  catalogs and the default role→tier→model routing.\n\n  The provider CLIs do not expose a machine-readable model list,\n  so the per-vendor model catalog is curated in-repo; discovery\n  confirms which CLIs are callable on this machine.\n\n  Subcommands:\n    list       Probe + print (read-only).\n    refresh    Probe + print, and write the cache to\n               ${PLANAR_HOME:-~/.planar}/models/catalog.json.\n    sync-doc   Regenerate agents/models.md's ## Tier Table from config;\n               --check reports drift without writing (plan 918 D4).",
+    .long_desc = "Probe the supported provider CLIs (claude, codex) for\n  installed-state + version, and report their curated model\n  catalogs and the default role→tier→model routing.\n\n  The provider CLIs do not expose a machine-readable model list,\n  so the per-vendor model catalog is curated in-repo; discovery\n  confirms which CLIs are callable on this machine.\n\n  Subcommands:\n    list       Probe + print (read-only).\n    refresh    Probe + print, and write the cache to\n               ${PLANAR_HOME:-~/.planar}/models/catalog.json.",
     .cmds = &.{
         .{
             .name = "list",
@@ -78,16 +78,6 @@ pub const verb: cli.Cmd = .{
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },
             .run = cli.handler(handleCandidates),
-        },
-        .{
-            .name = "sync-doc",
-            .desc = "Regenerate agents/models.md's ## Tier Table from the resolved config.",
-            .long_desc = "Regenerate ONLY the `## Tier Table` section of `agents/models.md`\n  from `[models.<vendor>.<tier>]` (resolved via the same shared\n  resolver `models routing`/`models candidates` use), preserving every\n  other line byte-for-byte. Idempotent: running twice produces no\n  diff. `--check` is read-only: it exits non-zero naming the\n  divergence when the committed table disagrees with a fresh\n  regeneration, and exits 0 (writing nothing) when already in sync.\n  This is the drift gate that replaces skillrender's old render-time\n  patch (plan 918 D4).",
-            .flags = &.{
-                .{ .long = "--out", .kind = .string, .default = .{ .string = "." } },
-                .{ .long = "--check", .kind = .bool, .default = .{ .bool = false } },
-            },
-            .run = cli.handler(handleSyncDoc),
         },
         .{
             .name = "evals",
@@ -317,87 +307,6 @@ fn handleCandidates(args_ptr: *const anyopaque) anyerror!void {
             .{ re.vendor, re.tier, re.work_type, re.model, re.source },
         );
     }
-}
-
-/// `planar models sync-doc [--check]` (plan 918 D4, milestone M3). Reads
-/// `agents/models.md` under `--out` (default cwd), regenerates its
-/// `## Tier Table` section from the resolved config via
-/// `engine.models.syncTierTable`, and either writes the result back
-/// (atomically: write-temp then rename) or, with `--check`, only reports
-/// whether the committed table already matches — the replacement for
-/// skillrender's retired render-time patch.
-fn handleSyncDoc(args_ptr: *const anyopaque) anyerror!void {
-    const args = cli.castArgs(main.root, &.{ "models", "sync-doc" }, args_ptr);
-    const ctx = runtime.current();
-
-    const cfg_path = config_path.resolveConfigPath(ctx.allocator, ctx.environ) catch |e|
-        exit.die(ctx, e, "resolving config path: {s}", .{@errorName(e)});
-    defer ctx.allocator.free(cfg_path);
-
-    const file_content: ?[]u8 = std.Io.Dir.cwd().readFileAlloc(ctx.io, cfg_path, ctx.allocator, .unlimited) catch |e| switch (e) {
-        error.FileNotFound => null,
-        else => exit.die(ctx, e, "reading config file: {s}", .{@errorName(e)}),
-    };
-    defer if (file_content) |fc| ctx.allocator.free(fc);
-
-    var resolved = engine.config.resolve(ctx.allocator, file_content, ctx.environ, null) catch |e|
-        exit.die(ctx, e, "resolving configuration: {s}", .{@errorName(e)});
-    defer resolved.deinit(ctx.allocator);
-
-    const models_path = std.fs.path.join(ctx.allocator, &.{ args.out, "agents/models.md" }) catch |e|
-        exit.die(ctx, e, "{s}", .{@errorName(e)});
-    defer ctx.allocator.free(models_path);
-
-    const current = std.Io.Dir.cwd().readFileAlloc(ctx.io, models_path, ctx.allocator, .unlimited) catch |e|
-        exit.die(ctx, e, "reading {s}: {s}", .{ models_path, @errorName(e) });
-    defer ctx.allocator.free(current);
-
-    const rewritten = engine.models.syncTierTable(ctx.allocator, current, &resolved.effective) catch |e| switch (e) {
-        error.MissingTierTableHeading => exit.die(
-            ctx,
-            e,
-            "{s}: no '## Tier Table' heading found — refusing to append or corrupt the file",
-            .{models_path},
-        ),
-        else => exit.die(ctx, e, "regenerating tier table: {s}", .{@errorName(e)}),
-    };
-    defer ctx.allocator.free(rewritten);
-
-    const in_sync = std.mem.eql(u8, current, rewritten);
-
-    if (args.check) {
-        if (in_sync) {
-            try ctx.stdout.print("{s}: tier table is in sync\n", .{models_path});
-            return;
-        }
-        exit.die(
-            ctx,
-            error.ModelsDocDrift,
-            "{s}: '## Tier Table' is out of sync with the resolved config (run `planar models sync-doc` to regenerate)",
-            .{models_path},
-        );
-    }
-
-    if (in_sync) {
-        try ctx.stdout.print("{s}: already in sync\n", .{models_path});
-        return;
-    }
-
-    writeAtomicFile(ctx.io, models_path, rewritten) catch |e|
-        exit.die(ctx, e, "writing {s}: {s}", .{ models_path, @errorName(e) });
-    try ctx.stdout.print("wrote {s}\n", .{models_path});
-}
-
-/// Write `data` to `path` via a sibling `<path>.planar-sync-tmp` temp file
-/// followed by a rename (write-temp-then-rename) so a crash mid-write never
-/// leaves `agents/models.md` truncated or partially rewritten.
-fn writeAtomicFile(io: std.Io, path: []const u8, data: []const u8) !void {
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp = try std.fmt.bufPrint(&buf, "{s}.planar-sync-tmp", .{path});
-    std.Io.Dir.cwd().deleteFile(io, tmp) catch {};
-    errdefer std.Io.Dir.cwd().deleteFile(io, tmp) catch {};
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = tmp, .data = data });
-    try std.Io.Dir.cwd().rename(tmp, std.Io.Dir.cwd(), path, io);
 }
 
 fn handleEvals(args_ptr: *const anyopaque) anyerror!void {

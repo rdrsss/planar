@@ -615,9 +615,9 @@ fi
 # during preflight, driven by the committed scriptorium.yaml (repo root).
 # This replaces Planar's retired in-tree renderer verb (tech-spec.md §
 # Architecture "How Planar shells scriptorium"). Note: `agents/models.md`'s
-# `## Tier Table` is NOT patched by this step — that patcher relocates to a
-# separate `planar models sync-doc` verb in a later milestone; until that
-# verb lands, models.md installs as ordinary committed content.
+# `## Tier Table` is NOT patched by this step, and is not patched anywhere —
+# it is owned and hand-maintained by the armarium orchestration layer, so
+# models.md installs as ordinary committed content.
 title "Rendering per-vendor skill outputs (scriptorium)"
 SCRIPTORIUM_CONFIG="$REPO_ROOT/scriptorium.yaml"
 [[ -f "$SCRIPTORIUM_CONFIG" ]] || err "scriptorium.yaml not found at $SCRIPTORIUM_CONFIG (required to render skill/agent sources)"
