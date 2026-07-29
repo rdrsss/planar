@@ -5869,8 +5869,15 @@ planar-agent block      --claim <token> --blocker <task-id> [--reason <text>] [-
 # Direct claims — for orchestrator dispatch when the caller already knows the
 # target entity by id. Task claims atomically transition todo → doing unless
 # --no-transition is supplied; plan and plan-step state is never changed.
-planar-agent claim      --entity task:<id>|plan:<id>|plan_step:<id> [--vendor <v>] [--vendor-session <vendor:id>] [--role <r>] [--ttl <duration>] [--purpose <text>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--no-transition] [--force] [--run <run-id>] [--stage <stage>] [--json]
+planar-agent claim      --entity task:<id>|plan:<id>|plan_step:<id> [--vendor <v>] [--vendor-session <vendor:id>] [--role <r>] [--model <s>] [--ttl <duration>] [--purpose <text>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--no-transition] [--force] [--run <run-id>] [--stage <stage>] [--json]
 planar-agent heartbeat  --claim <token> [--ttl <duration>] [--status <text>] [--json]
+
+# `--model` records the model actually used, verbatim, as an OPAQUE STRING.
+# Planar does not decide, validate, or publish what is "supported": an
+# unrecognized value is stored, not rejected, and a vendor/model pair that
+# disagrees is recorded as given rather than corrected. The catalog and spawn
+# verification belong to the Armarium/host boundary. Omitting it is valid and
+# stores NULL — reporting is optional.
 
 # Nested action lifecycle — for sub-tool-calls or sub-phases inside a
 # claim. Optional; lightweight claims skip these.
