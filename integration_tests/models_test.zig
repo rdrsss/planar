@@ -12,130 +12,6 @@
 const std = @import("std");
 const harness = @import("harness");
 
-test "planar models list: text output lists both vendors, catalogs, and default routing" {
-    const gpa = std.testing.allocator;
-    var suite = harness.Suite.init(gpa);
-    defer suite.deinit();
-
-    const stdout = suite.mustRun(&.{ "models", "list" });
-    defer gpa.free(stdout);
-
-    const required = [_][]const u8{
-        "providers:",
-        "claude",
-        "codex",
-        "claude-opus-4-8", // curated claude catalog
-        "claude-haiku-4-5", // claude small tier
-        "gpt-5.5", // curated codex catalog (current frontier)
-        "gpt-5.3-codex-spark", // codex small/ultra-fast
-        "default routing",
-        "coder",
-        "reviewer",
-    };
-    inline for (required) |needle| {
-        if (std.mem.indexOf(u8, stdout, needle) == null) {
-            std.debug.print("\nmodels list text missing '{s}'\nstdout:\n{s}\n", .{ needle, stdout });
-            return error.TestUnexpectedResult;
-        }
-    }
-}
-
-test "planar models list --json: providers + curated catalog + default routing shape" {
-    const gpa = std.testing.allocator;
-    var suite = harness.Suite.init(gpa);
-    defer suite.deinit();
-
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    const stdout = suite.mustRun(&.{ "models", "list", "--json" });
-    defer gpa.free(stdout);
-
-    const trimmed = std.mem.trim(u8, stdout, " \n");
-    const parsed = std.json.parseFromSlice(std.json.Value, arena, trimmed, .{
-        .allocate = .alloc_always,
-    }) catch |e| {
-        std.debug.print("\nmodels --json parse failed: {s}\nraw: {s}\n", .{ @errorName(e), stdout });
-        return error.TestUnexpectedResult;
-    };
-    try std.testing.expect(parsed.value == .object);
-    const obj = parsed.value.object;
-
-    // providers: array of two vendors, each with a non-empty curated catalog.
-    const providers = obj.get("providers").?.array;
-    try std.testing.expectEqual(@as(usize, 2), providers.items.len);
-    const vendors = [_][]const u8{ "claude", "codex" };
-    for (providers.items, vendors) |p, want_vendor| {
-        const po = p.object;
-        try std.testing.expectEqualStrings(want_vendor, po.get("vendor").?.string);
-        try std.testing.expect(po.get("installed").? == .bool); // present, value machine-dependent
-        try std.testing.expect(po.get("models").?.array.items.len > 0);
-    }
-
-    // default_routing: coder → claude-sonnet-5, reviewer → claude-opus-4-8.
-    const routing = obj.get("default_routing").?.array;
-    var saw_coder = false;
-    var saw_reviewer = false;
-    for (routing.items) |r| {
-        const ro = r.object;
-        const role = ro.get("role").?.string;
-        const model = ro.get("model").?.string;
-        if (std.mem.eql(u8, role, "coder")) {
-            saw_coder = true;
-            try std.testing.expectEqualStrings("claude-sonnet-5", model);
-        }
-        if (std.mem.eql(u8, role, "reviewer")) {
-            saw_reviewer = true;
-            try std.testing.expectEqualStrings("claude-opus-4-8", model);
-        }
-    }
-    try std.testing.expect(saw_coder and saw_reviewer);
-}
-
-test "planar models refresh: writes a parseable catalog cache under PLANAR_HOME/models/" {
-    const gpa = std.testing.allocator;
-    var suite = harness.Suite.init(gpa);
-    defer suite.deinit();
-
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    // Point PLANAR_HOME at the suite's tmp dir so refresh never touches the
-    // operator's real ~/.planar.
-    const home = suite.tmpAbsPath();
-    const stdout = suite.mustRunWith(&.{ "models", "refresh" }, &.{
-        .{ .key = "PLANAR_HOME", .value = home },
-    });
-    defer gpa.free(stdout);
-
-    // The cache file must exist and parse, with the two providers.
-    const cache_path = try std.fs.path.join(arena, &.{ home, "models", "catalog.json" });
-    const bytes = std.Io.Dir.cwd().readFileAlloc(std.testing.io, cache_path, arena, .limited(256 * 1024)) catch |e| {
-        std.debug.print("\nmodels refresh did not write {s}: {s}\n", .{ cache_path, @errorName(e) });
-        return error.TestUnexpectedResult;
-    };
-    const parsed = std.json.parseFromSlice(std.json.Value, arena, std.mem.trim(u8, bytes, " \n"), .{
-        .allocate = .alloc_always,
-    }) catch |e| {
-        std.debug.print("\ncached catalog.json did not parse: {s}\n", .{@errorName(e)});
-        return error.TestUnexpectedResult;
-    };
-    try std.testing.expect(parsed.value == .object);
-    try std.testing.expectEqual(@as(usize, 2), parsed.value.object.get("providers").?.array.items.len);
-}
-
-test "planar models list: codex entries carry human display labels (task 3633)" {
-    const gpa = std.testing.allocator;
-    var suite = harness.Suite.init(gpa);
-    defer suite.deinit();
-    const stdout = suite.mustRun(&.{ "models", "list" });
-    defer gpa.free(stdout);
-    try std.testing.expect(std.mem.indexOf(u8, stdout, "gpt-5.5") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout, "frontier") != null); // label text
-}
-
 // =========================================================================
 // planar models evals (plan 898/904, tech-spec 520 D8) — routing evals
 // scorecard. Seeds real dispatch history through planar / planar-agent (not
@@ -240,12 +116,19 @@ fn evalsAddTask(suite: *const harness.Suite, plan_id_arg: []const u8, title: []c
     return evalsExtractIntField(out, "\"id\"") orelse @panic("no task id");
 }
 
-/// Direct-claim a task and return its claim token (caller frees).
-fn evalsClaimTask(suite: *const harness.Suite, task_id: i64) []u8 {
+/// Direct-claim a task, RECORDING the vendor and model actually used, and
+/// return its claim token (caller frees). The scorecard reads the vendor back
+/// off the claim (plan 950 removed the catalog it used to infer it from), so a
+/// claim without `--vendor`/`--model` yields no vendor on the row.
+fn evalsClaimTask(suite: *const harness.Suite, task_id: i64, vendor: []const u8, model: []const u8) []u8 {
     const gpa = suite.allocator;
     const ref = std.fmt.allocPrint(gpa, "task:{d}", .{task_id}) catch @panic("OOM");
     defer gpa.free(ref);
-    const out = mustRunAgent(suite, &.{ "claim", "--entity", ref, "--no-locality-probe", "--json" });
+    const out = mustRunAgent(suite, &.{
+        "claim",  "--entity", ref,   "--vendor",
+        vendor,   "--model",  model, "--no-locality-probe",
+        "--json",
+    });
     defer gpa.free(out);
     return evalsExtractStringField(gpa, out, "\"claim_token\":\"") catch @panic("no claim_token");
 }
@@ -278,7 +161,7 @@ test "planar models evals --json: two candidates for the same work type rank by 
     // Task A: claude-opus-4-8, one dispatch cycle, approved.
     const task_a = evalsAddTask(&suite, plan_id_arg, "evals task A");
     evalsCaptureDispatchNote(&suite, task_a, "large", "claude-opus-4-8", "schema");
-    const claim_a = evalsClaimTask(&suite, task_a);
+    const claim_a = evalsClaimTask(&suite, task_a, "claude", "claude-opus-4-8");
     defer gpa.free(claim_a);
     gpa.free(mustRunAgent(&suite, &.{ "complete", "--claim", claim_a, "--json" }));
 
@@ -287,7 +170,7 @@ test "planar models evals --json: two candidates for the same work type rank by 
     const task_b = evalsAddTask(&suite, plan_id_arg, "evals task B");
     evalsCaptureDispatchNote(&suite, task_b, "large", "claude-haiku-4-5", "schema");
     evalsCaptureDispatchNote(&suite, task_b, "large", "claude-haiku-4-5", "schema");
-    const claim_b = evalsClaimTask(&suite, task_b);
+    const claim_b = evalsClaimTask(&suite, task_b, "claude", "claude-haiku-4-5");
     defer gpa.free(claim_b);
     gpa.free(mustRunAgent(&suite, &.{ "fail", "--claim", claim_b, "--reason", "test abort", "--json" }));
 

@@ -168,15 +168,24 @@ const GroupAccum = struct {
     test_coder_other: usize = 0,
 };
 
-/// Resolve a candidate model id to its curated-catalog vendor, or null when
-/// the id is not in the catalog (custom/operator-added candidate).
-fn vendorForCandidate(id: []const u8) ?[]const u8 {
-    for (models.catalog) |vc| {
-        for (vc.models) |m| {
-            if (std.mem.eql(u8, m.id, id)) return vc.vendor;
-        }
-    }
-    return null;
+/// The vendor a candidate was actually dispatched on, read from the claim that
+/// recorded it. Planar does not infer this from a catalog (plan 950 removed
+/// the catalog, and inferring a vendor is a support claim Planar does not
+/// make): agents report `--vendor` alongside `--model` when they claim work,
+/// so this reads back what was recorded. Null when no claim carries that
+/// model string.
+fn vendorForCandidate(d: *db.sqlite.Db, arena: std.mem.Allocator, id: []const u8) ?[]const u8 {
+    const sql: [:0]const u8 =
+        \\select vendor from agent_work_claims
+        \\where model = ?
+        \\order by claimed_at desc, id desc limit 1
+    ;
+    var stmt = d.prepare(sql) catch return null;
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .text = id }}) catch return null;
+    const step = stmt.step() catch return null;
+    if (step == .done) return null;
+    return stmt.columnTextAlloc(0, arena) catch null;
 }
 
 fn stringField(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
@@ -357,7 +366,7 @@ pub fn aggregate(
         try rows.append(arena, .{
             .work_type = g.work_type,
             .candidate = g.candidate,
-            .vendor = vendorForCandidate(g.candidate),
+            .vendor = vendorForCandidate(d, arena, g.candidate),
             .tier = g.tier,
             .dispatch_count = g.dispatch_count,
             .approved_count = g.approved_count,
@@ -548,8 +557,8 @@ test "aggregate: approved task scores approval_rate 1.0 with a recommendation" {
         &.{ .{ .int = sid }, .{ .text = "dispatch_shape: strict\nmodel_choice: {\"1\":{\"tier\":\"medium\",\"candidate\":\"claude-sonnet-5\",\"work_type\":\"schema\"}}" } },
     );
     _ = try d.execParams(
-        "insert into agent_work_claims (claim_token, session_id, entity_kind, entity_id, status, vendor, lease_expires_at) " ++
-            "values ('tok1', ?, 'task', 1, 'completed', 'claude', datetime('now','+1 hour'))",
+        "insert into agent_work_claims (claim_token, session_id, entity_kind, entity_id, status, vendor, model, lease_expires_at) " ++
+            "values ('tok1', ?, 'task', 1, 'completed', 'claude', 'claude-sonnet-5', datetime('now','+1 hour'))",
         &.{.{ .int = sid }},
     );
 
@@ -586,8 +595,8 @@ test "aggregate: two candidates for the same work type — higher approval/lower
         &.{ .{ .int = sid }, .{ .text = "dispatch_shape: strict\nmodel_choice: {\"1\":{\"tier\":\"large\",\"candidate\":\"claude-opus-4-8\",\"work_type\":\"schema\"}}" } },
     );
     _ = try d.execParams(
-        "insert into agent_work_claims (claim_token, session_id, entity_kind, entity_id, status, vendor, lease_expires_at) " ++
-            "values ('tok1', ?, 'task', 1, 'completed', 'claude', datetime('now','+1 hour'))",
+        "insert into agent_work_claims (claim_token, session_id, entity_kind, entity_id, status, vendor, model, lease_expires_at) " ++
+            "values ('tok1', ?, 'task', 1, 'completed', 'claude', 'claude-sonnet-5', datetime('now','+1 hour'))",
         &.{.{ .int = sid }},
     );
 
@@ -605,8 +614,8 @@ test "aggregate: two candidates for the same work type — higher approval/lower
         &.{ .{ .int = sid }, .{ .text = "dispatch_shape: strict\nmodel_choice: {\"2\":{\"tier\":\"large\",\"candidate\":\"claude-haiku-4-5\",\"work_type\":\"schema\"}}" } },
     );
     _ = try d.execParams(
-        "insert into agent_work_claims (claim_token, session_id, entity_kind, entity_id, status, vendor, lease_expires_at) " ++
-            "values ('tok2', ?, 'task', 2, 'aborted', 'claude', datetime('now','+1 hour'))",
+        "insert into agent_work_claims (claim_token, session_id, entity_kind, entity_id, status, vendor, model, lease_expires_at) " ++
+            "values ('tok2', ?, 'task', 2, 'aborted', 'claude', 'claude-sonnet-5', datetime('now','+1 hour'))",
         &.{.{ .int = sid }},
     );
 

@@ -37,22 +37,6 @@ pub const verb: cli.Cmd = .{
     .long_desc = "Probe the supported provider CLIs (claude, codex) for\n  installed-state + version, and report their curated model\n  catalogs and the default role→tier→model routing.\n\n  The provider CLIs do not expose a machine-readable model list,\n  so the per-vendor model catalog is curated in-repo; discovery\n  confirms which CLIs are callable on this machine.\n\n  Subcommands:\n    list       Probe + print (read-only).\n    refresh    Probe + print, and write the cache to\n               ${PLANAR_HOME:-~/.planar}/models/catalog.json.",
     .cmds = &.{
         .{
-            .name = "list",
-            .desc = "Probe providers and print catalogs + default routing.",
-            .flags = &.{
-                .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
-            },
-            .run = cli.handler(handleList),
-        },
-        .{
-            .name = "refresh",
-            .desc = "Probe providers and write the catalog cache under ~/.planar/models/.",
-            .flags = &.{
-                .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
-            },
-            .run = cli.handler(handleRefresh),
-        },
-        .{
             .name = "evals",
             .desc = "Aggregate completed dispatch outcomes into a per-(work-type, candidate) scorecard and preview-only recommendation.",
             .long_desc = "Read-only aggregation (plan 898/904, tech-spec 520 D8) over the\n  `dispatch_shape` / `model_choice` note convention in `session_entries`\n  (agents/orchestrator.md step 8a), joined with `agent_work_claims`\n  (terminal disposition) and `agent_actions` (test-coder expansion\n  outcome). Emits a per-(work-type, candidate) scorecard and a\n  recommended routing-map change. A pair with no completed-dispatch\n  history reports insufficient-data rather than a fabricated score.\n  Writes nothing: no routing-map mutation, no database write. Applying\n  a recommendation is a separate, explicit operator-gated action.",
@@ -184,49 +168,6 @@ fn parseVerification(value: []const u8) ?engine.routing.store.SpawnVerification 
     inline for (std.meta.tags(engine.routing.store.SpawnVerification)) |tag|
         if (std.mem.eql(u8, value, @tagName(tag))) return tag;
     return null;
-}
-
-fn handleList(args_ptr: *const anyopaque) anyerror!void {
-    const args = cli.castArgs(main.root, &.{ "models", "list" }, args_ptr);
-    const ctx = runtime.current();
-    const report = engine.models.discover(ctx.allocator, ctx.io) catch |e| exit.die(
-        ctx,
-        e,
-        "model discovery failed: {s}",
-        .{@errorName(e)},
-    );
-    try ctx.stderr.print("warning: embedded catalog output is a one-window compatibility view; use `planar models registry export --json`\n", .{});
-    try output.emit(ctx, engine.models, report, .{ .json = args.json });
-}
-
-fn handleRefresh(args_ptr: *const anyopaque) anyerror!void {
-    const args = cli.castArgs(main.root, &.{ "models", "refresh" }, args_ptr);
-    const ctx = runtime.current();
-
-    const report = engine.models.discover(ctx.allocator, ctx.io) catch |e| exit.die(
-        ctx,
-        e,
-        "model discovery failed: {s}",
-        .{@errorName(e)},
-    );
-
-    const home = engine.identity.workspace.planarHome(ctx.allocator, ctx.environ) catch |e| exit.die(
-        ctx,
-        e,
-        "resolving PLANAR_HOME: {s}",
-        .{@errorName(e)},
-    );
-    const path = engine.models.writeCache(ctx.allocator, ctx.io, home, report) catch |e| exit.die(
-        ctx,
-        e,
-        "writing model cache: {s}",
-        .{@errorName(e)},
-    );
-
-    try output.emit(ctx, engine.models, report, .{ .json = args.json });
-    // Provenance note on stderr so JSON stdout stays clean for scripts.
-    try ctx.stderr.print("warning: catalog.json is a one-window compatibility export; the candidate registry is authoritative\n", .{});
-    try ctx.stderr.print("wrote model cache: {s}\n", .{path});
 }
 
 /// One tier's effective candidate list with provenance (plan 899 D3/D5).
