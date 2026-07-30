@@ -99,29 +99,6 @@ test "models registry preserves opaque values, rejects controls, and names ident
     try contains(mismatch, "\"identity\":\"candidate_mismatch\"");
 }
 
-test "models registry legacy import preserves IDs and exports migration warning" {
-    var suite = harness.Suite.init(std.testing.allocator);
-    defer suite.deinit();
-    const config =
-        \\[models.codex]
-        \\small = ["operator exact id"]
-        \\medium = "operator-medium"
-        \\large = "operator-large"
-        \\[roles]
-        \\coder = "small"
-    ;
-    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = suite.config_path, .data = config });
-    const imported = suite.mustRun(&.{ "models", "registry", "import-legacy" });
-    defer suite.allocator.free(imported);
-    try contains(imported, "imported");
-
-    const exported = suite.mustRun(&.{ "models", "registry", "export", "--json" });
-    defer suite.allocator.free(exported);
-    try contains(exported, "operator exact id");
-    try contains(exported, "\"compatibility_source\":\"legacy_config\"");
-    try contains(exported, "migration_warning");
-}
-
 test "models registry refuses deletion when immutable host evidence exists" {
     var suite = harness.Suite.init(std.testing.allocator);
     defer suite.deinit();

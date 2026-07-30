@@ -308,7 +308,6 @@ fn lessThan(_: void, a: ScoreRow, b: ScoreRow) bool {
 pub fn aggregate(
     d: *db.sqlite.Db,
     allocator: std.mem.Allocator,
-    effective: *const config.EffectiveMap,
 ) Error!Result {
     var arena_state = std.heap.ArenaAllocator.init(allocator);
     defer arena_state.deinit();
@@ -372,33 +371,10 @@ pub fn aggregate(
         });
     }
 
-    // Sibling enumeration for insufficient-data reporting: for every
-    // distinct (vendor, tier, work_type) triple actually observed, list any
-    // candidate in that tier's effective candidate list that has no
-    // dispatch history for that work type.
-    var seen_triples: std.StringHashMapUnmanaged(void) = .empty;
-    var scored_it = groups.valueIterator();
-    while (scored_it.next()) |g| {
-        const vendor = vendorForCandidate(g.candidate) orelse continue;
-        const triple = try std.fmt.allocPrint(arena, "{s}\x00{s}\x00{s}", .{ vendor, g.tier, g.work_type });
-        const tgop = try seen_triples.getOrPut(arena, triple);
-        if (tgop.found_existing) continue;
-
-        var key_buf: [96]u8 = undefined;
-        const cfg_key = std.fmt.bufPrint(&key_buf, "models.{s}.{s}", .{ vendor, g.tier }) catch continue;
-        const vws = effective.get(cfg_key) orelse continue;
-        for (vws.candidates) |sibling| {
-            const composite = try groupKey(arena, g.work_type, sibling);
-            if (groups.contains(composite)) continue;
-            try rows.append(arena, .{
-                .work_type = g.work_type,
-                .candidate = sibling,
-                .vendor = vendor,
-                .tier = g.tier,
-                .insufficient_data = true,
-            });
-        }
-    }
+    // Sibling enumeration was removed with Planar's model catalog (plan 950):
+    // enumerating "candidates with no history" required a config-derived list
+    // of what exists, which is exactly the support claim Planar no longer
+    // makes. Rows now cover only candidates with observed dispatch history.
 
     std.mem.sort(ScoreRow, rows.items, {}, lessThan);
 
@@ -527,7 +503,7 @@ test "aggregate: no dispatch history at all yields empty scorecard, no recommend
     var eff = emptyEffective();
     defer eff.deinit(a);
 
-    var result = try aggregate(&d, a, &eff);
+    var result = try aggregate(&d, a);
     defer result.deinit(a);
 
     try std.testing.expectEqual(@as(usize, 0), result.scorecard.len);
@@ -552,7 +528,7 @@ test "aggregate: a dispatch note missing work_type is skipped as legacy, not sco
         &.{ .{ .int = sid }, .{ .text = "dispatch_shape: strict\nmodel_choice: {\"1\":{\"tier\":\"medium\",\"candidate\":\"claude-sonnet-5\"}}" } },
     );
 
-    var result = try aggregate(&d, a, &eff);
+    var result = try aggregate(&d, a);
     defer result.deinit(a);
 
     try std.testing.expectEqual(@as(usize, 0), result.scorecard.len);
@@ -577,7 +553,7 @@ test "aggregate: approved task scores approval_rate 1.0 with a recommendation" {
         &.{.{ .int = sid }},
     );
 
-    var result = try aggregate(&d, a, &eff);
+    var result = try aggregate(&d, a);
     defer result.deinit(a);
 
     try std.testing.expectEqual(@as(usize, 1), result.scorecard.len);
@@ -634,7 +610,7 @@ test "aggregate: two candidates for the same work type — higher approval/lower
         &.{.{ .int = sid }},
     );
 
-    var result = try aggregate(&d, a, &eff);
+    var result = try aggregate(&d, a);
     defer result.deinit(a);
 
     try std.testing.expectEqual(@as(usize, 2), result.scorecard.len);
@@ -645,50 +621,6 @@ test "aggregate: two candidates for the same work type — higher approval/lower
     try std.testing.expectEqual(@as(usize, 1), result.scorecard[1].dispatch_count);
     try std.testing.expectEqual(@as(f64, 3.0), result.scorecard[1].avg_iterations);
 
-    try std.testing.expectEqual(@as(usize, 1), result.recommendations.len);
-    try std.testing.expectEqualStrings("claude-opus-4-8", result.recommendations[0].candidate);
-}
-
-test "aggregate: sibling candidate with zero dispatch history reports insufficient_data" {
-    const a = std.testing.allocator;
-    var d = try setupTestDb(a);
-    defer d.close();
-
-    var eff: config.EffectiveMap = .empty;
-    defer eff.deinit(a);
-    try eff.put(a, "models.claude.large", .{
-        .value = "claude-opus-4-8",
-        .source = .config_file,
-        .env_var_name = "",
-        .candidates = &.{ "claude-opus-4-8", "claude-sonnet-5" },
-    });
-
-    const sid = try d.execParams("insert into sessions (vendor) values ('claude')", &.{});
-    _ = try d.execParams(
-        "insert into session_entries (session_id, ordinal, prefix, body) values (?, 1, 'note', ?)",
-        &.{ .{ .int = sid }, .{ .text = "dispatch_shape: strict\nmodel_choice: {\"1\":{\"tier\":\"large\",\"candidate\":\"claude-opus-4-8\",\"work_type\":\"schema\"}}" } },
-    );
-    _ = try d.execParams(
-        "insert into agent_work_claims (claim_token, session_id, entity_kind, entity_id, status, vendor, lease_expires_at) " ++
-            "values ('tok1', ?, 'task', 1, 'completed', 'claude', datetime('now','+1 hour'))",
-        &.{.{ .int = sid }},
-    );
-
-    var result = try aggregate(&d, a, &eff);
-    defer result.deinit(a);
-
-    try std.testing.expectEqual(@as(usize, 2), result.scorecard.len);
-    var saw_insufficient = false;
-    for (result.scorecard) |row| {
-        if (std.mem.eql(u8, row.candidate, "claude-sonnet-5")) {
-            saw_insufficient = true;
-            try std.testing.expect(row.insufficient_data);
-            try std.testing.expectEqual(@as(usize, 0), row.dispatch_count);
-            try std.testing.expectEqual(@as(?usize, null), row.rank);
-        }
-    }
-    try std.testing.expect(saw_insufficient);
-    // Only the observed candidate gets a recommendation.
     try std.testing.expectEqual(@as(usize, 1), result.recommendations.len);
     try std.testing.expectEqualStrings("claude-opus-4-8", result.recommendations[0].candidate);
 }

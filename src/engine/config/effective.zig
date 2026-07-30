@@ -1153,37 +1153,6 @@ test "effective: defaults-only (no file, no env) — all keys come from embedded
     try std.testing.expectEqualStrings("", vendor_prov.env_var_name);
 }
 
-test "effective: model tier maps + role tiers resolve from embedded defaults (plan 540)" {
-    const a = std.testing.allocator;
-    const environ = std.process.Environ.empty;
-
-    var res = try resolve(a, null, environ, null);
-    defer res.deinit(a);
-
-    const cases = [_]struct { key: []const u8, want: []const u8 }{
-        .{ .key = "models.claude.small", .want = "claude-haiku-4-5" },
-        .{ .key = "models.claude.medium", .want = "claude-sonnet-5" },
-        .{ .key = "models.claude.large", .want = "claude-opus-4-8" },
-        .{ .key = "models.codex.small", .want = "gpt-5.6-luna" },
-        .{ .key = "models.codex.medium", .want = "gpt-5.6-terra" },
-        .{ .key = "models.codex.large", .want = "gpt-5.6-sol" },
-        .{ .key = "models.gemini.small", .want = "gemini-3.1-flash" },
-        .{ .key = "models.gemini.medium", .want = "gemini-3.1-pro" },
-        .{ .key = "models.gemini.large", .want = "gemini-3.1-pro" },
-        .{ .key = "roles.coder", .want = "medium" },
-        .{ .key = "roles.reviewer", .want = "large" },
-        .{ .key = "roles.test-coder", .want = "large" },
-        .{ .key = "roles.documenter", .want = "large" },
-        .{ .key = "roles.doc-author", .want = "large" },
-        .{ .key = "roles.sync-reconciler", .want = "large" },
-    };
-    for (cases) |c| {
-        const prov = res.effective.get(c.key) orelse return error.TestFailed;
-        try std.testing.expectEqualStrings(c.want, prov.value);
-        try std.testing.expectEqual(Provenance.embedded_default, prov.source);
-    }
-}
-
 test "effective: config file overrides a model tier + a role tier (plan 540)" {
     const a = std.testing.allocator;
     const environ = std.process.Environ.empty;
@@ -1206,11 +1175,9 @@ test "effective: config file overrides a model tier + a role tier (plan 540)" {
     try std.testing.expectEqualStrings("large", coder.value);
     try std.testing.expectEqual(Provenance.config_file, coder.source);
 
-    // An untouched key keeps its embedded default (list[0] of the
-    // codex.large candidate list).
-    const codex_large = res.effective.get("models.codex.large") orelse return error.TestFailed;
-    try std.testing.expectEqualStrings("gpt-5.6-sol", codex_large.value);
-    try std.testing.expectEqual(Provenance.embedded_default, codex_large.source);
+    // No embedded-default assertion here any more: plan 950 removed Planar's
+    // model catalog and role->tier map, so `[models.*]`/`[roles]` keys exist
+    // only when an operator supplies them. Override + provenance still hold.
 }
 
 // ---------------------------------------------------------------------------
@@ -1223,8 +1190,14 @@ test "effective: candidate list — a scalar tier value resolves to a one-elemen
     const a = std.testing.allocator;
     const environ = std.process.Environ.empty;
 
-    // Every embedded default today is a scalar (back-compat baseline).
-    var res = try resolve(a, null, environ, null);
+    // Plan 950 removed the embedded model catalog, so the scalar baseline is
+    // now operator-supplied rather than a shipped default. The invariant under
+    // test is unchanged: a scalar value yields a one-element candidate list.
+    const scalar_file =
+        \\[models.claude]
+        \\medium = "claude-sonnet-5"
+    ;
+    var res = try resolve(a, scalar_file, environ, null);
     defer res.deinit(a);
 
     const entry = res.effective.get("models.claude.medium") orelse return error.TestFailed;
@@ -1269,11 +1242,9 @@ test "effective: candidate list — list[0] is the tier default surfaced as .val
     try std.testing.expectEqualStrings("gpt-5.3-codex-spark", entry.value);
     try std.testing.expectEqualStrings(entry.candidates[0], entry.value);
 
-    // Every existing scalar-compatible reader (resolveTier et al reads
-    // `.value` directly) is therefore unaffected by the candidate-list change.
-    const models_mod = @import("../models.zig");
-    const resolved = try models_mod.resolveTier(&res.effective, "codex", "large");
-    try std.testing.expectEqualStrings("gpt-5.3-codex-spark", resolved.model);
+    // Candidate-list parsing is a config-layer feature and is unaffected by the
+    // removal of the tier->model resolver (plan 950): `.value` still carries
+    // list[0] for any reader that wants the first candidate.
 }
 
 test "effective: candidate list — provenance preserved for both scalar and array shapes" {
@@ -1302,12 +1273,8 @@ test "effective: candidate list — provenance preserved for both scalar and arr
     try std.testing.expectEqual(Provenance.config_file, array_entry.source);
     try std.testing.expectEqual(@as(usize, 2), array_entry.candidates.len);
 
-    // An untouched scalar-only tier still carries embedded_default provenance.
-    // (claude.medium — codex.large became a candidate list in the embedded
-    // defaults, so it no longer exercises the scalar shape.)
-    const untouched = res2.effective.get("models.claude.medium") orelse return error.TestFailed;
-    try std.testing.expectEqual(Provenance.embedded_default, untouched.source);
-    try std.testing.expectEqual(@as(usize, 1), untouched.candidates.len);
+    // No embedded-default provenance assertion: plan 950 removed the shipped
+    // catalog, so `[models.*]` keys carry config_file provenance or nothing.
 }
 
 test "effective: candidate list — a config-file override of a scalar-default tier to a list" {

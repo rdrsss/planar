@@ -53,33 +53,6 @@ pub const verb: cli.Cmd = .{
             .run = cli.handler(handleRefresh),
         },
         .{
-            .name = "routing",
-            .desc = "Print the effective role→vendor/tier/model routing (resolved via config).",
-            .long_desc = "Resolve each role through the shared model resolver against the\n  effective config ([models.<vendor>] tiers, [roles] role→tier,\n  [role_vendors] role→vendor, [defaults].vendor) and print the\n  result with provenance. This is the routing an external workflow\n  harness consumes to pick a worker model per role.",
-            .flags = &.{
-                .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
-            },
-            .run = cli.handler(handleRouting),
-        },
-        .{
-            .name = "apply",
-            .desc = "Scaffold the [models]/[roles] config block into the config file.",
-            .long_desc = "Write the curated model tier maps + role routing into the\n  resolved config file as an editable starting point. Skips when a\n  [models] section is already present unless --force appends anyway.",
-            .flags = &.{
-                .{ .long = "--force", .kind = .bool, .default = .{ .bool = false } },
-            },
-            .run = cli.handler(handleApply),
-        },
-        .{
-            .name = "candidates",
-            .desc = "Show each tier's candidate list and the work-type routing map with provenance.",
-            .long_desc = "Resolve the effective config ([models.<vendor>.<tier>] candidate\n  lists — scalar or ordered list, plan 899 D3 — and the\n  [routing.<vendor>.<tier>] work-type routing map, plan 899 D4/D9/D10/D11)\n  and print both with provenance. list[0] in a tier's candidate list is\n  always the tier default; the routing map names, per work type\n  (schema/engine/architectural/cli/feature/mechanical), which candidate\n  in that list `resolve(role, work_type)` selects. Read-only.",
-            .flags = &.{
-                .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
-            },
-            .run = cli.handler(handleCandidates),
-        },
-        .{
             .name = "evals",
             .desc = "Aggregate completed dispatch outcomes into a per-(work-type, candidate) scorecard and preview-only recommendation.",
             .long_desc = "Read-only aggregation (plan 898/904, tech-spec 520 D8) over the\n  `dispatch_shape` / `model_choice` note convention in `session_entries`\n  (agents/orchestrator.md step 8a), joined with `agent_work_claims`\n  (terminal disposition) and `agent_actions` (test-coder expansion\n  outcome). Emits a per-(work-type, candidate) scorecard and a\n  recommended routing-map change. A pair with no completed-dispatch\n  history reports insufficient-data rather than a fabricated score.\n  Writes nothing: no routing-map mutation, no database write. Applying\n  a recommendation is a separate, explicit operator-gated action.",
@@ -185,11 +158,6 @@ pub const verb: cli.Cmd = .{
                     .run = cli.handler(handleRegistryVerifyIdentity),
                 },
                 .{
-                    .name = "import-legacy",
-                    .desc = "Import effective [models] values as opaque registry entries.",
-                    .run = cli.handler(handleRegistryImportLegacy),
-                },
-                .{
                     .name = "export",
                     .desc = "Export the versioned registry compatibility document.",
                     .flags = &.{.{ .long = "--json", .kind = .bool, .default = .{ .bool = false } }},
@@ -261,79 +229,6 @@ fn handleRefresh(args_ptr: *const anyopaque) anyerror!void {
     try ctx.stderr.print("wrote model cache: {s}\n", .{path});
 }
 
-fn handleRouting(args_ptr: *const anyopaque) anyerror!void {
-    const args = cli.castArgs(main.root, &.{ "models", "routing" }, args_ptr);
-    const ctx = runtime.current();
-
-    // Resolve the effective config (file-over-default), then build the routing.
-    const path = config_path.resolveConfigPath(ctx.allocator, ctx.environ) catch |e|
-        exit.die(ctx, e, "resolving config path: {s}", .{@errorName(e)});
-    defer ctx.allocator.free(path);
-
-    const file_content: ?[]u8 = std.Io.Dir.cwd().readFileAlloc(ctx.io, path, ctx.allocator, .unlimited) catch |e| switch (e) {
-        error.FileNotFound => null,
-        else => exit.die(ctx, e, "reading config file: {s}", .{@errorName(e)}),
-    };
-    defer if (file_content) |fc| ctx.allocator.free(fc);
-
-    var resolved = engine.config.resolve(ctx.allocator, file_content, ctx.environ, null) catch |e|
-        exit.die(ctx, e, "resolving configuration: {s}", .{@errorName(e)});
-    defer resolved.deinit(ctx.allocator);
-    const rows = engine.models.buildRouting(ctx.allocator, &resolved.effective) catch |e|
-        exit.die(ctx, e, "building model routing: {s}", .{@errorName(e)});
-    defer ctx.allocator.free(rows);
-
-    if (args.json) {
-        try std.json.Stringify.value(rows, .{}, ctx.stdout);
-        try ctx.stdout.print("\n", .{});
-    } else {
-        for (rows) |r| {
-            try ctx.stdout.print(
-                "  {s: <10} → {s: <6} {s: <22} ({s}) [{s}]\n",
-                .{ r.role, r.vendor, r.model, r.tier, r.source.label() },
-            );
-        }
-    }
-}
-
-fn handleApply(args_ptr: *const anyopaque) anyerror!void {
-    const args = cli.castArgs(main.root, &.{ "models", "apply" }, args_ptr);
-    const ctx = runtime.current();
-
-    const path = config_path.resolveConfigPath(ctx.allocator, ctx.environ) catch |e|
-        exit.die(ctx, e, "resolving config path: {s}", .{@errorName(e)});
-    defer ctx.allocator.free(path);
-
-    const existing: []u8 = std.Io.Dir.cwd().readFileAlloc(ctx.io, path, ctx.allocator, .unlimited) catch |e| switch (e) {
-        error.FileNotFound => try ctx.allocator.dupe(u8, ""),
-        else => exit.die(ctx, e, "reading config file: {s}", .{@errorName(e)}),
-    };
-    defer ctx.allocator.free(existing);
-
-    const already = std.mem.indexOf(u8, existing, "[models.") != null or std.mem.indexOf(u8, existing, "[models]") != null;
-    if (already and !args.force) {
-        try ctx.stdout.print("models config already present in {s} (use --force to append)\n", .{path});
-        return;
-    }
-
-    const block = engine.models.renderConfigBlock(ctx.allocator) catch |e|
-        exit.die(ctx, e, "rendering model config: {s}", .{@errorName(e)});
-    defer ctx.allocator.free(block);
-
-    // Append the block to existing content (with a separating newline).
-    var out: std.ArrayList(u8) = .empty;
-    defer out.deinit(ctx.allocator);
-    out.appendSlice(ctx.allocator, existing) catch |e| exit.die(ctx, e, "{s}", .{@errorName(e)});
-    if (existing.len > 0 and existing[existing.len - 1] != '\n') out.append(ctx.allocator, '\n') catch {};
-    if (existing.len > 0) out.append(ctx.allocator, '\n') catch {};
-    out.appendSlice(ctx.allocator, block) catch |e| exit.die(ctx, e, "{s}", .{@errorName(e)});
-
-    std.Io.Dir.cwd().writeFile(ctx.io, .{ .sub_path = path, .data = out.items }) catch |e|
-        exit.die(ctx, e, "writing config file: {s}", .{@errorName(e)});
-    try ctx.stderr.print("warning: generated [models] configuration is legacy compatibility input; run `planar models registry import-legacy`\n", .{});
-    try ctx.stdout.print("wrote model routing config to {s}\n", .{path});
-}
-
 /// One tier's effective candidate list with provenance (plan 899 D3/D5).
 /// `candidates[0]` is always the tier default.
 const TierCandidates = struct {
@@ -355,104 +250,6 @@ const RoutingEntry = struct {
     model: []const u8,
     source: []const u8,
 };
-
-fn handleCandidates(args_ptr: *const anyopaque) anyerror!void {
-    const args = cli.castArgs(main.root, &.{ "models", "candidates" }, args_ptr);
-    const ctx = runtime.current();
-
-    const path = config_path.resolveConfigPath(ctx.allocator, ctx.environ) catch |e|
-        exit.die(ctx, e, "resolving config path: {s}", .{@errorName(e)});
-    defer ctx.allocator.free(path);
-
-    const file_content: ?[]u8 = std.Io.Dir.cwd().readFileAlloc(ctx.io, path, ctx.allocator, .unlimited) catch |e| switch (e) {
-        error.FileNotFound => null,
-        else => exit.die(ctx, e, "reading config file: {s}", .{@errorName(e)}),
-    };
-    defer if (file_content) |fc| ctx.allocator.free(fc);
-
-    var resolved = engine.config.resolve(ctx.allocator, file_content, ctx.environ, null) catch |e|
-        exit.die(ctx, e, "resolving configuration: {s}", .{@errorName(e)});
-    defer resolved.deinit(ctx.allocator);
-    const registry = engine.models.importLegacyConfig(ctx.allocator, &resolved.effective) catch |e|
-        exit.die(ctx, e, "importing legacy model configuration: {s}", .{@errorName(e)});
-    defer registry.deinit(ctx.allocator);
-
-    var tiers_out: std.ArrayList(TierCandidates) = .empty;
-    defer tiers_out.deinit(ctx.allocator);
-    for (engine.config.vendors) |v| {
-        for (engine.config.tiers) |t| {
-            var buf: [64]u8 = undefined;
-            const key = std.fmt.bufPrint(&buf, "models.{s}.{s}", .{ v, t }) catch continue;
-            const vws = resolved.effective.get(key) orelse continue;
-            tiers_out.append(ctx.allocator, .{
-                .vendor = v,
-                .tier = t,
-                .candidates = vws.candidates,
-                .source = vws.source.label(),
-            }) catch |e| exit.die(ctx, e, "{s}", .{@errorName(e)});
-        }
-    }
-
-    var routing_out: std.ArrayList(RoutingEntry) = .empty;
-    defer routing_out.deinit(ctx.allocator);
-    for (engine.config.vendors) |v| {
-        for (engine.config.tiers) |t| {
-            for (engine.config.work_types) |wt| {
-                var buf: [96]u8 = undefined;
-                const key = std.fmt.bufPrint(&buf, "routing.{s}.{s}.{s}", .{ v, t, wt }) catch continue;
-                const vws = resolved.effective.get(key) orelse continue;
-                if (vws.value.len == 0) continue;
-                routing_out.append(ctx.allocator, .{
-                    .vendor = v,
-                    .tier = t,
-                    .work_type = wt,
-                    .model = vws.value,
-                    .source = vws.source.label(),
-                }) catch |e| exit.die(ctx, e, "{s}", .{@errorName(e)});
-            }
-        }
-    }
-
-    if (args.json) {
-        try ctx.stdout.print("{{\"registry\":", .{});
-        try std.json.Stringify.value(registry.candidates, .{}, ctx.stdout);
-        try ctx.stdout.print(",\"migration_warning\":", .{});
-        try std.json.Stringify.value(registry.migration_warning, .{}, ctx.stdout);
-        try ctx.stdout.print(",\"candidates\":", .{});
-        try std.json.Stringify.value(tiers_out.items, .{}, ctx.stdout);
-        try ctx.stdout.print(",\"routing\":", .{});
-        try std.json.Stringify.value(routing_out.items, .{}, ctx.stdout);
-        try ctx.stdout.print("}}\n", .{});
-        return;
-    }
-
-    try ctx.stdout.print("warning: {s}\n", .{registry.migration_warning});
-    try ctx.stdout.print("opaque candidate registry (legacy compatibility view):\n", .{});
-    for (registry.candidates) |candidate| {
-        try ctx.stdout.print(
-            "  {s: <8} {s: <24} {s: <6} order={d} observation=none\n",
-            .{ candidate.vendor, candidate.opaque_id, candidate.tier, candidate.fallback_order },
-        );
-    }
-    try ctx.stdout.print("\n", .{});
-    try ctx.stdout.print("tier candidate lists (models.<vendor>.<tier>):\n", .{});
-    for (tiers_out.items) |tc| {
-        try ctx.stdout.print("  {s: <8} {s: <6} → ", .{ tc.vendor, tc.tier });
-        for (tc.candidates, 0..) |c, i| {
-            if (i > 0) try ctx.stdout.print(", ", .{});
-            try ctx.stdout.print("{s}", .{c});
-        }
-        try ctx.stdout.print("  [{s}]\n", .{tc.source});
-    }
-
-    try ctx.stdout.print("\nwork-type routing map (routing.<vendor>.<tier>.<work-type>):\n", .{});
-    for (routing_out.items) |re| {
-        try ctx.stdout.print(
-            "  {s: <8} {s: <6} {s: <14} → {s: <22} [{s}]\n",
-            .{ re.vendor, re.tier, re.work_type, re.model, re.source },
-        );
-    }
-}
 
 fn handleRegistryList(args_ptr: *const anyopaque) anyerror!void {
     const ctx = runtime.current();
@@ -630,46 +427,6 @@ fn handleRegistryVerifyIdentity(args_ptr: *const anyopaque) anyerror!void {
     try ctx.stdout.print("{{\"candidate\":{d},\"identity\":\"{s}\"}}\n", .{ args.candidate, @tagName(result) });
 }
 
-fn handleRegistryImportLegacy(args_ptr: *const anyopaque) anyerror!void {
-    _ = cli.castArgs(main.root, &.{ "models", "registry", "import-legacy" }, args_ptr);
-    const ctx = runtime.current();
-    const path = config_path.resolveConfigPath(ctx.allocator, ctx.environ) catch |e|
-        exit.die(ctx, e, "resolving config path: {s}", .{@errorName(e)});
-    defer ctx.allocator.free(path);
-    const content: ?[]u8 = std.Io.Dir.cwd().readFileAlloc(ctx.io, path, ctx.allocator, .unlimited) catch |e| switch (e) {
-        error.FileNotFound => null,
-        else => exit.die(ctx, e, "reading config: {s}", .{@errorName(e)}),
-    };
-    defer if (content) |bytes| ctx.allocator.free(bytes);
-    var resolved = engine.config.resolve(ctx.allocator, content, ctx.environ, null) catch |e|
-        exit.die(ctx, e, "resolving config: {s}", .{@errorName(e)});
-    defer resolved.deinit(ctx.allocator);
-    const legacy = engine.models.importLegacyConfig(ctx.allocator, &resolved.effective) catch |e|
-        exit.die(ctx, e, "importing legacy config: {s}", .{@errorName(e)});
-    defer legacy.deinit(ctx.allocator);
-    const d = runtime.ensureDb() catch |e| exit.die(ctx, e, "opening database: {s}", .{@errorName(e)});
-    var imported: usize = 0;
-    for (legacy.candidates) |candidate| {
-        var id = engine.routing.store.findCandidateId(d, candidate.vendor, candidate.opaque_id) catch |e|
-            exit.die(ctx, e, "checking candidate: {s}", .{@errorName(e)});
-        if (id == null) {
-            id = engine.routing.store.createCandidate(d, .{
-                .vendor = candidate.vendor,
-                .candidate_id = candidate.opaque_id,
-                .fallback_order = @intCast(candidate.fallback_order),
-                .compatibility_source = "legacy_config",
-            }) catch |e| exit.die(ctx, e, "importing candidate: {s}", .{@errorName(e)});
-            imported += 1;
-        }
-        const tier = parseTier(candidate.tier).?;
-        for (candidate.allowed_roles) |role|
-            engine.routing.store.bindCandidate(d, id.?, role, tier) catch |e|
-                exit.die(ctx, e, "importing candidate binding: {s}", .{@errorName(e)});
-    }
-    try ctx.stderr.print("warning: {s}\n", .{legacy.migration_warning});
-    try ctx.stdout.print("imported {d} opaque candidates\n", .{imported});
-}
-
 fn handleEvals(args_ptr: *const anyopaque) anyerror!void {
     const args = cli.castArgs(main.root, &.{ "models", "evals" }, args_ptr);
     const ctx = runtime.current();
@@ -690,7 +447,7 @@ fn handleEvals(args_ptr: *const anyopaque) anyerror!void {
         exit.die(ctx, e, "resolving configuration: {s}", .{@errorName(e)});
     defer resolved.deinit(ctx.allocator);
 
-    var result = engine.evals.aggregate(d, ctx.allocator, &resolved.effective) catch |e|
+    var result = engine.evals.aggregate(d, ctx.allocator) catch |e|
         exit.die(ctx, e, "aggregating routing evals: {s}", .{@errorName(e)});
     defer result.deinit(ctx.allocator);
 
