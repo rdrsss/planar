@@ -10,6 +10,7 @@ comptime {
     _ = @import("models_registry_test.zig");
     _ = @import("opaque_model_string_test.zig");
     _ = @import("routing_packet_test.zig");
+    _ = @import("routing_packet_cli_test.zig");
     _ = @import("planar_execute_test.zig");
     _ = @import("bench_run_ritual_test.zig");
     _ = @import("workbench_terminal_filter_test.zig");
