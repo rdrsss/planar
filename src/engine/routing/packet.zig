@@ -1502,3 +1502,57 @@ test "orchestrator invocation visibly resolves fallback reason" {
         else => return error.TestUnexpectedResult,
     }
 }
+
+// --- generic bootstrap rejection -------------------------------------------
+
+test "generic bootstrap: placeholder acceptance criteria are refused" {
+    // These are what a task looks like when it was created from a template and
+    // never filled in. Dispatching against them sends an agent off with no
+    // definition of done, and the resulting run is unjudgeable — which is
+    // exactly the evidence the routing plane must not collect.
+    try std.testing.expect(genericAcceptance(""));
+    try std.testing.expect(genericAcceptance("   \n  "));
+    try std.testing.expect(genericAcceptance("The feature is implemented and tested"));
+    try std.testing.expect(genericAcceptance("works as expected"));
+    try std.testing.expect(genericAcceptance("Behaves per spec"));
+
+    // Case and surrounding prose must not smuggle a placeholder past the
+    // check — the phrase is the signal, not its formatting.
+    try std.testing.expect(genericAcceptance("IT WORKS AS EXPECTED"));
+    try std.testing.expect(genericAcceptance("- everything Works As Expected here"));
+}
+
+test "generic bootstrap: real acceptance criteria are NOT refused" {
+    // The opposite failure matters just as much. A matcher that is too eager
+    // blocks legitimate work and teaches operators to route around readiness,
+    // so these concrete criteria must all pass.
+    try std.testing.expect(!genericAcceptance(
+        "`planar task packet <id> --json` emits policy_version and named readiness reasons",
+    ));
+    try std.testing.expect(!genericAcceptance(
+        "Rejects a below-floor tier override with TierRejection.below_floor",
+    ));
+    try std.testing.expect(!genericAcceptance(
+        "Duplicate event ids fold idempotently; retries append attempts and yield one sample",
+    ));
+    // Mentions a spec without being the "per spec" placeholder.
+    try std.testing.expect(!genericAcceptance(
+        "Matches the digest algorithm described in the tech spec section 4",
+    ));
+}
+
+test "generic bootstrap: placeholder next actions are refused, specific ones are not" {
+    try std.testing.expect(genericNextAction(""));
+    try std.testing.expect(genericNextAction("TODO"));
+    try std.testing.expect(genericNextAction("todo"));
+    try std.testing.expect(genericNextAction("Implement per acceptance criteria"));
+    try std.testing.expect(genericNextAction("implement the task"));
+
+    // A real next action names where to start.
+    try std.testing.expect(!genericNextAction(
+        "Read src/engine/routing/profile.zig compile(), then add the threshold row",
+    ));
+    // "todo" as a substring of real prose is not the placeholder: the check is
+    // an exact match for that one, not a contains.
+    try std.testing.expect(!genericNextAction("Sweep the remaining TODO comments in db/migrate.zig"));
+}
