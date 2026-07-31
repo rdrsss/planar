@@ -61,6 +61,12 @@ test "task packet compiles a readiness verdict an operator can act on" {
     try contains(packet, "\"reasons\":");
     try contains(packet, "missing_acceptance_section");
 
+    // The policy version rides in the envelope. A consumer comparing two
+    // packets must know they were built under the same rules BEFORE comparing
+    // digests, and it should not have to parse the canonical body to find out.
+    try contains(packet, "\"policy_version\":\"routing-packet-v1\"");
+    try contains(packet, "\"ready\":false");
+
     // The digest is a change detector: recompiling unchanged state must
     // reproduce it, otherwise it could never certify "this is the same packet
     // the dispatch was authorized against".

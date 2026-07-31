@@ -21,7 +21,14 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     defer live.deinit();
 
     if (args.json) {
+        // The policy version rides in the envelope, not only inside the
+        // canonical string. A consumer comparing two packets has to know
+        // whether they were built under the same rules before comparing their
+        // digests at all, and digging it out of the canonical body would mean
+        // parsing the very thing whose format the version describes.
         try std.json.Stringify.value(.{
+            .policy_version = engine.routing.packet.policy_version,
+            .ready = live.packet.reasons.len == 0,
             .input = live.packet.input,
             .canonical = live.packet.canonical,
             .digest = live.packet.digest[0..],
