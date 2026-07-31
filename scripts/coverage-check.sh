@@ -47,6 +47,16 @@ for arg in "$@"; do
 done
 
 PLANAR_BIN="${PLANAR_BIN:-$REPO_ROOT/bin/planar}"
+
+# Point every probe at a scratch database.
+#
+# A planar binary opens and MIGRATES its database before it does anything —
+# even `--help` does, and this script runs `--help` once per verb. Without an
+# override those probes resolve to the operator's real ~/.planar/planar.db and
+# silently migrate it to this checkout's schema, which breaks every installed
+# binary on the machine until someone rolls the migration back by hand.
+COVERAGE_DB_DIR="$(mktemp -d)"
+export PLANAR_DB="$COVERAGE_DB_DIR/coverage-probe.db"
 if [[ ! -x "$PLANAR_BIN" ]]; then
   echo "coverage-check: $PLANAR_BIN not executable — run 'make build' first" >&2
   exit 1
@@ -54,7 +64,9 @@ fi
 
 # ---------- enumerate leaf (verb, subcommand) pairs ----------
 TMP_ALL=$(mktemp)
-trap 'rm -f "$TMP_ALL" "$TMP_EXERCISED" "$TMP_UNCOVERED"' EXIT
+# One EXIT trap only: a second `trap ... EXIT` REPLACES this one rather than
+# adding to it, which would leak whichever directory lost the race.
+trap 'rm -f "$TMP_ALL" "$TMP_EXERCISED" "$TMP_UNCOVERED"; rm -rf "$COVERAGE_DB_DIR"' EXIT
 TMP_EXERCISED=$(mktemp)
 TMP_UNCOVERED=$(mktemp)
 

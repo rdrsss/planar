@@ -35,6 +35,17 @@ if [[ -z "$BIN" ]]; then
   fi
 fi
 
+# Point probes at a scratch database.
+#
+# A planar binary opens and MIGRATES its database before doing anything — even
+# `--help`, which is all this script runs. Without an override those probes hit
+# the operator's real ~/.planar/planar.db and silently migrate it to whatever
+# schema the probed binary carries, breaking every other installed binary until
+# someone rolls the migration back by hand.
+CLI_SURFACE_DB_DIR="$(mktemp -d)"
+trap 'rm -rf "$CLI_SURFACE_DB_DIR"' EXIT
+export PLANAR_DB="$CLI_SURFACE_DB_DIR/cli-surface-probe.db"
+
 if [[ ! -d "$HANDLERS_DIR" ]]; then
   echo "cli-surface-check: handlers dir missing: $HANDLERS_DIR" >&2
   exit 64
