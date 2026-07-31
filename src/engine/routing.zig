@@ -5,6 +5,7 @@ pub const packet = @import("routing/packet.zig");
 pub const profile = @import("routing/profile.zig");
 pub const evidence = @import("routing/evidence.zig");
 pub const dispatch = @import("routing/dispatch.zig");
+pub const ranking = @import("routing/ranking.zig");
 
 test {
     _ = store;
@@ -12,4 +13,5 @@ test {
     _ = profile;
     _ = evidence;
     _ = dispatch;
+    _ = ranking;
 }

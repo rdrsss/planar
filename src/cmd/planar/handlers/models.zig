@@ -25,6 +25,7 @@
 const std = @import("std");
 const cli = @import("cli");
 const engine = @import("engine");
+const db = @import("db");
 const main = @import("../main.zig");
 const runtime = @import("runtime");
 const output = @import("../output.zig");
@@ -39,8 +40,18 @@ pub const verb: cli.Cmd = .{
         .{
             .name = "evals",
             .desc = "Aggregate completed dispatch outcomes into a per-(work-type, candidate) scorecard and preview-only recommendation.",
-            .long_desc = "Read-only aggregation (plan 898/904, tech-spec 520 D8) over the\n  `dispatch_shape` / `model_choice` note convention in `session_entries`\n  (agents/orchestrator.md step 8a), joined with `agent_work_claims`\n  (terminal disposition) and `agent_actions` (test-coder expansion\n  outcome). Emits a per-(work-type, candidate) scorecard and a\n  recommended routing-map change. A pair with no completed-dispatch\n  history reports insufficient-data rather than a fabricated score.\n  Writes nothing: no routing-map mutation, no database write. Applying\n  a recommendation is a separate, explicit operator-gated action.",
+            .long_desc = "Evidence-backed candidate ranking over declared-experiment\n  terminal samples in the exact cohort (plan 950 task 5530). Supply the\n  cohort flags to rank: results report sample and success counts, the raw\n  rate, the 95% Wilson lower bound, gate-failure rate, and expected excess\n  iterations. Candidates under --min-samples are labelled insufficient_data\n  and are never ranked or recommended; candidates below --quality-floor are\n  excluded before any iteration or gate-failure ordering, so a fast-but-wrong\n  candidate cannot outrank a slower correct one.\n\n  Without cohort flags this falls back to the LEGACY note-convention\n  scorecard below, which remains inspectable but is not evidence-backed:\n  it predates the routing evidence plane and carries no cohort or\n  independent-quality guarantee.\n\n  Legacy: read-only aggregation (plan 898/904, tech-spec 520 D8) over the\n  `dispatch_shape` / `model_choice` note convention in `session_entries`\n  (agents/orchestrator.md step 8a), joined with `agent_work_claims`\n  (terminal disposition) and `agent_actions` (test-coder expansion\n  outcome). Emits a per-(work-type, candidate) scorecard and a\n  recommended routing-map change. A pair with no completed-dispatch\n  history reports insufficient-data rather than a fabricated score.\n  Writes nothing: no routing-map mutation, no database write. Applying\n  a recommendation is a separate, explicit operator-gated action.",
             .flags = &.{
+                .{ .long = "--vendor", .kind = .string, .desc = "Cohort vendor; enables evidence-backed ranking" },
+                .{ .long = "--role", .kind = .string, .desc = "Cohort role" },
+                .{ .long = "--tier", .kind = .string, .desc = "Cohort tier (small|medium|large)" },
+                .{ .long = "--work-type", .kind = .string, .desc = "Cohort work type" },
+                .{ .long = "--complexity", .kind = .string, .desc = "Cohort complexity (bounded|standard|high-risk)" },
+                .{ .long = "--project", .kind = .string, .desc = "Cohort project id" },
+                .{ .long = "--validation-policy", .kind = .string, .desc = "Cohort validation policy version" },
+                .{ .long = "--routing-policy", .kind = .string, .desc = "Cohort routing policy version" },
+                .{ .long = "--min-samples", .kind = .string, .desc = "Minimum samples before a candidate is ranked (default 5)" },
+                .{ .long = "--quality-floor", .kind = .string, .desc = "Wilson lower-bound floor (default 0.5)" },
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },
             .run = cli.handler(handleEvals),
@@ -368,11 +379,133 @@ fn handleRegistryVerifyIdentity(args_ptr: *const anyopaque) anyerror!void {
     try ctx.stdout.print("{{\"candidate\":{d},\"identity\":\"{s}\"}}\n", .{ args.candidate, @tagName(result) });
 }
 
+fn optFlag(v: ?[]const u8) ?[]const u8 {
+    const t = v orelse return null;
+    return if (t.len == 0) null else t;
+}
+
+fn requireFlag(ctx: anytype, name: []const u8, v: ?[]const u8) []const u8 {
+    return optFlag(v) orelse
+        exit.die(ctx, error.InvalidInput, "{s} is required when ranking a cohort", .{name});
+}
+
+fn parseCohortEnum(comptime T: type, ctx: anytype, flag: []const u8, raw: []const u8) T {
+    // `high-risk` on the wire, `high_risk` in the enum.
+    const normalized = if (std.mem.eql(u8, raw, "high-risk")) "high_risk" else raw;
+    return std.meta.stringToEnum(T, normalized) orelse
+        exit.die(ctx, error.InvalidInput, "invalid {s} '{s}'", .{ flag, raw });
+}
+
+/// Rank one exact cohort from declared-experiment evidence.
+fn rankCohort(ctx: anytype, d: *db.sqlite.Db, args: anytype, vendor: []const u8) !void {
+    const ranking = engine.routing.ranking;
+    const store = engine.routing.store;
+
+    const project_raw = requireFlag(ctx, "--project", args.project);
+    const project_id = std.fmt.parseInt(i64, project_raw, 10) catch
+        exit.die(ctx, error.InvalidInput, "invalid --project '{s}': expected integer", .{project_raw});
+
+    var gates: ranking.Gates = .{};
+    if (optFlag(args.min_samples)) |raw| {
+        gates.minimum_samples = std.fmt.parseInt(u64, raw, 10) catch
+            exit.die(ctx, error.InvalidInput, "invalid --min-samples '{s}'", .{raw});
+    }
+    if (optFlag(args.quality_floor)) |raw| {
+        gates.quality_floor = std.fmt.parseFloat(f64, raw) catch
+            exit.die(ctx, error.InvalidInput, "invalid --quality-floor '{s}'", .{raw});
+    }
+
+    const cohort: ranking.Cohort = .{
+        .project_id = project_id,
+        .validation_policy_version = requireFlag(ctx, "--validation-policy", args.validation_policy),
+        .routing_policy_version = requireFlag(ctx, "--routing-policy", args.routing_policy),
+        .vendor = vendor,
+        .role = requireFlag(ctx, "--role", args.role),
+        .tier = parseCohortEnum(store.Tier, ctx, "--tier", requireFlag(ctx, "--tier", args.tier)),
+        .work_type = parseCohortEnum(store.WorkType, ctx, "--work-type", requireFlag(ctx, "--work-type", args.work_type)),
+        .complexity = parseCohortEnum(store.Complexity, ctx, "--complexity", requireFlag(ctx, "--complexity", args.complexity)),
+    };
+
+    var result = ranking.rank(d, ctx.allocator, cohort, gates) catch |e|
+        exit.die(ctx, e, "ranking cohort: {s}", .{@errorName(e)});
+    defer result.deinit(ctx.allocator);
+
+    if (args.json) {
+        try std.json.Stringify.value(.{
+            .version = result.version,
+            .evidence = "declared_experiment",
+            .gates = .{
+                .minimum_samples = gates.minimum_samples,
+                .quality_floor = gates.quality_floor,
+            },
+            .rows = result.rows,
+            .recommended = if (result.recommended) |i| result.rows[i].candidate else null,
+            .no_recommendation_reason = result.no_recommendation_reason,
+        }, .{}, ctx.stdout);
+        try ctx.stdout.writeAll("\n");
+        return;
+    }
+
+    try ctx.stdout.print(
+        "routing evidence ranking ({s}) — declared-experiment samples only, read-only:\n",
+        .{result.version},
+    );
+    try ctx.stdout.print(
+        "  gates: minimum_samples={d} quality_floor={d:.2}\n\n",
+        .{ gates.minimum_samples, gates.quality_floor },
+    );
+    if (result.rows.len == 0) {
+        try ctx.stdout.writeAll("  (no cohort-eligible declared-experiment samples)\n");
+        return;
+    }
+    try ctx.stdout.print(
+        "  {s: <4} {s: <28} {s: >7} {s: >8} {s: >8} {s: >8} {s: >9} {s: >7}\n",
+        .{ "rank", "candidate", "samples", "success", "raw", "wilson", "gatefail", "excess" },
+    );
+    for (result.rows) |row| {
+        var rank_buf: [8]u8 = undefined;
+        const rank_text: []const u8 = if (row.rank) |r|
+            std.fmt.bufPrint(&rank_buf, "{d}", .{r}) catch "?"
+        else if (row.insufficient_data)
+            "n/a"
+        else
+            "--";
+        try ctx.stdout.print(
+            "  {s: <4} {s: <28} {d: >7} {d: >8} {d: >8.3} {d: >8.3} {d: >9.3} {d: >7.2}",
+            .{
+                rank_text,             row.candidate,                  row.samples,
+                row.successes,         row.raw_rate,                   row.wilson_lower,
+                row.gate_failure_rate, row.expected_excess_iterations,
+            },
+        );
+        if (row.insufficient_data) {
+            try ctx.stdout.writeAll("  insufficient_data");
+        } else if (row.below_quality_floor) {
+            try ctx.stdout.writeAll("  below_quality_floor");
+        }
+        try ctx.stdout.writeAll("\n");
+    }
+    if (result.recommended) |i| {
+        try ctx.stdout.print("\nrecommended: {s} (preview only; writes nothing)\n", .{result.rows[i].candidate});
+    } else {
+        try ctx.stdout.print("\nno recommendation: {s}\n", .{result.no_recommendation_reason orelse "gated"});
+    }
+}
+
 fn handleEvals(args_ptr: *const anyopaque) anyerror!void {
     const args = cli.castArgs(main.root, &.{ "models", "evals" }, args_ptr);
     const ctx = runtime.current();
     const d = runtime.ensureDb() catch |e|
         exit.die(ctx, e, "opening database: {s}", .{@errorName(e)});
+
+    // Cohort flags select the evidence-backed path. Evidence is never pooled
+    // across cohorts, so ranking requires the caller to name one exactly
+    // rather than defaulting to "everything" — an aggregate over mixed
+    // cohorts would be a number with no meaning.
+    if (optFlag(args.vendor)) |vendor| {
+        try rankCohort(ctx, d, args, vendor);
+        return;
+    }
 
     const path = config_path.resolveConfigPath(ctx.allocator, ctx.environ) catch |e|
         exit.die(ctx, e, "resolving config path: {s}", .{@errorName(e)});
