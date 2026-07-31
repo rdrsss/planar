@@ -424,6 +424,19 @@ fn seedCohort(
     a: std.mem.Allocator,
     specs: []const CandidateSpec,
 ) !void {
+    return seedCohortWith(conn, a, specs, &.{});
+}
+
+/// `extra_population` names work items admitted by the frozen manifest but not
+/// dispatched by `specs`. The manifest is immutable once written, so anything
+/// a later insert needs must be declared here up front — which is the freeze
+/// working as intended.
+fn seedCohortWith(
+    conn: *db.sqlite.Db,
+    a: std.mem.Allocator,
+    specs: []const CandidateSpec,
+    extra_population: []const []const u8,
+) !void {
     _ = try conn.execParams("insert into projects (slug, name, root_path) values ('p','p','/p')", &.{});
 
     var population: std.ArrayList(u8) = .empty;
@@ -455,6 +468,12 @@ fn seedCohort(
                 try population.appendSlice(a, item);
             }
         }
+    }
+    for (extra_population) |extra| {
+        if (population.items.len > 1) try population.append(a, ',');
+        const item = try std.fmt.allocPrint(a, "\"{s}\"", .{extra});
+        defer a.free(item);
+        try population.appendSlice(a, item);
     }
     try population.append(a, ']');
     try candidate_set.append(a, ']');
@@ -620,5 +639,153 @@ test "rank: a cohort with no evidence recommends nothing and says why" {
     try testing.expectEqualStrings(
         "no cohort-eligible declared-experiment samples",
         result.no_recommendation_reason.?,
+    );
+}
+
+test "rank: a neighbouring cohort's evidence never leaks into this one" {
+    const a = testing.allocator;
+    var conn = try db.sqlite.Db.openMemory();
+    defer conn.close();
+    try db.migrate.applyAll(&conn, a);
+
+    const ok: Sample = .{ .state = "completed", .success = true, .attempts = 1 };
+    const rows = try repeat(a, 8, ok);
+    defer a.free(rows);
+    try seedCohort(&conn, a, &.{.{ .name = "cand-A", .order = 0, .samples = rows }});
+
+    const base: Cohort = .{
+        .project_id = 1,
+        .validation_policy_version = "val-v1",
+        .routing_policy_version = "route-v1",
+        .vendor = "vendor-x",
+        .role = "coder",
+        .tier = .medium,
+        .work_type = .feature,
+        .complexity = .standard,
+    };
+
+    // The seeded cohort ranks the candidate.
+    var here = try rank(&conn, a, base, .{});
+    defer here.deinit(a);
+    try testing.expectEqual(@as(usize, 1), here.rows.len);
+    try testing.expectEqual(@as(u64, 8), here.rows[0].samples);
+
+    // Every neighbouring cohort differs in exactly ONE dimension. Each must
+    // see zero samples: eight successes at `feature`/`standard` say nothing
+    // about `architectural` work, a different tier, a different role, or a
+    // run under a different validation policy. Pooling any of them would let
+    // evidence launder across the boundary it was collected in.
+    var vendor_other = base;
+    vendor_other.vendor = "vendor-y";
+    var role_other = base;
+    role_other.role = "reviewer";
+    var tier_other = base;
+    tier_other.tier = .large;
+    var work_other = base;
+    work_other.work_type = .architectural;
+    var complexity_other = base;
+    complexity_other.complexity = .high_risk;
+    var validation_other = base;
+    validation_other.validation_policy_version = "val-v2";
+    var routing_other = base;
+    routing_other.routing_policy_version = "route-v2";
+    var project_other = base;
+    project_other.project_id = 999;
+
+    for ([_]Cohort{
+        vendor_other,  role_other,       tier_other,
+        work_other,    complexity_other, validation_other,
+        routing_other, project_other,
+    }) |neighbour| {
+        var r = try rank(&conn, a, neighbour, .{});
+        defer r.deinit(a);
+        try testing.expectEqual(@as(usize, 0), r.rows.len);
+        try testing.expect(r.recommended == null);
+        try testing.expectEqualStrings(
+            "no cohort-eligible declared-experiment samples",
+            r.no_recommendation_reason.?,
+        );
+    }
+}
+
+test "rank: a candidate-mismatch sample is retained for audit but never counted" {
+    const a = testing.allocator;
+    var conn = try db.sqlite.Db.openMemory();
+    defer conn.close();
+    try db.migrate.applyAll(&conn, a);
+
+    const ok: Sample = .{ .state = "completed", .success = true, .attempts = 1 };
+    const rows = try repeat(a, 6, ok);
+    defer a.free(rows);
+    try seedCohortWith(
+        &conn,
+        a,
+        &.{.{ .name = "cand-A", .order = 0, .samples = rows }},
+        &.{"lwi-mismatch"},
+    );
+
+    // Terminal samples are immutable, and the identity trigger admits only
+    // declared-experiment dispatches — so an observational run never produces
+    // a sample row at all. The exclusion that CAN appear here is a candidate
+    // mismatch: the host answered with a different model than was requested,
+    // which says nothing about the requested candidate's quality.
+    const exp = try conn.intQuery("select id from routing_experiments limit 1");
+    const cand = try conn.intQuery("select id from routing_candidates limit 1");
+
+    const dispatch = try conn.execParams(
+        \\insert into routing_dispatch_snapshots (
+        \\  dispatch_key, logical_work_item_id, project_id, validation_policy_version,
+        \\  vendor, role, tier, work_type, complexity, routing_policy_version,
+        \\  profile_rule_version, packet_digest, policy_digest, capability_digest,
+        \\  requested_candidate_id, actual_vendor, actual_candidate_id,
+        \\  assignment_class, experiment_id, operator_decision, reviewer_disposition,
+        \\  terminal_state, confirmed_at
+        \\) values (
+        \\  'dk-mismatch','lwi-mismatch',1,'val-v1','vendor-x','coder','medium','feature',
+        \\  'standard','route-v1','pr','pk','po','ca',?,'vendor-x','something-else',
+        \\  'declared_experiment',?,'confirmed','approved','candidate_mismatch',
+        \\  '2026-01-01T00:00:00Z'
+        \\)
+    , &.{ .{ .int = cand }, .{ .int = exp } });
+
+    _ = try conn.execParams(
+        \\insert into routing_dispatch_events (
+        \\  dispatch_id, event_id, sequence, event_kind, attempt_number,
+        \\  terminal_state, payload_json, occurred_at
+        \\) values (?, 'ev-mismatch', 999, 'outcome', 1, 'candidate_mismatch', '{}', '2026-01-01T00:00:00Z')
+    , &.{.{ .int = dispatch }});
+
+    _ = try conn.execParams(
+        \\insert into routing_terminal_samples (
+        \\  experiment_id, logical_work_item_id, role, initial_packet_digest,
+        \\  candidate_id, project_id, validation_policy_version, routing_policy_version,
+        \\  vendor, tier, work_type, complexity, terminal_event_id, terminal_state,
+        \\  quality_success, cohort_eligible, exclusion_reason, finalized_at
+        \\) values (
+        \\  ?, 'lwi-mismatch', 'coder', 'pk', ?, 1, 'val-v1', 'route-v1', 'vendor-x',
+        \\  'medium', 'feature', 'standard', 'ev-mismatch', 'candidate_mismatch',
+        \\  0, 0, 'candidate_mismatch', '2026-01-01T00:00:00Z'
+        \\)
+    , &.{ .{ .int = exp }, .{ .int = cand } });
+
+    var result = try rank(&conn, a, .{
+        .project_id = 1,
+        .validation_policy_version = "val-v1",
+        .routing_policy_version = "route-v1",
+        .vendor = "vendor-x",
+        .role = "coder",
+        .tier = .medium,
+        .work_type = .feature,
+        .complexity = .standard,
+    }, .{});
+    defer result.deinit(a);
+
+    // Seven samples on record, six counted. Counting the seventh would blame
+    // the requested candidate for a substitution it did not make.
+    try testing.expectEqual(@as(u64, 6), result.rows[0].samples);
+    try testing.expectEqual(@as(u64, 6), result.rows[0].successes);
+    try testing.expectEqual(
+        @as(i64, 7),
+        try conn.intQuery("select count(*) from routing_terminal_samples"),
     );
 }
