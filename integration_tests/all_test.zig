@@ -14,6 +14,7 @@ comptime {
     _ = @import("dispatch_preview_confirm_test.zig");
     _ = @import("no_db_side_effects_test.zig");
     _ = @import("routing_views_test.zig");
+    _ = @import("dispatch_cancellation_test.zig");
     _ = @import("planar_execute_test.zig");
     _ = @import("bench_run_ritual_test.zig");
     _ = @import("workbench_terminal_filter_test.zig");
