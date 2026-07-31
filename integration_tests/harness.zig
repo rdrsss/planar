@@ -108,6 +108,13 @@ pub const Suite = struct {
             &tmp.sub_path,
             "codex-home",
         }) catch @panic("OOM building codex_home");
+        // Isolation is load-bearing, so assert it rather than assume it. A
+        // suite that ever resolved to the operator's real database would apply
+        // this checkout's pending migrations to it on first use and break every
+        // installed binary on the machine — silently, because migration is
+        // automatic and a test that "passed" looks identical either way.
+        assertIsolatedDbPath(db_path);
+
         return .{
             .allocator = allocator,
             .bin = bin,
@@ -117,6 +124,23 @@ pub const Suite = struct {
             .codex_home = codex_home,
             .tmp_dir = tmp,
         };
+    }
+
+    /// Panic unless `path` is a build-directory scratch database.
+    ///
+    /// Checked positively (must live under `.zig-cache/tmp`) rather than by
+    /// blocklisting `~/.planar/planar.db`: a blocklist only catches the one
+    /// path someone thought of, while any DB outside the build dir is
+    /// out of bounds for a test.
+    fn assertIsolatedDbPath(path: []const u8) void {
+        if (std.mem.startsWith(u8, path, ".zig-cache/tmp/")) return;
+        std.debug.print(
+            \\harness: refusing to run against a non-isolated database:
+            \\  {s}
+            \\Integration suites must use a scratch DB under .zig-cache/tmp/.
+            \\
+        , .{path});
+        @panic("harness: non-isolated database path");
     }
 
     /// Release the temp directory and allocations owned by the suite.

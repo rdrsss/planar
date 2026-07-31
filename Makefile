@@ -78,9 +78,28 @@ uninstall: ## Remove the four Planar executables from PREFIX/bin
 uninstall-full: ## Remove the legacy full install (preserves ~/.planar/planar.db)
 	./install.sh --uninstall $(INSTALL_FLAGS)
 
+# Scratch database for hand-run smoke tests, kept in the build dir.
+#
+# A from-source binary resolves $PLANAR_DB, falling back to the operator's real
+# ~/.planar/planar.db — and it applies its pending migrations AUTOMATICALLY on
+# first use. So one bare `zig build run` from a branch carrying a new migration
+# silently pushes the live database past every installed binary's supported
+# version and breaks every other agent on the machine. Always smoke against
+# this instead.
+SMOKE_DB ?= $(CURDIR)/.zig-cache/smoke/planar.db
+
 .PHONY: run
-run: ## Run the CLI from source: make run ARGS="task list"
+run: ## Run the CLI from source AGAINST THE REAL DB (use `make smoke` for a throwaway one)
 	$(ZIG) build run -- $(ARGS)
+
+.PHONY: smoke
+smoke: ## Run the CLI from source against a throwaway build-dir DB: make smoke ARGS="task list"
+	@mkdir -p $(dir $(SMOKE_DB))
+	PLANAR_DB=$(SMOKE_DB) $(ZIG) build run -- $(ARGS)
+
+.PHONY: smoke-reset
+smoke-reset: ## Delete the throwaway smoke database
+	rm -rf $(dir $(SMOKE_DB))
 
 .PHONY: test-install-manifest
 test-install-manifest: ## Run focused installer manifest ownership/atomicity fixtures
