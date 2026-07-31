@@ -250,6 +250,16 @@ pub fn parseArgs(allocator: std.mem.Allocator, argv: []const []const u8) std.mem
 /// `err`: the domain error that caused the failure, null on success.
 /// `start_ns`: wall-clock (best-effort) nanosecond timestamp at process start,
 ///   used to compute duration_ms. Pass 0 to omit duration.
+/// Whether the resolved database file already exists.
+///
+/// Telemetry attaches to an existing install; it never brings one into being.
+fn dbFileExists(ctx: anytype) bool {
+    const path: []const u8 = ctx.db_path;
+    if (path.len == 0) return false;
+    std.Io.Dir.cwd().access(ctx.io, path, .{}) catch return false;
+    return true;
+}
+
 pub fn record(exit_code: u8, err: ?anyerror, start_ns: i128) void {
     recordInner(exit_code, err, start_ns) catch {};
 }
@@ -277,8 +287,31 @@ fn recordInner(exit_code: u8, err: ?anyerror, start_ns: i128) !void {
 
     if (!resolved.config.introspection.cli_log) return; // logging off
 
-    // Acquire the DB — if not yet open (help/schema paths), fail open.
-    const db = runtime.ensureDb() catch return;
+    // Acquire the DB WITHOUT applying migrations, and fail open if that is
+    // not possible.
+    //
+    // This must never be `ensureDb`. Telemetry runs on EVERY invocation,
+    // including `--help`, `schema`, and `version`, which touch no database of
+    // their own — and `ensureDb` migrates on open. That combination silently
+    // advanced an operator's live database to a dev build's schema (twice),
+    // breaking every other installed binary with SchemaVersionAhead until the
+    // migration was rolled back by hand. Because this path is `catch return`,
+    // the damage was invisible: help printed normally while the migration
+    // landed.
+    //
+    // `record` only runs post-dispatch, so a verb that genuinely needs the
+    // database has already opened and migrated it through `ensureDb` by now;
+    // this call then returns that same cached handle. When no such verb ran,
+    // a database needing migration simply goes unlogged — the correct
+    // trade for telemetry, which must not have schema side effects.
+    // Never CREATE a database either. Opening one brings it into existence,
+    // so a bare `--help` against a fresh machine would leave an empty database
+    // behind purely as a side effect of telemetry. Logging an invocation is
+    // not a reason to create the thing being logged about; if no database
+    // exists yet, there is nothing worth recording against.
+    if (!dbFileExists(ctx)) return;
+
+    const db = runtime.ensureDbConsumer() catch return;
 
     // Parse verb_path and args_shape from process argv.
     const argv_tail: []const []const u8 = if (ctx.argv.len > 1) ctx.argv[1..] else &.{};
