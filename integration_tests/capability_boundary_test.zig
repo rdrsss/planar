@@ -228,7 +228,7 @@ fn assertExactSet(
 // `planar` owns. A future change that mistakenly registers any of
 // these on planar-agent fails this test immediately.
 
-test "planar-agent verb set is EXACTLY the 17 documented agent verbs" {
+test "planar-agent verb set is EXACTLY the 18 documented agent verbs" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
@@ -259,6 +259,10 @@ test "planar-agent verb set is EXACTLY the 17 documented agent verbs" {
         "schema",
         "run",
         "context",
+        // plan 950 task 5528: routing dispatch authorization. Agent-callable
+        // because the orchestrator spends it at spawn time, in the same
+        // sequence as the claim ritual — not an operator planning action.
+        "dispatch",
     }, "planar-agent");
 
     // Forbidden set: planning-entity verbs and operator-only namespaces.

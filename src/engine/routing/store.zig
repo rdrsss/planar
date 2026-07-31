@@ -8,7 +8,7 @@ const std = @import("std");
 const db = @import("db");
 
 /// Stable schema contract introduced by migration 00030.
-pub const schema_version: u32 = 30;
+pub const schema_version: u32 = 31;
 
 /// A value persisted in a provenance-bearing task fact.
 pub const FactValue = union(enum) {
@@ -1165,6 +1165,27 @@ test "migration 00030 enforces foreign keys, bindings, and immutable audit rows"
     try expectConstraint(&conn, "delete from routing_terminal_samples where id = 1");
 }
 
+/// Roll the routing migrations back to schema 29.
+///
+/// Downs unwind in reverse order: 00031's table references 00030's, so rolling
+/// 30 back first would leave a dangling reference and a stale 31 row in
+/// schema_migrations.
+fn unwindToSchema29(conn: *db.sqlite.Db) !void {
+    for ([_][]const u8{
+        "migrations/00031_dispatch_confirmation_tokens.down.sql",
+        "migrations/00030_adaptive_routing_evidence.down.sql",
+    }) |path| {
+        const down_sql = try std.Io.Dir.cwd().readFileAlloc(
+            std.testing.io,
+            path,
+            std.testing.allocator,
+            .limited(64 * 1024),
+        );
+        defer std.testing.allocator.free(down_sql);
+        try conn.execSlice(std.testing.allocator, down_sql);
+    }
+}
+
 test "migration 00030 down preserves schema 29 state and legacy configuration" {
     var conn = try db.sqlite.Db.openMemory();
     defer conn.close();
@@ -1173,14 +1194,7 @@ test "migration 00030 down preserves schema 29 state and legacy configuration" {
     try conn.exec(
         "insert into config (key, value) values ('models.legacy', 'opaque-old-id')",
     );
-    const down_sql = try std.Io.Dir.cwd().readFileAlloc(
-        std.testing.io,
-        "migrations/00030_adaptive_routing_evidence.down.sql",
-        std.testing.allocator,
-        .limited(64 * 1024),
-    );
-    defer std.testing.allocator.free(down_sql);
-    try conn.execSlice(std.testing.allocator, down_sql);
+    try unwindToSchema29(&conn);
     try std.testing.expectEqual(
         @as(i64, 29),
         try conn.intQuery("select max(version) from schema_migrations"),
@@ -1196,7 +1210,7 @@ test "migration 00030 down preserves schema 29 state and legacy configuration" {
             \\  and legacy_config_value = 'opaque-old-id'
         ),
     );
-    try conn.execSlice(std.testing.allocator, down_sql);
+    try unwindToSchema29(&conn);
     try std.testing.expectEqual(
         @as(i64, 29),
         try conn.intQuery("select max(version) from schema_migrations"),

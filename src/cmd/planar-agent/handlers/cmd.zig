@@ -36,6 +36,7 @@ const reconcile_h = @import("reconcile.zig");
 const abort_h = @import("abort.zig");
 const schema_h = @import("schema.zig");
 const run_cmd = @import("run/cmd.zig");
+const dispatch_cmd = @import("dispatch/cmd.zig");
 const context_cmd = @import("context/cmd.zig");
 
 pub const verbs: []const cli.Cmd = &.{
@@ -55,5 +56,6 @@ pub const verbs: []const cli.Cmd = &.{
     abort_h.verb,
     schema_h.verb,
     run_cmd.verb,
+    dispatch_cmd.verb,
     context_cmd.verb,
 };

@@ -276,8 +276,15 @@ test "scenario: guidance-closeout-envelope stale identity blocks clean while cle
     // are known, so it cannot become its own authority.
     const migration_tail = try deriveMigrationTail(a);
     defer a.free(migration_tail);
-    try std.testing.expectEqualStrings("00030_adaptive_routing_evidence.up.sql", migration_tail);
+    // The invariant is that the newest migration is reversible and declares its
+    // OWN version — not that it happens to be any particular file. Naming the
+    // file here would make every future migration fail this scenario for a
+    // reason unrelated to what it asserts.
     const migration_base = migration_tail[0 .. migration_tail.len - ".up.sql".len];
+    const underscore = std.mem.indexOfScalar(u8, migration_base, '_') orelse
+        return error.MalformedMigrationName;
+    const version = try std.fmt.parseInt(u32, migration_base[0..underscore], 10);
+
     const down_path = try std.fmt.allocPrint(a, "migrations/{s}.down.sql", .{migration_base});
     defer a.free(down_path);
     try std.Io.Dir.cwd().access(std.testing.io, down_path, .{});
@@ -285,7 +292,9 @@ test "scenario: guidance-closeout-envelope stale identity blocks clean while cle
     defer a.free(up_path);
     const up_body = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, up_path, a, .limited(128 * 1024));
     defer a.free(up_body);
-    try std.testing.expect(std.mem.indexOf(u8, up_body, "values (30,") != null);
+    const version_insert = try std.fmt.allocPrint(a, "values ({d},", .{version});
+    defer a.free(version_insert);
+    try std.testing.expect(std.mem.indexOf(u8, up_body, version_insert) != null);
 
     const build = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, "build.zig", a, .limited(512 * 1024));
     defer a.free(build);
@@ -320,13 +329,21 @@ test "scenario: guidance-closeout-envelope stale identity blocks clean while cle
     try std.testing.expectEqualStrings(claude_guidance, agents_guidance);
     const readme = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, "README.md", a, .limited(512 * 1024));
     defer a.free(readme);
+    // The guidance docs must name the CURRENT migration tail. Deriving it here
+    // (rather than repeating a literal) is what makes this assertion mean "the
+    // docs track the schema" instead of "the schema is still 00030" — the
+    // latter fails on every future migration for the wrong reason.
     for ([_][]const u8{ claude_guidance, readme }) |guidance| {
-        try std.testing.expect(std.mem.indexOf(u8, guidance, "00030_adaptive_routing_evidence.up.sql") != null);
+        try std.testing.expect(std.mem.indexOf(u8, guidance, migration_tail) != null);
     }
 
+    const version_text = try std.fmt.allocPrint(a, "{d}", .{version});
+    defer a.free(version_text);
+    const version_evidence = try std.fmt.allocPrint(a, "{s} up migration", .{migration_base});
+    defer a.free(version_evidence);
     const facts = [_]GuidanceFact{
-        .{ .key = "migration_tail", .expected = "00030_adaptive_routing_evidence.up.sql", .evidence = "migrations/ + schema_migrations insert" },
-        .{ .key = "schema_version", .expected = "30", .evidence = "00030 up migration" },
+        .{ .key = "migration_tail", .expected = migration_tail, .evidence = "migrations/ + schema_migrations insert" },
+        .{ .key = "schema_version", .expected = version_text, .evidence = version_evidence },
         .{ .key = "binary_set", .expected = "planar,planar-agent,planar-watch,planar-execute", .evidence = "build.zig installed artifacts" },
     };
     const stale = [_]GuidanceObservation{
@@ -346,8 +363,8 @@ test "scenario: guidance-closeout-envelope stale identity blocks clean while cle
     try std.testing.expect(!clean_closeout);
 
     const clean = [_]GuidanceObservation{
-        .{ .path = "CLAUDE.md", .key = "migration_tail", .actual = "00030_adaptive_routing_evidence.up.sql" },
-        .{ .path = "README.md", .key = "schema_version", .actual = "30" },
+        .{ .path = "CLAUDE.md", .key = "migration_tail", .actual = migration_tail },
+        .{ .path = "README.md", .key = "schema_version", .actual = version_text },
         .{ .path = "README.md", .key = "binary_set", .actual = "planar,planar-agent,planar-watch,planar-execute" },
     };
     const clean_rows = try guidanceRows(a, &facts, &clean);

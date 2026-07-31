@@ -319,9 +319,9 @@ const command_classes = [_]CommandClass{
     m("planar-agent complete"),              m("planar-agent fail"),             m("planar-agent release"),                   m("planar-agent block"),           m("planar-agent claim"),             m("planar-agent heartbeat"),
     m("planar-agent claim-associate"),       m("planar-agent action start"),     m("planar-agent action end"),                m("planar-agent ingest"),          m("planar-agent reconcile"),         m("planar-agent abort"),
     r("planar-agent schema"),                m("planar-agent run start"),        m("planar-agent run end"),                   m("planar-agent context add"),     m("planar-agent context capsule"),   r("planar-agent context list"),
-    m("planar-agent context resolve"),       r("planar-watch feed"),             r("planar-watch ps"),                        r("planar-watch claims"),          r("planar-watch actions"),           r("planar-watch plans"),
-    r("planar-watch log"),                   r("planar-watch tree"),             r("planar-watch run list"),                  r("planar-watch run show"),        r("planar-watch sync-events"),       r("planar-watch version"),
-    r("planar-watch completion"),            r("planar-watch schema"),
+    m("planar-agent context resolve"),       m("planar-agent dispatch preview"), m("planar-agent dispatch confirm"),          r("planar-watch feed"),            r("planar-watch ps"),                r("planar-watch claims"),
+    r("planar-watch actions"),               r("planar-watch plans"),            r("planar-watch log"),                       r("planar-watch tree"),            r("planar-watch run list"),          r("planar-watch run show"),
+    r("planar-watch sync-events"),           r("planar-watch version"),          r("planar-watch completion"),                r("planar-watch schema"),
 };
 
 fn checkCapability(arena: std.mem.Allocator, file: []const u8, role: []const u8, line_no: usize, line: []const u8, in_fence: bool, findings: *std.ArrayList(Finding), suppressions: *std.ArrayList(Suppression)) !void {
