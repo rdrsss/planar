@@ -7,6 +7,7 @@ pub const evidence = @import("routing/evidence.zig");
 pub const dispatch = @import("routing/dispatch.zig");
 pub const ranking = @import("routing/ranking.zig");
 pub const roles = @import("routing/roles.zig");
+pub const views = @import("routing/views.zig");
 
 test {
     _ = store;
@@ -16,4 +17,5 @@ test {
     _ = dispatch;
     _ = ranking;
     _ = roles;
+    _ = views;
 }

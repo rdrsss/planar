@@ -411,8 +411,10 @@ test "ranking: ties fall through to iterations, then gate failures, then order" 
 
 // --- DB-backed: the aggregation query and gates over a real evidence chain ---
 
-const Sample = struct { state: []const u8, success: bool, attempts: i64 };
-const CandidateSpec = struct { name: []const u8, order: i64, samples: []const Sample };
+/// Test-fixture shapes, shared with `views.zig` so the full evidence chain
+/// (manifest -> dispatch -> event -> sample) is built one way only.
+pub const Sample = struct { state: []const u8, success: bool, attempts: i64 };
+pub const CandidateSpec = struct { name: []const u8, order: i64, samples: []const Sample };
 
 /// Seed a full evidence chain: experiment manifest -> per-sample dispatch ->
 /// outcome event -> terminal sample. The schema enforces every link (sample
@@ -431,7 +433,7 @@ fn seedCohort(
 /// dispatched by `specs`. The manifest is immutable once written, so anything
 /// a later insert needs must be declared here up front — which is the freeze
 /// working as intended.
-fn seedCohortWith(
+pub fn seedCohortWith(
     conn: *db.sqlite.Db,
     a: std.mem.Allocator,
     specs: []const CandidateSpec,

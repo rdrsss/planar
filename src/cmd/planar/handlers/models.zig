@@ -57,6 +57,23 @@ pub const verb: cli.Cmd = .{
             .run = cli.handler(handleEvals),
         },
         .{
+            .name = "experiments",
+            .desc = "List declared routing experiments and how much evidence each has produced.",
+            .long_desc = "Read-only. Shows each experiment's frozen manifest identity (the\n  cohort it governs, its manifest digest, and when an operator approved\n  it) alongside how many terminal samples it has produced and how many\n  of those count toward a recommendation. The two counts differ whenever\n  a run was recorded but excluded; reporting only the eligible count\n  would understate what actually ran.",
+            .flags = &.{.{ .long = "--json", .kind = .bool, .default = .{ .bool = false } }},
+            .run = cli.handler(handleExperiments),
+        },
+        .{
+            .name = "outcomes",
+            .desc = "List recorded terminal outcomes, including excluded ones and why they were excluded.",
+            .long_desc = "Read-only. Excluded samples are shown deliberately: they are the\n  audit trail of the evidence boundary. Hiding them would make the\n  evidence look thinner than it is and leave no way to check the\n  boundary was applied correctly, and showing them without a named\n  reason would look like a bug.",
+            .flags = &.{
+                .{ .long = "--limit", .kind = .string, .desc = "Maximum rows to show (default 50)" },
+                .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
+            },
+            .run = cli.handler(handleOutcomes),
+        },
+        .{
             .name = "registry",
             .desc = "Manage opaque operator candidates and host observations.",
             .cmds = &.{
@@ -489,6 +506,93 @@ fn rankCohort(ctx: anytype, d: *db.sqlite.Db, args: anytype, vendor: []const u8)
         try ctx.stdout.print("\nrecommended: {s} (preview only; writes nothing)\n", .{result.rows[i].candidate});
     } else {
         try ctx.stdout.print("\nno recommendation: {s}\n", .{result.no_recommendation_reason orelse "gated"});
+    }
+}
+
+fn handleExperiments(args_ptr: *const anyopaque) anyerror!void {
+    const args = cli.castArgs(main.root, &.{ "models", "experiments" }, args_ptr);
+    const ctx = runtime.current();
+    const d = runtime.ensureDb() catch |e| exit.die(ctx, e, "opening database: {s}", .{@errorName(e)});
+
+    const rows = engine.routing.views.listExperiments(d, ctx.allocator) catch |e|
+        exit.die(ctx, e, "listing experiments: {s}", .{@errorName(e)});
+    defer engine.routing.views.freeExperiments(ctx.allocator, rows);
+
+    if (args.json) {
+        try std.json.Stringify.value(.{
+            .views_version = engine.routing.views.views_version,
+            .experiments = rows,
+        }, .{}, ctx.stdout);
+        try ctx.stdout.writeAll("\n");
+        return;
+    }
+    if (rows.len == 0) {
+        try ctx.stdout.writeAll("no declared routing experiments\n");
+        return;
+    }
+    try ctx.stdout.print("routing experiments ({s}) — read-only:\n\n", .{engine.routing.views.views_version});
+    for (rows) |r| {
+        try ctx.stdout.print("  [{d}] {s}  status={s}\n", .{ r.id, r.experiment_key, r.status });
+        try ctx.stdout.print(
+            "       cohort: {s}/{s}/{s}/{s}/{s}  policies: {s} + {s}\n",
+            .{ r.vendor, r.role, r.tier, r.work_type, r.complexity, r.validation_policy_version, r.routing_policy_version },
+        );
+        try ctx.stdout.print(
+            "       manifest: {s} approved {s}  population={d} candidates={d}\n",
+            .{ r.manifest_digest, r.operator_approved_at, r.population_size, r.candidate_count },
+        );
+        try ctx.stdout.print(
+            "       samples: {d} recorded, {d} counted ({d} excluded)\n\n",
+            .{ r.samples, r.eligible_samples, r.samples - r.eligible_samples },
+        );
+    }
+}
+
+fn handleOutcomes(args_ptr: *const anyopaque) anyerror!void {
+    const args = cli.castArgs(main.root, &.{ "models", "outcomes" }, args_ptr);
+    const ctx = runtime.current();
+    const d = runtime.ensureDb() catch |e| exit.die(ctx, e, "opening database: {s}", .{@errorName(e)});
+
+    var limit: i64 = 50;
+    if (optFlag(args.limit)) |raw| {
+        limit = std.fmt.parseInt(i64, raw, 10) catch
+            exit.die(ctx, error.InvalidInput, "invalid --limit '{s}': expected integer", .{raw});
+        if (limit <= 0) exit.die(ctx, error.InvalidInput, "--limit must be positive", .{});
+    }
+
+    const rows = engine.routing.views.listOutcomes(d, ctx.allocator, limit) catch |e|
+        exit.die(ctx, e, "listing outcomes: {s}", .{@errorName(e)});
+    defer engine.routing.views.freeOutcomes(ctx.allocator, rows);
+
+    if (args.json) {
+        try std.json.Stringify.value(.{
+            .views_version = engine.routing.views.views_version,
+            .outcomes = rows,
+        }, .{}, ctx.stdout);
+        try ctx.stdout.writeAll("\n");
+        return;
+    }
+    if (rows.len == 0) {
+        try ctx.stdout.writeAll("no recorded terminal outcomes\n");
+        return;
+    }
+    try ctx.stdout.print("terminal outcomes ({s}) — read-only:\n\n", .{engine.routing.views.views_version});
+    for (rows) |r| {
+        try ctx.stdout.print(
+            "  [{d}] {s}  {s}  {s}\n",
+            .{ r.id, r.candidate, r.terminal_state, r.logical_work_item_id },
+        );
+        if (r.counts_toward_recommendation) {
+            try ctx.stdout.print("       counts toward recommendation (quality_success={s})\n\n", .{
+                if (r.quality_success) "yes" else "no",
+            });
+        } else {
+            // Never print "excluded" without saying why: an unexplained
+            // exclusion is indistinguishable from a bug.
+            try ctx.stdout.print("       EXCLUDED from recommendations: {s}\n\n", .{
+                r.exclusion_reason orelse "unknown",
+            });
+        }
     }
 }
 

@@ -46,6 +46,12 @@ for arg in "$@"; do
   esac
 done
 
+# Prefer `make coverage`, which depends on `build` and therefore measures a
+# binary that matches the working tree. Invoked directly, this script measures
+# whatever ./bin/planar currently holds — and a STALE binary reports a clean
+# ratio against a CLI surface that no longer exists, because verbs added since
+# that build are invisible to the enumeration below. The check below only
+# catches a MISSING binary, not an out-of-date one.
 PLANAR_BIN="${PLANAR_BIN:-$REPO_ROOT/bin/planar}"
 
 # Point every probe at a scratch database.
