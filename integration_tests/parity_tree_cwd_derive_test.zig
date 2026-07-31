@@ -32,7 +32,7 @@ test "parity: tree from literal-path registered project resolves to assoc (Clust
 
     // Fixture: register the literal-path tmp dir as a Planar project,
     // create the association, bind the literal path to it. Matches the
-    // operator sequence from scripts/parity-audit.sh and the task 2375
+    // operator sequence from the retired Go-archive parity audit and task 2375
     // reproduction.
     const init_out = suite.mustRunInDir(root, &.{
         "init", "--allow-no-repo", "--name", "parity-e-text-proj",

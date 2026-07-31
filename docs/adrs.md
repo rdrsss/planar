@@ -165,7 +165,7 @@ each binary's `main.zig`.
 **Operational properties.** 1,700+ unit tests via `zig build test`, 570+
 integration tests via `zig build test-integration` (which exec the
 compiled `./bin/planar` through `integration_tests/harness.zig`), plus
-a `make parity-check` gate against the archived Go reference binary
+a `make parity-check` gate against the archived Go reference binary (since RETIRED — see docs/architecture.md; the reference froze at schema 00030 and the port moved past it)
 covering Bucket-3 (intentional Zig divergence) and Bucket-4 (cosmetic)
 rows per the plan-351 parity-triage taxonomy. The archived Go
 implementation remains at github.com:rdrsss/planar-go-archive.git as

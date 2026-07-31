@@ -1,3 +1,15 @@
+> **RETIRED — historical record.** The Go-archive parity audit that produced
+> this triage was retired once the Zig port outgrew it: the reference binary is
+> a frozen archive whose last migration is `00030`, so it and the current
+> binary can no longer open the same database, and the audit's premise was that
+> both operate on identical state. The audit scripts, allowlist, and generated
+> gap reports are gone.
+>
+> This file is kept because it is the RATIONALE for the `parity_*` integration
+> tests, which remain live: they assert the current binary's own user-facing
+> contract (help prose, exit codes, JSON shapes, render behaviour) that this
+> triage identified. Those contracts outlived the comparison that found them.
+
 # Parity Triage (Phase 2.5)
 
 _Generated 2026-05-25T23:44:30Z by orchestrator dispatch on task 2364._

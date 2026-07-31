@@ -62,9 +62,10 @@ zig-cache/
 
 # Local git worktrees for feature branches.
 .worktrees/
-scripts/parity-audit.sh.runone
 
-# Parity gap reports — regenerated on every `make parity-check` /
+# Parity gap reports — the audit is retired (task 5623); these patterns
+# remain so any stale locally-generated report stays untracked.
+# Previously regenerated on every `make parity-check` /
 # `make test-all` run with fresh timestamp + live in-flight task
 # count from the operator's local Planar DB. The hand-curated
 # companion at scripts/parity-data/parity-triage.md stays tracked.

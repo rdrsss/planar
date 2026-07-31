@@ -850,11 +850,11 @@ zig build test-integration               # integration tests
 zig build run -- <subcommand>            # run from source
 ```
 
-Planar runs a two-tier test model plus a cross-binary parity gate:
+Planar runs a two-tier test model:
 
 - **Unit tests** — `test "<name>" { ... }` blocks colocated with the code under test under `src/<module>/`. They exercise the module directly (plus the `db` module when they need a DB) and run under `zig build test`.
 - **CLI integration tests** — `integration_tests/` at the repo root exec the compiled `planar` binary via the `harness.zig` runner (`harness.smoke`, `harness.mustRun`, `harness.mustRunJSON`, `harness.expectFailure`). The suite imports nothing from the engine modules. These suites lock the user-visible contract — flag names, JSON shapes, exit codes, status-transition rules. Always invoke them via `make test-integration` so `PLANAR_BIN` points at the freshly-built `./bin/planar` rather than falling back to per-call rebuilds.
-- **Cross-binary parity gate** — `make parity-check` (wired into `make test-all`) runs `scripts/parity-check.sh`, which diffs the current zig binary against the archived Go reference across the full verb surface and fails on any gap not present in `scripts/parity-allowlist.txt`. When the Go reference binary is unreachable, the gate prints a skip notice and exits 0; the integration suite remains the always-on guard.
+- **Cross-binary parity gate (RETIRED)** — the port was originally guarded by a `make parity-check` gate diffing the zig binary against the archived Go reference. It was retired once the port outgrew it: the reference is a frozen archive whose last migration is `00030`, so the two binaries can no longer open the same database, and the audit's premise was that both operate on identical state. Handing each its own copy would not rescue it — the comparison would become "Go at schema 30 vs zig at a later schema", where pure schema drift registers as parity gaps that are not parity gaps. The integration suite is the standing guard, and the `parity_*` suites still assert the user-facing contracts (help prose, exit codes, JSON shapes) the audit originally surfaced; `scripts/parity-data/parity-triage.md` is retained as their rationale.
 - **Authored-surface lint gate** — `make cli-usage-check` runs the schema-driven CLI validator followed by the semantic authored-surface validator. `make surface-lint` runs only the semantic validator. The composed gate is wired into `make test-all` once.
 
 The binaries produced by `make build` land under `./bin/`. `make install`

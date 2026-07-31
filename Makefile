@@ -124,10 +124,6 @@ test-integration: ## Run the integration suite (builds its own Debug test binari
 test-integration-files: ## Run integration tests as one executable per test file
 	$(ZIG) build test-integration-files -Dtest-binary=true $(ARGS)
 
-.PHONY: parity-check
-parity-check: build ## Diff zig binary against Go archive binary (plan 351 Phase 5; skips when Go binary unreachable)
-	scripts/parity-check.sh
-
 .PHONY: cli-usage-check
 cli-usage-check: ## Validate authored surfaces against the live CLI schema and semantic contracts
 	$(ZIG) build cli-usage-check
@@ -148,8 +144,14 @@ coverage-report: build ## Print per-verb integration-test leaf coverage table
 coverage-update: build ## Re-seed scripts/coverage-baseline.txt with the current coverage ratio
 	scripts/coverage-check.sh --update
 
+# The Go-archive parity gate was RETIRED (planar task 5623). The reference was
+# a frozen archive whose last migration is 00030; the port moved past it, so
+# the two binaries could no longer open the same database — and the audit's
+# premise was that both operate on identical state. The integration suite is
+# the standing guard, and the `parity_*` suites still assert the user-facing
+# contracts the audit originally surfaced.
 .PHONY: test-all
-test-all: test test-integration parity-check coverage cli-usage-check ## Run unit + integration suites + parity, coverage, and composed authored-surface gates
+test-all: test test-integration coverage cli-usage-check ## Run unit + integration suites, coverage, and composed authored-surface gates
 
 .PHONY: fmt
 fmt: ## Run zig fmt on the source tree

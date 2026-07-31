@@ -90,7 +90,7 @@ make test               # unit tests
 make test-integration   # runs the integration suite under integration_tests/
                         # (build.zig builds Debug test binaries and points the
                         # harness at them via PLANAR_BIN itself)
-make test-all           # unit + integration + parity + coverage + authored-surface gates
+make test-all           # unit + integration + coverage + authored-surface gates
 
 # Direct zig CLI from the repo root:
 zig build                                     # default install (zig-out/bin/planar)
@@ -133,17 +133,19 @@ distinction is load-bearing — never collapse them.
   nothing from the engine modules. These lock the user-visible contract —
   flag names, JSON shapes, exit codes, status-transition rules — so
   internal refactors cannot silently break it.
-- **Cross-binary parity gate** — `make parity-check` runs
-  `scripts/parity-check.sh`, which diffs the zig binary against the
-  archive Go binary across the full top-level verb surface and fails
-  on any gap not present in `scripts/parity-allowlist.txt`. The
-  allowlist enumerates Bucket-3 (intentional zig divergence) and
-  Bucket-4 (cosmetic) rows per the plan-351 parity-triage taxonomy.
-  `make test-all` wires the gate in. When the Go reference binary is
-  unreachable (`$PLANAR_GO_BIN` not executable, `$ARCHIVE/src` absent)
-  the gate prints a skip notice and exits 0; the zig integration
-  suite remains the always-on parity guard. Pass `--strict` to
-  `parity-check.sh` to fail when the Go binary is unreachable.
+- **Cross-binary parity gate — RETIRED.** The port was guarded by a
+  `make parity-check` gate that diffed the zig binary against the archived Go
+  reference. It is gone (planar task 5623): the reference is a frozen archive
+  whose last migration is `00030`, so it and the current binary can no longer
+  open the same database, and the audit's premise was that both operate on
+  identical state. Giving each its own copy would not rescue it — the
+  comparison becomes "Go at schema 30 vs zig at a later schema", where pure
+  schema drift registers as parity gaps that are not parity gaps. The
+  integration suite is the standing guard. The `parity_*` suites under
+  `integration_tests/` remain LIVE and are not Go-dependent: they assert the
+  current binary's own user-facing contract (help prose, exit codes, JSON
+  shapes, render behaviour) that the audit originally surfaced.
+  `scripts/parity-data/parity-triage.md` is retained as their rationale.
 
 - **Authored-surface lint gate** — `make cli-usage-check` (also `zig build
   cli-usage-check`) runs two ordered validators over `agents/`, `skills/src/`,
