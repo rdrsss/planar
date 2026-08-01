@@ -436,6 +436,14 @@ fn factSemanticSource(
     }
     if (std.mem.eql(u8, source_kind, "artifact")) {
         const body = (try scalarText(a, d, "select coalesce(body,'') from artifacts where id=?\x00", source_id)) orelse return null;
+        // Same roadmap-locator rule as the citation path above. Fixing only
+        // that one left the FACT for the same locator resolving to nothing,
+        // so a task's roadmap citation read `current` while its
+        // cited_artifact_section fact stayed permanently stale — one locator
+        // with two answers.
+        if (std.mem.startsWith(u8, locator, "roadmap#")) {
+            return try materialize.roadmapSectionAlloc(a, body, locator);
+        }
         return materialize.artifactSection(body, locator);
     }
     if (std.mem.eql(u8, source_kind, "decision"))
