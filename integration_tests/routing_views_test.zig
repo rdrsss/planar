@@ -60,3 +60,38 @@ test "outcomes rejects a nonsense limit instead of silently showing everything" 
     const ok = suite.mustRunInDir(root, &.{ "models", "outcomes", "--limit", "5" });
     defer suite.allocator.free(ok);
 }
+
+test "models resolve never shows a tier without saying where it came from" {
+    var suite = harness.Suite.init(std.testing.allocator);
+    defer suite.deinit();
+    const root = suite.registerProject("resolve-provenance");
+    suite.addAssoc("resolve-provenance", null);
+
+    const plan_out = suite.mustRunInDir(root, &.{ "plan", "create", "Resolve plan", "--json" });
+    defer suite.allocator.free(plan_out);
+    const task_out = suite.mustRunInDir(root, &.{ "task", "add", "--plan", "1", "--json", "bare task" });
+    defer suite.allocator.free(task_out);
+
+    // A bare task has an unready packet, so the tier MUST be reported as a
+    // fallback with its reason — a tier shown without provenance reads
+    // identically to one derived from real evidence.
+    const out = suite.mustRunInDir(root, &.{ "models", "resolve", "--role", "coder", "--task", "1", "--json" });
+    defer suite.allocator.free(out);
+    try contains(out, "\"resolution_version\":\"routing-roles-v1\"");
+    try contains(out, "\"packet_backed\":false");
+    try contains(out, "\"fallback_reason\":\"packet_not_ready\"");
+    // Nothing was derived, so neither classification may be asserted.
+    try contains(out, "\"work_type\":null");
+    try contains(out, "\"complexity\":null");
+
+    // A pre-task role resolves from a planning packet, not a task profile.
+    const planner = suite.mustRunInDir(root, &.{ "models", "resolve", "--role", "planner", "--json" });
+    defer suite.allocator.free(planner);
+    try contains(planner, "\"packet_class\":\"planning\"");
+    try contains(planner, "\"fallback_reason\":\"no_packet\"");
+
+    // An unknown role is refused rather than defaulted to something plausible.
+    const bad = suite.execWithInDir(root, &.{ "models", "resolve", "--role", "wizard", "--task", "1" }, &.{});
+    defer bad.deinit(suite.allocator);
+    try std.testing.expect(bad.term.exited != 0);
+}

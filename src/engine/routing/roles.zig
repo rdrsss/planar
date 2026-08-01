@@ -133,6 +133,24 @@ pub fn resolveTask(
     };
 }
 
+/// Resolve a task-bound role starting from packet readiness.
+///
+/// `profile.compile` asserts a ready packet, so a caller holding an UNREADY
+/// one cannot produce an `Outcome` at all. Without this the caller would have
+/// to invent a profile-level reason (`missing_required_fact`) to describe a
+/// packet-level problem, which would misattribute the failure — the packet is
+/// incomplete, the profile rules are fine.
+pub fn resolveTaskPacket(
+    role: Role,
+    packet_ready: bool,
+    outcome: ?profile_mod.Outcome,
+    fallback: StaticFallback,
+) Resolution {
+    std.debug.assert(packetClass(role) == .task);
+    if (!packet_ready) return fallbackFor(role, .task, fallback, .packet_not_ready);
+    return resolveTask(role, outcome, fallback);
+}
+
 /// Resolve a pre-task role from its planning packet.
 ///
 /// A ready planning packet still yields no work type or complexity — there is
@@ -275,6 +293,19 @@ test "an unready planning packet falls back with its reason" {
     try testing.expectEqual(FallbackReason.packet_not_ready, r.fallback_reason.?);
 
     const absent = resolvePlanning(.spec_reviewer, null, .{ .tier = .medium });
+    try testing.expectEqual(FallbackReason.no_packet, absent.fallback_reason.?);
+}
+
+test "an unready packet is attributed to the packet, not to the profile rules" {
+    // The distinction matters for diagnosis: an incomplete packet is the
+    // operator's to fix, a policy gap is the rule table's.
+    const r = resolveTaskPacket(.coder, false, null, .{ .tier = .medium });
+    try testing.expect(!r.packetBacked());
+    try testing.expectEqual(FallbackReason.packet_not_ready, r.fallback_reason.?);
+    try testing.expect(r.work_type == null);
+
+    // A ready packet with no outcome is a genuinely absent profile.
+    const absent = resolveTaskPacket(.coder, true, null, .{ .tier = .medium });
     try testing.expectEqual(FallbackReason.no_packet, absent.fallback_reason.?);
 }
 

@@ -376,7 +376,13 @@ pub fn compute(
 
             if (existing_t) |et| {
                 try used_task_ids.put(et.id, {});
-                const body_changed = !std.mem.eql(u8, et.body, task_body);
+                // Once an operator enriches an ingested task with concrete
+                // citations, validation gates, or additional acceptance
+                // criteria, that task body becomes authoritative. Re-ingest
+                // must still reconcile facts, but must not replace the
+                // enriched body with the generated roadmap projection.
+                const body_changed = isGeneratedTaskBody(et.body, wi_title) and
+                    !std.mem.eql(u8, et.body, task_body);
                 const slug_needs_backfill = wi.slug.len != 0 and et.slug.len == 0;
                 if (!body_changed and !slug_needs_backfill) {
                     allocator.free(task_body);
@@ -681,7 +687,7 @@ pub fn buildTaskBody(allocator: std.mem.Allocator, wi: parse.WorkItem) std.mem.A
     defer buf.deinit(allocator);
     try buf.appendSlice(allocator, "## Acceptance Criteria\n\n- ");
     try buf.appendSlice(allocator, wi.title);
-    try buf.appendSlice(allocator, " is implemented and tested.\n");
+    try buf.append(allocator, '\n');
     if (wi.touches.len > 0) {
         try buf.appendSlice(allocator, "\n## Repository Scope\n\n");
         for (wi.touches) |slug| {
@@ -691,6 +697,32 @@ pub fn buildTaskBody(allocator: std.mem.Allocator, wi: parse.WorkItem) std.mem.A
         }
     }
     return try allocator.dupe(u8, buf.items);
+}
+
+/// Concrete default next action for a task projected from a roadmap item.
+/// This intentionally includes the work-item text: routing rejects the old
+/// context-free "Implement per acceptance criteria" placeholder.
+pub fn buildNextAction(allocator: std.mem.Allocator, title: []const u8) std.mem.Allocator.Error![]const u8 {
+    return std.fmt.allocPrint(allocator, "Implement and verify: {s}", .{title});
+}
+
+fn isGeneratedTaskBody(body: []const u8, title: []const u8) bool {
+    const acceptance = std.mem.trim(u8, section(body, "## Acceptance Criteria"), " \t\r\n");
+    if (acceptance.len < 2 or !std.mem.startsWith(u8, acceptance, "- ")) return false;
+    const value = std.mem.trim(u8, acceptance[2..], " \t\r\n");
+    if (std.mem.eql(u8, value, title)) return true;
+
+    const legacy = " is implemented and tested.";
+    return value.len == title.len + legacy.len and
+        std.mem.eql(u8, value[0..title.len], title) and
+        std.mem.eql(u8, value[title.len..], legacy);
+}
+
+fn section(body: []const u8, heading: []const u8) []const u8 {
+    const start = std.mem.indexOf(u8, body, heading) orelse return "";
+    const tail = body[start + heading.len ..];
+    const end = std.mem.indexOf(u8, tail, "\n## ") orelse tail.len;
+    return tail[0..end];
 }
 
 /// buildScenarioBody reconstructs the test_scenarios row body from a
@@ -1205,7 +1237,7 @@ test "compute: roadmap with one milestone → adds plan + tasks" {
     try testing.expectEqualStrings("- Add bar", diff_result.roadmap_citations[1].source_text);
 }
 
-test "buildTaskBody: matches Go format" {
+test "buildTaskBody: emits routing-ready acceptance with repository scope" {
     const a = testing.allocator;
     const wi = parse.WorkItem{
         .title = "Add foo",
@@ -1218,7 +1250,7 @@ test "buildTaskBody: matches Go format" {
     const expected =
         \\## Acceptance Criteria
         \\
-        \\- Add foo is implemented and tested.
+        \\- Add foo
         \\
         \\## Repository Scope
         \\
@@ -1242,10 +1274,31 @@ test "buildTaskBody: no touches → no Repository Scope section" {
     const expected =
         \\## Acceptance Criteria
         \\
-        \\- Add bar is implemented and tested.
+        \\- Add bar
         \\
     ;
     try testing.expectEqualStrings(expected, body);
+}
+
+test "generated task detection preserves enriched operator bodies" {
+    try testing.expect(isGeneratedTaskBody(
+        "## Acceptance Criteria\n\n- Add foo is implemented and tested.\n",
+        "Add foo",
+    ));
+    try testing.expect(isGeneratedTaskBody(
+        "## Acceptance Criteria\n\n- Add foo\n\n## Repository Scope\n\n- touches: repo-a\n",
+        "Add foo",
+    ));
+    try testing.expect(!isGeneratedTaskBody(
+        "## Acceptance Criteria\n\n- Add foo returns a durable result.\n\n## Required validation\n\n- zig build test\n",
+        "Add foo",
+    ));
+}
+
+test "buildNextAction includes the roadmap work item" {
+    const action = try buildNextAction(testing.allocator, "Add foo");
+    defer testing.allocator.free(action);
+    try testing.expectEqualStrings("Implement and verify: Add foo", action);
 }
 
 test "buildScenarioBody: composes Verifies / Kind / Acceptance + prose" {

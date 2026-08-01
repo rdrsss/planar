@@ -216,7 +216,10 @@ fn citationEvidence(a: std.mem.Allocator, d: *db.sqlite.Db, task_id: i64) ![]con
     while (try stmt.step() == .row) {
         const body = try stmt.columnTextAlloc(3, a);
         const locator = try stmt.columnTextAlloc(2, a);
-        const section = materialize.artifactSection(body, locator);
+        const section = if (std.mem.startsWith(u8, locator, "roadmap#"))
+            try materialize.roadmapSectionAlloc(a, body, locator)
+        else
+            materialize.artifactSection(body, locator);
         const current = if (section) |value|
             try materialize.sourceDigestAlloc(a, "artifact", stmt.columnInt(1), locator, value)
         else
@@ -427,6 +430,8 @@ fn factSemanticSource(
     }
     if (std.mem.eql(u8, source_kind, "artifact")) {
         const body = (try scalarText(a, d, "select coalesce(body,'') from artifacts where id=?\x00", source_id)) orelse return null;
+        if (std.mem.startsWith(u8, locator, "roadmap#"))
+            return materialize.roadmapSectionAlloc(a, body, locator);
         return materialize.artifactSection(body, locator);
     }
     if (std.mem.eql(u8, source_kind, "decision"))

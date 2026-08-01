@@ -57,6 +57,19 @@ pub const verb: cli.Cmd = .{
             .run = cli.handler(handleEvals),
         },
         .{
+            .name = "resolve",
+            .desc = "Resolve a role's routing tier from its authoritative packet, or report the fallback and why.",
+            .long_desc = "Read-only. Answers \"what tier should this role run at, and is that\n  answer backed by anything?\". Task-bound roles (coder, test-coder,\n  reviewer, research, janitor) resolve from the task's compiled profile;\n  pre-task roles (planner, spec-reviewer, ingestor, orchestrator) resolve\n  from a planning packet, which establishes readiness but classifies no\n  work because no unit of work exists yet.\n\n  When the authoritative packet is absent or unready the result reports\n  the configured static fallback AND the reason, and never a derived work\n  type — a tier shown without provenance reads identically to one derived\n  from real evidence.",
+            .flags = &.{
+                .{ .long = "--role", .kind = .string, .required = true, .desc = "planner|spec-reviewer|ingestor|orchestrator|coder|test-coder|reviewer|research|janitor" },
+                .{ .long = "--task", .kind = .string, .desc = "Task id (required for task-bound roles)" },
+                .{ .long = "--plan", .kind = .string, .desc = "Anchor plan id (pre-task roles)" },
+                .{ .long = "--fallback-tier", .kind = .string, .desc = "Configured static fallback tier (default medium)" },
+                .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
+            },
+            .run = cli.handler(handleResolve),
+        },
+        .{
             .name = "experiments",
             .desc = "List declared routing experiments and how much evidence each has produced.",
             .long_desc = "Read-only. Shows each experiment's frozen manifest identity (the\n  cohort it governs, its manifest digest, and when an operator approved\n  it) alongside how many terminal samples it has produced and how many\n  of those count toward a recommendation. The two counts differ whenever\n  a run was recorded but excluded; reporting only the eligible count\n  would understate what actually ran.",
@@ -506,6 +519,110 @@ fn rankCohort(ctx: anytype, d: *db.sqlite.Db, args: anytype, vendor: []const u8)
         try ctx.stdout.print("\nrecommended: {s} (preview only; writes nothing)\n", .{result.rows[i].candidate});
     } else {
         try ctx.stdout.print("\nno recommendation: {s}\n", .{result.no_recommendation_reason orelse "gated"});
+    }
+}
+
+fn handleResolve(args_ptr: *const anyopaque) anyerror!void {
+    const args = cli.castArgs(main.root, &.{ "models", "resolve" }, args_ptr);
+    const ctx = runtime.current();
+    const d = runtime.ensureDb() catch |e| exit.die(ctx, e, "opening database: {s}", .{@errorName(e)});
+
+    const roles = engine.routing.roles;
+    const profile = engine.routing.profile;
+    const packet = engine.routing.packet;
+    const store = engine.routing.store;
+
+    // Roles are spelled with hyphens on the wire and underscores in the enum.
+    var role_buf: [64]u8 = undefined;
+    if (args.role.len > role_buf.len) exit.die(ctx, error.InvalidInput, "role name too long", .{});
+    for (args.role, 0..) |c, i| role_buf[i] = if (c == '-') '_' else c;
+    const role = std.meta.stringToEnum(roles.Role, role_buf[0..args.role.len]) orelse
+        exit.die(ctx, error.InvalidInput, "unknown role '{s}'", .{args.role});
+
+    const fallback: roles.StaticFallback = .{
+        .tier = if (optFlag(args.fallback_tier)) |t|
+            std.meta.stringToEnum(store.Tier, t) orelse
+                exit.die(ctx, error.InvalidInput, "invalid --fallback-tier '{s}'", .{t})
+        else
+            .medium,
+    };
+
+    var resolution: roles.Resolution = undefined;
+    var readiness: []const u8 = "";
+
+    switch (roles.packetClass(role)) {
+        .task => {
+            const raw = optFlag(args.task) orelse
+                exit.die(ctx, error.InvalidInput, "--task is required for task-bound role '{s}'", .{args.role});
+            const task_id = std.fmt.parseInt(i64, raw, 10) catch
+                exit.die(ctx, error.InvalidInput, "invalid --task '{s}'", .{raw});
+            var live = packet.assembleTask(ctx.allocator, d, task_id) catch |e| switch (e) {
+                error.TaskNotFound => exit.die(ctx, e, "no task with id {d}", .{task_id}),
+                else => exit.die(ctx, e, "assembling packet: {s}", .{@errorName(e)}),
+            };
+            defer live.deinit();
+            const ready = live.packet.ready();
+            if (ready) {
+                const outcome = profile.compile(ctx.allocator, live.packet) catch |e|
+                    exit.die(ctx, e, "compiling profile: {s}", .{@errorName(e)});
+                defer switch (outcome) {
+                    .profile => |pr| pr.deinit(ctx.allocator),
+                    else => {},
+                };
+                resolution = roles.resolveTaskPacket(role, true, outcome, fallback);
+            } else {
+                resolution = roles.resolveTaskPacket(role, false, null, fallback);
+                readiness = if (live.packet.reasons.len > 0) @tagName(live.packet.reasons[0]) else "";
+            }
+        },
+        .planning => {
+            if (optFlag(args.plan)) |raw| {
+                const plan_id = std.fmt.parseInt(i64, raw, 10) catch
+                    exit.die(ctx, error.InvalidInput, "invalid --plan '{s}'", .{raw});
+                const planning_role = std.meta.stringToEnum(packet.PlanningRole, @tagName(role)) orelse
+                    exit.die(ctx, error.InvalidInput, "role '{s}' has no planning packet", .{args.role});
+                var live = packet.assemblePlanning(ctx.allocator, d, planning_role, plan_id) catch |e|
+                    exit.die(ctx, e, "assembling planning packet: {s}", .{@errorName(e)});
+                defer live.deinit();
+                resolution = roles.resolvePlanning(role, live.packet, fallback);
+                if (live.packet.reasons.len > 0) readiness = @tagName(live.packet.reasons[0]);
+            } else {
+                resolution = roles.resolvePlanning(role, null, fallback);
+            }
+        },
+    }
+
+    if (args.json) {
+        try std.json.Stringify.value(.{
+            .resolution_version = roles.resolution_version,
+            .role = @tagName(resolution.role),
+            .packet_class = @tagName(resolution.class),
+            .source = @tagName(resolution.source),
+            .packet_backed = resolution.packetBacked(),
+            .tier = @tagName(resolution.tier),
+            .work_type = if (resolution.work_type) |w| @tagName(w) else null,
+            .complexity = if (resolution.complexity) |c| @tagName(c) else null,
+            .fallback_reason = if (resolution.fallback_reason) |r| r.text() else null,
+            .first_readiness_reason = if (readiness.len > 0) readiness else null,
+            .rule_version = resolution.rule_version,
+        }, .{}, ctx.stdout);
+        try ctx.stdout.writeAll("\n");
+        return;
+    }
+
+    try ctx.stdout.print("role   : {s} ({s} packet)\n", .{ @tagName(resolution.role), @tagName(resolution.class) });
+    try ctx.stdout.print("tier   : {s}\n", .{@tagName(resolution.tier)});
+    if (resolution.packetBacked()) {
+        try ctx.stdout.print("source : packet ({s})\n", .{resolution.rule_version orelse "?"});
+        if (resolution.work_type) |w| try ctx.stdout.print("work   : {s}\n", .{@tagName(w)});
+        if (resolution.complexity) |c| try ctx.stdout.print("risk   : {s}\n", .{@tagName(c)});
+    } else {
+        // Never print a tier without saying it rested on nothing.
+        try ctx.stdout.print("source : STATIC FALLBACK — {s}\n", .{
+            if (resolution.fallback_reason) |r| r.text() else "unknown",
+        });
+        if (readiness.len > 0) try ctx.stdout.print("because: {s}\n", .{readiness});
+        try ctx.stdout.writeAll("         (no work type or complexity: nothing was derived)\n");
     }
 }
 
