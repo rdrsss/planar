@@ -6,7 +6,6 @@
 
 const std = @import("std");
 const db = @import("db");
-const parse = @import("parse.zig");
 
 pub const materializer_version = "spec-ingest-v1";
 
@@ -588,29 +587,6 @@ pub fn artifactSection(body: []const u8, locator: []const u8) ?[]const u8 {
         null;
 }
 
-/// Resolve an ingestor-owned roadmap locator back to the canonical folded
-/// bullet used when its citation fact was staged.
-pub fn roadmapSectionAlloc(
-    allocator: std.mem.Allocator,
-    body: []const u8,
-    locator: []const u8,
-) std.mem.Allocator.Error!?[]const u8 {
-    const prefix = "roadmap#milestone:";
-    if (!std.mem.startsWith(u8, locator, prefix)) return null;
-    const tail = locator[prefix.len..];
-    const separator = std.mem.indexOf(u8, tail, "/item:") orelse return null;
-    const milestone_number = std.fmt.parseInt(usize, tail[0..separator], 10) catch return null;
-    const item_number = std.fmt.parseInt(usize, tail[separator + "/item:".len ..], 10) catch return null;
-    if (milestone_number == 0 or item_number == 0) return null;
-
-    const milestones = try parse.parseRoadmap(allocator, body);
-    defer parse.deinitMilestones(milestones, allocator);
-    if (milestone_number > milestones.len) return null;
-    const items = milestones[milestone_number - 1].work_items;
-    if (item_number > items.len) return null;
-    return try allocator.dupe(u8, items[item_number - 1].source_text);
-}
-
 const Heading = struct {
     level: usize,
     title: []const u8,
@@ -738,23 +714,6 @@ test "artifact sections honor nested headings and ignore code-block headings" {
     try std.testing.expect(std.mem.indexOf(u8, section_body, "outside fenced decoy") == null);
     try std.testing.expect(std.mem.indexOf(u8, section_body, "outside indented decoy") == null);
     try std.testing.expect(std.mem.indexOf(u8, section_body, "NEXT_SENTINEL") == null);
-}
-
-test "roadmap locator resolves the canonical folded bullet" {
-    const body =
-        \\## M1
-        \\
-        \\- First item
-        \\- Wrapped item [slug: wrapped]
-        \\  continues here
-    ;
-    const value = (try roadmapSectionAlloc(
-        std.testing.allocator,
-        body,
-        "roadmap#milestone:1/item:2",
-    )).?;
-    defer std.testing.allocator.free(value);
-    try std.testing.expectEqualStrings("- Wrapped item [slug: wrapped] continues here", value);
 }
 
 test "materialization preserves lineage, replay identity, rollback, and model neutrality" {

@@ -181,13 +181,11 @@ fn applyWithinSavepoint(
         for (cp.tasks) |te| {
             switch (te.op) {
                 .add => {
-                    const next_action = try diff_mod.buildNextAction(allocator, te.title);
-                    defer allocator.free(next_action);
                     const t = task_mod.create(d, allocator, .{
                         .title = te.title,
                         .body = if (te.body.len > 0) te.body else null,
                         .plan_id = child_plan_id,
-                        .next_action = next_action,
+                        .next_action = "Implement per acceptance criteria.",
                         .slug = if (te.slug.len > 0) te.slug else null,
                         .scope = scope_slug,
                     }) catch |e| return mapTaskErr(e);
@@ -203,19 +201,12 @@ fn applyWithinSavepoint(
                     res.tasks_created += 1;
                 },
                 .update => {
-                    const next_action = try diff_mod.buildNextAction(allocator, te.title);
-                    defer allocator.free(next_action);
                     _ = d.execParams(
                         \\update tasks set body = ?,
-                        \\                  next_action = case
-                        \\                    when coalesce(trim(next_action), '') = ''
-                        \\                      or lower(trim(next_action)) = 'implement per acceptance criteria.'
-                        \\                    then ? else next_action end,
                         \\                  updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
                         \\where id = ?
                     , &.{
                         .{ .text = te.body },
-                        .{ .text = next_action },
                         .{ .int = te.existing_id },
                     }) catch return Error.QueryFailed;
 
