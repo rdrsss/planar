@@ -214,7 +214,22 @@ pub fn ensureDb() !*db.sqlite.Db {
 ///
 /// On success returns the cached `*db.sqlite.Db` (same singleton
 /// `ensureDb` would return). Subsequent calls are O(1).
+/// Open without migrating, and WITHOUT printing a schema-skew diagnostic.
+///
+/// For fail-open callers such as CLI telemetry, which swallow the error: the
+/// diagnostic would then be printed on every invocation while the command
+/// itself succeeds, which reads as a broken command rather than as skew.
+/// Real consumers (`planar-agent`, `planar-watch`) must keep the message,
+/// because for them the skew IS the outcome.
+pub fn ensureDbConsumerQuiet() !*db.sqlite.Db {
+    return ensureDbConsumerImpl(false);
+}
+
 pub fn ensureDbConsumer() !*db.sqlite.Db {
+    return ensureDbConsumerImpl(true);
+}
+
+fn ensureDbConsumerImpl(comptime report: bool) !*db.sqlite.Db {
     if (db_storage != null) return &db_storage.?;
     const ctx = current();
 
@@ -264,7 +279,7 @@ pub fn ensureDbConsumer() !*db.sqlite.Db {
     const emb_max = db.migrate.embedded_max;
 
     if (db_version < emb_max) {
-        ctx.stderr.print(
+        if (report) ctx.stderr.print(
             "error: schema version {d} in {s} is older than this binary's minimum of {d}; " ++
                 "run `planar init` to apply migrations\n",
             .{ db_version, ctx.db_path, emb_max },
@@ -274,7 +289,7 @@ pub fn ensureDbConsumer() !*db.sqlite.Db {
         return SchemaVersionBehind.SchemaVersionBehind;
     }
     if (db_version > emb_max) {
-        ctx.stderr.print(
+        if (report) ctx.stderr.print(
             "error: schema version {d} in {s} is newer than this binary's embedded max ({d}); " ++
                 "the DB was migrated by a newer build — rebuild/reinstall planar from a checkout " ++
                 "whose migrations include version {d} (e.g. once that migration lands on master), " ++

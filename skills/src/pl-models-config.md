@@ -1,9 +1,9 @@
 ---
-description: Discover installed provider CLIs and review/configure per-role model routing (plan 540).
-origin: docs/cli-reference.md#domain-models
+description: Inspect the opaque candidate registry, routing evidence, and role resolution; guide operator-gated preset edits.
+origin: docs/architecture.md#host-aware-agent-model-binding
 shared_notes:
-    - All provider/model state comes from the CLI (`planar models`, `planar config`); the skill must not read or write config files directly except by invoking `planar models apply` or guiding the operator to edit `~/.planar/config.toml`.
-    - The provider CLIs do not enumerate models; the per-vendor catalog is curated in the binary, so `models list` reports installed-state, not a live model fetch.
+    - All routing state comes from the CLI (`planar models`); the skill must not read or write config files directly.
+    - Planar stores candidate ids opaquely and never validates them against a supported list — the tier-to-model presets are Armarium's, not Planar's.
 slug: pl-models-config
 vendor:
     claude:
@@ -14,104 +14,120 @@ vendor:
 
 # Pl-Models-Config ({{.VendorTitle}})
 
-Guided review and configuration of which model each role spawns, across every supported provider (Claude, Codex), using the shared model resolver (plan 540).
+Inspect what Planar knows about routing: which opaque candidates are
+registered, what evidence exists, and what tier a role resolves to and why.
 
 ## When To Invoke
 
-- You want to see which provider CLIs are installed and what models they expose.
-- You want to check or change the effective role→model routing (e.g. route the coder to Codex, or bump the reviewer's tier).
-- An operator asks "what model will the coder/reviewer actually run?"
+- An operator asks "what tier will the coder actually run at, and why?"
+- You want to see which candidates are registered and whether they are eligible.
+- You want to review routing evidence before trusting a recommendation.
+- An operator wants to change which model a tier maps to.
 
 ## Mental Model
 
-Routing is config-driven and unified in `~/.planar/config.toml`:
+Ownership is split, and the split is the point:
 
-- `[models.<vendor>]` — per-vendor tier maps (`small` / `medium` / `large` → a **scalar or an ordered candidate list**; `list[0]` is always the tier default).
-- `[routing.<vendor>.<tier>]` — a work-type → candidate map (plan 899): each key is one of `schema | engine | architectural | cli | feature | mechanical` and each value names one candidate from that tier's list above (never a list index). The shipped default only routes `mechanical`; every other work type falls back to the tier default until overridden.
-- `[roles]` — role → tier (e.g. `coder = "medium"`, `reviewer = "large"`).
-- `[role_vendors]` — optional role → vendor override (defaults to `[defaults].vendor`).
+- **Planar** stores candidate ids as opaque bytes, records coordination state
+  and evidence, and *resolves* a role to a tier from the task's own packet. It
+  never parses an id and never decides which models are supported.
+- **Armarium** owns the tier→model presets (`agents/models.md` §Candidate
+  Presets), hand-maintained. There is no `[models]` or `[roles]` config block
+  and no `planar models apply`; those were removed with the curated catalog.
+- **Host adapters** own spawn verification. Planar records requested and actual
+  identity separately and names a mismatch; it never asserts which model
+  answered.
 
-The shared resolver composes these: the tier-only path (`resolveTier`/`resolveRole`/`resolveRoleAuto`) always returns `list[0]`; `resolve(role, work_type)` additionally consults the routing map. Scriptorium's render step, the stack's Tier Table (owned by the armarium orchestration layer), the orchestrator's dispatch-preview routed-model column (armarium orchestration layer), and external workflow harnesses all resolve through one of these — there is no separate per-tool model table.
+Evidence is cohort-local. Every sample is scoped to `(project, validation
+policy version, vendor, role, tier, work type, complexity)` and is never pooled
+across any of them, so evidence from one project says nothing about another.
 
 ## What It Does
 
-1. **Discover** — `planar models list` reports each provider CLI's installed-state + version and its curated model catalog (with human labels), plus the default routing.
-2. **Inspect routing** — `planar models routing` prints the effective role → `vendor model` mapping with provenance (`[embedded default]` vs `[config file]`). `--json` for machine consumption (this is what an external workflow harness shells).
-3. **Inspect candidates + routing map** — `planar models candidates` prints each tier's effective candidate list (`list[0]` = tier default) and the work-type routing map (`routing.<vendor>.<tier>.<work-type>` → candidate), both with provenance. `--json` for machine consumption.
-4. **Review routing evals** — `planar models evals` (`--json`) aggregates *completed* dispatch outcomes (the `dispatch_shape` / `model_choice` note convention in `session_entries`, the orchestrator's dispatch step (armarium orchestration layer)) into a per-(work-type, candidate) scorecard, ranked by approval rate and iteration count to approval, plus a per-work-type recommendation. It is **read-only — it writes nothing**: no routing-map mutation, no database write (plan 898/904, tech-spec 520 D8). A (work-type, candidate) pair with no completed-dispatch history reports `insufficient_data: true` rather than a fabricated score. Report the `signals_sourced` block verbatim — quality-gate pass/fail is not currently recorded anywhere in `session_entries`/`agent_actions`/`agent_work_claims`, so it is honestly reported as unsourced rather than guessed.
-5. **Cache** — `planar models refresh` writes the discovery result to `~/.planar/models/catalog.json`.
-6. **Scaffold** — `planar models apply` writes the `[models]`/`[roles]` block into the config file as an editable starting point (idempotent; `--force` to append again).
-7. **Apply an evals recommendation (explicit, operator-gated only)** — a `planar models evals` recommendation is a suggestion, never an instruction to act unprompted. Only after the operator explicitly confirms applying it, guide them to hand-edit the `[routing.<vendor>.<tier>]` table in `~/.planar/config.toml` to the recommended candidate (same edit path as item 8 below), then re-run `planar models candidates --json` to confirm. The skill must never write the routing map on its own initiative from an evals recommendation.
-8. **Override** — guide the operator to edit `~/.planar/config.toml`:
-   - re-route a tier: set `[models.codex] medium = "gpt-5.4"`.
-   - widen a tier to multiple candidates: set `[models.codex] large = ["gpt-5.6-sol", "gpt-5.5"]`.
-   - route a work type to a specific candidate: set `[routing.codex.large] schema = "gpt-5.6-sol"` (the target must be a member of that tier's candidate list, or `planar config validate` rejects it).
-   - move a role's tier: set `[roles] coder = "large"`.
-   - route a role to another vendor: set `[role_vendors] coder = "codex"`.
-   Then re-run `planar models routing` / `planar models candidates` to confirm the change took, with provenance now showing `[config file]`.
+1. **Registry** — `planar models registry list --json` reports each opaque
+   candidate, its role/tier bindings, and the latest host observation. A
+   candidate whose id has not been verified spawn-safe on this host is
+   ineligible for routing, not merely unproven.
+2. **Resolve** — `planar models resolve --role <role> [--task <id>] [--plan <id>]`
+   answers what tier a role gets and whether the answer is backed by anything.
+   `source: packet` means it was derived from the task's compiled profile;
+   `static_fallback` means it was not, and the reason is named
+   (`no_packet`, `packet_not_ready`, `policy_not_ready`). On a fallback the
+   work type and complexity are null — report that, never a derived-looking
+   tier without its provenance.
+3. **Evidence** — `planar models experiments --json` lists declared experiments
+   with recorded vs counted sample totals; `planar models outcomes --json`
+   lists terminal outcomes INCLUDING excluded ones with the reason each was
+   excluded. Report the excluded rows: hiding them makes the evidence look
+   thinner than it is.
+4. **Ranking** — `planar models evals --vendor … --role … --tier … --work-type …
+   --complexity … --project … --validation-policy … --routing-policy …`
+   ranks candidates in one exact cohort by the 95% Wilson lower bound over
+   declared-experiment evidence. It is **read-only**. Under-sampled candidates
+   report `insufficient_data`; candidates below the quality floor are excluded
+   before any iteration or cost ordering; and **no recommendation is a valid
+   outcome** meaning keep the configured default.
+5. **Change a preset (operator-gated)** — presets live in Armarium's
+   `agents/models.md`, so guide the operator there. A `Use when` cell must rest
+   on a product fact or recorded dispatch evidence; vendor capability claims,
+   benchmark scores, and release ordering are not admissible.
 
 ## What It Must Not Do
 
-- Do not hand-edit the Tier Table (owned by the armarium orchestration layer) or any rendered surface — those regenerate from config via the resolver, and always show the tier default (`list[0]`); per-task routing is runtime-only in the orchestrator dispatch preview.
-- Do not invent per-call model overrides in Lua workflows; routing is per-role (and, at dispatch time, per-work-type) and config-driven.
+- Do not ask Planar which model to use. It records the vendor and model an
+  agent reports and validates neither.
+- Do not present a `models evals` recommendation as applied. It writes nothing.
+- Do not report a fallback tier without its reason, or infer a work type when
+  the resolution says none was derived.
+- Do not treat an unverified candidate as available, or an absent latency/cost
+  metric as zero — unmeasured is not fast and free.
 
 ## Context
 
-Report the selected discovery, routing, refresh, scaffold, or guided-edit mode;
-the resolved config and catalog paths; and the vendors or roles in scope.
+Report the resolved scope, which inspection mode was selected, and the cohort
+dimensions in play when ranking.
 
 ## Intent
 
-State in one sentence whether the operator wants to inspect or change effective
-role-to-model routing.
+State in one sentence whether the operator wants to inspect registry state,
+resolve a role, review evidence, or change a preset.
 
 ## Actions
 
-Report `attempted`, `applied`, `skipped`, and `failed` counts for provider
-discovery, cache refresh, config scaffold, routing checks, and evals
-aggregation. Read-only inspection (including `models evals`) has zero
-applied; an already-present scaffold is an expected skip; applying an evals
-recommendation is only ever counted under `applied` when the operator
-explicitly confirmed the config edit.
+Report `attempted`, `applied`, `skipped`, and `failed`. Every verb here is
+read-only, so `applied` is zero unless the operator explicitly confirmed a
+preset edit in Armarium — which this skill guides but does not perform.
 
 ## Result
 
-Always report `outcome=ok|partial|error` and the effective routing with its
-provenance. After `planar models refresh`, verify with `planar models list
---json`; after `planar models apply` or a `[routing.*]` edit, verify with
-`planar models routing --json` and `planar models candidates --json`. After
-`planar models evals --json`, return the scorecard rows (candidate, rank or
-`insufficient_data`, approval rate, average iterations), the per-work-type
-recommendation (naming it as a preview, never as an already-applied change),
-and the `signals_sourced` block. Return the affected role/vendor mappings,
-tier candidate lists, routing-map entries, and durable path, not only a
-successful exit code.
+Set `outcome=ok|partial|error`. For a resolution, return the tier AND its
+source, with the fallback reason when applicable. For a ranking, return the
+per-candidate rows (samples, successes, raw rate, Wilson lower bound,
+gate-failure rate, excess iterations) plus which gate blocked any candidate,
+and name the recommendation as a preview. For evidence, return recorded and
+counted totals separately.
 
 ## Warnings
 
-Name missing provider CLIs, curated rather than live catalog evidence, config
-parse errors, unavailable post-state verification, and forced duplicate
-scaffolding. An uninstalled optional provider is not a failure unless
-requested. For evals, name every `insufficient_data` pair and the
-`legacy_dispatch_notes_skipped` count verbatim, and state explicitly that
-`quality_gate_pass_fail` is not currently recorded and so is excluded from
-scoring — never present an evals recommendation as something already applied.
+Name unverified/ineligible candidates, cohorts too thin to compare, excluded
+samples with their reasons, and any metric reported as unmeasured. State
+explicitly when a tier came from a static fallback rather than a packet.
 
 ## Next actions
 
-Give zero to three executable recommendations, led by the exact routing check
-or the specific config edit the operator requested. When `models evals`
-surfaces a recommendation, the next action is to ask the operator whether to
-apply it — never to apply it unprompted.
+Give zero to three executable commands, led by the exact inspection the
+operator asked for. When a ranking yields a recommendation, the next action is
+to ask whether to edit the Armarium preset — never to apply it unprompted.
 
 ## Recovery
 
-Provide `planar models routing --json`, `planar models candidates --json`, or
-`planar models evals --json` to inspect the last effective state and an
-idempotent `planar models refresh` or `planar models apply` retry when
-applicable. Do not claim a config rollback that the CLI did not perform, and
-do not claim a routing-map change from `models evals` was applied — that
-verb writes nothing.
+Provide `planar models registry list --json`, `planar models resolve --json`,
+or `planar models outcomes --json` to re-read current state. These verbs write
+nothing, so there is no rollback to claim; if a ranking was blocked by a gate,
+say which gate and that more evidence is the remedy.
 
 ## Vendor Notes
 
+- Installed to `~/.claude/commands/pl-models-config.md`.
+- Invoked as `/pl-models-config`.
+- Presets are Armarium's (`agents/models.md`); this skill reads Planar state and guides preset edits, never writing them.

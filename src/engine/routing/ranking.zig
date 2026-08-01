@@ -95,6 +95,12 @@ pub const Row = struct {
     /// a candidate imposes even when it eventually succeeds.
     excess_attempts: u64 = 0,
 
+    /// Optional comparable metrics. Null means NOT MEASURED, never zero: a
+    /// zero would rank an unmeasured candidate as instant and free.
+    mean_latency_ms: ?f64 = null,
+    mean_cost_micros: ?f64 = null,
+    measured_samples: u64 = 0,
+
     raw_rate: f64 = 0,
     wilson_lower: f64 = 0,
     gate_failure_rate: f64 = 0,
@@ -144,6 +150,20 @@ pub const Result = struct {
 /// carry them; they are not yet recorded on a terminal sample, so they are
 /// deliberately absent rather than defaulted to zero — a zero would silently
 /// rank an unmeasured candidate as instant and free.
+/// Compare an optional metric, lower-is-better, only when BOTH sides have one.
+///
+/// Returns null when either is unmeasured, so the caller falls through to the
+/// next key rather than inventing an ordering. Treating a missing value as 0
+/// would promote the candidate we know least about; treating it as infinity
+/// would bury a candidate for not being instrumented. Neither is a judgement
+/// the evidence supports, so the metric simply does not participate.
+fn compareOptional(a: ?f64, b: ?f64) ?bool {
+    const x = a orelse return null;
+    const y = b orelse return null;
+    if (x == y) return null;
+    return x < y;
+}
+
 pub fn lessThan(_: void, a: Row, b: Row) bool {
     if (a.wilson_lower != b.wilson_lower) return a.wilson_lower > b.wilson_lower;
     if (a.expected_excess_iterations != b.expected_excess_iterations) {
@@ -152,6 +172,8 @@ pub fn lessThan(_: void, a: Row, b: Row) bool {
     if (a.gate_failure_rate != b.gate_failure_rate) {
         return a.gate_failure_rate < b.gate_failure_rate;
     }
+    if (compareOptional(a.mean_latency_ms, b.mean_latency_ms)) |lt| return lt;
+    if (compareOptional(a.mean_cost_micros, b.mean_cost_micros)) |lt| return lt;
     return a.fallback_order < b.fallback_order;
 }
 
@@ -184,7 +206,11 @@ pub fn rank(
         \\          select d2.dispatch_id from routing_dispatch_events as d2
         \\          where d2.event_id = s.terminal_event_id
         \\        ))
-        \\  ), 0) as excess_attempts
+        \\  ), 0) as excess_attempts,
+        \\  avg(s.latency_ms) as mean_latency_ms,
+        \\  avg(s.cost_micros) as mean_cost_micros,
+        \\  sum(case when s.latency_ms is not null or s.cost_micros is not null
+        \\      then 1 else 0 end) as measured_samples
         \\from routing_terminal_samples as s
         \\join routing_candidates as c on c.id = s.candidate_id
         \\where s.cohort_eligible = 1
@@ -229,6 +255,9 @@ pub fn rank(
         const excess: u64 = @intCast(@max(0, stmt.columnInt(7)));
 
         var agg: Row = .{
+            .mean_latency_ms = if (stmt.columnIsNull(8)) null else stmt.columnDouble(8),
+            .mean_cost_micros = if (stmt.columnIsNull(9)) null else stmt.columnDouble(9),
+            .measured_samples = @intCast(@max(0, stmt.columnInt(10))),
             .candidate_id = stmt.columnInt(0),
             .candidate = candidate,
             .vendor = vendor,
@@ -790,4 +819,56 @@ test "rank: a candidate-mismatch sample is retained for audit but never counted"
         @as(i64, 7),
         try conn.intQuery("select count(*) from routing_terminal_samples"),
     );
+}
+
+// --- optional comparable metrics --------------------------------------------
+
+test "optional metrics only participate when BOTH candidates have them" {
+    var a = mkRow("a", 20, 19, 0);
+    var b = mkRow("b", 20, 19, 1);
+    // Identical evidence, so latency would decide — but only if measured.
+    try testing.expectEqual(a.wilson_lower, b.wilson_lower);
+
+    a.mean_latency_ms = 100;
+    b.mean_latency_ms = null;
+    // b is unmeasured. Treating null as 0 would promote the candidate we know
+    // LEAST about; treating it as infinity would bury a candidate merely for
+    // not being instrumented. Neither is supported by evidence, so the metric
+    // sits out and configured order decides.
+    try testing.expect(lessThan({}, a, b));
+
+    b.mean_latency_ms = 50;
+    try testing.expect(lessThan({}, b, a));
+}
+
+test "cost breaks a tie only after latency, and only when comparable" {
+    var a = mkRow("a", 20, 19, 0);
+    var b = mkRow("b", 20, 19, 1);
+    a.mean_latency_ms = 100;
+    b.mean_latency_ms = 100;
+    a.mean_cost_micros = 900;
+    b.mean_cost_micros = 100;
+    try testing.expect(lessThan({}, b, a));
+
+    // With cost unmeasured on one side, configured order decides again.
+    b.mean_cost_micros = null;
+    try testing.expect(lessThan({}, a, b));
+}
+
+test "an unmeasured candidate is never ranked as instant and free" {
+    // The concrete failure a zero default would cause: a candidate with no
+    // measurements outranking a measured, genuinely fast one.
+    var measured = mkRow("measured", 20, 19, 1);
+    measured.mean_latency_ms = 10;
+    measured.mean_cost_micros = 10;
+    const unmeasured = mkRow("unmeasured", 20, 19, 0);
+    try testing.expect(unmeasured.mean_latency_ms == null);
+    try testing.expect(unmeasured.mean_cost_micros == null);
+
+    var rows = [_]Row{ unmeasured, measured };
+    std.mem.sort(Row, &rows, {}, sortEligibleFirst);
+    // Order falls through to configured order rather than being decided by
+    // absent data — the unmeasured row does not WIN on a phantom zero.
+    try testing.expectEqualStrings("unmeasured", rows[0].candidate);
+    try testing.expect(rows[0].mean_latency_ms == null);
 }

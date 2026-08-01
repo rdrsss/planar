@@ -8,7 +8,7 @@ It is **vendor-agnostic by design**: Claude, Codex, and Copilot are first-class 
 
 ## Status
 
-Planar is a feature-complete, local-first tool built as four binaries (`planar`, `planar-agent`, `planar-watch`, and `planar-execute` — the deterministic Lua workflow engine, which holds no DB handle and reaches state only through a constrained CLI host surface). The schema has thirty-one migrations, through `migrations/00031_dispatch_confirmation_tokens.up.sql`; the runtime applies them automatically from an embedded `migrations` Zig module produced by build-time codegen. The suite contains 1,700+ unit tests and 570+ integration tests. Vendored SQLite is compiled by `build.zig`.
+Planar is a feature-complete, local-first tool built as four binaries (`planar`, `planar-agent`, `planar-watch`, and `planar-execute` — the deterministic Lua workflow engine, which holds no DB handle and reaches state only through a constrained CLI host surface). The schema has thirty-two migrations, through `migrations/00032_routing_sample_cost_metrics.up.sql`; the runtime applies them automatically from an embedded `migrations` Zig module produced by build-time codegen. The suite contains 1,700+ unit tests and 570+ integration tests. Vendored SQLite is compiled by `build.zig`.
 
 **History.** Repo split — the original Go implementation (M1–M19) is preserved at `github.com/rdrsss/planar-go-archive.git`; the current canonical Zig implementation lives at `github.com/rdrsss/planar.git`.
 
@@ -254,7 +254,7 @@ Three threads run through everything:
 
 ## The schema is the contract
 
-Thirty-one migration files (`migrations/00001_foundation.up.sql` through `migrations/00031_dispatch_confirmation_tokens.up.sql`) define Planar's schema. The runtime applies them from an embedded `migrations` Zig module produced by build-time codegen (`tools/gen_migrations.zig`); the public schema-version tracker is `schema_migrations`.
+Thirty-two migration files (`migrations/00001_foundation.up.sql` through `migrations/00032_routing_sample_cost_metrics.up.sql`) define Planar's schema. The runtime applies them from an embedded `migrations` Zig module produced by build-time codegen (`tools/gen_migrations.zig`); the public schema-version tracker is `schema_migrations`.
 
 Read-side tooling — viewers, query CLIs, Obsidian bridges, future binaries — opens `~/.planar/planar.db` with `PRAGMA query_only = 1`, reads `schema_migrations` to verify version compatibility, and operates without going through the binary. The contract is the schema, not the codebase. See [docs/architecture.md](docs/architecture.md) for the schema overview.
 

@@ -513,6 +513,13 @@ fn rankCohort(ctx: anytype, d: *db.sqlite.Db, args: anytype, vendor: []const u8)
         } else if (row.below_quality_floor) {
             try ctx.stdout.writeAll("  below_quality_floor");
         }
+        // Say "unmeasured" rather than printing nothing: a blank column would
+        // read as zero, and zero here means instant and free.
+        if (row.mean_latency_ms) |ms| {
+            try ctx.stdout.print("  {d:.0}ms", .{ms});
+        } else {
+            try ctx.stdout.writeAll("  latency:unmeasured");
+        }
         try ctx.stdout.writeAll("\n");
     }
     if (result.recommended) |i| {

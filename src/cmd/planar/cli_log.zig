@@ -311,7 +311,7 @@ fn recordInner(exit_code: u8, err: ?anyerror, start_ns: i128) !void {
     // exists yet, there is nothing worth recording against.
     if (!dbFileExists(ctx)) return;
 
-    const db = runtime.ensureDbConsumer() catch return;
+    const db = runtime.ensureDbConsumerQuiet() catch return;
 
     // Parse verb_path and args_shape from process argv.
     const argv_tail: []const []const u8 = if (ctx.argv.len > 1) ctx.argv[1..] else &.{};
