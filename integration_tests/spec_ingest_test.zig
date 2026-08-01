@@ -1860,3 +1860,187 @@ test "spec ingest apply-removals frees stale plan and task slugs before replacem
     try std.testing.expect(new_tasks[0].slug != null);
     try std.testing.expectEqualStrings("shared-task", new_tasks[0].slug.?);
 }
+
+test "ingested task is routable: no generic values and a current roadmap citation" {
+    // The deadlock this pins: Planar generated task metadata that Planar's own
+    // routing rejected, and staged roadmap citations it could not resolve — so
+    // a freshly ingested task could never become ready no matter what an
+    // operator did.
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_backing = std.heap.ArenaAllocator.init(gpa);
+    defer arena_backing.deinit();
+    const arena = arena_backing.allocator();
+
+    const tech_body =
+        \\# Routable Tech Spec
+        \\
+        \\## Status
+        \\
+        \\Draft.
+        \\
+    ;
+    // M2 is deliberately empty so a locator into M3 proves an authored empty
+    // milestone does not shift indices.
+    const roadmap_body =
+        \\# Routable Roadmap
+        \\
+        \\## M1 — First milestone
+        \\
+        \\- Stream reconnect survives a mid-batch drop [slug: routable-first]
+        \\
+        \\## M2 — Intentionally empty
+        \\
+        \\## M3 — Third milestone
+        \\
+        \\- Adapter mismatch reports the actual transport [slug: routable-third]
+        \\
+    ;
+    const test_spec_body =
+        \\# Routable Test Spec
+        \\
+        \\## Scenarios
+        \\
+        \\### Scenario: Reconnect holds
+        \\
+        \\**Bucket:** happy path
+        \\**Verifies:** task:routable-first
+        \\
+    ;
+
+    const fixture = createSpecIngestFixture(
+        &suite,
+        arena,
+        "Routable Ingest Plan",
+        tech_body,
+        roadmap_body,
+        test_spec_body,
+        "workbench-routable-ingest",
+    );
+
+    const applied = suite.mustRunWith(&.{ "spec", "ingest", fixture.plan_id, "--apply", "--json" }, fixture.env);
+    gpa.free(applied);
+
+    const task_id = taskIdBySlug(&suite, arena, "routable-third");
+    const packet = suite.mustRun(&.{ "task", "packet", task_id, "--json" });
+    defer gpa.free(packet);
+
+    // Generated metadata must not trip routing's own placeholder checks. These
+    // fired on values Planar itself wrote: the acceptance criterion was the
+    // roadmap item with " is implemented and tested." appended, and the next
+    // action was the literal string genericNextAction rejects.
+    // Generated metadata must not trip routing's own placeholder checks. These
+    // fired on values Planar itself wrote: the acceptance criterion was the
+    // roadmap item with " is implemented and tested." appended, and the next
+    // action was the literal string genericNextAction rejects.
+    try std.testing.expect(std.mem.indexOf(u8, packet, "generic_acceptance") == null);
+    try std.testing.expect(std.mem.indexOf(u8, packet, "generic_next_action") == null);
+    try std.testing.expect(std.mem.indexOf(u8, packet, "unresolved_citation") == null);
+    try std.testing.expect(std.mem.indexOf(u8, packet, "invalid_mandatory_fact") == null);
+    try std.testing.expect(std.mem.indexOf(u8, packet, "missing_roadmap") == null);
+
+    // The roadmap citation must be CURRENT immediately after ingest, with the
+    // staged digest equal to the freshly resolved one. Before the roadmap
+    // locator resolver existed, `roadmap#milestone:N/item:M` fell through to
+    // artifactSection (which wants `#Heading`), current_digest came back empty,
+    // and the citation was stale the instant it was written.
+    //
+    // Asserted on the citation itself rather than on absence of `stale_fact`:
+    // this fixture deliberately omits product_spec, decisions, dependencies,
+    // touches and validation gates, so other facts are legitimately incomplete.
+    // Blanket-asserting no stale fact would require a fully-populated fixture
+    // and would hide WHICH fact this fix actually repairs.
+    // Bound the slice by the citation OBJECT's braces. Slicing to the first
+    // `]` would stop inside the citation text, which carries the roadmap's
+    // own `[slug: ...]` annotation.
+    const loc_at = std.mem.indexOf(u8, packet, "roadmap#milestone:3/item:1").?;
+    const obj_start = std.mem.lastIndexOfScalar(u8, packet[0..loc_at], '{').?;
+    const obj_end = std.mem.indexOfScalarPos(u8, packet, loc_at, '}').?;
+    const citation = packet[obj_start..obj_end];
+    try std.testing.expect(std.mem.indexOf(u8, citation, "\"freshness\":\"current\"") != null);
+
+    // source_digest and current_digest must be the same non-empty value.
+    const sd_key = "\"source_digest\":\"";
+    const sd_at = std.mem.indexOf(u8, citation, sd_key).? + sd_key.len;
+    const sd_end = std.mem.indexOfScalarPos(u8, citation, sd_at, '"').?;
+    const cd_key = "\"current_digest\":\"";
+    const cd_at = std.mem.indexOf(u8, citation, cd_key).? + cd_key.len;
+    const cd_end = std.mem.indexOfScalarPos(u8, citation, cd_at, '"').?;
+    try std.testing.expect(sd_end > sd_at);
+    try std.testing.expectEqualStrings(citation[sd_at..sd_end], citation[cd_at..cd_end]);
+}
+
+test "re-ingest preserves an enriched task body and keeps its facts fresh" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_backing = std.heap.ArenaAllocator.init(gpa);
+    defer arena_backing.deinit();
+    const arena = arena_backing.allocator();
+
+    const roadmap_body =
+        \\# Enriched Roadmap
+        \\
+        \\## M1 — Only milestone
+        \\
+        \\- Do the enrichable thing [slug: enrichable]
+        \\
+    ;
+    const fixture = createSpecIngestFixture(
+        &suite,
+        arena,
+        "Enriched Ingest Plan",
+        "# T\n\n## Status\n\nDraft.\n",
+        roadmap_body,
+        "# TS\n\n## Scenarios\n\n### Scenario: S\n\n**Bucket:** happy path\n**Verifies:** task:enrichable\n",
+        "workbench-enriched-ingest",
+    );
+
+    const first = suite.mustRunWith(&.{ "spec", "ingest", fixture.plan_id, "--apply", "--json" }, fixture.env);
+    gpa.free(first);
+
+    const task_id = taskIdBySlug(&suite, arena, "enrichable");
+
+    // The operator replaces the generated body with real acceptance criteria.
+    const enriched_body =
+        \\## Acceptance Criteria
+        \\
+        \\- Reconnect completes within 2s and replays no duplicate frames
+        \\- A mismatched adapter reports the actual transport, not the requested one
+        \\
+    ;
+    const upd = suite.mustRun(&.{ "task", "update", task_id, "--body", enriched_body, "--scope", "global" });
+    gpa.free(upd);
+
+    // Re-ingest with no source change. This used to overwrite the enrichment
+    // with the generated projection, so the only way to refresh routing facts
+    // was to destroy the content that made the task dispatchable.
+    const second = suite.mustRunWith(&.{ "spec", "ingest", fixture.plan_id, "--apply", "--json" }, fixture.env);
+    gpa.free(second);
+
+    const after = suite.mustRun(&.{ "task", "show", task_id, "--json" });
+    defer gpa.free(after);
+    try std.testing.expect(std.mem.indexOf(u8, after, "replays no duplicate frames") != null);
+    // And the generated placeholder must not have come back.
+    try std.testing.expect(std.mem.indexOf(u8, after, "is implemented and tested") == null);
+}
+
+/// Resolve a task id from its roadmap slug via the CLI.
+fn taskIdBySlug(suite: *harness.Suite, arena: std.mem.Allocator, slug: []const u8) []const u8 {
+    const listed = suite.mustRun(&.{ "task", "list", "--json", "--scope", "global" });
+    defer suite.allocator.free(listed);
+    const marker = std.fmt.allocPrint(arena, "\"slug\":\"{s}\"", .{slug}) catch @panic("OOM");
+    const slug_at = std.mem.indexOf(u8, listed, marker) orelse {
+        std.debug.print("\ntask list had no slug '{s}':\n{s}\n", .{ slug, listed });
+        @panic("slug not found in task list");
+    };
+    const obj_start = std.mem.lastIndexOfScalar(u8, listed[0..slug_at], '{').?;
+    const id_key = "\"id\":";
+    const id_at = std.mem.indexOf(u8, listed[obj_start..], id_key).? + obj_start + id_key.len;
+    var id_end = id_at;
+    while (id_end < listed.len and listed[id_end] >= '0' and listed[id_end] <= '9') id_end += 1;
+    return arena.dupe(u8, listed[id_at..id_end]) catch @panic("OOM");
+}

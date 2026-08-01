@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const db = @import("db");
+const parse = @import("parse.zig");
 
 pub const materializer_version = "spec-ingest-v1";
 
@@ -539,6 +540,87 @@ fn explicitArtifactLocator(
     return try allocator.dupe(u8, locator);
 }
 
+/// Strip the synthetic wrapper `planar artifact show` puts around a stored
+/// body, returning the authored document.
+///
+/// A stored artifact begins with an `## Content` heading followed by a YAML
+/// frontmatter block. The workbench source parsed during ingestion has
+/// neither, so parsing the stored body directly counts `## Content` as a
+/// milestone and shifts every `milestone:N` locator by one — every roadmap
+/// citation then resolves to the wrong item, or to nothing.
+///
+/// Only a wrapper at the very start is removed. A legitimately authored
+/// section that happens to be called "Content" further down is left alone, and
+/// an authored milestone with no work items keeps its index.
+pub fn unwrapStoredArtifactBody(body: []const u8) []const u8 {
+    const trimmed = std.mem.trimStart(u8, body, " \t\r\n");
+    if (!std.mem.startsWith(u8, trimmed, "## Content")) return body;
+
+    // Past the heading line.
+    var rest = trimmed["## Content".len..];
+    const after_heading = std.mem.indexOfScalar(u8, rest, '\n') orelse return body;
+    rest = rest[after_heading + 1 ..];
+
+    const lead = std.mem.trimStart(u8, rest, " \t\r\n");
+    if (!std.mem.startsWith(u8, lead, "---")) {
+        // `## Content` with no frontmatter is not the wrapper shape; leave it.
+        return body;
+    }
+    // Skip the opening fence line, then find the closing one.
+    var scan = lead["---".len..];
+    const after_open = std.mem.indexOfScalar(u8, scan, '\n') orelse return body;
+    scan = scan[after_open + 1 ..];
+
+    var offset: usize = 0;
+    while (offset < scan.len) {
+        const line_end = std.mem.indexOfScalarPos(u8, scan, offset, '\n') orelse scan.len;
+        const line = std.mem.trim(u8, scan[offset..line_end], " \t\r");
+        if (std.mem.eql(u8, line, "---")) {
+            const body_start = if (line_end < scan.len) line_end + 1 else scan.len;
+            return scan[body_start..];
+        }
+        offset = if (line_end < scan.len) line_end + 1 else scan.len;
+    }
+    // Unterminated frontmatter: not the wrapper shape.
+    return body;
+}
+
+/// Resolve a `roadmap#milestone:N/item:M` locator to its canonical folded
+/// bullet text — the same string ingestion staged as `source_text`.
+///
+/// Returns null when the milestone or item does not exist, which is what makes
+/// a citation to a deleted roadmap item go stale instead of silently staying
+/// fresh. Indices are 1-based, matching the locators the differ emits.
+pub fn roadmapSectionAlloc(
+    allocator: std.mem.Allocator,
+    body: []const u8,
+    locator: []const u8,
+) std.mem.Allocator.Error!?[]const u8 {
+    const hash = std.mem.indexOfScalar(u8, locator, '#') orelse return null;
+    const spec = locator[hash + 1 ..];
+    if (!std.mem.startsWith(u8, spec, "milestone:")) return null;
+    const rest = spec["milestone:".len..];
+    const slash = std.mem.indexOfScalar(u8, rest, '/') orelse return null;
+    const milestone_no = std.fmt.parseInt(usize, rest[0..slash], 10) catch return null;
+    const item_part = rest[slash + 1 ..];
+    if (!std.mem.startsWith(u8, item_part, "item:")) return null;
+    const item_no = std.fmt.parseInt(usize, item_part["item:".len..], 10) catch return null;
+    if (milestone_no == 0 or item_no == 0) return null;
+
+    const authored = unwrapStoredArtifactBody(body);
+    const milestones = try parse.parseRoadmap(allocator, authored);
+    defer {
+        for (milestones) |m| parse.deinitMilestone(m, allocator);
+        allocator.free(milestones);
+    }
+    if (milestone_no > milestones.len) return null;
+    const ms = milestones[milestone_no - 1];
+    if (item_no > ms.work_items.len) return null;
+    const wi = ms.work_items[item_no - 1];
+    const text = if (wi.source_text.len > 0) wi.source_text else wi.title;
+    return try allocator.dupe(u8, text);
+}
+
 pub fn artifactSection(body: []const u8, locator: []const u8) ?[]const u8 {
     const hash = std.mem.indexOfScalar(u8, locator, '#') orelse return null;
     const section_name = std.mem.trim(u8, locator[hash + 1 ..], " \t");
@@ -836,4 +918,128 @@ test "materialization preserves lineage, replay identity, rollback, and model ne
         \\select count(*) from routing_task_facts
         \\where fact_kind = 'locked_decision' and value_text = 'DECISION_SENTINEL atomic transaction'
     ));
+}
+
+// --- roadmap locator resolution ---------------------------------------------
+
+const wrapped_roadmap =
+    \\## Content
+    \\
+    \\---
+    \\entity_kind: artifact
+    \\entity_id: 517
+    \\artifact_kind: roadmap
+    \\---
+    \\
+    \\# Some Roadmap
+    \\
+    \\## M1 — First
+    \\
+    \\- Do the first thing [slug:first]
+    \\- Do the second thing
+    \\
+    \\## M2 — Deliberately empty
+    \\
+    \\## M3 — Third
+    \\
+    \\- A folded item that continues
+    \\  onto a second line [touches:repo-a]
+    \\
+;
+
+test "roadmap locator: the synthetic Content wrapper does not shift indices" {
+    const a = std.testing.allocator;
+    // Parsed naively, `## Content` counts as milestone 1 and every locator is
+    // off by one — which is why every live roadmap citation was stale.
+    const first = (try roadmapSectionAlloc(a, wrapped_roadmap, "roadmap#milestone:1/item:1")).?;
+    defer a.free(first);
+    try std.testing.expect(std.mem.indexOf(u8, first, "first thing") != null);
+}
+
+test "roadmap locator: an authored empty milestone keeps its index" {
+    const a = std.testing.allocator;
+    // M2 has no work items, so item:1 must not exist — and M3 must still be 3.
+    try std.testing.expect((try roadmapSectionAlloc(a, wrapped_roadmap, "roadmap#milestone:2/item:1")) == null);
+    const third = (try roadmapSectionAlloc(a, wrapped_roadmap, "roadmap#milestone:3/item:1")).?;
+    defer a.free(third);
+    try std.testing.expect(std.mem.indexOf(u8, third, "folded item") != null);
+}
+
+test "roadmap locator: folded continuation lines are part of the item" {
+    const a = std.testing.allocator;
+    const folded = (try roadmapSectionAlloc(a, wrapped_roadmap, "roadmap#milestone:3/item:1")).?;
+    defer a.free(folded);
+    // The continuation must survive, otherwise the digest would differ from
+    // the one ingestion staged and the citation would be stale immediately.
+    try std.testing.expect(std.mem.indexOf(u8, folded, "second line") != null);
+}
+
+test "roadmap locator: a missing item resolves to null, not to a neighbour" {
+    const a = std.testing.allocator;
+    // Silently returning an adjacent item would keep a citation to a DELETED
+    // roadmap entry looking fresh.
+    try std.testing.expect((try roadmapSectionAlloc(a, wrapped_roadmap, "roadmap#milestone:1/item:9")) == null);
+    try std.testing.expect((try roadmapSectionAlloc(a, wrapped_roadmap, "roadmap#milestone:9/item:1")) == null);
+    try std.testing.expect((try roadmapSectionAlloc(a, wrapped_roadmap, "roadmap#milestone:0/item:1")) == null);
+}
+
+test "roadmap locator: a changed item changes the resolved text" {
+    const a = std.testing.allocator;
+    const before = (try roadmapSectionAlloc(a, wrapped_roadmap, "roadmap#milestone:1/item:1")).?;
+    defer a.free(before);
+    const edited = try std.mem.replaceOwned(u8, a, wrapped_roadmap, "Do the first thing", "Do something else");
+    defer a.free(edited);
+    const after = (try roadmapSectionAlloc(a, edited, "roadmap#milestone:1/item:1")).?;
+    defer a.free(after);
+    // Different text -> different digest -> the old fact goes stale, which is
+    // the whole point of tracking freshness.
+    try std.testing.expect(!std.mem.eql(u8, before, after));
+}
+
+test "roadmap locator: an unwrapped body resolves identically" {
+    const a = std.testing.allocator;
+    const unwrapped =
+        \\# Some Roadmap
+        \\
+        \\## M1 — First
+        \\
+        \\- Do the first thing [slug:first]
+        \\
+    ;
+    const got = (try roadmapSectionAlloc(a, unwrapped, "roadmap#milestone:1/item:1")).?;
+    defer a.free(got);
+    try std.testing.expect(std.mem.indexOf(u8, got, "first thing") != null);
+}
+
+test "unwrap: a section legitimately named Content further down is untouched" {
+    const a = std.testing.allocator;
+    const authored =
+        \\# Roadmap
+        \\
+        \\## M1 — First
+        \\
+        \\- item one
+        \\
+        \\## Content
+        \\
+        \\- not frontmatter
+        \\
+    ;
+    // Only a wrapper at the very start is synthetic. Stripping this would
+    // delete authored material.
+    try std.testing.expectEqualStrings(authored, unwrapStoredArtifactBody(authored));
+    const got = (try roadmapSectionAlloc(a, authored, "roadmap#milestone:1/item:1")).?;
+    defer a.free(got);
+    try std.testing.expect(std.mem.indexOf(u8, got, "item one") != null);
+}
+
+test "unwrap: `## Content` without frontmatter is not the wrapper shape" {
+    const authored = "## Content\n\n- just a list\n";
+    try std.testing.expectEqualStrings(authored, unwrapStoredArtifactBody(authored));
+}
+
+test "roadmap locator: a non-roadmap locator is refused" {
+    const a = std.testing.allocator;
+    try std.testing.expect((try roadmapSectionAlloc(a, wrapped_roadmap, "artifact:517#Heading")) == null);
+    try std.testing.expect((try roadmapSectionAlloc(a, wrapped_roadmap, "roadmap#Heading")) == null);
 }

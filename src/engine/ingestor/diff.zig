@@ -56,6 +56,9 @@ pub const TaskEntry = struct {
     touches: []const []const u8 = &.{},
     /// Slug from the roadmap `[slug:]` annotation. Empty when absent.
     slug: []const u8 = "",
+    /// Generated starting next action. Empty means "leave whatever is stored",
+    /// which is how an operator-refined next action survives re-ingest.
+    next_action: []const u8 = "",
     existing_id: i64 = 0,
     /// Parent child plan title (display only).
     child_plan_title: []const u8 = "",
@@ -220,6 +223,7 @@ fn deinitTaskEntry(t: TaskEntry, allocator: std.mem.Allocator) void {
     for (t.touches) |s| allocator.free(s);
     allocator.free(t.touches);
     allocator.free(t.slug);
+    allocator.free(t.next_action);
     allocator.free(t.child_plan_title);
 }
 
@@ -342,6 +346,7 @@ pub fn compute(
                 allocator.free(t.title);
                 allocator.free(t.body);
                 allocator.free(t.slug);
+                allocator.free(t.next_action);
             }
             allocator.free(existing_tasks);
         }
@@ -374,20 +379,53 @@ pub fn compute(
                 ),
             });
 
+            const next_action = try buildTaskNextAction(
+                allocator,
+                wi,
+                milestone_index + 1,
+                item_index + 1,
+            );
+
             if (existing_t) |et| {
                 try used_task_ids.put(et.id, {});
-                const body_changed = !std.mem.eql(u8, et.body, task_body);
+
+                // An operator may have replaced the generated body with real
+                // acceptance criteria. Overwriting that on every re-ingest is
+                // what made enrichment impossible: the only way to get fresh
+                // facts was to destroy the content that made the task
+                // dispatchable.
+                //
+                // "Generated" is decided by byte-comparison against every
+                // shipped projection — including the older suffixed one, so a
+                // task written before that suffix was dropped upgrades instead
+                // of being mistaken for operator work and frozen forever.
+                const generated = try isGeneratedTaskBody(allocator, et.body, wi);
+                const body_changed = generated and !std.mem.eql(u8, et.body, task_body);
                 const slug_needs_backfill = wi.slug.len != 0 and et.slug.len == 0;
+
                 if (!body_changed and !slug_needs_backfill) {
                     allocator.free(task_body);
+                    allocator.free(next_action);
                     continue;
+                }
+                if (!generated) {
+                    // Keep the enriched body; still refresh everything else.
+                    allocator.free(task_body);
                 }
                 try tasks_out.append(allocator, .{
                     .op = .update,
                     .title = try allocator.dupe(u8, wi_title),
-                    .body = task_body,
+                    .body = if (generated) task_body else try allocator.dupe(u8, ""),
                     .touches = try dupeStrings(allocator, wi.touches),
                     .slug = try allocator.dupe(u8, wi.slug),
+                    // Only replace a next action that is still the legacy
+                    // generated one; a refined next action is operator work.
+                    .next_action = if (std.mem.eql(u8, et.next_action, legacy_next_action))
+                        next_action
+                    else blk: {
+                        allocator.free(next_action);
+                        break :blk try allocator.dupe(u8, "");
+                    },
                     .existing_id = et.id,
                     .child_plan_title = try allocator.dupe(u8, ms_title),
                 });
@@ -398,6 +436,7 @@ pub fn compute(
                     .body = task_body,
                     .touches = try dupeStrings(allocator, wi.touches),
                     .slug = try allocator.dupe(u8, wi.slug),
+                    .next_action = next_action,
                     .existing_id = 0,
                     .child_plan_title = try allocator.dupe(u8, ms_title),
                 });
@@ -441,6 +480,7 @@ pub fn compute(
                 allocator.free(t.title);
                 allocator.free(t.body);
                 allocator.free(t.slug);
+                allocator.free(t.next_action);
             }
             allocator.free(orphan_kid_tasks);
         }
@@ -673,15 +713,34 @@ pub fn isNonTrivial(body: []const u8) bool {
 // Helpers (body builders, dupes)
 // =========================================================================
 
+/// The suffix older builds appended to every generated acceptance criterion.
+///
+/// Retained ONLY to recognise bodies written by those builds so they can be
+/// upgraded. Without this, dropping the suffix would make every existing
+/// generated body differ from the current projection, and enrichment
+/// detection would classify it as operator-written and preserve the generic
+/// text permanently — the fix would appear to work on new tasks while
+/// freezing every old one.
+pub const legacy_acceptance_suffix = " is implemented and tested.";
+
 /// buildTaskBody composes the task body from a roadmap WorkItem.
-/// Mirrors Go's buildTaskBody exactly so reconciliation by-byte-equality
-/// stays consistent between binaries.
+///
+/// The roadmap item title IS the acceptance criterion; it is authored content,
+/// not a placeholder. Earlier builds appended `legacy_acceptance_suffix` to it,
+/// which made every generated task fail routing's `generic_acceptance` check —
+/// Planar generating precisely what Planar refuses. `materialize.zig` already
+/// treated that suffix as "incomplete", so all three components agreed the
+/// suffix meant "no real criterion" while the ingestor kept emitting it.
+///
+/// The suffix existed to hold byte-equality with the Go implementation for
+/// cross-binary reconciliation. That archive was retired (task 5623), so the
+/// constraint no longer exists.
 pub fn buildTaskBody(allocator: std.mem.Allocator, wi: parse.WorkItem) std.mem.Allocator.Error![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
     try buf.appendSlice(allocator, "## Acceptance Criteria\n\n- ");
     try buf.appendSlice(allocator, wi.title);
-    try buf.appendSlice(allocator, " is implemented and tested.\n");
+    try buf.append(allocator, '\n');
     if (wi.touches.len > 0) {
         try buf.appendSlice(allocator, "\n## Repository Scope\n\n");
         for (wi.touches) |slug| {
@@ -691,6 +750,73 @@ pub fn buildTaskBody(allocator: std.mem.Allocator, wi: parse.WorkItem) std.mem.A
         }
     }
     return try allocator.dupe(u8, buf.items);
+}
+
+/// Compose the generated next action for a roadmap work item.
+///
+/// "Implement per acceptance criteria." — what earlier builds wrote — is
+/// rejected by routing's `genericNextAction`, and rightly: it tells a coder
+/// nothing they could not infer from the task existing. Naming the roadmap
+/// item the task derives from is specific, true, and points at where the work
+/// is defined.
+///
+/// This is still a STARTING next action. It is honest about scope rather than
+/// pretending to be a researched entry point, and an operator refining it is
+/// the expected path, not a correction.
+pub fn buildTaskNextAction(
+    allocator: std.mem.Allocator,
+    wi: parse.WorkItem,
+    milestone_index: usize,
+    item_index: usize,
+) std.mem.Allocator.Error![]const u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        "Deliver roadmap milestone {d} item {d}: {s}",
+        .{ milestone_index, item_index, wi.title },
+    );
+}
+
+/// The next action older builds wrote for every generated task.
+pub const legacy_next_action = "Implement per acceptance criteria.";
+
+/// Reproduce the body an older build would have generated for `wi`.
+///
+/// Used only to answer "did a previous Planar write this, or did an operator?".
+pub fn buildLegacyTaskBody(allocator: std.mem.Allocator, wi: parse.WorkItem) std.mem.Allocator.Error![]const u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(allocator);
+    try buf.appendSlice(allocator, "## Acceptance Criteria\n\n- ");
+    try buf.appendSlice(allocator, wi.title);
+    try buf.appendSlice(allocator, legacy_acceptance_suffix);
+    try buf.append(allocator, '\n');
+    if (wi.touches.len > 0) {
+        try buf.appendSlice(allocator, "\n## Repository Scope\n\n");
+        for (wi.touches) |slug| {
+            try buf.appendSlice(allocator, "- touches: ");
+            try buf.appendSlice(allocator, slug);
+            try buf.append(allocator, '\n');
+        }
+    }
+    return try allocator.dupe(u8, buf.items);
+}
+
+/// Whether `stored` is a body Planar generated (in any shipped shape) rather
+/// than one an operator wrote or enriched.
+///
+/// Byte comparison against every generated projection, so the answer is exact.
+/// A heuristic here would be the wrong tool: guessing "this looks generated"
+/// risks discarding real operator work on re-ingest.
+pub fn isGeneratedTaskBody(
+    allocator: std.mem.Allocator,
+    stored: []const u8,
+    wi: parse.WorkItem,
+) std.mem.Allocator.Error!bool {
+    const current = try buildTaskBody(allocator, wi);
+    defer allocator.free(current);
+    if (std.mem.eql(u8, stored, current)) return true;
+    const legacy = try buildLegacyTaskBody(allocator, wi);
+    defer allocator.free(legacy);
+    return std.mem.eql(u8, stored, legacy);
 }
 
 /// buildScenarioBody reconstructs the test_scenarios row body from a
@@ -856,11 +982,14 @@ const dbTask = struct {
     title: []const u8,
     body: []const u8,
     slug: []const u8,
+    /// Needed to tell a still-generated next action from a refined one.
+    next_action: []const u8,
 };
 
 fn loadTasksForPlan(d: *db.sqlite.Db, allocator: std.mem.Allocator, plan_id: i64) Error![]dbTask {
     var stmt = d.prepare(
-        \\select t.id, t.title, coalesce(t.body, ''), coalesce(t.slug, '')
+        \\select t.id, t.title, coalesce(t.body, ''), coalesce(t.slug, ''),
+        \\       coalesce(t.next_action, '')
         \\from tasks t
         \\join entity_links el on (el.from_kind = 'task' and el.from_id = t.id
         \\                         and el.to_kind = 'plan' and el.to_id = ?
@@ -888,6 +1017,7 @@ fn loadTasksForPlan(d: *db.sqlite.Db, allocator: std.mem.Allocator, plan_id: i64
                 .title = try stmt.columnTextAlloc(1, allocator),
                 .body = try stmt.columnTextAlloc(2, allocator),
                 .slug = try stmt.columnTextAlloc(3, allocator),
+                .next_action = try stmt.columnTextAlloc(4, allocator),
             }),
         }
     }
@@ -1205,7 +1335,7 @@ test "compute: roadmap with one milestone → adds plan + tasks" {
     try testing.expectEqualStrings("- Add bar", diff_result.roadmap_citations[1].source_text);
 }
 
-test "buildTaskBody: matches Go format" {
+test "buildTaskBody: the roadmap item IS the acceptance criterion" {
     const a = testing.allocator;
     const wi = parse.WorkItem{
         .title = "Add foo",
@@ -1215,10 +1345,13 @@ test "buildTaskBody: matches Go format" {
     };
     const body = try buildTaskBody(a, wi);
     defer a.free(body);
+    // No " is implemented and tested." suffix. Routing rejects that phrase as
+    // a placeholder, so appending it to real authored roadmap text made every
+    // generated task fail readiness on content Planar itself wrote.
     const expected =
         \\## Acceptance Criteria
         \\
-        \\- Add foo is implemented and tested.
+        \\- Add foo
         \\
         \\## Repository Scope
         \\
@@ -1242,10 +1375,50 @@ test "buildTaskBody: no touches → no Repository Scope section" {
     const expected =
         \\## Acceptance Criteria
         \\
-        \\- Add bar is implemented and tested.
+        \\- Add bar
         \\
     ;
     try testing.expectEqualStrings(expected, body);
+}
+
+test "generated bodies are recognised in BOTH shipped shapes" {
+    const a = testing.allocator;
+    const wi = parse.WorkItem{
+        .title = "Add baz",
+        .touches = &.{},
+        .slug = "",
+        .source_text = "- Add baz",
+    };
+    const current = try buildTaskBody(a, wi);
+    defer a.free(current);
+    const legacy = try buildLegacyTaskBody(a, wi);
+    defer a.free(legacy);
+    try testing.expect(!std.mem.eql(u8, current, legacy));
+
+    // Both must count as generated. If the legacy shape were not recognised,
+    // every task written before the suffix was dropped would be mistaken for
+    // operator work and its generic body preserved forever — the fix would
+    // look correct on new tasks while permanently freezing old ones.
+    try testing.expect(try isGeneratedTaskBody(a, current, wi));
+    try testing.expect(try isGeneratedTaskBody(a, legacy, wi));
+
+    // Real operator content is NOT generated, and must survive re-ingest.
+    try testing.expect(!try isGeneratedTaskBody(a, "## Acceptance Criteria\n\n- Streams reconnect within 2s of a drop\n", wi));
+}
+
+test "generated next action names the roadmap position, not a platitude" {
+    const a = testing.allocator;
+    const wi = parse.WorkItem{
+        .title = "Add qux",
+        .touches = &.{},
+        .slug = "",
+        .source_text = "- Add qux",
+    };
+    const na = try buildTaskNextAction(a, wi, 6, 1);
+    defer a.free(na);
+    try testing.expectEqualStrings("Deliver roadmap milestone 6 item 1: Add qux", na);
+    // The old value is what routing rejects; the new one must not resemble it.
+    try testing.expect(!std.mem.eql(u8, na, legacy_next_action));
 }
 
 test "buildScenarioBody: composes Verifies / Kind / Acceptance + prose" {

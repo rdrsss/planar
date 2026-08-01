@@ -216,7 +216,16 @@ fn citationEvidence(a: std.mem.Allocator, d: *db.sqlite.Db, task_id: i64) ![]con
     while (try stmt.step() == .row) {
         const body = try stmt.columnTextAlloc(3, a);
         const locator = try stmt.columnTextAlloc(2, a);
-        const section = materialize.artifactSection(body, locator);
+        // Roadmap locators are `roadmap#milestone:N/item:M`, which
+        // artifactSection cannot resolve — it expects `#Heading`. Routing them
+        // there yielded an empty digest, so every roadmap citation was stale
+        // the instant ingestion wrote it, and no amount of operator work could
+        // make the packet ready.
+        const roadmap_section: ?[]const u8 = if (std.mem.startsWith(u8, locator, "roadmap#"))
+            try materialize.roadmapSectionAlloc(a, body, locator)
+        else
+            null;
+        const section = roadmap_section orelse materialize.artifactSection(body, locator);
         const current = if (section) |value|
             try materialize.sourceDigestAlloc(a, "artifact", stmt.columnInt(1), locator, value)
         else
