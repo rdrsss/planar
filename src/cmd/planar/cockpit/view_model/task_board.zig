@@ -115,10 +115,16 @@ pub const TaskTouchPathRow = struct {
 
 /// One blocking/dependency link row for a task (from entity_links).
 ///
-/// The entity_links `blocks` relationship encodes:
+/// The entity_links `depends-on` relationship encodes:
 ///
 ///   from_kind=task, from_id=A, to_kind=task, to_id=B, relationship='depends-on'
-///   → task A blocks task B.
+///   → task A DEPENDS ON task B (B must be done first, so B blocks A).
+///
+/// NOTE (task 5761): the two directions below are assigned backwards relative
+/// to that meaning — this pane was written against the intuitive-but-wrong
+/// reading of the pre-00033 name (`A blocks B`). Display-only; routing and
+/// dispatch read the relationship directly and are correct. Do not "fix" the
+/// SQL in isolation — the direction assignment and its tests move together.
 ///
 /// For the board detail pane we surface:
 ///   • what blocks this task: where this task is the `to_id` (blocked-by set)
@@ -144,9 +150,13 @@ pub const TaskLinkRow = struct {
 
 /// Direction of a blocking link relative to the selected task.
 pub const LinkDirection = enum {
-    /// Another task blocks this task (entity_links: other→this, relationship='depends-on').
+    /// Intended: another task blocks this task. Actually populated from
+    /// entity_links other→this ('depends-on'), which is the opposite set —
+    /// see task 5761.
     blocks_this,
-    /// This task blocks another task (entity_links: this→other, relationship='depends-on').
+    /// Intended: this task blocks another task. Actually populated from
+    /// entity_links this→other ('depends-on'), which is the opposite set —
+    /// see task 5761.
     this_blocks,
 };
 
@@ -410,8 +420,12 @@ pub fn queryTaskTouchPaths(
 ///       from_kind='task', from_id=task_id, to_kind='task', relationship='depends-on'
 ///       → direction = .this_blocks
 ///
-/// The `blocks` relationship is the only one checked here per migration
-/// 00004_entity_links.up.sql, which confirms the valid set:
+/// Both directions are currently assigned backwards — see task 5761 and the
+/// note on `TaskLinkRow`. The labels below describe the INTENT, not what the
+/// SQL beneath them actually returns.
+///
+/// The `depends-on` relationship is the only one checked here per migration
+/// 00033, which confirms the valid set:
 ///   ('derives-from','depends-on','addresses','verifies','cites','supersedes','touches')
 ///
 /// Caller owns the result; free via `TaskLinkRow.deinitMany`.

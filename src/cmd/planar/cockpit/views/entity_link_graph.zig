@@ -8,7 +8,7 @@
 //!     verifies, cites, supersedes, touches). Each row is formatted as:
 //!
 //!       [out] derives-from  artifact:5 — FoundingSpec
-//!       [in]  blocks        task:12 — Implement parser
+//!       [in]  depends-on    task:12 — Implement parser
 //!
 //!     j/k (or arrow keys) navigate. Enter re-centers on the selected
 //!     entity (task 4028: navigate along a link).
@@ -600,7 +600,7 @@ test "entity_link_graph: multiple relationship kinds across both directions (tas
         "insert into plans (scope_kind, title, slug, status) values ('global','Center Plan','center-plan','active')",
         &.{},
     );
-    // Insert a task that this plan's task blocks.
+    // Insert a task that this plan's task depends on.
     const tid1 = try d.execParams(
         "insert into tasks (scope_kind, title, status) values ('global','Blocked Task','blocked')",
         &.{},
@@ -616,7 +616,9 @@ test "entity_link_graph: multiple relationship kinds across both directions (tas
         &.{},
     );
 
-    // Edge 1: task:tid1 is blocked by plan:pid  →  plan→task via 'depends-on' (outbound from plan).
+    // Edge 1: plan:pid depends on task:tid1  →  plan→task via 'depends-on' (outbound from plan).
+    // (This test asserts only [out]/[in] rendering; the direction prose is
+    // fixed here to match 00033 semantics — from_id depends on to_id.)
     _ = try d.execParams(
         "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('plan', ?, 'task', ?, 'depends-on')",
         &.{ .{ .int = pid }, .{ .int = tid1 } },
@@ -783,7 +785,7 @@ test "entity_link_graph: re-center changes neighborhood (task 4028)" {
         "insert into tasks (scope_kind, title, status) values ('global','Task Gamma','done')",
         &.{},
     );
-    // tid1 blocks tid2; tid2 addresses tid3.
+    // tid1 depends on tid2; tid2 addresses tid3.
     _ = try d.execParams(
         "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', ?, 'task', ?, 'depends-on')",
         &.{ .{ .int = tid1 }, .{ .int = tid2 } },
@@ -796,7 +798,7 @@ test "entity_link_graph: re-center changes neighborhood (task 4028)" {
     var state = EntityLinkState.init(a);
     defer state.deinit();
 
-    // Start on tid1: 1 outbound (blocks tid2).
+    // Start on tid1: 1 outbound (depends-on tid2).
     try state.reloadFor(&d, "task", tid1);
     try testing.expectEqual(@as(usize, 1), state.data.rows.len);
     try testing.expectEqualStrings("Task Alpha", state.data.focus.?.title);
@@ -810,7 +812,7 @@ test "entity_link_graph: re-center changes neighborhood (task 4028)" {
     // Simulate app.zig handling the FocusRequest by reloading for the target.
     try state.reloadFor(&d, fr.kind, fr.id);
 
-    // Now focused on tid2: inbound from tid1 (blocks) + outbound to tid3 (addresses).
+    // Now focused on tid2: inbound from tid1 (depends-on) + outbound to tid3 (addresses).
     try testing.expectEqual(@as(usize, 2), state.data.rows.len);
     try testing.expectEqualStrings("Task Beta", state.data.focus.?.title);
 
@@ -845,7 +847,7 @@ test "entity_link_graph: renderNavigator renders entity links with all data (tas
         "insert into plans (scope_kind, title, slug, status) values ('global','Focus Plan','focus-plan','active')",
         &.{},
     );
-    // Outbound: plan blocks a task.
+    // Outbound: plan depends on a task.
     const tid = try d.execParams(
         "insert into tasks (scope_kind, title, status) values ('global','Blocked Task','blocked')",
         &.{},
@@ -901,7 +903,7 @@ test "entity_link_graph: renderNavigator renders entity links with all data (tas
     try testing.expect(std.mem.indexOf(u8, text, "Focus Plan") != null);
     // Link count must appear.
     try testing.expect(std.mem.indexOf(u8, text, "Links:") != null);
-    // Outbound row: [out], blocks, task, Blocked Task.
+    // Outbound row: [out], depends-on, task, Blocked Task.
     try testing.expect(std.mem.indexOf(u8, text, "[out]") != null);
     try testing.expect(std.mem.indexOf(u8, text, "depends-on") != null);
     try testing.expect(std.mem.indexOf(u8, text, "Blocked Task") != null);

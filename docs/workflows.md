@@ -126,7 +126,7 @@ Plan 42 "billing-export-csv" — 5 todo tasks
 Phase 3 dispatch preview:
 
   wave 1
-    #43  add-export-jobs-table     depends-on: 45        tier: large   model: claude-opus-4-8  (schema)
+    #43  add-export-jobs-table     blocks: 45        tier: large   model: claude-opus-4-8  (schema)
     #44  add-billing-exports-table —                 tier: large   model: claude-opus-4-8  (schema)
   wave 2 — unblocks when #43 is done
     #45  write-migration-0008      blocked_by: 43    tier: large   model: claude-opus-4-8  (schema)

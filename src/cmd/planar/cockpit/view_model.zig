@@ -1120,8 +1120,11 @@ test "view_model: queryTaskBlockingLinks on task with no links returns empty (ta
 }
 
 test "view_model: queryTaskBlockingLinks surfaces blocks-this direction (task 4020)" {
-    // Task A blocks task B. Query from B's perspective → direction=.blocks_this.
-    // entity_links relationship 'depends-on' confirmed from migration 00004:
+    // Fixture: A --depends-on--> B, queried from B's perspective, asserting
+    // direction=.blocks_this. Under 00033 semantics that edge means A depends
+    // on B, so the set is really "tasks B blocks" — the assignment is inverted
+    // (task 5761). This test pins CURRENT behavior; it moves with that fix.
+    // Valid relationship set, per migration 00033:
     //   check(relationship in ('derives-from','depends-on','addresses','verifies','cites','supersedes','touches'))
     const a = testing.allocator;
     var d = try setupTestDb(a);
