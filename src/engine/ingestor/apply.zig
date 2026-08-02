@@ -37,7 +37,7 @@ const session_mod = @import("../runtime/session.zig");
 pub const Options = struct {
     /// Optional out-slot filled when a citation cannot be resolved, so the
     /// caller can report which task, artifact and section failed.
-    citation_diag: ?*?materialize.CitationDiagnostic = null,
+    citation_diag: ?*materialize.CitationDiagnostics = null,
     apply: bool = false,
     apply_removals: bool = false,
     /// Scope slug for child plans, tasks, decisions, scenarios created

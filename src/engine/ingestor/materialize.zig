@@ -33,9 +33,9 @@ pub fn reconcile(
     allocator: std.mem.Allocator,
     anchor_plan_id: i64,
     roadmap_citations: []const RoadmapCitation,
-    /// Optional out-slot for citation failure detail. The engine never prints;
+    /// Optional sink for citation failure detail. The engine never prints;
     /// the handler owns output.
-    diag: ?*?CitationDiagnostic,
+    diag: ?*CitationDiagnostics,
 ) Error!void {
     try createStage(d);
     d.exec("delete from temp.routing_task_facts_stage") catch return Error.QueryFailed;
@@ -205,6 +205,17 @@ pub const CitationDiagnostic = struct {
     }
 };
 
+/// Every unresolved citation found in one pass, so an operator fixing three
+/// bad citations needs one ingest run rather than three.
+pub const CitationDiagnostics = struct {
+    items: std.ArrayList(CitationDiagnostic) = .empty,
+
+    pub fn deinit(self: *CitationDiagnostics, allocator: std.mem.Allocator) void {
+        for (self.items.items) |d| d.deinit(allocator);
+        self.items.deinit(allocator);
+    }
+};
+
 /// Build the diagnostic for an unresolved citation. Best-effort: a failure to
 /// allocate here must not mask the citation error the caller is returning.
 fn buildCitationDiagnostic(
@@ -247,8 +258,9 @@ fn stageArtifactFacts(
     allocator: std.mem.Allocator,
     anchor_plan_id: i64,
     roadmap_citations: []const RoadmapCitation,
-    diag: ?*?CitationDiagnostic,
+    diag: ?*CitationDiagnostics,
 ) Error!void {
+    var failed = false;
     var stmt = d.prepare(
         \\select t.id, coalesce(t.body, ''), a.id, a.kind, coalesce(a.body, '')
         \\from tasks t
@@ -288,15 +300,22 @@ fn stageArtifactFacts(
                 // The usual cause is the locator swallowing trailing prose: it
                 // runs to end-of-line unless stopped by `,`, `)` or `]`, so
                 // `artifact:5#Goals - and then some` names no real section.
-                if (diag) |slot| {
-                    if (slot.* == null)
-                        slot.* = buildCitationDiagnostic(allocator, task_id, artifact_id, locator, body);
+                if (diag) |sink| {
+                    if (buildCitationDiagnostic(allocator, task_id, artifact_id, locator, body)) |built| {
+                        sink.items.append(allocator, built) catch built.deinit(allocator);
+                    }
                 }
-                return Error.InvalidCitation;
+                // Keep scanning so every bad citation is reported in one pass.
+                // The apply still fails below; nothing is staged from here.
+                failed = true;
+                continue;
             };
             try stage(d, allocator, task_id, "cited_artifact_section", .{ .text = cited_source }, "artifact", artifact_id, locator, cited_source);
         },
     };
+    // Reported every bad citation above; now fail the apply so nothing is
+    // materialized from a partially-resolved citation set.
+    if (failed) return Error.InvalidCitation;
 }
 
 fn hasParsedRoadmapCitation(
@@ -1175,4 +1194,24 @@ test "a locator with no fragment still yields a usable diagnostic" {
     defer diag.deinit(a);
     try std.testing.expectEqualStrings("artifact:2", diag.wanted);
     try std.testing.expectEqualStrings("Only", diag.available);
+}
+
+test "every bad citation is collected, not just the first" {
+    const a = std.testing.allocator;
+    var sink: CitationDiagnostics = .{};
+    defer sink.deinit(a);
+
+    // Reporting only the first would make an operator with three bad citations
+    // run ingest three times, each run hiding the next problem.
+    for ([_]struct { task: i64, art: i64 }{
+        .{ .task = 1, .art = 10 },
+        .{ .task = 1, .art = 11 },
+        .{ .task = 2, .art = 10 },
+    }) |c| {
+        const built = buildCitationDiagnostic(a, c.task, c.art, "artifact:x#Nope", "## Real\n").?;
+        try sink.items.append(a, built);
+    }
+    try std.testing.expectEqual(@as(usize, 3), sink.items.items.len);
+    try std.testing.expectEqual(@as(i64, 11), sink.items.items[1].artifact_id);
+    try std.testing.expectEqualStrings("Real", sink.items.items[2].available);
 }

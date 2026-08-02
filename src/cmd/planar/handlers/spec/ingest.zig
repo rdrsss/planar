@@ -298,8 +298,8 @@ fn runOnePlan(
     // Filled by the engine when a citation cannot be resolved. `InvalidCitation`
     // alone names only the plan, which is useless when several tasks each cite
     // several artifacts — the operator is left bisecting their own edits.
-    var citation_diag: ?ingestor.materialize.CitationDiagnostic = null;
-    defer if (citation_diag) |cd| cd.deinit(ctx.allocator);
+    var citation_diag: ingestor.materialize.CitationDiagnostics = .{};
+    defer citation_diag.deinit(ctx.allocator);
 
     const apply_opts: ingestor.apply.Options = .{
         .apply = apply_flag,
@@ -309,21 +309,25 @@ fn runOnePlan(
     };
     const result = ingestor.apply.apply(d, ctx.allocator, diff, apply_opts) catch |e| {
         try ctx.stderr.print("plan {d} ({s}): apply failed: {s}\n", .{ anchor.id, anchor.slug, @errorName(e) });
-        if (citation_diag) |cd| {
-            try ctx.stderr.print(
-                "  task {d} cites artifact {d} section \"{s}\", which that artifact does not contain\n",
-                .{ cd.task_id, cd.artifact_id, cd.wanted },
-            );
-            if (cd.available.len > 0) {
-                try ctx.stderr.print("  artifact {d} has: {s}\n", .{ cd.artifact_id, cd.available });
-            } else {
-                try ctx.stderr.print("  artifact {d} has no `## ` sections to cite\n", .{cd.artifact_id});
+        if (citation_diag.items.items.len > 0) {
+            // Every bad citation from one pass, so fixing three does not take
+            // three ingest runs.
+            for (citation_diag.items.items) |cd| {
+                try ctx.stderr.print(
+                    "  task {d} cites artifact {d} section \"{s}\", which that artifact does not contain\n",
+                    .{ cd.task_id, cd.artifact_id, cd.wanted },
+                );
+                if (cd.available.len > 0) {
+                    try ctx.stderr.print("    artifact {d} has: {s}\n", .{ cd.artifact_id, cd.available });
+                } else {
+                    try ctx.stderr.print("    artifact {d} has no `## ` sections to cite\n", .{cd.artifact_id});
+                }
             }
             // The usual cause, stated so the operator does not have to infer it.
             try ctx.stderr.print(
                 "  a citation runs to end-of-line unless stopped by `,`, `)` or `]` — " ++
-                    "write [artifact:{d}#Section] when prose follows on the same line\n",
-                .{cd.artifact_id},
+                    "write [artifact:<id>#Section] when prose follows on the same line\n",
+                .{},
             );
             try ctx.stderr.print(
                 "  no facts were materialized for any task under this anchor\n",
