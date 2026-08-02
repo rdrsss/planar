@@ -117,7 +117,7 @@ pub const TaskTouchPathRow = struct {
 ///
 /// The entity_links `blocks` relationship encodes:
 ///
-///   from_kind=task, from_id=A, to_kind=task, to_id=B, relationship='blocks'
+///   from_kind=task, from_id=A, to_kind=task, to_id=B, relationship='depends-on'
 ///   → task A blocks task B.
 ///
 /// For the board detail pane we surface:
@@ -144,9 +144,9 @@ pub const TaskLinkRow = struct {
 
 /// Direction of a blocking link relative to the selected task.
 pub const LinkDirection = enum {
-    /// Another task blocks this task (entity_links: other→this, relationship='blocks').
+    /// Another task blocks this task (entity_links: other→this, relationship='depends-on').
     blocks_this,
-    /// This task blocks another task (entity_links: this→other, relationship='blocks').
+    /// This task blocks another task (entity_links: this→other, relationship='depends-on').
     this_blocks,
 };
 
@@ -404,15 +404,15 @@ pub fn queryTaskTouchPaths(
 ///
 /// Surfaces two directions:
 ///   (1) tasks that block this task: entity_links rows where
-///       to_kind='task', to_id=task_id, from_kind='task', relationship='blocks'
+///       to_kind='task', to_id=task_id, from_kind='task', relationship='depends-on'
 ///       → direction = .blocks_this
 ///   (2) tasks this task blocks: entity_links rows where
-///       from_kind='task', from_id=task_id, to_kind='task', relationship='blocks'
+///       from_kind='task', from_id=task_id, to_kind='task', relationship='depends-on'
 ///       → direction = .this_blocks
 ///
 /// The `blocks` relationship is the only one checked here per migration
 /// 00004_entity_links.up.sql, which confirms the valid set:
-///   ('derives-from','blocks','addresses','verifies','cites','supersedes','touches')
+///   ('derives-from','depends-on','addresses','verifies','cites','supersedes','touches')
 ///
 /// Caller owns the result; free via `TaskLinkRow.deinitMany`.
 pub fn queryTaskBlockingLinks(
@@ -435,7 +435,7 @@ pub fn queryTaskBlockingLinks(
             \\  and el.from_id = t.id
             \\  and el.to_kind = 'task'
             \\  and el.to_id = ?
-            \\  and el.relationship = 'blocks'
+            \\  and el.relationship = 'depends-on'
             \\order by t.id asc
         ) catch return error.QueryFailed;
         defer stmt.finalize();
@@ -475,7 +475,7 @@ pub fn queryTaskBlockingLinks(
             \\  and el.to_id = t.id
             \\  and el.from_kind = 'task'
             \\  and el.from_id = ?
-            \\  and el.relationship = 'blocks'
+            \\  and el.relationship = 'depends-on'
             \\order by t.id asc
         ) catch return error.QueryFailed;
         defer stmt.finalize();
@@ -513,7 +513,7 @@ pub fn queryTaskBlockingLinks(
 ///
 /// Combines the basic task fields (status, priority, next_action, body)
 /// with reopen history (task_reopens), touch paths (task_touch_paths),
-/// and blocking/dependency links (entity_links, relationship='blocks').
+/// and blocking/dependency links (entity_links, relationship='depends-on').
 ///
 /// Returns null when the task does not exist.
 /// Caller owns the result; free via `TaskBoardDetail.deinit`.

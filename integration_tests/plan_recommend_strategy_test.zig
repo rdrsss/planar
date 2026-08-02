@@ -202,7 +202,7 @@ test "recommend-strategy partitions a realistic plan across all six rules" {
     // blocks edge via `links add` and leave status = todo.
     const tblk_ref = std.fmt.allocPrint(arena, "task:{d}", .{t_blocked}) catch unreachable;
     const tbkr_ref = std.fmt.allocPrint(arena, "task:{d}", .{t_blocker}) catch unreachable;
-    gpa.free(suite.mustRun(&.{ "links", "add", tblk_ref, tbkr_ref, "--relationship", "blocks" }));
+    gpa.free(suite.mustRun(&.{ "links", "add", tblk_ref, tbkr_ref, "--relationship", "depends-on" }));
 
     const rec = suite.mustRunJSON(RecommendJSON, arena, &.{
         "plan", "recommend-strategy", pid, "--json",

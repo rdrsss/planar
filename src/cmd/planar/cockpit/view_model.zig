@@ -1121,8 +1121,8 @@ test "view_model: queryTaskBlockingLinks on task with no links returns empty (ta
 
 test "view_model: queryTaskBlockingLinks surfaces blocks-this direction (task 4020)" {
     // Task A blocks task B. Query from B's perspective → direction=.blocks_this.
-    // entity_links relationship 'blocks' confirmed from migration 00004:
-    //   check(relationship in ('derives-from','blocks','addresses','verifies','cites','supersedes','touches'))
+    // entity_links relationship 'depends-on' confirmed from migration 00004:
+    //   check(relationship in ('derives-from','depends-on','addresses','verifies','cites','supersedes','touches'))
     const a = testing.allocator;
     var d = try setupTestDb(a);
     defer d.close();
@@ -1137,7 +1137,7 @@ test "view_model: queryTaskBlockingLinks surfaces blocks-this direction (task 40
     );
     // A blocks B: from_id=A, to_id=B.
     _ = try d.execParams(
-        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', ?, 'task', ?, 'blocks')",
+        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', ?, 'task', ?, 'depends-on')",
         &.{ .{ .int = task_a }, .{ .int = task_b } },
     );
 
@@ -1166,7 +1166,7 @@ test "view_model: queryTaskBlockingLinks surfaces blocked-by-this direction (tas
         &.{},
     );
     _ = try d.execParams(
-        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', ?, 'task', ?, 'blocks')",
+        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', ?, 'task', ?, 'depends-on')",
         &.{ .{ .int = task_a }, .{ .int = task_b } },
     );
 
@@ -1200,12 +1200,12 @@ test "view_model: queryTaskBlockingLinks both directions simultaneously (task 40
     );
     // Z blocks X.
     _ = try d.execParams(
-        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', ?, 'task', ?, 'blocks')",
+        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', ?, 'task', ?, 'depends-on')",
         &.{ .{ .int = task_z }, .{ .int = task_x } },
     );
     // X blocks Y.
     _ = try d.execParams(
-        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', ?, 'task', ?, 'blocks')",
+        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', ?, 'task', ?, 'depends-on')",
         &.{ .{ .int = task_x }, .{ .int = task_y } },
     );
 
@@ -1261,7 +1261,7 @@ test "view_model: queryTaskBoardDetail full detail: body + reopens + touch_paths
         &.{},
     );
     _ = try d.execParams(
-        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', ?, 'task', ?, 'blocks')",
+        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', ?, 'task', ?, 'depends-on')",
         &.{ .{ .int = blocker_id }, .{ .int = tid } },
     );
 

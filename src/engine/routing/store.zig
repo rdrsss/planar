@@ -8,7 +8,7 @@ const std = @import("std");
 const db = @import("db");
 
 /// Stable schema contract introduced by migration 00030.
-pub const schema_version: u32 = 32;
+pub const schema_version: u32 = 33;
 
 /// A value persisted in a provenance-bearing task fact.
 pub const FactValue = union(enum) {
@@ -1172,6 +1172,7 @@ test "migration 00030 enforces foreign keys, bindings, and immutable audit rows"
 /// schema_migrations.
 fn unwindToSchema29(conn: *db.sqlite.Db) !void {
     for ([_][]const u8{
+        "migrations/00033_rename_blocks_to_depends_on.down.sql",
         "migrations/00032_routing_sample_cost_metrics.down.sql",
         "migrations/00031_dispatch_confirmation_tokens.down.sql",
         "migrations/00030_adaptive_routing_evidence.down.sql",

@@ -5,7 +5,7 @@
 //! with a UNIQUE constraint that prevents duplicates. The from_kind / to_kind
 //! CHECK constraint covers every kind currently in the schema (widened in
 //! migrations 0004 and 0012). The relationship CHECK covers:
-//!   derives-from, blocks, addresses, verifies, cites, supersedes, touches
+//!   derives-from, depends-on, addresses, verifies, cites, supersedes, touches
 //!
 //! Link verbs are deliberately UNGUARDED — they create cross-scope edges by
 //! design. The per-entity `link` handlers in Cycle B (not in this module)
@@ -68,7 +68,7 @@ pub const EntityKind = enum {
 /// constraint on the `relationship` column.
 pub const Relationship = enum {
     @"derives-from",
-    blocks,
+    @"depends-on",
     addresses,
     verifies,
     cites,
@@ -77,7 +77,13 @@ pub const Relationship = enum {
 
     pub fn fromText(s: []const u8) ?Relationship {
         if (std.mem.eql(u8, s, "derives-from")) return .@"derives-from";
-        if (std.mem.eql(u8, s, "blocks")) return .blocks;
+        if (std.mem.eql(u8, s, "depends-on")) return .@"depends-on";
+        // `blocks` was the old spelling for this edge and is deliberately NOT
+        // accepted as an alias. `A --blocks--> B` stored "A depends on B", so
+        // silently mapping the old word would preserve exactly the inversion
+        // the rename exists to remove. Rejecting it forces the author to
+        // re-read the direction, and the CLI names the replacement.
+        if (std.mem.eql(u8, s, "blocks")) return null;
         if (std.mem.eql(u8, s, "addresses")) return .addresses;
         if (std.mem.eql(u8, s, "verifies")) return .verifies;
         if (std.mem.eql(u8, s, "cites")) return .cites;
@@ -89,7 +95,7 @@ pub const Relationship = enum {
     pub fn toText(self: Relationship) []const u8 {
         return switch (self) {
             .@"derives-from" => "derives-from",
-            .blocks => "blocks",
+            .@"depends-on" => "depends-on",
             .addresses => "addresses",
             .verifies => "verifies",
             .cites => "cites",
@@ -507,7 +513,7 @@ test "EntityKind.fromText returns null for unknown kind" {
 
 test "Relationship.fromText / toText round-trip for every relationship" {
     const rels = [_][]const u8{
-        "derives-from", "blocks",     "addresses", "verifies",
+        "derives-from", "depends-on", "addresses", "verifies",
         "cites",        "supersedes", "touches",
     };
     for (rels) |r| {
@@ -630,7 +636,7 @@ test "add: unsupported scope (.repo / .association) returns UnsupportedScope" {
         .from_id = 1,
         .to_kind = .plan,
         .to_id = 2,
-        .relationship = .blocks,
+        .relationship = .@"depends-on",
         .scope = "some-assoc",
     }));
 }
@@ -670,7 +676,7 @@ test "remove: happy path; audit row recorded" {
         .from_id = p1,
         .to_kind = .plan,
         .to_id = p2,
-        .relationship = .blocks,
+        .relationship = .@"depends-on",
     });
     const link_id = link.id;
     deinit(link, a);
@@ -741,7 +747,7 @@ test "list: filter by from_kind + from_id returns matches" {
 
     const l1 = try add(&d, a, .{ .from_kind = .plan, .from_id = p1, .to_kind = .plan, .to_id = p2, .relationship = .cites });
     defer deinit(l1, a);
-    const l2 = try add(&d, a, .{ .from_kind = .plan, .from_id = p1, .to_kind = .plan, .to_id = p3, .relationship = .blocks });
+    const l2 = try add(&d, a, .{ .from_kind = .plan, .from_id = p1, .to_kind = .plan, .to_id = p3, .relationship = .@"depends-on" });
     defer deinit(l2, a);
     // Different from_id — should not appear.
     const l3 = try add(&d, a, .{ .from_kind = .plan, .from_id = p2, .to_kind = .plan, .to_id = p3, .relationship = .addresses });
@@ -764,7 +770,7 @@ test "list: filter by to_kind + to_id returns matches" {
 
     const l1 = try add(&d, a, .{ .from_kind = .plan, .from_id = p1, .to_kind = .plan, .to_id = p3, .relationship = .cites });
     defer deinit(l1, a);
-    const l2 = try add(&d, a, .{ .from_kind = .plan, .from_id = p2, .to_kind = .plan, .to_id = p3, .relationship = .blocks });
+    const l2 = try add(&d, a, .{ .from_kind = .plan, .from_id = p2, .to_kind = .plan, .to_id = p3, .relationship = .@"depends-on" });
     defer deinit(l2, a);
 
     const results = try list(&d, a, .{ .to_kind = .plan, .to_id = p3 });
@@ -784,7 +790,7 @@ test "list: filter by relationship returns matches" {
 
     const l1 = try add(&d, a, .{ .from_kind = .plan, .from_id = p1, .to_kind = .plan, .to_id = p2, .relationship = .cites });
     defer deinit(l1, a);
-    const l2 = try add(&d, a, .{ .from_kind = .plan, .from_id = p2, .to_kind = .plan, .to_id = p3, .relationship = .blocks });
+    const l2 = try add(&d, a, .{ .from_kind = .plan, .from_id = p2, .to_kind = .plan, .to_id = p3, .relationship = .@"depends-on" });
     defer deinit(l2, a);
 
     const results = try list(&d, a, .{ .relationship = .cites });

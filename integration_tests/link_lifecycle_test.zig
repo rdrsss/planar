@@ -36,8 +36,8 @@ test "scenario: entity-link add/trail/remove lifecycle" {
     const to_ref = std.fmt.allocPrint(arena, "task:{d}", .{t2.id}) catch unreachable;
 
     // add
-    const link = suite.mustRunJSON(EntityLink, arena, &.{ "links", "add", from_ref, to_ref, "--relationship", "blocks", "--json" });
-    try std.testing.expectEqualStrings("blocks", link.relationship);
+    const link = suite.mustRunJSON(EntityLink, arena, &.{ "links", "add", from_ref, to_ref, "--relationship", "depends-on", "--json" });
+    try std.testing.expectEqualStrings("depends-on", link.relationship);
     const lid = std.fmt.allocPrint(arena, "{d}", .{link.id}) catch unreachable;
 
     // trail — the audit row for the entity_links edge.

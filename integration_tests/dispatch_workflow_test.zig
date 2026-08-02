@@ -297,7 +297,7 @@ fn seedAuthoritativePacket(suite: *harness.Suite, plan_id: i64, task_id: i64) vo
         \\('task',{d},'artifact',91003,'cites'),
         \\('task',{d},'artifact',91004,'cites'),
         \\('task',{d},'decision',91005,'cites'),
-        \\('task',{d},'task',91006,'blocks'),
+        \\('task',{d},'task',91006,'depends-on'),
         \\('test_scenario',91007,'plan',{d},'derives-from'),
         \\('test_scenario',91007,'task',{d},'verifies');
         \\insert into routing_task_facts(

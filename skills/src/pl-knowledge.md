@@ -63,7 +63,7 @@ planar scenario list [--scope <scope>] [--status <status>] --json
 planar scenario show <scenario-id> --json
 
 planar links list <kind:id> --json
-planar links add <from-kind:from-id> <to-kind:to-id> --relationship <derives-from|blocks|addresses|verifies|cites|supersedes|touches> --json
+planar links add <from-kind:from-id> <to-kind:to-id> --relationship <derives-from|depends-on|addresses|verifies|cites|supersedes|touches> --json
 ```
 
 Artifact kinds are schema-defined. Read `planar artifact add --help` and use an

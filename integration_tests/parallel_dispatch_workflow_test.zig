@@ -494,7 +494,7 @@ fn linkBlocks(suite: *harness.Suite, blocked_id: i64, blocker_id: i64) void {
     defer gpa.free(from_ref);
     const to_ref = std.fmt.allocPrint(gpa, "task:{d}", .{blocker_id}) catch unreachable;
     defer gpa.free(to_ref);
-    gpa.free(suite.mustRun(&.{ "links", "add", from_ref, to_ref, "--relationship", "blocks" }));
+    gpa.free(suite.mustRun(&.{ "links", "add", from_ref, to_ref, "--relationship", "depends-on" }));
 }
 
 /// laneByTaskId finds a lane by task id in a PlanResult (panics if absent).
@@ -974,7 +974,7 @@ test "parallel-dispatch waves: staged waves land contract lane before dependent 
 // collapses to three sequential one-lane waves rather than one three-lane wave.
 // ---------------------------------------------------------------------------
 
-test "parallel-dispatch waves: strict blocks-chain collapses to sequential one-lane waves" {
+test "parallel-dispatch waves: strict depends-on chain collapses to sequential one-lane waves" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
@@ -1045,7 +1045,7 @@ test "parallel-dispatch waves: strict blocks-chain collapses to sequential one-l
 // engine's eligibility decision even though the task has no blocks edge.
 // ---------------------------------------------------------------------------
 
-test "parallel-dispatch waves: engine-serialized non-blocks task is never placed in a wave" {
+test "parallel-dispatch waves: engine-serialized non-dependency task is never placed in a wave" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();

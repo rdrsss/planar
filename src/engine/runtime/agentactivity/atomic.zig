@@ -359,7 +359,7 @@ pub fn blockWork(
 
     // entity_links blocker edge.
     _ = d.execParams(
-        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', ?, 'task', ?, 'blocks')",
+        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', ?, 'task', ?, 'depends-on')",
         &.{ .{ .int = claim.entity_id }, .{ .int = blocker_task_id } },
     ) catch return store.Error.QueryFailed;
 
@@ -878,7 +878,7 @@ test "blockWork creates entity_links edge, flips task to blocked, releases claim
     const blk_count = try d.intQuery("select count(*) from tasks where status = 'blocked'");
     try std.testing.expectEqual(@as(i64, 1), blk_count);
     const link_count = try d.intQuery(
-        "select count(*) from entity_links where relationship = 'blocks'",
+        "select count(*) from entity_links where relationship = 'depends-on'",
     );
     try std.testing.expectEqual(@as(i64, 1), link_count);
 }

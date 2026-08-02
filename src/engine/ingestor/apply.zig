@@ -1186,10 +1186,10 @@ test "apply: creates child plan + task and flips anchor draft → active" {
     try d.exec(
         \\insert into entity_links (
         \\  from_kind, from_id, to_kind, to_id, relationship
-        \\) values ('task', 1, 'task', 99, 'blocks');
+        \\) values ('task', 1, 'task', 99, 'depends-on');
         \\insert into entity_links (
         \\  from_kind, from_id, to_kind, to_id, relationship
-        \\) values ('task', 1, 'task', 98, 'blocks')
+        \\) values ('task', 1, 'task', 98, 'depends-on')
     );
     _ = try apply(&d, a, replay_diff, .{ .apply = true });
     try testing.expectEqual(@as(i64, 2), try d.intQuery(
@@ -1200,13 +1200,13 @@ test "apply: creates child plan + task and flips anchor draft → active" {
     const max_fact_id = try d.intQuery("select max(id) from routing_task_facts");
     try d.exec(
         \\delete from entity_links where from_kind = 'task' and from_id = 1
-        \\  and to_kind = 'task' and relationship = 'blocks';
+        \\  and to_kind = 'task' and relationship = 'depends-on';
         \\insert into entity_links (
         \\  from_kind, from_id, to_kind, to_id, relationship
-        \\) values ('task', 1, 'task', 98, 'blocks');
+        \\) values ('task', 1, 'task', 98, 'depends-on');
         \\insert into entity_links (
         \\  from_kind, from_id, to_kind, to_id, relationship
-        \\) values ('task', 1, 'task', 99, 'blocks')
+        \\) values ('task', 1, 'task', 99, 'depends-on')
     );
     _ = try apply(&d, a, replay_diff, .{ .apply = true });
     const reordered_links = try readOrderedLinkFacts(&d, a);

@@ -372,7 +372,7 @@ test "groups recommend: a blocks edge produces a schedulable grouping (caveat gu
     for (refs) |pair| {
         const from = std.fmt.allocPrint(arena, "task:{d}", .{pair[0]}) catch unreachable;
         const to = std.fmt.allocPrint(arena, "task:{d}", .{pair[1]}) catch unreachable;
-        const out = suite.mustRun(&.{ "links", "add", from, to, "--relationship", "blocks" });
+        const out = suite.mustRun(&.{ "links", "add", from, to, "--relationship", "depends-on" });
         suite.allocator.free(out);
     }
 

@@ -233,7 +233,7 @@ pub fn queryOpenQuestions(
 ///
 /// Per migration 00004_entity_links.up.sql:
 ///   from_kind/to_kind include 'question' (confirmed in the CHECK constraint)
-///   valid relationships: ('derives-from','blocks','addresses','verifies','cites','supersedes','touches')
+///   valid relationships: ('derives-from','depends-on','addresses','verifies','cites','supersedes','touches')
 ///
 /// For each linked entity, the title is resolved via resolveEntityTitle.
 /// Caller owns the result; free via `QuestionLinkedEntity.deinitMany`.

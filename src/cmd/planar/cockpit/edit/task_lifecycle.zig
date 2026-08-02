@@ -266,7 +266,7 @@ pub const TransitionIntent = enum {
     done,
     /// * → blocked with a named blocker task id (task 4164).
     /// The caller must supply `blocker_id` to `executeTransition`; omitting
-    /// it (null) is rejected. The engine records an entity_links 'blocks' edge
+    /// it (null) is rejected. The engine records an entity_links 'depends-on' edge
     /// from the named blocker to this task — never a self-referential edge.
     block,
     /// done → todo (reopen).
@@ -1921,7 +1921,7 @@ test "renderOverlay: unclaimed claim_info shows 'unclaimed' and proceed hint" {
 // -------------------------------------------------------------------------
 
 test "executeTransition: block with real blocker persists entity_links edge" {
-    // Happy path: block task_a on task_b → entity_links 'blocks' edge from
+    // Happy path: block task_a on task_b → entity_links 'depends-on' edge from
     // task_a to task_b; task_a status = 'blocked'. Uses engine.planning.task.markBlocked.
     const a = std.testing.allocator;
     var d = try setupTestDb(a);
@@ -1944,9 +1944,9 @@ test "executeTransition: block with real blocker persists entity_links edge" {
     defer a.free(s);
     try std.testing.expectEqualStrings("blocked", s);
 
-    // Assert entity_links edge exists: from_id=task_id, to_id=blocker_id, relationship='blocks'.
+    // Assert entity_links edge exists: from_id=task_id, to_id=blocker_id, relationship='depends-on'.
     var link_stmt = try d.prepare(
-        "select count(*) from entity_links where from_kind='task' and from_id=? and to_kind='task' and to_id=? and relationship='blocks'",
+        "select count(*) from entity_links where from_kind='task' and from_id=? and to_kind='task' and to_id=? and relationship='depends-on'",
     );
     defer link_stmt.finalize();
     try link_stmt.bind(&.{ .{ .int = task_id }, .{ .int = blocker_id } });
@@ -2080,7 +2080,7 @@ test "TaskLifecycleState: blocker_input with valid blocker id commits block and 
 
     // entity_links edge: from_id=task_id, to_id=blocker_task_id.
     var link_stmt = try d.prepare(
-        "select count(*) from entity_links where from_kind='task' and from_id=? and to_kind='task' and to_id=? and relationship='blocks'",
+        "select count(*) from entity_links where from_kind='task' and from_id=? and to_kind='task' and to_id=? and relationship='depends-on'",
     );
     defer link_stmt.finalize();
     try link_stmt.bind(&.{ .{ .int = task_id }, .{ .int = blocker_task_id } });

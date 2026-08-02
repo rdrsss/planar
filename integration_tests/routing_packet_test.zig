@@ -36,7 +36,7 @@ test "packet assembler reads current isolated Planar database state" {
         \\insert into entity_links(from_kind,from_id,to_kind,to_id,relationship) values
         \\('plan',9001,'plan',9000,'derives-from'),('task',9002,'artifact',9010,'cites'),('task',9002,'artifact',9011,'cites'),
         \\('task',9002,'artifact',9012,'cites'),('task',9002,'artifact',9013,'cites'),('task',9002,'decision',9020,'cites'),
-        \\('test_scenario',2142,'task',9002,'verifies'),('task',9002,'task',9003,'blocks'),
+        \\('test_scenario',2142,'task',9002,'verifies'),('task',9002,'task',9003,'depends-on'),
         \\('artifact',9010,'plan',9000,'derives-from'),('artifact',9011,'plan',9000,'derives-from'),
         \\('artifact',9012,'plan',9000,'derives-from'),('artifact',9013,'plan',9000,'derives-from'),
         \\('decision',9020,'plan',9000,'derives-from'),('test_scenario',2142,'plan',9000,'derives-from'),
@@ -299,13 +299,13 @@ test "fact freshness rejects reversed relationship directions" {
         \\(9202,'global',null,9200,'Outgoing target','','done','Done.'),
         \\(9203,'global',null,9200,'Incoming source','','done','Done.');
         \\insert into entity_links(from_kind,from_id,to_kind,to_id,relationship) values
-        \\('task',9201,'task',9202,'blocks'),
-        \\('task',9203,'task',9201,'blocks'),
+        \\('task',9201,'task',9202,'depends-on'),
+        \\('task',9203,'task',9201,'depends-on'),
         \\('task',9201,'repo',9204,'touches');
     );
-    const blocks_digest = try sourceDigestAlloc(allocator, "task", 9202, "task:9202", "blocks");
+    const blocks_digest = try sourceDigestAlloc(allocator, "task", 9202, "task:9202", "depends-on");
     defer allocator.free(blocks_digest);
-    const blocked_by_digest = try sourceDigestAlloc(allocator, "task", 9203, "task:9203", "blocks");
+    const blocked_by_digest = try sourceDigestAlloc(allocator, "task", 9203, "task:9203", "depends-on");
     defer allocator.free(blocked_by_digest);
     const touch_digest = try sourceDigestAlloc(allocator, "repo", 9204, "repo:9204", "touches");
     defer allocator.free(touch_digest);
@@ -322,10 +322,10 @@ test "fact freshness rejects reversed relationship directions" {
         try std.testing.expectEqualStrings("current", fact.freshness);
 
     try live_db.exec(
-        \\delete from entity_links where relationship in ('blocks','touches');
+        \\delete from entity_links where relationship in ('depends-on','touches');
         \\insert into entity_links(from_kind,from_id,to_kind,to_id,relationship) values
-        \\('task',9202,'task',9201,'blocks'),
-        \\('task',9201,'task',9203,'blocks'),
+        \\('task',9202,'task',9201,'depends-on'),
+        \\('task',9201,'task',9203,'depends-on'),
         \\('repo',9204,'task',9201,'touches');
     );
     var reversed = try packet.assembleTask(allocator, &live_db, 9201);

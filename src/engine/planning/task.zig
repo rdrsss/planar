@@ -1029,7 +1029,7 @@ pub fn markBlocked(
 
     _ = d.execParams(
         \\insert into entity_links (from_kind, from_id, to_kind, to_id, relationship)
-        \\values ('task', ?, 'task', ?, 'blocks')
+        \\values ('task', ?, 'task', ?, 'depends-on')
     , &.{ .{ .int = id }, .{ .int = blocked_on_id } }) catch return Error.QueryFailed;
 
     try policy.audit.record(d, .{

@@ -871,7 +871,7 @@ fn blockedByNotDone(
         var stmt = d.prepare(
             \\select to_id from entity_links
             \\where from_kind = 'task' and from_id = ?
-            \\  and to_kind = 'task' and relationship = 'blocks'
+            \\  and to_kind = 'task' and relationship = 'depends-on'
         ) catch return Error.QueryFailed;
         defer stmt.finalize();
         stmt.bind(&.{.{ .int = cur }}) catch return Error.QueryFailed;
@@ -1223,7 +1223,7 @@ test "rule 1: a task blocked_by a not-done plan task is dropped" {
     try linkTouchesRepo(&d, blocked, r3);
     // blocked -[blocks]-> blocker  (blocked is blocked BY blocker)
     _ = try d.execParams(
-        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', ?, 'task', ?, 'blocks')",
+        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', ?, 'task', ?, 'depends-on')",
         &.{ .{ .int = blocked }, .{ .int = blocker } },
     );
 
@@ -1284,7 +1284,7 @@ test "rule 6: a task linked to a proposed decision is dropped" {
         &.{},
     );
     _ = try d.execParams(
-        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('decision', ?, 'task', ?, 'blocks')",
+        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('decision', ?, 'task', ?, 'depends-on')",
         &.{ .{ .int = dec }, .{ .int = t1 } },
     );
 

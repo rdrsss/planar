@@ -1,8 +1,8 @@
 --[[ @meta
 name: parallel-dispatch
-description: Deterministic, spawn-free wave/lane computation for the model orchestrator's worktree paths. Computes the current parallel wave (from recommend-strategy eligibility), a single sequential cycle lane for worktree-deferred execution, the FULL ordered wave list (from recommend-strategy eligibility + the plan's `blocks` graph, for ordering/labeling only, with the terminal cross-lane integration pass marked), each lane's worktree path + branch name, the epic branch name, the wave-barrier gate, the wave-aware (contract-lanes-first) fan-in merge order, the boundary-conflict escalation payload, the partial-wave reconcile plan, and provider-scoped capacity containment — then HANDS BACK. The model creates the worktrees, spawns the coders, and runs the git merges/reconciles; this seam never spawns and never touches git worktree/branch/merge.
+description: Deterministic, spawn-free wave/lane computation for the model orchestrator's worktree paths. Computes the current parallel wave (from recommend-strategy eligibility), a single sequential cycle lane for worktree-deferred execution, the FULL ordered wave list (from recommend-strategy eligibility + the plan's `depends-on` graph, for ordering/labeling only, with the terminal cross-lane integration pass marked), each lane's worktree path + branch name, the epic branch name, the wave-barrier gate, the wave-aware (contract-lanes-first) fan-in merge order, the boundary-conflict escalation payload, the partial-wave reconcile plan, and provider-scoped capacity containment — then HANDS BACK. The model creates the worktrees, spawns the coders, and runs the git merges/reconciles; this seam never spawns and never touches git worktree/branch/merge.
 phases: plan, cycle_plan, waves, barrier_check, fan_in, conflict_escalation, reconcile_plan, capacity_reconcile, teardown
-seam: planar plan recommend-strategy --json (via ctx.recommend_strategy), planar plan show --json (via ctx.plan_show), planar links list task:<id> --json (via cli.planar, for `blocks`-edge ordering only)
+seam: planar plan recommend-strategy --json (via ctx.recommend_strategy), planar plan show --json (via ctx.plan_show), planar links list task:<id> --json (via cli.planar, for `depends-on`-edge ordering only)
 --]]
 
 -- parallel-dispatch.lua — deterministic single-wave fan-out planning (plan 760 M1).
@@ -46,15 +46,15 @@ seam: planar plan recommend-strategy --json (via ctx.recommend_strategy), planar
 --
 --   waves         — (M2, wave-ordering) emit the FULL ordered wave list for the
 --                   plan by combining recommend-strategy eligibility with the
---                   plan's `blocks` graph. Waves are NOT depth-partitioned to
+--                   plan's `depends-on` graph. Waves are NOT depth-partitioned to
 --                   gate eligibility — the engine's recommend-strategy stays the
---                   single eligibility gate. The `blocks` graph is walked ONLY
+--                   single eligibility gate. The `depends-on` graph is walked ONLY
 --                   to ORDER and LABEL the waves so the operator sees "wave 2
 --                   unblocks once proto lands." Wave 1 is exactly the currently
 --                   -eligible set; each later wave is the tasks whose remaining
 --                   blockers are all in earlier waves, with the gating blockers
---                   named. A strict blocks-chain collapses to sequential
---                   one-lane waves. Serialized tasks with a NON-blocks exclusion
+--                   named. A strict depends-on chain collapses to sequential
+--                   one-lane waves. Serialized tasks with a NON-dependency exclusion
 --                   are surfaced (with excluded_by) but never placed in a wave.
 --                   HANDS BACK; the caller confirms the plan at the gate then
 --                   drives one barrier at a time via `plan` + `fan_in`.
@@ -153,17 +153,17 @@ seam: planar plan recommend-strategy --json (via ctx.recommend_strategy), planar
 -- falls back to `p<plan>` when the plan has no slug. These fallbacks are
 -- deterministic (derived from the ids), preserving byte-stability.
 --
--- ## Eligibility is the engine's; the `blocks` graph is for ordering only (M2)
+-- ## Eligibility is the engine's; the `depends-on` graph is for ordering only (M2)
 --
--- The `waves` phase reads the plan's `blocks` edges (via `planar links list
+-- The `waves` phase reads the plan's `depends-on` edges (via `planar links list
 -- task:<id> --json`) but it NEVER decides eligibility with them. The engine's
 -- recommend-strategy is the single eligibility gate (the six rules stay
--- authoritative). The `blocks` graph is used ONLY to compute the wave DEPTH of
+-- authoritative). The `depends-on` graph is used ONLY to compute the wave DEPTH of
 -- each not-done task — i.e. to ORDER the waves and to LABEL which downstream
 -- lanes are still blocked and by what. A task the engine serialized for a
--- NON-blocks reason (migration / singleton / empty-touches / open-question /
+-- non-dependency reason (migration / singleton / empty-touches / open-question /
 -- proposed-decision) is carried in `serialized` and never placed in a wave,
--- regardless of its blocks-depth. Because waves EMERGE by iterative recompute
+-- regardless of its dependency depth. Because waves EMERGE by iterative recompute
 -- across barriers (each barrier re-runs recommend-strategy and downstream lanes
 -- become eligible only once their blockers are `done`), the `waves` phase is a
 -- PROJECTION for the gate, not a schedule the seam executes: the model drives
@@ -356,15 +356,15 @@ local function assert_not_serialized(task_id, serialized_set, phase)
 end
 
 -- ---------------------------------------------------------------------------
--- `blocks`-graph helpers (M2 — ORDERING/LABELING ONLY, never eligibility)
+-- `depends-on`-graph helpers (M2 — ORDERING/LABELING ONLY, never eligibility)
 -- ---------------------------------------------------------------------------
 
 --- blockers_of(task_id, in_plan) — the set of task ids that `task_id` is
 -- blocked BY, restricted to tasks that are in this plan's not-done set.
 --
 -- Reads `planar links list task:<id> --json` (NDJSON, one flat object per
--- line). An edge `from_id=task_id, relationship="blocks", to_id=B` means
--- task_id is blocked BY B (see strategy.zig: task -[blocks]-> task, from_id is
+-- line). An edge `from_id=task_id, relationship="depends-on", to_id=B` means
+-- task_id depends on B (see strategy.zig: task -[depends-on]-> task, from_id
 -- blocked BY to_id). We extract the edges via line-wise Lua string patterns —
 -- the row shape is flat and stable — because the confined host surface exposes
 -- no Lua JSON decoder and `cli.planar_json` cannot parse NDJSON (multiple
@@ -382,10 +382,10 @@ local function blockers_of(task_id, in_plan)
       local from_id = line:match('"from_id":(%d+)')
       local to_id = line:match('"to_id":(%d+)')
       local rel = line:match('"relationship":"([%w%-]+)"')
-      if from_id ~= nil and to_id ~= nil and rel == "blocks" then
+      if from_id ~= nil and to_id ~= nil and rel == "depends-on" then
         local f = tonumber(from_id)
         local t = tonumber(to_id)
-        -- Only THIS task's outgoing blocks edges (from_id == task_id), and
+        -- Only THIS task's outgoing depends-on edges (from_id == task_id), and
         -- only blockers that are in-plan not-done tasks.
         if f == task_id and in_plan[t] then
           out[#out + 1] = t
@@ -397,7 +397,7 @@ local function blockers_of(task_id, in_plan)
 end
 
 --- compute_depths(task_ids, blockers) — assign each task a wave DEPTH from the
--- `blocks` graph. depth = 0 for a task with no in-plan blocker; otherwise
+-- `depends-on` graph. depth = 0 for a task with no in-plan blocker; otherwise
 -- depth = 1 + max(depth(blocker)). Deterministic longest-path over the DAG.
 --
 -- `blockers` is a map task_id -> array of in-plan blocker task ids (from
@@ -629,7 +629,7 @@ end
 --
 -- Emit the FULL ordered wave list for the plan. Eligibility gating stays the
 -- engine's: recommend-strategy's `parallel_eligible` IS wave 1's membership
--- candidate pool. The `blocks` graph is walked ONLY to ORDER later waves and to
+-- candidate pool. The `depends-on` graph is walked ONLY to ORDER later waves and to
 -- LABEL which tasks are still blocked and by what.
 --
 -- Algorithm:
@@ -639,9 +639,9 @@ end
 --      the eligible-now tasks PLUS the tasks serialized ONLY by rule 1
 --      (blocked_by a not-done task). A rule-1-only serialization means the task
 --      is fine to fan out once its blocker lands — it belongs in a LATER wave.
---      A task serialized by ANY non-blocks rule is NOT wave-eligible ever; it
+--      A task serialized by ANY non-dependency rule is NOT wave-eligible ever; it
 --      is carried in `serialized` and never placed in a wave.
---   3. Read each candidate's in-plan `blocks` blockers and compute wave depth
+--   3. Read each candidate's in-plan `depends-on` blockers and compute wave depth
 --      (0 = unblocked now; k = one past its deepest blocker). Group candidates
 --      by depth → ordered waves. A strict A→B→C chain yields three one-lane
 --      waves; a fully-parallel set yields one wave.
@@ -685,7 +685,7 @@ function waves()
   --    LATER-wave candidate; any other serialization keeps it out of all waves.
   local candidates = {} -- array of { id, slug, title }
   local task_meta = {} -- id -> { slug, title }
-  local in_plan = {} -- id -> true (candidate membership, for blocks filtering)
+  local in_plan = {} -- id -> true (candidate membership, for dependency filtering)
   local serialized = {} -- never-in-a-wave, carried through untouched
 
   for _, t in ipairs(eligible) do
@@ -695,7 +695,7 @@ function waves()
   end
 
   for _, t in ipairs(rec_serialized) do
-    -- Determine whether this task is serialized SOLELY by rule 1 (blocks).
+    -- Determine whether this task is serialized SOLELY by rule 1 (dependency).
     local only_blocks = true
     local reasons = {}
     if type(t.excluded_by) == "table" then
@@ -725,7 +725,7 @@ function waves()
   end
 
   -- Eligibility guard (M4): assert no candidate is ALSO in the never-in-a-wave
-  -- serialized output. A task serialized by any NON-blocks rule went into
+  -- serialized output. A task serialized by any non-dependency rule went into
   -- `serialized` above and must NOT also be a wave candidate. This never fires
   -- against a correct partition (the branches are mutually exclusive); if it
   -- does, the seam refuses to build a wave over an engine-serialized task rather
@@ -735,7 +735,7 @@ function waves()
     never_in_wave[s.task_id] = true
   end
 
-  -- 3. Read `blocks` blockers for each candidate (in-plan only) and compute
+  -- 3. Read `depends-on` blockers for each candidate (in-plan only) and compute
   --    wave depth over the candidate DAG.
   local candidate_ids = {}
   for _, c in ipairs(candidates) do

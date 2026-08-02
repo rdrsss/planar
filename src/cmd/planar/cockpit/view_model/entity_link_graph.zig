@@ -11,10 +11,10 @@ const resolveEntityTitle = @import("entity_title.zig").resolve;
 ///
 /// These are the valid values from the CHECK constraint in
 /// migrations/00004_entity_links.up.sql:
-///   ('derives-from','blocks','addresses','verifies','cites','supersedes','touches')
+///   ('derives-from','depends-on','addresses','verifies','cites','supersedes','touches')
 pub const LinkRelationship = enum {
     derives_from,
-    blocks,
+    depends_on,
     addresses,
     verifies,
     cites,
@@ -23,7 +23,7 @@ pub const LinkRelationship = enum {
 
     pub fn fromText(s: []const u8) ?LinkRelationship {
         if (std.mem.eql(u8, s, "derives-from")) return .derives_from;
-        if (std.mem.eql(u8, s, "blocks")) return .blocks;
+        if (std.mem.eql(u8, s, "depends-on")) return .depends_on;
         if (std.mem.eql(u8, s, "addresses")) return .addresses;
         if (std.mem.eql(u8, s, "verifies")) return .verifies;
         if (std.mem.eql(u8, s, "cites")) return .cites;
@@ -35,7 +35,7 @@ pub const LinkRelationship = enum {
     pub fn toText(self: LinkRelationship) []const u8 {
         return switch (self) {
             .derives_from => "derives-from",
-            .blocks => "blocks",
+            .depends_on => "depends-on",
             .addresses => "addresses",
             .verifies => "verifies",
             .cites => "cites",
@@ -65,7 +65,7 @@ pub const LinkEdgeDirection = enum {
 pub const EntityLinkRow = struct {
     /// The entity_links.id for this edge.
     link_id: i64,
-    /// Relationship kind (e.g. .derives_from, .blocks).
+    /// Relationship kind (e.g. .derives_from, .depends_on).
     relationship: LinkRelationship,
     /// Direction relative to the focus entity.
     direction: LinkEdgeDirection,

@@ -4,7 +4,7 @@
 //!
 //!   • Left pane (navigator): list of all entity_links edges for the
 //!     currently focused entity, in BOTH directions (outbound + inbound),
-//!     across ALL relationship kinds (derives-from, blocks, addresses,
+//!     across ALL relationship kinds (derives-from, depends-on, addresses,
 //!     verifies, cites, supersedes, touches). Each row is formatted as:
 //!
 //!       [out] derives-from  artifact:5 — FoundingSpec
@@ -250,7 +250,7 @@ pub fn render(
 ///
 /// INVARIANT (task 4027): EVERY queried datum is rendered:
 ///   - direction ([out]/[in])
-///   - relationship (derives-from, blocks, etc.)
+///   - relationship (derives-from, depends-on, etc.)
 ///   - kind:id of the other entity
 ///   - resolved title (when available)
 fn renderNavigator(state: *const EntityLinkState, win: Window) void {
@@ -616,9 +616,9 @@ test "entity_link_graph: multiple relationship kinds across both directions (tas
         &.{},
     );
 
-    // Edge 1: task:tid1 is blocked by plan:pid  →  plan→task via 'blocks' (outbound from plan).
+    // Edge 1: task:tid1 is blocked by plan:pid  →  plan→task via 'depends-on' (outbound from plan).
     _ = try d.execParams(
-        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('plan', ?, 'task', ?, 'blocks')",
+        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('plan', ?, 'task', ?, 'depends-on')",
         &.{ .{ .int = pid }, .{ .int = tid1 } },
     );
     // Edge 2: task:tid2 touches plan:pid  →  inbound to plan.
@@ -643,7 +643,7 @@ test "entity_link_graph: multiple relationship kinds across both directions (tas
     var found_touches = false;
     var found_derives = false;
     for (state.data.rows) |row| {
-        if (std.mem.indexOf(u8, row.display_text, "blocks") != null) found_blocks = true;
+        if (std.mem.indexOf(u8, row.display_text, "depends-on") != null) found_blocks = true;
         if (std.mem.indexOf(u8, row.display_text, "touches") != null) found_touches = true;
         if (std.mem.indexOf(u8, row.display_text, "derives-from") != null) found_derives = true;
     }
@@ -651,9 +651,9 @@ test "entity_link_graph: multiple relationship kinds across both directions (tas
     try testing.expect(found_touches);
     try testing.expect(found_derives);
 
-    // Outbound edge (blocks) must be [out]; inbound edges (touches, derives-from) must be [in].
+    // Outbound edge (depends-on) must be [out]; inbound edges (touches, derives-from) must be [in].
     for (state.data.rows) |row| {
-        if (row.relationship == .blocks) {
+        if (row.relationship == .depends_on) {
             try testing.expectEqual(view_model.LinkEdgeDirection.outbound, row.direction);
             try testing.expect(std.mem.indexOf(u8, row.display_text, "[out]") != null);
         }
@@ -743,7 +743,7 @@ test "entity_link_graph: handleKey Enter returns FocusRequest for re-center (tas
         &.{},
     );
     _ = try d.execParams(
-        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', ?, 'task', ?, 'blocks')",
+        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', ?, 'task', ?, 'depends-on')",
         &.{ .{ .int = tid }, .{ .int = tid2 } },
     );
 
@@ -785,7 +785,7 @@ test "entity_link_graph: re-center changes neighborhood (task 4028)" {
     );
     // tid1 blocks tid2; tid2 addresses tid3.
     _ = try d.execParams(
-        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', ?, 'task', ?, 'blocks')",
+        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', ?, 'task', ?, 'depends-on')",
         &.{ .{ .int = tid1 }, .{ .int = tid2 } },
     );
     _ = try d.execParams(
@@ -851,7 +851,7 @@ test "entity_link_graph: renderNavigator renders entity links with all data (tas
         &.{},
     );
     _ = try d.execParams(
-        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('plan', ?, 'task', ?, 'blocks')",
+        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('plan', ?, 'task', ?, 'depends-on')",
         &.{ .{ .int = pid }, .{ .int = tid } },
     );
     // Inbound: a decision derives-from this plan.
@@ -903,7 +903,7 @@ test "entity_link_graph: renderNavigator renders entity links with all data (tas
     try testing.expect(std.mem.indexOf(u8, text, "Links:") != null);
     // Outbound row: [out], blocks, task, Blocked Task.
     try testing.expect(std.mem.indexOf(u8, text, "[out]") != null);
-    try testing.expect(std.mem.indexOf(u8, text, "blocks") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "depends-on") != null);
     try testing.expect(std.mem.indexOf(u8, text, "Blocked Task") != null);
     // Inbound row: [in], derives-from, Derived Decision.
     try testing.expect(std.mem.indexOf(u8, text, "[in]") != null);

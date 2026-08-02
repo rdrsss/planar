@@ -1,7 +1,7 @@
 //! engine.grouping.load — M3.2 data-loading layer for `groups recommend`.
 //!
 //! The DB-facing bridge between the plan's persisted state (the `closures`
-//! table from M2, the `entity_links` `blocks` edges, the open `tasks`) and the
+//! table from M2, the `entity_links` `depends-on` edges, the open `tasks`) and the
 //! PURE `greedy.group` solver (M3.1). It loads three things for a plan and
 //! hands them to greedy as plain slices:
 //!
@@ -12,15 +12,15 @@
 //!      role `modify` / `reference`. `transitive` rows are EXCLUDED (the
 //!      effective-closure default, migration 00026 / spec v0.1 §1.2). Each
 //!      row becomes a `greedy.Unit{ qualified = symbol, role, weight }`.
-//!   3. The task dependency DAG from `entity_links` `blocks` edges.
+//!   3. The task dependency DAG from `entity_links` `depends-on` edges.
 //!
 //! ## Edge-direction mapping (the M3.1 reviewer caveat — load-bearing)
 //!
-//! `strategy.zig`'s convention is `task -[blocks]-> task` meaning **from_id is
-//! blocked BY to_id** (see `task.markBlocked` / strategy rule 1). greedy's
+//! `strategy.zig`'s convention is `task -[depends-on]-> task` meaning **from_id
+//! depends on to_id** (see `task.markBlocked` / strategy rule 1). greedy's
 //! `Dep` contract is the OPPOSITE orientation: `Dep{ blocked, blocker }` where
 //! `blocker` must complete before `blocked`. So an `entity_links` row
-//! `(from_id, to_id, relationship='blocks')` maps to:
+//! `(from_id, to_id, relationship='depends-on')` maps to:
 //!
 //!     Dep{ .blocked = from_id, .blocker = to_id }
 //!
@@ -254,7 +254,7 @@ fn loadInputs(d: *db.sqlite.Db, gpa: std.mem.Allocator, plan_id: i64) Error!Load
         tasks[i] = .{ .id = id, .units = try loadUnits(d, a, id) };
     }
 
-    // 3. Dependency DAG from entity_links `blocks` edges, restricted to edges
+    // 3. Dependency DAG from entity_links `depends-on` edges, restricted to edges
     //    BETWEEN the plan's open tasks (an edge to a done/foreign task does
     //    not constrain the open-task grouping). Edge direction mapped per the
     //    caveat: from_id -> blocked, to_id -> blocker.
@@ -382,11 +382,11 @@ fn loadUnits(
 }
 
 /// The dependency DAG over the plan's open tasks, read from `entity_links`
-/// `blocks` edges. ONLY edges whose BOTH endpoints are in the open-task set
+/// `depends-on` edges. ONLY edges whose BOTH endpoints are in the open-task set
 /// are returned (an edge to a done/foreign task does not constrain how the
 /// open tasks group). Edge direction mapped per the caveat:
 ///
-///     entity_links(from_id, to_id, 'blocks')  ⇒  Dep{ blocked = from_id,
+///     entity_links(from_id, to_id, 'depends-on')  ⇒  Dep{ blocked = from_id,
 ///                                                      blocker = to_id }
 ///
 /// because `strategy.zig`'s convention is `from_id is blocked BY to_id`,
@@ -402,7 +402,7 @@ fn loadDeps(
 
     var stmt = d.prepare(
         \\select from_id, to_id from entity_links
-        \\where from_kind = 'task' and to_kind = 'task' and relationship = 'blocks'
+        \\where from_kind = 'task' and to_kind = 'task' and relationship = 'depends-on'
     ) catch return Error.QueryFailed;
     defer stmt.finalize();
 
@@ -480,7 +480,7 @@ fn seedClosure(
 
 fn linkBlocks(d: *db.sqlite.Db, from_id: i64, to_id: i64) !void {
     _ = try d.execParams(
-        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', ?, 'task', ?, 'blocks')",
+        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', ?, 'task', ?, 'depends-on')",
         &.{ .{ .int = from_id }, .{ .int = to_id } },
     );
 }
@@ -492,7 +492,7 @@ test "load.loadDeps: edge-direction — from_id=blocked, to_id=blocker (orientat
     // below fail immediately — no amount of merge-symmetry in a higher-level
     // fixture can paper over a wrong field value here.
     //
-    // Fixture: two entity_links(from_id=A, to_id=B, 'blocks') rows (with
+    // Fixture: two entity_links(from_id=A, to_id=B, 'depends-on') rows (with
     // distinct from/to ids), covering both "from < to" and "from > to" orderings
     // so that a transposition cannot accidentally pass both.
     const a = testing.allocator;
@@ -610,7 +610,7 @@ test "load.recommend: every slice respects the budget" {
     for (rec.grouping.slices) |s| try testing.expect(s.cost <= 100);
 }
 
-test "load.recommend: blocks edge maps to a schedulable grouping (caveat guard)" {
+test "load.recommend: depends-on edge maps to a schedulable grouping (caveat guard)" {
     const a = testing.allocator;
     var d = try setupTestDb(a);
     defer d.close();

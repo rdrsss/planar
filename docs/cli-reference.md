@@ -908,7 +908,7 @@ Two open tasks are parallel-eligible iff **all six** hold:
 
 | Rule | Condition |
 |------|-----------|
-| 1 | No `blocked_by` chain (transitive `blocks` closure) to another not-done task in the plan. |
+| 1 | No `blocked_by` chain (transitive `depends-on` closure) to another not-done task in the plan. |
 | 2 | Disjoint touch set. A task's touch set is the file paths it declares via `task touches add <task> <repo> --path <p>` (`task_touch_paths`), with the coarse repo slug (`entity_links` `touches`) used only for repos that have no path-level declaration. Path detail refines the coarse signal: two tasks editing different files in the same repo are disjoint (eligible). An **empty** touch set is treated as "touches everything" and is never eligible. Two tasks whose touch sets intersect **both** drop (drop-both-on-tie). Eligibility is only as complete as the declared touches — declaring touches accurately is operator/orchestrator hygiene (the omission failure mode is safe: an undeclared task serializes rather than falsely parallelizing). |
 | 3 | No schema migration touched — any task touching `migrations/*.sql` serializes (migration numbering is linear). Unilateral drop. |
 | 4 | No singleton authoritative file touched — `CLAUDE.md`, `AGENTS.md`, `docs/cli-reference.md`, `docs/architecture.md`. Unilateral drop. |
@@ -1119,7 +1119,7 @@ planar plan link <plan-id> <to-kind:to-id> --relationship <kind>
 
 | Flag | Description | Required |
 |------|-------------|----------|
-| `--relationship <kind>` | One of `derives-from`, `blocks`, `addresses`, `verifies`, `cites`, `supersedes`. | yes |
+| `--relationship <kind>` | One of `derives-from`, `depends-on`, `addresses`, `verifies`, `cites`, `supersedes`. | yes |
 
 **Schema effects:** Inserts into `entity_links(from_kind='plan', from_id, to_kind, to_id, relationship)`.
 
@@ -1391,7 +1391,7 @@ planar task block <task-id> --on <task-id> [--force]
 
 **Schema effects:**
 - Updates `tasks(status='blocked', updated_at)` for the blocked task.
-- Inserts into `entity_links(from_kind='task', from_id=<task-id>, to_kind='task', to_id=<on-task-id>, relationship='blocks')`.
+- Inserts into `entity_links(from_kind='task', from_id=<task-id>, to_kind='task', to_id=<on-task-id>, relationship='depends-on')`.
 
 **Capture:** Appends `session_entries` row with `prefix='action'`.
 
@@ -1416,7 +1416,7 @@ planar task link <task-id> <to-kind:to-id> --relationship <kind>
 
 | Flag | Description | Required |
 |------|-------------|----------|
-| `--relationship <kind>` | One of `derives-from`, `blocks`, `addresses`, `verifies`, `cites`, `supersedes`. | yes |
+| `--relationship <kind>` | One of `derives-from`, `depends-on`, `addresses`, `verifies`, `cites`, `supersedes`. | yes |
 
 **Schema effects:** Inserts into `entity_links(from_kind='task', from_id, to_kind, to_id, relationship)`.
 
@@ -4516,7 +4516,7 @@ The `stale` bucket aggregates both `status='stale'` rows and `status='active'` r
 
 ## Domain: `links`
 
-Internal cross-cutting entity relationships. The `entity_links` table stores typed relationships between any two Planar entities (e.g. a task cites an artifact, a plan blocks another plan). This domain is distinct from the top-level `link` / `unlink` commands, which operate on `external_links` (operational plane bindings to Jira, GitHub Issues, etc.).
+Internal cross-cutting entity relationships. The `entity_links` table stores typed relationships between any two Planar entities (e.g. a task cites an artifact, a plan depends on another plan). This domain is distinct from the top-level `link` / `unlink` commands, which operate on `external_links` (operational plane bindings to Jira, GitHub Issues, etc.).
 
 | Table | Purpose |
 |-------|---------|
@@ -4545,7 +4545,7 @@ planar links add <from-kind:from-id> <to-kind:to-id> --relationship <rel>
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--relationship <rel>` | Relationship type. Accepted values: `derives-from`, `blocks`, `addresses`, `verifies`, `cites`, `supersedes`, `touches`. | Required. |
+| `--relationship <rel>` | Relationship type. Accepted values: `derives-from`, `depends-on`, `addresses`, `verifies`, `cites`, `supersedes`, `touches`. | Required. |
 
 **Valid kinds:** `plan`, `plan_step`, `task`, `question`, `test_scenario`, `artifact`, `decision`, `session`, `repo`.
 
@@ -4588,13 +4588,13 @@ planar links list <kind:id>
 ```
 id   direction  relationship    peer
 22   from       cites           artifact:3 "Billing Tech Spec"
-31   to         blocks          task:38 "Implement retry logic"
+31   to         depends-on      task:38 "Implement retry logic"
 ```
 
 **Output (`--json`):** One object per link:
 ```json
 {"id":22,"from_kind":"task","from_id":42,"to_kind":"artifact","to_id":3,"relationship":"cites"}
-{"id":31,"from_kind":"task","from_id":38,"to_kind":"task","to_id":42,"relationship":"blocks"}
+{"id":31,"from_kind":"task","from_id":38,"to_kind":"task","to_id":42,"relationship":"depends-on"}
 ```
 
 **Schema effects:** Reads `entity_links`.
@@ -5911,7 +5911,7 @@ planar-agent context resolve --status consumed|superseded (--id <record-id> | --
 | `complete` | Verify claim active → UPDATE action ended_at + outcome='ok' → UPDATE task status='done' → UPDATE claim status='completed'. |
 | `fail`     | Same as complete with outcome='error', task status='todo', claim status='aborted', and `failure_category` set from `--category` (default `unknown`). |
 | `release`  | Same as fail with outcome='aborted', claim status='released'. (Distinct semantically from fail — "graceful give-up" vs "I tried and failed".) |
-| `block`    | INSERT `entity_links(from=task, to=blocker, relationship='blocks')` → UPDATE task status='blocked' → UPDATE action ended_at + outcome='aborted' → UPDATE claim status='released'. |
+| `block`    | INSERT `entity_links(from=task, to=blocker, relationship='depends-on')` → UPDATE task status='blocked' → UPDATE action ended_at + outcome='aborted' → UPDATE claim status='released'. |
 | `peek`     | Read-only: same SELECT as step 1 of pull; no writes. |
 | `reconcile`| (1) Claim sweep: SELECT expired active claims → UPDATE status='stale' and optional operator-supplied `failure_category`; a claimed task in `doing` returns to `todo` only when the claim has an ownership action and no active replacement. Direct-claim `claim_check` markers are closed as aborted; the existing ended-session sweep closes other orphaned actions. (2) Run sweep: SELECT running `workflow_runs` rows → `kill(pid,0)` each → ESRCH ⇒ mark `abandoned` + set `ended_at`. Both sweeps run inside the same `BEGIN IMMEDIATE` transaction. `--dry-run` returns candidates + run_candidates without writing. `--plan <id>` scopes both sweeps to claims/actions/runs belonging to the given plan. |
 | `abort`    | UPDATE claim status='aborted' + released_at + release_reason + optional operator-supplied `failure_category` → restore `doing` → `todo` only for a default direct task claim carrying its transactional `claim_check` marker → close that marker as aborted → INSERT audit `agent_actions` row naming the aborting session. Primitive `--no-transition` and pull claims retain their previous task-status behavior. |

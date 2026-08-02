@@ -26,7 +26,7 @@
 //!   - Status enum values are those in migration 00003_work_items.up.sql:
 //!       check(status in ('todo','doing','blocked','done','cancelled'))
 //!     The board shows todo→open, doing, blocked, done. Cancelled excluded.
-//!   - Blocking links use the 'blocks' relationship from entity_links per
+//!   - Blocking links use the 'depends-on' relationship from entity_links per
 //!     migration 00004_entity_links.up.sql.
 
 const std = @import("std");
@@ -876,7 +876,7 @@ test "task_board: detail pane shows blocking links (task 4020)" {
         &.{},
     );
     _ = try d.execParams(
-        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', ?, 'task', ?, 'blocks')",
+        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', ?, 'task', ?, 'depends-on')",
         &.{ .{ .int = blocker_task }, .{ .int = blocked_task } },
     );
 
@@ -952,7 +952,7 @@ test "task_board: renderDetail renders reopens + touch_paths + links (tasks 4019
         &.{},
     );
     _ = try d.execParams(
-        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', ?, 'task', ?, 'blocks')",
+        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', ?, 'task', ?, 'depends-on')",
         &.{ .{ .int = blocker_id }, .{ .int = tid } },
     );
     // Also seed a this_blocks link: tid blocks another task.
@@ -961,7 +961,7 @@ test "task_board: renderDetail renders reopens + touch_paths + links (tasks 4019
         &.{},
     );
     _ = try d.execParams(
-        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', ?, 'task', ?, 'blocks')",
+        "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', ?, 'task', ?, 'depends-on')",
         &.{ .{ .int = tid }, .{ .int = blockee_id } },
     );
 

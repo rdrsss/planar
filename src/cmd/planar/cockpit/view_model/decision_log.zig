@@ -193,7 +193,7 @@ pub fn queryDecisionLog(
 ///   from_kind='decision', from_id=decision_id, relationship='derives-from'
 ///
 /// Per migration 00004_entity_links.up.sql:
-///   relationship check: ('derives-from','blocks','addresses','verifies','cites','supersedes','touches')
+///   relationship check: ('derives-from','depends-on','addresses','verifies','cites','supersedes','touches')
 ///
 /// Resolves the target title by joining to the appropriate table.
 /// Unresolvable targets (unknown kind) are surfaced with label "<kind>:<id>".

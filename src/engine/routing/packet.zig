@@ -152,7 +152,7 @@ pub fn assembleTask(allocator: std.mem.Allocator, d: *db.sqlite.Db, task_id: i64
     const questions = try linkedEvidence(a, d, task_id, "question", "addresses", "select 'question',id,'question:'||id,coalesce(answer_body,body,title),status,'question:'||id,title from questions where id=?\x00");
     const anchor_plan_id = if (anchors.len == 1) anchors[0].id else if (plan_id) |id| id else 0;
     const scenarios = try scenarioEvidence(a, d, task_id, anchor_plan_id);
-    const dependencies = try linkedEvidence(a, d, task_id, "task", "blocks", "select 'dependency',id,'task:'||id,title,case when status='done' then 'satisfied' else status end,'task:'||id,title from tasks where id=?\x00");
+    const dependencies = try linkedEvidence(a, d, task_id, "task", "depends-on", "select 'dependency',id,'task:'||id,title,case when status='done' then 'satisfied' else status end,'task:'||id,title from tasks where id=?\x00");
     const touches = try pathEvidence(a, d, task_id);
     const claims = try claimEvidence(a, d, task_id);
     const gates = try gateEvidence(a, task_id, body);
@@ -421,7 +421,7 @@ fn factSemanticSource(
         else if (std.mem.eql(u8, locator, "links#scenarios"))
             "scenario"
         else if (std.mem.eql(u8, locator, "links#blocks-outgoing"))
-            "blocks"
+            "depends-on"
         else
             null;
         if (count_kind) |kind| {
@@ -430,7 +430,7 @@ fn factSemanticSource(
             else if (std.mem.eql(u8, kind, "scenario"))
                 try countQuery(d, "select count(*) from entity_links where to_kind='task' and to_id=? and from_kind='test_scenario' and relationship='verifies'\x00", task_id)
             else
-                try countQuery(d, "select count(*) from entity_links where from_kind='task' and from_id=? and to_kind='task' and relationship='blocks'\x00", task_id);
+                try countQuery(d, "select count(*) from entity_links where from_kind='task' and from_id=? and to_kind='task' and relationship='depends-on'\x00", task_id);
             return try std.fmt.allocPrint(a, "{s}:{d}", .{ kind, count });
         }
     }
@@ -460,10 +460,13 @@ fn factSemanticSource(
     }
     if (std.mem.eql(u8, fact_kind, "touch"))
         return if (try liveRelationship(d, task_id, source_kind, source_id, "touches", .outgoing)) "touches" else null;
+    // `blocks`/`blocked_by` are routing FACT KINDS, a separate vocabulary from
+    // the entity_links relationship (renamed to `depends-on` in 00033). The
+    // fact kind is unchanged; only the relationship it resolves against moved.
     if (std.mem.eql(u8, fact_kind, "blocks"))
-        return if (try liveRelationship(d, task_id, source_kind, source_id, "blocks", .outgoing)) "blocks" else null;
+        return if (try liveRelationship(d, task_id, source_kind, source_id, "depends-on", .outgoing)) "depends-on" else null;
     if (std.mem.eql(u8, fact_kind, "blocked_by"))
-        return if (try liveRelationship(d, task_id, source_kind, source_id, "blocks", .incoming)) "blocks" else null;
+        return if (try liveRelationship(d, task_id, source_kind, source_id, "depends-on", .incoming)) "depends-on" else null;
     return null;
 }
 

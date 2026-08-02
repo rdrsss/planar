@@ -434,7 +434,7 @@ fn stageLinkFacts(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan_id
         \\  or (el.to_kind = 'task' and el.to_id = t.id)
         \\)
         \\where p.parent_plan_id = ?
-        \\  and el.relationship in ('touches', 'blocks')
+        \\  and el.relationship in ('touches', 'depends-on')
         \\order by t.id, el.from_kind, el.from_id, el.to_kind, el.to_id
     ) catch return Error.QueryFailed;
     defer stmt.finalize();
@@ -946,10 +946,10 @@ test "materialization preserves lineage, replay identity, rollback, and model ne
         \\) values ('test_scenario', 1, 'task', 1, 'verifies');
         \\insert into entity_links (
         \\  from_kind, from_id, to_kind, to_id, relationship
-        \\) values ('task', 1, 'task', 99, 'blocks');
+        \\) values ('task', 1, 'task', 99, 'depends-on');
         \\insert into entity_links (
         \\  from_kind, from_id, to_kind, to_id, relationship
-        \\) values ('task', 98, 'task', 1, 'blocks')
+        \\) values ('task', 98, 'task', 1, 'depends-on')
     );
 
     const roadmap_citations = [_]RoadmapCitation{.{

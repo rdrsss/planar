@@ -920,7 +920,7 @@ An entity link is a typed cross-entity relationship. Any two entities of any kin
 | Type | Meaning |
 |------|---------|
 | `derives-from` | This entity was derived from the referenced entity |
-| `blocks` | This entity cannot proceed until the referenced entity is resolved |
+| `depends-on` | This entity cannot proceed until the referenced entity is resolved |
 | `addresses` | This entity addresses (resolves or mitigates) the referenced entity |
 | `verifies` | This entity (typically a scenario) verifies the referenced entity |
 | `cites` | This entity references the referenced entity for context |

@@ -68,14 +68,14 @@ test "scenario: entity-link verbs task/plan/artifact link create edges" {
     // task link <task> <ref> --relationship; plan link; artifact link.
     // (artifact add --plan already made artifact->p1 derives-from, so link
     // the artifact to p2 to avoid the unique-edge conflict.)
-    gpa.free(suite.mustRun(&.{ "task", "link", task_id, p2ref, "--relationship", "blocks", "--json" }));
-    gpa.free(suite.mustRun(&.{ "plan", "link", p1s, p2ref, "--relationship", "blocks", "--json" }));
+    gpa.free(suite.mustRun(&.{ "task", "link", task_id, p2ref, "--relationship", "depends-on", "--json" }));
+    gpa.free(suite.mustRun(&.{ "plan", "link", p1s, p2ref, "--relationship", "depends-on", "--json" }));
     gpa.free(suite.mustRun(&.{ "artifact", "link", artifact_id, p2ref, "--relationship", "derives-from", "--json" }));
 
     // Confirm at least one edge surfaces via links list on the task.
     const links = suite.mustRun(&.{ "links", "list", std.fmt.allocPrint(arena, "task:{d}", .{task.id}) catch unreachable });
     defer gpa.free(links);
-    try std.testing.expect(std.mem.containsAtLeast(u8, links, 1, "blocks"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, links, 1, "depends-on"));
 }
 
 test "scenario: editor flows config/plan/question/scenario/decision/workbench edit" {
