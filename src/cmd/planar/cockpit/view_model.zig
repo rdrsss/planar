@@ -1120,61 +1120,62 @@ test "view_model: queryTaskBlockingLinks on task with no links returns empty (ta
 }
 
 test "view_model: queryTaskBlockingLinks surfaces blocks-this direction (task 4020)" {
-    // Fixture: A --depends-on--> B, queried from B's perspective, asserting
-    // direction=.blocks_this. Under 00033 semantics that edge means A depends
-    // on B, so the set is really "tasks B blocks" — the assignment is inverted
-    // (task 5761). This test pins CURRENT behavior; it moves with that fix.
+    // Fixture: depender --depends-on--> dependency, meaning the dependency
+    // must finish first, so the DEPENDENCY blocks the DEPENDER.
+    // Queried from the depender, the dependency is .blocks_this (task 5761 —
+    // this was asserted the other way round until the direction fix).
     // Valid relationship set, per migration 00033:
     //   check(relationship in ('derives-from','depends-on','addresses','verifies','cites','supersedes','touches'))
     const a = testing.allocator;
     var d = try setupTestDb(a);
     defer d.close();
 
-    const task_a = try d.execParams(
-        "insert into tasks (scope_kind, title, status) values ('global','TaskA','done')",
+    const dependency = try d.execParams(
+        "insert into tasks (scope_kind, title, status) values ('global','Dependency','done')",
         &.{},
     );
-    const task_b = try d.execParams(
-        "insert into tasks (scope_kind, title, status) values ('global','TaskB','blocked')",
+    const depender = try d.execParams(
+        "insert into tasks (scope_kind, title, status) values ('global','Depender','blocked')",
         &.{},
     );
-    // A blocks B: from_id=A, to_id=B.
     _ = try d.execParams(
         "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', ?, 'task', ?, 'depends-on')",
-        &.{ .{ .int = task_a }, .{ .int = task_b } },
+        &.{ .{ .int = depender }, .{ .int = dependency } },
     );
 
-    // Query from B's perspective.
-    const rows = try queryTaskBlockingLinks(&d, a, task_b);
+    // From the depender's perspective: what blocks me?
+    const rows = try queryTaskBlockingLinks(&d, a, depender);
     defer TaskLinkRow.deinitMany(rows, a);
 
     try testing.expectEqual(@as(usize, 1), rows.len);
     try testing.expectEqual(LinkDirection.blocks_this, rows[0].direction);
     // Label format: "task:<id> — <title>".
-    try testing.expect(std.mem.indexOf(u8, rows[0].label, "TaskA") != null);
+    try testing.expect(std.mem.indexOf(u8, rows[0].label, "Dependency") != null);
 }
 
 test "view_model: queryTaskBlockingLinks surfaces blocked-by-this direction (task 4020)" {
-    // Task A blocks task B. Query from A's perspective → direction=.this_blocks.
+    // Same edge as above, queried from the other end: from the DEPENDENCY,
+    // the depender is a task this one blocks (.this_blocks).
     const a = testing.allocator;
     var d = try setupTestDb(a);
     defer d.close();
 
-    const task_a = try d.execParams(
+    const blocker = try d.execParams(
         "insert into tasks (scope_kind, title, status) values ('global','Blocker','doing')",
         &.{},
     );
-    const task_b = try d.execParams(
+    const blockee = try d.execParams(
         "insert into tasks (scope_kind, title, status) values ('global','Blockee','blocked')",
         &.{},
     );
+    // Blockee depends on Blocker, so Blocker blocks Blockee.
     _ = try d.execParams(
         "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', ?, 'task', ?, 'depends-on')",
-        &.{ .{ .int = task_a }, .{ .int = task_b } },
+        &.{ .{ .int = blockee }, .{ .int = blocker } },
     );
 
-    // Query from A's perspective.
-    const rows = try queryTaskBlockingLinks(&d, a, task_a);
+    // From the blocker's perspective: what do I block?
+    const rows = try queryTaskBlockingLinks(&d, a, blocker);
     defer TaskLinkRow.deinitMany(rows, a);
 
     try testing.expectEqual(@as(usize, 1), rows.len);
@@ -1183,7 +1184,7 @@ test "view_model: queryTaskBlockingLinks surfaces blocked-by-this direction (tas
 }
 
 test "view_model: queryTaskBlockingLinks both directions simultaneously (task 4020)" {
-    // Task X blocks task Y; task Z blocks task X.
+    // Y depends on X (so X blocks Y); X depends on Z (so Z blocks X).
     // From X's perspective: 1 blocks_this (Z blocks X) + 1 this_blocks (X blocks Y).
     const a = testing.allocator;
     var d = try setupTestDb(a);
@@ -1201,15 +1202,15 @@ test "view_model: queryTaskBlockingLinks both directions simultaneously (task 40
         "insert into tasks (scope_kind, title, status) values ('global','Z','done')",
         &.{},
     );
-    // Z blocks X.
+    // Z blocks X  ⇒  X depends on Z.
     _ = try d.execParams(
         "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', ?, 'task', ?, 'depends-on')",
-        &.{ .{ .int = task_z }, .{ .int = task_x } },
+        &.{ .{ .int = task_x }, .{ .int = task_z } },
     );
-    // X blocks Y.
+    // X blocks Y  ⇒  Y depends on X.
     _ = try d.execParams(
         "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', ?, 'task', ?, 'depends-on')",
-        &.{ .{ .int = task_x }, .{ .int = task_y } },
+        &.{ .{ .int = task_y }, .{ .int = task_x } },
     );
 
     const rows = try queryTaskBlockingLinks(&d, a, task_x);
@@ -1258,14 +1259,15 @@ test "view_model: queryTaskBoardDetail full detail: body + reopens + touch_paths
         &.{ .{ .int = tid }, .{ .int = proj_id } },
     );
 
-    // Seed a blocking link: another task blocks this one.
+    // Seed a blocking link: another task blocks this one, i.e. THIS task
+    // depends on it (this→blocker).
     const blocker_id = try d.execParams(
         "insert into tasks (scope_kind, title, status) values ('global','Blocker','done')",
         &.{},
     );
     _ = try d.execParams(
         "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', ?, 'task', ?, 'depends-on')",
-        &.{ .{ .int = blocker_id }, .{ .int = tid } },
+        &.{ .{ .int = tid }, .{ .int = blocker_id } },
     );
 
     const detail_opt = try queryTaskBoardDetail(&d, a, tid);

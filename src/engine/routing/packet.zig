@@ -416,18 +416,24 @@ fn factSemanticSource(
             return scalarText(a, d, "select coalesce(next_action,'') from tasks where id=?\x00", task_id);
         if (std.mem.eql(u8, locator, "body"))
             return scalarText(a, d, "select coalesce(body,'') from tasks where id=?\x00", task_id);
-        const count_kind: ?[]const u8 = if (std.mem.eql(u8, locator, "links#touches"))
-            "touch"
-        else if (std.mem.eql(u8, locator, "links#scenarios"))
-            "scenario"
-        else if (std.mem.eql(u8, locator, "links#blocks-outgoing"))
-            "depends-on"
+        // These labels MUST match what materialize.stageCount stored, byte for
+        // byte, or the fact is permanently stale. Shared constants, not
+        // literals — see the note on materialize.counted_kind_dependency
+        // (task 5762). In particular the dependency label stays `blocks`: it
+        // is a fact kind, not the renamed entity_links relationship, even
+        // though the live count below correctly queries `depends-on`.
+        const count_kind: ?[]const u8 = if (std.mem.eql(u8, locator, materialize.locator_touches))
+            materialize.counted_kind_touch
+        else if (std.mem.eql(u8, locator, materialize.locator_scenarios))
+            materialize.counted_kind_scenario
+        else if (std.mem.eql(u8, locator, materialize.locator_dependency_fanout))
+            materialize.counted_kind_dependency
         else
             null;
         if (count_kind) |kind| {
-            const count = if (std.mem.eql(u8, kind, "touch"))
+            const count = if (std.mem.eql(u8, kind, materialize.counted_kind_touch))
                 try countQuery(d, "select count(*) from entity_links where from_kind='task' and from_id=? and relationship='touches'\x00", task_id)
-            else if (std.mem.eql(u8, kind, "scenario"))
+            else if (std.mem.eql(u8, kind, materialize.counted_kind_scenario))
                 try countQuery(d, "select count(*) from entity_links where to_kind='task' and to_id=? and from_kind='test_scenario' and relationship='verifies'\x00", task_id)
             else
                 try countQuery(d, "select count(*) from entity_links where from_kind='task' and from_id=? and to_kind='task' and relationship='depends-on'\x00", task_id);
@@ -1575,4 +1581,94 @@ test "generic bootstrap: placeholder next actions are refused, specific ones are
     // "todo" as a substring of real prose is not the placeholder: the check is
     // an exact match for that one, not a contains.
     try std.testing.expect(!genericNextAction("Sweep the remaining TODO comments in db/migrate.zig"));
+}
+
+test "dependency_fanout facts stay current across the materializer/packet seam" {
+    // REGRESSION (task 5762). `materialize.stageCount` writes the semantic
+    // source `"<counted_kind>:<count>"`; `factSemanticSource` recomputes it
+    // live to decide freshness. The 00033 rename moved only the packet side's
+    // dependency label to `depends-on` while the materializer kept `blocks`,
+    // so every dependency_fanout fact compared unequal and went permanently
+    // stale -- silently. The task's packet then reported `stale_fact` and
+    // never became ready, even with the dependency satisfied.
+    //
+    // This runs the REAL materializer and then the REAL packet, so drift on
+    // either side fails here rather than only in production.
+    const allocator = std.testing.allocator;
+    var conn = try db.sqlite.Db.openMemory();
+    defer conn.close();
+    try db.migrate.applyAll(&conn, allocator);
+    try conn.exec("insert into projects (slug, name) values ('fanout', 'Fanout')");
+    try conn.exec(
+        \\insert into plans (scope_kind, scope_id, title, slug, status)
+        \\values ('repo', 1, 'Anchor', 'anchor', 'active');
+        \\insert into plans (
+        \\  scope_kind, scope_id, title, slug, parent_plan_id, status
+        \\) values ('repo', 1, 'Milestone', 'milestone', 1, 'active');
+        \\insert into tasks (
+        \\  scope_kind, scope_id, plan_id, title, body, next_action, slug, status
+        \\) values
+        \\  ('repo', 1, 2, 'No deps',
+        \\   '## Acceptance Criteria' || char(10) || char(10) ||
+        \\   '- Emits policy_version and named readiness reasons.',
+        \\   'Emit the readiness reasons.', 'no-deps', 'todo'),
+        \\  ('repo', 1, 2, 'One dep',
+        \\   '## Acceptance Criteria' || char(10) || char(10) ||
+        \\   '- Emits policy_version and named readiness reasons.',
+        \\   'Emit the readiness reasons.', 'one-dep', 'todo'),
+        \\  ('repo', 1, 2, 'Two deps',
+        \\   '## Acceptance Criteria' || char(10) || char(10) ||
+        \\   '- Emits policy_version and named readiness reasons.',
+        \\   'Emit the readiness reasons.', 'two-deps', 'todo'),
+        \\  ('repo', 1, 2, 'Dependency A', 'Done.', 'Done.', 'dep-a', 'done'),
+        \\  ('repo', 1, 2, 'Dependency B', 'Done.', 'Done.', 'dep-b', 'done');
+        \\insert into entity_links (from_kind, from_id, to_kind, to_id, relationship)
+        \\values
+        \\  ('task', 2, 'task', 4, 'depends-on'),
+        \\  ('task', 3, 'task', 4, 'depends-on'),
+        \\  ('task', 3, 'task', 5, 'depends-on');
+    );
+
+    const citations = [_]materialize.RoadmapCitation{};
+    try materialize.reconcile(&conn, allocator, 1, &citations, null);
+
+    // Pin the counts the materializer actually recorded, so the fixture cannot
+    // silently stop exercising the multiple-dependency case.
+    try std.testing.expectEqual(@as(i64, 1), try countQuery(
+        &conn,
+        "select coalesce(value_integer,0) from routing_task_facts where task_id=? and fact_kind='dependency_fanout'\x00",
+        2,
+    ));
+    try std.testing.expectEqual(@as(i64, 2), try countQuery(
+        &conn,
+        "select coalesce(value_integer,0) from routing_task_facts where task_id=? and fact_kind='dependency_fanout'\x00",
+        3,
+    ));
+    // Zero dependencies: stageCount stores nothing, so there is no fact to go
+    // stale. Pinned so a change that starts emitting a 0-count fact has to
+    // confront the freshness contract deliberately.
+    try std.testing.expectEqual(@as(i64, 0), try countQuery(
+        &conn,
+        "select count(*) from routing_task_facts where task_id=? and fact_kind='dependency_fanout'\x00",
+        1,
+    ));
+
+    // The regression itself: every dependency_fanout fact reads `current`,
+    // and no packet reports stale_fact.
+    var saw_fanout = false;
+    for ([_]i64{ 1, 2, 3 }) |task_id| {
+        var pkt = try assembleTask(allocator, &conn, task_id);
+        defer pkt.deinit();
+        for (pkt.packet.input.facts) |fact| {
+            if (std.mem.eql(u8, fact.kind, "dependency_fanout")) {
+                saw_fanout = true;
+                try std.testing.expectEqualStrings("current", fact.freshness);
+            }
+        }
+        try std.testing.expect(
+            std.mem.indexOfScalar(ReadinessReason, pkt.packet.reasons, .stale_fact) == null,
+        );
+    }
+    // Guard against the assertions above passing vacuously.
+    try std.testing.expect(saw_fanout);
 }

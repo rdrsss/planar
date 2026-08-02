@@ -875,9 +875,10 @@ test "task_board: detail pane shows blocking links (task 4020)" {
         "insert into tasks (scope_kind, title, status) values ('global','Blocker','done')",
         &.{},
     );
+    // Blockee depends on Blocker, so Blocker blocks Blockee.
     _ = try d.execParams(
         "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', ?, 'task', ?, 'depends-on')",
-        &.{ .{ .int = blocker_task }, .{ .int = blocked_task } },
+        &.{ .{ .int = blocked_task }, .{ .int = blocker_task } },
     );
 
     var state = BoardState.init(a);

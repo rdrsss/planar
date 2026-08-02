@@ -465,10 +465,35 @@ fn stageLinkFacts(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan_id
         },
     };
 
-    try stageCount(d, allocator, anchor_plan_id, "touch", "breadth", "links#touches");
-    try stageCount(d, allocator, anchor_plan_id, "scenario", "validation_burden", "links#scenarios");
-    try stageCount(d, allocator, anchor_plan_id, "blocks", "dependency_fanout", "links#blocks-outgoing");
+    try stageCount(d, allocator, anchor_plan_id, counted_kind_touch, "breadth", locator_touches);
+    try stageCount(d, allocator, anchor_plan_id, counted_kind_scenario, "validation_burden", locator_scenarios);
+    try stageCount(d, allocator, anchor_plan_id, counted_kind_dependency, "dependency_fanout", locator_dependency_fanout);
 }
+
+/// Semantic-source labels for the aggregate facts produced by `stageCount`.
+///
+/// `stageCount` stores `"<counted_kind>:<count>"` as a fact's semantic source,
+/// and `routing.packet.factSemanticSource` RECOMPUTES that same string live to
+/// decide freshness. The two must agree byte-for-byte: if they drift, every
+/// affected fact is permanently `stale` and the task's packet never becomes
+/// ready — with no error anywhere, because each side is independently
+/// well-formed.
+///
+/// They DID drift (task 5762): the 00033 rename changed the packet side's
+/// dependency label to `depends-on` while the materializer kept `blocks`, so
+/// dependency_fanout facts went permanently stale. Both sides now read these
+/// constants so the mismatch cannot recur.
+///
+/// `counted_kind_dependency` is deliberately still `blocks`: it is a routing
+/// FACT KIND, a separate vocabulary from the `entity_links.relationship` value
+/// the 00033 rename moved. Changing it would invalidate every stored digest.
+pub const counted_kind_touch = "touch";
+pub const counted_kind_scenario = "scenario";
+pub const counted_kind_dependency = "blocks";
+
+pub const locator_touches = "links#touches";
+pub const locator_scenarios = "links#scenarios";
+pub const locator_dependency_fanout = "links#blocks-outgoing";
 
 fn stageCount(
     d: *db.sqlite.Db,

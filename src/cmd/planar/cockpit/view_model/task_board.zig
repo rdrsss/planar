@@ -120,15 +120,13 @@ pub const TaskTouchPathRow = struct {
 ///   from_kind=task, from_id=A, to_kind=task, to_id=B, relationship='depends-on'
 ///   → task A DEPENDS ON task B (B must be done first, so B blocks A).
 ///
-/// NOTE (task 5761): the two directions below are assigned backwards relative
-/// to that meaning — this pane was written against the intuitive-but-wrong
-/// reading of the pre-00033 name (`A blocks B`). Display-only; routing and
-/// dispatch read the relationship directly and are correct. Do not "fix" the
-/// SQL in isolation — the direction assignment and its tests move together.
+/// So for the board detail pane, the tasks that BLOCK this one are the ones
+/// it points AT (this→other), and the tasks it blocks are the ones pointing
+/// at it (other→this). These were inverted until task 5761.
 ///
 /// For the board detail pane we surface:
-///   • what blocks this task: where this task is the `to_id` (blocked-by set)
-///   • what this task blocks: where this task is the `from_id` (blocks set)
+///   • what blocks this task: where this task is the `from_id` (blocked-by set)
+///   • what this task blocks: where this task is the `to_id` (blocks set)
 pub const TaskLinkRow = struct {
     id: i64,
     /// Human-readable label: "task:<id> — <title>".
@@ -150,13 +148,11 @@ pub const TaskLinkRow = struct {
 
 /// Direction of a blocking link relative to the selected task.
 pub const LinkDirection = enum {
-    /// Intended: another task blocks this task. Actually populated from
-    /// entity_links other→this ('depends-on'), which is the opposite set —
-    /// see task 5761.
+    /// Another task blocks this task: this→other ('depends-on'), i.e. this
+    /// task depends on the other, which must finish first.
     blocks_this,
-    /// Intended: this task blocks another task. Actually populated from
-    /// entity_links this→other ('depends-on'), which is the opposite set —
-    /// see task 5761.
+    /// This task blocks another task: other→this ('depends-on'), i.e. the
+    /// other task depends on this one.
     this_blocks,
 };
 
@@ -414,15 +410,15 @@ pub fn queryTaskTouchPaths(
 ///
 /// Surfaces two directions:
 ///   (1) tasks that block this task: entity_links rows where
-///       to_kind='task', to_id=task_id, from_kind='task', relationship='depends-on'
-///       → direction = .blocks_this
-///   (2) tasks this task blocks: entity_links rows where
 ///       from_kind='task', from_id=task_id, to_kind='task', relationship='depends-on'
-///       → direction = .this_blocks
+///       (this task DEPENDS ON them) → direction = .blocks_this
+///   (2) tasks this task blocks: entity_links rows where
+///       to_kind='task', to_id=task_id, from_kind='task', relationship='depends-on'
+///       (they DEPEND ON this task) → direction = .this_blocks
 ///
-/// Both directions are currently assigned backwards — see task 5761 and the
-/// note on `TaskLinkRow`. The labels below describe the INTENT, not what the
-/// SQL beneath them actually returns.
+/// Both directions were assigned backwards until task 5761: the pane was
+/// written against the intuitive-but-wrong reading of the pre-00033 name
+/// (`A blocks B`), when the edge has always meant `A depends on B`.
 ///
 /// The `depends-on` relationship is the only one checked here per migration
 /// 00033, which confirms the valid set:
@@ -440,15 +436,16 @@ pub fn queryTaskBlockingLinks(
         out.deinit(allocator);
     }
 
-    // (1) Tasks that block this task (blocked-by set).
+    // (1) Tasks that block this task (blocked-by set): the tasks THIS task
+    //     depends on, i.e. this→other. They must finish before this one can.
     {
         var stmt = d.prepare(
             \\select t.id, t.title
             \\from tasks t
-            \\join entity_links el on el.from_kind = 'task'
-            \\  and el.from_id = t.id
-            \\  and el.to_kind = 'task'
-            \\  and el.to_id = ?
+            \\join entity_links el on el.to_kind = 'task'
+            \\  and el.to_id = t.id
+            \\  and el.from_kind = 'task'
+            \\  and el.from_id = ?
             \\  and el.relationship = 'depends-on'
             \\order by t.id asc
         ) catch return error.QueryFailed;
@@ -480,15 +477,16 @@ pub fn queryTaskBlockingLinks(
         }
     }
 
-    // (2) Tasks this task blocks (this_blocks set).
+    // (2) Tasks this task blocks (this_blocks set): the tasks that depend on
+    //     THIS one, i.e. other→this. They wait on this task.
     {
         var stmt = d.prepare(
             \\select t.id, t.title
             \\from tasks t
-            \\join entity_links el on el.to_kind = 'task'
-            \\  and el.to_id = t.id
-            \\  and el.from_kind = 'task'
-            \\  and el.from_id = ?
+            \\join entity_links el on el.from_kind = 'task'
+            \\  and el.from_id = t.id
+            \\  and el.to_kind = 'task'
+            \\  and el.to_id = ?
             \\  and el.relationship = 'depends-on'
             \\order by t.id asc
         ) catch return error.QueryFailed;
