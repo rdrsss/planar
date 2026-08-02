@@ -33,13 +33,16 @@ pub fn reconcile(
     allocator: std.mem.Allocator,
     anchor_plan_id: i64,
     roadmap_citations: []const RoadmapCitation,
+    /// Optional out-slot for citation failure detail. The engine never prints;
+    /// the handler owns output.
+    diag: ?*?CitationDiagnostic,
 ) Error!void {
     try createStage(d);
     d.exec("delete from temp.routing_task_facts_stage") catch return Error.QueryFailed;
 
     try stageTaskFacts(d, allocator, anchor_plan_id);
     try stageRoadmapFacts(d, allocator, roadmap_citations);
-    try stageArtifactFacts(d, allocator, anchor_plan_id, roadmap_citations);
+    try stageArtifactFacts(d, allocator, anchor_plan_id, roadmap_citations, diag);
     try stageDecisionFacts(d, allocator, anchor_plan_id);
     try stageQuestionFacts(d, allocator, anchor_plan_id);
     try stageScenarioFacts(d, allocator, anchor_plan_id);
@@ -182,11 +185,69 @@ fn stageTaskFacts(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan_id
     };
 }
 
+/// Detail about a citation whose section could not be resolved.
+///
+/// Returned through the caller rather than logged: engine code runs while the
+/// command's buffered stderr writer is live, and writing straight to the fd
+/// from here interleaves with — and truncates — that buffer. The handler owns
+/// output; the engine only supplies the facts.
+pub const CitationDiagnostic = struct {
+    task_id: i64,
+    artifact_id: i64,
+    /// Section name the task asked for.
+    wanted: []const u8,
+    /// Comma-separated list of sections the artifact actually has.
+    available: []const u8,
+
+    pub fn deinit(self: CitationDiagnostic, allocator: std.mem.Allocator) void {
+        allocator.free(self.wanted);
+        allocator.free(self.available);
+    }
+};
+
+/// Build the diagnostic for an unresolved citation. Best-effort: a failure to
+/// allocate here must not mask the citation error the caller is returning.
+fn buildCitationDiagnostic(
+    allocator: std.mem.Allocator,
+    task_id: i64,
+    artifact_id: i64,
+    locator: []const u8,
+    body: []const u8,
+) ?CitationDiagnostic {
+    const requested = if (std.mem.indexOfScalar(u8, locator, '#')) |h| locator[h + 1 ..] else locator;
+    const wanted = allocator.dupe(u8, requested) catch return null;
+
+    var available: std.ArrayList(u8) = .empty;
+    var offset: usize = 0;
+    var count: usize = 0;
+    while (offset < body.len) {
+        const line_end = std.mem.indexOfScalarPos(u8, body, offset, '\n') orelse body.len;
+        const line = body[offset..line_end];
+        if (std.mem.startsWith(u8, line, "## ")) {
+            const name = std.mem.trim(u8, line[3..], " \t\r");
+            // Skip the synthetic wrapper heading; it is not authored content.
+            if (!std.mem.eql(u8, name, "Content")) {
+                if (count > 0) available.appendSlice(allocator, ", ") catch break;
+                available.appendSlice(allocator, name) catch break;
+                count += 1;
+            }
+        }
+        offset = if (line_end < body.len) line_end + 1 else body.len;
+    }
+    const list = available.toOwnedSlice(allocator) catch {
+        available.deinit(allocator);
+        allocator.free(wanted);
+        return null;
+    };
+    return .{ .task_id = task_id, .artifact_id = artifact_id, .wanted = wanted, .available = list };
+}
+
 fn stageArtifactFacts(
     d: *db.sqlite.Db,
     allocator: std.mem.Allocator,
     anchor_plan_id: i64,
     roadmap_citations: []const RoadmapCitation,
+    diag: ?*?CitationDiagnostic,
 ) Error!void {
     var stmt = d.prepare(
         \\select t.id, coalesce(t.body, ''), a.id, a.kind, coalesce(a.body, '')
@@ -218,7 +279,21 @@ fn stageArtifactFacts(
             }
             const locator = try explicitArtifactLocator(allocator, task_body, artifact_id);
             defer allocator.free(locator);
-            const cited_source = artifactSection(body, locator) orelse return Error.InvalidCitation;
+            const cited_source = artifactSection(body, locator) orelse {
+                // `InvalidCitation` alone names only the plan, which is useless
+                // when several tasks each cite several artifacts — the operator
+                // is left bisecting their own edits. Hand the caller the exact
+                // citation and what the artifact actually offers.
+                //
+                // The usual cause is the locator swallowing trailing prose: it
+                // runs to end-of-line unless stopped by `,`, `)` or `]`, so
+                // `artifact:5#Goals - and then some` names no real section.
+                if (diag) |slot| {
+                    if (slot.* == null)
+                        slot.* = buildCitationDiagnostic(allocator, task_id, artifact_id, locator, body);
+                }
+                return Error.InvalidCitation;
+            };
             try stage(d, allocator, task_id, "cited_artifact_section", .{ .text = cited_source }, "artifact", artifact_id, locator, cited_source);
         },
     };
@@ -865,7 +940,7 @@ test "materialization preserves lineage, replay identity, rollback, and model ne
         .source_text = "- ARTIFACT_SENTINEL [slug: sentinel-task]",
     }};
     try conn.savepoint(allocator, "facts_apply");
-    try reconcile(&conn, allocator, 1, &roadmap_citations);
+    try reconcile(&conn, allocator, 1, &roadmap_citations, null);
     try conn.releaseSavepoint(allocator, "facts_apply");
 
     try std.testing.expectEqual(@as(i64, 1), try conn.intQuery(
@@ -907,13 +982,13 @@ test "materialization preserves lineage, replay identity, rollback, and model ne
     const max_id_before = try conn.intQuery("select max(id) from routing_task_facts");
     const count_before = try conn.intQuery("select count(*) from routing_task_facts");
     try conn.savepoint(allocator, "facts_replay");
-    try reconcile(&conn, allocator, 1, &roadmap_citations);
+    try reconcile(&conn, allocator, 1, &roadmap_citations, null);
     try conn.releaseSavepoint(allocator, "facts_replay");
     try std.testing.expectEqual(max_id_before, try conn.intQuery("select max(id) from routing_task_facts"));
     try std.testing.expectEqual(count_before, try conn.intQuery("select count(*) from routing_task_facts"));
 
     try conn.exec("update decisions set status = 'accepted' where id = 1");
-    try reconcile(&conn, allocator, 1, &roadmap_citations);
+    try reconcile(&conn, allocator, 1, &roadmap_citations, null);
     try std.testing.expectEqual(@as(i64, 1), try conn.intQuery(
         \\select count(*) from routing_task_facts
         \\where fact_kind = 'locked_decision' and value_text = 'DECISION_SENTINEL atomic transaction'
@@ -1042,4 +1117,62 @@ test "roadmap locator: a non-roadmap locator is refused" {
     const a = std.testing.allocator;
     try std.testing.expect((try roadmapSectionAlloc(a, wrapped_roadmap, "artifact:517#Heading")) == null);
     try std.testing.expect((try roadmapSectionAlloc(a, wrapped_roadmap, "roadmap#Heading")) == null);
+}
+
+// --- citation diagnostics ---------------------------------------------------
+
+test "citation diagnostic names the requested section and what the artifact has" {
+    const a = std.testing.allocator;
+    const body =
+        \\## Content
+        \\
+        \\---
+        \\entity_kind: artifact
+        \\---
+        \\
+        \\# Spec
+        \\
+        \\## Goals
+        \\
+        \\text
+        \\
+        \\## Acceptance signals
+        \\
+        \\text
+        \\
+    ;
+    // The failure mode this exists for: the locator swallowed trailing prose,
+    // so the requested section is a sentence rather than a heading.
+    const diag = buildCitationDiagnostic(
+        a,
+        42,
+        515,
+        "artifact:515#Acceptance signals — credential-free fixtures",
+        body,
+    ).?;
+    defer diag.deinit(a);
+
+    try std.testing.expectEqual(@as(i64, 42), diag.task_id);
+    try std.testing.expectEqual(@as(i64, 515), diag.artifact_id);
+    try std.testing.expectEqualStrings("Acceptance signals — credential-free fixtures", diag.wanted);
+    // The synthetic wrapper heading is not an authored section and must not be
+    // offered as something to cite.
+    try std.testing.expect(std.mem.indexOf(u8, diag.available, "Content") == null);
+    try std.testing.expect(std.mem.indexOf(u8, diag.available, "Goals") != null);
+    try std.testing.expect(std.mem.indexOf(u8, diag.available, "Acceptance signals") != null);
+}
+
+test "citation diagnostic reports an artifact with no citable sections" {
+    const a = std.testing.allocator;
+    const diag = buildCitationDiagnostic(a, 1, 2, "artifact:2#Anything", "plain prose, no headings\n").?;
+    defer diag.deinit(a);
+    try std.testing.expectEqualStrings("", diag.available);
+}
+
+test "a locator with no fragment still yields a usable diagnostic" {
+    const a = std.testing.allocator;
+    const diag = buildCitationDiagnostic(a, 1, 2, "artifact:2", "## Only\n").?;
+    defer diag.deinit(a);
+    try std.testing.expectEqualStrings("artifact:2", diag.wanted);
+    try std.testing.expectEqualStrings("Only", diag.available);
 }

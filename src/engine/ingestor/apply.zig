@@ -35,6 +35,9 @@ const session_mod = @import("../runtime/session.zig");
 // =========================================================================
 
 pub const Options = struct {
+    /// Optional out-slot filled when a citation cannot be resolved, so the
+    /// caller can report which task, artifact and section failed.
+    citation_diag: ?*?materialize.CitationDiagnostic = null,
     apply: bool = false,
     apply_removals: bool = false,
     /// Scope slug for child plans, tasks, decisions, scenarios created
@@ -365,7 +368,7 @@ fn applyWithinSavepoint(
     // Replace the complete provenance-bearing fact set inside the same
     // savepoint as entity reconciliation. A failure therefore leaves the
     // previous authoritative set intact and exposes no partial rows.
-    try materialize.reconcile(d, allocator, diff.anchor_plan_id, roadmap_citations);
+    try materialize.reconcile(d, allocator, diff.anchor_plan_id, roadmap_citations, opts.citation_diag);
 
     // ---- flip anchor draft → active -----------------------------------
     if (std.mem.eql(u8, diff.current_status, "draft")) {
