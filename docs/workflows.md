@@ -3162,7 +3162,6 @@ workflows are source-controlled seams, not model-spawning harnesses:
 | Workflow | Shipped phases / purpose |
 |---|---|
 | `bench_run_ritual.lua` | `setup`, `harvest` — clean-slate measurement ritual |
-| `dispatch.lua` | `prep`, `route`, `heartbeat` — deterministic dispatch preparation and claim routing |
 | `example.lua` | `setup` — minimal host-surface example |
 | `finalize_closeout.lua` | `closeout` — evaluate and apply the non-force closeout gate |
 | `parallel-dispatch.lua` | lane/wave, fan-in, recovery, capacity, and teardown computation |
