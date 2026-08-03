@@ -3165,13 +3165,9 @@ workflows are source-controlled seams, not model-spawning harnesses:
 | `dispatch.lua` | `prep`, `route`, `heartbeat` — deterministic dispatch preparation and claim routing |
 | `example.lua` | `setup` — minimal host-surface example |
 | `finalize_closeout.lua` | `closeout` — evaluate and apply the non-force closeout gate |
-| `handoff.lua` | `handoff` — traced snapshot/create/validate handoff sequence |
-| `health.lua` | `health` — structured health read |
 | `introspect.lua` | `introspect` — redacted usage-signal workflow |
 | `parallel-dispatch.lua` | lane/wave, fan-in, recovery, capacity, and teardown computation |
 | `propagate_tree.lua` | `propagate` — resumable external propagation walk |
-| `resume.lua` | `resume` — structured task resume packet read |
-| `status.lua` | `status` — composed scope/plan/task/question status read |
 
 Read each file's `@meta` block for its exact phase names and argument contract.
 The engine has no SQLite handle or model-spawn function; it reaches state only
