@@ -371,6 +371,152 @@ test "a task with no inferable paths writes nothing and stays serialized" {
     try std.testing.expect(std.mem.indexOf(u8, out, "eligible:0") != null);
 }
 
+test "touches remove --path withdraws one declaration and restores serialization" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const repo = registerRepoSlug(&suite, arena);
+    writeFixture(&suite, "src/alpha.zig", "pub fn a() void {}\n");
+    writeFixture(&suite, "src/beta.zig", "pub fn b() void {}\n");
+
+    const plan = suite.mustRunJSON(PlanJSON, arena, &.{
+        "plan", "create", "Withdrawal", "--status", "active", "--json",
+    });
+    const t1 = addTask(&suite, arena, plan.id, "Edit alpha", "Rework src/alpha.zig only.");
+    const t2 = addTask(&suite, arena, plan.id, "Edit beta", "Rework src/beta.zig only.");
+
+    for ([_]i64{ t1, t2 }) |tid| {
+        const s = idStr(gpa, tid);
+        defer gpa.free(s);
+        const out = suite.mustRun(&.{
+            "task", "touches", "infer", s, "--repo", repo, "--apply",
+        });
+        gpa.free(out);
+    }
+
+    const s1 = idStr(gpa, t1);
+    defer gpa.free(s1);
+
+    // Both eligible to begin with.
+    {
+        const out = recommend(&suite, plan.id);
+        defer gpa.free(out);
+        try std.testing.expect(std.mem.indexOf(u8, out, "eligible:2") != null);
+    }
+
+    // Withdraw t1's only path declaration.
+    const rm = suite.mustRunJSON(struct {
+        ok: bool = false,
+        path: []const u8 = "",
+    }, arena, &.{
+        "task", "touches", "remove", s1, repo, "--path", "src/alpha.zig", "--json",
+    });
+    try std.testing.expect(rm.ok);
+    try std.testing.expectEqualStrings("src/alpha.zig", rm.path);
+
+    const listed = suite.mustRunJSON(TouchListJSON, arena, &.{
+        "task", "touches", "list", s1, "--json",
+    });
+    try std.testing.expectEqual(@as(usize, 0), listed.paths.len);
+
+    // Withdrawal takes effect — but note WHERE it lands. `--path` does not
+    // cascade to the repo edge, and `infer --apply` wrote one. So t1 is not
+    // back to "undeclared"; it now holds a WHOLE-REPO claim, which collides
+    // with any same-repo touch. t2's path touch is on that same repo, so
+    // both drop (drop-both-on-tie) and nothing is eligible.
+    //
+    // That is stricter than the undeclared state, not looser, which is the
+    // right direction for a withdrawal to err in (decision 906). Pinned
+    // because the intuitive expectation — "removing a path returns the task
+    // to undeclared" — is wrong, and a future cascade change would silently
+    // relax this.
+    {
+        const out = recommend(&suite, plan.id);
+        defer gpa.free(out);
+        try std.testing.expect(std.mem.indexOf(u8, out, "eligible:0") != null);
+        try std.testing.expect(std.mem.indexOf(u8, out, "fan_out_available:no") != null);
+    }
+}
+
+test "removing the repo edge does NOT silently drop path declarations" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const repo = registerRepoSlug(&suite, arena);
+    writeFixture(&suite, "src/alpha.zig", "pub fn a() void {}\n");
+
+    const plan = suite.mustRunJSON(PlanJSON, arena, &.{
+        "plan", "create", "Edge vs path", "--status", "active", "--json",
+    });
+    const t1 = addTask(&suite, arena, plan.id, "Edit alpha", "Rework src/alpha.zig.");
+    const s = idStr(gpa, t1);
+    defer gpa.free(s);
+
+    const applied = suite.mustRun(&.{
+        "task", "touches", "infer", s, "--repo", repo, "--apply",
+    });
+    gpa.free(applied);
+
+    // Drop the coarse repo edge only.
+    const out = suite.mustRun(&.{ "task", "touches", "remove", s, repo });
+    gpa.free(out);
+
+    // The path row survives — the two granularities are independent, which
+    // is exactly why --path had to exist. Pinning it so nobody "fixes" the
+    // repo-edge removal into a cascade without deciding to.
+    const listed = suite.mustRunJSON(TouchListJSON, arena, &.{
+        "task", "touches", "list", s, "--json",
+    });
+    try std.testing.expectEqual(@as(usize, 1), listed.paths.len);
+}
+
+test "withdrawing a path that was never declared is an error, not a no-op" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const repo = registerRepoSlug(&suite, arena);
+    writeFixture(&suite, "src/alpha.zig", "pub fn a() void {}\n");
+
+    const plan = suite.mustRunJSON(PlanJSON, arena, &.{
+        "plan", "create", "Typo guard", "--status", "active", "--json",
+    });
+    const t1 = addTask(&suite, arena, plan.id, "Edit alpha", "Rework src/alpha.zig.");
+    const s = idStr(gpa, t1);
+    defer gpa.free(s);
+
+    const applied = suite.mustRun(&.{
+        "task", "touches", "infer", s, "--repo", repo, "--apply",
+    });
+    gpa.free(applied);
+
+    // A mistyped path must fail loudly. Silently succeeding would let an
+    // operator believe a declaration was withdrawn while it still drives
+    // eligibility.
+    const stderr = suite.expectFailure(&.{
+        "task", "touches", "remove", s, repo, "--path", "src/alhpa.zig",
+    });
+    defer gpa.free(stderr);
+    try std.testing.expect(std.mem.indexOf(u8, stderr, "no declared path touch") != null);
+
+    // The real declaration is untouched.
+    const listed = suite.mustRunJSON(TouchListJSON, arena, &.{
+        "task", "touches", "list", s, "--json",
+    });
+    try std.testing.expectEqual(@as(usize, 1), listed.paths.len);
+}
+
 test "a path cited with a line number still resolves" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);

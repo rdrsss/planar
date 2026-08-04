@@ -54,7 +54,9 @@ pub const verb: cli.Cmd = .{
         .{
             .name = "remove",
             .desc = "Remove a 'touches' link between a task and a repo.",
+            .long_desc = "Withdraw a touch declaration.\n\n  Without --path: removes the repo-level entity_links 'touches' edge.\n\n  With --path <p>: removes ONE path-level task_touch_paths row and leaves\n  the repo edge in place. Deliberately not symmetric with `touches add`,\n  where a path-touch implies the repo-touch — withdrawing one file should\n  not silently drop a repo claim that may carry other paths.\n\n  Removing the repo edge is not a substitute for --path: the parallel\n  eligibility rules read task_touch_paths directly, so orphaned path rows\n  keep driving eligibility after their edge is gone.",
             .flags = &.{
+                .{ .long = "--path", .kind = .string },
                 .{ .long = "--scope", .kind = .string },
                 .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
             },

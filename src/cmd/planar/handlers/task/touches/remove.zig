@@ -1,7 +1,21 @@
-//! handlers/task/touches/remove — `planar task touches remove <task-id> <repo-slug>`
+//! handlers/task/touches/remove — `planar task touches remove <task-id> <repo-slug> [--path <p>]`
 //!
-//! Deletes the entity_links(relationship='touches', from_kind='task', to_kind='repo')
-//! row between the given task and repo.
+//! Without --path: deletes the entity_links(relationship='touches',
+//! from_kind='task', to_kind='repo') row between the given task and repo.
+//!
+//! With --path <p>: deletes ONE `task_touch_paths` row and leaves the repo
+//! edge in place. This is the inverse of `touches add --path` at the same
+//! granularity. It is deliberately NOT symmetric with add's implication
+//! (a path-touch implies the repo-touch): withdrawing one file should not
+//! silently withdraw the repo claim, which may still be carrying other
+//! paths or an intentional whole-repo declaration.
+//!
+//! Why the flag exists: a path-level touch could be created two ways
+//! (`touches add --path`, `touches infer --apply`) and removed by none, so
+//! a mis-declared path was only correctable with raw SQL. Removing the repo
+//! edge is not a substitute — rule 2's loadTouches reads `task_touch_paths`
+//! directly, so orphaned path rows keep driving eligibility after their
+//! edge is gone.
 //!
 //! Removal requires finding the link-id first: list by from_kind=task + from_id +
 //! to_kind=repo + to_id + relationship=touches, then call engine.entitylink.remove.
@@ -24,6 +38,7 @@ const TouchesRemoveResult = struct {
     task_id: i64,
     repo_id: i64,
     repo_slug: []const u8,
+    path: ?[]const u8 = null,
 };
 
 pub fn handle(args_ptr: *const anyopaque) anyerror!void {
@@ -42,6 +57,38 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         error.NotFound => exit.die(ctx, e, "repo '{s}' not found", .{args.repo_slug}),
         else => exit.die(ctx, e, "repo lookup: {s}", .{@errorName(e)}),
     };
+
+    // Path-level withdrawal: delete the one task_touch_paths row and stop.
+    // The repo edge is intentionally preserved (see the module comment).
+    if (args.path) |path| {
+        engine.planning.task.removeTouchPath(d, task_id, repo_id, path) catch |e| switch (e) {
+            error.NotFound => exit.die(
+                ctx,
+                e,
+                "task:{d} has no declared path touch '{s}' on repo:{s}",
+                .{ task_id, path, args.repo_slug },
+            ),
+            else => exit.die(ctx, e, "task touches remove --path: {s}", .{@errorName(e)}),
+        };
+
+        if (args.json) {
+            const result = TouchesRemoveResult{
+                .ok = true,
+                .task_id = task_id,
+                .repo_id = repo_id,
+                .repo_slug = args.repo_slug,
+                .path = path,
+            };
+            try std.json.Stringify.value(result, .{}, ctx.stdout);
+            try ctx.stdout.print("\n", .{});
+        } else {
+            try ctx.stdout.print(
+                "path-touch removed: task:{d} -> repo:{s} path:{s}\n",
+                .{ task_id, args.repo_slug, path },
+            );
+        }
+        return;
+    }
 
     // Find the touches link id.
     const links = engine.entitylink.list(d, ctx.allocator, .{

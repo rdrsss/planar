@@ -527,6 +527,54 @@ pub fn addTouchPath(
     }) catch return Error.QueryFailed;
 }
 
+/// removeTouchPath withdraws one path-level touch declaration.
+///
+/// Returns `Error.NotFound` when no such row exists, so a caller can tell a
+/// real withdrawal from a typo'd path. A path-level row is otherwise
+/// unreachable for deletion: `entitylink.remove` clears only the coarse
+/// repo edge, while rule 2 reads `task_touch_paths` directly — so removing
+/// the edge alone leaves the path rows still driving eligibility.
+///
+/// The coarse repo edge is deliberately left alone. It may still be wanted
+/// (other paths on the same repo, or an intentional whole-repo claim);
+/// withdrawing it is `task touches remove` without `--path`.
+pub fn removeTouchPath(
+    d: *db.sqlite.Db,
+    task_id: i64,
+    repo_id: i64,
+    path: []const u8,
+) Error!void {
+    // Existence is checked with a SELECT rather than from the delete's
+    // return value: `execParams` returns `sqlite3_last_insert_rowid()`, not
+    // the changed-row count, so a DELETE's result says nothing about
+    // whether anything matched.
+    {
+        var stmt = d.prepare(
+            \\select 1 from task_touch_paths
+            \\where task_id = ? and repo_id = ? and path = ?
+        ) catch return Error.QueryFailed;
+        defer stmt.finalize();
+        stmt.bind(&.{
+            .{ .int = task_id },
+            .{ .int = repo_id },
+            .{ .text = path },
+        }) catch return Error.QueryFailed;
+        switch (stmt.step() catch return Error.QueryFailed) {
+            .done => return Error.NotFound,
+            .row => {},
+        }
+    }
+
+    _ = d.execParams(
+        \\delete from task_touch_paths
+        \\where task_id = ? and repo_id = ? and path = ?
+    , &.{
+        .{ .int = task_id },
+        .{ .int = repo_id },
+        .{ .text = path },
+    }) catch return Error.QueryFailed;
+}
+
 /// touchedPaths returns the path-level touch declarations for a task
 /// (rows in `task_touch_paths`), ordered by repo then path. Caller owns the
 /// returned slice and must free it via `deinitTouchPaths`.

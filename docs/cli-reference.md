@@ -1553,14 +1553,23 @@ planar task touches list <task-id> [--json]
 
 ---
 
-### `planar task touches remove <task-id> <repo-slug>`
+### `planar task touches remove <task-id> <repo-slug> [--path <p>]`
 
 **Synopsis:**
 ```
-planar task touches remove <task-id> <repo-slug>
+planar task touches remove <task-id> <repo-slug> [--path <p>] [--json]
 ```
 
-**Description:** Remove a touches link between a task and a repo. Deletes the `entity_links(relationship='touches')` row. Returns an error if no such link exists.
+**Description:** Withdraw a touch declaration.
+
+- **Without `--path`** (repo-level): deletes the `entity_links(relationship='touches')` row. Returns an error if no such link exists.
+- **With `--path <p>`** (path-level): deletes one `task_touch_paths` row and **leaves the repo edge in place**.
+
+The two granularities are independent, and removing the repo edge is **not** a way to withdraw path declarations: [rule 2](#plan-recommend-strategy) reads `task_touch_paths` directly, so orphaned path rows keep driving eligibility after their edge is gone.
+
+This is deliberately not symmetric with `touches add --path`, where a path-touch implies the repo-touch. Withdrawing one file should not silently drop a repo claim that may still carry other paths, or an intentional whole-repo declaration.
+
+**Withdrawing the last path does not return a task to "undeclared."** Because the repo edge survives, the task is left holding a *whole-repo* claim — and a whole-repo touch collides with any same-repo touch, coarse or path-level. The task therefore becomes **more** restrictive than an undeclared one, not less: it will drop its same-repo peers along with itself. To return a task to fully undeclared, remove the repo edge as well (`touches remove <task> <repo>` with no `--path`). Erring strict is intentional — see [Declaring what a task touches](concepts.md#declaring-what-a-task-touches) for why under-declaration is the dangerous direction.
 
 **Arguments:**
 
@@ -1569,19 +1578,27 @@ planar task touches remove <task-id> <repo-slug>
 | `<task-id>` | Task to update (required). |
 | `<repo-slug>` | Repo slug to remove from touches (required). |
 
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--path <p>` | Withdraw this path-level declaration only; the repo edge is preserved. | none (repo-level removal) |
+
 **Output (`--json`):**
 ```json
 {"ok":true,"task_id":42,"repo_id":7,"repo_slug":"acme/protos"}
 ```
+With `--path`, the withdrawn path is echoed as `"path":"src/foo.zig"`.
 
-**Schema effects:** Deletes from `entity_links(from_kind='task', from_id=<task-id>, to_kind='repo', to_id=<repo-id>, relationship='touches')`.
+**Schema effects:** Without `--path`, deletes from `entity_links(from_kind='task', from_id=<task-id>, to_kind='repo', to_id=<repo-id>, relationship='touches')`. With `--path`, deletes from `task_touch_paths(task_id, repo_id, path)` and leaves `entity_links` untouched.
 
 **Capture:** Appends `session_entries` row with `prefix='action'`.
 
 **Exit codes:**
 - `1` — task not found.
 - `1` — repo slug not found.
-- `1` — link does not exist.
+- `1` — link does not exist (repo-level).
+- `1` — no such path declaration on that task and repo (with `--path`). A mistyped path fails loudly rather than reporting a silent no-op.
 
 ---
 
