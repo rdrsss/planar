@@ -16,6 +16,7 @@ pub const artifact = @import("planning/artifact.zig");
 pub const annotation = @import("planning/annotation.zig");
 pub const test_spec_status = @import("planning/test_spec_status.zig");
 pub const strategy = @import("planning/strategy.zig");
+pub const touchinfer = @import("planning/touchinfer.zig");
 pub const closeout = @import("planning/closeout.zig");
 pub const feedback_triage = @import("planning/feedback_triage.zig");
 
