@@ -158,6 +158,20 @@ pub const Inference = struct {
 /// punctuation; none of that is part of the path.
 const trim_chars = " \t\r\n`'\"()[]{}<>,;:";
 
+/// Strip a trailing `:<line>` or `:<line>-<line>` reference. Task prose
+/// cites locations as `docs/cli-reference.md:339` and
+/// `src/engine/x.zig:12-40`; the path is the part before the colon. Without
+/// this, the single most common way this codebase names a file resolves to
+/// `unresolved` — a silent recall gap, which is the dangerous direction.
+pub fn stripLineSuffix(s: []const u8) []const u8 {
+    const colon = std.mem.lastIndexOfScalar(u8, s, ':') orelse return s;
+    if (colon == 0 or colon + 1 >= s.len) return s;
+    for (s[colon + 1 ..]) |c| {
+        if (!std.ascii.isDigit(c) and c != '-') return s;
+    }
+    return s[0..colon];
+}
+
 /// True when `s` looks like it could name a path worth resolving. This is
 /// deliberately permissive — a false candidate costs one `unresolved` row in
 /// the preview, while a missed candidate costs a silent under-declaration.
@@ -199,7 +213,16 @@ pub fn extractTokens(
     var out: std.ArrayList([]const u8) = .empty;
     var it = std.mem.tokenizeAny(u8, text, " \t\r\n");
     while (it.next()) |raw| {
-        const tok = std.mem.trim(u8, raw, trim_chars);
+        var trimmed = std.mem.trim(u8, raw, trim_chars);
+        // A sentence-ending period rides along with a path at the end of a
+        // clause ("Rework src/alpha.zig."). Strip it from the RIGHT only —
+        // a leading dot is meaningful (`./x`), a trailing one never is,
+        // since no path component ends in `.`. Without this the most
+        // natural way to write a task body under-declares silently.
+        while (trimmed.len > 0 and trimmed[trimmed.len - 1] == '.') {
+            trimmed = trimmed[0 .. trimmed.len - 1];
+        }
+        const tok = stripLineSuffix(trimmed);
         if (!isPathShaped(tok)) continue;
         try out.append(a, tok);
     }
@@ -366,6 +389,95 @@ pub fn classifyToken(
 }
 
 // =========================================================================
+// Whole-task inference
+// =========================================================================
+
+/// The task text inference reads. Split out so the resolution pass is
+/// testable without a database.
+pub const TaskText = struct {
+    title: []const u8 = "",
+    body: []const u8 = "",
+    next_action: []const u8 = "",
+};
+
+/// Resolve every path-shaped token in `text` against `root`, deduping
+/// repeated tokens. Candidate order follows field order (title, body,
+/// next_action) so the preview reads top-down like the task does.
+pub fn inferFromText(
+    a: std.mem.Allocator,
+    text: TaskText,
+    repo_id: i64,
+    root: []const u8,
+) std.mem.Allocator.Error![]const Candidate {
+    var out: std.ArrayList(Candidate) = .empty;
+    var seen: std.StringHashMapUnmanaged(void) = .empty;
+
+    const fields = [_]struct { ev: Evidence, s: []const u8 }{
+        .{ .ev = .title, .s = text.title },
+        .{ .ev = .body, .s = text.body },
+        .{ .ev = .next_action, .s = text.next_action },
+    };
+
+    for (fields) |f| {
+        if (f.s.len == 0) continue;
+        const toks = try extractTokens(a, f.s);
+        for (toks) |tok| {
+            // A token repeated across fields is one candidate, attributed to
+            // the first field that produced it.
+            if (seen.contains(tok)) continue;
+            try seen.put(a, tok, {});
+
+            const r = try classifyToken(a, root, tok);
+            try out.append(a, .{
+                .token = tok,
+                .evidence = f.ev,
+                .classification = r.classification,
+                .paths = r.paths,
+                .repo_id = repo_id,
+            });
+        }
+    }
+
+    return out.toOwnedSlice(a);
+}
+
+/// Read a task's text from the database and infer its touches against
+/// `root` (the repo checkout for `repo_id`).
+///
+/// Proposes only — no `task_touch_paths` row is written here. The caller
+/// previews, and writes on explicit confirmation.
+pub fn infer(
+    d: *db.sqlite.Db,
+    gpa: std.mem.Allocator,
+    task_id: i64,
+    repo_id: i64,
+    root: []const u8,
+) Error!Inference {
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    errdefer arena.deinit();
+    const a = arena.allocator();
+
+    var stmt = d.prepare(
+        \\select title, coalesce(body, ''), coalesce(next_action, '')
+        \\from tasks where id = ?
+    ) catch return Error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .int = task_id }}) catch return Error.QueryFailed;
+
+    const text: TaskText = switch (stmt.step() catch return Error.QueryFailed) {
+        .done => return Error.NotFound,
+        .row => .{
+            .title = try stmt.columnTextAlloc(0, a),
+            .body = try stmt.columnTextAlloc(1, a),
+            .next_action = try stmt.columnTextAlloc(2, a),
+        },
+    };
+
+    const candidates = try inferFromText(a, text, repo_id, root);
+    return .{ .task_id = task_id, .candidates = candidates, .arena = arena };
+}
+
+// =========================================================================
 // Tests
 // =========================================================================
 
@@ -401,6 +513,41 @@ test "extractTokens lifts paths out of prose and strips punctuation" {
     try testing.expectEqualStrings("workflows/status.lua", toks[0]);
     try testing.expectEqualStrings("workflows/health.lua", toks[1]);
     try testing.expectEqualStrings("integration_tests/all_test.zig", toks[2]);
+}
+
+test "stripLineSuffix handles the codebase's path:line citation style" {
+    try testing.expectEqualStrings("docs/cli-reference.md", stripLineSuffix("docs/cli-reference.md:339"));
+    try testing.expectEqualStrings("src/engine/x.zig", stripLineSuffix("src/engine/x.zig:12-40"));
+
+    // Not a line reference — leave it alone.
+    try testing.expectEqualStrings("docs/a.md", stripLineSuffix("docs/a.md"));
+    try testing.expectEqualStrings("src/a.zig:name", stripLineSuffix("src/a.zig:name"));
+    try testing.expectEqualStrings(":", stripLineSuffix(":"));
+}
+
+test "extractTokens recovers paths cited with line numbers" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const toks = try extractTokens(a, "See CLAUDE.md:339 and src/engine/planning/strategy.zig:64-66.");
+    try testing.expectEqual(@as(usize, 2), toks.len);
+    try testing.expectEqualStrings("CLAUDE.md", toks[0]);
+    try testing.expectEqualStrings("src/engine/planning/strategy.zig", toks[1]);
+}
+
+test "extractTokens recovers a path ending a sentence" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Regression: the trailing period rode along with the token and the
+    // path resolved as unresolved — a silent under-declaration in the most
+    // natural phrasing there is.
+    const toks = try extractTokens(a, "Rework src/alpha.zig. Then check docs/b.md:12.");
+    try testing.expectEqual(@as(usize, 2), toks.len);
+    try testing.expectEqualStrings("src/alpha.zig", toks[0]);
+    try testing.expectEqualStrings("docs/b.md", toks[1]);
 }
 
 test "extractTokens ignores prose that merely contains dots" {
@@ -502,6 +649,61 @@ test "classifyToken: hidden directories are never proposed" {
     try testing.expectEqual(Classification.directory, r.classification);
     try testing.expectEqual(@as(usize, 1), r.paths.len);
     try testing.expectEqualStrings("pkg/real.zig", r.paths[0]);
+}
+
+test "inferFromText dedupes a token repeated across fields" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(root);
+
+    try tmp.dir.makePath("src");
+    try tmp.dir.writeFile(.{ .sub_path = "src/a.zig", .data = "x" });
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const cands = try inferFromText(arena.allocator(), .{
+        .title = "Fix src/a.zig",
+        .body = "The bug is in src/a.zig somewhere.",
+        .next_action = "Edit src/a.zig",
+    }, 1, root);
+
+    try testing.expectEqual(@as(usize, 1), cands.len);
+    // Attributed to the FIRST field that produced it.
+    try testing.expectEqual(Evidence.title, cands[0].evidence);
+    try testing.expectEqual(Classification.resolved, cands[0].classification);
+}
+
+test "inferFromText carries unresolved tokens through for review" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(root);
+
+    try tmp.dir.makePath("src");
+    try tmp.dir.writeFile(.{ .sub_path = "src/real.zig", .data = "x" });
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const cands = try inferFromText(arena.allocator(), .{
+        .body = "Touch src/real.zig and also src/imaginary.zig here.",
+    }, 1, root);
+
+    try testing.expectEqual(@as(usize, 2), cands.len);
+    try testing.expectEqual(Classification.resolved, cands[0].classification);
+    try testing.expectEqual(Classification.unresolved, cands[1].classification);
+
+    // The unresolved one is surfaced but contributes no writable row.
+    var inf = Inference{
+        .task_id = 1,
+        .candidates = cands,
+        .arena = std.heap.ArenaAllocator.init(testing.allocator),
+    };
+    defer inf.deinit();
+    try testing.expectEqual(@as(usize, 1), inf.writableCount());
+    try testing.expectEqual(@as(usize, 1), inf.reviewCount());
 }
 
 test "writable classifications are exactly those that produce rows" {
