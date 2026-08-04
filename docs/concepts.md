@@ -623,6 +623,25 @@ An orchestration strategy is the operator-facing dispatch frame for a plan. It b
 
 The model-driven `/orchestrator` skill (armarium orchestration layer) runs the sequential strategies in either `pwd` or `worktree` isolation and runs `parallel-fanout` in worktrees. Worktree bookkeeping is driven via the spawn-free `workflows/parallel-dispatch.lua` seam: `cycle_plan` computes one sequential lane; `plan`/`waves` compute fan-out lanes. The model runs the git worktree/branch/merge ops and spawns the coders; the seam only computes and hands back. There is **no external harness**. In-flight worktree execution is watched through the existing `planar-watch ps --plan <id>` surface (claims + each claim's `worktree_path`); there is no dedicated wave/barrier view (a recorded non-goal).
 
+### Declaring what a task touches
+
+Parallel eligibility is computed from what each task **declares** it touches. Rule 2 treats an empty touch set as "touches everything," so an undeclared task is never eligible. That default is deliberate: the failure mode of omission is *safe* — an undeclared task serializes rather than falsely parallelizing.
+
+It is also the binding constraint in practice. Nothing populated `task_touch_paths` but hand declaration, so most open tasks were serialized for lack of a declaration rather than for genuine conflict — and the rows are load-bearing twice over, since [closure extraction](planar-spec-v0.1.md#1-the-central-term-context-closure) uses them as its seeds and reports `NoSeeds` without them.
+
+`planar task touches infer <task-id>` closes that gap. It reads the task's own title, body, and next_action, resolves the path-shaped tokens against the repo tree, and proposes `task_touch_paths` rows. It **previews by default**; `--apply` writes.
+
+**Inference biases toward over-declaration** (decision 906). A directory token expands to its files, a bare basename yields every match rather than one guess, and an unplaceable token is reported rather than dropped. The reason is that the two error directions are not symmetric:
+
+| Direction | Cost | Recoverable |
+|-----------|------|-------------|
+| Over-declare | Throughput — the task serializes when it might have run in parallel. | Yes: declare more precisely. |
+| Under-declare | Correctness — two tasks marked eligible, fanned into separate worktrees, both editing the same file, colliding at fan-in. | No: both cycles are already spent. |
+
+Inference cannot tell which of the two it produced. The operator can, which is why nothing is written without confirmation. Expect the preview to include files a task merely *cites* rather than edits — pruning those in review is the intended workflow, not a defect.
+
+Note that inference improves rule 2 only. Dependency edges (rule 1) are not inferred: two tasks can touch genuinely disjoint files and still be ordered, as when one imports a module the other creates. Declare those with `planar task block <task> --on <blocker>`.
+
 ### The five underlying axes
 
 Every strategy is a row in the axis table — locked values for each:

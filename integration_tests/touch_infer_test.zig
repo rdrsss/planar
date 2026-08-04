@@ -325,6 +325,52 @@ test "re-applying infer is a no-op" {
     try std.testing.expectEqual(@as(usize, 1), listed.paths.len);
 }
 
+test "a task with no inferable paths writes nothing and stays serialized" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const repo = registerRepoSlug(&suite, arena);
+    writeFixture(&suite, "src/alpha.zig", "pub fn a() void {}\n");
+
+    const plan = suite.mustRunJSON(PlanJSON, arena, &.{
+        "plan", "create", "Omission stays safe", "--status", "active", "--json",
+    });
+    // Prose with no path in it at all.
+    const t1 = addTask(
+        &suite,
+        arena,
+        plan.id,
+        "Think about the design",
+        "Decide whether the approach is right before writing anything.",
+    );
+    const s = idStr(gpa, t1);
+    defer gpa.free(s);
+
+    // Even WITH --apply, inference invents nothing.
+    const res = suite.mustRunJSON(InferJSON, arena, &.{
+        "task", "touches", "infer", s, "--repo", repo, "--apply", "--json",
+    });
+    try std.testing.expectEqual(@as(usize, 0), res.written);
+    try std.testing.expectEqual(@as(usize, 0), res.candidates.len);
+
+    const listed = suite.mustRunJSON(TouchListJSON, arena, &.{
+        "task", "touches", "list", s, "--json",
+    });
+    try std.testing.expectEqual(@as(usize, 0), listed.paths.len);
+
+    // The invariant that matters: an undeclared task still serializes.
+    // Inference must never turn "I found nothing" into "it touches nothing",
+    // which would read as trivially disjoint and falsely parallel-eligible.
+    const out = recommend(&suite, plan.id);
+    defer gpa.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "no task_touches declared") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "eligible:0") != null);
+}
+
 test "a path cited with a line number still resolves" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);

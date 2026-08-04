@@ -1466,6 +1466,62 @@ planar task touches add <task-id> <repo-slug> [--path <p>]
 
 ---
 
+### `planar task touches infer <task-id>`
+
+**Synopsis:**
+```
+planar task touches infer <task-id> [--repo <slug>] [--apply] [--json]
+```
+
+**Description:** Propose path-level `task_touch_paths` rows by extracting path-shaped tokens from the task's own `title`, `body`, and `next_action`, then resolving them against a repo checkout. **Preview by default — without `--apply` nothing is written.**
+
+Tokens are recovered from the phrasings this codebase actually uses: prose punctuation and backticks are stripped, a trailing `:<line>` or `:<line>-<line>` citation is removed (`docs/cli-reference.md:339` → `docs/cli-reference.md`), and a sentence-ending period is dropped (`Rework src/alpha.zig.` → `src/alpha.zig`). URLs, absolute paths, and `../` traversal are rejected.
+
+Each candidate is classified:
+
+| Classification | Meaning | Written by `--apply` |
+|----------------|---------|----------------------|
+| `resolved` | Exact repo-relative file. | yes |
+| `directory` | Token named a directory; expanded recursively to its files. | yes |
+| `basename` | Bare filename; **every** matching path in the tree. | yes |
+| `unresolved` | Path-shaped but no match — reported for review. | no |
+| `too_broad` | Directory or basename expanding past 64 files. | no |
+
+**Ambiguity always resolves wide** ([decision 906](concepts.md#declaring-what-a-task-touches)). Over-declaring costs throughput — the task serializes when it might have run in parallel — and is recoverable by declaring more precisely. Under-declaring costs correctness: two tasks are marked parallel-eligible, fanned into separate worktrees, both edit the same file, and the collision surfaces at fan-in after both burned a full cycle. Inference cannot tell which it produced; only the operator can, which is why the default is preview.
+
+Repo selection: `--repo <slug>` names the checkout. Without it, the repo is derived from the current directory — the project whose `root_path` is the **longest** matching prefix, so a submodule checkout beats its superproject.
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<task-id>` | Task to infer touches for (required). |
+
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--repo <slug>` | Repo checkout to resolve paths against. | derived from cwd |
+| `--apply` | Write the writable candidates. Without it, nothing is written. | off (preview) |
+| `--json` | Emit JSON instead of text. | off |
+
+**Output (`--json`):**
+```json
+{"task_id":42,"repo_id":7,"repo_slug":"acme/protos","applied":true,"written":2,"review":1,
+ "candidates":[{"token":"src/foo.zig","evidence":"body","classification":"resolved","paths":["src/foo.zig"]},
+               {"token":"src/gone.zig","evidence":"body","classification":"unresolved","paths":[]}]}
+```
+
+**Schema effects:** With `--apply`, inserts `task_touch_paths(task_id, repo_id, path)` for every path of every writable candidate, plus the coarse `entity_links(relationship='touches')` repo edge — a path-touch implies the repo-touch. Both are wrapped in a savepoint: a partial commit would leave the repo edge without its path rows, and `plan recommend-strategy` would then fall back to the whole-repo signal and serialize a task that should have been eligible. Writes are idempotent against `unique(task_id, repo_id, path)`, so re-running is a no-op.
+
+**Exit codes:**
+- `1` — task id not an integer, or task not found.
+- `1` — `--repo` slug not found.
+- `1` — no repo matches the current directory and `--repo` was not given.
+- `1` — the resolved repo has no `root_path` recorded.
+
+---
+
 ### `planar task touches list <task-id>`
 
 **Synopsis:**
