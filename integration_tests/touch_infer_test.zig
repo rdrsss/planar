@@ -542,6 +542,80 @@ test "withdrawing a path that was never declared is an error, not a no-op" {
     try std.testing.expectEqual(@as(usize, 1), listed.paths.len);
 }
 
+test "declaring a touch on an association-less repo warns but still writes" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    // `registerRepoSlug` registers ti-repo AND puts it in an association.
+    const member = registerRepoSlug(&suite, arena);
+    writeFixture(&suite, "src/alpha.zig", "pub fn a() void {}\n");
+
+    // Register a SECOND project in a different directory and never add it to
+    // an association. `init` registers the project; membership comes only
+    // from `assoc add`, so this one is orphaned — the shape that accumulated
+    // 76 stale rows in the real database.
+    const orphan_root = suite.freshSystemTmpDir();
+    {
+        const out = suite.mustRunInDir(orphan_root, &.{ "init", "--allow-no-repo" });
+        suite.allocator.free(out);
+    }
+    // The slug is derived from the DIRECTORY, not from --name, so it has to
+    // be read back rather than assumed. `scope show` inside the project dir
+    // reports it; `assoc members` cannot, since this project has none.
+    const orphan_slug = blk: {
+        const Scope = struct { kind: []const u8 = "", slug: []const u8 = "" };
+        const ScopeShow = struct { resolved_scopes: []const Scope = &.{} };
+        const out = suite.mustRunInDir(orphan_root, &.{ "scope", "show", "--json" });
+        defer suite.allocator.free(out);
+        const parsed = std.json.parseFromSlice(ScopeShow, arena, out, .{
+            .allocate = .alloc_always,
+            .ignore_unknown_fields = true,
+        }) catch @panic("scope show --json did not parse");
+        if (parsed.value.resolved_scopes.len == 0) @panic("orphan project has no cwd-derived scope");
+        break :blk parsed.value.resolved_scopes[0].slug;
+    };
+
+    const plan = suite.mustRunJSON(PlanJSON, arena, &.{
+        "plan", "create", "Orphan warn", "--status", "active", "--json",
+    });
+    const t1 = addTask(&suite, arena, plan.id, "Edit alpha", "Rework src/alpha.zig.");
+    const s = idStr(gpa, t1);
+    defer gpa.free(s);
+
+    // Declaring against the ASSOCIATED repo must stay quiet — the warning
+    // has to be specific, or it becomes noise on the normal path and gets
+    // ignored on the path that matters.
+    {
+        const res = suite.exec(&.{ "task", "touches", "add", s, member, "--path", "src/alpha.zig" });
+        defer gpa.free(res.stdout);
+        defer gpa.free(res.stderr);
+        try std.testing.expect(res.term == .exited and res.term.exited == 0);
+        try std.testing.expect(std.mem.indexOf(u8, res.stderr, "belongs to no association") == null);
+    }
+
+    // Declaring against the ORPHAN warns — and still writes. Link verbs are
+    // deliberately unguarded (CLAUDE.md §Cross-scope guard) because a touch
+    // on a repo in a DIFFERENT association is the legitimate polyrepo
+    // workflow. Refusing here would break that; the advisory does not.
+    {
+        const res = suite.exec(&.{ "task", "touches", "add", s, orphan_slug, "--path", "src/alpha.zig" });
+        defer gpa.free(res.stdout);
+        defer gpa.free(res.stderr);
+        try std.testing.expect(res.term == .exited and res.term.exited == 0);
+        try std.testing.expect(std.mem.indexOf(u8, res.stderr, "belongs to no association") != null);
+    }
+
+    // Both declarations landed: the advisory is not a veto.
+    const listed = suite.mustRunJSON(TouchListJSON, arena, &.{
+        "task", "touches", "list", s, "--json",
+    });
+    try std.testing.expectEqual(@as(usize, 2), listed.paths.len);
+}
+
 test "a path cited with a line number still resolves" {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);

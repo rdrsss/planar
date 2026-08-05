@@ -1455,6 +1455,8 @@ planar task touches add <task-id> <repo-slug> [--path <p>]
 ```
 (`path` is `null` for a repo-level add.)
 
+**Advisory — association-less repo.** If the named repo belongs to **no association**, a warning is printed to stderr (naming a same-basename alternative when one exists) and the write proceeds. This is not a scope check: link verbs are [deliberately unguarded](concepts.md#cross-scope-guard) because a touches edge to a repo in a *different* association is the legitimate polyrepo workflow. A repo in *no* association is different — nothing can reach it, so it is nearly always a stale duplicate slug chosen over the live one. Declarations on such a repo still compute eligibility correctly (rule 2 compares `(repo_id, path)` tuples and never reads the filesystem), but closure extraction reads `projects.root_path`, so seeds resolve against the wrong checkout and unreadable files are skipped silently.
+
 **Schema effects:** Inserts into `entity_links(from_kind='task', from_id=<task-id>, to_kind='repo', to_id=<repo-id>, relationship='touches')`; with `--path`, also inserts `task_touch_paths(task_id=<task-id>, repo_id=<repo-id>, path=<p>)`.
 
 **Capture:** Appends `session_entries` row with `prefix='action'`.

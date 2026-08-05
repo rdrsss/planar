@@ -57,6 +57,22 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         else => exit.die(ctx, e, "repo lookup: {s}", .{@errorName(e)}),
     };
 
+    // Warn — never refuse — when the named repo belongs to NO association.
+    //
+    // Link verbs are deliberately unguarded (CLAUDE.md §Cross-scope guard):
+    // a touches edge to a repo in a DIFFERENT association is the legitimate
+    // polyrepo workflow, so scope disagreement is not an error. A repo in no
+    // association at all is a different thing: nothing can reach it, so it is
+    // almost always a stale duplicate slug picked over the live one.
+    //
+    // This is not hypothetical. 76 path rows accumulated against an orphaned
+    // `planar` row pointing at a pre-vendoring clone, while the live checkout
+    // was registered as `planar-2`. Eligibility still computed — rule 2
+    // compares (repo_id, path) tuples and never consults the filesystem — but
+    // closure extraction reads projects.root_path, so seeds resolved against
+    // the wrong tree and silently skipped unreadable files.
+    if (!args.json) warnIfOrphanRepo(ctx, d, repo_id, args.repo_slug);
+
     // PR #17 cycle B finding 5: when --path is supplied the handler performs
     // TWO writes (entity_links repo edge + task_touch_paths row). They must
     // commit atomically — a partial commit (repo edge present, path row
@@ -122,6 +138,55 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         try ctx.stdout.print("path-touch added: task:{d} -> repo:{s} path:{s}\n", .{ task_id, args.repo_slug, path });
     } else {
         try ctx.stdout.print("touches link added: task:{d} -> repo:{s}\n", .{ task_id, args.repo_slug });
+    }
+}
+
+/// warnIfOrphanRepo emits an advisory when `repo_id` belongs to no
+/// association, naming a same-root alternative when one exists.
+///
+/// Advisory by design: the write proceeds. A hard refusal would break the
+/// polyrepo workflow that link verbs exist to serve, and this cannot tell a
+/// deliberate orphan from a mistaken one — only the operator can.
+fn warnIfOrphanRepo(ctx: anytype, d: anytype, repo_id: i64, slug: []const u8) void {
+    var stmt = d.prepare(
+        "select count(*) from project_associations where project_id = ?",
+    ) catch return;
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .int = repo_id }}) catch return;
+    switch (stmt.step() catch return) {
+        .done => return,
+        .row => if (stmt.columnInt(0) != 0) return,
+    }
+
+    ctx.stderr.print(
+        "warning: repo '{s}' belongs to no association — declarations on it are " ++
+            "unreachable from any scope, and closure extraction will read its " ++
+            "root_path rather than your checkout's\n",
+        .{slug},
+    ) catch return;
+
+    // Offer the likely intended repo: another project registered under a
+    // root_path that shares this one's basename (the `planar` / `planar-2`
+    // shape this guard exists for).
+    var alt = d.prepare(
+        \\select b.slug from projects a
+        \\join projects b on b.id <> a.id
+        \\where a.id = ?
+        \\  and b.root_path is not null and a.root_path is not null
+        \\  and replace(b.root_path, rtrim(b.root_path, replace(b.root_path, '/', '')), '')
+        \\      = replace(a.root_path, rtrim(a.root_path, replace(a.root_path, '/', '')), '')
+        \\  and exists (select 1 from project_associations pa where pa.project_id = b.id)
+        \\limit 1
+    ) catch return;
+    defer alt.finalize();
+    alt.bind(&.{.{ .int = repo_id }}) catch return;
+    switch (alt.step() catch return) {
+        .done => {},
+        .row => {
+            const other = alt.columnTextAlloc(0, ctx.allocator) catch return;
+            defer ctx.allocator.free(other);
+            ctx.stderr.print("         did you mean '{s}'?\n", .{other}) catch return;
+        },
     }
 }
 
