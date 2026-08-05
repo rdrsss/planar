@@ -82,3 +82,55 @@ test "scenario: top-level link / unlink external-link lifecycle" {
     const miss = suite.expectFailure(&.{ "unlink", "999999", "--json" });
     gpa.free(miss);
 }
+
+test "scenario: links add refuses a non-existent endpoint" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    _ = suite.registerProject("link-validate");
+
+    const plan = suite.mustRunJSON(Id, arena, &.{ "plan", "create", "--json", "Validate plan" });
+
+    // entity_links carries no FK constraint, so nothing downstream catches a
+    // reference to an entity that was never created. Link ids are typed by
+    // hand and by agents; a transposed digit must fail at write time rather
+    // than producing an edge that silently resolves to nothing forever.
+
+    // Missing FROM endpoint.
+    {
+        const stderr = suite.expectFailure(&.{
+            "links", "add", "task:999999", "plan:1", "--relationship", "cites",
+        });
+        defer gpa.free(stderr);
+        try std.testing.expect(std.mem.indexOf(u8, stderr, "task:999999") != null);
+    }
+
+    // Missing TO endpoint.
+    {
+        const from = std.fmt.allocPrint(gpa, "plan:{d}", .{plan.id}) catch unreachable;
+        defer gpa.free(from);
+        const stderr = suite.expectFailure(&.{
+            "links", "add", from, "decision:999999", "--relationship", "cites",
+        });
+        defer gpa.free(stderr);
+        try std.testing.expect(std.mem.indexOf(u8, stderr, "decision:999999") != null);
+    }
+
+    // A valid pair still succeeds — the guard must not block real links.
+    {
+        const dec = suite.mustRunJSON(Id, arena, &.{
+            "decision", "add", "A decision", "--json",
+        });
+        const from = std.fmt.allocPrint(gpa, "plan:{d}", .{plan.id}) catch unreachable;
+        defer gpa.free(from);
+        const to = std.fmt.allocPrint(gpa, "decision:{d}", .{dec.id}) catch unreachable;
+        defer gpa.free(to);
+        const out = suite.mustRun(&.{ "links", "add", from, to, "--relationship", "cites" });
+        gpa.free(out);
+    }
+}
