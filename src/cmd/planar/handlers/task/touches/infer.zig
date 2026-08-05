@@ -81,7 +81,7 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
     // recommend-strategy then falls back to the whole-repo signal and
     // serializes a task that should have been eligible.
     var written: usize = 0;
-    if (args.apply and inf.writableCount() > 0) {
+    if (args.apply and inf.writableCount(args.wide) > 0) {
         const sp_name = "touches_infer";
         d.savepoint(ctx.allocator, sp_name) catch |e|
             exit.die(ctx, e, "task touches infer: savepoint: {s}", .{@errorName(e)});
@@ -107,7 +107,7 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         }
 
         for (inf.candidates) |c| {
-            if (!c.classification.isWritable()) continue;
+            if (!c.classification.isWritable(args.wide)) continue;
             for (c.paths) |p| {
                 // addTouchPath is `insert or ignore` against
                 // unique(task_id, repo_id, path), so re-running is a no-op
@@ -125,7 +125,7 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
 
     // ---- report -----------------------------------------------------------
     if (args.json) {
-        try emitJson(ctx, inf, repo, args.apply, written);
+        try emitJson(ctx, inf, repo, args.apply, written, args.wide);
         return;
     }
 
@@ -134,14 +134,14 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         .{
             task_id,
             repo.slug,
-            inf.writableCount(),
-            inf.reviewCount(),
+            inf.writableCount(args.wide),
+            inf.reviewCount(args.wide),
             if (args.apply) "APPLIED" else "preview (nothing written)",
         },
     );
 
     for (inf.candidates) |c| {
-        if (!c.classification.isWritable()) continue;
+        if (!c.classification.isWritable(args.wide)) continue;
         for (c.paths) |p| {
             try ctx.stdout.print(
                 "  + {s}\n      [{s} via {s}: {s}]\n",
@@ -150,18 +150,39 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         }
     }
 
-    if (inf.reviewCount() > 0) {
+    if (inf.reviewCount(args.wide) > 0) {
         try ctx.stdout.print("\nnot written — review:\n", .{});
+        var wide_available: usize = 0;
         for (inf.candidates) |c| {
-            if (c.classification.isWritable()) continue;
+            if (c.classification.isWritable(args.wide)) continue;
+            // Show the expansion size for wide candidates: it is the whole
+            // basis for judging one. A token that would declare 35 files is
+            // a different proposition from one that would declare 2, and the
+            // count is what tells them apart.
+            if (c.paths.len > 0) {
+                wide_available += 1;
+                try ctx.stdout.print(
+                    "  ? {s}  [{s} via {s} — would declare {d} path(s)]\n",
+                    .{ c.token, c.classification.toText(), c.evidence.toText(), c.paths.len },
+                );
+            } else {
+                try ctx.stdout.print(
+                    "  ? {s}  [{s} via {s}]\n",
+                    .{ c.token, c.classification.toText(), c.evidence.toText() },
+                );
+            }
+        }
+        if (!args.wide and wide_available > 0) {
             try ctx.stdout.print(
-                "  ? {s}  [{s} via {s}]\n",
-                .{ c.token, c.classification.toText(), c.evidence.toText() },
+                "\n  {d} directory/basename candidate(s) withheld — add --wide to include them.\n" ++
+                    "  Wide expansion measured NEGATIVE for eligibility: it intersects peers\n" ++
+                    "  and rule 2 drops both, so it can remove tasks that were otherwise fine.\n",
+                .{wide_available},
             );
         }
     }
 
-    if (!args.apply and inf.writableCount() > 0) {
+    if (!args.apply and inf.writableCount(args.wide) > 0) {
         try ctx.stdout.print(
             "\napply with: planar task touches infer {d} --apply\n",
             .{task_id},
@@ -256,6 +277,7 @@ fn emitJson(
     repo: Repo,
     applied: bool,
     written: usize,
+    wide: bool,
 ) !void {
     const w = ctx.stdout;
     try w.print(
@@ -265,7 +287,7 @@ fn emitJson(
     try std.json.Stringify.value(repo.slug, .{}, w);
     try w.print(
         ",\"applied\":{s},\"written\":{d},\"review\":{d},\"candidates\":[",
-        .{ if (applied) "true" else "false", written, inf.reviewCount() },
+        .{ if (applied) "true" else "false", written, inf.reviewCount(wide) },
     );
     for (inf.candidates, 0..) |c, i| {
         if (i > 0) try w.print(",", .{});

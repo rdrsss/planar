@@ -28,6 +28,15 @@
 //! silently. Reporting beats guessing; guessing beats nothing only when the
 //! guess is safe, and here it is not.
 //!
+//! ## Proposing wide is not the same as writing wide
+//!
+//! That bias governs what is PROPOSED. What gets WRITTEN is narrower: only
+//! `resolved` writes by default, because measurement showed the wide
+//! classifications reduce parallel-eligibility rather than increasing it.
+//! The reason is rule 2's drop-both-on-tie — an over-declared task removes
+//! its PEERS from the eligible set as well as itself, while an undeclared
+//! task removes only itself. See `wide_expansion_note` for the numbers.
+//!
 //! ## Scope of v1 — deterministic only
 //!
 //! No model call. Extraction is literal path-shaped-token detection plus
@@ -98,15 +107,49 @@ pub const Classification = enum {
         };
     }
 
-    /// Whether a candidate of this classification contributes writable rows.
-    /// `unresolved` and `too_broad` are preview-only by construction.
-    pub fn isWritable(self: Classification) bool {
+    /// Whether a candidate of this classification contributes writable rows
+    /// under the given policy. `unresolved` and `too_broad` are preview-only
+    /// by construction, under either policy.
+    ///
+    /// `resolved` — an exact path the task named — always writes. The wide
+    /// classifications (`directory`, `basename`) write only when the caller
+    /// opts in, because measurement showed they cost eligibility rather than
+    /// adding it. See `wide_expansion_note` below.
+    pub fn isWritable(self: Classification, wide: bool) bool {
         return switch (self) {
-            .resolved, .directory, .basename => true,
+            .resolved => true,
+            .directory, .basename => wide,
             .unresolved, .too_broad => false,
         };
     }
 };
+
+/// Why the wide classifications are report-only by default.
+///
+/// Decision 906 biases *proposal* toward over-declaration, and that still
+/// holds: a directory expands rather than being dropped, an ambiguous
+/// basename yields every match, and nothing unplaceable is invented. What
+/// changed is which proposals are WRITTEN, which is a separable question.
+///
+/// Measured 2026-08-05 over 46 open tasks in six real plans, applying rule 2
+/// offline (empty set never eligible; intersecting sets drop BOTH):
+///
+///     nothing declared (baseline)   0 / 46 eligible
+///     resolved-only                14 / 46
+///     resolved + wide              13 / 46
+///
+/// Wide expansion bought zero additional eligible tasks and cost one. The
+/// mechanism is rule 2's drop-both-on-tie: an UNDECLARED task removes only
+/// itself from the eligible set, but an OVER-DECLARED one removes its peers
+/// too. In plan 344, four tasks each mentioned `skills/src/` in prose;
+/// expanding it gave all four the same 35 paths, so they mutually overlapped
+/// and also dragged down the one task that had seven genuinely distinct real
+/// paths. 1 eligible became 0.
+///
+/// So over-declaration is not the safely-recoverable direction once the
+/// declaration is wide enough to intersect everything — the cost propagates
+/// across the plan rather than staying with the declaring task.
+pub const wide_expansion_note = {};
 
 /// One token lifted from the task text, with how it resolved.
 pub const Candidate = struct {
@@ -130,20 +173,22 @@ pub const Inference = struct {
         self.arena.deinit();
     }
 
-    /// Count of candidates that would produce `task_touch_paths` rows.
-    pub fn writableCount(self: Inference) usize {
+    /// Count of paths that would be written under the given policy.
+    pub fn writableCount(self: Inference, wide: bool) usize {
         var n: usize = 0;
         for (self.candidates) |c| {
-            if (c.classification.isWritable()) n += c.paths.len;
+            if (c.classification.isWritable(wide)) n += c.paths.len;
         }
         return n;
     }
 
-    /// Count of candidates surfaced for review but not written.
-    pub fn reviewCount(self: Inference) usize {
+    /// Count of candidates surfaced for review but not written. Under the
+    /// default policy this includes the wide classifications, which is the
+    /// point: they stay visible, they just do not write.
+    pub fn reviewCount(self: Inference, wide: bool) usize {
         var n: usize = 0;
         for (self.candidates) |c| {
-            if (!c.classification.isWritable()) n += 1;
+            if (!c.classification.isWritable(wide)) n += 1;
         }
         return n;
     }
@@ -629,7 +674,8 @@ test "classifyToken: unplaceable token is reported, not silently dropped" {
     try testing.expectEqual(Classification.unresolved, r.classification);
     try testing.expectEqual(@as(usize, 0), r.paths.len);
     // Not writable — preview surfaces it, apply skips it.
-    try testing.expect(!r.classification.isWritable());
+    try testing.expect(!r.classification.isWritable(false));
+    try testing.expect(!r.classification.isWritable(true));
 }
 
 test "classifyToken: hidden directories are never proposed" {
@@ -702,14 +748,26 @@ test "inferFromText carries unresolved tokens through for review" {
         .arena = std.heap.ArenaAllocator.init(testing.allocator),
     };
     defer inf.deinit();
-    try testing.expectEqual(@as(usize, 1), inf.writableCount());
-    try testing.expectEqual(@as(usize, 1), inf.reviewCount());
+    try testing.expectEqual(@as(usize, 1), inf.writableCount(false));
+    try testing.expectEqual(@as(usize, 1), inf.reviewCount(false));
 }
 
 test "writable classifications are exactly those that produce rows" {
-    try testing.expect(Classification.resolved.isWritable());
-    try testing.expect(Classification.directory.isWritable());
-    try testing.expect(Classification.basename.isWritable());
-    try testing.expect(!Classification.unresolved.isWritable());
-    try testing.expect(!Classification.too_broad.isWritable());
+    // Default policy: only an exact path match writes. Directory and
+    // basename expansions are proposed and shown, but withheld — measured
+    // to REDUCE parallel-eligibility, since a wide set intersects peers and
+    // rule 2 drops both sides. See `wide_expansion_note`.
+    try testing.expect(Classification.resolved.isWritable(false));
+    try testing.expect(!Classification.directory.isWritable(false));
+    try testing.expect(!Classification.basename.isWritable(false));
+    try testing.expect(!Classification.unresolved.isWritable(false));
+    try testing.expect(!Classification.too_broad.isWritable(false));
+
+    // Opt-in policy: the wide classifications become writable; the two that
+    // resolve to nothing never do, under either policy.
+    try testing.expect(Classification.resolved.isWritable(true));
+    try testing.expect(Classification.directory.isWritable(true));
+    try testing.expect(Classification.basename.isWritable(true));
+    try testing.expect(!Classification.unresolved.isWritable(true));
+    try testing.expect(!Classification.too_broad.isWritable(true));
 }

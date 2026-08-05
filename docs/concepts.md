@@ -640,6 +640,18 @@ It is also the binding constraint in practice. Nothing populated `task_touch_pat
 
 Inference cannot tell which of the two it produced. The operator can, which is why nothing is written without confirmation. Expect the preview to include files a task merely *cites* rather than edits — pruning those in review is the intended workflow, not a defect.
 
+**Proposing wide is not the same as writing wide.** The bias above governs what inference *proposes*; what it *writes* is narrower. Only exact path matches are written by default. Directory and basename expansions are shown with their expansion size and withheld unless `--wide` is passed, because measurement showed they reduce eligibility rather than increasing it:
+
+| Policy | Parallel-eligible (46 tasks, six plans) |
+|--------|------------------------------------------|
+| Nothing declared | 0 |
+| Exact matches only | **14** |
+| Exact + wide expansions | 13 |
+
+The over-declare row above is understated for wide sets. Rule 2 drops **both** sides of an overlap, so an over-declared task removes its *peers* from the eligible set as well as itself — while an undeclared task removes only itself. In one plan, four tasks each mentioned `skills/src/` in prose; expanding it gave all four the same 35 paths, and they mutually overlapped *and* dragged down the one task with seven genuinely distinct real paths. One eligible task became zero.
+
+So over-declaration is recoverable only while it stays narrow enough not to intersect everything. Past that point the cost propagates across the plan rather than staying with the declaring task.
+
 Note that inference improves rule 2 only. Dependency edges (rule 1) are not inferred: two tasks can touch genuinely disjoint files and still be ordered, as when one imports a module the other creates. Declare those with `planar task block <task> --on <blocker>`.
 
 ### The five underlying axes

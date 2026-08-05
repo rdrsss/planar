@@ -1470,7 +1470,7 @@ planar task touches add <task-id> <repo-slug> [--path <p>]
 
 **Synopsis:**
 ```
-planar task touches infer <task-id> [--repo <slug>] [--apply] [--json]
+planar task touches infer <task-id> [--repo <slug>] [--apply] [--wide] [--json]
 ```
 
 **Description:** Propose path-level `task_touch_paths` rows by extracting path-shaped tokens from the task's own `title`, `body`, and `next_action`, then resolving them against a repo checkout. **Preview by default — without `--apply` nothing is written.**
@@ -1482,12 +1482,24 @@ Each candidate is classified:
 | Classification | Meaning | Written by `--apply` |
 |----------------|---------|----------------------|
 | `resolved` | Exact repo-relative file. | yes |
-| `directory` | Token named a directory; expanded recursively to its files. | yes |
-| `basename` | Bare filename; **every** matching path in the tree. | yes |
+| `directory` | Token named a directory; expanded recursively to its files. | only with `--wide` |
+| `basename` | Bare filename; **every** matching path in the tree. | only with `--wide` |
 | `unresolved` | Path-shaped but no match — reported for review. | no |
 | `too_broad` | Directory or basename expanding past 64 files. | no |
 
-**Ambiguity always resolves wide** ([decision 906](concepts.md#declaring-what-a-task-touches)). Over-declaring costs throughput — the task serializes when it might have run in parallel — and is recoverable by declaring more precisely. Under-declaring costs correctness: two tasks are marked parallel-eligible, fanned into separate worktrees, both edit the same file, and the collision surfaces at fan-in after both burned a full cycle. Inference cannot tell which it produced; only the operator can, which is why the default is preview.
+**Ambiguity always resolves wide when *proposing*** ([decision 906](concepts.md#declaring-what-a-task-touches)): a directory expands, a basename yields every match, and nothing unplaceable is invented. Inference cannot tell an over-declaration from an under-declaration; only the operator can, which is why the default is preview.
+
+**But wide candidates are not *written* by default.** Measured over 46 open tasks in six real plans, applying rule 2 offline:
+
+| Policy | Parallel-eligible |
+|--------|-------------------|
+| Nothing declared | 0 / 46 |
+| `resolved` only (default) | **14 / 46** |
+| `resolved` + `--wide` | 13 / 46 |
+
+Wide expansion bought zero additional eligible tasks and cost one. The mechanism is rule 2's drop-both-on-tie: an *undeclared* task removes only itself from the eligible set, but an *over-declared* one removes its peers too. In one plan, four tasks each mentioned `skills/src/` in prose; expanding it gave all four the same 35 paths, so they mutually overlapped and also dragged down the one task that had seven genuinely distinct real paths — 1 eligible became 0.
+
+So over-declaration is only the safely-recoverable direction while the declaration stays narrow enough not to intersect everything. Pass `--wide` when you have judged a specific expansion to be right; the preview shows each candidate's expansion size for exactly that decision.
 
 Repo selection: `--repo <slug>` names the checkout. Without it, the repo is derived from the current directory — the project whose `root_path` is the **longest** matching prefix, so a submodule checkout beats its superproject.
 
@@ -1503,6 +1515,7 @@ Repo selection: `--repo <slug>` names the checkout. Without it, the repo is deri
 |------|-------------|---------|
 | `--repo <slug>` | Repo checkout to resolve paths against. | derived from cwd |
 | `--apply` | Write the writable candidates. Without it, nothing is written. | off (preview) |
+| `--wide` | Also write `directory` and `basename` candidates. Measured to reduce eligibility — see above. | off |
 | `--json` | Emit JSON instead of text. | off |
 
 **Output (`--json`):**

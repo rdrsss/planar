@@ -239,14 +239,39 @@ test "a directory citation expands to its files rather than being dropped" {
     const s = idStr(gpa, t1);
     defer gpa.free(s);
 
-    const res = suite.mustRunJSON(InferJSON, arena, &.{
+    // DEFAULT: the directory is proposed and classified, but withheld.
+    // Measured over 46 tasks in six real plans, writing wide expansions
+    // yielded FEWER parallel-eligible tasks than resolved-only (13 vs 14):
+    // a wide set intersects peers and rule 2 drops BOTH sides, so one loose
+    // directory mention can remove tasks that were otherwise eligible.
+    const def = suite.mustRunJSON(InferJSON, arena, &.{
         "task", "touches", "infer", s, "--repo", repo, "--apply", "--json",
     });
+    try std.testing.expectEqual(@as(usize, 0), def.written);
+    try std.testing.expectEqual(@as(usize, 1), def.candidates.len);
+    try std.testing.expectEqualStrings("directory", def.candidates[0].classification);
+    // Still expanded in the proposal — decision 906 governs what is
+    // PROPOSED; --wide governs what is WRITTEN. Wider, not narrower: the
+    // nested file counts too.
+    try std.testing.expectEqual(@as(usize, 3), def.candidates[0].paths.len);
 
-    // Wider, not narrower: the nested file counts too (decision 906).
-    try std.testing.expectEqual(@as(usize, 3), res.written);
-    try std.testing.expectEqual(@as(usize, 1), res.candidates.len);
-    try std.testing.expectEqualStrings("directory", res.candidates[0].classification);
+    {
+        const listed = suite.mustRunJSON(TouchListJSON, arena, &.{
+            "task", "touches", "list", s, "--json",
+        });
+        try std.testing.expectEqual(@as(usize, 0), listed.paths.len);
+    }
+
+    // OPT-IN: --wide writes them.
+    const wide = suite.mustRunJSON(InferJSON, arena, &.{
+        "task", "touches", "infer", s, "--repo", repo, "--apply", "--wide", "--json",
+    });
+    try std.testing.expectEqual(@as(usize, 3), wide.written);
+
+    const listed = suite.mustRunJSON(TouchListJSON, arena, &.{
+        "task", "touches", "list", s, "--json",
+    });
+    try std.testing.expectEqual(@as(usize, 3), listed.paths.len);
 }
 
 test "an unplaceable path is reported for review and never written" {
