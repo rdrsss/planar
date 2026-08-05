@@ -68,15 +68,25 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
         .slug => unreachable,
     };
 
-    const link = engine.entitylink.add(d, ctx.allocator, .{
+    const add_args: engine.entitylink.AddArgs = .{
         .from_kind = from_kind,
         .from_id = from_id,
         .to_kind = to_kind,
         .to_id = to_id,
         .relationship = relationship,
-    }) catch |e| switch (e) {
+    };
+
+    const link = engine.entitylink.add(d, ctx.allocator, add_args) catch |e| switch (e) {
         error.LinkExists => exit.die(ctx, e, "link {s}:{d} -> {s}:{d} [{s}] already exists", .{ from_kind.toText(), from_id, to_kind.toText(), to_id, rel_text }),
         error.UnsupportedScope => exit.die(ctx, e, "scoped entity links not yet supported (M3)", .{}),
+        // Name the offending side and ref. A bare "endpoint not found" would
+        // leave the operator re-reading both halves of the command to work
+        // out which id was wrong — and a mistyped id is the whole reason
+        // this check exists.
+        error.EndpointNotFound => switch (engine.entitylink.missingEndpoint(d, add_args) orelse .from) {
+            .from => exit.die(ctx, e, "{s}:{d} not found", .{ from_kind.toText(), from_id }),
+            .to => exit.die(ctx, e, "{s}:{d} not found", .{ to_kind.toText(), to_id }),
+        },
         else => exit.die(ctx, e, "links add: {s}", .{@errorName(e)}),
     };
     defer engine.entitylink.deinit(link, ctx.allocator);

@@ -206,6 +206,9 @@ pub const Error =
         UnsupportedScope,
         InvalidRef,
         QueryFailed,
+        /// An endpoint references an entity id that does not exist. Carries
+        /// no detail; callers report which side via `MissingEndpoint`.
+        EndpointNotFound,
     } ||
     std.mem.Allocator.Error ||
     policy.audit.Error;
@@ -220,8 +223,68 @@ pub const Error =
 /// to, relationship) tuple is already recorded. Returns
 /// Error.UnsupportedScope if args.scope is non-null (M3 forward-compat
 /// guard; link verbs are unguarded so no scope_guard.check call is made).
+/// Which endpoint of a link failed validation.
+pub const MissingEndpoint = enum { from, to };
+
+/// The table backing each entity kind, for existence checks.
+///
+/// entity_links has no FK constraint — deliberately, since the column pair
+/// is polymorphic and SQLite cannot express a conditional reference. That
+/// makes existence a WRITE-TIME check or no check at all.
+fn tableFor(kind: EntityKind) [:0]const u8 {
+    return switch (kind) {
+        .plan => "plans",
+        .plan_step => "plan_steps",
+        .task => "tasks",
+        .question => "questions",
+        .test_scenario => "test_scenarios",
+        .artifact => "artifacts",
+        .decision => "decisions",
+        .session => "sessions",
+        .repo => "projects",
+        .annotation => "annotations",
+    };
+}
+
+/// True when `id` exists in the table backing `kind`.
+///
+/// A query failure reports EXISTS rather than missing: this guard must never
+/// turn a transient DB problem into a refusal to record a legitimate link.
+/// Failing open here preserves the pre-guard behavior in the degraded case.
+fn endpointExists(d: *db.sqlite.Db, kind: EntityKind, id: i64) bool {
+    var buf: [64]u8 = undefined;
+    const sql = std.fmt.bufPrintZ(&buf, "select 1 from {s} where id = ?", .{tableFor(kind)}) catch
+        return true;
+    var stmt = d.prepare(sql) catch return true;
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .int = id }}) catch return true;
+    return switch (stmt.step() catch return true) {
+        .done => false,
+        .row => true,
+    };
+}
+
+/// Check both endpoints, reporting which side is missing. Exposed so the
+/// handler can name the offending ref in its error rather than guessing.
+pub fn missingEndpoint(d: *db.sqlite.Db, args: AddArgs) ?MissingEndpoint {
+    if (!endpointExists(d, args.from_kind, args.from_id)) return .from;
+    if (!endpointExists(d, args.to_kind, args.to_id)) return .to;
+    return null;
+}
+
 pub fn add(d: *db.sqlite.Db, allocator: std.mem.Allocator, args: AddArgs) Error!EntityLink {
     if (args.scope != null) return Error.UnsupportedScope;
+
+    // Existence is checked here, not by the schema: the (kind, id) pair is
+    // polymorphic so no FK can express it. Without this the write succeeds
+    // and produces an edge that resolves to nothing forever — invisible at
+    // write time, and only noticed later by whoever follows the link.
+    //
+    // This is NOT a scope check. Link verbs stay deliberately unguarded so
+    // polyrepo edges can cross scopes (CLAUDE.md §Cross-scope guard); a
+    // legitimate cross-scope link still succeeds, because "does this entity
+    // exist" and "is it in my scope" are different questions.
+    if (missingEndpoint(d, args) != null) return Error.EndpointNotFound;
 
     const insert_sql: [:0]const u8 =
         \\insert into entity_links (from_kind, from_id, to_kind, to_id, relationship)

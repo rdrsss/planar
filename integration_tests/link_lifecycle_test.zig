@@ -124,7 +124,7 @@ test "scenario: links add refuses a non-existent endpoint" {
     // A valid pair still succeeds — the guard must not block real links.
     {
         const dec = suite.mustRunJSON(Id, arena, &.{
-            "decision", "add", "A decision", "--json",
+            "decision", "add", "A decision", "--body", "why", "--json",
         });
         const from = std.fmt.allocPrint(gpa, "plan:{d}", .{plan.id}) catch unreachable;
         defer gpa.free(from);
