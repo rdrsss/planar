@@ -55,15 +55,23 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
 
     _ = args.scope;
 
-    const link = engine.entitylink.add(d, ctx.allocator, .{
+    const add_args: engine.entitylink.AddArgs = .{
         .from_kind = .test_scenario,
         .from_id = scenario_id,
         .to_kind = to_kind,
         .to_id = to_id,
         .relationship = relationship,
-    }) catch |e| switch (e) {
+    };
+    const link = engine.entitylink.add(d, ctx.allocator, add_args) catch |e| switch (e) {
         error.LinkExists => exit.die(ctx, e, "link test_scenario:{d} -> {s}:{d} [{s}] already exists", .{ scenario_id, to_kind.toText(), to_id, rel_text }),
         error.UnsupportedScope => exit.die(ctx, e, "scoped entity links not yet supported (M3)", .{}),
+        // Name the side and the ref. The failure this guard catches is a
+        // mistyped id, and with two refs in play a bare error name leaves
+        // the operator guessing which one was wrong.
+        error.EndpointNotFound => switch (engine.entitylink.missingEndpoint(d, add_args) orelse .from) {
+            .from => exit.die(ctx, e, "{s}:{d} not found", .{ add_args.from_kind.toText(), add_args.from_id }),
+            .to => exit.die(ctx, e, "{s}:{d} not found", .{ add_args.to_kind.toText(), add_args.to_id }),
+        },
         else => exit.die(ctx, e, "scenario link: {s}", .{@errorName(e)}),
     };
     defer engine.entitylink.deinit(link, ctx.allocator);

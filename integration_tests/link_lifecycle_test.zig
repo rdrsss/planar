@@ -134,3 +134,52 @@ test "scenario: links add refuses a non-existent endpoint" {
         gpa.free(out);
     }
 }
+
+test "scenario: per-entity link verbs name the missing ref" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    _ = suite.registerProject("link-msg");
+
+    const plan = suite.mustRunJSON(Id, arena, &.{ "plan", "create", "--json", "Msg plan" });
+    const task = suite.mustRunJSON(Id, arena, &.{
+        "task", "add", "A task", "--json", "--editor=false",
+    });
+
+    const plan_ref = std.fmt.allocPrint(gpa, "{d}", .{plan.id}) catch unreachable;
+    defer gpa.free(plan_ref);
+    const task_ref = std.fmt.allocPrint(gpa, "{d}", .{task.id}) catch unreachable;
+    defer gpa.free(task_ref);
+
+    // The engine guard covers every caller, but a bare "EndpointNotFound"
+    // leaves the operator guessing WHICH of the two refs was wrong — and a
+    // mistyped id is the entire failure mode being caught. Each verb must
+    // name the offending side.
+    {
+        const stderr = suite.expectFailure(&.{
+            "task", "link", task_ref, "decision:999999", "--relationship", "cites",
+        });
+        defer gpa.free(stderr);
+        try std.testing.expect(std.mem.indexOf(u8, stderr, "decision:999999 not found") != null);
+    }
+    {
+        const stderr = suite.expectFailure(&.{
+            "plan", "link", plan_ref, "--relationship", "cites", "task:999999",
+        });
+        defer gpa.free(stderr);
+        try std.testing.expect(std.mem.indexOf(u8, stderr, "task:999999 not found") != null);
+    }
+    {
+        // The FROM side is reported too, not just the user-supplied ref.
+        const stderr = suite.expectFailure(&.{
+            "task", "link", "999999", "--relationship", "cites", "plan:1",
+        });
+        defer gpa.free(stderr);
+        try std.testing.expect(std.mem.indexOf(u8, stderr, "task:999999 not found") != null);
+    }
+}

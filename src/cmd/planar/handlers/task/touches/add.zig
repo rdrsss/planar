@@ -109,6 +109,9 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
             exit.die(ctx, e, "touches link task:{d} -> repo:{s} already exists", .{ task_id, args.repo_slug });
         },
         error.UnsupportedScope => exit.die(ctx, e, "scoped entity links not yet supported (M3)", .{}),
+        // Only the task side can be missing here: the repo id was already
+        // resolved from its slug above, so a failure names the task.
+        error.EndpointNotFound => exit.die(ctx, e, "task:{d} not found", .{task_id}),
         else => exit.die(ctx, e, "task touches add: {s}", .{@errorName(e)}),
     }
 

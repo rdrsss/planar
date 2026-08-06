@@ -103,6 +103,11 @@ pub fn handle(args_ptr: *const anyopaque) anyerror!void {
             engine.entitylink.deinit(link, ctx.allocator);
         } else |e| switch (e) {
             error.LinkExists => {},
+            // No EndpointNotFound arm: both endpoints are known to exist by
+            // this point. `touchinfer.infer` above reads the task and dies
+            // with "task {d} not found" if it is missing, and the repo was
+            // resolved from cwd or --repo. The generic arm below covers the
+            // impossible case without pretending it is expected.
             else => exit.die(ctx, e, "task touches infer: repo edge: {s}", .{@errorName(e)}),
         }
 
