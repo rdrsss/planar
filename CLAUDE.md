@@ -50,7 +50,7 @@ The repo root IS the Zig package root: `build.zig` and `build.zig.zon` sit at th
 | `integration_tests/` | End-to-end integration suites exercising the built binary via the `harness.zig` runner (`harness.smoke`, `harness.mustRun`, `harness.mustRunJSON`). Run via `zig build test-integration`. |
 | `migrations/` | SQLite schema migrations in sqlx-cli format (`NNNNN_<name>.up.sql` / `.down.sql`, 5-digit zero-padded prefix). Authoritative source — the Zig build picks them up automatically via `tools/gen_migrations.zig` codegen. See `migrations/README.md` for the file format and `schema_migrations` contract. |
 | `templates/defaults/` | Propagation templates (JSON) for external operational systems (`github-issues/`, `github-projects/`, `jira/`). Embedded into the binary at build time via `tools/gen_templates.zig`; operator overrides land in `~/.planar/templates/defaults/`. |
-| `templates/doc-prompts/`, `templates/entity/`, `templates/workspace-capabilities.toml` | Operator-editable template defaults staged under `~/.planar/templates/`. |
+| `templates/doc-prompts/`, `templates/defaults/`, `templates/workspace-capabilities.toml` | Operator-editable template defaults staged under `~/.planar/templates/`. |
 | `docs/architecture.md` | System overview — storage model, schema contract, context planes, workbench, adapters |
 | `docs/cli-reference.md` | Full CLI surface — commands, flags, exit codes |
 | `docs/skill-reference.md` | Skill and agent role overview |

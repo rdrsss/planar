@@ -308,7 +308,7 @@ The repo root IS the Zig package root: `build.zig` and `build.zig.zon` sit at th
 | `integration_tests/` | End-to-end integration suites exercising the built binary via the `harness.zig` runner |
 | `migrations/` | SQLite migrations in sqlx-cli format (`NNNNN_<name>.up.sql` / `.down.sql`) — single authoritative source |
 | `templates/defaults/` | Propagation templates (JSON) for external systems (`github-issues/`, `github-projects/`, `jira/`); embedded at build time |
-| `templates/doc-prompts/`, `templates/entity/`, `templates/workspace-capabilities.toml` | Operator-editable defaults staged into `~/.planar/templates/` on install |
+| `templates/doc-prompts/`, `templates/defaults/`, `templates/workspace-capabilities.toml` | Operator-editable defaults staged into `~/.planar/templates/` on install |
 | `skills/src/` | Unified authored skill sources (`pl-*.md`) |
 | `$PLANAR_HOME/commands/claude/` | Generated Claude staging tree (install output, not checked in) |
 | `$PLANAR_HOME/codex-skills/` | Generated Codex staging tree (install output, not checked in) |

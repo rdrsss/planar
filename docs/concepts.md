@@ -999,32 +999,11 @@ A **handoff** record is written at the end of a session via `planar handoff`. It
 
 ## Templates layer
 
-Planar ships per-entity-kind Markdown templates that seed new entities created via the editor-first `add` verbs. The shipped set lives in the repo under `templates/entity/` and is installed to `~/.planar/templates/entity/` by `install.sh` (existing files are preserved on re-install; `--force` overwrites).
+Planar's template plane is the **external-system propagation** templates: JSON documents that render a Planar entity into the payload a target system expects (GitHub Issues, Jira). They resolve through a three-level fallback chain — operator overrides in `~/.planar/templates/<kind>/<slug>.json`, default copies in `~/.planar/templates/defaults/`, then the set embedded in the binary — and are surfaced by `planar templates {list, show, render, validate, init, path}`.
 
-Layout:
+**SQLite tables:** none — templates are filesystem assets plus an embedded fallback set. **Primary entry points:** `src/engine/templates/loader.zig` (resolve + load), `render.zig` (render), `validate.zig` (lint).
 
-```
-~/.planar/templates/entity/
-├── artifact/
-│   ├── product_spec.md
-│   ├── tech_spec.md
-│   ├── roadmap.md
-│   ├── research.md
-│   ├── decision-record.md
-│   └── default.md       # fallback for unrecognized artifact subkinds
-├── decision.md
-├── task.md
-├── question.md
-└── scenario.md
-```
-
-Each template is a Markdown file with a YAML frontmatter block plus a short body skeleton. Placeholders use a Go-template-compatible mini-language: `{{.Title}}`, `{{.PlanID}}`, `{{.PlanSlug}}`, `{{.ArtifactKind}}` (artifact templates only), `{{.Priority}}` (task template only), `{{.Date}}`. The loader (`src/cmd/planar/editflow.zig` + `src/engine/templates/`) treats an unknown placeholder as an error so typos surface immediately.
-
-**Customizing.** Operators edit the installed file directly; `install.sh` does not clobber an existing template unless run with `--force`. Per-workspace template overrides are a future seam tracked in the M2 tech-spec.
-
-**Validation.** A unit-time `LintAll` renders every shipped template against a sentinel `Vars` to catch placeholder typos. A richer schema-aware validator at install time is tracked as a follow-up (task 740).
-
-**SQLite tables:** none — templates are pure filesystem assets. **Primary entry points:** `src/engine/templates/loader.zig` (resolve + load), `src/engine/templates/render.zig` (render), `src/engine/templates/validate.zig` (lint). Engine-internal, not a CLI surface.
+> **Removed (2026-08-07).** An earlier revision of this section described a second, unrelated templates layer: per-entity-kind Markdown files under `templates/entity/` that seeded new entities created through the editor-first `add` verbs, with a `{{.Title}}` placeholder language and an install-time validator. **That layer never existed in this binary.** The files and this documentation both arrived in the Go→Zig bootstrap (`bfa3abc`); the reader was never ported, and `src/cmd/planar/editflow.zig` has never contained the word "template". `templates/entity/` has been deleted rather than left installed and inert. See planar task 5918.
 
 ## Model routing
 
