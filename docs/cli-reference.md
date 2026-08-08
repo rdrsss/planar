@@ -4983,7 +4983,7 @@ Writes (only with `--apply`, atomically per anchor plan):
 - `decisions` — inserts or updates decisions.
 - `questions` — inserts H3 items under tech-spec `## Open Questions`; when the first non-blank body line begins with the case-sensitive `Resolution:` token, answers the new or existing question during the same apply.
 - `test_scenarios` — inserts or updates scenarios parsed from `test-spec.md`; also auto-drafts `Verify: <task title>` scenarios for non-trivial newly added tasks (task body contains at least two bullet lines).
-- `entity_links` — inserts `derives-from` links (plan→anchor, task→plan, decision→anchor, scenario→anchor), `touches` links from roadmap `[touches: <repo-slug>, ...]` annotations (task→repo), and `verifies` links (scenario→task).
+- `entity_links` — inserts `derives-from` links (plan→anchor, task→plan, decision→anchor, scenario→anchor), `touches` links from roadmap `[touches: ...]` annotations (task→repo), plus `task_touch_paths` rows for entries in `<repo-slug>:<path>` or bare-`<path>` form, and `verifies` links (scenario→task).
 
 **Capture:**
 - Preview mode: one `session_entries` row with `prefix='read'` appended.

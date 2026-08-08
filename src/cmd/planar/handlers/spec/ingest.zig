@@ -352,8 +352,27 @@ fn runOnePlan(
             },
         );
         if (result.tasks_cancelled > 0) try ctx.stderr.print(", {d} tasks cancelled", .{result.tasks_cancelled});
+        if (result.touch_paths_written > 0) try ctx.stderr.print(", {d} path touches declared", .{result.touch_paths_written});
         if (result.anchor_activated) try ctx.stderr.print(" (anchor plan activated)", .{});
         try ctx.stderr.print("\n", .{});
+
+        // Surface entries that resolved to nothing. Previously these were
+        // dropped in silence, so a typo'd repo slug in a roadmap was
+        // indistinguishable from one that worked — visible only later, as a
+        // task that never became parallel-eligible for no apparent reason.
+        if (result.touches_unresolved > 0) {
+            try ctx.stderr.print(
+                "warning: {d} `[touches: …]` entr{s} resolved to neither a registered repo " ++
+                    "slug nor a usable path and {s} recorded\n" ++
+                    "         qualify a path as `<repo-slug>:<path>`; a bare path needs the " ++
+                    "anchor's association to have exactly one member repo\n",
+                .{
+                    result.touches_unresolved,
+                    if (result.touches_unresolved == 1) @as([]const u8, "y") else "ies",
+                    if (result.touches_unresolved == 1) @as([]const u8, "was not") else "were not",
+                },
+            );
+        }
     }
 }
 

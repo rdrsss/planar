@@ -66,8 +66,28 @@ and the `draft -> active` flip all commit together or roll back together.
 
 Two annotations are load-bearing:
 
-- Roadmap work-item bullets may carry `[touches: <repo-slug>, ...]`; ingest
-  turns those into `entity_links(relationship='touches', task -> repo)` edges.
+- Roadmap work-item bullets may carry `[touches: ...]`, whose entries take
+  three forms:
+
+  | Entry | Records | Use |
+  |-------|---------|-----|
+  | `<repo-slug>` | `entity_links(touches, task → repo)` | the task touches the whole repo |
+  | `<repo-slug>:<path>` | a `task_touch_paths` row plus the implied repo edge | the task touches one file, repo named explicitly |
+  | `<path>` | same, against the anchor association's sole member repo | the common single-repo case |
+
+  **Prefer the path forms.** A whole-repo touch collides with *any* same-repo
+  touch under parallel-eligibility rule 2, so a plan whose tasks carry only
+  repo edges is no more parallel-eligible than one that declares nothing.
+  Path declarations are also the seeds closure extraction reads.
+
+  A bare path resolves only when the anchor's association has exactly one
+  member repo; with two there is no principled choice, and the entry is
+  reported rather than guessed. An entry naming an unknown repo
+  (`typo:src/x.zig`) is likewise reported, never re-read as a bare path —
+  falling back would attach the declaration to the wrong tree while looking
+  like it worked. Unresolved entries are counted and warned about at the end
+  of `spec ingest --apply`.
+
   `[slug: ...]` pins the task's stable slug.
 - A tech-spec `## Open Questions` item whose first non-blank body line begins
   with the case-sensitive `Resolution:` token is answered during apply. New

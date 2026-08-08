@@ -2044,3 +2044,127 @@ fn taskIdBySlug(suite: *harness.Suite, arena: std.mem.Allocator, slug: []const u
     while (id_end < listed.len and listed[id_end] >= '0' and listed[id_end] <= '9') id_end += 1;
     return arena.dupe(u8, listed[id_at..id_end]) catch @panic("OOM");
 }
+
+test "spec ingest records path-level touches from roadmap annotations" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_backing = std.heap.ArenaAllocator.init(gpa);
+    defer arena_backing.deinit();
+    const arena = arena_backing.allocator();
+
+    const InitJSON = struct { project_slug: []const u8 };
+    const project_root = suite.tmpAbsPath();
+    const init_raw = suite.mustRunInDir(project_root, &.{
+        "init", "--allow-no-repo", "--json", "--name", "touch-ingest-anchor",
+    });
+    defer gpa.free(init_raw);
+    const init = parseJSON(InitJSON, arena, init_raw);
+    const repo_scope = std.fmt.allocPrint(arena, "repo:{s}", .{init.project_slug}) catch @panic("OOM");
+
+    const assoc_slug = "touch-ingest-members";
+    const assoc_scope = "assoc:touch-ingest-members";
+    const create_assoc = suite.mustRun(&.{ "assoc", "create", assoc_slug, "--kind", "org" });
+    gpa.free(create_assoc);
+    const add_member = suite.mustRun(&.{ "assoc", "add", assoc_slug, project_root });
+    gpa.free(add_member);
+
+    // A REPO-scoped anchor names its repo outright, so a bare path in
+    // `[touches: …]` has exactly one thing it can mean. (A global-scoped
+    // anchor has no repo at all, and bare paths there stay unresolved.)
+    const ScopedEntity = struct {
+        id: i64,
+        scope_kind: []const u8,
+        scope_id: ?i64 = null,
+    };
+    const anchor = suite.mustRunJSON(ScopedEntity, arena, &.{
+        "plan", "create", "--json", "--scope", repo_scope, "Touch ingest anchor",
+    });
+    try std.testing.expectEqualStrings("repo", anchor.scope_kind);
+    const anchor_id = std.fmt.allocPrint(arena, "{d}", .{anchor.id}) catch @panic("OOM");
+
+    const tech_body =
+        \\# Touch Ingest Tech Spec
+        \\
+        \\## Status
+        \\
+        \\Draft.
+        \\
+    ;
+    // `[touches: …]` previously produced only whole-repo edges, and a
+    // whole-repo touch collides with ANY same-repo touch under rule 2 — so a
+    // plan whose tasks carried only those was no more parallel-eligible than
+    // one declaring nothing. The bare-path form is what rule 2 can use.
+    const roadmap_body =
+        \\# Touch Ingest Roadmap
+        \\
+        \\## Milestone
+        \\
+        \\- Bare path bullet [slug: bare-path] [touches: src/alpha.zig]
+        \\- Typo bullet [slug: typo] [touches: nosuchrepo:src/gamma.zig]
+        \\
+    ;
+    const tech = suite.mustRun(&.{
+        "artifact", "add",      "--json", "--scope", repo_scope,               "--kind", "tech_spec",
+        "--plan",   anchor_id,  "--body", tech_body, "Touch Ingest Tech Spec",
+    });
+    gpa.free(tech);
+    const roadmap = suite.mustRun(&.{
+        "artifact", "add",     "--json", "--scope",    repo_scope,             "--kind", "roadmap",
+        "--plan",   anchor_id, "--body", roadmap_body, "Touch Ingest Roadmap",
+    });
+    gpa.free(roadmap);
+
+    // spec ingest reads artifacts from the WORKBENCH FILESYSTEM, not the
+    // database, so they must be pushed out first.
+    const wb = createWorkbenchEnv(&suite, arena, "workbench-touch-ingest");
+    const push = suite.mustRunWith(&.{ "workbench", "push", "--json", anchor_id }, wb.env);
+    gpa.free(push);
+
+    const apply = suite.execWith(&.{
+        "spec", "ingest", anchor_id, "--apply", "--scope", assoc_scope,
+    }, wb.env);
+    defer apply.deinit(gpa);
+    if (!(apply.term == .exited and apply.term.exited == 0)) {
+        // Kept: ingest fails for several distinct reasons (missing artifact
+        // kind, scope refusal, unpushed workbench) and only the message says
+        // which.
+        std.debug.print("\ningest failed\nstdout: {s}\nstderr: {s}\n", .{ apply.stdout, apply.stderr });
+    }
+    try std.testing.expect(apply.term == .exited and apply.term.exited == 0);
+
+    // One path row from the bare path; the typo'd qualifier is REPORTED, not
+    // dropped and not re-read as a bare path — falling back would attach the
+    // declaration to the wrong repo while looking like it worked.
+    try std.testing.expect(std.mem.indexOf(u8, apply.stderr, "1 path touches declared") != null);
+    try std.testing.expect(std.mem.indexOf(u8, apply.stderr, "resolved to neither") != null);
+
+    // Post-state: the declaration is real, not merely counted.
+    const TouchRow = struct { repo: []const u8 = "", path: []const u8 = "" };
+    const TouchList = struct { task_id: i64 = 0, paths: []const TouchRow = &.{} };
+    const children_raw = suite.mustRun(&.{
+        "plan", "list", "--json", "--scope", repo_scope, "--parent", anchor_id,
+    });
+    defer gpa.free(children_raw);
+    const children = parseJSON([]const ScopedEntity, arena, children_raw);
+    try std.testing.expect(children.len >= 1);
+
+    var seen_alpha = false;
+    for (children) |c| {
+        const child_id = std.fmt.allocPrint(arena, "{d}", .{c.id}) catch @panic("OOM");
+        const tasks_raw = suite.mustRun(&.{
+            "task", "list", "--json", "--scope", repo_scope, "--plan", child_id,
+        });
+        defer gpa.free(tasks_raw);
+        const tasks = parseJSON([]const ScopedEntity, arena, tasks_raw);
+        for (tasks) |t| {
+            const tid = std.fmt.allocPrint(arena, "{d}", .{t.id}) catch @panic("OOM");
+            const listed = suite.mustRunJSON(TouchList, arena, &.{ "task", "touches", "list", tid, "--json" });
+            for (listed.paths) |row| {
+                if (std.mem.eql(u8, row.path, "src/alpha.zig")) seen_alpha = true;
+            }
+        }
+    }
+    try std.testing.expect(seen_alpha);
+}

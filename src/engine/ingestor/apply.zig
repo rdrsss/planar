@@ -58,6 +58,17 @@ pub const Result = struct {
     questions_added: usize = 0,
     questions_answered: usize = 0,
     anchor_activated: bool = false,
+    /// Path-level `task_touch_paths` rows written from `[touches: …]`
+    /// annotations. These are what rule 2 actually reads; the coarse
+    /// repo edge counted separately below is equivalent to
+    /// "touches everything" within that repo.
+    touch_paths_written: usize = 0,
+    /// `[touches: …]` entries that resolved to neither a registered repo
+    /// slug nor a usable path. Reported rather than dropped: an entry that
+    /// vanishes silently is indistinguishable from one that worked, and a
+    /// typo'd slug in a roadmap is invisible until someone wonders why a
+    /// task never became parallel-eligible.
+    touches_unresolved: usize = 0,
 };
 
 // =========================================================================
@@ -138,6 +149,12 @@ fn applyWithinSavepoint(
     // that authorized the write.
     const scope_slug: ?[]const u8 = opts.scope;
 
+    // Resolved once: a bare path in `[touches: …]` needs a repo to hang on,
+    // and there is only a defensible answer when the anchor's association has
+    // exactly one member. Null otherwise, which makes bare paths unresolvable
+    // rather than guessed onto the wrong tree.
+    const default_repo_id = soleMemberRepoId(d, diff.anchor_plan_id);
+
     // ---- removals -----------------------------------------------------
     //
     // Apply removals before additions so a spec refresh can replace an
@@ -203,7 +220,7 @@ fn applyWithinSavepoint(
                     defer task_mod.deinit(t, allocator);
 
                     ensureLink(d, allocator, .task, t.id, .plan, child_plan_id, .@"derives-from") catch |e| return e;
-                    try applyTouchesLinks(d, allocator, t.id, te.touches);
+                    try applyTouchesLinks(d, allocator, t.id, te.touches, default_repo_id, &res);
 
                     if (diff_mod.isNonTrivial(te.body)) {
                         scenarios_mod.draftScenario(d, allocator, t.id, te.title, scope_slug) catch |e| return e;
@@ -239,7 +256,7 @@ fn applyWithinSavepoint(
                         }) catch return Error.QueryFailed;
                     }
 
-                    try applyTouchesLinks(d, allocator, te.existing_id, te.touches);
+                    try applyTouchesLinks(d, allocator, te.existing_id, te.touches, default_repo_id, &res);
 
                     // Plan 286 M1 slug back-fill: set tasks.slug only when
                     // currently NULL. Never overwrite an existing slug
@@ -597,24 +614,142 @@ fn ensureLink(
     entitylink.deinit(link, allocator);
 }
 
-/// applyTouchesLinks inserts `entity_links(relationship='touches')` for
-/// each repo slug. A slug that doesn't resolve to a known projects.slug
-/// row is skipped silently — matches Go's behavior (the slug may not be
-/// registered in this DB).
+/// applyTouchesLinks resolves each `[touches: …]` entry and records it.
+///
+/// An entry takes one of three forms:
+///
+///   `<repo-slug>`              whole-repo touch  → entity_links edge
+///   `<repo-slug>:<path>`       path touch        → task_touch_paths + edge
+///   `<path>`                   path touch        → resolved against the
+///                                                  anchor's sole member repo
+///
+/// The bare-slug form is the original behavior and is unchanged. The two
+/// path forms are what rule 2 can actually use: a whole-repo touch collides
+/// with ANY same-repo touch, so a plan whose tasks all carry only repo edges
+/// is no more parallel-eligible than one that declares nothing.
+///
+/// The `<slug>:<path>` qualifier mirrors planar's pervasive `<kind>:<id>`
+/// ref shape (`task:5841`, `decision:906`). A bare path is accepted only
+/// when the anchor's association has exactly one member repo — 22 of 26
+/// associations in practice — because with two members there is no
+/// principled way to choose, and guessing would attach the declaration to
+/// the wrong tree.
+///
+/// Anything that resolves to none of the three is counted in
+/// `touches_unresolved` rather than dropped. The previous behavior skipped
+/// silently ("matches Go"), which made a typo'd slug invisible.
 fn applyTouchesLinks(
     d: *db.sqlite.Db,
     allocator: std.mem.Allocator,
     task_id: i64,
-    slugs: []const []const u8,
+    entries: []const []const u8,
+    default_repo_id: ?i64,
+    res: *Result,
 ) Error!void {
-    for (slugs) |slug| {
-        const repo_id = repoIdBySlug(d, slug) catch |err| switch (err) {
-            error.NotFound => null,
+    for (entries) |entry| {
+        // 1. Bare registered slug → whole-repo edge (original behavior).
+        if (repoIdBySlug(d, entry) catch |err| switch (err) {
+            error.NotFound => @as(?i64, null),
             else => return error.QueryFailed,
-        };
-        if (repo_id) |rid| {
+        }) |rid| {
             ensureLink(d, allocator, .task, task_id, .repo, rid, .touches) catch |e| return e;
+            continue;
         }
+
+        // 2. `<repo-slug>:<path>` → path row against the named repo.
+        if (std.mem.indexOfScalar(u8, entry, ':')) |colon| {
+            const slug = entry[0..colon];
+            const path = entry[colon + 1 ..];
+            if (slug.len > 0 and path.len > 0) {
+                if (repoIdBySlug(d, slug) catch |err| switch (err) {
+                    error.NotFound => @as(?i64, null),
+                    else => return error.QueryFailed,
+                }) |rid| {
+                    try writeTouchPath(d, allocator, task_id, rid, path, res);
+                    continue;
+                }
+            }
+            // A qualified entry naming an unknown repo is an error, not a
+            // path: treating `typo:src/x.zig` as a bare path would attach it
+            // to the wrong repo.
+            res.touches_unresolved += 1;
+            continue;
+        }
+
+        // 3. Bare path → the anchor's sole member repo, when there is one.
+        if (default_repo_id) |rid| {
+            try writeTouchPath(d, allocator, task_id, rid, entry, res);
+            continue;
+        }
+
+        res.touches_unresolved += 1;
+    }
+}
+
+/// writeTouchPath records a path-level touch plus the repo edge it implies,
+/// matching what `task touches add --path` writes.
+fn writeTouchPath(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    task_id: i64,
+    repo_id: i64,
+    path: []const u8,
+    res: *Result,
+) Error!void {
+    ensureLink(d, allocator, .task, task_id, .repo, repo_id, .touches) catch |e| return e;
+    _ = d.execParams(
+        \\insert or ignore into task_touch_paths (task_id, repo_id, path)
+        \\values (?, ?, ?)
+    , &.{
+        .{ .int = task_id },
+        .{ .int = repo_id },
+        .{ .text = path },
+    }) catch return error.QueryFailed;
+    res.touch_paths_written += 1;
+}
+
+/// soleMemberRepoId returns the repo a bare path should resolve against, or
+/// null when there is no unambiguous answer.
+///
+///   scope_kind='repo'         → that project, directly
+///   scope_kind='association'  → its member project, when it has exactly one
+///   anything else             → null
+///
+/// Null is the safe answer: it makes bare paths unresolvable and reported,
+/// rather than silently attached to whichever repo happened to be first.
+fn soleMemberRepoId(d: *db.sqlite.Db, anchor_plan_id: i64) ?i64 {
+    var scope_stmt = d.prepare("select scope_kind, scope_id from plans where id = ?") catch return null;
+    defer scope_stmt.finalize();
+    scope_stmt.bind(&.{.{ .int = anchor_plan_id }}) catch return null;
+    var kind_buf: [32]u8 = undefined;
+    const scope_id: i64 = switch (scope_stmt.step() catch return null) {
+        .done => return null,
+        .row => blk: {
+            const kind = scope_stmt.columnTextAlloc(0, std.heap.page_allocator) catch return null;
+            defer std.heap.page_allocator.free(kind);
+            if (kind.len >= kind_buf.len) return null;
+            @memcpy(kind_buf[0..kind.len], kind);
+            const id = scope_stmt.columnIntOpt(1) orelse return null;
+            // A repo-scoped anchor names its repo outright.
+            if (std.mem.eql(u8, kind, "repo")) return id;
+            if (!std.mem.eql(u8, kind, "association")) return null;
+            break :blk id;
+        },
+    };
+
+    var stmt = d.prepare(
+        "select project_id from project_associations where association_id = ? limit 2",
+    ) catch return null;
+    defer stmt.finalize();
+    stmt.bind(&.{.{ .int = scope_id }}) catch return null;
+    const first: i64 = switch (stmt.step() catch return null) {
+        .done => return null,
+        .row => stmt.columnInt(0),
+    };
+    // A second row means the association is polyrepo — ambiguous.
+    switch (stmt.step() catch return null) {
+        .done => return first,
+        .row => return null,
     }
 }
 
