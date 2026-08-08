@@ -54,6 +54,9 @@ pub const TaskEntry = struct {
     title: []const u8,
     body: []const u8,
     touches: []const []const u8 = &.{},
+    /// Slugs this task depends on, from the bullet's `[depends: …]`.
+    /// Resolved to `depends-on` edges after every task exists.
+    depends: []const []const u8 = &.{},
     /// Slug from the roadmap `[slug:]` annotation. Empty when absent.
     slug: []const u8 = "",
     /// Generated starting next action. Empty means "leave whatever is stored",
@@ -222,6 +225,8 @@ fn deinitTaskEntry(t: TaskEntry, allocator: std.mem.Allocator) void {
     allocator.free(t.body);
     for (t.touches) |s| allocator.free(s);
     allocator.free(t.touches);
+    for (t.depends) |s| allocator.free(s);
+    allocator.free(t.depends);
     allocator.free(t.slug);
     allocator.free(t.next_action);
     allocator.free(t.child_plan_title);
@@ -417,6 +422,7 @@ pub fn compute(
                     .title = try allocator.dupe(u8, wi_title),
                     .body = if (generated) task_body else try allocator.dupe(u8, ""),
                     .touches = try dupeStrings(allocator, wi.touches),
+                    .depends = try dupeStrings(allocator, wi.depends),
                     .slug = try allocator.dupe(u8, wi.slug),
                     // Only replace a next action that is still the legacy
                     // generated one; a refined next action is operator work.
@@ -435,6 +441,7 @@ pub fn compute(
                     .title = try allocator.dupe(u8, wi_title),
                     .body = task_body,
                     .touches = try dupeStrings(allocator, wi.touches),
+                    .depends = try dupeStrings(allocator, wi.depends),
                     .slug = try allocator.dupe(u8, wi.slug),
                     .next_action = next_action,
                     .existing_id = 0,
@@ -1296,12 +1303,14 @@ test "compute: roadmap with one milestone → adds plan + tasks" {
     const wi_a = parse.WorkItem{
         .title = try a.dupe(u8, "Add foo"),
         .touches = &.{},
+        .depends = &.{},
         .slug = try a.dupe(u8, "add-foo"),
         .source_text = try a.dupe(u8, "- Add foo [slug: add-foo]"),
     };
     const wi_b = parse.WorkItem{
         .title = try a.dupe(u8, "Add bar"),
         .touches = &.{},
+        .depends = &.{},
         .slug = try a.dupe(u8, ""),
         .source_text = try a.dupe(u8, "- Add bar"),
     };
@@ -1340,6 +1349,7 @@ test "buildTaskBody: the roadmap item IS the acceptance criterion" {
     const wi = parse.WorkItem{
         .title = "Add foo",
         .touches = &.{ "repo-a", "repo-b" },
+        .depends = &.{},
         .slug = "",
         .source_text = "- Add foo",
     };
@@ -1367,6 +1377,7 @@ test "buildTaskBody: no touches → no Repository Scope section" {
     const wi = parse.WorkItem{
         .title = "Add bar",
         .touches = &.{},
+        .depends = &.{},
         .slug = "",
         .source_text = "- Add bar",
     };
@@ -1386,6 +1397,7 @@ test "generated bodies are recognised in BOTH shipped shapes" {
     const wi = parse.WorkItem{
         .title = "Add baz",
         .touches = &.{},
+        .depends = &.{},
         .slug = "",
         .source_text = "- Add baz",
     };
@@ -1411,6 +1423,7 @@ test "generated next action names the roadmap position, not a platitude" {
     const wi = parse.WorkItem{
         .title = "Add qux",
         .touches = &.{},
+        .depends = &.{},
         .slug = "",
         .source_text = "- Add qux",
     };

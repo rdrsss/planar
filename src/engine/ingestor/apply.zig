@@ -69,6 +69,11 @@ pub const Result = struct {
     /// typo'd slug in a roadmap is invisible until someone wonders why a
     /// task never became parallel-eligible.
     touches_unresolved: usize = 0,
+    /// `depends-on` edges written from `[depends: …]` annotations. Rule 1
+    /// reads these; nothing else creates them at ingest.
+    depends_written: usize = 0,
+    /// `[depends: …]` slugs that named no task in the anchor's tree.
+    depends_unresolved: usize = 0,
 };
 
 // =========================================================================
@@ -320,6 +325,40 @@ fn applyWithinSavepoint(
         }
     }
 
+    // ---- dependency edges --------------------------------------------
+    //
+    // Runs AFTER every task exists so a bullet may name one defined later in
+    // the roadmap. Rule 1 reads these edges; nothing infers them, and rule 2
+    // cannot substitute — two tasks routinely have disjoint touch sets and a
+    // real ordering (one creates a module the other imports, so only the
+    // author edits the new file).
+    for (diff.child_plans) |cp| for (cp.tasks) |te| {
+        if (te.depends.len == 0) continue;
+        const task_id: i64 = switch (te.op) {
+            .add => blk: {
+                const id = taskIdBySlugInTree(d, te.slug, diff.anchor_plan_id) orelse {
+                    res.depends_unresolved += te.depends.len;
+                    continue;
+                };
+                break :blk id;
+            },
+            .update => te.existing_id,
+            .remove => continue,
+        };
+        for (te.depends) |dep_slug| {
+            const blocker = taskIdBySlugInTree(d, dep_slug, diff.anchor_plan_id) orelse {
+                // Reported, not dropped: a typo'd slug here silently removes
+                // an ordering constraint, which is the failure mode that
+                // makes a fan-out wrong rather than merely slow.
+                res.depends_unresolved += 1;
+                continue;
+            };
+            if (blocker == task_id) continue; // self-reference is a no-op
+            ensureLink(d, allocator, .task, task_id, .task, blocker, .@"depends-on") catch |e| return e;
+            res.depends_written += 1;
+        }
+    };
+
     // ---- test-spec scenarios -----------------------------------------
     for (diff.scenarios) |se| {
         // Resolve slug refs first; an unresolvable slug aborts the apply.
@@ -514,6 +553,42 @@ fn resolveTaskFromRoadmapMapping(
     }) catch return Error.QueryFailed;
     return switch (stmt.step() catch return Error.QueryFailed) {
         .done => Error.NotFound,
+        .row => stmt.columnInt(0),
+    };
+}
+
+/// taskIdBySlugInTree resolves a task slug within the anchor's plan tree —
+/// tasks on the anchor itself, or on a child plan linked by `derives-from`.
+/// Null when the slug names no such task.
+///
+/// Same scoping as `resolveSlugRefs` uses for `**Verifies:**` refs, extracted
+/// so the dependency pass resolves identically rather than by a second query
+/// that could drift.
+fn taskIdBySlugInTree(d: *db.sqlite.Db, slug: []const u8, anchor_plan_id: i64) ?i64 {
+    if (slug.len == 0) return null;
+    var stmt = d.prepare(
+        \\select t.id from tasks t
+        \\where t.slug = ?
+        \\  and (
+        \\    t.plan_id = ?
+        \\    or t.plan_id in (
+        \\      select from_id from entity_links
+        \\       where from_kind = 'plan'
+        \\         and to_kind = 'plan'
+        \\         and to_id = ?
+        \\         and relationship = 'derives-from'
+        \\    )
+        \\  )
+        \\limit 1
+    ) catch return null;
+    defer stmt.finalize();
+    stmt.bind(&.{
+        .{ .text = slug },
+        .{ .int = anchor_plan_id },
+        .{ .int = anchor_plan_id },
+    }) catch return null;
+    return switch (stmt.step() catch return null) {
+        .done => null,
         .row => stmt.columnInt(0),
     };
 }

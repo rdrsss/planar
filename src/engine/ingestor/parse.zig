@@ -73,11 +73,14 @@ pub fn deinitQuestions(items: []const Question, allocator: std.mem.Allocator) vo
     allocator.free(items);
 }
 
-/// One roadmap bullet. `touches` and `slug` are extracted from the
-/// optional `[touches: a, b]` and `[slug: foo-bar]` annotations.
+/// One roadmap bullet. `touches`, `depends` and `slug` are extracted from the
+/// optional `[touches: a, b]`, `[depends: other-slug]` and `[slug: foo-bar]`
+/// annotations.
 pub const WorkItem = struct {
     title: []const u8,
     touches: []const []const u8,
+    /// Slugs of bullets whose tasks must finish first, from `[depends: …]`.
+    depends: []const []const u8,
     slug: []const u8,
     /// Canonical folded roadmap bullet, including source annotations.
     source_text: []const u8,
@@ -87,6 +90,8 @@ pub fn deinitWorkItem(w: WorkItem, allocator: std.mem.Allocator) void {
     allocator.free(w.title);
     for (w.touches) |s| allocator.free(s);
     allocator.free(w.touches);
+    for (w.depends) |s| allocator.free(s);
+    allocator.free(w.depends);
     allocator.free(w.slug);
     allocator.free(w.source_text);
 }
@@ -846,6 +851,54 @@ fn isBullet(line: []const u8) bool {
     return std.mem.startsWith(u8, t, "- ") or std.mem.startsWith(u8, t, "* ");
 }
 
+/// One `[name: ...]` annotation lifted out of a bullet title.
+///
+/// `inner` borrows from the title it was found in. `stripped` is a fresh
+/// allocation the caller OWNS when non-null — the previous title should be
+/// freed if it too was owned. Making ownership explicit here replaces the
+/// old `title_needs_free` flag, which inferred it by comparing the current
+/// title's CONTENT against the original bullet text.
+const Annotation = struct {
+    inner: ?[]const u8 = null,
+    stripped: ?[]const u8 = null,
+};
+
+/// extractAnnotation finds the last `<open>...]` in `title`, returning its
+/// inner text and a copy of the title with the annotation removed.
+///
+/// Searches from the right and tolerates exactly one occurrence, matching the
+/// behavior each annotation implemented separately before.
+fn extractAnnotation(
+    allocator: std.mem.Allocator,
+    title: []const u8,
+    open: []const u8,
+) std.mem.Allocator.Error!Annotation {
+    const idx = std.mem.lastIndexOf(u8, title, open) orelse return .{};
+    const close_off = std.mem.indexOf(u8, title[idx..], "]") orelse return .{};
+    const inner = title[idx + open.len .. idx + close_off];
+
+    var rebuilt: std.ArrayList(u8) = .empty;
+    defer rebuilt.deinit(allocator);
+    try rebuilt.appendSlice(allocator, title[0..idx]);
+    try rebuilt.appendSlice(allocator, title[idx + close_off + 1 ..]);
+    const stripped = try allocator.dupe(u8, std.mem.trim(u8, rebuilt.items, " \t"));
+    return .{ .inner = inner, .stripped = stripped };
+}
+
+/// splitCsv splits an annotation's inner text on commas into owned strings,
+/// dropping empty entries.
+fn splitCsv(
+    allocator: std.mem.Allocator,
+    inner: []const u8,
+    out: *std.ArrayList([]const u8),
+) std.mem.Allocator.Error!void {
+    var it = std.mem.splitScalar(u8, inner, ',');
+    while (it.next()) |part| {
+        const t = std.mem.trim(u8, part, " \t");
+        if (t.len != 0) try out.append(allocator, try allocator.dupe(u8, t));
+    }
+}
+
 fn parseBullet(allocator: std.mem.Allocator, line: []const u8) std.mem.Allocator.Error!WorkItem {
     var raw = std.mem.trimStart(u8, line, " \t");
     const source_text = try allocator.dupe(u8, std.mem.trim(u8, raw, " \t"));
@@ -853,68 +906,61 @@ fn parseBullet(allocator: std.mem.Allocator, line: []const u8) std.mem.Allocator
     if (std.mem.startsWith(u8, raw, "- ")) raw = raw[2..] else if (std.mem.startsWith(u8, raw, "* ")) raw = raw[2..];
 
     var title = std.mem.trim(u8, raw, " \t");
+    var title_owned = false;
+
     var touches: std.ArrayList([]const u8) = .empty;
     errdefer {
-        for (touches.items) |s| allocator.free(s);
+        for (touches.items) |t| allocator.free(t);
         touches.deinit(allocator);
+    }
+    var depends: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (depends.items) |t| allocator.free(t);
+        depends.deinit(allocator);
     }
     var slug_buf: []const u8 = "";
 
-    // `[touches: ...]` — search from the right; tolerate one annotation.
-    if (std.mem.lastIndexOf(u8, title, "[touches:")) |idx| {
-        if (std.mem.indexOf(u8, title[idx..], "]")) |close_off| {
-            const inner = std.mem.trim(u8, title[idx + "[touches:".len .. idx + close_off], " \t");
-            // Split on commas.
-            var it = std.mem.splitScalar(u8, inner, ',');
-            while (it.next()) |part| {
-                const t = std.mem.trim(u8, part, " \t");
-                if (t.len != 0) try touches.append(allocator, try allocator.dupe(u8, t));
-            }
-            // Strip annotation from title (preserve surrounding spacing).
-            var rebuilt: std.ArrayList(u8) = .empty;
-            defer rebuilt.deinit(allocator);
-            try rebuilt.appendSlice(allocator, title[0..idx]);
-            try rebuilt.appendSlice(allocator, title[idx + close_off + 1 ..]);
-            const trimmed = std.mem.trim(u8, rebuilt.items, " \t");
-            // We can't keep title pointing into `rebuilt` past its scope;
-            // dupe out into a temporary buffer owned by the function arena.
-            const dup = try allocator.dupe(u8, trimmed);
-            // Stash for later; we'll free the previous title-string view
-            // at function exit by storing dup as the canonical title.
-            title = dup;
-            // We must take care to free `dup` on later branches' error
-            // paths — push it onto a defer with a stable label.
-            // Realistically the next step's errdefer covers this since
-            // `title` is the source for the final dupe at function end.
-            // We free it explicitly via the consolidated cleanup below.
+    // `[touches: a, b]` — files or repos this bullet's task will edit.
+    {
+        const a = try extractAnnotation(allocator, title, "[touches:");
+        if (a.inner) |inner| try splitCsv(allocator, std.mem.trim(u8, inner, " \t"), &touches);
+        if (a.stripped) |st| {
+            if (title_owned) allocator.free(title);
+            title = st;
+            title_owned = true;
         }
     }
-    var title_needs_free = !std.mem.eql(u8, title, std.mem.trim(u8, raw, " \t"));
 
-    // `[slug: ...]`.
-    if (std.mem.lastIndexOf(u8, title, "[slug:")) |idx| {
-        if (std.mem.indexOf(u8, title[idx..], "]")) |close_off| {
-            const inner = title[idx + "[slug:".len .. idx + close_off];
-            slug_buf = try sanitizeSlug(allocator, inner);
-            // Strip annotation from title.
-            var rebuilt: std.ArrayList(u8) = .empty;
-            defer rebuilt.deinit(allocator);
-            try rebuilt.appendSlice(allocator, title[0..idx]);
-            try rebuilt.appendSlice(allocator, title[idx + close_off + 1 ..]);
-            const trimmed = std.mem.trim(u8, rebuilt.items, " \t");
-            const dup = try allocator.dupe(u8, trimmed);
-            if (title_needs_free) allocator.free(title);
-            title = dup;
-            title_needs_free = true;
+    // `[depends: other-slug, ...]` — bullets whose tasks must finish first.
+    // Resolved to `depends-on` edges at apply time, after every task exists,
+    // so a bullet may name one defined later in the roadmap.
+    {
+        const a = try extractAnnotation(allocator, title, "[depends:");
+        if (a.inner) |inner| try splitCsv(allocator, std.mem.trim(u8, inner, " \t"), &depends);
+        if (a.stripped) |st| {
+            if (title_owned) allocator.free(title);
+            title = st;
+            title_owned = true;
+        }
+    }
+
+    // `[slug: foo-bar]` — the task's stable slug.
+    {
+        const a = try extractAnnotation(allocator, title, "[slug:");
+        if (a.inner) |inner| slug_buf = try sanitizeSlug(allocator, inner);
+        if (a.stripped) |st| {
+            if (title_owned) allocator.free(title);
+            title = st;
+            title_owned = true;
         }
     }
 
     const title_final = try allocator.dupe(u8, title);
-    if (title_needs_free) allocator.free(title);
-    const touches_slice = try touches.toOwnedSlice(allocator);
+    if (title_owned) allocator.free(title);
     return .{
         .title = title_final,
-        .touches = touches_slice,
+        .touches = try touches.toOwnedSlice(allocator),
+        .depends = try depends.toOwnedSlice(allocator),
         .slug = slug_buf,
         .source_text = source_text,
     };

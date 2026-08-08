@@ -353,6 +353,7 @@ fn runOnePlan(
         );
         if (result.tasks_cancelled > 0) try ctx.stderr.print(", {d} tasks cancelled", .{result.tasks_cancelled});
         if (result.touch_paths_written > 0) try ctx.stderr.print(", {d} path touches declared", .{result.touch_paths_written});
+        if (result.depends_written > 0) try ctx.stderr.print(", {d} dependency edges", .{result.depends_written});
         if (result.anchor_activated) try ctx.stderr.print(" (anchor plan activated)", .{});
         try ctx.stderr.print("\n", .{});
 
@@ -360,6 +361,16 @@ fn runOnePlan(
         // dropped in silence, so a typo'd repo slug in a roadmap was
         // indistinguishable from one that worked — visible only later, as a
         // task that never became parallel-eligible for no apparent reason.
+        if (result.depends_unresolved > 0) {
+            // A typo'd depends slug silently REMOVES an ordering constraint,
+            // which makes a fan-out wrong rather than merely slow — the one
+            // failure the pre-dispatch ordering check exists to catch.
+            try ctx.stderr.print(
+                "warning: {d} `[depends: …]` slug(s) named no task under this anchor; " ++
+                    "the ordering they describe was NOT recorded\n",
+                .{result.depends_unresolved},
+            );
+        }
         if (result.touches_unresolved > 0) {
             try ctx.stderr.print(
                 "warning: {d} `[touches: …]` entr{s} resolved to neither a registered repo " ++

@@ -2103,6 +2103,8 @@ test "spec ingest records path-level touches from roadmap annotations" {
         \\
         \\- Bare path bullet [slug: bare-path] [touches: src/alpha.zig]
         \\- Typo bullet [slug: typo] [touches: nosuchrepo:src/gamma.zig]
+        \\- Dependent bullet [slug: dependent] [depends: bare-path] [touches: src/beta.zig]
+        \\- Bad dep bullet [slug: bad-dep] [depends: nosuchslug] [touches: src/delta.zig]
         \\
     ;
     const tech = suite.mustRun(&.{
@@ -2137,8 +2139,18 @@ test "spec ingest records path-level touches from roadmap annotations" {
     // One path row from the bare path; the typo'd qualifier is REPORTED, not
     // dropped and not re-read as a bare path — falling back would attach the
     // declaration to the wrong repo while looking like it worked.
-    try std.testing.expect(std.mem.indexOf(u8, apply.stderr, "1 path touches declared") != null);
+    // Three: alpha (bare), beta and delta (on the two dependency bullets).
+    // gamma is the typo'd qualifier and resolves to nothing.
+    try std.testing.expect(std.mem.indexOf(u8, apply.stderr, "3 path touches declared") != null);
     try std.testing.expect(std.mem.indexOf(u8, apply.stderr, "resolved to neither") != null);
+
+    // `[depends: …]` writes the rule-1 edge nothing else infers. A forward or
+    // backward reference both work because the pass runs after every task
+    // exists. A slug naming no task is REPORTED: silently dropping it would
+    // remove an ordering constraint, which makes a fan-out wrong rather than
+    // merely slow.
+    try std.testing.expect(std.mem.indexOf(u8, apply.stderr, "1 dependency edges") != null);
+    try std.testing.expect(std.mem.indexOf(u8, apply.stderr, "named no task under this anchor") != null);
 
     // Post-state: the declaration is real, not merely counted.
     const TouchRow = struct { repo: []const u8 = "", path: []const u8 = "" };
