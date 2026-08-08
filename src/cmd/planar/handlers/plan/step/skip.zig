@@ -45,6 +45,10 @@ fn renderStepText(ctx: *const runtime.Ctx, step: engine.planning.plan_step.Step)
 
 fn emitStepJSON(ctx: *const runtime.Ctx, step: engine.planning.plan_step.Step) !void {
     const StepJSON = struct {
+        // Success sentinel emitted by every other mutation verb (19 handlers
+        // carry it). Steps were the outlier, so a caller writing one
+        // JSON-shape check across mutation verbs had to special-case them.
+        ok: bool,
         id: i64,
         plan_id: i64,
         ordinal: i64,
@@ -55,6 +59,7 @@ fn emitStepJSON(ctx: *const runtime.Ctx, step: engine.planning.plan_step.Step) !
         updated_at: []const u8,
     };
     const row = StepJSON{
+        .ok = true,
         .id = step.id,
         .plan_id = step.plan_id,
         .ordinal = step.ordinal,

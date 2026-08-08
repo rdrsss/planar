@@ -1034,6 +1034,12 @@ planar plan step add <plan-id> <body> [--after <ordinal>]
 step 3 added to plan 7
 ```
 
+**Output (`--json`):**
+```json
+{"ok":true,"id":3,"plan_id":7,"ordinal":3,"body":"Draft the schema","status":"pending","task_id":null,"created_at":"…","updated_at":"…"}
+```
+The `ok` sentinel matches every other mutation verb; `status` is one of `pending` / `done` / `skipped`, and `task_id` is non-null once the step is linked.
+
 **Schema effects:** Inserts into `plan_steps(plan_id, ordinal, body, status='pending')`.
 
 **Capture:** Appends `session_entries` row with `prefix='action'`.
@@ -1053,6 +1059,12 @@ planar plan step done <step-id>
 **Description:** Mark a plan step as done.
 
 **Scope guard:** Refuses when the operator's resolved write scope disagrees with the parent plan's stored scope (plan steps inherit their parent plan's scope). See [Cross-scope guard](#cross-scope-guard).
+
+**Output (`--json`):**
+```json
+{"ok":true,"id":3,"plan_id":7,"ordinal":3,"body":"Draft the schema","status":"pending","task_id":null,"created_at":"…","updated_at":"…"}
+```
+The `ok` sentinel matches every other mutation verb; `status` is one of `pending` / `done` / `skipped`, and `task_id` is non-null once the step is linked.
 
 **Schema effects:** Updates `plan_steps(status='done', updated_at)`.
 
@@ -1074,6 +1086,12 @@ planar plan step skip <step-id>
 
 **Scope guard:** Refuses when the operator's resolved write scope disagrees with the parent plan's stored scope. See [Cross-scope guard](#cross-scope-guard).
 
+**Output (`--json`):**
+```json
+{"ok":true,"id":3,"plan_id":7,"ordinal":3,"body":"Draft the schema","status":"pending","task_id":null,"created_at":"…","updated_at":"…"}
+```
+The `ok` sentinel matches every other mutation verb; `status` is one of `pending` / `done` / `skipped`, and `task_id` is non-null once the step is linked.
+
 **Schema effects:** Updates `plan_steps(status='skipped', updated_at)`.
 
 **Capture:** Appends `session_entries` row with `prefix='action'`.
@@ -1091,6 +1109,12 @@ planar plan step link <step-id> <task-id>
 ```
 
 **Description:** Associate a plan step with the task that materializes it. Sets `plan_steps.task_id`. Use `entity_links` (via `plan link`) for richer relationships.
+
+**Output (`--json`):**
+```json
+{"ok":true,"id":3,"plan_id":7,"ordinal":3,"body":"Draft the schema","status":"pending","task_id":null,"created_at":"…","updated_at":"…"}
+```
+The `ok` sentinel matches every other mutation verb; `status` is one of `pending` / `done` / `skipped`, and `task_id` is non-null once the step is linked.
 
 **Schema effects:** Updates `plan_steps(task_id)`.
 

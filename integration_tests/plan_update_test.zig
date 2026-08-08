@@ -237,3 +237,66 @@ test "plan update to a terminal status is silent when no descendants are open" {
     try std.testing.expect(res.term == .exited and res.term.exited == 0);
     try std.testing.expect(std.mem.indexOf(u8, res.stderr, "open descendant") == null);
 }
+
+test "plan step mutation verbs all emit the ok sentinel" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_backing = std.heap.ArenaAllocator.init(gpa);
+    defer arena_backing.deinit();
+    const arena = arena_backing.allocator();
+
+    const Id = struct { id: i64 };
+    const StepJSON = struct { ok: bool = false, id: i64 = 0, status: []const u8 = "" };
+
+    // `ok` is planar's own success sentinel, carried by 19 mutation handlers.
+    // The step verbs were the outlier, so a caller writing one JSON-shape
+    // check across mutation verbs had to special-case them. Dropping `ok`
+    // everywhere would have been the alternative resolution; it is a
+    // breaking change across those 19, so the convention is held instead.
+    const plan = suite.mustRunJSON(Id, arena, &.{
+        "plan", "create", "Steps", "--status", "active", "--scope", "global", "--json",
+    });
+    const pid = std.fmt.allocPrint(gpa, "{d}", .{plan.id}) catch unreachable;
+    defer gpa.free(pid);
+
+    const added = suite.mustRunJSON(StepJSON, arena, &.{
+        "plan", "step", "add", pid, "First step", "--json",
+    });
+    try std.testing.expect(added.ok);
+
+    const sid = std.fmt.allocPrint(gpa, "{d}", .{added.id}) catch unreachable;
+    defer gpa.free(sid);
+    const finished = suite.mustRunJSON(StepJSON, arena, &.{
+        "plan", "step", "done", sid, "--json",
+    });
+    try std.testing.expect(finished.ok);
+    try std.testing.expectEqualStrings("done", finished.status);
+
+    // skip needs a pending step; link needs a real task.
+    const second = suite.mustRunJSON(StepJSON, arena, &.{
+        "plan", "step", "add", pid, "Second step", "--json",
+    });
+    const sid2 = std.fmt.allocPrint(gpa, "{d}", .{second.id}) catch unreachable;
+    defer gpa.free(sid2);
+    const skipped = suite.mustRunJSON(StepJSON, arena, &.{
+        "plan", "step", "skip", sid2, "--json",
+    });
+    try std.testing.expect(skipped.ok);
+
+    const third = suite.mustRunJSON(StepJSON, arena, &.{
+        "plan", "step", "add", pid, "Third step", "--json",
+    });
+    const sid3 = std.fmt.allocPrint(gpa, "{d}", .{third.id}) catch unreachable;
+    defer gpa.free(sid3);
+    const task = suite.mustRunJSON(Id, arena, &.{
+        "task", "add", "A task", "--scope", "global", "--editor=false", "--json",
+    });
+    const tid = std.fmt.allocPrint(gpa, "{d}", .{task.id}) catch unreachable;
+    defer gpa.free(tid);
+    const linked = suite.mustRunJSON(StepJSON, arena, &.{
+        "plan", "step", "link", sid3, tid, "--json",
+    });
+    try std.testing.expect(linked.ok);
+}
