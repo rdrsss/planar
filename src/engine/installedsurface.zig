@@ -25,7 +25,7 @@
 
 const std = @import("std");
 
-pub const supported_vendors = [_][]const u8{ "claude", "codex", "copilot" };
+pub const supported_vendors = [_][]const u8{ "claude", "codex", "copilot", "gemini" };
 pub const manifest_version: u32 = 1;
 
 pub const State = enum { fresh, stale, missing, unmanaged };
@@ -356,11 +356,38 @@ fn vendorRoots(a: std.mem.Allocator, opts: Options, vendor: []const u8) ![]const
     } else if (std.mem.eql(u8, vendor, "codex")) {
         roots[0] = .{ .path = try std.fs.path.join(a, &.{ opts.codex_home, "skills" }), .kind = "skill", .directory_shape = true };
         roots[1] = .{ .path = try std.fs.path.join(a, &.{ opts.codex_home, "agents" }), .kind = "agent", .directory_shape = false };
-    } else {
+    } else if (std.mem.eql(u8, vendor, "copilot")) {
         roots[0] = .{ .path = try std.fs.path.join(a, &.{ opts.home, ".copilot", "skills" }), .kind = "skill", .directory_shape = true };
         roots[1] = .{ .path = try std.fs.path.join(a, &.{ opts.home, ".copilot", "agents" }), .kind = "agent", .directory_shape = false };
+    } else {
+        roots[0] = .{ .path = try std.fs.path.join(a, &.{ opts.home, ".gemini", "antigravity-cli", "skills" }), .kind = "skill", .directory_shape = true };
+        roots[1] = .{ .path = try std.fs.path.join(a, &.{ opts.home, ".gemini", "antigravity-cli", "agents" }), .kind = "agent", .directory_shape = false };
     }
     return roots;
+}
+
+test "installer vendors are accepted and mapped to their destination roots" {
+    const gpa = std.testing.allocator;
+    const expected = [_]struct { vendor: []const u8, skill_suffix: []const u8 }{
+        .{ .vendor = "claude", .skill_suffix = ".claude/commands" },
+        .{ .vendor = "codex", .skill_suffix = ".codex/skills" },
+        .{ .vendor = "copilot", .skill_suffix = ".copilot/skills" },
+        .{ .vendor = "gemini", .skill_suffix = ".gemini/antigravity-cli/skills" },
+    };
+    try std.testing.expectEqual(expected.len, supported_vendors.len);
+    for (expected) |entry| {
+        try std.testing.expect(isVendor(entry.vendor));
+        const roots = try vendorRoots(gpa, .{
+            .planar_home = "/tmp/.planar",
+            .home = "/tmp",
+            .codex_home = "/tmp/.codex",
+        }, entry.vendor);
+        defer {
+            for (roots) |root| gpa.free(root.path);
+            gpa.free(roots);
+        }
+        try std.testing.expect(std.mem.endsWith(u8, roots[0].path, entry.skill_suffix));
+    }
 }
 
 fn manifestOwns(manifest: Manifest, path: []const u8) bool {
