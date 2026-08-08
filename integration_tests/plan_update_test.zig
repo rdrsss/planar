@@ -156,3 +156,84 @@ test "plan arm refuses skip-ahead and terminal-revival moves" {
     const after_revive = suite.mustRunJSON(PlanJSON, arena, &.{ "plan", "show", "--json", revive_id });
     try std.testing.expectEqualStrings("done", after_revive.status);
 }
+
+test "plan update to a terminal status warns about open descendants" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_backing = std.heap.ArenaAllocator.init(gpa);
+    defer arena_backing.deinit();
+    const arena = arena_backing.allocator();
+
+    const Id = struct { id: i64 };
+
+    // `plan closeout` gates on descendants; `plan update --status done` does
+    // not, and reaches the same state. That ungated path is how 11 anchor
+    // plans came to sit done with 27 open children between them — and why
+    // milestones that were fully delivered stayed open for months, with
+    // nothing to resurface them once the parent looked closed.
+    //
+    // The advisory must NOT refuse: closing a parent whose remaining
+    // milestones are moot is legitimate, and only the operator can tell that
+    // from an accident.
+    const parent = suite.mustRunJSON(Id, arena, &.{
+        "plan", "create", "Parent", "--status", "active", "--scope", "global", "--json",
+    });
+    const pid = std.fmt.allocPrint(gpa, "{d}", .{parent.id}) catch unreachable;
+    defer gpa.free(pid);
+
+    const child = suite.mustRunJSON(Id, arena, &.{
+        "plan", "create", "Child", "--status", "draft", "--parent", pid, "--scope", "global", "--json",
+    });
+    const cid = std.fmt.allocPrint(gpa, "{d}", .{child.id}) catch unreachable;
+    defer gpa.free(cid);
+
+    // A grandchild proves the count is recursive, matching closeout's
+    // definition of "descendant" rather than only direct children.
+    const g = suite.mustRunJSON(Id, arena, &.{
+        "plan", "create", "Grandchild", "--status", "draft", "--parent", cid, "--scope", "global", "--json",
+    });
+    _ = g;
+
+    {
+        const res = suite.exec(&.{ "plan", "update", pid, "--status", "done" });
+        defer gpa.free(res.stdout);
+        defer gpa.free(res.stderr);
+        // Advisory, not a veto: the update still succeeds.
+        try std.testing.expect(res.term == .exited and res.term.exited == 0);
+        try std.testing.expect(std.mem.indexOf(u8, res.stderr, "2 open descendant plan(s)") != null);
+        try std.testing.expect(std.mem.indexOf(u8, res.stderr, "plan closeout") != null);
+    }
+
+    // And it landed.
+    const Shown = struct { id: i64, status: []const u8 };
+    const shown = suite.mustRunJSON(Shown, arena, &.{ "plan", "show", pid, "--json" });
+    try std.testing.expectEqualStrings("done", shown.status);
+}
+
+test "plan update to a terminal status is silent when no descendants are open" {
+    const gpa = std.testing.allocator;
+    var suite = harness.Suite.init(gpa);
+    defer suite.deinit();
+
+    var arena_backing = std.heap.ArenaAllocator.init(gpa);
+    defer arena_backing.deinit();
+    const arena = arena_backing.allocator();
+
+    const Id = struct { id: i64 };
+
+    // Specificity matters: an advisory that fires on every close becomes
+    // noise and stops being read on the one close that matters.
+    const solo = suite.mustRunJSON(Id, arena, &.{
+        "plan", "create", "Solo", "--status", "active", "--scope", "global", "--json",
+    });
+    const sid = std.fmt.allocPrint(gpa, "{d}", .{solo.id}) catch unreachable;
+    defer gpa.free(sid);
+
+    const res = suite.exec(&.{ "plan", "update", sid, "--status", "done" });
+    defer gpa.free(res.stdout);
+    defer gpa.free(res.stderr);
+    try std.testing.expect(res.term == .exited and res.term.exited == 0);
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "open descendant") == null);
+}

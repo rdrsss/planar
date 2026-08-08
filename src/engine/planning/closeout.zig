@@ -267,10 +267,23 @@ pub fn evaluate(
             "update plans set status = 'done', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') where id = ?",
             &.{.{ .int = plan_id }},
         ) catch return Error.QueryFailed;
+        // Record WHICH path closed the plan, and the evidence it passed on.
+        //
+        // Without this, closeout and `plan update --status done` are
+        // indistinguishable in audit_log — both wrote summary=null — so
+        // "how did this plan get closed with open children?" could only be
+        // answered by elimination rather than a query. recomputeStatus
+        // already writes a descriptive summary; this matches it.
+        const audit_summary = try std.fmt.allocPrint(
+            allocator,
+            "closeout plan {d}: → done; tasks done={d} cancelled={d}; descendants terminal={d}",
+            .{ plan_id, task_counts.done, task_counts.cancelled, desc_counts.terminal },
+        );
+        defer allocator.free(audit_summary);
         try policy.audit.record(d, .{
             .verb = .status_change,
             .entity = .{ .kind = "plan", .id = plan_id },
-            .summary = null,
+            .summary = audit_summary,
         });
         d.exec("commit") catch return Error.QueryFailed;
         committed = true;
