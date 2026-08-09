@@ -207,7 +207,7 @@ pub fn runSelectedVendorInstallerLifecycle() !void {
         const health = suite.mustRunWith(&.{ "health", "--json" }, &env);
         defer gpa.free(health);
         try std.testing.expect(std.mem.indexOf(u8, health, "\"projection_freshness\":{\"state\":\"fresh\"") != null);
-        try std.testing.expect(std.mem.indexOf(u8, health, "\"unselected_vendors\":2") != null);
+        try std.testing.expect(std.mem.indexOf(u8, health, "\"unselected_vendors\":3") != null);
         try std.testing.expect(std.mem.indexOf(u8, health, "\"overall\":\"ok\"") != null);
 
         const manifest_after_reads = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, manifest_path, gpa, .limited(4 * 1024 * 1024));
@@ -257,12 +257,12 @@ test "health reports fresh managed and unmanaged projections without degradation
 
     const json = suite.mustRunWith(&.{ "health", "--json" }, &env);
     defer gpa.free(json);
-    try std.testing.expect(std.mem.indexOf(u8, json, "\"projection_freshness\":{\"state\":\"fresh\",\"manifest_status\":\"current\",\"managed\":1,\"fresh\":1,\"stale\":0,\"missing\":0,\"unmanaged\":1,\"unselected_vendors\":2,\"evidence\":null,\"repair_command\":null}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"projection_freshness\":{\"state\":\"fresh\",\"manifest_status\":\"current\",\"managed\":1,\"fresh\":1,\"stale\":0,\"missing\":0,\"unmanaged\":1,\"unselected_vendors\":3,\"evidence\":null,\"repair_command\":null}") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"overall\":\"ok\"") != null);
 
     const text = suite.mustRunWith(&.{"health"}, &env);
     defer gpa.free(text);
-    const freshness_at = std.mem.indexOf(u8, text, "projection freshness: fresh (1 managed: 1 fresh, 0 stale, 0 missing; 1 unmanaged; 2 unselected vendors)").?;
+    const freshness_at = std.mem.indexOf(u8, text, "projection freshness: fresh (1 managed: 1 fresh, 0 stale, 0 missing; 1 unmanaged; 3 unselected vendors)").?;
     const manifest_at = std.mem.indexOf(u8, text, "projection manifest:  current").?;
     const overall_at = std.mem.indexOf(u8, text, "overall:          ok").?;
     try std.testing.expect(freshness_at < manifest_at and manifest_at < overall_at);
@@ -317,7 +317,7 @@ test "health degrades for stale and missing managed projections and preserves ex
     const text_result = suite.execWith(&.{"health"}, &env);
     defer text_result.deinit(gpa);
     try std.testing.expect(text_result.term == .exited and text_result.term.exited == 1);
-    const freshness_at = std.mem.indexOf(u8, text_result.stdout, "projection freshness: degraded (2 managed: 0 fresh, 1 stale, 1 missing; 0 unmanaged; 2 unselected vendors)").?;
+    const freshness_at = std.mem.indexOf(u8, text_result.stdout, "projection freshness: degraded (2 managed: 0 fresh, 1 stale, 1 missing; 0 unmanaged; 3 unselected vendors)").?;
     const evidence_at = std.mem.indexOf(u8, text_result.stdout, "projection evidence:  managed projections differ from the staged installation authority").?;
     const repair_at = std.mem.indexOf(u8, text_result.stdout, "projection repair:    ./install.sh --prefix").?;
     const overall_at = std.mem.indexOf(u8, text_result.stdout, "overall:          degraded").?;
