@@ -63,7 +63,7 @@ See [`docs/concepts.md#transcription-vs-synthesis`](../docs/concepts.md#transcri
 4. On a cache miss, the CLI exits 0 with the five-line "Awaiting LLM synthesis" notice naming the pending and target paths.
 5. The vendor skill (this role) reads the Request from `_pending.json`.
 6. The skill runs the LLM at temperature 0 with the synthesis prompt: produce fresh planning material, ground done-status claims in `code_evidence.areas[].path`, treat existing docs as CONTEXT not transcription source.
-7. The skill writes a synthesis Result JSON to `<cache-dir>/<fingerprint>.json` matching the schema in [`src/engine/synthesize.zig`](../zig/src/engine/synthesize.zig).
+7. The skill writes a synthesis Result JSON to `<cache-dir>/<fingerprint>.json` matching the schema in [`zig/src/engine/synthesize.zig`](../zig/src/engine/synthesize.zig).
 8. Operator re-invokes `planar synthesize <repo-root>`.
 9. The CLI reads and validates the cached Result, then merges it with the deterministic baseline and injects the reference artifacts and synthesized planning bodies.
 10. Operator reviews the preview; `--apply` commits.
@@ -100,7 +100,7 @@ for the full convention and 256-byte cap.
 
 ## Hard contract rules
 
-The synthesizer MUST honor these rules (the validator in [`src/engine/synthesize.zig`](../zig/src/engine/synthesize.zig) enforces every one):
+The synthesizer MUST honor these rules (the validator in [`zig/src/engine/synthesize.zig`](../zig/src/engine/synthesize.zig) enforces every one):
 
 - `schema_version: 1`, `fingerprint` matches `Request.Fingerprint`, `synthesized: true`.
 - `anchor_title` non-empty; phase slugs unique; task slugs unique within a phase.

@@ -32,7 +32,7 @@
 
 ## Source Layout
 
-The repo root IS the Zig package root: `build.zig` and `build.zig.zon` sit at the top level alongside the modules dir (`src/`), build-time codegen (`tools/`), the integration suite (`integration_tests/`), and the vendored SQLite amalgamation (`vendor/sqlite/`). Workflow surfaces, docs, templates, and bash tooling live as sibling top-level directories.
+**M0 split (plan 996, C++26 rewrite in progress on branch `rewrite/cpp26`; full docs pass deferred to M10).** The Zig implementation relocated to `zig/`: `zig/build.zig` and `zig/build.zig.zon` are the Zig package root, alongside `zig/src/`, `zig/tools/`, `zig/integration_tests/`, and `zig/vendor/` (including the vendored SQLite amalgamation). The root-level `src/`, `CMakeLists.txt`, `CMakePresets.json`, and root `vendor/` (CPM-cached) are the in-progress C++26 rewrite — NOT the Zig package root; that claim only held pre-relocation. `zig/` stays buildable strictly as the parity oracle through M9 (D13) and is deleted at M10. Everything below this note still describes the Zig tree as it existed pre-relocation and needs a path prefix of `zig/` in most places until the M10 docs pass; use it for shape, not literal paths. Workflow surfaces, docs, templates, and bash tooling stay at the repo root (language-agnostic, shared by both trees).
 
 | Path | Role |
 |------|------|
@@ -308,7 +308,7 @@ When invoking the CLI to exercise documented behavior (running skills, composing
 
 The defaults are mainstream Zig; deviations require justification.
 
-- `zig fmt` (via `make fmt` or `zig fmt build.zig src tools integration_tests`) clean before merge. `zig build` clean (warnings are errors). `make fmt-check` enforces formatter cleanliness in CI.
+- `zig fmt` (via `make fmt` or `zig fmt zig/build.zig zig/src zig/tools zig/integration_tests`, per the M0 relocation — see Source Layout above) clean before merge. `zig build` clean (warnings are errors). `make fmt-check` enforces formatter cleanliness in CI.
 - Identifiers: `camelCase` for functions and variables, `PascalCase` for types, `SCREAMING_SNAKE_CASE` for constants by convention. Module file names lowercase, short, no underscores when possible.
 - Errors: Zig's error unions (`!T`) and error sets. Define module-local error sets where the surface is bounded; use `anyerror` only at boundaries that genuinely propagate everything. Wrap underlying errors via explicit `catch` blocks that map them to the module's error set; never silently swallow.
 - Allocation: explicit allocator parameters at every API boundary that allocates. Prefer `std.heap.ArenaAllocator` for transient request-scoped work; long-lived state uses `std.heap.GeneralPurposeAllocator` (with leak detection on in tests). Never call `std.heap.page_allocator` from library code.

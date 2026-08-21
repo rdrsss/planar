@@ -36,7 +36,7 @@ Vendor-neutral. Vendor-specific surfaces are under `commands/claude/pl-spec-draf
   - `roadmap.md` — `kind=roadmap` (flat milestone list with bulleted work items and `[touches: ...]` annotations)
   - `test-spec.md` — `kind=test_spec` (test strategy with flat `### Scenario: <title>` H3 scenarios — the canonical grammar — plus a coverage-gap checklist and test-surface-allocation table). Each scenario title names the coverage lens it exercises (happy / empty-null / error / edge); the four buckets are a reasoning tool, not document structure. Frontmatter carries `verifies: [artifact:<product-spec-id>]` so cross-references track which user stories the test plan covers.
 
-  Every produced `.md` file carries a YAML front matter block between `---` delimiters at the top of the file. The canonical schema is the `FrontMatter` struct in [`src/engine/workbench/parse.zig`](../zig/src/engine/workbench/parse.zig). Required fields for planner-written artifact files:
+  Every produced `.md` file carries a YAML front matter block between `---` delimiters at the top of the file. The canonical schema is the `FrontMatter` struct in [`zig/src/engine/workbench/parse.zig`](../zig/src/engine/workbench/parse.zig). Required fields for planner-written artifact files:
 
   ```yaml
   ---
@@ -215,7 +215,7 @@ artifact_kind: tech_spec
 
 The `## Decisions` H2 is the **only** section the ingestor reads to extract decisions. Each H3 heading becomes one `decisions` row linked to the anchor plan via `entity_links(relationship='derives-from')`. The planner must not embed decision text elsewhere in the document.
 
-The `## Open Questions` H2 is parsed by `parseTechSpecOpenQuestions` in [`src/engine/ingestor/parse.zig`](../zig/src/engine/ingestor/parse.zig). Each H3 heading becomes one `questions` row. When an H3's body begins with a `Resolution:` marker (case-sensitive; must be the first non-blank token after the heading), the ingestor also creates a `decisions` row carrying the resolution text and flips the question to `answered`. Two forms are supported:
+The `## Open Questions` H2 is parsed by `parseTechSpecOpenQuestions` in [`zig/src/engine/ingestor/parse.zig`](../zig/src/engine/ingestor/parse.zig). Each H3 heading becomes one `questions` row. When an H3's body begins with a `Resolution:` marker (case-sensitive; must be the first non-blank token after the heading), the ingestor also creates a `decisions` row carrying the resolution text and flips the question to `answered`. Two forms are supported:
 
 ```markdown
 ## Open Questions
@@ -264,7 +264,7 @@ Each H2 becomes a child plan (one per milestone). Each bullet becomes a task. Th
 
 ### `product-spec.md` front matter
 
-All workbench files carry YAML front matter between `---` delimiters. The canonical schema is `FrontMatter` in [`src/engine/workbench/parse.zig`](../zig/src/engine/workbench/parse.zig). Required fields for `product-spec.md`:
+All workbench files carry YAML front matter between `---` delimiters. The canonical schema is `FrontMatter` in [`zig/src/engine/workbench/parse.zig`](../zig/src/engine/workbench/parse.zig). Required fields for `product-spec.md`:
 
 ```yaml
 ---
