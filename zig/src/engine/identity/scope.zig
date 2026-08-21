@@ -1134,6 +1134,72 @@ test "detectWorktree authoritative fallback: secondary worktree at non-conventio
     try std.testing.expect(!main_det.is_worktree);
 }
 
+// Regression test for the M0 zig/-relocation-cycle bug (commit 6423d9b,
+// docs/toolchain-parity.md's git-floor row): a PRIMARY checkout whose cwd is
+// nested two or more levels below the repo root (e.g. a build-output dir
+// like `.zig-cache/tmp/<rand>`) must still classify as NOT a worktree.
+// Before `--path-format=absolute` was added to the `--git-common-dir`
+// fallback query, git returned that path relative to the invocation cwd
+// (not to `--show-toplevel`), so joining it against `toplevel` produced a
+// bogus `<toplevel>/../../../.git`-shaped path whenever cwd was nested >=2
+// levels deep — misclassifying an ordinary primary checkout as a secondary
+// worktree and refusing planning verbs. This pins the fix by exercising the
+// authoritative git fallback (no `.worktrees/` segment in the nested path,
+// so the fast path cannot short-circuit it) from a real two-level-nested
+// cwd inside the primary checkout.
+test "detectWorktree authoritative fallback: primary checkout nested >=2 levels below root is not a worktree" {
+    const a = std.testing.allocator;
+
+    // Skip if git is unavailable.
+    {
+        const probe = std.process.run(a, std.testing.io, .{
+            .argv = &.{ "git", "--version" },
+        }) catch return error.SkipZigTest;
+        defer a.free(probe.stdout);
+        defer a.free(probe.stderr);
+        switch (probe.term) {
+            .exited => |code| if (code != 0) return error.SkipZigTest,
+            else => return error.SkipZigTest,
+        }
+    }
+
+    const mk = try std.process.run(a, std.testing.io, .{
+        .argv = &.{ "mktemp", "-d", "-t", "planar-scope-nested-test.XXXXXX" },
+    });
+    defer a.free(mk.stderr);
+    switch (mk.term) {
+        .exited => |code| if (code != 0) {
+            a.free(mk.stdout);
+            return error.MktempFailed;
+        },
+        else => {
+            a.free(mk.stdout);
+            return error.MktempFailed;
+        },
+    }
+    const tmp_owned = try a.dupe(u8, std.mem.trim(u8, mk.stdout, " \r\n\t"));
+    a.free(mk.stdout);
+    defer a.free(tmp_owned);
+    defer cleanupTmpDir(a, tmp_owned);
+
+    const primary = try std.fs.path.join(a, &.{ tmp_owned, "primary" });
+    defer a.free(primary);
+    // Two levels below the repo root, deliberately without a `.worktrees/`
+    // segment so only the authoritative git fallback can classify it.
+    const nested_cwd = try std.fs.path.join(a, &.{ primary, "build-output", "tmp" });
+    defer a.free(nested_cwd);
+
+    try runGit(a, tmp_owned, &.{ "init", "primary" });
+    try runGit(a, primary, &.{ "config", "user.email", "test@example.com" });
+    try runGit(a, primary, &.{ "config", "user.name", "Test" });
+    try runGit(a, primary, &.{ "commit", "--allow-empty", "-m", "init" });
+    try std.fs.cwd().makePath(nested_cwd);
+
+    const det = try detectWorktree(std.testing.io, a, nested_cwd);
+    defer deinitWorktreeDetection(a, det);
+    try std.testing.expect(!det.is_worktree);
+}
+
 fn cleanupTmpDir(allocator: std.mem.Allocator, dir: []const u8) void {
     const rm = std.process.run(allocator, std.testing.io, .{
         .argv = &.{ "rm", "-rf", dir },

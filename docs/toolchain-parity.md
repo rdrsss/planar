@@ -17,7 +17,7 @@ scripts are committed at `scripts/toolchain-probes/`.
 | LLVM/clang | **22.1.8** (Homebrew formula `llvm`, keg-only, `/opt/homebrew/opt/llvm`) | See "Why 22, not 23" below. |
 | CMake | **4.4.2** | `import std;`'s experimental gate is a UUID keyed to the CMake feature release; verified against the actually-installed 4.4.2 (see below). |
 | Ninja | **1.13.2** | Required for C++ module dependency scanning (dyndep); no other CMake generator supports it. |
-| git | **2.50.1** (floor: **≥ 2.31**) | The floor was discovered in the M0 zig/-relocation cycle (commit `6423d9b`): `detectWorktree`'s git-common-dir fallback needs `git rev-parse --git-common-dir --path-format=absolute`, a flag introduced in git 2.31. Below that floor the path resolves incorrectly against the wrong base and a primary checkout gets misclassified as a secondary worktree. |
+| git | **2.50.1** (floor: **≥ 2.31**) | The floor was discovered in the M0 zig/-relocation cycle (commit `6423d9b`): `detectWorktree`'s git-common-dir fallback needs `git rev-parse --path-format=absolute --git-common-dir`, a flag introduced in git 2.31. `--path-format=absolute` must precede `--git-common-dir` (it is a mode flag that governs how the path options after it are printed). Below that floor the path resolves incorrectly against the wrong base and a primary checkout gets misclassified as a secondary worktree. |
 | Doxygen | not yet pinned by this task | Deferred to the milestone that turns on the `doxygen Doxyfile.lint` gate (tech-spec § Toolchain and conventions); tabula pins 1.17.0 for its `.cppm`-parsing quality — reuse that value when the gate lands unless a newer verified release exists then. |
 
 ### Why 22, not 23

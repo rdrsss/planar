@@ -189,6 +189,26 @@ on_err() {
 }
 trap 'on_err $? $LINENO' ERR
 
+# ---------- D13 freeze gate ----------
+#
+# D13 (plan 996 decision, C++26 rewrite tech-spec): "Installed Planar
+# freezes at the fork point." During M0–M9 the operator's installed
+# binaries stay at the pre-branch build; install.sh must NOT retarget
+# itself at the relocated zig/ tree, and the zig/ tree stays buildable
+# strictly as the parity oracle for the in-progress C++ rewrite, never as
+# an install source. A prior M0 cycle violated this by retargeting
+# install.sh's checkout gate at $REPO_ROOT/zig (ZIG_DIR) below — this gate
+# reverts that: it refuses to run at all on a checkout that looks like the
+# relocated rewrite tree, before any build or install step runs. This is
+# mechanical and mirrors the shape of the relocated tree exactly: zig/
+# present with build.zig, but no build.zig at the repo root (the pre-
+# relocation, not-yet-rewritten layout always has both at the root).
+# install.sh swaps to the CMake-built binaries at M9 (task cpp-eval-parity)
+# per D13 — this gate is removed then, not before.
+if [[ -f "$REPO_ROOT/zig/build.zig" && ! -f "$REPO_ROOT/build.zig" ]]; then
+  err "installed Planar is frozen at the fork point (D13) until M9 — install.sh is disabled on the rewrite branch"
+fi
+
 # check_deps "<tier label>" <fatal:0|1> "cmd|brewpkg|what it's for" …
 # Checks every entry and reports ALL missing tools at once (not one-at-a-time),
 # with a `brew install …` hint built from the entries that have a Homebrew
@@ -448,6 +468,23 @@ discover_scriptorium_bin
 # Runtime tools — non-fatal; the install still produces a working binary, but
 # Planar's git-backed verbs and the bundled agent skills need these to work.
 check_deps "Planar runtime" 0 "${RUN_DEPS[@]}"
+
+# git version floor — non-fatal, matching the RUN_DEPS tier above (git is
+# already in RUN_DEPS; this adds the *version* check check_deps' presence-only
+# probe can't express). >= 2.31 is required for `git rev-parse
+# --path-format=absolute --git-common-dir` (docs/toolchain-parity.md's git
+# row) — below that floor, worktree detection can misclassify a primary
+# checkout nested two or more levels below the repo root as a secondary
+# worktree. This check stays live post-M9 (the D13 freeze gate above disables
+# the whole script during M0–M9, not this check's relevance).
+MIN_GIT="2.31.0"
+if command -v git >/dev/null 2>&1; then
+  HAVE_GIT="$(git --version | awk '{print $3}')"
+  HAVE_GIT_CORE="${HAVE_GIT%%-*}"
+  if [[ -n "$HAVE_GIT_CORE" ]] && ! version_ge "$HAVE_GIT_CORE" "$MIN_GIT"; then
+    warn "git $MIN_GIT or newer required for correct worktree detection, found $HAVE_GIT ($(command -v git))"
+  fi
+fi
 if [[ "$WITH_MTKAHYPAR" -eq 1 ]]; then
   check_deps "Mt-KaHyPar adapter" 1 \
     "python3|python|creates the isolated native-wheel environment"
