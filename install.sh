@@ -84,6 +84,12 @@ MTKAHYPAR_VERSION="1.6.1"
 INSTALLER_VERSION="1.0.0"     # install.sh's own version (see --version)
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The Zig implementation relocated to zig/ at M0 (plan 996, task
+# cpp-zig-relocation): build.zig + build.zig.zon now live at
+# $REPO_ROOT/zig. Everything else the installer stages (agents/, skills/,
+# migrations/, templates/, copilot/, scripts/) stayed at $REPO_ROOT — see
+# the Makefile's relocation note for the same split.
+ZIG_DIR="$REPO_ROOT/zig"
 source "$REPO_ROOT/scripts/install-manifest.sh"
 source "$REPO_ROOT/scripts/discover-scriptorium.sh"
 
@@ -418,7 +424,7 @@ check_deps "build" 1 "${BUILD_DEPS[@]}"
 # Zig version gate — build.zig.zon pins a minimum; an older toolchain otherwise
 # fails deep in the build with a cryptic error. Surface it up front. Dev/build
 # suffixes (0.16.0-dev.123+abc) are treated as their base release.
-MIN_ZIG="$(sed -n 's/.*\.minimum_zig_version = "\([0-9.]*\)".*/\1/p' "$REPO_ROOT/build.zig.zon" | head -n1)"
+MIN_ZIG="$(sed -n 's/.*\.minimum_zig_version = "\([0-9.]*\)".*/\1/p' "$ZIG_DIR/build.zig.zon" | head -n1)"
 HAVE_ZIG="$(zig version 2>/dev/null || true)"
 HAVE_ZIG_CORE="${HAVE_ZIG%%-*}"; HAVE_ZIG_CORE="${HAVE_ZIG_CORE%%+*}"
 if [[ -n "$MIN_ZIG" && -n "$HAVE_ZIG_CORE" ]] && ! version_ge "$HAVE_ZIG_CORE" "$MIN_ZIG"; then
@@ -426,10 +432,11 @@ if [[ -n "$MIN_ZIG" && -n "$HAVE_ZIG_CORE" ]] && ! version_ge "$HAVE_ZIG_CORE" "
 fi
 
 # Check that we are in a Planar source checkout.
-# Zig code lives under src/; build.zig + build.zig.zon sit at the repo root.
-[[ -f "$REPO_ROOT/build.zig" ]] || err "build.zig not found in $REPO_ROOT (run install.sh from the Planar source repo)"
-[[ -f "$REPO_ROOT/build.zig.zon" ]] || err "build.zig.zon not found in $REPO_ROOT"
-grep -q '^[[:space:]]*\.name = \.planar' "$REPO_ROOT/build.zig.zon" || err "$REPO_ROOT does not look like the Planar Zig package (build.zig.zon name mismatch)"
+# Zig code lives under zig/src/; build.zig + build.zig.zon sit at zig/
+# (relocated at M0, plan 996, task cpp-zig-relocation).
+[[ -f "$ZIG_DIR/build.zig" ]] || err "zig/build.zig not found in $REPO_ROOT (run install.sh from the Planar source repo)"
+[[ -f "$ZIG_DIR/build.zig.zon" ]] || err "zig/build.zig.zon not found in $REPO_ROOT"
+grep -q '^[[:space:]]*\.name = \.planar' "$ZIG_DIR/build.zig.zon" || err "$REPO_ROOT does not look like the Planar Zig package (zig/build.zig.zon name mismatch)"
 
 # scriptorium discovery — fatal, fail fast before the (slow) zig build below.
 # install.sh no longer renders vendor surfaces itself; it shells the
@@ -518,13 +525,18 @@ mkdir -p "$PLANAR_HOME/bin"
 #                    holds no DB handle, no model-spawn host fn)
 #
 # All four land in $PLANAR_HOME/bin/ in one shot — no extra cp step needed.
-# Migrations and templates/defaults are read from the repo root at
-# codegen time (build.zig sits at the repo root).
+# Migrations and templates/defaults are read from the repo root at codegen
+# time; build.zig sits at $ZIG_DIR (relocated at M0) and reaches them via
+# its own `../` paths. Invoke with `--build-file` by absolute path rather
+# than `cd`-ing into $ZIG_DIR, so the spawned zig process's cwd stays at
+# $REPO_ROOT — matching the Makefile's ZIGBUILD wrapper (see its relocation
+# note) so any codegen path resolution behaves identically whether the
+# operator runs `make build` or `install.sh`.
 # -Dversion-meta=true: stamp the real git sha/date/dirty into `planar version`.
 # Dev builds default this off because embedding live git metadata invalidates
 # the whole build cache on every commit / dirty-flag flip; installs are the
 # one place the stamped metadata is worth that rebuild.
-( cd "$REPO_ROOT" && zig build -Doptimize="$OPTIMIZE" -Dversion-meta=true --prefix "$PLANAR_HOME" )
+( cd "$REPO_ROOT" && zig build --build-file "$ZIG_DIR/build.zig" -Doptimize="$OPTIMIZE" -Dversion-meta=true --prefix "$PLANAR_HOME" )
 vlog "wrote $PLANAR_HOME/bin/planar"
 vlog "wrote $PLANAR_HOME/bin/planar-agent"
 vlog "wrote $PLANAR_HOME/bin/planar-watch"

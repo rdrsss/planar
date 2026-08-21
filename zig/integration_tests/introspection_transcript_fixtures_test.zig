@@ -82,11 +82,11 @@ test "current vendor fixture union stays bounded and private in JSON and text re
     const init_out = suite.mustRun(&.{ "init", "--allow-no-repo" });
     defer gpa.free(init_out);
 
-    const claude_path = try std.fs.path.resolve(gpa, &.{"integration_tests/fixtures/introspection_transcripts/claude.jsonl"});
+    const claude_path = try std.fs.path.resolve(gpa, &.{"zig/integration_tests/fixtures/introspection_transcripts/claude.jsonl"});
     defer gpa.free(claude_path);
-    const codex_path = try std.fs.path.resolve(gpa, &.{"integration_tests/fixtures/introspection_transcripts/codex.jsonl"});
+    const codex_path = try std.fs.path.resolve(gpa, &.{"zig/integration_tests/fixtures/introspection_transcripts/codex.jsonl"});
     defer gpa.free(codex_path);
-    const copilot_path = try std.fs.path.resolve(gpa, &.{"integration_tests/fixtures/introspection_transcripts/copilot.jsonl"});
+    const copilot_path = try std.fs.path.resolve(gpa, &.{"zig/integration_tests/fixtures/introspection_transcripts/copilot.jsonl"});
     defer gpa.free(copilot_path);
     const config_dir = std.fs.path.dirname(suite.db_path) orelse ".";
     const config_path = try std.fs.path.join(gpa, &.{ config_dir, "introspection-fixture-config.toml" });
