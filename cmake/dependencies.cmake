@@ -50,7 +50,7 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/CPM.cmake")
 # expected to add them:
 #
 #   * Catch2   3.15.3 — tests (cmake/module.cmake's planar_module(); task 6023) [vendored]
-#   * SQLite   3.53.4 (amalgamation) — storage [vendored]
+#   * SQLite   3.50.2 (amalgamation) — storage [vendored]
 #   * Lua      5.5    — planar-execute sandbox
 #   * Glaze    8.1.0  — JSON / YAML front matter / TOML config (D8, D12) [vendored]
 #   * libcurl          — HTTP for Jira/GitHub adapters

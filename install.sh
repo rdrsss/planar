@@ -193,34 +193,69 @@ trap 'on_err $? $LINENO' ERR
 #
 # D13 (plan 996 decision, C++26 rewrite tech-spec): "Installed Planar
 # freezes at the fork point." During M0–M9 the OPERATOR's installed
-# binaries stay at the pre-branch build; install.sh must NOT retarget the
-# operator's real install (the default $PLANAR_HOME, i.e. ~/.planar) at the
-# relocated zig/ tree, and the zig/ tree stays buildable strictly as the
-# parity oracle for the in-progress C++ rewrite, never as an install
-# source. A prior M0 cycle violated this by retargeting install.sh's
-# checkout gate at $REPO_ROOT/zig (ZIG_DIR) below — this gate reverts that:
-# it refuses to run against the default install location on a checkout
-# that looks like the relocated rewrite tree, before any build or install
-# step runs. The relocated-tree shape check is mechanical: zig/ present
-# with build.zig, but no build.zig at the repo root (the pre-relocation,
-# not-yet-rewritten layout always has both at the root).
+# surfaces stay at the pre-branch build; install.sh must NOT retarget any
+# of the operator's real, live surfaces at the relocated zig/ tree, and
+# the zig/ tree stays buildable strictly as the parity oracle for the
+# in-progress C++ rewrite, never as an install source. A prior M0 cycle
+# violated this by retargeting install.sh's checkout gate at
+# $REPO_ROOT/zig (ZIG_DIR) below — an earlier version of this gate
+# reverted that but checked only $PLANAR_HOME against the default
+# ~/.planar, which is incomplete: install.sh also symlinks/copies vendor
+# surfaces straight into $HOME/.claude, $CODEX_HOME (default
+# $HOME/.codex), $HOME/.copilot, and $HOME/.gemini (see the vendor
+# dispatch below), and --prefix redirects ONLY $PLANAR_HOME — it never
+# touches $HOME or $CODEX_HOME. So `./install.sh --prefix /somewhere-else`
+# used to pass the old gate and then run symlink_vendor / prune_stale_*
+# against the operator's real, live vendor dirs (F12: blind review,
+# task 6049). The relocated-tree shape check stays mechanical: zig/
+# present with build.zig, but no build.zig at the repo root (the
+# pre-relocation, not-yet-rewritten layout always has both at the root).
 #
-# D13 protects the operator's install, not every invocation of this
-# script — a run explicitly redirected away from the default prefix (via
-# PLANAR_HOME in the environment, or --prefix) targets an isolated
-# location the operator's frozen install never touches, so it is out of
-# D13's scope and proceeds. This is what lets the integration suite
-# exercise install.sh against its own throwaway temp prefixes
-# (installed_surface_test.zig, scenario_agent_skill_lifecycle_test.zig)
-# without weakening the freeze on ~/.planar. PLANAR_HOME is the single
-# resolved install target by this point in the script (env default at top,
-# optionally overridden by --prefix during arg parsing above), so
-# comparing it against the fixed default covers both override paths.
+# D13 protects every operator-real surface this script can write —
+# $PLANAR_HOME AND the per-vendor roots under $HOME/$CODEX_HOME — not
+# every invocation of this script. A run is genuinely isolated, and out
+# of D13's scope, only when PLANAR_HOME, HOME, and CODEX_HOME have ALL
+# been redirected away from the operator's real account home — that's
+# what lets the integration suite exercise install.sh against its own
+# throwaway temp prefixes (installed_surface_test.zig sets HOME,
+# PLANAR_HOME, and CODEX_HOME together; scenario_agent_skill_lifecycle_
+# test.zig likewise) without weakening the freeze on the real ~/.planar,
+# ~/.claude, ~/.codex, ~/.copilot, ~/.gemini. Comparing $HOME against the
+# literal env var is not enough either: $HOME itself is spoofable by the
+# same override an attempted bypass would use, so the "real account home"
+# below is resolved independently, from the passwd database via the
+# invoking account's username (`id -un`), which an env var override
+# cannot redirect. A run is refused whenever PLANAR_HOME, HOME, or
+# CODEX_HOME still resolves under that real home — covering both the
+# unredirected default and a partial redirect (e.g. --prefix alone, F12).
 # install.sh swaps to the CMake-built binaries at M9 (task cpp-eval-parity)
 # per D13 — this gate is removed then, not before.
-_D13_DEFAULT_PLANAR_HOME="$HOME/.planar"
-if [[ -f "$REPO_ROOT/zig/build.zig" && ! -f "$REPO_ROOT/build.zig" && "$PLANAR_HOME" == "$_D13_DEFAULT_PLANAR_HOME" ]]; then
-  err "installed Planar is frozen at the fork point (D13) until M9 — install.sh is disabled on the rewrite branch"
+_planar_real_home() {
+  # Resolve the invoking account's real home directory from the passwd
+  # database, independent of $HOME (which an isolated/spoofed run
+  # legitimately overrides, and a bypass attempt could too). `eval echo
+  # ~user` resolves through NSS/Directory Services on both macOS and
+  # Linux without depending on getent (absent on macOS). Falls back to
+  # $HOME if the account lookup fails for any reason — the safer
+  # (more restrictive) default.
+  local u home
+  u="$(id -un 2>/dev/null)" || { printf '%s' "$HOME"; return 0; }
+  home="$(eval echo "~$u" 2>/dev/null)" || true
+  if [[ -n "$home" && "$home" != "~$u" ]]; then
+    printf '%s' "$home"
+  else
+    printf '%s' "$HOME"
+  fi
+}
+_D13_REAL_HOME="$(_planar_real_home)"
+_d13_under_real_home() {
+  local p="$1"
+  [[ "$p" == "$_D13_REAL_HOME" || "$p" == "$_D13_REAL_HOME"/* ]]
+}
+if [[ -f "$REPO_ROOT/zig/build.zig" && ! -f "$REPO_ROOT/build.zig" ]]; then
+  if _d13_under_real_home "$PLANAR_HOME" || _d13_under_real_home "$HOME" || _d13_under_real_home "$CODEX_HOME"; then
+    err "installed Planar is frozen at the fork point (D13) until M9 — install.sh is disabled on the rewrite branch (PLANAR_HOME, HOME, and CODEX_HOME must ALL be redirected away from $_D13_REAL_HOME for an isolated run)"
+  fi
 fi
 
 # check_deps "<tier label>" <fatal:0|1> "cmd|brewpkg|what it's for" …

@@ -225,6 +225,19 @@ coverage-update: build ## Re-seed scripts/coverage-baseline.txt with the current
 # premise was that both operate on identical state. The integration suite is
 # the standing guard, and the `parity_*` suites still assert the user-facing
 # contracts the audit originally surfaced.
+# cpp-lint is deliberately NOT composed into test-all (M0 boundary review,
+# plan 996 task 6049 F14): it hardcodes a pinned LLVM path
+# ($(CLANG_FORMAT_BIN)/$(CLANG_TIDY_BIN) above, docs/toolchain-parity.md)
+# that only exists on a machine that has installed that exact toolchain,
+# and it requires $(CPP_BUILD_DIR) already configured+built (clang-tidy
+# needs materialized module BMIs, see the note in the cpp-lint target
+# itself) — an ordering precondition test-all's other members don't share.
+# Wiring it in would make test-all fail-by-default on any machine without
+# the pinned LLVM at that path, or silently skip real lint coverage on a
+# CI box that has a different clang-format on PATH. Run `make cpp-lint`
+# explicitly once the C++ tree is the sole implementation (post-M9,
+# D13) and toolchain provisioning is part of the standard dev/CI image;
+# revisit composing it into test-all at that point.
 .PHONY: test-all
 test-all: test test-integration coverage cli-usage-check ## Run unit + integration suites, coverage, and composed authored-surface gates
 
