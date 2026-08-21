@@ -148,6 +148,49 @@ test-integration: ## Run the integration suite (builds its own Debug test binari
 test-integration-files: ## Run integration tests as one executable per test file
 	$(ZIGBUILD) test-integration-files -Dtest-binary=true $(ARGS)
 
+.PHONY: cpp-lint
+# ── C++26 rewrite lint gate (M0 boundary review, plan 996 task 6049 F3) ──
+# Pinned toolchain per docs/toolchain-parity.md — always the pinned LLVM's
+# own binaries, never a PATH-resolved clang-format/clang-tidy, which may
+# belong to a different LLVM release and disagree under the same config.
+CLANG_FORMAT_BIN := /opt/homebrew/opt/llvm/bin/clang-format
+CLANG_TIDY_BIN   := /opt/homebrew/opt/llvm/bin/clang-tidy
+CPP_BUILD_DIR    ?= build/debug
+
+# First-party C++ file list: everything under src/ and
+# scripts/toolchain-probes/, excluding vendor/, zig/, and any build output —
+# find-based so newly added files are picked up without editing this list.
+CPP_FILES := $(shell find src scripts/toolchain-probes -type f \( -name '*.cppm' -o -name '*.cpp' \) \
+	-not -path '*/vendor/*' -not -path '*/zig/*' -not -path '*/build/*' 2>/dev/null)
+
+cpp-lint: ## Pinned clang-format + clang-tidy + doxygen gate over first-party C++ (docs/toolchain-parity.md)
+	@echo "== cpp-lint: clang-format --dry-run --Werror (pinned $(CLANG_FORMAT_BIN)) =="
+	$(CLANG_FORMAT_BIN) --dry-run --Werror $(CPP_FILES)
+	@echo "== cpp-lint: clang-tidy (pinned $(CLANG_TIDY_BIN); src/ tree only, see note below) =="
+	# clang-tidy needs the module BMIs (*.pcm) already materialized under
+	# $(CPP_BUILD_DIR) — unlike ninja's dyndep scan, clang-tidy does NOT run
+	# its own P1689 module-dependency scan, so a source that `import`s a
+	# module (`import std;`, `import planar.core;`) resolves only against an
+	# already-built tree. Verified empirically (task 6049, F3): against a
+	# freshly configured-but-unbuilt build dir, clang-tidy fails with
+	# "module 'std' not found" / "no such file ... .modmap". `cmake --build`
+	# here makes that a non-issue rather than an operator-order footgun.
+	cmake --build $(CPP_BUILD_DIR)
+	find src -type f \( -name '*.cppm' -o -name '*.cpp' \) -print0 | xargs -0 $(CLANG_TIDY_BIN) -p $(CPP_BUILD_DIR)
+	@echo "== cpp-lint: doxygen Doxyfile.lint =="
+	doxygen Doxyfile.lint
+	# NOTE — scripts/toolchain-probes/*.cpp are deliberately clang-format-
+	# checked above but NOT clang-tidied: they are standalone toolchain-
+	# verification probes compiled directly against the pinned clang++
+	# (docs/toolchain-parity.md), not CMake targets, so they have no entry
+	# in $(CPP_BUILD_DIR)/compile_commands.json. Without a compile-commands
+	# entry clang-tidy falls back to synthetic default flags and misfires on
+	# probe_embed.cpp's deliberate `-Wc23-extensions` case (the whole point
+	# of that probe — see toolchain-parity.md's "#embed" section). Inventing
+	# a fake compile command to force a pass would be lying about coverage;
+	# this is the genuine boundary of what clang-tidy can evaluate for a
+	# file outside the build graph.
+
 .PHONY: test-parity-cpp
 test-parity-cpp: ## Run the zig-side integration suite against CPP_BIN_DIR binaries (parity lane; fails until C++ binaries exist)
 	PLANAR_BIN=$(CPP_BIN_ABS)/$(BINARY) \
