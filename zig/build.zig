@@ -201,14 +201,14 @@ pub fn build(b: *std.Build) void {
     });
 
     const gen_run = b.addRunArtifact(gen_exe);
-    gen_run.addDirectoryArg(b.path("migrations"));
+    gen_run.addDirectoryArg(b.path("../migrations"));
     const manifest_path = gen_run.addOutputFileArg("manifest.zig");
 
     // addDirectoryArg alone doesn't track directory CONTENTS for cache
     // invalidation — adding/removing a migration file leaves the
     // manifest stale. Enumerate every *.sql here and register each
     // as a file input so the cache key flips on any change.
-    addMigrationDirInputs(b, gen_run, "migrations");
+    addMigrationDirInputs(b, gen_run, "../migrations");
 
     const migrations_mod = b.addModule("migrations", .{
         .root_source_file = manifest_path,
@@ -232,9 +232,9 @@ pub fn build(b: *std.Build) void {
     });
 
     const gen_tmpl_run = b.addRunArtifact(gen_tmpl_exe);
-    gen_tmpl_run.addDirectoryArg(b.path("templates/defaults"));
+    gen_tmpl_run.addDirectoryArg(b.path("../templates/defaults"));
     const tmpl_manifest_path = gen_tmpl_run.addOutputFileArg("templates_embed.zig");
-    addTemplateDirInputs(b, gen_tmpl_run, "templates/defaults");
+    addTemplateDirInputs(b, gen_tmpl_run, "../templates/defaults");
 
     const templates_embed_mod = b.addModule("templates_embed", .{
         .root_source_file = tmpl_manifest_path,
@@ -342,7 +342,7 @@ pub fn build(b: *std.Build) void {
     // in-process without runtime path resolution.
     // -----------------------------------------------------------------
     const metrics_sql_mod = b.addModule("metrics_sql", .{
-        .root_source_file = b.path("metrics/metrics_sql.zig"),
+        .root_source_file = b.path("../metrics/metrics_sql.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -545,7 +545,7 @@ pub fn build(b: *std.Build) void {
     const cli_usage_check_step = b.step("cli-usage-check", "Validate authored surfaces against the live CLI schema and semantic contracts");
     const cli_usage_check_run = b.addRunArtifact(cli_usage_lint_exe);
     cli_usage_check_run.step.dependOn(b.getInstallStep());
-    cli_usage_check_run.addArg(b.pathFromRoot("."));
+    cli_usage_check_run.addArg(b.pathFromRoot(".."));
     cli_usage_check_run.addArg(b.getInstallPath(.bin, "planar"));
     cli_usage_check_run.addArg(b.getInstallPath(.bin, "planar-agent"));
     cli_usage_check_run.addArg(b.getInstallPath(.bin, "planar-watch"));
@@ -562,7 +562,7 @@ pub fn build(b: *std.Build) void {
     });
     const surface_lint_step = b.step("surface-lint", "Validate authored agent, skill, and doc semantics");
     const surface_lint_run = b.addRunArtifact(surface_lint_exe);
-    surface_lint_run.addArg(b.pathFromRoot("."));
+    surface_lint_run.addArg(b.pathFromRoot(".."));
     if (b.args) |args| surface_lint_run.addArgs(args);
     surface_lint_step.dependOn(&surface_lint_run.step);
 
@@ -570,7 +570,7 @@ pub fn build(b: *std.Build) void {
     // cli-usage-check the single composed quality gate. A distinct run step
     // avoids forwarding surface-lint-only arguments into the normal gate.
     const cli_usage_surface_lint_run = b.addRunArtifact(surface_lint_exe);
-    cli_usage_surface_lint_run.addArg(b.pathFromRoot("."));
+    cli_usage_surface_lint_run.addArg(b.pathFromRoot(".."));
     cli_usage_surface_lint_run.step.dependOn(&cli_usage_check_run.step);
     cli_usage_check_step.dependOn(&cli_usage_surface_lint_run.step);
 
@@ -743,19 +743,19 @@ pub fn build(b: *std.Build) void {
     run_integration_all.step.dependOn(b.getInstallStep());
     run_integration_all.setEnvironmentVariable(
         "PLANAR_BIN",
-        b.getInstallPath(.bin, "planar"),
+        envOrInstallPath(b, "PLANAR_BIN", "planar"),
     );
     run_integration_all.setEnvironmentVariable(
         "PLANAR_AGENT_BIN",
-        b.getInstallPath(.bin, "planar-agent"),
+        envOrInstallPath(b, "PLANAR_AGENT_BIN", "planar-agent"),
     );
     run_integration_all.setEnvironmentVariable(
         "PLANAR_WATCH_BIN",
-        b.getInstallPath(.bin, "planar-watch"),
+        envOrInstallPath(b, "PLANAR_WATCH_BIN", "planar-watch"),
     );
     run_integration_all.setEnvironmentVariable(
         "PLANAR_EXECUTE_BIN",
-        b.getInstallPath(.bin, "planar-execute"),
+        envOrInstallPath(b, "PLANAR_EXECUTE_BIN", "planar-execute"),
     );
     test_integration_step.dependOn(&run_integration_all.step);
 
@@ -783,6 +783,22 @@ pub fn build(b: *std.Build) void {
             test_integration_files_step,
         );
     }
+}
+
+/// envOrInstallPath resolves a binary path for the integration harness: an
+/// externally-set environment variable (e.g. `PLANAR_BIN=/path/to/cpp/bin/
+/// planar make test-integration`) takes priority over the path this build
+/// graph would install the named artifact to. This is the parity-lane seam
+/// (`make test-parity-cpp`): the same zig-side `test-integration` step can
+/// point the existing black-box suite at externally-built binaries (the
+/// CMake/C++ parity build) without touching the suite itself. Absent an
+/// override, behavior is unchanged — the suite runs against the binaries
+/// this build just produced.
+fn envOrInstallPath(b: *std.Build, env_name: []const u8, install_name: []const u8) []const u8 {
+    if (b.graph.environ_map.get(env_name)) |v| {
+        return v;
+    }
+    return b.getInstallPath(.bin, install_name);
 }
 
 fn registerIntegrationTestDir(
@@ -831,19 +847,19 @@ fn registerIntegrationTestDir(
         run.step.dependOn(b.getInstallStep());
         run.setEnvironmentVariable(
             "PLANAR_BIN",
-            b.getInstallPath(.bin, "planar"),
+            envOrInstallPath(b, "PLANAR_BIN", "planar"),
         );
         run.setEnvironmentVariable(
             "PLANAR_AGENT_BIN",
-            b.getInstallPath(.bin, "planar-agent"),
+            envOrInstallPath(b, "PLANAR_AGENT_BIN", "planar-agent"),
         );
         run.setEnvironmentVariable(
             "PLANAR_WATCH_BIN",
-            b.getInstallPath(.bin, "planar-watch"),
+            envOrInstallPath(b, "PLANAR_WATCH_BIN", "planar-watch"),
         );
         run.setEnvironmentVariable(
             "PLANAR_EXECUTE_BIN",
-            b.getInstallPath(.bin, "planar-execute"),
+            envOrInstallPath(b, "PLANAR_EXECUTE_BIN", "planar-execute"),
         );
         test_integration_step.dependOn(&run.step);
     }

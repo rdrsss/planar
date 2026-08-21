@@ -93,15 +93,16 @@ fn writeWorkflow(suite: *harness.Suite, name: []const u8, body: []const u8) ![]c
 }
 
 /// repoRootFromBin derives the repo root directory from the PLANAR_BIN env
-/// var. The installed binary sits at <repo>/zig-out/bin/planar (three levels
-/// deep), so dirname × 3 yields the repo root. Returns an allocator-owned
-/// absolute path.
+/// var. The installed binary sits at <repo>/zig/zig-out/bin/planar (four
+/// levels deep since the M0 relocation to zig/), so dirname × 4 yields the
+/// repo root. Returns an allocator-owned absolute path.
 fn repoRootFromBin(allocator: std.mem.Allocator) ![]const u8 {
     const bin_path = resolveEnv("PLANAR_BIN");
     const d1 = std.fs.path.dirname(bin_path) orelse return error.FileNotFound;
     const d2 = std.fs.path.dirname(d1) orelse return error.FileNotFound;
     const d3 = std.fs.path.dirname(d2) orelse return error.FileNotFound;
-    return allocator.dupe(u8, d3);
+    const d4 = std.fs.path.dirname(d3) orelse return error.FileNotFound;
+    return allocator.dupe(u8, d4);
 }
 
 test "planar-execute runs a trivial deterministic workflow shelling cli.planar_json" {

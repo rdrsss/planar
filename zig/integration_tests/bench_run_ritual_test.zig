@@ -96,13 +96,15 @@ fn runExecute(
     return .{ .term = result.term, .stdout = result.stdout, .stderr = result.stderr, .gpa = gpa };
 }
 
-/// repoRootFromBin derives the repo root from PLANAR_BIN (<repo>/zig-out/bin/planar).
+/// repoRootFromBin derives the repo root from PLANAR_BIN
+/// (<repo>/zig/zig-out/bin/planar since the M0 relocation to zig/).
 fn repoRootFromBin(allocator: std.mem.Allocator) ![]const u8 {
     const bin_path = resolveEnv("PLANAR_BIN");
     const d1 = std.fs.path.dirname(bin_path) orelse return error.FileNotFound;
     const d2 = std.fs.path.dirname(d1) orelse return error.FileNotFound;
     const d3 = std.fs.path.dirname(d2) orelse return error.FileNotFound;
-    return allocator.dupe(u8, d3);
+    const d4 = std.fs.path.dirname(d3) orelse return error.FileNotFound;
+    return allocator.dupe(u8, d4);
 }
 
 // -------------------------------------------------------------------------

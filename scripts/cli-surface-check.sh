@@ -21,7 +21,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-HANDLERS_DIR="$REPO_ROOT/src/cmd/planar/handlers"
+HANDLERS_DIR="$REPO_ROOT/zig/src/cmd/planar/handlers"
 
 BIN="${PLANAR_BIN:-}"
 if [[ -z "$BIN" ]]; then

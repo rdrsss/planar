@@ -296,7 +296,7 @@ test "scenario: guidance-closeout-envelope stale identity blocks clean while cle
     defer a.free(version_insert);
     try std.testing.expect(std.mem.indexOf(u8, up_body, version_insert) != null);
 
-    const build = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, "build.zig", a, .limited(512 * 1024));
+    const build = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, "zig/build.zig", a, .limited(512 * 1024));
     defer a.free(build);
     for ([_][]const u8{ "planar", "planar-agent", "planar-watch", "planar-execute" }) |binary| {
         const declaration = try std.fmt.allocPrint(a, ".name = \"{s}\"", .{binary});

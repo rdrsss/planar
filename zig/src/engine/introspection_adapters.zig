@@ -1124,7 +1124,7 @@ test "mixed coverage remains exactly accounted at the evidence cap boundary" {
 test "current Claude fixture pairs tool use and result without retaining private fields" {
     const fixture = try std.Io.Dir.cwd().readFileAlloc(
         std.testing.io,
-        "integration_tests/fixtures/introspection_transcripts/claude.jsonl",
+        "zig/integration_tests/fixtures/introspection_transcripts/claude.jsonl",
         std.testing.allocator,
         .unlimited,
     );
@@ -1269,14 +1269,14 @@ test "malformed recognized envelope degrades only its adapter" {
 test "current vendor fixture union distinguishes irrelevant and malformed envelopes" {
     const codex = try std.Io.Dir.cwd().readFileAlloc(
         std.testing.io,
-        "integration_tests/fixtures/introspection_transcripts/codex.jsonl",
+        "zig/integration_tests/fixtures/introspection_transcripts/codex.jsonl",
         std.testing.allocator,
         .unlimited,
     );
     defer std.testing.allocator.free(codex);
     const copilot = try std.Io.Dir.cwd().readFileAlloc(
         std.testing.io,
-        "integration_tests/fixtures/introspection_transcripts/copilot.jsonl",
+        "zig/integration_tests/fixtures/introspection_transcripts/copilot.jsonl",
         std.testing.allocator,
         .unlimited,
     );

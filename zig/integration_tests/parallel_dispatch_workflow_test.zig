@@ -193,29 +193,44 @@ fn sqliteQueryLines(gpa: std.mem.Allocator, db_path: []const u8, sql: []const u8
     return result.stdout;
 }
 
-/// repoRootFromBin — derive repo root from PLANAR_BIN (three dirname levels:
-/// bin/planar → bin → repo-root; the harness build lays the binary at
-/// <root>/bin/planar so two dirname levels reach the root, but the dispatch
-/// test uses three because PLANAR_BIN there is under zig-out. We resolve the
-/// workflow relative to the binary's grand-grandparent, matching the dispatch
-/// test's proven path, then fall back if the workflow is not there.
+/// repoRootFromBin — derive repo root from PLANAR_BIN. Since the M0
+/// relocation to zig/, the harness build lays the binary at
+/// <root>/zig/zig-out/bin/planar (four dirname levels reach the root); a
+/// plain <root>/bin/planar layout is two levels. We resolve the workflow
+/// relative to the binary's great-great-grandparent, matching
+/// `workflowPath`'s proven path, then fall back if the workflow is not
+/// there.
 fn repoRootFromBin(allocator: std.mem.Allocator) ![]const u8 {
     const bin_path = resolveEnv("PLANAR_BIN");
     const d1 = std.fs.path.dirname(bin_path) orelse return error.FileNotFound;
     const d2 = std.fs.path.dirname(d1) orelse return error.FileNotFound;
     const d3 = std.fs.path.dirname(d2) orelse return error.FileNotFound;
-    return allocator.dupe(u8, d3);
+    const d4 = std.fs.path.dirname(d3) orelse return error.FileNotFound;
+    return allocator.dupe(u8, d4);
 }
 
 /// workflowPath resolves the seam path relative to the repo root, trying the
-/// three-dirname root first (matches dispatch_workflow_test.zig) and the
-/// two-dirname root as a fallback (when PLANAR_BIN is <root>/bin/planar).
+/// four-dirname root first (zig/zig-out/bin/planar layout, current since the
+/// M0 relocation), then the three-dirname root (pre-relocation zig-out/bin/
+/// planar layout), and finally the two-dirname root as a last fallback
+/// (when PLANAR_BIN is <root>/bin/planar).
 fn workflowPath(gpa: std.mem.Allocator) ![]const u8 {
     const bin_path = resolveEnv("PLANAR_BIN");
     const d1 = std.fs.path.dirname(bin_path) orelse return error.FileNotFound;
     const d2 = std.fs.path.dirname(d1) orelse return error.FileNotFound;
 
-    // Candidate 1: three-dirname root (zig-out/bin/planar layout).
+    // Candidate 1: four-dirname root (zig/zig-out/bin/planar layout).
+    if (std.fs.path.dirname(d2)) |d3| {
+        if (std.fs.path.dirname(d3)) |d4| {
+            const p = try std.fs.path.join(gpa, &.{ d4, "workflows", "parallel-dispatch.lua" });
+            if (std.Io.Dir.cwd().access(std.testing.io, p, .{})) |_| {
+                return p;
+            } else |_| {
+                gpa.free(p);
+            }
+        }
+    }
+    // Candidate 2: three-dirname root (zig-out/bin/planar layout).
     if (std.fs.path.dirname(d2)) |d3| {
         const p = try std.fs.path.join(gpa, &.{ d3, "workflows", "parallel-dispatch.lua" });
         if (std.Io.Dir.cwd().access(std.testing.io, p, .{})) |_| {
@@ -224,7 +239,7 @@ fn workflowPath(gpa: std.mem.Allocator) ![]const u8 {
             gpa.free(p);
         }
     }
-    // Candidate 2: two-dirname root (bin/planar layout).
+    // Candidate 3: two-dirname root (bin/planar layout).
     const p2 = try std.fs.path.join(gpa, &.{ d2, "workflows", "parallel-dispatch.lua" });
     return p2;
 }

@@ -4,9 +4,20 @@
 # declared in CLAUDE.md. They exist to give one consistent surface for humans
 # and CI.
 #
-# The Zig package root IS the repo root: build.zig sits next to this Makefile,
-# Zig modules live under src/, and tools/, integration_tests/, vendor/, and
-# migrations/ are sibling top-level directories.
+# The Zig implementation relocated to zig/ at M0 (plan 996, task
+# cpp-zig-relocation): build.zig sits at zig/build.zig, Zig modules live
+# under zig/src/, and zig/tools/, zig/integration_tests/, zig/vendor/ are
+# sibling directories under zig/. migrations/, templates/, skills/, agents/,
+# evals/, docs/, scripts/ stay at the repo root (language-agnostic) — the
+# relocated build.zig reaches them via relative (`../`) paths. This Makefile
+# stays the operator entry point at the repo root; its targets invoke zig
+# build against zig/build.zig via --build-file with an ABSOLUTE path rather
+# than `cd`-ing into zig/, so the spawned process's cwd (and therefore every
+# integration test's repo-root-relative file access, e.g. `skills/src/...`,
+# `docs/...`, `migrations/...`) stays at the repo root exactly as it did
+# before the relocation. Only `zig build`'s own path resolution (b.path())
+# is relative to zig/ (the build root), which is why build.zig's migrations/
+# templates/metrics references were rewritten with a leading `../`.
 
 BINARY        := planar
 AGENT_BINARY  := planar-agent
@@ -20,6 +31,19 @@ EXECUTE_BIN   := $(BIN_DIR)/$(EXECUTE_BINARY)
 
 ZIG         ?= zig
 PREFIX      ?= $(HOME)/.local
+
+# zig/ tree — see the relocation note above. ZIGBUILD invokes the relocated
+# build.zig by absolute path so every recipe below can keep running from the
+# repo root (Makefile's own invocation directory) without a `cd`.
+ZIG_DIR       := $(CURDIR)/zig
+ZIG_BUILD_FILE := $(ZIG_DIR)/build.zig
+ZIGBUILD      := $(ZIG) build --build-file $(ZIG_BUILD_FILE)
+
+# CMake parity build output — the C++ tree lands binaries here per the
+# tech-spec's CMakePresets (`build/<preset>`). Override to point the parity
+# lane at a different build directory.
+CPP_BIN_DIR   ?= build/debug/bin
+CPP_BIN_ABS   := $(abspath $(CPP_BIN_DIR))
 
 # Default optimize mode for production builds. Override via:
 #   make build OPTIMIZE=Debug
@@ -50,15 +74,15 @@ help:
 .PHONY: build
 build: ## Build the planar + planar-agent + planar-watch + planar-execute binaries into ./bin/ (at repo root)
 	@mkdir -p $(BIN_DIR)
-	$(ZIG) build -Doptimize=$(OPTIMIZE) $(ARGS)
-	@cp -f zig-out/bin/$(BINARY) $(BIN)
-	@cp -f zig-out/bin/$(AGENT_BINARY) $(AGENT_BIN)
-	@cp -f zig-out/bin/$(WATCH_BINARY) $(WATCH_BIN)
-	@cp -f zig-out/bin/$(EXECUTE_BINARY) $(EXECUTE_BIN)
+	$(ZIGBUILD) -Doptimize=$(OPTIMIZE) $(ARGS)
+	@cp -f $(ZIG_DIR)/zig-out/bin/$(BINARY) $(BIN)
+	@cp -f $(ZIG_DIR)/zig-out/bin/$(AGENT_BINARY) $(AGENT_BIN)
+	@cp -f $(ZIG_DIR)/zig-out/bin/$(WATCH_BINARY) $(WATCH_BIN)
+	@cp -f $(ZIG_DIR)/zig-out/bin/$(EXECUTE_BINARY) $(EXECUTE_BIN)
 
 .PHONY: install
 install: ## Build and install the four Planar executables into PREFIX/bin (default: ~/.local/bin)
-	$(ZIG) build -Doptimize=$(OPTIMIZE) -Dversion-meta=true --prefix $(PREFIX) $(ARGS)
+	$(ZIGBUILD) -Doptimize=$(OPTIMIZE) -Dversion-meta=true --prefix $(PREFIX) $(ARGS)
 
 .PHONY: install-bin
 install-bin: install ## Compatibility alias for the binary-only install
@@ -86,16 +110,16 @@ uninstall-full: ## Remove the legacy full install (preserves ~/.planar/planar.db
 # silently pushes the live database past every installed binary's supported
 # version and breaks every other agent on the machine. Always smoke against
 # this instead.
-SMOKE_DB ?= $(CURDIR)/.zig-cache/smoke/planar.db
+SMOKE_DB ?= $(ZIG_DIR)/.zig-cache/smoke/planar.db
 
 .PHONY: run
 run: ## Run the CLI from source AGAINST THE REAL DB (use `make smoke` for a throwaway one)
-	$(ZIG) build run -- $(ARGS)
+	$(ZIGBUILD) run -- $(ARGS)
 
 .PHONY: smoke
 smoke: ## Run the CLI from source against a throwaway build-dir DB: make smoke ARGS="task list"
 	@mkdir -p $(dir $(SMOKE_DB))
-	PLANAR_DB=$(SMOKE_DB) $(ZIG) build run -- $(ARGS)
+	PLANAR_DB=$(SMOKE_DB) $(ZIGBUILD) run -- $(ARGS)
 
 .PHONY: smoke-reset
 smoke-reset: ## Delete the throwaway smoke database
@@ -107,7 +131,7 @@ test-install-manifest: ## Run focused installer manifest ownership/atomicity fix
 
 .PHONY: test
 test: test-install-manifest ## Run unit tests
-	$(ZIG) build test $(ARGS)
+	$(ZIGBUILD) test $(ARGS)
 
 .PHONY: test-integration
 # -Dtest-binary=true: rebuild the binary with the test-binary flag enabled.
@@ -118,19 +142,27 @@ test: test-install-manifest ## Run unit tests
 # the Debug -Dtest-binary=true binaries it installs into zig-out itself, so a
 # ReleaseSafe ./bin pre-build would be dead weight the suite never executes.
 test-integration: ## Run the integration suite (builds its own Debug test binaries)
-	$(ZIG) build test-integration -Dtest-binary=true $(ARGS)
+	$(ZIGBUILD) test-integration -Dtest-binary=true $(ARGS)
 
 .PHONY: test-integration-files
 test-integration-files: ## Run integration tests as one executable per test file
-	$(ZIG) build test-integration-files -Dtest-binary=true $(ARGS)
+	$(ZIGBUILD) test-integration-files -Dtest-binary=true $(ARGS)
+
+.PHONY: test-parity-cpp
+test-parity-cpp: ## Run the zig-side integration suite against CPP_BIN_DIR binaries (parity lane; fails until C++ binaries exist)
+	PLANAR_BIN=$(CPP_BIN_ABS)/$(BINARY) \
+	PLANAR_AGENT_BIN=$(CPP_BIN_ABS)/$(AGENT_BINARY) \
+	PLANAR_WATCH_BIN=$(CPP_BIN_ABS)/$(WATCH_BINARY) \
+	PLANAR_EXECUTE_BIN=$(CPP_BIN_ABS)/$(EXECUTE_BINARY) \
+	$(ZIGBUILD) test-integration -Dtest-binary=true $(ARGS)
 
 .PHONY: cli-usage-check
 cli-usage-check: ## Validate authored surfaces against the live CLI schema and semantic contracts
-	$(ZIG) build cli-usage-check
+	$(ZIGBUILD) cli-usage-check
 
 .PHONY: surface-lint
 surface-lint: ## Validate authored links, contracts, capabilities, commands, and retired references
-	$(ZIG) build surface-lint
+	$(ZIGBUILD) surface-lint
 
 .PHONY: coverage
 coverage: build ## Check integration-test leaf-coverage ratio against scripts/coverage-baseline.txt
@@ -155,15 +187,15 @@ test-all: test test-integration coverage cli-usage-check ## Run unit + integrati
 
 .PHONY: fmt
 fmt: ## Run zig fmt on the source tree
-	$(ZIG) fmt build.zig src tools integration_tests
+	$(ZIG) fmt $(ZIG_DIR)/build.zig $(ZIG_DIR)/src $(ZIG_DIR)/tools $(ZIG_DIR)/integration_tests
 
 .PHONY: fmt-check
 fmt-check: ## Verify zig fmt is clean (CI gate)
-	$(ZIG) fmt --check build.zig src tools integration_tests
+	$(ZIG) fmt --check $(ZIG_DIR)/build.zig $(ZIG_DIR)/src $(ZIG_DIR)/tools $(ZIG_DIR)/integration_tests
 
 .PHONY: clean
 clean: ## Remove build artifacts
-	rm -rf $(BIN_DIR) zig-out .zig-cache zig-cache
+	rm -rf $(BIN_DIR) $(ZIG_DIR)/zig-out $(ZIG_DIR)/.zig-cache $(ZIG_DIR)/zig-cache
 
 .PHONY: docs-manifest
 docs-manifest: ## Regenerate the docs/.manifest-docs Merkle index

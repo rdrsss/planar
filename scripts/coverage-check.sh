@@ -3,7 +3,7 @@
 # coverage-check.sh — leaf (verb, subcommand) integration-test coverage gate.
 #
 # Walks the CLI's verb surface, extracts (verb, subcommand) tuples
-# exercised by `integration_tests/*.zig`, and reports the ratio. Fails
+# exercised by `zig/integration_tests/*.zig`, and reports the ratio. Fails
 # when the ratio drops below the recorded baseline so a new leaf added
 # without a scenario test trips CI immediately.
 #
@@ -26,12 +26,12 @@ BASELINE="$REPO_ROOT/scripts/coverage-baseline.txt"
 # file on disk allowed an unimported scenario to inflate coverage.
 collect_test_files() {
   while IFS= read -r rel; do
-    local path="$REPO_ROOT/integration_tests/$rel"
+    local path="$REPO_ROOT/zig/integration_tests/$rel"
     if [[ -f "$path" ]]; then
       printf '%s\n' "$path"
     fi
   done < <(sed -n 's/.*@import("\([^"]*_test\.zig\)").*/\1/p' \
-    "$REPO_ROOT/integration_tests/all_test.zig")
+    "$REPO_ROOT/zig/integration_tests/all_test.zig")
 }
 
 MODE="check"
@@ -109,8 +109,8 @@ done
 
 sort -u -o "$TMP_ALL" "$TMP_ALL"
 
-# ---------- extract exercised pairs from integration_tests/ ----------
-# Walk every *_test.zig file under integration_tests/, scan each `&.{`
+# ---------- extract exercised pairs from zig/integration_tests/ ----------
+# Walk every *_test.zig file under zig/integration_tests/, scan each `&.{`
 # slice literal across line boundaries, and capture the first two
 # string-literal positional args as (verb, subcommand). A `&.{ "verb" }`
 # with no second arg counts as (verb, "."). The Python pass handles

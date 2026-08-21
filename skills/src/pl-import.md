@@ -115,7 +115,7 @@ The Request payload carries: README + each `docs/*` body + git log (last ~500 co
 
 ## LLM Result Contract
 
-The skill writes a JSON Result matching this schema. The canonical result types and validation live in [`src/engine/import.zig`](../../src/engine/import.zig); the schema below mirrors the field set.
+The skill writes a JSON Result matching this schema. The canonical result types and validation live in [`src/engine/import.zig`](../../zig/src/engine/import.zig); the schema below mirrors the field set.
 
 ```json
 {
