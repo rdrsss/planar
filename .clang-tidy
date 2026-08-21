@@ -1,0 +1,43 @@
+# Planar clang-tidy configuration — adopted from tabula (D16). Identifier
+# naming only, for now — lower_case identifiers, `_` private/protected
+# member prefix, `_` public member suffix, and tabula's deliberate exception
+# kept: template parameters are CamelCase, the one non-lower_case identifier
+# kind, kept as the visual signal distinguishing a template parameter from a
+# concrete type. Use the pinned LLVM's clang-tidy (docs/toolchain-parity.md).
+---
+Checks: >
+  -*,
+  readability-identifier-naming
+CheckOptions:
+  - key: readability-identifier-naming.PrivateMemberPrefix
+    value: '_'
+  - key: readability-identifier-naming.ProtectedMemberPrefix
+    value: '_'
+  - key: readability-identifier-naming.PublicMemberSuffix
+    value: '_'
+  - key: readability-identifier-naming.ClassCase
+    value: lower_case
+  - key: readability-identifier-naming.StructCase
+    value: lower_case
+  - key: readability-identifier-naming.FunctionCase
+    value: lower_case
+  - key: readability-identifier-naming.MethodCase
+    value: lower_case
+  - key: readability-identifier-naming.NamespaceCase
+    value: lower_case
+  - key: readability-identifier-naming.EnumCase
+    value: lower_case
+  - key: readability-identifier-naming.EnumConstantCase
+    value: lower_case
+  - key: readability-identifier-naming.VariableCase
+    value: lower_case
+  - key: readability-identifier-naming.ParameterCase
+    value: lower_case
+  # Template parameters are PascalCase (D16) — deliberately the one
+  # un-lower_case identifier kind, so it stays the sole signal that
+  # distinguishes a template parameter from a concrete type at point of use.
+  - key: readability-identifier-naming.TemplateParameterCase
+    value: CamelCase
+  - key: readability-identifier-naming.TypeTemplateParameterCase
+    value: CamelCase
+...

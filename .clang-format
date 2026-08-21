@@ -1,0 +1,23 @@
+# Planar clang-format configuration — adopted from tabula (D16), the
+# stack's newest C++ tree, whose config targets the latest-LLVM dialect.
+# Use the pinned LLVM's clang-format (docs/toolchain-parity.md), not
+# whichever binary PATH finds first — this is a versioned dialect and two
+# LLVM releases can disagree about the same file under the same config.
+---
+BasedOnStyle: LLVM
+IndentWidth: 2
+ColumnLimit: 130
+PointerAlignment: Left
+ReferenceAlignment: Left
+BreakBeforeBraces: Attach
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never
+AlignConsecutiveAssignments: Consecutive
+AlignConsecutiveDeclarations: Consecutive
+AlignConsecutiveMacros: Consecutive
+ReflowComments: true
+CommentPragmas: '^ IWYU pragma:|^!|^:|^@(file|brief|param|return|tparam|note|see|throws|pre|post)'
+Standard: Latest
+...

@@ -57,6 +57,21 @@ zig-cache/
 .vscode/
 
 # ============================================================================
+# CMake (C++26 rewrite, plan 996)
+# ============================================================================
+
+# Out-of-source CMake build trees (CMakePresets.json: build/<preset>).
+/build/
+
+# clangd convenience symlink, recreated by CMakeLists.txt on every configure
+# — always points at whichever build/<preset> tree was configured most
+# recently.
+/compile_commands.json
+
+# Doxyfile.lint's OUTPUT_DIRECTORY.
+/doxygen-lint-output/
+
+# ============================================================================
 # Worktrees
 # ============================================================================
 
