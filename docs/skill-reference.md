@@ -59,13 +59,13 @@ Vendor profile data lives in scriptorium's built-in per-vendor profiles
 (claude/codex/copilot/gemini), with the repo-root `scriptorium.yaml`
 supplying overrides/additions; model-tier resolution stays Planar-side in the
 shared resolver (`src/engine/models.zig`) and is regenerated into
-the Tier Table is owned and hand-maintained by the armarium orchestration layer; Planar no longer generates it.
+the Tier Table lives in `agents/models.md`, hand-maintained; Planar no longer generates it.
 Static render paths show each tier's default model (`list[0]` when the config
 uses candidate lists); runtime orchestration may further select a
 per-work-type candidate through the shared model resolver. Drift between
 `skills/src/` and generated vendor trees is gated by `scriptorium check`
 against an out-of-tree staging directory. The Tier Table is not gated here:
-it is owned and hand-maintained by the armarium orchestration layer, and
+it is hand-maintained in `agents/models.md`, and
 Planar neither generates nor validates it.
 
 Planar's own in-band `x-planar-source-digest`/`x-planar-projection-digest`
@@ -170,7 +170,7 @@ for the seven literal H2 sections. The helper must still return sufficient
 failure, warning, and recovery detail for its caller to satisfy the shared
 contract.
 
-See the operator-feedback contract (owned by the armarium orchestration layer)
+See `agents/doctrine.md` § Operator feedback contract
 for the cross-role outcome and verification doctrine.
 
 ### Cross-scope write visibility
@@ -224,20 +224,20 @@ An external Lua-based **harness** (a **separate external project**, distinct fro
 Documentation workflows call the separately installed `tabularium` tool. It is
 not a Planar build artifact and owns its machine-local manifest database.
 
-Every skill in this document routes its writes through the binary that owns them. Skills that schedule agent work (the armarium orchestration layer's `/orchestrator` and `/coder`) drive the `planar-agent pull → heartbeat → complete|fail|release|block` ritual; skills that surface live operator views (status, dashboard, audit trail) read through `planar` and `planar-watch`.
+Every skill in this document routes its writes through the binary that owns them. Skills that schedule agent work (`/pl-orchestrator` and `/pl-coder`) drive the `planar-agent pull → heartbeat → complete|fail|release|block` ritual; skills that surface live operator views (status, dashboard, audit trail) read through `planar` and `planar-watch`.
 
 ---
 
 ## Orchestration
 
-The orchestrator, coder, reviewer, and test-coder roles that manage the full
-feature lifecycle and the coder/reviewer execution loop were raised to
-armarium (the stack's meta repo) at plan 918/929. `/orchestrator`, `/coder`,
-`/reviewer`, and `/test-coder` no longer render or install from this repo —
-see armarium's own skill and agent sources for those entry points. Planar
-retains and drives the primitives they compose: the `planar-agent` claim
-ritual, `planar test-spec status` coverage gating, and the dispatch-preview
-model-tier/routing surface. See
+The orchestrator, coder, reviewer, research, and test-coder roles that manage
+the full feature lifecycle and the coder/reviewer execution loop live in this
+repo (raised to armarium at plan 918/929, returned at the armarium
+reintegration). `/pl-orchestrator`, `/pl-coder`, `/pl-reviewer`,
+`/pl-research`, and `/pl-test-coder` render and install from
+`skills/src/` like every other skill. Planar also drives the primitives they
+compose: the `planar-agent` claim ritual, `planar test-spec status` coverage
+gating, and the dispatch-preview model-tier/routing surface. See
 [`docs/operations.md` §2 The Orchestration Lifecycle](operations.md#2-the-orchestration-lifecycle)
 and [`docs/concepts.md` §Dispatch shapes](concepts.md#dispatch-shapes).
 
@@ -692,7 +692,7 @@ Capture a context snapshot before terminating, validate it is resume-ready, and 
 
 **Example:** `/pl-handoff`
 
-Source: `skills/src/pl-handoff.md` · the heartbeat/handoff contract (owned by the armarium orchestration layer)
+Source: `skills/src/pl-handoff.md` · `agents/methodology.md` § Heartbeat status contract
 
 ---
 
@@ -910,11 +910,20 @@ Source: `skills/src/pl-feedback-triage.md` · `agents/feedback-triager.md`
 
 ## Agent Role Specs
 
-The vendor-neutral role specs live under `agents/`. Vendor skill files defer to them for the authoritative behavior description. The orchestrator, coder, reviewer, test-coder, and janitor roles — plus their companion methodology, doctrine, and model-tier-routing docs — were raised to armarium (the stack's meta repo) at plan 918/929 and no longer live in this repo; see armarium's own agent sources for those roles. The documenter and doc-author roles were likewise raised — to tabularium (which owns the doc-system tool they drive) — at the doc-cluster transfer (planar plan 933); see tabularium's own agent sources for those.
+The vendor-neutral role specs live under `agents/`. Vendor skill files defer to them for the authoritative behavior description. The orchestrator, coder, reviewer, research, test-coder, and janitor roles — plus their companion methodology, doctrine, cross-scope-writes, and model-tier-routing docs — live here too (raised to armarium at plan 918/929, returned at the armarium reintegration). The documenter and doc-author roles live in tabularium (which owns the doc-system tool they drive; moved at the doc-cluster transfer, planar plan 933); see tabularium's own agent sources for those.
 
 | File | Role |
 |------|------|
-| `(raised to armarium)` | Orchestrator, coder, reviewer, test-coder, and janitor roles, plus the shared methodology/doctrine contracts and model-tier-routing table — raised to armarium at plan 918/929 |
+| `agents/orchestrator.md` | Orchestrator role: full-lifecycle software-delivery dispatch, phase gates, strategy/isolation/dispatch-shape selection |
+| `agents/coder.md` | Coder role: implements one task per dispatch, claim-ritual discipline, work-complete report |
+| `agents/reviewer.md` | Reviewer role: blind-read review of coder output, approve/request-changes/open-question/abort |
+| `agents/research.md` | Research role: read-only cited findings-brief investigation |
+| `agents/test-coder.md` | Test-coder role: verification-only coverage expansion between coder and reviewer |
+| `agents/janitor.md` | Janitor role: delivery verification, integration, reconciliation, closeout |
+| `agents/methodology.md` | Shared coordination contract: claims, strategies, barrel modes, worktrees, heartbeat status |
+| `agents/doctrine.md` | Cross-role doctrine: dispatch-shape selection, common defects, operator feedback contract |
+| `agents/models.md` | Model-tier routing: the hand-maintained Tier Table and routing axes |
+| `agents/cross-scope-writes.md` | Cross-scope write visibility doctrine |
 | `agents/spec-reviewer.md` | Spec reviewer role: adversarial planning review, open-question reconciliation, feature/test gap analysis, and evidence-backed classification of the four recurring hazard lenses |
 | `agents/planner.md` | Planner role: input/output contract, document shape, workbench seeding |
 | `agents/ingestor.md` | Ingestor role: parsing contract, idempotency invariant, preview-first rule |

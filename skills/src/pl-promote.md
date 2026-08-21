@@ -74,4 +74,4 @@ reverse a verified applied move; do not imply automatic rollback.
 
 ## Vendor Notes
 
-Cross-scope writes require the scope checks defined by the stack's cross-scope-writes doctrine (armarium orchestration layer).
+Cross-scope writes require the scope checks defined by [`agents/cross-scope-writes.md`](../../agents/cross-scope-writes.md).

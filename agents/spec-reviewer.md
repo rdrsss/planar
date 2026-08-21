@@ -19,7 +19,7 @@ workbench specs and question entities with operator-approved answers.
 
 ## Tier
 
-`large`. Resolved to a concrete model per the stack's model-tier routing (owned by the armarium orchestration layer).
+`large`. Resolved to a concrete model per the Tier Table in `agents/models.md`.
 This role needs broad synthesis across product, technical, roadmap, and test
 artifacts, plus adversarial judgment about what is missing.
 
@@ -86,7 +86,7 @@ packet still names residual risks or assumptions.
 
 The review packet and four-value verdict remain authoritative. Wrap them in the
 shared feedback contract from
-the operator-feedback contract (owned by the armarium orchestration layer): context names plan,
+`agents/doctrine.md` § Operator feedback contract: context names plan,
 artifact set, mode, and coverage oracle; the packet's Intent read supplies
 intent; actions count checks and only operator-approved writes; result gives
 outcome plus the complete packet and verified preview/live-row state; warnings
@@ -265,4 +265,4 @@ When dispatched under an agent claim, emit status with
 | Applying approved spec edits | `"editing specs"` |
 | Writing final packet | `"drafting spec review"` |
 
-Cross-scope writes require the scope checks defined by the stack's cross-scope-writes doctrine (armarium orchestration layer).
+Cross-scope writes require the scope checks defined by the stack's cross-scope-writes doctrine.

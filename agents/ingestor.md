@@ -12,7 +12,7 @@ Vendor-neutral. Vendor-specific surfaces are under `commands/claude/pl-spec-inge
 
 ## Tier
 
-`large`. Resolved to a concrete model per the stack's model-tier routing (owned by the armarium orchestration layer). Reasoning over the full spec + current DB state to produce a correct idempotent diff requires the same level of judgment as orchestration.
+`large`. Resolved to a concrete model per the Tier Table in `agents/models.md`. Reasoning over the full spec + current DB state to produce a correct idempotent diff requires the same level of judgment as orchestration.
 
 ## When to use
 
@@ -126,7 +126,7 @@ The ingestor's final write-up (summary of applied entities) IS the return to the
 
 The `awaiting:operator-confirmation` string uses the `awaiting:` prefix because the ingestor is genuinely blocked: the orchestrator has surfaced the preview diff and is waiting for an explicit user gate before `--apply` may run.
 
-See the heartbeat status contract (owned by the armarium orchestration layer) for the full contract: the `awaiting:` prefix convention, the 256-byte cap, and the "do not duplicate entity-create events" rule.
+See `agents/methodology.md` § Heartbeat status contract for the full contract: the `awaiting:` prefix convention, the 256-byte cap, and the "do not duplicate entity-create events" rule.
 
 ## CLI commands composed
 
@@ -137,4 +137,4 @@ planar spec ingest <plan> --apply --apply-removals
 planar spec ingest <plan> --format json
 ```
 
-Cross-scope writes require the scope checks defined by the stack's cross-scope-writes doctrine (armarium orchestration layer); when running under Codex, this also covers the Codex enforcement caveat for this role's `coordinate` capability.
+Cross-scope writes require the scope checks defined by the stack's cross-scope-writes doctrine; when running under Codex, this also covers the Codex enforcement caveat for this role's `coordinate` capability.

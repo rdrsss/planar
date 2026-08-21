@@ -5349,10 +5349,10 @@ typo'd routing target is a configuration error, not a silent fall-through.
 `planar models candidates` prints the effective tier candidate lists and the
 work-type routing map with provenance; `planar models` reports which provider
 CLIs are installed. This is the **single authoritative routing source** — the
-skill-render Tier Table (owned by the armarium orchestration layer), the
+skill-render Tier Table (hand-maintained in `agents/models.md`), the
 orchestrator's Phase 3 dispatch-preview routed-model column (`resolve(role,
-work_type)`; its dispatch-preview model-tiers section is also owned by the
-armarium orchestration layer), and other workflow callers all resolve through
+work_type)`; see `skills/src/pl-orchestrator.md` § Dispatch preview and model
+tiers), and other workflow callers all resolve through
 it; there is no separate `execute-config.toml`.
 
 ---

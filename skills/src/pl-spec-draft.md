@@ -159,7 +159,7 @@ class question entities rather than depending on external notes.
 
 ## Status reporting
 
-See [`agents/planner.md` § Status reporting](../../agents/planner.md#status-reporting) for the canonical phase-transition strings (`"drafting product-spec"`, `"drafting tech-spec"`, `"drafting roadmap"`, `"drafting test-spec"`, `"ready for review"`). Emit each via `planar-agent heartbeat --claim <token> --status "<text>"`; cap is 256 bytes. See the heartbeat status contract (owned by the armarium orchestration layer) for the `awaiting:` prefix convention.
+See [`agents/planner.md` § Status reporting](../../agents/planner.md#status-reporting) for the canonical phase-transition strings (`"drafting product-spec"`, `"drafting tech-spec"`, `"drafting roadmap"`, `"drafting test-spec"`, `"ready for review"`). Emit each via `planar-agent heartbeat --claim <token> --status "<text>"`; cap is 256 bytes. See [`agents/methodology.md` § Heartbeat status contract](../../agents/methodology.md#heartbeat-status-contract) for the `awaiting:` prefix convention.
 
 ## Context
 
@@ -213,4 +213,4 @@ the independent plan, artifact, question, link, and filesystem writes.
 
 ## Vendor Notes
 
-Cross-scope writes require the scope checks defined by the stack's cross-scope-writes doctrine (armarium orchestration layer).
+Cross-scope writes require the scope checks defined by [`agents/cross-scope-writes.md`](../../agents/cross-scope-writes.md).

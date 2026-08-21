@@ -12,7 +12,7 @@ Vendor-neutral. Vendor-specific surfaces are under `commands/claude/pl-spec-draf
 
 ## Tier
 
-`large`. Resolved to a concrete model per the stack's model-tier routing (owned by the armarium orchestration layer). Drafting a coherent product spec, tech spec, roadmap, and test spec from an open-ended goal requires the same level of judgment as orchestration and review.
+`large`. Resolved to a concrete model per the Tier Table in `agents/models.md`. Drafting a coherent product spec, tech spec, roadmap, and test spec from an open-ended goal requires the same level of judgment as orchestration and review.
 
 ## When to use
 
@@ -89,7 +89,7 @@ The planner emits a status string at each meaningful phase boundary using `plana
 | Authoring Phase 4 — test spec | `"drafting test-spec"` |
 | All four documents written and pushed; waiting for operator review | `"ready for review"` |
 
-See the heartbeat status contract (owned by the armarium orchestration layer) for the full contract: the `awaiting:` prefix convention, the 256-byte cap, and the "do not duplicate entity-create events" rule.
+See `agents/methodology.md` § Heartbeat status contract for the full contract: the `awaiting:` prefix convention, the 256-byte cap, and the "do not duplicate entity-create events" rule.
 
 ## Boundaries
 
@@ -292,4 +292,4 @@ The verbs must be composed in this order to ensure every `.md` file carries cano
 4. (Optional) `planar scenario add <title> [--body <text>] [--scope assoc:<slug>]` — for each top-level acceptance scenario.
 5. `planar workbench push <plan-id>` — seeds the workbench manifest. At this point both the DB and the FS carry identical content with valid front matter; subsequent `planar workbench pull` and `planar workbench status` invocations are clean.
 
-Cross-scope writes require the scope checks defined by the stack's cross-scope-writes doctrine (armarium orchestration layer).
+Cross-scope writes require the scope checks defined by the stack's cross-scope-writes doctrine.

@@ -115,7 +115,7 @@ Use this when an anchor plan is `active` and you want to execute tasks.
 ### Invoke
 
 ```
-/orchestrator 42
+/pl-orchestrator 42
 ```
 
 The orchestrator reads claim-aware task state, then opens Gate 1:
@@ -190,7 +190,7 @@ Cycle dispatched slugs: [add-migration, wire-rpc, gateway-config]
 planar test-spec status --json:
   uncovered_task_slugs: [add-migration, gateway-config]
 
-Intersection non-empty → dispatching /test-coder for slugs:
+Intersection non-empty → dispatching /pl-test-coder for slugs:
   - add-migration
   - gateway-config
 ```
@@ -227,8 +227,8 @@ The orchestrator escalates. The operator decides whether to dispatch a new coder
 To backfill coverage on an already-committed change set:
 
 ```
-/test-coder <task-id>          # one task's cited scenarios
-/test-coder <plan-id> --plan   # every cited scenario in the plan
+/pl-test-coder <task-id>          # one task's cited scenarios
+/pl-test-coder <plan-id> --plan   # every cited scenario in the plan
 ```
 
 Useful after authoring a new test-spec for an older feature, or for a second-pass coverage check on a PR.
@@ -240,7 +240,7 @@ The orchestrator's gate offers six shapes — three classic (`strict`, `grouped`
 #### barrel-grouped (alias for grouped, explicit barrel namespace)
 
 ```
-/orchestrator 42 --barrel-grouped
+/pl-orchestrator 42 --barrel-grouped
 ```
 
 Equivalent to `--grouped` with the milestone heuristic locked in. Each milestone becomes one coder cycle, then one reviewer dispatch per group per the existing dispatch profile.
@@ -258,8 +258,8 @@ tasks: [44, 45, 46]
 #### barrel-deferred (per-milestone boundary)
 
 ```
-/orchestrator 42 --barrel-deferred                       # default: per-milestone
-/orchestrator 42 --barrel-deferred --barrel-deferred-at plan   # once at end of plan
+/pl-orchestrator 42 --barrel-deferred                       # default: per-milestone
+/pl-orchestrator 42 --barrel-deferred --barrel-deferred-at plan   # once at end of plan
 ```
 
 Coder cycles run back-to-back without reviewer dispatch between them. At the milestone (or plan) boundary, one reviewer fires against the union of all queued diffs.
@@ -292,7 +292,7 @@ tasks: [44, 45, 46]
 #### barrel-bypass (maximum throughput, gates are the entire signal)
 
 ```
-/orchestrator 42 --barrel-bypass
+/pl-orchestrator 42 --barrel-bypass
 ```
 
 No reviewer dispatch at all. Coder cycles run back-to-back; quality gates (`make fmt-check` + `make build` + `make test` + `make test-integration` **twice** + `scriptorium check` against an out-of-tree staging dir + any remaining relevant validators) are the entire signal.
@@ -307,11 +307,11 @@ tasks: [44, 45, 46]
 
 **Pick when:** you trust the gates completely (large existing test surface, strict typing, render-check/validator coverage in place) and want to ship the plan as fast as possible. Common for docs-only plans, vendor-surface mirror plans, or methodology updates where the diff IS the verification.
 
-**Trade-off:** uncaught defects must surface via runtime testing or out-of-band review. The closest retroactive surface is `git blame` + `/reviewer <task-id>` (armarium orchestration layer) against a still-active task.
+**Trade-off:** uncaught defects must surface via runtime testing or out-of-band review. The closest retroactive surface is `git blame` + `/pl-reviewer <task-id>` against a still-active task.
 
 **Phase 3.5 still fires across all three barrel modes** when uncovered slugs intersect the cycle. Barrel-bypass bypasses the reviewer, not the coverage gate. The test-coder's `failure-surfaced` outcome halts the cycle and escalates to the operator regardless of mode.
 
-For the canonical contract see the barrel-modes contract (owned by the armarium orchestration layer); for the dispatch-shape concept see [`docs/concepts.md` §Dispatch shapes](concepts.md#dispatch-shapes).
+For the canonical contract see `agents/methodology.md` § Barrel modes; for the dispatch-shape concept see [`docs/concepts.md` §Dispatch shapes](concepts.md#dispatch-shapes).
 
 ---
 
@@ -2217,12 +2217,12 @@ that runs cleanup as part of the next push.
 
 ## Recipe 21 — Pick an orchestration strategy for a plan
 
-Use this when you start `/orchestrator <plan-id>` on an `active` plan and want to understand the strategy gate (Phase 3's first sub-step). The strategy answers "what is the overall methodology for this plan?" — the dispatch-shape gate (nested under it) answers "within that strategy, how do I batch this cycle's work?" For the concept overview see [`docs/concepts.md §Orchestration strategy`](concepts.md#orchestration-strategy); for the canonical contract see the orchestration-strategies contract (owned by the armarium orchestration layer).
+Use this when you start `/pl-orchestrator <plan-id>` on an `active` plan and want to understand the strategy gate (Phase 3's first sub-step). The strategy answers "what is the overall methodology for this plan?" — the dispatch-shape gate (nested under it) answers "within that strategy, how do I batch this cycle's work?" For the concept overview see [`docs/concepts.md §Orchestration strategy`](concepts.md#orchestration-strategy); for the canonical contract see `agents/methodology.md` § Orchestration strategies.
 
 ### Step 1 — Invoke the orchestrator
 
 ```
-/orchestrator 297
+/pl-orchestrator 297
 ```
 
 The orchestrator reads the plan's task graph, computes the parallel-eligible subset, and surfaces its recommendation:
@@ -2266,13 +2266,13 @@ Type the name of the strategy you want. The orchestrator records the choice in t
 Operators who already know which strategy fits — typically because they always want the same one for a given plan shape — can pre-commit at invocation:
 
 ```
-/orchestrator 297 --strategy parallel-fanout
-/orchestrator 297 --strategy isolated-sequential
-/orchestrator 297 --strategy classic                # explicit continuity
-/orchestrator 297 --strategy classic --isolation worktree
-/orchestrator 297 --strategy barrel-deferred
-/orchestrator 297 --strategy barrel-deferred --isolation worktree
-/orchestrator 297 --strategy barrel-bypass
+/pl-orchestrator 297 --strategy parallel-fanout
+/pl-orchestrator 297 --strategy isolated-sequential
+/pl-orchestrator 297 --strategy classic                # explicit continuity
+/pl-orchestrator 297 --strategy classic --isolation worktree
+/pl-orchestrator 297 --strategy barrel-deferred
+/pl-orchestrator 297 --strategy barrel-deferred --isolation worktree
+/pl-orchestrator 297 --strategy barrel-bypass
 ```
 
 The strategy gate is skipped; for sequential strategies isolation defaults to `pwd` unless `--isolation worktree` is supplied. The dispatch-shape gate still runs (unless it also has a pre-committed answer via `--strict` / `--grouped` / `--batch`, or is forced by the strategy — `parallel-fanout` forces `fan-out`, the barrel strategies force their matching shape).
@@ -2282,7 +2282,7 @@ The strategy gate is skipped; for sequential strategies isolation defaults to `p
 For shapes outside the named menu, compose by axis:
 
 ```
-/orchestrator 297 --strategy custom \
+/pl-orchestrator 297 --strategy custom \
     --isolation worktree \
     --branch-model epic-child \
     --concurrency sequential \
@@ -2290,14 +2290,14 @@ For shapes outside the named menu, compose by axis:
     --test-coder-cadence at-boundary
 ```
 
-The per-axis flags are hidden from default `--help` and surfaced via `--help-advanced`. The orchestrator refuses invalid axis combinations (e.g. `concurrency=fan-out` with `isolation=in-pwd` — parallel coders would clobber pwd) with a diagnostic before any dispatch runs. See the invalid-combinations contract (owned by the armarium orchestration layer) for the full list.
+The per-axis flags are hidden from default `--help` and surfaced via `--help-advanced`. The orchestrator refuses invalid axis combinations (e.g. `concurrency=fan-out` with `isolation=in-pwd` — parallel coders would clobber pwd) with a diagnostic before any dispatch runs. See `agents/methodology.md` § Invalid combinations for the full list.
 
 ### Worked example — a 4-task plan accepts `parallel-fanout`
 
 You have plan 297 with four open tasks (`m1-foundation`, `m2-handlers`, `m3-tests`, `m4-docs`). Tasks 1 and 4 touch disjoint paths; tasks 2 and 3 each touch `src/cmd/planar/handlers/` but not the same file. None touch migrations or singleton files. Run:
 
 ```
-$ /orchestrator 297
+$ /pl-orchestrator 297
 Plan 297 "feature-x" — 4 todo tasks, 3 parallel-eligible
 Recommended strategy: parallel-fanout
 Rationale: ≥3 tasks and ≥2 parallel-eligible (rule 3)
@@ -2324,7 +2324,7 @@ The full `parallel-fanout` lifecycle, from strategy confirmation through fan-in 
 ### Step 1 — Strategy gate
 
 ```
-$ /orchestrator 297
+$ /pl-orchestrator 297
 Plan 297 "worktree-management" — 4 todo tasks, 3 parallel-eligible
 Recommended strategy: parallel-fanout
 ...
@@ -2433,7 +2433,7 @@ Reviewer dispatched against epic/worktree-management
 Verdict: approve
 ```
 
-On `approve` → cleanup proceeds. On `request-changes` → see the reviewer-requested-revisions-against-epic mechanics (owned by the armarium orchestration layer). On `open-question` or `abort` → escalates without cleanup.
+On `approve` → cleanup proceeds. On `request-changes` → see `agents/methodology.md` § Reviewer Decisions. On `open-question` or `abort` → escalates without cleanup.
 
 ### Step 9 — Cleanup (post-success only)
 
@@ -2494,7 +2494,7 @@ The steps above fan out a **single wave** of mutually-disjoint lanes. When the p
 
 4. **Fan-in retention + resume.** At each wave's `fan_in`, a lane may carry `"outcome":"succeeded"|"failed"`: a succeeded lane's worktree is torn down eagerly (in `teardown_worktrees`); a **failed lane's worktree is RETAINED** for inspection (in `retained_worktrees`). On a mid-wave failure, resume via the `reconcile_plan` phase — a `failed_clean` lane needs no reconcile (available on the next recompute); an `abandoned` lane is reclaimed immediately with `planar-agent reconcile --stale-after 0` — then recompute and re-fan only the remainder (never restart from wave 1). On plan completion, the `teardown` phase computes the full sweep (every lane worktree + branch removed; the epic branch retained until its PR merges).
 
-For the per-step orchestrator behavior under `parallel-fanout` and sequential worktree isolation, see the worktree-isolation section of the orchestrator skill (owned by the armarium orchestration layer).
+For the per-step orchestrator behavior under `parallel-fanout` and sequential worktree isolation, see `skills/src/pl-orchestrator.md` § Isolation invariant.
 
 ---
 
@@ -2606,13 +2606,13 @@ The task is now back in the pickable pool. You can either dispatch a fresh coder
 
 The persisted `worktree_path` on the (now stale or aborted) claim is the recovery key. Without it you'd be left scanning `/repo/.worktrees/` and guessing which directory belonged to which dead coder. With it, every operator-side recovery verb (`planar-watch claims`, `planar-agent reconcile`, `planar-agent abort`) surfaces or operates against the path deterministically, and a fresh `planar-agent claim --worktree <path>` reuses the on-disk checkout instead of creating a new one.
 
-For the persistence-on-claim contract see [`docs/concepts.md §Worktree`](concepts.md#worktree); for the canonical claim ritual see the coordination-claims contract (owned by the armarium orchestration layer).
+For the persistence-on-claim contract see [`docs/concepts.md §Worktree`](concepts.md#worktree); for the canonical claim ritual see `agents/methodology.md` § Coordination claims.
 
 ---
 
 ## Recipe 25 — Review and configure per-role model routing
 
-Inspect which models your agent roles will spawn, and re-route them — across Claude and Codex — through the unified config (plan 540). Scriptorium's rendered skill/agent `model:` fields and external workflow harnesses resolve from one source via the shared resolver. The Tier Table is owned and hand-maintained by the armarium orchestration layer; Planar no longer generates it.
+Inspect which models your agent roles will spawn, and re-route them — across Claude and Codex — through the unified config (plan 540). Scriptorium's rendered skill/agent `model:` fields and external workflow harnesses resolve from one source via the shared resolver. The Tier Table lives in `agents/models.md`, hand-maintained; Planar does not generate it.
 
 **1. Discover installed providers + their catalogs.**
 
@@ -2829,7 +2829,7 @@ The `epic_merge` section is advisory and never blocks. Absent branches (deleted 
 
 ### Step 3 — Dispatch the janitor (or run manually)
 
-**Via the orchestrator (automated):** Pass `--finalize` to `/orchestrator` (armarium orchestration layer) or confirm the finalization prompt when the orchestrator offers it. The orchestrator spawns a janitor subagent that executes the six-step finalization flow.
+**Via the orchestrator (automated):** Pass `--finalize` to `/pl-orchestrator` or confirm the finalization prompt when the orchestrator offers it. The orchestrator spawns a janitor subagent that executes the six-step finalization flow.
 
 **Manually (standalone):**
 
@@ -2877,7 +2877,7 @@ cd /path/to/planar-repo && ./install.sh
 
 **Finalization tasks convention:** The janitor (and orchestrator) create tasks with slug prefixes `finalize-`, `merge-`, or `reconcile-` to track discrete merge/reconciliation work items. `planar plan closeout --json` reports these as `hard_evidence.finalization_tasks` — an advisory count that identifies finalization work in the audit output without changing gate logic.
 
-**Capability boundary reminder:** Coders close tasks via `planar-agent complete`. The janitor is the only agent role that runs `planar plan closeout`. The orchestrator dispatches the janitor; it never calls closeout directly. See `docs/concepts.md § Closeout gate` and the janitor role's boundary specification (owned by the armarium orchestration layer) for the full detail.
+**Capability boundary reminder:** Coders close tasks via `planar-agent complete`. The janitor is the only agent role that runs `planar plan closeout`. The orchestrator dispatches the janitor; it never calls closeout directly. See `docs/concepts.md § Closeout gate` and `agents/janitor.md` § Capability and hard boundary for the full detail.
 
 ## Recipe 28 — Author and graduate a workflow
 

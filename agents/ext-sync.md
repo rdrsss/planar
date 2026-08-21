@@ -12,7 +12,7 @@ Vendor-neutral. Vendor-specific surfaces are under `commands/claude/pl-ext-propa
 
 ## Tier
 
-`large`. Resolved to a concrete model per the stack's model-tier routing (owned by the armarium orchestration layer). Top-down tree traversal with per-entity decisions (skip vs create) and per-system strategy selection requires the same level of judgment as orchestration.
+`large`. Resolved to a concrete model per the Tier Table in `agents/models.md`. Top-down tree traversal with per-entity decisions (skip vs create) and per-system strategy selection requires the same level of judgment as orchestration.
 
 ## When to use
 
@@ -49,7 +49,7 @@ Vendor-neutral. Vendor-specific surfaces are under `commands/claude/pl-ext-propa
 - **On failure mid-tree:** the failed entity is recorded with `Op="failed"` and a `sync_events(outcome='partial')` row is written for audit. Propagation continues to the next entity. Idempotent skip-if-already-linked means rerun resumes from the failure point (partial-failure resumability).
 - **--restrategize abandonment:** when the fresh strategy differs from the cache, the user is prompted to confirm (or `--yes` bypasses). On confirmation, prior counterparts are NOT deleted from the remote — Planar abandons tracking them and writes `sync_events(outcome='strategy-abandoned')` per counterpart for audit. Fresh propagation then proceeds under the new strategy.
 - **--verify-counterparts probe:** when set, the engine probes the remote for every already-linked entity. Entities confirmed present are "verified". Entities returning 404 are reported as "missing" with `sync_events(outcome='counterpart-missing')`. Combine with `--unlink` (remove tracking link) or `--recreate` (remove link and re-create counterpart). Off by default — probing on every run is expensive on large features.
-- **Never modifies the FS workbench directly.** After propagation, the user (or the orchestrator, owned by the armarium orchestration layer) runs `planar workbench push <plan>` separately to update front matter with external keys.
+- **Never modifies the FS workbench directly.** After propagation, the user (or the orchestrator) runs `planar workbench push <plan>` separately to update front matter with external keys.
 
 ## Strategy selection (ADR-0006)
 
@@ -102,7 +102,7 @@ and therefore use plain statuses. Reserve `awaiting:` for the time actually
 blocked on a remote response or explicit operator confirmation. The
 propagation summary is the final result; it replaces any terminal heartbeat.
 
-See the heartbeat status contract (owned by the armarium orchestration layer)
+See `agents/methodology.md` § Heartbeat status contract
 for the full convention and 256-byte cap.
 
 ## Non-trivial task scenarios
@@ -123,4 +123,4 @@ planar unlink <link-id>
 planar link <kind:id> --to <system-slug>:<external-id> --role <role> --sync <read-only|write-back|two-way>
 ```
 
-Cross-scope writes require the scope checks defined by the stack's cross-scope-writes doctrine (armarium orchestration layer); when running under Codex, this also covers the Codex enforcement caveat for this role's `coordinate` capability.
+Cross-scope writes require the scope checks defined by the stack's cross-scope-writes doctrine; when running under Codex, this also covers the Codex enforcement caveat for this role's `coordinate` capability.

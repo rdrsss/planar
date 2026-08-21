@@ -616,7 +616,7 @@ fi
 # This replaces Planar's retired in-tree renderer verb (tech-spec.md §
 # Architecture "How Planar shells scriptorium"). Note: `agents/models.md`'s
 # `## Tier Table` is NOT patched by this step, and is not patched anywhere —
-# it is owned and hand-maintained by the armarium orchestration layer, so
+# it is hand-maintained in agents/models.md, so
 # models.md installs as ordinary committed content.
 title "Rendering per-vendor skill outputs (scriptorium)"
 SCRIPTORIUM_CONFIG="$REPO_ROOT/scriptorium.yaml"

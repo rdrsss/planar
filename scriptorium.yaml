@@ -10,8 +10,8 @@
 # (internal/cli/render_cmd.go) and format.md § 4.1.
 
 sources:
-  skills: skills/src   # kind:skill sources (41 as of the M1+M2 migration)
-  agents: agents        # kind:agent + kind:doc sources (16 + 3)
+  skills: skills/src   # kind:skill sources (40 after the armarium orchestration-layer return)
+  agents: agents        # kind:agent + kind:doc sources (15 + 4)
 
 # The exact vendor set install.sh renders and wires today — its VENDORS
 # default and its four `claude|codex|copilot|gemini` cases (install.sh

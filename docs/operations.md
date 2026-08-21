@@ -16,8 +16,8 @@ Three flows carry most work:
 
 Each section leads with a diagram, then the contract, then pointers into
 [`concepts.md`](concepts.md), [`architecture.md`](architecture.md),
-[`workflows.md`](workflows.md), and the armarium orchestration layer's
-coordination contract. Nothing here introduces new behavior; it summarizes
+[`workflows.md`](workflows.md), and `agents/methodology.md` (the
+coordination contract). Nothing here introduces new behavior; it summarizes
 the existing contract.
 
 ---
@@ -114,15 +114,15 @@ execution, optional finalization, optional propagation/archive, and the
 default-on documentation pass. Planning and ingestion are hard-gated;
 execution runs a reviewer loop capped at five iterations.
 
-Since the M3 raise (armarium plan 929), the orchestrator, coder, reviewer,
-test-coder, and janitor roles that drive this lifecycle live in armarium (the
-stack's meta repo), not in this repo's `agents/`. The documenter and
-doc-author roles referenced in Phase 6 were likewise raised — to tabularium
-(the stack's standalone documentation tool, which owns the manifest database
-they operate) at the doc-cluster transfer (planar plan 933) — and no longer
-live in this repo's `agents/` either. Planar itself retains and drives the
-primitives these roles compose: the `planar-agent` claim ritual (§3 below),
-`tabularium diff`, and the doc manifest gates.
+The orchestrator, coder, reviewer, test-coder, and janitor roles that drive
+this lifecycle live in this repo's `agents/` (raised to armarium at plan 929,
+returned at the armarium reintegration), alongside their companion
+methodology, doctrine, and model-tier-routing docs. The documenter and
+doc-author roles referenced in Phase 6 live in tabularium (the stack's
+standalone documentation tool, which owns the manifest database they operate;
+moved there at the doc-cluster transfer, planar plan 933). Planar itself
+drives the primitives these roles compose: the `planar-agent` claim ritual
+(§3 below), `tabularium diff`, and the doc manifest gates.
 
 ```mermaid
 flowchart TD
@@ -199,7 +199,7 @@ operator, and then runs the caller-owned doc manifest gates. The documenter
 proposes; doc-author writes only approved prose rows.
 
 Detail: [`workflows.md` Recipe 2](workflows.md#recipe-2--run-the-orchestrator)
-and the armarium orchestration layer's methodology contract.
+and `agents/methodology.md`.
 
 ---
 
@@ -254,7 +254,7 @@ complete. Operator recovery uses `planar-agent reconcile --dry-run` first, then
 never mutates a live, unexpired claim.
 
 Detail: [`concepts.md` §Claim-owned task state and recovery](concepts.md#claim-owned-task-state-and-recovery)
-and the coordination-claims contract (owned by the armarium orchestration layer).
+and `agents/methodology.md` § Coordination claims.
 
 ---
 
@@ -288,6 +288,5 @@ the [`pl-models-config`](../skills/src/pl-models-config.md) skill.
   boundary, workbench, adapters.
 - [Concepts](concepts.md) — the entity and gate mental model.
 - [Workflows](workflows.md) — step-by-step operator recipes.
-- The armarium orchestration layer's methodology doc — authoritative
-  agent-coordination contract (raised from this repo at plan 918/929; planar
-  retains and drives the primitives it coordinates).
+- `agents/methodology.md` — authoritative
+  agent-coordination contract.
