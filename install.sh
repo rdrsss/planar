@@ -225,9 +225,36 @@ trap 'on_err $? $LINENO' ERR
 # same override an attempted bypass would use, so the "real account home"
 # below is resolved independently, from the passwd database via the
 # invoking account's username (`id -un`), which an env var override
-# cannot redirect. A run is refused whenever PLANAR_HOME, HOME, or
-# CODEX_HOME still resolves under that real home — covering both the
-# unredirected default and a partial redirect (e.g. --prefix alone, F12).
+# cannot redirect.
+#
+# The match must be EXACT against the three real surface roots, not a
+# containment/prefix test. This repo (and therefore the integration
+# harness's own throwaway temp roots, which it derives from
+# `<repo>/.zig-cache/tmp/<random>` per integration_tests/harness.zig) lives
+# under the operator's real home directory. A prefix test ("is this path
+# under $_D13_REAL_HOME at all") would refuse ANY redirect that still
+# happens to live under the operator's home tree — including the
+# harness's fully-redirected, throwaway HOME/PLANAR_HOME/CODEX_HOME — even
+# though none of those paths is one of the operator's real, live surface
+# roots. What D13 must actually protect is exactly three literal paths:
+# the real ~/.planar, the real $HOME (whose subtree carries ~/.claude,
+# ~/.codex default, ~/.copilot, ~/.gemini), and the real $CODEX_HOME. So a
+# run is refused iff:
+#   PLANAR_HOME == "$_D13_REAL_HOME/.planar"
+#   or HOME        == "$_D13_REAL_HOME"
+#   or CODEX_HOME  == "$_D13_REAL_HOME/.codex"
+# — an EXACT match on each of those three literal roots, not a prefix/
+# containment test. Guarding HOME exactly (rather than PLANAR_HOME's
+# broader default-derivation) still covers ~/.claude, ~/.copilot, and
+# ~/.gemini, because install.sh derives those vendor roots from $HOME
+# itself; CODEX_HOME is guarded separately because it has its own
+# independent override variable. This covers both the unredirected
+# default run (PLANAR_HOME and HOME both equal the real roots) and a
+# partial redirect (e.g. --prefix alone with real $HOME, F12) while
+# letting a genuinely isolated run — HOME/PLANAR_HOME/CODEX_HOME all
+# pointed at throwaway paths, even ones nested under the real home tree,
+# such as the integration harness's `.zig-cache/tmp/...` roots — proceed,
+# because none of those throwaway paths is EQUAL to a real surface root.
 # install.sh swaps to the CMake-built binaries at M9 (task cpp-eval-parity)
 # per D13 — this gate is removed then, not before.
 _planar_real_home() {
@@ -248,12 +275,8 @@ _planar_real_home() {
   fi
 }
 _D13_REAL_HOME="$(_planar_real_home)"
-_d13_under_real_home() {
-  local p="$1"
-  [[ "$p" == "$_D13_REAL_HOME" || "$p" == "$_D13_REAL_HOME"/* ]]
-}
 if [[ -f "$REPO_ROOT/zig/build.zig" && ! -f "$REPO_ROOT/build.zig" ]]; then
-  if _d13_under_real_home "$PLANAR_HOME" || _d13_under_real_home "$HOME" || _d13_under_real_home "$CODEX_HOME"; then
+  if [[ "$PLANAR_HOME" == "$_D13_REAL_HOME/.planar" || "$HOME" == "$_D13_REAL_HOME" || "$CODEX_HOME" == "$_D13_REAL_HOME/.codex" ]]; then
     err "installed Planar is frozen at the fork point (D13) until M9 — install.sh is disabled on the rewrite branch (PLANAR_HOME, HOME, and CODEX_HOME must ALL be redirected away from $_D13_REAL_HOME for an isolated run)"
   fi
 fi
