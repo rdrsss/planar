@@ -97,12 +97,17 @@
     // Paths are relative to the build root. Use the empty string (`""`) to refer to
     // the build root itself.
     // A directory listed here means that all files within, recursively, are included.
+    // The Zig implementation relocated to zig/ at M0 (plan 996, task
+    // cpp-zig-relocation): build.zig sits here, and migrations/, metrics/,
+    // templates/ stayed at the repo root (language-agnostic, reached via
+    // ../ paths from build.zig — see build.zig's own comments). They are
+    // NOT subdirectories of this build root, so they cannot appear here;
+    // an earlier draft listed them anyway, which is simply invalid for a
+    // path outside the package root. Every entry below is an actual path
+    // under zig/.
     .paths = .{
         "build.zig",
         "integration_tests",
-        "migrations",
-        "metrics",
-        "templates",
         "build.zig.zon",
         "src",
         "tools",
