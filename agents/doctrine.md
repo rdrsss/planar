@@ -41,7 +41,7 @@ Session-attributed defect log (add entries when a new defect class is observed):
 
 ## Verify independently
 
-Full doctrine lives in [`agents/reviewer.md §Verify independently`](reviewer.md#verify-independently).
+Full doctrine lives in [`agents/reviewer.md` §What the reviewer does](reviewer.md#what-the-reviewer-does).
 
 Summary: the blind reviewer does not receive the coder's narrative report. It
 receives a structured validation packet and independently verifies the diff.

@@ -219,7 +219,7 @@ inspection/retry commands for failures. Never claim cross-remote rollback.
 
 ## Cross-references
 
-- Sync command contract: [`docs/cli-reference.md` § Sync](../docs/cli-reference.md#sync-pull-target).
+- Sync command contract: [`docs/cli-reference.md` § Sync](../docs/cli-reference.md#planar-sync-pull-target).
 - Scope and binary boundaries: [`docs/concepts.md`](../docs/concepts.md).
 - Status doctrine: `agents/methodology.md` § Heartbeat status contract.
 

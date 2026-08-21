@@ -3,7 +3,7 @@ description: Inspect the opaque candidate registry, routing evidence, and role r
 origin: docs/architecture.md#host-aware-agent-model-binding
 shared_notes:
     - All routing state comes from the CLI (`planar models`); the skill must not read or write config files directly.
-    - Planar stores candidate ids opaquely and never validates them against a supported list — the tier-to-model presets are Armarium's, not Planar's.
+    - Planar stores candidate ids opaquely and never validates them against a supported list — the tier-to-model presets live in the orchestration layer's `agents/models.md`, not in the planar binary.
 slug: pl-models-config
 vendor:
     claude:
@@ -31,7 +31,7 @@ Ownership is split, and the split is the point:
 - **Planar** stores candidate ids as opaque bytes, records coordination state
   and evidence, and *resolves* a role to a tier from the task's own packet. It
   never parses an id and never decides which models are supported.
-- **Armarium** owns the tier→model presets (`agents/models.md` §Candidate
+- **The orchestration layer** owns the tier→model presets (`agents/models.md` §Candidate
   Presets), hand-maintained. There is no `[models]` or `[roles]` config block
   and no `planar models apply`; those were removed with the curated catalog.
 - **Host adapters** own spawn verification. Planar records requested and actual
@@ -67,8 +67,8 @@ across any of them, so evidence from one project says nothing about another.
    report `insufficient_data`; candidates below the quality floor are excluded
    before any iteration or cost ordering; and **no recommendation is a valid
    outcome** meaning keep the configured default.
-5. **Change a preset (operator-gated)** — presets live in Armarium's
-   `agents/models.md`, so guide the operator there. A `Use when` cell must rest
+5. **Change a preset (operator-gated)** — presets live in the orchestration
+   layer's `agents/models.md`, so guide the operator there. A `Use when` cell must rest
    on a product fact or recorded dispatch evidence; vendor capability claims,
    benchmark scores, and release ordering are not admissible.
 
@@ -96,7 +96,7 @@ resolve a role, review evidence, or change a preset.
 
 Report `attempted`, `applied`, `skipped`, and `failed`. Every verb here is
 read-only, so `applied` is zero unless the operator explicitly confirmed a
-preset edit in Armarium — which this skill guides but does not perform.
+preset edit in `agents/models.md` — which this skill guides but does not perform.
 
 ## Result
 
@@ -117,7 +117,7 @@ explicitly when a tier came from a static fallback rather than a packet.
 
 Give zero to three executable commands, led by the exact inspection the
 operator asked for. When a ranking yields a recommendation, the next action is
-to ask whether to edit the Armarium preset — never to apply it unprompted.
+to ask whether to edit the `agents/models.md` preset — never to apply it unprompted.
 
 ## Recovery
 
@@ -130,4 +130,4 @@ say which gate and that more evidence is the remedy.
 
 - Installed to `~/.claude/commands/pl-models-config.md`.
 - Invoked as `/pl-models-config`.
-- Presets are Armarium's (`agents/models.md`); this skill reads Planar state and guides preset edits, never writing them.
+- Presets live in `agents/models.md`; this skill reads Planar state and guides preset edits, never writing them.

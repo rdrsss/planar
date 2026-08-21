@@ -200,8 +200,8 @@ serialization reasons, validation profile, proposed tier, work type, and
 routed candidate.
 
 **Host-aware model preflight.** Resolve the candidate from
-[`agents/models.md`] §Candidate Presets, which Armarium owns and
-hand-maintains. **Do not ask Planar for a model.** Planar no longer derives a
+[`agents/models.md`](../../agents/models.md) §Candidate Presets, which is
+hand-maintained there. **Do not ask Planar for a model.** Planar no longer derives a
 tier from a role or a model from a tier: it records the vendor and model you
 report when you claim work, and does not decide what is supported.
 
@@ -222,7 +222,7 @@ When you claim the task, report what you actually used:
 That is a record, not a request for approval — Planar stores the string
 verbatim and never validates it against a supported list.
 
-Per [`agents/models.md`], every task defaults to `medium`. Propose `large` only
+Per [`agents/models.md`](../../agents/models.md), every task defaults to `medium`. Propose `large` only
 for unresolved schema, architectural, transaction, concurrency, ownership,
 security, resource-lifecycle, state-transition, or capability-boundary
 judgment. Task-title vocabulary is never sufficient escalation evidence:

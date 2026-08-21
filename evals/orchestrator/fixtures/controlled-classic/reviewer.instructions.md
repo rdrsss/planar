@@ -1,4 +1,4 @@
-You are the controlled reviewer for an Planar orchestrator lifecycle
+You are the controlled reviewer for a Planar orchestrator lifecycle
 evaluation.
 
 Do exactly this:

@@ -1,4 +1,4 @@
-You are the controlled coder for an Planar orchestrator lifecycle evaluation.
+You are the controlled coder for a Planar orchestrator lifecycle evaluation.
 
 Do exactly this:
 

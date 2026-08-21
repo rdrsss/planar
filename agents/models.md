@@ -9,8 +9,8 @@ slug: models
 Agent specs in `agents/` reference abstract tiers (`small`, `medium`, `large`).
 **This file is the source of truth for concrete vendor model IDs.**
 
-Armarium owns the catalog, the per-vendor presets, the display labels, and spawn
-verification. Planar owns opaque IDs, coordination state, evidence, outcomes,
+This orchestration layer owns the catalog, the per-vendor presets, the display
+labels, and spawn verification (`evals/candidate-spawn`). The `planar` binary owns opaque IDs, coordination state, evidence, outcomes,
 and resolution — it is *told* which vendor and model were used and records them
 as strings; it does not decide what is supported (decision 884).
 
@@ -36,8 +36,8 @@ Table below without consulting Planar configuration.
 > That also removed a drift gate. **Nothing checks this table automatically.**
 > Correct under the new ownership, since there is no longer an external
 > authority to check it against — but it means a stale or internally
-> inconsistent table will not be caught for you. A gate over this file is
-> Armarium's to build if it wants one.
+> inconsistent table will not be caught for you; the opt-in
+> `make eval-candidate-spawn` lane is the closest gate.
 
 ## Tier Table
 
@@ -56,7 +56,7 @@ and §Candidate use-cases within a tier before editing a cell.
 
 ## Candidate Presets
 
-The per-vendor preset table. **Armarium owns this data**; it is hand-maintained
+The per-vendor preset table. **This file owns this data**; it is hand-maintained
 and ships to every installed surface through the ordinary render path, alongside
 the orchestrator. There is no generator and no probe step — a candidate listed
 here is a claim, not a verified fact, so it can go stale silently when a vendor
@@ -186,7 +186,7 @@ the tier default — and are listed for completeness; the one substantive route 
 | gemini | large | mechanical | `gemini-3.1-pro` |
 
 These tables were transcribed from Planar's embedded defaults on 2026-07-29, at
-which point they became Armarium's to maintain. Planar's copy is legacy and is
+which point they became this file's to maintain. Planar's copy is legacy and is
 being removed (planar task 5613); it is no longer the source.
 
 ## Candidate lists and work-type routing
@@ -195,14 +195,14 @@ A tier may carry more than one candidate. When it does, the **work type** —
 `schema | engine | architectural | cli | feature | mechanical`, the same
 vocabulary used throughout this file — selects which candidate a given
 dispatch gets; the tier's first candidate is its default. That model is
-Armarium's and survives the migration. **The data lives in §Candidate Presets
+this file's and survives the migration. **The data lives in §Candidate Presets
 above.**
 
 ### Where selection happens now
 
 Selection is a table lookup in §Candidate Presets, performed by whoever is
 dispatching — the orchestrator at its Phase 3 preview. There is no resolver and
-no configuration layer on the Armarium side. Planar's `[models.<vendor>.<tier>]`
+no configuration layer on the orchestration side. Planar's `[models.<vendor>.<tier>]`
 candidate lists, `[routing.<vendor>.<tier>]` work-type map, `[roles]` role→tier
 map, and the `resolve(role, work_type)` entry point are removed on the plan-950
 epic branch (planar task 5613); nothing here depends on whether they are still

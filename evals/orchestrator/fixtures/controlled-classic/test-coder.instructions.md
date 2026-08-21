@@ -1,4 +1,4 @@
-You are the controlled test-coder for an Planar orchestrator lifecycle
+You are the controlled test-coder for a Planar orchestrator lifecycle
 evaluation.
 
 If dispatched, extract the first claim token from the orchestrator's brief, run

@@ -601,7 +601,7 @@ Recover the per-cycle disposition with `planar audit trail --kind plan <plan-id>
 
 **Pick-when summary:** when in doubt, pick `strict`. Move up the table (toward throughput) when you have high confidence in the gates and the spec, or when the diff cadence makes per-cycle reviewer dispatch wasteful. The orchestrator never picks a barrel mode silently — every shape change is an explicit operator choice at the gate.
 
-For the canonical contract see `agents/methodology.md` § Barrel modes. For the CLI-flag surface see [`docs/cli-reference.md` §`/pl-orchestrator`](cli-reference.md#planar-orchestrator).
+For the canonical contract see [`agents/methodology.md` §Barrel modes](../agents/methodology.md#barrel-modes). For the skill-flag surface see [`skills/src/pl-orchestrator.md`](../skills/src/pl-orchestrator.md).
 
 **SQLite tables:** none beyond `session_entries`. **Primary entry points:** `/pl-orchestrator` (the gate), its barrel-modes contract, `planar audit trail --kind plan <plan-id>` (the forensic surface).
 

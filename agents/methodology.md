@@ -920,7 +920,7 @@ Status strings describe the **agent's own state** (what it is doing), not a mirr
 
 ### Cross-references
 
-- Per-role canonical status strings: see the "Status reporting" sections in [`agents/coder.md`](coder.md#status-reporting), [`agents/orchestrator.md`](orchestrator.md#status-reporting), [`agents/planner.md`](planner.md#status-reporting), [`agents/reviewer.md`](reviewer.md#status-reporting), [`agents/test-coder.md`](test-coder.md#status-reporting), and [`agents/ingestor.md`](ingestor.md#status-reporting).
+- Per-role canonical status strings: see the "Status reporting" sections in [`agents/coder.md`](coder.md#status-reporting), [`agents/orchestrator.md`](orchestrator.md#status-reporting), [`agents/planner.md`](planner.md#status-reporting), [`agents/reviewer.md`](reviewer.md#status-reporting), [`agents/test-coder.md`](test-coder.md#iteration-and-status), and [`agents/ingestor.md`](ingestor.md#status-reporting).
 - `agent_actions` schema: see the installed Planar version's authoritative
   schema documentation.
 - Claim ritual: see [Coordination claims](#coordination-claims) above.

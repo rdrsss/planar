@@ -1604,7 +1604,7 @@ planar task touches remove <task-id> <repo-slug> [--path <p>] [--json]
 - **Without `--path`** (repo-level): deletes the `entity_links(relationship='touches')` row. Returns an error if no such link exists.
 - **With `--path <p>`** (path-level): deletes one `task_touch_paths` row and **leaves the repo edge in place**.
 
-The two granularities are independent, and removing the repo edge is **not** a way to withdraw path declarations: [rule 2](#plan-recommend-strategy) reads `task_touch_paths` directly, so orphaned path rows keep driving eligibility after their edge is gone.
+The two granularities are independent, and removing the repo edge is **not** a way to withdraw path declarations: [rule 2](#planar-plan-recommend-strategy-plan-id) reads `task_touch_paths` directly, so orphaned path rows keep driving eligibility after their edge is gone.
 
 This is deliberately not symmetric with `touches add --path`, where a path-touch implies the repo-touch. Withdrawing one file should not silently drop a repo claim that may still carry other paths, or an intentional whole-repo declaration.
 
@@ -5969,7 +5969,7 @@ planar-agent heartbeat  --claim <token> [--ttl <duration>] [--status <text>] [--
 # Planar does not decide, validate, or publish what is "supported": an
 # unrecognized value is stored, not rejected, and a vendor/model pair that
 # disagrees is recorded as given rather than corrected. The catalog and spawn
-# verification belong to the Armarium/host boundary. Omitting it is valid and
+# verification belong to the orchestration/host boundary. Omitting it is valid and
 # stores NULL — reporting is optional.
 
 # Nested action lifecycle — for sub-tool-calls or sub-phases inside a
@@ -6825,7 +6825,7 @@ seam:        planar run start/event/finish, planar plan closeout
 
 ### Sandbox directory
 
-The sandbox directory `~/.planar/local/workflows/` mirrors the `~/.planar/local/skills/` model: it is user-machine-local state, never committed to the repo, and is created on demand. Place any `.lua` file there to author and test a workflow before promoting it to the repo's `workflows/` directory. See [Recipe 28 — Author and graduate a workflow](#recipe-28--author-and-graduate-a-workflow) in `docs/workflows.md`.
+The sandbox directory `~/.planar/local/workflows/` mirrors the `~/.planar/local/skills/` model: it is user-machine-local state, never committed to the repo, and is created on demand. Place any `.lua` file there to author and test a workflow before promoting it to the repo's `workflows/` directory. See [Recipe 28 — Author and graduate a workflow](workflows.md#recipe-28--author-and-graduate-a-workflow) in `docs/workflows.md`.
 
 **`PLANAR_WORKFLOWS_DIR` env var:** When set, overrides the shipped workflows directory. Used by the integration test harness to point `workflow list/show` at a temporary directory seeded with fixture workflows.
 

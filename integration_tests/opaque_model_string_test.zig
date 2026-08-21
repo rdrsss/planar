@@ -3,7 +3,7 @@
 //!
 //! Per armarium decision 884: Planar is told which vendor and model were used
 //! and records them verbatim. It does not decide, validate, or publish what is
-//! "supported" — Armarium holds the catalog. These tests pin that contract, so
+//! "supported" — the orchestration layer's agents/models.md holds the catalog. These tests pin that contract, so
 //! a future change that adds a membership check fails loudly here.
 //!
 //! Covered scenarios:
@@ -12,7 +12,7 @@
 //!   - Scenario B: --model omitted leaves the column null; reporting is
 //!     optional, not required.
 //!   - Scenario C: a vendor/model pair that disagrees is ACCEPTED, not
-//!     rejected. Catching a cross-host mistake is Armarium's spawn
+//!     rejected. Catching a cross-host mistake is the orchestration layer's spawn
 //!     verification, not Planar's job.
 //!   - Scenario D: punctuation and mixed case survive unchanged — no
 //!     normalization, no lowercasing, no aliasing.
@@ -184,7 +184,7 @@ test "scenario C: a cross-vendor model is recorded, not rejected" {
 
     // Deliberately incoherent: a Claude model reported on a Codex vendor.
     // Planar must record what it is told. Detecting that this is wrong is
-    // Armarium's spawn verification, not a Planar membership check.
+    // the orchestration layer's spawn verification, not a Planar membership check.
     const out = mustRunAgent(&suite, &.{
         "claim",               "--entity", entity,
         "--role",              "coder",    "--vendor",
