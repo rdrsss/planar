@@ -1,0 +1,134 @@
+{
+  "version": 1,
+  "metadata": {
+    "name": "benchmark-template",
+    "catch2-version": "3.15.2"
+  },
+  "listings": {
+    "tests": [
+      {
+        "name": "Comparing function pointers",
+        "class-name": "",
+        "tags": [
+          "function pointer",
+          "Tricky"
+        ],
+        "source-location": {
+          "filename": "/mnt/c/ubuntu/Catch2/tests/SelfTest/UsageTests/Tricky.tests.cpp",
+          "line": 266
+        }
+      },
+      {
+        "name": "Testing checked-if 4",
+        "class-name": "",
+        "tags": [
+          "!shouldfail",
+          "checked-if"
+        ],
+        "source-location": {
+          "filename": "/mnt/c/ubuntu/Catch2/tests/SelfTest/UsageTests/Misc.tests.cpp",
+          "line": 216
+        }
+      },
+      {
+        "name": "count_equidistant_floats - double",
+        "class-name": "",
+        "tags": [
+          "approvals",
+          "distance",
+          "floating-point"
+        ],
+        "source-location": {
+          "filename": "/mnt/c/ubuntu/Catch2/tests/SelfTest/IntrospectiveTests/FloatingPoint.tests.cpp",
+          "line": 103
+        }
+      },
+      {
+        "name": "Usage of AllTrue range matcher",
+        "class-name": "",
+        "tags": [
+          "matchers",
+          "quantifiers",
+          "templated"
+        ],
+        "source-location": {
+          "filename": "/mnt/c/ubuntu/Catch2/tests/SelfTest/UsageTests/MatchersRanges.tests.cpp",
+          "line": 372
+        }
+      },
+      {
+        "name": "Exception matchers that succeed",
+        "class-name": "",
+        "tags": [
+          "!throws",
+          "exceptions",
+          "matchers"
+        ],
+        "source-location": {
+          "filename": "/mnt/c/ubuntu/Catch2/tests/SelfTest/UsageTests/Matchers.tests.cpp",
+          "line": 428
+        }
+      },
+      {
+        "name": "A TEMPLATE_TEST_CASE_METHOD based test run that succeeds - float",
+        "class-name": "Template_Fixture",
+        "tags": [
+          "class",
+          "template"
+        ],
+        "source-location": {
+          "filename": "/mnt/c/ubuntu/Catch2/tests/SelfTest/UsageTests/Class.tests.cpp",
+          "line": 82
+        }
+      },
+      {
+        "name": "Approximate PI",
+        "class-name": "",
+        "tags": [
+          "Approx",
+          "PI"
+        ],
+        "source-location": {
+          "filename": "/mnt/c/ubuntu/Catch2/tests/SelfTest/UsageTests/Approx.tests.cpp",
+          "line": 134
+        }
+      },
+      {
+        "name": "TextFlow::Column respects width setting",
+        "class-name": "",
+        "tags": [
+          "approvals",
+          "column",
+          "TextFlow"
+        ],
+        "source-location": {
+          "filename": "/mnt/c/ubuntu/Catch2/tests/SelfTest/IntrospectiveTests/TextFlow.tests.cpp",
+          "line": 38
+        }
+      },
+      {
+        "name": "Generators internals",
+        "class-name": "",
+        "tags": [
+          "generators",
+          "internals"
+        ],
+        "source-location": {
+          "filename": "/mnt/c/ubuntu/Catch2/tests/SelfTest/IntrospectiveTests/GeneratorsImpl.tests.cpp",
+          "line": 24
+        }
+      },
+      {
+        "name": "Mayfail test case with nested sections",
+        "class-name": "",
+        "tags": [
+          "!mayfail"
+        ],
+        "source-location": {
+          "filename": "/mnt/c/ubuntu/Catch2/tests/SelfTest/UsageTests/Condition.tests.cpp",
+          "line": 83
+        }
+      }
+    ]
+  }
+}
