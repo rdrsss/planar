@@ -2108,8 +2108,8 @@ test "spec ingest records path-level touches from roadmap annotations" {
         \\
     ;
     const tech = suite.mustRun(&.{
-        "artifact", "add",      "--json", "--scope", repo_scope,               "--kind", "tech_spec",
-        "--plan",   anchor_id,  "--body", tech_body, "Touch Ingest Tech Spec",
+        "artifact", "add",     "--json", "--scope", repo_scope,               "--kind", "tech_spec",
+        "--plan",   anchor_id, "--body", tech_body, "Touch Ingest Tech Spec",
     });
     gpa.free(tech);
     const roadmap = suite.mustRun(&.{

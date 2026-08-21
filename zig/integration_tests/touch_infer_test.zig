@@ -98,8 +98,8 @@ fn addTask(
     const pid = std.fmt.allocPrint(gpa, "{d}", .{plan_id}) catch unreachable;
     defer gpa.free(pid);
     const t = suite.mustRunJSON(TaskAddJSON, arena, &.{
-        "task",   "add",  title,
-        "--plan", pid,    "--body",
+        "task",   "add",    title,
+        "--plan", pid,      "--body",
         body,     "--json", "--editor=false",
     });
     return t.id;
