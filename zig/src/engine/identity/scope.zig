@@ -1193,7 +1193,7 @@ test "detectWorktree authoritative fallback: primary checkout nested >=2 levels 
     try runGit(a, primary, &.{ "config", "user.email", "test@example.com" });
     try runGit(a, primary, &.{ "config", "user.name", "Test" });
     try runGit(a, primary, &.{ "commit", "--allow-empty", "-m", "init" });
-    try std.fs.cwd().makePath(nested_cwd);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, nested_cwd);
 
     const det = try detectWorktree(std.testing.io, a, nested_cwd);
     defer deinitWorktreeDetection(a, det);
