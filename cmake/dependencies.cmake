@@ -13,23 +13,34 @@ set(CPM_SOURCE_CACHE "${CMAKE_CURRENT_SOURCE_DIR}/vendor" CACHE PATH
   "Where CPM caches and this repository commits vendored dependency sources")
 
 # Bootstrap cmake/CPM.cmake on first configure if it is not checked in yet —
-# scripts/get_cpm.sh does the same thing for command-line/CI use.
+# scripts/get_cpm.sh does the same thing for command-line/CI use. Pinned to
+# the EXACT version + hash of the CPM.cmake actually committed at
+# cmake/CPM.cmake (CURRENT_CPM_VERSION below) via its versioned GitHub
+# release tag — never releases/latest, which is a moving target that could
+# silently bootstrap a different CPM version than the one every other
+# CPMAddPackage() call in this file was verified against (task 6049, F8).
+# SHA256 re-verified independently against the versioned release asset.
+set(_planar_cpm_version "0.43.1")
+set(_planar_cpm_sha256 "1c40fc102ce9625d7de7eb14f541cab30cc3138dca627f0b0ec40293ce6c2934")
 set(_planar_cpm_file "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CPM.cmake")
 if(NOT EXISTS "${_planar_cpm_file}")
-  message(STATUS "Downloading latest CPM.cmake -> ${_planar_cpm_file}")
+  message(STATUS "Downloading pinned CPM.cmake v${_planar_cpm_version} -> ${_planar_cpm_file}")
   file(DOWNLOAD
-    "https://github.com/cpm-cmake/CPM.cmake/releases/latest/download/CPM.cmake"
+    "https://github.com/cpm-cmake/CPM.cmake/releases/download/v${_planar_cpm_version}/CPM.cmake"
     "${_planar_cpm_file}"
     STATUS _planar_cpm_status
+    EXPECTED_HASH SHA256=${_planar_cpm_sha256}
     TLS_VERIFY ON)
   list(GET _planar_cpm_status 0 _planar_cpm_status_code)
   if(NOT _planar_cpm_status_code EQUAL 0)
     file(REMOVE "${_planar_cpm_file}")
     list(GET _planar_cpm_status 1 _planar_cpm_status_msg)
-    message(FATAL_ERROR "Failed to download CPM.cmake: ${_planar_cpm_status_msg}")
+    message(FATAL_ERROR "Failed to download CPM.cmake v${_planar_cpm_version}: ${_planar_cpm_status_msg}")
   endif()
 endif()
 unset(_planar_cpm_file)
+unset(_planar_cpm_version)
+unset(_planar_cpm_sha256)
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/CPM.cmake")
 
@@ -83,11 +94,22 @@ endif()
 # (docs/architecture.md / tech-spec § Dependency set): SQLITE_THREADSAFE=1,
 # SQLITE_ENABLE_FTS5, SQLITE_ENABLE_JSON1, SQLITE_DQS=0,
 # SQLITE_DEFAULT_FOREIGN_KEYS=1, SQLITE_USE_URI=1.
+#
+# Pinned to 3.50.2 — matching zig/vendor/sqlite's own pin (zig/vendor/
+# manifest.zon) exactly, since zig/ remains the parity oracle through M9
+# (D13). An earlier cycle bumped this to 3.53.4 ahead of the Zig tree,
+# which breaks the parity premise (both trees must open the same on-disk
+# format under test). SHA256 re-verified independently against
+# https://www.sqlite.org/2025/sqlite-amalgamation-3500200.zip (task 6049,
+# F7) — matches zig's pinned hash. The deliberate post-cutover bump path:
+# once the C++ tree is the sole implementation (post-M10, zig/ deleted),
+# sqlite is free to move independently again — re-verify a fresh SHA256
+# against sqlite.org before bumping.
 CPMAddPackage(
   NAME sqlite
-  VERSION 3.53.4
-  URL https://www.sqlite.org/2026/sqlite-amalgamation-3530400.zip
-  URL_HASH SHA256=1e71ddf93849c6a6ecf58b827c0692073d2dd7ee40196158068f7b29f422e87d
+  VERSION 3.50.2
+  URL https://www.sqlite.org/2025/sqlite-amalgamation-3500200.zip
+  URL_HASH SHA256=387991de2834b5da2894119ff4173a9ea0779ea55ebcf53d9a40b24d1dc2484e
   DOWNLOAD_ONLY YES
   EXCLUDE_FROM_ALL YES
   SYSTEM YES
