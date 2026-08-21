@@ -2,8 +2,7 @@
 // Uses pack indexing (P2662R3, new in C++26): `pack...[index]`.
 #include <cstdio>
 
-template <typename... Ts>
-constexpr auto first_of(Ts... vals) {
+template <typename... Ts> constexpr auto first_of(Ts... vals) {
   return vals...[0];
 }
 

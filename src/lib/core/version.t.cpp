@@ -23,7 +23,7 @@ TEST_CASE("core module reports a non-empty version string", "[core][version]") {
 
 TEST_CASE("core module version string has MAJOR.MINOR.PATCH shape", "[core][version]") {
   std::string_view sv{version()};
-  auto first_dot = sv.find('.');
+  auto             first_dot = sv.find('.');
   REQUIRE(first_dot != std::string_view::npos);
   auto second_dot = sv.find('.', first_dot + 1);
   REQUIRE(second_dot != std::string_view::npos);

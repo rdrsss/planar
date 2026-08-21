@@ -984,7 +984,7 @@ WARN_LAYOUT_FILE       = YES
 # Possible values are: NO, YES, FAIL_ON_WARNINGS and FAIL_ON_WARNINGS_PRINT.
 # The default value is: NO.
 
-WARN_AS_ERROR                       = NO
+WARN_AS_ERROR                       = YES
 
 # The WARN_FORMAT tag determines the format of the warning messages that Doxygen
 # can produce. The string should contain the $file, $line, and $text tags, which
@@ -1066,7 +1066,10 @@ INPUT_FILE_ENCODING    =
 # provided as Doxygen C comment), *.py, *.pyw, *.f90, *.f95, *.f03, *.f08,
 # *.f18, *.f, *.for, *.vhd, *.vhdl, *.ucf, *.qsf and *.ice.
 
-FILE_PATTERNS                       = *.cppm
+# *.t.cpp files are matched by the *.cpp pattern (a glob matches on filename
+# suffix, and "version.t.cpp" ends in ".cpp") — no separate *.t.cpp entry
+# needed; verified empirically (task 6049, F2).
+FILE_PATTERNS                       = *.cppm *.cpp
 
 # The RECURSIVE tag can be used to specify whether or not subdirectories should
 # be searched for input files as well.
@@ -1097,7 +1100,10 @@ EXCLUDE_SYMLINKS       = NO
 # Note that the wildcards are matched against the file with absolute path, so to
 # exclude all test directories for example use the pattern */test/*
 
-EXCLUDE_PATTERNS                       = */vendor/*
+# INPUT is scoped to src/ (below), so */zig/* never actually gets walked —
+# listed anyway for explicitness per the M0 boundary-review requirement that
+# zig/ stay excluded even if INPUT's scope ever widens.
+EXCLUDE_PATTERNS                       = */vendor/* */zig/*
 
 # The EXCLUDE_SYMBOLS tag can be used to specify one or more symbol names
 # (namespaces, classes, functions, etc.) that should be excluded from the
