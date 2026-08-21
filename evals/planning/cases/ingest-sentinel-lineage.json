@@ -1,0 +1,16 @@
+{
+  "id": "ingest-sentinel-lineage",
+  "kind": "sentinel-lineage",
+  "description": "Unique sentinels planted in source planning documents must arrive in the correct Planar entity kinds, with citations, facts, and digests intact.",
+  "trials": 1,
+  "entities": [
+    { "kind": "decision", "slot": "locked-decision", "must_carry_digest": true },
+    { "kind": "scenario", "slot": "test-scenario", "must_carry_digest": true },
+    { "kind": "question", "slot": "open-question", "must_carry_digest": false },
+    { "kind": "artifact", "slot": "tech-spec", "must_carry_digest": true }
+  ],
+  "redaction": {
+    "allowed_in_diagnostics": ["sentinel"],
+    "forbidden_in_diagnostics": ["source_body"]
+  }
+}

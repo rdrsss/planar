@@ -89,3 +89,4 @@ scripts/parity-data/parity-gap-report.md
 /agents/codex/
 /agents/copilot/
 /agents/gemini/
+__pycache__/

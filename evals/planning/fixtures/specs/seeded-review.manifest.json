@@ -1,0 +1,42 @@
+{
+  "manifest_version": "seeded-review-manifest-v1",
+  "spec": "fixtures/specs/seeded-review.spec.md",
+  "defects": [
+    {
+      "id": "reclaimed-claim-renewal",
+      "severity": "critical",
+      "summary": "Renewing an already-reclaimed claim lets two agents hold the same work simultaneously.",
+      "why": "The design explicitly honours a renewal after another agent took over, which is a double-ownership bug, not a recovery."
+    },
+    {
+      "id": "fire-and-forget-renewal",
+      "severity": "high",
+      "summary": "The agent ignores the renewal response, so a rejected renewal is indistinguishable from a successful one.",
+      "why": "A silently failed renewal means the agent believes it holds a lease it has lost."
+    },
+    {
+      "id": "unfalsifiable-acceptance",
+      "severity": "high",
+      "summary": "'The feature works as expected under concurrent load' cannot be observed or refuted.",
+      "why": "No reviewer could tell whether this criterion was met."
+    },
+    {
+      "id": "cached-ttl",
+      "severity": "medium",
+      "summary": "TTL is cached per process, so an operator's change silently does not apply to running agents.",
+      "why": "The spec states the behaviour but does not acknowledge it as a limitation or an open question."
+    },
+    {
+      "id": "unbounded-lease-events",
+      "severity": "low",
+      "summary": "lease_events grows without retention.",
+      "why": "Named in the design with no mitigation."
+    },
+    {
+      "id": "empty-open-questions",
+      "severity": "medium",
+      "summary": "'Open questions: None' on a design with unresolved concurrency semantics.",
+      "why": "Claiming no open questions is itself a defect when the design leaves ownership ambiguous."
+    }
+  ]
+}

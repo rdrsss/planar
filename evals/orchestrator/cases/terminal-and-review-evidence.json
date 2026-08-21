@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "id": "terminal-ownership-and-blind-review-evidence",
+  "skill": "orchestrator",
+  "description": "Task terminal ownership and the blind structured-evidence review packet agree across roles.",
+  "tags": ["claims", "review", "evidence", "cross-role"],
+  "tiers": ["contract"],
+  "contract_assertions": [
+    {
+      "id": "no-coder-task-done",
+      "description": "Coder surfaces never use the non-atomic task-done verb.",
+      "mode": "none",
+      "paths": ["skills/src/pl-coder.md", "agents/coder.md"],
+      "pattern": "planar task done"
+    },
+    {
+      "id": "in-pwd-bypass-exception",
+      "description": "Coder and orchestrator agree on the narrow terminal exception.",
+      "mode": "all",
+      "paths": [
+        "skills/src/pl-coder.md",
+        "agents/coder.md",
+        "skills/src/pl-orchestrator.md",
+        "agents/orchestrator.md"
+      ],
+      "pattern": "in-pwd.*barrel-bypass|barrel-bypass.*in-pwd",
+      "multiline": true
+    },
+    {
+      "id": "blind-structured-packet",
+      "description": "Reviewer surfaces exclude coder narrative and consume structured validation evidence.",
+      "mode": "all",
+      "paths": ["skills/src/pl-reviewer.md", "agents/reviewer.md"],
+      "pattern": "structured.*evidence|structured validation",
+      "multiline": true
+    }
+  ],
+  "expected": {}
+}

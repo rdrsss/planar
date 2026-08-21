@@ -1,0 +1,14 @@
+{
+  "id": "pulled-task-readiness",
+  "kind": "packet-readiness",
+  "description": "A pulled claim must resolve an implementation-ready packet, reject generic or missing content, refuse a stale digest, and leave no claim behind on cancellation.",
+  "trials": 1,
+  "required_fields": ["title", "acceptance_criteria", "next_action"],
+  "generic_markers": [
+    "is implemented and tested",
+    "works as expected",
+    "implement per acceptance criteria",
+    "implement the task",
+    "todo"
+  ]
+}

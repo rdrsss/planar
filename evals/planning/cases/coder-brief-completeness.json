@@ -1,0 +1,16 @@
+{
+  "id": "coder-brief-completeness",
+  "kind": "brief-completeness",
+  "description": "The coder brief must faithfully carry every mandatory element from the packet it was built from, and fail closed when one is missing or altered.",
+  "trials": 1,
+  "mandatory_elements": [
+    "task_title",
+    "acceptance_criteria",
+    "spec_citations",
+    "locked_decisions",
+    "scenarios",
+    "dependencies",
+    "validation_gates",
+    "packet_digest"
+  ]
+}

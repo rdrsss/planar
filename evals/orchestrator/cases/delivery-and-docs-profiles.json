@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "id": "delivery-and-documentation-profiles",
+  "skill": "orchestrator",
+  "description": "Finalization follows a confirmed Git delivery mode and documentation can cleanly report not-configured.",
+  "tags": ["finalization", "git", "documentation"],
+  "tiers": ["contract"],
+  "contract_assertions": [
+    {
+      "id": "delivery-profile",
+      "description": "Orchestrator and janitor require a confirmed Git delivery profile.",
+      "mode": "all",
+      "paths": [
+        "skills/src/pl-orchestrator.md",
+        "agents/orchestrator.md",
+        "agents/janitor.md"
+      ],
+      "pattern": "Git delivery profile"
+    },
+    {
+      "id": "delivery-modes",
+      "description": "The janitor supports hosted, local, and already-integrated delivery.",
+      "mode": "all",
+      "paths": ["agents/janitor.md"],
+      "pattern": "github-pr.*external-pr.*local-ref.*already-integrated",
+      "multiline": true
+    },
+    {
+      "id": "docs-not-configured",
+      "description": "Both orchestrator surfaces define a verified not-configured outcome.",
+      "mode": "all",
+      "paths": ["skills/src/pl-orchestrator.md", "agents/orchestrator.md"],
+      "pattern": "docs_outcome: not-configured"
+    }
+  ],
+  "expected": {}
+}

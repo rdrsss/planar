@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "id": "review-bypass-is-explicit-expert-opt-in",
+  "skill": "orchestrator",
+  "description": "Reviewer bypass remains supported but is never inferred or recommended.",
+  "tags": ["review", "bypass", "operator-gate"],
+  "tiers": ["contract"],
+  "contract_assertions": [
+    {
+      "id": "never-recommended",
+      "description": "Every policy surface excludes bypass from recommendation.",
+      "mode": "all",
+      "paths": [
+        "skills/src/pl-orchestrator.md",
+        "agents/orchestrator.md",
+        "agents/methodology.md"
+      ],
+      "pattern": "never recommended|excluded from recommendation"
+    },
+    {
+      "id": "explicit-expert-choice",
+      "description": "Bypass is described as an explicit expert choice.",
+      "mode": "all",
+      "paths": [
+        "skills/src/pl-orchestrator.md",
+        "agents/orchestrator.md",
+        "agents/methodology.md"
+      ],
+      "pattern": "expert.*opt-in|expert operator|explicit expert"
+    }
+  ],
+  "expected": {}
+}

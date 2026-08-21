@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "id": "repository-derived-validation-profile",
+  "skill": "orchestrator",
+  "description": "All execution roles consume one target-repository-derived validation profile without language-specific gates.",
+  "tags": ["validation", "portability", "cross-role"],
+  "tiers": ["contract"],
+  "contract_assertions": [
+    {
+      "id": "profile-cross-role",
+      "description": "Every execution role names the validation profile.",
+      "mode": "all",
+      "paths": [
+        "skills/src/pl-orchestrator.md",
+        "agents/orchestrator.md",
+        "skills/src/pl-coder.md",
+        "agents/coder.md",
+        "skills/src/pl-reviewer.md",
+        "agents/reviewer.md",
+        "skills/src/pl-test-coder.md",
+        "agents/test-coder.md"
+      ],
+      "pattern": "validation profile|validation-profile"
+    },
+    {
+      "id": "no-language-gates",
+      "description": "The orchestrator cluster contains no language-specific gate examples.",
+      "mode": "none",
+      "paths": [
+        "skills/src/pl-orchestrator.md",
+        "agents/orchestrator.md",
+        "agents/methodology.md",
+        "agents/doctrine.md"
+      ],
+      "pattern": "\\b(Zig|zig|Golang|Rust|Python|TypeScript|JavaScript)\\b|\\.zig\\b"
+    }
+  ],
+  "expected": {}
+}

@@ -1,0 +1,120 @@
+{
+  "schema_version": 1,
+  "id": "phase3-model-routing-host-boundary",
+  "skill": "orchestrator",
+  "description": "An active plan with three already-decided configuration refactors must remain medium-tier and route within the active host.",
+  "tags": [
+    "gate",
+    "model-routing",
+    "mutation-safety"
+  ],
+  "tiers": [
+    "contract",
+    "live"
+  ],
+  "tasks": [
+    {
+      "slug": "hoist-config-resolution",
+      "title": "Hoist configuration resolution to the composition root so the engine receives only concrete values."
+    },
+    {
+      "slug": "per-module-config-types",
+      "title": "Decompose the configuration struct into per-module config types with grouped test seams."
+    },
+    {
+      "slug": "config-mapping-composition-root",
+      "title": "Map resolved invocation values into module configs at the composition root."
+    }
+  ],
+  "contract_assertions": [
+    {
+      "id": "medium-default",
+      "description": "Already-decided implementation work defaults to the medium coder tier.",
+      "mode": "all",
+      "paths": [
+        "skills/src/pl-orchestrator.md"
+      ],
+      "pattern": "every task defaults to `medium`"
+    },
+    {
+      "id": "preview-binds-tier-and-model",
+      "description": "Both orchestrator surfaces bind the confirmed tier and routed candidate.",
+      "mode": "all",
+      "paths": [
+        "skills/src/pl-orchestrator.md",
+        "agents/orchestrator.md"
+      ],
+      "pattern": "confirmed tier|tier confirmed"
+    },
+    {
+      "id": "preview-preserves-task-identity",
+      "description": "Every task appears as its own id-and-slug preview row.",
+      "mode": "all",
+      "paths": [
+        "skills/src/pl-orchestrator.md",
+        "agents/orchestrator.md"
+      ],
+      "pattern": "one preview row per open task|one row per claim-aware open task"
+    },
+    {
+      "id": "titles-do-not-escalate",
+      "description": "Task-title vocabulary alone cannot escalate coder tier.",
+      "mode": "all",
+      "paths": [
+        "skills/src/pl-orchestrator.md",
+        "agents/orchestrator.md",
+        "agents/models.md"
+      ],
+      "pattern": "Task-title vocabulary is never sufficient escalation evidence"
+    },
+    {
+      "id": "work-type-and-tier-agree",
+      "description": "High-judgment work types cannot be paired with the medium default.",
+      "mode": "all",
+      "paths": [
+        "skills/src/pl-orchestrator.md",
+        "agents/orchestrator.md",
+        "agents/models.md"
+      ],
+      "pattern": "Work type and tier must agree"
+    },
+    {
+      "id": "host-boundary-is-operational",
+      "description": "Both surfaces state the active-host boundary as an operative rule, not a bare assertion.",
+      "mode": "all",
+      "paths": [
+        "skills/src/pl-orchestrator.md",
+        "agents/orchestrator.md"
+      ],
+      "pattern": "even when global configuration names another provider"
+    }
+  ],
+  "setup": {
+    "plan_status": "active",
+    "scope": "global",
+    "configured_default_vendor": "opposite-of-active-host"
+  },
+  "interaction": [
+    {
+      "send": "Run the installed orchestrator for the active plan.",
+      "expect_gate": "phase3-strategy-isolation-tier-model-preview"
+    }
+  ],
+  "live": {
+    "scenario": "phase3-preview",
+    "prompt": "Use the installed orchestrator workflow for active plan {{PLAN_ID}}. Stop at its required Phase 3 strategy, isolation, tier, and routed-model preview gate and wait for operator confirmation. Do not claim or dispatch a task.",
+    "expected_models": {
+      "codex": "gpt-5.6-terra",
+      "claude": "claude-sonnet-5"
+    },
+    "timeout_seconds": 300
+  },
+  "expected": {
+    "tier": "medium",
+    "forbidden_work_type": "architectural",
+    "requires_explicit_gate": true,
+    "required_preview_terms": [
+      "isolation"
+    ]
+  }
+}

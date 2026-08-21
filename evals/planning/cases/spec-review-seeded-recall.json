@@ -1,0 +1,13 @@
+{
+  "id": "spec-review-seeded-recall",
+  "kind": "seeded-recall",
+  "description": "A spec review must find the seeded defects weighted by severity, without flagging everything to get there.",
+  "trials": 3,
+  "spec_fixture": "fixtures/specs/seeded-review.spec.md",
+  "manifest_fixture": "fixtures/specs/seeded-review.manifest.json",
+  "grader": "graders/spec-review-seeded-recall.v1.md",
+  "grader_version": "spec-review-seeded-recall-grader-v1",
+  "recall_threshold": 0.6,
+  "precision_threshold": 0.5,
+  "severity_weights": { "critical": 8, "high": 4, "medium": 2, "low": 1 }
+}

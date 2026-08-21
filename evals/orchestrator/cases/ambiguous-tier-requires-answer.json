@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "id": "ambiguous-tier-requires-operator-answer",
+  "skill": "orchestrator",
+  "description": "An ambiguous work-type classification remains unresolved until the operator assigns its tier.",
+  "tags": ["gate", "model-routing", "ambiguity"],
+  "tiers": ["contract"],
+  "contract_assertions": [
+    {
+      "id": "tier-question-stops-dispatch",
+      "description": "Both orchestrator surfaces require an explicit answer for a tier-question row.",
+      "mode": "all",
+      "paths": ["skills/src/pl-orchestrator.md", "agents/orchestrator.md"],
+      "pattern": "`tier: \\?`"
+    },
+    {
+      "id": "no-round-up",
+      "description": "The skill does not resolve ambiguity by silently escalating to large.",
+      "mode": "all",
+      "paths": ["skills/src/pl-orchestrator.md"],
+      "pattern": "requires an operator answer"
+    }
+  ],
+  "expected": {}
+}

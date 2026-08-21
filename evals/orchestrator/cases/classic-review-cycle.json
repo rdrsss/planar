@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "id": "classic-review-cycle-base-relative-diff",
+  "skill": "orchestrator",
+  "description": "A classic coder cycle captures its base and gives reviewer and test-coder the full base-relative change set.",
+  "tags": ["classic", "review", "diff"],
+  "tiers": ["contract"],
+  "contract_assertions": [
+    {
+      "id": "orchestrator-captures-base",
+      "description": "Both orchestrator surfaces name the coder-cycle base.",
+      "mode": "all",
+      "paths": ["skills/src/pl-orchestrator.md", "agents/orchestrator.md"],
+      "pattern": "coder-cycle-base"
+    },
+    {
+      "id": "specialists-read-base-diff",
+      "description": "Reviewer and test-coder surfaces inspect the base-relative diff.",
+      "mode": "all",
+      "paths": ["skills/src/pl-reviewer.md", "agents/reviewer.md", "skills/src/pl-test-coder.md", "agents/test-coder.md"],
+      "pattern": "git diff <coder-cycle-base>"
+    }
+  ],
+  "expected": {}
+}

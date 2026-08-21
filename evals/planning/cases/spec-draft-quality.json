@@ -1,0 +1,19 @@
+{
+  "id": "spec-draft-quality",
+  "description": "A spec draft from a hidden goal must be structurally complete, claim only work it did, and hold up under independent grading across trials.",
+  "trials": 3,
+  "goal_fixture": "fixtures/goals/spec-draft-quality.goal.txt",
+  "grader": "graders/spec-draft-quality.v1.md",
+  "grader_version": "spec-draft-quality-grader-v1",
+  "pass_threshold": 0.7,
+  "structural": {
+    "required_artifacts": ["product-spec", "tech-spec", "test-spec", "roadmap"],
+    "required_sections": ["Goal", "Non-goals", "Acceptance", "Open questions"],
+    "forbidden_claims": [
+      "implemented and tested",
+      "works as expected",
+      "all tests pass",
+      "verified in production"
+    ]
+  }
+}

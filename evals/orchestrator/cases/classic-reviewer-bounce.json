@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "id": "classic-reviewer-bounce",
+  "skill": "orchestrator",
+  "description": "A controlled reviewer request-changes result returns to the coder under the same claim before a second review approves.",
+  "tags": ["lifecycle", "classic", "review"],
+  "tiers": ["contract", "lifecycle"],
+  "tasks": [
+    {
+      "slug": "controlled-value",
+      "title": "Set the controlled fixture value to approved."
+    }
+  ],
+  "contract_assertions": [
+    {
+      "id": "request-changes-loops",
+      "description": "The orchestrator returns request-changes remediation to coder while the claim stays live.",
+      "mode": "all",
+      "paths": ["agents/orchestrator.md"],
+      "pattern": "request-changes.*no terminal verb"
+    }
+  ],
+  "setup": {
+    "fixture": "controlled-classic",
+    "specialist_scenario": "reviewer-bounce",
+    "plan_status": "active",
+    "strategy": "classic",
+    "isolation": "pwd",
+    "dispatch_shape": "strict"
+  },
+  "interaction": [
+    {
+      "send": "Execute with classic, pwd, strict, and no documentation phase."
+    }
+  ],
+  "lifecycle": {
+    "scenario": "controlled-classic",
+    "surface": "agent",
+    "prompt": "Run the current orchestrator agent for active plan {{PLAN_ID}}. The operator explicitly pre-commits strategy classic, isolation pwd, dispatch shape strict, and --no-docs. Execute the controlled task through every coder/reviewer iteration until it reaches a terminal state. Preserve the same claim across request-changes. Do not finalize, propagate, or archive.",
+    "timeout_seconds": 900,
+    "operator_responses": [
+      "Yes. Confirm the displayed medium tier and gpt-5.6-terra candidate. Continue through every controlled coder and reviewer iteration.",
+      "Use the already pre-committed strict dispatch shape and continue."
+    ]
+  },
+  "expected": {
+    "ordered_events": [
+      "claim-acquired",
+      "coder-finished",
+      "review-request-changes",
+      "coder-finished",
+      "review-approved",
+      "task-completed"
+    ],
+    "forbidden_events": [
+      "task-failed",
+      "claim-released"
+    ],
+    "event_counts": {
+      "claim-acquired": 1,
+      "coder-finished": 2,
+      "review-request-changes": 1,
+      "review-approved": 1,
+      "task-completed": 1
+    },
+    "post_state": {
+      "task_status": "done",
+      "active_claims": 0,
+      "file_value": "approved"
+    }
+  }
+}

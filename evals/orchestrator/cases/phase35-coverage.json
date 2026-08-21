@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "id": "phase35-is-coverage-driven",
+  "skill": "orchestrator",
+  "description": "Test-coder dispatch is driven by uncovered task slugs and cannot be disabled by strategy configuration.",
+  "tags": ["phase35", "test-coder", "coverage"],
+  "tiers": ["contract"],
+  "contract_assertions": [
+    {
+      "id": "coverage-oracle",
+      "description": "Both orchestrator surfaces consult Planar's uncovered-task oracle.",
+      "mode": "all",
+      "paths": ["skills/src/pl-orchestrator.md", "agents/orchestrator.md"],
+      "pattern": "uncovered_task_slugs|uncovered slugs"
+    },
+    {
+      "id": "no-configurable-cadence",
+      "description": "Strategy configuration cannot disable test-coder coverage.",
+      "mode": "none",
+      "paths": ["skills/src/pl-orchestrator.md", "agents/methodology.md"],
+      "pattern": "test_coder_cadence|test-coder-cadence"
+    }
+  ],
+  "expected": {}
+}

@@ -168,3 +168,82 @@ clean: ## Remove build artifacts
 .PHONY: docs-manifest
 docs-manifest: ## Regenerate the docs/.manifest-docs Merkle index
 	planar doc manifest --write
+
+# ── Skill/agent evaluation suites (returned from armarium with the
+#    orchestration layer). Deterministic lanes are provider-free; live lanes
+#    invoke a model host and are opt-in.
+
+.PHONY: eval
+eval: eval-render eval-orchestrator-unit eval-orchestrator eval-orchestrator-fixtures ## Deterministic render, contract, negative-control, and lifecycle-fixture checks
+
+.PHONY: eval-render
+eval-render: ## Dry-run scriptorium render of skills/src + agents
+	scriptorium render -config scriptorium.yaml -dry-run
+
+.PHONY: eval-installed
+eval-installed: ## Check installed projections match this checkout (run after ./install.sh)
+	./scripts/check-self-installed.sh
+
+.PHONY: eval-orchestrator
+eval-orchestrator: ## Orchestrator contract evals
+	./scripts/eval-orchestrator.sh --contract-only
+
+.PHONY: eval-orchestrator-fast
+eval-orchestrator-fast: eval-orchestrator-unit ## Provider-free contract lane (direct Python, no shell graders)
+	PYTHONDONTWRITEBYTECODE=1 python3 \
+		evals/orchestrator/harness.py --contract-only
+
+.PHONY: eval-orchestrator-unit
+eval-orchestrator-unit: ## Harness unit tests
+	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
+		-s evals/orchestrator -p 'test_*.py'
+
+.PHONY: eval-orchestrator-contract
+eval-orchestrator-contract: ## Backward-compatible alias for the contract lane
+	./scripts/eval-orchestrator.sh --contract-only
+
+.PHONY: eval-orchestrator-fixtures
+eval-orchestrator-fixtures: ## Lifecycle fixture replay without a model host
+	./scripts/eval-orchestrator.sh --lifecycle-fixture-only
+
+# Live host smoke. Override with VENDOR=claude SURFACE=agent as needed.
+VENDOR ?= codex
+SURFACE ?= skill
+.PHONY: eval-orchestrator-live
+eval-orchestrator-live: ## Live host smoke (opt-in; needs provider credentials)
+	./scripts/eval-orchestrator.sh --live --vendor $(VENDOR) --surface $(SURFACE)
+
+.PHONY: eval-orchestrator-lifecycle
+eval-orchestrator-lifecycle: ## Full controlled lifecycle through a live orchestrator (opt-in)
+	./scripts/eval-orchestrator.sh --lifecycle --vendor $(VENDOR) --surface agent
+
+# Semantic evaluation lines for the planning surfaces (plan 948). Live by
+# nature — NOT part of `make eval`. Use --dry-run to validate a case:
+#   make eval-planning CASE=spec-draft-quality ARGS="--dry-run"
+.PHONY: eval-planning
+eval-planning: ## Live planning-surface eval: make eval-planning CASE=<case> [ARGS=...]
+	@test -n "$(CASE)" || { echo "usage: make eval-planning CASE=<case> [ARGS=...]"; \
+	  echo "available:"; ls evals/planning/cases/*.json | xargs -n1 basename | sed 's/\.json$$//;s/^/  /'; exit 2; }
+	python3 evals/planning/harness.py --case $(CASE) $(ARGS)
+
+.PHONY: eval-planning-unit
+eval-planning-unit: ## Planning harness unit tests
+	python3 evals/planning/test_harness.py
+
+# Verifies every candidate in agents/models.md §Candidate Presets actually
+# spawns on its host. DELIBERATELY NOT part of `make eval`: it costs one live
+# invocation per candidate. Detection only — repair is an operator edit.
+.PHONY: eval-candidate-spawn
+eval-candidate-spawn: ## Verify every Tier Table candidate spawns (opt-in, live)
+	python3 evals/candidate-spawn/verify.py $(ARGS)
+
+# Offline rollout report for the adaptive routing plane (plan 949). Invokes NO
+# model — reads Planar's own read verbs and reports class separation, cohort
+# isolation, exclusions with reasons, rollback availability.
+.PHONY: rollout-report
+rollout-report: ## Offline adaptive-routing rollout report
+	python3 evals/rollout/report.py $(ARGS)
+
+.PHONY: rollout-report-unit
+rollout-report-unit: ## Rollout report unit tests
+	python3 evals/rollout/test_report.py

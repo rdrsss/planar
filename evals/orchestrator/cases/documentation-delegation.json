@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "id": "documentation-delegates-to-tabularium",
+  "skill": "orchestrator",
+  "description": "Documentation maintenance delegates drift and authoring decisions to Tabularium after a stable merged boundary.",
+  "tags": ["documentation", "delegation", "phase6"],
+  "tiers": ["contract"],
+  "contract_assertions": [
+    {
+      "id": "tabularium-workflow",
+      "description": "Both orchestrator surfaces invoke the Tabularium documenter workflow.",
+      "mode": "all",
+      "paths": ["skills/src/pl-orchestrator.md", "agents/orchestrator.md"],
+      "pattern": "tabularium-documenter"
+    },
+    {
+      "id": "no-checkout-relative-workflow",
+      "description": "The orchestrator does not invoke a checkout-relative Planar workflow.",
+      "mode": "none",
+      "paths": ["skills/src/pl-orchestrator.md", "agents/orchestrator.md"],
+      "pattern": "planar-execute run workflows/"
+    }
+  ],
+  "expected": {}
+}

@@ -1,0 +1,314 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://locumipsum.dev/planar/evals/orchestrator/schema.json",
+  "title": "Planar orchestrator evaluation case",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "skill",
+    "description",
+    "tags",
+    "tiers",
+    "contract_assertions",
+    "expected"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$"
+    },
+    "skill": {
+      "const": "orchestrator"
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1
+    },
+    "tags": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9][a-z0-9-]*$"
+      }
+    },
+    "tiers": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": ["contract", "live", "lifecycle"]
+      }
+    },
+    "tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["slug", "title"],
+        "properties": {
+          "slug": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]*$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "contract_assertions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "description", "mode", "paths", "pattern"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]*$"
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1
+          },
+          "mode": {
+            "enum": ["all", "any", "none"]
+          },
+          "paths": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "pattern": {
+            "type": "string",
+            "minLength": 1
+          },
+          "multiline": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      }
+    },
+    "setup": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "interaction": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["send"],
+        "properties": {
+          "send": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expect_gate": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "live": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scenario", "prompt", "expected_models"],
+      "properties": {
+        "scenario": {
+          "enum": ["phase3-preview"]
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expected_models": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["codex", "claude"],
+          "properties": {
+            "codex": {
+              "type": "string",
+              "minLength": 1
+            },
+            "claude": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "host_model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Model the orchestrator process itself runs as. Independent of delegated_candidate."
+        },
+        "delegated_candidate": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Candidate the orchestrator dispatches a child role to. Independent of host_model."
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 30,
+          "maximum": 3600
+        }
+      }
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scenario", "surface", "prompt"],
+      "properties": {
+        "scenario": {
+          "enum": ["controlled-classic"]
+        },
+        "surface": {
+          "const": "agent"
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 30,
+          "maximum": 3600
+        },
+        "operator_responses": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "expected": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "tier": {
+          "enum": ["small", "medium", "large"]
+        },
+        "forbidden_work_type": {
+          "type": "string"
+        },
+        "requires_explicit_gate": {
+          "type": "boolean"
+        },
+        "allows_claim_before_gate": {
+          "type": "boolean"
+        },
+        "required_preview_terms": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "ordered_events": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "forbidden_events": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "event_counts": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "post_state": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "tiers": {
+            "contains": {
+              "const": "live"
+            }
+          }
+        }
+      },
+      "then": {
+        "required": ["live", "tasks"]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "tiers": {
+            "contains": {
+              "const": "lifecycle"
+            }
+          }
+        }
+      },
+      "then": {
+        "required": ["lifecycle", "tasks", "setup"]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "tiers": {
+            "allOf": [
+              {
+                "not": {
+                  "contains": {
+                    "const": "live"
+                  }
+                }
+              },
+              {
+                "not": {
+                  "contains": {
+                    "const": "lifecycle"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "expected": {
+            "maxProperties": 0
+          }
+        }
+      }
+    }
+  ]
+}

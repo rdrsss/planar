@@ -439,48 +439,39 @@ lint/build/verify, and recovery. Documentation never overrides Planar closeout.
 
 ## Context
 
-Report the resolved scope, goal/plan/task targets, active phase, selected mode,
-strategy, isolation, dispatch shape, and claim tokens relevant to the result.
+Scope, plan/task targets, phase, strategy, isolation, dispatch shape, and
+relevant claim tokens.
 
 ## Intent
 
-State in one sentence which lifecycle transition or execution scope the
-orchestrator interpreted from the operator's request.
+One sentence: the lifecycle transition or execution scope interpreted from the
+operator's request.
 
 ## Actions
 
-Report `attempted`, `applied`, `skipped`, and `failed` counts across phase
-targets. For multi-cycle or multi-target work, retain per-task claim,
-test-coder, reviewer, merge, propagation, archive, and documentation outcomes;
-do not claim one transaction across independent worktrees or remote calls.
+`attempted`/`applied`/`skipped`/`failed` counts across phase targets, with
+per-task claim, reviewer, merge, propagation, archive, and documentation
+outcomes retained for multi-target work.
 
 ## Result
 
-Always report `outcome=ok|partial|error` and the verified lifecycle post-state:
-plan/task identifiers and statuses, surviving claims, commits/branches, remote
-URLs, or documentation post-state as applicable. Preserve every canonical gate
-choice, subagent verdict, iteration-cap decision, and pending operator
-approval.
+`outcome=ok|partial|error` plus the verified post-state: plan/task ids and
+statuses, surviving claims, commits/branches, remote URLs. Preserve every gate
+choice, subagent verdict, and pending operator approval.
 
 ## Warnings
 
-Name partial failures, stale or mismatched claims, degraded validation,
-unmerged worktrees, deferred documentation, unresolved questions, and
-consequential assumptions. An expected gate pause or clean no-op is not itself
-a warning.
+Partial failures, stale claims, degraded validation, unmerged worktrees,
+deferred documentation, consequential assumptions. An expected gate pause or
+clean no-op is not a warning.
 
 ## Next actions
 
-Give zero to three executable recommendations ordered by usefulness. When the
-workflow is paused at an operator gate, put the exact approval choice or CLI
-continuation first; otherwise point to the next phase, inspection, or safe
-terminal routing action.
+Zero to three executable recommendations; at an operator gate, the exact
+approval choice or CLI continuation first.
 
 ## Recovery
 
-For partial or failed orchestration, name every affected target and give its
-exact idempotent inspect, retry, resume, or cleanup command. Completed
-independent targets remain applied unless the underlying verb is atomic. The
-orchestrator invokes exactly one terminal `planar-agent` verb per claim and
-never invents rollback for worktree merges or remote propagation. Never claim
+Per affected target, the exact idempotent inspect/retry/resume/cleanup
+command. Exactly one terminal `planar-agent` verb per claim. Never claim
 cross-worktree or remote atomic rollback.

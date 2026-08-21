@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "id": "spec-review-before-ingestion",
+  "skill": "orchestrator",
+  "description": "Adversarial spec review is a mandatory lifecycle phase between user review and ingestion.",
+  "tags": ["planning", "spec-review", "ingestion"],
+  "tiers": ["contract"],
+  "contract_assertions": [
+    {
+      "id": "spec-review-present",
+      "description": "Both orchestrator surfaces invoke pl-spec-review.",
+      "mode": "all",
+      "paths": ["skills/src/pl-orchestrator.md", "agents/orchestrator.md"],
+      "pattern": "pl-spec-review"
+    },
+    {
+      "id": "ready-gates-ingestion",
+      "description": "Only ready-for-ingest advances to ingestion.",
+      "mode": "all",
+      "paths": ["skills/src/pl-orchestrator.md", "agents/orchestrator.md"],
+      "pattern": "ready-for-ingest"
+    }
+  ],
+  "expected": {}
+}

@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+WRAPPER_DIR="$(cd "$(dirname "$0")" && pwd)"
+EVAL_DIR="$(cd "$WRAPPER_DIR/.." && pwd)"
+REAL_PLANAR_AGENT="$(<"$EVAL_DIR/real-planar-agent")"
+EVENT_LOG="$EVAL_DIR/events.jsonl"
+COMMAND="${1:-}"
+STDOUT_FILE="$(mktemp "${TMPDIR:-/tmp}/planar-eval-agent-stdout.XXXXXX")"
+STDERR_FILE="$(mktemp "${TMPDIR:-/tmp}/planar-eval-agent-stderr.XXXXXX")"
+
+# shellcheck disable=SC2329 # invoked through the EXIT trap
+cleanup() {
+  rm -f "$STDOUT_FILE" "$STDERR_FILE"
+}
+trap cleanup EXIT
+
+set +e
+"$REAL_PLANAR_AGENT" "$@" >"$STDOUT_FILE" 2>"$STDERR_FILE"
+RC=$?
+set -e
+cat "$STDOUT_FILE"
+cat "$STDERR_FILE" >&2
+
+if [ "$RC" -eq 0 ]; then
+  case "$COMMAND" in
+    pull|claim)
+      printf '{"event":"claim-acquired","source":"planar-agent"}\n' >> "$EVENT_LOG"
+      ;;
+    complete)
+      printf '{"event":"task-completed","source":"planar-agent"}\n' >> "$EVENT_LOG"
+      ;;
+    fail)
+      printf '{"event":"task-failed","source":"planar-agent"}\n' >> "$EVENT_LOG"
+      ;;
+    release)
+      printf '{"event":"claim-released","source":"planar-agent"}\n' >> "$EVENT_LOG"
+      ;;
+    block)
+      printf '{"event":"task-blocked","source":"planar-agent"}\n' >> "$EVENT_LOG"
+      ;;
+  esac
+fi
+
+exit "$RC"

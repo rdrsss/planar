@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "id": "phase3-no-mutation-before-gates",
+  "skill": "orchestrator",
+  "description": "Phase 3 must complete both operator gates before claim acquisition or coder dispatch.",
+  "tags": ["gate", "mutation-safety", "phase3"],
+  "tiers": ["contract"],
+  "contract_assertions": [
+    {
+      "id": "two-gates-before-claim",
+      "description": "Both orchestrator surfaces explicitly order two gates before claiming.",
+      "mode": "all",
+      "paths": ["skills/src/pl-orchestrator.md", "agents/orchestrator.md"],
+      "pattern": "two gates"
+    },
+    {
+      "id": "explicit-confirmation",
+      "description": "The executable skill refuses to turn a recommendation into action without confirmation.",
+      "mode": "all",
+      "paths": ["skills/src/pl-orchestrator.md"],
+      "pattern": "waits for explicit operator confirmation"
+    },
+    {
+      "id": "pre-dispatch-intake-is-read-only",
+      "description": "The first Phase 3 gate cannot create recovery or coordination state.",
+      "mode": "all",
+      "paths": [
+        "skills/src/pl-orchestrator.md",
+        "agents/orchestrator.md",
+        "agents/methodology.md"
+      ],
+      "pattern": "pre-dispatch operator gate|Until both gates are accepted"
+    }
+  ],
+  "expected": {}
+}

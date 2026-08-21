@@ -1,0 +1,7 @@
+Operators cannot tell which of several concurrent agent dispatches is stalled.
+Each dispatch reports progress only when it finishes, so a run that has hung and
+a run that is merely slow look identical until a lease expires.
+
+Design a way for an operator to see, at a glance, which in-flight dispatches are
+making progress and which are not — without requiring the dispatched agent to be
+modified, and without treating absence of output as proof of failure.
