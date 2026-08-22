@@ -303,6 +303,22 @@ function(planar_check_architecture)
 
     set(_dep_names "")
     foreach(_entry IN LISTS _merged_links)
+      # Strip an unconditional $<LINK_ONLY:...> wrapper BEFORE applying the
+      # genex refusal below (plan 996 task 6078, M3 review remediation F2).
+      # For a STATIC library, CMake itself records every PRIVATE link entry
+      # in INTERFACE_LINK_LIBRARIES wrapped in $<LINK_ONLY:...> — that is
+      # CMake's own generated plumbing (so it always names its target
+      # literally; there is nothing to "evaluate" here, unlike a genex
+      # authored by a caller), not evasive or ambiguous code. Without this
+      # unwrap, the ordinary, textbook spelling
+      # target_link_libraries(planar_X PRIVATE planar_Y) tripped the genex
+      # refusal below and told the author to "replace it with a plain
+      # target name" when they already had — see
+      # cmake/tests/architecture-guard-fixture/private-link-legal/ for the
+      # standing proof this is now accepted.
+      if(_entry MATCHES "^\\$<LINK_ONLY:(.+)>$")
+        set(_entry "${CMAKE_MATCH_1}")
+      endif()
       # Scoped to genex entries that plausibly reference a planar_* target
       # (contain BOTH "$<" and "planar_"), not every generator expression
       # in the graph: CMake's own imported-target plumbing routinely emits
@@ -342,6 +358,40 @@ function(planar_check_architecture)
   if(_all_names)
     list(REMOVE_DUPLICATES _all_names)
   endif()
+
+  # Pass 1b: reject any planar_-prefixed dependency name that IS a real
+  # CMake TARGET but was never registered into PLANAR_MODULE_TARGETS (plan
+  # 996 task 6078, M3 review remediation F3). module.cmake's "every
+  # planar_* target MUST use planar_module()/planar_binary()" rule is
+  # enforced only by a comment, not a check — a raw add_library()
+  # intermediate that happens to be named planar_* configures cleanly and
+  # is invisible to _all_names, which silently voids the transitive
+  # closure for anything that depends through it (a real carrier->db edge
+  # routed through such an intermediate would never be flagged; "GUARD
+  # PASSED" on a genuine violation). This must run after _all_names is
+  # fully built (needs the complete registered set), but before any
+  # closure query below consumes it. See
+  # cmake/tests/architecture-guard-fixture/unregistered-target-caught/ for
+  # the standing proof.
+  foreach(_tgt IN LISTS _planar_targets)
+    if(NOT TARGET ${_tgt})
+      continue()
+    endif()
+    string(REGEX REPLACE "^planar_" "" _name "${_tgt}")
+    get_property(_dep_names GLOBAL PROPERTY _planar_arch_adj_${_name})
+    foreach(dep_name IN LISTS _dep_names)
+      if(NOT dep_name IN_LIST _all_names AND TARGET "planar_${dep_name}")
+        message(FATAL_ERROR
+          "D15 violation: ${_tgt} depends on planar_${dep_name}, which is "
+          "a real CMake target but was never registered via "
+          "planar_module()/planar_binary() (PLANAR_MODULE_TARGETS is "
+          "missing it). An unregistered intermediate voids this walk's "
+          "transitive closure for anything that depends on it — route "
+          "planar_${dep_name} through planar_module()/planar_binary() so "
+          "its own dependency edges are checked too.")
+      endif()
+    endforeach()
+  endforeach()
 
   # Pass 2: cycle detection over the full graph (see header comment,
   # "Layer-1 cycles").

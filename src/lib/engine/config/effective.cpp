@@ -207,18 +207,17 @@ auto assoc_str(const toml_map& file_map, std::optional<std::string_view> slug, s
 
 } // namespace
 
-auto env_view::from_process() -> env_view {
-  return env_view{};
-}
-
 auto env_view::get(std::string_view name) const -> std::optional<std::string> {
   if (auto it = vars_.find(name); it != vars_.end()) {
     return it->second.empty() ? std::nullopt : std::optional<std::string>{it->second};
   }
-  // Fall back to the real process environment — env_view::from_process()
-  // returns an EMPTY vars_ map deliberately (see its own doc comment) so
-  // production callers always land here; the vars_ map only ever holds
-  // entries when a test builds one explicitly via the map constructor.
+  // Fall back to the real process environment ONLY for from_process()
+  // views. empty() and the explicit-map constructor both leave
+  // consult_process_env_ false, so a hermetic view stays hermetic on a
+  // miss instead of silently reading the developer's real environment.
+  if (!consult_process_env_) {
+    return std::nullopt;
+  }
   const char* raw = std::getenv(std::string(name).c_str()); // NOLINT(concurrency-mt-unsafe) — single-threaded CLI startup path.
   if (raw == nullptr || raw[0] == '\0') {
     return std::nullopt;

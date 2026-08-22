@@ -9,10 +9,18 @@
 ///   2. `<root>/default/<system>/<kind>.json` (baseline set on disk)
 ///   3. embedded defaults                     (always present in the binary)
 ///
-/// The first readable file wins (JSON validity is NOT re-checked here —
-/// zig's `Template.fields` decode step and the `render`/`validate`
-/// surfaces that consume it are a separate, not-yet-ported task; this
-/// task's scope is resolution, not template rendering).
+/// The first readable AND VALID JSON file wins — mirrors zig's
+/// `loadFromDisk` (eager `parseTemplate`) + `load()`'s `catch {}`
+/// fall-through on `error.InvalidJson` (plan 996 task 6078, M3 review
+/// remediation F4: an earlier revision of this port skipped the parse
+/// step and let ANY file that merely opened win a level, so a truncated
+/// operator override could permanently shadow both the working baseline
+/// and the embedded default). `raw` is still verbatim, un-decoded JSON
+/// text on success — this task's scope is resolution (does this
+/// candidate parse at all?), not decoding into a typed tree for
+/// rendering; the `Template.fields`-equivalent decode step and the
+/// `render`/`validate` surfaces that would consume it remain a separate,
+/// not-yet-ported task.
 ///
 /// Not ported from loader.zig: `listEntries`'s exact unsorted OS-iteration
 /// order (the zig oracle never sorts disk-discovered entries — only the

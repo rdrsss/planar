@@ -162,6 +162,16 @@ _planar_add_architecture_guard_test(layer1-cycle fail
 # consult the full transitive closure, not just direct links.
 _planar_add_architecture_guard_test(execute-transitive-db fail
   MESSAGES "D15 violation" "planar_cmd_execute depends on planar_db")
+# F2 (plan 996 task 6078, M3 review remediation): a legal PRIVATE downward
+# edge on a STATIC library — CMake records this as $<LINK_ONLY:...> in
+# INTERFACE_LINK_LIBRARIES — must configure cleanly, not trip the genex
+# refusal.
+_planar_add_architecture_guard_test(private-link-legal succeed)
+# F3 (plan 996 task 6078, M3 review remediation): an unregistered
+# planar_-prefixed intermediate target must not silently void the
+# transitive closure for a real carrier->db violation reachable through it.
+_planar_add_architecture_guard_test(unregistered-target-caught fail
+  MESSAGES "D15 violation" "planar_cmd_execute depends on planar_engine_middleware")
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 

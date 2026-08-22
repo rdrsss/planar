@@ -123,6 +123,74 @@ TEST_CASE("load_template: a named set with no override file falls through to the
   CHECK(result->set_name == "default");
 }
 
+TEST_CASE("load_template: a malformed named-set disk file falls through to the default-set disk file (F4)", "[templates]") {
+  // Plan 996 task 6078, M3 review remediation F4: the pre-fix port took
+  // any file that merely opened, so a truncated named-set override would
+  // permanently shadow the working default-set file below it. Mirrors
+  // zig's loadFromDisk parsing eagerly + load()'s catch-and-continue on
+  // error.InvalidJson.
+  scratch_dir root;
+  write_file(root.path_ / "acme" / "github-issues" / "issue.json", R"({"unterminated": )");
+  write_file(root.path_ / "default" / "github-issues" / "issue.json", R"({"from": "default-set"})");
+
+  auto result = load_template("acme", "github-issues", "issue", root.path_.string());
+  REQUIRE(result.has_value());
+  CHECK(result->source_ == template_source::disk);
+  CHECK(result->raw == R"({"from": "default-set"})");
+  CHECK(result->set_name == "default");
+}
+
+TEST_CASE("load_template: a zero-byte named-set disk file falls through to the default-set disk file (F4)", "[templates]") {
+  scratch_dir root;
+  write_file(root.path_ / "acme" / "github-issues" / "issue.json", "");
+  write_file(root.path_ / "default" / "github-issues" / "issue.json", R"({"from": "default-set"})");
+
+  auto result = load_template("acme", "github-issues", "issue", root.path_.string());
+  REQUIRE(result.has_value());
+  CHECK(result->source_ == template_source::disk);
+  CHECK(result->raw == R"({"from": "default-set"})");
+  CHECK(result->set_name == "default");
+}
+
+TEST_CASE("load_template: a malformed default-set disk file falls through to the embedded default (F4)", "[templates]") {
+  scratch_dir root;
+  write_file(root.path_ / "default" / "github-issues" / "issue.json", R"({"broken": )");
+
+  auto result = load_template("default", "github-issues", "issue", root.path_.string());
+  REQUIRE(result.has_value());
+  CHECK(result->source_ == template_source::embedded);
+}
+
+TEST_CASE("load_template: a zero-byte default-set disk file falls through to the embedded default (F4)", "[templates]") {
+  // The sharpest pre-fix bug: `buf << in.rdbuf()` sets failbit on the
+  // ostringstream (not the ifstream) on a zero-byte extraction, so
+  // `in.good()` stayed true and "" was returned as a "successfully read"
+  // file — accepted as the winning level with no JSON-validity check at
+  // all. "" is not valid JSON, so this must fall through exactly like the
+  // malformed case above.
+  scratch_dir root;
+  write_file(root.path_ / "default" / "github-issues" / "issue.json", "");
+
+  auto result = load_template("default", "github-issues", "issue", root.path_.string());
+  REQUIRE(result.has_value());
+  CHECK(result->source_ == template_source::embedded);
+}
+
+TEST_CASE("load_template: a disk file over the 4 MiB read cap falls through to the embedded default (F4)", "[templates]") {
+  // Mirrors zig's loadFromDisk's std.Io.Limit.limited(4 * 1024 * 1024)
+  // (loader.zig:134) — resolution must not be an unbounded allocation
+  // driven by operator-controlled disk content. A syntactically-valid-if-
+  // it-were-read '{"a": "..."}' padded past 4 MiB must still be refused
+  // by size, not accepted because it happens to parse.
+  scratch_dir root;
+  std::string oversized = R"({"padding": ")" + std::string(5ULL * 1024 * 1024, 'x') + R"("})";
+  write_file(root.path_ / "default" / "github-issues" / "issue.json", oversized);
+
+  auto result = load_template("default", "github-issues", "issue", root.path_.string());
+  REQUIRE(result.has_value());
+  CHECK(result->source_ == template_source::embedded);
+}
+
 TEST_CASE("load_template: a nonexistent root directory falls through cleanly to the embedded default", "[templates]") {
   auto result = load_template("default", "jira", "epic", "/nonexistent/planar/templates/root");
   REQUIRE(result.has_value());

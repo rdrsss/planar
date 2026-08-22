@@ -171,16 +171,27 @@ export enum class effective_error : std::uint8_t {
 export class env_view {
 private:
   std::map<std::string, std::string, std::less<>> vars_;
+  /// Whether `get()` falls back to `std::getenv` on a `vars_` miss. Always
+  /// `false` for `empty()` and the explicit-map constructor — the whole
+  /// point of both is hermeticity — and `true` only for `from_process()`.
+  bool consult_process_env_ = false;
+
+  explicit env_view(bool consult_process_env) : consult_process_env_(consult_process_env) {
+  }
 
 public:
   env_view() = default;
 
-  /// @brief Build a view over an explicit set of variables (tests).
+  /// @brief Build a view over an explicit set of variables (tests). Never
+  /// falls back to the real process environment on a miss — a test that
+  /// wants a specific var absent must be able to trust that absence.
   /// @param vars The "NAME" → value pairs this view reports.
   explicit env_view(std::map<std::string, std::string, std::less<>> vars) : vars_(std::move(vars)) {
   }
 
   /// @brief A view reporting no variables at all — the "no env" test case.
+  /// Does NOT fall back to `std::getenv`; this is the hermetic view tests
+  /// rely on to be immune to the developer's real environment.
   /// @return An `env_view` whose `get` always returns `std::nullopt`.
   static auto empty() -> env_view {
     return env_view{};
@@ -189,7 +200,9 @@ public:
   /// @brief A view backed by the real process environment (production
   /// callers — `init`/future `cmd/` handlers).
   /// @return An `env_view` whose `get` falls back to `std::getenv`.
-  static auto from_process() -> env_view;
+  static auto from_process() -> env_view {
+    return env_view{/*consult_process_env=*/true};
+  }
 
   /// @brief Look up `name`. An empty string is treated the same as unset
   /// (mirrors every `pickStr`/`resolveParentFieldNames` call site in the

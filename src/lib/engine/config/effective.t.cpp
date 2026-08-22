@@ -9,6 +9,7 @@
 // models/routing/roles scope cut (no embedded default ships for those
 // keys any more, and they belong to a separate engine/ops task).
 #include <catch2/catch_test_macros.hpp>
+#include <cstdlib>
 
 import std;
 import planar.engine.config.effective;
@@ -171,6 +172,44 @@ TEST_CASE("resolve: a malformed config file surfaces effective_error::parse_fail
   auto res = resolve(std::string_view{"vendor = \"unclosed\n"}, env_view::empty(), std::nullopt);
   REQUIRE_FALSE(res.has_value());
   CHECK(res.error() == effective_error::parse_failed);
+}
+
+TEST_CASE("env_view::empty() ignores the real process environment (F1 hermeticity regression)", "[effective]") {
+  // Export a var that resolve() would otherwise honor (PLANAR_VENDOR
+  // feeds defaults.vendor via pick_str's env_name), then prove
+  // env_view::empty() — and therefore resolve() called with it — never
+  // observes it. Before the F1 fix, env_view::get() fell through to
+  // std::getenv on every vars_ miss, so this poisoned var would win and
+  // the CHECK below would fail.
+  REQUIRE(::setenv("PLANAR_VENDOR", "poisoned-by-test", /*overwrite=*/1) == 0);
+  struct restore_env {
+    ~restore_env() {
+      ::unsetenv("PLANAR_VENDOR");
+    }
+  } cleanup;
+
+  CHECK(env_view::empty().get("PLANAR_VENDOR") == std::nullopt);
+
+  auto res = resolve(std::nullopt, env_view::empty(), std::nullopt);
+  REQUIRE(res.has_value());
+  CHECK(res->cfg.defaults.vendor == "claude"); // embedded default, NOT "poisoned-by-test"
+  CHECK(res->effective.at("defaults.vendor").source_ == provenance::embedded_default);
+}
+
+TEST_CASE("env_view — explicit map constructor also ignores the real process environment", "[effective]") {
+  // The map-backed constructor (make_env / the explicit env_view{map}
+  // ctor) must stay hermetic too, independent of empty(): a map miss must
+  // return nullopt, not fall through to std::getenv.
+  REQUIRE(::setenv("PLANAR_SCOPE", "poisoned-by-test", /*overwrite=*/1) == 0);
+  struct restore_env {
+    ~restore_env() {
+      ::unsetenv("PLANAR_SCOPE");
+    }
+  } cleanup;
+
+  auto env = make_env({{"PLANAR_VENDOR", "codex"}}); // PLANAR_SCOPE deliberately absent from the map
+  CHECK(env.get("PLANAR_SCOPE") == std::nullopt);
+  CHECK(env.get("PLANAR_VENDOR") == "codex");
 }
 
 TEST_CASE("sensitive_name: exact and suffix matches, case-insensitive", "[effective]") {
