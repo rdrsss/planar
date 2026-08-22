@@ -19,6 +19,18 @@
 # and builds cleanly — "degrade gracefully" per the task brief. Re-running
 # configure once Catch2 is vendored picks the test binary back up.
 #
+# TEST_DEPENDS (task 6079, plan 996 M4 pre-work) names modules the
+# `*.t.cpp` test binary needs that the PRODUCTION module target itself does
+# not — e.g. a test importing `planar.cli.exit` purely to pin a domain-error
+# mapping against the oracle-captured exit code, with no `.cpp` in the
+# module naming `planar.cli` at all. Before this parameter existed, the
+# only way to get such an edge into the test binary was to add it to
+# DEPENDS, which also links it into the production module target and
+# creates a real dependency edge `cmake/architecture.cmake`'s D15 walk sees
+# and polices — an edge that exists ONLY for a test import is not a
+# genuine architectural dependency and should never show up there. Entries
+# here are linked into `<name>_tests` alone.
+#
 # `include(Catch)` (Catch2's CTest integration) is appended to
 # CMAKE_MODULE_PATH the first time this file runs *after* Catch2 has been
 # vendored (cmake/dependencies.cmake sets PLANAR_CATCH2_SOURCE_DIR) — each
@@ -29,7 +41,7 @@
 function(planar_module name)
   set(options EMBED)
   set(one_value_args)
-  set(multi_value_args INTERFACE SOURCES DEPENDS)
+  set(multi_value_args INTERFACE SOURCES DEPENDS TEST_DEPENDS)
   cmake_parse_arguments(ARG "${options}" "${one_value_args}" "${multi_value_args}" ${ARGN})
 
   set(_target "planar_${name}")
@@ -75,6 +87,11 @@ function(planar_module name)
     target_link_libraries(${_target} PUBLIC ${_depend_targets})
   endif()
 
+  set(_test_depend_targets "")
+  foreach(dep IN LISTS ARG_TEST_DEPENDS)
+    list(APPEND _test_depend_targets "planar_${dep}")
+  endforeach()
+
   # Tracked so cmake/architecture.cmake's planar_check_architecture() can
   # walk every declared module target without needing a hand-maintained
   # module list of its own.
@@ -110,7 +127,8 @@ function(planar_module name)
     target_link_libraries(${_test_target} PRIVATE
       Catch2::Catch2WithMain
       ${_target}
-      ${_depend_targets})
+      ${_depend_targets}
+      ${_test_depend_targets})
 
     if(COMMAND catch_discover_tests)
       catch_discover_tests(${_test_target}

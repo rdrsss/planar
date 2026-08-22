@@ -29,14 +29,17 @@ planar_module(engine_identity
     association.cpp
   DEPENDS
     db
+  TEST_DEPENDS
     cli)
 
-# `cli` is a test-only dependency in practice today: scope.t.cpp imports
-# `planar.cli.exit` to pin `check_scope_guard`'s `scope_error::scope_mismatch`
-# against the SAME `domain_error_kind::scope_mismatch -> exit 5` mapping a
-# future `cmd/` handler will reuse (task brief: "reuse it rather than
-# re-deriving"), rather than asserting a bare enumerator value with no tie
-# back to the oracle-captured exit code. `planar_module()`'s DEPENDS list is
-# shared between the module target and its test binary, so `cli` is
-# declared here even though no production `.cpp` in this module currently
-# names `planar.cli`.
+# `cli` is a TEST-only dependency: scope.t.cpp imports `planar.cli.exit` to
+# pin `check_scope_guard`'s `scope_error::scope_mismatch` against the SAME
+# `domain_error_kind::scope_mismatch -> exit 5` mapping a future `cmd/`
+# handler will reuse (task brief: "reuse it rather than re-deriving"),
+# rather than asserting a bare enumerator value with no tie back to the
+# oracle-captured exit code. No production `.cpp` in this module names
+# `planar.cli` at all, so it belongs under `planar_module()`'s
+# TEST_DEPENDS (task 6079) — linked into `planar_engine_identity_tests`
+# only, never into the production `planar_engine_identity` target, so
+# `engine_identity` does not carry an unused `planar_cli` edge for
+# `cmake/architecture.cmake`'s D15 walk to police.
