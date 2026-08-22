@@ -273,6 +273,100 @@ auto match_flag(std::vector<flag> const& flags, std::string_view tok) -> std::op
   return std::nullopt;
 }
 
+/// @brief Strip a numeric token's accept-set down to what
+/// `std::from_chars` itself understands, matching zig's
+/// `std.fmt.parseInt`/`std.fmt.parseFloat` accept-set (both are the
+/// actual oracle behind `--plan`/`--priority`/etc, see
+/// vendor/etcli/src/cli/parser.zig:651,1039,1046,658,1046).
+///
+/// Both zig parsers accept a single leading '+' (which `from_chars`
+/// rejects outright) and '_' digit separators (which `from_chars` never
+/// understands). This layer normalizes those two zig-only extensions
+/// away — dropping a leading '+' and stripping legal '_' separators —
+/// so the cleaned token can be hard-parsed by `from_chars` unchanged.
+/// Returns unset when the token uses '_' illegally (leading, trailing,
+/// or — for floats — not directly between two digits), matching each
+/// zig parser's own rejection rule for that case.
+namespace numeric {
+
+auto is_ascii_digit(char c) -> bool {
+  return c >= '0' && c <= '9';
+}
+
+/// @brief Mirrors `parseIntWithSign`: reject only when the digit run
+/// starts or ends with '_'; otherwise '_' (including consecutive runs)
+/// is simply dropped.
+auto normalize_int_token(std::string_view raw) -> std::optional<std::string> {
+  if (raw.empty()) {
+    return std::nullopt;
+  }
+  bool        negative = false;
+  std::size_t start    = 0;
+  if (raw.front() == '+' || raw.front() == '-') {
+    negative = raw.front() == '-';
+    start    = 1;
+  }
+  const auto digits = raw.substr(start);
+  if (digits.empty() || digits.front() == '_' || digits.back() == '_') {
+    return std::nullopt;
+  }
+  std::string cleaned;
+  cleaned.reserve(digits.size() + 1);
+  if (negative) {
+    cleaned.push_back('-');
+  }
+  for (char c : digits) {
+    if (c != '_') {
+      cleaned.push_back(c);
+    }
+  }
+  return cleaned;
+}
+
+/// @brief Mirrors zig's float number-scanner: every '_' must sit
+/// directly between two ASCII digits (not before/after the sign, the
+/// decimal point, an exponent marker, or the ends of the token; no two
+/// consecutive '_'). Exponent forms and a single leading '+'/'-' are
+/// otherwise left to `from_chars` to validate/parse.
+auto normalize_float_token(std::string_view raw) -> std::optional<std::string> {
+  if (raw.empty()) {
+    return std::nullopt;
+  }
+  bool        negative = false;
+  std::size_t start    = 0;
+  if (raw.front() == '+' || raw.front() == '-') {
+    negative = raw.front() == '-';
+    start    = 1;
+  }
+  const auto body = raw.substr(start);
+  if (body.empty()) {
+    return std::nullopt;
+  }
+  for (std::size_t i = 0; i < body.size(); ++i) {
+    if (body[i] != '_') {
+      continue;
+    }
+    const bool prev_digit = i > 0 && is_ascii_digit(body[i - 1]);
+    const bool next_digit = i + 1 < body.size() && is_ascii_digit(body[i + 1]);
+    if (!prev_digit || !next_digit) {
+      return std::nullopt;
+    }
+  }
+  std::string cleaned;
+  cleaned.reserve(body.size() + 1);
+  if (negative) {
+    cleaned.push_back('-');
+  }
+  for (char c : body) {
+    if (c != '_') {
+      cleaned.push_back(c);
+    }
+  }
+  return cleaned;
+}
+
+} // namespace numeric
+
 /// @brief Coerce `raw` to `f.value_kind` and store it into `flags_out`
 /// under `f.long_name`. List flags append; scalar flags overwrite (the
 /// caller has already checked duplicate-ness for non-list flags).
@@ -291,18 +385,26 @@ auto coerce_and_store(flag const& f, std::string_view raw, std::unordered_map<st
     coerced = std::string(raw);
     break;
   case kind::integer: {
+    auto cleaned = numeric::normalize_int_token(raw);
+    if (!cleaned) {
+      return std::unexpected(parse_error_kind::invalid_value);
+    }
     std::int64_t v       = 0;
-    auto const [ptr, ec] = std::from_chars(raw.data(), raw.data() + raw.size(), v);
-    if (ec != std::errc{} || ptr != raw.data() + raw.size()) {
+    auto const [ptr, ec] = std::from_chars(cleaned->data(), cleaned->data() + cleaned->size(), v);
+    if (ec != std::errc{} || ptr != cleaned->data() + cleaned->size()) {
       return std::unexpected(parse_error_kind::invalid_value);
     }
     coerced = v;
     break;
   }
   case kind::floating: {
+    auto cleaned = numeric::normalize_float_token(raw);
+    if (!cleaned) {
+      return std::unexpected(parse_error_kind::invalid_value);
+    }
     double v             = 0;
-    auto const [ptr, ec] = std::from_chars(raw.data(), raw.data() + raw.size(), v);
-    if (ec != std::errc{} || ptr != raw.data() + raw.size()) {
+    auto const [ptr, ec] = std::from_chars(cleaned->data(), cleaned->data() + cleaned->size(), v);
+    if (ec != std::errc{} || ptr != cleaned->data() + cleaned->size()) {
       return std::unexpected(parse_error_kind::invalid_value);
     }
     coerced = v;
@@ -578,9 +680,14 @@ auto parse_leaf(leaf_parse_context const& ctx, std::span<std::string const> tail
         coerced = std::string(tok);
         break;
       case kind::integer: {
+        auto cleaned = numeric::normalize_int_token(tok);
+        if (!cleaned) {
+          return std::unexpected(
+              parse_error_detail{.kind = parse_error_kind::invalid_value, .arg = std::string(tok), .positional_name = p.name});
+        }
         std::int64_t v       = 0;
-        auto const [ptr, ec] = std::from_chars(tok.data(), tok.data() + tok.size(), v);
-        if (ec != std::errc{} || ptr != tok.data() + tok.size()) {
+        auto const [ptr, ec] = std::from_chars(cleaned->data(), cleaned->data() + cleaned->size(), v);
+        if (ec != std::errc{} || ptr != cleaned->data() + cleaned->size()) {
           return std::unexpected(
               parse_error_detail{.kind = parse_error_kind::invalid_value, .arg = std::string(tok), .positional_name = p.name});
         }
@@ -588,9 +695,14 @@ auto parse_leaf(leaf_parse_context const& ctx, std::span<std::string const> tail
         break;
       }
       case kind::floating: {
+        auto cleaned = numeric::normalize_float_token(tok);
+        if (!cleaned) {
+          return std::unexpected(
+              parse_error_detail{.kind = parse_error_kind::invalid_value, .arg = std::string(tok), .positional_name = p.name});
+        }
         double v             = 0;
-        auto const [ptr, ec] = std::from_chars(tok.data(), tok.data() + tok.size(), v);
-        if (ec != std::errc{} || ptr != tok.data() + tok.size()) {
+        auto const [ptr, ec] = std::from_chars(cleaned->data(), cleaned->data() + cleaned->size(), v);
+        if (ec != std::errc{} || ptr != cleaned->data() + cleaned->size()) {
           return std::unexpected(
               parse_error_detail{.kind = parse_error_kind::invalid_value, .arg = std::string(tok), .positional_name = p.name});
         }

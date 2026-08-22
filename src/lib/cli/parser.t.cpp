@@ -282,6 +282,104 @@ TEST_CASE("parse: --flag=value inline attachment on a long flag", "[parser][synt
   CHECK(get_double(outcome->match.flags, "--ratio") == 3.5);
 }
 
+// --- numeric coercion parity (task 6067) ---------------------------------
+//
+// Oracle-derived: `./zig/zig-out/bin/planar task add probe --priority <v>`
+// against the live zig binary (which coerces via
+// vendor/etcli/src/cli/parser.zig's std.fmt.parseInt/parseFloat calls),
+// run 2026-08-22:
+//   int   '+5'    -> exit 0   int   '9_96'  -> exit 0
+//   int   '9__6'  -> exit 0   int   '_5'    -> exit 2 (rejected)
+//   int   '5_'    -> exit 2   int   '0x1F'  -> exit 2
+//   int   '1e3'   -> exit 2   int   '  5'   -> exit 2 (whitespace)
+// std::from_chars alone rejects the leading '+' and every '_' form; this
+// pins the C++ side now matching that accept-set exactly.
+
+TEST_CASE("parse: integer coercion accepts a leading '+' and '_' digit separators, matching zig's parseInt oracle",
+          "[parser][synthetic][kinds][numeric-parity]") {
+  auto root = make_synthetic_parser_root();
+
+  {
+    std::vector<std::string> argv{"widget", "build", "+996", "-f/tmp/x"};
+    auto                     outcome = planar::cli::parse(root, argv);
+    REQUIRE(outcome.has_value());
+    CHECK(get_int(outcome->match.positionals, "offset") == 996);
+  }
+  {
+    std::vector<std::string> argv{"widget", "build", "9_96", "-f/tmp/x"};
+    auto                     outcome = planar::cli::parse(root, argv);
+    REQUIRE(outcome.has_value());
+    CHECK(get_int(outcome->match.positionals, "offset") == 996);
+  }
+  {
+    // Consecutive '_' is legal for ints (zig's parseInt just drops every
+    // '_' it sees; it does not police runs), unlike the float grammar.
+    std::vector<std::string> argv{"widget", "build", "9_9__6", "-f/tmp/x"};
+    auto                     outcome = planar::cli::parse(root, argv);
+    REQUIRE(outcome.has_value());
+    CHECK(get_int(outcome->match.positionals, "offset") == 996);
+  }
+}
+
+TEST_CASE("parse: integer coercion still rejects a leading/trailing '_', hex, exponent form, and embedded whitespace",
+          "[parser][synthetic][kinds][numeric-parity]") {
+  // Break-probe for the accept-set test above: these must still fail,
+  // proving the normalization is not simply accepting everything.
+  auto root = make_synthetic_parser_root();
+  for (auto bad : {"_996", "996_", "0x1F", "1e3", " 996", "996 "}) {
+    std::vector<std::string> argv{"widget", "build", std::string(bad), "-f/tmp/x"};
+    auto                     outcome = planar::cli::parse(root, argv);
+    REQUIRE_FALSE(outcome.has_value());
+    CHECK(outcome.error().kind == planar::cli::parse_error_kind::invalid_value);
+  }
+}
+
+TEST_CASE("parse: float coercion accepts a leading '+', exponent forms, and '_' strictly between two digits (zig parity)",
+          "[parser][synthetic][kinds][numeric-parity]") {
+  auto root = make_synthetic_parser_root();
+
+  {
+    std::vector<std::string> argv{"widget", "build", "1", "--ratio=+3.5"};
+    auto                     outcome = planar::cli::parse(root, argv);
+    REQUIRE(outcome.has_value());
+    CHECK(get_double(outcome->match.flags, "--ratio") == 3.5);
+  }
+  {
+    std::vector<std::string> argv{"widget", "build", "1", "--ratio=1_2.5_0e1_0"};
+    auto                     outcome = planar::cli::parse(root, argv);
+    REQUIRE(outcome.has_value());
+    CHECK(get_double(outcome->match.flags, "--ratio") == 12.50e10);
+  }
+  {
+    std::vector<std::string> argv{"widget", "build", "1", "--ratio=1e+3"};
+    auto                     outcome = planar::cli::parse(root, argv);
+    REQUIRE(outcome.has_value());
+    CHECK(get_double(outcome->match.flags, "--ratio") == 1000.0);
+  }
+}
+
+TEST_CASE("parse: float coercion rejects '_' that is not directly between two digits (leading, trailing, doubled, or "
+          "adjacent to '.'/'e')",
+          "[parser][synthetic][kinds][numeric-parity]") {
+  // Break-probe: mirrors zig's own parseFloat test table (each case names
+  // exactly which adjacency rule it violates) — proves the float
+  // normalization is meaningfully stricter than the int one, not a
+  // blanket "strip all underscores" pass.
+  auto root = make_synthetic_parser_root();
+  for (auto bad : {
+           "0123456.789000e_0010",  // '_' right after 'e', not between digits
+           "_0123456.789000e0010",  // '_' before any digit
+           "0__123456.789000e0010", // doubled '_'
+           "0123456_.789000e0010",  // '_' immediately before '.'
+           "0123456.789000e0010_",  // '_' at the very end
+       }) {
+    std::vector<std::string> argv{"widget", "build", "1", std::string("--ratio=") + bad};
+    auto                     outcome = planar::cli::parse(root, argv);
+    REQUIRE_FALSE(outcome.has_value());
+    CHECK(outcome.error().kind == planar::cli::parse_error_kind::invalid_value);
+  }
+}
+
 TEST_CASE("parse: an alias resolves to the same canonical long flag name", "[parser][synthetic][alias]") {
   auto                     root = make_synthetic_parser_root();
   std::vector<std::string> argv{"widget", "build", "1", "--path-alt=/tmp/via-alias.txt"};
