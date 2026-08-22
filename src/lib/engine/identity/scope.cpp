@@ -240,21 +240,15 @@ auto guard_write(std::optional<std::string_view> entity_scope, std::optional<std
 auto resolve_for_write(db::connection& conn, std::optional<std::string_view> scope_flag, std::string_view cwd)
     -> std::expected<write_scope_resolution, scope_error> {
   if (scope_flag.has_value()) {
-    // Validate the flag resolves to a real row before trusting it as the
-    // write scope's label — mirrors the CLI-side contract that an unknown
-    // `--scope` value is a hard error, not a silent global fallback.
-    auto ref = resolve_slug(conn, *scope_flag);
-    if (!ref) {
-      return std::unexpected(ref.error());
-    }
-    // "global" carries no slug label — `check_scope_guard` treats an unset
-    // write_scope as "global/unresolved" (see scope.cppm's doc comment),
-    // so the literal string "global" must NOT be threaded through as a
-    // label or a guarded write against a global-scoped entity would
-    // spuriously compare "global" != unset and refuse.
-    if (ref->kind == scope_kind::global) {
-      return write_scope_resolution{.scope = std::nullopt, .from_explicit_flag = true, .reason = derive_reason::no_project_match};
-    }
+    // Threaded through VERBATIM — no DB lookup, no validation. Mirrors
+    // zig's resolveForWrite (zig/src/cmd/planar/scope.zig:84-93), which
+    // hands the override straight through without calling resolveSlug.
+    // This includes the literal string "global": zig carries it as-is
+    // rather than collapsing it to an unset scope, so a guarded write
+    // against a global-scoped entity (unset entity_scope) still succeeds
+    // unconditionally per check_scope_guard's first branch, and a
+    // guarded write against a NON-global entity correctly refuses
+    // (write_scope "global" != the entity's scope label).
     return write_scope_resolution{
         .scope = std::string(*scope_flag), .from_explicit_flag = true, .reason = derive_reason::no_project_match};
   }

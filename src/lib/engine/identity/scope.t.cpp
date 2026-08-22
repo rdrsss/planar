@@ -287,24 +287,39 @@ TEST_CASE("resolve_for_write: falls back to cwd derivation when no --scope flag 
   CHECK(res->reason == derive_reason::project_single_association);
 }
 
-TEST_CASE("resolve_for_write: an unknown --scope flag value is refused, not silently dropped to cwd derivation",
+TEST_CASE("resolve_for_write: an unknown --scope flag value is threaded through verbatim, not validated against the DB",
           "[scope][resolve_for_write]") {
+  // Mirrors zig's resolveForWrite (zig/src/cmd/planar/scope.zig:84-93):
+  // the write path does NOT call resolve_slug/resolveSlug at all.
+  // Validation is a read-path-only concern; an unknown scope surfaces
+  // later, from whatever verb actually tries to use it.
   scratch_db_path scratch;
   auto            conn = open_migrated(scratch);
 
   auto res = resolve_for_write(conn, "no-such-scope", "/anywhere");
-  REQUIRE_FALSE(res.has_value());
-  CHECK(res.error() == scope_error::slug_not_found);
+  REQUIRE(res.has_value());
+  CHECK(res->from_explicit_flag);
+  REQUIRE(res->scope.has_value());
+  CHECK(*res->scope == "no-such-scope");
 }
 
-TEST_CASE("resolve_for_write: explicit --scope global resolves to an unset write scope", "[scope][resolve_for_write]") {
+TEST_CASE("resolve_for_write: explicit --scope global is threaded through as the literal label, not collapsed to unset",
+          "[scope][resolve_for_write]") {
+  // Zig carries the literal string "global" as the resolved write scope
+  // (no special-casing in resolveForWrite/resolve). check_scope_guard's
+  // first branch (entity_scope unset -> any write allowed) means this is
+  // observably identical to "unset" for global-scoped entities, and
+  // correctly REFUSES a guarded write against a non-global entity, which
+  // an unset write_scope would also refuse — so no behavior is lost by
+  // preserving the literal label.
   scratch_db_path scratch;
   auto            conn = open_migrated(scratch);
 
   auto res = resolve_for_write(conn, "global", "/anywhere");
   REQUIRE(res.has_value());
   CHECK(res->from_explicit_flag);
-  CHECK_FALSE(res->scope.has_value());
+  REQUIRE(res->scope.has_value());
+  CHECK(*res->scope == "global");
 }
 
 // --- check_scope_guard / guard_write: the cross-scope guard's refusal ---

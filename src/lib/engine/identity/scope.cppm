@@ -189,12 +189,21 @@ export auto guard_write(std::optional<std::string_view> entity_scope, std::optio
 /// override precedence: an explicit flag always wins over cwd derivation
 /// (never overridden — the flag is the user's stated intent).
 ///
+/// An explicit `scope_flag` is threaded through VERBATIM, with no DB
+/// lookup and no validation that it resolves to a real row — mirrors
+/// zig's `resolveForWrite` (zig/src/cmd/planar/scope.zig:84-93), which
+/// hands the override straight to the resolution with no call into
+/// `resolveSlug`. Validating a `--scope` value against the DB is a
+/// READ-path-only concern (`resolve_slug`, called from zig's
+/// `resolveForReadSet`); an unknown write-scope slug surfaces later, as
+/// an ordinary "no such scope" failure from whatever verb tries to use
+/// it, not as an eager rejection here.
+///
 /// @param conn An open, migrated database connection.
 /// @param scope_flag The `--scope` flag's raw value, when passed.
 /// @param cwd The absolute working-directory path to fall back to deriving from.
-/// @return The resolution, or `scope_error::slug_not_found` when
-/// `scope_flag` was passed but does not resolve, `scope_error::invalid_path`
-/// when falling back to `derive_from_cwd` on an invalid `cwd`, or
+/// @return The resolution, or `scope_error::invalid_path` when falling
+/// back to `derive_from_cwd` on an invalid `cwd`, or
 /// `scope_error::query_failed` on a SQL failure.
 export auto resolve_for_write(db::connection& conn, std::optional<std::string_view> scope_flag, std::string_view cwd)
     -> std::expected<write_scope_resolution, scope_error>;
