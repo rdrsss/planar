@@ -1,10 +1,41 @@
 # planar.db — RAII connection/statement/transaction wrappers over the
 # vendored SQLite amalgamation (plan 996, task cpp-db-wrapper). Layer-1
 # base module: no DEPENDS on engine/cmd (tech-spec § "db module", D15).
+#
+# planar.db.migrations / planar.db.migrate (plan 996, task
+# cpp-db-migrations-embed) are additional module interfaces built into
+# this SAME `planar_db` CMake target rather than their own planar_module()
+# targets: architecture.cmake's D15 layering classifies every non-cmd_/
+# engine_ module as layer 1, so a separate `planar_db_migrations` target
+# would sit in the same layer as `planar_db` and a `planar_db` ->
+# `planar_db_migrations` dependency edge would fail the strictly-downward
+# check. Multiple distinct C++ module names compiling into one static
+# library target is fine — only the CMake target graph is what
+# architecture.cmake walks.
+#
+# The migrations data (`migrations.generated.cpp`) is generated at
+# configure time by cmake/generate_migrations.cmake, straight into the
+# build tree (never src/) — see that file for the enumeration + explicit
+# sort contract.
+
+include(generate_migrations)
+
+set(_planar_db_migrations_generated "${CMAKE_CURRENT_BINARY_DIR}/generated/migrations.generated.cpp")
+planar_generate_migrations(
+  MIGRATIONS_DIR "${CMAKE_SOURCE_DIR}/migrations"
+  OUT_FILE "${_planar_db_migrations_generated}"
+  MODULE_NAME "planar.db.migrations")
 
 planar_module(db
-  INTERFACE db.cppm
-  SOURCES db.cpp)
+  INTERFACE
+    db.cppm
+    migrations.cppm
+    migrate.cppm
+  SOURCES
+    db.cpp
+    migrate.cpp
+    "${_planar_db_migrations_generated}"
+  EMBED)
 
 target_link_libraries(planar_db PRIVATE SQLite::SQLite3)
 
@@ -13,4 +44,13 @@ target_link_libraries(planar_db PRIVATE SQLite::SQLite3)
 # vendored amalgamation.
 if(TARGET planar_db_tests)
   target_link_libraries(planar_db_tests PRIVATE SQLite::SQLite3)
+
+  # migrate.t.cpp's parity test shells the Zig reference binary (D6, the
+  # integration suite / zig/ tree is the parity oracle until M10 cutover)
+  # to produce a Zig-migrated fixture database and compares schema_migrations
+  # row-for-row against the C++-migrated equivalent. The test itself SKIPs
+  # (rather than fails) when this path does not exist, e.g. before `zig
+  # build` has run under zig/.
+  target_compile_definitions(planar_db_tests PRIVATE
+    PLANAR_ZIG_BIN="${CMAKE_SOURCE_DIR}/zig/zig-out/bin/planar")
 endif()
