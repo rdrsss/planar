@@ -21,12 +21,74 @@ planar_module(cli
     help.cppm
     completion.cppm
     schema.cppm
+    version.cppm
+    output.cppm
+    exit.cppm
     cli.cppm
   SOURCES
     parser.cpp
     help.cpp
     completion.cpp
-    schema.cpp)
+    schema.cpp
+    version.cpp)
+
+# output.cppm's emit()/emit_list() templates call glz::write_json directly
+# (D8: Glaze is the serialization layer) — PUBLIC so a downstream module
+# that imports planar.cli.output for instantiation picks up Glaze's
+# (header-only) include paths transitively, same as any other module that
+# reaches for it.
+target_link_libraries(planar_cli PUBLIC glaze::glaze)
+
+# --- version metadata (task cpp-cli-output-logging) ------------------------
+#
+# Opt-in, mirroring zig/build.zig's `-Dversion-meta` contract (CLAUDE.md §
+# Build And Test: "Two build-cache invariants keep iterative builds cheap").
+# Default OFF: `planar::cli::current_build_info()` (version.cpp) reads the
+# PLANAR_GIT_SHA / PLANAR_BUILD_DATE / PLANAR_GIT_DIRTY macros only when
+# defined, and falls back to the "dev"/"dev"/false sentinel otherwise — so
+# a default dev configure never re-resolves git state (and never
+# re-triggers a rebuild) on every commit or every clean<->dirty flip.
+# Passing -DPLANAR_VERSION_META=ON (the install-time equivalent of
+# install.sh's -Dversion-meta=true) resolves real git metadata ONCE, at
+# configure time, into these definitions.
+option(PLANAR_VERSION_META "Embed real git sha/date/dirty in \`planar version\` (invalidates the build cache on every commit and dirty-flag flip; default OFF embeds \"dev\")" OFF)
+if(PLANAR_VERSION_META)
+  find_package(Git QUIET)
+  set(_planar_git_sha "unknown")
+  set(_planar_git_dirty 0)
+  if(GIT_EXECUTABLE)
+    execute_process(
+      COMMAND "${GIT_EXECUTABLE}" rev-parse HEAD
+      WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+      OUTPUT_VARIABLE _planar_git_sha_out
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      RESULT_VARIABLE _planar_git_sha_result
+      ERROR_QUIET)
+    if(_planar_git_sha_result EQUAL 0 AND _planar_git_sha_out)
+      set(_planar_git_sha "${_planar_git_sha_out}")
+    endif()
+
+    execute_process(
+      COMMAND "${GIT_EXECUTABLE}" status --porcelain
+      WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+      OUTPUT_VARIABLE _planar_git_status_out
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      RESULT_VARIABLE _planar_git_status_result
+      ERROR_QUIET)
+    if(_planar_git_status_result EQUAL 0 AND _planar_git_status_out)
+      set(_planar_git_dirty 1)
+    endif()
+  endif()
+  string(TIMESTAMP _planar_build_date "%Y-%m-%dT%H:%M:%SZ" UTC)
+
+  target_compile_definitions(planar_cli PRIVATE
+    "PLANAR_GIT_SHA=\"${_planar_git_sha}\""
+    "PLANAR_BUILD_DATE=\"${_planar_build_date}\""
+    "PLANAR_GIT_DIRTY=${_planar_git_dirty}")
+  if(TARGET planar_cli_tests)
+    target_compile_definitions(planar_cli_tests PRIVATE PLANAR_VERSION_META=1)
+  endif()
+endif()
 
 # --- schema-catalog lint-parity stub (task cpp-cli-schema-catalog) --------
 #
