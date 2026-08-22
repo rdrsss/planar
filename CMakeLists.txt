@@ -143,6 +143,25 @@ _planar_add_architecture_guard_test(planar-binary-real fail NEEDS_TOOLCHAIN
 # unprefixed name ("execute", not "planar_execute").
 _planar_add_architecture_guard_test(planar-binary-execute-natural-name fail NEEDS_TOOLCHAIN
   MESSAGES "D15 violation" "planar_cmd_execute depends on planar_db")
+# Blind spot 1 (plan 996 task 6069, M3 pre-work): INTERFACE edges are
+# invisible to a LINK_LIBRARIES-only walk. M2 reviewer probe.
+_planar_add_architecture_guard_test(interface-edge fail
+  MESSAGES "D15 violation" "planar_core.*depends on.*planar_engine_widget")
+# Blind spot 2 (plan 996 task 6069, M3 pre-work): a generator-expression
+# link entry is unevaluated at configure time and must be refused, not
+# silently ignored.
+_planar_add_architecture_guard_test(genex-edge fail
+  MESSAGES "D15 violation" "generator expression")
+# Blind spot 3 (plan 996 task 6069, M3 pre-work): D17 (decision 943)
+# permits layer-1-to-layer-1 edges, which reopens a genuine dependency
+# cycle that neither the layer walk nor CMake's own generator catches.
+_planar_add_architecture_guard_test(layer1-cycle fail
+  MESSAGES "D15 violation" "dependency cycle detected")
+# Blind spot 4 (plan 996 task 6069, M3 pre-work — inherited scope gap from
+# task 6070): the execute-carrier / no-SQLite-handle exception must
+# consult the full transitive closure, not just direct links.
+_planar_add_architecture_guard_test(execute-transitive-db fail
+  MESSAGES "D15 violation" "planar_cmd_execute depends on planar_db")
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
