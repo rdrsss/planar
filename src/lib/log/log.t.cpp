@@ -5,6 +5,9 @@
 // in-memory `ostringstream` sink rather than calling `init()` (which
 // installs a PROCESS-GLOBAL default logger via spdlog's static registry
 // and would make test cases interfere with each other's state).
+#include <cstdio>   // std::fflush/stdout/stderr for the stdout-clean probe below
+#include <unistd.h> // dup/dup2/pipe/read/close — real fd redirection for the stdout-clean probe below
+
 #include <catch2/catch_test_macros.hpp>
 #include <glaze/glaze.hpp> // for the JSON-mode assertions' round-trip parse
 #include <spdlog/sinks/ostream_sink.h>
@@ -102,4 +105,61 @@ TEST_CASE("scoped: distinct names return distinct logger instances", "[log][scop
   REQUIRE(a.get() != b.get());
   REQUIRE(a->name() == "cpp-log-t-scoped-distinct-a");
   REQUIRE(b->name() == "cpp-log-t-scoped-distinct-b");
+}
+
+// Task 6068: `init()` used to build its sink from
+// `spdlog::sinks::stdout_color_sink_mt`, so a log line would land on the
+// SAME stream as a `--json` payload — corrupting it. Zig installs no
+// `std.log` logFn override, so `std.log` writes to stderr (its documented
+// default); `init()` must match. Redirect the REAL process fd 1/fd 2
+// (spdlog's color sinks write straight to the C stdio streams, so an
+// in-memory ostream_sink substitution like the tests above use would not
+// exercise this path) around a genuine `init()` + log call, and assert
+// stdout captures nothing while stderr captures the message.
+TEST_CASE("init: the default logger writes to stderr, never stdout", "[log][init][stdout-clean]") {
+  int out_pipe[2];
+  int err_pipe[2];
+  REQUIRE(pipe(out_pipe) == 0);
+  REQUIRE(pipe(err_pipe) == 0);
+
+  int const saved_stdout = dup(STDOUT_FILENO);
+  int const saved_stderr = dup(STDERR_FILENO);
+  REQUIRE(saved_stdout >= 0);
+  REQUIRE(saved_stderr >= 0);
+
+  std::fflush(stdout);
+  std::fflush(stderr);
+  REQUIRE(dup2(out_pipe[1], STDOUT_FILENO) >= 0);
+  REQUIRE(dup2(err_pipe[1], STDERR_FILENO) >= 0);
+  close(out_pipe[1]);
+  close(err_pipe[1]);
+
+  planar::log::init(mode::text, level::info);
+  spdlog::info("stdout-clean probe message");
+  spdlog::default_logger()->flush();
+
+  std::fflush(stdout);
+  std::fflush(stderr);
+  dup2(saved_stdout, STDOUT_FILENO);
+  dup2(saved_stderr, STDERR_FILENO);
+  close(saved_stdout);
+  close(saved_stderr);
+
+  auto drain = [](int fd) {
+    std::string text;
+    char        buf[4096];
+    ssize_t     n = 0;
+    while ((n = read(fd, buf, sizeof(buf))) > 0) {
+      text.append(buf, static_cast<std::size_t>(n));
+    }
+    close(fd);
+    return text;
+  };
+  auto stdout_text = drain(out_pipe[0]);
+  auto stderr_text = drain(err_pipe[0]);
+
+  CHECK(stdout_text.empty());
+  CHECK(stderr_text.find("stdout-clean probe message") != std::string::npos);
+
+  planar::log::init(mode::text, level::off); // quiet again for subsequent tests
 }

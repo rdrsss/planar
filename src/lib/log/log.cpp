@@ -107,7 +107,11 @@ auto make_logger(std::string_view name, mode m, std::shared_ptr<spdlog::sinks::s
 }
 
 auto init(mode m, level lvl) -> void {
-  auto sink   = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+  // Mirrors zig: main.zig installs no std.log logFn override, so std.log
+  // writes to stderr (its documented default). Logging to stdout would
+  // interleave log lines into --json payloads (see log.t.cpp's
+  // stdout-clean test).
+  auto sink   = std::make_shared<spdlog::sinks::stderr_color_sink_mt>();
   auto logger = make_logger("planar", m, sink, lvl);
   spdlog::set_default_logger(logger);
   spdlog::set_level(detail::to_spdlog_level(lvl));
