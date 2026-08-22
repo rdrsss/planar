@@ -1,11 +1,16 @@
 // @file migrate.t.cpp
 // @brief Unit tests for `planar.db.migrations` / `planar.db.migrate` (plan
-// 996, task cpp-db-migrations-embed). Exercises the real #embed-generated
-// chain against on-disk SQLite databases: full apply-to-head, the
-// anti-glob-order strictly-monotonic-versions mandate (tech-spec §
-// "Embedded migrations and templates"), idempotent re-application, a
-// rollback-on-failure test seam that never touches real migration files,
-// and a row-for-row parity check against a Zig-migrated fixture database.
+// 996, tasks cpp-db-migrations-embed and cpp-db-roundtrip). Exercises the
+// real #embed-generated chain against on-disk SQLite databases: full
+// apply-to-head, the anti-glob-order strictly-monotonic-versions mandate
+// (tech-spec § "Embedded migrations and templates"), idempotent
+// re-application, a rollback-on-failure test seam that never touches real
+// migration files, a row-for-row parity check against a Zig-migrated
+// fixture database, and the down-direction losslessness sweep required by
+// test-spec.md's "Edge — up/down/up roundtrip is lossless at every
+// version" scenario: an up→down→up schema-dump comparison at every
+// version in the chain, plus a strict-descending-mirror-order rollback
+// sweep from head down to an empty database.
 //
 // Include-before-import is deliberate (see core/version.t.cpp / db.t.cpp):
 // MSVC's supported direction for mixing textual std headers with IFC
@@ -44,6 +49,62 @@ struct scratch_db_path {
     std::filesystem::remove(path_.string() + "-shm", ec);
   }
 };
+
+/// @brief A canonical, order-independent textual dump of every schema
+/// object (tables, indexes, triggers, views — everything `sqlite_master`
+/// tracks) currently present on `conn`. Sorted by `(type, name, tbl_name)`
+/// so two databases built by different call sequences but with identical
+/// resulting structure compare equal; each row's own DDL text (the `sql`
+/// column) is included verbatim, so a losslessness check here also covers
+/// column lists, CHECK constraints, and index/trigger definitions — not
+/// just object names. Deliberately schema-only (no data rows): the
+/// roundtrip contract under test is "down→up restores the same structure
+/// the original up produced", not data preservation across a rebuild-style
+/// migration (test-spec.md's roundtrip scenario is scoped to schema).
+///
+/// One normalization is applied: double-quote characters are stripped from
+/// the `sql` text. This is load-bearing, not cosmetic-for-convenience —
+/// verified empirically (task cpp-db-roundtrip discovery) that SQLite's own
+/// `ALTER TABLE ... RENAME TO` rewrites a table's stored `CREATE TABLE`
+/// text to wrap the bare identifier in double quotes (`CREATE TABLE
+/// "tasks" (` vs `CREATE TABLE tasks (`), while a plain `ALTER TABLE ADD
+/// COLUMN` on a never-renamed table does not — an inconsistency confirmed
+/// to be internal SQLite stringification only: `PRAGMA table_info`,
+/// `PRAGMA foreign_key_list`, and `PRAGMA index_list` are byte-identical
+/// between the two forms for every affected table (decisions, questions,
+/// tasks, test_scenarios — the migration 00011 down script's
+/// create+copy+drop+rename rebuild targets). None of our migrations ever
+/// author a double-quoted identifier or a double-quoted string literal in
+/// DDL (the project's `.sqlfluff` dialect is bare lowercase identifiers,
+/// single-quoted literals), so stripping `"` cannot mask a real
+/// column/constraint/index difference — it only removes SQLite's own
+/// non-deterministic requoting artifact from the comparison.
+std::string canonical_schema_dump(planar::db::connection& conn) {
+  auto stmt = conn.prepare("select type, name, tbl_name, replace(ifnull(sql, ''), '\"', '') "
+                           "from sqlite_master order by type, name, tbl_name");
+  REQUIRE(stmt.has_value());
+
+  std::string out;
+  for (;;) {
+    auto step = stmt->step();
+    REQUIRE(step.has_value());
+    if (*step == planar::db::step_result::done) {
+      break;
+    }
+    // Unit-separator-delimited fields / record-separator-delimited rows —
+    // arbitrary but fixed control bytes that cannot appear in SQL text or
+    // sqlite_master identifiers, so no field/row can be misread as another.
+    out += stmt->column_text(0);
+    out += '\x1f';
+    out += stmt->column_text(1);
+    out += '\x1f';
+    out += stmt->column_text(2);
+    out += '\x1f';
+    out += stmt->column_text(3);
+    out += '\x1e';
+  }
+  return out;
+}
 
 } // namespace
 
@@ -160,4 +221,102 @@ TEST_CASE("parity: a C++-migrated database matches a Zig-migrated database row-f
     ++rows;
   }
   REQUIRE(rows == 33);
+}
+
+TEST_CASE("up-down-up roundtrip is lossless at every version in the chain", "[db][migrate][roundtrip]") {
+  scratch_db_path scratch;
+  auto            conn = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn.has_value());
+
+  const auto chain = planar::db::migrations();
+  REQUIRE(chain.size() == 33);
+
+  // Walk the chain forward one migration at a time. At each version,
+  // capture the schema, roll that single migration back, re-apply it, and
+  // require the schema to come back byte-identical. This is a per-version
+  // loop (not just a check at the tip) by construction: every iteration
+  // exercises a distinct migration's down/up pair, and the loop only ever
+  // holds exactly the versions 1..i applied — the same precondition each
+  // migration's own down script was written against — so a migration whose
+  // down leaves stray/missing state is caught either as an apply_all
+  // failure (second up_sql run hits e.g. "table already exists") or as a
+  // dump mismatch, never silently.
+  for (std::size_t i = 0; i < chain.size(); ++i) {
+    REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, i + 1)));
+
+    const auto before = canonical_schema_dump(*conn);
+
+    REQUIRE(conn->execute(chain[i].down_sql_));
+    REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, i + 1)));
+
+    const auto after = canonical_schema_dump(*conn);
+
+    INFO(std::format("migration version {} ('{}') is not lossless across down/up", chain[i].version_, chain[i].name_));
+    REQUIRE(before == after);
+  }
+
+  // The sweep is constructive: it leaves the database fully migrated to
+  // head, so this also re-confirms the "fresh-DB migrate to head" contract
+  // held throughout every intermediate down/up step.
+  auto stmt = conn->prepare("select count(*), max(version) from schema_migrations");
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->step().value() == planar::db::step_result::row);
+  REQUIRE(stmt->column_int64(0) == stmt->column_int64(1));
+  REQUIRE(stmt->column_int64(1) == 33);
+}
+
+TEST_CASE("the down chain from head deletes schema_migrations rows in strict descending mirror order, "
+          "leaving no orphan rows, and a full rollback reaches an empty database",
+          "[db][migrate][rollback]") {
+  scratch_db_path scratch;
+  auto            conn = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn.has_value());
+  REQUIRE(planar::db::apply_all(*conn));
+
+  const auto chain = planar::db::migrations();
+  REQUIRE(chain.size() == 33);
+
+  // Roll back one migration at a time, from the tip down to the
+  // foundation, asserting the mirror-order contract at every step: before
+  // rolling back migration i, schema_migrations' highest row must be
+  // exactly version i (nothing skipped ahead of it); after rolling it
+  // back, the highest row must be exactly version i-1 (nothing left
+  // behind as an orphan) — except at the foundation migration (i == 0),
+  // whose down drops the schema_migrations table itself.
+  for (std::size_t idx = chain.size(); idx-- > 0;) {
+    const auto& m = chain[idx];
+
+    {
+      auto before = conn->prepare("select max(version) from schema_migrations");
+      REQUIRE(before.has_value());
+      REQUIRE(before->step().value() == planar::db::step_result::row);
+      REQUIRE(static_cast<std::uint32_t>(before->column_int64(0)) == m.version_);
+    }
+
+    REQUIRE(conn->execute(m.down_sql_));
+
+    if (idx == 0) {
+      auto after = conn->prepare("select max(version) from schema_migrations");
+      REQUIRE_FALSE(after.has_value()); // table itself was dropped
+    } else {
+      auto after = conn->prepare("select max(version) from schema_migrations");
+      REQUIRE(after.has_value());
+      REQUIRE(after->step().value() == planar::db::step_result::row);
+      REQUIRE(static_cast<std::uint32_t>(after->column_int64(0)) == chain[idx - 1].version_);
+    }
+  }
+
+  // Full rollback to zero: no Planar-authored schema object of any kind
+  // survives. `sqlite_sequence` is excluded deliberately: SQLite creates it
+  // itself, automatically, the first time any `integer primary key
+  // autoincrement` table is created (foundation's own `projects` table
+  // qualifies), and never removes it just because the autoincrement tables
+  // that triggered its creation were later dropped (verified empirically —
+  // it survives a full down-chain rollback to zero regardless of migration
+  // content). It is SQLite's own bookkeeping object, not something any
+  // down script is expected to manage, and not an orphan of our schema.
+  auto leftover = conn->prepare("select count(*) from sqlite_master where name != 'sqlite_sequence'");
+  REQUIRE(leftover.has_value());
+  REQUIRE(leftover->step().value() == planar::db::step_result::row);
+  REQUIRE(leftover->column_int64(0) == 0);
 }
