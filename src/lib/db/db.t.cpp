@@ -219,11 +219,20 @@ TEST_CASE("commit() on a moved-from transaction returns a guarded error instead 
   auto result = txn->commit();
   REQUIRE_FALSE(result.has_value());
   REQUIRE(result.error().code_ == k_sqlite_misuse);
+  // `code_` alone doesn't discriminate: an UNGUARDED `sqlite3_exec(nullptr,
+  // ...)` also returns SQLITE_MISUSE (`sqlite3SafetyCheckOk` is checked
+  // unconditionally at that call site, independent of
+  // `SQLITE_ENABLE_API_ARMOR`), so the code matches with or without the
+  // guard. Pin the guard's own message so this actually fails if the guard
+  // is removed.
+  REQUIRE(result.error().message_ == "planar.db: commit() on a moved-from transaction");
 
-  // `moved_into` still owns the live transaction and rolls it back
-  // cleanly on scope exit — confirms the guard above never touched
-  // SQLite (a real `sqlite3_exec(nullptr, ...)` call would have crashed
-  // outright, since SQLITE_ENABLE_API_ARMOR is not compiled in).
+  // `moved_into` still owns the live transaction and rolls it back cleanly
+  // on scope exit. The guard above exists to document this contract
+  // explicitly and as defense-in-depth against a future vendor bump — this
+  // module's vendored SQLite already self-guards a null `sqlite3*` inside
+  // `sqlite3_exec`/`sqlite3_errmsg`, so it would not have crashed even
+  // without the guard (see db.cppm's `commit()` doc comment).
 }
 
 TEST_CASE("a second commit() on an already-committed transaction returns a guarded error instead of "
