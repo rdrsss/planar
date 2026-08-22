@@ -86,6 +86,42 @@ option(PLANAR_WARNINGS_AS_ERRORS "Build planar_* targets with -Werror" OFF)
 
 enable_testing()
 
+# D15 guard standing tests (plan 996 task 6050, M2 pre-work;
+# cmake/architecture.cmake, scripts/test-architecture-guard.cmake,
+# cmake/tests/architecture-guard-fixture/): each fixture configures a
+# small, self-contained CMake project exercising one rule the D15 walk
+# enforces and asserts the expected outcome, every ctest run, so the guard
+# cannot silently weaken (a FATAL_ERROR downgraded to WARNING, or the walk
+# itself deleted) without a standing test noticing. Registered before
+# add_subdirectory(src) so these run alongside the rest of the default
+# ctest lane regardless of what src/ configures.
+function(_planar_add_architecture_guard_test case_name expect)
+  cmake_parse_arguments(ARG "" "" "MESSAGES" ${ARGN})
+  set(_args
+    "-DCASE=${case_name}"
+    "-DFIXTURE=${CMAKE_CURRENT_SOURCE_DIR}/cmake/tests/architecture-guard-fixture/${case_name}"
+    "-DCXX=${CMAKE_CXX_COMPILER}"
+    "-DWORK=${CMAKE_BINARY_DIR}/architecture-guard-${case_name}"
+    "-DEXPECT=${expect}")
+  set(_n 1)
+  foreach(_msg IN LISTS ARG_MESSAGES)
+    list(APPEND _args "-DEXPECT_MESSAGE_${_n}=${_msg}")
+    math(EXPR _n "${_n} + 1")
+  endforeach()
+  add_test(NAME "architecture_guard.${case_name}"
+    COMMAND "${CMAKE_COMMAND}" ${_args}
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test-architecture-guard.cmake")
+  set_tests_properties("architecture_guard.${case_name}" PROPERTIES LABELS "architecture")
+endfunction()
+
+_planar_add_architecture_guard_test(upward fail
+  MESSAGES "D15 violation" "planar_core.*depends on.*planar_engine_widget")
+_planar_add_architecture_guard_test(engine-execute-db fail
+  MESSAGES "D15 violation" "planar_engine_execute depends on planar_db")
+_planar_add_architecture_guard_test(cmd-binary-db fail
+  MESSAGES "D15 violation" "planar_cmd_planar_execute depends on planar_db")
+_planar_add_architecture_guard_test(layer1-same-layer succeed)
+
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 include(dependencies)   # CPM + vendored packages (cmake/dependencies.cmake)

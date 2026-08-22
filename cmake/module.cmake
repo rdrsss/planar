@@ -124,3 +124,59 @@ function(planar_module name)
     endif()
   endif()
 endfunction()
+
+# planar_binary() — one `src/cmd/<binary>/` executable target.
+#
+# cmake/architecture.cmake's planar_check_architecture() walks only the
+# GLOBAL PLANAR_MODULE_TARGETS property. planar_module() targets append
+# themselves to it automatically; a plain add_executable() call (as every
+# cmd binary — planar, planar-agent, planar-watch, planar-execute — will
+# be) does NOT, so a naked add_executable() in a future src/cmd/*/
+# CMakeLists.txt would sit outside D15 enforcement entirely — exactly the
+# gap plan 996 task 6050 (M2 pre-work) found: the tech-spec claims
+# architecture.cmake turns an accidental planar-execute -> planar_db edge
+# into a "configure/link failure", which was only true for the
+# `engine_execute` module, not the `cmd_planar_execute` binary target,
+# because nothing registered the binary into the walk.
+#
+# planar_binary(<name> [SOURCES ...] [DEPENDS ...]) creates
+# `planar_cmd_<name>` (matching `_planar_module_layer()`'s `^cmd_` layer-3
+# classification and the hardcoded cmd_planar_execute exception in
+# architecture.cmake) and registers it into PLANAR_MODULE_TARGETS exactly
+# like planar_module() does, so every cmd binary that uses this helper
+# instead of a raw add_executable() is walked by planar_check_architecture()
+# for free. src/cmd/*/CMakeLists.txt MUST use this helper, not
+# add_executable() directly, once M2/M3 add the first cmd binary — a bare
+# add_executable() there silently re-opens the coverage gap this function
+# closes.
+function(planar_binary name)
+  set(options)
+  set(one_value_args)
+  set(multi_value_args SOURCES DEPENDS)
+  cmake_parse_arguments(ARG "${options}" "${one_value_args}" "${multi_value_args}" ${ARGN})
+
+  set(_target "planar_cmd_${name}")
+
+  add_executable(${_target} ${ARG_SOURCES})
+  set_target_properties(${_target} PROPERTIES
+    CXX_STANDARD 26
+    CXX_STANDARD_REQUIRED ON
+    CXX_MODULE_STD ON)
+
+  if(PLANAR_WARNINGS_AS_ERRORS)
+    target_compile_options(${_target} PRIVATE
+      $<$<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>,$<CXX_COMPILER_ID:GNU>>:-Werror>)
+  endif()
+
+  set(_depend_targets "")
+  foreach(dep IN LISTS ARG_DEPENDS)
+    list(APPEND _depend_targets "planar_${dep}")
+  endforeach()
+  if(_depend_targets)
+    target_link_libraries(${_target} PRIVATE ${_depend_targets})
+  endif()
+
+  # Same registration planar_module() performs — see this function's
+  # header comment for why a plain add_executable() must not skip it.
+  set_property(GLOBAL APPEND PROPERTY PLANAR_MODULE_TARGETS "${_target}")
+endfunction()
