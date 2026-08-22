@@ -10,10 +10,14 @@
 # real layer-1 base library; `cli` (plan 996, task cpp-cli-tree-parity) is
 # the etcli command-tree/parser/help/completion port. `log` (plan 996, task
 # cpp-cli-output-logging, D11) is the spdlog-backed text/JSON dual-mode
-# logging setup.
+# logging setup. `engine/config` (plan 996, task 6032) is the config plane
+# (`~/.planar/config.toml` + embedded defaults), the embedded-templates +
+# operator-override resolution surface, and the init verb's engine-level
+# project-registration behavior.
 
 add_subdirectory(core)
 add_subdirectory(db)
 add_subdirectory(cli)
 add_subdirectory(log)
 add_subdirectory(engine/identity)
+add_subdirectory(engine/config)

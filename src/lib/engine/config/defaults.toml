@@ -1,0 +1,92 @@
+# ~/.planar/config.toml — Planar configuration
+#
+# All keys here are optional. Anything you don't set falls through to the
+# embedded defaults shipped in the binary. Run `planar config show --defaults`
+# to see the full baseline.
+#
+# Environment variables override config values. See:
+#   planar config show --effective
+# for the resolved value of every key plus its provenance.
+
+[defaults]
+# Default vendor identity used when $PLANAR_VENDOR is not set.
+# Acceptable values today: claude, codex, copilot.
+vendor = "claude"
+
+# Default scope when no scope is active. Acceptable: global, repo, association.
+scope = "global"
+
+[workbench]
+# Per-feature workbench root. $PLANAR_WORKBENCH_ROOT wins if set.
+root = "~/.planar/workbench"
+
+[templates]
+# Where the user's JSON template files live.
+dir = "~/.planar/templates"
+
+# Default template set selected when an association has no override.
+default_set = "default"
+
+[external.jira]
+# Base URL of the Jira instance. Required for ext-sync against Jira.
+# base_url = "https://your-org.atlassian.net"
+# Env vars to read for HTTP Basic auth. Never put the actual values here.
+user_env  = "JIRA_USER"
+token_env = "JIRA_TOKEN"
+
+[external.jira.status]
+# Map Planar task/plan statuses to your Jira workflow names.
+todo    = "To Do"
+doing   = "In Progress"
+blocked = "Blocked"
+done    = "Done"
+
+[external.github-issues]
+# Auth resolution. Acceptable: token-env, gh-cli, oauth-stored.
+auth      = "gh-cli"
+token_env = "GITHUB_TOKEN"           # used only when auth = "token-env"
+
+[external.github-issues.status]
+todo  = "open"
+doing = "open"
+done  = "closed"
+
+[external.github-projects]
+# Custom-field name candidates Planar probes when discovering the "parent"
+# relationship in a Projects v2 board. First match wins.
+parent_field_names = ["Parent", "Initiative", "Tracking"]
+
+[introspection]
+# Opt-in local CLI usage log. When true, one row per top-level `planar`
+# invocation is written to cli_invocations. Default off — recording the
+# operator's behavior without consent violates least surprise.
+cli_log = false
+
+# How many days of cli_invocations rows to retain. Rows older than this
+# are pruned statelessly on the capture write path. No last-prune
+# bookkeeping is stored anywhere.
+retention_days = 90
+
+[introspection.transcripts]
+# Each adapter may be disabled independently. An empty path selects the
+# built-in vendor location; a non-empty path is an operator override.
+claude_enabled = true
+claude_path = ""
+codex_enabled = true
+codex_path = ""
+copilot_enabled = true
+copilot_path = ""
+
+# Per-association overrides. Keys here shadow the top-level sections when
+# the named association is in active scope. Slug is the association.slug.
+#
+# [associations."org:acme"]
+# # Used by ADR-0006's zero-repo fallback path.
+# github_lead_repo = "acme/platform"
+# # Pick a custom template set under templates/<set>/. Falls through to
+# # templates.default_set when unset.
+# default_template_set = "acme-internal"
+#
+# [associations."org:acme".external.jira.status]
+# # Per-association status overrides.
+# done = "Closed"
