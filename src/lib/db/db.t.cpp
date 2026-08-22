@@ -22,8 +22,10 @@ namespace {
 // raw C API confined to its own global module fragment (db.cppm/db.cpp),
 // and the numeric values are part of SQLite's stable public ABI.
 constexpr int k_sqlite_error                 = 1;   // SQLITE_ERROR
+constexpr int k_sqlite_busy                  = 5;   // SQLITE_BUSY
 constexpr int k_sqlite_readonly              = 8;   // SQLITE_READONLY
 constexpr int k_sqlite_cantopen              = 14;  // SQLITE_CANTOPEN
+constexpr int k_sqlite_misuse                = 21;  // SQLITE_MISUSE
 constexpr int k_sqlite_constraint_foreignkey = 787; // SQLITE_CONSTRAINT_FOREIGNKEY
 
 /// @brief A unique scratch database path under the system temp directory,
@@ -140,6 +142,122 @@ TEST_CASE("transaction rollback-on-scope-exit discards the write", "[db][transac
   REQUIRE(stmt.has_value());
   REQUIRE(stmt->step().value() == planar::db::step_result::row);
   REQUIRE(stmt->column_int64(0) == 0);
+}
+
+TEST_CASE("begin_transaction(lock_mode::immediate) takes the write lock synchronously at BEGIN, "
+          "blocking a concurrent writer before any statement runs",
+          "[db][transaction][lock-mode]") {
+  scratch_db_path scratch;
+  auto            seed = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(seed.has_value());
+  REQUIRE(seed->execute("create table t (n integer);"));
+
+  auto conn_a = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn_a.has_value());
+  auto conn_b = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn_b.has_value());
+
+  {
+    auto txn_a = conn_a->begin_transaction(planar::db::lock_mode::immediate);
+    REQUIRE(txn_a.has_value());
+
+    // `txn_a` has not executed a single statement yet — under `deferred`
+    // mode this would still be lock-free. Because it requested
+    // `immediate`, the RESERVED (write) lock was already taken
+    // synchronously inside `begin_transaction` above, so a second
+    // connection's plain write fails right now with SQLITE_BUSY (default
+    // busy_timeout is 0 — no retry window) rather than succeeding or
+    // blocking indefinitely.
+    auto blocked_write = conn_b->execute("insert into t (n) values (1);");
+    REQUIRE_FALSE(blocked_write.has_value());
+    REQUIRE(blocked_write.error().code_ == k_sqlite_busy);
+
+    // `txn_a` goes out of scope here without a commit — rollback-on-
+    // scope-exit releases the RESERVED lock.
+  }
+
+  // Confirms the earlier block was genuinely the RESERVED lock (now
+  // released), not some permanent failure.
+  REQUIRE(conn_b->execute("insert into t (n) values (2);"));
+}
+
+TEST_CASE("begin_transaction() default (deferred) takes no lock at BEGIN, so a concurrent writer "
+          "is not blocked until this transaction itself performs a write",
+          "[db][transaction][lock-mode]") {
+  scratch_db_path scratch;
+  auto            seed = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(seed.has_value());
+  REQUIRE(seed->execute("create table t (n integer);"));
+
+  auto conn_a = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn_a.has_value());
+  auto conn_b = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn_b.has_value());
+
+  auto txn_a = conn_a->begin_transaction(); // default: lock_mode::deferred
+  REQUIRE(txn_a.has_value());
+
+  // Contrast case for the test above: with the default deferred mode,
+  // `begin_transaction` alone takes no lock, so a second connection's
+  // write succeeds immediately.
+  REQUIRE(conn_b->execute("insert into t (n) values (1);"));
+}
+
+TEST_CASE("commit() on a moved-from transaction returns a guarded error instead of crashing", "[db][transaction][error-path]") {
+  scratch_db_path scratch;
+  auto            conn = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn.has_value());
+  REQUIRE(conn->execute("create table t (n integer);"));
+
+  auto txn = conn->begin_transaction();
+  REQUIRE(txn.has_value());
+
+  // Move `*txn`'s transaction elsewhere — `txn`'s own transaction object
+  // is now moved-from (its `_handle` is null; see the move constructor).
+  planar::db::transaction moved_into = std::move(*txn);
+
+  auto result = txn->commit();
+  REQUIRE_FALSE(result.has_value());
+  REQUIRE(result.error().code_ == k_sqlite_misuse);
+
+  // `moved_into` still owns the live transaction and rolls it back
+  // cleanly on scope exit — confirms the guard above never touched
+  // SQLite (a real `sqlite3_exec(nullptr, ...)` call would have crashed
+  // outright, since SQLITE_ENABLE_API_ARMOR is not compiled in).
+}
+
+TEST_CASE("a second commit() on an already-committed transaction returns a guarded error instead of "
+          "re-issuing COMMIT",
+          "[db][transaction][error-path]") {
+  scratch_db_path scratch;
+  auto            conn = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn.has_value());
+  REQUIRE(conn->execute("create table t (n integer);"));
+
+  auto txn = conn->begin_transaction();
+  REQUIRE(txn.has_value());
+  REQUIRE(conn->execute("insert into t (n) values (1);"));
+  REQUIRE(txn->commit());
+
+  // A second, unrelated transaction is now open on the same connection —
+  // if the guard were missing, a stray second `commit()` below would
+  // re-issue `COMMIT` and land on THIS transaction instead of erroring.
+  auto other_txn = conn->begin_transaction();
+  REQUIRE(other_txn.has_value());
+  REQUIRE(conn->execute("insert into t (n) values (2);"));
+
+  auto second_commit = txn->commit();
+  REQUIRE_FALSE(second_commit.has_value());
+  REQUIRE(second_commit.error().code_ == k_sqlite_misuse);
+
+  // The unrelated transaction was never touched by the stray commit
+  // attempt above — it is still open and rolls back on scope exit here.
+  REQUIRE(conn->execute("rollback;"));
+
+  auto stmt = conn->prepare("select count(*) from t;");
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->step().value() == planar::db::step_result::row);
+  REQUIRE(stmt->column_int64(0) == 1); // only the first, genuinely-committed insert persisted
 }
 
 TEST_CASE("a read-only connection refuses a write", "[db][connection][error-path]") {

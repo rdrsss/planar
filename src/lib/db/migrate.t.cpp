@@ -182,6 +182,67 @@ TEST_CASE("a failing migration rolls back its own transaction, leaving schema_mi
   REQUIRE(after->column_int64(1) == max_before);
 }
 
+TEST_CASE("apply_all takes the write lock synchronously at BEGIN (lock_mode::immediate), so a "
+          "concurrent migrator loses cleanly before any migration DDL runs",
+          "[db][migrate][lock-mode]") {
+  // M1 boundary-review finding R1: two Planar binaries can both start
+  // against the same on-disk database and both try to migrate it. This
+  // pins the fix by simulating exactly that race with two real
+  // connections to the same file: connection A stands in for a
+  // concurrent migrator that already won the race and is holding its
+  // migration transaction open; connection B then calls the real
+  // `apply_all` and must fail right at `begin_transaction` (SQLITE_BUSY,
+  // default busy_timeout is 0) rather than partway through executing a
+  // migration script.
+  constexpr int k_sqlite_busy = 5; // SQLITE_BUSY
+
+  scratch_db_path scratch;
+
+  auto conn_a = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn_a.has_value());
+  auto conn_b = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn_b.has_value());
+
+  {
+    // Stand-in for a concurrent migrator that has already reached its
+    // per-migration `begin_transaction(lock_mode::immediate)` call and is
+    // holding the write lock while its migration script runs.
+    auto txn_a = conn_a->begin_transaction(planar::db::lock_mode::immediate);
+    REQUIRE(txn_a.has_value());
+
+    // `current_version` is a plain read (`prepare`/`step`, no explicit
+    // transaction) so it is unaffected by A's RESERVED lock and correctly
+    // reports a fresh database (0) — the failure below happens at
+    // apply_all's own `begin_transaction(lock_mode::immediate)` call for
+    // the first pending migration, not at the version read.
+    auto result = planar::db::apply_all(*conn_b);
+    REQUIRE_FALSE(result.has_value());
+    REQUIRE(result.error().code_ == k_sqlite_busy);
+
+    // Confirms the failure was clean: nothing from the first migration's
+    // DDL landed on B's side (B never got that far), and A's own
+    // in-progress migration state (nothing committed yet either) is
+    // untouched.
+    auto stmt = conn_b->prepare("select count(*) from sqlite_master where type = 'table'");
+    REQUIRE(stmt.has_value());
+    REQUIRE(stmt->step().value() == planar::db::step_result::row);
+    REQUIRE(stmt->column_int64(0) == 0);
+
+    // `txn_a` goes out of scope here without a commit — rollback releases
+    // the lock, standing in for the "winner" finishing its migration.
+  }
+
+  // With the lock released, a normal apply_all now succeeds and reaches
+  // head — confirms the earlier failure was genuinely the lock race, not
+  // a side effect that left the database or connection unusable.
+  REQUIRE(planar::db::apply_all(*conn_b));
+  auto stmt = conn_b->prepare("select count(*), max(version) from schema_migrations");
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->step().value() == planar::db::step_result::row);
+  REQUIRE(stmt->column_int64(0) == stmt->column_int64(1));
+  REQUIRE(stmt->column_int64(1) == 33);
+}
+
 TEST_CASE("parity: a C++-migrated database matches a Zig-migrated database row-for-row", "[db][migrate][parity]") {
   const std::filesystem::path zig_bin{PLANAR_ZIG_BIN};
   if (!std::filesystem::exists(zig_bin)) {

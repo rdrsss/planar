@@ -136,6 +136,22 @@ public:
   [[nodiscard]] auto column_blob(int index) const -> std::vector<std::byte>;
 };
 
+/// @brief Requested SQLite lock-acquisition mode for `BEGIN`.
+///
+/// See `sqlite3`'s own `BEGIN [DEFERRED|IMMEDIATE]` documentation. `deferred`
+/// (SQLite's own default) takes no lock at `BEGIN` — the first statement
+/// that actually reads or writes acquires it, so a `deferred` transaction
+/// that never writes never blocks a concurrent writer. `immediate` acquires
+/// the RESERVED (write) lock synchronously at `BEGIN`, before any statement
+/// runs, so a concurrent writer (or another `immediate` transaction) on a
+/// different connection fails cleanly with `SQLITE_BUSY` right there,
+/// rather than partway through whatever script the first transaction goes
+/// on to run. See `connection::begin_transaction`.
+export enum class lock_mode {
+  deferred, ///< No lock until the first read/write statement (SQLite default).
+  immediate ///< Takes the write (RESERVED) lock synchronously at `BEGIN`.
+};
+
 /// @brief A SQLite transaction, begun immediately on construction.
 ///
 /// Move-only. If the transaction has not been explicitly committed by the
@@ -149,11 +165,16 @@ private:
 
   friend class connection;
 
-  /// @brief Issues `BEGIN` on `handle` and takes ownership of the
-  /// resulting in-progress transaction. `handle` is non-owning — the
-  /// originating `connection` outlives every `transaction` it produces.
+  /// @brief Issues `BEGIN` (or `BEGIN IMMEDIATE`, per `mode`) on `handle`
+  /// and takes ownership of the resulting in-progress transaction.
+  /// `handle` is non-owning — the originating `connection` outlives every
+  /// `transaction` it produces.
   /// @param handle The connection to begin a transaction on.
-  explicit transaction(sqlite3* handle) noexcept;
+  /// @param mode The lock-acquisition mode to request. Defaults to
+  /// `lock_mode::deferred` (SQLite's own default and this type's
+  /// historical behavior); pass `lock_mode::immediate` to take the write
+  /// lock synchronously at `BEGIN` (see `lock_mode`).
+  explicit transaction(sqlite3* handle, lock_mode mode = lock_mode::deferred) noexcept;
 
   /// @brief Rolls back the in-progress transaction, if any, ignoring the
   /// result (destructors cannot propagate `std::expected` failures).
@@ -177,7 +198,28 @@ public:
 
   /// @brief Commits the transaction. After a successful call the
   /// destructor is a no-op.
-  /// @return Success, or the SQLite failure as a `db_error`.
+  ///
+  /// Guarded against every degenerate call shape (M1 boundary-review
+  /// finding R2): calling `commit()` on a moved-from transaction (its
+  /// `_handle` is null — see the move constructor/assignment), calling it
+  /// a second time on an already-committed transaction, or calling it on
+  /// one that is not currently active (e.g. after an explicit rollback)
+  /// all return a `db_error{.code_ = SQLITE_MISUSE, ...}` without touching
+  /// SQLite — none of them ever reach `sqlite3_exec`. The load-bearing
+  /// case is the double-commit: a stray second `commit()` cannot re-issue
+  /// `COMMIT` against a connection that has since started an unrelated
+  /// transaction (confirmed by break-probe — removing this guard lets a
+  /// second `commit()` silently succeed and commit the other transaction).
+  /// The moved-from case is defense-in-depth rather than the primary
+  /// crash concern the finding raised: this module's vendored SQLite
+  /// happens to self-guard a null `sqlite3*` inside `sqlite3_exec`/
+  /// `sqlite3_errmsg` (`sqlite3SafetyCheckOk`, checked unconditionally at
+  /// those two call sites regardless of `SQLITE_ENABLE_API_ARMOR`) — this
+  /// guard exists so the contract does not depend on that SQLite-internal
+  /// behavior persisting across a future vendor bump, and so the caller
+  /// gets a documented `db_error` instead of an SQLite-internal one.
+  /// @return Success, or the SQLite failure (or the `SQLITE_MISUSE`
+  /// guard failure above) as a `db_error`.
   auto commit() -> std::expected<void, db_error>;
 };
 
@@ -246,9 +288,15 @@ public:
 
   /// @brief Begins a transaction on this connection. See `transaction` for
   /// commit/rollback-on-scope-exit semantics.
+  /// @param mode The lock-acquisition mode to request (see `lock_mode`).
+  /// Defaults to `lock_mode::deferred` — pass `lock_mode::immediate` when
+  /// the caller needs to serialize against other writers starting at
+  /// `BEGIN` itself rather than at the first write statement (e.g.
+  /// `planar.db.migrate`'s `apply_all`, which must not let two concurrent
+  /// migrators both start executing a migration script).
   /// @return The in-progress transaction, or the SQLite failure as a
   /// `db_error`.
-  auto begin_transaction() -> std::expected<transaction, db_error>;
+  auto begin_transaction(lock_mode mode = lock_mode::deferred) -> std::expected<transaction, db_error>;
 };
 
 } // namespace planar::db

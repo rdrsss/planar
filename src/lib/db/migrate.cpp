@@ -42,7 +42,19 @@ auto apply_all(connection& conn, std::span<migration_record const> chain) -> std
       continue;
     }
 
-    auto txn = conn.begin_transaction();
+    // `lock_mode::immediate` (M1 boundary-review finding R1): Planar is a
+    // five-binary system that shares one SQLite file, and every binary
+    // migrates the database at startup. A plain `begin;` takes no lock —
+    // two concurrent starters could both read the same current_version,
+    // both open a deferred transaction, and both start executing this
+    // migration's DDL before either acquires the write lock, so the
+    // loser would hit SQLITE_BUSY partway through the script rather than
+    // cleanly at BEGIN. Requesting the write lock synchronously here
+    // makes the loser fail at this `begin_transaction` call instead —
+    // before any DDL runs — restoring the clean serialization point that
+    // zig/src/db/migrate.zig:53's `begin immediate` already provides on
+    // the Zig side.
+    auto txn = conn.begin_transaction(lock_mode::immediate);
     if (!txn) {
       return std::unexpected(txn.error());
     }

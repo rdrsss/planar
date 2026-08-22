@@ -2,7 +2,10 @@
 /// @brief `planar.db.migrate` — applies the embedded `planar.db.migrations`
 /// chain against a `planar.db` connection. Behavior-preserving port (D2)
 /// of `zig/src/db/migrate.zig`'s `applyAll`/`rollbackAll`: each pending up
-/// migration runs inside its own explicit transaction, and the
+/// migration runs inside its own explicit `lock_mode::immediate`
+/// transaction (matching `begin immediate` at zig/src/db/migrate.zig:53 —
+/// see `apply_all`'s doc comment for why the lock mode itself is part of
+/// the fidelity contract, not just the transaction boundary), and the
 /// `schema_migrations` insert/delete contract (migrations/README.md) is
 /// honored entirely by the migration SQL itself — the runner never injects
 /// those statements.
@@ -29,8 +32,20 @@ export auto current_version(connection& conn) -> std::expected<std::uint32_t, db
 
 /// @brief Applies every migration in `chain` whose version exceeds the
 /// database's current version, in ascending order, each inside its own
-/// explicit transaction (`connection::begin_transaction`). Idempotent:
+/// explicit transaction begun with `lock_mode::immediate`
+/// (`connection::begin_transaction(lock_mode::immediate)`). Idempotent:
 /// calling this again against an up-to-date database is a no-op.
+///
+/// The immediate lock mode matters: Planar is a five-binary system
+/// sharing one SQLite file, and every binary migrates at startup. Taking
+/// the write lock synchronously at `BEGIN` (rather than SQLite's default
+/// deferred mode, where no lock is taken until the first statement)
+/// means two concurrent starters racing on the same pending migration
+/// fail cleanly against each other right at this call — the loser sees
+/// `SQLITE_BUSY` from `begin_transaction` before any migration DDL runs
+/// — instead of one of them getting `SQLITE_BUSY` partway through the
+/// script. This mirrors `begin immediate` at
+/// zig/src/db/migrate.zig:53.
 /// @param conn The connection to migrate.
 /// @param chain The ordered migration chain to apply. Exposed as a
 /// parameter — rather than always reading `planar::db::migrations()` — so

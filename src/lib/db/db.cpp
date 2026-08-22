@@ -161,8 +161,9 @@ auto statement::column_blob(int index) const -> std::vector<std::byte> {
 
 // --- transaction --------------------------------------------------------------
 
-transaction::transaction(sqlite3* handle) noexcept : _handle(handle) {
-  _active = static_cast<bool>(exec_simple(_handle, "begin;"));
+transaction::transaction(sqlite3* handle, lock_mode mode) noexcept : _handle(handle) {
+  const char* begin_sql = mode == lock_mode::immediate ? "begin immediate;" : "begin;";
+  _active               = static_cast<bool>(exec_simple(_handle, begin_sql));
 }
 
 transaction::transaction(transaction&& other) noexcept
@@ -201,6 +202,18 @@ auto transaction::rollback_if_active() noexcept -> void {
 }
 
 auto transaction::commit() -> std::expected<void, db_error> {
+  if (_handle == nullptr) {
+    return std::unexpected(db_error{.code_ = SQLITE_MISUSE, .message_ = "planar.db: commit() on a moved-from transaction"});
+  }
+  if (_committed) {
+    return std::unexpected(db_error{.code_ = SQLITE_MISUSE, .message_ = "planar.db: commit() called twice"});
+  }
+  if (!_active) {
+    return std::unexpected(
+        db_error{.code_    = SQLITE_MISUSE,
+                 .message_ = "planar.db: commit() on a transaction that was never active (or already rolled back)"});
+  }
+
   auto result = exec_simple(_handle, "commit;");
   if (!result) {
     return std::unexpected(result.error());
@@ -303,8 +316,8 @@ auto connection::prepare(std::string_view sql) -> std::expected<statement, db_er
   return statement(stmt);
 }
 
-auto connection::begin_transaction() -> std::expected<transaction, db_error> {
-  transaction txn(_handle);
+auto connection::begin_transaction(lock_mode mode) -> std::expected<transaction, db_error> {
+  transaction txn(_handle, mode);
   if (!txn._active) {
     return std::unexpected(make_error(_handle));
   }
