@@ -1,9 +1,9 @@
 # planar_engine_identity — engine/identity bucket (plan 996, task
 # cpp-scope-assoc). Layer-2 `engine_*` module (cmake/architecture.cmake):
-# may DEPEND on layer-1 `db` (D15). Behavior-preserving port (D2) of
-# zig/src/engine/identity/{scope.zig,association.zig} — cwd-derived scope
-# resolution, the `resolveSlug`/`slugFromRef` scope-ref plumbing, the
-# cross-scope guard's refusal decision (mirrors
+# may DEPEND on layer-1 `db` and `scope_ref` (D15). Behavior-preserving
+# port (D2) of zig/src/engine/identity/{scope.zig,association.zig} —
+# cwd-derived scope resolution, the `resolveSlug`/`slugFromRef` scope-ref
+# plumbing, the cross-scope guard's refusal decision (mirrors
 # zig/src/engine/policy/scope_guard.zig — folded into scope.cppm rather
 # than a separate `policy` module, since no `policy` bucket task exists
 # yet and the guard is a single small pure function; tech-spec's
@@ -18,6 +18,16 @@
 #
 # `identity.cppm` is the umbrella re-export, matching `lib/cli/cli.cppm`'s
 # pattern (single import point for the whole bucket).
+#
+# `scope_ref` (plan 996, task 6089, decision D19): `scope.cpp`'s
+# `resolve_slug` used to implement the `global`/`repo:<slug>`/
+# `assoc:<slug>`/bare-association grammar and its DB lookup directly; that
+# algorithm is now extracted into the layer-1 `planar.scope_ref` module
+# (`lib/scope_ref/`) so `engine_planning` can consume it too without a
+# forbidden layer-2-to-layer-2 edge onto `engine_identity` (D18 unchanged).
+# `resolve_slug` is now a thin translator onto `scope_ref::resolve`; this
+# module's own `scope_kind`/`scope_ref`/`scope_error` public types are
+# unaffected — only the implementation moved.
 
 planar_module(engine_identity
   INTERFACE
@@ -29,6 +39,7 @@ planar_module(engine_identity
     association.cpp
   DEPENDS
     db
+    scope_ref
   TEST_DEPENDS
     cli)
 

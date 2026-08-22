@@ -7,6 +7,7 @@ module planar.engine.planning.task;
 
 import std;
 import planar.db;
+import planar.scope_ref;
 import planar.engine.planning.plan;
 import planar.engine.planning.transitions;
 
@@ -32,75 +33,48 @@ auto scope_kind_to_text(task_scope_kind k) -> std::string_view {
   return "global"; // unreachable
 }
 
-/// @brief Strip an optional leading `"assoc:"` prefix. Mirrors
-/// `planar.engine.identity.scope`'s (module-private) `normalize_assoc` —
-/// duplicated here (also duplicated in plan.cpp) rather than imported;
-/// see task.cppm / plan.cppm's CMakeLists.txt for why a dependency on
-/// `engine_identity` is not available at this layer.
-auto normalize_assoc(std::string_view scope) -> std::string_view {
-  constexpr std::string_view prefix = "assoc:";
-  if (scope.starts_with(prefix)) {
-    return scope.substr(prefix.size());
+/// @brief Translate `planar.scope_ref`'s `scope_kind` onto this module's
+/// own `task_scope_kind`. A 1:1 mapping kept explicit so this module's
+/// public API is unaffected by the extraction (plan 996 task 6089, D19).
+auto to_task_kind(scope_ref::scope_kind k) -> task_scope_kind {
+  switch (k) {
+  case scope_ref::scope_kind::global:
+    return task_scope_kind::global;
+  case scope_ref::scope_kind::association:
+    return task_scope_kind::association;
+  case scope_ref::scope_kind::repo:
+    return task_scope_kind::repo;
   }
-  return scope;
+  return task_scope_kind::global; // unreachable
+}
+
+auto to_task_error(scope_ref::error e) -> task_error {
+  switch (e) {
+  case scope_ref::error::query_failed:
+    return task_error::query_failed;
+  case scope_ref::error::slug_not_found:
+    return task_error::slug_not_found;
+  }
+  return task_error::query_failed; // unreachable
 }
 
 /// @brief Resolve `scope` (when present) to a `(kind,id)` pair, else
-/// global. Mirrors `planar.engine.identity.scope`'s `resolve_slug`
-/// algorithm at the SQL level — see this module's CMakeLists.txt for why
-/// this is a local duplication rather than a call into `engine_identity`.
+/// global. Delegates to `planar.scope_ref::resolve` (plan 996 task 6089,
+/// D19) for the `"global"` / `"repo:<slug>"` / `"assoc:<slug>"` /
+/// bare-association grammar and its DB lookup — that algorithm now lives
+/// in exactly one place, shared with `engine_identity`'s `resolve_slug`
+/// and this bucket's own `plan.cpp`. Only the "no scope at all -> global"
+/// fold stays local to this module (same as plan.cpp's own copy).
 auto resolve_scope_or_global(db::connection& conn, const std::optional<std::string>& scope)
     -> std::expected<std::pair<task_scope_kind, std::optional<std::int64_t>>, task_error> {
   if (!scope.has_value()) {
     return std::make_pair(task_scope_kind::global, std::optional<std::int64_t>{});
   }
-  const std::string_view s = *scope;
-  if (s == "global") {
-    return std::make_pair(task_scope_kind::global, std::optional<std::int64_t>{});
+  auto resolved = scope_ref::resolve(conn, *scope);
+  if (!resolved) {
+    return std::unexpected(to_task_error(resolved.error()));
   }
-
-  constexpr std::string_view repo_prefix = "repo:";
-  if (s.starts_with(repo_prefix)) {
-    const auto bare_repo = s.substr(repo_prefix.size());
-    if (bare_repo.empty()) {
-      return std::unexpected(task_error::slug_not_found);
-    }
-    auto stmt = conn.prepare("select id from projects where slug = ?");
-    if (!stmt) {
-      return std::unexpected(task_error::query_failed);
-    }
-    if (auto bound = stmt->bind_text(1, bare_repo); !bound) {
-      return std::unexpected(task_error::query_failed);
-    }
-    auto step = stmt->step();
-    if (!step) {
-      return std::unexpected(task_error::query_failed);
-    }
-    if (*step != db::step_result::row) {
-      return std::unexpected(task_error::slug_not_found);
-    }
-    return std::make_pair(task_scope_kind::repo, std::optional<std::int64_t>{stmt->column_int64(0)});
-  }
-
-  const auto bare = normalize_assoc(s);
-  if (bare.empty()) {
-    return std::unexpected(task_error::slug_not_found);
-  }
-  auto stmt = conn.prepare("select id from associations where slug = ?");
-  if (!stmt) {
-    return std::unexpected(task_error::query_failed);
-  }
-  if (auto bound = stmt->bind_text(1, bare); !bound) {
-    return std::unexpected(task_error::query_failed);
-  }
-  auto step = stmt->step();
-  if (!step) {
-    return std::unexpected(task_error::query_failed);
-  }
-  if (*step != db::step_result::row) {
-    return std::unexpected(task_error::slug_not_found);
-  }
-  return std::make_pair(task_scope_kind::association, std::optional<std::int64_t>{stmt->column_int64(0)});
+  return std::make_pair(to_task_kind(resolved->kind), resolved->id);
 }
 
 auto map_plan_error(plan_error e) -> task_error {
