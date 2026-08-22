@@ -25,6 +25,23 @@
 /// whether that divergence itself gets fixed upstream; until it resolves,
 /// this module's two doc comments (here and on `exit_code_for`) must keep
 /// agreeing with the code, unlike the Zig side's docs/code disagreement.
+///
+/// A SECOND, independent per-binary divergence (M2 boundary review, plan
+/// 996 task 6066, found alongside the parse-error one above):
+/// zig/src/runtime/runtime.zig:103 raises `error.SchemaVersionBehind` (live
+/// DB older than the binary's embedded minimum — distinct from
+/// `SchemaVersionAhead`, "stale binary", which both this module and the
+/// Zig side already model). zig/src/cmd/planar-agent/exit.zig AND
+/// zig/src/cmd/planar-watch/exit.zig both fold it into the SAME exit 7 as
+/// `SchemaVersionAhead` (`error.SchemaVersionAhead, error.
+/// SchemaVersionBehind => 7`). zig/src/cmd/planar/exit.zig's `codeFor` has
+/// NO `SchemaVersionBehind` arm at all — only `SchemaVersionAhead => 7` —
+/// so it silently falls through to the generic `else => 1` bucket. That is
+/// a real THIRD divergence this module must not paper over: `domain_error_
+/// kind::schema_version_behind` below reproduces exit 1 for `binary_kind::
+/// planar` and exit 7 for `binary_kind::planar_agent` (which also stands
+/// in for `planar_watch`'s identical policy — see `binary_kind`'s own doc
+/// comment for why `planar_watch` has no dedicated enumerator here).
 module;
 
 export module planar.cli.exit;
@@ -35,10 +52,16 @@ import planar.cli.error;
 namespace planar::cli {
 
 /// @brief Which binary's exit-code policy to apply. Only the two binaries
-/// task 6063 found diverging are modeled; `planar_watch` is read-only and
-/// raises no mutating-domain errors, and `planar_execute` has no `schema`/
-/// dispatch surface of this shape at all (see CLAUDE.md § five-binary
-/// boundary).
+/// task 6063 found diverging on `parse_error` are modeled as distinct
+/// enumerators; `planar_watch` is read-only and raises no mutating-domain
+/// errors, and `planar_execute` has no `schema`/dispatch surface of this
+/// shape at all (see CLAUDE.md § five-binary boundary). `planar_watch`
+/// DOES raise `SchemaVersionBehind`/`SchemaVersionAhead` at startup like
+/// every other binary, but its policy for that pair is IDENTICAL to
+/// `planar_agent`'s (both `=> 7` for both kinds — see this file's header
+/// comment), so `binary_kind::planar_agent` stands in for it here; if
+/// `planar_watch` ever gains a dispatch surface with its OWN divergent
+/// policy, it earns its own enumerator then, not before.
 export enum class binary_kind : std::uint8_t {
   planar,       ///< The operator binary — `cli.Parse.*` maps to exit 2.
   planar_agent, ///< The agent-callable binary — `cli.Parse.*` falls through to exit 1 (task 6063).
@@ -57,6 +80,9 @@ export enum class binary_kind : std::uint8_t {
 ///   5  scope_mismatch
 ///   6  slug_conflict / already_exists
 ///   7  schema_version_ahead
+///   7  schema_version_behind (`planar_agent`/`planar_watch`) / 1
+///      (`planar` — no arm, falls through to generic; see this file's
+///      header comment, "SECOND, independent per-binary divergence")
 ///   64 not_implemented
 export enum class domain_error_kind : std::uint8_t {
   generic_failure,
@@ -69,13 +95,15 @@ export enum class domain_error_kind : std::uint8_t {
   slug_conflict,
   already_exists,
   schema_version_ahead,
+  schema_version_behind,
   not_implemented,
 };
 
 /// @brief Map a `domain_error_kind` to the process exit code the given
-/// binary's dispatch layer uses, applying the per-binary `parse_error`
-/// divergence documented in this file's header comment (task 6063).
-/// Every other kind maps identically for both binaries.
+/// binary's dispatch layer uses, applying the two per-binary divergences
+/// documented in this file's header comment: `parse_error` (task 6063) and
+/// `schema_version_behind` (plan 996 task 6066). Every other kind maps
+/// identically for both binaries.
 /// @param kind The domain-error kind a handler raised.
 /// @param binary Which binary's exit-code policy to apply.
 /// @return The process exit code (see `planar::cli`'s `exit_*` constants
@@ -99,6 +127,13 @@ export auto exit_code_for(domain_error_kind kind, binary_kind binary) -> int {
     return exit_precondition_conflict;
   case domain_error_kind::schema_version_ahead:
     return exit_schema_version_ahead;
+  case domain_error_kind::schema_version_behind:
+    // zig/src/cmd/planar-agent/exit.zig and zig/src/cmd/planar-watch/
+    // exit.zig both fold SchemaVersionBehind into the same exit 7 as
+    // SchemaVersionAhead. zig/src/cmd/planar/exit.zig has NO
+    // SchemaVersionBehind arm — it silently falls through to the generic
+    // `else => 1` bucket. Reproduced verbatim, not "fixed", per D2.
+    return binary == binary_kind::planar ? exit_generic_failure : exit_schema_version_ahead;
   case domain_error_kind::not_implemented:
     return exit_not_implemented;
   }

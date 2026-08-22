@@ -354,6 +354,39 @@ auto render_command(cmd const& root, cmd const& node, std::span<std::string cons
   return out;
 }
 
+/// @brief Depth-first pre-order walk emitting every VISIBLE descendant of
+/// `node`, PRUNING an entire subtree the moment a hidden child is reached —
+/// matches zig/vendor/etcli/src/cli/schema.zig's `renderDescendantCommands`
+/// (`if (!visibleCmd(child, options)) continue;` inside the per-child
+/// loop: the loop `continue`s past the child WITHOUT ever recursing into
+/// it, so nothing beneath a hidden node is walked at all, let alone
+/// rendered).
+///
+/// B3 (M2 boundary review, plan 996 task 6066): the code this replaced
+/// called `planar.cli.cmd::all_nodes` (cmd.cppm), which flattens the WHOLE
+/// tree unconditionally (it recurses into every child regardless of
+/// visibility — it has other callers, e.g. completion.cpp, that need the
+/// full tree including hidden nodes), and then filtered `if
+/// (!visible_cmd(*node)) continue;` per FLATTENED node. That filter only
+/// excludes a hidden node ITSELF; a visible child of a hidden parent still
+/// appears in `all_nodes`'s flattened list and passes the per-node
+/// `visible_cmd` check, so it was wrongly emitted — not a subset of the
+/// Zig catalog, a genuine divergence. This is therefore a second,
+/// schema-specific walk rather than a change to `all_nodes`'s contract.
+auto render_descendant_commands(cmd const& root, cmd const& node, std::vector<std::string> const& path) -> std::string {
+  std::string out;
+  for (auto const& child : node.cmds) {
+    if (!visible_cmd(child)) {
+      continue; // Prune: do not render this child, and do not recurse into it.
+    }
+    auto child_path = path;
+    child_path.push_back(child.name);
+    out += "," + render_command(root, child, child_path);
+    out += render_descendant_commands(root, child, child_path);
+  }
+  return out;
+}
+
 } // namespace
 
 auto schema_json(cmd const& root) -> std::string {
@@ -363,12 +396,7 @@ auto schema_json(cmd const& root) -> std::string {
   out += "\"root\":" + json_string(root.name) + ",";
   out += "\"commands\":[";
   out += render_command(root, root, {});
-  for (auto const& [path, node] : all_nodes(root)) {
-    if (!visible_cmd(*node)) {
-      continue;
-    }
-    out += "," + render_command(root, *node, path);
-  }
+  out += render_descendant_commands(root, root, {});
   out += "]";
   out += "}";
   return out;

@@ -10,20 +10,22 @@
 /// derive expected values by running the reference binary, never
 /// hand-assumed).
 ///
-/// `exit_code_for` reproduces the canonical mapping documented in
-/// `zig/src/cmd/planar/exit.zig` (the `planar` operator binary's table —
-/// the tech-spec's "exit-code mapping" reference point). Note this table is
-/// a *policy* each binary's own `exit.zig` applies to the `Parse` error it
-/// receives back from `cli.dispatch`/`cli.parse` — etcli's parser itself
-/// never calls `std.process.exit`. `zig/src/cmd/planar-agent/exit.zig`
-/// verifiably applies a DIFFERENT policy (falls through to the generic-1
-/// bucket for every `Parse.*` kind except none — verified via
-/// `./zig/zig-out/bin/planar-agent fail --reason x` → exit 1, not 2). This
-/// module exports the full numeric convention (0/1/2/3/5/6/7/64) as named
-/// constants so a caller can reproduce either binary's policy, or its own,
-/// without hand-rolling magic numbers; `exit_code_for` itself encodes only
-/// the `planar`-binary convention (every `parse_error_kind` maps to
-/// `exit_user_input`).
+/// `exit_code_for_parse_error_planar_binary` reproduces the canonical
+/// mapping documented in `zig/src/cmd/planar/exit.zig` (the `planar`
+/// operator binary's table — the tech-spec's "exit-code mapping" reference
+/// point). Note this table is a *policy* each binary's own `exit.zig`
+/// applies to the `Parse` error it receives back from
+/// `cli.dispatch`/`cli.parse` — etcli's parser itself never calls
+/// `std.process.exit`. `zig/src/cmd/planar-agent/exit.zig` verifiably
+/// applies a DIFFERENT policy (falls through to the generic-1 bucket for
+/// every `Parse.*` kind except none — verified via `./zig/zig-out/bin/
+/// planar-agent fail --reason x` → exit 1, not 2). This module exports the
+/// full numeric convention (0/1/2/3/5/6/7/64) as named constants so a
+/// caller can reproduce either binary's policy, or its own, without
+/// hand-rolling magic numbers; `exit_code_for_parse_error_planar_binary`
+/// itself encodes ONLY the `planar`-binary convention (every
+/// `parse_error_kind` maps to `exit_user_input`) — see this function's own
+/// doc comment for why it is not spelled `exit_code_for` and must not be.
 module;
 
 export module planar.cli.error;
@@ -202,15 +204,30 @@ export inline constexpr int exit_precondition_conflict = 6;  ///< Slug conflict 
 export inline constexpr int exit_schema_version_ahead  = 7;  ///< DB schema newer than this binary embeds.
 export inline constexpr int exit_not_implemented       = 64; ///< Placeholder / not-yet-implemented handler.
 
-/// @brief Map a `parse_error_kind` to the exit code the `planar` operator
+/// @brief Map a `parse_error_kind` to the exit code the `planar` OPERATOR
 /// binary's `exit.zig` maps every `cli.Parse.*` error to: every parse-error
 /// kind is a user-input failure (`exit_user_input`, 2). See this file's
 /// header comment for why this is one binary's policy, not an inherent
 /// parser property.
+///
+/// M2 boundary review (plan 996 task 6066, pre-M3 trap): this function used
+/// to be named `exit_code_for(parse_error_kind)`, sharing a name with
+/// `planar.cli.exit`'s binary-AWARE `exit_code_for(domain_error_kind,
+/// binary_kind)` (both re-exported together through `planar.cli` —
+/// cli.cppm). Overload resolution picks the one-argument form purely by
+/// argument count, so a call site written as `exit_code_for(err.kind)` from
+/// a `planar-agent` code path would silently get THIS function's
+/// planar-only policy (2) instead of the agent binary's actual policy (1,
+/// task 6063) — a real, silent bug waiting for M3's dispatch wiring to
+/// trip over it, not a hypothetical. Renamed so the name itself states its
+/// scope and cannot be reached by accident: a `planar-agent` path MUST use
+/// `exit_code_for(domain_error_kind::parse_error, binary_kind::
+/// planar_agent)` from `planar.cli.exit` instead.
 /// @param k The parse-error kind to map.
 /// @return `exit_user_input` for every `parse_error_kind` (all ten kinds
-/// map identically, matching `zig/src/cmd/planar/exit.zig`'s `codeFor`).
-export auto exit_code_for(parse_error_kind k) -> int {
+/// map identically, matching `zig/src/cmd/planar/exit.zig`'s `codeFor`),
+/// under the `planar` OPERATOR binary's policy only.
+export auto exit_code_for_parse_error_planar_binary(parse_error_kind k) -> int {
   (void)k;
   return exit_user_input;
 }

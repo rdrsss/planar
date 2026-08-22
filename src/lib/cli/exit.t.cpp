@@ -63,6 +63,31 @@ TEST_CASE("exit_code_for: schema_version_ahead maps to exit 7 for both binaries"
   REQUIRE(exit_code_for(domain_error_kind::schema_version_ahead, binary_kind::planar_agent) == 7);
 }
 
+// Pre-M3 trap 2 (M2 boundary review, plan 996 task 6066): zig/src/runtime/
+// runtime.zig:103's SchemaVersionBehind guard is a THIRD per-binary
+// divergence, independent of parse_error/task 6063 above.
+// zig/src/cmd/planar-agent/exit.zig and zig/src/cmd/planar-watch/exit.zig
+// both fold it into the SAME exit 7 as SchemaVersionAhead;
+// zig/src/cmd/planar/exit.zig has NO SchemaVersionBehind arm at all and
+// falls through to the generic exit 1. Break-probe: schema_version_ahead
+// and schema_version_behind must NOT collapse to the same code for
+// `binary_kind::planar` (7 vs 1) even though they DO for `planar_agent`
+// (7 == 7) — asserting only the agent side would pass a regression that
+// silently added a SchemaVersionBehind => 7 arm to the planar binary too.
+TEST_CASE("exit_code_for: schema_version_behind diverges per binary — planar falls through to 1, planar_agent maps to 7",
+          "[cli][exit]") {
+  REQUIRE(exit_code_for(domain_error_kind::schema_version_behind, binary_kind::planar) == 1);
+  REQUIRE(exit_code_for(domain_error_kind::schema_version_behind, binary_kind::planar_agent) == 7);
+  // Non-vacuous cross-check: for `planar`, schema_version_ahead (7) and
+  // schema_version_behind (1) must differ from each other.
+  REQUIRE(exit_code_for(domain_error_kind::schema_version_ahead, binary_kind::planar) !=
+          exit_code_for(domain_error_kind::schema_version_behind, binary_kind::planar));
+  // For planar_agent, the two schema-version kinds DO collapse to the same
+  // code (7) — matching the Zig source's shared switch arm exactly.
+  REQUIRE(exit_code_for(domain_error_kind::schema_version_ahead, binary_kind::planar_agent) ==
+          exit_code_for(domain_error_kind::schema_version_behind, binary_kind::planar_agent));
+}
+
 TEST_CASE("exit_code_for: not_implemented maps to exit 64 for both binaries", "[cli][exit]") {
   REQUIRE(exit_code_for(domain_error_kind::not_implemented, binary_kind::planar) == 64);
   REQUIRE(exit_code_for(domain_error_kind::not_implemented, binary_kind::planar_agent) == 64);

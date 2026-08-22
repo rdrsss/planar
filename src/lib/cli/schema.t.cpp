@@ -419,6 +419,60 @@ TEST_CASE("schema_json: inherited flags, flag groups, env metadata, hidden exclu
   REQUIRE(run_entry.has_value());
 }
 
+/// @brief B3 (M2 boundary review, plan 996 task 6066): a VISIBLE child of a
+/// HIDDEN parent must be OMITTED from the catalog entirely, matching
+/// zig/vendor/etcli/src/cli/schema.zig's `renderDescendantCommands`, which
+/// `continue`s past a hidden child WITHOUT recursing into it — the whole
+/// subtree is pruned, not just the hidden node itself. Before the fix,
+/// `schema_json` walked via `all_nodes` (which flattens unconditionally)
+/// and filtered per-node, so `secret visible-child` slipped through even
+/// though `secret` itself was correctly excluded — this is the
+/// non-vacuous proof: the pre-fix code passes the "hidden node itself
+/// excluded" half of this test and fails the "descendant excluded" half.
+auto make_hidden_subtree_root() -> cmd {
+  cmd visible_child{
+      .name = "visible-child",
+      .desc = "A visible leaf nested under a hidden parent.",
+  };
+  cmd hidden_parent{
+      .name   = "secret",
+      .hidden = true,
+      .desc   = "A hidden group whose children must not surface either.",
+      .cmds   = {std::move(visible_child)},
+  };
+  cmd visible_sibling{
+      .name = "public",
+      .desc = "An ordinary visible leaf, sibling of the hidden group.",
+  };
+  return cmd{.name = "root", .cmds = {std::move(hidden_parent), std::move(visible_sibling)}};
+}
+
+TEST_CASE("schema_json: a visible child of a hidden parent is pruned along with the hidden subtree",
+          "[schema][unit][break-probe]") {
+  auto const root    = make_hidden_subtree_root();
+  auto const catalog = parse_generic(planar::cli::schema_json(root));
+
+  // The hidden node itself is excluded (this half held even before the fix).
+  CHECK_FALSE(find_command(catalog, "root secret").has_value());
+  // The VISIBLE child of that hidden node must ALSO be excluded — this is
+  // the assertion that fails against the pre-fix `all_nodes`-then-filter
+  // implementation.
+  CHECK_FALSE(find_command(catalog, "root secret visible-child").has_value());
+  // An ordinary visible sibling, unaffected by the hidden subtree, must
+  // still be present — proves the walk isn't just pruning everything.
+  CHECK(find_command(catalog, "root public").has_value());
+
+  // Cross-check against the `commands` array directly: no entry's `path`
+  // should ever start with "secret".
+  auto const& commands = catalog.at("commands").get<glz::generic::array_t>();
+  for (auto const& c : commands) {
+    auto const& path = c.at("path").get<glz::generic::array_t>();
+    if (!path.empty()) {
+      CHECK(path[0].get<std::string>() != "secret");
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // [parity] structural equality against the real reference binaries.
 // ---------------------------------------------------------------------------
@@ -516,34 +570,117 @@ TEST_CASE("parity: planar-agent fail schema entry structurally matches the refer
 
 namespace {
 
-/// @brief Compile `zig/tools/cli_usage_lint.zig` standalone (never through
-/// zig/build.zig — this task must not touch anything under `zig/`) into a
-/// scratch binary. Returns the binary's path, or nullopt if `zig` is not
-/// on PATH or the source file is missing (caller SKIPs in that case).
-auto build_lint_tool() -> std::optional<std::filesystem::path> {
+/// @brief Distinguishes WHY `build_lint_tool` didn't hand back a usable
+/// binary. B5 (M2 boundary review, plan 996 task 6066): the original
+/// version of this helper returned `nullopt` for three entirely different
+/// situations — no `zig` on PATH, the source file missing, AND a non-zero
+/// `zig build-exe` — and the caller SKIPped identically in every case. That
+/// collapses "the reference tool isn't available in this environment" (a
+/// legitimate reason to SKIP) into "the reference tool IS available and its
+/// build is BROKEN" (a real regression — e.g. a zig toolchain bump breaking
+/// `cli_usage_lint.zig` itself — that must FAIL the suite, not go green by
+/// silently skipping). `unavailable` keeps the original SKIP behavior;
+/// `broken` is new and must propagate to a FAIL.
+enum class lint_tool_build_outcome : std::uint8_t { unavailable, broken, built };
+
+/// @brief The outcome of `build_lint_tool`, plus enough evidence to act on
+/// it: `bin_path` is set only when `outcome == built`; `log` carries
+/// `build.log`'s contents whenever a build was actually attempted (i.e.
+/// `outcome == broken` or `built`) — the original version wrote this file
+/// and never read it back, so a broken build's diagnostic was silently
+/// discarded even when SKIP was wrong.
+struct lint_tool_build_result {
+  lint_tool_build_outcome              outcome = lint_tool_build_outcome::unavailable;
+  std::optional<std::filesystem::path> bin_path;
+  std::string                          log;
+};
+
+/// @brief Compile `src` standalone (never through zig/build.zig — this
+/// task must not touch anything under `zig/`) into a scratch binary.
+/// `src` is a parameter (not hardcoded to `PLANAR_ZIG_CLI_USAGE_LINT_SRC`)
+/// specifically so a test can inject a deliberately-broken source file and
+/// observe `outcome == broken` without needing the real tool to be broken.
+auto build_lint_tool(std::filesystem::path const& src) -> lint_tool_build_result {
   if (std::system("command -v zig > /dev/null 2>&1") != 0) {
-    return std::nullopt;
+    return {.outcome = lint_tool_build_outcome::unavailable};
   }
-  const std::filesystem::path src{PLANAR_ZIG_CLI_USAGE_LINT_SRC};
   if (!std::filesystem::exists(src)) {
-    return std::nullopt;
+    return {.outcome = lint_tool_build_outcome::unavailable};
   }
   auto const work_dir = std::filesystem::temp_directory_path() /
                         std::format("planar_cli_lint_build_{}", std::chrono::steady_clock::now().time_since_epoch().count());
   std::filesystem::create_directories(work_dir);
   auto const        out_bin   = work_dir / "cli_usage_lint";
   auto const        cache_dir = work_dir / ".zig-cache";
+  auto const        log_path  = work_dir / "build.log";
   std::string const cmd_str =
       std::format("zig build-exe '{}' -O Debug --name cli_usage_lint -femit-bin='{}' --cache-dir '{}' > '{}' 2>&1", src.string(),
-                  out_bin.string(), cache_dir.string(), (work_dir / "build.log").string());
+                  out_bin.string(), cache_dir.string(), log_path.string());
   int const status = std::system(cmd_str.c_str());
-  if (!WIFEXITED(status) || WEXITSTATUS(status) != 0 || !std::filesystem::exists(out_bin)) {
-    return std::nullopt;
+
+  std::string log_text;
+  {
+    std::ifstream in(log_path, std::ios::binary);
+    log_text.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
   }
-  return out_bin;
+
+  if (!WIFEXITED(status) || WEXITSTATUS(status) != 0 || !std::filesystem::exists(out_bin)) {
+    // `zig` is on PATH and the source file exists — the environment IS
+    // capable of building the reference tool, so a build failure here is a
+    // real regression to fail on, not an unavailable-environment SKIP.
+    return {.outcome = lint_tool_build_outcome::broken, .bin_path = std::nullopt, .log = log_text};
+  }
+  return {.outcome = lint_tool_build_outcome::built, .bin_path = out_bin, .log = log_text};
+}
+
+/// @brief Convenience overload for the real caller: builds the actual,
+/// unmodified `zig/tools/cli_usage_lint.zig`.
+auto build_lint_tool() -> lint_tool_build_result {
+  return build_lint_tool(std::filesystem::path{PLANAR_ZIG_CLI_USAGE_LINT_SRC});
 }
 
 } // namespace
+
+// ---------------------------------------------------------------------------
+// Break-probe: prove `build_lint_tool` actually distinguishes "unavailable"
+// from "broken" — the exact trichotomy the real [lint-parity] test below
+// relies on to FAIL rather than SKIP on a broken reference build.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("build_lint_tool: a missing source path is 'unavailable', not 'broken'", "[schema][lint-parity][break-probe]") {
+  auto const result = build_lint_tool(std::filesystem::path{"/nonexistent/planar_cli_lint_does_not_exist.zig"});
+  CHECK(result.outcome == lint_tool_build_outcome::unavailable);
+  CHECK_FALSE(result.bin_path.has_value());
+}
+
+TEST_CASE("build_lint_tool: a zig source file that fails to compile is 'broken', not 'unavailable' — must FAIL, not SKIP",
+          "[schema][lint-parity][break-probe]") {
+  if (std::system("command -v zig > /dev/null 2>&1") != 0) {
+    SKIP("`zig` not on PATH — cannot exercise the broken-build path (this SKIP itself is the 'unavailable' case, covered "
+         "by the previous test)");
+  }
+  auto const scratch_dir =
+      std::filesystem::temp_directory_path() /
+      std::format("planar_cli_lint_broken_src_{}", std::chrono::steady_clock::now().time_since_epoch().count());
+  std::filesystem::create_directories(scratch_dir);
+  auto const broken_src = scratch_dir / "broken.zig";
+  {
+    std::ofstream out(broken_src, std::ios::trunc);
+    out << "this is not valid zig source at all {{{ syntax error\n";
+  }
+
+  auto const result = build_lint_tool(broken_src);
+  // Non-vacuous: `zig` IS on PATH and the source file DOES exist, so a
+  // pre-fix implementation (which never distinguished this from
+  // "unavailable") would also have returned nullopt/unavailable here —
+  // this assertion is exactly what would have failed before B5's fix.
+  CHECK(result.outcome == lint_tool_build_outcome::broken);
+  CHECK_FALSE(result.bin_path.has_value());
+  CHECK_FALSE(result.log.empty()); // build.log was actually captured and read back, not just written and discarded.
+
+  std::error_code ec;
+  std::filesystem::remove_all(scratch_dir, ec);
+}
 
 TEST_CASE("lint-parity: the unmodified zig cli_usage_lint tool accepts and enforces C++-emitted schema output",
           "[schema][lint-parity]") {
@@ -551,10 +688,18 @@ TEST_CASE("lint-parity: the unmodified zig cli_usage_lint tool accepts and enfor
   if (!std::filesystem::exists(stub_bin)) {
     SKIP(std::format("schema stub binary not built at {}", stub_bin.string()));
   }
-  auto const lint_tool = build_lint_tool();
-  if (!lint_tool.has_value()) {
+  auto const lint_build = build_lint_tool();
+  if (lint_build.outcome == lint_tool_build_outcome::unavailable) {
     SKIP("`zig` not on PATH, or zig/tools/cli_usage_lint.zig is missing — cannot build the reference lint tool");
   }
+  if (lint_build.outcome == lint_tool_build_outcome::broken) {
+    // B5: `zig` IS on PATH and the source file DOES exist, so this is a
+    // real regression (e.g. a zig toolchain bump breaking
+    // cli_usage_lint.zig itself), not an unavailable-environment SKIP.
+    FAIL("zig/tools/cli_usage_lint.zig failed to build even though `zig` is on PATH and the source exists — build.log:\n"
+         << lint_build.log);
+  }
+  auto const& lint_tool = lint_build.bin_path;
 
   // Sanity: the stub really does answer `<bin> schema` the way a real
   // Planar binary would (this is the shape the lint tool's own

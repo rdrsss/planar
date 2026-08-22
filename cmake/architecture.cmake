@@ -48,12 +48,29 @@
 # engine or cmd<->cmd edge is exactly the kind of implicit coupling D15 was
 # introduced to catch early. The residual risk this exception reopens is a
 # genuine dependency *cycle* among layer-1 libraries (A -> B -> A), which
-# this walk does not detect by itself; CMake/Ninja's own generator refuses
-# to build a real circular target_link_libraries graph, so a layer-1 cycle
-# still fails configure/generate — just with CMake's generic cycle
-# diagnostic rather than this file's D15 message. See
+# this walk does not detect by itself. This file used to claim CMake/
+# Ninja's own generator refuses to build a real circular
+# target_link_libraries graph, so a layer-1 cycle would fail configure/
+# generate anyway with CMake's own diagnostic — THAT CLAIM IS FALSE for
+# planar_module()'s STATIC libraries (M2 boundary review, plan 996 task
+# 6066, D17: a reviewer probe configured AND generated a mutual
+# planar_a<->planar_b STATIC target_link_libraries cycle — exit 0, no
+# diagnostic at either step). CMake permits and silently resolves a static
+# cycle by re-listing the involved archives on the final link line as many
+# times as needed; it is only an INTERFACE/SHARED-library cycle, or one
+# CMake's dependency graph cannot topologically order at all, that
+# configure/generate refuses. A layer-1 same-layer STATIC cycle is
+# therefore a REAL gap: neither this D15 walk (which explicitly allows
+# layer-1-to-layer-1 edges, per the decision above) nor CMake itself will
+# catch it. Closing that gap (e.g. extending this walk with real cycle
+# detection over the layer-1 subgraph) is an M3 follow-up, deliberately not
+# done here — but the comment must not keep telling a future reader CMake
+# already covers it, which would talk them out of adding the detection
+# this file still lacks. See
 # cmake/tests/architecture-guard-fixture/layer1-same-layer/ for the
-# standing proof that a layer-1 same-layer edge is accepted.
+# standing proof that a layer-1 same-layer edge is accepted (that fixture
+# does not itself construct a cycle; it only proves the single same-layer
+# edge case, which is the pre-existing, intentional exception).
 
 # @brief Classify a planar_module() name into its architecture layer.
 # @param name The module name as passed to planar_module() (e.g. "core",

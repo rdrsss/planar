@@ -132,7 +132,313 @@ auto get_bool(std::unordered_map<std::string, planar::cli::value> const& m, std:
   return std::get<bool>(m.at(key));
 }
 
+auto get_double(std::unordered_map<std::string, planar::cli::value> const& m, std::string const& key) -> double {
+  return std::get<double>(m.at(key));
+}
+
+auto get_list(std::unordered_map<std::string, planar::cli::value> const& m, std::string const& key) -> std::vector<std::string> {
+  return std::get<std::vector<std::string>>(m.at(key));
+}
+
+// ---------------------------------------------------------------------------
+// B4 (M2 boundary review, plan 996 task 6066): synthetic parser-mechanism
+// coverage. The task/task-add/task-done/fail subset above (help.t.cpp/
+// schema.t.cpp's shared fixture) never exercises `short_name` at all — grep
+// confirms `short_name` appears nowhere in this file before this block —
+// leaving the parser's highest-risk logic (short-flag matching, bundling,
+// attached values, negation, flag-group enforcement, count/list
+// accumulation, `--` passthrough/rest, allow_unknown_flags, duplicate
+// detection, too-many-positionals, negative-number positionals, and the
+// duration/float/path kinds) with ZERO coverage. The synthetic `widget`
+// tree below is built specifically to hit each of those mechanisms, one
+// leaf at a time, with a break-probe style assertion (the flag/positional
+// this test cares about, checked against the LITERAL value the mechanism
+// should have produced — not just "no error").
+// ---------------------------------------------------------------------------
+
+using planar::cli::flag_group;
+using planar::cli::flag_group_mode;
+
+/// @brief `widget build` — short_name matching, attached short value
+/// (`-fPATH`), `--flag=value` inline attachment, `--no-` negation, list
+/// accumulation, aliases, the `duration`/`float`/`path` kinds, and a
+/// negative-number positional.
+auto make_build_leaf() -> cmd {
+  return cmd{
+      .name = "build",
+      .desc = "Synthetic leaf covering short/attached/inline/negation/list/alias/kind mechanics.",
+      .flags =
+          {
+              flag{.long_name = "--file", .aliases = {"--path-alt"}, .short_name = 'f', .value_kind = planar::cli::kind::path},
+              flag{.long_name = "--ratio", .value_kind = planar::cli::kind::floating},
+              flag{.long_name = "--timeout", .value_kind = planar::cli::kind::duration},
+              flag{.long_name = "--enabled", .value_kind = planar::cli::kind::boolean, .default_value = true},
+              flag{.long_name = "--tag", .value_kind = planar::cli::kind::string, .list = true},
+          },
+      .positionals = {positional{.name = "offset", .value_kind = planar::cli::kind::integer, .required = true}},
+  };
+}
+
+/// @brief `widget bundle` — bool bundling of DISTINCT shorts (`-ab`), a
+/// COUNT short bundled with itself (`-vvv`), duplicate-flag detection on a
+/// non-count flag, and too-many-positionals (no `allow_extra_positionals`).
+auto make_bundle_leaf() -> cmd {
+  return cmd{
+      .name = "bundle",
+      .desc = "Synthetic leaf covering bool bundling, count bundling, duplicate-flag, too-many-positionals.",
+      .flags =
+          {
+              flag{.long_name = "--alpha", .short_name = 'a', .value_kind = planar::cli::kind::boolean},
+              flag{.long_name = "--beta", .short_name = 'b', .value_kind = planar::cli::kind::boolean},
+              flag{.long_name = "--verbose", .short_name = 'v', .value_kind = planar::cli::kind::boolean, .count = true},
+          },
+      .positionals = {positional{.name = "only", .required = true}},
+  };
+}
+
+/// @brief `widget forward` — `allow_unknown_flags`: an unrecognized flag
+/// (and its best-effort-swallowed value) must not error and must not leak
+/// into positionals/flags, while a declared flag alongside it still parses
+/// normally.
+auto make_forward_leaf() -> cmd {
+  return cmd{
+      .name                = "forward",
+      .desc                = "Synthetic leaf covering allow_unknown_flags passthrough.",
+      .flags               = {flag{.long_name = "--known", .value_kind = planar::cli::kind::boolean}},
+      .allow_unknown_flags = true,
+  };
+}
+
+/// @brief `widget collect` — `--` passthrough (tokens after `--` are never
+/// treated as flags, even if they start with `-`) plus `rest_field`
+/// overflow collection.
+auto make_collect_leaf() -> cmd {
+  return cmd{
+      .name        = "collect",
+      .desc        = "Synthetic leaf covering -- passthrough and rest_field overflow.",
+      .positionals = {positional{.name = "head", .required = true}},
+      .rest_field  = "rest",
+  };
+}
+
+/// @brief `widget excl` — `flag_group_mode::mutually_exclusive`.
+auto make_group_excl_leaf() -> cmd {
+  return cmd{
+      .name        = "excl",
+      .desc        = "Synthetic leaf covering mutually_exclusive flag-group enforcement.",
+      .flags       = {flag{.long_name = "--a", .value_kind = planar::cli::kind::boolean},
+                      flag{.long_name = "--b", .value_kind = planar::cli::kind::boolean}},
+      .flag_groups = {flag_group{.name = "mode", .mode = flag_group_mode::mutually_exclusive, .flags = {"--a", "--b"}}},
+  };
+}
+
+/// @brief `widget any` — `flag_group_mode::required_one`.
+auto make_group_any_leaf() -> cmd {
+  return cmd{
+      .name        = "any",
+      .desc        = "Synthetic leaf covering required_one flag-group enforcement.",
+      .flags       = {flag{.long_name = "--x", .value_kind = planar::cli::kind::boolean},
+                      flag{.long_name = "--y", .value_kind = planar::cli::kind::boolean}},
+      .flag_groups = {flag_group{.name = "input", .mode = flag_group_mode::required_one, .flags = {"--x", "--y"}}},
+  };
+}
+
+/// @brief `widget exact` — `flag_group_mode::required_exactly_one`.
+auto make_group_exact_leaf() -> cmd {
+  return cmd{
+      .name        = "exact",
+      .desc        = "Synthetic leaf covering required_exactly_one flag-group enforcement.",
+      .flags       = {flag{.long_name = "--p", .value_kind = planar::cli::kind::boolean},
+                      flag{.long_name = "--q", .value_kind = planar::cli::kind::boolean}},
+      .flag_groups = {flag_group{.name = "strict", .mode = flag_group_mode::required_exactly_one, .flags = {"--p", "--q"}}},
+  };
+}
+
+auto make_synthetic_parser_root() -> cmd {
+  return cmd{.name = "widget",
+             .cmds = {make_build_leaf(), make_bundle_leaf(), make_forward_leaf(), make_collect_leaf(), make_group_excl_leaf(),
+                      make_group_any_leaf(), make_group_exact_leaf()}};
+}
+
 } // namespace
+
+// ---------------------------------------------------------------------------
+// B4 synthetic-tree TEST_CASEs.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("parse: short_name matching (-f) and attached short value (-fPATH)", "[parser][synthetic][short]") {
+  auto                     root = make_synthetic_parser_root();
+  std::vector<std::string> argv{"widget", "build", "42", "-f/tmp/out.txt"};
+  auto                     outcome = planar::cli::parse(root, argv);
+  REQUIRE(outcome.has_value());
+  CHECK(get_str(outcome->match.flags, "--file") == "/tmp/out.txt");
+}
+
+TEST_CASE("parse: --flag=value inline attachment on a long flag", "[parser][synthetic][inline]") {
+  auto                     root = make_synthetic_parser_root();
+  std::vector<std::string> argv{"widget", "build", "1", "--ratio=3.5"};
+  auto                     outcome = planar::cli::parse(root, argv);
+  REQUIRE(outcome.has_value());
+  CHECK(get_double(outcome->match.flags, "--ratio") == 3.5);
+}
+
+TEST_CASE("parse: an alias resolves to the same canonical long flag name", "[parser][synthetic][alias]") {
+  auto                     root = make_synthetic_parser_root();
+  std::vector<std::string> argv{"widget", "build", "1", "--path-alt=/tmp/via-alias.txt"};
+  auto                     outcome = planar::cli::parse(root, argv);
+  REQUIRE(outcome.has_value());
+  CHECK(get_str(outcome->match.flags, "--file") == "/tmp/via-alias.txt");
+}
+
+TEST_CASE("parse: --no- negation flips a default-true bool flag to false", "[parser][synthetic][negation]") {
+  auto                     root = make_synthetic_parser_root();
+  std::vector<std::string> argv{"widget", "build", "1", "--no-enabled"};
+  auto                     outcome = planar::cli::parse(root, argv);
+  REQUIRE(outcome.has_value());
+  CHECK(get_bool(outcome->match.flags, "--enabled") == false);
+  // Break-probe: the flag's OWN default (true) must NOT be what we're
+  // seeing — confirms this assertion is actually sensitive to the negation
+  // path, not just re-reading the default.
+  std::vector<std::string> argv_absent{"widget", "build", "1"};
+  auto                     outcome_absent = planar::cli::parse(root, argv_absent);
+  REQUIRE(outcome_absent.has_value());
+  CHECK(get_bool(outcome_absent->match.flags, "--enabled") == true);
+}
+
+TEST_CASE("parse: list flag accumulates repeated values in order", "[parser][synthetic][list]") {
+  auto                     root = make_synthetic_parser_root();
+  std::vector<std::string> argv{"widget", "build", "1", "--tag", "a", "--tag", "b", "--tag", "c"};
+  auto                     outcome = planar::cli::parse(root, argv);
+  REQUIRE(outcome.has_value());
+  CHECK(get_list(outcome->match.flags, "--tag") == std::vector<std::string>{"a", "b", "c"});
+}
+
+TEST_CASE("parse: duration and negative-number-positional kinds", "[parser][synthetic][kinds]") {
+  auto                     root = make_synthetic_parser_root();
+  std::vector<std::string> argv{"widget", "build", "-5", "--timeout", "90s"};
+  auto                     outcome = planar::cli::parse(root, argv);
+  REQUIRE(outcome.has_value());
+  // -5 is consumed as the integer positional, NOT mistaken for a flag,
+  // because the currently-open positional (`offset`) is integer-kind.
+  CHECK(get_int(outcome->match.positionals, "offset") == -5);
+  // Duration coerces to nanoseconds: 90s = 90 * 1_000_000_000.
+  CHECK(get_int(outcome->match.flags, "--timeout") == 90'000'000'000LL);
+}
+
+TEST_CASE("parse: bool bundling of distinct short flags (-ab sets both)", "[parser][synthetic][bundle]") {
+  auto                     root = make_synthetic_parser_root();
+  std::vector<std::string> argv{"widget", "bundle", "-ab", "only-positional"};
+  auto                     outcome = planar::cli::parse(root, argv);
+  REQUIRE(outcome.has_value());
+  CHECK(get_bool(outcome->match.flags, "--alpha") == true);
+  CHECK(get_bool(outcome->match.flags, "--beta") == true);
+}
+
+TEST_CASE("parse: count-flag bundling (-vvv counts 3)", "[parser][synthetic][bundle][count]") {
+  auto                     root = make_synthetic_parser_root();
+  std::vector<std::string> argv{"widget", "bundle", "-vvv", "only-positional"};
+  auto                     outcome = planar::cli::parse(root, argv);
+  REQUIRE(outcome.has_value());
+  CHECK(get_int(outcome->match.flags, "--verbose") == 3);
+}
+
+TEST_CASE("parse error: duplicate_flag on a repeated non-count, non-list flag", "[parser][synthetic][error][duplicate]") {
+  auto                     root = make_synthetic_parser_root();
+  std::vector<std::string> argv{"widget", "bundle", "--alpha", "--alpha", "only-positional"};
+  auto                     outcome = planar::cli::parse(root, argv);
+  REQUIRE_FALSE(outcome.has_value());
+  CHECK(outcome.error().kind == planar::cli::parse_error_kind::duplicate_flag);
+  CHECK(outcome.error().flag_name == "--alpha");
+}
+
+TEST_CASE("parse error: too_many_positionals without allow_extra_positionals", "[parser][synthetic][error][positionals]") {
+  auto                     root = make_synthetic_parser_root();
+  std::vector<std::string> argv{"widget", "bundle", "first", "second-overflow"};
+  auto                     outcome = planar::cli::parse(root, argv);
+  REQUIRE_FALSE(outcome.has_value());
+  CHECK(outcome.error().kind == planar::cli::parse_error_kind::too_many_positionals);
+  CHECK(outcome.error().arg == "second-overflow");
+}
+
+TEST_CASE("parse: allow_unknown_flags swallows an unrecognized flag and its value silently", "[parser][synthetic][unknown]") {
+  auto                     root = make_synthetic_parser_root();
+  std::vector<std::string> argv{"widget", "forward", "--mystery", "eaten", "--known"};
+  auto                     outcome = planar::cli::parse(root, argv);
+  REQUIRE(outcome.has_value());
+  CHECK(get_bool(outcome->match.flags, "--known") == true);
+  CHECK_FALSE(outcome->match.flags.contains("--mystery"));
+  CHECK(outcome->match.positionals.empty());
+}
+
+TEST_CASE("parse: -- passthrough disables flag parsing, rest_field collects the overflow", "[parser][synthetic][passthrough]") {
+  auto                     root = make_synthetic_parser_root();
+  std::vector<std::string> argv{"widget", "collect", "headval", "--", "-x", "-y", "z"};
+  auto                     outcome = planar::cli::parse(root, argv);
+  REQUIRE(outcome.has_value());
+  CHECK(get_str(outcome->match.positionals, "head") == "headval");
+  // Non-vacuous: "-x"/"-y" retained their leading dash, proving they were
+  // NEVER routed through flag matching (an actual flag match would have
+  // either errored unknown_flag or consumed them as a value) — they landed
+  // as literal rest tokens instead.
+  CHECK(outcome->match.rest == std::vector<std::string>{"-x", "-y", "z"});
+}
+
+TEST_CASE("parse: mutually_exclusive flag group — one member ok, both members violates", "[parser][synthetic][group]") {
+  auto root = make_synthetic_parser_root();
+  {
+    std::vector<std::string> argv{"widget", "excl", "--a"};
+    auto                     outcome = planar::cli::parse(root, argv);
+    REQUIRE(outcome.has_value());
+  }
+  {
+    std::vector<std::string> argv{"widget", "excl", "--a", "--b"};
+    auto                     outcome = planar::cli::parse(root, argv);
+    REQUIRE_FALSE(outcome.has_value());
+    CHECK(outcome.error().kind == planar::cli::parse_error_kind::flag_group_violation);
+    CHECK(outcome.error().group == "mode");
+    CHECK(outcome.error().group_mode == flag_group_mode::mutually_exclusive);
+  }
+}
+
+TEST_CASE("parse: required_one flag group — one member ok, neither violates", "[parser][synthetic][group]") {
+  auto root = make_synthetic_parser_root();
+  {
+    std::vector<std::string> argv{"widget", "any", "--x"};
+    auto                     outcome = planar::cli::parse(root, argv);
+    REQUIRE(outcome.has_value());
+  }
+  {
+    std::vector<std::string> argv{"widget", "any"};
+    auto                     outcome = planar::cli::parse(root, argv);
+    REQUIRE_FALSE(outcome.has_value());
+    CHECK(outcome.error().kind == planar::cli::parse_error_kind::flag_group_violation);
+    CHECK(outcome.error().group == "input");
+    CHECK(outcome.error().group_mode == flag_group_mode::required_one);
+  }
+}
+
+TEST_CASE("parse: required_exactly_one flag group — exactly one ok, zero and both both violate", "[parser][synthetic][group]") {
+  auto root = make_synthetic_parser_root();
+  {
+    std::vector<std::string> argv{"widget", "exact", "--p"};
+    auto                     outcome = planar::cli::parse(root, argv);
+    REQUIRE(outcome.has_value());
+  }
+  {
+    std::vector<std::string> argv{"widget", "exact"};
+    auto                     outcome = planar::cli::parse(root, argv);
+    REQUIRE_FALSE(outcome.has_value());
+    CHECK(outcome.error().kind == planar::cli::parse_error_kind::flag_group_violation);
+    CHECK(outcome.error().group_mode == flag_group_mode::required_exactly_one);
+  }
+  {
+    std::vector<std::string> argv{"widget", "exact", "--p", "--q"};
+    auto                     outcome = planar::cli::parse(root, argv);
+    REQUIRE_FALSE(outcome.has_value());
+    CHECK(outcome.error().kind == planar::cli::parse_error_kind::flag_group_violation);
+    CHECK(outcome.error().group_mode == flag_group_mode::required_exactly_one);
+  }
+}
 
 TEST_CASE("parse: task add — required positional, string/int/bool flags, defaults fill in", "[parser][success]") {
   auto                     root = make_planar_root();
@@ -213,7 +519,7 @@ TEST_CASE("parse error: unknown subcommand", "[parser][error]") {
   // Captured: `./zig/zig-out/bin/planar task bogus` → stdout
   // "error: unknown subcommand (got bogus) [in: task]\n", exit 2.
   CHECK(planar::cli::format_error(err) == "error: unknown subcommand (got bogus) [in: task]\n");
-  CHECK(planar::cli::exit_code_for(err.kind) == 2);
+  CHECK(planar::cli::exit_code_for_parse_error_planar_binary(err.kind) == 2);
 }
 
 TEST_CASE("parse error: unknown flag", "[parser][error]") {
@@ -227,7 +533,7 @@ TEST_CASE("parse error: unknown flag", "[parser][error]") {
   // Captured: `./zig/zig-out/bin/planar task add T --bogus x` → stdout
   // "error: unknown flag (got --bogus)\n", exit 2.
   CHECK(planar::cli::format_error(err) == "error: unknown flag (got --bogus)\n");
-  CHECK(planar::cli::exit_code_for(err.kind) == 2);
+  CHECK(planar::cli::exit_code_for_parse_error_planar_binary(err.kind) == 2);
 }
 
 TEST_CASE("parse error: missing required positional", "[parser][error]") {
@@ -241,7 +547,7 @@ TEST_CASE("parse error: missing required positional", "[parser][error]") {
   // Captured: `./zig/zig-out/bin/planar task done` → stdout
   // "error: required positional missing: <task-id>\n", exit 2.
   CHECK(planar::cli::format_error(err) == "error: required positional missing: <task-id>\n");
-  CHECK(planar::cli::exit_code_for(err.kind) == 2);
+  CHECK(planar::cli::exit_code_for_parse_error_planar_binary(err.kind) == 2);
 }
 
 TEST_CASE("parse error: missing required flag", "[parser][error]") {
@@ -257,11 +563,12 @@ TEST_CASE("parse error: missing required flag", "[parser][error]") {
   // exit.zig falls this through to its generic-1 bucket (verified: exit 1,
   // not 2 — planar-agent's exit.zig only maps InvalidEntityRef/InvalidInput
   // to 2, unlike planar/exit.zig's blanket cli.Parse.* mapping). This
-  // module's `exit_code_for` documents and reproduces the `planar`-binary
-  // policy specifically (see error.cppm's file comment) — every
+  // module's `exit_code_for_parse_error_planar_binary` documents and
+  // reproduces the `planar`-binary policy specifically (see error.cppm's
+  // file comment) — every
   // `parse_error_kind` including this one maps to exit_user_input (2).
   CHECK(planar::cli::format_error(err) == "error: required flag missing: --claim\n");
-  CHECK(planar::cli::exit_code_for(err.kind) == 2);
+  CHECK(planar::cli::exit_code_for_parse_error_planar_binary(err.kind) == 2);
 }
 
 TEST_CASE("parse error: invalid choice value carries a message and no close suggestion", "[parser][error]") {
@@ -278,7 +585,7 @@ TEST_CASE("parse error: invalid choice value carries a message and no close sugg
   // bogus)\n" — "bogus" isn't within edit-distance 2 of any declared
   // choice, so no "; did you mean ...?" suffix.
   CHECK(planar::cli::format_error(err) == "error: invalid value: --category (got bogus)\n");
-  CHECK(planar::cli::exit_code_for(err.kind) == 2);
+  CHECK(planar::cli::exit_code_for_parse_error_planar_binary(err.kind) == 2);
 }
 
 TEST_CASE("parity: task add/done help and error behavior matches the reference planar binary", "[parser][parity]") {
@@ -300,7 +607,7 @@ TEST_CASE("parity: task add/done help and error behavior matches the reference p
   std::vector<std::string> argv{"planar", "task", "done"};
   auto                     outcome = planar::cli::parse(root, argv);
   REQUIRE_FALSE(outcome.has_value());
-  CHECK(planar::cli::exit_code_for(outcome.error().kind) == WEXITSTATUS(status));
+  CHECK(planar::cli::exit_code_for_parse_error_planar_binary(outcome.error().kind) == WEXITSTATUS(status));
 
   std::error_code ec;
   std::filesystem::remove(out_path, ec);

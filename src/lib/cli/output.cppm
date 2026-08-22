@@ -23,6 +23,40 @@
 /// captured oracle shape before the override was added — see this file's
 /// git history / the coder's work-complete report for that discovery.
 ///
+/// `json_opts` is NOT the single override point this comment used to claim
+/// (M2 boundary review, plan 996 task 6066, finding B1): Glaze's OWN escape
+/// table (vendor/glaze/a4a7/include/glaze/util/parse.hpp:164-186) only
+/// covers 7 control characters (`\b \t \n \f \r \" \\`); every other byte
+/// in 0x00-0x1F is written RAW by default (Glaze's own comment says so —
+/// core/opts.hpp:171: "The default behavior does not escape these
+/// characters"), which is INVALID JSON per RFC 8259 §7. Zig's
+/// `std.json.Stringify.value` escapes all of 0x00-0x1F unconditionally.
+/// Fixing this needs a SECOND override, `escape_control_characters`, which
+/// is `requires`-detected rather than a plain field
+/// (`check_escape_control_characters`, opts.hpp:533-541: `if constexpr
+/// (requires { Opts.escape_control_characters; })`) — a bare
+/// `glz::opts{.escape_control_characters = true}` does not compile (`glz::
+/// opts` declares no such member; opts.hpp:169 lists it under "Add these
+/// fields to a custom options struct if you want to use them"). `json_opts`
+/// below is therefore a distinct TYPE (`json_opts_t`) inheriting `glz::
+/// opts` and adding the field, the same pattern Glaze's own
+/// `opt_true<..., escape_control_characters_opt_tag>` builds at
+/// opts.hpp:1080-1084.
+///
+/// Even with that option, Glaze does not reach byte parity with the Zig
+/// oracle: for the 0x00-0x1F bytes that have no short escape, Glaze writes
+/// `\uXXXX` with UPPERCASE hex digits (json/write.hpp:811,
+/// `"0123456789ABCDEF"`), unconditionally — there is no Glaze option for
+/// hex case. Zig's `outputUnicodeEscape` (json/Stringify.zig:636-654) uses
+/// `printInt(..., .lower, ...)`, i.e. lowercase. `detail::
+/// lowercase_control_escapes` below closes that gap with a second pass over
+/// Glaze's own (already-valid) output: a JSON-string-aware walk that
+/// lowercases exactly the hex digits of a genuine `\u00XX` escape and
+/// leaves every other byte untouched, so the combined result is
+/// byte-for-byte what the Zig oracle emits (see that function's own doc
+/// comment for why the walk cannot misfire on user content that happens to
+/// contain the literal text `A`).
+///
 /// Every field in a struct passed through `emit`'s JSON path is exported
 /// verbatim by name — house style elsewhere uses a trailing underscore on
 /// encapsulated implementation state (e.g. db_error::code_), but a type
@@ -55,16 +89,92 @@ export enum class output_format {
 
 namespace detail {
 
-/// @brief Glaze's own default (`glz::opts{}`) sets `skip_null_members =
-/// true` — an absent/`std::nullopt` field is OMITTED from the object
-/// entirely. The Zig oracle (`std.json.Stringify.value`) does the
-/// opposite: every declared field is always written, `null` included
-/// (verified in output.t.cpp's captures — `"summary":null`,
-/// `"parent_plan_id":null` are present keys, not omitted ones). This
-/// options value is `emit`/`emit_list`'s single override point so every
-/// caller gets the Zig shape without having to remember the override
-/// itself.
-inline constexpr glz::opts json_opts{.skip_null_members = false};
+/// @brief The options TYPE `emit`/`emit_list` write through. Two
+/// independent overrides on top of Glaze's defaults, both required for
+/// this module's Zig-parity contract (see this file's header comment):
+///   - `skip_null_members = false` — Glaze's own default OMITS an
+///     absent/`std::nullopt` field's key entirely; the Zig oracle
+///     (`std.json.Stringify.value`) always writes the key, `null`
+///     included (verified in output.t.cpp's captures — `"summary":null`,
+///     `"parent_plan_id":null` are present keys, not omitted ones).
+///   - `escape_control_characters = true` — Glaze's own default leaves
+///     0x00-0x1F control characters outside its 7-entry short-escape
+///     table RAW in the output, which is invalid JSON. This field is
+///     `requires`-detected (opts.hpp:533-541), so it can only take effect
+///     on a TYPE that declares it, not a `glz::opts{...}` value — hence
+///     `json_opts_t` inherits `glz::opts` instead of being one.
+struct json_opts_t : glz::opts {
+  bool skip_null_members         = false; ///< Always write a null/absent field's key (Zig-parity override).
+  bool escape_control_characters = true;  ///< Escape all 0x00-0x1F, not just Glaze's 7-entry table (valid-JSON override).
+};
+
+/// @brief The single override point `emit`/`emit_list` write through so
+/// every caller gets the Zig-parity shape without having to remember the
+/// override itself. See `json_opts_t`'s doc comment for what the two
+/// fields fix, and this file's header comment for the residual hex-case
+/// gap `lowercase_control_escapes` below closes.
+inline constexpr json_opts_t json_opts{};
+
+/// @brief Second pass over Glaze's `escape_control_characters` output,
+/// closing the one gap that option alone cannot: Glaze always renders a
+/// control-character `\uXXXX` escape with UPPERCASE hex digits
+/// (json/write.hpp:811/922, `"0123456789ABCDEF"`, no option to change
+/// it); Zig's `outputUnicodeEscape` (json/Stringify.zig:636-654) always
+/// renders lowercase. Since Glaze only ever emits `\u00XX` for a genuine
+/// 0x00-0x1F control-character escape (there is no other `\u` producer in
+/// this option set — non-ASCII bytes pass through raw, not through a
+/// unicode escape), lowercasing the two hex digits of every SUCH sequence
+/// reaches byte parity.
+///
+/// The walk is JSON-string-aware (tracks whether we are inside a string
+/// literal, and treats a backslash as always consuming exactly the next
+/// character as its escape partner) specifically so it cannot misfire on
+/// user string content that happens to contain the literal 6 bytes
+/// backslash-u-0-0-4-1 as ordinary text: Glaze itself escapes that
+/// content's backslash to `\\`, producing `\\u0041` in the wire text, and walking
+/// character-by-character consumes that doubled backslash as its OWN
+/// two-character escape pair before the scan ever reaches the `u` — so
+/// the `u` is seen as an ordinary (non-escape-introducing) character, not
+/// mistaken for the start of a new escape sequence.
+/// @param text The already Glaze-serialized, already-valid JSON text to
+/// normalize in place.
+inline auto lowercase_control_escapes(std::string& text) -> void {
+  bool in_string = false;
+  for (std::size_t i = 0; i < text.size(); ++i) {
+    char const c = text[i];
+    if (!in_string) {
+      if (c == '"') {
+        in_string = true;
+      }
+      continue;
+    }
+    if (c == '"') {
+      in_string = false;
+      continue;
+    }
+    if (c != '\\') {
+      continue;
+    }
+    // `c` is an unescaped backslash starting an escape sequence; it
+    // always consumes exactly one more character (or, for `\u`, four
+    // more hex digits) as its partner.
+    if (i + 1 >= text.size()) {
+      break;
+    }
+    char const next = text[i + 1];
+    if (next == 'u' && i + 5 < text.size()) {
+      for (std::size_t k = i + 2; k <= i + 5; ++k) {
+        char& h = text[k];
+        if (h >= 'A' && h <= 'F') {
+          h = static_cast<char>(h - 'A' + 'a');
+        }
+      }
+      i += 5; // skip the full \uXXXX (backslash + 'u' + 4 hex digits).
+    } else {
+      i += 1; // skip the single escaped character (\n, \", \\, ...).
+    }
+  }
+}
 
 } // namespace detail
 
@@ -89,6 +199,7 @@ auto emit(T const& value, output_format fmt, TextFn&& text_fn, std::ostream& out
   if (fmt == output_format::json) {
     auto result = glz::write<detail::json_opts>(value);
     if (result) {
+      detail::lowercase_control_escapes(*result);
       out << *result << '\n';
     } else {
       // Fail loud rather than silently omitting output — a Glaze
@@ -114,6 +225,7 @@ auto emit_list(Range const& values, output_format fmt, TextFn&& text_fn, std::os
   if (fmt == output_format::json) {
     auto result = glz::write<detail::json_opts>(values);
     if (result) {
+      detail::lowercase_control_escapes(*result);
       out << *result << '\n';
     } else {
       out << "[]\n";

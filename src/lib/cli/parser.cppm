@@ -54,7 +54,11 @@ export struct parse_outcome {
 /// @param argv The full argv, including argv[0].
 /// @return The parsed outcome, or a structured `parse_error_detail` on
 /// failure (render with `format_error`; map to an exit code with
-/// `exit_code_for`).
+/// `exit_code_for_parse_error_planar_binary` for the `planar` operator
+/// binary's policy, or with `planar.cli.exit`'s binary-aware
+/// `exit_code_for(domain_error_kind::parse_error, binary_kind)` for any
+/// other binary — see error.cppm's file comment for why these are two
+/// distinctly-named functions, not one overload set).
 export auto parse(cmd const& root, std::span<std::string const> argv) -> std::expected<parse_outcome, parse_error_detail>;
 
 } // namespace planar::cli

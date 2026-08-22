@@ -159,18 +159,103 @@ TEST_CASE("emit_list: text path invokes text_fn instead of serializing JSON", "[
 }
 
 // Break-probe: string field values containing characters that need JSON
-// escaping (embedded quote, backslash, newline) must come out correctly
-// escaped, not passed through raw — a raw pass-through would produce
-// invalid JSON, silently breaking every consumer that parses `--json`
-// output.
-TEST_CASE("emit: json path — string field escaping (embedded quote/backslash/newline)", "[cli][output]") {
-  plan_row           row{.id = 1, .title = "say \"hi\"\\nline2", .summary = std::nullopt, .parent_plan_id = std::nullopt};
+// escaping (embedded quote, backslash, a REAL newline byte — not the
+// two-character sequence backslash-n, which is already valid JSON content
+// and proves nothing about escaping) must come out correctly escaped, not
+// passed through raw — a raw pass-through would produce invalid JSON,
+// silently breaking every consumer that parses `--json` output.
+//
+// B2 (M2 boundary review, plan 996 task 6066): the ORIGINAL version of this
+// test used the C++ string literal "say \"hi\"\\nline2", which is a
+// backslash followed by the letter 'n' — two ordinary, already-valid-JSON
+// characters, not the single 0x0A newline byte the test's own name claimed
+// to cover. No byte outside Glaze's 7-entry short-escape table ever
+// appeared in the input, so the test could not have caught B1 (Glaze
+// passing 0x00-0x1F through raw by default) even though the escaping WAS
+// broken at the time. Fixed below to use a real embedded newline (0x0A,
+// via '\n' as a value, not "\\n" as two literal chars) plus a dedicated
+// sweep over every 0x00-0x1F byte including 0x1B (ESC), matching the
+// task's required 0x1B citation.
+TEST_CASE("emit: json path — string field escaping (embedded quote/backslash/real newline)", "[cli][output]") {
+  plan_row row{
+      .id = 1, .title = "say \"hi\"" + std::string(1, '\n') + "line2", .summary = std::nullopt, .parent_plan_id = std::nullopt};
+  REQUIRE(row.title.find('\n') != std::string::npos); // guard: the byte under test is really in the fixture
   std::ostringstream out;
   emit(row, output_format::json, [](plan_row const&, std::ostream&) {}, out);
   auto const& text = out.str();
+  // `emit` itself appends exactly one trailing '\n' after the JSON payload
+  // (see output.cppm: `out << *result << '\n';`) — that terminator is not
+  // part of the escaped payload under test, so strip it before checking
+  // for a raw, un-escaped newline byte anywhere in the JSON text itself.
+  REQUIRE(text.back() == '\n');
+  auto const& payload = text.substr(0, text.size() - 1);
+  // The raw byte must never appear un-escaped in the wire text — this is
+  // the assertion that actually fails against the pre-fix behavior (raw
+  // passthrough), unlike a round-trip-only check which a lenient/lax JSON
+  // reader could paper over.
+  CHECK(payload.find('\n') == std::string::npos);
+  CHECK(payload.find("\\n") != std::string::npos);
   // Round-trip: re-parse and confirm the title decodes back to the
   // original string, proving the escaping is correct (not just present).
   auto parsed = glz::read_json<std::map<std::string, glz::generic>>(text);
   REQUIRE(parsed.has_value());
-  REQUIRE(parsed->at("title").get<std::string>() == "say \"hi\"\\nline2");
+  REQUIRE(parsed->at("title").get<std::string>() == row.title);
+}
+
+// Break-probe: every byte in 0x00-0x1F, including the 7 Glaze already
+// short-escapes AND the ones B1 found passed through raw (e.g. 0x01, and
+// 0x1B/ESC specifically named by the task brief). Before the
+// `escape_control_characters` fix, every byte NOT in Glaze's 7-entry table
+// (i.e. every one of these except \b \t \n \f \r) was written raw,
+// producing an unparseable document — `glz::read_json` below is the
+// non-vacuous half of the probe: it FAILS on the pre-fix output for those
+// bytes, proving this isn't just a "the option is set" tautology.
+TEST_CASE("emit: json path — every 0x00-0x1F control byte round-trips through valid JSON, including 0x1B",
+          "[cli][output][break-probe]") {
+  for (int b = 0x00; b <= 0x1F; ++b) {
+    INFO("control byte 0x" << std::hex << b);
+    plan_row           row{.id             = 1,
+                           .title          = "pre" + std::string(1, static_cast<char>(b)) + "post",
+                           .summary        = std::nullopt,
+                           .parent_plan_id = std::nullopt};
+    std::ostringstream out;
+    emit(row, output_format::json, [](plan_row const&, std::ostream&) {}, out);
+    auto const& text = out.str();
+    REQUIRE(text.back() == '\n'); // emit()'s own trailing terminator, not part of the escaped payload
+    auto const& payload = text.substr(0, text.size() - 1);
+    CHECK(payload.find(static_cast<char>(b)) == std::string::npos); // never appears raw
+    auto parsed = glz::read_json<std::map<std::string, glz::generic>>(text);
+    REQUIRE(parsed.has_value()); // must be valid, parseable JSON for every byte
+    CHECK(parsed->at("title").get<std::string>() == row.title);
+  }
+  // 0x1B (ESC) called out explicitly by the task brief.
+  plan_row esc_row{
+      .id = 1, .title = "esc[" + std::string(1, '\x1b') + "]seq", .summary = std::nullopt, .parent_plan_id = std::nullopt};
+  std::ostringstream out;
+  emit(esc_row, output_format::json, [](plan_row const&, std::ostream&) {}, out);
+  auto const& text = out.str();
+  CHECK(text.find('\x1b') == std::string::npos);
+  CHECK(text.find("\\u001b") != std::string::npos); // lowercase hex, matching the Zig oracle (json/Stringify.zig:642)
+  auto parsed = glz::read_json<std::map<std::string, glz::generic>>(text);
+  REQUIRE(parsed.has_value());
+  CHECK(parsed->at("title").get<std::string>() == esc_row.title);
+}
+
+// Break-probe for B1's hex-case fix specifically: a control byte with no
+// short escape (e.g. 0x01) must render as LOWERCASE hex (\u0001), matching
+// Zig's std.json.Stringify.value (json/Stringify.zig:642,
+// `printInt(codepoint, 16, .lower, ...)`), not Glaze's own uppercase
+// default (json/write.hpp:811/922, "0123456789ABCDEF"). This is the
+// non-vacuous proof that `detail::lowercase_control_escapes` actually ran:
+// asserting only "text.find(\"\\u0001\")" would pass whether the hex came
+// out upper or lower (0-9 and 1 have no case), so the fixture below
+// deliberately picks a byte (0x0B) whose hex digit (B) DOES have a case,
+// so an uppercase regression fails this check.
+TEST_CASE("emit: json path — control-char hex escapes are lowercase, matching the Zig oracle", "[cli][output][break-probe]") {
+  plan_row row{.id = 1, .title = "x" + std::string(1, '\x0b') + "y", .summary = std::nullopt, .parent_plan_id = std::nullopt};
+  std::ostringstream out;
+  emit(row, output_format::json, [](plan_row const&, std::ostream&) {}, out);
+  auto const& text = out.str();
+  CHECK(text.find("\\u000b") != std::string::npos);
+  CHECK(text.find("\\u000B") == std::string::npos);
 }
