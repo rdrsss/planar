@@ -28,7 +28,13 @@
 # `entity_links` CRUD primitive plus the `task_touch_paths` path-level
 # "touches" surface; it depends only on `db` (same D15/D18 same-layer
 # prohibition — see engine/entitylink/CMakeLists.txt for why it needed no
-# extraction to layer 1 under D19).
+# extraction to layer 1 under D19). `engine/ingest` (plan 996, task 6035) is
+# the READ side of the spec-ingest pipeline — workbench markdown parsing, the
+# proposed-entity diff, the `--strict` gate's coverage object, the text/JSON
+# preview renderers, and the provenance-bearing routing-fact materializer. It
+# depends only on `db`; the pipeline's APPLY step is deliberately absent,
+# because it composes six other layer-2 engine buckets and therefore has no
+# legal home inside one (see engine/ingest/CMakeLists.txt).
 
 add_subdirectory(core)
 add_subdirectory(db)
@@ -39,3 +45,4 @@ add_subdirectory(engine/identity)
 add_subdirectory(engine/config)
 add_subdirectory(engine/planning)
 add_subdirectory(engine/entitylink)
+add_subdirectory(engine/ingest)
