@@ -23,7 +23,12 @@
 # cpp-planning-verbs) is the plan/task CRUD surface, the plan/task status
 # transition matrices, and the plan-304 auto-promotion invariant; it does
 # NOT depend on `engine/identity` (a layer-2-to-layer-2 edge is forbidden
-# by D15/D18 — see engine/planning/CMakeLists.txt).
+# by D15/D18 — see engine/planning/CMakeLists.txt). `engine/entitylink`
+# (plan 996, task cpp-entity-links) is the generic cross-cutting
+# `entity_links` CRUD primitive plus the `task_touch_paths` path-level
+# "touches" surface; it depends only on `db` (same D15/D18 same-layer
+# prohibition — see engine/entitylink/CMakeLists.txt for why it needed no
+# extraction to layer 1 under D19).
 
 add_subdirectory(core)
 add_subdirectory(db)
@@ -33,3 +38,4 @@ add_subdirectory(scope_ref)
 add_subdirectory(engine/identity)
 add_subdirectory(engine/config)
 add_subdirectory(engine/planning)
+add_subdirectory(engine/entitylink)
