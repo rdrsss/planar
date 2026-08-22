@@ -177,8 +177,8 @@ cpp-lint: ## Pinned clang-format + clang-tidy + doxygen gate over first-party C+
 	# here makes that a non-issue rather than an operator-order footgun.
 	cmake --build $(CPP_BUILD_DIR)
 	find src -type f \( -name '*.cppm' -o -name '*.cpp' \) -print0 | xargs -0 $(CLANG_TIDY_BIN) -p $(CPP_BUILD_DIR)
-	@echo "== cpp-lint: doxygen Doxyfile.lint =="
-	doxygen Doxyfile.lint
+	@echo "== cpp-lint: doxygen Doxyfile.lint (retries only on signal death; see docs/toolchain-parity.md) =="
+	scripts/cpp-lint-doxygen.sh Doxyfile.lint
 	# NOTE — scripts/toolchain-probes/*.cpp are deliberately clang-format-
 	# checked above but NOT clang-tidied: they are standalone toolchain-
 	# verification probes compiled directly against the pinned clang++
