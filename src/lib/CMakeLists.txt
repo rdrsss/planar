@@ -13,7 +13,11 @@
 # logging setup. `engine/config` (plan 996, task 6032) is the config plane
 # (`~/.planar/config.toml` + embedded defaults), the embedded-templates +
 # operator-override resolution surface, and the init verb's engine-level
-# project-registration behavior.
+# project-registration behavior. `engine/planning` (plan 996, task
+# cpp-planning-verbs) is the plan/task CRUD surface, the plan/task status
+# transition matrices, and the plan-304 auto-promotion invariant; it does
+# NOT depend on `engine/identity` (a layer-2-to-layer-2 edge is forbidden
+# by D15/D18 — see engine/planning/CMakeLists.txt).
 
 add_subdirectory(core)
 add_subdirectory(db)
@@ -21,3 +25,4 @@ add_subdirectory(cli)
 add_subdirectory(log)
 add_subdirectory(engine/identity)
 add_subdirectory(engine/config)
+add_subdirectory(engine/planning)

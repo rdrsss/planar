@@ -1,0 +1,72 @@
+/// @file transitions.cpp
+/// @brief Implementation of `planar.engine.planning.transitions` (see
+/// transitions.cppm).
+
+module;
+
+module planar.engine.planning.transitions;
+
+import std;
+
+namespace planar::engine::planning {
+
+namespace {
+
+auto check_plan(std::string_view from, std::string_view to) -> std::expected<void, transition_error> {
+  bool legal = false;
+  if (from == "draft") {
+    legal = to == "active";
+  } else if (from == "active") {
+    legal = to == "paused" || to == "done" || to == "abandoned";
+  } else if (from == "paused") {
+    legal = to == "active";
+  } else if (from == "done" || from == "abandoned") {
+    legal = false; // terminal for operator transitions.
+  } else {
+    return std::unexpected(transition_error::unknown_status);
+  }
+  if (!legal) {
+    return std::unexpected(transition_error::illegal_transition);
+  }
+  return {};
+}
+
+auto check_task(std::string_view from, std::string_view to) -> std::expected<void, transition_error> {
+  bool legal = false;
+  if (from == "todo") {
+    legal = to == "doing" || to == "blocked" || to == "cancelled";
+  } else if (from == "doing") {
+    legal = to == "todo" || to == "blocked" || to == "done" || to == "cancelled";
+  } else if (from == "blocked") {
+    legal = to == "doing" || to == "done" || to == "cancelled";
+  } else if (from == "done" || from == "cancelled") {
+    legal = false; // terminal for bare update; escape via reopen/force.
+  } else {
+    return std::unexpected(transition_error::unknown_status);
+  }
+  if (!legal) {
+    return std::unexpected(transition_error::illegal_transition);
+  }
+  return {};
+}
+
+} // namespace
+
+auto check_transition(transition_kind kind, std::string_view from, std::string_view to, bool force)
+    -> std::expected<void, transition_error> {
+  if (from == to) {
+    return {};
+  }
+  if (force && kind == transition_kind::task) {
+    return {};
+  }
+  switch (kind) {
+  case transition_kind::plan:
+    return check_plan(from, to);
+  case transition_kind::task:
+    return check_task(from, to);
+  }
+  return std::unexpected(transition_error::unknown_status);
+}
+
+} // namespace planar::engine::planning
