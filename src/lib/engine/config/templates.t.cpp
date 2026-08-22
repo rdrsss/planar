@@ -152,6 +152,28 @@ TEST_CASE("load_template: a zero-byte named-set disk file falls through to the d
   CHECK(result->set_name == "default");
 }
 
+TEST_CASE("load_template: a named-set disk file with trailing garbage after the JSON value falls through (task 6086)",
+          "[templates]") {
+  // Glaze's validate_trailing_whitespace option defaults to unset/false
+  // (glaze/core/opts.hpp:125), so a bare glz::read_json call happily
+  // parses the leading `{"a":1}` and silently ignores "garbage" — the
+  // same permissive direction as the F4 bug above, just for trailing
+  // content instead of a missing/truncated one. Zig's
+  // std.json.parseFromSlice rejects trailing content outright. Route
+  // through glz::validate_json (which enables
+  // validate_trailing_whitespace) so this falls through exactly like a
+  // malformed file does.
+  scratch_dir root;
+  write_file(root.path_ / "acme" / "github-issues" / "issue.json", R"({"a":1}garbage)");
+  write_file(root.path_ / "default" / "github-issues" / "issue.json", R"({"from": "default-set"})");
+
+  auto result = load_template("acme", "github-issues", "issue", root.path_.string());
+  REQUIRE(result.has_value());
+  CHECK(result->source_ == template_source::disk);
+  CHECK(result->raw == R"({"from": "default-set"})");
+  CHECK(result->set_name == "default");
+}
+
 TEST_CASE("load_template: a malformed default-set disk file falls through to the embedded default (F4)", "[templates]") {
   scratch_dir root;
   write_file(root.path_ / "default" / "github-issues" / "issue.json", R"({"broken": )");

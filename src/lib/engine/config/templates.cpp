@@ -4,7 +4,6 @@
 
 module;
 
-#include <glaze/json/generic.hpp>
 #include <glaze/json/read.hpp>
 
 module planar.engine.config.templates;
@@ -68,13 +67,16 @@ auto try_read_file(const std::filesystem::path& path) -> std::optional<std::stri
 /// disk/embedded candidate and treats a parse failure as
 /// `error.InvalidJson` — caught by `load()`'s `catch {}` and treated
 /// exactly like a missing file (falls through to the next resolution
-/// level). Parses into `glz::generic_i64` (an any-JSON-value type, not a
-/// fixed schema) purely as a validity probe — this task's scope is
-/// resolution, not decoding into a typed tree for rendering.
+/// level). Zig's `std.json.parseFromSlice` rejects trailing content
+/// after the top-level value; a plain `glz::read_json` call does NOT —
+/// Glaze's `validate_trailing_whitespace` option defaults to unset/false
+/// (glaze/core/opts.hpp:125), so `{"a":1}garbage` reads the object and
+/// silently ignores "garbage" (task 6086). `glz::validate_json` is
+/// Glaze's own purpose-built validity probe and enables that option
+/// (glaze/json/read.hpp's `opts_validate`), so route through it instead
+/// of a bespoke `glz::read_json` into a throwaway generic value.
 auto is_valid_json(std::string_view raw) -> bool {
-  glz::generic_i64 value;
-  const auto       ec = glz::read_json(value, raw);
-  return !ec;
+  return !glz::validate_json(raw);
 }
 
 /// @brief Resolve `path` and, if it opens AND parses as valid JSON,
