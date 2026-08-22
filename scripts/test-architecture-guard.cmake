@@ -29,13 +29,41 @@
 #                         layer-1 interdependency decision). MUST SUCCEED —
 #                         the positive control proving the decision is
 #                         implemented, not just documented.
+#   planar-binary-real — a same-layer cmd -> cmd edge, both binaries
+#                         created through the REAL planar_binary() (plan
+#                         996 task 6070, M3 pre-work: planar_binary() had
+#                         zero call sites before this). MUST fail, naming
+#                         the D15 violation and the offending edge.
+#   planar-binary-execute-natural-name — the no-SQLite-handle exception
+#                         exercised through planar_binary(execute ...),
+#                         the natural/unprefixed call convention, proving
+#                         the naming-coupling trap (task 6070) is closed.
+#                         MUST fail, naming the D15 violation and the
+#                         offending edge.
 #
 # CMake script rather than shell so the test runs identically on all
 # platforms (tabula's parity note: its .sh predecessor was BAD_COMMAND on
 # Windows). Invoked as
 #   cmake -DCASE=<case> -DFIXTURE=<dir> -DCXX=<compiler> -DWORK=<scratch dir>
 #         -DEXPECT=<fail|succeed> [-DEXPECT_MESSAGE_1=<regex>]
-#         [-DEXPECT_MESSAGE_2=<regex>] -P <this file>
+#         [-DEXPECT_MESSAGE_2=<regex>]
+#         [-DTOOLCHAIN_CXX_FLAGS=<flags>]
+#         [-DTOOLCHAIN_LINKER_FLAGS=<flags>]
+#         [-DTOOLCHAIN_STDLIB_MODULES_JSON=<path>]
+#         [-DTOOLCHAIN_IMPORT_STD_UUID=<uuid>]
+#         -P <this file>
+#
+# The four TOOLCHAIN_* variables are optional and forwarded verbatim as
+# CMAKE_CXX_FLAGS / CMAKE_EXE_LINKER_FLAGS / CMAKE_CXX_STDLIB_MODULES_JSON /
+# CMAKE_EXPERIMENTAL_CXX_IMPORT_STD to the fixture's own configure. They
+# exist because planar_binary() and planar_module() set CXX_MODULE_STD ON
+# on every target they create, which needs both the pinned-libc++ toolchain
+# wiring AND the per-CMake-release `import std` experimental gate (see
+# docs/toolchain-parity.md and this repo's top-level CMakeLists.txt,
+# "`import std;` experimental gate"); the top-level CMakeLists.txt forwards
+# its OWN active, already-resolved values rather than this script (or a
+# fixture) hardcoding a second copy of the gate UUID table, so there is
+# exactly one source of truth.
 
 foreach(_required CASE FIXTURE CXX WORK EXPECT)
   if(NOT DEFINED ${_required})
@@ -45,9 +73,22 @@ endforeach()
 
 file(REMOVE_RECURSE "${WORK}")
 
+set(_configure_args "-DCMAKE_CXX_COMPILER=${CXX}")
+if(DEFINED TOOLCHAIN_CXX_FLAGS)
+  list(APPEND _configure_args "-DCMAKE_CXX_FLAGS=${TOOLCHAIN_CXX_FLAGS}")
+endif()
+if(DEFINED TOOLCHAIN_LINKER_FLAGS)
+  list(APPEND _configure_args "-DCMAKE_EXE_LINKER_FLAGS=${TOOLCHAIN_LINKER_FLAGS}")
+endif()
+if(DEFINED TOOLCHAIN_STDLIB_MODULES_JSON)
+  list(APPEND _configure_args "-DCMAKE_CXX_STDLIB_MODULES_JSON=${TOOLCHAIN_STDLIB_MODULES_JSON}")
+endif()
+if(DEFINED TOOLCHAIN_IMPORT_STD_UUID)
+  list(APPEND _configure_args "-DCMAKE_EXPERIMENTAL_CXX_IMPORT_STD=${TOOLCHAIN_IMPORT_STD_UUID}")
+endif()
+
 execute_process(
-  COMMAND "${CMAKE_COMMAND}" -S "${FIXTURE}" -B "${WORK}" -G Ninja
-          "-DCMAKE_CXX_COMPILER=${CXX}"
+  COMMAND "${CMAKE_COMMAND}" -S "${FIXTURE}" -B "${WORK}" -G Ninja ${_configure_args}
   OUTPUT_VARIABLE _out ERROR_VARIABLE _out RESULT_VARIABLE _res)
 
 if(EXPECT STREQUAL "fail")

@@ -96,13 +96,25 @@ enable_testing()
 # add_subdirectory(src) so these run alongside the rest of the default
 # ctest lane regardless of what src/ configures.
 function(_planar_add_architecture_guard_test case_name expect)
-  cmake_parse_arguments(ARG "" "" "MESSAGES" ${ARGN})
+  cmake_parse_arguments(ARG "NEEDS_TOOLCHAIN" "" "MESSAGES" ${ARGN})
   set(_args
     "-DCASE=${case_name}"
     "-DFIXTURE=${CMAKE_CURRENT_SOURCE_DIR}/cmake/tests/architecture-guard-fixture/${case_name}"
     "-DCXX=${CMAKE_CXX_COMPILER}"
     "-DWORK=${CMAKE_BINARY_DIR}/architecture-guard-${case_name}"
     "-DEXPECT=${expect}")
+  # planar_binary()/planar_module() set CXX_MODULE_STD ON on every target
+  # they create, which needs the pinned-libc++ toolchain wiring (see
+  # docs/toolchain-parity.md). Forward THIS configure's own already-resolved
+  # values (from CMakePresets.json's "base" preset) rather than duplicating
+  # the hardcoded paths in a second place.
+  if(ARG_NEEDS_TOOLCHAIN)
+    list(APPEND _args
+      "-DTOOLCHAIN_CXX_FLAGS=${CMAKE_CXX_FLAGS}"
+      "-DTOOLCHAIN_LINKER_FLAGS=${CMAKE_EXE_LINKER_FLAGS}"
+      "-DTOOLCHAIN_STDLIB_MODULES_JSON=${CMAKE_CXX_STDLIB_MODULES_JSON}"
+      "-DTOOLCHAIN_IMPORT_STD_UUID=${CMAKE_EXPERIMENTAL_CXX_IMPORT_STD}")
+  endif()
   set(_n 1)
   foreach(_msg IN LISTS ARG_MESSAGES)
     list(APPEND _args "-DEXPECT_MESSAGE_${_n}=${_msg}")
@@ -121,6 +133,16 @@ _planar_add_architecture_guard_test(engine-execute-db fail
 _planar_add_architecture_guard_test(cmd-binary-db fail
   MESSAGES "D15 violation" "planar_cmd_planar_execute depends on planar_db")
 _planar_add_architecture_guard_test(layer1-same-layer succeed)
+# Hazard 1 (plan 996 task 6070, M3 pre-work): planar_binary() exercised
+# through its real function body, not the manual-registration proxy the
+# fixtures above use.
+_planar_add_architecture_guard_test(planar-binary-real fail NEEDS_TOOLCHAIN
+  MESSAGES "D15 violation" "planar_cmd_planar_execute depends on planar_db")
+# Hazard 2 (plan 996 task 6070, M3 pre-work): the no-SQLite-handle exception
+# must still fire when planar_binary() is called with the natural,
+# unprefixed name ("execute", not "planar_execute").
+_planar_add_architecture_guard_test(planar-binary-execute-natural-name fail NEEDS_TOOLCHAIN
+  MESSAGES "D15 violation" "planar_cmd_execute depends on planar_db")
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 

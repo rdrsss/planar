@@ -141,14 +141,26 @@ endfunction()
 #
 # planar_binary(<name> [SOURCES ...] [DEPENDS ...]) creates
 # `planar_cmd_<name>` (matching `_planar_module_layer()`'s `^cmd_` layer-3
-# classification and the hardcoded cmd_planar_execute exception in
-# architecture.cmake) and registers it into PLANAR_MODULE_TARGETS exactly
-# like planar_module() does, so every cmd binary that uses this helper
-# instead of a raw add_executable() is walked by planar_check_architecture()
-# for free. src/cmd/*/CMakeLists.txt MUST use this helper, not
-# add_executable() directly, once M2/M3 add the first cmd binary — a bare
-# add_executable() there silently re-opens the coverage gap this function
-# closes.
+# classification) and registers it into PLANAR_MODULE_TARGETS exactly like
+# planar_module() does, so every cmd binary that uses this helper instead of
+# a raw add_executable() is walked by planar_check_architecture() for free.
+# src/cmd/*/CMakeLists.txt MUST use this helper, not add_executable()
+# directly, once M2/M3 add the first cmd binary — a bare add_executable()
+# there silently re-opens the coverage gap this function closes.
+#
+# Name your execute binary however reads naturally — e.g.
+# planar_binary(execute DEPENDS engine_execute ...) yielding
+# `planar_cmd_execute` — you do NOT need to spell it
+# planar_binary(planar_execute ...) to get the no-SQLite-handle exception in
+# architecture.cmake to fire. That exception now derives from whether the
+# target actually links `planar_engine_execute`, not from matching this
+# function's naming output against a literal string (plan 996, task 6070,
+# M3 pre-work — see cmake/architecture.cmake's header comment and
+# cmake/tests/architecture-guard-fixture/planar-binary-execute-natural-name/
+# for the standing proof). This function itself performs no name
+# validation or normalization; the robustness lives in the consuming check,
+# not here — do not add a parallel name-based guard in this function, it
+# would just be a second literal to keep in sync.
 function(planar_binary name)
   set(options)
   set(one_value_args)

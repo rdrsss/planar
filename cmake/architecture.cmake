@@ -33,6 +33,36 @@
 # CMakeLists.txt (and therefore every `planar_module()` call) has run — the
 # top-level CMakeLists.txt does this last, deliberately.
 #
+# Naming-coupling closure (plan 996, task 6070, M3 pre-work): the exception
+# below used to match SOLELY by the literal target name `cmd_planar_execute`
+# — true only if the execute command binary is declared as
+# `planar_binary(planar_execute ...)`. `planar_binary()` (cmake/module.cmake)
+# prefixes whatever name it is given with `planar_cmd_`, so the natural,
+# unprefixed call `planar_binary(execute ...)` yields `planar_cmd_execute`
+# instead, which never matched the literal — the no-SQLite-handle exception
+# silently never fired for that (equally real) binary. Nothing enforced or
+# even documented that the caller had to spell the name exactly that one
+# way. The walk below now ALSO derives the exception from the real
+# dependency edge: any layer-3 target that actually links
+# `planar_engine_execute` is treated as an execute carrier, regardless of
+# what its own target name is. That makes the exception impossible to
+# bypass by choosing a different `planar_binary()` name — the only way to
+# silence it is to not link engine_execute at all, which is the correct
+# behavior. The original literal-name match is kept alongside it (not
+# replaced) purely for the pre-existing `cmd-binary-db` fixture, which
+# proxies a `cmd_planar_execute` target that never actually links
+# `engine_execute`; removing the literal check would stop that fixture's
+# induced violation from being caught. See
+# cmake/tests/architecture-guard-fixture/planar-binary-execute-natural-name/
+# for the standing proof that the natural, unprefixed name is still caught.
+# Scope note: the link-based check only looks at DIRECT LINK_LIBRARIES, not
+# a transitive closure — a cmd binary that reaches engine_execute only
+# through an intermediate layer-2 module is not currently classified as a
+# carrier. That is unlikely (engine buckets are flat, per the layer-1
+# interdependency decision above, and a cmd binary is expected to link
+# engine_execute directly), but it is a real, undetected residual gap, not
+# a claim this file makes and then fails to back.
+#
 # Layer-1 interdependency decision (plan 996, task 6050, M2 pre-work): the
 # walk below classifies every non-cmd_/engine_ module into one flat layer
 # (1), which by construction made a same-layer edge (e.g. a future `cli ->
@@ -103,6 +133,20 @@ function(planar_check_architecture)
       continue()
     endif()
 
+    # See the comment block above for why this is BOTH a literal-name match
+    # (pre-existing, kept for the cmd-binary-db fixture) AND a real-edge
+    # derivation (new: closes the naming-coupling trap for any
+    # planar_binary() call convention).
+    set(_is_execute_carrier FALSE)
+    if(_name STREQUAL "engine_execute" OR _name STREQUAL "cmd_planar_execute")
+      set(_is_execute_carrier TRUE)
+    endif()
+    foreach(_check_dep IN LISTS _links)
+      if(_check_dep STREQUAL "planar_engine_execute")
+        set(_is_execute_carrier TRUE)
+      endif()
+    endforeach()
+
     foreach(dep IN LISTS _links)
       if(NOT dep MATCHES "^planar_(.+)$")
         continue()
@@ -118,8 +162,7 @@ function(planar_check_architecture)
         continue()
       endif()
 
-      if((_name STREQUAL "engine_execute" OR _name STREQUAL "cmd_planar_execute")
-          AND _dep_name STREQUAL "db")
+      if(_is_execute_carrier AND _dep_name STREQUAL "db")
         message(FATAL_ERROR
           "D15 violation: ${_tgt} depends on planar_db, which is forbidden "
           "for '${_name}' — engine.execute must never hold a SQLite handle "
