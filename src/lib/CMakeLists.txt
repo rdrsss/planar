@@ -34,7 +34,21 @@
 # preview renderers, and the provenance-bearing routing-fact materializer. It
 # depends only on `db`; the pipeline's APPLY step is deliberately absent,
 # because it composes six other layer-2 engine buckets and therefore has no
-# legal home inside one (see engine/ingest/CMakeLists.txt).
+# legal home inside one (see engine/ingest/CMakeLists.txt). `engine/runs`
+# (plan 996, task 6095) is the run-record lifecycle behind `planar bench *`
+# and `planar run *` — both verb families write the SAME `runs` /
+# `run_events` / `run_touches` tables (`run` does NOT use `workflow_runs`,
+# despite the name) and differ only in their surface. It depends only on
+# `db`; `bench harvest` is deferred with its git-subprocess dependency (see
+# engine/runs/CMakeLists.txt). `engine/closure` (plan 996, task 6095) is the
+# read side of a task's derived symbol-level closure (`closure show`); the
+# `closure compute` extractor is deferred with its tree-sitter, filesystem-walk,
+# and cross-bucket-handler dependencies (see engine/closure/CMakeLists.txt). `engine/grouping` (plan 996, task 6095)
+# is the closure-replication-minimizing slice recommender behind `groups
+# recommend`; it reads the same `closures` table as `engine/closure` through
+# its OWN query rather than depending on that bucket (a layer-2-to-layer-2
+# edge would FATAL), mirroring what the Zig originals do. The optional
+# `mtkahypar` solver arm is deferred with its subprocess dependency.
 
 add_subdirectory(core)
 add_subdirectory(db)
@@ -48,3 +62,6 @@ add_subdirectory(engine/entitylink)
 add_subdirectory(engine/ingest)
 add_subdirectory(engine/promotion)
 add_subdirectory(engine/runtime)
+add_subdirectory(engine/runs)
+add_subdirectory(engine/closure)
+add_subdirectory(engine/grouping)

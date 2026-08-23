@@ -71,12 +71,14 @@ planar_module(engine_planning
     plan.cppm
     task.cppm
     annotation.cppm
+    test_spec_status.cppm
     planning.cppm
   SOURCES
     transitions.cpp
     plan.cpp
     task.cpp
     annotation.cpp
+    test_spec_status.cpp
   DEPENDS
     db
     scope_ref

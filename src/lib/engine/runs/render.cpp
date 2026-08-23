@@ -1,0 +1,322 @@
+/// @file render.cpp
+/// @brief Implementation of `planar.engine.runs.render` (plan 996, task
+/// 6095). See render.cppm for scope and the oracle-derived output shapes.
+
+module;
+
+#include <glaze/json/read.hpp>
+
+module planar.engine.runs.render;
+
+import std;
+import planar.engine.runs.lifecycle;
+
+namespace planar::engine::runs::render {
+
+namespace {
+
+/// @brief Append `s` to `out` as a quoted JSON string.
+///
+/// Escaping matches zig's `output.writeJsonString`, which is a thin wrapper
+/// over `std.json.Stringify.encodeJsonString` with default options: the two
+/// mandatory escapes, the five short forms, LOWERCASE `\u00xx` for the
+/// remaining C0 control bytes, and deliberately NO escaping of `/` or of
+/// non-ASCII bytes. Confirmed against the oracle rather than assumed:
+///
+///   $Z bench start 'q"uid\back' --arm 'a"rm<TAB>tab' --base-sha $'sha\nnl' \
+///      --config-hash 'h€ü' --corpus-repo 'c/r' ...
+///   $Z bench event 'q"uid\back' --kind $'k\x01ctl' --seq 1
+///   $Z bench show 'q"uid\back' --json
+///     -> "run_uid":"q\"uid\\back","arm":"a\"rm\ttab","base_sha":"sha\nnl",
+///        "config_hash":"h€ü","corpus_repo":"c/r", ... "kind":"k\u0001ctl"
+///
+/// Note `h€ü` passed through as raw UTF-8, `c/r` kept its bare slash, and the
+/// 0x01 byte became lowercase-hex `\u0001`. Escaping `/` or upper-casing the
+/// hex would still be valid JSON but would not be byte-identical, which is
+/// what parity compares.
+auto append_json_string(std::string& out, std::string_view s) -> void {
+  out.push_back('"');
+  for (const char raw : s) {
+    const auto c = static_cast<unsigned char>(raw);
+    switch (c) {
+    case '\\':
+      out.append("\\\\");
+      break;
+    case '"':
+      out.append("\\\"");
+      break;
+    case 0x08:
+      out.append("\\b");
+      break;
+    case 0x0C:
+      out.append("\\f");
+      break;
+    case '\n':
+      out.append("\\n");
+      break;
+    case '\r':
+      out.append("\\r");
+      break;
+    case '\t':
+      out.append("\\t");
+      break;
+    default:
+      if (c <= 0x1F) {
+        out.append(std::format("\\u{:04x}", static_cast<unsigned>(c)));
+      } else {
+        out.push_back(raw);
+      }
+      break;
+    }
+  }
+  out.push_back('"');
+}
+
+/// @brief Append a stored raw-JSON blob verbatim, or the literal `null`.
+///
+/// The blob is NOT re-escaped and NOT re-formatted: whatever bytes the column
+/// holds are spliced straight into the enclosing object. See render.cppm's
+/// "Raw-JSON embedding" section for the whitespace round-trip capture that
+/// makes this observable.
+auto append_raw_json_or_null(std::string& out, const std::optional<std::string>& blob) -> void {
+  if (blob.has_value()) {
+    out.append(*blob);
+  } else {
+    out.append("null");
+  }
+}
+
+auto append_string_or_null(std::string& out, const std::optional<std::string>& value) -> void {
+  if (value.has_value()) {
+    append_json_string(out, *value);
+  } else {
+    out.append("null");
+  }
+}
+
+/// @brief Append the `events` array, shared verbatim between `bench show` and
+/// `run show` — the one part of the two JSON renderers that IS identical.
+auto append_events_array(std::string& out, std::span<const lifecycle::event_row> events) -> void {
+  out.append(",\"events\":[");
+  for (std::size_t i = 0; i < events.size(); ++i) {
+    if (i > 0) {
+      out.push_back(',');
+    }
+    const auto& ev = events[i];
+    out.append(std::format("{{\"id\":{},\"seq\":{},\"kind\":", ev.id, ev.seq));
+    append_json_string(out, ev.kind);
+    out.append(",\"payload\":");
+    append_raw_json_or_null(out, ev.payload);
+    out.append(",\"created_at\":");
+    append_json_string(out, ev.created_at);
+    out.push_back('}');
+  }
+  out.push_back(']');
+}
+
+/// @brief Append the shared `events (N):` text section.
+///
+/// The blank line before the header, the parenthesised count, and the
+/// `  [seq] kind` / `  [seq] kind: payload` row forms are all identical
+/// between the two show leaves.
+auto append_events_text(std::string& out, std::span<const lifecycle::event_row> events) -> void {
+  out.append(std::format("\nevents ({}):\n", events.size()));
+  for (const auto& ev : events) {
+    if (ev.payload.has_value()) {
+      out.append(std::format("  [{}] {}: {}\n", ev.seq, ev.kind, *ev.payload));
+    } else {
+      out.append(std::format("  [{}] {}\n", ev.seq, ev.kind));
+    }
+  }
+}
+
+} // namespace
+
+auto is_known_arm(std::string_view arm) -> bool {
+  return std::ranges::find(k_known_arms, arm) != k_known_arms.end();
+}
+
+auto is_valid_terminal_status(std::string_view status) -> bool {
+  return std::ranges::find(k_terminal_statuses, status) != k_terminal_statuses.end();
+}
+
+auto is_valid_json_payload(std::string_view blob) -> bool {
+  // `glz::validate_json` (not a bare `glz::read_json`) is the purpose-built
+  // probe that enables Glaze's `validate_trailing_whitespace` — without it
+  // `{"a":1} junk` reads the object and silently ignores the tail, which the
+  // oracle refuses at exit 2. Same reasoning and same call as
+  // engine/config/templates.cpp's `is_valid_json` (task 6086).
+  return !glz::validate_json(blob);
+}
+
+auto render_unknown_arm_warning(std::string_view arm) -> std::string {
+  return std::format("warn: bench start: unrecognized arm '{}'; recognized arms: strict, eligibility, grouped", arm);
+}
+
+auto render_run_not_found(std::string_view leaf, std::string_view run_uid) -> std::string {
+  return std::format("{}: run '{}' not found", leaf, run_uid);
+}
+
+auto render_invalid_status(std::string_view leaf, std::string_view status) -> std::string {
+  return std::format("{}: invalid --status '{}'; expected completed, aborted, or error", leaf, status);
+}
+
+auto render_invalid_touch_kind(std::string_view kind) -> std::string {
+  return std::format("bench touch: invalid --kind '{}'; expected declared or actual", kind);
+}
+
+auto render_invalid_json(std::string_view leaf, std::string_view flag, std::string_view blob) -> std::string {
+  return std::format("{}: {} is not valid JSON: {}", leaf, flag, blob);
+}
+
+auto render_duplicate_run_uid(std::string_view run_uid) -> std::string {
+  return std::format("bench start: run_uid '{}' already exists", run_uid);
+}
+
+auto render_duplicate_seq(std::int64_t seq, std::string_view run_uid) -> std::string {
+  return std::format("bench event: seq {} already used for run '{}'", seq, run_uid);
+}
+
+auto render_bench_show_json(const lifecycle::run& run_, std::span<const lifecycle::event_row> events,
+                            std::span<const lifecycle::touch_row> touches) -> std::string {
+  std::string out;
+  out.append(std::format("{{\"id\":{},\"run_uid\":", run_.id));
+  append_json_string(out, run_.run_uid);
+  out.append(std::format(",\"plan_id\":{},\"arm\":", run_.plan_id));
+  append_json_string(out, run_.arm);
+  out.append(",\"base_sha\":");
+  append_json_string(out, run_.base_sha);
+  out.append(",\"config_hash\":");
+  append_json_string(out, run_.config_hash);
+  out.append(",\"config_json\":");
+  append_raw_json_or_null(out, run_.config_json);
+  out.append(",\"corpus_repo\":");
+  append_string_or_null(out, run_.corpus_repo);
+  out.append(",\"status\":");
+  append_json_string(out, run_.status);
+  out.append(",\"started_at\":");
+  append_json_string(out, run_.started_at);
+  out.append(",\"ended_at\":");
+  append_string_or_null(out, run_.ended_at);
+
+  append_events_array(out, events);
+
+  out.append(",\"touches\":[");
+  for (std::size_t i = 0; i < touches.size(); ++i) {
+    if (i > 0) {
+      out.push_back(',');
+    }
+    const auto& t = touches[i];
+    out.append(std::format("{{\"id\":{},\"task_id\":{},\"path\":", t.id, t.task_id));
+    append_json_string(out, t.path);
+    out.append(",\"kind\":");
+    append_json_string(out, lifecycle::touch_kind_to_text(t.kind_));
+    out.append(",\"created_at\":");
+    append_json_string(out, t.created_at);
+    out.push_back('}');
+  }
+  out.push_back(']');
+
+  out.push_back('}');
+  return out;
+}
+
+auto render_bench_show_text(const lifecycle::run& run_, std::span<const lifecycle::event_row> events,
+                            std::span<const lifecycle::touch_row> touches) -> std::string {
+  std::string out;
+  out.append(std::format("run:         {}\n", run_.run_uid));
+  out.append(std::format("plan_id:     {}\n", run_.plan_id));
+  out.append(std::format("arm:         {}\n", run_.arm));
+  out.append(std::format("status:      {}\n", run_.status));
+  out.append(std::format("base_sha:    {}\n", run_.base_sha));
+  out.append(std::format("config_hash: {}\n", run_.config_hash));
+  // corpus_repo and ended_at rows are omitted entirely when unset — NOT
+  // rendered with an empty value. Note config_json has no text row at all.
+  if (run_.corpus_repo.has_value()) {
+    out.append(std::format("corpus_repo: {}\n", *run_.corpus_repo));
+  }
+  out.append(std::format("started_at:  {}\n", run_.started_at));
+  if (run_.ended_at.has_value()) {
+    out.append(std::format("ended_at:    {}\n", *run_.ended_at));
+  }
+
+  append_events_text(out, events);
+
+  out.append(std::format("\ntouches ({}):\n", touches.size()));
+  for (const auto& t : touches) {
+    out.append(std::format("  task={} path={} kind={}\n", t.task_id, t.path, lifecycle::touch_kind_to_text(t.kind_)));
+  }
+  return out;
+}
+
+auto render_run_show_json(const lifecycle::run& run_, std::span<const lifecycle::event_row> events) -> std::string {
+  std::string out;
+  out.append(std::format("{{\"id\":{},\"run_uid\":", run_.id));
+  append_json_string(out, run_.run_uid);
+  out.append(std::format(",\"plan_id\":{},\"arm\":", run_.plan_id));
+  append_json_string(out, run_.arm);
+  out.append(",\"status\":");
+  append_json_string(out, run_.status);
+  out.append(",\"started_at\":");
+  append_json_string(out, run_.started_at);
+  out.append(",\"ended_at\":");
+  append_string_or_null(out, run_.ended_at);
+
+  append_events_array(out, events);
+
+  out.push_back('}');
+  return out;
+}
+
+auto render_run_show_text(const lifecycle::run& run_, std::span<const lifecycle::event_row> events) -> std::string {
+  std::string out;
+  // Width 12, not bench's 13 — `started_at: ` is the longest label here.
+  out.append(std::format("run:        {}\n", run_.run_uid));
+  out.append(std::format("plan_id:    {}\n", run_.plan_id));
+  out.append(std::format("arm:        {}\n", run_.arm));
+  out.append(std::format("status:     {}\n", run_.status));
+  out.append(std::format("started_at: {}\n", run_.started_at));
+  if (run_.ended_at.has_value()) {
+    out.append(std::format("ended_at:   {}\n", *run_.ended_at));
+  }
+
+  append_events_text(out, events);
+  return out;
+}
+
+auto render_bench_start(std::string_view run_uid) -> std::string {
+  return std::string{run_uid};
+}
+
+auto render_bench_ok() -> std::string {
+  return "ok";
+}
+
+auto render_run_start_json(std::string_view run_uid, std::int64_t plan_id, std::string_view arm) -> std::string {
+  std::string out{"{\"run_uid\":"};
+  append_json_string(out, run_uid);
+  out.append(std::format(",\"plan_id\":{},\"arm\":", plan_id));
+  append_json_string(out, arm);
+  out.push_back('}');
+  return out;
+}
+
+auto render_run_event_json(std::string_view run_uid, std::int64_t seq, std::string_view kind) -> std::string {
+  std::string out{"{\"run_uid\":"};
+  append_json_string(out, run_uid);
+  out.append(std::format(",\"seq\":{},\"kind\":", seq));
+  append_json_string(out, kind);
+  out.push_back('}');
+  return out;
+}
+
+auto render_run_finish_json(std::string_view run_uid, std::string_view status) -> std::string {
+  std::string out{"{\"run_uid\":"};
+  append_json_string(out, run_uid);
+  out.append(",\"status\":");
+  append_json_string(out, status);
+  out.push_back('}');
+  return out;
+}
+
+} // namespace planar::engine::runs::render

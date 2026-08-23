@@ -14,3 +14,4 @@ export import planar.engine.planning.transitions;
 export import planar.engine.planning.plan;
 export import planar.engine.planning.task;
 export import planar.engine.planning.annotation;
+export import planar.engine.planning.test_spec_status;
