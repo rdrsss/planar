@@ -94,6 +94,26 @@ auto make_planar_agent_root() -> cmd {
   return cmd{.name = "planar-agent", .cmds = {std::move(fail)}};
 }
 
+/// @brief Environment prefix that pins the reference binary to a throwaway
+/// database.
+///
+/// The Zig runtime resolves `$PLANAR_DB` and otherwise falls back to
+/// `~/.planar/planar.db`, applying any pending migrations **automatically** on
+/// first use. Shelling the reference binary with the inherited environment
+/// therefore points it at the operator's live database — and the moment a
+/// migration lands on this branch, running `ctest` would migrate that database
+/// past the version every installed binary supports, locking out every other
+/// agent on the machine. Isolating here keeps the suite honest about the
+/// repository rule that a from-source binary never touches the real database.
+auto scratch_env_prefix() -> std::string {
+  auto const      root = std::filesystem::temp_directory_path() /
+                         std::format("planar_cli_help_env_{}", std::chrono::steady_clock::now().time_since_epoch().count());
+  std::error_code ec;
+  std::filesystem::create_directories(root, ec);
+  return std::format("PLANAR_DB='{}' PLANAR_HOME='{}' PLANAR_CONFIG_PATH='{}' ", (root / "planar.db").string(),
+                     (root / "home").string(), (root / "config.toml").string());
+}
+
 /// @brief Run `bin arg1 arg2 ...`, redirecting stdout+stderr to a scratch
 /// file, and return its contents. Caller checks the binary exists first
 /// (SKIP otherwise) — mirrors migrate.t.cpp's `std::system` + redirect
@@ -102,7 +122,7 @@ auto capture_stdout(std::string const& bin, std::vector<std::string> const& args
   auto const out_path =
       std::filesystem::temp_directory_path() /
       std::format("planar_cli_help_capture_{}.txt", std::chrono::steady_clock::now().time_since_epoch().count());
-  std::string cmd_str = bin;
+  std::string cmd_str = scratch_env_prefix() + bin;
   for (auto const& a : args) {
     cmd_str += " '" + a + "'";
   }

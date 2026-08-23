@@ -693,11 +693,24 @@ TEST_CASE("parity: task add/done help and error behavior matches the reference p
   }
   auto const out_path = std::filesystem::temp_directory_path() / "planar_cli_parity_task_add.txt";
 
+  // Pin the reference binary to a throwaway database. The Zig runtime resolves
+  // $PLANAR_DB and otherwise falls back to ~/.planar/planar.db, applying
+  // pending migrations automatically on first use — so an inherited
+  // environment points this at the operator's live database, and once a
+  // migration lands on this branch `ctest` would migrate it past the version
+  // every installed binary supports.
+  auto const      scratch = std::filesystem::temp_directory_path() /
+                            std::format("planar_cli_parity_env_{}", std::chrono::steady_clock::now().time_since_epoch().count());
+  std::error_code mk_ec;
+  std::filesystem::create_directories(scratch, mk_ec);
+
   // "task add" with a duplicate — no missing-positional/flag error path;
   // this only re-confirms the exit code convention (2) still holds against
   // the live reference binary, in case exit.zig's mapping ever drifts.
-  auto      cmd_str = std::format("{} task done > {} 2>&1", zig_bin.string(), out_path.string());
-  int const status  = std::system(cmd_str.c_str());
+  auto cmd_str = std::format("PLANAR_DB='{}' PLANAR_HOME='{}' PLANAR_CONFIG_PATH='{}' {} task done > {} 2>&1",
+                             (scratch / "planar.db").string(), (scratch / "home").string(), (scratch / "config.toml").string(),
+                             zig_bin.string(), out_path.string());
+  int const status = std::system(cmd_str.c_str());
   REQUIRE(WIFEXITED(status));
   CHECK(WEXITSTATUS(status) == 2);
 
